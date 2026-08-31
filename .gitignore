@@ -1,0 +1,37 @@
+# Local artifacts and tooling state. Do not commit.
+.atl/
+.codegraph/
+.venv/
+node_modules/
+dist/
+build/
+coverage/
+htmlcov/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local environment overrides
+.env
+.env.local
+.env.*.local
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vite/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# OS scratch
+tmp/
+temp/
