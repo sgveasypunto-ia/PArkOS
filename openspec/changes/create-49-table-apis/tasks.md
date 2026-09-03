@@ -66,7 +66,7 @@ After pre-apply, all feature branches are cut from `dev` and all PRs target `dev
 
 | PR | Tables | New files | LOC forecast | LOC risk | Conditional split |
 |---|---|---|---|---|---|
-| PR0 | 0 | 2 | ~80 | LOW | — |
+| PR0 | 0 | 3 | ~330 | LOW | — (but adds the `check_schema_match.py` gate for all subsequent PRs) |
 | PR1 | 5 (4 [V] auth + 1 [L-S] login) | ~22 | ~700 | MED | — |
 | PR2 | 7 ([A] infra: sync + log) | ~12 | ~700 | MED | — |
 | PR3 | 9 ([V] catalogs) | ~11 | ~600 | LOW | — |
@@ -132,17 +132,19 @@ All edits land in ONE commit (single docs reconciliation unit). The two new scri
 - [ ] **T-PR0-04**: Update `openspec/config.yaml` line 14 `context:` — rewrite the data-model line to "AUDIT-FIRST (49 tables, 26 [V] / 3 [L-E] / 6 [L-W] / 2 [L-S] / 12 [A])"; update `rules.proposal` line 20 to reference the 49-table model.
 - [ ] **T-PR0-05**: Add `openspec/scripts/check_table_counts.py` — Python helper that scans the four reconciled docs and exits non-zero if any "45 / 24 / 9 / 12" stale token appears; prints the canonical counts.
 - [ ] **T-PR0-06**: Add `openspec/scripts/preflight_table_counts.sh` — bash wrapper that calls the Python helper, then queries `\dt prod.*` via `psql $DATABASE_URL` and asserts count ≥ 49, asserts ≥ 11 `_inmutable` triggers, and asserts ≥ 2 `ls_session%` triggers. Exits non-zero on any miss. Refs SC-X4 (REQ-cross-cutting).
+- [ ] **T-PR0-06b**: Add `openspec/scripts/check_schema_match.py` — full schema conformance verifier. Parses `modelo_datos_er.mmd` (49 tables, column types, UK, FK) and queries `information_schema` + `pg_trigger` + `pg_class.relrowsecurity` in `prod.*` schema. Asserts: (a) every table in ER exists in DB, (b) every column in ER exists in DB with the same type + nullability, (c) every UK in ER is present, (d) every FK in ER is present, (e) every [A] table has `REVOKE UPDATE,DELETE FROM rol_app` (verified via `has_table_privilege('rol_app', 'prod.<table>', 'UPDATE') = false`), (f) every [A] table has a `BEFORE UPDATE OR DELETE` trigger, (g) every [L-S] table has a `BEFORE UPDATE` session-guard trigger, (h) every `pg_partman`-partitioned table (8 of them per design §13) has `partman.create_parent` registered. Exit 0 = 100% match, exit 1 with diff detail otherwise. This script is the CI gate for every PR (per CI configuration in design §21.14) and the sdd-verify acceptance check.
 - [ ] **T-PR0-07**: Add `AGENTS.md` Risk Register row: "bootstrap PR2 schema completeness" — mitigation: `preflight_table_counts.sh` exit 0. (User instructed T-PR1-18 for this in the prompt; shipped here as PR0 alongside the script.)
 - [ ] **T-PR0-08**: Commit + push + open PR. PR title: `docs(create-49-table-apis): reconcile 45→49 table count drift`. PR body includes the diff-stat and links to the script. PR target: `dev` (per `AGENTS.md` gitflow).
 
 ### Acceptance
 - `python openspec/scripts/check_table_counts.py` exits 0 against the four docs.
 - `bash openspec/scripts/preflight_table_counts.sh` exits 0 against the migrated DB after bootstrap PR2 lands.
+- `python openspec/scripts/check_schema_match.py` exits 0 against the migrated DB — the post-bootstrap schema matches `modelo_datos_er.mmd` 100% (49 tables, all columns, all UK, all FK, all 11 [A] REVOKEs, all 11 [A] triggers, both [L-S] session guards, 8 pg_partman parents). This gate is the contract for every subsequent PR.
 - All 4 stale docs read "49 tables / 26 [V] / 3 [L-E] / 6 [L-W] / 2 [L-S] / 12 [A]".
 - `AGENTS.md` Risk Register references the new preflight check.
 
 ### Estimate
-~80 changed lines across 6 files (4 edits + 2 new scripts + 1 AGENTS.md row).
+~330 changed lines across 7 files (4 edits + 3 new scripts + 1 AGENTS.md row). The new `check_schema_match.py` is the largest deliverable (~250 LOC for the Mermaid parser + DB introspection + diff engine).
 
 ---
 
@@ -719,7 +721,7 @@ If `git diff --stat` post-implementation > 800 LOC → execute **PR11a** (T-PR11
 
 | PR | Tasks | LOC | Files | Risk |
 |---|---|---|---|---|
-| PR0 | 8 | ~80 | 6 | LOW |
+| PR0 | 9 | ~330 | 7 | LOW |
 | PR1 | 19 | ~700 | 30 | MED |
 | PR2 | 15 | ~700 | 17 | MED |
 | PR3 | 9 | ~600 | 13 | LOW |
@@ -731,7 +733,7 @@ If `git diff --stat` post-implementation > 800 LOC → execute **PR11a** (T-PR11
 | PR9 | 20 | ~800 | 14 | **HIGH** (apply-time split to 9a+9b; sync workers) |
 | PR10 | 15 | ~600 | 12 | MED (multi-sucursal admin views + branch-selector UI) |
 | PR11 | 18 | ~700 | 10 | **HIGH** (apply-time split to 11a+11b; DIAN dispatcher) |
-| **Total** | **200** | **~7,880** | **~179** | 5 conditional splits: PR5a/5b, PR6a/6b, PR8a/8b, PR9a/9b, PR11a/11b |
+| **Total** | **201** | **~8,130** | **~180** | 5 conditional splits: PR5a/5b, PR6a/6b, PR8a/8b, PR9a/9b, PR11a/11b |
 
 ## Risks surfaced
 

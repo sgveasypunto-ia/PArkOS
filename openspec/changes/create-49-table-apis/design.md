@@ -2905,6 +2905,24 @@ The delta is "done" when:
 **Engram / persistence**:
 28. The 4 new PRs commit task IDs `T-PR8-NN` / `T-PR9-NN` / `T-PR10-NN` / `T-PR11-NN` (added to `tasks.md` in the sdd-tasks delta) with work-unit scope: one behavior per commit, tests+docs in the same commit (per `~/.config/opencode/skills/work-unit-commits/SKILL.md`).
 
+**Cross-change DB schema conformance** (user-ratified this session):
+29. **`openspec/scripts/check_schema_match.py` exits 0** (PR0 deliverable, gated by every subsequent PR). The verifier parses `modelo_datos_er.mmd` and asserts 100% match against the live `prod.*` schema: 49 tables, all columns with exact types + nullability, all UK, all FK, all 11 `[A]` REVOKE statements, all 11 `[A]` `BEFORE UPDATE OR DELETE` triggers, both `[L-S]` session-guard triggers, and the 8 `pg_partman` partition parents. **Zero difference tolerated** — any deviation fails the PR gate and the sdd-verify phase. The sdd-apply orchestration runs this script post-merge of each PR.
+
+### 21.15 sdd-apply orchestration: per-task specialized sub-agents
+
+The change is implemented via a per-task sub-agent delegation pattern. The orchestrator launches the `sdd-apply` agent once with the full `tasks.md` (201 tasks across PR0–PR11). The `sdd-apply` agent, in turn, **delegates each task to a fresh specialized sub-agent** (not implementing in its own context) so each implementation runs with a minimal, focused context window:
+
+- **Sub-agent per task**: each `T-PRN-NN` becomes a separate sub-agent invocation. The sub-agent receives:
+  - The exact task description and acceptance criteria from `tasks.md`
+  - A pointer to the relevant `modelo_datos_er.mmd` excerpt (the table definition only, not the whole 1178-line file)
+  - A pointer to the relevant `design.md` section (e.g., `§4.1 versioned.py` for a `[V]`-table task)
+  - A pointer to the relevant `specs/*.md` REQ/SC it implements
+  - The preflight `check_schema_match.py` invocation command (so the sub-agent can verify the DB state before claiming success)
+- **Post-task verifier sub-agent**: after all task sub-agents land in a PR branch, `sdd-apply` invokes one final sub-agent that runs `openspec/scripts/check_schema_match.py` against the testcontainers Postgres. Exit 0 required to proceed to PR open.
+- **Per-PR gate**: every PR has its own verifier run; a PR that breaks the schema match is held back and re-iterated with the offending task sub-agent (the same `(phase, task-fingerprint)` dedup rule from the orchestrator allows the orchestrator to re-launch the specific failing sub-agent with corrective context).
+
+**Rationale**: 200 tasks across 8,130 LOC exceeds the useful context window of any single agent invocation. Sub-agent-per-task gives each implementation a focused context (the table definition, the helper module, the spec REQ), which reduces drift and makes per-task failures diagnosable. The orchestrator-level dedup + the per-PR schema-match gate together replace the monolithic in-context implementation that would otherwise be lossy.
+
 ---
 
 **Summary of §21 impact**: this section adds 2 new `[A]` tables (`pairing_tokens`, `revoked_sync_jwts`) — making the model 51 tables total, of which 14 are `[A]`-class. It introduces 4 chained PRs (PR8–PR11) with a conditional split trigger on PR10 (sync workers at the 800-LOC edge), 44 new files (~2,200 LOC), 12 new risks (4 HIGH, 6 MED, 2 LOW — none catastrophic), and a complete transport protocol that closes the original §19 "out of scope" deferral. All new code honors AGENTS.md `gitflow` (PRs to `dev`), `Audit-First` (REVOKE + trigger in the SAME migration, idempotency at every layer, hash chain extension in cloud for branch chains), and `no-DELETE` (every operation is C/Q/U; the 2 new `[A]` tables follow the same REVOKE + trigger pattern, with the one-time DELETE path reserved for the `sync_queue` whitelisted-columns carve-out already in §12).
