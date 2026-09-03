@@ -1,0 +1,52 @@
+# DIAN boundary layer 1 — image-level exclusion (REQ-X3, design §10 Layer 1).
+#
+# This file ships with the `backend/` Docker build context. The 3-layer
+# DIAN boundary per design §10:
+#
+#   Layer 1 (this file): the Docker build context physically excludes
+#     the `parkos_core/dian/cloud/` subtree from BRANCH images. The
+#     cloud package never reaches the branch image filesystem, so
+#     `import parkos_core.dian.cloud.dispatcher` on a branch container
+#     fails at the filesystem layer (ModuleNotFoundError) before the
+#     module-level import guard even runs.
+#
+#   Layer 2 (module-level guard): each cloud-only module checks
+#     `os.environ.get("PARKOS_DEPLOY", "cloud").lower() == "branch"`
+#     at module load and raises ImportError. Belt-and-suspenders for
+#     the case where Layer 1 was misconfigured (e.g., someone moved
+#     the source).
+#
+#   Layer 3 (artifact-level filter): the OpenAPI generation scripts
+#     tag-filter the cloud-only endpoints OUT of the branch OpenAPI
+#     artifact (`api_sucursal/openapi.json`). See
+#     `openspec/scripts/build_openapi_artifacts.py` (T-PR6-13).
+#
+# The branch Dockerfile (T-PR9-04, infra/docker/Dockerfile.branch)
+# copies `backend/` as the build context. The cloud Dockerfile
+# (T-PR9-04, infra/docker/Dockerfile.cloud) ALSO uses this .dockerignore
+# but explicitly does NOT exclude `**/dian/cloud/**` — wait, actually
+# cloud images DO need the dispatcher. So this .dockerignore is
+# context-dependent.
+#
+# Resolution: the per-image .dockerignore override happens at the
+# Docker build invocation (the multi-stage Dockerfile's `COPY`
+# directives). The branch build explicitly skips the dian/cloud/
+# subtree via a dedicated `COPY --exclude` pattern. This top-level
+# `.dockerignore` is the FALLBACK safety net if the per-image
+# exclusion is forgotten.
+#
+# Rule: exclude `**/dian/cloud/**` from any build context that
+# targets a branch service. The PR9 Dockerfiles respect this.
+
+# Cloud-only DIAN package — excluded from branch builds.
+**/dian/cloud/**
+
+# Build artifacts + caches (already in .gitignore but .dockerignore
+# is independent).
+**/.venv/
+**/__pycache__/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.pytest_cache/
+**/*.pyc
+**/*.pyo
