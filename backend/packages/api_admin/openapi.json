@@ -3839,6 +3839,1900 @@
         }
       }
     },
+    "/api/v1/clientes/clientes": {
+      "get": {
+        "tags": [
+          "clientes",
+          "clientes"
+        ],
+        "summary": "List Endpoint",
+        "operationId": "list_endpoint_api_v1_clientes_clientes_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientesReadList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "clientes",
+          "clientes"
+        ],
+        "summary": "Create Endpoint",
+        "operationId": "create_endpoint_api_v1_clientes_clientes_post",
+        "parameters": [
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientesRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/clientes/{uuid}": {
+      "get": {
+        "tags": [
+          "clientes",
+          "clientes"
+        ],
+        "summary": "Get Endpoint",
+        "operationId": "get_endpoint_api_v1_clientes_clientes__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientesRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "clientes",
+          "clientes"
+        ],
+        "summary": "Update Endpoint",
+        "operationId": "update_endpoint_api_v1_clientes_clientes__uuid__put",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientesRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/clientes/{uuid}/history": {
+      "get": {
+        "tags": [
+          "clientes",
+          "clientes"
+        ],
+        "summary": "History Endpoint",
+        "operationId": "history_endpoint_api_v1_clientes_clientes__uuid__history_get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientesRead"
+                  },
+                  "title": "Response History Endpoint Api V1 Clientes Clientes  Uuid  History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/clientes-b2b": {
+      "get": {
+        "tags": [
+          "clientes",
+          "clientes-b2b"
+        ],
+        "summary": "List Endpoint",
+        "operationId": "list_endpoint_api_v1_clientes_clientes_b2b_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientesB2BReadList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "clientes",
+          "clientes-b2b"
+        ],
+        "summary": "Create Endpoint",
+        "operationId": "create_endpoint_api_v1_clientes_clientes_b2b_post",
+        "parameters": [
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientesB2BRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/clientes-b2b/{uuid}": {
+      "get": {
+        "tags": [
+          "clientes",
+          "clientes-b2b"
+        ],
+        "summary": "Get Endpoint",
+        "operationId": "get_endpoint_api_v1_clientes_clientes_b2b__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientesB2BRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "clientes",
+          "clientes-b2b"
+        ],
+        "summary": "Update Endpoint",
+        "operationId": "update_endpoint_api_v1_clientes_clientes_b2b__uuid__put",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientesB2BRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/clientes-b2b/{uuid}/history": {
+      "get": {
+        "tags": [
+          "clientes",
+          "clientes-b2b"
+        ],
+        "summary": "History Endpoint",
+        "operationId": "history_endpoint_api_v1_clientes_clientes_b2b__uuid__history_get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientesB2BRead"
+                  },
+                  "title": "Response History Endpoint Api V1 Clientes Clientes B2B  Uuid  History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/subscripciones-cliente": {
+      "get": {
+        "tags": [
+          "clientes",
+          "subscripciones-cliente"
+        ],
+        "summary": "List Endpoint",
+        "operationId": "list_endpoint_api_v1_clientes_subscripciones_cliente_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscripcionesClienteReadList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "clientes",
+          "subscripciones-cliente"
+        ],
+        "summary": "Create Endpoint",
+        "operationId": "create_endpoint_api_v1_clientes_subscripciones_cliente_post",
+        "parameters": [
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscripcionesClienteRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/subscripciones-cliente/{uuid}": {
+      "get": {
+        "tags": [
+          "clientes",
+          "subscripciones-cliente"
+        ],
+        "summary": "Get Endpoint",
+        "operationId": "get_endpoint_api_v1_clientes_subscripciones_cliente__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscripcionesClienteRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "clientes",
+          "subscripciones-cliente"
+        ],
+        "summary": "Update Endpoint",
+        "operationId": "update_endpoint_api_v1_clientes_subscripciones_cliente__uuid__put",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscripcionesClienteRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/subscripciones-cliente/{uuid}/history": {
+      "get": {
+        "tags": [
+          "clientes",
+          "subscripciones-cliente"
+        ],
+        "summary": "History Endpoint",
+        "operationId": "history_endpoint_api_v1_clientes_subscripciones_cliente__uuid__history_get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubscripcionesClienteRead"
+                  },
+                  "title": "Response History Endpoint Api V1 Clientes Subscripciones Cliente  Uuid  History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/vehiculos": {
+      "get": {
+        "tags": [
+          "clientes",
+          "vehiculos"
+        ],
+        "summary": "List Endpoint",
+        "operationId": "list_endpoint_api_v1_clientes_vehiculos_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehiculosReadList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "clientes",
+          "vehiculos"
+        ],
+        "summary": "Create Endpoint",
+        "operationId": "create_endpoint_api_v1_clientes_vehiculos_post",
+        "parameters": [
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehiculosRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/vehiculos/{uuid}": {
+      "get": {
+        "tags": [
+          "clientes",
+          "vehiculos"
+        ],
+        "summary": "Get Endpoint",
+        "operationId": "get_endpoint_api_v1_clientes_vehiculos__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehiculosRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "clientes",
+          "vehiculos"
+        ],
+        "summary": "Update Endpoint",
+        "operationId": "update_endpoint_api_v1_clientes_vehiculos__uuid__put",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehiculosRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/vehiculos/{uuid}/history": {
+      "get": {
+        "tags": [
+          "clientes",
+          "vehiculos"
+        ],
+        "summary": "History Endpoint",
+        "operationId": "history_endpoint_api_v1_clientes_vehiculos__uuid__history_get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VehiculosRead"
+                  },
+                  "title": "Response History Endpoint Api V1 Clientes Vehiculos  Uuid  History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/subscripcion-vehiculos": {
+      "get": {
+        "tags": [
+          "clientes",
+          "subscripcion-vehiculos"
+        ],
+        "summary": "List Endpoint",
+        "operationId": "list_endpoint_api_v1_clientes_subscripcion_vehiculos_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscripcionVehiculosReadList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "clientes",
+          "subscripcion-vehiculos"
+        ],
+        "summary": "Create Endpoint",
+        "operationId": "create_endpoint_api_v1_clientes_subscripcion_vehiculos_post",
+        "parameters": [
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscripcionVehiculosRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/subscripcion-vehiculos/{uuid}": {
+      "get": {
+        "tags": [
+          "clientes",
+          "subscripcion-vehiculos"
+        ],
+        "summary": "Get Endpoint",
+        "operationId": "get_endpoint_api_v1_clientes_subscripcion_vehiculos__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscripcionVehiculosRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "clientes",
+          "subscripcion-vehiculos"
+        ],
+        "summary": "Update Endpoint",
+        "operationId": "update_endpoint_api_v1_clientes_subscripcion_vehiculos__uuid__put",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "payload",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "title": "Payload"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscripcionVehiculosRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clientes/subscripcion-vehiculos/{uuid}/history": {
+      "get": {
+        "tags": [
+          "clientes",
+          "subscripcion-vehiculos"
+        ],
+        "summary": "History Endpoint",
+        "operationId": "history_endpoint_api_v1_clientes_subscripcion_vehiculos__uuid__history_get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubscripcionVehiculosRead"
+                  },
+                  "title": "Response History Endpoint Api V1 Clientes Subscripcion Vehiculos  Uuid  History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/operacion/ingresos": {
+      "post": {
+        "tags": [
+          "operacion"
+        ],
+        "summary": "Register a vehicle entry (ingreso, [L-E] event)",
+        "description": "Insert-only write for an ingreso event.\n\nThe Idempotency-Key header is checked by the FastAPI middleware\n(PR2 IdempotencyKeyMiddleware). Body goes through Pydantic validation\n(``IngresoCreate``). Persistence goes through ``repo.event.record_event``\n(REQ-30).",
+        "operationId": "create_ingreso_api_v1_operacion_ingresos_post",
+        "parameters": [
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngresoCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngresoRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "operacion"
+        ],
+        "summary": "List ingresos with simple pagination",
+        "description": "List recent ingresos (filters: uuid_sucursal, placa). No cursor pagination (yet).",
+        "operationId": "list_ingresos_api_v1_operacion_ingresos_get",
+        "parameters": [
+          {
+            "name": "uuid_sucursal",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Uuid Sucursal"
+            }
+          },
+          {
+            "name": "placa",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Placa"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IngresoRead"
+                  },
+                  "title": "Response List Ingresos Api V1 Operacion Ingresos Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/operacion/ingresos/{uuid}": {
+      "get": {
+        "tags": [
+          "operacion"
+        ],
+        "summary": "Read a single ingreso (events are append-only \u2014 no history)",
+        "operationId": "get_ingreso_api_v1_operacion_ingresos__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngresoRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/operacion/ingresos/{uuid}/estado": {
+      "get": {
+        "tags": [
+          "operacion"
+        ],
+        "summary": "Derived state of an ingreso (REQ-32, SC-30)",
+        "description": "Compute the derived state of an ingreso.\n\nState machine (per SC-30):\n- ``anulada`` if an ``anulaciones`` chain references this ingreso (PR6)\n- ``cerrado`` if a ``salidas`` row references this ingreso (PR6)\n- ``abierto`` otherwise (no exits yet)\n\nUntil PR6 mounts ``salidas`` and ``anulaciones``, we read the\nunderlying ingreso + its linkage to ``salidas`` (if any). Returns\n``abierto`` if no salidas row exists yet, ``cerrado`` otherwise.\nThe ``anulada`` branch is a stub (always returns ``abierto`` here\nunless we detect a closed chain via timestamps).",
+        "operationId": "get_ingreso_estado_api_v1_operacion_ingresos__uuid__estado_get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngresoEstadoResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/empresa/empresa": {
       "get": {
         "tags": [
@@ -5922,6 +7816,364 @@
         ],
         "title": "CantidadVehiculosSucursalReadList"
       },
+      "ClientesB2BRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "uuid_cliente": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Cliente"
+          },
+          "cantidad": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cantidad"
+          },
+          "registro": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registro"
+          },
+          "fecha_inicio_convenio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha Inicio Convenio"
+          },
+          "fecha_vencimiento": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha Vencimiento"
+          },
+          "vigente_desde": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Vigente Desde"
+          },
+          "vigente_hasta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vigente Hasta"
+          },
+          "estado": {
+            "type": "string",
+            "title": "Estado"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "uuid_cliente",
+          "cantidad",
+          "registro",
+          "fecha_inicio_convenio",
+          "fecha_vencimiento",
+          "vigente_desde",
+          "vigente_hasta",
+          "estado",
+          "created_at",
+          "created_by",
+          "sync_status"
+        ],
+        "title": "ClientesB2BRead",
+        "description": "Read-back for ``prod.clientes_b2b``. UK is\n``(uuid_cliente, vigente_desde)`` \u2014 one active B2B extension per\ncustomer per version."
+      },
+      "ClientesB2BReadList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ClientesB2BRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ClientesB2BReadList"
+      },
+      "ClientesRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "tipo_identificador": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tipo Identificador"
+          },
+          "numero_identificacion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numero Identificacion"
+          },
+          "nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nombre"
+          },
+          "apellido": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apellido"
+          },
+          "telefono": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telefono"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "uuid_tipo_persona": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Tipo Persona"
+          },
+          "registro": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registro"
+          },
+          "vigente_desde": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Vigente Desde"
+          },
+          "vigente_hasta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vigente Hasta"
+          },
+          "estado": {
+            "type": "string",
+            "title": "Estado"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "tipo_identificador",
+          "numero_identificacion",
+          "nombre",
+          "apellido",
+          "telefono",
+          "email",
+          "uuid_tipo_persona",
+          "registro",
+          "vigente_desde",
+          "vigente_hasta",
+          "estado",
+          "created_at",
+          "created_by",
+          "sync_status"
+        ],
+        "title": "ClientesRead",
+        "description": "Read-back for ``prod.clientes``. UK is ``(tipo_identificador,\nnumero_identificacion, vigente_desde)``."
+      },
+      "ClientesReadList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ClientesRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ClientesReadList"
+      },
       "ConfiguracionSeguridadRead": {
         "properties": {
           "uuid": {
@@ -6818,6 +9070,273 @@
         ],
         "title": "ImpuestosReadList"
       },
+      "IngresoCreate": {
+        "properties": {
+          "uuid_sucursal": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Sucursal"
+          },
+          "placa": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placa"
+          },
+          "uuid_tipo_vehiculo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Tipo Vehiculo"
+          },
+          "uuid_subscripcion_cliente": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Subscripcion Cliente"
+          },
+          "fecha_ingreso": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha Ingreso"
+          },
+          "observaciones": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observaciones"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid_sucursal"
+        ],
+        "title": "IngresoCreate",
+        "description": "INSERT payload for ``prod.ingreso``.\n\n``uuid_sucursal`` is REQUIRED \u2014 every ingreso belongs to a branch.\nThe remaining 5 business columns are OPTIONAL and can be filled in by\na later lookup, by a derived-resource PATCH (PR6), or left NULL for\nad-hoc walk-in traffic that has no subscription attached.\n\n.. note::\n   The ``Idempotency-Key`` HTTP header is REQUIRED at the API edge.\n   That validation lives in a FastAPI dependency (``T-PR5-07``),\n   NOT here, to keep this schema a pure data contract decoupled\n   from transport concerns.\n\n.. warning::\n   ``extra='forbid'`` (inherited from :class:`_Base`) rejects any\n   unknown field \u2014 clients cannot smuggle audit columns\n   (``created_at``, ``created_by``, ``sync_status``) or\n   ``LifecycleEventBase`` internals; those are server-controlled."
+      },
+      "IngresoEstadoResponse": {
+        "properties": {
+          "uuid_ingreso": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Ingreso"
+          },
+          "estado": {
+            "type": "string",
+            "title": "Estado"
+          },
+          "fecha_ingreso": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha Ingreso"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid_ingreso",
+          "estado"
+        ],
+        "title": "IngresoEstadoResponse",
+        "description": "Response shape for ``GET /ingresos/{uuid}/estado``.\n\nThe state is DERIVED from ``V_INGRESO_ESTADO`` (or computed inline until\nPR6 mounts that view). Possible values: ``abierto``, ``cerrado``,\n``anulada``."
+      },
+      "IngresoRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          },
+          "sync_timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Timestamp"
+          },
+          "sync_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Attempts"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "placa": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placa"
+          },
+          "uuid_tipo_vehiculo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Tipo Vehiculo"
+          },
+          "uuid_subscripcion_cliente": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Subscripcion Cliente"
+          },
+          "fecha_ingreso": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha Ingreso"
+          },
+          "observaciones": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observaciones"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "created_at",
+          "created_by",
+          "sync_status",
+          "sync_timestamp",
+          "sync_attempts",
+          "uuid_sucursal",
+          "placa",
+          "uuid_tipo_vehiculo",
+          "uuid_subscripcion_cliente",
+          "fecha_ingreso",
+          "observaciones"
+        ],
+        "title": "IngresoRead",
+        "description": "Full ORM column mapping for ``prod.ingreso``.\n\nInherits ``from_attributes=True`` and ``extra='forbid'`` from\n:class:`_Base`. Used as the response model for ``GET /ingresos/{uuid}``\nand as the ``items`` element type for :class:`IngresoReadList`."
+      },
       "LoginRequest": {
         "properties": {
           "email": {
@@ -7228,6 +9747,293 @@
           "items"
         ],
         "title": "ResolucionFacturacionReadList"
+      },
+      "SubscripcionVehiculosRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "uuid_subscripcion_cliente": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Subscripcion Cliente"
+          },
+          "uuid_vehiculo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Vehiculo"
+          },
+          "vigente_desde": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Vigente Desde"
+          },
+          "vigente_hasta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vigente Hasta"
+          },
+          "estado": {
+            "type": "string",
+            "title": "Estado"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "uuid_subscripcion_cliente",
+          "uuid_vehiculo",
+          "vigente_desde",
+          "vigente_hasta",
+          "estado",
+          "created_at",
+          "created_by",
+          "sync_status"
+        ],
+        "title": "SubscripcionVehiculosRead",
+        "description": "Read-back for ``prod.subscripcion_vehiculos``. UK is\n``(uuid_subscripcion_cliente, uuid_vehiculo, vigente_desde)``."
+      },
+      "SubscripcionVehiculosReadList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SubscripcionVehiculosRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "SubscripcionVehiculosReadList"
+      },
+      "SubscripcionesClienteRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "uuid_cliente": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Cliente"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "uuid_tipo_subscripcion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Tipo Subscripcion"
+          },
+          "fecha_inicio_cobertura": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha Inicio Cobertura"
+          },
+          "fecha_vencimiento": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha Vencimiento"
+          },
+          "vigente_desde": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Vigente Desde"
+          },
+          "vigente_hasta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vigente Hasta"
+          },
+          "estado": {
+            "type": "string",
+            "title": "Estado"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "uuid_cliente",
+          "uuid_sucursal",
+          "uuid_tipo_subscripcion",
+          "fecha_inicio_cobertura",
+          "fecha_vencimiento",
+          "vigente_desde",
+          "vigente_hasta",
+          "estado",
+          "created_at",
+          "created_by",
+          "sync_status"
+        ],
+        "title": "SubscripcionesClienteRead",
+        "description": "Read-back for ``prod.subscripciones_cliente``. No DB-level UK \u2014\nthe bi-temporal ``vigente_desde`` discriminator keeps each version\nunique and the business key (the 3 FKs + dates) is enforced at the\nAPI layer."
+      },
+      "SubscripcionesClienteReadList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SubscripcionesClienteRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "SubscripcionesClienteReadList"
       },
       "SucursalRead": {
         "properties": {
@@ -8439,6 +11245,129 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "VehiculosRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "placa": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placa"
+          },
+          "uuid_tipo_vehiculo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Tipo Vehiculo"
+          },
+          "vigente_desde": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Vigente Desde"
+          },
+          "vigente_hasta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vigente Hasta"
+          },
+          "estado": {
+            "type": "string",
+            "title": "Estado"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "placa",
+          "uuid_tipo_vehiculo",
+          "vigente_desde",
+          "vigente_hasta",
+          "estado",
+          "created_at",
+          "created_by",
+          "sync_status"
+        ],
+        "title": "VehiculosRead",
+        "description": "Read-back for ``prod.vehiculos``. UK is ``(placa, vigente_desde)``."
+      },
+      "VehiculosReadList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/VehiculosRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "VehiculosReadList"
       }
     }
   }

@@ -1,4 +1,4 @@
-"""parkos_core FastAPI v1 router package (PR1c + PR3 + PR4).
+"""parkos_core FastAPI v1 router package (PR1c + PR3 + PR4 + PR5).
 
 PR4 enforces the DIAN boundary at the router-aggregation level
 (design §10 + REQ-X3): the branch image physically lacks
@@ -12,12 +12,16 @@ Cloud-only resources (excluded from branch deploy, REQ-X3):
 Replicated resources (mounted in BOTH deploys):
 
 - ``auth`` — login + refresh + logout
-- ``catalogos`` — 9 [V] catalogs
+- ``catalogos`` — 9 [V] catalogs (PR3)
 - ``empresa`` (excluding resolucion-facturacion) — empresa, sucursal,
-  documentos, tarifas-sucursal, cantidad-vehiculos-sucursal
-- ``configuracion`` — configuracion-tolerancias + configuracion-seguridad
+  documentos, tarifas_sucursal, cantidad_vehiculos_sucursal (PR4)
+- ``configuracion`` — configuracion-tolerancias + configuracion-seguridad (PR4)
 - ``sucursal`` — pairing-token (route is callable from cloud-admin; the
-  ``admin-`` issuer guard denies branch tokens with 401)
+  ``admin-`` issuer guard denies branch tokens with 401) (PR4)
+- ``clientes`` — 5 [V] commercial tables: clientes, clientes-b2b,
+  subscripciones-cliente, vehiculos, subscripcion-vehiculos (PR5)
+- ``operacion`` — ingreso [L-E] lifecycle event + derived /estado
+  endpoint (PR5)
 
 T-PR4-11 keeps the path layout ``/api/v1/empresa/{resource}/...`` intact by
 rebuilding a custom empresa router with the same ``/empresa`` prefix the
@@ -42,7 +46,7 @@ _CLOUD_ONLY_EMPRESA_RESOURCES: frozenset[str] = frozenset(
 )
 
 # Side-effect imports: each submodule registers its router at module load.
-from . import auth, catalogos, configuracion, empresa, sucursal
+from . import auth, catalogos, clientes, configuracion, empresa, operacion, sucursal
 
 # Re-use the same per-resource sub-routers that ``empresa.router``
 # aggregates. Including them individually here lets us apply the DIAN
@@ -80,6 +84,8 @@ def _build_router() -> APIRouter:
     r.include_router(catalogos.router)
     r.include_router(configuracion.router)
     r.include_router(sucursal.router)
+    r.include_router(clientes.router)
+    r.include_router(operacion.router)
 
     # Empresa resources — selectively mounted (DIAN boundary, REQ-X3).
     r.include_router(_build_empresa_router())
