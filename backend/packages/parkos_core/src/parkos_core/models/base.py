@@ -146,41 +146,47 @@ class HashChainMixin:
 # ---------------------------------------------------------------------------
 
 
-class VersionedBase(IdMixin, AuditMixin, SyncMixin, VersionedMixin):
+class VersionedBase(Base, IdMixin, AuditMixin, SyncMixin, VersionedMixin):
     """[V] Bi-temporal close+insert (REQ-04, REQ-05)."""
 
     __abstract__ = True
     __close_and_insert_only__ = True
 
 
-class LifecycleEventBase(IdMixin, AuditMixin, SyncMixin):
+class LifecycleEventBase(Base, IdMixin, AuditMixin, SyncMixin):
     """[L-E] Insert-only lifecycle event."""
 
     __abstract__ = True
     __record_only__ = True
 
 
-class WorkflowBase(IdMixin, AuditMixin, SyncMixin):
+class WorkflowBase(Base, IdMixin, AuditMixin, SyncMixin):
     """[L-W] State machine transitions (REQ-X9, REQ-21-W-TRANSITION)."""
 
     __abstract__ = True
     __workflow_only__ = True
 
 
-class SessionBase(IdMixin, AuditMixin, SyncMixin):
+class SessionBase(Base, IdMixin, AuditMixin, SyncMixin):
     """[L-S] Session lifecycle (login + sesion tables)."""
 
     __abstract__ = True
     __session_only__ = True
 
 
-class AppendOnlyBase(IdMixin, AuditMixin, SyncMixin, RetentionMixin):
+class AppendOnlyBase(Base, IdMixin, AuditMixin, SyncMixin, RetentionMixin):
     """[A] Append-only with retention. [A] tables carry REVOKE UPDATE/DELETE.
 
     Defense in depth, AGENTS.md §1 + §3:
     - DB layer: REVOKE + ``BEFORE UPDATE OR DELETE`` trigger blocks mutation.
     - ORM layer: this marker tells AST tests ``session.execute(update/delete)``
       on a concrete subclass is a violation outside ``repo/append_only.py``.
+
+    Note: ``Base`` MUST be the first parent in the MRO so SQLAlchemy 2.0
+    registers the abstract base as a proper ``DeclarativeBase`` subclass.
+    Without this, concrete subclasses fail with ``TypeError: __init__() got
+    an unexpected keyword argument 'uuid'`` at instantiation time. This was
+    a latent bug introduced in PR1b and caught by the PR2 sub-agent.
     """
 
     __abstract__ = True
