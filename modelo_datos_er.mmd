@@ -1,1239 +1,1057 @@
-erDiagram
+﻿erDiagram
     direction TB
 
-    %% ============================================================
-    %% AUDIT-FIRST / COMPLIANCE-DRIVEN DATA ARCHITECTURE
-    %% 45 tables (24 [V] + 3 [L-E] + 4 [L-W] + 2 [L-S] + 12 [A])
-    %% ============================================================
-    %%
-    %% Tres niveles de jerarquía (source-of-truth vs proyección):
-    %%
-    %% [V] PROYECCION — Estado actual derivado de eventos.
-    %%     Cada cambio genera nueva fila (vigente_desde / vigente_hasta).
-    %%     Es la vista de "current state" para la app. NO es fuente de verdad
-    %%     histórica: la historia vive en los eventos [L] y los hechos [A].
-    %%     Enforce: UPDATE crea nueva versión. DELETE nunca.
-    %%
-    %% [L] EVENTO DE LIFECYCLE — Tres subtipos con reglas distintas:
-    %%
-    %%   [L-E] EVENTO PURO — append-only. El estado se DERIVA de otros
-    %%         eventos registrados. NO se muta el estado.
-    %%         Tablas: ingreso, facturas, factura_electronica.
-    %%         Enforce: INSERT-only.
-    %%         Ej: factura_electronica.estado='revocada' se infiere de la
-    %%         existencia de una fila en `revocacion_factura` apuntando
-    %%         a esta e-factura.
-    %%
-    %%   [L-W] WORKFLOW — transiciones de estado registradas como NUEVAS
-    %%         filas con FK `uuid_padre` al original (cadena de workflow).
-    %%         La "última fila de la cadena" es el estado vigente.
-    %%         Tablas: anulaciones, reclamos, alerta, reimpresion_ticket.
-    %%         Enforce: INSERT-only. UPDATE/DELETE prohibidos.
-    %%         Ej: anulaciones recorre 'solicitada' → 'aprobada' →
-    %%         'ejecutada' como tres filas encadenadas por uuid_padre.
-    %%
-    %%   [L-S] SESIÓN/CICLO — UPDATE legítimo sobre campos estado/cierre
-    %%         con log_transaccional OBLIGATORIO en la misma TX.
-    %%         Tablas: login, sesion.
-    %%         Enforce: UPDATE solo sobre `estado` y `fecha_cierre`;
-    %%         cualquier otro campo no se muta.
-    %%         Ej: logout → UPDATE login SET estado='cerrado' +
-    %%         INSERT log_transaccional en la misma TX.
-    %%
-    %% [A] SOURCE-OF-TRUTH — Inmutable enforced.
-    %%     Append-only estricto. REVOKE UPDATE/DELETE a nivel DB.
-    %%     Excepción operacional: sync_queue admite UPDATE de campos
-    %%     operacionales (estado, intentos, next_retry_at, ultimo_error)
-    %%     porque es cola de trabajo, no registro histórico.
-    %%     Cadena de hash en log_transaccional y revocacion_factura para
-    %%     evidencia probatoria ante DIAN.
-    %%     Enforce: REVOKE UPDATE, DELETE FROM rol_app ON [A]_tables
-    %%              (excepto sync_queue). Triggers RAISE EXCEPTION.
-    %%
-    %% COLUMNAS COMUNES PARA AUDIT-FIRST:
-    %%   - timestamp_evento: cuándo ocurrió el hecho en el negocio
-    %%     (distinto de created_at, que es cuándo el DB lo registró)
-    %%   - fecha_retencion_hasta: hasta cuándo debe retenerse la fila
-    %%     (DIAN exige 5+ años para facturas; configurable por tipo)
-    %%   - hash_anterior / hash_actual: cadena de integridad en logs críticos
-    %%     (log_transaccional, revocacion_factura)
-    %%   - uuid_padre: FK a sí misma para tablas [L-W] (cadena de workflow)
-    %%
-    %% ESTADO vs EVENTO (regla general):
-    %%   - [L-E]: estado derivado de otros eventos. NO se muta.
-    %%   - [L-W]: estado es la última fila de la cadena uuid_padre.
-    %%   - [L-S]: estado se muta con log obligatorio en log_transaccional.
-    %%   - [V]: estado es lifecycle operativo (activo/inactivo/archivado),
-    %%     NO se confunde con validez temporal (vigente_desde/hasta).
+    
 
-    %% ============================================================
-    %% [V] PROYECCION (current state) - Usuarios y autenticación
-    %% ============================================================
 
-    %% usuarios: Usuarios del sistema (admin, operador, supervisor).
-    %% La cédula es el identificador legal; el email es el login identifier.
-    %% password_hash es bcrypt (nunca plain text). Cada cambio de atributos
-    %% genera nueva fila (versión) — incluye reset de password. Las FKs a
-    %% esta tabla apuntan a la versión vigente al INSERT y NO se migran.
-    %% AUDIT-FIRST: esta tabla es PROYECCION de estado actual. La historia
-    %% de quién creó / desactivó / reasignó rol a este usuario vive en
-    %% log_transaccional (source-of-truth). El campo `estado` es lifecycle
-    %% operativo; un "borrado lógico" se registra como nueva versión con
-    %% vigente_hasta=NOW() y evento en log_transaccional.
     usuarios {
-        %% [V] Business
-        uuid uuid PK
-        string nombre
-        string apellido
-        string cedula
-        string email
-        string password_hash
-        timestamp fecha_cambio_password
-        string rol
+        %% [V] Maestro global de operadores; se administra en cloud y se replica a sucursales para login offline
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string nombre "nombre de la persona (reportes y trazabilidad)"
+        string apellido "apellido de la persona"
+        string cedula UK "UK01 (cedula, vigente_desde) - documento de identidad"
+        string email "correo de contacto y recuperación de acceso"
+        string password_hash "hash de la contraseña (nunca en claro)"
+        timestamp fecha_cambio_password "cuándo se estableció la contraseña actual (rotación por política)"
+        string rol "rol grueso: admin | operador | supervisor (detalle fino en permisos_usuario)"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Versioning
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% permisos: Catálogo de permisos del sistema.
-    %% Ejemplos: crear_usuario, facturar, cerrar_caja, ver_reportes.
-    %% Cada permiso es una fila versionable.
     permisos {
-        %% [V] Business
-        uuid uuid PK
-        string permiso
+        %% [V] Catálogo global de permisos atómicos del sistema; replica cloud a sucursales
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string permiso UK "UK01 (permiso, vigente_desde) - código del permiso (ej: anular_ingreso, realizar_arqueo)"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Versioning
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% permisos_usuario: Tabla puente que asigna permisos a usuarios.
-    %% Cada asignación es versionable (se puede revocar y reasignar).
     permisos_usuario {
-        %% [V] Business
-        uuid uuid PK
-        uuid uuid_usuario FK
-        uuid uuid_permiso FK
+        %% [V] Junction usuario-permiso; otorgar inserta fila, revocar cierra vigencia (histórico completo)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_usuario FK "UK01 (uuid_usuario, uuid_permiso, vigente_desde) - usuario que recibe el permiso"
+        uuid uuid_permiso FK "UK01 - permiso otorgado"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Versioning
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [V] PROYECCION (current state) - Catálogos
-    %% ============================================================
 
-    %% tipo_persona: Tipos de persona del sistema.
-    %% Valores: 'natural', 'juridica', 'final' (consumidor final).
     tipo_persona {
-        %% [V]
-        uuid uuid PK
-        string tipo
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% tipos_vehiculo: Tipos de vehículo soportados.
-    %% Ejemplos: automovil, moto, camioneta, bicicleta.
-    tipos_vehiculo {
-        %% [V]
-        uuid uuid PK
-        string tipo
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% tipo_subscripciones: Planes de subscripción disponibles.
-    %% Campos clave para restricciones de negocio:
-    %%   - cantidad_maxima_vehiculos: tope por subscripción
-    %%   - mismo_tipo_vehiculo: TRUE para B2C, FALSE para B2B
-    %%   - tipo_cliente_permitido: 'b2c' | 'b2b' | 'ambos'
-    tipo_subscripciones {
-        %% [V]
-        uuid uuid PK
-        string tipo
-        decimal valor
-        int duracion_dias
-        int cantidad_maxima_vehiculos
-        bool mismo_tipo_vehiculo
-        string tipo_cliente_permitido
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% tipo_tarifa: Modalidades de tarifa.
-    %% Valores: 'por_hora', 'por_minuto', 'plena' (tarifa B2B).
-    tipo_tarifa {
-        %% [V]
-        uuid uuid PK
-        string tipo
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% tipo_sucursal: Tipos de sucursal según tamaño e infraestructura.
-    %% Seed: C (Pequeño sin barreras), B (Mediano con talanqueras), A (Grande + sensores).
-    %% caracteristicas JSON documenta hardware disponible por tipo.
-    tipo_sucursal {
-        %% [V]
-        uuid uuid PK
-        string codigo
-        string nombre
-        text descripcion
-        json caracteristicas
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% impuestos: Catálogo de impuestos aplicables a facturas.
-    %% tipo_calculo: 'porcentaje' | 'fijo'.
-    %% base_calculo: 'subtotal' | 'subtotal_con_impuestos'.
-    %% El versionado es crítico para DIAN: una factura emitida con
-    %% IVA 19% debe quedar asociada al registro histórico de ese 19%.
-    impuestos {
-        %% [V]
-        uuid uuid PK
-        string nombre
-        string codigo
-        decimal porcentaje
-        string tipo_calculo
-        string base_calculo
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% otros_cobros: Cargos adicionales parametrizables (no son impuestos).
-    %% Ejemplos: tarifa nocturna, cargo por evento, etc.
-    otros_cobros {
-        %% [V]
-        uuid uuid PK
-        string nombre
-        decimal costo
-        string tipo_calculo
-        string base_calculo
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% costos_servicios: Catálogo de costos por servicios puntuales.
-    %% Conceptos: reimpresion_ticket, segunda_via_factura, certificados.
-    %% Cada servicio tiene su costo snapshot al momento de uso.
-    costos_servicios {
-        %% [V]
-        uuid uuid PK
-        string concepto
-        decimal costo
-        string tipo_calculo
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% configuracion_tolerancias: Tolerancias operativas globales (singleton).
-    %% Una sola fila activa. Cambio genera nueva versión para preservar histórico.
-    %% Usada por arqueo para decidir si genera alerta diferencia_arqueo.
-    configuracion_tolerancias {
-        %% [V]
-        uuid uuid PK
-        decimal tolerancia_efectivo
-        decimal tolerancia_datafono
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% configuracion_seguridad: Políticas de seguridad/credenciales globales.
-    %% Singleton. controla expiración de passwords, intentos de login, bloqueos.
-    %% Seed: 30 días expiración, 5 intentos, 15 min bloqueo.
-    configuracion_seguridad {
-        %% [V]
-        uuid uuid PK
-        int dias_expiracion_password
-        int max_intentos_login
-        int minutos_bloqueo_login
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
-    }
-
-    %% empresa: Datos del emisor (la cadena de parqueaderos dueña de todas
-    %% las sucursales). Singleton corporativo versionable: UNA fila activa
-    %% a la vez; cualquier cambio genera nueva versión para preservar
-    %% auditoría. Define la identidad corporativa que se replica en cada
-    %% `sucursal` (NIT, regimen, mensajes de bienvenida/salida) y la
-    %% numeración DIAN (resolución, prefijo, rango desde/hasta, consecutivo
-    %% actual). Las `sucursal` no duplican estos campos: los leen de
-    %% `empresa` en queries JOIN. Cada `sucursal` agrega solo `direccion`,
-    %% `telefono` y `prefijo_nombre` (datos locales de la sede física).
-    %% El `numero_factura` final que se imprime es
-    %% `{empresa.prefijo_factura}-{consecutivo_actual con padding}`; la
-    %% numeración es atómica vía `UPDATE empresa SET consecutivo_actual =
-    %% consecutivo_actual + 1 WHERE uuid = ? AND consecutivo_actual <=
-    %% rango_hasta` dentro de la misma TX del pago. Si `consecutivo_actual`
-    %% supera `rango_hasta`, el endpoint retorna 409 `rango_agotado` y el
-    %% admin debe cargar una nueva resolución.
-    %% AUDIT-FIRST: consecutivo_actual es el ÚNICO campo mutable de esta
-    %% tabla (atomic counter para numeración DIAN). Todo lo demás es
-    %% versionado: cambio de NIT, resolución, regimen → nueva fila + log.
-    empresa {
-        %% [V] Business
-        uuid uuid PK
-        string nombre
-        string nit
-        string mensaje_bienvenida
-        string mensaje_salida
-        string regimen
-        string resolucion_facturacion
-        string prefijo_factura
-        bigint rango_desde
-        bigint rango_hasta
-        bigint consecutivo_actual
+        %% [V] Catálogo: clasifica clientes (natural | jurídica); define exigencias de facturación electrónica
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string tipo UK "UK01 (tipo, vigente_desde) - nombre de la clasificación"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Versioning
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [V] PROYECCION (current state) - Sucursales
-    %% ============================================================
+    tipos_vehiculo {
+        %% [V] Catálogo: clases de vehículo (carro, moto, bicicleta); base de tarifas, cupos y suscripciones
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string tipo UK "UK01 (tipo, vigente_desde) - nombre de la clase de vehículo"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
 
-    %% sucursal: Cada sucursal física del parqueadero.
-    %% horario es un string simple (considerar tabla aparte si se
-    %% necesitan excepciones por feriado o mantenimiento).
-    %% uuid_tipo_sucursal determina tamaño/infra (C=sin barreras, B=talanqueras, A=sensores).
-    %% Los datos corporativos del emisor (NIT, regimen, mensajes, resolución
-    %% DIAN, prefijo y rango de facturación) NO viven aquí: se leen de
-    %% `empresa` en queries JOIN. Esta tabla solo agrega los datos LOCALES
-    %% de la sede: `direccion` (calle + número), `telefono` (línea de
-    %% atención) y `prefijo_nombre` (ej: "Sucursal Norte — Bogota", se
-    %% muestra en tickets y comprobantes para identificar la sede).
+    tipo_subscripciones {
+        %% [V] Catálogo: planes comerciales de suscripción; la contratación referencia la versión vigente del plan
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string tipo UK "UK01 (tipo, vigente_desde) - nombre comercial del plan"
+        decimal valor "precio del plan en esta versión"
+        int duracion_dias "días de cobertura desde la compra"
+        int cantidad_maxima_vehiculos "máximo de vehículos asociables al plan"
+        bool mismo_tipo_vehiculo "true = todos los vehículos asociados del mismo tipo"
+        string tipo_cliente_permitido "restringe el plan a un tipo de cliente (ej: solo B2B)"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    tipo_tarifa {
+        %% [V] Catálogo: modalidades de cobro por estadía (hora, fracción, plena, nocturna); da semántica a tarifas_sucursal
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string tipo UK "UK01 (tipo, vigente_desde) - nombre de la modalidad de cobro"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    tipo_sucursal {
+        %% [V] Catálogo: clasifica sucursales por modelo operativo; sus características habilitan módulos
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string codigo UK "UK01 (codigo, vigente_desde) - código corto del tipo"
+        string nombre "nombre descriptivo del tipo"
+        text descripcion "explicación del modelo operativo"
+        json caracteristicas "payload opaco de capacidades/flags del tipo"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    tipo_arqueo {
+        %% [V] Catálogo: clasifica los arqueos (cierre de turno, auditoría sorpresiva, cierre de sesión)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string codigo UK "UK01 (codigo, vigente_desde) - cierre_turno | auditoria | cierre_sesion"
+        string nombre "nombre para UI y reportes"
+        text descripcion "cuándo corresponde ejecutar este tipo de arqueo"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    impuestos {
+        %% [V] Catálogo tributario (IVA, INC); la factura NUNCA lo lee en vivo: copia snapshot a factura_impuestos
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string nombre "nombre del impuesto"
+        string codigo UK "UK01 (codigo, vigente_desde) - código tributario oficial"
+        decimal porcentaje "tarifa vigente en esta versión"
+        string tipo_calculo "cómo se aplica: porcentual | valor fijo"
+        string base_calculo "sobre qué base se calcula (subtotal, subtotal - descuento)"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    otros_cobros {
+        %% [V] Catálogo de cargos adicionales facturables (seguro, lavado); la factura copia snapshot a factura_otros_cobros
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string nombre UK "UK01 (nombre, vigente_desde) - nombre del cargo"
+        decimal costo "valor o factor vigente del cargo"
+        string tipo_calculo "fijo | porcentual"
+        string base_calculo "base sobre la que se aplica si es porcentual"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    costos_servicios {
+        %% [V] Catálogo de servicios operativos internos (ej: reimpresión de ticket); se copia como costo_aplicado
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string concepto UK "UK01 (concepto, vigente_desde) - servicio que se cobra"
+        decimal costo "valor vigente del servicio"
+        string tipo_calculo "fijo | porcentual"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    configuracion_tolerancias {
+        %% [V] Umbrales de diferencia aceptable en arqueos; patrón default global + override por sucursal
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "UK01 (uuid_sucursal, vigente_desde) - NULL = default global; valor = override por sucursal"
+        decimal tolerancia_efectivo "diferencia máxima en efectivo sin disparar alerta"
+        decimal tolerancia_datafono "diferencia máxima en datáfono sin disparar alerta"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    configuracion_seguridad {
+        %% [V] Política de acceso; patrón default global + override por sucursal
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "UK01 (uuid_sucursal, vigente_desde) - NULL = default global; valor = override por sucursal"
+        int dias_expiracion_password "vigencia máxima de una contraseña antes de forzar cambio"
+        int max_intentos_login "intentos fallidos consecutivos antes de bloquear"
+        int minutos_bloqueo_login "duración del bloqueo tras exceder intentos"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    empresa {
+        %% [V] Identidad tributaria del operador ante la DIAN; la numeración vive en resolucion_facturacion
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string nombre "razón social"
+        string nit UK "UK01 (nit, vigente_desde) - NIT de la compañía"
+        string mensaje_bienvenida "texto corporativo impreso al entrar"
+        string mensaje_salida "texto corporativo impreso al salir"
+        string regimen "régimen tributario (común, simple); requerido en factura electrónica"
+        %% Numeración DIAN movida a resolucion_facturacion (una resolución por sucursal)
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+
+    resolucion_facturacion {
+        %% [V] Business — resolución de facturación DIAN propia de cada sucursal
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sucursal titular de la resolución"
+        string numero_resolucion UK "UK01 (numero_resolucion, vigente_desde)"
+        string prefijo "prefijo de factura propio de la sucursal (snapshot en cada factura electrónica)"
+        bigint rango_desde "inicio del rango de consecutivos autorizado"
+        bigint rango_hasta "fin del rango; fuera de él no se puede emitir"
+        %% consecutivo_actual eliminado (4FN): derivado - max(factura_electronica.consecutivo) por resolucion (vista V_RESOLUCION_CONSECUTIVO)
+        date fecha_resolucion "fecha de expedición del acto administrativo DIAN"
+        date fecha_inicio_vigencia "desde cuándo autoriza a facturar"
+        date fecha_fin_vigencia "hasta cuándo autoriza a facturar"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
     sucursal {
-        %% [V]
-        uuid uuid PK
-        string nombre
-        string direccion
-        string telefono
-        string prefijo_nombre
-        string ciudad
-        string horario
-        uuid uuid_tipo_sucursal FK
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Maestro de sedes; eje de particionamiento: la réplica local de cada sede contiene solo sus filas + catálogos
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string nombre "nombre comercial de la sede"
+        string direccion "dirección física (se imprime en ticket/factura)"
+        string telefono "teléfono de contacto de la sede"
+        string prefijo_nombre UK "UK01 (prefijo_nombre, vigente_desde) - código corto identificador de la sede"
+        string ciudad "ciudad de la sede"
+        string horario "horario de operación publicado"
+        uuid uuid_tipo_sucursal FK "modelo operativo de la sede"
+        uuid uuid_empresa FK "empresa a la que pertenece"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% usuarios_sucursal: Tabla puente usuario ↔ sucursal.
-    %% Define a qué sucursales tiene acceso cada usuario.
     usuarios_sucursal {
-        %% [V]
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_usuario FK
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Junction: autoriza a un usuario a operar en una sede (el login valida contra esta tabla)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "UK01 (uuid_sucursal, uuid_usuario, vigente_desde) - sede autorizada"
+        uuid uuid_usuario FK "UK01 - usuario autorizado"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% documentos: Documentos asociados a sucursales.
-    %% Tipos: licencias, contratos, permisos municipales.
-    %% documento_b64 almacena el contenido (PDF, JPG).
     documentos {
-        %% [V]
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        string tipo
-        string formato
-        text documento_b64
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Archivos administrativos de la sede (logos, plantillas) inline en base64 para disponibilidad offline
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede dueña del documento"
+        string tipo "clase de documento: logo | plantilla_ticket | certificado"
+        string formato "tipo MIME/extensión del contenido"
+        text documento_b64 "contenido binario codificado en base64"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% tarifas_sucursal: Tarifa por (sucursal, tipo_vehiculo, tipo_tarifa).
-    %% CRÍTICO: el versionado es obligatorio para facturación histórica.
-    %% Un ticket emitido con la tarifa del 2024-01-01 debe calcularse
-    %% con esos valores aunque la tarifa actual sea otra.
-    %% AUDIT-FIRST: además del versionado (vigente_desde/hasta), cada
-    %% cambio de tarifa DEBE registrar un evento en log_transaccional
-    %% con datos_anteriores y datos_nuevos para trazabilidad probatoria
-    %% ante DIAN (no alcanza con la nueva fila; se necesita el evento).
     tarifas_sucursal {
-        %% [V]
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_tipo_vehiculo FK
-        uuid uuid_tipo_tarifa FK
-        decimal valor
-        decimal valor_plena
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Precio por sede x tipo de vehículo x modalidad; el histórico reconstruye con qué tarifa se cobró; vigente_desde admite fecha futura (tarifa programada)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "UK01 (uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa, vigente_desde)"
+        uuid uuid_tipo_vehiculo FK "UK01"
+        uuid uuid_tipo_tarifa FK "UK01 - modalidad tarifada (hora, fracción, plena)"
+        decimal valor "precio de la modalidad para la combinación"
+        decimal valor_plena "tope/tarifa plena diaria asociada"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% cantidad_vehiculos_sucursal: Capacidad o conteo por sucursal/tipo de vehículo.
     cantidad_vehiculos_sucursal {
-        %% [V]
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_tipo_vehiculo FK
-        int cantidad
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Cupo máximo de la sede por tipo de vehículo; la ocupación se compara contra ingresos activos (vista). Decisión de alcance: cupo agregado por tipo, sin asignación de puesto individual
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "UK01 (uuid_sucursal, uuid_tipo_vehiculo, vigente_desde) - sede con cupo"
+        uuid uuid_tipo_vehiculo FK "UK01 - tipo de vehículo con cupo asignado"
+        int cantidad "número máximo de celdas/espacios para ese tipo"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [V] PROYECCION (current state) - Clientes y subscripciones
-    %% ============================================================
 
-    %% clientes: Clientes del sistema, tanto B2C (naturales) como B2B.
-    %% tipo_identificador puede ser 'consumidor_final' (seed UUID fijo).
-    %% El cliente B2B se determina por la presencia de fila en clientes_b2b.
-    %% registro: configuración a nivel cliente (aplica a B2C y B2B).
-    %%          Ver sección "Campos JSON: registro" en modelo_datos.md.
     clientes {
-        %% [V]
-        uuid uuid PK
-        string tipo_identificador
-        string numero_identificacion
-        string nombre
-        string apellido
-        string telefono
-        string email
-        uuid uuid_tipo_persona FK
-        json registro
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Maestro de clientes identificados (facturación electrónica o suscripciones); el ocasional no requiere fila
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string tipo_identificador "clase de documento: CC | NIT | CE | pasaporte"
+        string numero_identificacion UK "UK01 (tipo_identificador, numero_identificacion, vigente_desde) - número del documento"
+        string nombre "nombre o razón social"
+        string apellido "apellido (vacío para persona jurídica)"
+        string telefono "teléfono de contacto"
+        string email "recibe la representación gráfica de la factura electrónica"
+        uuid uuid_tipo_persona FK "natural | jurídica"
+        json registro "payload opaco con datos adicionales (campos DIAN opcionales, preferencias)"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% clientes_b2b: Extensión B2B del cliente (contratos corporativos).
-    %% Relación 1:1 opcional con clientes.
-    %% registro: configuración específica del CONTRATO B2B (no del cliente).
-    %%          Ver sección "Campos JSON: registro" en modelo_datos.md.
     clientes_b2b {
-        %% [V]
-        uuid uuid PK
-        uuid uuid_cliente FK
-        int cantidad
-        json registro
-        date fecha_vencimiento
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Extensión 1:1 de clientes para corporativos con convenio (flotas, empresas); cubre el rol de convenios - decisión de alcance: no hay entidad de convenios de comercios aliados
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_cliente FK "UK01 (uuid_cliente, vigente_desde) - extension 1:1 de clientes"
+        int cantidad "volumen contratado del convenio (vehículos/cupos)"
+        json registro "condiciones del convenio (payload opaco)"
+        date fecha_inicio_convenio "inicio pactado del convenio (admite fecha futura)"
+        date fecha_vencimiento "cuándo vence el convenio B2B"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% subscripciones_cliente: Subscripción de un cliente en una sucursal.
-    %% Asocia cliente + sucursal + tipo_subscripcion. Los vehículos
-    %% asociados se vinculan via subscripcion_vehiculos.
     subscripciones_cliente {
-        %% [V]
-        uuid uuid PK
-        uuid uuid_cliente FK
-        uuid uuid_sucursal FK
-        uuid uuid_tipo_subscripcion FK
-        date fecha_vencimiento
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Contratación de un plan por un cliente; renovar = fila nueva; el ingreso suscrito la referencia
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_cliente FK "cliente que contrata"
+        uuid uuid_sucursal FK "sede donde se vendió/aplica"
+        uuid uuid_tipo_subscripcion FK "plan contratado (versión vigente al contratar)"
+        date fecha_inicio_cobertura "inicio de cobertura (puede diferir de la fecha de compra)"
+        date fecha_vencimiento "fin de cobertura (inicio + duracion_dias del plan)"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [V] PROYECCION (current state) - Vehículos
-    %% ============================================================
 
-    %% vehiculos: Vehículos con subscripción activa.
-    %% Solo se persisten para vehículos subscritos. Los vehículos
-    %% ocasionales quedan como 'placa' string en ingreso/salidas.
-    %% La placa es UNIQUE por negocio.
     vehiculos {
-        %% [V]
-        uuid uuid PK
-        string placa
-        uuid uuid_tipo_vehiculo FK
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Vehículos registrados, solo requeridos para suscripciones; el ocasional va con placa directa en ingreso
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string placa UK "UK01 (placa, vigente_desde) - placa del vehículo"
+        uuid uuid_tipo_vehiculo FK "tipo del vehículo (valida mismo_tipo_vehiculo del plan)"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% subscripcion_vehiculos: Relación N:M entre subscripciones_cliente y vehículos.
-    %% Resuelve el problema de 1NF de tener placavehiculo1, placavehiculo2.
     subscripcion_vehiculos {
-        %% [V]
-        uuid uuid PK
-        uuid uuid_subscripcion_cliente FK
-        uuid uuid_vehiculo FK
-        timestamp created_at
-        uuid created_by
-        timestamp vigente_desde
-        timestamp vigente_hasta
-        string estado
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        %% [V] Junction suscripción-vehículos cubiertos; filas vigentes <= cantidad_maxima_vehiculos del plan
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_subscripcion_cliente FK "UK01 (uuid_subscripcion_cliente, uuid_vehiculo, vigente_desde) - suscripción que cubre"
+        uuid uuid_vehiculo FK "UK01 - vehículo cubierto"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [L] EVENTO DE LIFECYCLE - Operación
-    %% ============================================================
 
-    %% login [L-S]: Auditoría de cada intento de login.
-    %% El estado recorre 'exitoso' → 'cerrado' (logout), o queda en 'fallido'.
-    %% uuid_sucursal: dónde ocurrió el login (para multi-tenancy).
-    %% AUDIT-FIRST [L-S]: `timestamp` es el momento del intento (negocio);
-    %% `created_at` es cuándo la DB lo registró. Pueden diferir si la
-    %% sucursal estaba offline (diferencia = tiempo en cola de sync).
-    %% UPDATE legítimo: SET estado='cerrado' en logout — registra
-    %% OBLIGATORIAMENTE fila en log_transaccional en la misma TX.
-    %% UPDATE sobre cualquier otro campo prohibido.
     login {
-        %% [L-S] Business
-        uuid uuid PK
-        uuid uuid_usuario FK
-        uuid uuid_sucursal FK
+        %% [L-S] Bitácora de intentos de autenticación; alimenta el bloqueo por intentos fallidos
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_usuario FK "usuario que intenta autenticarse"
+        uuid uuid_sucursal FK "sede desde la que se intenta el acceso"
         timestamp timestamp_evento "cuándo ocurrió el intento en el negocio"
+        timestamp timestamp_cierre "cuándo ocurrió el logout (columna de control, set en el UPDATE de cierre)"
         %% Lifecycle (UPDATE permitido solo en logout, con log obligatorio)
         string estado "exitoso | fallido | cerrado"
         %% Audit
-        timestamp created_at "cuándo la DB registró la fila"
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ingreso [L-E]: Registro de cada vehículo que entra al parqueadero.
-    %% placa es string (captura en puerta), uuid_subscripcion_cliente es
-    %% NULL para ocasionales o para vehículos que entran por
-    %% rotación (cupo de subscripción ya ocupado).
-    %% AUDIT-FIRST [L-E]: append-only. El campo `estado` se DERIVA de eventos:
-    %%   - 'activo' → no hay fila en `salidas` ni en `anulaciones` para este ingreso.
-    %%   - 'cerrado' → existe fila en `salidas` con fecha_salida.
-    %%   - 'anulado' → existe fila en `anulaciones` apuntando a este ingreso.
-    %% NO se UPDATEa esta fila: se inserta el evento correspondiente.
-    %% fecha_salida se deriva de `salidas` (mantener acá por query speed,
-    %% pero la fuente de verdad es la fila en `salidas`).
     ingreso {
-        %% [L-E] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        string placa
-        uuid uuid_tipo_vehiculo FK
-        uuid uuid_subscripcion_cliente FK
-        timestamp fecha_ingreso
-        timestamp fecha_salida "derivado de salidas — fuente: tabla salidas"
-        text observaciones
-        %% Lifecycle (DERIVADO — no se muta)
-        string estado "activo | cerrado | anulado (derivado de eventos)"
+        %% [L-E] Evento núcleo del negocio: un vehículo entró a la sede; se crea offline-first y sube a cloud
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede donde entró el vehículo"
+        string placa "placa digitada por el operador (hecho del evento; puede no existir en vehiculos)"
+        uuid uuid_tipo_vehiculo FK "tipo observado al entrar (define la tarifa a aplicar)"
+        uuid uuid_subscripcion_cliente FK "suscripción aplicada; NULL = estadía ocasional tarifada"
+        timestamp fecha_ingreso "momento de entrada; inicio del cálculo de estadía"
+        text observaciones "anotaciones del operador (estado del vehículo, objetos visibles)"
+        %% fecha_salida eliminada (4FN): derivada - fuente: tabla salidas (vista)
+        %% Lifecycle derivado via vista V_INGRESO_ESTADO (salida no anulada / anulaciones ejecutadas) - no se almacena
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% reimpresion_ticket [L-W]: Cada reimpresión de un ticket con su costo.
-    %% costo_aplicado es snapshot de costos_servicios al momento.
-    %% uuid_factura siempre presente (cobrada en factura existente
-    %% o nueva). El operador nunca puede dejar la reimpresión gratuita.
-    %% AUDIT-FIRST [L-W]: append-only. Una reimpresión anulada se modela
-    %% como NUEVA fila con uuid_padre apuntando a la original y
-    %% estado='anulada'. El estado vigente = última fila de la cadena.
-    %% Valores de estado (alineados a .md sección 2.8): 'cobrada' | 'anulada'.
     reimpresion_ticket {
-        %% [L-W] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_ingreso FK
-        uuid uuid_usuario FK
-        uuid uuid_costo_servicio FK
-        decimal costo_aplicado
-        uuid uuid_factura FK
-        string motivo
-        uuid uuid_padre FK "anulación: nueva fila apunta a la reimpresión original"
+        %% [L-W] Workflow de reimpresión de ticket perdido/dañado; cobra el servicio vigente y se carga a factura
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede donde se solicita"
+        uuid uuid_ingreso FK "ingreso cuyo ticket se reimprime"
+        uuid uuid_usuario FK "operador que ejecuta la reimpresión"
+        uuid uuid_costo_servicio FK "versión del servicio de reimpresión aplicada"
+        decimal costo_aplicado "snapshot del costo cobrado (hecho del evento; el catálogo cambia en el tiempo)"
+        uuid uuid_factura FK "factura donde se cargó el cobro"
+        string motivo "por qué se reimprimió"
+        uuid uuid_reimpresion_padre FK "anulación: nueva fila apunta a la reimpresión original"
         timestamp timestamp_evento "cuándo se solicitó la reimpresión"
         %% Lifecycle (workflow — cada transición es nueva fila)
         string estado "cobrada | anulada"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% anulaciones [L-W]: Workflow de anulación de ingresos por el admin.
-    %% uuid_usuario registra quién autorizó la anulación.
-    %% AUDIT-FIRST [L-W]: append-only. La anulación recorre un workflow
-    %% de aprobación: 'solicitada' → 'aprobada' → 'ejecutada'.
-    %% Cada transición es una NUEVA fila encadenada por uuid_anulacion_padre.
-    %% La fila raíz (uuid_anulacion_padre IS NULL) es la solicitud inicial.
-    %% La "anulación efectiva" sobre el ingreso es la fila con
-    %% estado='ejecutada'. NO se UPDATEa esta fila: se inserta la transición.
     anulaciones {
-        %% [L-W] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_ingreso FK "ingreso afectado (todas las filas de la cadena apuntan al mismo ingreso)"
-        uuid uuid_usuario FK "usuario que ejecuta esta transición"
-        text motivo
-        uuid uuid_anulacion_padre FK "FK a la fila anterior de la cadena (NULL = solicitud inicial)"
+        %% [L-W] Workflow de anulación de ingreso O de salida, con cadena de aprobación; solo la fila ejecutada anula
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede del ingreso afectado"
+        string tipo_anulable "ingreso | salida - qué se anula"
+        uuid uuid_ingreso FK "ingreso afectado (siempre presente; en anulación de salida es el ingreso de esa salida)"
+        uuid uuid_salida FK "salida anulada (solo cuando tipo_anulable = salida; NULL en anulación de ingreso)"
+        uuid uuid_usuario FK "usuario que ejecuta esta transición (solicita, aprueba o ejecuta)"
+        text motivo "justificación de la transición"
+        uuid uuid_anulacion_padre FK "UK02 cadena lineal - FK a la fila anterior (NULL = solicitud inicial)"
         timestamp timestamp_evento "cuándo se ejecutó esta transición"
         %% Lifecycle (workflow — valores alineados a .md sección 2.8)
         string estado "solicitada | aprobada | ejecutada"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% reclamos [L-W]: Reclamos de clientes sobre cualquier entidad.
-    %% FK polimórfica: tipo_reclamable indica a qué tabla apunta
-    %% uuid_reclamable (ingreso, salida, factura, subscripcion).
-    %% AUDIT-FIRST [L-W]: append-only. El reclamo recorre workflow:
-    %% 'abierto' → 'en_revision' → 'resuelto' (o 'rechazado').
-    %% Cada transición es NUEVA fila con uuid_reclamo_padre apuntando
-    %% a la anterior. La fila raíz (uuid_reclamo_padre IS NULL) es la
-    %% presentación original del reclamo. El estado vigente es la
-    %% última fila de la cadena.
     reclamos {
-        %% [L-W] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        string tipo_reclamable "ingreso | salida | factura | subscripcion"
-        uuid uuid_reclamable "FK al registro según tipo_reclamable"
-        text motivo
-        uuid uuid_reclamo_padre FK "FK a la fila anterior (NULL = reclamo inicial)"
+        %% [L-W] Workflow de reclamos del cliente sobre objetos reclamables (referencia polimórfica)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede donde se presenta el reclamo"
+        string tipo_reclamable "tabla objetivo: ingreso | salida | factura | subscripcion"
+        uuid uuid_reclamable "uuid del registro reclamado (polimórfico, sin FK física)"
+        text motivo "descripción del reclamo o de la resolución de esta transición"
+        uuid uuid_reclamo_padre FK "UK02 cadena lineal - FK a la fila anterior (NULL = reclamo inicial)"
         timestamp timestamp_evento "cuándo se presentó / se ejecutó la transición"
         %% Lifecycle (workflow — cada transición es nueva fila)
         string estado "abierto | en_revision | resuelto | rechazado"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [L] EVENTO DE LIFECYCLE - Facturación
-    %% ============================================================
 
-    %% facturas [L-E]: Factura de negocio (registro de la transacción).
-    %% Es el documento de negocio; factura_electronica es la
-    %% representación fiscal. Subtotal + descuento + impuestos
-    %% + otros cobros = total.
-    %% uuid_sucursal: filtrado directo (transitivo via ingreso/salida).
-    %% AUDIT-FIRST [L-E]: append-only. La factura de negocio NO se muta:
-    %% una vez emitida permanece inmutable. Su anulación (si ocurre) se
-    %% registra en `anulaciones` apuntando a `uuid_ingreso` (no a esta
-    %% tabla). El campo `estado` se DERIVA:
-    %%   - 'activa' → fila recién creada, sin evento de anulación vinculado.
-    %%   - 'anulada' → existe fila en `anulaciones` con estado='ejecutada'
-    %%     apuntando al mismo uuid_ingreso.
-    %% NO se UPDATEa esta fila. La revocación DIAN es evento inmutable
-    %% en `revocacion_factura` y opera sobre `factura_electronica`, no
-    %% sobre esta tabla (la factura de negocio permanece).
-    %% RETENCION DIAN: 5 años mínimo desde la fecha de emisión.
     facturas {
-        %% [L-E] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        decimal subtotal
-        decimal descuento
-        decimal total
-        uuid uuid_ingreso FK
-        uuid uuid_salida FK
-        %% Lifecycle (DERIVADO — no se muta)
-        string estado "activa | anulada (derivado de anulaciones)"
+        %% [L-E] Documento de venta interno emitido en la sede; sus totales son hechos legales de la emisión
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede emisora"
+        decimal subtotal "suma de líneas tal como se emitió (hecho del documento)"
+        decimal descuento "descuento aplicado a nivel de documento"
+        decimal total "valor emitido del documento (hecho legal del evento, no derivado)"
+        uuid uuid_ingreso FK "estadía que se factura"
+        uuid uuid_salida FK "salida que cerró la estadía facturada"
+        %% Lifecycle derivado via vista V_FACTURA_ESTADO (anulaciones ejecutadas) - no se almacena (4FN + insert-only)
         %% Retention (DIAN)
         date fecha_retencion_hasta "DIAN: 5+ años desde emisión"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% factura_electronica [L-E]: Representación fiscal enviada a DIAN.
-    %% uuid_cliente puede ser consumidor_final_default (seed UUID).
-    %% Permite revocar y reemitir (reemision_consumidor_final).
-    %% uuid_sucursal: filtrado directo (transitivo via factura).
-    %% `consecutivo` es el número crudo del rango DIAN asignado a esta
-    %% factura (atómico desde `empresa.consecutivo_actual` en la TX del
-    %% pago). El `numero_factura` que se imprime al cliente se compone en
-    %% código como `empresa.prefijo_factura || '-' || lpad(consecutivo)`.
-    %% AUDIT-FIRST [L-E]: append-only. El `estado` se DERIVA de eventos:
-    %%   - 'activa' → recién creada, sin fila en `revocacion_factura`
-    %%     donde esta fila es uuid_factura_electronica.
-    %%   - 'revocada' → existe fila en `revocacion_factura` apuntando
-    %%     a esta fila (uuid_factura_electronica).
-    %%   - 'anulada' → anulada directamente (sin reemplazo).
-    %% NO se UPDATEa esta fila. La revocación implica INSERT en
-    %% `revocacion_factura` (con cadena de hash para DIAN); el lector
-    %% interpreta el estado a partir de esa existencia. La factura
-    %% original NO se reemplaza — se inserta una NUEVA factura_electronica
-    %% y `revocacion_factura.uuid_factura_electronica_reemplazo` la apunta.
-    %% RETENCION DIAN: 5+ años.
     factura_electronica {
-        %% [L-E] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_factura FK
-        uuid uuid_cliente FK
-        bool reportado_dian
-        decimal descuento
-        bigint consecutivo
-        %% Lifecycle (DERIVADO — no se muta)
-        string estado "activa | revocada | anulada (derivado de revocacion_factura)"
+        %% [L-E] Versión DIAN de la factura interna; se emite EN sucursal con SU resolución y cloud la envía (envio_dian)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede emisora"
+        uuid uuid_factura FK "UK02 - 1:1 con facturas"
+        uuid uuid_cliente FK "adquirente (titular fiscal del documento)"
+        uuid uuid_resolucion_facturacion FK "UK01 (uuid_resolucion_facturacion, consecutivo) - resolucion DIAN de la sucursal emisora"
+        string prefijo "snapshot del prefijo de la resolución al emitir"
+        bigint consecutivo UK "UK01 - asignado en sucursal dentro del rango de su resolución"
+        %% numero_completo eliminado (4FN): derivado - prefijo + consecutivo (vista)
+        %% cufe y reportado_dian eliminados (4FN): derivados - fuente: envio_dian (vista)
+        decimal descuento "descuento reflejado en el documento electrónico"
+        %% Lifecycle derivado via vista V_FE_ESTADO_DIAN (revocacion_factura / envio_dian) - no se almacena (4FN + insert-only)
         %% Retention (DIAN)
         date fecha_retencion_hasta "DIAN: 5+ años desde emisión"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [L] EVENTO DE LIFECYCLE - Caja y sesión
-    %% ============================================================
 
-    %% sesion [L-S]: Turno de operación (apertura/cierre de caja).
-    %% Un operador abre sesión al iniciar, la cierra al final.
-    %% AUDIT-FIRST [L-S]: `estado` recorre 'abierta' → 'cerrada'.
-    %% UPDATE legítimo: SET estado='cerrada', timestamp_cierre=NOW()
-    %% al cerrar sesión — registra OBLIGATORIAMENTE fila en
-    %% log_transaccional en la misma TX. El arqueo asociado queda
-    %% referenciado vía uuid_sesion en arqueo (no UUID directo acá).
     sesion {
-        %% [L-S] Business
-        uuid uuid PK
-        decimal valor_inicial_efectivo
-        decimal valor_inicial_datafono
-        uuid uuid_sucursal FK
-        uuid uuid_usuario FK
-        timestamp timestamp_apertura
+        %% [L-S] Turno de caja de un operador; base inicial + pagos del turno = esperado del arqueo
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        decimal valor_inicial_efectivo "base de efectivo con la que abre el turno"
+        decimal valor_inicial_datafono "valor inicial registrado del datáfono"
+        uuid uuid_sucursal FK "sede del turno"
+        uuid uuid_usuario FK "operador responsable del turno"
+        timestamp timestamp_apertura "inicio del turno"
         timestamp timestamp_cierre "set en UPDATE de cierre (con log obligatorio)"
+        uuid uuid_usuario_cierre FK "quién ejecutó el cierre (columna de control; puede ser un supervisor distinto del titular)"
         %% Lifecycle (UPDATE permitido solo en cierre, con log obligatorio)
         string estado "abierta | cerrada"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% alerta [L-W]: Alertas del sistema (operacionales y de sync).
-    %% tipo_alerta incluye: diferencia_arqueo, caja_baja, fraude,
-    %% manual, sync_failure, branch_offline.
-    %% AUDIT-FIRST [L-W]: append-only. La alerta recorre workflow:
-    %% 'abierta' → 'en_revision' → 'resuelta'. Cada transición es
-    %% NUEVA fila con uuid_alerta_padre apuntando a la anterior.
-    %% La fila raíz (uuid_alerta_padre IS NULL) es la alerta original
-    %% disparada por el sistema. El estado vigente es la última fila
-    %% de la cadena. Cuando la conectividad se restablece, el worker
-    %% inserta nueva fila 'resuelta' para cerrar alertas sync.
     alerta {
-        %% [L-W] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
+        %% [L-W] Workflow de alertas operativas; nace automática (arqueo, sync, offline) o manual (fraude)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede donde ocurre la condición"
         uuid uuid_usuario FK "responsable actual de la alerta"
-        uuid uuid_arqueo FK "NULL si no proviene de arqueo"
+        uuid uuid_arqueo FK "arqueo que la disparó (NULL si no proviene de arqueo)"
         string tipo_alerta "diferencia_arqueo | caja_baja | fraude | manual | sync_failure | branch_offline"
-        decimal valor_diferencia_efectivo
-        decimal valor_diferencia_datafono
-        uuid uuid_alerta_padre FK "FK a la fila anterior (NULL = alerta inicial)"
+        decimal valor_diferencia_efectivo "diferencia observada al crear la alerta (hecho del evento)"
+        decimal valor_diferencia_datafono "ídem para datáfono"
+        uuid uuid_alerta_padre FK "UK02 cadena lineal - FK a la fila anterior (NULL = alerta inicial)"
         timestamp timestamp_evento "cuándo ocurrió la condición / se ejecutó la transición"
         %% Lifecycle (workflow — cada transición es nueva fila)
         string estado "abierta | en_revision | resuelta"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [A] SOURCE-OF-TRUTH (append-only) - Operación
-    %% ============================================================
 
-    %% salidas: Registro de cada vehículo que sale del parqueadero.
-    %% Una fila por salida (1:1 con ingreso cuando sale).
-    %% AUDIT-FIRST: source-of-truth para el cierre del ingreso. ENFORCE:
-    %% REVOKE UPDATE, DELETE FROM rol_app. Inmutabilidad a nivel DB.
     salidas {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_ingreso FK
-        string placa
-        timestamp fecha_salida
+        %% [A] Evento de salida del vehículo; cierra la estadía (tiempo = fecha_salida - fecha_ingreso); salida errónea se corrige vía anulaciones (tipo_anulable = salida)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede (redundancia controlada de particionamiento para sync)"
+        uuid uuid_ingreso FK "UK01 filtrada - una salida NO ANULADA por ingreso (índice único parcial; placa derivable via ingreso)"
+        timestamp fecha_salida "momento de salida; fin del cálculo de estadía"
         %% Retention (operacional — corto, ej: 2 años; particionable por mes)
-        date fecha_retencion_hasta
+        date fecha_retencion_hasta "límite de retención para archivado/particiones (nunca DELETE de negocio)"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [A] SOURCE-OF-TRUTH (append-only) - Facturación (snapshots)
-    %% ============================================================
 
-    %% factura_detalle: Líneas de factura (conceptos facturados).
-    %% Opcional: solo si una factura puede tener múltiples líneas.
-    %% uuid_sucursal: filtrado directo (transitivo via factura).
-    %% AUDIT-FIRST: append-only enforced. Snapshot inmutable de los
-    %% conceptos facturados al momento de emisión. Particionable por mes.
     factura_detalle {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_factura FK
-        string concepto
-        int cantidad
-        decimal valor_unitario
-        decimal subtotal
+        %% [A] Líneas de la factura: cada fila es un concepto cobrado con los valores exactos emitidos
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede (particionamiento/sync)"
+        uuid uuid_factura FK "factura a la que pertenece la línea"
+        string concepto "descripción del ítem cobrado (estadía, reimpresión)"
+        int cantidad "unidades del concepto"
+        decimal valor_unitario "precio unitario emitido"
+        decimal subtotal "valor de línea emitido (hecho del documento; incluye el redondeo aplicado al emitir)"
         %% Retention (DIAN)
         date fecha_retencion_hasta "DIAN: 5+ años"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% factura_impuestos: Snapshot de cada impuesto aplicado.
-    %% porcentaje_aplicado es snapshot al momento de la facturación
-    %% para que DIAN pueda verificar exactamente qué tasa se usó.
-    %% uuid_sucursal: filtrado directo (transitivo via factura).
-    %% AUDIT-FIRST: append-only enforced. CRÍTICO para DIAN — la tasa
-    %% histórica aplicada NUNCA debe cambiar aunque se modifique el
-    %% catálogo `impuestos`. Tabla candidata a hash-chaining si DIAN
-    %% exige cadena de integridad sobre totales.
     factura_impuestos {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_factura FK
-        uuid uuid_impuesto FK
-        decimal base_calculo
-        decimal porcentaje_aplicado
-        decimal valor
+        %% [A] Impuestos aplicados a la factura con snapshot de la tarifa vigente al emitir
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede (particionamiento/sync)"
+        uuid uuid_factura FK "factura gravada"
+        uuid uuid_impuesto FK "versión del impuesto del catálogo que se aplicó"
+        decimal base_calculo "base gravable usada"
+        decimal porcentaje_aplicado "snapshot de la tarifa al momento de emisión"
+        decimal valor "valor del impuesto en el documento legal (incluye redondeo DIAN aplicado al emitir)"
         %% Retention (DIAN)
         date fecha_retencion_hasta "DIAN: 5+ años"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% factura_otros_cobros: Snapshot de otros cobros aplicados.
-    %% uuid_sucursal: filtrado directo (transitivo via factura).
-    %% AUDIT-FIRST: append-only enforced. Snapshot inmutable.
     factura_otros_cobros {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_factura FK
-        uuid uuid_otro_cobro FK
-        decimal base_calculo
-        decimal valor_aplicado
-        decimal valor
+        %% [A] Cargos adicionales aplicados a la factura, mismo patrón snapshot que los impuestos
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede (particionamiento/sync)"
+        uuid uuid_factura FK "factura afectada"
+        uuid uuid_otro_cobro FK "versión del cargo del catálogo aplicada"
+        decimal base_calculo "base usada si el cargo es porcentual"
+        decimal valor_aplicado "snapshot del costo/factor vigente al emitir"
+        decimal valor "valor final del cargo en el documento"
         %% Retention (DIAN)
         date fecha_retencion_hasta "DIAN: 5+ años"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% factura_pagos: Cada pago de una factura.
-    %% Una factura puede tener varios pagos (mixto: efectivo + datafono).
-    %% uuid_sucursal: filtrado directo (transitivo via factura).
-    %% AUDIT-FIRST: append-only enforced. Snapshot del pago al momento de
-    %% la transacción. CRÍTICO para arqueo de caja: la suma de pagos debe
-    %% coincidir con el cierre de caja (validación cruzada en `arqueo`).
     factura_pagos {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_factura FK
-        string medio_pago
-        decimal valor
-        string referencia
-        timestamp timestamp_evento "cuándo se recibió el pago en caja"
+        %% [A] Medios de pago que saldaron la factura (pago mixto posible); insumo del arqueo por turno; reverso = fila compensatoria, nunca UPDATE
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede (particionamiento/sync)"
+        uuid uuid_factura FK "factura pagada"
+        uuid uuid_sesion FK "turno de caja que recibió el pago"
+        string medio_pago "efectivo | datafono | transferencia"
+        decimal valor "monto pagado con este medio"
+        string referencia "voucher/aprobación del datáfono o referencia de transferencia"
+        string tipo_movimiento "pago | reverso"
+        uuid uuid_pago_revertido FK "UK02 - pago que este movimiento reversa (un reverso por pago; NULL en pagos)"
+        timestamp timestamp_evento "cuándo se recibió el pago en caja / se ejecutó el reverso"
         %% Retention (DIAN + arqueo)
         date fecha_retencion_hasta "DIAN: 5+ años"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% revocacion_factura: Cadena de revocaciones de e-facturas.
-    %% uuid_factura_electronica_reemplazo forma la cadena: la e-factura
-    %% original es revocada por esta fila, que apunta a su reemplazo.
-    %% uuid_sucursal: filtrado directo (transitivo via e-factura).
-    %% AUDIT-FIRST: cadena de hash para integridad probatoria ante DIAN.
-    %% Cada revocación encadena con la anterior vía hash_anterior →
-    %% hash_actual. Si alguien altera una fila histórica, el hash no
-    %% coincide y la cadena se rompe (evidencia de tampering).
-    %% hash_anterior = SHA256(uuid + uuid_sucursal + uuid_factura_electronica
-    %%   + uuid_factura_electronica_reemplazo + motivo + timestamp
-    %%   + hash_anterior de la revocación previa del mismo uuid_sucursal).
-    %% hash_actual = SHA256(uuid + timestamp_registro + datos_canonicos).
-    %% Única fila con hash_anterior NULL es la primera revocación por
-    %% sucursal (semilla de la cadena).
     revocacion_factura {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        uuid uuid_factura_electronica FK
-        uuid uuid_factura_electronica_reemplazo FK
-        text motivo
-        timestamp timestamp "cuándo se emitió la revocación (negocio)"
+        %% [A] Revocaciones/notas de factura electrónica con cadena de hashes probatoria por sede
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede del documento revocado"
+        uuid uuid_factura_electronica FK "documento que se revoca"
+        uuid uuid_factura_electronica_reemplazo FK "documento sustituto (NULL si no hay)"
+        text motivo "causa legal/comercial de la revocación"
+        timestamp timestamp_evento "cuándo se emitió la revocación (negocio)"
         %% Chain integrity (DIAN evidence)
         string hash_anterior "SHA256 de la revocación previa del mismo uuid_sucursal"
         string hash_actual "SHA256 de esta fila + hash_anterior"
         %% Retention (DIAN)
         date fecha_retencion_hasta "DIAN: 5+ años"
         %% Audit
-        timestamp created_at "cuándo la DB registró la fila"
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [A] SOURCE-OF-TRUTH (append-only) - Caja
-    %% ============================================================
 
-    %% caja: Estado de caja por sucursal. Append-only.
-    %% AUDIT-FIRST: cada fila es un snapshot del estado de caja en un
-    %% momento dado. El "estado actual" de caja se reconstruye leyendo
-    %% la última fila por sucursal. ENFORCE: REVOKE UPDATE, DELETE.
+    envio_dian {
+        %% [L-W] Business — CLOUD-ONLY: único punto de salida hacia el proveedor de factura electrónica DIAN
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sucursal emisora del documento"
+        uuid uuid_factura_electronica FK "documento que se envía"
+        uuid uuid_resolucion_facturacion FK "resolución usada: cloud valida prefijo y rango antes de enviar"
+        json payload "documento enviado al proveedor (prefijo y numeración de la sucursal)"
+        json respuesta_proveedor "respuesta cruda del proveedor (evidencia)"
+        string cufe "CUFE devuelto por el proveedor"
+        uuid uuid_envio_padre FK "UK02 cadena lineal - reintento/transición apunta a la anterior (NULL = primer envío)"
+        timestamp timestamp_evento "cuándo se ejecutó esta transición"
+        %% Lifecycle (workflow — cada transición es nueva fila)
+        string estado "pendiente | enviado | aceptado | rechazado"
+        %% Retention (DIAN)
+        date fecha_retencion_hasta "DIAN: 5+ años"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+    validacion_evento {
+        %% [L-W] Business — CLOUD-ONLY: bandeja del admin para validar cada evento recibido de sucursal
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sucursal que originó el evento"
+        uuid uuid_usuario FK "admin que ejecuta la transición (NULL en recepción automática)"
+        string tabla_origen "tabla del evento recibido"
+        uuid uuid_registro "uuid del registro en tabla_origen (polimórfico)"
+        string hash_evento "SHA256 del payload recibido (integridad contra lo emitido por la sucursal)"
+        text observaciones "notas del admin al validar/observar/rechazar"
+        uuid uuid_validacion_padre FK "UK02 cadena lineal - FK a la fila anterior (NULL = recepción inicial)"
+        timestamp timestamp_evento "cuándo se recibió / se ejecutó la transición"
+        %% Lifecycle (workflow — cada transición es nueva fila)
+        string estado "recibido | validado | observado | rechazado"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
     caja {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        decimal valor_efectivo
-        decimal valor_datafono
+        %% [A] Fotos periódicas del dinero en caja por sede; la evolución es la serie temporal de filas
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede de la caja"
+        decimal valor_efectivo "efectivo en caja al momento del corte"
+        decimal valor_datafono "acumulado de datáfono al momento del corte"
         %% Retention (operacional)
         date fecha_retencion_hasta "particionable por mes"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% arqueo: Arqueo de caja al cierre de sesión.
-    %% diferencia = reportado - esperado. Genera alerta si supera
-    %% la tolerancia configurada.
-    %% AUDIT-FIRST: append-only enforced. El arqueo es la fuente de verdad
-    %% para el cierre de la `sesion` y para la generación de `alerta`.
-    %% Si hay corrección del arqueo, se inserta una nueva fila con
-    %% referencia al arqueo original (ver uuid_arquee_original si se agrega).
     arqueo {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        decimal valor_efectivo_esperado
-        decimal valor_datafono_esperado
-        decimal valor_efectivo_reportado
-        decimal valor_datafono_reportado
-        decimal diferencia_efectivo
-        decimal diferencia_datafono
+        %% [A] Conteo físico de caja contra lo esperado, clasificado por tipo; supera tolerancia = alerta. Corrección: nuevo arqueo del mismo turno + alerta que referencia al anterior (nunca UPDATE)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede arqueada"
+        uuid uuid_tipo_arqueo FK "cierre_turno | auditoria | cierre_sesion"
+        uuid uuid_sesion FK "turno de caja auditado"
+        decimal valor_efectivo_esperado "evidencia: valor calculado y mostrado al auditor al momento del conteo"
+        decimal valor_datafono_esperado "evidencia: datáfono esperado en ese momento"
+        decimal valor_efectivo_reportado "lo que el conteo físico encontró (el hecho nuevo del arqueo)"
+        decimal valor_datafono_reportado "total reportado del datáfono en el conteo"
+        %% diferencias eliminadas (4FN): derivadas - esperado menos reportado (vista V_ARQUEO_DIFERENCIAS)
         %% Retention (operacional — 2 años; particionable por mes)
-        date fecha_retencion_hasta
+        date fecha_retencion_hasta "límite de retención para archivado/particiones (nunca DELETE de negocio)"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% [A] SOURCE-OF-TRUTH (append-only) - Sincronización y auditoría
-    %% ============================================================
 
-    %% sync_queue: Cola persistente de operaciones pendientes de sync.
-    %% tabla + uuid_registro referencia cualquier tabla del modelo
-    %% (FK polimórfica). datos es snapshot completo de la fila.
-    %% Worker la procesa con backoff exponencial.
-    %% AUDIT-FIRST: la cola SÍ se actualiza (estado, intentos, next_retry_at)
-    %% — es operacional, no histórica. La transición append-only aplica a
-    %% los eventos de sync_result (éxito/fallo) que se registran en
-    %% `sync_log`, NO al estado interno de la cola.
     sync_queue {
-        %% [A] Business (con estado mutable por diseño — ver comentario)
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        string operacion
-        string tabla
-        uuid uuid_registro
-        json datos
-        int prioridad
+        %% [A] Outbox de la sucursal hacia cloud; infraestructura: única tabla con estado mutable por diseño
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sucursal dueña de la cola"
+        string operacion "operación transportada (insert, cambio de estado)"
+        string tabla "tabla del registro afectado"
+        uuid uuid_registro "uuid del registro a sincronizar (polimórfico)"
+        json datos "payload del registro tal como debe aplicarse en cloud"
+        int prioridad "orden de despacho (facturación antes que métricas)"
         string estado "pendiente | en_progreso | exitoso | fallido | descartado"
-        int intentos
-        timestamp next_retry_at
-        text ultimo_error
+        int intentos "reintentos de despacho consumidos"
+        timestamp next_retry_at "próximo reintento programado (backoff)"
+        text ultimo_error "último error del despacho, para diagnóstico"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% sync_conflict: Log de conflictos detectados durante sync.
-    %% politica define resolución: cloud_wins, local_wins, append,
-    %% manual. Datos completos de ambas versiones para auditoría.
-    %% AUDIT-FIRST: append-only enforced. Snapshot completo del conflicto
-    %% para resolución posterior o auditoría.
     sync_conflict {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        string tabla
-        uuid uuid_registro
-        json datos_local
-        json datos_cloud
-        string politica
-        string resolucion
-        timestamp timestamp "cuándo se detectó el conflicto"
+        %% [A] Conflictos detectados al sincronizar (local difiere de cloud); guarda ambas versiones y la resolución
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sucursal involucrada"
+        string tabla "tabla en conflicto"
+        uuid uuid_registro "registro en conflicto (polimórfico)"
+        json datos_local "versión de la sucursal al detectar el conflicto"
+        json datos_cloud "versión de cloud"
+        string politica "regla de resolución aplicada (last-write-wins, cloud-wins)"
+        string resolucion "resultado de aplicar la política"
+        timestamp timestamp_evento "cuándo se detectó el conflicto"
         %% Retention (operacional — 1 año post-resolución)
-        date fecha_retencion_hasta
+        date fecha_retencion_hasta "límite de retención para archivado/particiones (nunca DELETE de negocio)"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% sync_log: Registro de cada ciclo de sincronización.
-    %% Permite al cloud detectar sucursales offline (sin log en 24hs).
-    %% AUDIT-FIRST: append-only enforced. Métricas operacionales por
-    %% ciclo de sync. Retención corta (particionar por mes, purgar >1 año).
     sync_log {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_sucursal FK
-        timestamp timestamp "inicio del ciclo de sync"
-        int operaciones_enviadas
-        int operaciones_exitosas
-        int operaciones_fallidas
-        int conflictos
-        int duracion_ms
+        %% [A] Métrica por ciclo de sincronización de cada sucursal; alimenta alertas sync_failure y branch_offline
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sucursal que sincronizó"
+        timestamp timestamp_evento "inicio del ciclo de sync"
+        int operaciones_enviadas "total de operaciones despachadas en el ciclo"
+        int operaciones_exitosas "aplicadas con éxito en cloud"
+        int operaciones_fallidas "rechazadas o con error"
+        int conflictos "conflictos detectados en el ciclo"
+        int duracion_ms "duración del ciclo (rendimiento del enlace)"
         %% Retention (operacional — 1 año)
-        date fecha_retencion_hasta
+        date fecha_retencion_hasta "límite de retención para archivado/particiones (nunca DELETE de negocio)"
         %% Audit
-        timestamp created_at
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% log_transaccional: Log append-only de cada acción del sistema.
-    %% Permite auditoría completa: quién hizo qué, cuándo y dónde.
-    %% AUDIT-FIRST: cadena de hash para integridad probatoria. Es la
-    %% fuente de verdad para reconstruir cualquier cambio de estado
-    %% (tablas [V] derivan de acá). Cada fila encadena con la anterior
-    %% del mismo uuid_sucursal vía hash_anterior → hash_actual.
-    %%
-    %% hash_anterior = SHA256(uuid + datos_anteriores + datos_nuevos
-    %%   + accion + uuid_usuario + timestamp_evento + timestamp_registro
-    %%   + hash_anterior del log previo del mismo uuid_sucursal).
-    %% hash_actual = SHA256(uuid + timestamp_registro + hash_anterior).
-    %% Única fila con hash_anterior NULL es el primer log por sucursal
-    %% (semilla de la cadena).
-    %%
-    %% datos_anteriores y datos_nuevos son snapshots JSON del registro
-    %% afectado antes y después del cambio. NULL para eventos sin
-    %% mutación (ej: login). Para eventos derivados de la lectura
-    %% de otros logs, referenciar vía uuid_referencia.
     log_transaccional {
-        %% [A] Business
-        uuid uuid PK
-        uuid uuid_usuario FK
-        uuid uuid_sucursal FK
+        %% [A] Bitácora probatoria de toda acción relevante, con cadena de hashes por sede; hace auditable el patrón insert-only
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_usuario FK "quién ejecutó la acción"
+        uuid uuid_sucursal FK "dónde se ejecutó"
         string accion "crear | actualizar | eliminar | revocar | archivar | etc."
         string tabla_afectada "tabla sobre la que se actuó"
         uuid uuid_registro_afectado "uuid del registro en tabla_afectada"
@@ -1245,52 +1063,47 @@ erDiagram
         string hash_anterior "SHA256 del log previo del mismo uuid_sucursal"
         string hash_actual "SHA256 de esta fila + hash_anterior"
         %% Retention (compliance — depende de la acción; default 5 años)
-        date fecha_retencion_hasta
+        date fecha_retencion_hasta "límite de retención para archivado/particiones (nunca DELETE de negocio)"
         %% Audit
-        timestamp created_at "cuándo la DB registró la fila"
-        uuid created_by
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
         %% Sync
-        string sync_status
-        timestamp sync_timestamp
-        int sync_attempts
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
     }
 
-    %% ============================================================
-    %% RELACIONES
-    %% ============================================================
 
-    %% Usuarios y permisos
     usuarios ||--o{ login : "sesiones"
     usuarios ||--o{ permisos_usuario : "tiene"
     permisos ||--o{ permisos_usuario : "asignado"
 
-    %% Usuarios y sucursales
     usuarios ||--o{ usuarios_sucursal : "asignado"
     sucursal ||--o{ usuarios_sucursal : "tiene personal"
     sucursal ||--o{ login : "sucursal del login"
 
-    %% Sucursal y operaciones
     sucursal ||--o{ documentos : "almacena"
     sucursal ||--o{ tarifas_sucursal : "aplica"
     tipos_vehiculo ||--o{ tarifas_sucursal : "tarifa"
     tipo_tarifa ||--o{ tarifas_sucursal : "modalidad"
     tipo_sucursal ||--o{ sucursal : "clasifica"
+    empresa ||--o{ sucursal : "opera"
+    sucursal ||--o{ resolucion_facturacion : "resolución DIAN propia"
+    sucursal ||--o{ configuracion_tolerancias : "override individual"
+    sucursal ||--o{ configuracion_seguridad : "override individual"
     sucursal ||--o{ cantidad_vehiculos_sucursal : "cupo"
     tipos_vehiculo ||--o{ cantidad_vehiculos_sucursal : "tipo"
 
-    %% Clientes
     tipo_persona ||--o{ clientes : "clasifica"
     clientes ||--o| clientes_b2b : "extensión B2B"
     clientes ||--o{ subscripciones_cliente : "contrata"
     sucursal ||--o{ subscripciones_cliente : "origen"
     tipo_subscripciones ||--o{ subscripciones_cliente : "plan"
 
-    %% Vehículos
     tipos_vehiculo ||--o{ vehiculos : "tipo"
     subscripciones_cliente ||--o{ subscripcion_vehiculos : "incluye"
     vehiculos ||--o{ subscripcion_vehiculos : "asociado"
 
-    %% Operación
     sucursal ||--o{ ingreso : "registra"
     tipos_vehiculo ||--o{ ingreso : "tipo"
     subscripciones_cliente ||--o{ ingreso : "opcional"
@@ -1299,15 +1112,15 @@ erDiagram
     usuarios ||--o{ reimpresion_ticket : "operó"
     costos_servicios ||--o{ reimpresion_ticket : "cobro"
     facturas ||--o{ reimpresion_ticket : "cargada en"
-    reimpresion_ticket ||--o{ reimpresion_ticket : "anulación (uuid_padre)"
+    reimpresion_ticket ||--o{ reimpresion_ticket : "anulación (uuid_reimpresion_padre)"
     sucursal ||--o{ salidas : "sucursal"
-    ingreso ||--|| salidas : "genera"
+    ingreso ||--o| salidas : "genera (sin salida mientras activo)"
     sucursal ||--o{ anulaciones : "sucursal"
     ingreso ||--o{ anulaciones : "puede tener"
+    salidas ||--o{ anulaciones : "anulación de salida (tipo_anulable = salida)"
     usuarios ||--o{ anulaciones : "autorizó"
     anulaciones ||--o{ anulaciones : "transición workflow (uuid_anulacion_padre)"
 
-    %% Reclamos (FK polimórfica: se muestran las cuatro referencias posibles)
     sucursal ||--o{ reclamos : "sucursal"
     ingreso ||--o{ reclamos : "sobre ingreso"
     salidas ||--o{ reclamos : "sobre salida"
@@ -1315,7 +1128,6 @@ erDiagram
     subscripciones_cliente ||--o{ reclamos : "sobre subscripcion"
     reclamos ||--o{ reclamos : "transición workflow (uuid_reclamo_padre)"
 
-    %% Facturación
     sucursal ||--o{ facturas : "sucursal"
     ingreso ||--o{ facturas : "origen"
     salidas ||--o{ facturas : "origen"
@@ -1329,123 +1141,38 @@ erDiagram
     otros_cobros ||--o{ factura_otros_cobros : "snapshot"
     sucursal ||--o{ factura_pagos : "sucursal"
     facturas ||--o{ factura_pagos : "cobrada con"
+    factura_pagos ||--o| factura_pagos : "reverso compensatorio (uuid_pago_revertido)"
     sucursal ||--o{ factura_electronica : "sucursal"
     facturas ||--o| factura_electronica : "versión DIAN"
     clientes ||--o{ factura_electronica : "titular"
+    resolucion_facturacion ||--o{ factura_electronica : "numera (prefijo + consecutivo)"
+    sucursal ||--o{ envio_dian : "origen del documento"
+    factura_electronica ||--o{ envio_dian : "enviada a DIAN por (cloud)"
+    resolucion_facturacion ||--o{ envio_dian : "valida prefijo y rango"
+    envio_dian ||--o{ envio_dian : "transición workflow (uuid_envio_padre)"
     sucursal ||--o{ revocacion_factura : "sucursal"
     factura_electronica ||--o{ revocacion_factura : "revocada por"
     factura_electronica ||--o{ revocacion_factura : "reemplazada por"
 
-    %% Caja y arqueo
     sucursal ||--o{ caja : "tiene"
     sucursal ||--o{ sesion : "tiene turnos"
     usuarios ||--o{ sesion : "abre"
+    usuarios ||--o{ sesion : "cierra turno (uuid_usuario_cierre)"
+    sesion ||--o{ factura_pagos : "pagos del turno"
+    sesion ||--o{ arqueo : "audita turno"
     sucursal ||--o{ arqueo : "realiza"
+    tipo_arqueo ||--o{ arqueo : "clasifica"
     sucursal ||--o{ alerta : "genera"
     usuarios ||--o{ alerta : "responsable"
     arqueo ||--o{ alerta : "dispara"
     alerta ||--o{ alerta : "transición workflow (uuid_alerta_padre)"
 
-    %% Sincronización
     sucursal ||--o{ sync_queue : "tiene cola"
     sucursal ||--o{ sync_conflict : "tiene conflictos"
     sucursal ||--o{ sync_log : "registra sync"
+    sucursal ||--o{ validacion_evento : "eventos validados por admin (cloud)"
+    usuarios ||--o{ validacion_evento : "admin valida"
+    validacion_evento ||--o{ validacion_evento : "transición workflow (uuid_validacion_padre)"
     sucursal ||--o{ log_transaccional : "origen"
     usuarios ||--o{ log_transaccional : "acción"
 
-    %% ============================================================
-    %% AUDIT-FIRST: ENFORCEMENT Y REGLAS DE INMUTABILIDAD
-    %% ============================================================
-    %%
-    %% NIVEL DB (PostgreSQL):
-    %%
-    %% 1. REVOKE UPDATE, DELETE ON [A]_tables FROM rol_app;
-    %%    El rol de la app solo tiene INSERT y SELECT en tablas [A].
-    %%    Excepción: sync_queue permite UPDATE sobre campos operacionales
-    %%    (estado, intentos, next_retry_at, ultimo_error).
-    %%
-    %% 2. Trigger BEFORE UPDATE OR DELETE en cada tabla [A] (excepto sync_queue):
-    %%    CREATE FUNCTION reject_mutation() RETURNS trigger AS $$
-    %%    BEGIN
-    %%      RAISE EXCEPTION 'tabla append-only: % prohibido en %',
-    %%        TG_OP, TG_TABLE_NAME;
-    %%    END;
-    %%    $$ LANGUAGE plpgsql;
-    %%
-    %% 3. GRANT BYPASSRLS a un rol_admin_auditor (separado del rol_app)
-    %%    para investigaciones de fraude; deja痕 en log_transaccional.
-    %%
-    %% 4. Tablas [L-E] y [L-W]: INSERT-only. UPDATE/DELETE prohibidos
-    %%    a nivel DB. Cada cambio = nueva fila.
-    %%
-    %% 5. Tablas [L-S] (login, sesion): UPDATE permitido SOLO sobre
-    %%    campos `estado` y `timestamp_cierre`/`timestamp_apertura`. Trigger
-    %%    valida que UPDATE no toque otros campos + que INSERT en
-    %%    log_transaccional ocurra en la misma TX.
-    %%
-    %% 6. Tablas [V]: INSERT y UPDATE via API versionada. DELETE solo
-    %%    via archivado (nueva fila con vigente_hasta=NOW()).
-    %%
-    %% NIVEL APLICACIÓN:
-    %%
-    %% - Tablas [L-E] (ingreso, facturas, factura_electronica):
-    %%   el estado se DERIVA de otros eventos. NO se muta.
-    %%
-    %% - Tablas [L-W] (anulaciones, reclamos, alerta, reimpresion_ticket):
-    %%   cada transición de estado es NUEVA fila encadenada por
-    %%   uuid_padre (o uuid_anulacion_padre / uuid_reclamo_padre /
-    %%   uuid_alerta_padre). El estado vigente es la última fila de la cadena.
-    %%
-    %% - Tablas [L-S] (login, sesion): UPDATE legítimo sobre estado/cierre
-    %%   con INSERT obligatorio en log_transaccional en la misma TX.
-    %%
-    %% - Cada cambio en tablas [V] registra evento en log_transaccional
-    %%   con datos_anteriores y datos_nuevos (snapshot JSON).
-    %%
-    %% - Cada revocación de e-factura registra fila en revocacion_factura
-    %%   con cadena de hash por uuid_sucursal.
-    %%
-    %% RETENCION:
-    %%
-    %% - Tablas DIAN (facturas, factura_electronica, factura_detalle,
-    %%   factura_impuestos, factura_otros_cobros, factura_pagos,
-    %%   revocacion_factura): fecha_retencion_hasta = created_at +
-    %%   dias_retencion_empresa (configurado en `empresa`, default 5 años).
-    %%   Particionar por año fiscal para purga controlada.
-    %%
-    %% - log_transaccional: fecha_retencion_hasta = created_at + dias_retencion_accion
-    %%   (default 5 años; ampliable a 10 para acciones de facturación).
-    %%
-    %% - Tablas operacionales (caja, arqueo, sync_log, sync_conflict):
-    %%   1-2 años. Particionar por mes.
-    %%
-    %% HASH CHAIN (integridad probatoria):
-    %%
-    %% - log_transaccional y revocacion_factura mantienen cadena de
-    %%   hash por uuid_sucursal. La verificación de cadena corre como
-    %%   job nightly y alerta si encuentra inconsistencia.
-    %%
-    %% - Verificación: SELECT hash_actual, hash_calculado FROM (
-    %%     SELECT *, SHA256(...) OVER (PARTITION BY uuid_sucursal
-    %%     ORDER BY created_at) AS hash_calculado FROM log_transaccional
-    %%   ) WHERE hash_actual != hash_calculado;
-    %%
-    %% CONSULTAS BI-TEMPORALES (proyección):
-    %%
-    %% - "Estado actual de usuarios al 2024-03-15":
-    %%   SELECT * FROM usuarios
-    %%   WHERE vigente_desde <= '2024-03-15'
-    %%     AND (vigente_hasta IS NULL OR vigente_hasta > '2024-03-15');
-    %%
-    %% - "Quién modificó la tarifa X y cuándo":
-    %%   SELECT * FROM log_transaccional
-    %%   WHERE tabla_afectada = 'tarifas_sucursal'
-    %%     AND uuid_registro_afectado = ?;
-    %%
-    %% - "Cadena de revocaciones de la e-factura X":
-    %%   WITH RECURSIVE chain AS (
-    %%     SELECT * FROM revocacion_factura WHERE uuid_factura_electronica = ?
-    %%     UNION ALL
-    %%     SELECT rf.* FROM revocacion_factura rf
-    %%     JOIN chain c ON rf.uuid_factura_electronica = c.uuid_factura_electronica_reemplazo
-    %%   ) SELECT * FROM chain;

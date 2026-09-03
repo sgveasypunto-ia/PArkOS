@@ -1,4 +1,5 @@
 # Local artifacts and tooling state. Do not commit.
+.agent-generated/
 .atl/
 .codegraph/
 .venv/

@@ -14,7 +14,80 @@
   - Two distinct web apps (admin multi-tenant, branch single-tenant)
 - **Deployment**: Docker Compose for both cloud and branch (same image, two compose files)
 - **Compliance**: DIAN Colombia (electronic invoicing, 5+ year retention, SHA256 hash chain on `log_transaccional` and `revocacion_factura` per `uuid_sucursal`)
-- **Authorization model**: `feature-branch-chain` (user-ratified for compliance-heavy schemas)
+- **Authorization model**: `gitflow` (user-ratified) — `main` (producción) + `dev` (integración) + feature branches; **PRs mergean a `dev` (nunca directo a `main`)**; cada rama certificada se mergea a `dev`, y de `dev` a `main` solo via release branch con certificación
+- **Data architecture**: Audit-First / Compliance-Driven with Bi-Temporal model and logical deletion only — see [Architectural Principles](#architectural-principles) below
+- **API contract**: C/Q/U only — Consulta, Inserción, Actualización (bi-temporal). **No physical DELETE at any layer.**
+
+## Architectural Principles
+
+These principles are project-wide canon. Every sub-agent (and every human
+change) MUST honor them. They are non-negotiable.
+
+### 1. Audit-First / Compliance-Driven Data Architecture
+
+The data layer is designed for regulatory auditability from day one:
+
+- Every row carries `created_at`, `created_by`, plus class-specific audit columns
+- Compliance tables (`factura_electronica`, `revocacion_factura`,
+  `log_transaccional`) carry `fecha_retencion_hasta` (DIAN: 5+ years) and
+  SHA256 `hash_anterior` / `hash_actual` chains per `uuid_sucursal`
+- `REVOKE UPDATE, DELETE` on 11 `[A]` tables from `rol_app`;
+  `rol_admin_auditor` is the only role with `BYPASSRLS`
+- `BEFORE UPDATE OR DELETE` triggers on `[A]` tables block any mutation
+  outside the allowed paths and force corrections to be expressed as new rows
+- The canonical column-level view lives at `modelo_datos_er.mmd` — every
+  entity there has `Audit`, `Versioning`, and `Sync` blocks by construction
+
+### 2. Bi-Temporal Model with Logical Deletion (Borrado Lógico)
+
+The model is bi-temporal. Every `[V]` and `[L]` row carries:
+
+- **Valid time** (`vigente_desde`, `vigente_hasta`): when the fact was true in
+  the real world. `vigente_hasta IS NULL` means the version is current
+- **Transaction time** (`created_at`): when the fact was recorded in the DB
+
+The UK of every `[V]` row includes `vigente_desde`, so the version is part
+of identity — multiple versions of the same logical entity coexist as
+distinct rows.
+
+**Logical deletion ONLY. No physical DELETE is permitted at any layer**
+(API, ORM, SQL, migrations, seed scripts). Closing a version means:
+
+1. Set `vigente_hasta = NOW()` and `estado = 'inactivo'` on the current row
+2. `INSERT` a new row with the new state (`vigente_desde = NOW()`,
+   `vigente_hasta = NULL`, `estado = 'activo'`)
+
+Both rows remain in the table forever; history is reconstructable at any
+point in time. Corrections that look like "deletes" — `anular`, `revertir`,
+`reverso`, `corregir salida errónea` — are expressed as new compensating
+rows in the corresponding workflow table, never as physical DELETE.
+
+### 3. API Operation Contract — Consulta, Inserción, Actualización (no Delete)
+
+The API exposes exactly three operations per resource:
+
+- **Consulta (Query)**: `SELECT` reads; views and projections are fine
+- **Inserción (Insert)**: `INSERT` of a new row (a new version, a new event,
+  or an append to an `[A]` table)
+- **Actualización (Update)**: bi-temporal — *cambio de estado + nuevo
+  registro*. Close the current row (`vigente_hasta = NOW()`,
+  `estado = 'inactivo'`) AND insert a new row with the new state
+
+**NO ESTÁ PERMITIDA LA ELIMINACIÓN DE NINGÚN REGISTRO.** The API has no
+`DELETE` operation at any layer. Conceptual deletion is modeled as:
+
+- a new row in a workflow table (`anulaciones`, `reimpresion_ticket`,
+  `reclamos`, `alerta`)
+- a compensating row (`factura_pagos.tipo_movimiento = 'reverso'`,
+  pointing at `uuid_pago_revertido`)
+- a derived view state (`V_FACTURA_ESTADO`, `V_INGRESO_ESTADO`,
+  `V_FE_ESTADO_DIAN`, `V_RESOLUCION_CONSECUTIVO`) — state is *derived*,
+  never stored
+
+Enforced at three levels: **API** (no endpoint), **ORM** (close+insert
+helpers, no hard delete on `[V]`/`[A]`), **DB** (`REVOKE DELETE` on `[A]` +
+`BEFORE UPDATE OR DELETE` trigger). All three are required — defense in
+depth.
 
 ## Tech Stack (assumed, to be ratified in `bootstrap-monorepo-foundation/design`)
 
@@ -32,6 +105,8 @@
 
 - **PostgreSQL 16+** in cloud and on each branch
 - **AUDIT-FIRST** schema with 3 enforcement levels: `[V]` projection, `[L]` lifecycle, `[A]` source-of-truth
+- **Bi-temporal columns** (`vigente_desde` / `vigente_hasta` / `estado` on `[V]` and `[L]`) — every UK includes `vigente_desde`; canonical column-level view at `modelo_datos_er.mmd`
+- **No physical DELETE** — `REVOKE DELETE` on `[A]` + `BEFORE UPDATE OR DELETE` trigger; corrections modeled as workflow rows. See [Architectural Principles](#architectural-principles).
 - **REVOKE UPDATE, DELETE** on 11 `[A]` tables from `rol_app`; `rol_admin_auditor` has BYPASSRLS
 - **`pg_partman`** for monthly partitioning of high-volume tables
 - **DIAN-only tables** (`factura_electronica`, `revocacion_factura`) live ONLY in cloud; branches have schema parity but never write
@@ -76,10 +151,10 @@
 ### Python (`backend/`)
 
 - All async (SQLAlchemy 2.0 `AsyncSession`)
-- Models partitioned by audit level in `parkos_core/models/`:
-  - `models/V/` (24 versioned tables)
+- Models partitioned by audit level in `parkos_core/models/` (counts track `modelo_datos_er.mmd` — 49 tables total):
+  - `models/V/` (26 versioned tables)
   - `models/L_E/` (3 L-E events)
-  - `models/L_W/` (4 L-W workflows)
+  - `models/L_W/` (6 L-W workflows)
   - `models/L_S/` (2 L-S sessions)
   - `models/A/` (12 append-only tables)
 - Every model has `created_at`, `created_by`, `vigente_desde`/`vigente_hasta` (for `[V]`), `sync_status`/`sync_timestamp`/`sync_attempts`
@@ -132,6 +207,27 @@
 - Branch offline mode: prints `numero_temporal` (preliminar), enqueues `factura` in `sync_queue`; cloud assigns real and sends `SyncBackEvent` back; `reimpresion_ticket` enabled only after sync-back
 - Atomic `empresa.consecutivo_actual` mutated only in cloud
 
+### API operation contract
+
+The API exposes **Consulta, Inserción, Actualización** per resource.
+Actualización is bi-temporal: close the current row (`vigente_hasta = NOW()`,
+`estado = 'inactivo'`) AND insert a new row with the new state.
+
+**NO ESTÁ PERMITIDA LA ELIMINACIÓN DE NINGÚN REGISTRO.** The API has no
+`DELETE` operation. Conceptual deletion is modeled as:
+
+- a new row in a workflow table (`anulaciones`, `reimpresion_ticket`,
+  `reclamos`, `alerta`)
+- a compensating row (`factura_pagos.tipo_movimiento = 'reverso'`)
+- a derived view state (`V_FACTURA_ESTADO`, `V_INGRESO_ESTADO`,
+  `V_FE_ESTADO_DIAN`)
+
+Enforced at three levels: **API** (no endpoint), **ORM** (close+insert
+helpers, no hard delete on `[V]`/`[A]`), **DB** (`REVOKE DELETE` on `[A]` +
+`BEFORE UPDATE OR DELETE` trigger). All three are required — defense in
+depth. See [Architectural Principles](#3-api-operation-contract--consulta-inserción-actualización-no-delete)
+for the full contract and rationale.
+
 ### Frontend
 
 - Multi-branch selector in `web_admin`; branch-pinned in `web_sucursal`
@@ -141,11 +237,11 @@
 
 ## Workflow (SDD)
 
-1. Preflight collected: pace=`interactive`, artifact=`hybrid`, delivery=`ask-on-risk`, chain=`feature-branch-chain`, budget=`400 lines` per PR
+1. Preflight collected (current session for `create-49-table-apis`): pace=`auto`, artifact=`hybrid` (OpenSpec+Engram), delivery=`auto-chain`, chain=`gitflow`, budget=`800 lines` per PR
 2. Every change follows: explore → propose → spec → design → tasks → apply → verify → archive
 3. Each phase persisted to BOTH OpenSpec (`openspec/changes/{name}/`) AND Engram (topic_key `sdd/{name}/{phase}`)
 4. In interactive mode: orchestrator shows result + asks before next phase
-5. Chained PRs recommended when forecast >400 LOC; `feature-branch-chain` for compliance-heavy changes
+5. Chained PRs recommended when forecast >800 LOC; `gitflow` model — PRs land on `dev`, releases to `main`
 
 ## Risk Registers (project-wide)
 
@@ -157,6 +253,7 @@
 | Tenant scope leak in admin JWT | `X-Sucursal-Context` enforced against `sucursales_permitidas` on every call |
 | Pairing-token replay | single-use, 24h TTL, rate-limited |
 | DIAN `consecutivo_actual` race | atomic UPDATE in cloud only; branches read via sync |
+| **Physical DELETE attempted** at any layer (intentional or feature shortcut) | API has no DELETE endpoint; ORM uses close+insert helpers for `[V]`/`[L]`; `REVOKE DELETE` + `BEFORE UPDATE OR DELETE` trigger on `[A]` tables blocks DB-level — corrections must flow through workflow tables |
 | `0001_initial_schema.py` is one big file | PR2 carries explicit `size:exception`; not split (would break single-head invariant) |
 
 ## Active Change
