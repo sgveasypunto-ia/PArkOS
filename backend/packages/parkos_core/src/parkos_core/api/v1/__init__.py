@@ -19,6 +19,10 @@ Cloud-only resources (excluded from branch deploy, REQ-X3):
 - ``POST /api/v1/envio-dian`` — DIAN send/ack workflow transition.
 - ``POST /api/v1/validacion-evento`` — admin validation workflow transition.
 - ``POST /api/v1/revocacion-factura-webhook`` — DIAN revocation + chain.
+- ``admin_views`` (PR10, REQ-X2) — ``GET /api/v1/sucursales``,
+  ``GET /api/v1/admin/sucursales/{uuid}/dashboard``, ``GET /api/v1/admin/me``.
+  Multi-branch visibility is an admin-only capability; branch operators
+  must never see other branches.
 
 Replicated resources (mounted in BOTH deploys):
 
@@ -127,6 +131,25 @@ def _build_router() -> APIRouter:
 
     # Empresa resources — selectively mounted (DIAN boundary, REQ-X3).
     r.include_router(_build_empresa_router())
+
+    # T-PR10: admin_views — cloud-only (REQ-X2). Branch operators have no
+    # cross-branch visibility, so ``api_sucursal`` never mounts these routes.
+    if _IS_BRANCH:
+        logger.info(
+            "Branch deploy: admin_views SKIPPED (cloud-only admin views, REQ-X2)"
+        )
+    else:
+        try:
+            from . import admin_views as _admin_views
+
+            r.include_router(_admin_views.router)
+            logger.info(
+                "Admin views mounted (cloud deploy): /sucursales + "
+                "/admin/sucursales/{uuid}/dashboard + /admin/me"
+            )
+        except ImportError as e:
+            logger.error("Failed to import admin_views: %s", e)
+            raise
 
     # T-PR6-11: lazy-import the DIAN cloud router ONLY on cloud deploy.
     # Branch images physically lack ``parkos_core/dian/`` (Layer 1) AND
