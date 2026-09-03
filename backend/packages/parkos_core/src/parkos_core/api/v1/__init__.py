@@ -1,13 +1,24 @@
-"""parkos_core FastAPI v1 router package (PR1c + PR3 + PR4 + PR5).
+"""parkos_core FastAPI v1 router package (PR1c + PR3 + PR4 + PR5 + PR6).
 
-PR4 enforces the DIAN boundary at the router-aggregation level
-(design §10 + REQ-X3): the branch image physically lacks
-``parkos_core.dian.cloud_router`` (belt-and-suspenders) AND the v1 router
-skips cloud-only resources when ``PARKOS_DEPLOY=branch``.
+The DIAN boundary (design §10 + REQ-X3) is enforced at TWO layers:
+
+1. **Image-level** (Layer 1, design §10): the ``Dockerfile`` for branch
+   images physically excludes the ``parkos_core/dian/`` directory.
+2. **Import-level** (Layer 2, this module + ``dian.cloud_router``): the
+   top-level guard in :mod:`parkos_core.dian.cloud_router` raises
+   ``ImportError`` when ``PARKOS_DEPLOY=branch``, and THIS module
+   lazy-imports :mod:`parkos_core.dian.cloud_router` only when
+   ``PARKOS_DEPLOY != "branch"``. On branch deploy the lazy import is
+   skipped entirely so we never even attempt to load the cloud-only
+   file.
 
 Cloud-only resources (excluded from branch deploy, REQ-X3):
 
 - ``empresa.resolucion-facturacion`` — DIAN root; cloud is the single writer.
+- ``POST /api/v1/factura-electronica`` — atomic ``consecutivo`` issuance.
+- ``POST /api/v1/envio-dian`` — DIAN send/ack workflow transition.
+- ``POST /api/v1/validacion-evento`` — admin validation workflow transition.
+- ``POST /api/v1/revocacion-factura-webhook`` — DIAN revocation + chain.
 
 Replicated resources (mounted in BOTH deploys):
 
@@ -22,11 +33,16 @@ Replicated resources (mounted in BOTH deploys):
   subscripciones-cliente, vehiculos, subscripcion-vehiculos (PR5)
 - ``operacion`` — ingreso [L-E] lifecycle event + derived /estado
   endpoint (PR5)
+- ``facturacion`` — 5 non-cloud billing tables (PR6): facturas,
+  factura-detalle, factura-impuestos, factura-otros-cobros, factura-pagos
+- ``workflows`` — 4 branch-originated [L-W] tables (PR6):
+  reimpresion-ticket, anulaciones, reclamos, alerta
 
 T-PR4-11 keeps the path layout ``/api/v1/empresa/{resource}/...`` intact by
 rebuilding a custom empresa router with the same ``/empresa`` prefix the
 aggregated ``empresa.router`` exposes. The aggregated router is preserved
-for backward-compat direct imports.
+for backward-compat direct imports. T-PR6-11 adds the DIAN cloud router
+mount at the v1 root only on cloud deploys (REQ-X3 belt-and-suspenders).
 """
 from __future__ import annotations
 
@@ -46,7 +62,17 @@ _CLOUD_ONLY_EMPRESA_RESOURCES: frozenset[str] = frozenset(
 )
 
 # Side-effect imports: each submodule registers its router at module load.
-from . import auth, catalogos, clientes, configuracion, empresa, operacion, sucursal
+from . import (
+    auth,
+    catalogos,
+    clientes,
+    configuracion,
+    empresa,
+    facturacion,
+    operacion,
+    sucursal,
+    workflows,
+)
 
 # Re-use the same per-resource sub-routers that ``empresa.router``
 # aggregates. Including them individually here lets us apply the DIAN
@@ -76,7 +102,7 @@ def _build_empresa_router() -> APIRouter:
 
 
 def _build_router() -> APIRouter:
-    """Build the v1 router, applying DIAN boundary rules."""
+    """Build the v1 router, applying DIAN boundary rules (REQ-X3, T-PR6-11)."""
     r = APIRouter(prefix="/api/v1")
 
     # Always-mounted routers (replicated on cloud + branch).
@@ -86,9 +112,46 @@ def _build_router() -> APIRouter:
     r.include_router(sucursal.router)
     r.include_router(clientes.router)
     r.include_router(operacion.router)
+    r.include_router(facturacion.router)  # PR6
+    r.include_router(workflows.router)  # PR6
 
     # Empresa resources — selectively mounted (DIAN boundary, REQ-X3).
     r.include_router(_build_empresa_router())
+
+    # T-PR6-11: lazy-import the DIAN cloud router ONLY on cloud deploy.
+    # Branch images physically lack ``parkos_core/dian/`` (Layer 1) AND
+    # the import-time guard inside ``cloud_router`` would raise
+    # ``ImportError`` even if the file were present (Layer 2). We gate
+    # here so we never attempt the import on branch.
+    if _IS_BRANCH:
+        logger.info(
+            "Branch deploy: dian.cloud_router SKIPPED (DIAN boundary, REQ-X3)"
+        )
+    else:
+        try:
+            # Late import — keeps the cloud-only module off branch
+            # import graphs entirely. The module's own top-level guard
+            # is the belt-and-suspenders second layer.
+            from ...dian import cloud_router as _dian_cloud
+
+            r.include_router(_dian_cloud.router)
+            logger.info(
+                "DIAN cloud router mounted (cloud deploy): "
+                "/factura-electronica + /envio-dian + "
+                "/validacion-evento + /revocacion-factura-webhook"
+            )
+        except ImportError as e:
+            # Only swallow ImportError from the cloud-only guard —
+            # propagate any other ImportError (e.g. missing dep).
+            if "cloud_router" in str(e) and "branch deploy" in str(e):
+                logger.error(
+                    "Cloud deploy attempted to import cloud_router but "
+                    "received branch-guard ImportError: %s",
+                    e,
+                )
+                raise
+            logger.error("Failed to import dian.cloud_router: %s", e)
+            raise
 
     if _IS_BRANCH:
         logger.info(
