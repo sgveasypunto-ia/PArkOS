@@ -16,6 +16,7 @@ dependencies = [
     # Validation + settings
     "pydantic>=2",
     "pydantic-settings",
+    "pydantic[email]>=2",
     # Auth (3-issuer JWT + bcrypt)
     "python-jose[cryptography]",
     "bcrypt",
