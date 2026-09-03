@@ -1,0 +1,237 @@
+"""test_jwt_issuer_guard.py — REQ-X7, REQ-X8.
+
+Unit tests for the three-issuer JWT enforcement. The three issuers are
+mutually exclusive:
+
+  - ``admin-``     → admin scope
+  - ``operador-``  → branch operator scope (pinned to one branch)
+  - ``sync-agent-``→ sync worker scope (branch or cloud)
+
+The guard returns 401 on a cross-issuer token (a token whose
+``iss`` prefix is not in the route's allowed list).
+
+These tests run WITHOUT a DB — they exercise only the in-process token
+verification (``auth.tokens.verify_token`` and
+``auth.jwt_issuer_guard.requires_issuer``).
+"""
+from __future__ import annotations
+
+import uuid as uuid_lib
+
+import pytest
+
+
+def _issue(issuer_prefix: str, **claims) -> str:
+    from parkos_core.auth.tokens import issue_token
+
+    return issue_token(
+        subject_uuid=uuid_lib.uuid4(),
+        issuer=f"{issuer_prefix}-test",
+        claims=claims,
+        expires_in=3600,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ``verify_token`` direct tests
+# ---------------------------------------------------------------------------
+
+def test_verify_token_accepts_admin_token() -> None:
+    """``verify_token`` returns claims for a well-formed ``admin-`` token."""
+    from parkos_core.auth.tokens import verify_token
+
+    token = _issue("admin", rol="admin", sucursales_permitidas=[str(uuid_lib.uuid4())])
+    claims = verify_token(token)
+    assert claims["iss"].startswith("admin-")
+    assert claims["rol"] == "admin"
+
+
+def test_verify_token_accepts_operador_token() -> None:
+    """``verify_token`` returns claims for a well-formed ``operador-`` token."""
+    from parkos_core.auth.tokens import verify_token
+
+    token = _issue("operador", rol="operador", sucursal=str(uuid_lib.uuid4()))
+    claims = verify_token(token)
+    assert claims["iss"].startswith("operador-")
+
+
+def test_verify_token_accepts_sync_agent_token() -> None:
+    """``verify_token`` returns claims for a well-formed ``sync-agent-`` token."""
+    from parkos_core.auth.tokens import verify_token
+
+    token = _issue("sync-agent", scope="cloud")
+    claims = verify_token(token)
+    assert claims["iss"].startswith("sync-agent-")
+
+
+def test_issue_token_rejects_unknown_issuer_prefix() -> None:
+    """``issue_token`` rejects unknown issuer prefixes up front (validation fails before signing).
+
+    The helper refuses to mint a JWT with an unknown ``iss`` prefix
+    because downstream verifiers will reject it anyway. PR1c verifies
+    the defensive gate here.
+    """
+    from parkos_core.auth.tokens import JWTIssuerPrefixError, issue_token
+
+    with pytest.raises(JWTIssuerPrefixError):
+        issue_token(
+            subject_uuid=uuid_lib.uuid4(),
+            issuer="rogue-prefix",  # not in ISSUER_PREFIXES
+            expires_in=3600,
+        )
+
+
+def test_verify_token_rejects_tampered_signature() -> None:
+    """Mutating the signature segment yields ``JWTValidationError``."""
+    from parkos_core.auth.tokens import JWTValidationError, verify_token
+
+    token = _issue("admin", rol="admin")
+    # Replace the last character of the signature.
+    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    with pytest.raises(JWTValidationError):
+        verify_token(tampered)
+
+
+def test_verify_token_rejects_expired() -> None:
+    """An expired token raises ``JWTValidationError``."""
+    from parkos_core.auth.tokens import JWTValidationError, issue_token, verify_token
+
+    token = issue_token(
+        subject_uuid=uuid_lib.uuid4(),
+        issuer="admin-test",
+        expires_in=-10,  # already expired
+    )
+    with pytest.raises(JWTValidationError):
+        verify_token(token)
+
+
+def test_verify_token_rejects_malformed_token() -> None:
+    """A non-JWT string raises ``JWTValidationError``."""
+    from parkos_core.auth.tokens import JWTValidationError, verify_token
+
+    with pytest.raises(JWTValidationError):
+        verify_token("not.a.valid.jwt")
+
+
+# ---------------------------------------------------------------------------
+# ``requires_issuer`` factory tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_requires_issuer_accepts_matching_prefix() -> None:
+    """A token whose issuer matches the allowed prefix returns its claims."""
+    from fastapi import Request
+    from parkos_core.auth.jwt_issuer_guard import requires_issuer
+
+    dep = requires_issuer("admin-")
+    token = _issue("admin", rol="admin", sucursales_permitidas=[str(uuid_lib.uuid4())])
+
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+        }
+    )
+    claims = await dep(request)
+    assert claims["iss"].startswith("admin-")
+
+
+@pytest.mark.asyncio
+async def test_requires_issuer_rejects_cross_audience() -> None:
+    """An ``operador-`` token against an admin-only route → 401 ``wrong_issuer``."""
+    from fastapi import HTTPException, Request
+    from parkos_core.auth.jwt_issuer_guard import requires_issuer
+
+    dep = requires_issuer("admin-")
+    token = _issue("operador", rol="operador", sucursal=str(uuid_lib.uuid4()))
+
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await dep(request)
+    assert exc.value.status_code == 401
+    assert exc.value.detail["error"] == "wrong_issuer"
+
+
+@pytest.mark.asyncio
+async def test_requires_issuer_rejects_sync_agent_on_branch_route() -> None:
+    """A ``sync-agent-`` token against an operador-only route → 401 ``wrong_issuer``."""
+    from fastapi import HTTPException, Request
+    from parkos_core.auth.jwt_issuer_guard import requires_issuer
+
+    dep = requires_issuer("operador-")
+    token = _issue("sync-agent", scope="branch")
+
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await dep(request)
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_requires_issuer_accepts_multiple_prefixes() -> None:
+    """A multi-prefix dependency accepts any token in the allowed set."""
+    from fastapi import Request
+    from parkos_core.auth.jwt_issuer_guard import requires_issuer
+
+    dep = requires_issuer("admin-", "operador-")
+
+    admin_token = _issue("admin", rol="admin")
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", f"Bearer {admin_token}".encode())],
+        }
+    )
+    claims = await dep(request)
+    assert claims["iss"].startswith("admin-")
+
+    op_token = _issue("operador", sucursal=str(uuid_lib.uuid4()))
+    request2 = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", f"Bearer {op_token}".encode())],
+        }
+    )
+    claims2 = await dep(request2)
+    assert claims2["iss"].startswith("operador-")
+
+
+@pytest.mark.asyncio
+async def test_requires_issuer_rejects_missing_bearer() -> None:
+    """No Authorization header → 401 ``missing_bearer_token``."""
+    from fastapi import HTTPException, Request
+    from parkos_core.auth.jwt_issuer_guard import requires_issuer
+
+    dep = requires_issuer("admin-")
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [],
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await dep(request)
+    assert exc.value.status_code == 401
+    assert exc.value.detail["error"] == "invalid_token"

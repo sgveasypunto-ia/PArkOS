@@ -1,38 +1,27 @@
-"""parkos_core API v1 routers — auth, catalogos, facturacion, workflows, etc.
+"""parkos_core FastAPI v1 router package (PR1c placeholder).
 
-Layer 2 of the DIAN-only boundary (design §10):
-- Cloud images: ``PARKOS_DEPLOY=cloud`` → lazy-import ``dian.cloud_router``.
-- Branch images: ``PARKOS_DEPLOY != "cloud"`` → no cloud router is mounted.
-- Branch images physically lack the module on disk (Layer 1: Dockerfile
-  .dockerignore excludes ``**/dian/cloud/**``). The branch image never
-  reaches the lazy import.
+PR1b ships a small set of v1 routers — this ``__init__`` aggregates them
+so the apps (``api_admin_main`` and ``api_sucursal_main``) can mount
+``/api/v1/*`` with a single ``include_router(v1_router)`` call.
+
+Layout:
+
+  - ``auth``        — REQ-42 / REQ-43 / REQ-45 (login + refresh + logout)
+  - ``catalogos``   — REQ-OP-13 / REQ-02-V-CONSULTA (smoke mount: tipo-persona)
+
+The DIAN-only boundary (design §10) is enforced by ``api_admin`` /
+``api_sucursal`` apps at the FastAPI mount level: the apps choose which
+routers to include, not this package. Future PRs add ``facturacion``,
+``sync``, ``clientes``, ``envio_dian`` (cloud-only), etc.
 """
 from __future__ import annotations
 
-import logging
-import os
-
 from fastapi import APIRouter
 
-from .auth import router as auth_router
-from .catalogos import router as catalogos_router
-
-logger = logging.getLogger(__name__)
+from . import auth, catalogos
 
 router = APIRouter(prefix="/api/v1")
-router.include_router(auth_router)
-router.include_router(catalogos_router)
+router.include_router(auth.router)
+router.include_router(catalogos.router)
 
-# Lazy + conditional DIAN router import (Layer 2 of the boundary).
-if os.environ.get("PARKOS_DEPLOY") == "cloud":
-    try:
-        from parkos_core.dian.cloud_router import router as dian_router
-
-        router.include_router(dian_router)
-    except ImportError as e:
-        # Cloud image MUST have the module; ImportError here is a build defect.
-        raise RuntimeError(
-            f"cloud_router_unavailable_in_cloud_image: {e}"
-        ) from e
-
-__all__ = ["router", "auth_router", "catalogos_router"]
+__all__ = ["router"]

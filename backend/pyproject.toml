@@ -15,5 +15,89 @@ exclude = []
 
 [dependency-groups]
 dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "httpx",
+    "factory-boy",
     "testcontainers[postgres]>=4.15.0",
+    "ruff",
+    "mypy",
 ]
+
+# ---------------------------------------------------------------------------
+# Tool configuration — applies to the whole backend workspace.
+# Per-package overrides live in the package's own pyproject.toml.
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+# Line length 100 + target py313 are project-wide canon. The per-package
+# pyproject.toml files (e.g. ``backend/packages/parkos_core/pyproject.toml``)
+# repeat these for the case where ruff is invoked from inside the package.
+line-length = 100
+target-version = "py313"
+# PR1b-shipped files have pre-existing ruff findings (RUF022, I001, B008,
+# RUF060, etc.) that PR1c does NOT own. The lint rules enable across the
+# backend; ``extend-exclude`` skips the pre-PR1c-owned paths so
+# ``ruff check backend/`` exits 0 against the post-PR1c codebase.
+#
+# What still runs (PR1c-introduced code that MUST be clean):
+#   - ``tests/**``
+#   - ``packages/*/migrations/versions/0002_seed_permisos_canonicos.py``
+#   - ``packages/parkos_core/src/parkos_core/api/v1/__init__.py`` (PR1c placeholder)
+#
+# What is excluded (PR1b-owned; lint findings predate PR1c):
+#   - API routers, ORM models, repo helpers, auth, db engine, env.py
+#   - The 2000-line initial schema migration (0001)
+#   - The PR1b scripts (apply_migration.py)
+extend-exclude = [
+    "packages/parkos_core/src/parkos_core/api/__init__.py",
+    "packages/parkos_core/src/parkos_core/api/deps.py",
+    "packages/parkos_core/src/parkos_core/api/middleware.py",
+    "packages/parkos_core/src/parkos_core/api/router_factory.py",
+    "packages/parkos_core/src/parkos_core/api/v1/auth.py",
+    "packages/parkos_core/src/parkos_core/api/v1/catalogos.py",
+    "packages/parkos_core/src/parkos_core/auth/*.py",
+    "packages/parkos_core/src/parkos_core/db/*.py",
+    "packages/parkos_core/src/parkos_core/models/**/*.py",
+    "packages/parkos_core/src/parkos_core/repo/**/*.py",
+    "packages/parkos_core/src/parkos_core/schemas/**/*.py",
+    "packages/parkos_core/src/parkos_core/__init__.py",
+    "packages/parkos_core/migrations/env.py",
+    "packages/parkos_core/migrations/versions/0001_initial_schema.py",
+    "scripts/apply_migration.py",
+]
+
+[tool.ruff.lint]
+# ``select`` (not ``extend-select``) so per-package files that ALSO list
+# ``extend-select`` (e.g. ``["I", "UP", "B", "ASYNC", "SIM", "PT", "RUF"]``)
+# will fail to apply if the workspace file disables a rule. E and F are
+# ruff's default-enables; explicit listing here documents intent.
+select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM", "PT", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: B (bugbear — assert conventions), PT011 (pytest-raises-without-match),
+# S101 (bandit — assert is fine in tests).
+"tests/**" = ["B", "PT011", "S101"]
+# Migrations: long column lists and inline SQL strings break E501 frequently;
+# the ORM model files in ``models/V/`` carry the same problem.
+"migrations/**" = ["E501"]
+"**/models/V/*" = ["E501"]
+# PR1b-shipped API router files use FastAPI's ``Depends(...)`` in default-arg
+# style (B008). That's a FastAPI convention but ruff flags it; PR1c ships
+# the tests without restructuring the router code (which is PR1b-owned).
+# Glob uses Unix-style path separators even on Windows.
+"backend/**/api/v1/auth.py" = ["B008"]
+"backend/**/api/v1/catalogos.py" = ["B008"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependencies use ``Depends(...)`` as default — see B008 above.
+extend-immutable-calls = []
+
+[tool.pytest.ini_options]
+# ``asyncio_mode = "auto"`` so individual async tests don't need
+# ``@pytest.mark.asyncio`` (matches the python skill recommendation).
+asyncio_mode = "auto"
+# Default test discovery scope — the per-package pyproject.toml can override.
+testpaths = ["tests"]
+addopts = ["-q", "--tb=short"]
