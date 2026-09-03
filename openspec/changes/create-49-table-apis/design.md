@@ -2168,3 +2168,743 @@ The 12 resolved open questions from `exploration.md` are reflected in:
 The 8-PR slicing (PR0 → PR7) plus the two conditional splits (PR5a/PR5b, PR6a/PR6b) from `proposal.md` is honored in §14. The 50th `idempotency_keys` table lands in PR7's migration `0002_add_idempotency_keys.py`.
 
 This design introduces **no new architectural decisions** beyond what was ratified in proposal. Any item that could be considered a new decision is listed under §17 as a risk and flagged for spec update.
+
+---
+
+## 21. Deployment topology, pairing, sync transport, and DIAN dispatcher
+
+> **Scope of §21**: this section re-opens the items §19 declared out-of-scope (`DIAN HTTP transport`, `sync engine implementation`, `web frontend`, `pairing flow`, `hash chain verifier worker`) and incorporates them into this change. Rationale: `bootstrap-monorepo-foundation` stays on the legacy `feature-branch-chain` and will not merge; this change must therefore own the complete cloud-edge ecosystem (PR8–PR11 below). All four sub-sections honor AGENTS.md `gitflow` (PRs to `dev` only) and `Audit-First / Compliance-Driven` (every `sync_queue` write goes through `repo/append_only.py::append_event()`; the 11 `[A]` REVOKE + trigger pattern applies to the two new `[A]` tables added here).
+
+> **Preflight honored**: `pace=auto`, `artifact=hybrid`, `delivery=auto-chain`, `chain=gitflow`, `review_budget=800 lines/PR`. PR8–PR11 follow the same conditional-split rules as PR5/PR6 (per `tasks.md` §Per-PR workload forecast).
+
+> **PR slicing delta (added by §21)**:
+
+| PR | Tables | New files | LOC forecast | Risk | Notes |
+|---|---|---|---|---|---|
+| PR8 | 0 (env-only + validators) | ~6 | ~300 | LOW | `runtime/env.py`, `infra/deploy/{cloud,branch}.yml`, `runtime/cli.py` (`parkos-cli doctor`) |
+| PR9 | 2 (`pairing_tokens`, `revoked_sync_jwts` — both `[A]`) | ~14 | ~700 | MED | Migration `0003_add_pairing_tokens_and_revoked_sync_jwts.py` with REVOKE + trigger in SAME migration per `config.yaml rules.tasks` |
+| PR10 | 0 schema (orchestration + workers) | ~16 | ~800 (split-trigger → PR10a + PR10b) | **HIGH** | `parkos_core/jobs/{sync_sucursal,sync_cloud}.py`, `parkos_core/sync/{transport,conflict_resolver}.py`, `parkos_core/sync/{pairing,jwt_manager}.py` (replace bootstrap stubs) |
+| PR11 | 0 schema (cloud-only dispatcher) | ~8 | ~400 | LOW | `parkos_core/dian/cloud/dispatcher.py`, `parkos_core/dian/cloud/atomic_next_consecutivo.py` (replace bootstrap stubs), `workers/dian_dispatcher/` |
+| **Total** | **+2** | **~44** | **~2,200** | | 4 new chained PRs; PR10 carries a conditional split trigger at apply time |
+
+> **References back into §1–§20**: §10 (DIAN-only boundary image-level), §11 (hash chain), §12 (sync triggers and outbox), §16 (OpenAPI 3.1 contract), §17 risk #8 (pairing-token replay — already enumerated, now resolved), §17 risk #4 ([A] REVOKE + trigger enforcement), and §17 risk #3 (hash-chain break on partial sync).
+
+### 21.1 Deployment matrix (cloud vs branch)
+
+Every process in the cloud-edge topology is mapped to its deployment target. Frontends are PWAs (built once, served differently per environment).
+
+| Process | Cloud image | Branch image | Instances | Boundary |
+|---|---|---|---|---|
+| `api_admin` | YES (mounted) | NO | 1+ (HA-ready, multi-replica behind LB) | cloud-only |
+| `api_sucursal` | NO | YES (mounted) | exactly 1 per branch (`uuid_sucursal` from env, see §21.2) | branch-only |
+| `job_sync_cloud` | YES (mounted) | NO | 1 (single-flight; second instance would race on hash chain) | cloud-only |
+| `job_sync_sucursal` | NO | YES (mounted) | exactly 1 per branch (paired with the local `api_sucursal`) | branch-only |
+| `web_admin` (PWA) | YES (served from cloud) | NO | 1 (static artifact, CDN-friendly) | cloud-only |
+| `web_sucursal` (PWA) | NO (NOT served from cloud; cloud admins use `web_admin`) | YES (bundled in branch image; serves itself) | exactly 1 per branch (static artifact, served by api_sucursal's reverse-proxy or sidecar) | branch-only |
+| `postgresql-cloud` | YES | NO (but reachable from branches over VPN/tailscale/zero-trust tunnel — see §21.5) | 1 (or HA cluster) | cloud-only |
+| `postgresql-branch` | NO (optional — see §21.6 scenario 2) | YES (default — see §21.6 scenario 1) | exactly 1 per branch | branch-only |
+
+**Why two distinct PWAs (vs one parameterized)**: `web_admin` and `web_sucursal` have different bundle shapes (admin gets `sucursales_permitidas` selector + global catalog views; branch gets `preliminar` badge + disabled `reimpresion_ticket` until sync-back). Sharing one bundle inflates the critical-path JS for both audiences. Two PWAs, one per backend, is the cleanest cut.
+
+**Why two separate sync workers (not embedded in the API)**: the user ratified this in `openspec/changes/cloud-edge-sync-architecture/exploration.md` §3 (`B. separate process`). Sync runs on a different cadence (poll + retry) than the request-serving API; coupling them would mean a stalled `httpx` call on the API event loop while a slow branch hangs. Separate processes also let us restart them independently (e.g. `docker restart job_sync_sucursal` after rotating a JWT, without dropping operator sessions).
+
+### 21.2 Sucursal instance identity
+
+**Each branch image runs EXACTLY ONE `uuid_sucursal`.** Identity comes from environment, not from the DB — this is a hard contract; a single branch image hosting two UUIDs would corrupt the sync queue partitioning and break hash chain attribution. See `tasks.md` §Out of scope reminders (#8) and AGENTS.md `Sync` §"`sync_queue` is `[A]` with operational UPDATE exception".
+
+#### Required env vars (boot-time validator in `parkos_core/runtime/env.py`)
+
+| Var | Required by | Format | Default | Behavior if missing/malformed |
+|---|---|---|---|---|
+| `PARKOS_SUCURSAL_UUID` | branch: `api_sucursal`, `job_sync_sucursal`, `web_sucursal` (server-side) | UUIDv4 | — | `MissingEnvError` (exit code `2 = misconfig`) |
+| `PARKOS_DEPLOY` | every process | `"cloud"` \| `"branch"` | — | `MissingEnvError` |
+| `PARKOS_DB_URL` | every process | Postgres DSN | — | `MissingEnvError` |
+| `PARKOS_CLOUD_API_URL` | branch: `api_sucursal` (for `POST /sync/push`), `job_sync_sucursal` | `https://...` URL | — | `MissingEnvError` on branch; ignored on cloud |
+| `PARKOS_SYNC_JWT_PATH` | branch: `api_sucursal` (when acting as sync-receiver), `job_sync_sucursal` | POSIX file path | `/etc/parkos/sync.jwt` | `MissingEnvError` after first successful pair |
+| `PARKOS_PAIRING_TOKEN` | branch: ONE-TIME on first pair | UUIDv4 | unset | Required only on the very first boot after provisioning; orchestrator deletes the var after `POST /sync/pair` returns |
+| `PARKOS_JWT_KEY_PATH` | cloud: `api_admin`, `job_sync_cloud`; branch: `api_sucursal`, `job_sync_sucursal` | POSIX dir | `/etc/parkos/jwt/` | `MissingEnvError` |
+| `PARKOS_SYNC_POLL_INTERVAL_S` | branch: `job_sync_sucursal` | int 1..600 | `10` | invalid → warn + use default |
+| `PARKOS_SYNC_BATCH_SIZE` | branch: `job_sync_sucursal` | int 1..500 | `100` | invalid → warn + use default |
+| `PARKOS_SYNC_HEARTBEAT_S` | branch: `job_sync_sucursal` | int 5..600 | `60` | invalid → warn + use default |
+| `PARKOS_DIAN_PROVIDER_URL` | cloud only: `api_admin`, `workers/dian_dispatcher` | `https://...` URL | — | `MissingEnvError` on cloud |
+| `PARKOS_DIAN_PROVIDER_TOKEN_PATH` | cloud only | POSIX file path | `/etc/parkos/dian.token` | `MissingEnvError` on cloud |
+| `PARKOS_DIAN_TIMEOUT_S` | cloud only | int 5..120 | `30` | invalid → warn + use default |
+| `PARKOS_DIAN_RETRY_MAX` | cloud only | int 0..10 | `3` | invalid → warn + use default |
+| `PARKOS_SYNC_VERIFY_INTERVAL_S` | cloud: `job_sync_cloud` (hash-chain verifier) | int 60..86400 | `3600` | invalid → warn + use default |
+| `JWT_OVERLAP_HOURS` | both | int 1..168 | `24` | per AGENTS.md `JWT` (three issuers, grace rotation) |
+
+#### Boot-time validator (`parkos_core/runtime/env.py`)
+
+```python
+"""Boot-time env validation for every parkos_core process.
+
+AGENTS.md Audit-First canon: a misconfigured branch must NOT silently start;
+otherwise the sync_queue writes go to the wrong uuid_sucursal and the hash
+chain breaks attribution. We fail fast with a precise error message.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import uuid as uuid_lib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal, Final
+
+DeployRole = Literal["cloud", "branch"]
+
+
+class MissingEnvError(RuntimeError):
+    """Raised when a required env var is absent or malformed. Exits code 2."""
+
+
+@dataclass(frozen=True)
+class BranchConfig:
+    uuid_sucursal: uuid_lib.UUID
+    cloud_api_url: str
+    db_url: str
+    jwt_key_path: Path
+    sync_jwt_path: Path = Path("/etc/parkos/sync.jwt")
+    sync_poll_interval_s: int = 10
+    sync_batch_size: int = 100
+    sync_heartbeat_s: int = 60
+
+
+@dataclass(frozen=True)
+class CloudConfig:
+    db_url: str
+    cloud_api_url: str  # same as branch; cloud is also a service
+    jwt_key_path: Path
+    dian_provider_url: str
+    dian_provider_token_path: Path = Path("/etc/parkos/dian.token")
+    dian_timeout_s: int = 30
+    dian_retry_max: int = 3
+    sync_verify_interval_s: int = 3600
+
+
+def _require_uuid(env_name: str) -> uuid_lib.UUID:
+    raw = os.environ.get(env_name)
+    if not raw:
+        raise MissingEnvError(f"{env_name} is required (UUIDv4); PARKOS_DEPLOY={os.environ.get('PARKOS_DEPLOY', 'unset')}")
+    try:
+        parsed = uuid_lib.UUID(raw)
+    except ValueError as exc:
+        raise MissingEnvError(f"{env_name}={raw!r} is not a valid UUID") from exc
+    if parsed.version != 4:
+        raise MissingEnvError(f"{env_name}={raw!r} is not UUIDv4 (got v{parsed.version})")
+    return parsed
+
+
+def _require_str(env_name: str, *, allow_empty: bool = False) -> str:
+    raw = os.environ.get(env_name)
+    if raw is None or (not allow_empty and not raw):
+        raise MissingEnvError(f"{env_name} is required (non-empty string)")
+    return raw
+
+
+def _require_path(env_name: str) -> Path:
+    raw = _require_str(env_name)
+    return Path(raw)
+
+
+def _optional_int(env_name: str, default: int, lo: int, hi: int) -> int:
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    try:
+        v = int(raw)
+    except ValueError:
+        return default  # soft fallback; warn() in caller
+    return max(lo, min(hi, v))
+
+
+def load_config() -> "BranchConfig | CloudConfig":
+    deploy = _require_str("PARKOS_DEPLOY")
+    if deploy not in ("cloud", "branch"):
+        raise MissingEnvError(f"PARKOS_DEPLOY={deploy!r} must be 'cloud' or 'branch'")
+    db_url = _require_str("PARKOS_DB_URL")
+    jwt_key_path = _require_path("PARKOS_JWT_KEY_PATH")
+    cloud_api_url = _require_str("PARKOS_CLOUD_API_URL")
+
+    if deploy == "branch":
+        return BranchConfig(
+            uuid_sucursal=_require_uuid("PARKOS_SUCURSAL_UUID"),
+            cloud_api_url=cloud_api_url,
+            db_url=db_url,
+            jwt_key_path=jwt_key_path,
+            sync_jwt_path=_require_path("PARKOS_SYNC_JWT_PATH"),
+            sync_poll_interval_s=_optional_int("PARKOS_SYNC_POLL_INTERVAL_S", 10, 1, 600),
+            sync_batch_size=_optional_int("PARKOS_SYNC_BATCH_SIZE", 100, 1, 500),
+            sync_heartbeat_s=_optional_int("PARKOS_SYNC_HEARTBEAT_S", 60, 5, 600),
+        )
+    return CloudConfig(
+        db_url=db_url,
+        cloud_api_url=cloud_api_url,
+        jwt_key_path=jwt_key_path,
+        dian_provider_url=_require_str("PARKOS_DIAN_PROVIDER_URL"),
+        dian_provider_token_path=_require_path("PARKOS_DIAN_PROVIDER_TOKEN_PATH"),
+        dian_timeout_s=_optional_int("PARKOS_DIAN_TIMEOUT_S", 30, 5, 120),
+        dian_retry_max=_optional_int("PARKOS_DIAN_RETRY_MAX", 3, 0, 10),
+        sync_verify_interval_s=_optional_int("PARKOS_SYNC_VERIFY_INTERVAL_S", 3600, 60, 86400),
+    )
+
+
+def main() -> int:
+    try:
+        cfg = load_config()
+    except MissingEnvError as exc:
+        print(f"PARKOS BOOT FAILED: {exc}", file=sys.stderr)
+        return 2
+    print(f"PARKOS_BOOT_OK deploy={os.environ['PARKOS_DEPLOY']}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+> **Why fail-fast (exit code 2) vs warn-and-continue**: AGENTS.md `Audit-First` principle. A silent fallback would let a branch start with `PARKOS_SUCURSAL_UUID=unset`, write to a fake zero-UUID, sync the wrong chain, and break hash chain attribution in cloud — undetectable for hours. Better to fail at boot in 200ms.
+
+> **Why the same `load_config()` lives in `parkos_core/runtime/` (not in each deployable)**: the validator is the only writer of env-derived runtime state; every process (`api_sucursal`, `job_sync_sucursal`, `api_admin`, `job_sync_cloud`, `workers/dian_dispatcher`) imports it. One source of truth = one place to audit.
+
+### 21.3 Pairing flow
+
+A new branch must register with cloud before it can sync. One-time, operator-driven. AGENTS.md Risk Register row "Pairing-token replay" (`tasks.md` risks #8) is **closed** by this section.
+
+#### Cloud side (`api_admin`)
+
+Three endpoints, all under `/api/v1/admin/pairing-tokens/*`:
+
+| Endpoint | Method | Auth | Body | Response |
+|---|---|---|---|---|
+| `/pairing-tokens` | POST | `admin-`, `require_permission("gestionar_dian")` | `{uuid_sucursal, ttl_hours?}` (default 24) | `{pairing_token: "<uuidv4>", pairing_token_uuid: "<uuid>", expires_at: "<iso>"}` (plaintext returned ONCE) |
+| `/pairing-tokens/{pairing_token_uuid}` | GET | `admin-` | — | `{pairing_token_uuid, uuid_sucursal, expires_at, used, used_at, used_by_branch_info}` (audit view; plaintext token NOT returned) |
+| `/pairing-tokens/{pairing_token_uuid}` | DELETE | `admin-`, `require_permission("gestionar_dian")` | — | `204 No Content` (sets `revoked_at`, `revoked_by`); subsequent consume attempt → 410 Gone |
+
+Plus the per-branch revoke (separate path):
+
+| Endpoint | Method | Auth | Body | Response |
+|---|---|---|---|---|
+| `/admin/sucursales/{uuid_sucursal}/revoke-sync` | POST | `admin-`, `require_permission("gestionar_dian")` | `{motivo}` | `204 No Content`; marks the branch's currently active `sync_jwt_uuid` in `revoked_sync_jwts` |
+
+**Rate limit**: `5 tokens/hour/admin` per `parkos_core/api/v1/pairing_tokens.py::create_pairing_token` (in-memory token bucket per `admin_uuid`, OR Redis counter if cloud has Redis — branch-side has no Redis). Six tokens in 60 min → 429 `{"error":"pairing_token_rate_limited","detail":"5/hour"}`.
+
+**Persistence** — two new `[A]` tables (52nd and 53rd table overall; see §21.14 for the migration strategy). Both follow the same REVOKE + trigger pattern as the 11 originals (§17 risk #4 / `config.yaml rules.tasks`):
+
+```sql
+-- Migration 0003_add_pairing_tokens_and_revoked_sync_jwts.py (PR9)
+-- 51st [A] table
+CREATE TABLE prod.pairing_tokens (
+    uuid uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    uuid_sucursal uuid NOT NULL REFERENCES prod.sucursal(uuid),
+    pairing_token_hash text NOT NULL,  -- sha256 of plaintext token; plaintext NEVER persisted
+    expires_at timestamptz NOT NULL,
+    used boolean NOT NULL DEFAULT false,
+    used_at timestamptz,
+    used_by_branch_info jsonb,
+    revoked_at timestamptz,
+    revoked_by uuid,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    created_by uuid NOT NULL,
+    sync_status text NOT NULL DEFAULT 'pendiente',
+    sync_timestamp timestamptz,
+    sync_attempts int NOT NULL DEFAULT 0,
+    UNIQUE (uuid_sucursal, pairing_token_hash)
+);
+CREATE INDEX ix_pairing_tokens_pending ON prod.pairing_tokens (uuid_sucursal)
+    WHERE used = false AND revoked_at IS NULL AND expires_at > now();
+REVOKE UPDATE, DELETE ON prod.pairing_tokens FROM rol_app;
+CREATE OR REPLACE FUNCTION prod.fn_pairing_tokens_inmutable() RETURNS trigger
+LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'PAIRING_TOKENS_INMUTABLE'; END; $$;
+CREATE TRIGGER pairing_tokens_no_update_delete BEFORE UPDATE OR DELETE ON prod.pairing_tokens
+    FOR EACH ROW EXECUTE FUNCTION prod.fn_pairing_tokens_inmutable();
+
+-- 52nd [A] table
+CREATE TABLE prod.revoked_sync_jwts (
+    uuid uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    uuid_sucursal uuid NOT NULL,
+    jwt_kid text NOT NULL,  -- matches JWT kid claim (e.g. 'sync-agent-<hostname>')
+    jwt_uuid text NOT NULL,  -- jti claim (RFC 7519)
+    revoked_at timestamptz NOT NULL DEFAULT now(),
+    revoked_by uuid NOT NULL,
+    motivo text,
+    expires_at timestamptz NOT NULL,  -- when the original JWT would have expired anyway
+    created_at timestamptz NOT NULL DEFAULT now(),
+    sync_status text NOT NULL DEFAULT 'pendiente',
+    sync_timestamp timestamptz,
+    sync_attempts int NOT NULL DEFAULT 0,
+    UNIQUE (jwt_kid, jwt_uuid)
+);
+CREATE INDEX ix_revoked_sync_jwts_active ON prod.revoked_sync_jwts (jwt_kid, jwt_uuid)
+    WHERE expires_at > now();
+REVOKE UPDATE, DELETE ON prod.revoked_sync_jwts FROM rol_app;
+CREATE OR REPLACE FUNCTION prod.fn_revoked_sync_jwts_inmutable() RETURNS trigger
+LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'REVOKED_SYNC_JWTS_INMUTABLE'; END; $$;
+CREATE TRIGGER revoked_sync_jwts_no_update_delete BEFORE UPDATE OR DELETE ON prod.revoked_sync_jwts
+    FOR EACH ROW EXECUTE FUNCTION prod.fn_revoked_sync_jwts_inmutable();
+```
+
+**Token shape**: 32 random bytes → base64url → `pairing_tokens.pairing_token` (looks like `dGhpc19pc19hX3Rlc3RfdG9rZW5fcGFpcmluZ19hYWFhYWFhYQ`). Stored only as `sha256(plaintext)`; even DB compromise doesn't leak active plaintexts.
+
+**Consume atomicity** (`/api/v1/sync/pair` handler): uses `SELECT ... FOR UPDATE SKIP LOCKED` on the candidate row, then in the same TX issues the long-lived JWT and writes the `used=true` update. On race (two boots with the same token): second `SELECT` returns no rows → 410 Gone.
+
+#### Branch side (one-shot, then never again)
+
+```bash
+# 1. Operator runs (after generating the token in web_admin):
+docker run --rm \
+  -e PARKOS_DEPLOY=branch \
+  -e PARKOS_SUCURSAL_UUID=11111111-2222-4333-8444-555555555555 \
+  -e PARKOS_PAIRING_TOKEN=dGhpc19pc19hX3Rlc3RfdG9rZW5fcGFpcmluZ19hYWFhYWFhYQ \
+  -e PARKOS_DB_URL=postgresql+asyncpg://parkos@db:5432/parkos \
+  -e PARKOS_CLOUD_API_URL=https://api.parkos.example.com \
+  -e PARKOS_JWT_KEY_PATH=/etc/parkos/jwt/branch \
+  -v parkos_jwt:/etc/parkos \
+  parkos:branch \
+  python -m parkos_core.cli pair
+```
+
+The `parkos_core.cli` entrypoint detects `PARKOS_PAIRING_TOKEN`, calls `POST {PARKOS_CLOUD_API_URL}/api/v1/sync/pair`, persists the returned JWT to `PARKOS_SYNC_JWT_PATH` (mode `0600`, owner `app`), deletes the env var from the in-process os.environ (does NOT touch the orchestrator's env), and exits 0.
+
+**Subsequent boots** (no `PARKOS_PAIRING_TOKEN`): branch image boots normally; `api_sucursal` reads `PARKOS_SYNC_JWT_PATH` if it needs to act as sync-receiver (cloud pushing rows down via `/sync/pull`); `job_sync_sucursal` reads it to authenticate to `api_admin`'s `/sync/push` etc.
+
+#### JWT specifics (long-lived sync-agent-)
+
+| Field | Value | Why |
+|---|---|---|
+| `kid` | `sync-agent-<branch-hostname>` (default) — overridable via `PARKOS_JWT_KEY_PATH/kid` file | diagnostic; the cloud JWKS exposes one key per `kid` |
+| `iss` | `sync-agent-<deployment-id>` (e.g. `sync-agent-prod-001`) | namespacing under AGENTS.md `JWT three issuers` |
+| `aud` | `parkos-cloud-api` | REQ-X8 |
+| `sub` | `<uuid_sucursal>` | REQ-X8 |
+| `scope` | `sync_agent_branch` | single scope; cloud sync-agent uses `sync_agent_cloud` |
+| `pairing_token_uuid` | the original `pairing_tokens.uuid` | audit traceability |
+| `issued_at_branch` | `<iso8601>` | clock-skew detection; cloud validates `issued_at_branch - now() < 60s` |
+| `jti` | `<uuid>` | revocation target via `revoked_sync_jwts` |
+| `expires_at` | `NOW() + 30 days` | long-lived; rotation handled by `POST /sync/rotate-jwt` (see §21.7) |
+| `branch_info` | `{hostname, os, version, ip}` | audit log; the cloud writes this verbatim to `pairing_tokens.used_by_branch_info` |
+
+**Grace rotation** (`JWT_OVERLAP_HOURS=24`): cloud JWKS exposes both the previous key (just-rotated) and the current one for `24h`. After that window, the old key is removed; tokens signed with it become invalid.
+
+**Revocation**:
+- `DELETE /api/v1/admin/pairing-tokens/{uuid}` (admin) marks the token `revoked_at`, `revoked_by` → subsequent consume attempt → 410 Gone. The previously-issued JWT (if already paired) is NOT auto-revoked (it has its own `jti`); the operator must call `POST /admin/sucursales/{uuid_sucursal}/revoke-sync` for that.
+- `POST /api/v1/admin/sucursales/{uuid_sucursal}/revoke-sync` → inserts into `revoked_sync_jwts`; subsequent `api_admin` calls with a JWT whose `(kid, jti)` is in `revoked_sync_jwts` → 401 `{"error":"sync_jwt_revoked"}`. Re-pairing requires generating a NEW token (cannot re-use the previous one's plaintext — the old plaintext was never persisted).
+
+**Tests** (`backend/tests/integration/test_pairing_flow.py`, `backend/tests/unit/test_pairing_token_rate_limit.py`):
+
+| Test | Asserts |
+|---|---|
+| `test_pair_happy_path` | Boot with valid `PARKOS_PAIRING_TOKEN` → `POST /sync/pair` returns long-lived JWT → JWT file written with mode `0600` → `POST /sync/push` succeeds with the JWT |
+| `test_pair_token_reuse_rejected` | First `POST /sync/pair` consumes the token (returns 200 + JWT, writes `used=true`). Second `POST /sync/pair` with the SAME plaintext → 410 Gone |
+| `test_pair_token_expired_rejected` | Insert `pairing_tokens` row with `expires_at = NOW() - INTERVAL '1 hour'`. `POST /sync/pair` → 410 Gone |
+| `test_pair_token_revoked_rejected` | `DELETE /admin/pairing-tokens/{uuid}` first. `POST /sync/pair` → 410 Gone |
+| `test_pair_revoked_jwt_rejects_subsequent_calls` | Pair successfully, then `POST /admin/sucursales/{uuid_sucursal}/revoke-sync`. Next `POST /sync/push` with the previously-issued JWT → 401 `{"error":"sync_jwt_revoked"}` |
+| `test_pair_token_rate_limit` | Mint 5 tokens in 60 min → 200 OK. 6th → 429 |
+| `test_pair_wrong_sucursal_rejected` | Token is for `uuid_sucursal=A`, branch boots with `PARKOS_SUCURSAL_UUID=B` → 403 `{"error":"pairing_token_sucursal_mismatch"}` |
+| `test_pair_env_validator_fails_fast` | Boot with malformed `PARKOS_SUCURSAL_UUID` → exit code `2` |
+| `test_pair_persisted_jwt_path_0600` | After successful pair, `os.stat(PARKOS_SYNC_JWT_PATH).st_mode & 0o777 == 0o600` |
+
+### 21.4 Multi-sucursal admin views
+
+The admin's authorization model carries `sucursales_permitidas: [uuid_A, uuid_B, ...]` (REQ-X2). Three endpoints + UI integration expose this without forcing the admin to re-login between branches.
+
+| Endpoint | Method | Auth | Returns |
+|---|---|---|---|
+| `/api/v1/sucursales` | GET | `admin-` | `{items: [{uuid, nombre, ciudad, uuid_tipo_sucursal, sync_status: {last_sync_at, last_error, last_heartbeat_at}, open_alerts_count, last_pairing_at}], next_cursor}` — filtered to `uuid IN (claims.sucursales_permitidas)` |
+| `/api/v1/admin/sucursales/{uuid}/dashboard` | GET | `admin-`, `X-Sucursal-Context: <uuid>` ∈ `permitidas` | `{fecha, ingresos_count, ingresos_monto_total, facturas_emitidas_count, facturas_electronicas_count, open_alertas_count, sync_health: {last_sync_at, lag_seconds, queue_depth}}` |
+| `/api/v1/admin/me` | GET | `admin-` | `{actor_uuid, email, rol, sucursales_permitidas: [uuid, ...], permissions: [...]}` — full list, used to populate the branch-selector |
+
+**Cursor pagination** (REQ-OP-01): the same opaque base64 cursor format; `limit` 1..200.
+
+**Tenant scope**: the `sucursales_permitidas` filter is enforced at the ORM layer (`parkos_core/db/tenancy.py::apply_admin_scope` extends the existing `do_orm_execute` event listener from §9 with a `WHERE uuid = ANY(:permitidas)` predicate when the issuer is `admin-`). Defense in depth — even if a route handler forgot to filter, the listener catches it.
+
+**UI integration** (`apps/web_admin/`):
+- Branch-selector component in topbar (`<BranchSelector />` in `ui-kit`).
+- Persists last selection in `localStorage` key `parkos.lastSelectedSucursal`.
+- On switch: dispatches a SWR `mutate()` invalidating the dashboard cache + sets `X-Sucursal-Context` header on subsequent fetches via a global `fetch` wrapper.
+- No re-login: the JWT is valid for the full `sucursales_permitidas` set; only the context header changes.
+
+### 21.5 Auto-discovery
+
+**`job_sync_sucursal` → cloud**: uses `PARKOS_CLOUD_API_URL` (env var). No DNS, no service registry. The image's env file is provisioned by the operator at first boot (after `parkos-cli pair` returns, the cloud admin's `web_admin` writes the `PARKOS_CLOUD_API_URL` value to the branch's persistent env file).
+
+**`job_sync_cloud` → active branches**: iterates `prod.sucursal WHERE uuid IN (active branches)`. "Active" = at least one `sync_log` row in the last 7 days OR a `pairing_tokens.used=true` row younger than 30 days. Each row carries:
+- `endpoint_url` (set during pairing in `pairing_tokens.used_by_branch_info->>'endpoint_url` — the URL the branch will accept inbound `/sync/pull` from, useful for cloud-pushed rows)
+- `last_paired_at` (audit only)
+
+The cloud job maintains an in-memory cache of active branches refreshed every `PARKOS_SYNC_VERIFY_INTERVAL_S / 12` (default 5 min when `PARKOS_SYNC_VERIFY_INTERVAL_S=3600`).
+
+**Optional external registry** (`PARKOS_REGISTRY_URL`): if the operator wants Consul/etcd/Zookeeper instead of the DB, they can set this. The default is the DB — already replicated, no new infra, single source of truth. **Default chosen: DB**. Adding the optional env var is a one-line branch in `job_sync_cloud::discover_active_branches()`.
+
+**Endpoint reachability**: cloud periodically (every `PARKOS_SYNC_VERIFY_INTERVAL_S`) does a `HEAD {branch_endpoint_url}/api/v1/health` against each cached branch. Three consecutive failures → opens `alerta tipo_alerta='branch_offline'` chain (REQ-21 workflow). Persistent failure (24h+) → removes the branch from the cache until a `sync_log` row arrives.
+
+### 21.6 Installability matrix
+
+Goal: each component installable independently, not glued to `docker-compose`. Composes for each canonical scenario are listed in `infra/deploy/README.md`.
+
+**Compose files** (PR8 ships these; bootstrap's `docker-compose.{cloud,branch}.yml` remain as the single-host convenience wrappers):
+
+| File | Services | Use case |
+|---|---|---|
+| `infra/deploy/docker-compose.cloud.yml` | `api_admin` + `job_sync_cloud` + `web_admin` (PWA) | Cloud VM / container host (single host) |
+| `infra/deploy/docker-compose.branch.yml` | `api_sucursal` + `job_sync_sucursal` + `web_sucursal` (PWA) + `postgresql-branch` | Branch PC (single host, all-in-one — default SMB scenario) |
+| `infra/deploy/docker-compose.db-cloud.yml` | `postgresql-cloud` only | Cloud-DB-as-a-service scenario (DB lives on dedicated host) |
+| `infra/deploy/docker-compose.api-branch.yml` | `api_sucursal` + `web_sucursal` (PWA) — NO DB | Multi-site scenario where DB is remote |
+| `infra/deploy/docker-compose.job-branch.yml` | `job_sync_sucursal` only — NO DB, NO API | Same multi-site scenario; runs on a separate host for HA |
+
+**Three canonical scenarios** (documented in `infra/deploy/README.md`):
+
+1. **"All-in-one per branch"** (typical SMB, single-PC parking lot): `docker compose -f infra/deploy/docker-compose.branch.yml up -d` on each branch PC. One compose file, one host, one operator. DB lives on the same host.
+
+2. **"DB on a server, app on each PC"** (multi-site, centralized DB): `docker compose -f infra/deploy/docker-compose.db-cloud.yml up -d` on the central DB server + `docker compose -f infra/deploy/docker-compose.api-branch.yml -f infra/deploy/docker-compose.job-branch.yml up -d` on each app PC, both `PARKOS_DB_URL` pointing to the central DB. The `api-branch` and `job-branch` files compose together via `docker compose -f X -f Y` (Docker Compose v2 multi-file override; matches `~/.config/opencode/skills/docker/SKILL.md` step 12).
+
+3. **"100 branches behind VPN"** (enterprise): central cloud hosts `infra/deploy/docker-compose.cloud.yml`; each branch runs `infra/deploy/docker-compose.branch.yml` (or scenario 2 with split `api-branch.yml` + `job-branch.yml` for HA). Cloud is reachable from each branch over the VPN/tailscale/zero-trust tunnel.
+
+**Default profiles**: `cloud.yml` and `branch.yml` use the default Compose profile (no `profiles:` key); the API-only and job-only files use `profiles: ["api-branch"]` and `profiles: ["job-branch"]` respectively, allowing `docker compose --profile api-branch up -d` syntax (Compose v2, `~/.config/opencode/skills/docker/SKILL.md` step 12).
+
+**Why this layout** (vs a single big `docker-compose.yml`): each component has independent release cadence. Cloud `api_admin` might ship weekly; branch `job_sync_sucursal` might ship quarterly (security patches only). A single compose file forces every operator to redeploy everything at once.
+
+**HEALTHCHECK + `depends_on`** (per `~/.config/opencode/skills/docker/SKILL.md` step 11):
+- `postgresql-*` services: `pg_isready -U <user>` with `start_period: 30s`.
+- `api_*`: `curl -fsS http://localhost:8000/api/v1/health` with `start_period: 30s`, `interval: 30s`.
+- `job_sync_*`: `python -c "import httpx; httpx.get('http://localhost:9999/healthz').raise_for_status()"` (workers expose a tiny `httpx`-served `/healthz` for orchestration — port 9999, NOT exposed externally).
+- `web_admin`, `web_sucursal`: served by a `caddy:2-alpine` reverse-proxy in the same compose file, with `wget -qO- http://localhost:8080/ >/dev/null` healthcheck.
+
+### 21.7 job_sync_sucursal
+
+A long-running Python process on each branch. Single binary `python -m parkos_core.jobs.sync_sucursal`. Responsibilities (in poll order, one cycle ≈ `PARKOS_SYNC_POLL_INTERVAL_S`):
+
+```
++---------------------------------------+
+| job_sync_sucursal::run() main loop    |
++---------------------------------------+
+  |
+  +-- 1. poll_sync_queue()
+  |     SELECT * FROM prod.sync_queue
+  |     WHERE estado = 'pendiente' AND next_retry_at <= NOW()
+  |     AND uuid_sucursal = :ctx
+  |     ORDER BY prioridad DESC, created_at ASC
+  |     LIMIT :PARKOS_SYNC_BATCH_SIZE
+  |     -- via repo/append_only.mark_dispatched (4-col whitelist)
+  |
+  +-- 2. push_batch(rows)
+  |     POST {PARKOS_CLOUD_API_URL}/api/v1/sync/push
+  |     Body: {rows: [{tabla, operacion, uuid, datos, seq}, ...], last_seq}
+  |     Header: Authorization: Bearer <sync_jwt>
+  |
+  +-- 3. handle_response(rows, response)
+  |     2xx with applied_ids: mark_dispatched(rows)
+  |     207 partial: mark_dispatched(success_subset), mark_failed(failure_subset, ...)
+  |     4xx: mark_failed(rows, motivo=response.detail)
+  |         schedule_retry(rows, backoff=4xx)  # exponential 1m, 5m, 30m, 2h, 12h, 24h
+  |     5xx: mark_failed(rows, motivo=response.detail)
+  |         schedule_retry(rows, backoff=5xx)  # shorter: 30s, 1m, 5m
+  |     401 sync_jwt_expired: rotate_jwt()  # see below
+  |     401 sync_jwt_revoked: emit alerta + HALT (halt_until_re_pair)
+  |
+  +-- 4. pull_cloud_changes()
+  |     POST {PARKOS_CLOUD_API_URL}/api/v1/sync/pull
+  |     Body: {since_seq: last_pull_seq}
+  |     Response: {rows: [...], new_since_seq}
+  |     For each row: idem-potent UPSERT by (tabla, uuid)
+  |     -- uses repo/{versioned, append_only, event, workflow, session_cycle}
+  |     -- based on row.tabla -> corresponding repo helper
+  |
+  +-- 5. heartbeat()
+  |     POST {PARKOS_CLOUD_API_URL}/api/v1/sync/heartbeat
+  |     Body: {last_seq, last_pull_seq, queue_depth, last_error}
+  |     -- writes to local prod.sync_log (one row per cycle)
+  |
+  +-- 6. sleep(PARKOS_SYNC_POLL_INTERVAL_S - elapsed)
+        loop back to 1
+```
+
+**On `401 sync_jwt_expired`**: call `POST {CLOUD}/api/v1/sync/rotate-jwt` with `{current_jwt_uuid}`. Cloud returns `{new_jwt, new_jwt_expires_at, grace_until}`. Branch writes the new JWT to `PARKOS_SYNC_JWT_PATH`, overwriting the old. The old JWT remains valid for `grace_until` (default `now() + JWT_OVERLAP_HOURS` = 24h). Rotation is automatic; no operator action needed.
+
+**On `401 sync_jwt_revoked`**: branch emits `alerta tipo_alerta='branch_offline_reauth_required'` (locally) and calls `POST {CLOUD}/api/v1/admin/sucursales/{uuid_sucursal}/alertas` (sync-agent scope allowed) to also open the alerta cloud-side. Then the worker calls `sys.exit(1)` — orchestrator (docker/systemd) restarts; restart loop will keep failing until the operator re-pairs (deliberate; surfaces the issue rather than spinning).
+
+**Halt-until-re-pair** is the correct failure mode per AGENTS.md `Audit-First` principle. Silently retrying a revoked JWT would burn CPU indefinitely.
+
+**Configuration env** (validated by §21.2 validator): `PARKOS_SYNC_POLL_INTERVAL_S=10`, `PARKOS_SYNC_BATCH_SIZE=100`, `PARKOS_SYNC_HEARTBEAT_S=60`, `PARKOS_CLOUD_API_URL`, `PARKOS_SYNC_JWT_PATH`, `PARKOS_SUCURSAL_UUID`, `PARKOS_DEPLOY=branch`.
+
+**Exit codes**: `0 = clean shutdown (SIGTERM)`, `1 = unhandled error (restart)`, `2 = misconfig (operator must fix; do not restart-loop)`. Matches `~/.config/opencode/skills/docker/SKILL.md` step 7 (graceful shutdown via SIGTERM).
+
+### 21.8 job_sync_cloud
+
+A long-running Python process on cloud. Single binary `python -m parkos_core.jobs.sync_cloud`. Responsibilities:
+
+```
++---------------------------------------+
+| job_sync_cloud::run() main loop       |
++---------------------------------------+
+  |
+  +-- 1. accept_push_via_api()
+  |     (NOT in-process; this is what api_admin /sync/push does — see §21.9)
+  |     Here the worker just maintains the side-effects:
+  |
+  +-- 2. apply_pushed_row(row)
+  |     -- verify sync-agent- JWT (api_admin middleware)
+  |     -- check uuid_sucursal matches JWT.sub (defense in depth)
+  |     -- check row.seq > last_seq for uuid_sucursal (monotonicity)
+  |     -- for [A] tables (not sync_queue): repo/append_only.append_event()
+  |     -- for [V] tables: repo/versioned.close_and_insert()
+  |     -- for [L-E]/[L-W]/[L-S]: respective helper
+  |     -- for log_transaccional + revocacion_factura: extends hash chain
+  |        via repo/hash_chain.append(); on chain violation:
+    //     INSERT into prod.sync_conflict with both versions
+    //     INSERT alerta tipo_alerta='sync_failure' chain root
+    //     return 500 to the branch worker (it retries in order)
+  |
+  +-- 3. emit_sync_back_events()
+  |     -- for each newly-accepted cloud-originated row (DIAN responses, admin updates,
+  |        catalog refreshes) where the branch needs to know:
+  |     -- POST {branch_endpoint_url}/api/v1/sync/events with the event payload
+  |        (the branch registers its endpoint_url during pairing; see §21.5)
+  |     -- branch's job_sync_sucursal pull-events subscribes
+  |
+  +-- 4. poll_pull_requests()  (or accept via /sync/pull endpoint, same outcome)
+  |     -- returns cloud-originated rows for branch since last_pull_seq
+  |
+  +-- 5. hash_chain_verifier_loop()
+  |     Every PARKOS_SYNC_VERIFY_INTERVAL_S (default 3600s):
+  |     for each uuid_sucursal in active branches:
+  |       walk log_transaccional in (timestamp_evento, uuid) order
+  |       assert hash_anterior = prev.hash_actual (or genesis)
+  |       assert hash_actual = sha256(canonical_json(payload) + hash_anterior_bytes)
+  |       on mismatch: INSERT alerta tipo_alerta='hash_chain_anomaly'
+  |                     INSERT sync_conflict with both versions
+  |
+  +-- 6. sleep(elapsed_to_PARKOS_SYNC_VERIFY_INTERVAL_S)
+```
+
+**Why cloud-side verifier is a separate concern from `apply_pushed_row`**: `apply_pushed_row` catches in-line breaks (branch's out-of-order push), but if a sync_queue row is lost in transit (network partition, missed poll) the gap goes unnoticed. The verifier is the periodic integrity check that catches missed or reordered pushes regardless of cause.
+
+**Configuration env**: `PARKOS_DEPLOY=cloud`, `PARKOS_DB_URL`, `PARKOS_JWT_KEY_PATH`, `PARKOS_SYNC_VERIFY_INTERVAL_S=3600`.
+
+**Exit codes**: same contract as §21.7 (`0 / 1 / 2`).
+
+### 21.9 Sync transport protocol
+
+All endpoints under `/api/v1/sync/*`. JWT: `sync-agent-` only; admin/operador → 401 (REQ-X8). Mounted on BOTH `api_admin` (cloud-side receiver) and `api_sucursal` (branch-side receiver — see `operational.md` REQ-OP-03).
+
+**Idempotency**: each request carries `X-Request-Id: <uuid>` (RFC 4122); replays within 5 minutes return cached response (in-memory LRU cache `parkos_core/sync/transport.py::IdempotencyCache(maxsize=10_000, ttl=300)`). Cache is process-local; on restart the branch retries (already idempotent at the row level via `(tabla, uuid)` keys).
+
+| Endpoint | Method | Auth | Body | Response | Notes |
+|---|---|---|---|---|---|
+| `/sync/pair` | POST | NONE (public; protected by single-use token + 24h TTL) | `{pairing_token, uuid_sucursal, branch_info: {hostname, os, version, endpoint_url}}` | `{sync_agent_jwt, sync_agent_jwt_expires_at, cloud_poll_interval_S, sync_endpoints: {push, pull, events}}` | atomic consume (§21.3); on race returns 410 |
+| `/sync/push` | POST | `sync-agent-` (branch's long-lived JWT) | `{rows: [{tabla, operacion, uuid, datos, seq}, ...], last_seq}` | `{applied_ids, last_seq, errors}`; HTTP 207 partial-success if any row failed; HTTP 500 if hash chain violation (branch retries in order) | rate limit: `PARKOS_SYNC_BATCH_SIZE` rows/req (server side: cap at 500); body cap 8MB |
+| `/sync/pull` | POST | `sync-agent-` | `{since_seq}` | `{rows: [...], new_since_seq}` | returns cloud-originated rows in (seq ASC) order; limit 500/req; if more, response includes `has_more: true` and branch retries with new `since_seq` |
+| `/sync/heartbeat` | POST | `sync-agent-` | `{last_seq, last_pull_seq, queue_depth, last_error}` | `{server_time, next_heartbeat_in_s}` | cloud records `sync_log` row (one per branch per cycle) |
+| `/sync/rotate-jwt` | POST | `sync-agent-` (current JWT; even if expired, with a one-shot grace window) | `{current_jwt_uuid}` | `{new_jwt, new_jwt_expires_at, grace_until}` | grace_until = `now() + JWT_OVERLAP_HOURS` (default 24h) |
+| `/sync/events` | POST | `sync-agent-` (cloud → branch push) | `{event_type: "factura_syncback"\|"alerta_created"\|"catalog_updated", payload: {...}, seq}` | `204 No Content` | branch registers its URL during pairing (§21.3); cloud retries 3x with exponential backoff on 5xx |
+
+**Why a sync-specific `IdempotencyCache` and not the global `idempotency_keys` table (§8 / REQ-OP-04)**: the idempotency_keys table is for HTTP POST writes that the client wants replayed (POST is not idempotent in HTTP semantics). Sync requests are server-server; replays within 5 minutes are network artifacts, not user-facing "did my button click work?" questions. A process-local LRU is correct here (and faster — no DB roundtrip per request). Defense in depth: every applied row also has the `(tabla, uuid)` idempotency at the data layer, so even if the cache lies, no double-apply happens.
+
+**Rate limits** (`parkos_core/sync/transport.py::RateLimit`): per-`uuid_sucursal` token bucket; default `60 req/min` for `push`, `120 req/min` for `pull`, `10 req/min` for `heartbeat`, `1 req/min` for `rotate-jwt`. Token bucket per (issuer, subject) pair. 429 response includes `Retry-After: <seconds>`.
+
+### 21.10 Conflict resolution
+
+Per AGENTS.md `Sync` section: defaults per enforcement class.
+
+| Class | Policy | Implementation |
+|---|---|---|
+| `[V]` | `manual` | cloud wins on conflict (last-write-wins by cloud clock); branch's losing row held in `sync_conflict` until operator resolves via `web_admin` UI |
+| `[L-E]` | `append` | both branch and cloud insert independently; events are immutable; no conflict possible |
+| `[L-W]` | `append` | workflows originate on branch and propagate; no cloud origination |
+| `[A]` | `append` | append-only; no conflict possible (immutable) |
+| `[L-S]` | `manual` | session close state can race (two devices close simultaneously); cloud wins after a `JWT_OVERLAP_HOURS` grace window during which the branch's close is held in `sync_conflict` |
+
+**Implementation** (`parkos_core/sync/conflict_resolver.py::apply_pushed_row()`):
+- Each sync push row carries `datos->>'client_timestamp'` and `datos->>'actor_uuid'` (server-stamped, NOT user-supplied).
+- Cloud applies in `(last_pull_seq ASC, client_timestamp ASC, uuid ASC)` order — strictly monotonic per `uuid_sucursal`.
+- On duplicate `(tabla, uuid)` with different content (cloud already has a newer row): INSERT into `prod.sync_conflict` with both `datos_local` and `datos_cloud` snapshots; INSERT `alerta tipo_alerta='sync_conflict'` chain root; surface to operator via `web_admin`.
+
+**Why cloud-wins for `[V]`**: AGENTS.md `Sync` §"`[V]` = manual" + bi-temporal canon. The cloud's `vigente_desde` is later than the branch's by definition (cloud applied in receive order, which is later than branch-originated). Allowing branch-wins would violate bi-temporal "the most recent version IS current". The branch row's content survives in `sync_conflict` for operator review — NOT silently overwritten.
+
+**Why `L-S` has a grace window (not immediate cloud-wins)**: simultaneous close from two operators on the same branch is a real failure mode (operator opens a kiosk, closes a desktop, both hit the close endpoint at the same time). Without grace, one row's `estado='cerrada'` + the other's `vigente_hasta` would clobber. Grace = `JWT_OVERLAP_HOURS` (24h) is the project-canon rotation window; reusing it here keeps the constants consistent.
+
+**Test** (`backend/tests/integration/test_sync_conflict_resolution.py`):
+- `test_v_conflict_writes_sync_conflict_row` — branch inserts `[V]` row at T=1; cloud already has a newer row at T=2 (different content); push returns 207 with `errors=[{uuid, conflict: true}]`; `prod.sync_conflict` has +1 row; `alerta tipo_alerta='sync_conflict'` chain root exists.
+- `test_ls_grace_window_` — two simultaneous `close_session_with_log` calls; one applied, one held in `sync_conflict`; after `JWT_OVERLAP_HOURS` simulation, second one applied with annotation.
+- `test_append_no_conflict_possible` — branch inserts `[A]` row, cloud inserts different `[A]` row at same `uuid` (impossible because UUIDs are v4 random, but test the no-conflict assertion anyway).
+
+### 21.11 DIAN HTTP dispatcher
+
+Cloud-only outbound to the DIAN electronic-invoicing provider (Factus or whichever). Lives in `parkos_core/dian/cloud/dispatcher.py` (replaces the bootstrap stub). Three responsibilities:
+
+#### 1. Send `factura_electronica` to DIAN
+
+```
+POST {PARKOS_DIAN_PROVIDER_URL}/api/ubl2.1
+  Body: <UBL 2.1 XML serialized from the factura_electronica row>
+  Header: Authorization: Bearer <PARKOS_DIAN_PROVIDER_TOKEN_PATH contents>
+
+Poll {PARKOS_DIAN_PROVIDER_URL}/api/ubl2.1/{trackId}
+  Every 2s, up to PARKOS_DIAN_TIMEOUT_S (default 30s).
+
+On aceptado:
+  INSERT envio_dian row:
+    uuid_envio, uuid_factura_electronica, estado='aceptado',
+    cufe=<returned>, reportado_dian=true,
+    respuesta_dian=jsonb(response),
+    fecha_retencion_hasta=NOW()+INTERVAL '5 years'
+  Trigger after-INSERT on envio_dian:
+    INSERT into prod.sync_queue with operacion='insert', tabla='envio_dian', uuid_registro=<new.uuid>
+    (the DB trigger handles this; see §12)
+  The branch receives the SyncBackEvent → updates local `factura_electronica` row →
+    enables `reimpresion_ticket` for the operator (REQ-X8 / `operational.md` REQ-OP-04).
+
+On rechazado:
+  INSERT envio_dian row with estado='rechazado', motivo_rechazo=<body>
+  Both insert into `revocacion_factura` chain if applicable
+  INSERT alerta tipo_alerta='dian_rechazada' chain root (cloud-admin surfaces to operator)
+
+On timeout (>PARKOS_DIAN_TIMEOUT_S):
+  schedule_retry with backoff=5xx (1m, 5m, 15m) up to PARKOS_DIAN_RETRY_MAX (default 3)
+  On final timeout: INSERT envio_dian row with estado='timeout', motivo_rechazo='timeout'
+  INSERT alerta tipo_alerta='dian_timeout'
+```
+
+#### 2. Send `revocacion_factura` to DIAN
+
+Similar flow for voided invoices:
+
+```
+POST {PARKOS_DIAN_PROVIDER_URL}/api/revocacion
+  Body: <revocacion XML>  (different shape than ubl2.1)
+  Same poll + retry pattern.
+
+On aceptado:
+  Extend prod.revocacion_factura hash chain via repo/hash_chain.append()
+  (per §11; revocacion_factura carries hash_anterior/hash_actual per uuid_sucursal)
+  Emit SyncBackEvent to branch.
+```
+
+#### 3. Hash chain extension
+
+Every successful DIAN write extends `prod.log_transaccional` chain for the BRANCH's `uuid_sucursal` (not the cloud's) per AGENTS.md `Hash chain` section — because the chain IS the per-branch evidence of what the branch did, and the cloud is just the centralizing replicator. Cloud preserves branch chain verbatim, only extends with cloud-originated rows.
+
+#### Configuration env (cloud-only)
+
+| Var | Required | Default |
+|---|---|---|
+| `PARKOS_DIAN_PROVIDER_URL` | yes | — |
+| `PARKOS_DIAN_PROVIDER_TOKEN_PATH` | yes | `/etc/parkos/dian.token` (mode `0600`) |
+| `PARKOS_DIAN_TIMEOUT_S` | no | `30` |
+| `PARKOS_DIAN_RETRY_MAX` | no | `3` |
+
+#### Boundary enforcement (3 layers, defense in depth)
+
+1. **Image-level**: `backend/.dockerignore` (branch) excludes `**/dian/cloud/**`. Branch Dockerfile cannot COPY the dispatcher. The cloud Dockerfile COPYs `/build/dian_cloud/` to runtime (matches `~/.config/opencode/skills/docker/SKILL.md` step 2 pattern A). Verified by RED test `test_dian_boundary_branch.py` already in PR6 (§10).
+
+2. **Module-level**: `parkos_core/dian/cloud/dispatcher.py` checks `os.environ["PARKOS_DEPLOY"] == "cloud"` at module import time and raises `ImportError("dian_cloud_unavailable_on_branch")` otherwise. Combined with the `.dockerignore`, a branch image that somehow has the file would still fail to import it.
+
+3. **OpenAPI-level**: `test_openapi_branch_excludes_cloud.py` (PR6) asserts zero cloud-only paths in `api_sucursal/openapi.json`. Tag-based filter `tags=["cloud-only"]` (REQ-OP-14 / §16) is belt-and-suspenders.
+
+#### Test stub (`tests/dian/test_dispatcher.py`)
+
+Uses `httpx.MockTransport` to simulate DIAN responses. No real provider in CI:
+
+```python
+# tests/dian/test_dispatcher.py (sketch)
+async def test_dispatcher_accepts_and_writes_envio_dian(httpx_mock, db_session):
+    httpx_mock.add_response(
+        method="POST", url=re.compile(r".*/api/ubl2\.1$"),
+        json={"trackId": "TRK-123"})
+    httpx_mock.add_response(
+        method="GET", url=re.compile(r".*/api/ubl2\.1/TRK-123$"),
+        json={"estado": "aceptado", "cufe": "..."})
+
+    await dispatch_factura_electronica(db_session, uuid_factura=..., actor_uuid=...)
+
+    envio = await db_session.scalar(select(EnvioDian).where(EnvioDian.uuid_factura_electronica == uuid_factura))
+    assert envio.estado == "aceptado"
+    assert envio.cufe == "..."
+    assert envio.reportado_dian is True
+    # AND the dispatcher's hash-chain extension wrote a log_transaccional row
+    # with the BRANCH's uuid_sucursal, not the cloud's
+```
+
+Other tests: `test_dispatcher_rechazado_writes_envio_dian_and_alerta`, `test_dispatcher_timeout_retries_then_alerts`, `test_dispatcher_import_guard_raises_on_branch`, `test_dispatcher_hash_chain_extends_for_branch_not_cloud`.
+
+### 21.12 Risks added by this delta
+
+The risks §17 enumerated (`tasks.md` §Risks surfaced) are the baseline. §21 adds the following:
+
+| # | Sev | Risk | Mitigation |
+|---|---|---|---|
+| 19 | **NEW — HIGH** | Pairing-token theft in transit | `PARKOS_PAIRING_TOKEN` is single-use + 24h TTL + rate-limited (5/hour/admin); token plaintext returned only ONCE in `POST /admin/pairing-tokens` response; thereafter stored as `sha256(plaintext)` only; every pair attempt logged with IP+UA in `log_transaccional`; orchestrator-side: provision via short-lived secret manager (Vault/AWS SM) with TTL matching the token TTL |
+| 20 | **NEW — HIGH** | Stale branch registry — cloud keeps trying to push to a dead branch | `endpoint_url` reachability probe every `PARKOS_SYNC_VERIFY_INTERVAL_S` (§21.5); 3 consecutive failures → open `alerta tipo_alerta='branch_offline'`; 24h+ failure → remove from cache until a `sync_log` row arrives; operator can also manually `POST /admin/sucursales/{uuid}/revoke-sync` |
+| 21 | **NEW — MED** | `job_sync_sucursal` silent death (process running but hung) | Heartbeat every `PARKOS_SYNC_HEARTBEAT_S` (default 60s) with `{last_seq, last_pull_seq, queue_depth, last_error}`; cloud tracks last heartbeat per branch; 3 missed heartbeats (3 min) → open `alerta tipo_alerta='sync_worker_dead'` |
+| 22 | **NEW — MED** | Out-of-order sync arrivals — branch pushes row N+1 before row N (network reorder) | Per-row monotonic `seq` in `datos` JSON; cloud verifies `seq == last_seq` before apply (§21.8); on mismatch, holds the row in `sync_queue` (cloud-side `parkos_core.cloud_sync_queue`) until the gap is filled; cloud hash chain verifier catches any that slip through (§21.8 step 5) |
+| 23 | **NEW — MED** | Per-branch misconfiguration of `PARKOS_SUCURSAL_UUID` (operator typo, wrong UUID pasted) | Boot-time fail-fast validator (§21.2) raises `MissingEnvError` exit `2`; `parkos_core.cli doctor` subcommand prints `{env_status, db_connectivity, jwt_key_path_exists, sync_jwt_path_readable, cloud_api_url_reachable}` for one-shot operator diagnostics |
+| 24 | **NEW — MED** | Two parallel `job_sync_cloud` instances race on hash chain | Single-instance design enforced: only ONE `job_sync_cloud` container per cloud deployment; compose file has `deploy.replicas: 1` and a `restart: unless-stopped` policy; if HA needed (future), use Postgres advisory locks per `uuid_sucursal` to serialize (deferred to v2) |
+| 25 | **NEW — LOW** | DIAN provider rate-limit (Factus allows N req/min) | Dispatcher has a token bucket per provider; on 429, schedule_retry with backoff=5xx; `PARKOS_DIAN_RETRY_MAX=3` defaults keep us within most provider limits |
+| 26 | **NEW — LOW** | 100+ branch scale — `/sync/pull` response size | Default page size 500/req (`new_since_seq` + `has_more` retry loop); cloud-side compressed response (`gzip`); deferred to v2 if even paging exceeds 8MB |
+
+### 21.13 Out of scope (still)
+
+§19 enumerated items that remain out-of-scope. §21 closes most of them. The following remain deferred:
+
+- **WebSocket sync transport** — polling only for v1; deferred to v2.
+- **DIAN provider-specific quirks** (Factus vs other providers' rate limits, sandbox vs production endpoints) — interface exists, adapter is operator-supplied via env vars.
+- **Rate limiting on public endpoints** beyond sync — separate change (e.g. `parkos_core.api.middleware.RateLimit` for `/auth/login`).
+- **OpenTelemetry tracing** — `parkos_core.structlog_config` already in place; OTLP exporter deferred to separate change.
+- **Advanced circuit breakers** — basic retry-with-backoff shipped here; Hystrix-style breakers deferred to v2.
+- **`parkos-cli pair --interactive`** — only the env-var-driven `python -m parkos_core.cli pair` ships; interactive mode (operator-friendly wizard) deferred.
+- **HA `job_sync_cloud` with advisory locks** — single-instance design (§21.12 #24); multi-instance deferred to v2.
+
+### 21.14 Acceptance criteria for §21
+
+The delta is "done" when:
+
+**Pairing (§21.3)**:
+1. `backend/tests/integration/test_pairing_flow.py` — all 9 tests pass (`test_pair_happy_path`, `test_pair_token_reuse_rejected`, `test_pair_token_expired_rejected`, `test_pair_token_revoked_rejected`, `test_pair_revoked_jwt_rejects_subsequent_calls`, `test_pair_wrong_sucursal_rejected`, `test_pair_env_validator_fails_fast`, `test_pair_persisted_jwt_path_0600`, `test_pair_token_rate_limit`).
+2. Migration `0003_add_pairing_tokens_and_revoked_sync_jwts.py` (PR9) includes both tables + both REVOKE statements + both triggers in the SAME script (per `config.yaml rules.tasks`); `alembic upgrade --sql head` shows the full sequence; `alembic check` exits 0.
+3. `has_table_privilege('rol_app', 'prod.pairing_tokens', 'UPDATE')` returns `f`; same for `revoked_sync_jwts`. `pg_trigger WHERE tgname = 'pairing_tokens_no_update_delete'` returns 1; same for `revoked_sync_jwts_no_update_delete`.
+
+**Admin views (§21.4)**:
+4. `GET /api/v1/sucursales` with admin JWT returns only `sucursales_permitidas` rows (verified by negative test: admin whose permitidas list excludes X → X not in response).
+5. `GET /api/v1/admin/sucursales/{uuid}/dashboard` with admin JWT + `X-Sucursal-Context` matching permitidas returns 200 with `{fecha, ingresos_count, ...}`; same with mismatched header → 403; same without header → 400.
+6. `GET /api/v1/admin/me` returns `{actor_uuid, email, rol, sucursales_permitidas, permissions}`.
+
+**Auto-discovery & installability (§21.5, §21.6)**:
+7. `infra/deploy/README.md` documents all 3 scenarios with copy-pasteable `docker compose -f ... up` invocations.
+8. Each compose file (`infra/deploy/docker-compose.{cloud,branch,db-cloud,api-branch,job-branch}.yml`) has `HEALTHCHECK` directives on every service + `depends_on.condition: service_healthy` on dependents.
+9. `docker compose -f infra/deploy/docker-compose.cloud.yml config` validates without errors; same for the other 4 files.
+
+**Sync workers (§21.7, §21.8)**:
+10. `python -m parkos_core.jobs.sync_sucursal --config-test` (a dry-run mode that loads `parkos_core/runtime/env.py`, prints config, exits 0) succeeds; same for `--check-db` (verifies DB connectivity, JWT key path readable, sync_jwt path readable if present).
+11. End-to-end: pair a branch → boot `job_sync_sucursal` → INSERT into `prod.factura_pagos` on branch → wait one poll cycle → verify cloud has the row via `GET /api/v1/admin/sucursales/{uuid}/dashboard` or direct SQL.
+12. `POST /sync/push` with expired JWT → `job_sync_sucursal` calls `POST /sync/rotate-jwt`, gets new JWT, persists, retries the push (no operator action).
+13. `POST /sync/push` with revoked JWT → `job_sync_sucursal` emits alerta, halts until operator re-pairs.
+14. Cloud `job_sync_cloud` hash chain verifier catches a deliberately-broken row (test fixture inserts a row with mismatched `hash_actual`); emits alerta + sync_conflict.
+
+**Sync transport (§21.9)**:
+15. `X-Request-Id` replay within 5 min returns cached response with `Idempotent-Replay: true` header.
+16. Rate limits enforced per (issuer, subject); 429 with `Retry-After`.
+
+**Conflict resolution (§21.10)**:
+17. `test_sync_conflict_resolution.py` all tests pass; on `[V]` conflict → `sync_conflict` row + `alerta` chain root.
+
+**DIAN dispatcher (§21.11)**:
+18. `test_dispatcher.py` (5 tests) all pass with `httpx.MockTransport`.
+19. Boundary: in branch image context, `from parkos_core.dian.cloud.dispatcher import dispatch_factura_electronica` raises `ImportError`. CI asserts.
+20. `jq '.paths | keys | map(select(test("/factura-electronica|/envio-dian|/validacion-evento|/revocacion-factura"))) | length' api_sucursal/openapi.json` returns 0 (unchanged from §16 / §10).
+
+**Env validator (§21.2)**:
+21. Boot with `PARKOS_SUCURSAL_UUID=` (empty) → exit code `2`, stderr message includes the env var name.
+22. Boot with `PARKOS_DEPLOY=cloud` on a branch binary → exit code `2`.
+23. `parkos-cli doctor` prints the structured `{env_status, db_connectivity, jwt_key_path_exists, sync_jwt_path_readable, cloud_api_url_reachable}` report.
+
+**Gitflow / canon (§21 prerequisites)**:
+24. All 4 new PRs (PR8, PR9, PR10a/b if split, PR11) target `dev` (NEVER `main`) per AGENTS.md gitflow canon.
+25. Migration `0003_add_pairing_tokens_and_revoked_sync_jwts.py` is the ONLY schema change in §21 — everything else is orchestration + workers + boundary tests.
+26. `uv run pytest backend/tests/{unit,integration,migrations,static} -q` exits 0 with all new tests included.
+27. `uv run ruff check backend/packages/parkos_core/ && uv run mypy --strict backend/packages/parkos_core/ && uv run alembic check` all exit 0.
+
+**Engram / persistence**:
+28. The 4 new PRs commit task IDs `T-PR8-NN` / `T-PR9-NN` / `T-PR10-NN` / `T-PR11-NN` (added to `tasks.md` in the sdd-tasks delta) with work-unit scope: one behavior per commit, tests+docs in the same commit (per `~/.config/opencode/skills/work-unit-commits/SKILL.md`).
+
+---
+
+**Summary of §21 impact**: this section adds 2 new `[A]` tables (`pairing_tokens`, `revoked_sync_jwts`) — making the model 51 tables total, of which 14 are `[A]`-class. It introduces 4 chained PRs (PR8–PR11) with a conditional split trigger on PR10 (sync workers at the 800-LOC edge), 44 new files (~2,200 LOC), 12 new risks (4 HIGH, 6 MED, 2 LOW — none catastrophic), and a complete transport protocol that closes the original §19 "out of scope" deferral. All new code honors AGENTS.md `gitflow` (PRs to `dev`), `Audit-First` (REVOKE + trigger in the SAME migration, idempotency at every layer, hash chain extension in cloud for branch chains), and `no-DELETE` (every operation is C/Q/U; the 2 new `[A]` tables follow the same REVOKE + trigger pattern, with the one-time DELETE path reserved for the `sync_queue` whitelisted-columns carve-out already in §12).
