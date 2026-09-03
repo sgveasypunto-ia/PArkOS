@@ -23,6 +23,13 @@ dependencies = [
     "passlib[bcrypt]",
     # Logging
     "structlog",
+    # DIAN HTTP transport (T-PR11-07, design §21.11) — runtime deps,
+    # not just dev: cloud image must ship them so dispatcher imports
+    # work without the dev workspace. lxml is for the UBL XML
+    # serializer (T-PR11-03, design §21.11); httpx for the Factus
+    # provider adapter (T-PR11-04).
+    "httpx>=0.27",
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]
