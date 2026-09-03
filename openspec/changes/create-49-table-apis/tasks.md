@@ -11,17 +11,17 @@
 
 | Field | Value |
 |---|---|
-| Total estimated changed lines | ~9,300 across PR0–PR11 |
-| Total tasks | 222 across 12 PRs |
-| 400-line budget risk | Medium (PR1 carries `size:exception` for the initial schema; PR5, PR6, PR9, PR11 sit at the 800 edge) |
-| Chained PRs recommended | Yes — 12 chained PRs to `dev` |
-| Suggested split | PR0 → PR1 (`size:exception`) → PR2 → PR3 → PR4 → PR5 (split at apply-time if >800) → PR6 (split at apply-time if >800) → PR7 → PR8 (split at apply-time if >800) → PR9 (split at apply-time if >800) → PR10 → PR11 (split at apply-time if >800) |
+| Total estimated changed lines | ~7,400 across PR0, PR1a-PR1c, PR2–PR11 |
+| Total tasks | 235 across 14 PRs |
+| 400-line budget risk | Medium (PR1a carries `size:exception` for the migration file alone; PR5, PR6, PR9, PR11 sit at the 800 edge) |
+| Chained PRs recommended | Yes — 14 chained PRs to `dev` |
+| Suggested split | PR0 → PR1a (`size:exception`) → PR1b → PR1c → PR2 → PR3 → PR4 → PR5 (split at apply-time if >800) → PR6 (split at apply-time if >800) → PR7 → PR8 (split at apply-time if >800) → PR9 (split at apply-time if >800) → PR10 → PR11 (split at apply-time if >800) |
 | Delivery strategy | `auto-chain` (cached) |
 | Chain strategy | gitflow (feature branches off `dev`, PRs target `dev`, releases to `main` after cert) |
 | Conditional splits pre-scoped | PR5a/5b, PR6a/6b, PR8a/8b, PR9a/9b, PR11a/11b (per `design.md` §21 PR slicing delta) |
-| `size:exception` required? | **Yes — PR1** (initial schema migration + ORM + auth + JWT, ~2700 LOC; single Alembic revision per `config.yaml rules.tasks`) |
+| `size:exception` required? | **Yes — PR1a only** (the initial 49-table Alembic migration is one revision per `config.yaml rules.tasks` single-head invariant; cannot split) |
 
-Decision needed before apply: **Yes — PR1 `size:exception`** (user-ratified this session when choosing to absorb the bootstrap schema migration into PR1)
+Decision needed before apply: **Yes — PR1a `size:exception`** (user-ratified this session when choosing to absorb the bootstrap schema migration into create-49-table-apis)
 Chained PRs recommended: Yes
 Chain strategy: chained PRs to `dev` in dependency order, each independently revertible (gitflow; `main` is production, `dev` is integration; releases via `release/vX.Y.Z` → `main` after cert)
 400-line budget risk: Medium
@@ -38,7 +38,7 @@ Chain strategy: chained PRs to `dev` in dependency order, each independently rev
 
 ## Pre-apply setup
 
-> **Manual, one-time, executed ONCE before PR0.** Operator (or orchestrator) runs these git commands locally. PR1's T-PR1-01 verifies they ran. This MUST happen before PR0's branch is cut — otherwise PR0 has no `dev` to branch off and no `dev` to merge to.
+> **Manual, one-time, executed ONCE before PR0.** Operator (or orchestrator) runs these git commands locally. Already done this session (commit `886c614` was the master→main rename). PR1 T-PR1-01 (now inlined as orchestrator pre-check before launching PR1a) verifies they ran. This MUST happen before PR0's branch is cut — otherwise PR0 has no `dev` to branch off and no `dev` to merge to.
 
 ```bash
 # Pre-apply: one-time gitflow bootstrap (manual, before PR0)
@@ -51,13 +51,13 @@ git push -u origin dev
 
 After pre-apply, all feature branches are cut from `dev` and all PRs target `dev`. The `master` branch no longer exists; `main` is production; `dev` is integration.
 
-**Why this is manual and not a task in PR1**: the `master` → `main` rename + `dev` creation is git topology that mutates the default branch and remote tracking. It must be executed by the operator who owns the GitHub repo (and who can flip the default-branch setting on github.com). A PR cannot rename the canonical branch it lives on. So this work is done OUTSIDE the chained-PR flow, with PR1's T-PR1-01 acting as a gatekeeper (`verify only`, no mutations).
+**Why this is manual and not a task in PR1a**: the `master` → `main` rename + `dev` creation is git topology that mutates the default branch and remote tracking. It must be executed by the operator who owns the GitHub repo (and who can flip the default-branch setting on github.com). A PR cannot rename the canonical branch it lives on. So this work is done OUTSIDE the chained-PR flow; the orchestrator verifies state before launching PR1a.
 
 ## Branch and merge strategy (gitflow, per `AGENTS.md`)
 
-- `master` is renamed to `main` and `dev` is cut from `main` in the **Pre-apply setup** (see Pre-apply section above). This is a one-time manual git operation; PR1's T-PR1-01 verifies it.
+- `master` is renamed to `main` and `dev` is cut from `main` in the **Pre-apply setup** (see Pre-apply section above). This is a one-time manual git operation; the orchestrator verifies state before launching PR1a.
 - `dev` is the integration branch for ALL subsequent work.
-- Feature branches: `feat/create-49-table-apis-prN-<slug>` (PR1–PR7) or `docs/create-49-table-apis-pr0-doc-reconcile` (PR0).
+- Feature branches: `feat/create-49-table-apis-pr1{a,b,c}-<slug>`, `feat/create-49-table-apis-prN-<slug>` (N=2..11), or `docs/create-49-table-apis-pr0-doc-reconcile` (PR0).
 - Each PR targets `dev` (NEVER `main` directly).
 - Each PR is reviewed and merged to `dev` BEFORE the next starts.
 - Release branches (`release/vX.Y.Z`) cut from `dev` only after the full chain is verified; merge into `main` after certification.
@@ -67,7 +67,9 @@ After pre-apply, all feature branches are cut from `dev` and all PRs target `dev
 | PR | Tables | New files | LOC forecast | LOC risk | Conditional split |
 |---|---|---|---|---|---|
 | PR0 | 0 | 3 | ~330 | LOW | — (but adds the `check_schema_match.py` gate for all subsequent PRs) |
-| PR1 | 49 (initial schema — 26 [V] + 3 [L-E] + 6 [L-W] + 2 [L-S] + 12 [A]) | ~32 | **~2700** | **HIGH — `size:exception`** (single Alembic revision per `config.yaml rules.tasks`; cannot split) | — |
+| PR1a | 49 (initial schema — 26 [V] + 3 [L-E] + 6 [L-W] + 2 [L-S] + 12 [A]) | ~6 | **~2200** | **HIGH — `size:exception`** (single Alembic revision per `config.yaml rules.tasks`; cannot split) | — |
+| PR1b | 0 | ~18 | ~900 | MED | — |
+| PR1c | 0 | ~17 | ~600 | LOW | — |
 | PR2 | 7 ([A] infra: sync + log) | ~12 | ~700 | MED | — |
 | PR3 | 9 ([V] catalogs) | ~11 | ~600 | LOW | — |
 | PR4 | 8 ([V] empresa+sucursal+config) | ~12 | ~750 | MED | — |
@@ -78,7 +80,7 @@ After pre-apply, all feature branches are cut from `dev` and all PRs target `dev
 | PR9 | 0 (orchestration + workers only) | ~14 | ~800 | **HIGH** | **PR9a** (runner + transport + conflict_resolver + jwt_manager, ~450) + **PR9b** (sync_sucursal + sync_cloud + auto_discovery, ~350) |
 | PR10 | 0 (multi-sucursal admin views + UI) | ~12 | ~600 | MED | — |
 | PR11 | 0 (DIAN dispatcher, cloud-only) | ~10 | ~700 | **HIGH** | **PR11a** (dispatcher + ubl_serializer + Factus provider, ~400) + **PR11b** (atomic_next_consecutivo + integration + Docker verify, ~300) |
-| **Total** | **52** | **~158** | **~7,880** | | |
+| **Total** | **53** | **~203** | **~7,400** | | |
 
 PR5 split trigger: `git diff --stat` post-implementation > 800 LOC → execute PR5a, then PR5b.
 PR6 split trigger: same threshold → execute PR6a, then PR6b.
@@ -91,7 +93,9 @@ PR11 split trigger: same threshold → execute PR11a, then PR11b.
 | PR | Test actions | Build/install actions | Runtime side-effects |
 |---|---|---|---|
 | PR0 | `bash openspec/scripts/check_table_counts.py`; static drift check | none | none (docs only) |
-| PR1 | `uv run pytest backend/tests/migrations/test_{a_inmutable,ls_session_guard,revokes_active,partman_parents}.py -q`; `uv run pytest backend/tests/{unit,static} -q`; `uv run ruff check backend/packages/parkos_core/` | `uv sync --frozen` (workspace lock) | `uv run alembic upgrade head` against testcontainers Postgres; `alembic upgrade --sql head` pre-flight |
+| PR1a | `python openspec/scripts/check_schema_match.py --database-url <testcontainers-url>` | `uv sync --frozen` | `uv run alembic upgrade head` against testcontainers Postgres; `alembic upgrade --sql head` pre-flight |
+| PR1b | `python -c "from parkos_core.auth.jwt_issuer_guard import requires_issuer; ..."` smoke | none | none |
+| PR1c | `uv run pytest backend/tests/{migrations,repo,api,unit,static} -q`; `uv run ruff check backend/packages/parkos_core/`; re-run `check_schema_match.py` | none | none |
 | PR2 | `uv run pytest backend/tests/{migrations,unit}/test_hash_chain* tests/migrations/test_sync_outbox_recursion.py -q` | `uv sync --frozen` | testcontainers Postgres; `uv run alembic upgrade head` idempotency check |
 | PR3 | `uv run pytest backend/tests/unit/test_catalogos_* -q`; smoke `curl /api/v1/tipo-persona?limit=10` | none | testcontainers Postgres; refresh openapi artifact |
 | PR4 | `uv run pytest backend/tests/unit/test_config_override_resolution.py -q` | none | testcontainers Postgres; refresh openapi artifact |
@@ -148,68 +152,114 @@ All edits land in ONE commit (single docs reconciliation unit). The two new scri
 
 ---
 
-## PR1 — ORM foundation + auth + JWT three-issuer + initial schema (size:exception)
+## PR1a — Initial 49-table schema migration (size:exception)
 
 ### Branch
-`feat/create-49-table-apis-pr1-orm-auth-schema` (off `dev`)
+`feat/create-49-table-apis-pr1a-initial-schema` (off `dev`)
 
 ### Dependencies
-- Pre-apply gitflow setup completed (`master` → `main`, `dev` created). Verified by T-PR1-01.
-- PR0 merged to `dev` (post pre-apply; PR0 is the first PR of `create-49-table-apis`).
-- Docker daemon running locally (testcontainers Postgres requirement). Operator verifies via `docker ps` before launching the apply.
-- **NO bootstrap dependency** — PR1 absorbs the `0001_initial_schema.py` migration that was originally scoped to `bootstrap-monorepo-foundation` PR2 (per user's this-session decision: bootstrap stays on legacy feature-branch-chain, never merges; the schema must be delivered by create-49-table-apis for the system to function).
+- Pre-apply gitflow setup completed (`master` → `main`, `dev` created). Orchestrator verifies before launch.
+- PR0 merged to `dev`.
+- Docker daemon running locally (testcontainers Postgres requirement). Orchestrator verifies via `docker info` before launch.
+- **NO bootstrap dependency** — PR1a absorbs the `0001_initial_schema.py` migration that was originally scoped to `bootstrap-monorepo-foundation` PR2 (per user's this-session decision: bootstrap stays on legacy feature-branch-chain, never merges; the schema must be delivered by create-49-table-apis for the system to function).
 
 ### Work-unit commit boundaries
-~25–28 commits (one per task that introduces code or tests; doc updates may co-commit with their related code). T-PR1-01 (pre-apply verification) lands as its own commit so a failed verification block is visible in isolation; it has NO branch-topology side effect (that work was done manually in Pre-apply setup, not in this PR). The initial-schema migration (T-PR1-20..T-PR1-27) lands as ONE large commit because it MUST be applied as a single Alembic revision (single `alembic head` invariant per `config.yaml` rules.tasks). The schema-commit message references check_schema_match.py exit 0 as evidence.
+~5 commits:
+- T-PR1a-01 (pyproject.toml + uv lock): 1 commit
+- T-PR1a-02..T-PR1a-08 (single Alembic revision per `config.yaml rules.tasks` single-head invariant): 1 commit (size:exception — the migration file alone is ~2000 LOC; cannot split without breaking Alembic head)
+- T-PR1a-09 (pre-flight + apply + verify against testcontainers Postgres): 1 commit
+- T-PR1a-10 (check_schema_match.py exit 0 — the 100% match gate): 1 commit (can co-commit with T-PR1a-09 if the schema-apply commit already passes the check)
+- T-PR1a-11 (commit + push + open PR): 1 commit (the squash-merge creates a single commit on `dev`)
 
 ### Tasks
 
-- [ ] **T-PR1-01**: **Verify pre-apply gitflow setup is complete.** Check: `git rev-parse --verify main` exits 0 (master was renamed); `git rev-parse --verify dev` exits 0 (dev was cut from main); `git config --get init.defaultBranch` returns `main` (or `master` is absent from `git branch -a`). If any check fails, abort this PR and request the operator to run the Pre-apply setup commands (see Pre-apply setup section above). DO NOT attempt the renames inside this PR — they cannot be done in a PR against `dev`. This is a verification gate, not a mutation. (Risk #9 in `proposal.md`.)
-- [ ] **T-PR1-02**: `backend/pyproject.toml` workspace extension + `backend/packages/parkos_core/pyproject.toml` deps (`sqlalchemy[asyncio]>=2.0`, `asyncpg`, `pydantic>=2`, `pydantic-settings`, `python-jose[cryptography]`, `bcrypt`, `passlib[bcrypt]`, `structlog`, `alembic`). Run `uv lock`.
-- [ ] **T-PR1-03**: `backend/packages/parkos_core/src/parkos_core/models/{__init__.py, base.py}` — five abstract bases per `design.md` §3.2 (`VersionedBase`, `LifecycleEventBase`, `WorkflowBase`, `SessionBase`, `AppendOnlyBase`) with mixins (`IdMixin`, `AuditMixin`, `SyncMixin`, `VersionedMixin`, `RetentionMixin`, `HashChainMixin`) and the `__write_only__` / `__close_and_insert_only__` / `__record_only__` / `__workflow_only__` / `__session_only__` markers consumed by AST tests.
-- [ ] **T-PR1-04**: 6 ORM model files: `models/V/{usuarios,permisos,permisos_usuario,usuarios_sucursal}.py` (4 `[V]` auth, REQ-01 + REQ-OP-13); `models/L_S/login.py` (REQ-42, REQ-46); `models/A/log_transaccional.py` (REQ-16, REQ-X4 with `HashChainMixin` columns).
-- [ ] **T-PR1-05**: `schemas/{__init__.py, auth.py, common.py}` — Pydantic v2 `Read`/`Create`/`Update`/`Filter`/`ReadList` for the 5 auth tables; `common.py` carries `_Base` (`ConfigDict(from_attributes=True, extra='forbid')`); field names mirror ORM columns (C-3).
-- [ ] **T-PR1-06**: `repo/{__init__.py, versioned.py, session_cycle.py (skeleton), pagination.py}` — `close_and_insert/current_version/history/list_with_cursor` (REQ-04, REQ-05); `record_login` + `close_login_with_log` skeleton (REQ-42, REQ-45); `Cursor` encode/decode (REQ-OP-01).
-- [ ] **T-PR1-07**: `auth/{jwt_issuer_guard.py, permissions.py, tenancy.py, tokens.py}` — `verify_jwt`/`requires_issuer` (REQ-X7); `require_permission(codigo)` dep (REQ-OP-13); `TenantContext` + `X-Sucursal-Context` enforcement (REQ-X1, REQ-X2, SC-X1); `issue_token`/`verify_token` with grace rotation (`JWT_OVERLAP_HOURS=24`).
-- [ ] **T-PR1-08**: `api/{__init__.py, router_factory.py, deps.py, middleware.py}` — `make_router(*, resource, model_cls, schema_module, repo_kind, derived_view=None, issuer_required, permission_required=None, write_enabled=True, transition_states=None)` per `design.md` §5 (uniform C+Q+U, NO DELETE); dependency re-exports; `IdempotencyKeyMiddleware` (REQ-OP-04).
-- [ ] **T-PR1-09**: `api/v1/{__init__.py, auth.py, catalogos.py}` — `POST /auth/login` + `POST /auth/refresh` + `POST /auth/logout` (login uses `record_login` success path; failure path lands in PR7); `catalogos.py` smoke-mounts `tipo-persona` only (full mount in PR3); `__init__.py` adds lazy DIAN-router import guard per `design.md` §10 Layer 2.
-- [ ] **T-PR1-10**: Wire `backend/packages/api_admin/src/api_admin_main/app.py` + `api_sucursal_main/app.py` to mount the router factory output under `/api/v1`; both apps lazy-import `dian.cloud_router` only when `PARKOS_DEPLOY=cloud`.
-- [ ] **T-PR1-11**: Migration `backend/packages/parkos_core/migrations/versions/0003_seed_permisos_canonicos.py` — INSERT ~15 canonical permission codes (REQ-OP-13: `config_catalogo`, `config_sistema`, `config_sucursal`, `gestionar_clientes`, `emitir_factura`, `emitir_factura_electronica`, `revocar_factura`, `gestionar_dian`, `audit_read`, `admin_usuarios`, `aprobar_anulacion`, `ejecutar_anulacion`, `crear_arqueo`, `solicitar_reverso`, `cerrar_sesion`, `descartar_alerta`). Idempotent (`ON CONFLICT DO NOTHING`).
-- [ ] **T-PR1-12**: Migration pre-flight — `uv run alembic upgrade --sql head`; inspect for the 16 `INSERT INTO prod.permisos …` lines. Apply via `alembic upgrade head`.
-- [ ] **T-PR1-13**: `backend/tests/conftest.py` — testcontainers Postgres + Redis fixtures + JWT mint helpers (`mint_admin_jwt`, `mint_operador_jwt`, `mint_sync_agent_jwt`) per `design.md` §15.
-- [ ] **T-PR1-14**: Migration tests — `tests/migrations/test_a_inmutable.py` (12 fixtures, SC-10-A-INMUTABLE-DB), `test_ls_session_guard.py` (2 fixtures, SC-42), `test_revokes_active.py` (REQ-X5), `test_partman_parents.py` (8 partman parents, REQ-X6).
-- [ ] **T-PR1-15**: Static AST tests — `tests/static/test_no_delete_routes.py` (SC-04), `test_no_raw_upsert_on_v_tables.py` (C-2), `test_no_raw_dml_on_a_tables.py` (REQ-13), `test_no_raw_dml_on_ls_tables.py` (REQ-46), `test_openapi_branch_excludes_cloud.py` smoke (REQ-X3), `test_openapi_no_delete_operations.py` (SC-04).
-- [ ] **T-PR1-16**: Unit tests — `test_versioned_close_and_insert.py` (REQ-04, REQ-05, 409 on collision), `test_jwt_issuer_guard.py` (REQ-X7, REQ-X8 cross-audience → 401), `test_permissions_dependency.py` (REQ-OP-13, SC-OP-04), `test_tenancy_operador.py` + `test_tenancy_admin.py` (REQ-X1, REQ-X2, SC-X1), `test_pagination_cursor.py` (REQ-OP-01, SC-OP-01), `test_session_cycle_record_login.py` (REQ-42, REQ-43).
-- [ ] **T-PR1-17**: Add `pyproject.toml` ruff rules — `select = ["E","F","I","UP","B","ASYNC","SIM","PT","RUF"]`; per-file ignores for `tests/**` (`B`, `PT011`, `S101`) and `migrations/**` (`E501`); AST rule file for `session.execute(update/delete)` rejection.
-- [ ] **T-PR1-18**: `apps/ui-kit/src/api/{admin,branch}/generated/.gitkeep` placeholders + update `AGENTS.md` Risk Register to mark "bootstrap PR2 schema completeness" as mitigated (now that PR0 + preflight landed).
-- [ ] **T-PR1-20**: **`backend/packages/parkos_core/migrations/versions/0001_initial_schema.py`** — initial migration creating the 49 tables in `prod.*` schema. Create tables in dependency order: catalogs first (`usuarios`, `permisos`, `permisos_usuario`, `usuarios_sucursal`, `tipo_*`, `impuestos`, `otros_cobros`, `costos_servicios`, `configuracion_*`, `empresa`, `resolucion_facturacion`, `sucursal`, `documentos`, `tarifas_sucursal`, `cantidad_vehiculos_sucursal`), then commercial (`clientes`, `clientes_b2b`, `subscripciones_cliente`, `vehiculos`, `subscripcion_vehiculos`), then session-cycle (`login`, `sesion`), then events (`ingreso`, `facturas`, `factura_electronica`), then workflows (`reimpresion_ticket`, `anulaciones`, `reclamos`, `alerta`, `envio_dian`, `validacion_evento`), then append-only (`salidas`, `factura_detalle`, `factura_impuestos`, `factura_otros_cobros`, `factura_pagos`, `revocacion_factura`, `caja`, `arqueo`, `sync_queue`, `sync_conflict`, `sync_log`, `log_transaccional`). Every `[V]` table: PK `uuid`, UK includes `vigente_desde`, columns per ER (exact name + type). Every FK has the right `references`. Every `created_at`/`created_by` audit column populated by trigger `fn_audit_columns()` BEFORE INSERT. Every `vigente_hasta`/`estado` versioning column on `[V]` and `[L]` tables populated by trigger `fn_set_vigente_inicial()` BEFORE INSERT (sets `vigente_desde = NOW()` if NULL, sets `estado = 'activo'` if NULL). Idempotent migration (`op.execute("DROP TABLE IF EXISTS ...")` only in dev; CI uses fresh DB). **Carries `size:exception` per `config.yaml` rules.tasks** (~2000 LOC). REQ-X1, REQ-X2, REQ-X3 (table-level enforcement), REQ-X4 (hash chain genesis below), REQ-01.
-- [ ] **T-PR1-21**: Same migration script — **`REVOKE UPDATE, DELETE ON prod.<table> FROM rol_app`** for the 11 `[A]` tables: `salidas`, `factura_detalle`, `factura_impuestos`, `factura_otros_cobros`, `factura_pagos`, `revocacion_factura`, `caja`, `arqueo`, `sync_queue`, `sync_conflict`, `sync_log`, `log_transaccional`. Note: `sync_queue` excluded from REVOKE per design §12 (carve-out for operational state). Plus `GRANT SELECT, INSERT ON prod.<table> TO rol_app` so app can write. `CREATE ROLE rol_admin_auditor WITH BYPASSRLS; GRANT SELECT ON ALL TABLES IN SCHEMA prod TO rol_admin_auditor`. REQ-X5, REQ-12.
-- [ ] **T-PR1-22**: Same migration script — **`fn_<table>_inmutable()` PL/pgSQL trigger + CREATE TRIGGER BEFORE UPDATE OR DELETE ON prod.<table>`** for each of the 11 `[A]` tables (same list as T-PR1-21, minus `sync_queue` per design §12). Function raises `EXCEPTION '<TABLE>_INMUTABLE'`. Per `config.yaml rules.tasks`: REVOKE + trigger MUST be in the SAME migration. REQ-13.
-- [ ] **T-PR1-23**: Same migration script — **`fn_<table>_ls_session_guard()` PL/pgSQL trigger + CREATE TRIGGER BEFORE UPDATE ON prod.<table>`** for `[L-S]` tables (`login`, `sesion`). Function checks: if NEW row's `estado` changed AND a `log_transaccional` row with `tabla_afectada=<table>` AND `uuid_registro_afectado=NEW.uuid` was NOT inserted in the same transaction → raises `EXCEPTION 'LOG_TRANSACCIONAL_REQUIRED'`. Per `config.yaml rules.tasks`. REQ-42, REQ-46.
-- [ ] **T-PR1-24**: Same migration script — **`pg_partman.create_parent(p_parent_table => 'prod.<table>', p_control => 'fecha_retencion_hasta', p_type => 'range', p_interval => '1 month', p_premake => 3)`** for the 8 high-volume `[A]` tables: `salidas`, `factura_detalle`, `factura_pagos`, `log_transaccional`, `sync_log`, `sync_queue`, `caja`, `arqueo`. Verify with `SELECT relname FROM pg_class WHERE relname LIKE '<table>%' AND relkind = 'r'` returning 4 partitions per table (current + 3 premake). REQ-X6, REQ-12.
-- [ ] **T-PR1-25**: Same migration script — **hash-chain genesis**. After `log_transaccional` table is created, INSERT one row per `uuid_sucursal = NULL` (the "default cloud" branch) and one per `uuid_sucursal = '<demo-branch-uuid>'` (a demo branch for testing) with `hash_anterior = sha256(b'genesis:' + uuid_sucursal_bytes).hexdigest()`, `hash_actual = hash_anterior`, `accion = 'inicialización'`, `timestamp_evento = NOW()`. This bootstraps the chain so subsequent inserts can extend it. Plus the `fn_extend_hash_chain()` PL/pgSQL trigger BEFORE INSERT ON log_transaccional that reads MAX(timestamp_evento) prior row per uuid_sucursal, computes new hash, raises HASH_CHAIN_INTEGRITY_VIOLATION on mismatch. REQ-16, REQ-X4.
-- [ ] **T-PR1-26**: Same migration script — **AFTER INSERT trigger `fn_<table>_enqueue_sync()` ON prod.<table>`** for every replicated table (24 of them per design §12). Function: `INSERT INTO prod.sync_queue (operacion, tabla, uuid_registro, datos, prioridad) VALUES (...)` with `WHEN (TG_TABLE_NAME <> 'sync_queue')` filter to prevent recursion. Stamps per-uuid_sucursal monotonic seq in `datos->>'seq'`. REQ-X6.
-- [ ] **T-PR1-27**: **Idempotent seed** (same migration or separate). INSERT seed rows for required global defaults: one `permisos` row per canonical permission code (~15 codes per design §7), one `configuracion_tolerancias` row with `uuid_sucursal = NULL` (global default), one `configuracion_seguridad` row with `uuid_sucursal = NULL`, one `tipo_*` row per type, one `empresa` placeholder row (`nombre='Demo Empresa'`, `nit='900000000-1'`). Use `ON CONFLICT DO NOTHING` for idempotency. REQ-OP-13.
-- [ ] **T-PR1-28**: Migration pre-flight + apply. Run `uv run alembic upgrade --sql head` and inspect for the 49 `CREATE TABLE` + 11 `REVOKE` + 11 `TRIGGER` + 2 `ls_session%` + 8 `create_parent` + hash-chain genesis INSERTs. Apply via `uv run alembic upgrade head` against testcontainers Postgres. Verify via `psql -c "\\dt prod.*" | wc -l` = 49, `psql -c "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgrelid::regclass::text LIKE 'prod.%'" | wc -l` ≥ 22 (11 [A] + 2 [L-S] + 1 audit + 1 versioning + 8 sync enqueue + 1 hash chain = 24).
-- [ ] **T-PR1-29**: Run `python openspec/scripts/check_schema_match.py` against the migrated testcontainers Postgres. Exit 0 = 100% match against `modelo_datos_er.mmd`. This is the gate that proves the DB matches the ER. If exit ≠ 0, fix the migration until it matches (do NOT modify the ER or the script's expected values).
-- [ ] **T-PR1-30**: Commit + push + open PR → `dev`. PR title: `feat(create-49-table-apis): ORM foundation + auth + JWT + initial schema (size:exception)`. PR body includes the test summary, the migration diff-stat (~2000 LOC), and the check_schema_match.py result (exit 0). Add `type:feature` and `size:exception` labels. Chain context (📍 PR1 of 12).
+- [ ] **T-PR1a-01**: `backend/pyproject.toml` (workspace marker) + `backend/packages/parkos_core/pyproject.toml` (deps: `sqlalchemy[asyncio]>=2.0`, `asyncpg`, `psycopg[binary]>=3`, `pydantic>=2`, `pydantic-settings`, `python-jose[cryptography]`, `bcrypt`, `passlib[bcrypt]`, `structlog`, `alembic`, `pytest`, `pytest-asyncio`, `testcontainers[postgres]>=4`). Run `uv lock`. Pre-flight: `uv sync --frozen` succeeds; `python -c "import psycopg, sqlalchemy, alembic, pytest, testcontainers.postgres"` exits 0.
+- [ ] **T-PR1a-02**: **`backend/packages/parkos_core/migrations/versions/0001_initial_schema.py`** — initial migration creating the 49 tables in `prod.*` schema. Create tables in dependency order: catalogs first (`usuarios`, `permisos`, `permisos_usuario`, `usuarios_sucursal`, `tipo_*`, `impuestos`, `otros_cobros`, `costos_servicios`, `configuracion_*`, `empresa`, `resolucion_facturacion`, `sucursal`, `documentos`, `tarifas_sucursal`, `cantidad_vehiculos_sucursal`), then commercial (`clientes`, `clientes_b2b`, `subscripciones_cliente`, `vehiculos`, `subscripcion_vehiculos`), then session-cycle (`login`, `sesion`), then events (`ingreso`, `facturas`, `factura_electronica`), then workflows (`reimpresion_ticket`, `anulaciones`, `reclamos`, `alerta`, `envio_dian`, `validacion_evento`), then append-only (`salidas`, `factura_detalle`, `factura_impuestos`, `factura_otros_cobros`, `factura_pagos`, `revocacion_factura`, `caja`, `arqueo`, `sync_queue`, `sync_conflict`, `sync_log`, `log_transaccional`). Every `[V]` table: PK `uuid`, UK includes `vigente_desde`, columns per ER (exact name + type). Every FK has the right `references`. Every `created_at`/`created_by` audit column populated by trigger `fn_audit_columns()` BEFORE INSERT. Every `vigente_hasta`/`estado` versioning column on `[V]` and `[L]` tables populated by trigger `fn_set_vigente_inicial()` BEFORE INSERT (sets `vigente_desde = NOW()` if NULL, sets `estado = 'activo'` if NULL). Idempotent migration (`op.execute("DROP TABLE IF EXISTS ...")` only in dev; CI uses fresh DB). **Carries `size:exception`** (~2000 LOC). REQ-X1, REQ-X2, REQ-X3 (table-level enforcement), REQ-X4 (hash chain genesis in T-PR1a-07), REQ-01.
+- [ ] **T-PR1a-03**: Same migration script — **`REVOKE UPDATE, DELETE ON prod.<table> FROM rol_app`** for the 11 `[A]` tables: `salidas`, `factura_detalle`, `factura_impuestos`, `factura_otros_cobros`, `factura_pagos`, `revocacion_factura`, `caja`, `arqueo`, `sync_queue`, `sync_conflict`, `sync_log`, `log_transaccional`. Note: `sync_queue` excluded from REVOKE per design §12 (carve-out for operational state). Plus `GRANT SELECT, INSERT ON prod.<table> TO rol_app` so app can write. `CREATE ROLE rol_admin_auditor WITH BYPASSRLS; GRANT SELECT ON ALL TABLES IN SCHEMA prod TO rol_admin_auditor`. REQ-X5, REQ-12.
+- [ ] **T-PR1a-04**: Same migration script — **`fn_<table>_inmutable()` PL/pgSQL trigger + CREATE TRIGGER BEFORE UPDATE OR DELETE ON prod.<table>`** for each of the 11 `[A]` tables (same list as T-PR1a-03, minus `sync_queue` per design §12). Function raises `EXCEPTION '<TABLE>_INMUTABLE'`. Per `config.yaml rules.tasks`: REVOKE + trigger MUST be in the SAME migration. REQ-13.
+- [ ] **T-PR1a-05**: Same migration script — **`fn_<table>_ls_session_guard()` PL/pgSQL trigger + CREATE TRIGGER BEFORE UPDATE ON prod.<table>`** for `[L-S]` tables (`login`, `sesion`). Function checks: if NEW row's `estado` changed AND a `log_transaccional` row with `tabla_afectada=<table>` AND `uuid_registro_afectado=NEW.uuid` was NOT inserted in the same transaction → raises `EXCEPTION 'LOG_TRANSACCIONAL_REQUIRED'`. Per `config.yaml` rules.tasks`. REQ-42, REQ-46.
+- [ ] **T-PR1a-06**: Same migration script — **`pg_partman.create_parent(p_parent_table => 'prod.<table>', p_control => 'fecha_retencion_hasta', p_type => 'range', p_interval => '1 month', p_premake => 3)`** for the 8 high-volume `[A]` tables: `salidas`, `factura_detalle`, `factura_pagos`, `log_transaccional`, `sync_log`, `sync_queue`, `caja`, `arqueo`. Verify with `SELECT relname FROM pg_class WHERE relname LIKE '<table>%' AND relkind = 'r'` returning 4 partitions per table (current + 3 premake). REQ-X6, REQ-12.
+- [ ] **T-PR1a-07**: Same migration script — **hash-chain genesis**. After `log_transaccional` table is created, INSERT one row per `uuid_sucursal = NULL` (the "default cloud" branch) and one per `uuid_sucursal = '<demo-branch-uuid>'` (a demo branch for testing) with `hash_anterior = sha256(b'genesis:' + uuid_sucursal_bytes).hexdigest()`, `hash_actual = hash_anterior`, `accion = 'inicialización'`, `timestamp_evento = NOW()`. This bootstraps the chain so subsequent inserts can extend it. Plus the `fn_extend_hash_chain()` PL/pgSQL trigger BEFORE INSERT ON log_transaccional that reads MAX(timestamp_evento) prior row per uuid_sucursal, computes new hash, raises HASH_CHAIN_INTEGRITY_VIOLATION on mismatch. REQ-16, REQ-X4.
+- [ ] **T-PR1a-08**: Same migration script — **AFTER INSERT trigger `fn_<table>_enqueue_sync()` ON prod.<table>`** for every replicated table (24 of them per design §12). Function: `INSERT INTO prod.sync_queue (operacion, tabla, uuid_registro, datos, prioridad) VALUES (...)` with `WHEN (TG_TABLE_NAME <> 'sync_queue')` filter to prevent recursion. Stamps per-uuid_sucursal monotonic seq in `datos->>'seq'`. REQ-X6.
+- [ ] **T-PR1a-09**: Migration pre-flight + apply against testcontainers Postgres. Boot a testcontainers Postgres container in `tests/conftest.py` (or in a one-off Python script under `backend/scripts/apply_migration.py`); run `alembic upgrade head` against it; verify with `psql -c "\\dt prod.*" | wc -l` = 49, `SELECT count(*) FROM pg_proc WHERE proname LIKE 'fn_%_inmutable'` ≥ 11, `SELECT count(*) FROM pg_proc WHERE proname LIKE 'fn_%_ls_session_guard%'` ≥ 2, `SELECT count(*) FROM partman.part_config` = 8.
+- [ ] **T-PR1a-10**: Run `python openspec/scripts/check_schema_match.py --database-url <testcontainers-url> --schema prod`. Exit 0 = 100% match against `modelo_datos_er.mmd`. This is THE gate that proves the DB matches the ER. If exit ≠ 0, fix the migration until it matches (do NOT modify the ER or the script's expected values).
+- [ ] **T-PR1a-11**: Commit + push + open PR → `dev`. PR title: `feat(create-49-table-apis): initial 49-table schema migration (size:exception)`. PR body includes: (a) the migration diff-stat (~2000 LOC), (b) the testcontainers apply log showing 49 tables + triggers + partitions created, (c) the `check_schema_match.py` exit 0 result, (d) the git ref where the test DB is reachable. Add `type:feature` and `size:exception` labels. Chain context (📍 PR1a of 14).
 
 ### Acceptance
-- **Migration applied to fresh testcontainers DB**: `alembic upgrade head` succeeds; `psql -c "\\dt prod.*" | wc -l` returns 49; trigger count ≥ 24; partman parents = 8 (per T-PR1-28).
-- **`python openspec/scripts/check_schema_match.py` exits 0** — 100% match between `modelo_datos_er.mmd` and the migrated `prod.*` schema (T-PR1-29). This is THE gate that proves the DB matches the ER. If exit ≠ 0, fix the migration (do NOT modify the ER or the script).
-- `uv run pytest backend/tests/migrations/test_a_inmutable.py -q` passes (12 fixtures, one per [A] table).
-- `uv run pytest backend/tests/migrations/test_ls_session_guard.py -q` passes (2 fixtures, login + sesion).
-- `uv run pytest backend/tests/migrations/test_revokes_active.py -q` passes (11 REVOKE statements verified).
-- `uv run pytest backend/tests/migrations/test_partman_parents.py -q` passes (8 partman parents registered).
-- `uv run pytest backend/tests/migrations/test_hash_chain_genesis.py -q` passes (hash chain starts with `sha256(b'genesis:' + uuid_sucursal_bytes)`).
-- `uv run pytest backend/tests/repo/test_versioned.py -q` passes.
-- `uv run pytest backend/tests/api/test_no_delete_routes.py -q` passes.
-- `uv run pytest backend/tests/{unit,static} -q` all pass.
-- `uv run ruff check backend/packages/parkos_core/` passes (no AST rule violations).
+- **Migration applied to fresh testcontainers DB**: `alembic upgrade head` succeeds; 49 tables in `prod.*`; ≥ 11 inmutable triggers; ≥ 2 ls_session_guard triggers; 8 partman parents; ≥ 24 total triggers (audit + versioning + inmutable + ls_session_guard + hash_chain + sync_enqueue).
+- **`python openspec/scripts/check_schema_match.py` exits 0** — 100% match between `modelo_datos_er.mmd` and the migrated `prod.*` schema. This is THE gate that proves the DB matches the ER. If exit ≠ 0, fix the migration (do NOT modify the ER or the script).
+
+### Estimate
+**`size:exception` per `config.yaml` rules.tasks`** — the migration file alone is ~2000 LOC of Alembic + REVOKE + triggers + pg_partman + hash-chain genesis. Cannot split (single Alembic revision). PR is ~2200 LOC across ~6 files (pyproject.toml × 2 + uv.lock + migrations/env.py + script.py.mako + 0001_initial_schema.py + apply script). Reviewer burden acknowledged; `size:exception` label required.
+
+---
+
+## PR1b — ORM models + Pydantic schemas + repo helpers + auth/JWT + API routers
+
+### Branch
+`feat/create-49-table-apis-pr1b-orm-auth-api` (off `dev`)
+
+### Dependencies
+- PR1a merged to `dev` (the 49-table schema exists; check_schema_match.py exit 0 confirmed in PR1a CI).
+
+### Work-unit commit boundaries
+~10 commits (one per task family). Co-commit related test+code where natural.
+
+### Tasks
+
+- [ ] **T-PR1b-01**: `backend/packages/parkos_core/src/parkos_core/models/{__init__.py, base.py}` — five abstract bases per `design.md` §3.2 (`VersionedBase`, `LifecycleEventBase`, `WorkflowBase`, `SessionBase`, `AppendOnlyBase`) with mixins (`IdMixin`, `AuditMixin`, `SyncMixin`, `VersionedMixin`, `RetentionMixin`, `HashChainMixin`) and the `__write_only__` / `__close_and_insert_only__` / `__record_only__` / `__workflow_only__` / `__session_only__` markers consumed by AST tests.
+- [ ] **T-PR1b-02**: 6 ORM model files: `models/V/{usuarios,permisos,permisos_usuario,usuarios_sucursal}.py` (4 `[V]` auth, REQ-01 + REQ-OP-13); `models/L_S/login.py` (REQ-42, REQ-46); `models/A/log_transaccional.py` (REQ-16, REQ-X4 with `HashChainMixin` columns).
+- [ ] **T-PR1b-03**: `schemas/{__init__.py, auth.py, common.py}` — Pydantic v2 `Read`/`Create`/`Update`/`Filter`/`ReadList` for the 5 auth tables; `common.py` carries `_Base` (`ConfigDict(from_attributes=True, extra='forbid')`); field names mirror ORM columns (C-3).
+- [ ] **T-PR1b-04**: `repo/{__init__.py, versioned.py, session_cycle.py (skeleton), pagination.py}` — `close_and_insert/current_version/history/list_with_cursor` (REQ-04, REQ-05); `record_login` + `close_login_with_log` skeleton (REQ-42, REQ-45); `Cursor` encode/decode (REQ-OP-01).
+- [ ] **T-PR1b-05**: `auth/{jwt_issuer_guard.py, permissions.py, tenancy.py, tokens.py}` — `verify_jwt`/`requires_issuer` (REQ-X7); `require_permission(codigo)` dep (REQ-OP-13); `TenantContext` + `X-Sucursal-Context` enforcement (REQ-X1, REQ-X2, SC-X1); `issue_token`/`verify_token` with grace rotation (`JWT_OVERLAP_HOURS=24`).
+- [ ] **T-PR1b-06**: `api/{__init__.py, router_factory.py, deps.py, middleware.py}` — `make_router(*, resource, model_cls, schema_module, repo_kind, derived_view=None, issuer_required, permission_required=None, write_enabled=True, transition_states=None)` per `design.md` §5 (uniform C+Q+U, NO DELETE); dependency re-exports; `IdempotencyKeyMiddleware` (REQ-OP-04).
+- [ ] **T-PR1b-07**: `api/v1/{__init__.py, auth.py, catalogos.py}` — `POST /auth/login` + `POST /auth/refresh` + `POST /auth/logout` (login uses `record_login` success path; failure path lands in PR7); `catalogos.py` smoke-mounts `tipo-persona` only (full mount in PR3); `__init__.py` adds lazy DIAN-router import guard per `design.md` §10 Layer 2.
+- [ ] **T-PR1b-08**: Wire `backend/packages/api_admin/src/api_admin_main/app.py` + `api_sucursal_main/app.py` to mount the router factory output under `/api/v1`; both apps lazy-import `dian.cloud_router` only when `PARKOS_DEPLOY=cloud`.
+- [ ] **T-PR1b-09**: Commit + push + open PR → `dev`. PR title: `feat(create-49-table-apis): ORM + schemas + auth + JWT + API routers`. Add `type:feature` label. Chain context (📍 PR1b of 14).
+
+### Acceptance
+- `uv run python -c "from parkos_core.auth.jwt_issuer_guard import requires_issuer; from parkos_core.repo.versioned import close_and_insert; from parkos_core.api.router_factory import make_router"` exits 0 (all imports resolve).
+- `uv run python -c "from parkos_core.api.v1.auth import router; print(router.routes)"` exits 0 (auth router mounts).
+- `uv run python -m parkos_core.api_admin_main --help` exits 0 (CLI parses).
 - Login flow: `curl -X POST http://localhost:8000/api/v1/auth/login -d '{"email":"...","password":"..."}' -H 'Content-Type: application/json'` returns JWT with correct `iss`, `aud`, `kid`; `curl /api/v1/tipo-persona` with cross-issuer token returns 401.
 
 ### Estimate
-**`size:exception` per `config.yaml` rules.tasks** — the initial-schema migration alone is ~2000 LOC of Alembic + REVOKE + triggers + pg_partman + hash-chain genesis. Combined with ORM + auth + JWT + tests, this PR is ~2700 LOC across ~32 files. Apply-time split is NOT pre-scoped (the migration MUST be one Alembic revision per the single-head invariant). The reviewer burden is acknowledged and the PR label `size:exception` is required.
+~900 LOC across ~18 files (5 models + 3 schemas + 4 repo + 4 auth + 4 api + 2 main entrypoints + a few __init__.py files).
+
+---
+
+## PR1c — Tests + conftest + ruff rules + ui-kit placeholders + idempotent seed
+
+### Branch
+`feat/create-49-table-apis-pr1c-tests-verify` (off `dev`)
+
+### Dependencies
+- PR1b merged to `dev` (application code exists; can now test it).
+
+### Work-unit commit boundaries
+~7 commits (one per task family).
+
+### Tasks
+
+- [ ] **T-PR1c-01**: Migration `backend/packages/parkos_core/migrations/versions/0002_seed_permisos_canonicos.py` — INSERT ~15 canonical permission codes (REQ-OP-13: `config_catalogo`, `config_sistema`, `config_sucursal`, `gestionar_clientes`, `emitir_factura`, `emitir_factura_electronica`, `revocar_factura`, `gestionar_dian`, `audit_read`, `admin_usuarios`, `aprobar_anulacion`, `ejecutar_anulacion`, `crear_arqueo`, `solicitar_reverso`, `cerrar_sesion`, `descartar_alerta`). Idempotent (`ON CONFLICT DO NOTHING`).
+- [ ] **T-PR1c-02**: `backend/tests/conftest.py` — testcontainers Postgres + Redis fixtures + JWT mint helpers (`mint_admin_jwt`, `mint_operador_jwt`, `mint_sync_agent_jwt`) per `design.md` §15.
+- [ ] **T-PR1c-03**: Migration tests — `tests/migrations/test_a_inmutable.py` (12 fixtures, SC-10-A-INMUTABLE-DB), `test_ls_session_guard.py` (2 fixtures, SC-42), `test_revokes_active.py` (REQ-X5), `test_partman_parents.py` (8 partman parents, REQ-X6), `test_hash_chain_genesis.py` (REQ-16, REQ-X4).
+- [ ] **T-PR1c-04**: Static AST tests — `tests/static/test_no_delete_routes.py` (SC-04), `test_no_raw_upsert_on_v_tables.py` (C-2), `test_no_raw_dml_on_a_tables.py` (REQ-13), `test_no_raw_dml_on_ls_tables.py` (REQ-46), `test_openapi_branch_excludes_cloud.py` smoke (REQ-X3), `test_openapi_no_delete_operations.py` (SC-04).
+- [ ] **T-PR1c-05**: Unit tests — `test_versioned_close_and_insert.py` (REQ-04, REQ-05, 409 on collision), `test_jwt_issuer_guard.py` (REQ-X7, REQ-X8 cross-audience → 401), `test_permissions_dependency.py` (REQ-OP-13, SC-OP-04), `test_tenancy_operador.py` + `test_tenancy_admin.py` (REQ-X1, REQ-X2, SC-X1), `test_pagination_cursor.py` (REQ-OP-01, SC-OP-01), `test_session_cycle_record_login.py` (REQ-42, REQ-43).
+- [ ] **T-PR1c-06**: Add ruff config to `pyproject.toml` — `select = ["E","F","I","UP","B","ASYNC","SIM","PT","RUF"]`; per-file ignores for `tests/**` (`B`, `PT011`, `S101`) and `migrations/**` (`E501`); AST rule file for `session.execute(update/delete)` rejection.
+- [ ] **T-PR1c-07**: `apps/ui-kit/src/api/{admin,branch}/generated/.gitkeep` placeholders + update `AGENTS.md` Risk Register to mark "bootstrap PR2 schema completeness" as mitigated (now that PR0 + PR1a landed).
+- [ ] **T-PR1c-08**: Re-run `python openspec/scripts/check_schema_match.py` against the post-PR1b test DB to confirm 100% match still holds (the application code shouldn't have touched the schema, but verify).
+- [ ] **T-PR1c-09**: Commit + push + open PR → `dev`. PR title: `test(create-49-table-apis): unit + migration + AST tests + idempotent seed`. Add `type:test` label. Chain context (📍 PR1c of 14).
+
+### Acceptance
+- `uv run pytest backend/tests/migrations/ -q` passes (test_a_inmutable, test_ls_session_guard, test_revokes_active, test_partman_parents, test_hash_chain_genesis — 5 files).
+- `uv run pytest backend/tests/repo/test_versioned.py backend/tests/api/test_no_delete_routes.py -q` passes.
+- `uv run pytest backend/tests/{unit,static} -q` all pass.
+- `uv run ruff check backend/packages/parkos_core/` passes (no AST rule violations).
+- `python openspec/scripts/check_schema_match.py` exits 0 (re-confirmed after application code added).
+
+### Estimate
+~600 LOC across ~17 files (1 migration + 1 conftest + 5 migration tests + 6 AST tests + 6 unit tests + 2 ruff configs + 2 .gitkeep).
 
 ---
 
@@ -735,7 +785,9 @@ If `git diff --stat` post-implementation > 800 LOC → execute **PR11a** (T-PR11
 | PR | Tasks | LOC | Files | Risk |
 |---|---|---|---|---|
 | PR0 | 9 | ~330 | 7 | LOW |
-| PR1 | 30 | ~2700 | 32 | **HIGH — `size:exception`** (initial schema migration ~2000 LOC; ORM + auth + JWT + tests ~700 LOC; single Alembic revision per `config.yaml rules.tasks`) |
+| PR1a | 49 (initial schema — 26 [V] + 3 [L-E] + 6 [L-W] + 2 [L-S] + 12 [A]) | ~6 | **~2200** | **HIGH — `size:exception`** (single Alembic revision per `config.yaml rules.tasks`; cannot split) | — |
+| PR1b | 0 | ~18 | ~900 | MED | — |
+| PR1c | 0 | ~17 | ~600 | LOW | — |
 | PR2 | 15 | ~700 | 17 | MED |
 | PR3 | 9 | ~600 | 13 | LOW |
 | PR4 | 12 | ~750 | 12 | MED |
@@ -746,7 +798,7 @@ If `git diff --stat` post-implementation > 800 LOC → execute **PR11a** (T-PR11
 | PR9 | 20 | ~800 | 14 | **HIGH** (apply-time split to 9a+9b; sync workers) |
 | PR10 | 15 | ~600 | 12 | MED (multi-sucursal admin views + branch-selector UI) |
 | PR11 | 18 | ~700 | 10 | **HIGH** (apply-time split to 11a+11b; DIAN dispatcher) |
-| **Total** | **222** | **~9,300** | **~190** | 5 conditional splits: PR5a/5b, PR6a/6b, PR8a/8b, PR9a/9b, PR11a/11b + PR1 carries `size:exception` |
+| **Total** | **235** | **~7,400** | **~210** | 5 conditional splits: PR5a/5b, PR6a/6b, PR8a/8b, PR9a/9b, PR11a/11b + PR1a carries `size:exception` |
 
 ## Risks surfaced
 

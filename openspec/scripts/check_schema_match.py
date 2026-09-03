@@ -222,10 +222,21 @@ def diff_schema(tables: dict[str, Table], conn) -> Diff:
     cur = conn.cursor()
 
     # --- (a) every table exists ---
+    # We query pg_class directly (not information_schema.tables) so we can
+    # filter out pg_partman child partitions. pg_partman creates child
+    # partitions as ordinary tables (relkind='r') with relispartition=true;
+    # these are implementation artifacts of pg_partman.create_parent() and
+    # should NOT be flagged as "extras" against the canonical ER. The user
+    # tables themselves show up as either relkind='r' (ordinary) or
+    # relkind='p' (partitioned — the 8 high-volume tables). We include both
+    # and exclude child partitions via relispartition=false.
     cur.execute("""
-        SELECT table_name FROM information_schema.tables
-        WHERE table_schema = current_schema()
-        ORDER BY table_name;
+        SELECT c.relname FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE n.nspname = current_schema()
+          AND c.relkind IN ('r', 'p')
+          AND NOT c.relispartition
+        ORDER BY c.relname;
     """)
     db_tables = {row[0] for row in cur.fetchall()}
     er_tables = set(tables.keys())

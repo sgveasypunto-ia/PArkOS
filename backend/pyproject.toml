@@ -1,0 +1,19 @@
+# uv workspace marker for the Parkos backend monorepo.
+#
+# This file lives at `backend/pyproject.toml` and declares the workspace so
+# `uv` can resolve packages under `packages/*` as a single unit. Individual
+# packages carry their own `[project]` block; this file is intentionally
+# minimal per uv 0.4+ workspace conventions.
+#
+# Reference: https://docs.astral.sh/uv/concepts/projects/workspaces/
+
+[tool.uv.workspace]
+# Auto-discover packages under packages/ (uv 0.4+ convention).
+members = ["packages/*"]
+# Allow transitive resolution to reach into shared test fixtures.
+exclude = []
+
+[dependency-groups]
+dev = [
+    "testcontainers[postgres]>=4.15.0",
+]
