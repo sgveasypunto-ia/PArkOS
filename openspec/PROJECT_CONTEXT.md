@@ -52,19 +52,19 @@ The user has communicated an **assumed stack** in the orchestrator preflight. Th
   3. **Admin-Op** — operational admin
   4. **Admin-Cfg** — configurator / white-label admin
 
-### Data Model — AUDIT-FIRST (45 tables)
+### Data Model — AUDIT-FIRST (49 tables)
 
 Three enforcement levels encoded in the Mermaid model:
 
 | Marker | Count | Semantics | Enforcement |
 |--------|-------|-----------|-------------|
-| `[V]` versioned projection | 24 | Each change generates a new row (`vigente_desde`, `vigente_hasta`). Current state view. NOT source of truth. | UPDATE creates new version. DELETE never. |
-| `[L]` lifecycle event | 9 | Three subtypes (see below) | Per subtype |
+| `[V]` versioned projection | 26 | Each change generates a new row (`vigente_desde`, `vigente_hasta`). Current state view. NOT source of truth. | UPDATE creates new version. DELETE never. |
+| `[L]` lifecycle event | 11 | Three subtypes (see below) | Per subtype |
 | `[L-E]` event puro | 3 | State is DERIVED from other registered events. NO mutation. (facturas, factura_electronica, ingreso) | INSERT-only. |
-| `[L-W]` workflow | 4 | State transitions as NEW rows with FK `uuid_padre` to the original (chain). Last row of the chain = current state. (anulaciones, reclamos, alerta, reimpresion_ticket) | INSERT-only. UPDATE/DELETE forbidden. |
+| `[L-W]` workflow | 6 | State transitions as NEW rows with FK `uuid_padre` to the original (chain). Last row of the chain = current state. (anulaciones, reclamos, alerta, reimpresion_ticket, envio_dian, validacion_evento) | INSERT-only. UPDATE/DELETE forbidden. |
 | `[L-S]` session/cycle | 2 | UPDATE legitimate on `estado`/`fecha_cierre` with OBLIGATORY `log_transaccional` row in the same TX. (login, sesion) | UPDATE only on `estado` and `fecha_cierre`. |
 | `[A]` source-of-truth | 12 | Inmutable enforced. Append-only. | REVOKE UPDATE, DELETE FROM `rol_app` ON `[A]_tables` (except `sync_queue`). Triggers RAISE EXCEPTION. |
-| **Total** | **45** | | |
+| **Total** | **49** | | |
 
 ### Compliance — DIAN (Colombia)
 
@@ -107,6 +107,6 @@ Three enforcement levels encoded in the Mermaid model:
 - **No git repo yet** — OpenSpec file benefits (versioning, audit trail) are dormant until `git init` runs.
 - **No test runner** — strict TDD is off. Re-evaluate after first backend `pyproject.toml` or first `package.json` lands.
 - **No `.codegraph/`** — structural queries fall back to filesystem tools until `codegraph init` is run.
-- **45-table AUDIT-FIRST model is rich** — first scaffold risk: choosing a code structure that can't honor all three audit levels. Recommend sdd-design produce a backend module layout (`models/` partitioned by audit level) BEFORE first migration.
+- **49-table AUDIT-FIRST model is rich** — first scaffold risk: choosing a code structure that can't honor all three audit levels. Recommend sdd-design produce a backend module layout (`models/` partitioned by audit level) BEFORE first migration.
 - **DIAN compliance is hard** — retention 5+ years + SHA256 hash chain + REVOKE on `[A]` tables is not optional. The model `.mmd` MUST be the source of truth; do NOT regenerate from prose.
 - **Multi-tenant + cloud-edge** — sync conflicts will happen. Plan for `sync_conflict` resolution strategy in sdd-design.

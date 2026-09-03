@@ -18,7 +18,7 @@
 
 ## Constraints
 
-- **Schema is foundational** — `0001_initial_schema.py` (45 tables + 11 REVOKE + 11 triggers + 8 `pg_partman` + hash-chain genesis + seed) lands in one PR with `size:exception`. Cannot split (single `alembic head` invariant).
+- **Schema is foundational** — `0001_initial_schema.py` (49 tables + 11 REVOKE + 11 triggers + 8 `pg_partman` + hash-chain genesis + seed) lands in one PR with `size:exception`. Cannot split (single `alembic head` invariant).
 - **JWT three issuers** must exist before IT-1 — the bootstrap builds the auth skeleton with `admin`, `operador`, `sync-agent` keys. IT-1 wires login endpoints + UI.
 - **DIAN dispatcher** is cloud-only — branch imports of `parkos_core.dian.cloud` MUST fail (RED test enforces the boundary from the first iteration).
 - **Hash-chain survival** — every iteration that writes to `log_transaccional` or `revocacion_factura` MUST verify `hash_anterior == prev.hash_actual` per `uuid_sucursal`.
@@ -41,13 +41,13 @@ Tasks:
 - [ ] F1.3 `docker-compose.cloud.yml` + `docker-compose.branch.yml` + `.env.*.example`.
 - [ ] F1.4 `infra/postgres/init/{01_roles,02_extensions}.sql`.
 - [ ] F1.5 `infra/docker/entrypoint.sh` skeleton (wait-for-postgres + `${VAR:?}` precheck + `alembic upgrade head` + REVOKE verifier + `exec "$@"`).
-- [ ] F1.6 `backend/packages/parkos_core/migrations/{env.py,script.py.mako,versions/0001_initial_schema.py}` — **45 tables + 11 REVOKE + 11 triggers + 2 session guards + 8 `pg_partman.create_parent` + hash-chain genesis + idempotent seed**. Pre-flight `alembic upgrade --sql` per `config.yaml` `rules.tasks`.
+- [ ] F1.6 `backend/packages/parkos_core/migrations/{env.py,script.py.mako,versions/0001_initial_schema.py}` — **49 tables + 11 REVOKE + 11 triggers + 2 session guards + 8 `pg_partman.create_parent` + hash-chain genesis + idempotent seed**. Pre-flight `alembic upgrade --sql` per `config.yaml` `rules.tasks`.
 - [ ] F1.7 RED test for entrypoint (shell commands + executable-file classification from threat matrix).
 - [ ] F1.8 RED test for `0001_initial_schema.py`: drop a trigger → restart container → entrypoint exits non-zero.
 - [ ] F1.9 `parkos_core` skeleton: `db/{base,engine,tenancy}.py`, `auth/{passwords.py, jwt_three_issuers.py stub}`, `models/{V,L_E,L_W,L_S,A}/` stubs (one class per table with `__tablename__` + PK so Alembic sees `target_metadata`).
 - [ ] F1.10 `parkos_core/api_admin/routers/health.py` + `parkos_core/api_sucursal/routers/health.py` (`GET /health`).
 - [ ] F1.11 `api_admin_main/__main__.py` + `api_sucursal_main/__main__.py` (uvicorn wiring).
-- [ ] F1.12 Verify: `docker compose -f docker-compose.branch.yml up -d` boots; `curl /health` returns 200; `\dt prod.*` count = 45; `pg_trigger` check passes.
+- [ ] F1.12 Verify: `docker compose -f docker-compose.branch.yml up -d` boots; `curl /health` returns 200; `\dt prod.*` count = 49; `pg_trigger` check passes.
 
 #### PR2 — Building Blocks (~400 LOC)
 

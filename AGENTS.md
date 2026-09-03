@@ -254,7 +254,8 @@ for the full contract and rationale.
 | Pairing-token replay | single-use, 24h TTL, rate-limited |
 | DIAN `consecutivo_actual` race | atomic UPDATE in cloud only; branches read via sync |
 | **Physical DELETE attempted** at any layer (intentional or feature shortcut) | API has no DELETE endpoint; ORM uses close+insert helpers for `[V]`/`[L]`; `REVOKE DELETE` + `BEFORE UPDATE OR DELETE` trigger on `[A]` tables blocks DB-level — corrections must flow through workflow tables |
-| `0001_initial_schema.py` is one big file | PR2 carries explicit `size:exception`; not split (would break single-head invariant) |
+| `0001_initial_schema.py` is one big file | PR1 carries explicit `size:exception`; not split (would break single-head invariant). The 49-table schema migration (T-PR1-20..T-PR1-27 in create-49-table-apis tasks.md) carries REVOKE + triggers + pg_partman + hash-chain genesis + idempotent seed in ONE Alembic revision per `config.yaml rules.tasks`. |
+| **Physical DELETE attempted** at any layer (intentional or feature shortcut) | API has no DELETE endpoint; ORM uses close+insert helpers for `[V]`/`[L]`; `REVOKE DELETE` + `BEFORE UPDATE OR DELETE` trigger on `[A]` tables blocks DB-level — corrections must flow through workflow tables. CI gate: `python openspec/scripts/check_schema_match.py` exits 0 with REVOKE + trigger + 8 partman parents verified (per PR1 T-PR1-29). |
 
 ## Active Change
 

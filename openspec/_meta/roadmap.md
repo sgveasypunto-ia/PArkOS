@@ -26,7 +26,7 @@ Schema + infra + Docker + minimal `parkos_core`. After this phase the system boo
 
 | PR | Scope | Budget | Notes |
 |---|---|---|---|
-| F1 | infra skeleton + `Dockerfile` + compose + `0001_initial_schema.py` + `/health` + JWT three issuers stub | **`size:exception`** (~800–1500 LOC) | The schema must be one PR (single `alembic head` invariant). 45 tables + 11 REVOKE + 11 triggers + 2 session guards + 8 `pg_partman.create_parent` + hash-chain genesis + idempotent seed. |
+| F1 | infra skeleton + `Dockerfile` + compose + `0001_initial_schema.py` + `/health` + JWT three issuers stub | **`size:exception`** (~800–1500 LOC) | The schema must be one PR (single `alembic head` invariant). 49 tables + 11 REVOKE + 11 triggers + 2 session guards + 8 `pg_partman.create_parent` + hash-chain genesis + idempotent seed. |
 | F2 | `dian/common,cloud,branch/` stubs + `sync/` stubs + JWT three issuers production-ready + `infra/sync_policy.yaml` + `apps/ui-kit/` | ~400 LOC | Cross-audience JWT guard active. Branch import of `dian.cloud` raises `ImportError`. |
 
 After F2 the system is ready to deliver business features one iteration at a time.
@@ -77,9 +77,9 @@ After F2 the system is ready to deliver business features one iteration at a tim
 
 | Enforcement level | Tables | First iteration that delivers write logic |
 |---|---|---|
-| `[V]` projection (24 tables) | `usuarios`, `permisos`, `permisos_usuario`, `tipo_persona`, `tipos_vehiculo`, `tipo_subscripciones`, `tipo_tarifa`, `tipo_sucursal`, `impuestos`, `otros_cobros`, `costos_servicios`, `configuracion_tolerancias`, `configuracion_seguridad`, `empresa`, `sucursal`, `usuarios_sucursal`, `documentos`, `tarifas_sucursal`, `cantidad_vehiculos_sucursal`, `clientes`, `clientes_b2b`, `subscripciones_cliente`, `vehiculos`, `subscripcion_vehiculos` | F1 (schema) + IT-1 (usuarios, permisos_usuario, usuarios_sucursal), IT-2 (sucursal, tipo_sucursal, documentos), IT-10 (clientes, subscripciones, vehiculos) |
+| `[V]` projection (26 tables) | `usuarios`, `permisos`, `permisos_usuario`, `tipo_persona`, `tipos_vehiculo`, `tipo_subscripciones`, `tipo_tarifa`, `tipo_sucursal`, `tipo_arqueo`, `impuestos`, `otros_cobros`, `costos_servicios`, `configuracion_tolerancias`, `configuracion_seguridad`, `empresa`, `resolucion_facturacion`, `sucursal`, `usuarios_sucursal`, `documentos`, `tarifas_sucursal`, `cantidad_vehiculos_sucursal`, `clientes`, `clientes_b2b`, `subscripciones_cliente`, `vehiculos`, `subscripcion_vehiculos` | F1 (schema) + IT-1 (usuarios, permisos_usuario, usuarios_sucursal), IT-2 (sucursal, tipo_sucursal, documentos), IT-10 (clientes, subscripciones, vehiculos) |
 | `[L-E]` event (3 tables) | `ingreso`, `facturas`, `factura_electronica` | F1 (schema) + IT-3 (ingreso), IT-5 (facturas, factura_electronica cloud-only) |
-| `[L-W]` workflow (4 tables) | `anulaciones`, `reclamos`, `alerta`, `reimpresion_ticket` | F1 (schema) + IT-6 (anulaciones), IT-7 (alerta), IT-8 (reclamos), IT-9 (reimpresion_ticket) |
+| `[L-W]` workflow (6 tables) | `anulaciones`, `reclamos`, `alerta`, `reimpresion_ticket`, `envio_dian`, `validacion_evento` | F1 (schema) + IT-6 (anulaciones), IT-7 (alerta), IT-8 (reclamos), IT-9 (reimpresion_ticket) |
 | `[L-S]` session/cycle (2 tables) | `login`, `sesion` | F1 (schema) + IT-1 (login) + future sesion for cash session lifecycle |
 | `[A]` source-of-truth (12 tables) | `sync_queue`, `sync_log`, `sync_conflict`, `log_transaccional`, `revocacion_factura`, `caja`, `arqueo`, `factura_detalle`, `factura_impuestos`, `factura_otros_cobros`, `factura_pagos`, `salidas` | F1 (schema + REVOKE + triggers + partitions + hash-chain genesis) + IT-1 (sync_queue, log_transaccional), IT-3 (ingreso writes log_transaccional), IT-4 (salidas), IT-5 (factura_detalle, factura_pagos, factura_electronica), IT-7 (alerta writes log_transaccional), IT-12 (log_transaccional verifier) |
 

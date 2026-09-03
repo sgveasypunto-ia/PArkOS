@@ -11,13 +11,13 @@ context: |
   Stack: empty — design phase pending. Assumed stack documented in PROJECT_CONTEXT.md.
   Domain: multi-tenant cloud-edge with per-branch Postgres + bidirectional sync.
   Compliance: DIAN Colombia (5+ year retention, SHA256 hash chain).
-  Data model: AUDIT-FIRST (45 tables, 3 enforcement levels [V] / [L-E,W,S] / [A]).
+  Data model: AUDIT-FIRST (49 tables, 3 enforcement levels [V] / [L-E,W,S] / [A]).
   Artifact store: hybrid (Engram + openspec/). Strict TDD: false (not yet configurable).
 
 rules:
   proposal:
     - Include rollback plan for any change touching audit-first tables.
-    - Reference the 45-table AUDIT-FIRST model when proposing schema changes.
+    - Reference the 49-table AUDIT-FIRST model when proposing schema changes.
     - Mark sync-queue or sync-conflict changes as risk: high (bidirectional sync).
   specs:
     - Use Given/When/Then for every scenario.
