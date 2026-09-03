@@ -7231,6 +7231,610 @@
         }
       }
     },
+    "/api/v1/caja/caja": {
+      "get": {
+        "tags": [
+          "caja",
+          "caja"
+        ],
+        "summary": "List Endpoint",
+        "operationId": "list_endpoint_api_v1_caja_caja_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CajaReadList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/caja/caja/{uuid}": {
+      "get": {
+        "tags": [
+          "caja",
+          "caja"
+        ],
+        "summary": "Get Endpoint",
+        "operationId": "get_endpoint_api_v1_caja_caja__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CajaRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/caja/arqueo": {
+      "get": {
+        "tags": [
+          "caja",
+          "arqueo"
+        ],
+        "summary": "List Endpoint",
+        "operationId": "list_endpoint_api_v1_caja_arqueo_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArqueoReadList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/caja/arqueo/{uuid}": {
+      "get": {
+        "tags": [
+          "caja",
+          "arqueo"
+        ],
+        "summary": "Get Endpoint",
+        "operationId": "get_endpoint_api_v1_caja_arqueo__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArqueoRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/caja-sesion/sesiones": {
+      "post": {
+        "tags": [
+          "caja-sesion"
+        ],
+        "summary": "Open a cash session (REQ-40-S-OPEN)",
+        "description": "Insert a new Sesion row + log_transaccional (REQ-40).",
+        "operationId": "open_sesion_api_v1_caja_sesion_sesiones_post",
+        "parameters": [
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SesionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SesionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/caja-sesion/sesion/{uuid}/cerrar": {
+      "put": {
+        "tags": [
+          "caja-sesion"
+        ],
+        "summary": "Close a cash session (REQ-41, SC-42 \u2014 log-first)",
+        "description": "Close the Sesion row + write log_transaccional FIRST.\n\nThe DB trigger ``ls_session_guard`` validates the log exists in the\nsame TX. If not, the trigger RAISES (REQ-41, SC-42).",
+        "operationId": "cerrar_sesion_api_v1_caja_sesion_sesion__uuid__cerrar_put",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SesionCerrarRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SesionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/caja-sesion/arqueos/{uuid}/diferencias": {
+      "get": {
+        "tags": [
+          "caja-sesion"
+        ],
+        "summary": "Derived arqueo differences (SC-40-S-FULL-SHIFT)",
+        "description": "Read the Arqueo row + compute expected-vs-reported deltas.\n\nReturns 404 if no Arqueo row exists for the given ``uuid``. The\nderived view ``V_ARQUEO_DIFERENCIAS`` is computed on demand here\nrather than read from the view to keep the path independent of the\nview's existence at boot.",
+        "operationId": "arqueo_diferencias_api_v1_caja_sesion_arqueos__uuid__diferencias_get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArqueoDiferenciasResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/caja-sesion/sesion": {
+      "get": {
+        "tags": [
+          "caja-sesion",
+          "sesion"
+        ],
+        "summary": "List Endpoint",
+        "operationId": "list_endpoint_api_v1_caja_sesion_sesion_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SesionReadList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/caja-sesion/sesion/{uuid}": {
+      "get": {
+        "tags": [
+          "caja-sesion",
+          "sesion"
+        ],
+        "summary": "Get Endpoint",
+        "operationId": "get_endpoint_api_v1_caja_sesion_sesion__uuid__get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SesionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/empresa/empresa": {
       "get": {
         "tags": [
@@ -9346,6 +9950,436 @@
         ],
         "title": "AnulacionesReadList",
         "description": "Cursor-paginated list of :class:`AnulacionesRead` items."
+      },
+      "ArqueoDiferenciasResponse": {
+        "properties": {
+          "uuid_arqueo": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Arqueo"
+          },
+          "valor_efectivo_esperado": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Efectivo Esperado"
+          },
+          "valor_datafono_esperado": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Datafono Esperado"
+          },
+          "valor_efectivo_reportado": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Efectivo Reportado"
+          },
+          "valor_datafono_reportado": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Datafono Reportado"
+          },
+          "diferencia_efectivo": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diferencia Efectivo"
+          },
+          "diferencia_datafono": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diferencia Datafono"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid_arqueo",
+          "valor_efectivo_esperado",
+          "valor_datafono_esperado",
+          "valor_efectivo_reportado",
+          "valor_datafono_reportado",
+          "diferencia_efectivo",
+          "diferencia_datafono"
+        ],
+        "title": "ArqueoDiferenciasResponse",
+        "description": "GET /arqueos/{uuid}/diferencias response (SC-40-S-FULL-SHIFT).\n\nReads the Arqueo row directly and computes the expected-vs-reported\ndeltas. Returns ``None`` for differences when no Arqueo row exists."
+      },
+      "ArqueoRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          },
+          "sync_timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Timestamp"
+          },
+          "sync_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Attempts"
+          },
+          "fecha_retencion_hasta": {
+            "type": "string",
+            "format": "date",
+            "title": "Fecha Retencion Hasta"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "uuid_tipo_arqueo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Tipo Arqueo"
+          },
+          "uuid_sesion": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sesion"
+          },
+          "valor_efectivo_esperado": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Efectivo Esperado"
+          },
+          "valor_datafono_esperado": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Datafono Esperado"
+          },
+          "valor_efectivo_reportado": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Efectivo Reportado"
+          },
+          "valor_datafono_reportado": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Datafono Reportado"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "created_at",
+          "created_by",
+          "sync_status",
+          "sync_timestamp",
+          "sync_attempts",
+          "fecha_retencion_hasta",
+          "uuid_sucursal",
+          "uuid_tipo_arqueo",
+          "uuid_sesion",
+          "valor_efectivo_esperado",
+          "valor_datafono_esperado",
+          "valor_efectivo_reportado",
+          "valor_datafono_reportado"
+        ],
+        "title": "ArqueoRead",
+        "description": "Read-back for ``prod.arqueo`` (composite PK; monthly partitioned).\n\nExpected vs reported balances per payment method (cash + datafono).\nCorrections are compensating rows; no UPDATE path on this table."
+      },
+      "ArqueoReadList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ArqueoRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ArqueoReadList",
+        "description": "Cursor-paginated list of :class:`ArqueoRead` items."
+      },
+      "CajaRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          },
+          "sync_timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Timestamp"
+          },
+          "sync_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Attempts"
+          },
+          "fecha_retencion_hasta": {
+            "type": "string",
+            "format": "date",
+            "title": "Fecha Retencion Hasta"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "valor_efectivo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Efectivo"
+          },
+          "valor_datafono": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Datafono"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "created_at",
+          "created_by",
+          "sync_status",
+          "sync_timestamp",
+          "sync_attempts",
+          "fecha_retencion_hasta",
+          "uuid_sucursal",
+          "valor_efectivo",
+          "valor_datafono"
+        ],
+        "title": "CajaRead",
+        "description": "Read-back for ``prod.caja`` (composite PK; monthly partitioned).\n\nThe cash + datafono balances are recorded at sesion close; the\nreverso pattern (insert a compensating ``caja`` row with negative\ndeltas) handles corrections. There is no UPDATE path on this table."
+      },
+      "CajaReadList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CajaRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "CajaReadList",
+        "description": "Cursor-paginated list of :class:`CajaRead` items."
       },
       "CantidadVehiculosSucursalRead": {
         "properties": {
@@ -12652,6 +13686,325 @@
         ],
         "title": "ReimpresionTicketReadList",
         "description": "Cursor-paginated list of :class:`ReimpresionTicketRead` items."
+      },
+      "SesionCerrarRequest": {
+        "properties": {
+          "valor_final_efectivo": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Final Efectivo"
+          },
+          "valor_final_datafono": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Final Datafono"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SesionCerrarRequest",
+        "description": "PUT /sesion/{uuid}/cerrar body \u2014 final cash values for shift close.\n\nThe ``valor_final_*`` values are recorded in the ``log_transaccional``\nrow's ``datos_nuevos`` JSONB \u2014 the Sesion table only stores the\ninitial values (REQ-41)."
+      },
+      "SesionCreate": {
+        "properties": {
+          "valor_inicial_efectivo": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Inicial Efectivo"
+          },
+          "valor_inicial_datafono": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Inicial Datafono"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "uuid_usuario": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Usuario"
+          },
+          "timestamp_apertura": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Apertura"
+          },
+          "timestamp_cierre": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Cierre"
+          },
+          "uuid_usuario_cierre": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Usuario Cierre"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SesionCreate",
+        "description": "INSERT payload for ``prod.sesion`` (REQ-40-S-OPEN).\n\nServer-assigned ``timestamp_apertura`` is filled by\n``open_session()`` \u2014 clients SHOULD NOT send it. ``extra='forbid'``\nblocks smuggling it; the helper ignores any client value."
+      },
+      "SesionRead": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "sync_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Status"
+          },
+          "sync_timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Timestamp"
+          },
+          "sync_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Attempts"
+          },
+          "valor_inicial_efectivo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Inicial Efectivo"
+          },
+          "valor_inicial_datafono": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valor Inicial Datafono"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "uuid_usuario": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Usuario"
+          },
+          "timestamp_apertura": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Apertura"
+          },
+          "timestamp_cierre": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Cierre"
+          },
+          "uuid_usuario_cierre": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Usuario Cierre"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "created_at",
+          "created_by",
+          "sync_status",
+          "sync_timestamp",
+          "sync_attempts",
+          "valor_inicial_efectivo",
+          "valor_inicial_datafono",
+          "uuid_sucursal",
+          "uuid_usuario",
+          "timestamp_apertura",
+          "timestamp_cierre",
+          "uuid_usuario_cierre"
+        ],
+        "title": "SesionRead",
+        "description": "Read-back for ``prod.sesion`` (single PK, [L-S], NO versioning).\n\nThe ``open_session`` helper INSERTs with ``timestamp_apertura`` +\ninitial cash; ``close_session_with_log`` UPDATEs with\n``timestamp_cierre`` + ``uuid_usuario_cierre`` in the SAME\ntransaction as a ``log_transaccional`` row (the\n``ls_session_guard`` trigger enforces this, SC-40)."
+      },
+      "SesionReadList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SesionRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "SesionReadList",
+        "description": "Cursor-paginated list of :class:`SesionRead` items."
       },
       "SubscripcionVehiculosRead": {
         "properties": {

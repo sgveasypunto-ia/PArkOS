@@ -1,4 +1,4 @@
-"""parkos_core FastAPI v1 router package (PR1c + PR3 + PR4 + PR5 + PR6).
+"""parkos_core FastAPI v1 router package (PR1c + PR3 + PR4 + PR5 + PR6 + PR7).
 
 The DIAN boundary (design §10 + REQ-X3) is enforced at TWO layers:
 
@@ -37,6 +37,12 @@ Replicated resources (mounted in BOTH deploys):
   factura-detalle, factura-impuestos, factura-otros-cobros, factura-pagos
 - ``workflows`` — 4 branch-originated [L-W] tables (PR6):
   reimpresion-ticket, anulaciones, reclamos, alerta
+- ``caja`` — caja + arqueo [A] cash-drawer + cash-count snapshots (PR7).
+  Read-only this PR; writes land in PR11 via ``repo.append_only``.
+- ``caja-sesion`` — sesion [L-S] cash session + custom endpoints
+  (PR7, REQ-40/REQ-41): ``POST /sesiones`` opens, ``PUT
+  /sesion/{uuid}/cerrar`` closes (log-first), ``GET
+  /arqueos/{uuid}/diferencias`` reads expected-vs-reported deltas.
 
 T-PR4-11 keeps the path layout ``/api/v1/empresa/{resource}/...`` intact by
 rebuilding a custom empresa router with the same ``/empresa`` prefix the
@@ -64,6 +70,8 @@ _CLOUD_ONLY_EMPRESA_RESOURCES: frozenset[str] = frozenset(
 # Side-effect imports: each submodule registers its router at module load.
 from . import (
     auth,
+    caja,  # T-PR7-09 wire-in
+    caja_sesion,  # T-PR7-09 wire-in
     catalogos,
     clientes,
     configuracion,
@@ -114,6 +122,8 @@ def _build_router() -> APIRouter:
     r.include_router(operacion.router)
     r.include_router(facturacion.router)  # PR6
     r.include_router(workflows.router)  # PR6
+    r.include_router(caja.router)  # T-PR7-09
+    r.include_router(caja_sesion.router)  # T-PR7-09
 
     # Empresa resources — selectively mounted (DIAN boundary, REQ-X3).
     r.include_router(_build_empresa_router())

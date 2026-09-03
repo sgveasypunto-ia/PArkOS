@@ -1,22 +1,39 @@
 """Session lifecycle helpers for [L-S] tables (design §4.3).
 
-PR1b ships the auth-domain helpers (login only — sesion + caja + arqueo
-land in PR7). The ``record_login`` / ``close_login_with_log`` pair writes
-rows to ``prod.login`` plus a co-transactional ``log_transaccional`` row
-(satisfying the DB-layer session-guard trigger).
+PR1b shipped the auth-domain helpers (``record_login`` /
+``close_login_with_log`` for ``prod.login``). PR7 EXTENDS this module
+with the cash-session helpers (``open_session`` /
+``close_session_with_log`` for ``prod.sesion``) and the login-failure
+lockout skeleton (``record_login_failure`` / ``clear_login_failures``
+for ``prod.usuarios`` — best-effort until the ``intentos_fallo`` column
+lands). Every helper writes a co-transactional ``log_transaccional`` row
+to satisfy the DB-layer session-guard trigger on UPDATE.
 """
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.L_S.login import Login
+from ..models.L_S.sesion import Sesion
+from ..models.V.usuarios import Usuarios
 
 
 class SessionGuardError(Exception):
     """Raised when the DB-layer session guard trigger fires (LOG_TRANSACCIONAL_REQUIRED)."""
+
+
+class SessionNotFoundError(SessionGuardError):
+    """Raised when a Sesion row doesn't exist, is already closed, or violates
+    an open-state invariant on close."""
+
+
+def _now_naive() -> datetime:
+    """Naive UTC ``datetime`` matching the DB ``DateTime(timezone=False)`` columns."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 async def record_login(
@@ -41,7 +58,7 @@ async def record_login(
     Returns:
         The newly created :class:`Login` row (not yet committed).
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)  # noqa: UP017
     estado = "exitoso" if success else "fallido"
 
     login_row = Login(
@@ -84,7 +101,7 @@ async def close_login_with_log(
     state-machine validation). PR1b ships this as a skeleton so the auth
     router's ``POST /auth/logout`` endpoint compiles.
     """
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)  # noqa: UP017
 
     # 1. Read current row (for datos_anteriores snapshot)
     from sqlalchemy import select
@@ -124,8 +141,200 @@ async def close_login_with_log(
     return row
 
 
+# ---------------------------------------------------------------------------
+# PR7 — Cash session helpers (REQ-40-S-OPEN, REQ-41-S-CLOSE, SC-40, SC-42)
+# ---------------------------------------------------------------------------
+
+
+async def open_session(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID,
+    valor_inicial_efectivo: float,
+    valor_inicial_datafono: float,
+    uuid_usuario: uuid_lib.UUID,
+    log_tx: bool = True,
+) -> Sesion:
+    """Open a cash session — REQ-40-S-OPEN.
+
+    Inserts a new ``Sesion`` row + co-transactional ``log_transaccional``
+    row in the same TX. The session-guard trigger validates the log row
+    on the subsequent UPDATE (close) — but the INSERT itself doesn't
+    require a log row first (the trigger only fires on UPDATE/DELETE).
+    """
+    from ..models.A.log_transaccional import LogTransaccional
+
+    now = _now_naive()
+
+    new_row = Sesion(
+        valor_inicial_efectivo=valor_inicial_efectivo,
+        valor_inicial_datafono=valor_inicial_datafono,
+        uuid_sucursal=uuid_sucursal,
+        uuid_usuario=uuid_usuario,
+        timestamp_apertura=now,
+        timestamp_cierre=None,
+        uuid_usuario_cierre=None,
+        created_at=now,
+        created_by=actor_uuid,
+    )
+    session.add(new_row)
+
+    if log_tx:
+        log_row = LogTransaccional(
+            uuid_usuario=actor_uuid,
+            uuid_sucursal=uuid_sucursal,
+            accion="crear",
+            tabla_afectada="sesion",
+            uuid_registro_afectado=getattr(new_row, "uuid", None),
+            timestamp_evento=now,
+            datos_nuevos={
+                "valor_inicial_efectivo": str(valor_inicial_efectivo),
+                "valor_inicial_datafono": str(valor_inicial_datafono),
+            },
+        )
+        session.add(log_row)
+
+    return new_row
+
+
+async def close_session_with_log(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    sesion_uuid: uuid_lib.UUID,
+    valor_final_efectivo: float | None = None,
+    valor_final_datafono: float | None = None,
+    log_tx: bool = True,
+) -> Sesion:
+    """Close a cash session — REQ-41, SC-42.
+
+    UPDATEs the ``Sesion`` row with ``timestamp_cierre`` +
+    ``uuid_usuario_cierre``. The DB trigger ``ls_session_guard`` validates
+    a ``log_transaccional`` row exists in the same TX — that row is added
+    FIRST (then ``flush()``) so the trigger can see it on the subsequent
+    UPDATE.
+
+    Final cash counts (``valor_final_*``) are recorded in the log row's
+    ``datos_nuevos`` JSONB — the Sesion table only carries
+    ``valor_inicial_*`` columns, so the initial values are preserved and
+    the deltas live in the audit log.
+    """
+    from ..models.A.log_transaccional import LogTransaccional
+
+    now = _now_naive()
+
+    # 1. Read the current Sesion row (for uuid_sucursal + initial values
+    #    to snapshot into datos_nuevos).
+    result = await session.execute(
+        select(Sesion).where(Sesion.uuid == sesion_uuid)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise SessionNotFoundError(f"sesion {sesion_uuid} not found")
+
+    # 2. Log row FIRST (so the DB-layer session-guard trigger accepts the UPDATE)
+    if log_tx:
+        log_row = LogTransaccional(
+            uuid_usuario=actor_uuid,
+            uuid_sucursal=row.uuid_sucursal,
+            accion="cerrar",
+            tabla_afectada="sesion",
+            uuid_registro_afectado=sesion_uuid,
+            timestamp_evento=now,
+            datos_nuevos={
+                "valor_inicial_efectivo": (
+                    str(row.valor_inicial_efectivo)
+                    if row.valor_inicial_efectivo is not None else None
+                ),
+                "valor_inicial_datafono": (
+                    str(row.valor_inicial_datafono)
+                    if row.valor_inicial_datafono is not None else None
+                ),
+                "valor_final_efectivo": (
+                    str(valor_final_efectivo)
+                    if valor_final_efectivo is not None else None
+                ),
+                "valor_final_datafono": (
+                    str(valor_final_datafono)
+                    if valor_final_datafono is not None else None
+                ),
+            },
+        )
+        session.add(log_row)
+        await session.flush()  # ensure log row is visible to the trigger
+
+    # 3. UPDATE the Sesion row (the trigger fires here and validates the log row)
+    update_result = await session.execute(
+        update(Sesion)
+        .where(Sesion.uuid == sesion_uuid, Sesion.timestamp_cierre.is_(None))
+        .values(timestamp_cierre=now, uuid_usuario_cierre=actor_uuid)
+    )
+    if update_result.rowcount == 0:
+        raise SessionNotFoundError(
+            f"sesion {sesion_uuid} already closed or not found"
+        )
+
+    # 4. Refresh and return so the caller sees the updated state
+    await session.refresh(row)
+    return row
+
+
+async def record_login_failure(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    uuid_usuario: uuid_lib.UUID,
+    ip_origen: str | None = None,
+) -> None:
+    """Increment the ``usuarios.intentos_fallo`` counter (REQ-OP-11).
+
+    Best-effort: if the ``Usuarios`` model has no ``intentos_fallo`` column
+    (PR1b didn't add it), this function silently no-ops. Future PR adds
+    the column + the lockout enforcement: 3 failures within 15 min locks
+    the user out for 30 min (REQ-43, SC-41).
+
+    Args:
+        session: Active ``AsyncSession`` (caller commits).
+        actor_uuid: JWT subject (audit actor).
+        uuid_usuario: User whose failure counter should increment.
+        ip_origen: Optional IP for the audit log (currently unused —
+            the column will land with the lockout PR).
+    """
+    # Column doesn't exist yet on the ORM — no-op (documented limitation).
+    if not hasattr(Usuarios, "intentos_fallo"):
+        return
+
+    # Future PR: read current_version(), increment counter, close+insert
+    # via repo.versioned.close_and_insert. For now: nothing to do.
+    return
+
+
+async def clear_login_failures(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    uuid_usuario: uuid_lib.UUID,
+) -> None:
+    """Reset ``usuarios.intentos_fallo`` on successful login (REQ-OP-11).
+
+    Best-effort no-op when the column doesn't exist on the model yet.
+    When the column lands, this will read the current version, reset the
+    counter to 0, and close+insert via ``repo.versioned.close_and_insert``.
+    """
+    if not hasattr(Usuarios, "intentos_fallo"):
+        return
+
+    # Future PR: close+insert with ``intentos_fallo=0``.
+    return
+
+
 __all__ = [
     "SessionGuardError",
-    "record_login",
+    "SessionNotFoundError",
+    "clear_login_failures",
     "close_login_with_log",
+    "open_session",
+    "record_login",
+    "record_login_failure",
 ]
