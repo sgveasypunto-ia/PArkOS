@@ -151,10 +151,11 @@ async def reverse_payment(
         await session.flush()
     except IntegrityError as e:
         # psycopg raises UniqueViolation; SQLAlchemy wraps it as
-        # IntegrityError. The partial unique index
-        # ``uq_factura_pagos_reverso`` prevents a second reversal.
+        # IntegrityError. The BEFORE INSERT trigger raises
+        # ``factura_pagos reverso uniqueness violation: uuid_pago_revertido=...
+        # already has a reverso row`` (see 0004_add_factura_pagos_reverso_trigger.py:48).
         if (
-            "uq_factura_pagos_reverso" in str(e.orig)
+            "reverso uniqueness" in str(e.orig)
             or "duplicate key" in str(e.orig).lower()
         ):
             raise DuplicateReversoError(

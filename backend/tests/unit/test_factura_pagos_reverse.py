@@ -264,6 +264,28 @@ class TestReversePaymentDuplicate:
                 original_pago_uuid=ORIGINAL_PAGO_UUID,
             )
 
+    @pytest.mark.asyncio
+    async def test_duplicate_via_trigger_message(self):
+        """``e.orig`` carries the BEFORE INSERT trigger's message
+        (``reverso uniqueness violation: uuid_pago_revertido=… already has
+        a reverso row``, raised by 0004_add_factura_pagos_reverso_trigger.py:48)
+        → DuplicateReversoError. This is the production path on a fresh DB.
+        """
+        original = _make_original_pago_row()
+        orig = _IntegrityOrig(
+            'factura_pagos reverso uniqueness violation: '
+            'uuid_pago_revertido=00000000-0000-0000-0000-000000000001 already has a reverso row'
+        )
+        err = IntegrityError("INSERT INTO factura_pagos ...", None, orig)
+        session = _make_session_with_original(original, flush_side_effect=err)
+
+        with pytest.raises(DuplicateReversoError, match="already been reversed"):
+            await reverse_payment(
+                session,
+                actor_uuid=ACTOR_UUID,
+                original_pago_uuid=ORIGINAL_PAGO_UUID,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Other IntegrityError propagation — defense in depth

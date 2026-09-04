@@ -215,7 +215,7 @@ def alembic_upgrade(pg_dsn: str, _wait_for_pg: None) -> None:
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
-            cwd=str(migrations_pkg),
+            cwd=str(migrations_pkg.parent),  # alembic.ini lives one level up from versions/
             env=env,
             capture_output=True,
             text=True,
