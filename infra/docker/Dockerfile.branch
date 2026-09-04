@@ -1,0 +1,124 @@
+# syntax=docker/dockerfile:1.7
+# Multi-stage Dockerfile for the branch-side ``job_sync_sucursal`` worker
+# (PR9, T-PR9-09; per `~/.config/opencode/skills/docker/SKILL.md` Pattern A).
+#
+# Build (from the REPO ROOT — see docker-compose.branch.yml in PR9b):
+#   docker build -f infra/docker/Dockerfile.branch . \
+#     --build-arg BUILD_TARGET=job_sync_sucursal \
+#     --build-arg UID=1000 \
+#     -t parkos:job-sync-sucursal-test
+#
+# Run smoke:
+#   docker run --rm \
+#     -e PARKOS_DEPLOY=branch \
+#     -e PARKOS_SUCURSAL_UUID=<uuidv4> \
+#     -e PARKOS_DB_URL=postgresql+asyncpg://parkos:parkos@db:5432/parkos \
+#     -e PARKOS_CLOUD_API_URL=http://cloud-api:8000 \
+#     -e PARKOS_JWT_KEY_PATH=/run/secrets/jwt_private.pem \
+#     -e PARKOS_SYNC_JWT_PATH=/run/secrets/sync.jwt \
+#     parkos:job-sync-sucursal-test
+#
+# DIAN boundary layer 1 (REQ-X3): this Dockerfile inherits
+# ``backend/.dockerignore`` at build time (when the build context is
+# the repo root, the ``.dockerignore`` resolution is per-Dockerfile).
+# The branch-side context EXCLUDES ``**/dian/cloud/**`` so the
+# ``parkos_core.dian.cloud`` package never lands on the branch image
+# filesystem — Layer 2 (module-level ``PARKOS_DEPLOY`` guard) and
+# Layer 3 (OpenAPI tag filter) are belt-and-suspenders for the case
+# where Layer 1 is misconfigured. See ``backend/.dockerignore`` for
+# the canonical rationale.
+#
+# Runtime layout:
+#   /app/backend/packages/parkos_core/src/ — parkos_core importable as
+#     ``parkos_core`` (PYTHONPATH set below).
+#   /app/backend/.venv/ — uv-managed virtualenv (PATH wired in).
+#   /healthz served on port 9999 (NOT exposed externally; reachable
+#     only from the docker network for ``HEALTHCHECK`` + Compose
+#     ``depends_on.condition: service_healthy`` orchestration).
+
+ARG PYTHON_VERSION=3.13.5
+ARG UID=1000
+
+# ---------------------------------------------------------------------------
+# Stage 1 — builder
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS builder
+
+ARG UID
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc \
+        libpq-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv==0.4.18
+
+WORKDIR /app
+
+COPY backend/pyproject.toml backend/uv.lock /app/backend/
+COPY backend/packages /app/backend/packages
+
+WORKDIR /app/backend
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# ---------------------------------------------------------------------------
+# Stage 2 — runtime
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+ARG UID
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        libpq5 \
+        ca-certificates \
+        tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid ${UID} parkos \
+    && useradd --uid ${UID} --gid parkos --create-home --shell /bin/bash parkos
+
+ARG BUILD_VERSION=dev
+LABEL org.opencontainers.image.title="parkos-job-sync-sucursal" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.source="https://github.com/IngFabianRodriguez/easypuinto-parkos-software" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.base.name="python:${PYTHON_VERSION}-slim"
+
+COPY --from=builder --chown=parkos:parkos /app/backend/.venv /app/backend/.venv
+COPY --from=builder --chown=parkos:parkos /app/backend/packages /app/backend/packages
+
+ENV PYTHONPATH=/app/backend/packages/parkos_core/src \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/app/backend/.venv/bin:${PATH}"
+
+ARG SERVICE_NAME=job_sync_sucursal
+ENV SERVICE_NAME=${SERVICE_NAME}
+
+WORKDIR /app/backend
+
+# /healthz port (PR9b's worker body imports parkos_core.jobs.healthz
+# and binds :9999 on boot). NOT exposed externally — Compose only
+# reaches it via the docker network for HEALTHCHECK.
+EXPOSE 9999
+
+# Same cadence as Dockerfile.cloud — long-lived worker, no warm-up.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request as u; u.urlopen('http://localhost:9999/healthz', timeout=4).read()" || exit 1
+
+USER parkos
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Default CMD: boot the branch sync worker. PR9b's worker module
+# (parkos_core.jobs.sync_sucursal) wires the main loop per §21.7.
+CMD ["python", "-m", "parkos_core.jobs.sync_sucursal"]

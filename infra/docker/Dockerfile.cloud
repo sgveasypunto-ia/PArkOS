@@ -1,0 +1,149 @@
+# syntax=docker/dockerfile:1.7
+# Multi-stage Dockerfile for the cloud-side ``job_sync_cloud`` worker
+# (PR9, T-PR9-08; per `~/.config/opencode/skills/docker/SKILL.md` Pattern A).
+#
+# Build (from the REPO ROOT — see docker-compose.cloud.yml in PR9b):
+#   docker build -f infra/docker/Dockerfile.cloud . \
+#     --build-arg BUILD_TARGET=job_sync_cloud \
+#     --build-arg UID=1000 \
+#     -t parkos:job-sync-cloud-test
+#
+# Run smoke:
+#   docker run --rm \
+#     -e PARKOS_DEPLOY=cloud \
+#     -e PARKOS_DB_URL=postgresql+asyncpg://parkos:parkos@db:5432/parkos \
+#     -e PARKOS_JWT_KEY_PATH=/run/secrets/jwt_private.pem \
+#     -e PARKOS_DIAN_PROVIDER_URL=https://api.factus.example \
+#     -e PARKOS_DIAN_PROVIDER_TOKEN_PATH=/run/secrets/factus_token \
+#     parkos:job-sync-cloud-test
+#
+# Runtime layout:
+#   /app/backend/packages/parkos_core/src/ — parkos_core importable as
+#     ``parkos_core`` (PYTHONPATH set below).
+#   /app/backend/.venv/ — uv-managed virtualenv (PATH wired in).
+#   /healthz served on port 9999 (NOT exposed externally; reachable
+#     only from the docker network for ``HEALTHCHECK`` + Compose
+#     ``depends_on.condition: service_healthy`` orchestration).
+#
+# Why a tiny HTTP /healthz on a worker:
+#   The worker main loop is a long-running process with no natural
+#   health endpoint. A standalone ``/healthz`` on a separate port lets
+#   the Compose / Kubernetes healthcheck distinguish "process alive
+#   but main-loop wedged" from "process crashed". The check is owned
+#   by PR9b (the worker body imports ``parkos_core.jobs.healthz`` and
+#   binds the port on boot); this Dockerfile reserves the port and
+#   HEALTHCHECK directive only.
+#
+# Why ``--chown=1000:1000`` on every COPY:
+#   Defense in depth — even before ``USER parkos`` takes effect (the
+#   first ``pip install uv`` runs as root, which is unavoidable), the
+#   source tree and venv are owned by the unprivileged user so a later
+#   process can never accidentally read them as root.
+
+ARG PYTHON_VERSION=3.13.5
+ARG UID=1000
+
+# ---------------------------------------------------------------------------
+# Stage 1 — builder: install uv + resolve + install the workspace
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS builder
+
+ARG UID
+
+# System deps for ``uv sync`` (libpq for psycopg, ca-certs for HTTPS).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc \
+        libpq-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv (pinned; matches the project's uv.lock).
+RUN pip install --no-cache-dir uv==0.4.18
+
+WORKDIR /app
+
+# Copy ONLY the workspace manifest + the source tree; uv reads
+# ``pyproject.toml`` + ``uv.lock`` and walks ``packages/*``.
+COPY backend/pyproject.toml backend/uv.lock /app/backend/
+COPY backend/packages /app/backend/packages
+
+WORKDIR /app/backend
+
+# Install deps (BuildKit cache mount keeps /root/.cache/uv between
+# builds so dependency layers reuse on rebuild).
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
+# Install the workspace packages themselves (also cached).
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# ---------------------------------------------------------------------------
+# Stage 2 — runtime: slim image, non-root, HEALTHCHECK + CMD
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+ARG UID
+
+# Runtime-only system deps (curl for HEALTHCHECK, libpq for asyncpg,
+# ca-certs for HTTPS to Factus). tini reaps zombies so the worker
+# survives nested signals cleanly.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        libpq5 \
+        ca-certificates \
+        tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid ${UID} parkos \
+    && useradd --uid ${UID} --gid parkos --create-home --shell /bin/bash parkos
+
+# OCI image labels (per docker skill §5).
+ARG BUILD_VERSION=dev
+LABEL org.opencontainers.image.title="parkos-job-sync-cloud" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.source="https://github.com/IngFabianRodriguez/easypuinto-parkos-software" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.base.name="python:${PYTHON_VERSION}-slim"
+
+# Copy the resolved venv + source from the builder. --chown ensures
+# the unprivileged ``parkos`` user can read everything.
+COPY --from=builder --chown=parkos:parkos /app/backend/.venv /app/backend/.venv
+COPY --from=builder --chown=parkos:parkos /app/backend/packages /app/backend/packages
+
+ENV PYTHONPATH=/app/backend/packages/parkos_core/src \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/app/backend/.venv/bin:${PATH}"
+
+# Runtime env: SERVICE_NAME selects the worker entrypoint at boot
+# (per AGENTS.md Docker section — same image, two compose files).
+ARG SERVICE_NAME=job_sync_cloud
+ENV SERVICE_NAME=${SERVICE_NAME}
+
+WORKDIR /app/backend
+
+# /healthz port (PR9b's worker body imports parkos_core.jobs.healthz
+# and binds :9999 on boot). NOT exposed externally — Compose only
+# reaches it via the docker network for HEALTHCHECK.
+EXPOSE 9999
+
+# Image-level HEALTHCHECK — uses python's stdlib urllib to avoid
+# depending on the venv (faster cold start than resolving the
+# installed httpx). 30s interval is the standard "long-lived
+# worker" cadence; start-period 10s gives the worker body time to
+# bind :9999 on first boot.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request as u; u.urlopen('http://localhost:9999/healthz', timeout=4).read()" || exit 1
+
+USER parkos
+
+# tini as PID 1 — reaps zombies and forwards signals to the worker
+# (SIGTERM from Compose → graceful shutdown per §21.7).
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Default CMD: boot the cloud sync worker. PR9b's worker module
+# (parkos_core.jobs.sync_cloud) wires the main loop per §21.8.
+CMD ["python", "-m", "parkos_core.jobs.sync_cloud"]
