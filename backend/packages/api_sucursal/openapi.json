@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "parkos-api-sucursal",
-    "description": "Branch API \u2014 operador + sync-agent only, offline-first.",
+    "description": "Branch API — operador + sync-agent only, offline-first.",
     "version": "0.1.0"
   },
   "paths": {
@@ -3725,7 +3725,7 @@
           "configuracion"
         ],
         "summary": "Effective seguridad config for a branch (per-branch override OR global default)",
-        "description": "Resolve the effective ``configuracion_seguridad`` for ``uuid_sucursal``.\n\nPriority: per-branch row (uuid_sucursal = :requested, vigente_hasta IS NULL)\n\u2192 global default (uuid_sucursal IS NULL, vigente_hasta IS NULL)\n\u2192 404 if neither.",
+        "description": "Resolve the effective ``configuracion_seguridad`` for ``uuid_sucursal``.\n\nPriority: per-branch row (uuid_sucursal = :requested, vigente_hasta IS NULL)\n→ global default (uuid_sucursal IS NULL, vigente_hasta IS NULL)\n→ 404 if neither.",
         "operationId": "efectiva_api_v1_configuracion_configuracion_seguridad_efectiva_get",
         "parameters": [
           {
@@ -3785,7 +3785,7 @@
           "sucursal"
         ],
         "summary": "Mint a 24h single-use pairing token for a branch (cloud-only, REQ-OP-15)",
-        "description": "Mint a 24h single-use pairing token.\n\nThe branch operator redeems this token at ``POST /sync/pair`` (PR8) for a\nlong-lived ``sync-agent-`` JWT. Single-use enforcement lives in the\nconsume endpoint (PR8 \u2014 verifies the token has not been seen before and\nwrites a ``revoked_sync_jwts`` row in the same TX).",
+        "description": "Mint a 24h single-use pairing token.\n\nThe branch operator redeems this token at ``POST /sync/pair`` (PR8) for a\nlong-lived ``sync-agent-`` JWT. Single-use enforcement lives in the\nconsume endpoint (PR8 — verifies the token has not been seen before and\nwrites a ``revoked_sync_jwts`` row in the same TX).",
         "operationId": "pairing_token_api_v1_sucursal__uuid__pairing_token_get",
         "parameters": [
           {
@@ -5619,7 +5619,7 @@
         "tags": [
           "operacion"
         ],
-        "summary": "Read a single ingreso (events are append-only \u2014 no history)",
+        "summary": "Read a single ingreso (events are append-only — no history)",
         "operationId": "get_ingreso_api_v1_operacion_ingresos__uuid__get",
         "parameters": [
           {
@@ -7572,7 +7572,7 @@
         "tags": [
           "caja-sesion"
         ],
-        "summary": "Close a cash session (REQ-41, SC-42 \u2014 log-first)",
+        "summary": "Close a cash session (REQ-41, SC-42 — log-first)",
         "description": "Close the Sesion row + write log_transaccional FIRST.\n\nThe DB trigger ``ls_session_guard`` validates the log exists in the\nsame TX. If not, the trigger RAISES (REQ-41, SC-42).",
         "operationId": "cerrar_sesion_api_v1_caja_sesion_sesion__uuid__cerrar_put",
         "parameters": [
@@ -7818,6 +7818,307 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SesionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/pair": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Consume a pairing token + mint a long-lived sync-agent- JWT.",
+        "description": "Branch-side pairing: redeem the admin-issued pairing-token for a JWT.\n\nNo auth — the plaintext token IS the credential. On success:\n``POST /sync/pair`` returns a long-lived (30-day) ``sync-agent-``\nJWT + the branch uuid + ``expires_at`` (naive UTC). The branch's\n:mod:`parkos_core.cli.pair` CLI persists the JWT to\n``PARKOS_SYNC_JWT_PATH`` mode 0o600 and writes a\n``log_transaccional`` row with ``accion='pair_completed'``.\n\nFailure 4 (per §21.3):\n- 410 Gone on consumed / expired / revoked tokens (mapped from\n  :class:`PairingTokenConsumedError` / :class:`PairingTokenExpiredError`\n  / :class:`PairingTokenNotFoundError`).\n- 422 on malformed body (Pydantic).",
+        "operationId": "sync_pair_api_v1_sync_pair_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_PairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_PairResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/push": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Branch → cloud row push (issuer sync-agent-, rate-limited 60/min).",
+        "description": "Branch pushes a batch of rows to the cloud.\n\nAuth chain:\n1. ``sync-agent-`` issuer guard (catches cross-issuer attempts).\n2. ``is_revoked`` lookup against ``prod.revoked_sync_jwts`` (catches\n   admin-revoked JWTs).\n3. ``iat_branch`` clock-skew check (catches drifted branch clocks).\n4. ``X-Request-Id`` idempotency cache (replays cached responses\n   on duplicate POST within 5 min).\n5. Per-(issuer, subject) rate limit (push=60/min).\n\nReturns 207 Multi-Status with per-row results. The per-row\nconflict resolution itself is a PR9 concern (when the cloud-side\napplier lands); PR8c returns ``status=\"applied\"`` for all rows so\nthe auth + cache + rate-limit plumbing is exercised end-to-end.",
+        "operationId": "sync_push_api_v1_sync_push_post",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Request-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_PushRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "207": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_PushResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/pull": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Branch ← cloud row pull (issuer sync-agent-, rate-limited 120/min).",
+        "description": "Branch pulls a batch of rows from the cloud.\n\nThe full cloud-side applier (which reads ``sync_queue`` +\n``log_transaccional`` to materialize the per-branch sequence)\nlands in PR9. PR8c returns an empty batch so the auth + cache +\nrate-limit chain is verified.",
+        "operationId": "sync_pull_api_v1_sync_pull_post",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Request-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_PullRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_PullResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/heartbeat": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Branch/cloud heartbeat (issuer sync-agent-, rate-limited 10/min).",
+        "description": "Heartbeat — keeps the cloud's per-branch \"alive\" flag fresh.\n\nEmpty body permitted (Pydantic defaults ``state`` to ``{}``). The\nrate limit is 10/min — heartbeats are cheap but excessive calls\nindicate a misbehaving worker. No idempotency cache: heartbeats\nare inherently idempotent at the data layer (the cloud just\nrefreshes a timestamp).",
+        "operationId": "sync_heartbeat_api_v1_sync_heartbeat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_HeartbeatRequest",
+                "default": {
+                  "state": {}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/rotate-jwt": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Rotate the sync-agent- JWT (issuer sync-agent-, rate-limited 1/min).",
+        "description": "Rotate the current ``sync-agent-`` JWT.\n\nThe endpoint verifies the supplied ``current_jwt`` (signature +\nissuer prefix + revocation check), then mints a fresh JWT. Per\nspec §21.3 the new JWT's ``kid`` is ``current.kid + \"_r\" + uuid``\nso the old JWT is naturally distinguishable for revocation.\n\nImplementation note: ``issue_token`` doesn't accept a custom ``kid``\narg (the dev HS256 path computes ``kid = issuer + suffix``). We\nwork around by using a unique issuer per rotation\n(``sync-agent-cloud-r-{uuid}``) — the issuer prefix check still\npasses (``sync-agent-``) but the resulting kid is unique.\n\nReturns ``{jwt, expires_at, grace_until}`` matching the deployed\n``sync/transport.py::SyncHttpClient.rotate_jwt`` client (PR9,\nT-PR9-02). ``grace_until`` is set to ``now + JWT_OVERLAP_HOURS``\n(24h) so the old JWT remains valid during the overlap window.",
+        "operationId": "sync_rotate_jwt_api_v1_sync_rotate_jwt_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RotateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_RotateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/events": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Cloud → branch SyncBackEvent push (issuer sync-agent-).",
+        "description": "Cloud pushes SyncBackEvent rows to a branch.\n\nSyncBackEvents are the cloud's response to actions the branch took\n(e.g. ``Factus.dispatch`` accepted → emit a ``SyncBackEvent`` to the\nbranch so its local cache of ``factura_electronica`` state updates).\nPR8c accepts the events and returns 207; the branch-side applier\n(which writes the events to local tables) lands in PR9.",
+        "operationId": "sync_events_api_v1_sync_events_post",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Request-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_EventsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "207": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_EventsResponse"
                 }
               }
             }
@@ -9675,7 +9976,7 @@
           "estado"
         ],
         "title": "AlertaRead",
-        "description": "Read-back for ``prod.alerta`` (composite PK; monthly partitioned).\n\n``estado`` values: ``activa`` | ``descartada`` | ``resuelta``.\nTransitioning to ``descartada`` requires an admin actor (REQ-26)\n\u2014 enforced at the endpoint layer."
+        "description": "Read-back for ``prod.alerta`` (composite PK; monthly partitioned).\n\n``estado`` values: ``activa`` | ``descartada`` | ``resuelta``.\nTransitioning to ``descartada`` requires an admin actor (REQ-26)\n— enforced at the endpoint layer."
       },
       "AlertaReadList": {
         "properties": {
@@ -9921,7 +10222,7 @@
           "estado"
         ],
         "title": "AnulacionesRead",
-        "description": "Read-back for ``prod.anulaciones`` (composite PK; monthly partitioned).\n\nThe polymorphic pointer ``tipo_anulable`` (``ingreso`` | ``salida``)\n+ ``uuid_ingreso``/``uuid_salida`` is the source of the\n``V_INGRESO_ESTADO`` derivation \u2014 an annulment writes a new row\nhere and the view joins to surface ``anulada``. NO physical DELETE\nis permitted (REQ-04, AGENTS.md \u00a72)."
+        "description": "Read-back for ``prod.anulaciones`` (composite PK; monthly partitioned).\n\nThe polymorphic pointer ``tipo_anulable`` (``ingreso`` | ``salida``)\n+ ``uuid_ingreso``/``uuid_salida`` is the source of the\n``V_INGRESO_ESTADO`` derivation — an annulment writes a new row\nhere and the view joins to surface ``anulada``. NO physical DELETE\nis permitted (REQ-04, AGENTS.md §2)."
       },
       "AnulacionesReadList": {
         "properties": {
@@ -10650,7 +10951,7 @@
           "sync_status"
         ],
         "title": "ClientesB2BRead",
-        "description": "Read-back for ``prod.clientes_b2b``. UK is\n``(uuid_cliente, vigente_desde)`` \u2014 one active B2B extension per\ncustomer per version."
+        "description": "Read-back for ``prod.clientes_b2b``. UK is\n``(uuid_cliente, vigente_desde)`` — one active B2B extension per\ncustomer per version."
       },
       "ClientesB2BReadList": {
         "properties": {
@@ -12537,7 +12838,7 @@
           "uuid_salida"
         ],
         "title": "FacturasRead",
-        "description": "Read-back for ``prod.facturas`` (composite PK ``uuid + fecha_retencion_hasta``).\n\nState (``emitida`` | ``anulada`` | ``pagada``) is NEVER stored on the\nrow \u2014 it is derived via the ``V_FACTURA_ESTADO`` view (PR6 schema\nwork) by joining ``factura_pagos`` + ``anulaciones``."
+        "description": "Read-back for ``prod.facturas`` (composite PK ``uuid + fecha_retencion_hasta``).\n\nState (``emitida`` | ``anulada`` | ``pagada``) is NEVER stored on the\nrow — it is derived via the ``V_FACTURA_ESTADO`` view (PR6 schema\nwork) by joining ``factura_pagos`` + ``anulaciones``."
       },
       "FacturasReadList": {
         "properties": {
@@ -12811,7 +13112,7 @@
           "uuid_sucursal"
         ],
         "title": "IngresoCreate",
-        "description": "INSERT payload for ``prod.ingreso``.\n\n``uuid_sucursal`` is REQUIRED \u2014 every ingreso belongs to a branch.\nThe remaining 5 business columns are OPTIONAL and can be filled in by\na later lookup, by a derived-resource PATCH (PR6), or left NULL for\nad-hoc walk-in traffic that has no subscription attached.\n\n.. note::\n   The ``Idempotency-Key`` HTTP header is REQUIRED at the API edge.\n   That validation lives in a FastAPI dependency (``T-PR5-07``),\n   NOT here, to keep this schema a pure data contract decoupled\n   from transport concerns.\n\n.. warning::\n   ``extra='forbid'`` (inherited from :class:`_Base`) rejects any\n   unknown field \u2014 clients cannot smuggle audit columns\n   (``created_at``, ``created_by``, ``sync_status``) or\n   ``LifecycleEventBase`` internals; those are server-controlled."
+        "description": "INSERT payload for ``prod.ingreso``.\n\n``uuid_sucursal`` is REQUIRED — every ingreso belongs to a branch.\nThe remaining 5 business columns are OPTIONAL and can be filled in by\na later lookup, by a derived-resource PATCH (PR6), or left NULL for\nad-hoc walk-in traffic that has no subscription attached.\n\n.. note::\n   The ``Idempotency-Key`` HTTP header is REQUIRED at the API edge.\n   That validation lives in a FastAPI dependency (``T-PR5-07``),\n   NOT here, to keep this schema a pure data contract decoupled\n   from transport concerns.\n\n.. warning::\n   ``extra='forbid'`` (inherited from :class:`_Base`) rejects any\n   unknown field — clients cannot smuggle audit columns\n   (``created_at``, ``created_by``, ``sync_status``) or\n   ``LifecycleEventBase`` internals; those are server-controlled."
       },
       "IngresoEstadoResponse": {
         "properties": {
@@ -13387,7 +13688,7 @@
           "estado"
         ],
         "title": "ReclamosRead",
-        "description": "Read-back for ``prod.reclamos``.\n\nSingle-PK (``uuid`` only). The chain tip walks\n``uuid_reclamo_padre`` self-FK. ``tipo_reclamable`` discriminates\nwhich table ``uuid_reclamable`` belongs to (``ingreso``,\n``salida``, or ``factura``) \u2014 REQ-23-W-POLYMORPHIC-FK."
+        "description": "Read-back for ``prod.reclamos``.\n\nSingle-PK (``uuid`` only). The chain tip walks\n``uuid_reclamo_padre`` self-FK. ``tipo_reclamable`` discriminates\nwhich table ``uuid_reclamable`` belongs to (``ingreso``,\n``salida``, or ``factura``) — REQ-23-W-POLYMORPHIC-FK."
       },
       "ReclamosReadList": {
         "properties": {
@@ -13715,7 +14016,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SesionCerrarRequest",
-        "description": "PUT /sesion/{uuid}/cerrar body \u2014 final cash values for shift close.\n\nThe ``valor_final_*`` values are recorded in the ``log_transaccional``\nrow's ``datos_nuevos`` JSONB \u2014 the Sesion table only stores the\ninitial values (REQ-41)."
+        "description": "PUT /sesion/{uuid}/cerrar body — final cash values for shift close.\n\nThe ``valor_final_*`` values are recorded in the ``log_transaccional``\nrow's ``datos_nuevos`` JSONB — the Sesion table only stores the\ninitial values (REQ-41)."
       },
       "SesionCreate": {
         "properties": {
@@ -13813,7 +14114,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SesionCreate",
-        "description": "INSERT payload for ``prod.sesion`` (REQ-40-S-OPEN).\n\nServer-assigned ``timestamp_apertura`` is filled by\n``open_session()`` \u2014 clients SHOULD NOT send it. ``extra='forbid'``\nblocks smuggling it; the helper ignores any client value."
+        "description": "INSERT payload for ``prod.sesion`` (REQ-40-S-OPEN).\n\nServer-assigned ``timestamp_apertura`` is filled by\n``open_session()`` — clients SHOULD NOT send it. ``extra='forbid'``\nblocks smuggling it; the helper ignores any client value."
       },
       "SesionRead": {
         "properties": {
@@ -14264,7 +14565,7 @@
           "sync_status"
         ],
         "title": "SubscripcionesClienteRead",
-        "description": "Read-back for ``prod.subscripciones_cliente``. No DB-level UK \u2014\nthe bi-temporal ``vigente_desde`` discriminator keeps each version\nunique and the business key (the 3 FKs + dates) is enforced at the\nAPI layer."
+        "description": "Read-back for ``prod.subscripciones_cliente``. No DB-level UK —\nthe bi-temporal ``vigente_desde`` discriminator keeps each version\nunique and the business key (the 3 FKs + dates) is enforced at the\nAPI layer."
       },
       "SubscripcionesClienteReadList": {
         "properties": {
@@ -15626,6 +15927,356 @@
           "items"
         ],
         "title": "VehiculosReadList"
+      },
+      "_BranchInfo": {
+        "properties": {
+          "hostname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hostname"
+          },
+          "os": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Os"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "endpoint_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_BranchInfo",
+        "description": "Branch bootstrap metadata captured at pair-consume time."
+      },
+      "_EventResponseRow": {
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_type",
+          "status"
+        ],
+        "title": "_EventResponseRow"
+      },
+      "_EventsRequest": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/_SyncBackEvent"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_EventsRequest"
+      },
+      "_EventsResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/_EventResponseRow"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_EventsResponse"
+      },
+      "_HeartbeatRequest": {
+        "properties": {
+          "state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "State"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_HeartbeatRequest",
+        "description": "Body for ``POST /sync/heartbeat`` — empty body permitted."
+      },
+      "_PairRequest": {
+        "properties": {
+          "pairing_token": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Pairing Token"
+          },
+          "uuid_sucursal": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Sucursal"
+          },
+          "branch_info": {
+            "$ref": "#/components/schemas/_BranchInfo"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pairing_token",
+          "uuid_sucursal"
+        ],
+        "title": "_PairRequest",
+        "description": "Body for ``POST /sync/pair`` (T-PR8-14 endpoint #1).\n\nNO auth header — the plaintext pairing-token IS the credential."
+      },
+      "_PairResponse": {
+        "properties": {
+          "sync_jwt": {
+            "type": "string",
+            "title": "Sync Jwt"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "uuid_sucursal": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Sucursal"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sync_jwt",
+          "expires_at",
+          "uuid_sucursal"
+        ],
+        "title": "_PairResponse",
+        "description": "Response for ``POST /sync/pair`` — 201 Created.\n\nField naming (``sync_jwt`` not ``jwt``) matches the deployed\n``cli/pair.py`` PR8b contract which reads ``body.get(\"sync_jwt\")``.\nSee the module docstring deviation note in PR8c."
+      },
+      "_PullRequest": {
+        "properties": {
+          "since_seq": {
+            "type": "integer",
+            "title": "Since Seq",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_PullRequest"
+      },
+      "_PullResponse": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/_PushedRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          },
+          "next_seq": {
+            "type": "integer",
+            "title": "Next Seq",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_PullResponse"
+      },
+      "_PushRequest": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/_PushedRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_PushRequest"
+      },
+      "_PushResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/_PushResponseRow"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_PushResponse",
+        "description": "207 multi-status body for ``POST /sync/push``."
+      },
+      "_PushResponseRow": {
+        "properties": {
+          "uuid_registro": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Registro"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid_registro",
+          "status"
+        ],
+        "title": "_PushResponseRow",
+        "description": "Per-row result inside the 207 multi-status push response."
+      },
+      "_PushedRow": {
+        "properties": {
+          "tabla": {
+            "type": "string",
+            "title": "Tabla"
+          },
+          "uuid_registro": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Registro"
+          },
+          "seq": {
+            "type": "integer",
+            "title": "Seq"
+          },
+          "datos": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Datos"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tabla",
+          "uuid_registro",
+          "seq"
+        ],
+        "title": "_PushedRow",
+        "description": "One row in the sync push/pull payload (T-PR8-14 endpoints #2/#3).\n\n``tabla`` is the source table name (one of the 49 logical entities),\n``uuid_registro`` is the row's primary-key uuid,\n``seq`` is the per-branch monotonic sequence (per §21.7 ordering),\n``datos`` is the row's payload as a JSONB-shaped dict."
+      },
+      "_RotateRequest": {
+        "properties": {
+          "current_jwt": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Current Jwt"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current_jwt"
+        ],
+        "title": "_RotateRequest",
+        "description": "Body for ``POST /sync/rotate-jwt``."
+      },
+      "_RotateResponse": {
+        "properties": {
+          "jwt": {
+            "type": "string",
+            "title": "Jwt"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "grace_until": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Grace Until"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "jwt",
+          "expires_at",
+          "grace_until"
+        ],
+        "title": "_RotateResponse",
+        "description": "Response for ``POST /sync/rotate-jwt``.\n\nField naming (``jwt`` + ``expires_at`` + ``grace_until``) matches\nthe deployed ``sync/transport.py::SyncHttpClient.rotate_jwt`` client\n(T-PR9-02). The client reads ``body[\"jwt\"]``, ``body[\"expires_at\"]``,\n``body[\"grace_until\"]`` — the response MUST match."
+      },
+      "_SyncBackEvent": {
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_type"
+        ],
+        "title": "_SyncBackEvent",
+        "description": "A single SyncBackEvent (cloud → branch push).\n\nThe full schema ships in PR9 (DIAN dispatcher integration). PR8c\naccepts a permissive shape so the endpoint compiles + the auth\nchain is exercised; PR9 narrows the schema when the cloud-side\nproducer is wired."
       }
     }
   }

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "parkos-api-admin",
-    "description": "Cloud admin API \u2014 multi-tenant, three-issuer JWT, DIAN-aware.",
+    "description": "Cloud admin API — multi-tenant, three-issuer JWT, DIAN-aware.",
     "version": "0.1.0"
   },
   "paths": {
@@ -3725,7 +3725,7 @@
           "configuracion"
         ],
         "summary": "Effective seguridad config for a branch (per-branch override OR global default)",
-        "description": "Resolve the effective ``configuracion_seguridad`` for ``uuid_sucursal``.\n\nPriority: per-branch row (uuid_sucursal = :requested, vigente_hasta IS NULL)\n\u2192 global default (uuid_sucursal IS NULL, vigente_hasta IS NULL)\n\u2192 404 if neither.",
+        "description": "Resolve the effective ``configuracion_seguridad`` for ``uuid_sucursal``.\n\nPriority: per-branch row (uuid_sucursal = :requested, vigente_hasta IS NULL)\n→ global default (uuid_sucursal IS NULL, vigente_hasta IS NULL)\n→ 404 if neither.",
         "operationId": "efectiva_api_v1_configuracion_configuracion_seguridad_efectiva_get",
         "parameters": [
           {
@@ -3785,7 +3785,7 @@
           "sucursal"
         ],
         "summary": "Mint a 24h single-use pairing token for a branch (cloud-only, REQ-OP-15)",
-        "description": "Mint a 24h single-use pairing token.\n\nThe branch operator redeems this token at ``POST /sync/pair`` (PR8) for a\nlong-lived ``sync-agent-`` JWT. Single-use enforcement lives in the\nconsume endpoint (PR8 \u2014 verifies the token has not been seen before and\nwrites a ``revoked_sync_jwts`` row in the same TX).",
+        "description": "Mint a 24h single-use pairing token.\n\nThe branch operator redeems this token at ``POST /sync/pair`` (PR8) for a\nlong-lived ``sync-agent-`` JWT. Single-use enforcement lives in the\nconsume endpoint (PR8 — verifies the token has not been seen before and\nwrites a ``revoked_sync_jwts`` row in the same TX).",
         "operationId": "pairing_token_api_v1_sucursal__uuid__pairing_token_get",
         "parameters": [
           {
@@ -5619,7 +5619,7 @@
         "tags": [
           "operacion"
         ],
-        "summary": "Read a single ingreso (events are append-only \u2014 no history)",
+        "summary": "Read a single ingreso (events are append-only — no history)",
         "operationId": "get_ingreso_api_v1_operacion_ingresos__uuid__get",
         "parameters": [
           {
@@ -7572,7 +7572,7 @@
         "tags": [
           "caja-sesion"
         ],
-        "summary": "Close a cash session (REQ-41, SC-42 \u2014 log-first)",
+        "summary": "Close a cash session (REQ-41, SC-42 — log-first)",
         "description": "Close the Sesion row + write log_transaccional FIRST.\n\nThe DB trigger ``ls_session_guard`` validates the log exists in the\nsame TX. If not, the trigger RAISES (REQ-41, SC-42).",
         "operationId": "cerrar_sesion_api_v1_caja_sesion_sesion__uuid__cerrar_put",
         "parameters": [
@@ -7818,6 +7818,307 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SesionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/pair": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Consume a pairing token + mint a long-lived sync-agent- JWT.",
+        "description": "Branch-side pairing: redeem the admin-issued pairing-token for a JWT.\n\nNo auth — the plaintext token IS the credential. On success:\n``POST /sync/pair`` returns a long-lived (30-day) ``sync-agent-``\nJWT + the branch uuid + ``expires_at`` (naive UTC). The branch's\n:mod:`parkos_core.cli.pair` CLI persists the JWT to\n``PARKOS_SYNC_JWT_PATH`` mode 0o600 and writes a\n``log_transaccional`` row with ``accion='pair_completed'``.\n\nFailure 4 (per §21.3):\n- 410 Gone on consumed / expired / revoked tokens (mapped from\n  :class:`PairingTokenConsumedError` / :class:`PairingTokenExpiredError`\n  / :class:`PairingTokenNotFoundError`).\n- 422 on malformed body (Pydantic).",
+        "operationId": "sync_pair_api_v1_sync_pair_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_PairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_PairResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/push": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Branch → cloud row push (issuer sync-agent-, rate-limited 60/min).",
+        "description": "Branch pushes a batch of rows to the cloud.\n\nAuth chain:\n1. ``sync-agent-`` issuer guard (catches cross-issuer attempts).\n2. ``is_revoked`` lookup against ``prod.revoked_sync_jwts`` (catches\n   admin-revoked JWTs).\n3. ``iat_branch`` clock-skew check (catches drifted branch clocks).\n4. ``X-Request-Id`` idempotency cache (replays cached responses\n   on duplicate POST within 5 min).\n5. Per-(issuer, subject) rate limit (push=60/min).\n\nReturns 207 Multi-Status with per-row results. The per-row\nconflict resolution itself is a PR9 concern (when the cloud-side\napplier lands); PR8c returns ``status=\"applied\"`` for all rows so\nthe auth + cache + rate-limit plumbing is exercised end-to-end.",
+        "operationId": "sync_push_api_v1_sync_push_post",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Request-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_PushRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "207": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_PushResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/pull": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Branch ← cloud row pull (issuer sync-agent-, rate-limited 120/min).",
+        "description": "Branch pulls a batch of rows from the cloud.\n\nThe full cloud-side applier (which reads ``sync_queue`` +\n``log_transaccional`` to materialize the per-branch sequence)\nlands in PR9. PR8c returns an empty batch so the auth + cache +\nrate-limit chain is verified.",
+        "operationId": "sync_pull_api_v1_sync_pull_post",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Request-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_PullRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_PullResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/heartbeat": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Branch/cloud heartbeat (issuer sync-agent-, rate-limited 10/min).",
+        "description": "Heartbeat — keeps the cloud's per-branch \"alive\" flag fresh.\n\nEmpty body permitted (Pydantic defaults ``state`` to ``{}``). The\nrate limit is 10/min — heartbeats are cheap but excessive calls\nindicate a misbehaving worker. No idempotency cache: heartbeats\nare inherently idempotent at the data layer (the cloud just\nrefreshes a timestamp).",
+        "operationId": "sync_heartbeat_api_v1_sync_heartbeat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_HeartbeatRequest",
+                "default": {
+                  "state": {}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/rotate-jwt": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Rotate the sync-agent- JWT (issuer sync-agent-, rate-limited 1/min).",
+        "description": "Rotate the current ``sync-agent-`` JWT.\n\nThe endpoint verifies the supplied ``current_jwt`` (signature +\nissuer prefix + revocation check), then mints a fresh JWT. Per\nspec §21.3 the new JWT's ``kid`` is ``current.kid + \"_r\" + uuid``\nso the old JWT is naturally distinguishable for revocation.\n\nImplementation note: ``issue_token`` doesn't accept a custom ``kid``\narg (the dev HS256 path computes ``kid = issuer + suffix``). We\nwork around by using a unique issuer per rotation\n(``sync-agent-cloud-r-{uuid}``) — the issuer prefix check still\npasses (``sync-agent-``) but the resulting kid is unique.\n\nReturns ``{jwt, expires_at, grace_until}`` matching the deployed\n``sync/transport.py::SyncHttpClient.rotate_jwt`` client (PR9,\nT-PR9-02). ``grace_until`` is set to ``now + JWT_OVERLAP_HOURS``\n(24h) so the old JWT remains valid during the overlap window.",
+        "operationId": "sync_rotate_jwt_api_v1_sync_rotate_jwt_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_RotateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_RotateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sync/events": {
+      "post": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "Cloud → branch SyncBackEvent push (issuer sync-agent-).",
+        "description": "Cloud pushes SyncBackEvent rows to a branch.\n\nSyncBackEvents are the cloud's response to actions the branch took\n(e.g. ``Factus.dispatch`` accepted → emit a ``SyncBackEvent`` to the\nbranch so its local cache of ``factura_electronica`` state updates).\nPR8c accepts the events and returns 207; the branch-side applier\n(which writes the events to local tables) lands in PR9.",
+        "operationId": "sync_events_api_v1_sync_events_post",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Request-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_EventsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "207": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_EventsResponse"
                 }
               }
             }
@@ -9779,13 +10080,378 @@
         }
       }
     },
+    "/api/v1/sucursales": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List branches in claims.sucursales_permitidas (T-PR10-01, REQ-X2)",
+        "description": "Return branches + sync status + alerts count + last pairing.\n\nScope filter: ``claims.sucursales_permitidas``, applied through\n:func:`~parkos_core.db.tenancy.apply_admin_scope` (single source of\ntruth for admin scope — T-PR10-04, defense in depth).",
+        "operationId": "list_sucursales_api_v1_sucursales_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SucursalListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/sucursales/{uuid}/dashboard": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Branch dashboard aggregates (T-PR10-02, REQ-X2)",
+        "description": "Aggregate metrics for one branch.\n\nRequires ``X-Sucursal-Context`` matching the path UUID (400 if missing,\n403 if mismatched or outside ``sucursales_permitidas`` — REQ-X2).\nEvery metric is one aggregate query (no N+1).",
+        "operationId": "branch_dashboard_api_v1_admin_sucursales__uuid__dashboard_get",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SucursalDashboard"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/me": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Actor identity + permissions + permitted branches (T-PR10-03)",
+        "description": "Return the actor's identity + RBAC permissions for the BranchSelector.",
+        "operationId": "admin_me_api_v1_admin_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminMeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/pairing-tokens": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Issue a 24h pairing token (admin-only, rate-limited 5/hour).",
+        "description": "Mint a fresh pairing token. Returns the plaintext ONCE.\n\n- 429 on the 6th request in a 60-min window per ``actor_uuid``.\n- The response's ``token`` field carries the plaintext; the DB\n  stores only the SHA-256 hash. The admin MUST capture the\n  plaintext before the response is consumed.",
+        "operationId": "issue_pairing_token_api_v1_admin_pairing_tokens_post",
+        "parameters": [
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingTokenIssueRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingTokenIssueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/pairing-tokens/{pairing_token_uuid}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Read a pairing token's metadata (hash is stripped from JSON).",
+        "description": "Return the row's audit metadata. ``pairing_token_hash`` is NEVER on the wire.\n\nThe full read shape (:class:`PairingTokenRead`) keeps the hash for\ninternal callers (audit dashboard, offline replay-protection).\nThis public endpoint drops the hash at the serialization boundary\n(defense in depth — the schema permits the field, the endpoint\nfilters it).",
+        "operationId": "read_pairing_token_api_v1_admin_pairing_tokens__pairing_token_uuid__get",
+        "parameters": [
+          {
+            "name": "pairing_token_uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Pairing Token Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingTokenReadPublic"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/pairing-tokens/{pairing_token_uuid}/revoke": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke a pairing token (POST-shaped — DELETE forbidden by canon).",
+        "description": "Record the revocation in ``revoked_sync_jwts`` (INSERT, never UPDATE).\n\nArchitectural note: the ``pairing_tokens`` table's inmutable trigger\nblocks UPDATE on the row, so we cannot set ``revoked_at`` +\n``revoked_by`` directly. Instead, we INSERT a sibling row into\n``revoked_sync_jwts`` with ``jwt_kid=\"pairing_token:<uuid>\"`` —\nthe same lookup the sync-router middleware uses to reject 401 on\nrevoked JWTs. The :func:`consume_pairing_token` helper also\nchecks via ``is_revoked`` so a revoked token cannot be consumed\neven if its issuance row's ``revoked_at`` is still NULL.\n\nReturns 204 (idempotent — re-revoking is a UK violation swallowed\nby the repo and still returns 204).",
+        "operationId": "revoke_pairing_token_api_v1_admin_pairing_tokens__pairing_token_uuid__revoke_post",
+        "parameters": [
+          {
+            "name": "pairing_token_uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Pairing Token Uuid"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/sucursales/{uuid_sucursal}/revoke-sync": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke a branch's persistent sync-agent- JWT (PR8c wire-up).",
+        "description": "PR8c wire-up — inserts a ``revoked_sync_jwts`` row for the branch's JWT.\n\nThe cloud has no direct view of the branch's persisted\n``PARKOS_SYNC_JWT_PATH`` (the file lives on the branch's local\nfilesystem), so the admin supplies the ``kid`` + ``jti`` values to\nrevoke. The revocation is scoped to (``jwt_kid``, ``jwt_uuid``,\n``vigente_desde``, ``fecha_retencion_hasta``) per the table's UK —\nduplicate revocations are swallowed by ``revoke_jwt`` (returns\n``None``) and the endpoint still answers 204 (idempotent).\n\nThe sync-router's ``is_revoked`` lookup catches the revocation on\nthe next ``POST /sync/push`` / ``/pull`` / ``/heartbeat`` call\n(returns 401 with ``{\"error\": \"sync_jwt_revoked\"}``). ``expires_at``\nis set to ``now + JWT_OVERLAP_HOURS`` (24h) — the JWT's own\n``exp`` claim may be further out, but the revocation only needs to\noutlast the rotation grace window; once the JWT expires naturally\nthe revocation row's filter (``expires_at > now``) drops it from\nthe active set.",
+        "operationId": "revoke_branch_sync_token_api_v1_admin_sucursales__uuid_sucursal__revoke_sync_post",
+        "parameters": [
+          {
+            "name": "uuid_sucursal",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Uuid Sucursal"
+            }
+          },
+          {
+            "name": "X-Sucursal-Context",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Sucursal-Context"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/_SyncRevokeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/factura-electronica": {
       "post": {
         "tags": [
           "dian"
         ],
         "summary": "Atomic SELECT FOR UPDATE on resolucion + consecutivo++ + INSERT (REQ-34, REQ-35)",
-        "description": "Atomically assign prefijo + consecutivo + insert ``factura_electronica``.\n\nREQ-34 / REQ-35:\n\n1. ``SELECT FOR UPDATE`` on ``prod.resolucion_facturacion`` row \u2014\n   the row lock holds until commit so concurrent inserts do not race\n   for the same ``consecutivo``.\n2. Compute ``consecutivo = MAX(consecutivo)+1`` scoped to the\n   resolution. The UK\n   ``(uuid_resolucion_facturacion, consecutivo)`` enforces DIAN's\n   ``numero_oficial`` uniqueness invariant inside the range.\n3. ``record_event`` the new row (append-only ``[L-E]``, with a\n   co-transactional ``log_transaccional`` audit row).\n\nReturns:\n    ``{uuid, prefijo, consecutivo}`` \u2014 the server-assigned trio.",
+        "description": "Atomically assign prefijo + consecutivo + insert + dispatch (REQ-34, REQ-35).\n\n1. :func:`atomic_next_consecutivo.next_consecutivo` runs\n   ``SELECT FOR UPDATE`` on the resolution row + computes the next\n   ``consecutivo`` (lock holds until the INSERT commits).\n2. ``record_event`` writes the ``[L-E]`` row + co-transactional\n   ``log_transaccional`` audit row.\n3. T-PR11-06 fires the DIAN dispatcher; the terminal outcome\n   (``aceptado`` | ``rechazado`` | ``timeout``) lands in\n   ``envio_dian.respuesta_proveedor.estado_dian``.\n\nReturns:\n    ``{uuid, prefijo, consecutivo, uuid_envio_dian}``.",
         "operationId": "create_factura_electronica_api_v1_factura_electronica_post",
         "parameters": [
           {
@@ -9847,7 +10513,7 @@
           "dian"
         ],
         "summary": "Workflow transition for DIAN send/ack (REQ-25-W-CLOUD-ONLY)",
-        "description": "Record a workflow transition for DIAN envio (send/ack).\n\nCloud-only \u2014 branch deploys cannot load this module. Validates\n``parent.estado -> new_attrs['estado']`` against\n:data:`repo.workflow.STATE_MACHINES['envio_dian']` via\n:func:`repo.workflow.append_transition` (REQ-21). For root\ninsertions (``parent_uuid=None``) the new row starts at\n``pendiente``.\n\nReturns:\n    ``{\"uuid\": new_row.uuid}``.",
+        "description": "Record a workflow transition for DIAN envio (send/ack).\n\nCloud-only — branch deploys cannot load this module. Validates\n``parent.estado -> new_attrs['estado']`` against\n:data:`repo.workflow.STATE_MACHINES['envio_dian']` via\n:func:`repo.workflow.append_transition` (REQ-21). For root\ninsertions (``parent_uuid=None``) the new row starts at\n``pendiente``.\n\nReturns:\n    ``{\"uuid\": new_row.uuid}``.",
         "operationId": "create_envio_dian_api_v1_envio_dian_post",
         "parameters": [
           {
@@ -9971,7 +10637,7 @@
           "dian"
         ],
         "summary": "Receive DIAN revocation webhook, extend SHA-256 hash chain (REQ-X3)",
-        "description": "Insert a ``revocacion_factura`` row extending the hash chain.\n\nDIAN POSTs a signed webhook when an electronic invoice is annulled.\nThe row is ``[A]`` (append-only) + carries the second of only two\nhash chains (REQ-16, REQ-X4). :func:`repo.append_only.append_event`\nwith ``chain_hash=True`` extends the per-``uuid_sucursal`` SHA-256\nchain atomically with the INSERT \u2014 the DB trigger\n``prod.fn_extend_hash_chain()`` re-verifies the Python-computed hash\non commit and raises ``HASH_CHAIN_MISMATCH`` if they diverge.\n\nThe webhook is unauthenticated at the JWT layer; the endpoint\nadditionally accepts admin- tokens. ``actor_uuid=None`` is\nintentional \u2014 DIAN is not a JWT subject.\n\nReturns:\n    ``{\"uuid\": new_row.uuid}``.",
+        "description": "Insert a ``revocacion_factura`` row + fire the DIAN dispatcher.\n\nDIAN POSTs a signed webhook when an electronic invoice is annulled.\nThe row is ``[A]`` (append-only) + carries the second of only two\nhash chains (REQ-16, REQ-X4). :func:`repo.append_only.append_event`\nwith ``chain_hash=True`` extends the per-``uuid_sucursal`` SHA-256\nchain atomically with the INSERT — the DB trigger\n``prod.fn_extend_hash_chain()`` re-verifies the Python-computed hash\non commit and raises ``HASH_CHAIN_MISMATCH`` if they diverge.\n\nPer design §21.11 step 2 (T-PR11-02 / T-PR11-06), the dispatcher\nfires after the inbound row is committed. On ``aceptado`` the\ndispatcher extends the chain AGAIN with a confirmation row\n(``motivo='dian_confirmada'``) — the inbound + confirmed are TWO\ndistinct events in the chain by design.\n\nThe webhook is unauthenticated at the JWT layer; the endpoint\nadditionally accepts admin- tokens. ``actor_uuid=None`` is\nintentional — DIAN is not a JWT subject.\n\nReturns:\n    ``{\"uuid\": new_row.uuid, \"uuid_envio_dian\": envio.uuid}``.",
         "operationId": "revocacion_factura_webhook_api_v1_revocacion_factura_webhook_post",
         "requestBody": {
           "content": {
@@ -10012,6 +10678,63 @@
   },
   "components": {
     "schemas": {
+      "AdminMeResponse": {
+        "properties": {
+          "actor_uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Actor Uuid"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "rol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rol"
+          },
+          "sucursales_permitidas": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Sucursales Permitidas"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Permissions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "actor_uuid",
+          "email",
+          "rol",
+          "sucursales_permitidas",
+          "permissions"
+        ],
+        "title": "AdminMeResponse",
+        "description": "``GET /admin/me`` (T-PR10-03)."
+      },
       "AlertaRead": {
         "properties": {
           "uuid": {
@@ -10229,7 +10952,7 @@
           "estado"
         ],
         "title": "AlertaRead",
-        "description": "Read-back for ``prod.alerta`` (composite PK; monthly partitioned).\n\n``estado`` values: ``activa`` | ``descartada`` | ``resuelta``.\nTransitioning to ``descartada`` requires an admin actor (REQ-26)\n\u2014 enforced at the endpoint layer."
+        "description": "Read-back for ``prod.alerta`` (composite PK; monthly partitioned).\n\n``estado`` values: ``activa`` | ``descartada`` | ``resuelta``.\nTransitioning to ``descartada`` requires an admin actor (REQ-26)\n— enforced at the endpoint layer."
       },
       "AlertaReadList": {
         "properties": {
@@ -10475,7 +11198,7 @@
           "estado"
         ],
         "title": "AnulacionesRead",
-        "description": "Read-back for ``prod.anulaciones`` (composite PK; monthly partitioned).\n\nThe polymorphic pointer ``tipo_anulable`` (``ingreso`` | ``salida``)\n+ ``uuid_ingreso``/``uuid_salida`` is the source of the\n``V_INGRESO_ESTADO`` derivation \u2014 an annulment writes a new row\nhere and the view joins to surface ``anulada``. NO physical DELETE\nis permitted (REQ-04, AGENTS.md \u00a72)."
+        "description": "Read-back for ``prod.anulaciones`` (composite PK; monthly partitioned).\n\nThe polymorphic pointer ``tipo_anulable`` (``ingreso`` | ``salida``)\n+ ``uuid_ingreso``/``uuid_salida`` is the source of the\n``V_INGRESO_ESTADO`` derivation — an annulment writes a new row\nhere and the view joins to surface ``anulada``. NO physical DELETE\nis permitted (REQ-04, AGENTS.md §2)."
       },
       "AnulacionesReadList": {
         "properties": {
@@ -11204,7 +11927,7 @@
           "sync_status"
         ],
         "title": "ClientesB2BRead",
-        "description": "Read-back for ``prod.clientes_b2b``. UK is\n``(uuid_cliente, vigente_desde)`` \u2014 one active B2B extension per\ncustomer per version."
+        "description": "Read-back for ``prod.clientes_b2b``. UK is\n``(uuid_cliente, vigente_desde)`` — one active B2B extension per\ncustomer per version."
       },
       "ClientesB2BReadList": {
         "properties": {
@@ -11847,6 +12570,45 @@
           "items"
         ],
         "title": "CostosServiciosReadList"
+      },
+      "DashboardSyncHealth": {
+        "properties": {
+          "last_sync_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync At"
+          },
+          "lag_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lag Seconds"
+          },
+          "queue_depth": {
+            "type": "integer",
+            "title": "Queue Depth"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "last_sync_at",
+          "lag_seconds",
+          "queue_depth"
+        ],
+        "title": "DashboardSyncHealth"
       },
       "DocumentosRead": {
         "properties": {
@@ -12492,7 +13254,7 @@
           "uuid_resolucion_facturacion"
         ],
         "title": "FacturaElectronicaCreate",
-        "description": "REQ-34 + REQ-35. Server assigns ``prefijo`` and ``consecutivo``.\n\nThe cloud-only ``dian/cloud_router.py`` (T-PR6-09) atomically:\n\n1. ``SELECT FOR UPDATE`` on ``prod.resolucion_facturacion`` row\n2. ``UPDATE consecutivo_actual++``\n3. ``INSERT INTO prod.factura_electronica`` with the assigned values\n\nThe Pydantic schema here excludes both fields \u2014 ``extra='forbid'``\n(from :class:`_Base`) blocks client smuggling. That is the\nT-PR4-08-style fast-fail assertion: any ``prefijo`` / ``consecutivo``\nin the request body returns ``ValidationError`` (``HTTP 422``)."
+        "description": "REQ-34 + REQ-35. Server assigns ``prefijo`` and ``consecutivo``.\n\nThe cloud-only ``dian/cloud_router.py`` (T-PR6-09) atomically:\n\n1. ``SELECT FOR UPDATE`` on ``prod.resolucion_facturacion`` row\n2. ``UPDATE consecutivo_actual++``\n3. ``INSERT INTO prod.factura_electronica`` with the assigned values\n\nThe Pydantic schema here excludes both fields — ``extra='forbid'``\n(from :class:`_Base`) blocks client smuggling. That is the\nT-PR4-08-style fast-fail assertion: any ``prefijo`` / ``consecutivo``\nin the request body returns ``ValidationError`` (``HTTP 422``)."
       },
       "FacturaImpuestosRead": {
         "properties": {
@@ -13250,7 +14012,7 @@
           "uuid_salida"
         ],
         "title": "FacturasRead",
-        "description": "Read-back for ``prod.facturas`` (composite PK ``uuid + fecha_retencion_hasta``).\n\nState (``emitida`` | ``anulada`` | ``pagada``) is NEVER stored on the\nrow \u2014 it is derived via the ``V_FACTURA_ESTADO`` view (PR6 schema\nwork) by joining ``factura_pagos`` + ``anulaciones``."
+        "description": "Read-back for ``prod.facturas`` (composite PK ``uuid + fecha_retencion_hasta``).\n\nState (``emitida`` | ``anulada`` | ``pagada``) is NEVER stored on the\nrow — it is derived via the ``V_FACTURA_ESTADO`` view (PR6 schema\nwork) by joining ``factura_pagos`` + ``anulaciones``."
       },
       "FacturasReadList": {
         "properties": {
@@ -13524,7 +14286,7 @@
           "uuid_sucursal"
         ],
         "title": "IngresoCreate",
-        "description": "INSERT payload for ``prod.ingreso``.\n\n``uuid_sucursal`` is REQUIRED \u2014 every ingreso belongs to a branch.\nThe remaining 5 business columns are OPTIONAL and can be filled in by\na later lookup, by a derived-resource PATCH (PR6), or left NULL for\nad-hoc walk-in traffic that has no subscription attached.\n\n.. note::\n   The ``Idempotency-Key`` HTTP header is REQUIRED at the API edge.\n   That validation lives in a FastAPI dependency (``T-PR5-07``),\n   NOT here, to keep this schema a pure data contract decoupled\n   from transport concerns.\n\n.. warning::\n   ``extra='forbid'`` (inherited from :class:`_Base`) rejects any\n   unknown field \u2014 clients cannot smuggle audit columns\n   (``created_at``, ``created_by``, ``sync_status``) or\n   ``LifecycleEventBase`` internals; those are server-controlled."
+        "description": "INSERT payload for ``prod.ingreso``.\n\n``uuid_sucursal`` is REQUIRED — every ingreso belongs to a branch.\nThe remaining 5 business columns are OPTIONAL and can be filled in by\na later lookup, by a derived-resource PATCH (PR6), or left NULL for\nad-hoc walk-in traffic that has no subscription attached.\n\n.. note::\n   The ``Idempotency-Key`` HTTP header is REQUIRED at the API edge.\n   That validation lives in a FastAPI dependency (``T-PR5-07``),\n   NOT here, to keep this schema a pure data contract decoupled\n   from transport concerns.\n\n.. warning::\n   ``extra='forbid'`` (inherited from :class:`_Base`) rejects any\n   unknown field — clients cannot smuggle audit columns\n   (``created_at``, ``created_by``, ``sync_status``) or\n   ``LifecycleEventBase`` internals; those are server-controlled."
       },
       "IngresoEstadoResponse": {
         "properties": {
@@ -13889,6 +14651,185 @@
         ],
         "title": "OtrosCobrosReadList"
       },
+      "PairingTokenIssueRequest": {
+        "properties": {
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "ttl_hours": {
+            "type": "integer",
+            "title": "Ttl Hours",
+            "default": 24
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PairingTokenIssueRequest",
+        "description": "Body for ``POST /admin/pairing-tokens``.\n\n``uuid_sucursal`` is OPTIONAL (the issuance may be pre-branch — the\nmodel accepts a NULL FK to ``prod.sucursal``). ``ttl_hours`` is\nbounded 1..168 (max 7 days) so a misconfigured admin can't mint a\nlong-lived plaintext secret."
+      },
+      "PairingTokenIssueResponse": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "pairing_token_uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Pairing Token Uuid"
+          },
+          "pairing_token_hash": {
+            "type": "string",
+            "title": "Pairing Token Hash"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "ttl_hours": {
+            "type": "integer",
+            "title": "Ttl Hours"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "token",
+          "pairing_token_uuid",
+          "pairing_token_hash",
+          "expires_at",
+          "uuid_sucursal",
+          "ttl_hours"
+        ],
+        "title": "PairingTokenIssueResponse",
+        "description": "Response for ``POST /admin/pairing-tokens`` (T-PR8-12 endpoint #1).\n\nCarries the plaintext ONCE — the server never persists the\nplaintext, so the admin MUST capture it before the response is\nconsumed (a re-issue is the only recovery path; the admin revokes\nthe old via the /revoke endpoint below)."
+      },
+      "PairingTokenReadPublic": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "fecha_retencion_hasta": {
+            "type": "string",
+            "format": "date",
+            "title": "Fecha Retencion Hasta"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "uuid_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Sucursal"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "used": {
+            "type": "boolean",
+            "title": "Used"
+          },
+          "used_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used At"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "revoked_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked By"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "fecha_retencion_hasta",
+          "created_at",
+          "created_by",
+          "uuid_sucursal",
+          "expires_at",
+          "used",
+          "used_at",
+          "revoked_at",
+          "revoked_by"
+        ],
+        "title": "PairingTokenReadPublic",
+        "description": "Public read shape for ``GET /admin/pairing-tokens/{uuid}``.\n\nSame as :class:`PairingTokenRead` minus ``pairing_token_hash`` (the\nhash is admin-only diagnostic data — never on the wire). The\nserver-side invariant \"the server never returns the hash via the\npublic API\" is enforced here at the endpoint layer (defense in\ndepth — the canonical ``PairingTokenRead`` still exposes the\nfield for internal callers)."
+      },
       "PairingTokenResponse": {
         "properties": {
           "token": {
@@ -14100,7 +15041,7 @@
           "estado"
         ],
         "title": "ReclamosRead",
-        "description": "Read-back for ``prod.reclamos``.\n\nSingle-PK (``uuid`` only). The chain tip walks\n``uuid_reclamo_padre`` self-FK. ``tipo_reclamable`` discriminates\nwhich table ``uuid_reclamable`` belongs to (``ingreso``,\n``salida``, or ``factura``) \u2014 REQ-23-W-POLYMORPHIC-FK."
+        "description": "Read-back for ``prod.reclamos``.\n\nSingle-PK (``uuid`` only). The chain tip walks\n``uuid_reclamo_padre`` self-FK. ``tipo_reclamable`` discriminates\nwhich table ``uuid_reclamable`` belongs to (``ingreso``,\n``salida``, or ``factura``) — REQ-23-W-POLYMORPHIC-FK."
       },
       "ReclamosReadList": {
         "properties": {
@@ -14569,7 +15510,7 @@
           "sync_status"
         ],
         "title": "ResolucionFacturacionRead",
-        "description": "Read-back for ``prod.resolucion_facturacion``. Includes the server-assigned\n``prefijo`` and ``rango_desde``/``rango_hasta`` \u2014 but those are NOT accepted\non :class:`ResolucionFacturacionCreate`."
+        "description": "Read-back for ``prod.resolucion_facturacion``. Includes the server-assigned\n``prefijo`` and ``rango_desde``/``rango_hasta`` — but those are NOT accepted\non :class:`ResolucionFacturacionCreate`."
       },
       "ResolucionFacturacionReadList": {
         "properties": {
@@ -14662,7 +15603,7 @@
           "uuid_factura_electronica"
         ],
         "title": "RevocacionFacturaWebhookPayload",
-        "description": "Inbound webhook payload for ``POST /revocacion-factura-webhook``.\n\nDIAN POSTs this when an electronic invoice is annulled. The webhook\nis **not** JWT-authenticated at the application layer \u2014 DIAN\nauthenticates via signed HTTP requests (out of scope here). The\nendpoint's issuer guard additionally accepts admin tokens; production\nwebhook callers present an admin token via the cloud admin app.\n\nThe DIAN-controlled ``timestamp_evento`` is preserved as-is so the\naudit trail reflects DIAN's clock instead of our server clock."
+        "description": "Inbound webhook payload for ``POST /revocacion-factura-webhook``.\n\nDIAN POSTs this when an electronic invoice is annulled. The webhook\nis **not** JWT-authenticated at the application layer — DIAN\nauthenticates via signed HTTP requests (out of scope here). The\nendpoint's issuer guard additionally accepts admin tokens; production\nwebhook callers present an admin token via the cloud admin app.\n\nThe DIAN-controlled ``timestamp_evento`` is preserved as-is so the\naudit trail reflects DIAN's clock instead of our server clock."
       },
       "SesionCerrarRequest": {
         "properties": {
@@ -14692,7 +15633,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SesionCerrarRequest",
-        "description": "PUT /sesion/{uuid}/cerrar body \u2014 final cash values for shift close.\n\nThe ``valor_final_*`` values are recorded in the ``log_transaccional``\nrow's ``datos_nuevos`` JSONB \u2014 the Sesion table only stores the\ninitial values (REQ-41)."
+        "description": "PUT /sesion/{uuid}/cerrar body — final cash values for shift close.\n\nThe ``valor_final_*`` values are recorded in the ``log_transaccional``\nrow's ``datos_nuevos`` JSONB — the Sesion table only stores the\ninitial values (REQ-41)."
       },
       "SesionCreate": {
         "properties": {
@@ -14790,7 +15731,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SesionCreate",
-        "description": "INSERT payload for ``prod.sesion`` (REQ-40-S-OPEN).\n\nServer-assigned ``timestamp_apertura`` is filled by\n``open_session()`` \u2014 clients SHOULD NOT send it. ``extra='forbid'``\nblocks smuggling it; the helper ignores any client value."
+        "description": "INSERT payload for ``prod.sesion`` (REQ-40-S-OPEN).\n\nServer-assigned ``timestamp_apertura`` is filled by\n``open_session()`` — clients SHOULD NOT send it. ``extra='forbid'``\nblocks smuggling it; the helper ignores any client value."
       },
       "SesionRead": {
         "properties": {
@@ -15241,7 +16182,7 @@
           "sync_status"
         ],
         "title": "SubscripcionesClienteRead",
-        "description": "Read-back for ``prod.subscripciones_cliente``. No DB-level UK \u2014\nthe bi-temporal ``vigente_desde`` discriminator keeps each version\nunique and the business key (the 3 FKs + dates) is enforced at the\nAPI layer."
+        "description": "Read-back for ``prod.subscripciones_cliente``. No DB-level UK —\nthe bi-temporal ``vigente_desde`` discriminator keeps each version\nunique and the business key (the 3 FKs + dates) is enforced at the\nAPI layer."
       },
       "SubscripcionesClienteReadList": {
         "properties": {
@@ -15269,6 +16210,161 @@
           "items"
         ],
         "title": "SubscripcionesClienteReadList"
+      },
+      "SucursalDashboard": {
+        "properties": {
+          "uuid_sucursal": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Sucursal"
+          },
+          "fecha": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Fecha"
+          },
+          "ingresos_count": {
+            "type": "integer",
+            "title": "Ingresos Count"
+          },
+          "ingresos_monto_total": {
+            "type": "number",
+            "title": "Ingresos Monto Total"
+          },
+          "facturas_emitidas_count": {
+            "type": "integer",
+            "title": "Facturas Emitidas Count"
+          },
+          "facturas_electronicas_count": {
+            "type": "integer",
+            "title": "Facturas Electronicas Count"
+          },
+          "open_alertas_count": {
+            "type": "integer",
+            "title": "Open Alertas Count"
+          },
+          "sync_health": {
+            "$ref": "#/components/schemas/DashboardSyncHealth"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid_sucursal",
+          "fecha",
+          "ingresos_count",
+          "ingresos_monto_total",
+          "facturas_emitidas_count",
+          "facturas_electronicas_count",
+          "open_alertas_count",
+          "sync_health"
+        ],
+        "title": "SucursalDashboard",
+        "description": "``GET /admin/sucursales/{uuid}/dashboard`` (T-PR10-02)."
+      },
+      "SucursalItem": {
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid"
+          },
+          "nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nombre"
+          },
+          "ciudad": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ciudad"
+          },
+          "uuid_tipo_sucursal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uuid Tipo Sucursal"
+          },
+          "sync_status": {
+            "$ref": "#/components/schemas/SucursalSyncStatus"
+          },
+          "open_alerts_count": {
+            "type": "integer",
+            "title": "Open Alerts Count"
+          },
+          "last_pairing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Pairing At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid",
+          "nombre",
+          "ciudad",
+          "uuid_tipo_sucursal",
+          "sync_status",
+          "open_alerts_count",
+          "last_pairing_at"
+        ],
+        "title": "SucursalItem",
+        "description": "Full ``/sucursales`` item (T-PR10-01)."
+      },
+      "SucursalListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SucursalItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "SucursalListResponse"
       },
       "SucursalRead": {
         "properties": {
@@ -15465,6 +16561,54 @@
           "items"
         ],
         "title": "SucursalReadList"
+      },
+      "SucursalSyncStatus": {
+        "properties": {
+          "last_sync_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sync At"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "last_sync_at",
+          "last_error",
+          "last_heartbeat_at"
+        ],
+        "title": "SucursalSyncStatus",
+        "description": "Nested ``sync_status`` block (T-PR10-01)."
       },
       "TarifasSucursalRead": {
         "properties": {
@@ -16707,6 +17851,380 @@
           "items"
         ],
         "title": "VehiculosReadList"
+      },
+      "_BranchInfo": {
+        "properties": {
+          "hostname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hostname"
+          },
+          "os": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Os"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "endpoint_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_BranchInfo",
+        "description": "Branch bootstrap metadata captured at pair-consume time."
+      },
+      "_EventResponseRow": {
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_type",
+          "status"
+        ],
+        "title": "_EventResponseRow"
+      },
+      "_EventsRequest": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/_SyncBackEvent"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_EventsRequest"
+      },
+      "_EventsResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/_EventResponseRow"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_EventsResponse"
+      },
+      "_HeartbeatRequest": {
+        "properties": {
+          "state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "State"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_HeartbeatRequest",
+        "description": "Body for ``POST /sync/heartbeat`` — empty body permitted."
+      },
+      "_PairRequest": {
+        "properties": {
+          "pairing_token": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Pairing Token"
+          },
+          "uuid_sucursal": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Sucursal"
+          },
+          "branch_info": {
+            "$ref": "#/components/schemas/_BranchInfo"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pairing_token",
+          "uuid_sucursal"
+        ],
+        "title": "_PairRequest",
+        "description": "Body for ``POST /sync/pair`` (T-PR8-14 endpoint #1).\n\nNO auth header — the plaintext pairing-token IS the credential."
+      },
+      "_PairResponse": {
+        "properties": {
+          "sync_jwt": {
+            "type": "string",
+            "title": "Sync Jwt"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "uuid_sucursal": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Sucursal"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sync_jwt",
+          "expires_at",
+          "uuid_sucursal"
+        ],
+        "title": "_PairResponse",
+        "description": "Response for ``POST /sync/pair`` — 201 Created.\n\nField naming (``sync_jwt`` not ``jwt``) matches the deployed\n``cli/pair.py`` PR8b contract which reads ``body.get(\"sync_jwt\")``.\nSee the module docstring deviation note in PR8c."
+      },
+      "_PullRequest": {
+        "properties": {
+          "since_seq": {
+            "type": "integer",
+            "title": "Since Seq",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_PullRequest"
+      },
+      "_PullResponse": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/_PushedRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          },
+          "next_seq": {
+            "type": "integer",
+            "title": "Next Seq",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_PullResponse"
+      },
+      "_PushRequest": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/_PushedRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_PushRequest"
+      },
+      "_PushResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/_PushResponseRow"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "_PushResponse",
+        "description": "207 multi-status body for ``POST /sync/push``."
+      },
+      "_PushResponseRow": {
+        "properties": {
+          "uuid_registro": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Registro"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "uuid_registro",
+          "status"
+        ],
+        "title": "_PushResponseRow",
+        "description": "Per-row result inside the 207 multi-status push response."
+      },
+      "_PushedRow": {
+        "properties": {
+          "tabla": {
+            "type": "string",
+            "title": "Tabla"
+          },
+          "uuid_registro": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uuid Registro"
+          },
+          "seq": {
+            "type": "integer",
+            "title": "Seq"
+          },
+          "datos": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Datos"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tabla",
+          "uuid_registro",
+          "seq"
+        ],
+        "title": "_PushedRow",
+        "description": "One row in the sync push/pull payload (T-PR8-14 endpoints #2/#3).\n\n``tabla`` is the source table name (one of the 49 logical entities),\n``uuid_registro`` is the row's primary-key uuid,\n``seq`` is the per-branch monotonic sequence (per §21.7 ordering),\n``datos`` is the row's payload as a JSONB-shaped dict."
+      },
+      "_RotateRequest": {
+        "properties": {
+          "current_jwt": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Current Jwt"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current_jwt"
+        ],
+        "title": "_RotateRequest",
+        "description": "Body for ``POST /sync/rotate-jwt``."
+      },
+      "_RotateResponse": {
+        "properties": {
+          "jwt": {
+            "type": "string",
+            "title": "Jwt"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "grace_until": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Grace Until"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "jwt",
+          "expires_at",
+          "grace_until"
+        ],
+        "title": "_RotateResponse",
+        "description": "Response for ``POST /sync/rotate-jwt``.\n\nField naming (``jwt`` + ``expires_at`` + ``grace_until``) matches\nthe deployed ``sync/transport.py::SyncHttpClient.rotate_jwt`` client\n(T-PR9-02). The client reads ``body[\"jwt\"]``, ``body[\"expires_at\"]``,\n``body[\"grace_until\"]`` — the response MUST match."
+      },
+      "_SyncBackEvent": {
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_type"
+        ],
+        "title": "_SyncBackEvent",
+        "description": "A single SyncBackEvent (cloud → branch push).\n\nThe full schema ships in PR9 (DIAN dispatcher integration). PR8c\naccepts a permissive shape so the endpoint compiles + the auth\nchain is exercised; PR9 narrows the schema when the cloud-side\nproducer is wired."
+      },
+      "_SyncRevokeRequest": {
+        "properties": {
+          "jwt_kid": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Jwt Kid"
+          },
+          "jwt_uuid": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Jwt Uuid"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "jwt_kid",
+          "jwt_uuid"
+        ],
+        "title": "_SyncRevokeRequest",
+        "description": "Body for ``POST /admin/sucursales/{uuid}/revoke-sync`` (PR8c wire-up).\n\nThe admin supplies the JWT ``kid`` header + ``jti`` payload claim of\nthe branch's currently-issued ``sync-agent-`` token. The cloud\nrecords the revocation in ``revoked_sync_jwts`` (the [A] inmutable\ntrigger blocks UPDATE on ``pairing_tokens`` so all revocations flow\nthrough this sibling table — see ``repo/pairing.py`` module\ndocstring). The branch-side ``sync`` worker drops the JWT from\n``PARKOS_SYNC_JWT_PATH`` on the next heartbeat via the canonical\n``is_revoked`` lookup (design §21.3)."
       }
     }
   }

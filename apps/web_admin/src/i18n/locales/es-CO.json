@@ -5,5 +5,24 @@
     "tagline": "Parkos — multi-tenant management",
     "loginPlaceholder": "El formulario de inicio de sesión se conecta en PR10c.",
     "bootstrapNotice": "Bootstrap shell — los módulos de sucursal y facturación se montan en PR10c/PR11."
+  },
+  "branchSelector": {
+    "label": "Seleccionar sucursal",
+    "placeholder": "Selecciona una sucursal",
+    "empty": "No hay sucursales disponibles",
+    "loading": "Cargando sucursales...",
+    "loadError": "No se pudieron cargar las sucursales. Reintentá."
+  },
+  "dashboard": {
+    "title": "Panel de sucursal",
+    "subtitle": "Métricas en vivo de la sucursal seleccionada.",
+    "ingresos": "Ingresos",
+    "facturas": "Facturas",
+    "alertas": "Alertas abiertas",
+    "montoTotal": "Monto total (COP)",
+    "lastSync": "Última sincronización",
+    "loading": "Cargando panel...",
+    "noBranch": "Seleccioná una sucursal para ver el panel.",
+    "loadError": "No se pudo cargar el panel de la sucursal."
   }
 }
