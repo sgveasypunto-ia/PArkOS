@@ -151,6 +151,31 @@ def _build_router() -> APIRouter:
             logger.error("Failed to import admin_views: %s", e)
             raise
 
+    # T-PR8b: pairing admin endpoints — cloud-only (REQ-OP-15 +
+    # design §21.3). Pairing is an admin-only operation; branch
+    # operators have no business accessing these. Two routers:
+    # ``pairing.router`` (4 admin pairing-token endpoints) +
+    # ``pairing.sync_revoke_router`` (PR8c stub for branch sync JWT
+    # revocation).
+    if _IS_BRANCH:
+        logger.info(
+            "Branch deploy: pairing admin endpoints SKIPPED "
+            "(cloud-only, REQ-OP-15)"
+        )
+    else:
+        try:
+            from . import pairing as _pairing
+
+            r.include_router(_pairing.router)
+            r.include_router(_pairing.sync_revoke_router)
+            logger.info(
+                "Pairing admin endpoints mounted (cloud deploy): "
+                "/admin/pairing-tokens + /admin/sucursales/{uuid}/revoke-sync"
+            )
+        except ImportError as e:
+            logger.error("Failed to import pairing endpoints: %s", e)
+            raise
+
     # T-PR6-11: lazy-import the DIAN cloud router ONLY on cloud deploy.
     # Branch images physically lack ``parkos_core/dian/`` (Layer 1) AND
     # the import-time guard inside ``cloud_router`` would raise
