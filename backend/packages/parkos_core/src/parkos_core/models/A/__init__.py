@@ -1,6 +1,16 @@
 """[A] Append-only ORM models — hash chain + retention + REVOKE + triggers.
 
-PR2 ships the full [A] infrastructure (8 ORM classes):
+PR2 ships the base [A] infrastructure; PR6 adds the [L-W] workflows;
+PR8a adds:
+
+  - :class:`PairingToken`    — admin-issued short-lived (24h) pairing
+    tokens (REQ-OP-04, design §21.3)
+  - :class:`RevokedSyncJwt`  — JWT revocation registry, normalized to
+    ``jwt_kid`` + ``jwt_uuid`` with bi-temporal UK (PR8a replaces the
+    PR2-shipped ``RevokedSyncJwts`` whose columns did not match the
+    revocation-by-kid+jti pattern)
+
+  Other [A] tables living here:
 
   - :class:`LogTransaccional` — audit log; SHA-256 chain carrier (REQ-16, REQ-X4)
   - :class:`SyncQueue`        — outbox carved-out from [A] inmutability (REQ-14)
@@ -10,7 +20,6 @@ PR2 ships the full [A] infrastructure (8 ORM classes):
   - :class:`Arqueo`           — cash-count event
   - :class:`RevocacionFactura` — DIAN revocation; second hash-chain carrier
   - :class:`IdempotencyKeys`  — Idempotency-Key response cache (REQ-OP-04)
-  - :class:`RevokedSyncJwts`  — JWT revocation registry (REQ-OP-04)
 
 All classes descend from :class:`AppendOnlyBase`; the inmutability contract
 (``REVOKE UPDATE, DELETE`` + ``BEFORE UPDATE OR DELETE`` trigger) is
@@ -25,8 +34,9 @@ from .arqueo import Arqueo
 from .caja import Caja
 from .idempotency_keys import IdempotencyKeys
 from .log_transaccional import LogTransaccional
+from .pairing_tokens import PairingToken
 from .revocacion_factura import RevocacionFactura
-from .revoked_sync_jwts import RevokedSyncJwts
+from .revoked_sync_jwts import RevokedSyncJwt
 from .sync_conflict import SyncConflict
 from .sync_log import SyncLog
 from .sync_queue import SyncQueue
@@ -36,8 +46,9 @@ __all__ = [
     "Caja",
     "IdempotencyKeys",
     "LogTransaccional",
+    "PairingToken",
     "RevocacionFactura",
-    "RevokedSyncJwts",
+    "RevokedSyncJwt",
     "SyncConflict",
     "SyncLog",
     "SyncQueue",

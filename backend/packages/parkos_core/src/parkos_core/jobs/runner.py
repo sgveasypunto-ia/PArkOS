@@ -9,7 +9,8 @@ main loop with:
 - Exit code contract (per §21.7):
   - ``0``: clean shutdown
   - ``1``: unhandled error / restart-loop case
-  - ``2``: misconfig (missing/invalid env at boot)
+  - ``2``: misconfig (missing/invalid env at boot) — also raised by the
+    T-PR8-02 env validator wired into ``BaseRunner.run``.
 - Backoff constants per §21.7.
 
 Subclasses implement ``async def cycle() -> None`` — one iteration of
@@ -23,6 +24,12 @@ import signal
 from abc import ABC, abstractmethod
 
 import structlog
+
+# T-PR8-02: env validator imported lazily inside ``BaseRunner.run`` to
+# avoid forcing the validator at import time (keeps the module importable
+# for tools that introspect ``BaseRunner`` without wanting to spin up the
+# runtime config machinery).
+from parkos_core.runtime.env import MissingEnvError, load_config
 
 # Backoff schedules (seconds).
 BACKOFF_4XX = [60, 300, 1800, 7200, 43200, 86400]
@@ -47,7 +54,23 @@ class BaseRunner(ABC):
         self._shutdown_requested.set()
 
     async def run(self) -> int:
-        """Run cycles until SIGTERM/SIGINT, then graceful exit 0."""
+        """Run cycles until SIGTERM/SIGINT, then graceful exit 0.
+
+        T-PR8-02: validate runtime env BEFORE the first ``cycle()`` call.
+        ``MissingEnvError`` is mapped to exit code ``2`` (misconfig) per
+        §21.7, raising the same exit-code contract the container
+        entrypoints honor.
+        """
+        # T-PR8-02: env validation — exit 2 on missing/malformed vars.
+        # Logging goes through structlog (``self.log``) so the operator
+        # sees the offending var names alongside the worker's startup
+        # banner.
+        try:
+            load_config()
+        except MissingEnvError as exc:
+            self.log.error("env_validation_failed", errors=exc.errors)
+            return 2
+
         # Wire signal handlers (Unix only — Windows uses add_signal_handler)
         loop = asyncio.get_running_loop()
         try:

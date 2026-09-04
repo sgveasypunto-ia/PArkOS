@@ -8,15 +8,28 @@ tokens return 401.
 The DIAN-only boundary (design §10) is enforced at image level: branch
 images physically lack ``parkos_core/dian/cloud_router.py``. The lazy
 import guard in :mod:`parkos_core.api.v1` is belt-and-suspenders.
+
+Layer ``runtime/env`` is wired FIRST (T-PR8-02): ``load_config()`` runs
+before any DB or network connection so misconfiguration fails fast
+with exit code ``2`` rather than surfacing as a confusing
+``RuntimeError`` deep inside a third-party driver (design §21.2).
 """
 from __future__ import annotations
 
 import logging
 import os
+import sys
 import uuid as uuid_lib
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+# T-PR8-02: env validator is the first parkos_core import so a misconfig
+# stops the process BEFORE we open a DB pool, a DIAN HTTP client, or a
+# uvicorn socket. The validator prints the offending var name(s) on
+# ``MissingEnvError``; we additionally ``sys.exit(2)`` to honor the
+# orchestrator exit-code contract (§21.2).
+from parkos_core.runtime.env import MissingEnvError, load_config
 from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger(__name__)
@@ -38,6 +51,14 @@ def create_app() -> FastAPI:
 
     Branch-pinned routes only (operador + sync-agent). The DIAN router is
     NOT mounted (design §10): branch images physically lack the module.
+
+    Note on T-PR8-02: ``load_config()`` is called in :func:`main`
+    (the uvicorn entrypoint), NOT here. ``create_app`` is called by
+    tests that want to inspect the FastAPI app object without booting
+    the full runtime stack. Branch deploys additionally require
+    ``PARKOS_SUCURSAL_UUID`` (UUIDv4) + ``PARKOS_CLOUD_API_URL`` +
+    ``PARKOS_SYNC_JWT_PATH`` — all surfaced as a single
+    ``MissingEnvError`` so the operator fixes everything in one pass.
     """
     app = FastAPI(
         title="parkos-api-sucursal",
@@ -80,7 +101,27 @@ app = create_app()
 
 
 def main() -> None:
-    """uvicorn entrypoint."""
+    """uvicorn entrypoint.
+
+    T-PR8-02: validate runtime env FIRST. ``load_config()`` raises
+    ``MissingEnvError`` with a list of offending var names; we surface
+    the error to stderr and exit ``2`` so the orchestrator (Docker,
+    Kubernetes) marks the boot as a hard failure rather than a
+    crash-loop soft failure.
+
+    Placing the validator here (not in :func:`create_app`) means
+    production boots fail fast WITHOUT blocking ``create_app`` from
+    tests that want to introspect the FastAPI app object without
+    setting valid runtime env.
+    """
+    try:
+        load_config()
+    except MissingEnvError as exc:
+        sys.stderr.write("env validation failed for api_sucursal:\n")
+        for err in exc.errors:
+            sys.stderr.write(f"  - {err}\n")
+        sys.exit(2)
+
     import uvicorn
 
     uvicorn.run(
