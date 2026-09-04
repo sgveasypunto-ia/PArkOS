@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
-from .tokens import JWTIssuerPrefixError, verify_token
+from .tokens import JWTIssuerPrefixError, JWTValidationError, verify_token
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,18 @@ async def verify_jwt(request: Request) -> dict[str, Any]:
 
     Caches the decoded claims on ``request.state.jwt_claims`` so downstream
     dependencies (``get_tenant_ctx``, ``require_permission``) don't re-decode.
+
+    All JWT validation failures surface as ``InvalidTokenError`` (401)
+    instead of leaking an unhandled exception that FastAPI's default
+    handler would convert to 500. Maps to:
+
+    - ``JWTValidationError`` (malformed, expired, bad signature, kid mismatch)
+      → ``InvalidTokenError`` (401 ``invalid_token``)
+    - ``JWTIssuerPrefixError`` (iss prefix not in canonical set) →
+      ``CrossIssuerError`` (401 ``wrong_issuer``) so route-level
+      ``requires_issuer(...)`` calls return a meaningful error code
+    - Any other ``Exception`` (defense in depth — base64 decoding, JSON
+      parsing, unexpected module errors) → ``InvalidTokenError`` (401)
     """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
@@ -58,6 +70,18 @@ async def verify_jwt(request: Request) -> dict[str, Any]:
         claims = verify_token(token)
     except JWTIssuerPrefixError as e:
         raise CrossIssuerError(str(e)) from e
+    except JWTValidationError as e:
+        raise InvalidTokenError(str(e)) from e
+    except (ValueError, TypeError) as e:
+        # base64 decode failures, type coercion, JSON edge cases —
+        # surfaced by ``tokens.verify_token`` internals. Still a
+        # client-side token problem → 401, not 500.
+        raise InvalidTokenError(f"decode_error: {e}") from e
+    except Exception as e:  # pragma: no cover -- defense-in-depth
+        # Catch-all so uncaught token-decoding bugs surface as 401
+        # instead of 500. Logged so the bug isn't invisible.
+        logger.exception("Unexpected JWT verification error")
+        raise InvalidTokenError("invalid_token") from e
 
     iss = claims.get("iss", "")
     prefix = iss.split("-")[0] + "-" if "-" in iss else ""

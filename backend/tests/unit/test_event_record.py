@@ -28,15 +28,24 @@ SUCURSAL_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000bb")
 
 
 def _make_session() -> AsyncMock:
-    """Mock ``AsyncSession`` — ``add()`` is sync, ``flush()`` is async.
+    """Mock ``AsyncSession`` — ``add()`` is sync, ``flush()`` / ``execute()`` are async.
 
-    ``record_event`` only calls ``session.add()``, so ``commit`` / ``flush``
-    mocks are defensive (asserted-not-called).
+    After PR11c wired ``record_event(log_tx=True)`` →
+    ``hash_chain.append`` → ``session.execute(stmt)`` to read the prior
+    chain head, the mock must stub ``execute()`` too. We return a
+    Result-like whose ``scalar_one_or_none()`` is ``None`` so
+    ``hash_chain._read_prior_hash`` follows the genesis-hash branch and
+    no prior row attribute lookup is needed.
     """
     session = AsyncMock()
     session.add = MagicMock()
     session.flush = AsyncMock()
     session.commit = AsyncMock()
+    # Mock session.execute to return a Result whose scalar_one_or_none() is None.
+    # This makes hash_chain._read_prior_hash use the genesis hash path.
+    fake_result = MagicMock()
+    fake_result.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=fake_result)
     return session
 
 

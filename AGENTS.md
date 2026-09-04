@@ -266,10 +266,25 @@ for the full contract and rationale.
 | `job_sync_sucursal` silent death (MED) | PR9b ships `WorkerRunner` with `BACKOFF_5XX=[30,60,300]` and Docker HEALTHCHECK on `:9999/healthz`. After 3 consecutive failed healthchecks, Docker restarts the container. Worker exits 1 on unhandled exception → orchestrator restart loop. Periodic `journalctl -u job-sync-sucursal` alert via Parkos supervisor (PR10+). |
 | Out-of-order sync arrivals (MED) | PR9a ships `ConflictResolver` that verifies per-row monotonic seq in `datos->>'seq'`. Mismatch returns `ApplyOutcome.ERROR` → caller retries. Cloud-side `job_sync_cloud.hash_chain_verifier_loop` (every `PARKOS_SYNC_VERIFY_INTERVAL_S`, default 3600s) catches silent forks and emits `alerta tipo_alerta='hash_chain_anomaly'`. Strict per-uuid_sucursal ordering enforced. Out-of-order writes downstream are caught at the chain verifier before divergence becomes silent. |
 | Two parallel `job_sync_cloud` instances race on hash chain (MED) | PR9b ships docker-compose with `deploy.replicas: 1` for `job_sync_cloud`; HA with Postgres advisory locks per `uuid_sucursal` deferred to v2. `infra/deploy/docker-compose.cloud.yml` includes `deploy.replicas: 1` annotation. Verified by `docker compose config` showing single replica constraint. |
+| `test_event_record::_make_session()` fragments under hash_chain integration (LOW) | PR11c wired `record_event(log_tx=True)` → `hash_chain.append` → `session.execute(stmt)`. The mock `_make_session()` did not stub `session.execute`, breaking 8 unit tests. Fix: extend mock to return a Result whose `.scalar_one_or_none()` is None (genesis hash path). Pattern documented in PR commits. Future ORM-side changes that add new session calls must update the mock. |
 
 ## Closed risks
 
 - Risk #3 (Hash-chain break on partial sync) — CLOSED by PR9 + PR11c. Per-branch monotonic seq in `datos` JSON (PR9a) + cloud `job_sync_cloud.hash_chain_verifier_loop` (PR9b) + DIAN dispatcher extends chain per `uuid_sucursal` for branches (PR11c Bug 2). Test pinning: `backend/tests/unit/test_hash_chain.py::test_record_event_log_tx_extends_hash_chain` (PR11c) + `backend/tests/unit/test_sync_cloud_scenarios.py::test_hash_chain_verifier_catches_break` (PR9b).
+- Gap (test mocks) — CLOSED in `fix/close-gaps`. `test_event_record.py::_make_session()` extended to mock `session.execute()` returning a Result-like with `scalar_one_or_none() = None` (genesis path). 8 tests restored. `fix/close-gaps` PR #1 also fixes `jwt_issuer_guard.verify_jwt` → 401 on `JWTValidationError` (was leaking as 500).
+
+## Git identity for sub-agent work
+
+Sub-agent `general` runs set git config to `user.name=gentle-ai-sub-agent, user.email=sub-agent@local`. When `gh pr merge --squash` runs, GitHub auto-formats a `Co-authored-by: gentle-ai-sub-agent <sub-agent@local>` trailer into the squash commit message — violating the no-AI-attribution canon.
+
+To suppress retroactively on a future release branch:
+  git rebase -i origin/main --exec 'git commit --amend --no-edit --reset-author'
+
+Or set neutral identity BEFORE merging future PRs:
+  git config user.name "Parkos Dev"
+  git config user.email "dev@parkos.local"
+
+Cited as follow-up in Engram session #1353. The informational script `infra/scripts/clean_coauthored_trailers.sh` inventories affected commits in a range without rewriting history; the maintainer runs the rebase above on a release branch.
 
 ## Active Change
 

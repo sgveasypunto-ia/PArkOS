@@ -235,3 +235,132 @@ async def test_requires_issuer_rejects_missing_bearer() -> None:
         await dep(request)
     assert exc.value.status_code == 401
     assert exc.value.detail["error"] == "invalid_token"
+
+
+# ---------------------------------------------------------------------------
+# ``verify_jwt`` (the FastAPI dependency) error surface tests
+#
+# Pre-fix: ``verify_token`` raised ``JWTValidationError`` (malformed /
+# expired / wrong-sig) which was uncaught — FastAPI's default exception
+# handler surfaced it as 500. Post-fix: ``verify_jwt`` catches it and
+# returns HTTP 401 ``invalid_token``. These tests pin that contract.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verify_jwt_returns_401_on_malformed_token() -> None:
+    """A non-JWT string in the Bearer slot → 401 ``invalid_token``, NOT 500."""
+    from fastapi import HTTPException, Request
+    from parkos_core.auth.jwt_issuer_guard import verify_jwt
+
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", b"Bearer not.a.valid.jwt")],
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await verify_jwt(request)
+    assert exc.value.status_code == 401
+    assert exc.value.detail["error"] == "invalid_token"
+
+
+@pytest.mark.asyncio
+async def test_verify_jwt_returns_401_on_empty_bearer() -> None:
+    """``Authorization: Bearer `` (empty token after the prefix) → 401."""
+    from fastapi import HTTPException, Request
+    from parkos_core.auth.jwt_issuer_guard import verify_jwt
+
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", b"Bearer ")],
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await verify_jwt(request)
+    assert exc.value.status_code == 401
+    assert exc.value.detail["error"] == "invalid_token"
+    assert "empty" in exc.value.detail["detail"]
+
+
+@pytest.mark.asyncio
+async def test_verify_jwt_returns_401_on_wrong_signature() -> None:
+    """A token whose signature segment was mutated → 401 ``invalid_token``."""
+    from fastapi import HTTPException, Request
+    from parkos_core.auth.jwt_issuer_guard import verify_jwt
+
+    token = _issue("admin", rol="admin")
+    # Flip the last char of the signature so HMAC comparison fails.
+    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", f"Bearer {tampered}".encode())],
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await verify_jwt(request)
+    assert exc.value.status_code == 401
+    assert exc.value.detail["error"] == "invalid_token"
+    # The detail should mention the specific validation failure mode
+    # (``signature_mismatch``) for operability — proving the inner
+    # ``JWTValidationError`` was caught and translated, not swallowed.
+    assert "signature" in exc.value.detail["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_verify_jwt_returns_401_on_expired_token() -> None:
+    """An expired token (issued with negative TTL) → 401, not 500."""
+    from fastapi import HTTPException, Request
+    from parkos_core.auth.jwt_issuer_guard import verify_jwt
+    from parkos_core.auth.tokens import issue_token
+
+    expired = issue_token(
+        subject_uuid=uuid_lib.uuid4(),
+        issuer="admin-test",
+        expires_in=-10,
+    )
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", f"Bearer {expired}".encode())],
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await verify_jwt(request)
+    assert exc.value.status_code == 401
+    assert exc.value.detail["error"] == "invalid_token"
+    assert "expired" in exc.value.detail["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_verify_jwt_returns_401_on_garbage_token() -> None:
+    """Pure garbage (no dots, no base64) → 401, not 500.
+
+    Defends against base64 decoding or JSON parsing errors leaking
+    as 500 in production.
+    """
+    from fastapi import HTTPException, Request
+    from parkos_core.auth.jwt_issuer_guard import verify_jwt
+
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/x",
+            "headers": [(b"authorization", b"Bearer !!!garbage!!!")],
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        await verify_jwt(request)
+    assert exc.value.status_code == 401
+    assert exc.value.detail["error"] == "invalid_token"
