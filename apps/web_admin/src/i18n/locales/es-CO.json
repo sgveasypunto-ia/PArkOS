@@ -1,0 +1,9 @@
+{
+  "app": {
+    "name": "Parkos Admin",
+    "dashboard": "Panel",
+    "tagline": "Parkos — multi-tenant management",
+    "loginPlaceholder": "El formulario de inicio de sesión se conecta en PR10c.",
+    "bootstrapNotice": "Bootstrap shell — los módulos de sucursal y facturación se montan en PR10c/PR11."
+  }
+}

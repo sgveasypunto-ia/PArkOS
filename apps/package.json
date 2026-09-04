@@ -1,0 +1,22 @@
+{
+  "name": "@parkos/apps",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "ui-kit",
+    "web_admin"
+  ],
+  "scripts": {
+    "dev": "npm-run-all --parallel dev:*",
+    "dev:web_admin": "npm --workspace=web_admin run dev",
+    "build": "npm-run-all --serial build:*",
+    "build:web_admin": "npm --workspace=web_admin run build",
+    "lint": "npm-run-all --parallel lint:*",
+    "lint:web_admin": "npm --workspace=web_admin run lint",
+    "test": "npm-run-all --parallel test:*",
+    "test:web_admin": "npm --workspace=web_admin run test"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}
