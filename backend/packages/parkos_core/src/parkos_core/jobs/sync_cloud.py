@@ -282,7 +282,8 @@ class SyncCloudWorker(WorkerRunner):
         """One full sweep of the log_transaccional hash chain."""
         # 1. Distinct tenants — empty + each non-null uuid_sucursal.
         tenants_stmt = select(LogTransaccional.uuid_sucursal).distinct()
-        tenants = [row.uuid_sucursal for row in (await self._session.execute(tenants_stmt)).all()]
+        tenants_result = await self._session.execute(tenants_stmt)
+        tenants = list(tenants_result.scalars().all())
 
         if not tenants:
             self.log.debug("sync_cloud.verifier_no_tenants")

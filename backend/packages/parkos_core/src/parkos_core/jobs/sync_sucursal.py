@@ -206,14 +206,10 @@ class SyncSucursalWorker(WorkerRunner):
         """Translate a ``PushResponse`` into repo writes."""
         status = response.status
 
-        # 2xx — clean success.
-        if 200 <= status < 300:
-            for row in pending:
-                await sq_helpers.mark_dispatched(self._session, row.uuid)
-            self.log.info("sync_sucursal.push_ok", sent=len(pending), status=status)
-            return
-
-        # 207 Multi-Status — partial. Cloud returns the accepted UUIDs.
+        # 207 Multi-Status — partial. Cloud returns the accepted UUIDs
+        # in ``body.success_uuids``. We check 207 BEFORE the 2xx range
+        # because 207 is technically in 200-299; without this ordering
+        # the worker would treat every partial push as a clean success.
         if status == 207:
             success_ids = _extract_success_uuids(response.body)
             accepted = 0
@@ -235,6 +231,13 @@ class SyncSucursalWorker(WorkerRunner):
                 accepted=accepted,
                 rejected=rejected,
             )
+            return
+
+        # 2xx (except 207) — clean success.
+        if 200 <= status < 300:
+            for row in pending:
+                await sq_helpers.mark_dispatched(self._session, row.uuid)
+            self.log.info("sync_sucursal.push_ok", sent=len(pending), status=status)
             return
 
         # 401 — JWT lifecycle event.
