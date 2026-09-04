@@ -14,88 +14,98 @@ Verifies ``GET /api/v1/admin/sucursales/{uuid}/dashboard``:
 """
 from __future__ import annotations
 
-import os
 import sys
 import uuid as uuid_lib
 from pathlib import Path
 
 import pytest
 
-# Force cloud deploy BEFORE any parkos_core import - the v1 router reads
-# ``PARKOS_DEPLOY`` at module-load time to decide whether to mount
-# admin views. Sibling conftests (e.g. ``tests/static/conftest.py``)
-# may have set ``branch``; default to ``cloud`` for these admin tests.
-os.environ["PARKOS_DEPLOY"] = os.environ.get("PARKOS_DEPLOY") or "cloud"
-
-# Some endpoints (missing/mismatched context) are rejected BEFORE the
-# DB session is opened, but FastAPI still resolves deps in declaration
-# order - ``get_session`` runs first and would raise RuntimeError if
-# DATABASE_URL is unset. Provide a dummy URL that satisfies the lazy
-# engine resolver; queries that DO reach the DB will fail and those
-# tests skip gracefully.
-os.environ.setdefault(
-    "DATABASE_URL",
-    "postgresql+asyncpg://dummy:dummy@localhost:5432/dummy",
-)
-
-# Mirror backend/tests/conftest.py path bootstrap so this file works
-# when invoked standalone.
+# Module-level setup intentionally MINIMAL — see fixtures below.
+# Previous module-level ``os.environ.setdefault("DATABASE_URL", ...)``
+# polluted the env for subsequent tests in the full suite (test_sync_router,
+# test_idempotency_middleware). All env + sys.modules mutations now happen
+# in fixtures with save/restore, so a stale value never leaks.
+_DUMMY_DB_URL = "postgresql+asyncpg://dummy:dummy@localhost:5432/dummy"
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
-for _p in (
-    _BACKEND_ROOT / "packages" / "parkos_core" / "src",
-    _BACKEND_ROOT / "packages" / "api_admin" / "src",
-):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
 
-def _fresh_admin_app():
-    """Return the admin app after clearing cached v1 modules.
+def _ensure_paths() -> None:
+    """Insert backend package paths onto sys.path (idempotent)."""
+    for _p in (
+        _BACKEND_ROOT / "packages" / "parkos_core" / "src",
+        _BACKEND_ROOT / "packages" / "api_admin" / "src",
+    ):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
 
-    A sibling conftest may have cached ``parkos_core.api.v1`` /
-    ``api_admin_main.app`` with ``PARKOS_DEPLOY=branch``, in which
-    case the admin/pairing routers are skipped. Clear the cache so
-    the next import re-evaluates the deploy flag from the current
-    env var (forced to ``cloud`` at module load).
-    """
-    for mod_name in list(sys.modules):
-        if (
-            mod_name.startswith("parkos_core.api.v1")
-            or mod_name == "parkos_core.api.deps"
-            or mod_name == "parkos_core.api.middleware"
-            or mod_name.startswith("api_admin_main")
-        ):
-            sys.modules.pop(mod_name, None)
+
+@pytest.fixture
+def dummy_db_url(monkeypatch: pytest.MonkeyPatch):
+    """Force DATABASE_URL to a dummy URL; restore on teardown + reset engine cache."""
+    import parkos_core.db.engine as _engine_mod
+
+    monkeypatch.setenv("DATABASE_URL", _DUMMY_DB_URL)
+    _engine_mod._engine = None
+    _engine_mod._sessionmaker = None
+    try:
+        yield _DUMMY_DB_URL
+    finally:
+        _engine_mod._engine = None
+        _engine_mod._sessionmaker = None
+
+
+@pytest.fixture
+def fresh_admin_app(monkeypatch: pytest.MonkeyPatch):
+    """Return a fresh admin app with ``sys.modules`` fully restored on teardown."""
+    _ensure_paths()
+    monkeypatch.setenv("PARKOS_DEPLOY", "cloud")
+
+    _purge_prefixes = ("parkos_core.api.v1", "api_admin_main")
+    _purge_exact = {"parkos_core.api.deps", "parkos_core.api.middleware"}
+    saved_modules = {
+        name: mod
+        for name, mod in sys.modules.items()
+        if name.startswith(_purge_prefixes) or name in _purge_exact
+    }
+    for name in list(saved_modules):
+        sys.modules.pop(name, None)
+
     try:
         from api_admin_main.app import app as admin_app
     except ImportError as exc:
         pytest.skip(f"admin app not importable: {exc}")
-    return admin_app
+    try:
+        yield admin_app
+    finally:
+        for name in list(sys.modules):
+            if (
+                name.startswith(_purge_prefixes)
+                or name in _purge_exact
+            ) and name not in saved_modules:
+                sys.modules.pop(name, None)
+        for name, mod in saved_modules.items():
+            sys.modules[name] = mod
 
 
-def _client():
-    """Lazy-import the admin app + TestClient."""
+def _client(fresh_admin_app):
+    """Lazy-import TestClient bound to the freshly built admin app."""
     from fastapi.testclient import TestClient
 
-    return TestClient(_fresh_admin_app())
+    return TestClient(fresh_admin_app)
 
 
-def _has_dashboard_path() -> bool:
+def _has_dashboard_path(fresh_admin_app) -> bool:
     """True if the dashboard route is mounted on the admin app."""
-    try:
-        admin_app = _fresh_admin_app()
-    except pytest.skip.Exception:
-        return False
-    paths = admin_app.openapi().get("paths", {})
+    paths = fresh_admin_app.openapi().get("paths", {})
     return any(
         "/admin/sucursales/" in path and path.endswith("/dashboard")
         for path in paths
     )
 
 
-def _require_dashboard_mounted() -> None:
+def _require_dashboard_mounted(fresh_admin_app) -> None:
     """Skip if the dashboard route is not mounted (branch deploy context)."""
-    if not _has_dashboard_path():
+    if not _has_dashboard_path(fresh_admin_app):
         pytest.skip(
             "/api/v1/admin/sucursales/{uuid}/dashboard not mounted - likely "
             "PARKOS_DEPLOY=branch (admin views are cloud-only, REQ-X3). "
@@ -129,14 +139,16 @@ def _safe_get(client, url: str, headers: dict[str, str]):
         )
 
 
-def test_dashboard_negative_branch_returns_403() -> None:
+def test_dashboard_negative_branch_returns_403(
+    dummy_db_url: str, fresh_admin_app
+) -> None:
     """GET dashboard for branch outside ``sucursales_permitidas`` -> 403."""
-    _require_dashboard_mounted()
+    _require_dashboard_mounted(fresh_admin_app)
     permitidas = [str(uuid_lib.uuid4())]
     forbidden = str(uuid_lib.uuid4())
     token = _admin_token(sucursales_permitidas=permitidas)
 
-    client = _client()
+    client = _client(fresh_admin_app)
     response = _safe_get(
         client,
         f"/api/v1/admin/sucursales/{forbidden}/dashboard",
@@ -152,13 +164,15 @@ def test_dashboard_negative_branch_returns_403() -> None:
     )
 
 
-def test_dashboard_missing_sucursal_context_returns_400() -> None:
+def test_dashboard_missing_sucursal_context_returns_400(
+    dummy_db_url: str, fresh_admin_app
+) -> None:
     """Missing ``X-Sucursal-Context`` header -> 400."""
-    _require_dashboard_mounted()
+    _require_dashboard_mounted(fresh_admin_app)
     branch_uuid = str(uuid_lib.uuid4())
     token = _admin_token(sucursales_permitidas=[branch_uuid])
 
-    client = _client()
+    client = _client(fresh_admin_app)
     response = _safe_get(
         client,
         f"/api/v1/admin/sucursales/{branch_uuid}/dashboard",
@@ -171,15 +185,17 @@ def test_dashboard_missing_sucursal_context_returns_400() -> None:
     )
 
 
-def test_dashboard_mismatched_context_returns_403() -> None:
+def test_dashboard_mismatched_context_returns_403(
+    dummy_db_url: str, fresh_admin_app
+) -> None:
     """``X-Sucursal-Context`` not matching path uuid -> 403."""
-    _require_dashboard_mounted()
+    _require_dashboard_mounted(fresh_admin_app)
     permitidas = [str(uuid_lib.uuid4())]
     path_uuid = str(uuid_lib.uuid4())
     other_uuid = str(uuid_lib.uuid4())
     token = _admin_token(sucursales_permitidas=permitidas)
 
-    client = _client()
+    client = _client(fresh_admin_app)
     response = _safe_get(
         client,
         f"/api/v1/admin/sucursales/{path_uuid}/dashboard",
@@ -195,13 +211,15 @@ def test_dashboard_mismatched_context_returns_403() -> None:
     )
 
 
-def test_dashboard_returns_counts_shape() -> None:
+def test_dashboard_returns_counts_shape(
+    dummy_db_url: str, fresh_admin_app
+) -> None:
     """Matching context + permitted branch -> 200 with aggregate counts."""
-    _require_dashboard_mounted()
+    _require_dashboard_mounted(fresh_admin_app)
     branch_uuid = str(uuid_lib.uuid4())
     token = _admin_token(sucursales_permitidas=[branch_uuid])
 
-    client = _client()
+    client = _client(fresh_admin_app)
     response = _safe_get(
         client,
         f"/api/v1/admin/sucursales/{branch_uuid}/dashboard",

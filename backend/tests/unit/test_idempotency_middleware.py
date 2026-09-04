@@ -110,13 +110,32 @@ def test_middleware_with_header_passes_through_when_no_db() -> None:
     """
     import asyncio
     import os
+    import sys
 
     import httpx
     from fastapi import FastAPI
     from parkos_core.api.middleware import IdempotencyKeyMiddleware
 
-    # Clear the DB env so the lazy engine can't initialize.
+    # Clear the DB env AND reset the lazy engine cache so the test
+    # cannot inherit a stale _sessionmaker built against a dummy URL
+    # (e.g. test_admin_me.py / test_dashboard_aggregation.py set
+    # DATABASE_URL=localhost:5432; without this reset the cached
+    # _sessionmaker dials that URL and OSError propagates instead of
+    # the expected RuntimeError).
     saved = os.environ.pop("DATABASE_URL", None)
+    # Reset cache on ALL parkos_core.db.engine instances that may exist
+    # (a prior test_admin_me's fresh_admin_app fixture purged and
+    # re-imported the module; the cached _engine/_sessionmaker may live
+    # on either the ORIGINAL or the FRESH module — reset both).
+    import contextlib
+    for mod_name in ("parkos_core.db.engine", "parkos_core.db"):
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            continue
+        for attr in ("_engine", "_sessionmaker"):
+            with contextlib.suppress(AttributeError, TypeError):
+                if hasattr(mod, attr):
+                    setattr(mod, attr, None)
 
     app = FastAPI()
     app.add_middleware(IdempotencyKeyMiddleware)
@@ -145,3 +164,13 @@ def test_middleware_with_header_passes_through_when_no_db() -> None:
     finally:
         if saved is not None:
             os.environ["DATABASE_URL"] = saved
+        # Reset the engine cache again so subsequent tests rebuild
+        # against the restored env (no stale _sessionmaker leak).
+        for mod_name in ("parkos_core.db.engine", "parkos_core.db"):
+            mod = sys.modules.get(mod_name)
+            if mod is None:
+                continue
+            for attr in ("_engine", "_sessionmaker"):
+                with contextlib.suppress(AttributeError, TypeError):
+                    if hasattr(mod, attr):
+                        setattr(mod, attr, None)
