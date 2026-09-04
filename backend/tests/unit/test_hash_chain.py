@@ -206,3 +206,100 @@ def test_out_of_order_payload_raises() -> None:
         "the incoming row's timestamp_evento >= prior row's. See "
         "Engram backlog (PR10+ cloud verifier scope)."
     )
+
+
+async def test_record_event_log_tx_extends_hash_chain(
+    pg_engine, alembic_upgrade
+) -> None:
+    """``record_event(log_tx=True)`` extends the SHA-256 chain (PR11c -- Bug 2).
+
+    Verifies the fix: the ``log_transaccional`` row written by
+    ``record_event`` carries ``hash_anterior`` = genesis (first call)
+    and ``hash_actual`` != ``hash_anterior``. A second ``record_event``
+    call against the same ``uuid_sucursal`` lands a row whose
+    ``hash_anterior`` matches the prior row's ``hash_actual`` -- the
+    canonical chain invariant.
+
+    Requires the testcontainers Postgres container; skipped if not
+    available (same gating as the other chain tests above).
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from parkos_core.models.A.log_transaccional import LogTransaccional
+    from parkos_core.models.L_E.ingreso import Ingreso
+    from parkos_core.repo.event import record_event
+
+    actor = uuid_lib.uuid4()
+    sucursal = uuid_lib.uuid4()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+
+    async with Session() as session:
+        # 1. First record_event -- log_transaccional row must anchor at the
+        #    per-sucursal genesis hash.
+        await record_event(
+            session,
+            Ingreso,
+            actor_uuid=actor,
+            new_attrs={
+                "uuid_sucursal": sucursal,
+                "placa": "AAA-001",
+                "fecha_ingreso": datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC).replace(
+                    tzinfo=None
+                ),
+            },
+            log_tx=True,
+        )
+        await session.commit()
+
+        rows = (
+            await session.execute(
+                select(LogTransaccional)
+                .where(LogTransaccional.uuid_sucursal == sucursal)
+                .order_by(LogTransaccional.timestamp_evento.asc())
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        first = rows[0]
+        assert first.hash_anterior == _genesis_hash(sucursal), (
+            f"first.hash_anterior={first.hash_anterior!r} != genesis="
+            f"{_genesis_hash(sucursal)!r}"
+        )
+        assert first.hash_actual is not None
+        assert first.hash_actual != first.hash_anterior
+        first_hash = first.hash_actual
+
+    async with Session() as session:
+        # 2. Second record_event -- log_transaccional row links to the prior.
+        await record_event(
+            session,
+            Ingreso,
+            actor_uuid=actor,
+            new_attrs={
+                "uuid_sucursal": sucursal,
+                "placa": "BBB-002",
+                "fecha_ingreso": datetime(2026, 1, 16, 12, 0, 0, tzinfo=UTC).replace(
+                    tzinfo=None
+                ),
+            },
+            log_tx=True,
+        )
+        await session.commit()
+
+        rows = (
+            await session.execute(
+                select(LogTransaccional)
+                .where(LogTransaccional.uuid_sucursal == sucursal)
+                .order_by(LogTransaccional.timestamp_evento.asc())
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+        second = rows[1]
+        assert second.hash_anterior == first_hash, (
+            f"second.hash_anterior={second.hash_anterior!r} != "
+            f"first.hash_actual={first_hash!r}"
+        )
+        assert second.hash_actual is not None
+        assert second.hash_actual != first_hash

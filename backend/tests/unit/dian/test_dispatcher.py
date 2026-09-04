@@ -20,6 +20,7 @@ on the ORM is the bi-temporal flag.
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -116,6 +117,14 @@ async def test_dispatcher_accepts_and_writes_envio_dian(
     assert envio.payload["track_id"] == "track-123"
     assert len(envio.payload["xml_sha256"]) == 64
     assert set(envio.payload["xml_sha256"]) <= _HEX
+    # PR11c -- Bug 4: ``aceptado`` now stamps the ORM attribute
+    # ``fecha_retencion_hasta`` 5 years out (replaces PR11a raw SQL).
+    assert envio.fecha_retencion_hasta is not None
+    days_out = (envio.fecha_retencion_hasta - date.today()).days
+    assert 365 * 4 < days_out <= 365 * 5 + 1, (
+        f"envio.fecha_retencion_hasta={envio.fecha_retencion_hasta!r} "
+        f"→ {days_out} days out (expected ~1825 / 5 years)"
+    )
     # Alerta is a failure-only side effect.
     append_event.assert_not_called()
     assert [r.method for r in seen] == ["POST", "GET"]
@@ -308,37 +317,55 @@ async def test_dispatcher_missing_auth_writes_rechazado(
 # ---------------------------------------------------------------------------
 
 
-async def test_dispatcher_initial_post_timeout_propagates(
+async def test_dispatcher_initial_post_timeout_writes_envio_dian_and_alerta(
     monkeypatch: pytest.MonkeyPatch, token_path: Path
 ) -> None:
-    """POST ``ConnectTimeout`` → uncaught ``httpx.ConnectTimeout`` propagates.
+    """POST ``ConnectTimeout`` x4 → retries exhaust → ``estado_dian='timeout'`` + ``dian_timeout`` alerta (PR11c — Bug 3).
 
-    Deviation from tasks.md T-PR11-01 step 6: ``_send_initial`` only
-    catches ``HTTPStatusError`` (→ ``rechazado``) and lets
-    ``RequestError`` subclasses (``ConnectTimeout`` / ``ReadTimeout``
-    / ``NetworkError``) propagate. The poll-timeout retry loop — which
-    needs a ``trackId`` to retry against — is intact and covered below.
-    Follow-up (PR11c or later) should wrap POST in the same
-    ``backoff_5xx`` schedule to fully match the spec.
+    Per §21.11 step 6 the initial POST is wrapped in the ``backoff_5xx``
+    retry schedule ``[60, 300, 900]`` seconds for up to
+    ``PARKOS_DIAN_RETRY_MAX`` retries (default 3). On exhaustion
+    ``_send_initial`` surfaces a ``timeout`` :class:`PollResult` which
+    routes through ``_record_terminal``: ``respuesta_proveedor``
+    stamps ``estado_dian='timeout'`` AND ``alerta tipo_alerta='dian_timeout'``
+    is appended via ``repo.append_only.append_event`` (NO raw SQL).
+    Caller sees graceful return — no exception propagated.
+
+    The transport raises ``ConnectTimeout`` 4 times (1 initial + 3
+    retries). The sleep shim collapses the ``backoff_5xx`` waits to
+    10ms each so the test runs in milliseconds.
     """
     def _handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("could not connect to provider")
 
     seen = install_rejection_transport(monkeypatch, _handler)
     append_event = install_append_event_mock(monkeypatch)
-    install_dian_timeout_env(monkeypatch)
+    # PARKOS_DIAN_RETRY_MAX=3 (default) → 1 initial + 3 retries = 4 POSTs.
+    monkeypatch.setenv("PARKOS_DIAN_RETRY_MAX", "3")
+    monkeypatch.setenv("PARKOS_DIAN_TIMEOUT_S", "0.001")
+    install_poll_sleep_shim(monkeypatch)
     session = mock_session_with_factura(factura_row())
 
-    with pytest.raises(httpx.ConnectTimeout):
-        await _dispatch(session, token_path)
+    # No exception propagates; caller sees the terminal ``timeout`` envio.
+    envio = await _dispatch(session, token_path)
 
-    # Envio was queued (NOT committed) before the POST attempt; the
-    # exception leaves it in ``estado_dian='pendiente'``. No alerta.
-    assert session.add.call_count == 1
-    assert isinstance(session.added[0], EnvioDian)
-    assert session.added[0].payload["estado_dian"] == "pendiente"
-    append_event.assert_not_called()
-    assert [r.method for r in seen] == ["POST"]
+    assert envio.respuesta_proveedor["estado_dian"] == dispatcher.ESTADO_TIMEOUT
+    motivo = envio.respuesta_proveedor["motivo_rechazo"]
+    assert motivo is not None
+    assert motivo.startswith("send:")
+    assert "ConnectTimeout" in motivo
+    assert envio.cufe is None
+
+    # One ``dian_timeout`` alerta chain root emitted via the append_only
+    # helper (no raw SQL).
+    append_event.assert_awaited_once()
+    attrs = append_event.await_args.args[2]
+    assert attrs["tipo_alerta"] == "dian_timeout"
+    assert attrs["uuid_arqueo"] == envio.uuid
+    assert attrs["uuid_alerta_padre"] is None  # chain root
+
+    # 1 initial POST + 3 retry POSTs = 4 total.
+    assert [r.method for r in seen] == ["POST", "POST", "POST", "POST"]
 
 
 async def test_dispatcher_poll_timeout_after_trackId_writes_timeout(

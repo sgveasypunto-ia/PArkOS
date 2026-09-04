@@ -2,7 +2,7 @@
 
 Maps 1:1 to the migration in ``0001_initial_schema.py`` (lines 976-993).
 
-``WorkflowBase`` \u2014 carries versioning columns. Cloud-only by deployment:
+``WorkflowBase`` -- carries versioning columns. Cloud-only by deployment:
 the schema exists in both cloud and branch DBs but the BRANCH service
 MUST NOT write here. Writes flow through
 :mod:`parkos_core.dian.cloud_router` (T-PR6-09, REQ-25-W-CLOUD-ONLY).
@@ -13,9 +13,9 @@ The chain tip walks the ``uuid_envio_padre`` self-FK to capture retries
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, String, text
+from sqlalchemy import Date, DateTime, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -51,6 +51,15 @@ class EnvioDian(WorkflowBase):
         DateTime(timezone=False),
         nullable=True,
     )
+
+    # --- DIAN 5-year retention (PR11c -- Bug 4) ---
+    # Re-declared here so the ORM exposes the column added by
+    # ``0001_initial_schema.py::_retention_column()``. PR11a stamped the
+    # column via raw SQL ``UPDATE prod.envio_dian`` because the ORM
+    # did not surface it; the dispatcher now mutates the attribute
+    # directly so the change flows through ``session.add(envio)`` like
+    # every other ORM write in the codebase.
+    fecha_retencion_hasta: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # --- Versioning columns (re-declared from VersionedMixin) ---
     # WorkflowBase does NOT inherit VersionedMixin, but the migration adds

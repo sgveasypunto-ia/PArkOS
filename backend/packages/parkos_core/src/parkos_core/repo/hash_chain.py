@@ -65,13 +65,35 @@ def _canonical_json(payload: dict[str, Any]) -> bytes:
     payloads round-trip identically across Python versions and dict
     insertion orders.
 
+    ``datetime`` / ``date`` / ``uuid.UUID`` values are coerced via the
+    standard ``default`` hook (ISO-8601 string for dates, hex string
+    for UUIDs). This lets callers pass raw ORM objects without
+    pre-serializing — PR11c wired ``repo.event.record_event`` →
+    ``hash_chain.append`` with a ``timestamp_evento`` datetime that
+    flowed straight into the canonical JSON. The hooks preserve the
+    byte-determinism invariant because ``isoformat()`` on a naive
+    datetime always returns the same string for the same instant.
+
     The same payload MUST hash to the same bytes regardless of how the
     caller built the dict. Verified by ``test_canonical_json_is_deterministic``
     in ``tests/unit/test_hash_chain.py``.
     """
     return json.dumps(
-        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        payload,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=_json_default,
     ).encode("utf-8")
+
+
+def _json_default(obj: Any) -> Any:
+    """``json.dumps`` default hook — serialise common ORM scalars to strings."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, uuid_lib.UUID):
+        return str(obj)
+    raise TypeError(f"Cannot JSON-serialize {type(obj).__name__}")
 
 
 def _genesis_hash(uuid_sucursal: uuid_lib.UUID | None) -> str:

@@ -94,18 +94,32 @@ async def record_event[T: LifecycleEventBase](
     session.add(new_row)
 
     if log_tx:
-        # Lazily import to avoid module-load-time circulars.
+        # Lazily import to avoid module-load-time circulars (model +
+        # hash_chain).
         from ..models.A.log_transaccional import LogTransaccional
+        from . import hash_chain
 
-        log_row = LogTransaccional(
-            uuid_usuario=actor_uuid,
-            uuid_sucursal=new_attrs.get("uuid_sucursal"),
-            accion="crear",
-            tabla_afectada=model_cls.__tablename__,
-            uuid_registro_afectado=getattr(new_row, "uuid", None),
-            timestamp_evento=now,
+        # Extend the SHA-256 chain per ``uuid_sucursal`` (REQ-16, REQ-X4).
+        # ``repo/hash_chain.append`` reads the prior chain head for the
+        # tenant, computes the new ``hash_actual`` over the canonical
+        # payload + prior hash, stamps both columns, and INSERTs the row
+        # via ``session.add``. First call per tenant lands with
+        # ``hash_anterior`` = the per-sucursal genesis hash; subsequent
+        # calls link to the prior row's ``hash_actual``. PR11c -- Bug 2.
+        log_attrs: dict[str, Any] = {
+            "uuid_usuario": actor_uuid,
+            "uuid_sucursal": new_attrs.get("uuid_sucursal"),
+            "accion": "crear",
+            "tabla_afectada": model_cls.__tablename__,
+            "uuid_registro_afectado": getattr(new_row, "uuid", None),
+            "timestamp_evento": now,
+        }
+        await hash_chain.append(
+            session,
+            LogTransaccional,
+            log_attrs,
+            actor_uuid=actor_uuid,
         )
-        session.add(log_row)
 
     return new_row
 

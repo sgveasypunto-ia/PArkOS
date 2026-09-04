@@ -136,23 +136,15 @@ def test_ubl_serialize_has_correct_namespaces_and_root() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. XSD-validation acceptance gate -- xfail pending PR11c.
-# Remove the xfail decorator once the minimal serializer is expanded.
+# 2. XSD-validation regression gate (PR11c -- Bug 1).
+# The xfail decorator was REMOVED in PR11c once the full UBL 2.1
+# serializer landed (lxml + UBLVersionID + InvoiceTypeCode + parties +
+# TaxTotal + LegalMonetaryTotal + InvoiceLine). This test is now a
+# hard regression check against ``UBL-Invoice-2.1.xsd`` -- any future
+# serializer regression that breaks the XSD contract trips it.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason=(
-        "UBL 2.1 XSD validation pending the PR11c follow-up that ships the "
-        "full serializer (per ubl_serializer.py module docstring + "
-        "openspec/changes/create-49-table-apis/tasks.md T-PR11c). The "
-        "current minimal serializer emits <cac:InvoiceUUID> which is not "
-        "in UBL 2.1 InvoiceType. When the full serializer lands, remove "
-        "this xfail decorator -- the assertion will then pass against the "
-        "already-bundled XSD."
-    ),
-    strict=False,
-)
 def test_ubl_serialize_validates_against_xsd() -> None:
     """``serialize()`` output validates against the bundled ``UBL-Invoice-2.1.xsd``.
 

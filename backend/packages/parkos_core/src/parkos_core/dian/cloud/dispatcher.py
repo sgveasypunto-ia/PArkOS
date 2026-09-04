@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # T-PR11-07 — DIAN boundary layer 2: branch deploys bail at module load.
@@ -118,13 +118,43 @@ async def _do_poll_once(provider: DianProvider, track_id: str) -> PollResult:
 async def _send_initial(
     provider: DianProvider, xml_bytes: bytes
 ) -> tuple[str | None, PollResult | None]:
-    """``(track_id, None)`` on success; ``(None, rechazo)`` on HTTP rejection."""
-    try:
-        return await provider.send_ubl(xml_bytes), None
-    except httpx.HTTPStatusError as exc:
-        return None, PollResult(
-            estado=ESTADO_RECHAZADO, motivo_rechazo=_http_motivo("send:", exc)
-        )
+    """``(track_id, None)`` on success; ``(None, rechazo)`` on HTTP rejection.
+
+    Transport-level errors (``httpx.RequestError`` — connection refused,
+    read timeout, etc.) are wrapped in the ``backoff_5xx`` retry loop
+    per §21.11 step 6: ``[60, 300, 900]`` seconds between attempts,
+    up to ``PARKOS_DIAN_RETRY_MAX`` retries. On exhaustion the function
+    surfaces a ``timeout`` :class:`PollResult` so the caller routes to
+    :func:`_record_terminal`, which writes the ``dian_timeout`` alerta
+    chain root + stamps ``respuesta_proveedor.estado_dian='timeout'``.
+
+    PR11c — Bug 3 closes the gap from PR11a where these errors
+    propagated as uncaught ``httpx.ConnectTimeout`` /
+    ``httpx.ReadTimeout`` exceptions, leaving the envio_dian row in
+    ``pendiente`` state with no operator-visible alerta.
+    """
+    retry_max = _env_int_pos("PARKOS_DIAN_RETRY_MAX", _DEFAULT_RETRY_MAX)
+    last_exc: httpx.RequestError | None = None
+    for attempt_idx in range(retry_max + 1):
+        try:
+            return await provider.send_ubl(xml_bytes), None
+        except httpx.HTTPStatusError as exc:
+            return None, PollResult(
+                estado=ESTADO_RECHAZADO, motivo_rechazo=_http_motivo("send:", exc)
+            )
+        except httpx.RequestError as exc:
+            last_exc = exc
+            # Sleep ``backoff_5xx[min(attempt_idx, 2)]`` before the next
+            # attempt. The schedule mirrors the poll-side retry loop so
+            # the two paths use the same wait math.
+            if attempt_idx < retry_max:
+                backoff_idx = min(attempt_idx, len(_BACKOFF_5XX_SECONDS) - 1)
+                await asyncio.sleep(_BACKOFF_5XX_SECONDS[backoff_idx])
+    # Exhaustion — surface as a timeout rejection; the caller routes to
+    # ``_record_terminal`` which stamps ``envio_dian`` and emits the
+    # ``dian_timeout`` alerta chain root.
+    motivo = f"send: {type(last_exc).__name__ if last_exc else 'RequestError'}: timeout"
+    return None, PollResult(estado=ESTADO_TIMEOUT, motivo_rechazo=motivo)
 
 
 async def _write_alerta(
@@ -145,24 +175,20 @@ async def _write_alerta(
     await append_event(session, Alerta, attrs)  # type: ignore[arg-type]
 
 
-async def _stamp_envio_retention(
-    session: AsyncSession, envio_uuid: uuid_lib.UUID
-) -> None:
-    """DIAN 5-year retention stamp on envio.
+def _stamp_envio_retention_on_attribute(envio: EnvioDian) -> None:
+    """Stamp the DIAN 5-year retention column on the ORM instance (PR11c -- Bug 4).
 
-    Raw SQL because the ORM class doesn't redeclare
-    ``fecha_retencion_hasta`` (migration adds the column, model
-    doesn't expose it). envio_dian is ``[L-W]`` (not ``[A]``) so the
-    no-``session.execute(update)`` rule does not apply.
+    Replaces the PR11a raw SQL ``UPDATE prod.envio_dian`` path with a
+    straight attribute mutation -- ``EnvioDian.fecha_retencion_hasta``
+    is now declared on the ORM class so the change flows through
+    ``session.add(envio)`` like every other ORM write in the codebase.
+
+    The caller (``_record_terminal``) commits once after both the
+    retention stamp and the alerta INSERT land on the session, so no
+    extra commit lives here.
     """
-    retention = _now_naive().date() + timedelta(days=365 * _DIAN_RETENTION_YEARS)
-    await session.execute(
-        text(
-            "UPDATE prod.envio_dian "
-            "SET fecha_retencion_hasta = :retention "
-            "WHERE uuid = :uuid"
-        ),
-        {"retention": retention, "uuid": envio_uuid},
+    envio.fecha_retencion_hasta = _now_naive().date() + timedelta(
+        days=365 * _DIAN_RETENTION_YEARS
     )
 
 
@@ -186,7 +212,7 @@ async def _record_terminal(
     envio.timestamp_evento = _now_naive()
 
     if estado == ESTADO_ACEPTADO:
-        await _stamp_envio_retention(session, envio.uuid)  # type: ignore[arg-type]
+        _stamp_envio_retention_on_attribute(envio)
     elif estado == ESTADO_RECHAZADO:
         await _write_alerta(session, envio=envio, tipo_alerta="dian_rechazada")
     elif estado == ESTADO_TIMEOUT:
