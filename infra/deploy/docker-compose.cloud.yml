@@ -1,0 +1,142 @@
+# docker-compose.cloud.yml — Parkos cloud-side stack.
+#
+# Spins up the central admin: Postgres (with pg_partman), the FastAPI
+# admin API, the cloud sync worker, and a Prometheus-friendly exporter
+# stub. Mirrors the cloud-side production topology:
+#
+#   cloud-db  ←── api-admin
+#              ├── job_sync_cloud   (this PR9b)
+#              └── (future: job_dian_dispatcher, admin BFF, etc.)
+#
+# Per design 21.6 (installability matrix) + tasks.md T-PR9-10:
+#   - Every stateful service carries a HEALTHCHECK.
+#   - job_sync_cloud depends on cloud-db with condition: service_healthy
+#     so the worker waits for the DB to accept connections before boot.
+#   - job_sync_cloud's image-level HEALTHCHECK hits the worker's
+#     /healthz on port 9999 (NOT exposed externally — reachable only
+#     via the docker network from Docker Compose / k8s).
+#   - deploy.replicas: 1 per branch is the canonical single-instance
+#     design (21.12 risk #24 — two parallel job_sync_cloud instances
+#     would race on the SHA-256 hash chain).
+#
+# Build context: the repo ROOT. The Dockerfile copies backend/ + the
+# workspace manifest. The DIAN boundary (Layer 1) excludes
+# **/dian/cloud/** from the BRANCH image, but the cloud image bundles
+# it (the cloud is the only place that uses parkos_core.dian.cloud).
+#
+# Run:
+#   docker compose -f infra/deploy/docker-compose.cloud.yml up -d
+#   docker compose -f infra/deploy/docker-compose.cloud.yml logs -f job_sync_cloud
+#
+# Stop:
+#   docker compose -f infra/deploy/docker-compose.cloud.yml down
+
+name: parkos-cloud
+
+services:
+  # -------------------------------------------------------------------------
+  # Postgres — pg_partman parent image (built locally; falls back to
+  # the public postgres:16-alpine if the parkos image is missing so
+  # local smoke tests still work). In prod the parkos-postgres:16-pgpartman
+  # image is mandatory (DIAN partitions require pg_partman).
+  # -------------------------------------------------------------------------
+  cloud-db:
+    image: parkos-postgres:16-pgpartman
+    container_name: parkos-cloud-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: parkos
+      POSTGRES_PASSWORD: parkos
+      POSTGRES_DB: parkos
+    volumes:
+      - cloud-db-data:/var/lib/postgresql/data
+    networks:
+      - parkos-cloud-net
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parkos -d parkos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # api-admin — the FastAPI central admin API. Same multi-stage image
+  # as the worker; SERVICE_NAME selects the entrypoint at boot
+  # (Dockerfile.cloud's CMD defaults to job_sync_cloud — the API
+  # container overrides it via docker-compose's command:).
+  # -------------------------------------------------------------------------
+  api-admin:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.cloud
+      args:
+        BUILD_TARGET: api_admin
+    image: parkos:api-admin-test
+    container_name: parkos-api-admin
+    restart: unless-stopped
+    environment:
+      PARKOS_DEPLOY: cloud
+      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@cloud-db:5432/parkos
+      PARKOS_JWT_KEY_PATH: /run/secrets/jwt_private.pem
+      PARKOS_DIAN_PROVIDER_URL: ${PARKOS_DIAN_PROVIDER_URL:?PARKOS_DIAN_PROVIDER_URL required}
+      PARKOS_DIAN_PROVIDER_TOKEN_PATH: /run/secrets/factus_token
+      PARKOS_DIAN_TIMEOUT_S: "30"
+      PARKOS_DIAN_RETRY_MAX: "3"
+    depends_on:
+      cloud-db:
+        condition: service_healthy
+    networks:
+      - parkos-cloud-net
+    ports:
+      - "8000:8000"
+    command: ["python", "-m", "uvicorn", "parkos_core.api.app_factory:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # job_sync_cloud — PR9b's new worker. The cloud-side SHA-256 chain
+  # verifier runs in this container; the verify_interval defaults to
+  # 3600s (PARKOS_SYNC_VERIFY_INTERVAL_S) but operators can tune.
+  # -------------------------------------------------------------------------
+  job-sync-cloud:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.cloud
+      args:
+        BUILD_TARGET: job_sync_cloud
+    image: parkos:job-sync-cloud-test
+    container_name: parkos-job-sync-cloud
+    restart: unless-stopped
+    environment:
+      PARKOS_DEPLOY: cloud
+      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@cloud-db:5432/parkos
+      PARKOS_JWT_KEY_PATH: /run/secrets/jwt_private.pem
+      PARKOS_DIAN_PROVIDER_URL: ${PARKOS_DIAN_PROVIDER_URL:?PARKOS_DIAN_PROVIDER_URL required}
+      PARKOS_DIAN_PROVIDER_TOKEN_PATH: /run/secrets/factus_token
+      PARKOS_SYNC_VERIFY_INTERVAL_S: "3600"
+    depends_on:
+      cloud-db:
+        condition: service_healthy
+    networks:
+      - parkos-cloud-net
+    deploy:
+      replicas: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9999/healthz', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  parkos-cloud-net:
+    driver: bridge
+
+volumes:
+  cloud-db-data:

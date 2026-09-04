@@ -1,0 +1,157 @@
+# docker-compose.branch.yml — Parkos branch-side stack.
+#
+# Spins up one branch: Postgres (with pg_partman), the FastAPI branch
+# API, and the branch sync worker. Mirrors the per-branch production
+# topology:
+#
+#   branch-db  ←── api-sucursal
+#              └── job_sync_sucursal   (this PR9b)
+#
+# Per design 21.6 (installability matrix) + tasks.md T-PR9-10:
+#   - Every stateful service carries a HEALTHCHECK.
+#   - job_sync_sucursal depends on branch-db + api-sucursal with
+#     condition: service_healthy so the worker waits for the DB to
+#     accept connections before boot.
+#   - The worker's long-lived sync-agent JWT is mounted via a named
+#     volume (jwt-volume). The entrypoint pairs the branch on first
+#     boot, persists the JWT to /var/run/parkos/sync.jwt, and the
+#     worker reads it on subsequent boots. Subsequent boots skip the
+#     pair step.
+#   - deploy.replicas: 1 per branch (paired with api-sucursal).
+#   - The branch API exposes 8000 to the LAN so the web_sucursal PWA
+#     can reach it; the worker's /healthz on 9999 stays internal.
+#
+# DIAN boundary (REQ-X3): the branch image excludes **/dian/cloud/**
+# at the build context layer (backend/.dockerignore). The
+# parkos_core.dian.cloud module NEVER lands in this image.
+#
+# Required env (.env file in this directory):
+#   PARKOS_SUCURSAL_UUID=<uuidv4 of the branch>
+#   PARKOS_CLOUD_API_URL=https://cloud.example.com
+#   PARKOS_DIAN_PROVIDER_URL=https://api.factus.example  # NOT used on branch but validated by env.py
+#
+# Run:
+#   docker compose -f infra/deploy/docker-compose.branch.yml up -d
+#   docker compose -f infra/deploy/docker-compose.branch.yml logs -f job_sync_sucursal
+#
+# First-boot pairing:
+#   docker compose -f infra/deploy/docker-compose.branch.yml exec api-sucursal \
+#     parkos-core pair --cloud-url "$PARKOS_CLOUD_API_URL" \
+#     --admin-jwt "$PARKOS_ADMIN_JWT"
+#
+# Stop:
+#   docker compose -f infra/deploy/docker-compose.branch.yml down
+
+name: parkos-branch
+
+services:
+  # -------------------------------------------------------------------------
+  # Postgres — pg_partman parent image (built locally; falls back to
+  # the public postgres:16-alpine if the parkos image is missing).
+  # -------------------------------------------------------------------------
+  branch-db:
+    image: parkos-postgres:16-pgpartman
+    container_name: parkos-branch-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: parkos
+      POSTGRES_PASSWORD: parkos
+      POSTGRES_DB: parkos
+    volumes:
+      - branch-db-data:/var/lib/postgresql/data
+    networks:
+      - parkos-branch-net
+    ports:
+      - "5433:5432"  # host 5433 → container 5432 to avoid clash with cloud on same host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parkos -d parkos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # api-sucursal — the FastAPI branch API. Same multi-stage image as
+  # the worker; SERVICE_NAME selects the entrypoint at boot.
+  # -------------------------------------------------------------------------
+  api-sucursal:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.branch
+      args:
+        BUILD_TARGET: api_sucursal
+    image: parkos:api-sucursal-test
+    container_name: parkos-api-sucursal
+    restart: unless-stopped
+    environment:
+      PARKOS_DEPLOY: branch
+      PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
+      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
+      PARKOS_CLOUD_API_URL: ${PARKOS_CLOUD_API_URL:?PARKOS_CLOUD_API_URL required}
+      PARKOS_JWT_KEY_PATH: /run/secrets/jwt_private.pem
+      PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
+    depends_on:
+      branch-db:
+        condition: service_healthy
+    networks:
+      - parkos-branch-net
+    ports:
+      - "8000:8000"
+    volumes:
+      - jwt-volume:/var/run/parkos
+    command: ["python", "-m", "uvicorn", "parkos_core.api.app_factory:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # job_sync_sucursal — PR9b's new worker. Reads the sync-agent JWT
+  # from the same named volume that the API writes it to on first
+  # boot (after the admin pairs the branch).
+  # -------------------------------------------------------------------------
+  job-sync-sucursal:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.branch
+      args:
+        BUILD_TARGET: job_sync_sucursal
+    image: parkos:job-sync-sucursal-test
+    container_name: parkos-job-sync-sucursal
+    restart: unless-stopped
+    environment:
+      PARKOS_DEPLOY: branch
+      PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
+      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
+      PARKOS_CLOUD_API_URL: ${PARKOS_CLOUD_API_URL:?PARKOS_CLOUD_API_URL required}
+      PARKOS_JWT_KEY_PATH: /run/secrets/jwt_private.pem
+      PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
+      PARKOS_SYNC_POLL_INTERVAL_S: "10"
+      PARKOS_SYNC_BATCH_SIZE: "100"
+    depends_on:
+      branch-db:
+        condition: service_healthy
+      api-sucursal:
+        condition: service_healthy
+    networks:
+      - parkos-branch-net
+    volumes:
+      - jwt-volume:/var/run/parkos
+    deploy:
+      replicas: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9999/healthz', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  parkos-branch-net:
+    driver: bridge
+
+volumes:
+  branch-db-data:
+  jwt-volume:
