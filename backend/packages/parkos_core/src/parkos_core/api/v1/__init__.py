@@ -1,4 +1,4 @@
-"""parkos_core FastAPI v1 router package (PR1c + PR3 + PR4 + PR5 + PR6 + PR7).
+"""parkos_core FastAPI v1 router package (PR1c + PR3 + PR4 + PR5 + PR6 + PR7 + PR8c).
 
 The DIAN boundary (design §10 + REQ-X3) is enforced at TWO layers:
 
@@ -23,6 +23,12 @@ Cloud-only resources (excluded from branch deploy, REQ-X3):
   ``GET /api/v1/admin/sucursales/{uuid}/dashboard``, ``GET /api/v1/admin/me``.
   Multi-branch visibility is an admin-only capability; branch operators
   must never see other branches.
+- ``admin/pairing-tokens`` + ``admin/sucursales/{uuid}/revoke-sync``
+  (PR8b/PR8c) — admin-issued pairing tokens + admin-side branch JWT
+  revocation. The ``admin-`` issuer guard denies branch operators with
+  401, but the routers themselves live in ``api/v1/pairing.py`` and are
+  NOT mounted on branch deploy (belt-and-suspenders for the same
+  reason as the cloud-only list above).
 
 Replicated resources (mounted in BOTH deploys):
 
@@ -47,12 +53,22 @@ Replicated resources (mounted in BOTH deploys):
   (PR7, REQ-40/REQ-41): ``POST /sesiones`` opens, ``PUT
   /sesion/{uuid}/cerrar`` closes (log-first), ``GET
   /arqueos/{uuid}/diferencias`` reads expected-vs-reported deltas.
+- ``sync`` (PR8c, REQ-OP-03) — ``/sync/pair``, ``/sync/push``,
+  ``/sync/pull``, ``/sync/heartbeat``, ``/sync/rotate-jwt``,
+  ``/sync/events``. Mounted on BOTH ``api_admin`` AND
+  ``api_sucursal``: ``/sync/pair`` is the branch→cloud one-shot
+  consumer; the other five are the bidirectional transport used by
+  the cloud-side receiver AND the branch-side receiver. The
+  three-layer DIAN boundary does NOT apply because the sync transport
+  is not DIAN — see ``api/v1/sync_router.py`` docstring.
 
 T-PR4-11 keeps the path layout ``/api/v1/empresa/{resource}/...`` intact by
 rebuilding a custom empresa router with the same ``/empresa`` prefix the
 aggregated ``empresa.router`` exposes. The aggregated router is preserved
 for backward-compat direct imports. T-PR6-11 adds the DIAN cloud router
 mount at the v1 root only on cloud deploys (REQ-X3 belt-and-suspenders).
+T-PR8-16 adds the sync router at the v1 root on BOTH deploys
+(non-DIAN, REQ-OP-03).
 """
 from __future__ import annotations
 
@@ -83,6 +99,7 @@ from . import (
     facturacion,
     operacion,
     sucursal,
+    sync_router,  # T-PR8-16 wire-in: /sync/* (REQ-OP-03, both deploys)
     workflows,
 )
 
@@ -128,6 +145,7 @@ def _build_router() -> APIRouter:
     r.include_router(workflows.router)  # PR6
     r.include_router(caja.router)  # T-PR7-09
     r.include_router(caja_sesion.router)  # T-PR7-09
+    r.include_router(sync_router.router)  # T-PR8-16: /sync/* (both deploys, REQ-OP-03)
 
     # Empresa resources — selectively mounted (DIAN boundary, REQ-X3).
     r.include_router(_build_empresa_router())

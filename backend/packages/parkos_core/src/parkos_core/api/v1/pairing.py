@@ -48,13 +48,14 @@ import uuid as uuid_lib
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_session, requires_issuer
 from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext, get_tenant_ctx
+from ...auth.tokens import JWT_OVERLAP_HOURS
 from ...models.A.pairing_tokens import PairingToken
 from ...repo.pairing import (
     DEFAULT_TTL_HOURS,
@@ -348,47 +349,80 @@ async def revoke_pairing_token(
     await session.commit()
 
 
+class _SyncRevokeRequest(_Base):
+    """Body for ``POST /admin/sucursales/{uuid}/revoke-sync`` (PR8c wire-up).
+
+    The admin supplies the JWT ``kid`` header + ``jti`` payload claim of
+    the branch's currently-issued ``sync-agent-`` token. The cloud
+    records the revocation in ``revoked_sync_jwts`` (the [A] inmutable
+    trigger blocks UPDATE on ``pairing_tokens`` so all revocations flow
+    through this sibling table — see ``repo/pairing.py`` module
+    docstring). The branch-side ``sync`` worker drops the JWT from
+    ``PARKOS_SYNC_JWT_PATH`` on the next heartbeat via the canonical
+    ``is_revoked`` lookup (design §21.3).
+    """
+
+    jwt_kid: str = Field(..., min_length=1, max_length=64)
+    jwt_uuid: str = Field(..., min_length=1, max_length=64)
+
+
 @sync_revoke_router.post(
     "/{uuid_sucursal}/revoke-sync",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(_admin_issuer_dep), Depends(_manage_perm_dep)],
-    summary="Revoke a branch's persistent sync-agent- JWT (stub — PR8c wires the consumer).",
+    summary="Revoke a branch's persistent sync-agent- JWT (PR8c wire-up).",
 )
 async def revoke_branch_sync_token(
+    payload: _SyncRevokeRequest,
     uuid_sucursal: uuid_lib.UUID = Path(...),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> None:
-    """STUB — returns 501 Not Implemented in PR8b.
+    """PR8c wire-up — inserts a ``revoked_sync_jwts`` row for the branch's JWT.
 
-    The endpoint is registered so the contract is fixed; the
-    sync-router (PR8c) wires the actual consume path: on call, the
-    cloud looks up the branch's currently-issued ``sync-agent-`` JWT,
-    writes a ``revoked_sync_jwts`` row carrying its ``kid`` + ``jti``,
-    and emits a SyncBackEvent so the branch drops the now-revoked
-    JWT from ``PARKOS_SYNC_JWT_PATH`` on its next boot.
+    The cloud has no direct view of the branch's persisted
+    ``PARKOS_SYNC_JWT_PATH`` (the file lives on the branch's local
+    filesystem), so the admin supplies the ``kid`` + ``jti`` values to
+    revoke. The revocation is scoped to (``jwt_kid``, ``jwt_uuid``,
+    ``vigente_desde``, ``fecha_retencion_hasta``) per the table's UK —
+    duplicate revocations are swallowed by ``revoke_jwt`` (returns
+    ``None``) and the endpoint still answers 204 (idempotent).
 
-    In PR8b the endpoint returns 501 + logs that the contract is
-    registered. ``api/v1/__init__.py`` mounts this router only on
-    cloud deploy (DIAN boundary belt-and-suspenders).
+    The sync-router's ``is_revoked`` lookup catches the revocation on
+    the next ``POST /sync/push`` / ``/pull`` / ``/heartbeat`` call
+    (returns 401 with ``{"error": "sync_jwt_revoked"}``). ``expires_at``
+    is set to ``now + JWT_OVERLAP_HOURS`` (24h) — the JWT's own
+    ``exp`` claim may be further out, but the revocation only needs to
+    outlast the rotation grace window; once the JWT expires naturally
+    the revocation row's filter (``expires_at > now``) drops it from
+    the active set.
     """
-    logger.warning(
-        "POST /admin/sucursales/%s/revoke-sync called — STUB. "
-        "PR8c wires the sync-router consumer; this PR8b stub returns "
-        "501 Not Implemented. actor=%s",
-        uuid_sucursal,
-        ctx.actor_uuid,
+    now_naive = _now_naive()
+    now_iso = now_naive.isoformat()
+    expires_at = now_naive + timedelta(hours=JWT_OVERLAP_HOURS)
+    result = await revoke_jwt(
+        session,
+        kid=payload.jwt_kid,
+        jwt_uuid=payload.jwt_uuid,
+        motivo=f"admin_revoked_at_{now_iso}",
+        actor_uuid=ctx.actor_uuid,
+        expires_at=expires_at,
     )
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "error": "not_implemented",
-            "detail": (
-                "revoke-sync consumer lands in PR8c (sync-router "
-                "integration). PR8b registers the endpoint so the "
-                "contract is fixed."
-            ),
-        },
-    )
+    if result is None:
+        logger.info(
+            "sync-agent JWT (kid=%s jti=%s) already revoked — 204 idempotent",
+            payload.jwt_kid,
+            payload.jwt_uuid,
+        )
+    else:
+        logger.info(
+            "sync-agent JWT (kid=%s jti=%s) revoked by %s for branch %s",
+            payload.jwt_kid,
+            payload.jwt_uuid,
+            ctx.actor_uuid,
+            uuid_sucursal,
+        )
+    await session.commit()
 
 
 # ---------------------------------------------------------------------------

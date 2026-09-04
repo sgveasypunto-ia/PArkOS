@@ -310,20 +310,29 @@ class TestRevokePairingToken:
 
 
 # ---------------------------------------------------------------------------
-# POST /admin/sucursales/{uuid}/revoke-sync (PR8c stub)
+# POST /admin/sucursales/{uuid}/revoke-sync (PR8c wire-up)
 # ---------------------------------------------------------------------------
 
 
-class TestRevokeSyncStub:
-    def test_returns_501_not_implemented(self, client: TestClient):
-        """The 4th endpoint is a PR8c stub — returns 501."""
-        # Build a sibling app that also mounts sync_revoke_router.
+class TestRevokeSync:
+    """PR8c replaces the PR8b 501 stub with the real ``revoke_jwt`` call.
+
+    The admin POSTs ``{jwt_kid, jwt_uuid}`` in the body; the endpoint
+    inserts a ``revoked_sync_jwts`` row scoped to the branch. The
+    sync-router's ``is_revoked`` lookup catches the revocation on the
+    next ``POST /sync/push`` / ``/pull`` / ``/heartbeat`` (returns 401
+    with ``{"error": "sync_jwt_revoked"}``). Duplicates are idempotent
+    — ``revoke_jwt`` returns ``None`` and the endpoint still answers
+    204.
+    """
+
+    def _make_app(self, fake_session: MagicMock) -> FastAPI:
         app = FastAPI()
         app.include_router(pairing_module.router)
         app.include_router(pairing_module.sync_revoke_router)
 
         async def _session_override():
-            yield MagicMock(name="AsyncSession")
+            yield fake_session
 
         async def _tenant_override():
             return TenantContext(
@@ -343,14 +352,71 @@ class TestRevokeSyncStub:
         app.dependency_overrides[get_tenant_ctx] = _tenant_override
         app.dependency_overrides[_admin_issuer_dep] = _issuer_override
         app.dependency_overrides[_manage_perm_dep] = _perm_override
+        return app
 
+    def test_returns_204_and_inserts_revoked_sync_jwt_row(
+        self, fake_session: MagicMock
+    ) -> None:
+        """Happy path — body carries kid + jwt_uuid, endpoint inserts a
+        ``revoked_sync_jwts`` row + commits + returns 204.
+        """
+        app = self._make_app(fake_session)
+        c = TestClient(app)
+        resp = c.post(
+            f"/admin/sucursales/{SUCURSAL_UUID}/revoke-sync",
+            headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+            json={"jwt_kid": "sync-agent-cloud", "jwt_uuid": "00000000-0000-0000-0000-000000000aaa"},
+        )
+        assert resp.status_code == 204, resp.text
+        # One ``revoked_sync_jwts`` row INSERTed.
+        assert len(fake_session.added) == 1
+        row = fake_session.added[0]
+        assert row.jwt_kid == "sync-agent-cloud"
+        assert row.jwt_uuid == "00000000-0000-0000-0000-000000000aaa"
+        assert row.revoked_by == ACTOR_UUID
+        # expires_at is server-set to now + 24h (JWT_OVERLAP_HOURS).
+        # The fake_session's flush() populates missing attributes, but
+        # the endpoint sets expires_at explicitly — verify it landed.
+        assert row.expires_at is not None
+
+    def test_returns_204_on_duplicate_revocation(
+        self, fake_session: MagicMock
+    ) -> None:
+        """Duplicate revocations are idempotent — the UK violation in
+        ``revoke_jwt`` is swallowed and the endpoint still answers 204.
+        """
+        from parkos_core.repo.revoked_sync_jwt import revoke_jwt as real_revoke_jwt
+
+        async def _fake_revoke_jwt(*args, **kwargs):
+            return None  # duplicate — UK violation swallowed
+
+        # Patch the symbol the endpoint imported, so the call returns
+        # None (the "duplicate" branch).
+        import parkos_core.api.v1.pairing as _pairing
+
+        original = _pairing.revoke_jwt
+        _pairing.revoke_jwt = _fake_revoke_jwt  # type: ignore[assignment]
+        try:
+            app = self._make_app(fake_session)
+            c = TestClient(app)
+            resp = c.post(
+                f"/admin/sucursales/{SUCURSAL_UUID}/revoke-sync",
+                headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+                json={"jwt_kid": "k1", "jwt_uuid": "j1"},
+            )
+            assert resp.status_code == 204
+        finally:
+            _pairing.revoke_jwt = original
+
+    def test_rejects_missing_body(self, fake_session: MagicMock) -> None:
+        """Missing body → 422 from Pydantic (jwt_kid + jwt_uuid required)."""
+        app = self._make_app(fake_session)
         c = TestClient(app)
         resp = c.post(
             f"/admin/sucursales/{SUCURSAL_UUID}/revoke-sync",
             headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
         )
-        assert resp.status_code == 501
-        assert resp.json()["detail"]["error"] == "not_implemented"
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
