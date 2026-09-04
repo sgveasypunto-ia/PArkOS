@@ -7,6 +7,10 @@ is the only mapping (no aliases; C-3 in bi-temporal-crud).
 PR1b ships the auth-domain schemas (5 V + 1 L_S) plus a smoke-mount set
 for the catalog router. Subsequent PRs add the rest of catalog,
 empresa/sucursal, operacion, facturacion, workflows domains.
+
+PR2 retroactivo backfill: ``sync_infra`` ships the 5 ``[A]`` schemas
+(SyncQueue/SyncLog/SyncConflict + LogTransaccional + RevocacionFactura)
+needed by the sync-outbox and DIAN audit flows.
 """
 from __future__ import annotations
 
@@ -16,5 +20,6 @@ from __future__ import annotations
 from . import auth as auth
 from . import catalogos as catalogos
 from . import common as common
+from . import sync_infra as sync_infra
 
-__all__ = ["auth", "catalogos", "common"]
+__all__ = ["auth", "catalogos", "common", "sync_infra"]

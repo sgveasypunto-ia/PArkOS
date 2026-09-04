@@ -167,3 +167,42 @@ async def test_hash_chain_append_rejects_model_without_columns(
                 {"uuid_sucursal": uuid_lib.uuid4(), "timestamp_evento": None},
                 actor_uuid=uuid_lib.uuid4(),
             )
+
+
+def test_out_of_order_payload_raises() -> None:
+    """Out-of-order payload should raise ``HashChainIntegrityViolation``.
+
+    The SHA-256 chain is per-``uuid_sucursal`` and relies on
+    ``timestamp_evento`` monotonicity. Two writes that race and the
+    second arrives with a ``timestamp_evento`` BEFORE the first will
+    cause the chain to silently fork:
+
+      - ``_read_prior_hash`` orders by ``timestamp_evento DESC`` and
+        returns the row with the LATEST timestamp as the prior.
+      - The second row (with the EARLIER timestamp) sees the FUTURE
+        row's ``hash_actual`` as its ``hash_anterior``.
+      - Result: the chain splits into two heads; the cloud-side
+        verifier (PR10) catches the divergence downstream but the
+        helper itself is happy-path only.
+
+    TODO: PR10+ backlog — implement out-of-order detection in
+    ``repo/hash_chain.py::append``. The envelope is:
+      1. Read the prior row by ``MAX(timestamp_evento)`` (already done).
+      2. Compare the incoming payload's ``timestamp_evento`` to the
+         prior's. If the incoming is <= prior, raise
+         ``HashChainIntegrityViolation`` with a "out-of-order" reason.
+      3. Optionally: read the row with ``MAX(timestamp_evento) WHERE
+         timestamp_evento <= incoming`` to anchor the chain at the
+         most recent earlier row (not just the head).
+
+    When detection lands, remove this skip and assert the violation.
+
+    PR2 retroactivo: this test pins the gap so the backlog item
+    surfaces on every CI run.
+    """
+    pytest.skip(
+        "out-of-order detection deferred — repo/hash_chain.py:append "
+        "uses ORDER BY timestamp_evento DESC and does NOT validate that "
+        "the incoming row's timestamp_evento >= prior row's. See "
+        "Engram backlog (PR10+ cloud verifier scope)."
+    )
