@@ -69,6 +69,7 @@ def _sync_columns() -> list[sa.Column]:
 
 def upgrade() -> None:
     """Create both tables with REVOKE + inmutable trigger in one TX."""
+    op.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64);")
     # Ensure the schema exists (0001 already creates it, but be idempotent).
     op.execute("CREATE SCHEMA IF NOT EXISTS prod;")
 
@@ -111,7 +112,7 @@ def upgrade() -> None:
         "idempotency_keys",
         ["issuer", "key_hash"],
         unique=False,
-        postgresql_where=sa.text("expires_at > NOW()"),
+        postgresql_where=sa.text("expires_at IS NOT NULL"),
         schema="prod",
     )
 
@@ -176,7 +177,7 @@ def upgrade() -> None:
         "revoked_sync_jwts",
         ["key_uuid"],
         unique=False,
-        postgresql_where=sa.text("expires_at > NOW()"),
+        postgresql_where=sa.text("expires_at IS NOT NULL"),
         schema="prod",
     )
 
