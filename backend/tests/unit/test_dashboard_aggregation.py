@@ -56,7 +56,14 @@ def dummy_db_url(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def fresh_admin_app(monkeypatch: pytest.MonkeyPatch):
-    """Return a fresh admin app with ``sys.modules`` fully restored on teardown."""
+    """Return a fresh admin app with ``sys.modules`` fully restored on teardown.
+
+    Also restores the parent package's ``__dict__`` entries for each
+    purged submodule (Python's import system auto-binds submodules into
+    the parent's ``__dict__`` on reimport, so a ``sys.modules``-only
+    restore leaves ``from parkos_core.api.v1 import sync_router``
+    resolving to the freshly-imported module rather than the original).
+    """
     _ensure_paths()
     monkeypatch.setenv("PARKOS_DEPLOY", "cloud")
 
@@ -67,6 +74,21 @@ def fresh_admin_app(monkeypatch: pytest.MonkeyPatch):
         for name, mod in sys.modules.items()
         if name.startswith(_purge_prefixes) or name in _purge_exact
     }
+    # Capture parent-package ``__dict__`` entries for every submodule
+    # we are about to purge. After reimport, Python mutates the parent's
+    # ``__dict__`` to point to the NEW submodule; on teardown we restore
+    # the OLD submodule so ``from parent import submodule`` resolves
+    # correctly for downstream tests.
+    saved_parent_attrs: dict[tuple[str, str], object] = {}
+    for name, mod in saved_modules.items():
+        if "." not in name:
+            continue
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is None:
+            continue
+        if attr in parent.__dict__ and parent.__dict__[attr] is mod:
+            saved_parent_attrs[(parent_name, attr)] = mod
     for name in list(saved_modules):
         sys.modules.pop(name, None)
 
@@ -78,13 +100,17 @@ def fresh_admin_app(monkeypatch: pytest.MonkeyPatch):
         yield admin_app
     finally:
         for name in list(sys.modules):
-            if (
-                name.startswith(_purge_prefixes)
-                or name in _purge_exact
-            ) and name not in saved_modules:
+            cond_a = name.startswith(_purge_prefixes)
+            cond_b = name in _purge_exact
+            if (cond_a or cond_b) and name not in saved_modules:
                 sys.modules.pop(name, None)
         for name, mod in saved_modules.items():
             sys.modules[name] = mod
+        # Restore parent ``__dict__`` entries for each purged submodule.
+        for (parent_name, attr), original in saved_parent_attrs.items():
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                parent.__dict__[attr] = original
 
 
 def _client(fresh_admin_app):

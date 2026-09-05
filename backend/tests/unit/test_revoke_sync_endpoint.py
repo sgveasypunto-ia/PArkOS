@@ -21,63 +21,92 @@ means the test is running in a branch-deploy context.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 import pytest
 
-# Force cloud deploy BEFORE any parkos_core import - the v1 router reads
-# ``PARKOS_DEPLOY`` at module-load time to decide whether to mount
-# admin/pairing routers. ``tests/static/conftest.py`` calls
-# ``os.environ.setdefault("PARKOS_DEPLOY", "branch")`` for sibling tests,
-# which is sticky once set. Override unconditionally here.
-os.environ["PARKOS_DEPLOY"] = "cloud"
-
-# ---------------------------------------------------------------------------
-# Path bootstrap - mirror backend/tests/conftest.py so this file is
-# runnable standalone with ``uv run pytest tests/unit/...``.
-# ---------------------------------------------------------------------------
-
-_BACKEND_ROOT = Path(__file__).resolve().parents[2]
-_API_ADMIN_SRC = _BACKEND_ROOT / "packages" / "api_admin" / "src"
-if str(_API_ADMIN_SRC) not in sys.path:
-    sys.path.insert(0, str(_API_ADMIN_SRC))
-
-
 REVOKE_SYNC_PATH = "/admin/sucursales/{uuid_sucursal}/revoke-sync"
 
 
-def _admin_app():
-    """Lazy-import the admin app so module-level errors don't kill pytest.
+def _ensure_paths() -> None:
+    """Insert backend package paths onto sys.path (idempotent)."""
+    _BACKEND_ROOT = Path(__file__).resolve().parents[2]
+    _API_ADMIN_SRC = _BACKEND_ROOT / "packages" / "api_admin" / "src"
+    if str(_API_ADMIN_SRC) not in sys.path:
+        sys.path.insert(0, str(_API_ADMIN_SRC))
 
-    Re-imports ``parkos_core.api.v1`` + ``api_admin_main.app`` to honor
-    the forced ``PARKOS_DEPLOY=cloud`` env var - a sibling conftest may
-    have cached the v1 router with ``branch`` deploy, in which case the
-    admin/pairing routers are skipped.
+
+@pytest.fixture
+def admin_app(monkeypatch: pytest.MonkeyPatch):
+    """Return the admin app with ``sys.modules`` fully restored on teardown.
+
+    Same pattern as ``tests/unit/test_admin_me.py::fresh_admin_app`` —
+    purges ``parkos_core.api.v1.*`` (and the parent package itself) from
+    ``sys.modules`` to force re-evaluation of ``PARKOS_DEPLOY=cloud``,
+    then restores the originals. Also restores the parent package's
+    ``__dict__`` entries for each submodule (Python's import system
+    auto-binds submodules into the parent's ``__dict__`` on reimport,
+    so a ``sys.modules``-only restore leaves ``from parkos_core.api.v1
+    import sync_router`` resolving to the freshly-imported module).
     """
-    # Drop cached modules so the next import recomputes the deploy-flag
-    # from the current env var. We need to drop ``api_admin_main.app``
-    # because it captures ``v1_router`` at import time.
-    for mod_name in list(sys.modules):
-        if (
-            mod_name.startswith("parkos_core.api.v1")
-            or mod_name == "parkos_core.api.deps"
-            or mod_name == "parkos_core.api.middleware"
-            or mod_name.startswith("api_admin_main")
-        ):
-            sys.modules.pop(mod_name, None)
+    _ensure_paths()
+    monkeypatch.setenv("PARKOS_DEPLOY", "cloud")
+
+    _purge_prefixes = ("parkos_core.api.v1", "api_admin_main")
+    _purge_exact = {"parkos_core.api.deps", "parkos_core.api.middleware"}
+    saved_modules = {
+        name: mod
+        for name, mod in sys.modules.items()
+        if name.startswith(_purge_prefixes) or name in _purge_exact
+    }
+    # Capture parent-package ``__dict__`` entries for every submodule
+    # we are about to purge. After reimport, Python mutates the parent's
+    # ``__dict__`` to point to the NEW submodule; on teardown we restore
+    # the OLD submodule so ``from parent import submodule`` resolves
+    # correctly for downstream tests.
+    saved_parent_attrs: dict[tuple[str, str], object] = {}
+    for name, mod in saved_modules.items():
+        if "." not in name:
+            continue
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is None:
+            continue
+        if attr in parent.__dict__ and parent.__dict__[attr] is mod:
+            saved_parent_attrs[(parent_name, attr)] = mod
+    for name in list(saved_modules):
+        sys.modules.pop(name, None)
+
     try:
-        from api_admin_main.app import app as admin_app
+        from api_admin_main.app import app as built_app
     except ImportError as exc:
         pytest.skip(f"api_admin_main.app not importable: {exc}")
-    return admin_app
+    try:
+        yield built_app
+    finally:
+        # Drop any modules freshly imported by the admin app, then
+        # re-insert the saved originals so module identities match.
+        for name in list(sys.modules):
+            cond_a = name.startswith(_purge_prefixes)
+            cond_b = name in _purge_exact
+            if (cond_a or cond_b) and name not in saved_modules:
+                sys.modules.pop(name, None)
+        for name, mod in saved_modules.items():
+            sys.modules[name] = mod
+        # Restore parent ``__dict__`` entries for each purged submodule.
+        # Without this, ``from parkos_core.api.v1 import sync_router``
+        # returns the freshly-imported (NEW) module rather than the
+        # one ``sync_router_obj`` (captured at collection time) points to.
+        for (parent_name, attr), original in saved_parent_attrs.items():
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                parent.__dict__[attr] = original
 
 
-def _has_revoke_sync_path() -> bool:
+def _has_revoke_sync_path(app) -> bool:
     """True if the admin app's OpenAPI exposes the revoke-sync endpoint."""
-    admin_app = _admin_app()
-    schema = admin_app.openapi()
+    schema = app.openapi()
     paths = schema.get("paths", {})
     return any(
         "/admin/sucursales/" in path and path.endswith("/revoke-sync")
@@ -85,14 +114,14 @@ def _has_revoke_sync_path() -> bool:
     )
 
 
-def _require_revoke_sync_mounted() -> None:
+def _require_revoke_sync_mounted(app) -> None:
     """Skip the test if the revoke-sync endpoint is not mounted.
 
     On ``PARKOS_DEPLOY=branch`` the admin routers are skipped
     (cloud-only, REQ-X3). This helper guards against the false-fail
     case where a conftest set the env to ``branch`` for a sibling test.
     """
-    if not _has_revoke_sync_path():
+    if not _has_revoke_sync_path(app):
         pytest.skip(
             "POST /admin/sucursales/{uuid}/revoke-sync not mounted on the "
             "admin app. Likely cause: PARKOS_DEPLOY=branch (cloud-only "
@@ -101,11 +130,10 @@ def _require_revoke_sync_mounted() -> None:
         )
 
 
-def test_revoke_sync_path_in_openapi() -> None:
+def test_revoke_sync_path_in_openapi(admin_app) -> None:
     """The endpoint path is registered on the admin app's OpenAPI schema."""
-    _require_revoke_sync_mounted()
+    _require_revoke_sync_mounted(admin_app)
 
-    admin_app = _admin_app()
     schema = admin_app.openapi()
     paths = schema.get("paths", {})
 
@@ -128,13 +156,12 @@ def test_revoke_sync_path_in_openapi() -> None:
         )
 
 
-def test_revoke_sync_unauthenticated_returns_401() -> None:
+def test_revoke_sync_unauthenticated_returns_401(admin_app) -> None:
     """POST without Authorization header -> 401 (issuer guard)."""
-    _require_revoke_sync_mounted()
+    _require_revoke_sync_mounted(admin_app)
 
     from fastapi.testclient import TestClient
 
-    admin_app = _admin_app()
     client = TestClient(admin_app)
 
     response = client.post(
