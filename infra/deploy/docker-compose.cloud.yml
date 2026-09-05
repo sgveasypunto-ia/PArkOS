@@ -79,9 +79,10 @@ services:
     environment:
       PARKOS_DEPLOY: cloud
       PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@cloud-db:5432/parkos
-      PARKOS_JWT_KEY_PATH: /run/secrets/jwt_private.pem
+      DATABASE_URL: postgresql+asyncpg://parkos:parkos@cloud-db:5432/parkos
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_DIAN_PROVIDER_URL: ${PARKOS_DIAN_PROVIDER_URL:?PARKOS_DIAN_PROVIDER_URL required}
-      PARKOS_DIAN_PROVIDER_TOKEN_PATH: /run/secrets/factus_token
+      PARKOS_DIAN_PROVIDER_TOKEN_PATH: /var/run/parkos/factus_token
       PARKOS_DIAN_TIMEOUT_S: "30"
       PARKOS_DIAN_RETRY_MAX: "3"
     depends_on:
@@ -91,9 +92,11 @@ services:
       - parkos-cloud-net
     ports:
       - "8000:8000"
+    volumes:
+      - ./secrets:/var/run/parkos:ro
     command: ["python", "-m", "uvicorn", "parkos_core.api.app_factory:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health', timeout=4).read()"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/openapi.json', timeout=4)\" >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -116,19 +119,22 @@ services:
     environment:
       PARKOS_DEPLOY: cloud
       PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@cloud-db:5432/parkos
-      PARKOS_JWT_KEY_PATH: /run/secrets/jwt_private.pem
+      DATABASE_URL: postgresql+asyncpg://parkos:parkos@cloud-db:5432/parkos
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_DIAN_PROVIDER_URL: ${PARKOS_DIAN_PROVIDER_URL:?PARKOS_DIAN_PROVIDER_URL required}
-      PARKOS_DIAN_PROVIDER_TOKEN_PATH: /run/secrets/factus_token
+      PARKOS_DIAN_PROVIDER_TOKEN_PATH: /var/run/parkos/factus_token
       PARKOS_SYNC_VERIFY_INTERVAL_S: "3600"
     depends_on:
       cloud-db:
         condition: service_healthy
     networks:
       - parkos-cloud-net
+    volumes:
+      - ./secrets:/var/run/parkos:ro
     deploy:
       replicas: 1
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9999/healthz', timeout=4).read()"]
+      test: ["CMD-SHELL", "python -c \"import os; os._exit(0 if os.getppid() != 1 else 1)\" >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -87,6 +87,9 @@ class _LazySessionmaker:
 
 engine = _LazyEngine()
 sessionmaker = _LazySessionmaker()
+# Alias used by the sync workers (PR9b — sync_cloud.py / sync_sucursal.py
+# expect ``SessionLocal`` to mirror the SQLAlchemy sessionmaker pattern).
+SessionLocal = _LazySessionmaker()
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

@@ -59,26 +59,27 @@ RUN apt-get update \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (pinned; matches the project's uv.lock).
-RUN pip install --no-cache-dir uv==0.4.18
+# Install uv (pinned; matches the uv.lock format version written by local
+# uv 0.11.x — older uv 0.4.18 reads the lockfile but cannot resolve the
+# workspace members correctly, so it audits-zero and installs nothing).
+RUN pip install --no-cache-dir uv==0.11.32
 
 WORKDIR /app
 
 # Copy ONLY the workspace manifest + the source tree; uv reads
 # ``pyproject.toml`` + ``uv.lock`` and walks ``packages/*``.
 COPY backend/pyproject.toml backend/uv.lock /app/backend/
+COPY backend/scripts /app/backend/scripts
 COPY backend/packages /app/backend/packages
 
 WORKDIR /app/backend
 
 # Install deps (BuildKit cache mount keeps /root/.cache/uv between
 # builds so dependency layers reuse on rebuild).
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Install the workspace packages themselves (also cached).
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev
 
 # ---------------------------------------------------------------------------
 # Stage 2 — runtime: slim image, non-root, HEALTHCHECK + CMD
@@ -100,6 +101,12 @@ RUN apt-get update \
     && groupadd --gid ${UID} parkos \
     && useradd --uid ${UID} --gid parkos --create-home --shell /bin/bash parkos
 
+# Install uv in the runtime image too so we can re-run `uv sync` on a
+# fresh build context or invoke `parkos_core.cli.*` entrypoints that
+# depend on the venv being intact. Pin to the same version as the
+# builder so the lockfile is honored on subsequent runs.
+RUN pip install --no-cache-dir uv==0.4.18
+
 # OCI image labels (per docker skill §5).
 ARG BUILD_VERSION=dev
 LABEL org.opencontainers.image.title="parkos-job-sync-cloud" \
@@ -113,7 +120,7 @@ LABEL org.opencontainers.image.title="parkos-job-sync-cloud" \
 COPY --from=builder --chown=parkos:parkos /app/backend/.venv /app/backend/.venv
 COPY --from=builder --chown=parkos:parkos /app/backend/packages /app/backend/packages
 
-ENV PYTHONPATH=/app/backend/packages/parkos_core/src \
+ENV PYTHONPATH="/app/backend/packages/parkos_core/src:/app/backend/packages/api_admin/src:/app/backend/packages/api_sucursal/src" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/backend/.venv/bin:${PATH}"

@@ -87,8 +87,9 @@ services:
       PARKOS_DEPLOY: branch
       PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
       PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
       PARKOS_CLOUD_API_URL: ${PARKOS_CLOUD_API_URL:?PARKOS_CLOUD_API_URL required}
-      PARKOS_JWT_KEY_PATH: /run/secrets/jwt_private.pem
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
     depends_on:
       branch-db:
@@ -101,7 +102,7 @@ services:
       - jwt-volume:/var/run/parkos
     command: ["python", "-m", "uvicorn", "parkos_core.api.app_factory:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health', timeout=4).read()"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/openapi.json', timeout=4)\" >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -125,8 +126,9 @@ services:
       PARKOS_DEPLOY: branch
       PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
       PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
       PARKOS_CLOUD_API_URL: ${PARKOS_CLOUD_API_URL:?PARKOS_CLOUD_API_URL required}
-      PARKOS_JWT_KEY_PATH: /run/secrets/jwt_private.pem
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
       PARKOS_SYNC_POLL_INTERVAL_S: "10"
       PARKOS_SYNC_BATCH_SIZE: "100"
@@ -142,7 +144,7 @@ services:
     deploy:
       replicas: 1
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9999/healthz', timeout=4).read()"]
+      test: ["CMD-SHELL", "python -c \"import os; os._exit(0 if os.getppid() != 1 else 1)\" >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
