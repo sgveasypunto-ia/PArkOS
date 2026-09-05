@@ -117,9 +117,11 @@ def requires_issuer(*allowed: str):
         )
         if not prefix:
             raise CrossIssuerError(
-                f"issuer={prefix} not in allowed={sorted(allowed_set)}"
+                f"issuer={iss!r} not in allowed={sorted(allowed_set)}"
             )
         return claims
+
+    return _dep
 
     return _dep
 
