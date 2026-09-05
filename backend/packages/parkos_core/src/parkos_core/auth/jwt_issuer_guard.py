@@ -84,9 +84,14 @@ async def verify_jwt(request: Request) -> dict[str, Any]:
         raise InvalidTokenError("invalid_token") from e
 
     iss = claims.get("iss", "")
-    prefix = iss.split("-")[0] + "-" if "-" in iss else ""
-    if prefix not in ISSUER_PREFIXES:
-        raise CrossIssuerError(f"unknown_issuer_prefix={prefix}")
+    # PR9b fix: check which ISSUER_PREFIX is a prefix of the iss string.
+    # Issuer format is ``<prefix>-<rest>`` where the prefix may itself
+    # contain a dash (``sync-agent-``). The previous code split on every
+    # ``-`` and took [0] (only the first segment), so ``sync-agent-`` never
+    # matched — the check needs the LONGEST matching prefix.
+    prefix = next((p for p in sorted(ISSUER_PREFIXES, key=len, reverse=True) if iss.startswith(p)), "")
+    if not prefix:
+        raise CrossIssuerError(f"unknown_issuer_prefix={iss!r}")
 
     request.state.jwt_claims = claims
     return claims
@@ -105,8 +110,12 @@ def requires_issuer(*allowed: str):
     async def _dep(request: Request) -> dict[str, Any]:
         claims = await verify_jwt(request)
         iss = claims.get("iss", "")
-        prefix = iss.split("-")[0] + "-" if "-" in iss else ""
-        if prefix not in allowed_set:
+        # PR9b fix: see verify_jwt above — use the LONGEST matching prefix.
+        prefix = next(
+            (p for p in sorted(allowed_set, key=len, reverse=True) if iss.startswith(p)),
+            "",
+        )
+        if not prefix:
             raise CrossIssuerError(
                 f"issuer={prefix} not in allowed={sorted(allowed_set)}"
             )

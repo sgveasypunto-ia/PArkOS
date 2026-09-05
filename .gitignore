@@ -36,3 +36,8 @@ Thumbs.db
 # OS scratch
 tmp/
 temp/
+
+# Local dev secrets — never commit (see infra/deploy/secrets/README.md)
+infra/deploy/secrets/*.pem
+infra/deploy/secrets/*.jwt
+infra/deploy/secrets/factus_token

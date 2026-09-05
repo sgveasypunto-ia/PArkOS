@@ -260,13 +260,16 @@ async def _sync_agent_claims(
     """
     claims = await verify_jwt(request)
     iss = claims.get("iss", "")
-    prefix = iss.split("-")[0] + "-" if "-" in iss else ""
-    if prefix != "sync-agent-":
+    # PR9b fix: the issuer prefix check should use startswith() against the
+    # canonical ``sync-agent-`` prefix. The previous code split on ``-`` and
+    # only matched the FIRST segment ("sync-" vs "sync-agent-"), so a
+    # valid ``sync-agent-cloud`` token was always rejected as wrong_issuer.
+    if not iss.startswith("sync-agent-"):
         raise HTTPException(
             status_code=401,
             detail={
                 "error": "wrong_issuer",
-                "detail": f"issuer={prefix} not in allowed=['sync-agent-']",
+                "detail": f"issuer={iss!r} does not start with 'sync-agent-'",
             },
         )
 

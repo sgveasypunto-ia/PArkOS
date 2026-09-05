@@ -1,0 +1,130 @@
+# docker-compose.local.yml — Local combined stack (cloud + branch).
+#
+# Runs the cloud + one branch on a shared docker network so the branch
+# sync worker can POST to http://api-admin:8000 without host-port bridging.
+#
+# Pre-req: the cloud stack is already up via `docker-compose.cloud.yml`,
+# which created the `parkos-cloud_parkos-cloud-net` network.
+#
+# Run:
+#   docker compose -f infra/deploy/docker-compose.local.yml --env-file .env.local up -d --build
+#
+# This file:
+#   - Reuses the cloud network so `api-admin` resolves as a hostname.
+#   - Spawns the branch DB on host port 5433 (cloud uses 5432).
+#   - Spawns api-sucursal + job-sync-sucursal on host port 8100 / 9999.
+#   - Mounts the same ./secrets directory for the JWT key.
+
+name: parkos-local
+
+networks:
+  parkos-cloud-net:
+    external: true
+    name: parkos-cloud_parkos-cloud-net
+
+services:
+  # -------------------------------------------------------------------------
+  # Branch Postgres (separate from cloud-db; runs on port 5433 to avoid
+  # collision).
+  # -------------------------------------------------------------------------
+  branch-db:
+    image: parkos-postgres:16-pgpartman
+    container_name: parkos-branch-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: parkos
+      POSTGRES_PASSWORD: parkos
+      POSTGRES_DB: parkos
+    volumes:
+      - branch-db-data:/var/lib/postgresql/data
+    networks:
+      - parkos-cloud-net
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parkos -d parkos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # api-sucursal — branch FastAPI.
+  # -------------------------------------------------------------------------
+  api-sucursal:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.branch
+      args:
+        BUILD_TARGET: api_sucursal
+    image: parkos:api-sucursal-test
+    container_name: parkos-api-sucursal
+    restart: unless-stopped
+    environment:
+      PARKOS_DEPLOY: branch
+      PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
+      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
+      PARKOS_CLOUD_API_URL: http://api-admin:8000
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
+      PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
+    depends_on:
+      branch-db:
+        condition: service_healthy
+    networks:
+      - parkos-cloud-net
+    ports:
+      - "8100:8000"
+    volumes:
+      - ./secrets:/var/run/parkos:ro
+    command: ["python", "-m", "uvicorn", "parkos_core.api.app_factory:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/openapi.json', timeout=4)\" >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # job-sync-sucursal — branch sync worker.
+  # -------------------------------------------------------------------------
+  job-sync-sucursal:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.branch
+      args:
+        BUILD_TARGET: job_sync_sucursal
+    image: parkos:job-sync-sucursal-test
+    container_name: parkos-job-sync-sucursal
+    restart: unless-stopped
+    environment:
+      PARKOS_DEPLOY: branch
+      PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
+      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
+      PARKOS_CLOUD_API_URL: http://api-admin:8000
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
+      PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
+      PARKOS_SYNC_POLL_INTERVAL_S: "10"
+      PARKOS_SYNC_BATCH_SIZE: "100"
+    depends_on:
+      branch-db:
+        condition: service_healthy
+      api-sucursal:
+        condition: service_healthy
+    networks:
+      - parkos-cloud-net
+    volumes:
+      - ./secrets:/var/run/parkos:ro
+    deploy:
+      replicas: 1
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os._exit(0 if os.getppid() != 1 else 1)\" >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  branch-db-data:
+  jwt-volume:
