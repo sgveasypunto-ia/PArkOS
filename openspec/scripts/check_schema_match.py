@@ -5,8 +5,18 @@ Parses `modelo_datos_er.mmd` (canonical Mermaid ER diagram) and asserts a 100%
 match against the live `prod.*` Postgres schema. Zero difference tolerated —
 any deviation exits non-zero with a precise diff.
 
+**ADR-002 (sync-overhaul PR10, T-PR10-007).** The ER now declares 51
+entities; the physical `prod.*` schema carries 54 tables = 51 ER + 3
+non-ER operational tables (`idempotency_keys`, `pairing_tokens`,
+`revoked_sync_jwts` — added by `create-49-table-apis` PR7/PR8, confirmed
+against `catalog/local_only_catalog.py`). These 3 have no `%% [A]` block in
+`modelo_datos_er.mmd` by design (ADR-002) and must NOT be flagged as
+"extra" tables not in the ER — see `EXPECTED_NON_ER_TABLES` in check (a).
+
 Checks performed:
-  (a) Every table listed in the ER exists in `prod.*`
+  (a) Every table listed in the ER exists in `prod.*`; every physical table
+      not in the ER is either an accepted `EXPECTED_NON_ER_TABLES` entry or
+      a genuine extra (fails)
   (b) Every column in the ER exists in the DB with the same name, type, and
       nullability (within a small set of accepted Postgres vs Mermaid synonyms)
   (c) Every UK declared in the ER exists as a UNIQUE or PRIMARY KEY constraint
@@ -18,6 +28,9 @@ Checks performed:
   (g) Every `[L-S]`-class table has a `BEFORE UPDATE` session-guard trigger that
       requires a `log_transaccional` row in the same TX
   (h) The 8 high-volume `[A]` tables have a `pg_partman` partition registered
+      (informational only for any OTHER registered partman parent — e.g.
+      `sync_queue_lw_buffer`'s own daily partition schedule, ADR-002 — extra
+      partman parents are never a failure, only the 8 listed ones are required)
 
 Usage:
   python openspec/scripts/check_schema_match.py \\
@@ -84,6 +97,24 @@ class Table:
     columns: tuple[Column, ...]
     uks: tuple[tuple[str, ...], ...]  # each UK is a tuple of column names
     fks: tuple[str, ...]  # referenced table names (informational)
+
+
+# ADR-002: physical prod tables that are NOT ER entities (no `%% [A]` block
+# in modelo_datos_er.mmd) — deliberately, not an omission. `create-49-table-
+# apis` PR7/PR8 added these as `LocalOnlyCatalog` entries
+# (`catalog/local_only_catalog.py`), never replicated, never ER-modeled.
+# Physical total = 51 ER + 3 non-ER = 54.
+EXPECTED_NON_ER_TABLES: frozenset[str] = frozenset(
+    {"idempotency_keys", "pairing_tokens", "revoked_sync_jwts"}
+)
+
+# ADR-002/003: `[A]` tables with a documented, DELETE-only REVOKE carve-out
+# (UPDATE stays granted) instead of the standard full `REVOKE UPDATE, DELETE`.
+# `sync_queue_lw_buffer`'s drain/TTL-sweep workers must UPDATE `estado`/
+# `ultimo_error` after insert (0012_add_sync_queue_lw_buffer.py) — the same
+# tension design §12 already resolved for `sync_queue` itself (full UPDATE
+# grant, Python-side discipline), generalized to this one other table.
+DELETE_ONLY_REVOKE_TABLES: frozenset[str] = frozenset({"sync_queue_lw_buffer"})
 
 
 # Mermaid → Postgres type mapping (covers everything in our canonical ER).
@@ -241,7 +272,11 @@ def diff_schema(tables: dict[str, Table], conn) -> Diff:
     db_tables = {row[0] for row in cur.fetchall()}
     er_tables = set(tables.keys())
     missing_in_db = er_tables - db_tables
-    extra_in_db = db_tables - er_tables
+    # ADR-002: idempotency_keys / pairing_tokens / revoked_sync_jwts are
+    # physical prod tables with NO `%% [A]` block in the ER by design (they
+    # are LocalOnlyCatalog, non-ER operational tables) — never flag them as
+    # "extra". Anything else not in the ER is a genuine drift.
+    extra_in_db = db_tables - er_tables - EXPECTED_NON_ER_TABLES
     if missing_in_db:
         diff.fail(f"(a) ER has {len(missing_in_db)} table(s) missing from DB: {sorted(missing_in_db)}")
     if extra_in_db:
@@ -324,14 +359,24 @@ def diff_schema(tables: dict[str, Table], conn) -> Diff:
                 diff.fail(f"(d) {tname}: ER FK → {ref} not present as FOREIGN KEY in DB")
 
     # --- (e) every [A] table has REVOKE UPDATE, DELETE FROM rol_app ---
+    # sync_queue_lw_buffer carries a documented DELETE-only carve-out
+    # (0012_add_sync_queue_lw_buffer.py, ADR-002/003, mirroring sync_queue's
+    # own "full UPDATE grant, Python-side discipline" convention): the
+    # drain/TTL-sweep workers must UPDATE estado/ultimo_error after insert,
+    # so only DELETE is revoked for this one table — UPDATE stays granted.
+    # Discovered while wiring the amended ER into this script: check (e) had
+    # no carve-out for a partially-revoked [A] table before ADR-002 added
+    # one to the canon.
     a_tables = [t.name for t in tables.values() if t.klass == "A" and t.name != "sync_queue"]
     for tname in a_tables:
         cur.execute("SELECT has_table_privilege('rol_app', %s, 'UPDATE')", (f"prod.{tname}",))
         can_update = cur.fetchone()[0]
         cur.execute("SELECT has_table_privilege('rol_app', %s, 'DELETE')", (f"prod.{tname}",))
         can_delete = cur.fetchone()[0]
-        if can_update or can_delete:
-            diff.fail(f"(e) {tname}: REVOKE failed — rol_app has UPDATE={can_update} DELETE={can_delete}")
+        if can_delete:
+            diff.fail(f"(e) {tname}: REVOKE failed — rol_app has DELETE={can_delete}")
+        if tname not in DELETE_ONLY_REVOKE_TABLES and can_update:
+            diff.fail(f"(e) {tname}: REVOKE failed — rol_app has UPDATE={can_update}")
 
     # --- (f) every [A] table has a BEFORE UPDATE OR DELETE trigger ---
     cur.execute("""

@@ -53,6 +53,19 @@ heartbeat-style pulse); the heavier hash-chain-verifier loop runs as an
 Cites §21.8 (job_sync_cloud full flow), §21.14 acceptance #14
 (hash chain verifier emits alerta + sync_conflict on mismatch),
 tasks.md T-PR9-07, T-PR9-007 (withdrawn per-branch fan-out removal).
+
+**T-PR10-003 (D21 guard 2, REQ-OPS-014).** ``is_infra_table`` /
+``SyncCloudWorker._maybe_skip_infra_row`` land here ahead of the
+catalog-driven apply loop itself (that loop is PR11's T-PR11-001 —
+``jobs/sync_cloud.py reads the catalog and calls SyncMotor``). PR10 lands
+the GUARD as a standalone, independently-unit-tested piece; PR11 wires it
+into the real per-row dispatch, calling it BEFORE any dispatch attempt so
+a row whose ``tabla`` is one of the 5 out-of-catalog names
+(``sync_queue``, ``sync_log``, ``sync_conflict``, ``sync_queue_lw_buffer``,
+``alert_types``) is skipped cleanly — never ``mark_failed(unknown_table)``
+— so a branch still emitting rows from the pre-``0015`` legacy trigger set
+during the dual-protocol grace window does not inflate the failure-rate
+metric.
 """
 from __future__ import annotations
 
@@ -73,6 +86,7 @@ from parkos_core.repo import append_only as ao_helpers
 from parkos_core.repo import hash_chain as hc_helpers
 from parkos_core.repo import workflow as wf_helpers
 from parkos_core.sync.auto_discovery import BranchCache
+from parkos_core.sync.catalog.out_of_catalog import OUT_OF_CATALOG
 from parkos_core.sync.conflict_resolver import ConflictResolver
 
 # Default interval between hash chain verifier sweeps (matches the
@@ -89,6 +103,19 @@ class HashChainBreak(Exception):
     The :meth:`_handle_chain_break` helper converts this into the
     spec-required ``alerta`` + ``sync_conflict`` rows.
     """
+
+
+def is_infra_table(tabla: str) -> bool:
+    """``True`` when ``tabla`` is one of the 5 out-of-catalog infra tables.
+
+    D21 guard 2 (REQ-OPS-014). ``sync_queue``, ``sync_log``,
+    ``sync_conflict``, ``sync_queue_lw_buffer``, and ``alert_types`` never
+    carry a ``SyncCatalog``/``LocalOnlyCatalog`` entry (ADR-002) — a
+    ``sync_queue`` row naming one of them is infra noise (e.g. from the
+    pre-``0015`` legacy trigger set still running on a branch during the
+    grace window), never a real replication failure.
+    """
+    return tabla in OUT_OF_CATALOG
 
 
 class SyncCloudWorker(WorkerRunner):
@@ -187,6 +214,28 @@ class SyncCloudWorker(WorkerRunner):
     # admin updates a catalog row, or the DIAN dispatcher accepts a
     # factura_electronica) creates a row, the cloud worker fans it out
     # to the originating branch via the sync_back loop below.
+
+    # ------------------------------------------------------------------
+    # D21 guard 2 (T-PR10-003) — skip infra-table sync_queue rows
+    # ------------------------------------------------------------------
+
+    def _maybe_skip_infra_row(self, tabla: str) -> bool:
+        """Return ``True`` and log the skip when ``tabla`` is out-of-catalog infra.
+
+        The catalog-driven apply loop (PR11, T-PR11-001) MUST call this
+        BEFORE attempting to dispatch a ``sync_queue`` row and, on
+        ``True``, move on to the next row WITHOUT calling
+        ``repo.sync_queue.mark_failed`` — marking an infra-table row
+        failed would inflate the failure-rate metric for a row that was
+        never supposed to be dispatched in the first place (D21), which
+        matters most during the dual-protocol grace window when a branch
+        may still be running the pre-``0015`` legacy trigger set on
+        ``sync_log``/``sync_conflict``.
+        """
+        if not is_infra_table(tabla):
+            return False
+        self.log.info("sync_skip_infra_table", tabla=tabla)
+        return True
 
     # ------------------------------------------------------------------
     # Loop 2: hash_chain_verifier
@@ -367,5 +416,6 @@ __all__ = [
     "DEFAULT_VERIFY_INTERVAL_S",
     "HashChainBreak",
     "SyncCloudWorker",
+    "is_infra_table",
     "main",
 ]

@@ -52,9 +52,13 @@ The user has communicated an **assumed stack** in the orchestrator preflight. Th
   3. **Admin-Op** — operational admin
   4. **Admin-Cfg** — configurator / white-label admin
 
-### Data Model — AUDIT-FIRST (49 tables)
+### Data Model — AUDIT-FIRST (51 ER entities, ADR-002)
 
-Three enforcement levels encoded in the Mermaid model:
+Three enforcement levels encoded in the Mermaid model. **ER entities vs
+physical prod tables are two distinct counts (ADR-002)**: 3 non-ER
+operational `[A]` tables (`idempotency_keys`, `pairing_tokens`,
+`revoked_sync_jwts`) have no `%% [A]` block in `modelo_datos_er.mmd` and are
+not counted below — physical total is **54** (51 ER + 3 non-ER).
 
 | Marker | Count | Semantics | Enforcement |
 |--------|-------|-----------|-------------|
@@ -63,8 +67,9 @@ Three enforcement levels encoded in the Mermaid model:
 | `[L-E]` event puro | 3 | State is DERIVED from other registered events. NO mutation. (facturas, factura_electronica, ingreso) | INSERT-only. |
 | `[L-W]` workflow | 6 | State transitions as NEW rows with FK `uuid_padre` to the original (chain). Last row of the chain = current state. (anulaciones, reclamos, alerta, reimpresion_ticket, envio_dian, validacion_evento) | INSERT-only. UPDATE/DELETE forbidden. |
 | `[L-S]` session/cycle | 2 | UPDATE legitimate on `estado`/`fecha_cierre` with OBLIGATORY `log_transaccional` row in the same TX. (login, sesion) | UPDATE only on `estado` and `fecha_cierre`. |
-| `[A]` source-of-truth | 12 | Inmutable enforced. Append-only. | REVOKE UPDATE, DELETE FROM `rol_app` ON `[A]_tables` (except `sync_queue`). Triggers RAISE EXCEPTION. |
-| **Total** | **49** | | |
+| `[A]` source-of-truth | 14 | Inmutable enforced. Append-only. | REVOKE UPDATE, DELETE FROM `rol_app` ON `[A]_tables` (except `sync_queue`). Triggers RAISE EXCEPTION. |
+| **Total (ER entities)** | **51** | | |
+| Physical prod tables | **54** | 51 ER + 3 non-ER operational (`idempotency_keys`, `pairing_tokens`, `revoked_sync_jwts`) | |
 
 ### Compliance — DIAN (Colombia)
 

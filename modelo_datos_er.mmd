@@ -1073,6 +1073,46 @@
         int sync_attempts "reintentos de sync consumidos"
     }
 
+    sync_queue_lw_buffer {
+        %% [A] Buffer de dependencia: retiene una fila hasta que su padre declarado (depends_on) llegue; espera genérica en ambas direcciones (D18, ADR-002)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        timestamp buffered_at "cuándo se encoló la fila en el buffer (clave de partición, particionado diario por pg_partman)"
+        uuid uuid_sucursal FK "sucursal dueña de la fila en espera (NULL si la fila en espera no tiene sucursal propia)"
+        string tabla "tabla del registro en espera"
+        uuid uuid_registro "uuid del registro en espera (polimórfico)"
+        string tabla_padre "tabla del padre declarado en depends_on aún no resuelto"
+        uuid uuid_padre "uuid del padre aún no resuelto"
+        json datos "payload original a reintentar cuando el padre llegue"
+        string estado "pendiente | aplicado | fallido"
+        timestamp expires_at "vencimiento del TTL de espera (24h)"
+        text ultimo_error "motivo de expiración del TTL (parent_missing_timeout)"
+        %% Retention (no usado — buffered_at es la clave de partición real de esta tabla)
+        date fecha_retencion_hasta "no usado en esta tabla"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Sync
+        string sync_status "no usado — tabla out-of-catalog, nunca replicada"
+        timestamp sync_timestamp "no usado"
+        int sync_attempts "no usado"
+    }
+
+    alert_types {
+        %% [A] Registro del catálogo de tipos de alerta; sembrado idempotente en cloud y sucursal, out-of-catalog (nunca replica)
+        %% Business
+        string tipo_alerta PK "identificador de negocio del tipo de alerta (clave primaria de negocio, no UUID)"
+        text descripcion "descripción legible del tipo de alerta"
+        string severity "info | warning | critical"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Sync
+        string sync_status "no usado — tabla out-of-catalog, nunca replicada"
+        timestamp sync_timestamp "no usado"
+        int sync_attempts "no usado"
+    }
+
 
     usuarios ||--o{ login : "sesiones"
     usuarios ||--o{ permisos_usuario : "tiene"
@@ -1170,6 +1210,8 @@
     sucursal ||--o{ sync_queue : "tiene cola"
     sucursal ||--o{ sync_conflict : "tiene conflictos"
     sucursal ||--o{ sync_log : "registra sync"
+    sucursal ||--o{ sync_queue_lw_buffer : "buffer de dependencia (uuid_sucursal opcional)"
+    sucursal }o--o{ alert_types : "catálogo sembrado en cada sucursal (sin FK física, out-of-catalog)"
     sucursal ||--o{ validacion_evento : "eventos validados por admin (cloud)"
     usuarios ||--o{ validacion_evento : "admin valida"
     validacion_evento ||--o{ validacion_evento : "transición workflow (uuid_validacion_padre)"

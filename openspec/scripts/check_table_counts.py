@@ -1,23 +1,31 @@
 """
-check_table_counts.py — Drift detector for the 45-table → 49-table reconciliation.
+check_table_counts.py — Drift detector for the 45 → 49 → 51 ER-canon reconciliation.
 
-Scans the four canonical doc files for stale tokens that mention the old count
+Scans the four canonical doc files for stale tokens that mention an old count
 or class breakdown, and exits non-zero if any are found. The intent is to make
-the 45 → 49 reconciliation permanent — if any of these docs ever drift back to
-45 (or any of 24 / 9 / 12, which were the wrong class breakdowns for the legacy
-ER), this script fails.
+each reconciliation permanent:
+  - 45 → 49 (2026-09-03): legacy 24/9/4-class breakdown corrected.
+  - 49 → 51 (ADR-002, sync-overhaul PR10): `prod.sync_queue_lw_buffer` and
+    `prod.alert_types` join the ER as two new `[A]` entities.
 
-Canonical counts after reconciliation:
-  - Total tables: 49
+Canonical counts after the ADR-002 amendment:
+  - ER entities total: 51
   - [V] versioned: 26
   - [L-E] events: 3
   - [L-W] workflows: 6
   - [L-S] sessions: 2
-  - [A] append-only: 12
+  - [A] append-only: 14
+  - Physical prod tables: 54 (51 ER + 3 non-ER operational: idempotency_keys,
+    pairing_tokens, revoked_sync_jwts — see check_schema_match.py)
 
 The old (pre-reconciliation) counts the script flags as stale:
-  - "45 tables" / "AUDIT-FIRST (45" / "24 [V]" / "9 [L]" / "12 [A]"
-  - "24 versioned" / "4 L-W" / "12 [A]" / "9 [L]" / "3 [L-E]" / "2 [L-S]" (legacy breakdown)
+  - "45 tables" / "24 [V]" / "9 [L]" / legacy "4 L-W" breakdown
+  - "AUDIT-FIRST (49" / "12 [A]" / "50 tables" — ADR-002 superseded these;
+    they must never reappear as the CURRENT canonical claim (a historical
+    reference to what a specific already-merged migration delivered, e.g.
+    "0001_initial_schema.py ... 49 tables", is NOT what this guards against —
+    only the "AUDIT-FIRST (NN" canonical-summary phrasing is checked, so a
+    historical PR-scoped mention is never a false positive)
 
 Usage:
   python openspec/scripts/check_table_counts.py [DOC_ROOT]
@@ -33,14 +41,14 @@ import re
 import sys
 from pathlib import Path
 
-# Canonical counts (post-reconciliation, ratified 2026-09-03).
+# Canonical counts (post ADR-002 amendment, ratified 2026-09-09).
 CANONICAL = {
-    "total": 49,
+    "total": 51,
     "[V]": 26,
     "[L-E]": 3,
     "[L-W]": 6,
     "[L-S]": 2,
-    "[A]": 12,
+    "[A]": 14,
 }
 
 # Stale-token patterns (regex -> human description).
@@ -63,6 +71,20 @@ STALE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Legacy [A] count — also the canonical 12 happens to match; we don't flag 12 alone.
     # The pattern below catches only the combined "(12 [A])" with wrong siblings.
     (re.compile(r"\b12\s*\[A\].*\b24\b|\b24\b.*\b12\s*\[A\]"), "stale combined (24 [V] / 12 [A]) breakdown"),
+
+    # --- ADR-002 (49 -> 51 ER-canon amendment) guards ---
+    # Narrow, canonical-summary-only pattern: matches "AUDIT-FIRST (49 ..."
+    # (PROJECT_CONTEXT.md's header, config.yaml's context block) but NOT a
+    # historical, PR-scoped mention like "0001_initial_schema.py (49 tables +
+    # 11 REVOKE ...)" in _meta/roadmap.md / _meta/iteration-plan.md, which
+    # correctly and permanently describes what that specific migration
+    # shipped and is never stale.
+    (re.compile(r"AUDIT-FIRST\s*\(49\b"), "stale 'AUDIT-FIRST (49' (canonical: 51)"),
+    (re.compile(r"\b12\s*\[A\]\b"), "stale '12 [A]' (canonical: 14)"),
+    (
+        re.compile(r"\b50[- ]tables?\b"),
+        "stale '50 tables' — ADR-002's own flagged wrong intermediate value (canonical: 51)",
+    ),
 ]
 
 # Doc files the script scans. Each path is relative to DOC_ROOT.
@@ -95,7 +117,7 @@ def main(argv: list[str]) -> int:
         print(f"ERROR: doc root not found: {doc_root}", file=sys.stderr)
         return 2
 
-    print(f"Scanning {doc_root} for stale 45-table tokens...")
+    print(f"Scanning {doc_root} for stale table-count tokens...")
     print(f"Canonical: total={CANONICAL['total']}, [V]={CANONICAL['[V]']}, "
           f"[L-E]={CANONICAL['[L-E]']}, [L-W]={CANONICAL['[L-W]']}, "
           f"[L-S]={CANONICAL['[L-S]']}, [A]={CANONICAL['[A]']}")
@@ -123,7 +145,10 @@ def main(argv: list[str]) -> int:
 
     print()
     if total_findings == 0:
-        print("OK: no drift detected. Docs reflect canonical 49 / 26 [V] / 3 [L-E] / 6 [L-W] / 2 [L-S] / 12 [A].")
+        print(
+            "OK: no drift detected. Docs reflect canonical "
+            "51 / 26 [V] / 3 [L-E] / 6 [L-W] / 2 [L-S] / 14 [A]."
+        )
         return 0
 
     print(f"FAIL: {total_findings} stale token(s) found across {len(TARGET_DOCS)} docs.")

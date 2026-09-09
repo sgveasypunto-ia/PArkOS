@@ -1940,78 +1940,155 @@ Status: confirmed by `tests/integration/test_dian_round_trip.py` (offline branch
 
 ---
 
-## PR10 — Migrations 0011/0012 + `modelo_datos_er.mmd` amendment + count scripts (ADR-002)
+## PR10 — Migrations 0014/0015 + `modelo_datos_er.mmd` amendment + count scripts (ADR-002)
 
 **Branch**: `hu/PR10-triggers-canon-er` (off `feature/sync-overhaul`) — PR target: `feature/sync-overhaul`
 **Dependencies**: PR9 merged
 **Estimated LOC**: ~600
 **Gate to next PR**: `check_schema_match.py` and `check_table_counts.py` exit 0 at 51/54
 
-#### T-PR10-001: Migration `0011_add_catalog_triggers.py`
-Req: REQ-CAT-004 (18-table coverage), REQ-CAT-012 · Design: §4 · Depends on: PR9
-Files: `backend/packages/parkos_core/migrations/versions/0011_add_catalog_triggers.py` (new) —
-`fn_enqueue_sync_catalog` coverage for the 18 previously-untriggered `[V]` tables (D8-rev); reads
-`priority` only as an intra-level tie-break; `tests/migrations/
-test_catalog_triggers_schema.py` (new).
-Pre-flight: `uv run alembic upgrade --sql 0011_add_catalog_triggers` reviewed before apply.
-- [ ] Trigger fires an INSERT into `sync_queue` for all 18 tables named in REQ-CAT-004
+> **Status (apply, 2026-09-09): migration renumbering.** `0011`/`0012` (as originally written here)
+> were already used by PR7 (`0011_add_seq_lookup_indexes.py`) and PR8
+> (`0012_add_sync_queue_lw_buffer.py`) by the time PR10 was implemented — re-verified via
+> `ls migrations/versions/`, which also showed `0013_add_alert_types.py` (PR8) as the highest
+> applied revision. The next free numbers are **`0014`/`0015`**, used throughout this section and
+> in the actual files: `0014_add_catalog_triggers.py` (`down_revision="0013_add_alert_types"`),
+> `0015_drop_infra_triggers.py` (`down_revision="0014_add_catalog_triggers"`). Same renumbering
+> pattern already used by every PR7-PR9 section above.
 
-#### T-PR10-002: Migration `0012_drop_infra_triggers.py` (D21 guard 1)
+#### T-PR10-001: Migration `0014_add_catalog_triggers.py`
+Req: REQ-CAT-004 (18-table coverage), REQ-CAT-012 · Design: §4 · Depends on: PR9
+Files: `backend/packages/parkos_core/migrations/versions/0014_add_catalog_triggers.py` (new) —
+`fn_enqueue_sync_catalog` coverage for the 18 previously-untriggered `[V]` tables (D8-rev); reads
+`priority` only as an intra-level tie-break; `backend/tests/migrations/
+test_catalog_triggers_schema.py` (new).
+Pre-flight: `uv run alembic upgrade --sql 0014_add_catalog_triggers` reviewed before apply.
+- [x] Trigger fires an INSERT into `sync_queue` for all 18 tables named in REQ-CAT-004
+
+> **Status: 18-table list derived, not assumed.** Cross-referenced `SYNC_ENTRIES_V` (26 entries)
+> against every `CREATE TRIGGER <table>_enqueue_sync` already present in `0001_initial_schema.py`
+> (8 matches: `configuracion_tolerancias`, `configuracion_seguridad`, `resolucion_facturacion`,
+> `usuarios_sucursal`, `documentos`, `tarifas_sucursal`, `cantidad_vehiculos_sucursal`,
+> `subscripciones_cliente` — all 8 happen to be the ones with a physical `uuid_sucursal` column).
+> 26 − 8 = 18, matching design.md's own superseded-REQ-CAT-004 list verbatim (`usuarios`,
+> `permisos`, `tipo_persona`, `tipos_vehiculo`, `tipo_subscripciones`, `tipo_tarifa`,
+> `tipo_sucursal`, `tipo_arqueo`, `impuestos`, `otros_cobros`, `costos_servicios`, `empresa`,
+> `permisos_usuario`, `sucursal`, `clientes`, `clientes_b2b`, `vehiculos`,
+> `subscripcion_vehiculos`). **Bug found and fixed during this task**: none of these 18 tables has a
+> physical `uuid_sucursal` column (`has_uuid_sucursal=False` for all of them) — reusing
+> `fn_enqueue_sync()` as literally written (it references `NEW.uuid_sucursal` directly) would raise
+> "record NEW has no field uuid_sucursal" on the very first INSERT. The new `fn_enqueue_sync_catalog()`
+> extracts `uuid_sucursal` from `to_jsonb(NEW)` instead, which is safe whether the column exists or
+> not (`NULL` = global/all_branches scope). Verified against real Postgres — see Work Unit Evidence.
+
+#### T-PR10-002: Migration `0015_drop_infra_triggers.py` (D21 guard 1)
 Req: REQ-OPS-014 · Design: §4 · Depends on: T-PR10-001
-Files: `backend/packages/parkos_core/migrations/versions/0012_drop_infra_triggers.py` (new) — drops
-`fn_enqueue_sync` from `prod.sync_log` and `prod.sync_conflict`; `tests/migrations/
+Files: `backend/packages/parkos_core/migrations/versions/0015_drop_infra_triggers.py` (new) — drops
+`fn_enqueue_sync` from `prod.sync_log` and `prod.sync_conflict`; `backend/tests/migrations/
 test_drop_infra_triggers_schema.py` (new).
-Pre-flight: `uv run alembic upgrade --sql 0012_drop_infra_triggers` reviewed before apply.
-- [ ] Post-migration INSERT into `sync_log`/`sync_conflict` produces no `sync_queue` row
+Pre-flight: `uv run alembic upgrade --sql 0015_drop_infra_triggers` reviewed before apply.
+- [x] Post-migration INSERT into `sync_log`/`sync_conflict` produces no `sync_queue` row
 
 #### T-PR10-003: Cloud worker skip-not-fail for infra tables (D21 guard 2)
 Req: REQ-OPS-014 · Design: §11 · Depends on: T-PR10-002
 Files: `backend/packages/parkos_core/src/parkos_core/jobs/sync_cloud.py` (modified) — skips (does
 NOT `mark_failed(unknown_table)`) any row whose `tabla` matches one of the 5 out-of-catalog names,
-logs `{"event":"sync_skip_infra_table","tabla":...}` at `info`; `tests/unit/
+logs `{"event":"sync_skip_infra_table","tabla":...}` at `info`; `backend/tests/unit/
 test_sync_cloud_skip_infra_table.py` (new).
-- [ ] A `sync_queue` row with `tabla="sync_log"` is skipped cleanly, not marked failed; no failure
+- [x] A `sync_queue` row with `tabla="sync_log"` is skipped cleanly, not marked failed; no failure
       metric increments
+
+> **Status: guard landed standalone, ahead of the real apply loop.** `jobs/sync_cloud.py` has no
+> `sync_queue`-draining/dispatch loop yet as of PR10 — the catalog-driven applier that will call
+> `mark_failed`/this guard per row is PR11's own T-PR11-001 ("`job_sync_cloud` reads the catalog and
+> calls `SyncMotor`"). PR10 lands `is_infra_table()` + `SyncCloudWorker._maybe_skip_infra_row()` as an
+> independently unit-tested guard function; PR11 wires it into the real per-row dispatch before any
+> `mark_failed` call. This matches the PR10/PR11 split already declared in this file and does not
+> change either PR's acceptance criteria.
 
 #### T-PR10-004: `modelo_datos_er.mmd` — add `sync_queue_lw_buffer` `%% [A]` block
 Req: proposal §9.3, ADR-002 · Design: §4 · Depends on: T-PR8-001
 Files: `modelo_datos_er.mmd` (modified) — new `%% [A]` entity block for `sync_queue_lw_buffer`
 (columns per T-PR8-001's migration) plus its relationship line to `sucursal`.
-- [ ] The `.mmd` block's column list matches the `0009` migration's DDL exactly
+- [x] The `.mmd` block's column list matches the `0012_add_sync_queue_lw_buffer.py` migration's DDL
+      exactly (renumbered from `0009` — see PR8's own renumbering note)
 
 #### T-PR10-005: `modelo_datos_er.mmd` — add `alert_types` `%% [A]` block
 Req: proposal §9.3, ADR-002 · Design: §4 · Depends on: T-PR10-004, T-PR8-002
 Files: `modelo_datos_er.mmd` (modified) — new `%% [A]` entity block for `alert_types` (columns per
 T-PR8-002's migration) plus its relationship line to `sucursal`.
-- [ ] `.mmd` now carries exactly 14 `%% [A]` blocks total (12 existing + these 2)
+- [x] `.mmd` now carries exactly 14 `%% [A]` blocks total (12 existing + these 2)
+
+> **Status: relationship-line honesty note for `alert_types`.** `alert_types` (migration
+> `0013_add_alert_types.py`) has NO physical `uuid_sucursal` column — it is a small, deploy-seeded,
+> global registry, not branch-scoped. Its required relationship line to `sucursal` therefore uses
+> the non-identifying `}o--o{` notation with a label stating "sin FK física" rather than the
+> one-to-many `||--o{` used everywhere else, so the diagram does not imply a physical FK that does
+> not exist. `sync_queue_lw_buffer` DOES have a nullable `uuid_sucursal` column, so its relationship
+> line uses the ordinary `||--o{` form. Verified: 12 (pre-existing) + 2 (new) = 14 `%% [A]` blocks;
+> 26+3+6+2+14 = 51 total ER entities — both counted directly against the amended file, not assumed.
 
 #### T-PR10-006: `openspec/scripts/check_table_counts.py` — 51/14 canon
 Req: ADR-002 Validation · Design: §4 · Depends on: T-PR10-005
 Files: `openspec/scripts/check_table_counts.py` (modified) — `CANONICAL` mapping bumped `total: 49 →
 51`, `[A]: 12 → 14`; stale-pattern guards so "49 tables" / "12 [A]" cannot reappear as canonical.
-- [ ] Script exits 0 against the amended `.mmd`
+- [x] Script exits 0 against the amended `.mmd`
+
+> **Status: companion doc edits required to keep the script green.** Adding a blanket "49 tables"
+> guard would have flagged `_meta/roadmap.md` / `_meta/iteration-plan.md`'s legitimate, permanent,
+> historical mentions of "`0001_initial_schema.py` ... 49 tables" (describing what that specific,
+> already-merged migration shipped — never stale). The new guards are narrowly scoped to the
+> canonical-summary phrasing (`AUDIT-FIRST (49`, `12 [A]`, `50 tables`) instead, which DID match two
+> genuinely-stale, present-tense canon claims outside the file list this task originally named:
+> `openspec/PROJECT_CONTEXT.md` (Data Model table: header + `[A]` row + Total row) and
+> `openspec/config.yaml` (`context:` block + a `rules.proposal` line). Both updated to 51/14/54 so
+> `check_table_counts.py` actually exits 0, not just in principle.
 
 #### T-PR10-007: `openspec/scripts/check_schema_match.py` — 54 physical tables
 Req: ADR-002 Validation · Design: §4 · Depends on: T-PR10-006
 Files: `openspec/scripts/check_schema_match.py` (modified) — asserts full match between the amended
 `.mmd` (51 ER entities) and 54 physical prod tables (51 ER + 3 non-ER operational).
-- [ ] Script exits 0
+- [x] Script exits 0
+
+> **Status: real gap found and fixed.** Before this change, check (a) had NO allowance for the 3
+> non-ER operational tables (`idempotency_keys`, `pairing_tokens`, `revoked_sync_jwts`) — `extra_in_db
+> = db_tables - er_tables` would have unconditionally flagged all 3 as "extra" the moment the ER
+> stopped being a 1:1 mirror of the physical schema, which is exactly ADR-002's premise. Added
+> `EXPECTED_NON_ER_TABLES` (cross-checked against `catalog/local_only_catalog.py` — confirmed these
+> are the exact 3, no others) and excluded it from the "extra" diff. Without this fix,
+> `check_schema_match.py` could never have exited 0 once the two counts (ER vs physical) legitimately
+> diverged. **A second real gap, found the same way**: check (e)'s blanket "every `[A]` table must
+> have both UPDATE and DELETE revoked" (only `sync_queue` was ever exempt) does not hold for
+> `sync_queue_lw_buffer` — its own migration (`0012_add_sync_queue_lw_buffer.py`, PR8) documents a
+> DELETE-only carve-out (UPDATE stays granted so the drain/TTL-sweep workers can flip
+> `estado`/`ultimo_error` after insert), which only became reachable by this check once the table
+> entered the ER via this PR. Added `DELETE_ONLY_REVOKE_TABLES = {"sync_queue_lw_buffer"}`; DELETE is
+> still asserted revoked for every `[A]` table, UPDATE is only exempted for this one, matching its
+> documented design. Verified end-to-end against a real pgpartman-enabled Postgres container running
+> the full `0001`..`0015` migration chain — see Work Unit Evidence. **Discovered, out-of-scope, not
+> fixed**: check (b)'s own docstring claims it verifies "nullability", but the implementation only
+> compares `data_type`, never `is_nullable` — a pre-existing gap unrelated to PR10's scope (fixing it
+> could newly fail many already-passing tables across the whole schema; that blast radius needs its
+> own dedicated review, not a PR10 side effect).
 
 #### T-PR10-008: Static test — `%% [A]` block count is 14
 Req: ADR-002 Validation · Design: §4 · Depends on: T-PR10-005
-Files: `backend/packages/parkos_core/tests/static/test_mmd_block_count.py` (new) — equivalent of
+Files: `backend/tests/static/test_mmd_block_count.py` (new) — equivalent of
 `git grep -c "%% \[A\]" modelo_datos_er.mmd` returns 14 (the 3 non-ER operational tables have no
 `%% [A]` block by definition).
-- [ ] Test passes
+- [x] Test passes
 
 #### T-PR10-009: Commit + open PR10
 Depends on: T-PR10-001..008
 - [ ] Branch `feat/sync-overhaul-pr10-catalog-triggers-er-canon` pushed, target `dev`
 - [ ] Both migration `--sql` dry-runs attached to the PR
 
+> **Status:** commit/push/PR are explicitly out of scope for this apply pass per the operator's
+> instructions ("No hagas git commit/push"). Left unchecked for the human operator to complete.
+
 ### PR10 acceptance
-- [ ] `check_table_counts.py` and `check_schema_match.py` both exit 0
-- [ ] `.mmd` carries 51 entities, 14 `%% [A]` blocks
+- [x] `check_table_counts.py` and `check_schema_match.py` both exit 0
+- [x] `.mmd` carries 51 entities, 14 `%% [A]` blocks
 
 ---
 
