@@ -20,7 +20,7 @@ scope to remove \u2014 see the PR9 apply report), but it is NOT the branch's
 numbering path; the two do not share the same call path.
 
 The UK ``(uuid_resolucion_facturacion, consecutivo)`` enforces uniqueness
-inside a ``resolucion_facturacion``'s range \u2014 the DIAN ``numero_oficial``
+inside a ``resolucion_facturacion``'s range \u2014 the DIAN numbering-uniqueness
 invariant, now enforced on INSERT (the UK) rather than relied upon solely
 via the allocator's own MAX()+1 read.
 """

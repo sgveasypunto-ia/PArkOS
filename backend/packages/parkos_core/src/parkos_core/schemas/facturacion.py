@@ -14,9 +14,10 @@ Special validators (defense in depth):
 
 - ``FacturaElectronicaCreate`` EXCLUDES ``prefijo`` / ``consecutivo``.
   ``extra='forbid'`` (from :class:`_Base`) blocks client smuggling; the
-  cloud router (``dian/cloud_router.py``, T-PR6-09) atomically assigns
-  them via ``SELECT FOR UPDATE`` on ``resolucion_facturacion`` +
-  ``consecutivo_actual++``.
+  legacy cloud-only router (``dian/cloud_router.py``, T-PR6-09,
+  pre-D1-rev, still live but NOT the branch's numbering path) atomically
+  assigns them via ``SELECT FOR UPDATE`` on ``resolucion_facturacion`` +
+  incrementing its ``consecutivo`` counter.
 - ``FacturaPagosCreate.tipo_movimiento`` defaults to ``"pago"``;
   ``FacturaPagosReversoCreate`` is the dedicated compensating variant
   (``uuid_pago_revertido`` REQUIRED, ``tipo_movimiento='reverso'``
@@ -142,8 +143,14 @@ class FacturaElectronicaCreate(_Base):
     The cloud-only ``dian/cloud_router.py`` (T-PR6-09) atomically:
 
     1. ``SELECT FOR UPDATE`` on ``prod.resolucion_facturacion`` row
-    2. ``UPDATE consecutivo_actual++``
+    2. ``UPDATE`` the row's ``consecutivo`` counter (``next_consecutivo``,
+       T-PR11-05 helper)
     3. ``INSERT INTO prod.factura_electronica`` with the assigned values
+
+    This is the pre-D1-rev cloud-only path (still live, out of PR9's scope
+    to remove — see ``models/L_E/factura_electronica.py``'s own docstring);
+    it is NOT the branch's numbering path (``repo.resolucion_facturacion
+    .assign_consecutivo``, branch-local, D1-rev).
 
     The Pydantic schema here excludes both fields — ``extra='forbid'``
     (from :class:`_Base`) blocks client smuggling. That is the

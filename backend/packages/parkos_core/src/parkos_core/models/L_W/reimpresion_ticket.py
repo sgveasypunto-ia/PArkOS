@@ -9,9 +9,10 @@ Maps 1:1 to the migration in ``0001_initial_schema.py`` (lines 893-910).
 ``uuid_reimpresion_padre`` self-FK \u2014 no UK on the table because
 ``vigente_desde`` participates in identity.
 
-The branch enables ``reimpresion_ticket`` ONLY after the cloud
-``SyncBackEvent`` arrives with the real ``numero_oficial`` \u2014 enforced in
-the Pydantic schema, not here.
+Reprint is available at the branch as soon as the invoice is emitted \u2014
+never gated on a cloud round-trip (D1-rev). What may still be pending is
+the DIAN acknowledgement (``envio_dian``), which is a status indicator on
+the document, not a precondition enforced here or in the Pydantic schema.
 """
 from __future__ import annotations
 

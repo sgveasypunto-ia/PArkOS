@@ -109,8 +109,8 @@ depth.
 - **No physical DELETE** — `REVOKE DELETE` on `[A]` + `BEFORE UPDATE OR DELETE` trigger; corrections modeled as workflow rows. See [Architectural Principles](#architectural-principles).
 - **REVOKE UPDATE, DELETE** on 11 `[A]` tables from `rol_app`; `rol_admin_auditor` has BYPASSRLS
 - **`pg_partman`** for monthly partitioning of high-volume tables
-- **DIAN-only tables** (`factura_electronica`, `revocacion_factura`) live ONLY in cloud; branches have schema parity but never write
-- **`empresa.consecutivo_actual`** is atomic in cloud; branches read via sync
+- `factura_electronica` and `revocacion_factura` are **emitted at the branch** and replicated `branch_to_cloud`; the cloud is the only egress point to the DIAN provider (`envio_dian`), which is cloud-only.
+- **Invoice numbering is branch-local**: `consecutivo` is assigned at the branch inside its own `resolucion_facturacion` range (`rango_desde`/`rango_hasta`); uniqueness comes from UK `(uuid_resolucion_facturacion, consecutivo)`. `empresa` has no `consecutivo_actual` column (removed in the 4NF pass).
 - **Hash chain**: `hash_anterior` references previous row's `hash_actual` per `uuid_sucursal`
 
 ### Frontend
@@ -202,10 +202,8 @@ depth.
 ### DIAN
 
 - 100% centralized in cloud admin
-- `factura_electronica` and `revocacion_factura` written ONLY in cloud
-- Branch online mode: synchronous POST to `/facturas/procesar` returns real `numero_oficial`
-- Branch offline mode: prints `numero_temporal` (preliminar), enqueues `factura` in `sync_queue`; cloud assigns real and sends `SyncBackEvent` back; `reimpresion_ticket` enabled only after sync-back
-- Atomic `empresa.consecutivo_actual` mutated only in cloud
+- The branch emits and numbers locally, online or offline, with no behavioural difference; the cloud forwards to the provider asynchronously and the outcome returns via `envio_dian`. Reprint is never gated on a cloud round-trip.
+- The cloud validates the branch-assigned `consecutivo` against the resolution's authorized range and forwards the document to the DIAN provider (`envio_dian`, cloud-only); `cufe` and `estado` return to the branch through the ordinary `envio_dian` `cloud_to_branch` catalog entry.
 
 ### API operation contract
 
@@ -231,8 +229,7 @@ for the full contract and rationale.
 ### Frontend
 
 - Multi-branch selector in `web_admin`; branch-pinned in `web_sucursal`
-- `preliminar` badge on `web_sucursal` until `SyncBackEvent` arrives
-- `reimpresion_ticket` disabled until `SyncBackEvent`
+- The document is final at emission. What may be pending is the DIAN acknowledgement, which is a status indicator on the document, not a gate on reprinting.
 - axe-core CI gate must pass for WCAG 2.1 AA
 
 ## Workflow (SDD)
@@ -252,7 +249,7 @@ for the full contract and rationale.
 | Outbox bypass on direct `[A]` writes | `AFTER INSERT` trigger into `sync_queue` (PR5 task) |
 | Tenant scope leak in admin JWT | `X-Sucursal-Context` enforced against `sucursales_permitidas` on every call |
 | Pairing-token replay | single-use, 24h TTL, rate-limited |
-| DIAN `consecutivo_actual` race | atomic UPDATE in cloud only; branches read via sync |
+| DIAN `consecutivo` collision | one resolution per branch with a disjoint authorized range; UK `(uuid_resolucion_facturacion, consecutivo)`; the cloud rejects a document whose `consecutivo` falls outside the resolution range, and range exhaustion raises an `alerta` |
 | **Physical DELETE attempted** at any layer (intentional or feature shortcut) | API has no DELETE endpoint; ORM uses close+insert helpers for `[V]`/`[L]`; `REVOKE DELETE` + `BEFORE UPDATE OR DELETE` trigger on `[A]` tables blocks DB-level — corrections must flow through workflow tables |
 | `0001_initial_schema.py` is one big file | MERGED in PR1a (bootstrap-monorepo-foundation #2). Mitigation: `python openspec/scripts/check_schema_match.py` exits 0 verified the 49-table schema matches the ER 100% — tables, columns, UKs, FKs, REVOKE on 11 `[A]`, `_inmutable` triggers, `ls_session*` triggers, and the 8 `pg_partman` parents are all present. Future migrations stay in the <800-LOC budget per `config.yaml rules.tasks`. |
 | **Physical DELETE attempted** at any layer (intentional or feature shortcut) | API has no DELETE endpoint; ORM uses close+insert helpers for `[V]`/`[L]`; `REVOKE DELETE` + `BEFORE UPDATE OR DELETE` trigger on `[A]` tables blocks DB-level — corrections must flow through workflow tables. CI gate: `python openspec/scripts/check_schema_match.py` exits 0 with REVOKE + trigger + 8 partman parents verified (per PR1 T-PR1-29). |

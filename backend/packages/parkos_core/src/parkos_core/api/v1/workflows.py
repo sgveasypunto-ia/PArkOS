@@ -4,8 +4,8 @@
 :func:`make_router`:
 
 - ``reimpresion-ticket`` — ``[L-W]`` ticket-reprint chain (operator
-  write, admin read). Disabled until the cloud ``SyncBackEvent``
-  surfaces the real ``numero_oficial`` — enforced in Pydantic, not here.
+  write, admin read). Available as soon as the invoice is emitted at the
+  branch — never gated on a cloud round-trip (D1-rev).
 - ``anulaciones`` — ``[L-W]`` annulment chain against ``ingreso`` or
   ``salida`` (polymorphic FK, REQ-22). Terminal states: ``ejecutada`` /
   ``rechazada``.

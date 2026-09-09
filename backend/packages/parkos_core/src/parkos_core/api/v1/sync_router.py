@@ -25,7 +25,7 @@ Seven endpoints:
   ``sync-agent-`` JWT after validating the current one. 1/min.
 - ``POST /api/v1/sync/events`` — bidirectional row push. Same auth
   chain. Two coexisting shapes (T-PR11-006, REQ-CUT-015): legacy
-  ``SyncBackEvent`` provider-notification rows (``event_type`` +
+  provider-notification rows (``event_type`` +
   ``payload``, reported ``delivered``) and catalog-driven rows
   (``tabla`` set) applied through ``SyncMotor.apply_row`` and reported
   via REQ-MOT-005's wire vocabulary (``applied`` / ``conflict`` /
@@ -231,8 +231,8 @@ class _RotateResponse(_Base):
     grace_until: datetime
 
 
-class _SyncBackEvent(_Base):
-    """A single SyncBackEvent (cloud → branch push) OR a catalog-driven row.
+class _CatalogPushEvent(_Base):
+    """A single cloud ↔ branch push event — legacy provider-notification OR catalog-driven row.
 
     The original PR8c shape (``event_type`` + ``payload``) accepted a
     permissive provider-notification-style event so the endpoint compiled
@@ -256,7 +256,7 @@ class _SyncBackEvent(_Base):
 
 
 class _EventsRequest(_Base):
-    events: list[_SyncBackEvent] = Field(default_factory=list)
+    events: list[_CatalogPushEvent] = Field(default_factory=list)
 
 
 class _EventResponseRow(_Base):
@@ -867,7 +867,7 @@ async def sync_events(
     """Cloud ↔ branch catalog-driven row push (mounted on both processes).
 
     Two request shapes coexist on the same wire endpoint (see
-    ``_SyncBackEvent``'s docstring):
+    ``_CatalogPushEvent``'s docstring):
 
     - Legacy provider-notification events (``event_type`` + ``payload``,
       no ``tabla``) — reported ``delivered`` exactly as PR8c shipped it.

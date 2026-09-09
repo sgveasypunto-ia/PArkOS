@@ -1,7 +1,7 @@
 """Auto-discovery of active branches from the local DB (T-PR9-05).
 
 The cloud-side ``job_sync_cloud`` worker needs the list of branches that
-are currently active so it can emit :class:`SyncBackEvent` per branch and
+are currently active so it can drive the catalog-driven apply loop and
 walk each branch's hash chain. This module is the canonical source of
 that list.
 
