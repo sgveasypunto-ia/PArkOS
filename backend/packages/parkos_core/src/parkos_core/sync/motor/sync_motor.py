@@ -44,6 +44,9 @@ from ..conflict_resolver import ApplyOutcome, ConflictResolver
 from .apply_result import ApplyResult
 from .apply_row import apply_row as _catalog_apply_row
 from .dependency_orderer import order_batch
+from .read_local_seq import ReadLocalSeq
+from .resolve_conflict import ConflictResolution
+from .resolve_conflict import resolve_conflict as _resolve_conflict
 
 # Maps the legacy ConflictResolver.apply_pushed_row outcome onto the
 # catalog-era ApplyResult.status vocabulary, so SyncMotor.apply_row returns
@@ -98,6 +101,9 @@ class SyncMotor:
         self.engine = engine
         self.session_grace_hours = session_grace_hours
         self.dependency_buffer_ttl_hours = dependency_buffer_ttl_hours
+        # One long-lived ReadLocalSeq per motor instance (T-PR7-002) — its
+        # 5s TTL cache is only useful across calls, not re-created per row.
+        self._read_local_seq = ReadLocalSeq()
 
     async def apply_row(
         self,
@@ -196,5 +202,40 @@ class SyncMotor:
 
         return result
 
+    async def resolve_conflict(
+        self,
+        session: AsyncSession,
+        spec: SyncCatalogEntry,
+        *,
+        uuid_registro: uuid_lib.UUID,
+        local: dict[str, Any] | None,
+        remote: dict[str, Any],
+        actor_uuid: uuid_lib.UUID,
+        branch_uuid: uuid_lib.UUID | None = None,
+        parent_local: dict[str, Any] | None = None,
+        open_version: dict[str, Any] | None = None,
+    ) -> ConflictResolution:
+        """Per-audit-class conflict policy (T-PR7-006, REQ-MOT-007..010, -013).
 
-__all__ = ["BatchResult", "SyncMotor"]
+        Thin delegation to :func:`motor.resolve_conflict.resolve_conflict`,
+        passing this instance's own long-lived ``ReadLocalSeq`` (so its TTL
+        cache is shared across every call through this motor) and
+        ``session_grace_hours`` (the ``[L-S]`` grace window, finally
+        consumed here — see this class's constructor).
+        """
+        return await _resolve_conflict(
+            session,
+            spec,
+            uuid_registro=uuid_registro,
+            local=local,
+            remote=remote,
+            actor_uuid=actor_uuid,
+            branch_uuid=branch_uuid,
+            parent_local=parent_local,
+            open_version=open_version,
+            read_local_seq=self._read_local_seq,
+            session_grace_hours=self.session_grace_hours,
+        )
+
+
+__all__ = ["BatchResult", "ConflictResolution", "SyncMotor"]

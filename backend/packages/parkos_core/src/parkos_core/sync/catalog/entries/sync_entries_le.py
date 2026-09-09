@@ -5,6 +5,18 @@
 the branch with the branch's own ``resolucion_facturacion``; the cloud
 validates and forwards to the DIAN provider, recording the exchange in
 ``envio_dian`` (``sync_entries_lw.py``).
+
+**Bug found and fixed in PR7 (T-PR7-002).** All three entries previously
+declared ``seq_strategy="max_timestamp_evento"``, but none of the three
+``[L-E]`` models (``Ingreso``, ``Facturas``, ``FacturaElectronica``) carries a
+``timestamp_evento`` column — only ``Login`` (``models/L_S/login.py``) does.
+``motor/read_local_seq.py::ReadLocalSeq`` dispatches ``max_timestamp_evento``
+to ``SELECT MAX(timestamp_evento) FROM {table} WHERE uuid = :row_uuid``
+(design.md §2 Issue #4), which would raise ``AttributeError`` for these three
+specs. Corrected to ``max_created_at`` — every table carries ``created_at``
+unconditionally (``AuditMixin``, AGENTS.md §1), and for insert-only ``[L-E]``
+rows ``created_at`` IS the event's own timestamp, so the fix changes no
+observable ordering semantics.
 """
 from __future__ import annotations
 
@@ -26,7 +38,7 @@ _INGRESO = SyncCatalogEntry(
     apply_strategy="record_event",
     depends_on=("sucursal", "tipos_vehiculo"),
     has_uuid_sucursal=True,
-    seq_strategy="max_timestamp_evento",
+    seq_strategy="max_created_at",
 )
 
 _FACTURAS = SyncCatalogEntry(
@@ -42,7 +54,7 @@ _FACTURAS = SyncCatalogEntry(
     apply_strategy="record_event",
     depends_on=("sucursal", "ingreso", "salidas"),
     has_uuid_sucursal=True,
-    seq_strategy="max_timestamp_evento",
+    seq_strategy="max_created_at",
 )
 
 _FACTURA_ELECTRONICA = SyncCatalogEntry(
@@ -61,7 +73,7 @@ _FACTURA_ELECTRONICA = SyncCatalogEntry(
     apply_strategy="record_event",
     depends_on=("sucursal", "facturas", "clientes", "resolucion_facturacion"),
     has_uuid_sucursal=True,
-    seq_strategy="max_timestamp_evento",
+    seq_strategy="max_created_at",
 )
 
 SYNC_ENTRIES_LE: tuple[SyncCatalogEntry, ...] = (

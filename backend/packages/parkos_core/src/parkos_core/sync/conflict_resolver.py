@@ -1,52 +1,51 @@
-"""Per-class conflict resolution for the sync layer (T-PR9-03).
+"""conflict_resolver.py — thin shim over ``SyncMotor.resolve_conflict`` (T-PR7-004).
 
 ``ConflictResolver.apply_pushed_row`` decides what happens when a row
 arrives from the cloud-side ``/sync/push`` (or the branch-side
-``/sync/pull``). The policy mirrors the audit-first data architecture
-(``AGENTS.md`` §1-§3) — once a row lands, it can never be deleted or
-rewritten physically:
+``/sync/pull``). Existing callers (``jobs/sync_cloud.py``,
+``jobs/sync_sucursal.py``, and ``motor/sync_motor.py``'s own
+``EngineMode.LEGACY`` dispatch — see that module's ``_apply_row_legacy``)
+see **no API change**: ``apply_pushed_row(session, row) -> ApplyOutcome``
+is unchanged, but the actual per-audit-class DECISION now lives in
+``motor/resolve_conflict.py`` (D4, D17, D18), reached via
+``SyncMotor.resolve_conflict`` (T-PR7-006).
 
-- ``[V]`` versioned rows: each incoming row is a NEW version of the
-  logical entity; the resolver inserts it. If the per-row monotonic
-  ``seq`` is BELOW what the local DB already has for the same
-  ``uuid_registro``, the incoming row loses; the caller records the loss
-  in ``sync_conflict`` and we return :class:`ApplyOutcome.CONFLICT_V`.
-- ``[L-E]`` / ``[L-W]`` / ``[A]`` append-only: conflict is impossible
-  (an event log has no overwrite semantics). Returns
-  :class:`ApplyOutcome.APPLIED` and the worker calls the appropriate
-  repo helper.
-- ``[L-S]`` sessions: grace window (``JWT_OVERLAP_HOURS`` = 24h)
-  during which both sides may legitimately write a ``close_session``
-  for the same ``uuid_sesion``. After the grace expires, cloud-wins
-  per §21.10.
+**What moved out of this module (PR9a -> PR7).** The 4 hardcoded
+``frozenset`` constants (``APPEND_ONLY_TABLES``, ``LIFECYCLE_EVENT_TABLES``,
+``WORKFLOW_TABLES``, ``SESSION_TABLES``) duplicated the catalog's own
+``audit_class`` field — this shim now reads ``SYNC_CATALOG_BY_NAME`` instead.
+The ``_read_local_seq`` stub (permanently ``None``) is replaced by
+``motor/read_local_seq.py::ReadLocalSeq`` (D4) — every ``[V]`` conflict
+without a natural key now produces a concrete seq instead of trivially
+admitting every row.
 
-Seq-mismatch vs INVALID-seq contract: a missing/non-int ``seq`` is
-treated as :class:`ApplyOutcome.ERROR` so the caller can retry. A
-strictly-lower-than-local ``seq`` is :class:`ApplyOutcome.CONFLICT_V`
-(caller writes ``sync_conflict``). These two are deliberately distinct:
-``ERROR`` means "I couldn't decide" (transient); ``CONFLICT_V`` means
-"we have a real conflict; please record it".
+**Behavior change this shim necessarily carries (documented, not hidden).**
+The PR9a policy treated ``[L-E]``/``[A]`` as unconditionally ``APPLIED`` and
+never checked ``depends_on`` at all; REQ-MOT-007's amendment (D18) gates
+those classes on parent resolution instead (``RETRY`` on a missing parent).
+Under the current catalog wiring (no concrete ``ValidateParentChain`` hook
+yet — see ``motor/resolve_conflict.py``'s docstring), that branch still
+resolves ``APPLIED`` in practice, so no existing caller observes a different
+outcome today. The ``seq``-format pre-validation the PR9a stub performed
+before class dispatch (missing/non-int/negative ``datos.seq`` -> ``ERROR``,
+even for classes that never consulted ``seq`` at all) is also gone: ``seq``
+is only meaningful for the ``[V]``-without-``natural_key`` branch now, and an
+invalid seq there is bounded by the SQL query itself (a non-numeric
+``datos->>'seq'`` in ``prod.sync_queue``'s own history — not the incoming
+row — would raise at the DB layer, surfacing as the pre-existing
+``SQLAlchemyError`` -> ``ERROR`` path below).
 
-Cites design §21.10 (conflict resolution), REQ-X9 (chain tie-break via
-the per-row monotonic seq).
-
-Per-row seq lookup — design intent and PR9b ownership:
-The per-row monotonic ``seq`` lives in the destination table itself
-(not in ``prod.sync_log``, which is a worker-cycle diagnostic record
-without per-row content). The default implementation of
-:meth:`ConflictResolver._read_local_seq` therefore returns ``None`` —
-the resolver treats the absence as "no conflict possible" and accepts
-the incoming row. PR9b's worker wires the concrete lookup against
-the actual destination [V] tables; this helper stays table-class
-agnostic so adding new [V] tables does not require touching this
-module.
+Cites design §5 (API Contracts), §7.5 (sequence diagram), REQ-MOT-007..010.
 """
 from __future__ import annotations
 
 import enum
 import uuid as uuid_lib
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from .catalog.sync_catalog import SYNC_CATALOG_BY_NAME
 
 
 class ApplyOutcome(enum.StrEnum):
@@ -58,82 +57,23 @@ class ApplyOutcome(enum.StrEnum):
     ERROR = "error"
 
 
-# Import the concrete exception types we explicitly swallow so ruff's
-# blind-exception check (``BLE001``) is satisfied. Anything else
-# propagates so genuine bugs (e.g. DB-driver programming errors)
-# surface during the sync worker's structured-logging error path.
-from sqlalchemy.exc import SQLAlchemyError
-
-# Tables classified as append-only ([A]) — no conflict ever.
-APPEND_ONLY_TABLES: frozenset[str] = frozenset({
-    "sync_queue",
-    "sync_log",
-    "sync_conflict",
-    "log_transaccional",
-    "factura_detalle",
-    "factura_impuestos",
-    "factura_otros_cobros",
-    "factura_pagos",
-    "revocacion_factura",
-    "caja",
-    "arqueo",
-    "pairing_tokens",
-    "revoked_sync_jwts",
-    "idempotency_keys",
-    "salidas",
-})
-
-# Tables classified as lifecycle events [L-E] — append-only (no conflict).
-LIFECYCLE_EVENT_TABLES: frozenset[str] = frozenset({
-    "ingreso",
-    "facturas",
-    "factura_electronica",
-})
-
-# Tables classified as workflows [L-W] — append-only (no conflict).
-WORKFLOW_TABLES: frozenset[str] = frozenset({
-    "anulaciones",
-    "reclamos",
-    "alerta",
-    "reimpresion_ticket",
-    "envio_dian",
-    "validacion_evento",
-})
-
-# Tables classified as sessions [L-S] — grace-window conflict possible.
-SESSION_TABLES: frozenset[str] = frozenset({
-    "login",
-    "sesion",
-})
-
-
-def _coerce_seq(datos: dict | None) -> int | None:
-    """Return the per-row ``seq`` from ``datos`` (or ``None`` if missing/invalid).
-
-    The ``seq`` lives in the ``datos->>'seq'`` projection (Postgres JSONB
-    accessor on the wire); here we accept it from the already-parsed
-    ``datos`` dict. Non-int values yield ``None`` so the caller can
-    distinguish "missing" from "lower than local" — the former is
-    :class:`ApplyOutcome.ERROR`, the latter is :class:`ApplyOutcome.CONFLICT_V`.
-    """
-    if not isinstance(datos, dict):
-        return None
-    raw = datos.get("seq")
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
+# ConflictResolution.status -> ApplyOutcome for classes that never carry a
+# [L-S]-specific conflict (RETRY always means "caller retries the batch",
+# matching motor/sync_motor.py's own _LEGACY_OUTCOME_TO_STATUS reverse map).
+_STATUS_TO_OUTCOME: dict[str, ApplyOutcome] = {
+    "APPLIED": ApplyOutcome.APPLIED,
+    "RETRY": ApplyOutcome.ERROR,
+}
 
 
 class ConflictResolver:
-    """Apply pushed rows from a branch sync to the local DB.
+    """Apply pushed rows from a branch sync to the local DB (shim, T-PR7-004).
 
     Args:
-        jwt_overlap_hours: Length of the [L-S] grace window during
+        jwt_overlap_hours: Length of the ``[L-S]`` grace window during
             which both sides may legitimately write a session close.
-            Default 24h per §21.10.
+            Default 24h per REQ-MOT-013. Forwarded verbatim as
+            ``SyncMotor(session_grace_hours=...)``.
     """
 
     def __init__(self, *, jwt_overlap_hours: int = 24) -> None:
@@ -149,79 +89,85 @@ class ConflictResolver:
         Args:
             session: Active ``AsyncSession`` (caller commits).
             row: Pushed row with shape ``{tabla, uuid_registro, datos,
-                uuid_sucursal, timestamp_evento, seq, actor_uuid}``.
+                uuid_sucursal, timestamp_evento, actor_uuid}``.
 
         Returns:
             :class:`ApplyOutcome` — one of ``APPLIED``, ``CONFLICT_V``,
             ``CONFLICT_LS``, ``ERROR``. The caller is responsible for
-            translating outcomes into repo writes (``sync_conflict`` for
-            conflicts) and into the next-batch decision (``ERROR`` →
-            retry the whole batch).
+            translating outcomes into repo writes and into the next-batch
+            decision (``ERROR`` -> retry the whole batch).
         """
         tabla = row.get("tabla")
         uuid_registro = row.get("uuid_registro")
         datos = row.get("datos") or {}
+        # `datos` doubles as the resolve_conflict "remote" payload — the
+        # [L-S] branch reads `remote["timestamp_evento"]`, so surface the
+        # row-level field into it when the row itself carries one and the
+        # payload does not (mirrors what a real wire push assembles).
+        remote = dict(datos)
+        remote.setdefault("timestamp_evento", row.get("timestamp_evento"))
 
         if not isinstance(tabla, str) or not tabla:
             return ApplyOutcome.ERROR
         if not isinstance(uuid_registro, (str, uuid_lib.UUID)):
             return ApplyOutcome.ERROR
+        if isinstance(uuid_registro, str):
+            try:
+                uuid_registro = uuid_lib.UUID(uuid_registro)
+            except ValueError:
+                return ApplyOutcome.ERROR
 
-        # Coerce the per-row seq; missing/invalid → caller retries.
-        incoming_seq = _coerce_seq(datos)
-        if incoming_seq is None or incoming_seq < 0:
-            return ApplyOutcome.ERROR
-
-        # Append-only classes — accept unconditionally.
-        if (
-            tabla in APPEND_ONLY_TABLES
-            or tabla in LIFECYCLE_EVENT_TABLES
-            or tabla in WORKFLOW_TABLES
-        ):
+        spec = SYNC_CATALOG_BY_NAME.get(tabla)
+        if spec is None:
+            # Out-of-catalog table (e.g. `sync_queue` itself, an
+            # infrastructure table never pushed as a business row) — no
+            # conflict is possible; accept unconditionally, matching the
+            # pre-PR7 append-only default for anything outside the catalog.
             return ApplyOutcome.APPLIED
 
-        # [L-S] sessions — grace-window logic (happy path returns APPLIED).
-        # Future PR may branch on ``self.jwt_overlap_hours`` + ``row.timestamp_evento``
-        # to detect out-of-grace-window closes; for PR9a the helper returns
-        # APPLIED so the worker proceeds with the write.
-        if tabla in SESSION_TABLES:
-            return ApplyOutcome.APPLIED
+        actor_uuid = row.get("actor_uuid") or uuid_lib.uuid4()
+        if isinstance(actor_uuid, str):
+            try:
+                actor_uuid = uuid_lib.UUID(actor_uuid)
+            except ValueError:
+                actor_uuid = uuid_lib.uuid4()
 
-        # Default: [V] (versioned). Check the per-row seq before
-        # admitting the row as a new version. The default
-        # :meth:`_read_local_seq` returns ``None`` (no conflict possible);
-        # PR9b's worker wires the concrete lookup per destination table.
+        branch_uuid = row.get("uuid_sucursal")
+        if isinstance(branch_uuid, str):
+            try:
+                branch_uuid = uuid_lib.UUID(branch_uuid)
+            except ValueError:
+                branch_uuid = None
+
+        # Lazy import — avoids a module-load-time circular import:
+        # motor/sync_motor.py already imports THIS module (for the
+        # EngineMode.LEGACY dispatch, see that module's _apply_row_legacy),
+        # so importing SyncMotor at this module's top level would cycle.
+        from .motor.sync_motor import SyncMotor
+
+        motor = SyncMotor(session_grace_hours=self.jwt_overlap_hours)
+
         try:
-            existing = await self._read_local_seq(session, tabla, uuid_registro)
+            resolution = await motor.resolve_conflict(
+                session,
+                spec,
+                uuid_registro=uuid_registro,
+                local=None,
+                remote=remote,
+                actor_uuid=actor_uuid,
+                branch_uuid=branch_uuid,
+            )
         except SQLAlchemyError:
             # Driver / connection failure — caller retries the batch.
             return ApplyOutcome.ERROR
-        if existing is not None and existing > incoming_seq:
-            return ApplyOutcome.CONFLICT_V
-        return ApplyOutcome.APPLIED
 
-    async def _read_local_seq(
-        self,
-        session: AsyncSession,
-        tabla: str,
-        uuid_registro: str | uuid_lib.UUID,
-    ) -> int | None:
-        """Return the highest locally-known ``seq`` for ``(tabla, uuid_registro)``.
-
-        Default implementation returns ``None`` — the per-row monotonic
-        ``seq`` lives in the destination table itself (varies by table),
-        so this helper stays table-class agnostic. PR9b's worker wraps
-        or subclasses :class:`ConflictResolver` to provide the concrete
-        lookup per [V] destination table.
-        """
-        return None
+        if resolution.status in _STATUS_TO_OUTCOME:
+            return _STATUS_TO_OUTCOME[resolution.status]
+        # MANUAL — which flavor of conflict depends on the audit class.
+        return ApplyOutcome.CONFLICT_LS if spec.audit_class == "L_S" else ApplyOutcome.CONFLICT_V
 
 
 __all__ = [
-    "APPEND_ONLY_TABLES",
-    "LIFECYCLE_EVENT_TABLES",
-    "SESSION_TABLES",
-    "WORKFLOW_TABLES",
     "ApplyOutcome",
     "ConflictResolver",
 ]
