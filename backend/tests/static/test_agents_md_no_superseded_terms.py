@@ -69,6 +69,14 @@ one) are pruned too — they inherently describe the withdrawn model to
 explain why it was replaced; R21's concern is ``AGENTS.md`` re-deriving
 from stale CANON, not dated decision records. ``openspec/scripts/**``
 stays IN SCOPE (live operational code).
+
+``openspec/specs/**`` (added post-``sdd-archive``): the archive step
+merges each delta spec verbatim from ``openspec/changes/sync-overhaul/
+specs/*.md`` into the project's canonical ``openspec/specs/<domain>/
+spec.md``, "Amendment note" prose and all — the same D1-rev
+historical-negation text this test already exempts under
+``openspec/changes/**`` (the domain moved, not the content or its
+justification). Excluded for the identical reason.
 """
 from __future__ import annotations
 
@@ -107,6 +115,7 @@ _EXCLUDED_DIR_NAMES: frozenset[str] = frozenset(
 _EXCLUDED_RELATIVE_PREFIXES: tuple[str, ...] = (
     "openspec/changes",
     "openspec/_meta",
+    "openspec/specs",
 )
 
 _EXCLUDED_FILENAMES: frozenset[str] = frozenset({"openapi.json"})
