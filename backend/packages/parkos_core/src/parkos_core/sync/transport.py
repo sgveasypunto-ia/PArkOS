@@ -1,4 +1,4 @@
-"""Sync HTTP transport client (T-PR9-02).
+"""Sync HTTP transport client (T-PR9-02; T-PR12-006/007 additions).
 
 Branch→cloud + cloud→branch HTTP client for the sync workers. Reads the
 JWT from ``PARKOS_SYNC_JWT_PATH`` lazily (the file may not exist at boot —
@@ -6,8 +6,15 @@ the CLI pair flow writes it once after the first pairing).
 
 Endpoints (per design §21.7 / §21.9):
 
-- ``POST {base_url}/api/v1/sync/push`` — branch → cloud
+- ``GET {base_url}/api/v1/sync/hello`` — dual-protocol handshake
+  (T-PR12-007). NO auth header — mirrors the endpoint's own "no auth
+  required" contract (REQ-CUT-004).
+- ``POST {base_url}/api/v1/sync/push`` — branch → cloud (legacy applier)
 - ``POST {base_url}/api/v1/sync/pull`` — branch ← cloud
+- ``POST {base_url}/api/v1/sync/events`` — catalog-driven row push
+  (T-PR12-006, REQ-CUT-015) — the branch auto-detect table
+  (``jobs/sync_sucursal.py``, T-PR12-007) switches to this endpoint
+  instead of ``/sync/push`` once the catalog applier is selected.
 - ``POST {base_url}/api/v1/sync/heartbeat`` — both directions
 - ``POST {base_url}/api/v1/sync/rotate-jwt`` — both directions
 
@@ -56,6 +63,37 @@ class NewJwt:
     grace_until: int  # unix timestamp
 
 
+@dataclass
+class HelloResponse:
+    """Response from GET /sync/hello (T-PR12-007, REQ-CUT-004's shape).
+
+    ``protocol_version``/``min_branch_version``/``catalog_revision`` are
+    ``None`` when the response could not be parsed (non-2xx or non-JSON
+    body) — the caller (``jobs/sync_sucursal.py``'s auto-detect) treats
+    that the same as a transport error: fail-safe to the legacy applier.
+    """
+
+    status: int
+    protocol_version: str | None
+    min_branch_version: str | None
+    grace_until: str | None
+    catalog_revision: str | None
+
+
+@dataclass
+class EventsPushResponse:
+    """Response from POST /sync/events (T-PR12-006).
+
+    ``results`` is ``[{"event_type": ..., "status": ...}, ...]`` in the
+    SAME order as the request's ``events`` — the router applies each row
+    synchronously, in request order (never reordered), so positional
+    correlation back to the pushed ``sync_queue`` rows is safe.
+    """
+
+    status: int
+    results: list[dict[str, Any]]
+
+
 DEFAULT_TIMEOUT_S = 30.0
 
 
@@ -89,6 +127,52 @@ class SyncHttpClient:
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._read_jwt()}"}
+
+    async def hello(self) -> HelloResponse:
+        """GET /sync/hello — dual-protocol handshake (T-PR12-007).
+
+        NO auth header — mirrors the endpoint's own contract (a branch
+        calls this BEFORE it has decided which applier, and therefore
+        which JWT-bearing flow, to use).
+        """
+        async with self._session_factory() as session:
+            response = await session.get(f"{self.base_url}/api/v1/sync/hello")
+        body = (
+            response.json()
+            if response.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
+        return HelloResponse(
+            status=response.status_code,
+            protocol_version=body.get("protocol_version"),
+            min_branch_version=body.get("min_branch_version"),
+            grace_until=body.get("grace_until"),
+            catalog_revision=body.get("catalog_revision"),
+        )
+
+    async def push_events(self, events: list[dict[str, Any]]) -> EventsPushResponse:
+        """POST /sync/events — catalog-driven row push (T-PR12-006).
+
+        Distinct from :meth:`push` (``/sync/push``, the legacy applier's
+        transport) — the auto-detect table (REQ-CUT-005) decides which of
+        the two the caller uses for a given cycle.
+        """
+        body = {"events": events}
+        async with self._session_factory() as session:
+            response = await session.post(
+                f"{self.base_url}/api/v1/sync/events",
+                json=body,
+                headers=self._auth_headers(),
+            )
+        body_dict = (
+            response.json()
+            if response.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
+        return EventsPushResponse(
+            status=response.status_code,
+            results=list(body_dict.get("results", [])),
+        )
 
     async def push(self, rows: list[dict[str, Any]]) -> PushResponse:
         """POST /sync/push — branch → cloud."""
@@ -161,6 +245,8 @@ class SyncHttpClient:
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
+    "EventsPushResponse",
+    "HelloResponse",
     "NewJwt",
     "PullResponse",
     "PushResponse",

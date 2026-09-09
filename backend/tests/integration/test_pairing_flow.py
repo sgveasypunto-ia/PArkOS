@@ -454,3 +454,133 @@ async def test_pair_token_rate_limit():
         )
         assert resp.status_code == 429
         assert resp.json()["detail"]["error"] == "pairing_token_rate_limited"
+
+
+# ---------------------------------------------------------------------------
+# 10. T-PR12-001 (RED) / T-PR12-002 (GREEN) — topological, paginated backfill
+# ---------------------------------------------------------------------------
+#
+# NOTE (apply-phase correction): tasks.md's T-PR12-001 describes this file as
+# "new, failing" — that was already stale by the time PR12 was implemented;
+# this file existed since PR2 (9 pairing-flow scenarios above, several
+# xfail for a preexisting partman-partition gap unrelated to sync-overhaul).
+# The RED/GREEN pair below is APPENDED here rather than in a new file, per
+# the corrected instruction for this PR.
+
+
+async def test_backfill_reaches_catalog_backfill_complete_in_topological_order(
+    pg_engine, alembic_upgrade
+) -> None:
+    """A freshly paired branch (empty catalog set) backfills every
+    cloud_to_branch entry in topological level order, paginated;
+    catalog_backfill_complete{uuid_sucursal} reaches 1 only when every
+    level applied with zero unresolved parents (R-D8, design.md §7.1).
+
+    Was RED when written (``cutover/backfill.py`` did not exist yet,
+    T-PR12-001) — now GREEN against the real module (T-PR12-002).
+    """
+    import uuid as uuid_lib
+
+    from parkos_core.runtime import engine_flag
+    from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+    from parkos_core.sync.cutover.backfill import BackfillPage, run_backfill
+    from parkos_core.sync.motor.sync_motor import SyncMotor
+    from parkos_core.sync.observability.metrics import catalog_backfill_complete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    tipos_vehiculo_spec = SYNC_CATALOG_BY_NAME["tipos_vehiculo"]  # level 0
+    vehiculos_spec = SYNC_CATALOG_BY_NAME["vehiculos"]  # level 1 (depends_on tipos_vehiculo)
+
+    tipo = f"tipo-{uuid_lib.uuid4().hex[:8]}"
+    placa = f"PL{uuid_lib.uuid4().hex[:6].upper()}"
+    fetch_order: list[str] = []
+
+    async def fetch_page(tabla: str, cursor: str | None, limit: int) -> BackfillPage:
+        fetch_order.append(tabla)
+        if tabla == "tipos_vehiculo":
+            if cursor is None:
+                # Page 1 of 2 — proves pagination actually advances the
+                # cursor rather than looping forever or stopping early.
+                return BackfillPage(rows=({"tipo": tipo},), next_cursor="page2", has_more=True)
+            return BackfillPage(rows=(), next_cursor=None, has_more=False)
+        if tabla == "vehiculos":
+            return BackfillPage(rows=({"placa": placa},), next_cursor=None, has_more=False)
+        return BackfillPage(rows=(), next_cursor=None, has_more=False)
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        branch = uuid_lib.uuid4()
+        result = await run_backfill(
+            session,
+            uuid_sucursal=branch,
+            fetch_page=fetch_page,
+            actor_uuid=ACTOR_UUID,
+            motor=SyncMotor(engine=engine_flag.EngineMode.CATALOG_BRANCH),
+            catalog=(tipos_vehiculo_spec, vehiculos_spec),
+        )
+        await session.commit()
+
+    assert result.complete is True
+    assert (
+        catalog_backfill_complete.labels(uuid_sucursal=str(branch))._value.get() == 1
+    )
+    # Pagination: 2 fetch_page calls for tipos_vehiculo (cursor advanced).
+    assert fetch_order.count("tipos_vehiculo") == 2
+    # Topological order: every tipos_vehiculo (level 0) fetch happens
+    # before the first vehiculos (level 1) fetch.
+    last_tipos_idx = max(i for i, t in enumerate(fetch_order) if t == "tipos_vehiculo")
+    first_vehiculos_idx = min(i for i, t in enumerate(fetch_order) if t == "vehiculos")
+    assert last_tipos_idx < first_vehiculos_idx
+
+
+async def test_backfill_gauge_stays_zero_when_a_level_has_an_unresolved_parent(
+    pg_engine, alembic_upgrade
+) -> None:
+    """A row that arrives with no resolvable identity data (empty dict on a
+    NOT-NULL-constrained model column set) still counts toward "applied" for
+    the gauge's purposes ONLY via a genuine RETRY(parent_missing) outcome —
+    this test drives that via a stub motor to isolate the gauge's OWN
+    transition rule from a specific catalog entry's hook wiring (which
+    entries call hook_validate_parent at all is an orthogonal, already
+    covered concern — see test_broadcast_resolver.py / apply_row.py's own
+    suite)."""
+    import uuid as uuid_lib
+    from dataclasses import dataclass, field
+    from typing import Any
+
+    from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+    from parkos_core.sync.cutover.backfill import BackfillPage, run_backfill
+    from parkos_core.sync.observability.metrics import catalog_backfill_complete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    usuarios_spec = SYNC_CATALOG_BY_NAME["usuarios"]
+
+    @dataclass
+    class _BatchResult:
+        applied: list[Any] = field(default_factory=list)
+        buffered: list[Any] = field(default_factory=list)
+
+    class _StubMotor:
+        async def apply_batch(self, session, rows, *, actor_uuid):
+            spec, payload = rows[0]
+            return _BatchResult(buffered=[(spec, payload)])
+
+    async def fetch_page(tabla: str, cursor: str | None, limit: int) -> BackfillPage:
+        return BackfillPage(rows=({"nombre": "stuck"},), next_cursor=None, has_more=False)
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        branch = uuid_lib.uuid4()
+        result = await run_backfill(
+            session,
+            uuid_sucursal=branch,
+            fetch_page=fetch_page,
+            actor_uuid=ACTOR_UUID,
+            motor=_StubMotor(),
+            catalog=(usuarios_spec,),
+        )
+
+    assert result.complete is False
+    assert (
+        catalog_backfill_complete.labels(uuid_sucursal=str(branch))._value.get() == 0
+    )

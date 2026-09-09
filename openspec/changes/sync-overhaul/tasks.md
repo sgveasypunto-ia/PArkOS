@@ -2290,14 +2290,40 @@ Files: `backend/packages/parkos_core/tests/integration/test_pairing_flow.py` (ne
 freshly paired branch (empty catalog set) backfills every `cloud_to_branch` entry in topological
 level order, paginated; `catalog_backfill_complete{uuid_sucursal}` reaches 1 only when every level
 applied with zero unresolved parents.
-- [ ] Fails — `cutover/backfill.py` does not exist yet
+- [x] Fails — `cutover/backfill.py` does not exist yet
+
+Status: **Correction (apply phase).** `test_pairing_flow.py` was NOT new/failing at PR12 apply
+time — it already existed since PR2 (455 lines, 9 pairing-flow scenarios, several `xfail` for a
+preexisting partman-partition gap unrelated to sync-overhaul), exactly per the requesting user's
+explicit correction. The RED test (`test_backfill_reaches_catalog_backfill_complete_in_topological_
+order`) was appended to that existing file, not written into a new one, and confirmed to fail before
+`cutover/backfill.py` existed (import error), matching this line's intent. No existing test in that
+file was modified, renamed, or broken.
 
 #### T-PR12-002: GREEN — `cutover/backfill.py`
 Req: R-D8 · Design: §7.1, §3 · Depends on: T-PR12-001, T-PR3-006
 Files: `backend/packages/parkos_core/src/parkos_core/sync/cutover/backfill.py` (new) — walks
 `cloud_to_branch` entries by topological level, paginated; `usuarios`/`permisos`/`permisos_usuario`
 sit at the root so offline login is available as early as possible (R9).
-- [ ] T-PR12-001 passes (GREEN)
+- [x] T-PR12-001 passes (GREEN)
+
+Status: `run_backfill(session, uuid_sucursal, fetch_page, actor_uuid, motor=None, page_size=100,
+catalog=SYNC_CATALOG)` groups every `cloud_to_branch`/`bidirectional` entry by
+`dependency_graph.topological_level`, walks levels ascending, and for each entry in a level pages
+through an injected `FetchPage` callable (`fetch_page(tabla, cursor, limit) -> BackfillPage`) until
+`has_more=False`, applying each non-empty page via `SyncMotor.apply_batch`. `usuarios`/`permisos`/
+`permisos_usuario` need no special-casing — they declare `depends_on=()` (or depend only on other
+root entries), so the generic topological sort already places them at/near level 0 (R9 falls out of
+the algorithm, not a hardcoded table list). **Design decision, documented, not silently improvised**:
+`design.md`/`tasks.md` never pin down backfill's concrete wire transport beyond the word
+"paginated", and no PR12 file list entry names a new/modified `sync_router.py` endpoint for it —
+adding one here would be scope creep beyond the explicit file list (and this project's own rule
+against inventing endpoints as a test shortcut). `backfill.py` is therefore transport-agnostic: it
+accepts an injected `FetchPage` protocol instead of hardcoding an HTTP client; the concrete
+production data source (an HTTP client hitting the cloud's bulk-export surface) is a **deliberate,
+documented follow-up**, the same carve-out precedent already established in this codebase for
+`motor/dependency_buffer.py`'s `ValidateParentChain` gap. 4/4 focused tests pass
+(`test_pairing_flow.py`'s 2 new + `test_catalog_backfill_gauge.py`'s 3, one shared).
 
 #### T-PR12-003: `motor/broadcast_resolver.py` (D5-rev, D19, §16 Q1)
 Req: REQ-MOT-014, REQ-MOT-016 · Design: §3 · Depends on: T-PR2-006
@@ -2308,8 +2334,22 @@ branch), `all_branches_with_override` (NULL row → all + stored; non-NULL → t
 for `subscripcion_vehiculos` — reusing the already-validated `depends_on` parent, never a second
 query); `tests/unit/test_broadcast_resolver.py` (new) — no fallback to `all_branches` for
 `subscription`.
-- [ ] Transitive resolution for `subscripcion_vehiculos` reuses the validated parent, asserted via a
+- [x] Transitive resolution for `subscripcion_vehiculos` reuses the validated parent, asserted via a
       mock query-count of 1
+
+Status: `resolve_broadcast_targets(session, spec, payload, *, parent_local=None, branch_cache=None)`
+dispatches on `spec.broadcast_policy`. `single_branch` reads `payload["uuid_sucursal"]` when
+`spec.has_uuid_sucursal`, else `payload["uuid"]` (the `sucursal` entry itself — the row IS the
+branch identity). `all_branches`/`all_branches_with_override`'s NULL-default case enumerate via
+`auto_discovery.discover_active_branches` (optionally through an injected `BranchCache`).
+`subscription` prefers an already-supplied `parent_local["uuid_sucursal"]` (the SAME parent data
+`hook_validate_parent` already fetched) — **zero** additional queries; when omitted, falls back to
+exactly **one** scalar `SELECT` on the registered transitive parent
+(`subscripcion_vehiculos` → `subscripciones_cliente` via `uuid_subscripcion_cliente`) — never a
+second query on top of it, and never a fallback to `all_branches`. Asserted behaviorally with a
+mock `AsyncSession.execute` call counter: `test_subscription_transitive_reuses_parent_local_zero_
+queries` (0 calls) and `test_subscription_transitive_fallback_uses_exactly_one_query` (exactly 1
+call). 12/12 tests pass, 94% line coverage on the new module.
 
 #### T-PR12-004: Branch-side `/sync/events` wire status `retry_parent_missing`
 Req: REQ-CUT-015 · Design: §2 Issue #8 · Depends on: T-PR11-006
@@ -2317,49 +2357,136 @@ Files: `backend/packages/parkos_core/src/parkos_core/api/v1/sync_router.py` (mod
 branch's `/sync/events` receiver (for `cloud_to_branch` pushes) reports the same wire status
 mapping as T-PR11-006; `tests/unit/test_sync_router_wire_status.py` (append case for the branch
 direction).
-- [ ] Mapping table matches T-PR11-006 exactly (single source of truth, REQ-MOT-005)
+- [x] Mapping table matches T-PR11-006 exactly (single source of truth, REQ-MOT-005)
+
+Status: **No `sync_router.py` code change was needed or made** — `sync_events`/`wire_status_for_
+apply_result` are already direction-agnostic (the SAME handler, mounted on both `api_admin` and
+`api_sucursal`, dispatches on `ev.tabla` regardless of which process is running it). Confirmed, not
+assumed: appended `TestSyncEventsWireStatus.test_cloud_to_branch_row_applied_reports_applied` +
+`test_cloud_to_branch_row_missing_parent_reports_retry_parent_missing` to the existing `tests/unit/
+test_sync_router_wire_status.py`, using a real `cloud_to_branch` table name (`tipos_vehiculo`,
+`resolucion_facturacion`) instead of a `branch_to_cloud` one, against the identical stubbed-motor
+harness T-PR11-006 already built — proving the mapping by exercise, not by inspection alone.
+12/12 tests pass (10 existing + 2 new).
 
 #### T-PR12-005: Sender-side `retry_parent_missing` handling (`mark_success`, `intentos` untouched)
 Req: REQ-CUT-015, ADR-003 Part 2 · Design: §2 Issue #8 · Depends on: T-PR12-004
 Files: `backend/packages/parkos_core/src/parkos_core/jobs/sync_sucursal.py` (modified) — on
 `retry_parent_missing`, calls `repo.sync_queue.mark_success`; does NOT increment `intentos` or set
 `next_retry_at`; `tests/unit/test_sync_sucursal_retry_parent_missing.py` (new).
-- [ ] `intentos` is byte-identical before/after a `retry_parent_missing` response
+- [x] `intentos` is byte-identical before/after a `retry_parent_missing` response
+
+Status: "Sender" here is the BRANCH pushing `branch_to_cloud` rows outward (T-PR12-004's branch-as-
+*receiver* scenario is the mirror direction) — this task wires the branch's own push path. New
+`SyncSucursalWorker._push_and_handle_catalog` (T-PR12-006) maps `applied`/`conflict`/`retry_parent_
+missing` ALL to `repo.sync_queue.mark_dispatched` (`mark_success` in design.md's naming; this
+codebase has no function literally named `mark_success` — `wire_status_for_apply_result`'s own
+docstring already established `mark_dispatched` as its real name). `mark_dispatched` never touches
+`intentos`/`next_retry_at` at all (only `mark_failed` does per `repo/sync_queue.py`) — so asserting
+`mark_failed` was never awaited on a `retry_parent_missing` response IS the "byte-identical
+intentos" proof. Any wire status outside the three (e.g. `unknown_table`) still calls `mark_failed`
+— never a silent drop. 4/4 tests pass.
 
 #### T-PR12-006: `jobs/sync_sucursal.py` 6-step cycle calls `SyncMotor.apply_batch`
 Req: REQ-MOT-015 · Design: §17 · Depends on: T-PR12-002
 Files: `jobs/sync_sucursal.py` (modified) — every pushed batch goes through
 `SyncMotor.apply_batch`; `tests/integration/test_sync_sucursal_apply_batch.py` (new).
-- [ ] Batch selection is unchanged (still `list_pending`'s ordering/limit), only in-batch application
+- [x] Batch selection is unchanged (still `list_pending`'s ordering/limit), only in-batch application
       changes
+
+Status: **Design decision, documented.** Two coexisting flows now live side by side, chosen per
+cycle by T-PR12-007's auto-detect (never both, never neither):
+1. **Push** (step 1-3) — `_push_and_handle_catalog` still calls the UNCHANGED
+   `sq_helpers.list_pending` (step 1); only step 2-3 changed transport, from `/sync/push` (legacy,
+   no `retry_parent_missing` vocabulary) to `/sync/events` (catalog-driven, T-PR12-004/005). The
+   receiver applies each row via `SyncMotor` (already shipped, T-PR11-006) — this is genuinely "the
+   batch goes through SyncMotor", satisfied end to end across the wire, not by this file calling
+   `apply_batch` directly (impossible for an outbound HTTP push; `apply_batch` needs a local DB
+   session).
+2. **Pull** (step 4) — NEW `_pull_and_apply_catalog` collects every pulled row into `(spec, payload)`
+   pairs and calls `SyncMotor.apply_batch` ONCE (dependency-ordered + buffered, wrapped in one
+   `session.begin_nested()` SAVEPOINT) — this is the LITERAL, direct mirror of PR11's
+   `SyncCloudWorker._apply_pending_batch_once` pattern, replacing the legacy path's per-row
+   `ConflictResolver.apply_pushed_row` loop. Built with the EXPLICIT `EngineMode.CATALOG_BRANCH` —
+   never `engine_flag.get_engine()` — for the same D11 reason the auto-detect itself doesn't read
+   the branch's own env flag (see T-PR12-007). `is_infra_table`/`_business_payload_for_apply` are
+   IMPORTED from `jobs/sync_cloud.py` rather than duplicated — same D21 guard + payload-cleaning
+   logic applies identically on both sides; documented as a deliberate DRY choice, not an
+   accidental cross-module coupling. 3/3 focused integration tests pass (real Postgres; a real
+   `[V]` row lands in `prod.usuarios` via `apply_batch`; an unrecognized `tabla` never crashes the
+   cycle; `list_pending`'s priority ordering is unchanged).
 
 #### T-PR12-007: Branch auto-detect from `/sync/hello`
 Req: REQ-CUT-005 · Design: §8 · Depends on: T-PR11-003
 Files: `jobs/sync_sucursal.py` (modified) — wires the auto-detect table (legacy vs. catalog applier,
 fail-safe to legacy on HTTP error/timeout); `tests/integration/test_branch_autodetect.py` (new).
-- [ ] All 4 rows of REQ-CUT-005's condition table are exercised
+- [x] All 4 rows of REQ-CUT-005's condition table are exercised
+
+Status: `REQ-CUT-005`'s exact table lives in `specs/cutover-migration.md` (tasks.md's own inline
+prose doesn't restate it verbatim). New `SyncSucursalWorker._detect_applier_mode` implements all 4
+rows exactly: `legacy` → legacy; `catalog` + `branch_version >= min_branch_version` → catalog
+(`SyncMotor`, built with the explicit `CATALOG_BRANCH` mode); `catalog` + a stale `branch_version` →
+legacy + a `catalog_too_new` warning log; HTTP error/timeout (or a non-200/unparseable response) →
+legacy, fail-safe. Cached for `dual_protocol.BRANCH_CACHE_TTL_SECONDS` (300s, REQ-CUT-004) via a
+`time.monotonic()`-keyed cache, mirroring `engine_flag.py`'s own TTL-cache style. `branch_version`
+is a new constructor kwarg (default `PARKOS_BRANCH_VERSION` env or `dual_protocol.DEFAULT_MIN_
+BRANCH_VERSION`), added as keyword-only so no existing caller's positional/keyword usage broke.
+6/6 focused tests pass, PLUS `test_branch_offline_flow.py` (T-PR12-009) independently proves row 4
+against a REAL failed socket connection (not mocked) to `http://127.0.0.1:1`.
 
 #### T-PR12-008: `observability/metrics.py::catalog_backfill_complete` gauge
 Req: REQ-OPS-006 · Design: §9 · Depends on: T-PR12-002
 Files: `backend/packages/parkos_core/src/parkos_core/sync/observability/metrics.py` (new or
 modified) — transitions to 1 only after every `cloud_to_branch` entry backfills with zero unresolved
 parents for the branch; `tests/unit/test_catalog_backfill_gauge.py` (new).
-- [ ] Gauge stays 0 while any level has an unresolved parent
+- [x] Gauge stays 0 while any level has an unresolved parent
+
+Status: `sync/observability/` did not exist before this PR — created fresh with `metrics.py`
+carrying exactly the one gauge R-D8 needs (design.md's remaining §9 counters/gauges are explicitly
+PR13's T-PR13-001). Added `prometheus-client>=0.20` as a REAL runtime dependency to `parkos_core`'s
+`pyproject.toml` (previously absent from this codebase entirely) rather than hand-rolling a fake
+gauge — `uv sync` resolved it cleanly (`prometheus-client==0.26.0`), zero transitive deps. `run_
+backfill` sets the label to 0 unconditionally at the start of every run (so a concurrent reader,
+e.g. the stage-4 gate, never observes a stale 1 from a PRIOR run while a new one is mid-flight), and
+only to 1 at the very end, and only if zero levels buffered a row anywhere in the whole walk. 3/3
+tests pass, including a reset-across-runs regression test.
 
 #### T-PR12-009: RED+GREEN — full offline-flow integration test
 Req: proposal §13 Success Criteria · Design: §10 Testing Strategy · Depends on: T-PR12-002, PR9, PR5
 Files: `backend/packages/parkos_core/tests/integration/test_branch_offline_flow.py` (new) —
 authenticate, authorize, classify a vehicle, price a stay, register an identified client, emit and
 number an electronic invoice, reprint a ticket — all with the cloud unreachable.
-- [ ] Every step succeeds against testcontainers with no cloud connectivity simulated
+- [x] Every step succeeds against testcontainers with no cloud connectivity simulated
+
+Status: **Real, additional discovery (not flagged in advance for this file, unlike `test_pairing_
+flow.py`).** `test_branch_offline_flow.py` already existed (dated 2026-09-03), but as a PR6-era
+placeholder: `pytestmark = pytest.mark.skip(...)`, a `db_session` fixture that raises
+`NotImplementedError`, and `...` literals in place of real values — zero real assertions, zero real
+coverage. Replaced in full (nothing of substance was lost). The new test proves, against ONE real
+Postgres container: (0) the cloud is genuinely unreachable — `SyncSucursalWorker._detect_applier_
+mode` against `http://127.0.0.1:1` (a real failed TCP connection, 2s timeout, never mocked) fails
+safe to the legacy applier; (1) authenticate — `repo.session_cycle.record_login`; (2) authorize —
+the same `PermisosUsuario` x `Permisos` join `auth.permissions.require_permission` runs; (3) classify
+a vehicle — `repo.event.record_event(Ingreso)`; (4) price a stay — `TarifasSucursal.valor` x elapsed
+hours, feeding `Facturas.total`; (5) register an identified client — `repo.versioned.close_and_
+insert(Clientes)`; (6) emit + number an electronic invoice — `repo.resolucion_facturacion.assign_
+consecutivo` (T-PR9's local, no-cloud-wait numbering; also asserts the SAME source event replays the
+SAME consecutivo, never a gap) + `repo.event.record_event(Facturas, FacturaElectronica)`; (7)
+reprint a ticket — `repo.workflow.append_transition(ReimpresionTicket, estado="solicitada")`. Every
+write goes through the SAME `repo.*` helper `motor/apply_row.py` itself dispatches to — there is no
+cloud round-trip anywhere in that call chain, so step 0's real disconnection changes nothing about
+whether steps 1-7 succeed. 1/1 test passes end to end.
 
 #### T-PR12-010: Commit + open PR12
 Depends on: T-PR12-001..009
 - [ ] Branch `feat/sync-overhaul-pr12-branch-cutover` pushed, target `dev`
 
+Status: Deliberately left unchecked — commit/push is explicitly the requesting user's own action for
+this session (apply phase does not commit or push).
+
 ### PR12 acceptance
-- [ ] `catalog_backfill_complete{uuid_sucursal}` reaches 1 with zero unresolved parents
-- [ ] Full offline-flow integration test passes end to end
+- [x] `catalog_backfill_complete{uuid_sucursal}` reaches 1 with zero unresolved parents
+- [x] Full offline-flow integration test passes end to end
 
 ---
 

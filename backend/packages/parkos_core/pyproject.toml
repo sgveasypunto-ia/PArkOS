@@ -30,6 +30,9 @@ dependencies = [
     # provider adapter (T-PR11-04).
     "httpx>=0.27",
     "lxml>=5.0",
+    # Observability (T-PR12-008, design §3/§9) — counters + gauges for the
+    # sync pipeline (catalog_backfill_complete first; the rest land in PR13).
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

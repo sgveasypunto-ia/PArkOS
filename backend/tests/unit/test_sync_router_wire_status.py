@@ -258,6 +258,69 @@ class TestSyncEventsWireStatus:
             {"event_type": "factus_dispatch_accepted", "status": "delivered"}
         ]
 
+    # -----------------------------------------------------------------
+    # T-PR12-004 — the SAME endpoint, mounted on api_sucursal, receiving
+    # a cloud_to_branch push. No separate handler exists (single source
+    # of truth, REQ-MOT-005) — this test uses a cloud_to_branch table
+    # name to confirm the mapping is direction-agnostic, not to exercise
+    # different code.
+    # -----------------------------------------------------------------
+
+    def test_cloud_to_branch_row_applied_reports_applied(
+        self, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            sync_router,
+            "SyncMotor",
+            _stub_motor_cls([ApplyResult(status="APPLIED", row_uuid=uuid_lib.uuid4())]),
+        )
+        c = TestClient(app)
+        resp = c.post(
+            "/sync/events",
+            json={
+                "events": [
+                    {
+                        "event_type": "tipos_vehiculo",
+                        "tabla": "tipos_vehiculo",
+                        "payload": {"tipo": "carro"},
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 207, resp.text
+        assert resp.json()["results"] == [
+            {"event_type": "tipos_vehiculo", "status": "applied"}
+        ]
+
+    def test_cloud_to_branch_row_missing_parent_reports_retry_parent_missing(
+        self, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cloud_to_branch row whose declared parent has not yet arrived
+        at the branch — same wire status as the branch_to_cloud direction
+        (T-PR11-006), never a generic failure, never a silent drop."""
+        monkeypatch.setattr(
+            sync_router,
+            "SyncMotor",
+            _stub_motor_cls([ApplyResult(status="RETRY", reason="parent_missing")]),
+        )
+        c = TestClient(app)
+        resp = c.post(
+            "/sync/events",
+            json={
+                "events": [
+                    {
+                        "event_type": "resolucion_facturacion",
+                        "tabla": "resolucion_facturacion",
+                        "payload": {},
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 207, resp.text
+        assert resp.json()["results"] == [
+            {"event_type": "resolucion_facturacion", "status": "retry_parent_missing"}
+        ]
+
     def test_mixed_batch_maps_each_row_independently(
         self, app: FastAPI, monkeypatch: pytest.MonkeyPatch
     ) -> None:

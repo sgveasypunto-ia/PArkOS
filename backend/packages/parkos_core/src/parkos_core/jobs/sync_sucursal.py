@@ -1,17 +1,39 @@
-"""Branch-side sync worker — 6-step main loop (T-PR9-06).
+"""Branch-side sync worker — 6-step main loop (T-PR9-06; T-PR12-004..007
+catalog cutover).
 
 The ``SyncSucursalWorker`` runs as the ``job_sync_sucursal`` process on
 each branch. It owns the local ``prod.sync_queue`` ([A] carved-out
 table) and the long-lived ``sync-agent-`` JWT; every cycle it:
 
     1. ``poll sync_queue``          → ``repo.sync_queue.list_pending``
-    2. ``push batch``               → ``SyncHttpClient.push``
-    3. ``handle response``          → mark_dispatched / mark_failed /
-                                       JwtManager.on_401_response
-    4. ``pull cloud changes``       → ``SyncHttpClient.pull`` →
+    2. ``push batch``               → legacy: ``SyncHttpClient.push``
+                                       (``/sync/push``) — catalog:
+                                       ``SyncHttpClient.push_events``
+                                       (``/sync/events``, T-PR12-006)
+    3. ``handle response``          → legacy: mark_dispatched /
+                                       mark_failed / JwtManager.
+                                       on_401_response — catalog: per-row
+                                       wire status (``applied`` /
+                                       ``conflict`` / ``retry_parent_
+                                       missing`` all settle as
+                                       dispatched, T-PR12-005; anything
+                                       else is a genuine failure)
+    4. ``pull cloud changes``       → ``SyncHttpClient.pull`` → legacy:
                                        ``ConflictResolver.apply_pushed_row``
+                                       — catalog: ``SyncMotor.apply_batch``
+                                       (T-PR12-006)
     5. ``heartbeat``                → ``SyncHttpClient.heartbeat``
     6. ``sleep until next cycle``   → ``PARKOS_SYNC_POLL_INTERVAL_S``
+
+Which of the two (legacy vs. catalog) applies each cycle is decided by
+:meth:`SyncSucursalWorker._detect_applier_mode` (T-PR12-007, REQ-CUT-005) —
+the branch's own auto-detect from ``GET /sync/hello``, cached for
+``dual_protocol.BRANCH_CACHE_TTL_SECONDS`` (300s) and fail-safe to the
+legacy applier on ANY HTTP error/timeout, non-OK response, or a branch
+version below the cloud's advertised minimum. This decision is
+INDEPENDENT of this process's own ``PARKOS_SYNC_ENGINE`` env value — D11's
+whole point is that a branch decides from what the CLOUD advertises, not
+from its own local flag, so upgrades don't have to happen in lockstep.
 
 The class extends :class:`parkos_core.jobs.runner.WorkerRunner` (PR9
 T-PR9-01) so it inherits SIGTERM/SIGINT graceful shutdown + structured
@@ -37,15 +59,18 @@ the next :meth:`run` is the one that exits. The push itself is not
 retried (the cloud marks the batch as either accepted or rejected, and
 the next cycle picks up any rows still ``pendiente``).
 
-Cites §21.7 (job_sync_sucursal main loop), tasks.md T-PR9-06.
+Cites §21.7 (job_sync_sucursal main loop), tasks.md T-PR9-06,
+T-PR12-004..007.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import sys
+import time
 import uuid as uuid_lib
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -54,13 +79,20 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from parkos_core.jobs.runner import WorkerRunner
+from parkos_core.jobs.sync_cloud import _business_payload_for_apply, is_infra_table
 from parkos_core.repo import sync_queue as sq_helpers
+from parkos_core.runtime import engine_flag
+from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
 from parkos_core.sync.conflict_resolver import (
     ApplyOutcome,
     ConflictResolver,
 )
+from parkos_core.sync.cutover import dual_protocol
 from parkos_core.sync.jwt_manager import JwtAction, JwtManager
+from parkos_core.sync.motor.sync_motor import SyncMotor
 from parkos_core.sync.transport import (
+    EventsPushResponse,
+    HelloResponse,
     PushResponse,
     SyncHttpClient,
 )
@@ -69,6 +101,38 @@ from parkos_core.sync.transport import (
 DEFAULT_POLL_INTERVAL_S = 10
 # Default batch size cap per cycle.
 DEFAULT_BATCH_SIZE = 100
+# This branch worker's own semver — compared against /sync/hello's
+# min_branch_version (REQ-CUT-005 row 3). Override via PARKOS_BRANCH_VERSION
+# for a branch deliberately pinned below the cloud's minimum (tests, staged
+# rollouts). Mirrors dual_protocol.DEFAULT_MIN_BRANCH_VERSION's own default.
+DEFAULT_BRANCH_VERSION = dual_protocol.DEFAULT_MIN_BRANCH_VERSION
+
+
+class ApplierMode(StrEnum):
+    """Which applier this cycle uses (T-PR12-007, REQ-CUT-005)."""
+
+    LEGACY = "legacy"
+    CATALOG = "catalog"
+
+
+def _parse_semver(value: str) -> tuple[int, int, int]:
+    """Best-effort ``"X.Y.Z"`` -> ``(X, Y, Z)``; non-digit suffixes ignored.
+
+    Never raises — an unparseable segment reads as 0 so a malformed
+    version compares as "old" rather than crashing the auto-detect cycle.
+    """
+    parts: list[int] = []
+    for chunk in value.split(".")[:3]:
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
+
+
+def _version_gte(a: str, b: str) -> bool:
+    """``True`` iff semver ``a >= b`` (REQ-CUT-005's branch_version compare)."""
+    return _parse_semver(a) >= _parse_semver(b)
 
 
 class SyncSucursalWorker(WorkerRunner):
@@ -85,6 +149,10 @@ class SyncSucursalWorker(WorkerRunner):
             (``PARKOS_SYNC_POLL_INTERVAL_S``).
         batch_size: Maximum rows per ``push`` cycle
             (``PARKOS_SYNC_BATCH_SIZE``).
+        branch_version: This worker's own semver, compared against
+            ``/sync/hello``'s ``min_branch_version`` (T-PR12-007,
+            REQ-CUT-005). Defaults to ``PARKOS_BRANCH_VERSION`` or
+            :data:`DEFAULT_BRANCH_VERSION`.
         logger: Optional structlog ``BoundLogger``; defaults to
             ``parkos.jobs.sync_sucursal``.
     """
@@ -97,6 +165,7 @@ class SyncSucursalWorker(WorkerRunner):
         session: AsyncSession,
         poll_interval_s: int = DEFAULT_POLL_INTERVAL_S,
         batch_size: int = DEFAULT_BATCH_SIZE,
+        branch_version: str | None = None,
         logger: structlog.stdlib.BoundLogger | None = None,
     ) -> None:
         super().__init__(name="sync_sucursal")
@@ -105,6 +174,11 @@ class SyncSucursalWorker(WorkerRunner):
         self._session = session
         self.poll_interval_s = max(1, int(poll_interval_s))
         self.batch_size = max(1, int(batch_size))
+        self.branch_version = (
+            branch_version
+            or os.environ.get("PARKOS_BRANCH_VERSION")
+            or DEFAULT_BRANCH_VERSION
+        )
         self.log = logger or structlog.get_logger("parkos.jobs.sync_sucursal")
 
         # Per-cycle collaborators — instantiated lazily inside cycle()
@@ -114,6 +188,13 @@ class SyncSucursalWorker(WorkerRunner):
         self._jwt_manager: JwtManager | None = None
         self._http_client: SyncHttpClient | None = None
         self._conflict_resolver: ConflictResolver = ConflictResolver()
+        # T-PR12-006 — the catalog-driven applier, built lazily with the
+        # EXPLICIT catalog_branch engine mode (never engine_flag.get_engine()
+        # — D11's whole point is that the branch decides from what /sync/
+        # hello advertises, not from its own local PARKOS_SYNC_ENGINE).
+        self._motor: SyncMotor | None = None
+        # T-PR12-007 — auto-detect cache: (mode, time.monotonic() at cache time).
+        self._applier_cache: tuple[ApplierMode, float] | None = None
         # Track per-row in-flight seq so a partial-push (HTTP 207) can
         # tell which rows the cloud accepted vs rejected.
         self._last_pushed_uuids: list[uuid_lib.UUID] = []
@@ -137,19 +218,29 @@ class SyncSucursalWorker(WorkerRunner):
         if self._jwt_manager is None:
             self._jwt_manager = JwtManager(jwt_path=self.jwt_path, base_url=self.base_url)
 
-        # 1. Poll sync_queue.
+        # T-PR12-007 — decide the applier for THIS cycle (cached 300s).
+        mode = await self._detect_applier_mode()
+
+        # 1. Poll sync_queue (unchanged selection regardless of mode,
+        #    T-PR12-006).
         pending = await sq_helpers.list_pending(
             self._session,
             limit=self.batch_size,
         )
         if pending:
             self._last_pushed_uuids = [row.uuid for row in pending]
-            await self._push_and_handle(pending)
+            if mode is ApplierMode.CATALOG:
+                await self._push_and_handle_catalog(pending)
+            else:
+                await self._push_and_handle(pending)
         else:
             self.log.debug("sync_sucursal.idle", batch_size=self.batch_size)
 
         # 4. Pull cloud changes (always — even when there's nothing to push).
-        await self._pull_and_apply()
+        if mode is ApplierMode.CATALOG:
+            await self._pull_and_apply_catalog()
+        else:
+            await self._pull_and_apply()
 
         # 5. Heartbeat (fire-and-forget; don't fail the cycle).
         await self._heartbeat_safe()
@@ -314,6 +405,156 @@ class SyncSucursalWorker(WorkerRunner):
         # sleep itself — the cycle's outer ``asyncio.sleep`` does.
 
     # ------------------------------------------------------------------
+    # T-PR12-007 — branch auto-detect from /sync/hello (REQ-CUT-005)
+    # ------------------------------------------------------------------
+
+    async def _detect_applier_mode(self) -> ApplierMode:
+        """Decide legacy vs. catalog applier for THIS cycle (REQ-CUT-005).
+
+        | Condition | Applier |
+        |---|---|
+        | ``protocol_version == "legacy"`` | Legacy (current code) |
+        | ``protocol_version == "catalog"`` AND ``branch_version >= min_branch_version`` | Catalog (``SyncMotor``, ``catalog_branch``) |
+        | ``protocol_version == "catalog"`` AND ``branch_version < min_branch_version`` | Legacy + ``WARN catalog_too_new`` |
+        | HTTP error / timeout | Legacy (fail-safe — never blocks branch operations) |
+
+        Cached for ``dual_protocol.BRANCH_CACHE_TTL_SECONDS`` (300s,
+        REQ-CUT-004) so the worker doesn't hammer ``/sync/hello`` every
+        cycle. This decision is INDEPENDENT of this process's own
+        ``PARKOS_SYNC_ENGINE`` — see the module docstring.
+        """
+        now = time.monotonic()
+        if (
+            self._applier_cache is not None
+            and (now - self._applier_cache[1]) < dual_protocol.BRANCH_CACHE_TTL_SECONDS
+        ):
+            return self._applier_cache[0]
+
+        assert self._http_client is not None
+        try:
+            hello: HelloResponse = await self._http_client.hello()
+        except (TimeoutError, httpx.HTTPError, OSError) as exc:
+            self.log.warning("sync_sucursal.hello_failed_fallback_legacy", error=str(exc))
+            mode = ApplierMode.LEGACY
+            self._applier_cache = (mode, now)
+            return mode
+
+        if hello.status != 200 or hello.protocol_version is None:
+            self.log.warning(
+                "sync_sucursal.hello_non_ok_fallback_legacy", status=hello.status
+            )
+            mode = ApplierMode.LEGACY
+        elif hello.protocol_version == "legacy":
+            mode = ApplierMode.LEGACY
+        elif hello.protocol_version == "catalog":
+            min_version = hello.min_branch_version or DEFAULT_BRANCH_VERSION
+            if _version_gte(self.branch_version, min_version):
+                mode = ApplierMode.CATALOG
+            else:
+                self.log.warning(
+                    "sync_sucursal.catalog_too_new",
+                    branch_version=self.branch_version,
+                    min_branch_version=min_version,
+                )
+                mode = ApplierMode.LEGACY
+        else:
+            self.log.warning(
+                "sync_sucursal.hello_unknown_protocol_fallback_legacy",
+                protocol_version=hello.protocol_version,
+            )
+            mode = ApplierMode.LEGACY
+
+        self._applier_cache = (mode, now)
+        return mode
+
+    # ------------------------------------------------------------------
+    # T-PR12-006 — catalog-driven push via /sync/events
+    # ------------------------------------------------------------------
+
+    async def _push_and_handle_catalog(self, pending: list) -> None:
+        """Catalog-driven push via ``/sync/events`` (T-PR12-006).
+
+        Batch SELECTION is unchanged — ``pending`` already comes from
+        ``list_pending``'s ordering/limit (step 1); only the wire contract
+        + per-row settlement changes versus the legacy ``/sync/push`` path.
+        The receiver (cloud's ``/sync/events``, T-PR11-006) applies each
+        row through ``SyncMotor`` and returns REQ-MOT-005's wire vocabulary,
+        which this method maps 1:1 to ``sync_queue`` actions per design.md
+        §2 Issue #8's table: ``applied``/``conflict``/``retry_parent_
+        missing`` are ALL "delivered" — none of them touch ``intentos`` or
+        ``next_retry_at`` (T-PR12-005). Only a genuine transport failure or
+        an unrecognized wire status is a real dispatch failure.
+        """
+        assert self._http_client is not None
+
+        events: list[dict[str, Any]] = []
+        resolved_rows: list[Any] = []
+
+        for row in pending:
+            tabla = getattr(row, "tabla", None)
+            if is_infra_table(tabla):
+                # D21 guard — an out-of-catalog infra row never reaches
+                # sync in the first place; settle it, never mark_failed.
+                await sq_helpers.mark_dispatched(self._session, row.uuid)
+                continue
+            spec = SYNC_CATALOG_BY_NAME.get(tabla)
+            if spec is None:
+                # Never a silent drop (REQ-CUT-015) — a tabla outside the
+                # catalog is a genuine anomaly.
+                await sq_helpers.mark_failed(self._session, row.uuid, "unknown_table")
+                continue
+
+            payload = _business_payload_for_apply(spec, row.datos or {})
+            events.append(
+                {
+                    "event_type": tabla,
+                    "tabla": tabla,
+                    "uuid_registro": str(row.uuid_registro) if row.uuid_registro else None,
+                    "payload": payload,
+                }
+            )
+            resolved_rows.append(row)
+
+        if not resolved_rows:
+            return
+
+        try:
+            response: EventsPushResponse = await self._http_client.push_events(events)
+        except (TimeoutError, httpx.HTTPError, OSError) as exc:
+            self.log.error("sync_sucursal.push_events_transport_error", error=str(exc))
+            await self._mark_failed_batch(resolved_rows, error=f"transport: {exc}")
+            return
+
+        if response.status not in (200, 207):
+            self.log.warning("sync_sucursal.push_events_non_ok", status=response.status)
+            await self._mark_failed_batch(resolved_rows, error=f"http_{response.status}")
+            return
+
+        results = response.results
+        if len(results) != len(resolved_rows):
+            # Never guess a correlation across a mismatched count — fail
+            # the whole batch loudly (never a silent partial drop).
+            self.log.error(
+                "sync_sucursal.push_events_result_count_mismatch",
+                sent=len(resolved_rows),
+                received=len(results),
+            )
+            await self._mark_failed_batch(resolved_rows, error="result_count_mismatch")
+            return
+
+        for row, result in zip(resolved_rows, results, strict=True):
+            wire_status = result.get("status")
+            if wire_status in ("applied", "conflict", "retry_parent_missing"):
+                # design.md §2 Issue #8's table — all three are the SAME
+                # outbox action; a dependency wait is not a transport
+                # failure (T-PR12-005: intentos/next_retry_at untouched).
+                await sq_helpers.mark_dispatched(self._session, row.uuid)
+            else:
+                # "unknown_table" (receiver-side) or anything unrecognized
+                # — never a silent drop (REQ-CUT-015).
+                await sq_helpers.mark_failed(self._session, row.uuid, f"events_{wire_status}")
+
+    # ------------------------------------------------------------------
     # Step 4: pull + apply
     # ------------------------------------------------------------------
 
@@ -348,6 +589,66 @@ class SyncSucursalWorker(WorkerRunner):
             applied=applied,
             conflicts=conflicts,
             errors=errors,
+            next_seq=pulled.next_seq,
+        )
+
+    # ------------------------------------------------------------------
+    # T-PR12-006 — catalog-driven pull + apply via SyncMotor.apply_batch
+    # ------------------------------------------------------------------
+
+    async def _pull_and_apply_catalog(self) -> None:
+        """Pull cloud changes and apply the WHOLE batch via ``SyncMotor.
+        apply_batch`` (T-PR12-006) — dependency-ordered + buffered, unlike
+        the legacy path's per-row ``ConflictResolver.apply_pushed_row``.
+
+        Built with the EXPLICIT ``catalog_branch`` engine mode — never
+        ``engine_flag.get_engine()`` — for the same D11 reason
+        :meth:`_detect_applier_mode` doesn't read the env flag either.
+        """
+        assert self._http_client is not None
+        try:
+            pulled = await self._http_client.pull(since_seq=0)
+        except (TimeoutError, httpx.HTTPError, OSError) as exc:
+            self.log.error("sync_sucursal.pull_transport_error", error=str(exc))
+            return
+
+        if pulled.status != 200:
+            self.log.warning("sync_sucursal.pull_non_ok", status=pulled.status)
+            return
+
+        resolved: list[tuple[Any, dict[str, Any]]] = []
+        unresolved = 0
+        for row in pulled.rows:
+            tabla = row.get("tabla")
+            spec = SYNC_CATALOG_BY_NAME.get(tabla)
+            if spec is None:
+                unresolved += 1
+                continue
+            resolved.append((spec, row.get("datos") or {}))
+
+        if unresolved:
+            self.log.warning("sync_sucursal.pull_unknown_tables", count=unresolved)
+        if not resolved:
+            return
+
+        if self._motor is None:
+            self._motor = SyncMotor(engine=engine_flag.EngineMode.CATALOG_BRANCH)
+        actor_uuid = uuid_lib.uuid4()
+
+        try:
+            async with self._session.begin_nested():
+                result = await self._motor.apply_batch(
+                    self._session, resolved, actor_uuid=actor_uuid
+                )
+        except Exception as exc:  # noqa: BLE001 — keep the cycle alive (mirrors sync_cloud.py)
+            self.log.warning("sync_sucursal.pull_apply_batch_failed", error=str(exc))
+            return
+
+        self.log.info(
+            "sync_sucursal.pull_applied_catalog",
+            pulled=len(pulled.rows),
+            applied=len(result.applied),
+            buffered=len(result.buffered),
             next_seq=pulled.next_seq,
         )
 
@@ -480,7 +781,9 @@ if __name__ == "__main__":  # pragma: no cover
 
 __all__ = [
     "DEFAULT_BATCH_SIZE",
+    "DEFAULT_BRANCH_VERSION",
     "DEFAULT_POLL_INTERVAL_S",
+    "ApplierMode",
     "SyncSucursalWorker",
     "main",
 ]
