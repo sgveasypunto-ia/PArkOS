@@ -17,27 +17,24 @@ PR1b ships:
   - ``close_login_with_log`` — skeleton. Full impl lands in PR7.
     We test the basic happy path: log row FIRST, then UPDATE.
 
-We do NOT need a Usuarios row for these tests because the helper only
-sets ``uuid_usuario`` + ``uuid_sucursal`` columns. The FK to ``usuarios``
-is intentionally nullable in the schema (PR1b design choice).
+PR6 correction: ``uuid_usuario`` IS a real, enforced FK
+(``fk_login_uuid_usuario``, ``0001_initial_schema.py``) — the COLUMN is
+nullable (a login attempt against an unknown/deleted user can still be
+recorded with ``uuid_usuario=NULL``), but a NON-NULL value must reference a
+real ``prod.usuarios`` row. The module's original docstring conflated
+"nullable column" with "no FK constraint" — a pre-existing test bug masked
+by the (now-fixed) hash-chain genesis-row failure that always aborted these
+tests earlier. Every test below uses the real ``seeded_usuario_uuid``
+fixture instead of a bare ``uuid_lib.uuid4()``.
 """
 from __future__ import annotations
 
 import uuid as uuid_lib
 
-import pytest
 
-_XFAIL_GENESIS = pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
-
-
-@_XFAIL_GENESIS
-async def test_record_login_inserts_login_row(pg_engine, alembic_upgrade) -> None:
+async def test_record_login_inserts_login_row(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid, seeded_usuario_uuid
+) -> None:
     """``record_login(success=True)` inserts a ``login`` row with ``estado='exitoso'``."""
     from parkos_core.models.L_S.login import Login
     from parkos_core.repo.session_cycle import record_login
@@ -45,8 +42,8 @@ async def test_record_login_inserts_login_row(pg_engine, alembic_upgrade) -> Non
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
-    usuario = uuid_lib.uuid4()
-    sucursal = uuid_lib.uuid4()
+    usuario = seeded_usuario_uuid
+    sucursal = seeded_sucursal_uuid
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
@@ -73,9 +70,8 @@ async def test_record_login_inserts_login_row(pg_engine, alembic_upgrade) -> Non
         assert fetched.estado == "exitoso"
 
 
-@_XFAIL_GENESIS
 async def test_record_login_failed_inserts_with_estado_fallido(
-    pg_engine, alembic_upgrade
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid, seeded_usuario_uuid
 ) -> None:
     """``record_login(success=False)` inserts with ``estado='fallido'``."""
     from parkos_core.repo.session_cycle import record_login
@@ -87,8 +83,8 @@ async def test_record_login_failed_inserts_with_estado_fallido(
     async with Session() as session:
         row = await record_login(
             session,
-            usuario_uuid=uuid_lib.uuid4(),
-            sucursal_uuid=uuid_lib.uuid4(),
+            usuario_uuid=seeded_usuario_uuid,
+            sucursal_uuid=seeded_sucursal_uuid,
             actor_uuid=actor,
             success=False,
             motivo="bad_password",
@@ -98,8 +94,9 @@ async def test_record_login_failed_inserts_with_estado_fallido(
         assert row.estado == "fallido"
 
 
-@_XFAIL_GENESIS
-async def test_record_login_writes_log_row(pg_engine, alembic_upgrade) -> None:
+async def test_record_login_writes_log_row(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid, seeded_usuario_uuid
+) -> None:
     """``record_login`` writes a co-transactional ``log_transaccional`` row."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
     from parkos_core.repo.session_cycle import record_login
@@ -107,13 +104,13 @@ async def test_record_login_writes_log_row(pg_engine, alembic_upgrade) -> None:
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         await record_login(
             session,
-            usuario_uuid=uuid_lib.uuid4(),
+            usuario_uuid=seeded_usuario_uuid,
             sucursal_uuid=sucursal,
             actor_uuid=actor,
             success=True,
@@ -134,8 +131,9 @@ async def test_record_login_writes_log_row(pg_engine, alembic_upgrade) -> None:
         assert log_row.uuid_sucursal == sucursal
 
 
-@_XFAIL_GENESIS
-async def test_close_login_with_log_skipped_in_pr1b(pg_engine, alembic_upgrade) -> None:
+async def test_close_login_with_log_skipped_in_pr1b(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid, seeded_usuario_uuid
+) -> None:
     """``close_login_with_log`` is a PR1b skeleton; PR7 lands the full impl.
 
     We still exercise the helper to ensure the skeleton doesn't crash on
@@ -148,8 +146,8 @@ async def test_close_login_with_log_skipped_in_pr1b(pg_engine, alembic_upgrade) 
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    actor = uuid_lib.uuid4()
-    sucursal = uuid_lib.uuid4()
+    actor = seeded_usuario_uuid
+    sucursal = seeded_sucursal_uuid
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:

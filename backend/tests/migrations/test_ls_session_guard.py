@@ -25,14 +25,6 @@ import pytest
 
 _LS_TABLES = ("login", "sesion")
 
-_XFAIL_GENESIS = pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
-
 
 @pytest.mark.parametrize("table_name", _LS_TABLES)
 async def test_ls_update_requires_log(
@@ -82,7 +74,6 @@ async def test_ls_update_requires_log(
             )
 
 
-@_XFAIL_GENESIS
 @pytest.mark.parametrize("table_name", _LS_TABLES)
 async def test_ls_update_with_log_succeeds(
     pg_dsn: str,

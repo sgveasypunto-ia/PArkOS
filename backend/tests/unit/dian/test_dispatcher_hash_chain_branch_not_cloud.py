@@ -46,6 +46,11 @@ async def test_record_event_stamps_branch_uuid_and_chain_is_per_sucursal() -> No
     session = MagicMock(name="AsyncSession")
     added: list = []
     session.add = MagicMock(side_effect=added.append)
+    # PR6: no prior row (scalar_one_or_none() is None) -> hash_chain.
+    # _read_prior_hash bootstraps a real genesis row (_ensure_genesis_row),
+    # which flushes it immediately (read-your-own-writes for the DB
+    # trigger). The mock session needs an awaitable ``flush``.
+    session.flush = AsyncMock()
 
     async def _empty_exec(*_a: object, **_k: object) -> MagicMock:
         r = MagicMock()
@@ -71,7 +76,15 @@ async def test_record_event_stamps_branch_uuid_and_chain_is_per_sucursal() -> No
     )
 
     fact_rows = [o for o in added if isinstance(o, FacturaElectronica)]
-    log_rows = [o for o in added if isinstance(o, LogTransaccional)]
+    # PR6: with no prior row for this mocked branch, hash_chain.append's
+    # genesis-row auto-bootstrap ALSO ``session.add()``s a real genesis
+    # LogTransaccional (accion='inicialización') ahead of the actual "crear"
+    # log row record_event writes — filter it out by accion.
+    log_rows = [
+        o
+        for o in added
+        if isinstance(o, LogTransaccional) and o.accion != "inicialización"
+    ]
     assert len(fact_rows) == 1, f"expected 1 FacturaElectronica, got {len(fact_rows)}"
     assert len(log_rows) == 1, f"expected 1 LogTransaccional, got {len(log_rows)}"
 
@@ -115,6 +128,8 @@ async def test_record_event_stamps_branch_uuid_and_chain_is_per_sucursal() -> No
 
     # --- Part 3: a DIFFERENT sucursal gets a DIFFERENT chain head ---
     cloud_session = MagicMock()
+    # PR6: no prior row -> _ensure_genesis_row bootstraps + flushes one.
+    cloud_session.flush = AsyncMock()
 
     async def _return_cloud_prior(*_a: object, **_k: object) -> MagicMock:
         r = MagicMock()

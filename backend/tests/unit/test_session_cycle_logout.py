@@ -53,6 +53,23 @@ def _select_returns(row: MagicMock | None) -> MagicMock:
     return result
 
 
+def _hash_chain_prior_row_lookup_returns() -> MagicMock:
+    """Build the ``session.execute`` result ``repo.hash_chain._read_prior_hash``
+    consumes (PR6 — ``close_login_with_log`` now routes its log row through
+    ``hash_chain.append``, which does its OWN ``session.execute(select(...))``
+    to read the prior chain head, BETWEEN the login-row SELECT and the
+    UPDATE this test file's ``side_effect`` sequences already expect).
+    Simulates an EXISTING prior row (not ``None``) so the genesis-row
+    auto-bootstrap branch (an orthogonal concern — see
+    ``tests/unit/test_hash_chain.py``) never activates here.
+    """
+    fake_prior_row = MagicMock()
+    fake_prior_row.hash_actual = "a" * 64
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=fake_prior_row)
+    return result
+
+
 class TestCloseLoginWithLogOrder:
     """``close_login_with_log`` writes log FIRST then UPDATE."""
 
@@ -64,6 +81,7 @@ class TestCloseLoginWithLogOrder:
         # ``session.execute`` is called twice: SELECT, then UPDATE.
         session.execute.side_effect = [
             _select_returns(_login_row_mock()),
+            _hash_chain_prior_row_lookup_returns(),
             AsyncMock(),
         ]
 
@@ -94,6 +112,7 @@ class TestCloseLoginWithLogOrder:
         session = _make_session()
         session.execute.side_effect = [
             _select_returns(_login_row_mock()),
+            _hash_chain_prior_row_lookup_returns(),
             AsyncMock(),
         ]
 
@@ -126,6 +145,7 @@ class TestCloseLoginWithLogUpdateFields:
         session = _make_session()
         session.execute.side_effect = [
             _select_returns(_login_row_mock()),
+            _hash_chain_prior_row_lookup_returns(),
             AsyncMock(),
         ]
 

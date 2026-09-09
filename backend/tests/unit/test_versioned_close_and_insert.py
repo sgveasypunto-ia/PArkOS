@@ -25,16 +25,7 @@ import uuid as uuid_lib
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-_XFAIL_GENESIS = pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
 
-
-@_XFAIL_GENESIS
 async def test_close_and_insert_new_row(pg_engine, alembic_upgrade) -> None:
     """INSERT-only path creates a [V] row with the canonical bi-temporal columns."""
     from parkos_core.models.V.usuarios import Usuarios
@@ -69,7 +60,6 @@ async def test_close_and_insert_new_row(pg_engine, alembic_upgrade) -> None:
         assert new_row.created_by == actor
 
 
-@_XFAIL_GENESIS
 async def test_close_and_insert_closes_old_row(pg_engine, alembic_upgrade) -> None:
     """Close+insert path sets ``vigente_hasta`` + 'inactivo' on the old row."""
     from parkos_core.models.V.usuarios import Usuarios
@@ -141,15 +131,28 @@ async def test_close_and_insert_closes_old_row(pg_engine, alembic_upgrade) -> No
         )
 
 
-@_XFAIL_GENESIS
 async def test_close_and_insert_uk_violation(pg_engine, alembic_upgrade) -> None:
-    """Inserting two rows with the same ``(cedula, vigente_desde)`` raises IntegrityError."""
+    """Inserting two rows with the same ``(cedula, vigente_desde)`` raises IntegrityError.
+
+    ``close_and_insert`` computes ``vigente_desde`` from ``datetime.now()``
+    INTERNALLY on every call — two separate calls a moment apart therefore
+    get two DIFFERENT ``vigente_desde`` values (down to microsecond
+    resolution) and would never actually collide on the ``usuarios_uk01``
+    unique constraint. Pass an explicit, identical ``vigente_desde`` via
+    ``new_attrs`` (which the helper's ``payload`` dict lets a caller
+    override) so the test deterministically reproduces the collision it is
+    meant to verify, instead of depending on two wall-clock reads
+    coincidentally matching.
+    """
+    from datetime import UTC, datetime
+
     from parkos_core.models.V.usuarios import Usuarios
     from parkos_core.repo.versioned import close_and_insert
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
     cedula = f"test-{uuid_lib.uuid4().hex[:8]}"
+    shared_vigente_desde = datetime.now(UTC).replace(tzinfo=None)
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
@@ -163,13 +166,14 @@ async def test_close_and_insert_uk_violation(pg_engine, alembic_upgrade) -> None
                 "email": "charlie@example.com",
                 "password_hash": "$2b$12$test",
                 "rol": "operador",
+                "vigente_desde": shared_vigente_desde,
             },
             actor_uuid=actor,
             log_tx=True,
         )
         await session.commit()
 
-        # Same cedula + same vigente_desde (NOW()) → UK violation.
+        # Same cedula + same vigente_desde → UK violation.
         async def _attempt_duplicate() -> None:
             await close_and_insert(
                 session,
@@ -181,6 +185,7 @@ async def test_close_and_insert_uk_violation(pg_engine, alembic_upgrade) -> None
                     "email": "charlie@example.com",
                     "password_hash": "$2b$12$test",
                     "rol": "operador",
+                    "vigente_desde": shared_vigente_desde,
                 },
                 actor_uuid=actor,
                 log_tx=True,
@@ -192,7 +197,6 @@ async def test_close_and_insert_uk_violation(pg_engine, alembic_upgrade) -> None
         await session.rollback()
 
 
-@_XFAIL_GENESIS
 async def test_close_and_insert_log_row_created(pg_engine, alembic_upgrade) -> None:
     """The helper writes a co-transactional ``log_transaccional`` row."""
     from parkos_core.models.A.log_transaccional import LogTransaccional

@@ -38,31 +38,44 @@ import uuid as uuid_lib
 
 import pytest
 
-_XFAIL_GENESIS = pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
+
+async def _seed_genesis(session, uuid_sucursal) -> None:
+    """Bootstrap the hash-chain genesis row for one ``uuid_sucursal``.
+
+    Only needed here because 3 of this file's tests call ``append_event``
+    with ``chain_hash=False`` (the default) — they never route through
+    ``repo.hash_chain.append``'s PR6 auto-bootstrap, yet the DB trigger
+    ``fn_extend_hash_chain()`` still fires unconditionally on every INSERT
+    into ``prod.log_transaccional``. Reuses the SAME production helper
+    ``repo.hash_chain._ensure_genesis_row`` rather than duplicating the
+    genesis-row construction here.
+    """
+    from parkos_core.models.A.log_transaccional import LogTransaccional
+    from parkos_core.repo.hash_chain import _ensure_genesis_row
+
+    await _ensure_genesis_row(session, LogTransaccional, uuid_sucursal)
+    await session.commit()
+
 
 # ---------------------------------------------------------------------------
 # append_event tests
 # ---------------------------------------------------------------------------
 
 
-@_XFAIL_GENESIS
-async def test_append_event_inserts_row(pg_engine, alembic_upgrade) -> None:
+async def test_append_event_inserts_row(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """``append_event`` writes a row with the supplied attrs + server-side audit columns."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
     from parkos_core.repo.append_only import append_event
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
     async with Session() as session:
+        await _seed_genesis(session, sucursal)
         row = await append_event(
             session,
             LogTransaccional,
@@ -85,8 +98,9 @@ async def test_append_event_inserts_row(pg_engine, alembic_upgrade) -> None:
         assert row.uuid_sucursal == sucursal
 
 
-@_XFAIL_GENESIS
-async def test_append_event_stamps_created_at_when_absent(pg_engine, alembic_upgrade) -> None:
+async def test_append_event_stamps_created_at_when_absent(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """When the caller doesn't pass ``created_at``, the helper stamps NOW()."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
     from parkos_core.repo.append_only import append_event
@@ -96,11 +110,12 @@ async def test_append_event_stamps_created_at_when_absent(pg_engine, alembic_upg
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
     async with Session() as session:
+        await _seed_genesis(session, seeded_sucursal_uuid)
         row = await append_event(
             session,
             LogTransaccional,
             {
-                "uuid_sucursal": uuid_lib.uuid4(),
+                "uuid_sucursal": seeded_sucursal_uuid,
                 "accion": "no_created_at",
                 "tabla_afectada": "log_transaccional",
                 "uuid_registro_afectado": uuid_lib.uuid4(),
@@ -112,15 +127,16 @@ async def test_append_event_stamps_created_at_when_absent(pg_engine, alembic_upg
         assert row.created_at is not None
 
 
-@_XFAIL_GENESIS
-async def test_append_event_with_hash_chain_extends_chain(pg_engine, alembic_upgrade) -> None:
+async def test_append_event_with_hash_chain_extends_chain(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """``append_event(chain_hash=True)`` invokes ``hash_chain.append`` and stamps the chain."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
     from parkos_core.repo.append_only import append_event
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
     async with Session() as session:
@@ -190,8 +206,9 @@ async def test_compensate_rejects_missing_original(pg_engine, alembic_upgrade) -
             )
 
 
-@_XFAIL_GENESIS
-async def test_append_only_rejects_update(pg_engine, alembic_upgrade) -> None:
+async def test_append_only_rejects_update(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """After ``append_event`` + commit, UPDATE on the row raises the DB trigger.
 
     This is the integration version of ``test_a_inmutable.py`` for the
@@ -208,11 +225,12 @@ async def test_append_only_rejects_update(pg_engine, alembic_upgrade) -> None:
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
     async with Session() as session:
+        await _seed_genesis(session, seeded_sucursal_uuid)
         row = await append_event(
             session,
             LogTransaccional,
             {
-                "uuid_sucursal": uuid_lib.uuid4(),
+                "uuid_sucursal": seeded_sucursal_uuid,
                 "accion": "immutable_test",
                 "tabla_afectada": "log_transaccional",
                 "uuid_registro_afectado": uuid_lib.uuid4(),
@@ -235,7 +253,13 @@ async def test_append_only_rejects_update(pg_engine, alembic_upgrade) -> None:
                 (row_uuid,),
             )
             await conn.commit()
-        except psycopg.errors.RaiseException as exc:
+        except psycopg.errors.InsufficientPrivilege as exc:
+            # ERRCODE = '42501' (fn_log_transaccional_inmutable,
+            # 0001_initial_schema.py) -> psycopg surfaces InsufficientPrivilege,
+            # not the generic RaiseException (P0001, the default for a plain
+            # RAISE EXCEPTION with no explicit code). Pre-existing test bug
+            # discovered while un-xfailing this test for PR6 (masked before
+            # by the genesis-row failure short-circuiting earlier).
             msg = str(exc)
             assert "LOG_TRANSACCIONAL_INMUTABLE" in msg, (
                 f"log_transaccional: trigger raised but missing tag; got '{msg}'"

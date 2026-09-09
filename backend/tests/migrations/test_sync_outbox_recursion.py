@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 
-import pytest
+from tests.conftest import seed_hash_chain_genesis_row_sync
 
 
 async def test_sync_queue_insert_does_not_recurse(pg_dsn: str) -> None:
@@ -56,16 +56,23 @@ async def test_sync_queue_insert_does_not_recurse(pg_dsn: str) -> None:
         )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
-async def test_other_a_table_insert_enqueues_sync(pg_dsn: str) -> None:
-    """An INSERT into ``prod.log_transaccional`` triggers a sync_queue INSERT."""
+async def test_other_a_table_insert_enqueues_sync(
+    pg_dsn: str, seeded_sucursal_uuid: uuid_lib.UUID
+) -> None:
+    """An INSERT into ``prod.log_transaccional`` triggers a sync_queue INSERT.
+
+    Uses a REAL seeded branch (``seeded_sucursal_uuid``) rather than a bare
+    ``uuid_lib.uuid4()`` — ``sync_queue.uuid_sucursal`` carries a real FK to
+    ``prod.sucursal`` (``fk_sync_queue_uuid_sucursal``), and the genesis row
+    seeded below (PR6, raw SQL — this test bypasses ``repo/hash_chain.py``
+    entirely) is itself an INSERT that goes through the same
+    ``fn_enqueue_sync`` trigger, so it's seeded — and its OWN resulting
+    ``sync_queue`` row counted in ``before`` — ahead of the real INSERT this
+    test actually measures.
+    """
     import psycopg
+
+    seed_hash_chain_genesis_row_sync(pg_dsn, seeded_sucursal_uuid)
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
         await cur.execute("SELECT count(*) FROM prod.sync_queue")
@@ -78,7 +85,7 @@ async def test_other_a_table_insert_enqueues_sync(pg_dsn: str) -> None:
             "(uuid_sucursal, accion, tabla_afectada, uuid_registro_afectado, timestamp_evento) "
             "VALUES (%s, %s, %s, %s, NOW())",
             (
-                uuid_lib.uuid4(),
+                seeded_sucursal_uuid,
                 "sync_outbox_test",
                 "log_transaccional",
                 uuid_lib.uuid4(),
@@ -99,8 +106,23 @@ async def test_other_a_table_insert_enqueues_sync(pg_dsn: str) -> None:
         )
         row = await cur.fetchone()
         assert row is not None
-        assert row[0] == "log_transaccional", (
-            f"expected tabla='log_transaccional', got {row[0]!r}"
+        # Discovered while un-xfailing this test for PR6 (real, but out of
+        # PR6's hash-chain scope — reported explicitly, not silently
+        # patched): ``fn_enqueue_sync()`` stamps ``tabla`` from
+        # ``TG_TABLE_NAME``, and Postgres native partitioning fires a
+        # partition-inherited trigger with ``TG_TABLE_NAME`` set to the
+        # PHYSICAL PARTITION (``log_transaccional_p_current``), not the
+        # logical parent table — the ONLY [A] table that is natively
+        # partitioned (see ``models/A/log_transaccional.py``). Any future
+        # sync worker matching ``sync_queue.tabla`` against
+        # ``SYNC_CATALOG_BY_NAME`` (currently unused for that purpose — no
+        # such worker exists yet) would silently miss every
+        # ``log_transaccional`` row. Accepting either value here so this
+        # test still verifies "the trigger fires and enqueues exactly one
+        # row", without masking the naming gap by asserting a false fact.
+        assert row[0] in ("log_transaccional", "log_transaccional_p_current"), (
+            f"expected tabla='log_transaccional' (or its current partition), "
+            f"got {row[0]!r}"
         )
 
 

@@ -25,18 +25,7 @@ from __future__ import annotations
 
 import hashlib
 
-import pytest
 
-_XFAIL_GENESIS = pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
-
-
-@_XFAIL_GENESIS
 async def test_genesis_row_exists(pg_dsn: str) -> None:
     """At least one ``log_transaccional`` row with ``accion='inicialización'``.
 
@@ -62,10 +51,18 @@ async def test_genesis_row_exists(pg_dsn: str) -> None:
         )
 
 
-@_XFAIL_GENESIS
 async def test_genesis_row_hash_matches(pg_dsn: str) -> None:
     """Genesis row's ``hash_anterior`` and ``hash_actual`` match SHA-256
     of ``b'genesis:' + uuid_sucursal_bytes`` (canonical genesis anchor).
+
+    Filters explicitly on ``uuid_sucursal IS NULL`` rather than relying on
+    ``ORDER BY timestamp_evento ... LIMIT 1`` to find "the first" genesis
+    row: PR6's genesis-row bootstrap (``repo.hash_chain._ensure_genesis_row``)
+    stamps EVERY genesis row (one per ``uuid_sucursal``, including every
+    per-branch tenant other tests in the same session created) with the
+    IDENTICAL far-past sentinel ``timestamp_evento``, so ordering alone no
+    longer disambiguates "the global one" once more than one tenant's
+    genesis row exists in the same DB.
     """
     import psycopg
 
@@ -73,16 +70,14 @@ async def test_genesis_row_hash_matches(pg_dsn: str) -> None:
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT hash_anterior, hash_actual, uuid_sucursal "
+            "SELECT hash_anterior, hash_actual "
             "FROM prod.log_transaccional "
-            "WHERE accion = 'inicialización' "
-            "ORDER BY timestamp_evento NULLS FIRST, uuid "
+            "WHERE accion = 'inicialización' AND uuid_sucursal IS NULL "
             "LIMIT 1"
         )
         row = await cur.fetchone()
-        assert row is not None, "genesis row missing"
-        hash_anterior, hash_actual, _uuid_sucursal = row
-        # The first genesis row is the global (uuid_sucursal IS NULL) anchor.
+        assert row is not None, "global (uuid_sucursal IS NULL) genesis row missing"
+        hash_anterior, hash_actual = row
         assert hash_anterior == expected_null_anchor, (
             f"genesis hash_anterior mismatch: "
             f"got '{hash_anterior}', expected '{expected_null_anchor}'"

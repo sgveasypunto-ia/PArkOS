@@ -32,17 +32,7 @@ _A_TABLES: tuple = (
     ("arqueo", False),
     ("sync_log", False),
     ("sync_conflict", False),
-    pytest.param(
-        "log_transaccional",
-        False,
-        marks=pytest.mark.xfail(
-            reason=(
-                "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-                "openspec/changes/sync-overhaul/tasks.md PR6"
-            ),
-            strict=True,
-        ),
-    ),
+    ("log_transaccional", False),
     ("sync_queue", True),  # carve-out — UPDATE/DELETE allowed on the 4 whitelisted cols
 )
 

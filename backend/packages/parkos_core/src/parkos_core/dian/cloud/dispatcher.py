@@ -58,7 +58,8 @@ from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_W.alerta import Alerta
 from ...models.L_W.envio_dian import EnvioDian
 from ...repo.append_only import append_event
-from ...repo.hash_chain import append as hash_chain_append
+from ...sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+from ...sync.hooks.base import HookContext
 from .dian_providers.factus import DianProvider, FactusProvider, PollResult
 from .ubl_serializer import serialize
 
@@ -346,7 +347,8 @@ async def dispatch_revocacion(
     - POST goes to ``/api/revocacion`` (via
       :meth:`FactusProvider.send_revocacion`).
     - On ``aceptado`` the ``prod.revocacion_factura`` SHA-256 chain is
-      extended via :func:`repo.hash_chain.append` — the new row carries
+      extended via the catalog's ``hook_chain_extend`` slot
+      (``RevocacionFacturaChain``, T-PR6-005) — the new row carries
       ``motivo='dian_confirmada'`` so it's distinguishable from the
       original webhook request. REQ-16 + REQ-X4.
     - On ``aceptado`` a SyncBackEvent placeholder is enqueued via
@@ -475,7 +477,11 @@ async def _finalize_revocacion(
         # 7. Extend the SHA-256 chain — the cloud-side confirmation row.
         # ``motivo='dian_confirmada'`` distinguishes this row from the
         # original webhook-originated row (whose motivo is the DIAN
-        # payload's motive string).
+        # payload's motive string). T-PR6-005: looks up the catalog's
+        # ``hook_chain_extend`` slot (``RevocacionFacturaChain``) instead of
+        # calling ``repo.hash_chain.append`` directly — the extension logic
+        # itself is unchanged, but is now reached via the SAME catalog-
+        # registered hook every other caller uses (design.md §6).
         chain_payload: dict[str, Any] = {
             "uuid_sucursal": row.uuid_sucursal,
             "uuid_factura_electronica": row.uuid_factura_electronica,
@@ -485,11 +491,18 @@ async def _finalize_revocacion(
             "motivo": "dian_confirmada",
             "timestamp_evento": _now_naive(),
         }
-        await hash_chain_append(
-            session,
-            RevocacionFactura,
-            chain_payload,
-            actor_uuid or uuid_lib.uuid4(),
+        revocacion_spec = SYNC_CATALOG_BY_NAME["revocacion_factura"]
+        chain_hook = revocacion_spec.hook_chain_extend
+        assert chain_hook is not None, (
+            "revocacion_factura catalog entry has no hook_chain_extend bound"
+        )
+        await chain_hook(
+            HookContext(
+                spec=revocacion_spec,
+                payload=chain_payload,
+                session=session,
+                actor_uuid=actor_uuid or uuid_lib.uuid4(),
+            )
         )
 
         # 8. SyncBackEvent placeholder. The sync_queue row carries the

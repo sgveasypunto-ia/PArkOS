@@ -101,21 +101,48 @@ async def close_and_insert(
     }
     new_row = model_cls(**payload)
     session.add(new_row)
+    # Flush NOW (still same TX, nothing committed) so ``new_row.uuid`` is
+    # populated before the log-row branch below reads it, and so that
+    # branch's own query (``hash_chain.append`` -> ``_read_prior_hash``)
+    # does not have to rely on SQLAlchemy's autoflush to persist this row
+    # first — autoflush-triggered-by-SELECT does not reliably postfetch a
+    # server-generated PK for every model in this codebase (observed with
+    # ``Usuarios``, whose ``uuid`` column re-declaration leaves no
+    # ORM-visible default; discovered while wiring PR6's genesis bootstrap).
+    await session.flush()
 
-    # 3. Log row stub (PR2: append_only.append_event for log_transaccional)
+    # 3. Log row — extends the SHA-256 hash chain (PR6, REQ-16 + REQ-X4).
+    #    A plain ``LogTransaccional(...)`` + ``session.add()`` (the PR2-era
+    #    stub this replaces) leaves ``hash_anterior``/``hash_actual`` NULL
+    #    client-side, relying entirely on the DB trigger
+    #    ``fn_extend_hash_chain()`` to compute them — which has NO genesis
+    #    -row bootstrap of its own (see ``repo/hash_chain.py``), so the
+    #    very first ``log_transaccional`` row for any ``uuid_sucursal`` this
+    #    helper had never seen before raised ``HASH_CHAIN_INTEGRITY_
+    #    VIOLATION: no genesis row``. Routing through ``repo.hash_chain.
+    #    append`` (the SAME primitive ``repo.event.record_event`` already
+    #    uses for its own log row) both extends the chain in Python and
+    #    transparently bootstraps that genesis row on first use.
     if log_tx:
         # Lazily import to avoid module-load-time circulars.
         from ..models.A.log_transaccional import LogTransaccional
+        from . import hash_chain
 
-        log_row = LogTransaccional(
-            uuid_usuario=actor_uuid,
-            uuid_sucursal=new_attrs.get("uuid_sucursal"),
-            accion="actualizar" if current_uuid is not None else "crear",
-            tabla_afectada=model_cls.__tablename__,
-            uuid_registro_afectado=getattr(new_row, "uuid", None),
-            timestamp_evento=now,
+        log_attrs: dict[str, Any] = {
+            "uuid_usuario": actor_uuid,
+            "uuid_sucursal": new_attrs.get("uuid_sucursal"),
+            "accion": "actualizar" if current_uuid is not None else "crear",
+            "tabla_afectada": model_cls.__tablename__,
+            "uuid_registro_afectado": getattr(new_row, "uuid", None),
+            "timestamp_evento": now,
+        }
+
+        await hash_chain.append(
+            session,
+            LogTransaccional,
+            log_attrs,
+            actor_uuid=actor_uuid,
         )
-        session.add(log_row)
 
     return new_row
 

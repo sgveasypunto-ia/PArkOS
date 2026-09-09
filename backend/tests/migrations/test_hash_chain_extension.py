@@ -13,31 +13,36 @@ The companion unit test ``tests/unit/test_hash_chain.py`` exercises the
 same paths against a per-test fixture; this migration test exercises
 them against the production schema with the DB-side chain trigger
 ``prod.fn_extend_hash_chain()`` enabled.
+
+PR6 note: these tests INSERT directly via raw ``psycopg`` SQL, bypassing
+``repo/hash_chain.py``'s Python-side genesis-row auto-bootstrap entirely
+(nothing here ever calls that helper) — so each test seeds its own genesis
+row via ``seed_hash_chain_genesis_row_sync`` (mirrors the exact trigger
+escape valve ``repo.hash_chain._ensure_genesis_row`` uses) before exercising
+the trigger's OWN chain-extension math. ``uuid_sucursal`` is a REAL seeded
+branch (``seeded_sucursal_uuid``) rather than a bare ``uuid_lib.uuid4()`` —
+the ``AFTER INSERT`` outbox trigger (``fn_enqueue_sync``) enqueues into
+``prod.sync_queue``, whose ``uuid_sucursal`` carries a real FK to
+``prod.sucursal``.
 """
 from __future__ import annotations
 
 import uuid as uuid_lib
 
-import pytest
-
-_XFAIL_GENESIS = pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
+from tests.conftest import seed_hash_chain_genesis_row_sync
 
 
-@_XFAIL_GENESIS
-async def test_first_row_uses_genesis_anchor(pg_dsn: str) -> None:
+async def test_first_row_uses_genesis_anchor(
+    pg_dsn: str, seeded_sucursal_uuid: uuid_lib.UUID
+) -> None:
     """The first row for a uuid_sucursal has ``hash_anterior = genesis_hash``."""
     import hashlib
 
     import psycopg
 
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
     expected_anchor = hashlib.sha256(b"genesis:" + str(sucursal).encode()).hexdigest()
+    seed_hash_chain_genesis_row_sync(pg_dsn, sucursal)
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
         await cur.execute(
@@ -55,12 +60,14 @@ async def test_first_row_uses_genesis_anchor(pg_dsn: str) -> None:
         )
 
 
-@_XFAIL_GENESIS
-async def test_second_row_links_to_first(pg_dsn: str) -> None:
+async def test_second_row_links_to_first(
+    pg_dsn: str, seeded_sucursal_uuid: uuid_lib.UUID
+) -> None:
     """The second row's ``hash_anterior`` matches the first row's ``hash_actual``."""
     import psycopg
 
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
+    seed_hash_chain_genesis_row_sync(pg_dsn, sucursal)
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
         # Insert the first row and capture its hash_actual.
@@ -94,12 +101,14 @@ async def test_second_row_links_to_first(pg_dsn: str) -> None:
         assert second_actual != first_hash_actual
 
 
-@_XFAIL_GENESIS
-async def test_chain_grows_monotonically(pg_dsn: str) -> None:
+async def test_chain_grows_monotonically(
+    pg_dsn: str, seeded_sucursal_uuid: uuid_lib.UUID
+) -> None:
     """A 5-row chain produces 5 distinct ``hash_actual`` values."""
     import psycopg
 
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
+    seed_hash_chain_genesis_row_sync(pg_dsn, sucursal)
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
         seen_hashes: set[str] = set()

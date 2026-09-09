@@ -70,21 +70,16 @@ def test_genesis_prefix_constant() -> None:
     assert GENESIS_PREFIX == b"genesis:"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
-async def test_hash_chain_append_first_row_uses_genesis(pg_engine, alembic_upgrade) -> None:
+async def test_hash_chain_append_first_row_uses_genesis(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """The first row in a tenant has ``hash_anterior`` = genesis hash for that tenant."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
     from parkos_core.repo.hash_chain import append
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
     async with Session() as session:
@@ -106,15 +101,8 @@ async def test_hash_chain_append_first_row_uses_genesis(pg_engine, alembic_upgra
         assert row.hash_actual != row.hash_anterior
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
-        "openspec/changes/sync-overhaul/tasks.md PR6"
-    ),
-    strict=True,
-)
 async def test_hash_chain_append_second_row_links_to_prior(
-    pg_engine, alembic_upgrade
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
 ) -> None:
     """A second row's ``hash_anterior`` matches the prior row's ``hash_actual``."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
@@ -122,7 +110,7 @@ async def test_hash_chain_append_second_row_links_to_prior(
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
     async with Session() as session:
@@ -222,16 +210,8 @@ def test_out_of_order_payload_raises() -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Trigger mal targeteado escribe vigente_desde sobre Ingreso "
-        "([L-E], no versionado) — bug preexistente fuera de alcance de "
-        "sync-overhaul, requiere investigación dedicada"
-    ),
-    strict=True,
-)
 async def test_record_event_log_tx_extends_hash_chain(
-    pg_engine, alembic_upgrade
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
 ) -> None:
     """``record_event(log_tx=True)`` extends the SHA-256 chain (PR11c -- Bug 2).
 
@@ -242,8 +222,13 @@ async def test_record_event_log_tx_extends_hash_chain(
     ``hash_anterior`` matches the prior row's ``hash_actual`` -- the
     canonical chain invariant.
 
-    Requires the testcontainers Postgres container; skipped if not
-    available (same gating as the other chain tests above).
+    Was xfail'd for a DIFFERENT, previously out-of-scope reason
+    ("trigger mal targeteado escribe vigente_desde sobre Ingreso") — fixed
+    by T-PR6-000 (migration ``0010_drop_le_vigente_inicial_triggers.py``).
+    Un-xfailed here as a direct bonus of that fix; ``uuid_sucursal`` now
+    uses a REAL seeded branch (``fk_ingreso_uuid_sucursal`` is a real FK,
+    which the bare ``uuid_lib.uuid4()`` this test used before could only
+    ever have violated too, once the vigente_desde crash stopped masking it).
     """
     from datetime import UTC, datetime
 
@@ -254,7 +239,7 @@ async def test_record_event_log_tx_extends_hash_chain(
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
-    sucursal = uuid_lib.uuid4()
+    sucursal = seeded_sucursal_uuid
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
     async with Session() as session:
@@ -275,10 +260,16 @@ async def test_record_event_log_tx_extends_hash_chain(
         )
         await session.commit()
 
+        # Filter on accion="crear" (record_event's own log row) — PR6's
+        # genesis-row auto-bootstrap (repo/hash_chain.py) ALSO lands a real
+        # row for this brand-new uuid_sucursal (accion='inicialización',
+        # far-past sentinel timestamp), which would otherwise double-count
+        # here.
         rows = (
             await session.execute(
                 select(LogTransaccional)
                 .where(LogTransaccional.uuid_sucursal == sucursal)
+                .where(LogTransaccional.accion == "crear")
                 .order_by(LogTransaccional.timestamp_evento.asc())
             )
         ).scalars().all()
@@ -313,6 +304,7 @@ async def test_record_event_log_tx_extends_hash_chain(
             await session.execute(
                 select(LogTransaccional)
                 .where(LogTransaccional.uuid_sucursal == sucursal)
+                .where(LogTransaccional.accion == "crear")
                 .order_by(LogTransaccional.timestamp_evento.asc())
             )
         ).scalars().all()

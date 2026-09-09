@@ -75,17 +75,28 @@ async def record_login(
     )
     session.add(login_row)
 
-    # Co-transactional log row — required by the DB-layer session guard trigger.
+    # Co-transactional log row — required by the DB-layer session guard
+    # trigger. Routed through ``repo.hash_chain.append`` (PR6, REQ-16 +
+    # REQ-X4) rather than a raw ``LogTransaccional(...)`` + ``session.add()``
+    # — the latter leaves ``hash_anterior``/``hash_actual`` NULL client-side
+    # and relies entirely on the DB trigger to compute them, which has no
+    # genesis-row bootstrap of its own and rejects the first login for any
+    # ``uuid_sucursal`` never seen before with ``HASH_CHAIN_INTEGRITY_
+    # VIOLATION: no genesis row``. ``hash_chain.append`` both computes the
+    # chain in Python and transparently bootstraps that genesis row.
     from ..models.A.log_transaccional import LogTransaccional
+    from . import hash_chain
 
-    log_row = LogTransaccional(
-        uuid_usuario=actor_uuid or usuario_uuid,
-        uuid_sucursal=sucursal_uuid,
-        accion="login",
-        tabla_afectada="login",
-        timestamp_evento=now,
+    log_attrs = {
+        "uuid_usuario": actor_uuid or usuario_uuid,
+        "uuid_sucursal": sucursal_uuid,
+        "accion": "login",
+        "tabla_afectada": "login",
+        "timestamp_evento": now,
+    }
+    await hash_chain.append(
+        session, LogTransaccional, log_attrs, actor_uuid=actor_uuid or usuario_uuid
     )
-    session.add(log_row)
     return login_row
 
 
@@ -113,18 +124,22 @@ async def close_login_with_log(
     if row is None:
         raise SessionGuardError(f"login {login_uuid} not found")
 
-    # 2. Log row FIRST (so the DB-layer session-guard trigger accepts the UPDATE)
+    # 2. Log row FIRST (so the DB-layer session-guard trigger accepts the
+    #    UPDATE). Routed through ``repo.hash_chain.append`` — see
+    #    ``record_login``'s docstring note above for why the raw-insert
+    #    stub this replaces broke on a ``uuid_sucursal`` never seen before.
     from ..models.A.log_transaccional import LogTransaccional
+    from . import hash_chain
 
-    log_row = LogTransaccional(
-        uuid_usuario=actor_uuid,
-        uuid_sucursal=row.uuid_sucursal,
-        accion="logout",
-        tabla_afectada="login",
-        uuid_registro_afectado=login_uuid,
-        timestamp_evento=now,
-    )
-    session.add(log_row)
+    log_attrs = {
+        "uuid_usuario": actor_uuid,
+        "uuid_sucursal": row.uuid_sucursal,
+        "accion": "logout",
+        "tabla_afectada": "login",
+        "uuid_registro_afectado": login_uuid,
+        "timestamp_evento": now,
+    }
+    await hash_chain.append(session, LogTransaccional, log_attrs, actor_uuid=actor_uuid)
     await session.flush()  # ensure log row is visible to the trigger
 
     # 3. UPDATE the login row

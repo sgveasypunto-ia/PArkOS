@@ -38,6 +38,7 @@ fixtures themselves are sync (the container is blocking I/O).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import time
@@ -288,6 +289,67 @@ async def pg_engine(pg_async_dsn: str, alembic_upgrade: None) -> AsyncEngine:
         yield engine
     finally:
         await engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _bootstrap_global_hash_chain_genesis(pg_engine: AsyncEngine) -> None:
+    """Bootstrap the GLOBAL (``uuid_sucursal IS NULL``) hash-chain genesis row.
+
+    PR6 (``repo/hash_chain.py::_ensure_genesis_row``) bootstraps the genesis
+    row for ``log_transaccional`` LAZILY — the first time
+    ``repo.hash_chain.append`` (or anything routed through it) is called for
+    a given ``uuid_sucursal``. Several migration-level tests
+    (``tests/migrations/test_hash_chain_genesis.py``,
+    ``test_a_inmutable.py``'s ``log_transaccional`` case,
+    ``test_ls_session_guard.py``) exercise the GLOBAL (NULL) partition
+    directly via raw SQL or a bare INSERT with no ``uuid_sucursal`` column
+    at all — nothing in a fresh test session has necessarily called the
+    Python helper for ``uuid_sucursal=None`` yet by the time those tests
+    run, and their own docstrings intentionally forbid the test itself from
+    inserting the genesis row (that would just be testing the fixture, not
+    the invariant). This session-scoped, autouse fixture removes that
+    ordering fragility by guaranteeing the SAME real bootstrap the
+    production application performs on first use has already happened,
+    exactly once, before any test's assertions run — mirroring
+    ``backend/scripts/apply_migration.py``'s local smoke-check bootstrap,
+    but wired into the actual pytest fixture chain.
+    """
+    from parkos_core.models.A.log_transaccional import LogTransaccional
+    from parkos_core.repo.hash_chain import _ensure_genesis_row
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        await _ensure_genesis_row(session, LogTransaccional, None)
+        await session.commit()
+
+
+def seed_hash_chain_genesis_row_sync(
+    pg_dsn: str, uuid_sucursal: uuid_lib.UUID | None
+) -> None:
+    """Raw-SQL genesis-row bootstrap for tests exercising ``fn_extend_hash_
+    chain()`` directly via a bare ``psycopg`` connection (bypassing
+    ``repo/hash_chain.py``'s Python-side auto-bootstrap entirely, since these
+    tests never call it). Mirrors the exact escape valve the trigger itself
+    provides (``0001_initial_schema.py``): ``accion='inicialización'`` +
+    ``hash_anterior == hash_actual`` (both the per-``uuid_sucursal`` genesis
+    anchor) passes without requiring a prior row — the SAME construction
+    ``repo.hash_chain._ensure_genesis_row`` performs for ORM-based callers.
+
+    Only needed for a per-test ``uuid_sucursal`` the autouse global-genesis
+    fixture above does not cover (i.e. anything other than ``NULL``).
+    """
+    marker = b"NULL" if uuid_sucursal is None else str(uuid_sucursal).encode("ascii")
+    anchor = hashlib.sha256(b"genesis:" + marker).hexdigest()
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO prod.log_transaccional "
+            "(uuid, fecha_retencion_hasta, uuid_sucursal, accion, "
+            " tabla_afectada, timestamp_evento, hash_anterior, hash_actual) "
+            "VALUES (gen_random_uuid(), CURRENT_DATE, %s, 'inicialización', "
+            "'log_transaccional', %s, %s, %s)",
+            (uuid_sucursal, datetime(1970, 1, 1), anchor, anchor),
+        )
+        conn.commit()
 
 
 @pytest_asyncio.fixture

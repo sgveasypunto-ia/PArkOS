@@ -33,18 +33,26 @@ def _make_session() -> AsyncMock:
     After PR11c wired ``record_event(log_tx=True)`` →
     ``hash_chain.append`` → ``session.execute(stmt)`` to read the prior
     chain head, the mock must stub ``execute()`` too. We return a
-    Result-like whose ``scalar_one_or_none()`` is ``None`` so
-    ``hash_chain._read_prior_hash`` follows the genesis-hash branch and
-    no prior row attribute lookup is needed.
+    Result-like whose ``scalar_one_or_none()`` is a FAKE PRIOR ROW (not
+    ``None``) — PR6's genesis-row auto-bootstrap
+    (``repo.hash_chain._ensure_genesis_row``) only activates on the "no
+    prior row" branch, and it ``session.add()``s + ``session.flush()``es a
+    genesis row when it does. This file's assertions are about
+    ``record_event``'s OWN dispatch logic (exactly 2 adds: the event row +
+    its log row; never flushing — that stays the caller's responsibility),
+    an orthogonal concern to hash-chain genesis bootstrapping (covered by
+    ``tests/unit/test_hash_chain.py`` / ``test_log_transaccional_chain.py``
+    instead) — simulating an EXISTING chain here keeps those assertions
+    decoupled from that unrelated first-call-only behavior.
     """
     session = AsyncMock()
     session.add = MagicMock()
     session.flush = AsyncMock()
     session.commit = AsyncMock()
-    # Mock session.execute to return a Result whose scalar_one_or_none() is None.
-    # This makes hash_chain._read_prior_hash use the genesis hash path.
+    fake_prior_row = MagicMock()
+    fake_prior_row.hash_actual = "a" * 64
     fake_result = MagicMock()
-    fake_result.scalar_one_or_none = MagicMock(return_value=None)
+    fake_result.scalar_one_or_none = MagicMock(return_value=fake_prior_row)
     session.execute = AsyncMock(return_value=fake_result)
     return session
 

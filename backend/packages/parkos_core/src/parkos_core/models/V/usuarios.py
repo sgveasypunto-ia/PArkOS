@@ -9,11 +9,9 @@ Bi-temporal close+insert (REQ-04, REQ-05): writes go through
 """
 from __future__ import annotations
 
-import uuid as uuid_lib
 from datetime import datetime
 
 from sqlalchemy import DateTime, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..base import VersionedBase
@@ -41,14 +39,19 @@ class Usuarios(VersionedBase):
         nullable=True,
     )  # 'admin' | 'operador'
 
-    # Re-declare uuid without primary_key inheritance collision if any subclass
-    # ever wanted to override; keeping the inherited PK is correct here.
-    uuid: Mapped[uuid_lib.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        primary_key=True,
-        nullable=False,
-        server_default=None,  # inherited default from IdMixin is fine; explicit None reuses mixin
-    )
+    # ``uuid`` is inherited as-is from ``IdMixin`` (``primary_key=True,
+    # server_default=func.gen_random_uuid()``, matching the migration's
+    # ``_uuid_pk()``). A PR6 bug fix removed a re-declaration that shadowed
+    # it with ``server_default=None`` — that stripped the server default
+    # from SQLAlchemy's metadata entirely (explicitly passing
+    # ``server_default=None`` to ``mapped_column()`` does NOT "reuse the
+    # mixin default", it OVERRIDES it with "no default"), so any INSERT
+    # relying on Postgres to generate the PK (no client-side ``uuid`` in
+    # the payload) failed with ``FlushError: ... has a NULL identity key``.
+    # Every ``VFixtureFactory``-built test row masked this by always
+    # supplying an explicit client-side ``uuid``; ``repo.versioned.
+    # close_and_insert(Usuarios, ..., new_attrs={... no uuid ...})`` — the
+    # real production path — did not.
 
     __table_args__ = (
         UniqueConstraint("cedula", "vigente_desde", name="usuarios_uk01"),

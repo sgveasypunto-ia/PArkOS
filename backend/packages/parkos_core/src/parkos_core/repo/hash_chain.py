@@ -23,10 +23,26 @@ Algorithm (:func:`append`):
      ``hash_actual = new_hash`` onto the row.
   4. INSERT the row and return it.
 
-The DB trigger ``prod.fn_extend_hash_chain()`` (added by 0001) does the
-same calculation server-side as a safety net — if the Python chain
-somehow diverges from the DB chain, the trigger raises
-``HASH_CHAIN_MISMATCH`` at INSERT time.
+The DB trigger ``prod.fn_extend_hash_chain()`` (added by 0001, attached only
+to ``log_transaccional``) does the same calculation server-side as a safety
+net — if the Python chain somehow diverges from the DB chain, the trigger
+raises ``HASH_CHAIN_MISMATCH`` at INSERT time. That same trigger has an
+escape valve for the very FIRST row of a ``uuid_sucursal``: a row with
+``accion='inicialización'`` AND ``hash_anterior = hash_actual`` (both equal
+to the per-``uuid_sucursal`` genesis anchor) passes without requiring a
+prior row to exist. Every OTHER row raises
+``HASH_CHAIN_INTEGRITY_VIOLATION: no genesis row for uuid_sucursal=%`` when
+no prior row is found for that tenant.
+
+**Genesis-row bootstrap (PR6, REQ-16 + REQ-X4).** ``0001_initial_schema.py``
+documents (see its "Hash-chain genesis (runtime)" comment) that the genesis
+row is deliberately NOT inserted at migration time — it is meant to be
+created by the application the first time a chain is extended for a given
+``uuid_sucursal``. Before PR6, nothing actually did this: :func:`append`
+computed the genesis anchor for use as the FIRST real row's
+``hash_anterior``, but never persisted an actual genesis row, so the DB
+trigger's "no genesis row" branch fired on that very first INSERT.
+:func:`_ensure_genesis_row` closes this gap — see its docstring.
 
 The cloud-side verifier (PR10 worker) walks the chain on every sync
 batch and raises :class:`HashChainIntegrityViolation` on a break. PR2
@@ -107,6 +123,74 @@ def _genesis_hash(uuid_sucursal: uuid_lib.UUID | None) -> str:
     return hashlib.sha256(GENESIS_PREFIX + marker).hexdigest()
 
 
+# Sentinel ``timestamp_evento`` stamped on a bootstrapped genesis row — an
+# arbitrary point far enough in the past that it always sorts BEFORE any
+# real business event for the same ``uuid_sucursal`` (``_read_prior_hash``'s
+# ``ORDER BY timestamp_evento DESC`` must always pick the most recent REAL
+# row over the genesis row once at least one real row exists).
+_GENESIS_TIMESTAMP = datetime(1970, 1, 1, tzinfo=UTC).replace(tzinfo=None)
+
+
+async def _ensure_genesis_row(
+    session: AsyncSession,
+    model_cls: type[AppendOnlyBase],
+    uuid_sucursal: uuid_lib.UUID | None,
+    genesis_hash: str | None = None,
+) -> None:
+    """Idempotently bootstrap the real genesis row for ``uuid_sucursal``.
+
+    ``prod.fn_extend_hash_chain()`` (0001_initial_schema.py, attached only to
+    ``log_transaccional``) rejects the FIRST INSERT for a ``uuid_sucursal``
+    with ``HASH_CHAIN_INTEGRITY_VIOLATION: no genesis row`` unless an
+    explicit escape-valve row already exists: ``accion='inicialización'``
+    AND ``hash_anterior = hash_actual`` (both the per-``uuid_sucursal``
+    genesis anchor). The migration deliberately does NOT insert that row —
+    see its "Hash-chain genesis (runtime)" comment — the application is
+    responsible for creating it on first use. This function IS that runtime
+    bootstrap: called from :func:`_read_prior_hash` exactly when no prior
+    row exists yet for ``uuid_sucursal`` (which is also the only moment a
+    genesis row is legitimately missing), so a second call for the same
+    ``uuid_sucursal`` never happens — the genesis row it inserts here
+    immediately becomes the "prior row" every subsequent
+    :func:`_read_prior_hash` call for this tenant finds instead.
+
+    Works for both hash-chain carriers via ``hasattr`` rather than
+    branching on ``model_cls`` by name: ``log_transaccional`` has an
+    ``accion`` / ``tabla_afectada`` discriminator pair the DB trigger's
+    escape valve keys off of; ``revocacion_factura`` has neither column (and
+    no DB trigger is even attached to it — only ``log_transaccional_hash_
+    chain`` exists in 0001), so those two fields are simply omitted for it.
+    Every other column on both models is nullable, so the minimal row below
+    satisfies every NOT NULL constraint.
+
+    ``timestamp_evento`` is stamped with the far-past :data:`_GENESIS_TIMESTAMP`
+    sentinel rather than left ``NULL`` — Postgres sorts ``NULL`` FIRST on a
+    ``DESC`` order by default, which would make an untimestamped genesis row
+    outrank every real row forever and permanently short-circuit the chain.
+    """
+    anchor = genesis_hash if genesis_hash is not None else _genesis_hash(uuid_sucursal)
+    genesis_attrs: dict[str, Any] = {
+        "uuid_sucursal": uuid_sucursal,
+        "timestamp_evento": _GENESIS_TIMESTAMP,
+        "hash_anterior": anchor,
+        "hash_actual": anchor,
+        "created_at": datetime.now(UTC).replace(tzinfo=None),
+        "created_by": None,
+    }
+    if hasattr(model_cls, "accion"):
+        genesis_attrs["accion"] = "inicialización"
+    if hasattr(model_cls, "tabla_afectada"):
+        genesis_attrs["tabla_afectada"] = model_cls.__tablename__
+
+    genesis_row = model_cls(**genesis_attrs)
+    session.add(genesis_row)
+    # Flush NOW (not just add) — the real row this bootstrap unblocks is
+    # about to be added to the SAME session and MUST see this genesis row
+    # already physically INSERTed (same transaction, read-your-own-writes)
+    # before its own INSERT statement reaches the DB trigger.
+    await session.flush()
+
+
 async def _read_prior_hash(
     session: AsyncSession,
     model_cls: type[AppendOnlyBase],
@@ -115,8 +199,10 @@ async def _read_prior_hash(
     """Return the chain head ``hash_actual`` for ``uuid_sucursal``.
 
     Reads the latest row (by ``timestamp_evento`` when present,
-    otherwise by ``created_at``). Returns the genesis hash if no prior
-    row exists for the tenant.
+    otherwise by ``created_at``). When no prior row exists for the tenant,
+    bootstraps the real genesis row (:func:`_ensure_genesis_row`, PR6) and
+    returns its hash — the genesis anchor, now backed by an actual
+    persisted row rather than a value computed but never written.
     """
     if hasattr(model_cls, "timestamp_evento"):
         stmt = (
@@ -142,7 +228,9 @@ async def _read_prior_hash(
     result = await session.execute(stmt)
     prior = result.scalar_one_or_none()
     if prior is None:
-        return _genesis_hash(uuid_sucursal)
+        genesis = _genesis_hash(uuid_sucursal)
+        await _ensure_genesis_row(session, model_cls, uuid_sucursal, genesis)
+        return genesis
     return prior.hash_actual  # type: ignore[attr-defined]
 
 
@@ -215,6 +303,7 @@ __all__ = [
     "GENESIS_PREFIX",
     "HashChainIntegrityViolation",
     "_canonical_json",
+    "_ensure_genesis_row",
     "_genesis_hash",
     "append",
 ]

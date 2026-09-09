@@ -22,6 +22,8 @@ from ....models.A.log_transaccional import LogTransaccional
 from ....models.A.revocacion_factura import RevocacionFactura
 from ....models.A.salidas import Salidas
 from ...hooks.impls.bi_temporal_compensation import bi_temporal_compensation
+from ...hooks.impls.log_transaccional_chain import log_transaccional_chain
+from ...hooks.impls.revocacion_factura_chain import revocacion_factura_chain
 from ..schema import SyncCatalogEntry
 
 # ---------------------------------------------------------------------------
@@ -159,6 +161,11 @@ _LOG_TRANSACCIONAL = SyncCatalogEntry(
     seq_strategy="seq_via_datos",
     hash_chain=True,
     verify_chain=True,
+    # T-PR6-002 — REQ-HOOK-008. See log_transaccional_chain.py's module
+    # docstring for the double-extension caveat vs. apply_strategy=
+    # "append_event"'s own step-3 chain_hash dispatch (not currently
+    # reachable: nothing calls apply_row(_LOG_TRANSACCIONAL, ...) directly).
+    hook_chain_extend=log_transaccional_chain,
 )
 
 _REVOCACION_FACTURA = SyncCatalogEntry(
@@ -178,6 +185,9 @@ _REVOCACION_FACTURA = SyncCatalogEntry(
     seq_strategy="seq_via_datos",
     hash_chain=True,
     verify_chain=True,
+    # T-PR6-004 — REQ-HOOK-009. Replaces the manual dispatcher.py call
+    # (T-PR6-005) — see revocacion_factura_chain.py's module docstring.
+    hook_chain_extend=revocacion_factura_chain,
 )
 
 SYNC_ENTRIES_A: tuple[SyncCatalogEntry, ...] = (
