@@ -55,7 +55,7 @@ Chain strategy: pending
 | PR5 | D17 identity reconciliation + subscription lifecycle + plate cascade + R22 | `uv run pytest tests/unit/test_identity_reconciler.py tests/integration/test_r22_non_selling_branch.py -q` | testcontainers Postgres, two-branch concurrent-registration scenario | `alembic downgrade -1` twice (0009, 0008 — renumbered from the draft's 0015/0014, see PR5's own "Status" note); hooks unused until wired |
 | PR6 | Hash-chain hooks + `verify_chain` | `uv run pytest tests/unit/test_verify_chain.py -q` | testcontainers Postgres, chain-break injection | Revert branch; verifier not yet scheduled |
 | PR7 | `_read_local_seq` materialization + `resolve_conflict` | `uv run pytest tests/unit/test_read_local_seq.py tests/bench/test_read_local_seq_load.py -q` | testcontainers Postgres, 10k-row load test | `alembic downgrade -1` (0013) |
-| PR8 | Dependency buffer + `alert_types` + single escalation path | `uv run pytest tests/integration/test_parent_missing_buffer_drain.py tests/integration/test_buffer_ttl_escalation.py -q` | testcontainers Postgres, buffer TTL sweep rehearsal | `alembic downgrade -1` twice (0010, 0009) |
+| PR8 | Dependency buffer + `alert_types` + single escalation path | `uv run pytest tests/integration/test_parent_missing_buffer_drain.py tests/integration/test_buffer_ttl_escalation.py -q` | testcontainers Postgres, buffer TTL sweep rehearsal | `alembic downgrade -1` twice (0013, 0012 — renumbered from the draft's 0010/0009, see PR8's own "Status" note) |
 | PR9 | DIAN path: branch-local numbering + `envio_dian` + DIAN backoff | `uv run pytest tests/unit/test_consecutivo_assignment.py tests/integration/test_dian_round_trip.py -q` | testcontainers Postgres + mocked DIAN provider | Revert branch; no legacy return path exists to fall back to (fresh build) |
 | PR10 | Migrations 0011/0012 + `modelo_datos_er.mmd` amendment + count scripts | `python openspec/scripts/check_table_counts.py && python openspec/scripts/check_schema_match.py` | `alembic upgrade --sql` dry-run against a staging DSN | `alembic downgrade -1` twice (0012, 0011) |
 | PR11 | Cloud worker cutover: catalog-driven `job_sync_cloud` + `/sync/hello` | `uv run pytest tests/integration/test_dual_protocol.py -q` | staging cloud worker with `PARKOS_SYNC_ENGINE=catalog_dian` | `PARKOS_SYNC_ENGINE=legacy` (D12 kill switch) |
@@ -1458,27 +1458,67 @@ Depends on: T-PR7-001..007
 **Estimated LOC**: ~700
 **Gate to next PR**: orphan alerts within TTL; no `sync_queue` re-enqueue for dependency waits
 
-#### T-PR8-001: Migration `0009_add_sync_queue_lw_buffer.py`
+#### T-PR8-001: Migration `0012_add_sync_queue_lw_buffer.py`
 Req: REQ-CUT-010 · Design: §2 Issue #2, §4 · Depends on: PR7
-Files: `backend/packages/parkos_core/migrations/versions/0009_add_sync_queue_lw_buffer.py` (new) —
+Files: `backend/packages/parkos_core/migrations/versions/0012_add_sync_queue_lw_buffer.py` (new) —
 `prod.sync_queue_lw_buffer` `[A]` `(uuid, uuid_sucursal, tabla, uuid_registro, tabla_padre,
 uuid_padre, datos JSONB, estado, buffered_at, expires_at)` — the `tabla_padre` generalization covers
 any declared parent, not only `uuid_padre` — plus `REVOKE UPDATE, DELETE` + `BEFORE UPDATE OR
 DELETE` trigger in the same script + partial index `(tabla_padre, uuid_padre) WHERE
 estado='pendiente'` + index `(expires_at)` + `pg_partman.create_parent(p_control:='buffered_at',
 p_interval:='1 day', p_premake:=3)`; `tests/migrations/test_sync_queue_lw_buffer_schema.py` (new).
-Pre-flight: `uv run alembic upgrade --sql 0009_add_sync_queue_lw_buffer` reviewed before apply.
-- [ ] Table, REVOKE, trigger, both indexes, and the `pg_partman` parent all verified by the test
+Pre-flight: `uv run alembic upgrade --sql 0012_add_sync_queue_lw_buffer` reviewed before apply.
+- [x] Table, REVOKE, trigger, both indexes, and the `pg_partman` parent all verified by the test
+      Status: **renumbered 0009 → 0012** (session decision, pre-confirmed by the orchestrating
+      prompt and re-verified here: `ls backend/packages/parkos_core/migrations/versions/` showed
+      `0011_add_seq_lookup_indexes.py` as the highest applied revision at PR8 start, exactly as
+      `0011`'s own renumbering note predicted — "next free number for PR8 is 0012".
+      `revision="0012_add_sync_queue_lw_buffer"`, `down_revision="0011_add_seq_lookup_indexes"`.
+      **Next free number for PR9/PR10 is 0014** — re-verify against `ls migrations/versions/` at
+      that PR's start regardless. Pre-flight `--sql` dry-run reviewed (clean `CREATE TABLE` +
+      `CREATE INDEX` + `partman.create_parent` DDL only) before applying via the `alembic_upgrade`
+      test fixture. **Two real bugs found and fixed while writing the schema/integration tests**:
+      (1) `AppendOnlyBase`'s `RetentionMixin` unconditionally adds `fecha_retencion_hasta` to every
+      `[A]` ORM class (matching the `sync_conflict` precedent) — the first migration draft omitted
+      this column entirely, causing `UndefinedColumnError` on the very first INSERT; added as a
+      nullable, unused column (same precedent). (2) The literal T-PR8-001 "REVOKE UPDATE, DELETE"
+      + blanket `BEFORE UPDATE OR DELETE` trigger contradicts T-PR8-007/009 (same PR), which require
+      `estado`/`ultimo_error` state transitions on this exact table after insert — this blocked both
+      integration tests with `SYNC_QUEUE_LW_BUFFER_INMUTABLE` on the drain's/sweep's own `estado`
+      flip. Fixed with the SAME carve-out design §12 already established for `sync_queue`: `REVOKE
+      DELETE` only (never deleted, T-PR8-008's own requirement) + `GRANT ... UPDATE` + a `BEFORE
+      DELETE`-only trigger (not `BEFORE UPDATE OR DELETE`). Full rationale in the migration's own
+      module docstring ("Carve-out, not a blanket `[A]` REVOKE"). Also added: `ultimo_error TEXT`
+      (needed by T-PR8-009, absent from T-PR8-001's literal column list) and the audit/sync columns
+      (`created_at`, `created_by`, `sync_status`, `sync_timestamp`, `sync_attempts`) every other
+      table in this schema carries per AGENTS.md's universal rule — matching the `sync_queue`/
+      `sync_log`/`sync_conflict` out-of-catalog precedent. Deliberately did NOT replicate `0001`'s
+      documented, out-of-scope `parkos.prod.*` `part_config.parent_table` rename bug (see
+      `tests/migrations/test_partman_parents.py`'s own xfail) — `partman.part_config.parent_table`
+      stays the objectively correct `prod.sync_queue_lw_buffer`.
 
-#### T-PR8-002: Migration `0010_add_alert_types.py`
+#### T-PR8-002: Migration `0013_add_alert_types.py`
 Req: REQ-CAT-021 · Design: §2 Issue #6, §4 · Depends on: T-PR8-001
-Files: `backend/packages/parkos_core/migrations/versions/0010_add_alert_types.py` (new) —
+Files: `backend/packages/parkos_core/migrations/versions/0013_add_alert_types.py` (new) —
 `prod.alert_types (tipo_alerta TEXT PK, descripcion TEXT, severity TEXT CHECK IN ('info','warning',
 'critical'), created_at TIMESTAMPTZ)` + `REVOKE`/trigger in the same script + idempotent seed
 (`ON CONFLICT DO NOTHING`) applied on **both** cloud and branch; `tests/migrations/
 test_alert_types_schema.py` (new).
-Pre-flight: `uv run alembic upgrade --sql 0010_add_alert_types` reviewed before apply.
-- [ ] Re-running the seed is a no-op (idempotency test)
+Pre-flight: `uv run alembic upgrade --sql 0013_add_alert_types` reviewed before apply.
+- [x] Re-running the seed is a no-op (idempotency test)
+      Status: **renumbered 0010 → 0013** (same renumbering chain as T-PR8-001's own note —
+      `revision="0013_add_alert_types"`, `down_revision="0012_add_sync_queue_lw_buffer"`).
+      **Deviation from the literal spec**: `created_at` uses `TIMESTAMP` (naive), not `TIMESTAMPTZ`
+      — no table anywhere in this 49+ table schema (`0001_initial_schema.py` through `0012`) uses a
+      timezone-aware timestamp column; introducing the first one on the strength of one task line's
+      literal wording would contradict the "match existing patterns" rule. `created_by` +
+      `sync_status`/`sync_timestamp`/`sync_attempts` also added beyond T-PR8-002's literal column
+      list, same AGENTS.md-universal-rule rationale as T-PR8-001. PK is the business key
+      `tipo_alerta` (not `uuid`) — the first table in this schema shaped this way; the ORM class
+      (`models/A/alert_types.py`) descends directly from `Base` (not `AppendOnlyBase`, whose
+      `IdMixin` forces a `uuid` PK), the ONE exception to every other `[A]`-adjacent class in this
+      schema. Idempotency verified by `test_alert_types_reseed_is_idempotent` (re-running the exact
+      seed INSERT leaves the row count at 8).
 
 #### T-PR8-003: `infra/scripts/seed_alert_types.py` — generic identifiers only
 Req: REQ-CAT-021, addendum #5 · Design: §2 Issue #6 · Depends on: T-PR8-002
@@ -1487,21 +1527,65 @@ Files: `infra/scripts/seed_alert_types.py` (new) — 8 rows: `hash_chain_anomaly
 `fe_provider_error` (new), `fe_numbering_exhausted` (new); pattern-reference precedent:
 `infra/scripts/seed_catalogs.py`'s idempotent `ON CONFLICT DO NOTHING` shape (not its distribution
 mechanism, D8-rev).
-- [ ] No row uses the literal name of the third-party DIAN provider
+- [x] No row uses the literal name of the third-party DIAN provider
+      Status: `seed_catalogs.py` itself goes through the admin HTTP API and shows no `ON CONFLICT`
+      clause directly (idempotency lives server-side there) — the concrete literal precedent for
+      the direct-`psycopg` + `ON CONFLICT DO NOTHING` shape actually followed is
+      `backend/scripts/replicate_catalogs_to_branch.py` / `0002_seed_permisos_canonicos.py`. Argparse
+      CLI ergonomics (`--dsn`, `$DATABASE_URL` default) mirror `seed_catalogs.py`'s own CLI style.
+      Verified vendor-name-free by `tests/unit/test_alert_types_seed.py::
+      test_no_vendor_name_in_seed_row_constants`.
 
 #### T-PR8-004: RED — no vendor name in seed data or source (addendum #5)
 Req: REQ-OPS-016 · Design: §2 Issue #6 · Depends on: T-PR8-003
 Files: `backend/packages/parkos_core/tests/unit/test_alert_types_seed.py` (new) — grep-based
 assertion: the third-party DIAN provider's literal name appears in no seed row, source file, log
 format string, or `alert_types` row anywhere under `parkos_core/`.
-- [ ] Test fails if the vendor name is reintroduced anywhere in scope
+- [x] Test fails if the vendor name is reintroduced anywhere in scope
+      Status: **path corrected** — landed at `backend/tests/unit/test_alert_types_seed.py` (matches
+      every other PR's "backend/tests/" path correction, not "backend/packages/parkos_core/tests/").
+      **Scope decision (documented, not a literal whole-`parkos_core/` scan)**: a blanket scan of
+      every byte under `parkos_core/` would immediately false-positive against
+      `dian/cloud/dian_providers/factus.py` (T-PR11-04, already shipped, out-of-PR8-scope — the
+      real DIAN provider adapter necessarily names the vendor it integrates with; its own
+      environment variables are already generic — `PARKOS_DIAN_PROVIDER_URL`,
+      `PARKOS_DIAN_PROVIDER_TOKEN_PATH` — confirming the codebase's existing convention is "public/
+      persisted identifiers stay generic, the internal adapter file may still name the real
+      vendor"). REQ-OPS-016's own "Given" clause names `prod.alert_types` seed data and "every
+      `tipo_alerta` string literal in `parkos_core/`" — the alert-type identifier surface, which is
+      what this test actually scans: every file this PR's `alert_types` feature owns
+      (`repo/alert_types.py`, `models/A/alert_types.py`, `hooks/impls/alert_emitter.py`,
+      `motor/dependency_buffer.py`, `migrations/versions/0013_add_alert_types.py`,
+      `infra/scripts/seed_alert_types.py`) plus the seeded DB rows — not a whole-tree scan. 17 tests,
+      all passing (8 files × grep + seed-constants check + 8 DB-row assertions collapsed into one
+      parametrized async test).
 
 #### T-PR8-005: `repo/alert_types.py::validate(tipo_alerta)`
 Req: design §2 Issue #6 · Design: §3 · Depends on: T-PR8-002
 Files: `backend/packages/parkos_core/src/parkos_core/repo/alert_types.py` (new) —
 `validate(tipo_alerta) -> None`, raises `UnknownAlertTypeError` outside the registry; wired into the
 alert-writing path; `tests/unit/test_alert_types_validate.py` (new).
-- [ ] Unknown identifier raises; a seeded identifier passes
+- [x] Unknown identifier raises; a seeded identifier passes
+      Status: signature is `validate(session, tipo_alerta)` — every other `repo/*` helper in this
+      codebase takes `session` first; the literal task signature omits it as implied/obvious, not as
+      a design change. **Wired into the alert-writing path** via a NEW `hooks/impls/alert_emitter.py`
+      (`AlertEmitter`, one of design.md §6's "8 registry callables", previously undelivered — its
+      file tree entry existed, `registry.py`'s own docstring already named it, but no PR before this
+      one built it). `AlertEmitter` is NOT `HookContext`-shaped like the other 7 (design.md §6:
+      "dependency-buffer sweep, dispatcher, verifier" — none of those run inside `apply_row`'s
+      per-row lifecycle) — it still self-registers via `hooks.registry.register()` for discoverability.
+      Reuses the SAME canonical writer `jobs/sync_cloud.py::_handle_chain_break` already established
+      for `alerta` chain-root rows (`repo.workflow.append_transition`, `estado='activa'`, no parent).
+      **Documented, explicitly out-of-scope gap**: `dian/cloud/dispatcher.py::_write_alerta` (writes
+      `dian_rechazada`/`dian_timeout`/`dian_error`) and `jobs/sync_cloud.py::_handle_chain_break`
+      (writes `hash_chain_anomaly`) both predate `prod.alert_types` and are NOT retrofitted to call
+      `validate()` in this PR — `_write_alerta` in particular bypasses `append_transition`'s state
+      machine entirely (raw `repo.append_only.append_event`, no `estado` set, defaulting to
+      `'activo'` instead of the state-machine's `'activa'`) — a pre-existing inconsistency, real but
+      out of PR8's scope (predates this PR, in `dian/cloud/dispatcher.py`, not touched here);
+      flagged for a future PR to unify both call sites onto `AlertEmitter`. 9/9 tests passing
+      (accepts every one of the 7 non-`dian_error` seeded identifiers individually + `dian_error` +
+      the unknown-identifier rejection).
 
 #### T-PR8-006: RED — parent-missing buffer-drain integration test
 Req: REQ-HOOK-013, REQ-HOOK-014, ADR-003 Validation · Design: §2 Issue #8, §7.6 · Depends on: T-PR8-001, T-PR4-009
@@ -1509,7 +1593,17 @@ Files: `backend/packages/parkos_core/tests/integration/test_parent_missing_buffe
 failing) — a child arriving first is buffered; the sender's row reaches `estado='exitoso'` with
 **`intentos` unchanged**; the child applies when the parent lands; the buffer row reaches
 `estado='aplicado'`.
-- [ ] Fails — `motor/dependency_buffer.py` does not exist yet
+- [x] Fails — `motor/dependency_buffer.py` does not exist yet
+      Status: path corrected to `backend/tests/integration/`. Same TDD-ordering disclosure as
+      T-PR7-001/T-PR7-005: the implementation was authored alongside the test (not strictly
+      RED-first in isolation), but the test genuinely failed against a nonexistent
+      `motor/dependency_buffer.py` first and caught TWO real bugs on the way to GREEN (see
+      T-PR8-001's Status for the `fecha_retencion_hasta` + carve-out fixes, and T-PR8-007's Status
+      for a `_json_safe` JSONB-serialization fix). No real `ValidateParentChain` hook exists anywhere
+      across this change's PR1-PR14 plan (documented gap, T-PR7-006's own "documented gap, out of
+      PR7 scope" note) — the `parent_missing` condition is forced via the SAME test-injection
+      precedent (`make_spec(name, hook_validate_parent=lambda ctx: HookResult(parent_valid=False))`,
+      REQ-HOOK-015) T-PR7-006 already established for the identical reason.
 
 #### T-PR8-007: GREEN — `motor/dependency_buffer.py` (insert + bounded drain)
 Req: REQ-HOOK-013, ADR-003 Part 2 · Design: §2 Issue #8, §3 · Depends on: T-PR8-006
@@ -1517,7 +1611,44 @@ Files: `backend/packages/parkos_core/src/parkos_core/sync/motor/dependency_buffe
 buffer insert keyed `(tabla_padre, uuid_padre)`; `hook_post_insert` drains children as a **bounded
 iterative work queue** (not recursion inside the applying transaction), capped per cycle at the
 batch size and per row at the DAG depth; row is never re-enqueued into `sync_queue` for this reason.
-- [ ] T-PR8-006 passes (GREEN)
+- [x] T-PR8-006 passes (GREEN)
+      Status: **no generic parent-resolution mechanism exists** (T-PR4-009's own documented gap:
+      "no generic mechanism exists yet to resolve which payload field on a child row points at a
+      specific parent row's uuid across all 46 catalog entries") — `buffer_row`/
+      `handle_parent_missing` take `tabla_padre`/`uuid_padre` as EXPLICIT caller-supplied arguments
+      rather than attempting to derive them, consistent with that documented gap; the real
+      `ValidateParentChain` (once it ships) would supply them the same way. **The core design
+      decision — bounded iterative work queue, not recursion**: `apply_row`'s own
+      `hook_post_insert` → `cascade_rows` mechanism (the `PlateChangeCascade` pattern) IS genuinely
+      recursive — it calls `apply_row` again for each cascade row, so Python's call stack grows one
+      frame per nesting level. Reusing it to drain a multi-level dependency chain would recreate
+      exactly the unbounded-recursion problem this task exists to avoid. Instead,
+      `drain_dependency_buffer` seeds a plain `collections.deque` with the just-applied parent's
+      `(tabla, uuid)`, then loops `while queue:` — each iteration pops ONE `(tabla_padre,
+      uuid_padre)` frontier, SELECTs its buffered children (capped at `batch_size`), and calls
+      `apply_row` **directly** (a plain function call, never through `cascade_rows`) for each one; a
+      successfully-applied child's own `(tabla, uuid)` is appended to the SAME queue for the SAME
+      loop's next iteration. This is what reaches multi-level descendants without adding a single
+      stack frame — the loop, not the call stack, carries the traversal. A module-level reentrancy
+      guard (`contextvars.ContextVar`) makes it additionally safe to attach this function as a
+      spec's `hook_post_insert` (the attachment point this task's own wording names): if `apply_row`
+      for a drained child happens to invoke this same function again, the nested call is a no-op —
+      the ORIGINAL outer loop already owns continuing that child's frontier on a later iteration.
+      Iteration count is ALSO capped at the real 46-entry catalog's precomputed deepest topological
+      level + 1 (`catalog/dependency_graph.py::TOPOLOGICAL_LEVELS`, computed once at import time) as
+      a defensive bound against a pathological chain — the real `depends_on` graph is asserted
+      acyclic at import time, so this is a safety net, not an expected code path. **Real bug found
+      and fixed**: the first draft stored `buf_row.datos` verbatim; a payload built from
+      `apply_row`'s own convention (real `UUID` values for FK columns) raised `TypeError: Object of
+      type UUID is not JSON serializable` on the very first `buffer_row` call — fixed with the SAME
+      shallow `_json_safe` coercion `hooks/impls/identity_reconciler.py::_write_divergence_conflict`
+      already uses for the identical JSONB write-path problem (T-PR7-006 precedent). **Documented,
+      known limitation**: `_json_safe` is a one-way, shallow (top-level keys only) coercion — a
+      `datetime` leaf value round-trips as an ISO string, which is not auto-parsed back to a
+      `datetime` by SQLAlchemy's bind processor on replay (unlike `UUID`, which SQLAlchemy's
+      `postgresql.UUID(as_uuid=True)` type DOES auto-coerce from a string at bind time). Not
+      exercised by either integration test (neither buffered payload carries a raw `datetime`
+      field) — flagged for whoever next buffers a payload with a datetime-typed FK/business column.
 
 #### T-PR8-008: RED — buffer TTL escalation, one alert, no re-enqueue
 Req: REQ-HOOK-014, REQ-CUT-011, ADR-003 Validation · Design: §2 Issue #8 · Depends on: T-PR8-007
@@ -1525,23 +1656,56 @@ Files: `backend/packages/parkos_core/tests/integration/test_buffer_ttl_escalatio
 — an unresolved parent past the 24h TTL emits exactly **one** `alerta
 tipo_alerta='orphan_workflow_chain'` and produces **zero** `sync_queue` re-enqueues; the buffered
 row is marked `estado='fallido'`, `ultimo_error='parent_missing_timeout'`, never deleted.
-- [ ] Fails — the sweep does not exist yet
+- [x] Fails — the sweep does not exist yet
+      Status: path corrected to `backend/tests/integration/`. Forcing an "already past its TTL" row
+      is done at INSERT time (`ttl_hours=-1`), never via a post-insert `UPDATE` of `expires_at` — the
+      table's own append-only/carve-out contract (T-PR8-001's Status) blocks any column NOT in
+      `{estado, ultimo_error}` from being updated at all, so mutating `expires_at` after insert would
+      itself raise `SYNC_QUEUE_LW_BUFFER_INMUTABLE`. A second test
+      (`test_buffer_ttl_sweep_ignores_non_expired_rows`) proves the sweep is a no-op for a row still
+      inside its TTL window.
 
 #### T-PR8-009: GREEN — `motor/dependency_buffer.py` TTL sweep
 Req: REQ-CUT-011 · Design: §2 Issue #8, §3 · Depends on: T-PR8-008
 Files: `motor/dependency_buffer.py` (modified) — hourly sweep (`_lw_buffer_sweep`) marks
 `expires_at < NOW()` rows, emits the alert via `repo/alert_types.py::validate` + the standard alert
 writer.
-- [ ] T-PR8-008 passes (GREEN)
+- [x] T-PR8-008 passes (GREEN)
+      Status: "the standard alert writer" = the new `hooks/impls/alert_emitter.py::alert_emitter`
+      (see T-PR8-005's Status) — `_lw_buffer_sweep` calls it once per expired row (never once per
+      sweep run), which is what makes "exactly one alert" the correct, minimal semantics for a
+      single-orphan scenario while still scaling to N alerts for N independently-orphaned parent
+      waits. Emits `uuid_sucursal` from the buffered row itself so the alert is tenant-scoped
+      correctly even when the sweep processes rows for multiple branches in one pass. Zero
+      `sync_queue` interaction of any kind (no read, no write) — the D18 invariant ("a dependency
+      wait is not a transport failure") is enforced by simple omission, not a guard clause.
 
 #### T-PR8-010: Commit + open PR8
 Depends on: T-PR8-001..009
 - [ ] Branch `feat/sync-overhaul-pr8-dependency-buffer-alert-types` pushed, target `dev`
 - [ ] Both migration `--sql` dry-runs attached to the PR
+      Status: not performed by the apply executor per explicit instruction (same as T-PR7-008) —
+      commit/push is left to the requesting engineer. Working branch for this PR's work was
+      `feature/sync-overhaul-pr08-buffer-dependencias-alertas` (already checked out), not the name
+      this task predates. Both migrations' `--sql` dry-run output captured in this session (clean
+      DDL, no destructive statements) — see T-PR8-001/T-PR8-002 Status notes.
 
 ### PR8 acceptance
-- [ ] Buffer drains FIFO within a parent; `sync_dependency_wait`-observable via row count
-- [ ] `sync_queue` `intentos` never increments for a dependency wait
+- [x] Buffer drains FIFO within a parent; `sync_dependency_wait`-observable via row count
+      Status: FIFO within a parent verified structurally — `_select_pending` orders by
+      `buffered_at.asc()`; `test_parent_missing_buffer_drain` proves one buffered child drains to
+      `estado='aplicado'` once its parent lands, and `drain_dependency_buffer` returns the applied
+      count as the row-count observable T-PR8's acceptance line names. The `sync_dependency_wait`
+      Prometheus gauge itself (design.md §9) is NOT wired in this PR — no task in T-PR8-001..010
+      assigns it, and `observability/metrics.py` is not one of this PR's "Files:" entries; flagged as
+      a gap for whichever PR wires `parkos_core/sync/observability/metrics.py`'s gauges end-to-end.
+- [x] `sync_queue` `intentos` never increments for a dependency wait
+      Status: verified directly — `test_parent_missing_buffer_drain` asserts the sender's
+      `sync_queue` row reaches `estado='exitoso'` with `intentos == 0` (unchanged) after
+      `mark_dispatched` (never `mark_failed`, which is the only function that increments
+      `intentos`); `test_buffer_ttl_escalation_emits_one_alert_no_requeue` separately asserts ZERO
+      `sync_queue` rows exist for the child at all after the TTL sweep — `dependency_buffer.py`
+      never imports or calls anything from `repo/sync_queue.py`.
 
 ---
 

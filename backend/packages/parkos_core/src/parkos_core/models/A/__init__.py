@@ -21,8 +21,18 @@ PR8a adds:
   - :class:`RevocacionFactura` — DIAN revocation; second hash-chain carrier
   - :class:`IdempotencyKeys`  — Idempotency-Key response cache (REQ-OP-04)
 
-All classes descend from :class:`AppendOnlyBase`; the inmutability contract
-(``REVOKE UPDATE, DELETE`` + ``BEFORE UPDATE OR DELETE`` trigger) is
+PR8 adds:
+
+  - :class:`SyncQueueLwBuffer` — dependency buffer (design §2 Issue #2/#8);
+    keyed on ``(tabla_padre, uuid_padre)``, drained by
+    :mod:`parkos_core.sync.motor.dependency_buffer`
+  - :class:`AlertTypes`        — deploy-seeded ``tipo_alerta`` registry
+    (design §2 Issue #6); the ONE exception here — it descends directly
+    from :class:`Base`, not :class:`AppendOnlyBase`, since its PK is the
+    business key ``tipo_alerta``, not a ``uuid`` (see its own docstring)
+
+Every OTHER class descends from :class:`AppendOnlyBase`; the inmutability
+contract (``REVOKE UPDATE, DELETE`` + ``BEFORE UPDATE OR DELETE`` trigger) is
 enforced at the DB layer for every table here. ``SyncQueue`` is the
 carve-out (design §12) — it keeps ``UPDATE`` / ``DELETE`` grants so the
 sync workers can flip ``estado`` + ``intentos``, but the column whitelist
@@ -30,6 +40,7 @@ is enforced in :mod:`parkos_core.repo.sync_queue` (Python side).
 """
 from __future__ import annotations
 
+from .alert_types import AlertTypes
 from .arqueo import Arqueo
 from .caja import Caja
 from .idempotency_keys import IdempotencyKeys
@@ -40,8 +51,10 @@ from .revoked_sync_jwts import RevokedSyncJwt
 from .sync_conflict import SyncConflict
 from .sync_log import SyncLog
 from .sync_queue import SyncQueue
+from .sync_queue_lw_buffer import SyncQueueLwBuffer
 
 __all__ = [
+    "AlertTypes",
     "Arqueo",
     "Caja",
     "IdempotencyKeys",
@@ -52,4 +65,5 @@ __all__ = [
     "SyncConflict",
     "SyncLog",
     "SyncQueue",
+    "SyncQueueLwBuffer",
 ]

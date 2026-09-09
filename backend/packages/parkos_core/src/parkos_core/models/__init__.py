@@ -21,6 +21,7 @@ that error against ``pairing_tokens.uuid_sucursal -> prod.sucursal``.
 """
 from __future__ import annotations
 
+from .A.alert_types import AlertTypes
 from .A.arqueo import Arqueo
 from .A.caja import Caja
 from .A.factura_detalle import FacturaDetalle
@@ -36,6 +37,7 @@ from .A.salidas import Salidas
 from .A.sync_conflict import SyncConflict
 from .A.sync_log import SyncLog
 from .A.sync_queue import SyncQueue
+from .A.sync_queue_lw_buffer import SyncQueueLwBuffer
 from .L_E.factura_electronica import FacturaElectronica
 from .L_E.facturas import Facturas
 from .L_E.ingreso import Ingreso
@@ -75,6 +77,7 @@ from .V.usuarios_sucursal import UsuariosSucursal
 from .V.vehiculos import Vehiculos
 
 __all__ = [
+    "AlertTypes",
     "Alerta",
     "Anulaciones",
     "Arqueo",
@@ -116,6 +119,7 @@ __all__ = [
     "SyncConflict",
     "SyncLog",
     "SyncQueue",
+    "SyncQueueLwBuffer",
     "TarifasSucursal",
     "TipoArqueo",
     "TipoPersona",
