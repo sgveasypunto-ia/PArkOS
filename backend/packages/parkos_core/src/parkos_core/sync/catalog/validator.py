@@ -22,6 +22,18 @@ these and formats the result.
   - **Rule 3** — the 46 / 3 / 5 / 54 counts (proposal.md §6.5).
   - **Rule 4** — ``direction`` / ``broadcast_policy`` re-derived from
     ``modelo_datos_er.mmd`` per REQ-CAT-004's derivation table.
+  - **Rule 5** (T-PR3-007, D18/ADR-003) — ``depends_on`` re-derived from
+    ``modelo_datos_er.mmd``'s FK-tagged attributes: every table's expected
+    parent set is exactly the tables it holds a mandatory (NOT NULL),
+    physically FK-tagged column to, that are themselves ``SYNC_CATALOG``
+    entries. A nullable FK (or a polymorphic reference with no physical FK
+    at all, e.g. ``reclamos.uuid_reclamable``) never belongs in
+    ``depends_on`` — the R22 guard.
+  - **Rule 6** (R19) — the ``depends_on`` graph (self-chain edges excluded)
+    is a DAG; a cycle is reported as a rule violation using the same
+    algorithm ``catalog/dependency_graph.py`` runs at import time.
+  - **Rule 7** (R12) — ``priority`` is referenced nowhere in the dependency
+    ordering code path (AST check, not text-grep).
 
 **Rule 4's curated exception sets.** The ER's ``%% [TAG]`` comment plus
 ``uuid_sucursal`` column presence mechanically derives the correct
@@ -344,14 +356,249 @@ def check_rule_4_direction_matches_er(
     return violations
 
 
+# ---------------------------------------------------------------------------
+# Rule 5 — depends_on equals the ER's mandatory-FK parent set (D18, ADR-003, R22)
+# ---------------------------------------------------------------------------
+
+# Every ``<type> <column> FK "<description>"`` attribute line in
+# modelo_datos_er.mmd uses ``uuid`` as the type (verified: 88/88 FK-tagged
+# attributes in the current ER). A plain ``uuid <column> "<description>"``
+# line with no ``FK`` token — e.g. ``reclamos.uuid_reclamable`` ("polimórfico,
+# sin FK física") or ``log_transaccional.uuid_referencia`` ("opcional: FK al
+# evento origen") — is deliberately NOT matched: "FK" appearing inside the
+# free-text description does not make it a physically FK-tagged column.
+_FK_ATTR_RE = re.compile(r'^\s+uuid\s+(\w+)\s+FK\s+"([^"]*)"')
+_NULLABLE_MARKER_RE = re.compile(r"\bNULL\b", re.IGNORECASE)
+
+# Column name -> target table. Spanish singular/plural table naming is not a
+# mechanical function of the FK column name (e.g. ``uuid_tipo_vehiculo`` ->
+# ``tipos_vehiculo``, ``uuid_otro_cobro`` -> ``otros_cobros``), so — like this
+# module's Rule 4 curated exception sets — this is a small, explicit,
+# exhaustive dictionary built directly from every FK-tagged attribute line in
+# modelo_datos_er.mmd (32 distinct column names; re-derive by grepping
+# ``uuid \S+ FK`` against the ER if this ever needs updating). Self-chain
+# columns (the ``uuid_..._padre`` family + ``uuid_pago_revertido``) map to
+# their OWN table; ``parse_er_mandatory_fk_parents`` filters those out via
+# its ``target == table`` check, not by omitting them here — keeping them
+# documents the mapping completely instead of relying on silent absence.
+_FK_COLUMN_TARGET_TABLE: dict[str, str] = {
+    "uuid_usuario": "usuarios",
+    "uuid_usuario_cierre": "usuarios",
+    "uuid_permiso": "permisos",
+    "uuid_sucursal": "sucursal",
+    "uuid_tipo_sucursal": "tipo_sucursal",
+    "uuid_empresa": "empresa",
+    "uuid_tipo_vehiculo": "tipos_vehiculo",
+    "uuid_tipo_tarifa": "tipo_tarifa",
+    "uuid_tipo_persona": "tipo_persona",
+    "uuid_cliente": "clientes",
+    "uuid_tipo_subscripcion": "tipo_subscripciones",
+    "uuid_subscripcion_cliente": "subscripciones_cliente",
+    "uuid_vehiculo": "vehiculos",
+    "uuid_ingreso": "ingreso",
+    "uuid_costo_servicio": "costos_servicios",
+    "uuid_factura": "facturas",
+    "uuid_salida": "salidas",
+    "uuid_resolucion_facturacion": "resolucion_facturacion",
+    "uuid_arqueo": "arqueo",
+    "uuid_impuesto": "impuestos",
+    "uuid_otro_cobro": "otros_cobros",
+    "uuid_sesion": "sesion",
+    "uuid_factura_electronica": "factura_electronica",
+    "uuid_factura_electronica_reemplazo": "factura_electronica",
+    "uuid_tipo_arqueo": "tipo_arqueo",
+    # Self-chain columns (self_chain=True) — see the module-comment above.
+    "uuid_reimpresion_padre": "reimpresion_ticket",
+    "uuid_anulacion_padre": "anulaciones",
+    "uuid_reclamo_padre": "reclamos",
+    "uuid_alerta_padre": "alerta",
+    "uuid_pago_revertido": "factura_pagos",
+    "uuid_envio_padre": "envio_dian",
+    "uuid_validacion_padre": "validacion_evento",
+}
+
+
+def parse_er_mandatory_fk_parents(
+    mmd_path: Path, *, known_tables: set[str] | None = None
+) -> dict[str, frozenset[str]]:
+    """Derive each table's mandatory-FK parent set from ``modelo_datos_er.mmd``.
+
+    Mechanical rule (ADR-003 Part 1 / D18): a table's expected
+    ``depends_on`` is the set of tables it declares a real, ``FK``-tagged
+    ``uuid`` attribute pointing at (resolved via
+    :data:`_FK_COLUMN_TARGET_TABLE`) whose description carries **no**
+    nullability marker (a case-insensitive ``NULL`` word — matches every
+    nullable-FK annotation style actually used in the ER: ``NULL =``,
+    ``NULL si``, ``NULL en``), excluding:
+
+    - self-references (target == the table's own name — self-chains are
+      resolved separately via ``parent_fk_column``, never via
+      ``depends_on``);
+    - targets outside ``known_tables`` when provided (ADR-003: "that is
+      itself a SyncCatalog entry" — excludes ``LocalOnlyCatalog``/
+      ``OutOfCatalog`` targets).
+
+    A generic ``uuid`` attribute with no ``FK`` token at all (e.g.
+    ``reclamos.uuid_reclamable``, explicitly "sin FK física" — polymorphic,
+    no physical constraint) contributes nothing, mechanically, with no
+    special-casing required here — ``_FK_ATTR_RE`` simply never matches it.
+    """
+    lines = mmd_path.read_text(encoding="utf-8").splitlines()
+    result: dict[str, frozenset[str]] = {}
+
+    table: str | None = None
+    parents: set[str] = set()
+    for line in lines:
+        if table is None:
+            match = _BLOCK_START_RE.match(line)
+            if match:
+                table = match.group(1)
+                parents = set()
+            continue
+        if _BLOCK_END_RE.match(line):
+            result[table] = frozenset(parents)
+            table = None
+            continue
+
+        fk_match = _FK_ATTR_RE.match(line)
+        if not fk_match:
+            continue
+        column, description = fk_match.group(1), fk_match.group(2)
+        target = _FK_COLUMN_TARGET_TABLE.get(column)
+        if target is None or target == table:
+            continue
+        if _NULLABLE_MARKER_RE.search(description):
+            continue
+        if known_tables is not None and target not in known_tables:
+            continue
+        parents.add(target)
+
+    return result
+
+
+def check_rule_5_depends_on_matches_er(
+    *, sync_catalog: list, mmd_path: Path
+) -> list[DriftViolation]:
+    sync_names = {entry.name for entry in sync_catalog}
+    expected_by_table = parse_er_mandatory_fk_parents(mmd_path, known_tables=sync_names)
+
+    violations: list[DriftViolation] = []
+    for entry in sync_catalog:
+        expected = expected_by_table.get(entry.name, frozenset())
+        actual = frozenset(entry.depends_on)
+        if actual == expected:
+            continue
+
+        detail = (
+            f"{entry.name}: declared depends_on={sorted(actual)}, "
+            f"ER mandatory-FK set={sorted(expected)}"
+        )
+        unexpected = sorted(actual - expected)
+        if unexpected:
+            detail += f" — unexpected (nullable FK or no physical FK, R22 guard): {unexpected}"
+        missing = sorted(expected - actual)
+        if missing:
+            detail += f" — missing mandatory FK: {missing}"
+        violations.append(DriftViolation(5, detail))
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# Rule 6 — the depends_on graph (self-chain edges excluded) is a DAG (R19)
+# ---------------------------------------------------------------------------
+
+
+def check_rule_6_graph_is_dag(*, sync_catalog: list) -> list[DriftViolation]:
+    """Rule 6 — ``depends_on`` (self-chain excluded) forms a DAG.
+
+    Reuses the exact algorithm ``catalog/dependency_graph.py`` runs against
+    the real ``SYNC_CATALOG`` at import time, applied here to whatever
+    ``sync_catalog`` the caller passes — the real catalog for
+    ``check_catalog_drift.py``, or a deliberately cyclic fixture list for a
+    unit test — without needing to re-import a module that would itself
+    fail to import on a real cycle.
+    """
+    # Local import: avoids a hard import-time coupling from validator.py (a
+    # module several other call sites import defensively) to
+    # dependency_graph.py (a module that can itself raise at import time).
+    from .dependency_graph import DependencyGraphError, _build_graph, _topological_levels
+
+    graph = _build_graph(sync_catalog)
+    try:
+        _topological_levels(graph)
+    except DependencyGraphError as exc:
+        return [DriftViolation(6, str(exc))]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Rule 7 — `priority` referenced nowhere in the dependency-ordering code path (R12)
+# ---------------------------------------------------------------------------
+
+# The dependency-ordering code path (design.md §11 rule 7 / §3 Module
+# Structure) — the only modules allowed to reason about cross-row order.
+ORDERING_MODULE_RELATIVE_PATHS: tuple[str, ...] = (
+    "parkos_core/sync/catalog/dependency_graph.py",
+    "parkos_core/sync/motor/dependency_orderer.py",
+)
+
+
+def check_rule_7_priority_absent_from_ordering(
+    *, src_root: Path, relative_paths: tuple[str, ...] = ORDERING_MODULE_RELATIVE_PATHS
+) -> list[DriftViolation]:
+    """Rule 7 — ``priority`` is never referenced in the ordering code path.
+
+    ``priority`` legally exists as a per-entry FIFO tie-break *within* one
+    topological level (ADR-003 Part 1) — that tie-break falls out of
+    stable-sorting a batch ``list_pending`` already priority-ordered
+    (``motor/dependency_orderer.py``'s module docstring), never an explicit
+    read of the field. AST-based (not text-grep): ``ast.walk`` finds every
+    ``ast.Name``/``ast.Attribute`` node literally named ``priority``
+    regardless of formatting, so a comment merely mentioning the word cannot
+    produce a false positive and reformatted code cannot produce a false
+    negative.
+    """
+    violations: list[DriftViolation] = []
+    for relative_path in relative_paths:
+        module_path = src_root / relative_path
+        if not module_path.is_file():
+            continue
+        try:
+            tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+        except SyntaxError as exc:
+            violations.append(DriftViolation(7, f"{relative_path}: could not parse ({exc})"))
+            continue
+        for node in ast.walk(tree):
+            name = None
+            if isinstance(node, ast.Name):
+                name = node.id
+            elif isinstance(node, ast.Attribute):
+                name = node.attr
+            if name == "priority":
+                lineno = getattr(node, "lineno", "?")
+                violations.append(
+                    DriftViolation(
+                        7,
+                        f"{relative_path}:{lineno}: 'priority' referenced in the "
+                        "dependency-ordering code path",
+                    )
+                )
+    return violations
+
+
 __all__ = [
+    "ORDERING_MODULE_RELATIVE_PATHS",
     "DriftViolation",
     "ERSignal",
     "check_rule_1_name_matches_model",
     "check_rule_2_exactly_one_catalog",
     "check_rule_3_counts",
     "check_rule_4_direction_matches_er",
+    "check_rule_5_depends_on_matches_er",
+    "check_rule_6_graph_is_dag",
+    "check_rule_7_priority_absent_from_ordering",
     "derive_expected_direction_broadcast",
     "discover_model_tablenames",
     "parse_er_entities",
+    "parse_er_mandatory_fk_parents",
 ]

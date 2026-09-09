@@ -2,8 +2,9 @@
 check_catalog_drift.py — CI guard for the declarative sync catalog (T-PR2-017).
 
 REQ-OPS-003: re-derives catalog policy from source-of-truth artifacts and
-fails the build on drift. Rules 1-4 (this PR); rules 5-7 (`depends_on`/DAG/
-`priority`) land in PR3 (T-PR3-007) as an extension of this same script.
+fails the build on drift. Rules 1-4 shipped in PR2; rules 5-7
+(`depends_on`/DAG/`priority`) are PR3's extension of this same script
+(T-PR3-007, D18/ADR-003).
 
   1. name -> ORM class (every catalog entry's declared name matches its
      model_cls.__tablename__)
@@ -12,6 +13,12 @@ fails the build on drift. Rules 1-4 (this PR); rules 5-7 (`depends_on`/DAG/
      46+3+5==54
   4. direction / broadcast_policy re-derived from modelo_datos_er.mmd
      (REQ-CAT-004), asserted against the declared value
+  5. depends_on re-derived from modelo_datos_er.mmd's mandatory (NOT NULL),
+     FK-tagged attributes — a nullable FK (or a polymorphic reference with
+     no physical FK) in any depends_on fails the build (R22 guard)
+  6. the depends_on graph (self-chain edges excluded) is a DAG (R19)
+  7. `priority` is referenced nowhere in the dependency-ordering code path
+     (AST check, R12)
 
 Usage:
   python openspec/scripts/check_catalog_drift.py [SRC_ROOT] [ER_MMD_PATH]
@@ -32,7 +39,8 @@ from pathlib import Path
 
 def main(argv: list[str]) -> int:
     repo_root = Path(__file__).resolve().parents[2]
-    src_root = Path(argv[1]) if len(argv) > 1 else repo_root / "backend" / "packages" / "parkos_core" / "src"
+    default_src_root = repo_root / "backend" / "packages" / "parkos_core" / "src"
+    src_root = Path(argv[1]) if len(argv) > 1 else default_src_root
     er_path = Path(argv[2]) if len(argv) > 2 else repo_root / "modelo_datos_er.mmd"
 
     if not src_root.is_dir():
@@ -50,6 +58,9 @@ def main(argv: list[str]) -> int:
             check_rule_2_exactly_one_catalog,
             check_rule_3_counts,
             check_rule_4_direction_matches_er,
+            check_rule_5_depends_on_matches_er,
+            check_rule_6_graph_is_dag,
+            check_rule_7_priority_absent_from_ordering,
             parse_er_entities,
         )
     except ImportError as exc:
@@ -76,13 +87,18 @@ def main(argv: list[str]) -> int:
     violations += check_rule_4_direction_matches_er(
         sync_catalog=list(SYNC_CATALOG), er_entities=er_entities
     )
+    violations += check_rule_5_depends_on_matches_er(
+        sync_catalog=list(SYNC_CATALOG), mmd_path=er_path
+    )
+    violations += check_rule_6_graph_is_dag(sync_catalog=list(SYNC_CATALOG))
+    violations += check_rule_7_priority_absent_from_ordering(src_root=src_root)
 
     print(f"Checked {len(SYNC_CATALOG)} SYNC_CATALOG + {len(LOCAL_ONLY_CATALOG)} "
           f"LOCAL_ONLY_CATALOG entries against {models_root} and {er_path}")
     print()
 
     if not violations:
-        print("OK: no catalog drift found (rules 1-4).")
+        print("OK: no catalog drift found (rules 1-7).")
         return 0
 
     print(f"FAIL: {len(violations)} violation(s) found:")

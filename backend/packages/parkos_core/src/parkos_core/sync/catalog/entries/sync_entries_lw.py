@@ -47,7 +47,17 @@ _ANULACIONES = SyncCatalogEntry(
     direction="branch_to_cloud",
     broadcast_policy=None,  # single destination (cloud); no broadcast scope
     apply_strategy="append_transition",
-    depends_on=("sucursal", "ingreso", "salidas", "usuarios"),
+    # T-PR3-001 fix (R22 guard): "salidas" REMOVED from depends_on.
+    # ER modelo_datos_er.mmd:629 — uuid_salida FK "salida anulada (solo
+    # cuando tipo_anulable = salida; NULL en anulación de ingreso)" is a
+    # nullable FK (it is NULL for every anulación of tipo_anulable='ingreso').
+    # ADR-003 Part 1 / D18: depends_on holds ONLY mandatory (NOT NULL) FKs —
+    # a nullable FK here would wait forever for a "salida" that legitimately
+    # never exists (the exact R22 hazard, applied to this table instead of
+    # ingreso/subscripciones_cliente). uuid_ingreso stays: its own ER comment
+    # states it is "siempre presente" (always present) regardless of
+    # tipo_anulable — a real mandatory FK.
+    depends_on=("sucursal", "ingreso", "usuarios"),
     has_uuid_sucursal=True,
     seq_strategy="seq_via_datos",
     self_chain=True,
@@ -62,7 +72,18 @@ _RECLAMOS = SyncCatalogEntry(
     direction="branch_to_cloud",
     broadcast_policy=None,  # single destination (cloud); no broadcast scope
     apply_strategy="append_transition",
-    depends_on=("sucursal", "ingreso", "salidas", "facturas", "subscripciones_cliente"),
+    # T-PR3-001 fix: depends_on reduced to ("sucursal",) only.
+    # ER modelo_datos_er.mmd:651 — the polymorphic target is carried by a
+    # SINGLE generic column, `uuid_reclamable`, explicitly annotated "sin FK
+    # física" (no physical FK) — `tipo_reclamable` is a string discriminator,
+    # not a real per-table foreign key. ingreso/salidas/facturas/
+    # subscripciones_cliente were previously listed here (proposal.md §6.4's
+    # pre-ER-alignment table), but none of them is backed by an actual
+    # mandatory NOT NULL FK column pointing at that specific table — the
+    # ADR-003 depends_on contract ("every table it holds a mandatory FK to")
+    # does not apply to a polymorphic, constraint-free reference. Only
+    # `uuid_sucursal` is a real FK-tagged, non-nullable column on this table.
+    depends_on=("sucursal",),
     has_uuid_sucursal=True,
     seq_strategy="seq_via_datos",
     self_chain=True,
@@ -118,7 +139,15 @@ _VALIDACION_EVENTO = SyncCatalogEntry(
     apply_strategy=None,
     role_required="cloud",
     originating_role="cloud",
-    depends_on=(),
+    # T-PR3-001 fix: depends_on=("sucursal",) — previously left empty.
+    # ER modelo_datos_er.mmd:920 — uuid_sucursal FK "sucursal que originó el
+    # evento" carries no nullability marker, i.e. a real mandatory FK
+    # (uuid_usuario at :921 IS nullable — "NULL en recepción automática" —
+    # and correctly stays excluded). This entry is never_propagated (never
+    # enters a sync batch), so the fix is inert at runtime; it only makes
+    # the declared value match the ER, per T-PR3-001's uniform, CI-derived
+    # rule (ADR-003: "depends_on is CI-derived, not hand-maintained").
+    depends_on=("sucursal",),
     has_uuid_sucursal=True,
     seq_strategy="none",
     self_chain=True,

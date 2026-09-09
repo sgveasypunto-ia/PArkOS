@@ -527,68 +527,131 @@ Depends on: T-PR2-001..018
 **Dependencies**: PR2 merged
 **Estimated LOC**: ~600
 **Gate to next PR**: topological order verified against the ER; cycle detection tested
+**Status**: All file-level tasks (T-PR3-001..007) verified complete. Per the same corrected branch
+topology as PR1/PR2, this work was applied on `feature/sync-overhaul-pr03-grafo-dependencias` off
+`dev`. **Test path correction**: this section's original `Files:` lines point at
+`backend/packages/parkos_core/tests/unit/...`, which does not exist in this repo — the real,
+already-established convention (`testpaths=["tests"]` in `backend/pyproject.toml`, used by every PR1/
+PR2 test) is the single `backend/tests/{unit,integration,static,migrations}/` tree. Both new test
+files landed at `backend/tests/unit/test_dependency_graph.py` and
+`backend/tests/unit/test_dependency_orderer.py` instead; `check_catalog_drift.py`'s rules 5/7 also
+gained 2 tests appended to the already-existing `backend/tests/static/test_check_catalog_drift.py`
+(PR2's own file for this same script) rather than a new file, mirroring how PR2 tested rule 4 there.
+
+**Three real R22-class bugs found in PR2's catalog and fixed here** (T-PR3-001's own acceptance test
+— `test_depends_on_matches_er` — is what surfaces them; ADR-003 Part 1 requires `depends_on` to hold
+*only* mandatory NOT NULL FKs, mechanically re-derived from `modelo_datos_er.mmd`):
+- `anulaciones.depends_on` incorrectly included `"salidas"` — `modelo_datos_er.mmd:629`'s
+  `uuid_salida` FK is explicitly nullable ("NULL en anulación de ingreso"), the same hazard class as
+  the ratified `ingreso`/`subscripciones_cliente` example, just on a different table. Fixed to
+  `("sucursal", "ingreso", "usuarios")`.
+- `reclamos.depends_on` incorrectly included `"ingreso"`, `"salidas"`, `"facturas"`,
+  `"subscripciones_cliente"` — all four are carried by ONE polymorphic column, `uuid_reclamable`,
+  explicitly annotated in the ER as "sin FK física" (no physical FK at all; `tipo_reclamable` is a
+  string discriminator, not a real per-table FK). None of the four is a real mandatory FK to that
+  specific table. Fixed to `("sucursal",)` — the only real, FK-tagged, non-nullable column.
+- `validacion_evento.depends_on` was empty but `uuid_sucursal` is a real mandatory FK (`uuid_usuario`
+  correctly stays excluded — it is nullable, "NULL en recepción automática"). Fixed to
+  `("sucursal",)`. Inert at runtime (this is the sole `never_propagated` entry, never enters a sync
+  batch) — the fix only makes the declared value match the ER, per the same uniform, CI-derived rule
+  applied to every other entry (no sync_strategy-based exception carved into rule 5).
+
+All three fixes live in `backend/packages/parkos_core/src/parkos_core/sync/catalog/entries/
+sync_entries_lw.py` — no other file references these values yet (PR4+ is the first consumer), so the
+fix is contained and carries no behavioral risk to already-shipped code.
+
+Verification: `TEST_PG_IMAGE=parkos-postgres:16-pgpartman uv run pytest -q` — full suite: **924
+passed, 0 failed, 54 xfailed (strict, unchanged from PR2's baseline — none added, none touched), 11
+skipped (pre-existing, unrelated: a handful of integration tests need a separately-running local
+Postgres with a hardcoded `dummy` user, distinct from the `pg_engine`/`alembic_upgrade` testcontainers
+fixtures — out of PR3 scope), 0 errors**. One transient, unrelated flake was observed and NOT
+reproduced on immediate re-run: `tests/unit/test_jwt_issuer_guard.py::
+test_verify_jwt_returns_401_on_wrong_signature` failed once, passed on the very next full-suite run
+with zero code changes in between — pre-existing JWT/auth test infra, outside sync-overhaul's scope,
+not investigated further per the instruction to leave other PRs' gaps alone.
 
 #### T-PR3-001: RED — `depends_on` ↔ ER matching test
 Req: ADR-003 Validation · Design: §2 Issue #7 · Depends on: PR2
-Files: `backend/packages/parkos_core/tests/unit/test_dependency_graph.py` (new, failing) —
+Files: `backend/tests/unit/test_dependency_graph.py` (new) —
 `test_depends_on_matches_er`: each entry's `depends_on` equals the ER's mandatory-FK parent set;
 `test_nullable_fk_rejected`: explicitly asserts `"subscripciones_cliente" not in
-ingreso.depends_on` (R22).
-- [ ] Fails — `catalog/dependency_graph.py` does not exist yet
+ingreso.depends_on` (R22). ER-derivation lives in `catalog/validator.py::parse_er_mandatory_fk_parents`
+(shared with `check_catalog_drift.py` rule 5, T-PR3-007) — a mechanical FK-column-tag +
+nullability-marker scan, not a hand-maintained table.
+- [x] Fails — `catalog/dependency_graph.py` does not exist yet (RED confirmed before T-PR3-003)
+- [x] Passes GREEN after T-PR3-003, with the 3 catalog fixes above applied
 
 #### T-PR3-002: RED — DAG-after-self-edges test
 Req: R19 · Design: §2 Issue #7 · Depends on: T-PR3-001
 Files: `test_dependency_graph.py` (append) — `test_graph_is_dag_after_self_edges`: the 7
-`self_chain=True` edges are excluded and the remainder is acyclic; an injected cycle fixture raises
-at import time.
-- [ ] Fails alongside T-PR3-001
+`self_chain=True` edges are excluded and the remainder is acyclic; `test_cycle_raises_at_import`
+loads a standalone fixture module (`backend/tests/unit/fixtures/cyclic_dependency_graph_fixture.py`)
+that calls the real `_topological_levels` against a deliberately cyclic 2-node graph — proves the
+raise happens at import (`exec_module`) time, not apply time.
+- [x] Fails alongside T-PR3-001
+- [x] Passes GREEN after T-PR3-003
 
 #### T-PR3-003: GREEN — `catalog/dependency_graph.py`
 Req: REQ-CAT-015, R19 · Design: §2 Issue #7, §3 · Depends on: T-PR3-002
 Files: `backend/packages/parkos_core/src/parkos_core/sync/catalog/dependency_graph.py` (new) —
-builds the graph from every entry's `depends_on`, excludes `self_chain=True` edges, computes
-topological levels once at import, raises `ImportError`-class exception on a cycle (programming
-error, not a runtime condition).
-- [ ] T-PR3-001 and T-PR3-002 pass (GREEN)
+builds the graph from every entry's `depends_on`, excludes `self_chain=True` edges (defensively —
+no entry's `depends_on` ever references its own name), computes topological levels once at import
+via Kahn's algorithm (BFS layering), raises `DependencyGraphError` (an `ImportError` subclass) on a
+cycle (programming error, not a runtime condition).
+- [x] T-PR3-001 and T-PR3-002 pass (GREEN)
 
 #### T-PR3-004: RED — parents-before-children ordering test
 Req: R12, ADR-003 Validation · Design: §2 Issue #7 · Depends on: T-PR3-003
-Files: `backend/packages/parkos_core/tests/unit/test_dependency_orderer.py` (new, failing) —
+Files: `backend/tests/unit/test_dependency_orderer.py` (new) —
 `test_parents_before_children`: `facturas` precedes `factura_pagos` despite the legacy `priority`
-values (`factura_pagos=5`, `facturas=1`).
-- [ ] Fails — `motor/dependency_orderer.py` does not exist yet
+values (`factura_pagos=5`, `facturas=1`); the fixture batch arrives in the "wrong" (legacy
+priority-ranked) order to prove the fix is real.
+- [x] Fails — `motor/dependency_orderer.py` does not exist yet (RED confirmed before T-PR3-006)
+- [x] Passes GREEN after T-PR3-006
 
 #### T-PR3-005: RED — batch-selection-unchanged test
 Req: ADR-003 Validation, addendum #4 · Design: §2 Issue #7 · Depends on: T-PR3-004
-Files: `test_dependency_orderer.py` (append) — `test_batch_selection_unchanged`: the selection query
-is byte-identical to `repo/sync_queue.py::list_pending`'s `prioridad DESC, intentos ASC,
-created_at ASC LIMIT 100` ordering and 100/500 cap.
-- [ ] Fails alongside T-PR3-004
+Files: `test_dependency_orderer.py` (append) — `test_batch_selection_unchanged`: captures the actual
+`Select` statement `repo/sync_queue.py::list_pending` builds (via a fake `AsyncSession.execute`, no
+real DB) and asserts its compiled SQL is byte-identical to `prioridad DESC, intentos ASC,
+created_at ASC` / default `LIMIT 100` — proving PR3 did not touch `list_pending` (the documented
+500 cap is not enforced in code anywhere in this repo; asserted as the documented default only).
+- [x] Fails alongside T-PR3-004
+- [x] Passes GREEN after T-PR3-006
 
 #### T-PR3-006: GREEN — `motor/dependency_orderer.py`
 Req: REQ-MOT-015 · Design: §2 Issue #7, §3 · Depends on: T-PR3-005
-Files: `backend/packages/parkos_core/src/parkos_core/sync/motor/dependency_orderer.py` (new) —
-topologically sorts an already-selected batch over `depends_on`, excluding self-chain edges;
-`priority` used only as an intra-level FIFO tie-break; does NOT touch batch selection.
-- [ ] T-PR3-004 and T-PR3-005 pass (GREEN)
+Files: `backend/packages/parkos_core/src/parkos_core/sync/motor/dependency_orderer.py` (new, plus
+`sync/motor/__init__.py` — the `motor/` package did not exist yet) — stable-sorts an already-selected
+batch by table topological level (`catalog.dependency_graph.TOPOLOGICAL_LEVELS`), excluding
+self-chain edges (never present in `depends_on` to begin with); `priority` is never read — the
+stable sort over an already-priority-ordered input is what makes `priority` "survive" as the
+intra-level FIFO tie-break; does NOT touch batch selection.
+- [x] T-PR3-004 and T-PR3-005 pass (GREEN)
 
 #### T-PR3-007: `check_catalog_drift.py` rules 5-7 extension (depends_on/DAG/priority)
 Req: REQ-OPS-003 (rules 5-6), R12, R19 · Design: §11 (rules 6, 7, 11) · Depends on: T-PR3-006
-Files: `openspec/scripts/check_catalog_drift.py` (modified) — rule: `depends_on` equals the ER's
-mandatory-FK parent set (a nullable FK in any `depends_on` fails the build — the R22 guard); rule:
-the graph is a DAG after removing self-chain edges; rule: `priority` referenced nowhere in the
-ordering code path (AST check).
-- [ ] Script exits 1 when a fixture nullable FK is injected into `depends_on`
-- [ ] Script exits 1 when `priority` is referenced in a fixture ordering function
+Files: `openspec/scripts/check_catalog_drift.py` (modified) + `catalog/validator.py` (modified, new
+rule 5/6/7 functions) — rule: `depends_on` equals the ER's mandatory-FK parent set (a nullable FK, or
+a polymorphic reference with no physical FK, in any `depends_on` fails the build — the R22 guard);
+rule: the graph is a DAG after removing self-chain edges (reuses `dependency_graph`'s exact
+algorithm); rule: `priority` referenced nowhere in the ordering code path (`ast.walk`-based, not
+text-grep — checked against `catalog/dependency_graph.py` and `motor/dependency_orderer.py`).
+Tests appended to the existing `backend/tests/static/test_check_catalog_drift.py` (PR2's file).
+- [x] Script exits 1 when a fixture nullable FK is injected into `depends_on`
+  (`test_rule_5_flags_injected_nullable_fk_in_depends_on`)
+- [x] Script exits 1 when `priority` is referenced in a fixture ordering function
+  (`test_rule_7_flags_priority_in_fixture_ordering_function`)
 
 #### T-PR3-008: Commit + open PR3
 Depends on: T-PR3-001..007
-- [ ] Branch `feat/sync-overhaul-pr3-dependency-graph` pushed, target `dev`
-- [ ] `check_catalog_drift.py` exits 0 with all rules through 7 active
+- [ ] Branch pushed, PR opened — left to the orchestrator per this run's instructions (no commit/push
+  performed by the apply step)
+- [x] `check_catalog_drift.py` exits 0 with all rules through 7 active
 
 ### PR3 acceptance
-- [ ] `test_depends_on_matches_er`, `test_nullable_fk_rejected`, `test_graph_is_dag_after_self_edges` pass
-- [ ] `test_parents_before_children`, `test_batch_selection_unchanged` pass
+- [x] `test_depends_on_matches_er`, `test_nullable_fk_rejected`, `test_graph_is_dag_after_self_edges` pass
+- [x] `test_parents_before_children`, `test_batch_selection_unchanged` pass
 
 ---
 
