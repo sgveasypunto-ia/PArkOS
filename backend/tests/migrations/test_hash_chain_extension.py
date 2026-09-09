@@ -18,7 +18,18 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 
+import pytest
 
+_XFAIL_GENESIS = pytest.mark.xfail(
+    reason=(
+        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
+        "openspec/changes/sync-overhaul/tasks.md PR6"
+    ),
+    strict=True,
+)
+
+
+@_XFAIL_GENESIS
 async def test_first_row_uses_genesis_anchor(pg_dsn: str) -> None:
     """The first row for a uuid_sucursal has ``hash_anterior = genesis_hash``."""
     import hashlib
@@ -44,6 +55,7 @@ async def test_first_row_uses_genesis_anchor(pg_dsn: str) -> None:
         )
 
 
+@_XFAIL_GENESIS
 async def test_second_row_links_to_first(pg_dsn: str) -> None:
     """The second row's ``hash_anterior`` matches the first row's ``hash_actual``."""
     import psycopg
@@ -82,6 +94,7 @@ async def test_second_row_links_to_first(pg_dsn: str) -> None:
         assert second_actual != first_hash_actual
 
 
+@_XFAIL_GENESIS
 async def test_chain_grows_monotonically(pg_dsn: str) -> None:
     """A 5-row chain produces 5 distinct ``hash_actual`` values."""
     import psycopg

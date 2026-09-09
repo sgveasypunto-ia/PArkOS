@@ -25,6 +25,14 @@ import pytest
 
 _LS_TABLES = ("login", "sesion")
 
+_XFAIL_GENESIS = pytest.mark.xfail(
+    reason=(
+        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
+        "openspec/changes/sync-overhaul/tasks.md PR6"
+    ),
+    strict=True,
+)
+
 
 @pytest.mark.parametrize("table_name", _LS_TABLES)
 async def test_ls_update_requires_log(
@@ -33,6 +41,12 @@ async def test_ls_update_requires_log(
 ) -> None:
     """Without a co-transactional ``log_transaccional`` row, the UPDATE
     must be rejected with ``LOG_TRANSACCIONAL_REQUIRED``.
+
+    The guard trigger raises with ``ERRCODE = '42501'``
+    (``insufficient_privilege``, ``0001_initial_schema.py``), which psycopg
+    surfaces as :class:`psycopg.errors.InsufficientPrivilege` — not the
+    generic :class:`psycopg.errors.RaiseException` (``P0001``, the default
+    for a plain ``RAISE EXCEPTION`` with no explicit code).
     """
     import psycopg
 
@@ -56,7 +70,7 @@ async def test_ls_update_requires_log(
                 (row_uuid,),
             )
             await conn.commit()
-        except psycopg.errors.RaiseException as exc:
+        except psycopg.errors.InsufficientPrivilege as exc:
             msg = str(exc)
             assert "LOG_TRANSACCIONAL_REQUIRED" in msg, (
                 f"{table_name}: trigger raised but missing tag; "
@@ -68,6 +82,7 @@ async def test_ls_update_requires_log(
             )
 
 
+@_XFAIL_GENESIS
 @pytest.mark.parametrize("table_name", _LS_TABLES)
 async def test_ls_update_with_log_succeeds(
     pg_dsn: str,

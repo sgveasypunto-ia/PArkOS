@@ -31,11 +31,17 @@ from ..models.A.sync_queue import SyncQueue
 # gives mypy a finite set to validate against.
 Operacion = Literal["insert", "update", "delete", "compensate"]
 
-# Only these four columns may be updated by ``rol_app``. The DB GRANT
+# Only these five columns may be updated by ``rol_app``. The DB GRANT
 # carries the same restriction at the SQL layer; this frozenset is the
 # Python-side mirror, asserted by every helper here.
+#
+# T-PR2-000 (pre-existing bug, found during PR1's carve-out AST-check
+# draft): ``sync_timestamp`` was missing from this whitelist even though
+# both ``mark_dispatched`` and ``mark_in_progress`` always set it, so both
+# helpers unconditionally raised ``SyncQueueStateError`` on every call.
+# ``mark_failed`` was unaffected — it never touches ``sync_timestamp``.
 ALLOWED_SYNC_QUEUE_UPDATE_COLUMNS: frozenset[str] = frozenset(
-    {"estado", "intentos", "next_retry_at", "ultimo_error"}
+    {"estado", "intentos", "next_retry_at", "ultimo_error", "sync_timestamp"}
 )
 
 # Exponential backoff schedule: 1m → 5m → 30m → 2h → 12h → 24h max
@@ -236,8 +242,12 @@ async def mark_failed(
     if current is None:
         raise SyncQueueNotFoundError(f"sync_queue row {sq_uuid} not found")
 
-    new_intentos = (current or 0) + 1
-    new_delay = next_retry_delay(new_intentos)
+    current = current or 0
+    new_intentos = current + 1
+    # Delay is indexed by the attempt count *before* this failure (see the
+    # docstring table above) — the first failure (current=0) gets the 1m
+    # entry, not the 5m one.
+    new_delay = next_retry_delay(current)
     new_retry_at = _now() + new_delay
 
     _validate_update_columns(

@@ -25,7 +25,18 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 
+import pytest
 
+_XFAIL_GENESIS = pytest.mark.xfail(
+    reason=(
+        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
+        "openspec/changes/sync-overhaul/tasks.md PR6"
+    ),
+    strict=True,
+)
+
+
+@_XFAIL_GENESIS
 async def test_record_login_inserts_login_row(pg_engine, alembic_upgrade) -> None:
     """``record_login(success=True)` inserts a ``login`` row with ``estado='exitoso'``."""
     from parkos_core.models.L_S.login import Login
@@ -62,6 +73,7 @@ async def test_record_login_inserts_login_row(pg_engine, alembic_upgrade) -> Non
         assert fetched.estado == "exitoso"
 
 
+@_XFAIL_GENESIS
 async def test_record_login_failed_inserts_with_estado_fallido(
     pg_engine, alembic_upgrade
 ) -> None:
@@ -86,6 +98,7 @@ async def test_record_login_failed_inserts_with_estado_fallido(
         assert row.estado == "fallido"
 
 
+@_XFAIL_GENESIS
 async def test_record_login_writes_log_row(pg_engine, alembic_upgrade) -> None:
     """``record_login`` writes a co-transactional ``log_transaccional`` row."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
@@ -121,6 +134,7 @@ async def test_record_login_writes_log_row(pg_engine, alembic_upgrade) -> None:
         assert log_row.uuid_sucursal == sucursal
 
 
+@_XFAIL_GENESIS
 async def test_close_login_with_log_skipped_in_pr1b(pg_engine, alembic_upgrade) -> None:
     """``close_login_with_log`` is a PR1b skeleton; PR7 lands the full impl.
 

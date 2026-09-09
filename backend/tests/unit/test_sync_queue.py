@@ -33,9 +33,15 @@ from parkos_core.repo.sync_queue import (
 
 
 def test_allowed_columns_constant() -> None:
-    """The whitelist has exactly the four expected columns."""
+    """The whitelist has exactly the five expected columns (T-PR2-000).
+
+    ``sync_timestamp`` joined the whitelist in T-PR2-000 — without it,
+    ``mark_dispatched``/``mark_in_progress`` always raised
+    ``SyncQueueStateError`` because both stamp ``sync_timestamp`` on every
+    call.
+    """
     assert frozenset(
-        {"estado", "intentos", "next_retry_at", "ultimo_error"}
+        {"estado", "intentos", "next_retry_at", "ultimo_error", "sync_timestamp"}
     ) == ALLOWED_SYNC_QUEUE_UPDATE_COLUMNS
 
 
@@ -65,7 +71,9 @@ def test_next_retry_delay_clamping() -> None:
     assert next_retry_delay(-1) == timedelta(minutes=1)  # clamp to first
 
 
-async def test_enqueue_default_priority_for_insert(pg_engine, alembic_upgrade) -> None:
+async def test_enqueue_default_priority_for_insert(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """``operacion='insert'`` gets priority 10 (highest)."""
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -78,7 +86,7 @@ async def test_enqueue_default_priority_for_insert(pg_engine, alembic_upgrade) -
             tabla="log_transaccional",
             uuid_registro=uuid_lib.uuid4(),
             datos={"accion": "test"},
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=seeded_sucursal_uuid,
         )
         await session.commit()
 
@@ -87,7 +95,9 @@ async def test_enqueue_default_priority_for_insert(pg_engine, alembic_upgrade) -
         assert row.intentos == 0
 
 
-async def test_enqueue_default_priority_for_non_insert(pg_engine, alembic_upgrade) -> None:
+async def test_enqueue_default_priority_for_non_insert(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """Non-insert operations default to priority 0."""
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -101,13 +111,13 @@ async def test_enqueue_default_priority_for_non_insert(pg_engine, alembic_upgrad
                 tabla="sync_queue",
                 uuid_registro=uuid_lib.uuid4(),
                 datos={},
-                uuid_sucursal=uuid_lib.uuid4(),
+                uuid_sucursal=seeded_sucursal_uuid,
             )
             assert row.prioridad == 0, f"{op} should default to priority 0"
         await session.commit()
 
 
-async def test_mark_dispatched(pg_engine, alembic_upgrade) -> None:
+async def test_mark_dispatched(pg_engine, alembic_upgrade, seeded_sucursal_uuid) -> None:
     """``mark_dispatched`` flips ``estado='exitoso'`` and stamps ``sync_timestamp``."""
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -120,7 +130,7 @@ async def test_mark_dispatched(pg_engine, alembic_upgrade) -> None:
             tabla="sync_queue",
             uuid_registro=uuid_lib.uuid4(),
             datos={},
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=seeded_sucursal_uuid,
         )
         await session.commit()
         row_uuid = row.uuid
@@ -133,7 +143,7 @@ async def test_mark_dispatched(pg_engine, alembic_upgrade) -> None:
         assert row.sync_timestamp is not None
 
 
-async def test_mark_in_progress(pg_engine, alembic_upgrade) -> None:
+async def test_mark_in_progress(pg_engine, alembic_upgrade, seeded_sucursal_uuid) -> None:
     """``mark_in_progress`` flips ``estado='en_progreso'``."""
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -146,7 +156,7 @@ async def test_mark_in_progress(pg_engine, alembic_upgrade) -> None:
             tabla="sync_queue",
             uuid_registro=uuid_lib.uuid4(),
             datos={},
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=seeded_sucursal_uuid,
         )
         await session.commit()
         row_uuid = row.uuid
@@ -158,7 +168,9 @@ async def test_mark_in_progress(pg_engine, alembic_upgrade) -> None:
         assert row.estado == "en_progreso"
 
 
-async def test_mark_failed_increments_intentos(pg_engine, alembic_upgrade) -> None:
+async def test_mark_failed_increments_intentos(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """``mark_failed`` increments ``intentos`` and sets ``next_retry_at`` per the schedule."""
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -171,7 +183,7 @@ async def test_mark_failed_increments_intentos(pg_engine, alembic_upgrade) -> No
             tabla="sync_queue",
             uuid_registro=uuid_lib.uuid4(),
             datos={},
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=seeded_sucursal_uuid,
         )
         await session.commit()
         row_uuid = row.uuid
@@ -202,14 +214,16 @@ async def test_mark_failed_increments_intentos(pg_engine, alembic_upgrade) -> No
         assert timedelta(seconds=295) < delta < timedelta(seconds=305)
 
 
-async def test_list_pending_returns_pending_rows(pg_engine, alembic_upgrade) -> None:
+async def test_list_pending_returns_pending_rows(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
     """``list_pending`` returns rows with ``estado='pendiente'``, ordered correctly."""
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
     async with Session() as session:
-        sucursal = uuid_lib.uuid4()
+        sucursal = seeded_sucursal_uuid
         # Insert 3 rows: priorities 5, 10, 1.
         high = await enqueue(
             session,

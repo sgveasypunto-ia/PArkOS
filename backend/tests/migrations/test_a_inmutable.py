@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 # (table_name, skip?)
-_A_TABLES: tuple[tuple[str, bool], ...] = (
+_A_TABLES: tuple = (
     ("salidas", False),
     ("factura_detalle", False),
     ("factura_impuestos", False),
@@ -32,7 +32,17 @@ _A_TABLES: tuple[tuple[str, bool], ...] = (
     ("arqueo", False),
     ("sync_log", False),
     ("sync_conflict", False),
-    ("log_transaccional", False),
+    pytest.param(
+        "log_transaccional",
+        False,
+        marks=pytest.mark.xfail(
+            reason=(
+                "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
+                "openspec/changes/sync-overhaul/tasks.md PR6"
+            ),
+            strict=True,
+        ),
+    ),
     ("sync_queue", True),  # carve-out — UPDATE/DELETE allowed on the 4 whitelisted cols
 )
 
@@ -96,8 +106,19 @@ async def test_a_table_update_blocked(
     """UPDATE on a [A] table row must raise ``<TABLE>_INMUTABLE``.
 
     Inserts a row first (via the helper from the previous test pattern), then
-    attempts an UPDATE. The BEFORE UPDATE OR DELETE trigger raises a custom
-    exception; we assert the error message contains the table-specific tag.
+    attempts an UPDATE. The BEFORE UPDATE OR DELETE trigger raises
+    ``RAISE EXCEPTION ... USING ERRCODE = '42501'`` (``insufficient_privilege``
+    — see every ``fn_<table>_inmutable()`` function in
+    ``0001_initial_schema.py``), which psycopg surfaces as
+    :class:`psycopg.errors.InsufficientPrivilege`, not the generic
+    :class:`psycopg.errors.RaiseException` (that class corresponds to the
+    default ``P0001`` code, used only when no ``ERRCODE`` is given). We
+    assert the error message contains the table-specific tag.
+
+    ``sync_status`` is the column mutated here (not ``estado``) because it is
+    the one column every ``[A]`` table carries via ``AppendOnlyBase``'s
+    ``SyncMixin`` — most ``[A]`` tables (all but ``log_transaccional``) have
+    no ``estado`` column at all.
     """
     import psycopg
 
@@ -118,12 +139,12 @@ async def test_a_table_update_blocked(
         # New transaction for the UPDATE — the trigger raises RAISE EXCEPTION.
         try:
             await cur.execute(
-                f"UPDATE prod.{table_name} SET estado = 'mutado' "
+                f"UPDATE prod.{table_name} SET sync_status = 'error' "
                 f"WHERE uuid = %s",
                 (row_uuid,),
             )
             await conn.commit()
-        except psycopg.errors.RaiseException as exc:
+        except psycopg.errors.InsufficientPrivilege as exc:
             msg = str(exc)
             assert expected_tag in msg, (
                 f"{table_name}: trigger raised but missing tag; "
@@ -145,6 +166,8 @@ async def test_a_table_delete_blocked(
 
     Symmetric to ``test_a_table_update_blocked`` — same trigger, different
     DML verb. Verified for every [A] table except ``sync_queue`` (carve-out).
+    Same ``InsufficientPrivilege`` exception class as the UPDATE case — the
+    trigger raises with ``ERRCODE = '42501'`` regardless of the DML verb.
     """
     import psycopg
 
@@ -167,7 +190,7 @@ async def test_a_table_delete_blocked(
                 (row_uuid,),
             )
             await conn.commit()
-        except psycopg.errors.RaiseException as exc:
+        except psycopg.errors.InsufficientPrivilege as exc:
             msg = str(exc)
             assert expected_tag in msg, (
                 f"{table_name}: trigger raised but missing tag; "

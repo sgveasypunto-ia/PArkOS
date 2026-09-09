@@ -6,10 +6,11 @@ Fuzz-style tests for the ``sync_queue`` column whitelist
 
 REQ-14-A-SYNC-FACADE: ``prod.sync_queue`` is the carved-out [A] table
 where ``rol_app`` keeps UPDATE/DELETE grants so workers can flip
-``estado`` + ``intentos``. Only the four whitelisted columns
-(``estado``, ``intentos``, ``next_retry_at``, ``ultimo_error``) may
-be mutated; any attempt to UPDATE a non-whitelisted column raises
-:class:`SyncQueueStateError` (Python) or a DB GRANT error (Postgres).
+``estado`` + ``intentos``. Only the five whitelisted columns
+(``estado``, ``intentos``, ``next_retry_at``, ``ultimo_error``,
+``sync_timestamp``) may be mutated; any attempt to UPDATE a
+non-whitelisted column raises :class:`SyncQueueStateError` (Python) or
+a DB GRANT error (Postgres).
 
 The DB-side GRANT carries the same restriction at the SQL layer (out
 of PR2 scope). The Python validator (``_validate_update_columns``)
@@ -31,16 +32,21 @@ from parkos_core.repo.sync_queue import (
 )
 
 
-def test_whitelist_contains_exactly_four_columns() -> None:
-    """The whitelist has exactly the four expected columns.
+def test_whitelist_contains_exactly_five_columns() -> None:
+    """The whitelist has exactly the five expected columns.
 
     Mirrors the assertion in tests/unit/test_sync_queue.py
     ::test_allowed_columns_constant; this migration-level test pins
     the same invariant at the boundary (so a runtime migration
     refactor cannot silently expand or shrink the whitelist).
+
+    ``sync_timestamp`` joined the whitelist in T-PR2-000 — without it,
+    ``mark_dispatched``/``mark_in_progress`` always raised
+    ``SyncQueueStateError`` because both stamp ``sync_timestamp`` on
+    every call.
     """
     assert frozenset(
-        {"estado", "intentos", "next_retry_at", "ultimo_error"}
+        {"estado", "intentos", "next_retry_at", "ultimo_error", "sync_timestamp"}
     ) == ALLOWED_SYNC_QUEUE_UPDATE_COLUMNS
 
 
@@ -57,7 +63,6 @@ def test_whitelist_contains_exactly_four_columns() -> None:
         "created_at",
         "created_by",
         "sync_status",
-        "sync_timestamp",
         "sync_attempts",
         "fecha_retencion_hasta",
         "pairing_token_hash",  # a totally unrelated column - guards against typos

@@ -30,7 +30,7 @@
 | Field | Value |
 |---|---|
 | Total estimated changed lines | ~8,000 across 14 chained PRs (per-PR estimates below, from proposal §10 / design §13, each ≤ 800 LOC by design) |
-| Total tasks | 148 across 14 PRs (vs. 63 in the superseded breakdown — atomicity requirement, more/smaller not fewer/larger) |
+| Total tasks | 149 across 14 PRs (vs. 63 in the superseded breakdown — atomicity requirement, more/smaller not fewer/larger; includes T-PR2-000, a pre-existing `sync_queue.py` bugfix discovered mid-session) |
 | Review budget applied | 800 lines/PR (session preflight, authoritative for this run) |
 | 400-line budget risk | **High** — PR2 (~750), PR5 (~700), PR8 (~700) sit at 87-94% of the 800-line ceiling before test/migration overhead is counted; real diffs have historically run larger than estimates on this change |
 | Chained PRs recommended | Yes — 14 PRs, each independently gated, dependency-ordered |
@@ -91,6 +91,13 @@ working tree: `router_factory.py`, `sync_router.py`, `sync_cloud.py`, `dian/clou
 `repo/hash_chain.py` all already exist and are modified/imported by this change).
 **Estimated LOC**: ~280 (proposal §10)
 **Gate to next PR**: CI green (`uv sync --frozen`, carve-out check, pytest)
+**Status**: Code changes verified present in the working tree — `runtime/engine_flag.py`,
+`sync/guards/role_guard.py`, and `repo/sync_queue.py::ALLOWED_SYNC_QUEUE_UPDATE_COLUMNS` all exist;
+`sync/table_registry.py` is absent, matching T-PR1-001's cleanup action. Per the mandatory
+`hu/`-under-`feature/` topology (`aranda-git-workflow` §2), `hu/PR01-limpieza-arbol-trabajo`
+integrates into `feature/sync-overhaul`, not directly into `dev` — only `feature/sync-overhaul`
+merges to `dev`, once, at the end of the chain. Flagged for confirmation rather than recorded as a
+direct-to-`dev` merge, which would contradict the standing branch policy.
 
 Cleanup tasks (T-PR1-001..004) run **first**, before any new sync code is layered on top
 (correccion-brief "Working tree cleanup").
@@ -259,6 +266,75 @@ Depends on: T-PR1-001..013
 **Dependencies**: PR1 merged
 **Estimated LOC**: ~750 (proposal §10 — closest PR to the 800-line budget; watch for overrun)
 **Gate to next PR**: 80% coverage on `catalog/`; count assertions 46/3/5/54 green
+**Status**: All file-level tasks (T-PR2-000..018) verified complete. Per the ratified branch topology
+(superseding this header's `hu/`-under-`feature/` line — see the "Branch topology final" decision),
+this PR actually lives on `feature/sync-overhaul-pr02-catalogo-declarativo` off `dev`, merging direct
+to `dev`. Verification was run against the real `parkos-postgres:16-pgpartman` testcontainers image
+(`TEST_PG_IMAGE=parkos-postgres:16-pgpartman`) rather than the `postgres:16-alpine` default, per the
+project's standing full-suite rule — the alpine image makes `alembic_upgrade` skip silently
+(no `pg_partman`), which had been masking the entire DB-backed test tree indefinitely. Running for
+real against Postgres surfaced and fixed, beyond this PR's own file list:
+- An `asyncio_default_fixture_loop_scope`/`asyncio_default_test_loop_scope` gap in
+  `backend/pyproject.toml` — without it, session-scoped fixtures (`pg_engine`, `alembic_upgrade`,
+  `postgres_container`) collided with per-test event loops ("attached to a different loop") the
+  moment DB tests actually ran instead of skipping.
+- `sync_queue`/`permisos_usuario` test fixtures inserting FK-referencing rows against nonexistent
+  parents — new `seeded_sucursal_uuid`/`seeded_usuario_uuid` fixtures in `tests/conftest.py` seed a
+  real row via `VFixtureFactory` instead of a bare `uuid4()`.
+- A genuine off-by-one in `repo/sync_queue.py::mark_failed` (backoff indexed by post-increment
+  `intentos` instead of the pre-failure count — first failure got 5min instead of 1min).
+- A stale test (`test_sync_queue_whitelist.py`) asserting the pre-T-PR2-000 4-column whitelist.
+- `tests/migrations/*` never actually requesting the `alembic_upgrade` fixture (silently relying on
+  another test having triggered it first) — fixed via a new `tests/migrations/conftest.py` autouse
+  fixture.
+- `models/L_S/login.py` missing `vigente_desde`/`vigente_hasta`/`estado` mapped columns that the
+  physical migration already carries and that `repo/session_cycle.py::record_login` already writes —
+  a real, previously-uncaught bug (every real login would have raised `TypeError`) that had never been
+  exercised against Postgres before.
+- `models/__init__.py` registering only 7 of ~49 ORM classes, breaking string-based FK resolution
+  (`NoReferencedTableError`) for any model outside that short list.
+- 20 tests in `test_a_inmutable.py` (+2 in `test_idempotency_inmutable.py`, +2 in
+  `test_ls_session_guard.py`) asserting the wrong exception class (`RaiseException`/P0001 instead of
+  `InsufficientPrivilege`/42501, the SQLSTATE every immutability trigger actually raises) and, for
+  `test_a_inmutable.py`, mutating a `estado` column most `[A]` tables don't physically have.
+
+Four **pre-existing, out-of-scope** gaps were found and deliberately left unfixed, per user decision
+(see `sdd/sync-overhaul/pr2-full-suite-triage` in Engram) — each is now `xfail(strict=True)` with an
+explicit reason in-line, so the suite reports 0 failed without hiding them:
+1. **Hash-chain genesis-row bootstrap** (~58 tests across `test_hash_chain_extension.py`,
+   `test_hash_chain_genesis.py`, `test_ls_session_guard.py`, `test_sync_outbox_recursion.py`,
+   `test_append_only.py`, `test_hash_chain.py`, `test_versioned_close_and_insert.py`, the
+   `log_transaccional` case in `test_a_inmutable.py`, and `test_session_cycle_record_login.py`) — the
+   `fn_extend_hash_chain()` trigger requires a genesis row per `uuid_sucursal` (incl. NULL) that no
+   application code creates; this is squarely PR6's scope ("Hash-chain hooks + `verify_chain`"), left
+   for real there, not implemented early.
+2. **`pairing_tokens` missing the "now" partman partition** (~14 tests across `test_pairing_flow.py`
+   and `test_pairing_tokens_inmutable.py`) and **`test_partman_parents.py`**'s `parent_table` carrying
+   a spurious `parkos.` prefix from `0001_initial_schema.py` — a partman/migration maintenance gap
+   unrelated to sync-overhaul; migration 0001 was deliberately left untouched.
+3. **`revoked_sync_jwts` missing the `key_uuid` column** the test expects (2 tests in
+   `test_idempotency_inmutable.py`) — pre-existing schema gap, needs dedicated investigation.
+4. **3 auth/pairing bugs** in `test_pairing_flow.py` (rate-limit, JWT persisted-path permissions,
+   env-validator fail-fast) — pre-existing, security-adjacent, out of sync-overhaul's scope.
+
+Full suite independently re-verified by the orchestrator (not just self-reported): 986 collected,
+915 passed, 54 xfailed (0 unexpected xpass), 17 skipped, **0 failed**, 0 errors.
+
+#### T-PR2-000: Fix `repo/sync_queue.py::mark_dispatched`/`mark_in_progress` — `sync_timestamp` not whitelisted
+Req: pre-existing bug, verified by direct read of `repo/sync_queue.py` during this session · Design:
+n/a — bugfix in code this change depends on · Depends on: none — runs before every other PR2 task; no
+existing PR2 task calls these functions directly, but PR3+ worker code will, so it must be fixed
+before the chain reaches that point.
+Files: `backend/packages/parkos_core/src/parkos_core/repo/sync_queue.py` (modified) — add
+`"sync_timestamp"` to `ALLOWED_SYNC_QUEUE_UPDATE_COLUMNS`; `backend/packages/parkos_core/tests/unit/
+test_sync_queue_mark_dispatched.py` (new).
+Given `mark_dispatched(session, sq_uuid)` or `mark_in_progress(session, sq_uuid)` is called, when
+`_validate_update_columns` runs, then it MUST NOT raise `SyncQueueStateError` — today both always
+raise, because each passes `sync_timestamp` to the validator while the frozenset omits it, even
+though every other column they touch is already whitelisted.
+- [x] `ALLOWED_SYNC_QUEUE_UPDATE_COLUMNS` includes `sync_timestamp` alongside the existing 4 columns
+- [x] `mark_dispatched` and `mark_in_progress` both succeed against a seeded `sync_queue` row without raising
+- [x] `mark_failed` (uses only the already-whitelisted `intentos`/`next_retry_at`/`ultimo_error`/`estado`) is unaffected — regression case included — verified against real Postgres (`parkos-postgres:16-pgpartman`); found and fixed a second, unrelated bug in the same function during this verification: `mark_failed` indexed `next_retry_delay` by the post-increment attempt count instead of the pre-failure one, so the first failure got the 5-minute backoff entry instead of 1-minute
 
 #### T-PR2-001: `catalog/schema.py::SyncCatalogEntry` (REQ-CAT-001)
 Req: REQ-CAT-001 · Design: §3 (`catalog/schema.py`) · Depends on: PR1
@@ -269,8 +345,8 @@ test_catalog_schema.py` (new).
 Given the dataclass is constructed, when a field is mutated, then it raises (`frozen=True`); when
 `broadcast_policy` receives a `direction` literal (e.g. `"bidirectional"`), then a static assertion
 fails — the two enums are disjoint string-literal sets.
-- [ ] `cloud_only`, `sync_back_event`, `direction_proposed` are absent from the dataclass (removed fields)
-- [ ] `depends_on`, `parent_fk_column`, `self_chain`, `natural_key`, `natural_key_normalizer`,
+- [x] `cloud_only`, `sync_back_event`, `direction_proposed` are absent from the dataclass (removed fields)
+- [x] `depends_on`, `parent_fk_column`, `self_chain`, `natural_key`, `natural_key_normalizer`,
       `originating_role`, `snapshot_columns`, `justification` are present (added fields)
 
 #### T-PR2-002: `[V]` group 1 — 8 tier-0 global roots
@@ -280,7 +356,7 @@ Entries: `usuarios`, `permisos`, `tipo_persona`, `tipos_vehiculo`, `tipo_subscri
 `tipo_tarifa`, `tipo_sucursal`, `tipo_arqueo` — all `direction="cloud_to_branch"`,
 `broadcast_policy="all_branches"`, `apply_strategy="close_and_insert"`, `seq_strategy=
 "max_created_at"`, `depends_on=()` (roots).
-- [ ] All 8 entries declared with no `uuid_sucursal` column and no dependents among themselves
+- [x] All 8 entries declared with no `uuid_sucursal` column and no dependents among themselves
 
 #### T-PR2-003: `[V]` group 2 — impuestos / otros_cobros / costos_servicios / empresa
 Req: REQ-CAT-004 · Design: §2 Issue #5 · Depends on: T-PR2-002
@@ -288,7 +364,7 @@ Files: `sync_entries_v.py` (append)
 Entries: `impuestos`, `otros_cobros`, `costos_servicios` (`cloud_to_branch`/`all_branches`,
 `depends_on=()`); `empresa` (`cloud_to_branch`/`all_branches`, tenant-filtered by the branch's own
 `sucursal.uuid_empresa`, `depends_on=()`).
-- [ ] `empresa`'s tenant-filter note is present as an inline comment, not silently omitted
+- [x] `empresa`'s tenant-filter note is present as an inline comment, not silently omitted
 
 #### T-PR2-004: `[V]` group 3 — `permisos_usuario` + `configuracion_{tolerancias,seguridad}` (D19)
 Req: REQ-CAT-004, REQ-CAT-019 · Design: §2 Issue #5, §2 Issue #6 · Depends on: T-PR2-002
@@ -296,7 +372,7 @@ Files: `sync_entries_v.py` (append)
 Entries: `permisos_usuario` (`cloud_to_branch`/`all_branches`, `depends_on=("usuarios","permisos")`);
 `configuracion_tolerancias`, `configuracion_seguridad` (`cloud_to_branch`/
 `broadcast_policy="all_branches_with_override"`, nullable `uuid_sucursal`, `depends_on=()`).
-- [ ] `all_branches_with_override` is the only entry group using that `broadcast_policy` value
+- [x] `all_branches_with_override` is the only entry group using that `broadcast_policy` value
 
 #### T-PR2-005: `[V]` group 4 — `sucursal` + 5 single-branch dependents
 Req: REQ-CAT-004 · Design: §2 Issue #5 · Depends on: T-PR2-002
@@ -306,7 +382,7 @@ Entries: `sucursal` (`cloud_to_branch`/`single_branch`, `depends_on=("empresa","
 (`depends_on=("usuarios","sucursal")`); `documentos` (`depends_on=("sucursal",)`); `tarifas_sucursal`
 (`depends_on=("sucursal","tipos_vehiculo","tipo_tarifa")`); `cantidad_vehiculos_sucursal`
 (`depends_on=("sucursal","tipos_vehiculo")`) — all `cloud_to_branch`/`single_branch`.
-- [ ] All 6 entries carry `uuid_sucursal` and `broadcast_policy="single_branch"`
+- [x] All 6 entries carry `uuid_sucursal` and `broadcast_policy="single_branch"`
 
 #### T-PR2-006: `[V]` group 5 — bidirectional identity masters + junctions (D17, §16 Q1)
 Req: REQ-CAT-004, REQ-CAT-017, REQ-CAT-018 · Design: §2 Issue #5, §2 Issue #10 · Depends on: T-PR2-002
@@ -321,8 +397,8 @@ Entries: `clientes` (`bidirectional`/`all_branches`, `natural_key=("tipo_identif
 `depends_on=("subscripciones_cliente","vehiculos")`).
 Note: `natural_key_normalizer` callables (trim/uppercase) are wired in PR5 (T-PR5-006); this task
 declares the tuple fields only.
-- [ ] `natural_key` non-empty for exactly `clientes`, `clientes_b2b`, `vehiculos`
-- [ ] `broadcast_policy="subscription"` on exactly `subscripciones_cliente`, `subscripcion_vehiculos`
+- [x] `natural_key` non-empty for exactly `clientes`, `clientes_b2b`, `vehiculos`
+- [x] `broadcast_policy="subscription"` on exactly `subscripciones_cliente`, `subscripcion_vehiculos`
 
 #### T-PR2-007: `[L-E]` — `ingreso`, `facturas`, `factura_electronica`
 Req: REQ-CAT-005 · Design: §2 Issue #1 · Depends on: T-PR2-001
@@ -332,7 +408,7 @@ Entries: `ingreso` (`branch_to_cloud`, `depends_on=("sucursal","tipos_vehiculo")
 (`branch_to_cloud`, `apply_strategy="record_event"`, `depends_on=("sucursal","facturas","clientes",
 "resolucion_facturacion")`) — **single catalog entry**, no `sync_back_event` field, not present in
 `LocalOnlyCatalog` (D1-rev, D6-rev).
-- [ ] `factura_electronica` appears in exactly one catalog (verified against T-PR2-014's exemption
+- [x] `factura_electronica` appears in exactly one catalog (verified against T-PR2-014's exemption
       list and T-PR2-013's `LOCAL_ONLY_CATALOG`)
 
 #### T-PR2-008: `[L-W]` group 1 — 4 branch-side workflow entries
@@ -344,7 +420,7 @@ Entries: `reimpresion_ticket` (`branch_to_cloud`, `depends_on=("sucursal","ingre
 `parent_fk_column="uuid_anulacion_padre"`); `reclamos` (`depends_on=("sucursal","ingreso","salidas",
 "facturas","subscripciones_cliente")`, `parent_fk_column="uuid_reclamo_padre"`); `alerta`
 (`depends_on=("sucursal","usuarios")`, `parent_fk_column="uuid_alerta_padre"`).
-- [ ] None of the 4 entries declares `origen: Literal["manual","auto"]`
+- [x] None of the 4 entries declares `origen: Literal["manual","auto"]`
 
 #### T-PR2-009: `[L-W]` group 2 — `envio_dian` (flipped) + `validacion_evento` (never_propagated)
 Req: REQ-CAT-008, REQ-CAT-010, REQ-CAT-016 · Design: §2 Issue #1, §2 Issue #5 · Depends on: T-PR2-008
@@ -357,8 +433,8 @@ Entries: `envio_dian` (`direction="cloud_to_branch"`, `broadcast_policy="single_
 `justification="ER CLOUD-ONLY admin review tray, no stated branch-side need"`,
 `parent_fk_column="uuid_validacion_padre"`, `depends_on=()` — **flipped** from `branch_to_cloud`,
 the sole `never_propagated` entry).
-- [ ] `envio_dian` does NOT trigger `role_guard` on branch import (`role_required="both"`)
-- [ ] `validacion_evento` is the only entry anywhere with `sync_strategy="never_propagated"`
+- [x] `envio_dian` does NOT trigger `role_guard` on branch import (`role_required="both"`)
+- [x] `validacion_evento` is the only entry anywhere with `sync_strategy="never_propagated"`
 
 #### T-PR2-010: `[L-S]` — `login`, `sesion`
 Req: REQ-CAT-004 · Design: §2 · Depends on: T-PR2-001
@@ -366,7 +442,7 @@ Files: `backend/packages/parkos_core/src/parkos_core/sync/catalog/entries/sync_e
 Entries: `login` (`branch_to_cloud`, `apply_strategy="session_cycle"`, `depends_on=("usuarios",
 "sucursal")`); `sesion` (`branch_to_cloud`, `apply_strategy="session_cycle"`,
 `depends_on=("sucursal","usuarios")`).
-- [ ] Both entries carry `sync_strategy="grace_window"` and the 24h default
+- [x] Both entries carry `sync_strategy="grace_window"` and the 24h default
 
 #### T-PR2-011: `[A]` group 1 — `salidas` / `factura_detalle` / `caja` / `arqueo` / `factura_pagos`
 Req: REQ-CAT-004 · Design: §2 · Depends on: T-PR2-001
@@ -376,7 +452,7 @@ Entries: `salidas` (`depends_on=("sucursal","ingreso")`); `factura_detalle` (`de
 "tipo_arqueo")`); `factura_pagos` (`depends_on=("sucursal","facturas","sesion")`,
 `self_chain=True`/`parent_fk_column="uuid_pago_revertido"`) — all `branch_to_cloud`,
 `apply_strategy="append_event"`, `hash_chain=False`.
-- [ ] `factura_pagos.uuid_pago_revertido` excluded from the topological sort (`self_chain=True`)
+- [x] `factura_pagos.uuid_pago_revertido` excluded from the topological sort (`self_chain=True`)
 
 #### T-PR2-012: `[A]` group 2 — `factura_impuestos` / `factura_otros_cobros` (D20 snapshot)
 Req: REQ-CAT-020 · Design: §2 Issue #12 · Depends on: T-PR2-011
@@ -385,7 +461,7 @@ Entries: both `branch_to_cloud`, `apply_strategy="append_event"`; `factura_impue
 `depends_on=("sucursal","facturas","impuestos")`, `snapshot_columns` names every rate/amount column
 sourced from `impuestos`; `factura_otros_cobros` `depends_on=("sucursal","facturas","otros_cobros")`,
 analogous `snapshot_columns`.
-- [ ] `snapshot_columns` is non-`None` for exactly these two entries (verified against T-PR4-007)
+- [x] `snapshot_columns` is non-`None` for exactly these two entries (verified against T-PR4-007)
 
 #### T-PR2-013: `[A]` group 3 — `log_transaccional` / `revocacion_factura` (hash chain)
 Req: REQ-CAT-005, REQ-CAT-009 · Design: §2 Issue #1 · Depends on: T-PR2-011
@@ -394,27 +470,27 @@ Entries: `log_transaccional` (`bidirectional`, `depends_on=("sucursal","usuarios
 `verify_chain=True`); `revocacion_factura` (`branch_to_cloud`, `depends_on=("sucursal",
 "factura_electronica")`, `hash_chain=True`, `verify_chain=True` — **single catalog entry**, not
 present in `LocalOnlyCatalog`, no `sync_back_event` field, D1-rev/D6-rev).
-- [ ] `hash_chain=True` on exactly these two entries in the whole catalog
+- [x] `hash_chain=True` on exactly these two entries in the whole catalog
 
 #### T-PR2-014: `catalog/local_only_catalog.py` (3 entries, D6-rev)
 Req: REQ-CAT-003 · Design: §2 Issue #5 · Depends on: T-PR2-001
 Files: `backend/packages/parkos_core/src/parkos_core/sync/catalog/local_only_catalog.py` (new) —
 `idempotency_keys`, `pairing_tokens`, `revoked_sync_jwts`, all `sync_strategy="local_only"`,
 `role_required="both"`.
-- [ ] `factura_electronica` and `revocacion_factura` are NOT present here (superseded by D6-rev)
+- [x] `factura_electronica` and `revocacion_factura` are NOT present here (superseded by D6-rev)
 
 #### T-PR2-015: `catalog/out_of_catalog.py` (5 names, D6-rev)
 Req: REQ-CAT-006 · Design: §2 Issue #2, §2 Issue #6 · Depends on: T-PR2-001
 Files: `backend/packages/parkos_core/src/parkos_core/sync/catalog/out_of_catalog.py` (new) — exactly
 `sync_queue`, `sync_log`, `sync_conflict`, `sync_queue_lw_buffer`, `alert_types`.
-- [ ] Exactly 5 names, no more, no fewer
+- [x] Exactly 5 names, no more, no fewer
 
 #### T-PR2-016: `tests/unit/test_catalog_counts.py` (46/3/5/54)
 Req: REQ-CAT-002, REQ-CAT-003, ADR-002 · Design: §2 Issue #5 · Depends on: T-PR2-002..015
 Files: `backend/packages/parkos_core/tests/unit/test_catalog_counts.py` (new)
 Given the three collections are loaded, then `len(SYNC_CATALOG)==46`, `len(LOCAL_ONLY_CATALOG)==3`,
 `len(OUT_OF_CATALOG)==5`, and `46+3+5==54`.
-- [ ] Test asserts the recomputed count, not a hardcoded literal duplicated from this file
+- [x] Test asserts the recomputed count, not a hardcoded literal duplicated from this file
 
 #### T-PR2-017: `openspec/scripts/check_catalog_drift.py` rules 1-4
 Req: REQ-OPS-003 (rules 1-4) · Design: §11 · Depends on: T-PR2-016
@@ -422,25 +498,26 @@ Files: `openspec/scripts/check_catalog_drift.py` (new), `backend/packages/parkos
 parkos_core/sync/catalog/validator.py` (new) — rule 1 (name → ORM class), rule 2 (exactly one
 catalog per table, exception-free), rule 3 (46/3/5/54 counts), rule 4 (direction/`broadcast_policy`
 re-derived from `modelo_datos_er.mmd` vs. declared value).
-- [ ] Script exits 0 against the populated catalog from T-PR2-002..015
-- [ ] Script exits 1 naming the offending table on an injected direction mismatch fixture
+- [x] Script exits 0 against the populated catalog from T-PR2-002..015
+- [x] Script exits 1 naming the offending table on an injected direction mismatch fixture
 
 #### T-PR2-018: `tests/conftest.py::VFixtureFactory` (R15)
 Req: R15, REQ-OPS-009 · Design: §9 Testing Strategy · Depends on: T-PR2-001
 Files: `backend/packages/parkos_core/tests/conftest.py` (modified) — `VFixtureFactory` defaults
 `vigente_hasta=None` on all 26 `[V]` classes.
-- [ ] Coverage report shows all 26 `[V]` classes exercised through the factory
+- [x] Coverage report shows all 26 `[V]` classes exercised through the factory
 
 #### T-PR2-019: Commit + open PR2
 Depends on: T-PR2-001..018
-- [ ] Branch `feat/sync-overhaul-pr2-catalog-declarations` pushed, target `dev`
-- [ ] `python openspec/scripts/check_catalog_drift.py` exits 0
-- [ ] Coverage on `catalog/` ≥ 80%
+- [ ] Branch `feature/sync-overhaul-pr02-catalogo-declarativo` pushed, target `dev` (see the ratified
+  branch-topology note above — not `feat/sync-overhaul-pr2-catalog-declarations`/`hu/PR02-...`)
+- [x] `python openspec/scripts/check_catalog_drift.py` exits 0
+- [x] Coverage on `catalog/` ≥ 80% (all `catalog/` modules at 91-100% in the full-suite run)
 
 ### PR2 acceptance
-- [ ] `len(SYNC_CATALOG)==46`, `len(LOCAL_ONLY_CATALOG)==3`, `len(OUT_OF_CATALOG)==5`
-- [ ] No entry carries `cloud_only`, `sync_back_event`, or `direction_proposed`
-- [ ] `validacion_evento` is the sole `never_propagated` entry; `envio_dian` is `cloud_to_branch`
+- [x] `len(SYNC_CATALOG)==46`, `len(LOCAL_ONLY_CATALOG)==3`, `len(OUT_OF_CATALOG)==5`
+- [x] No entry carries `cloud_only`, `sync_back_event`, or `direction_proposed`
+- [x] `validacion_evento` is the sole `never_propagated` entry; `envio_dian` is `cloud_to_branch`
 
 ---
 

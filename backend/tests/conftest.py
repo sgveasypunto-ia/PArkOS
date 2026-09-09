@@ -43,6 +43,7 @@ import sys
 import time
 import uuid as uuid_lib
 from collections.abc import AsyncIterator, Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -52,7 +53,6 @@ if sys.platform == "win32":
     # Python 3.8 via selectors.SelectSelector — guarded by hasattr for
     # forward compat.
     import asyncio
-    import selectors
 
     try:
         asyncio.set_event_loop_policy(
@@ -64,6 +64,10 @@ if sys.platform == "win32":
 import psycopg
 import pytest
 import pytest_asyncio
+from faker import Faker
+from sqlalchemy import Boolean, Date, DateTime, Integer, Numeric, String
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 # ---------------------------------------------------------------------------
@@ -448,7 +452,124 @@ def table_set_ls() -> list[str]:
     return ["login", "sesion"]
 
 
+# ---------------------------------------------------------------------------
+# VFixtureFactory (T-PR2-018, R15, REQ-OPS-009) — one generic [V] row builder
+# ---------------------------------------------------------------------------
+
+
+class VFixtureFactory:
+    """Builds a ``[V]`` ORM instance defaulted to an open bi-temporal version.
+
+    Not 26 per-model ``factory-boy`` subclasses — every ``[V]`` table shares
+    the same ``VersionedBase`` mixin shape (``IdMixin`` / ``AuditMixin`` /
+    ``SyncMixin`` / ``VersionedMixin``, ``models/base.py``); only the
+    business columns differ, and every business column across all 26 ``[V]``
+    models is nullable in the ORM (verified: the sole NOT-NULL-without-a-
+    default column across all 26 is ``usuarios.uuid``, which is handled by
+    the same PK path as every other class). One generic builder, reused
+    everywhere, is therefore both correct and far less to maintain than 26
+    near-identical factory classes.
+
+    ``vigente_hasta=None`` is always the default (T-PR2-018's acceptance
+    criterion) — the built row is always the currently-open version unless
+    a caller overrides it. Faker (``es_CO``) fills any other NOT-NULL,
+    no-default column so the instance is insertable as-is; RNF-029: no
+    real PII, ``Faker`` only.
+    """
+
+    _fake = Faker("es_CO")
+
+    @classmethod
+    def build(cls, model_cls: type, /, **overrides: object) -> object:
+        """Construct ``model_cls(**kwargs)`` with safe non-persisted defaults."""
+        now = datetime.now(UTC).replace(tzinfo=None)
+        kwargs: dict[str, object] = {
+            "uuid": uuid_lib.uuid4(),
+            "created_at": now,
+            "created_by": None,
+            "vigente_desde": now,
+            "vigente_hasta": None,  # T-PR2-018: open version by default
+            "estado": "activo",
+            "sync_status": "pendiente",
+            "sync_timestamp": None,
+            "sync_attempts": 0,
+        }
+
+        mapper = sa_inspect(model_cls)
+        for column in mapper.columns:
+            name = column.name
+            if name in kwargs:
+                continue
+            if column.nullable or column.server_default is not None or column.default is not None:
+                continue
+            # A required column with no DB-side default — synthesize one.
+            kwargs[name] = cls._synthesize(column.type)
+
+        kwargs.update(overrides)
+        return model_cls(**kwargs)
+
+    @classmethod
+    def _synthesize(cls, sa_type: object) -> object:
+        if isinstance(sa_type, PG_UUID):
+            return uuid_lib.uuid4()
+        if isinstance(sa_type, String):
+            return cls._fake.word()
+        if isinstance(sa_type, Numeric):
+            return 0
+        if isinstance(sa_type, Boolean):
+            return False
+        if isinstance(sa_type, Integer):
+            return 0
+        if isinstance(sa_type, DateTime | Date):
+            return datetime.now(UTC).replace(tzinfo=None)
+        return None
+
+
+@pytest.fixture
+def v_fixture_factory() -> type[VFixtureFactory]:
+    """Fixture handle for :class:`VFixtureFactory` (T-PR2-018)."""
+    return VFixtureFactory
+
+
+@pytest_asyncio.fixture
+async def seeded_sucursal_uuid(pg_engine: AsyncEngine) -> uuid_lib.UUID:
+    """Insert one real ``sucursal`` row and return its uuid.
+
+    ``sync_queue.uuid_sucursal`` carries a DB-level FK to ``prod.sucursal``
+    (``fk_sync_queue_uuid_sucursal``, ``0001_initial_schema.py``) — tests that
+    enqueue rows need a real parent, not a bare ``uuid_lib.uuid4()``.
+    """
+    from parkos_core.models.V.sucursal import Sucursal
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        sucursal = VFixtureFactory.build(Sucursal)
+        session.add(sucursal)
+        await session.commit()
+        return sucursal.uuid
+
+
+@pytest_asyncio.fixture
+async def seeded_usuario_uuid(pg_engine: AsyncEngine) -> uuid_lib.UUID:
+    """Insert one real ``usuarios`` row and return its uuid.
+
+    ``permisos_usuario.uuid_usuario`` carries a DB-level FK to
+    ``prod.usuarios`` (``fk_permisos_usuario_uuid_usuario``,
+    ``0001_initial_schema.py``) — tests that seed permission rows need a
+    real parent, not a bare ``uuid_lib.uuid4()``.
+    """
+    from parkos_core.models.V.usuarios import Usuarios
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        usuario = VFixtureFactory.build(Usuarios)
+        session.add(usuario)
+        await session.commit()
+        return usuario.uuid
+
+
 __all__ = [
+    "VFixtureFactory",
     "alembic_upgrade",
     "app",
     "client",
@@ -460,6 +581,9 @@ __all__ = [
     "pg_engine",
     "pg_session",
     "postgres_container",
+    "seeded_sucursal_uuid",
+    "seeded_usuario_uuid",
     "table_set_a",
     "table_set_ls",
+    "v_fixture_factory",
 ]

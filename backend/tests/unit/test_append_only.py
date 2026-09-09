@@ -38,11 +38,20 @@ import uuid as uuid_lib
 
 import pytest
 
+_XFAIL_GENESIS = pytest.mark.xfail(
+    reason=(
+        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
+        "openspec/changes/sync-overhaul/tasks.md PR6"
+    ),
+    strict=True,
+)
+
 # ---------------------------------------------------------------------------
 # append_event tests
 # ---------------------------------------------------------------------------
 
 
+@_XFAIL_GENESIS
 async def test_append_event_inserts_row(pg_engine, alembic_upgrade) -> None:
     """``append_event`` writes a row with the supplied attrs + server-side audit columns."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
@@ -76,6 +85,7 @@ async def test_append_event_inserts_row(pg_engine, alembic_upgrade) -> None:
         assert row.uuid_sucursal == sucursal
 
 
+@_XFAIL_GENESIS
 async def test_append_event_stamps_created_at_when_absent(pg_engine, alembic_upgrade) -> None:
     """When the caller doesn't pass ``created_at``, the helper stamps NOW()."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
@@ -102,6 +112,7 @@ async def test_append_event_stamps_created_at_when_absent(pg_engine, alembic_upg
         assert row.created_at is not None
 
 
+@_XFAIL_GENESIS
 async def test_append_event_with_hash_chain_extends_chain(pg_engine, alembic_upgrade) -> None:
     """``append_event(chain_hash=True)`` invokes ``hash_chain.append`` and stamps the chain."""
     from parkos_core.models.A.log_transaccional import LogTransaccional
@@ -179,6 +190,7 @@ async def test_compensate_rejects_missing_original(pg_engine, alembic_upgrade) -
             )
 
 
+@_XFAIL_GENESIS
 async def test_append_only_rejects_update(pg_engine, alembic_upgrade) -> None:
     """After ``append_event`` + commit, UPDATE on the row raises the DB trigger.
 

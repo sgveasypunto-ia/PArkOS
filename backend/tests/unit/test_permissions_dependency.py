@@ -32,15 +32,32 @@ async def _seed_permission(
     """Insert one permisos + one permisos_usuario row for the test actor."""
     from parkos_core.models.V.permisos import Permisos
     from parkos_core.models.V.permisos_usuario import PermisosUsuario
-    from sqlalchemy import delete
+    from sqlalchemy import delete, select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        # Clean any leftover from a prior run.
+        # Clean any leftover from a prior run. Two other tests in this file
+        # reuse the same perm_code ("emitir_factura") with a different actor
+        # each time, so a stale permisos_usuario row from an earlier test may
+        # still reference the permiso row this one is about to delete —
+        # permisos_usuario.uuid_permiso carries a DB-level FK to
+        # permisos.uuid, so it must go first regardless of which actor it
+        # belongs to.
         await session.execute(
             delete(PermisosUsuario).where(PermisosUsuario.uuid_usuario == actor_uuid)
         )
+        stale_permiso_uuids = (
+            await session.execute(
+                select(Permisos.uuid).where(Permisos.permiso == perm_code)
+            )
+        ).scalars().all()
+        if stale_permiso_uuids:
+            await session.execute(
+                delete(PermisosUsuario).where(
+                    PermisosUsuario.uuid_permiso.in_(stale_permiso_uuids)
+                )
+            )
         await session.execute(
             delete(Permisos).where(Permisos.permiso == perm_code)
         )
@@ -111,13 +128,13 @@ async def test_require_permission_denies_when_no_row(
 
 
 async def test_require_permission_accepts_with_row(
-    pg_engine, alembic_upgrade, mint_operador_jwt, pg_session
+    pg_engine, alembic_upgrade, mint_operador_jwt, pg_session, seeded_usuario_uuid
 ) -> None:
     """A matching ``permisos_usuario`` row → claims returned (no exception)."""
     from parkos_core.auth.permissions import require_permission
     from parkos_core.auth.tokens import verify_token
 
-    actor = uuid_lib.uuid4()
+    actor = seeded_usuario_uuid
     await _seed_permission(
         pg_engine,
         actor_uuid=actor,
@@ -138,13 +155,13 @@ async def test_require_permission_accepts_with_row(
 
 
 async def test_require_permission_rejects_when_different_code(
-    pg_engine, alembic_upgrade, mint_operador_jwt, pg_session
+    pg_engine, alembic_upgrade, mint_operador_jwt, pg_session, seeded_usuario_uuid
 ) -> None:
     """A permisos_usuario row for a DIFFERENT code → 403."""
     from fastapi import HTTPException
     from parkos_core.auth.permissions import require_permission
 
-    actor = uuid_lib.uuid4()
+    actor = seeded_usuario_uuid
     await _seed_permission(
         pg_engine,
         actor_uuid=actor,
@@ -163,7 +180,7 @@ async def test_require_permission_rejects_when_different_code(
 
 
 async def test_require_permission_rejects_closed_junction(
-    pg_engine, alembic_upgrade, mint_operador_jwt, pg_session
+    pg_engine, alembic_upgrade, mint_operador_jwt, pg_session, seeded_usuario_uuid
 ) -> None:
     """A ``permisos_usuario`` row whose ``vigente_hasta`` is set → 403.
 
@@ -173,7 +190,7 @@ async def test_require_permission_rejects_closed_junction(
     from fastapi import HTTPException
     from parkos_core.auth.permissions import require_permission
 
-    actor = uuid_lib.uuid4()
+    actor = seeded_usuario_uuid
     await _seed_permission(
         pg_engine,
         actor_uuid=actor,

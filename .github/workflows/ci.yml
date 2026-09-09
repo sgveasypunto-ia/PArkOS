@@ -2,7 +2,7 @@ name: backend CI
 
 # T-PR1-013 (REQ-OPS-011) — first backend CI workflow. Gate ordering is
 # fixed: uv sync (frozen) -> sync_queue carve-out guard -> catalog drift
-# guard (placeholder until PR2 wires check_catalog_drift.py) -> ruff ->
+# guard (check_catalog_drift.py, wired in PR2/T-PR2-017) -> ruff ->
 # mypy -> pytest+coverage -> Trivy (merge-to-dev only). Each step runs
 # sequentially and a failure in any step fails the job (default GitHub
 # Actions behaviour — no continue-on-error is set anywhere below).
@@ -42,11 +42,8 @@ jobs:
       - name: sync_queue carve-out guard (R-D3, R8, REQ-OPS-004)
         run: uv run python ../openspec/scripts/check_sync_queue_carveout.py packages/parkos_core/src
 
-      - name: catalog drift guard (placeholder — wired in PR2)
-        run: |
-          echo "openspec/scripts/check_catalog_drift.py does not exist yet (lands in PR2, T-PR2-017)."
-          echo "This step is an intentional no-op placeholder that preserves the gate's position"
-          echo "in the pipeline ahead of lint/type-check, per T-PR1-013's required ordering."
+      - name: catalog drift guard (T-PR2-017)
+        run: uv run python ../openspec/scripts/check_catalog_drift.py
 
       - name: Lint (ruff)
         run: uv run ruff check .
@@ -63,7 +60,7 @@ jobs:
 
       - name: Trivy vulnerability scan (merge-to-dev only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           scan-type: fs
           scan-ref: backend

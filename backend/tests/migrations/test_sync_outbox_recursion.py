@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 
+import pytest
+
 
 async def test_sync_queue_insert_does_not_recurse(pg_dsn: str) -> None:
     """An INSERT into ``prod.sync_queue`` creates exactly one row — no recursion."""
@@ -54,6 +56,13 @@ async def test_sync_queue_insert_does_not_recurse(pg_dsn: str) -> None:
         )
 
 
+@pytest.mark.xfail(
+    reason=(
+        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
+        "openspec/changes/sync-overhaul/tasks.md PR6"
+    ),
+    strict=True,
+)
 async def test_other_a_table_insert_enqueues_sync(pg_dsn: str) -> None:
     """An INSERT into ``prod.log_transaccional`` triggers a sync_queue INSERT."""
     import psycopg

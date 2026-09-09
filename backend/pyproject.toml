@@ -99,6 +99,15 @@ extend-immutable-calls = []
 # ``asyncio_mode = "auto"`` so individual async tests don't need
 # ``@pytest.mark.asyncio`` (matches the python skill recommendation).
 asyncio_mode = "auto"
+# ``pg_engine``/``alembic_upgrade``/``postgres_container`` (conftest.py) are
+# session-scoped async fixtures. Without a matching session-scoped loop,
+# pytest-asyncio hands each test function its own event loop while the
+# session fixture's asyncpg connections stay bound to the first one,
+# raising "Task ... got Future ... attached to a different loop" as soon as
+# a second DB-backed test runs. Pin both loop scopes to session so the
+# whole run shares one loop.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 # Default test discovery scope — the per-package pyproject.toml can override.
 testpaths = ["tests"]
 # Coverage instrumentation scoped to parkos_core.sync only (REQ-OPS-002,

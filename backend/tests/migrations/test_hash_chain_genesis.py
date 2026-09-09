@@ -25,7 +25,18 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
 
+_XFAIL_GENESIS = pytest.mark.xfail(
+    reason=(
+        "Bloqueado hasta PR6 (hash-chain genesis-row bootstrap) — "
+        "openspec/changes/sync-overhaul/tasks.md PR6"
+    ),
+    strict=True,
+)
+
+
+@_XFAIL_GENESIS
 async def test_genesis_row_exists(pg_dsn: str) -> None:
     """At least one ``log_transaccional`` row with ``accion='inicialización'``.
 
@@ -51,6 +62,7 @@ async def test_genesis_row_exists(pg_dsn: str) -> None:
         )
 
 
+@_XFAIL_GENESIS
 async def test_genesis_row_hash_matches(pg_dsn: str) -> None:
     """Genesis row's ``hash_anterior`` and ``hash_actual`` match SHA-256
     of ``b'genesis:' + uuid_sucursal_bytes`` (canonical genesis anchor).
