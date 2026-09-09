@@ -2503,14 +2503,39 @@ Files: `sync/observability/metrics.py` (modified/new) — `sync_apply_total{stat
 uuid_sucursal,audit_class}`, `sync_dependency_wait{tabla,tabla_padre}`, `catalog_rows_total{tabla,
 uuid_sucursal}`, `sync_deferred_total{tabla,tabla_padre}`; `tests/unit/
 test_observability_metrics.py` (new).
-- [ ] All labels exclude PII (no payload content) — asserted by the test
+- [x] All labels exclude PII (no payload content) — asserted by the test
+
+Status: done. `sync_apply_total` (Counter), `sync_dependency_wait` (Gauge), `catalog_rows_total`
+(Gauge), `sync_deferred_total` (Counter) added to the existing PR12 module (`catalog_backfill_complete`
+gauge untouched). `tests/unit/test_observability_metrics.py` (10 tests) asserts each metric's exact
+label set and that no metric in the module can ever expose a PII-suspect label name. Deviation
+flagged (not fixed — out of PR13-001's explicit scope): `openspec/changes/sync-overhaul/specs/
+operations.md` REQ-OPS-006 documents `sync_dependency_wait` with `labelnames=["tabla",
+"uuid_sucursal"]`, which disagrees with this task's own (and design.md §9's) `{tabla, tabla_padre}`;
+implemented `{tabla, tabla_padre}` per this task's literal spec (2 of 3 artifacts agree, and it is the
+semantically correct pairing for a D18 "waiting on which parent table" gauge) — recommend
+reconciling `operations.md`. Also: `sync_chain_anomalies_total`, `sync_import_errors_total`,
+`orphan_workflow_chain_alerts_total`, `alerta_total` (named in design.md §9's Counters list and
+REQ-OPS-008's alert conditions) and a real `GET /metrics` HTTP exposition endpoint (REQ-OPS-006)
+remain unimplemented — genuinely out of this task's explicit file list and this PR's ~450 LOC budget;
+same carve-out precedent PR12 already documented for `catalog_backfill_complete`. Flagged again under
+"PR13 acceptance" below.
 
 #### T-PR13-002: `observability/logs.py` — structlog config
 Req: REQ-OPS-007 · Design: §9 · Depends on: T-PR13-001
 Files: `sync/observability/logs.py` (new) — required keys `event`, `tabla`, `uuid_sucursal`,
 `actor_uuid`, `correlation_id`, `ts`, `level`; `chain_break` logs at `error`; `tests/unit/
 test_observability_logs.py` (new).
-- [ ] JSON output carries all 7 required keys on a sample `sync_apply` event
+- [x] JSON output carries all 7 required keys on a sample `sync_apply` event
+
+Status: done. `configure_logging()` (idempotent) + `get_logger()` + `log_sync_event()` added.
+`structlog` was already a runtime dependency (used by `jobs/sync_cloud.py`, `jobs/sync_sucursal.py`,
+`jobs/runner.py`, `sync/jwt_manager.py`, `sync/transport.py`) but nothing had ever called
+`structlog.configure(...)` before this PR — this module is the first to do so (JSON renderer +
+`add_log_level` + `TimeStamper(key="ts")`). `chain_break` events are forced to `level="error"`
+regardless of the caller-requested level. 5 tests in `tests/unit/test_observability_logs.py`
+(capsys-captured JSON) verify all 7 keys, the forced-error behavior, `None`-branch serialization, and
+payload redaction pass-through.
 
 #### T-PR13-003: `observability/pii_redaction.py::PIIRedactor` — sink-side only
 Req: REQ-HOOK-004, REQ-OPS-007 · Design: §6, §9 · Depends on: T-PR13-002
@@ -2518,8 +2543,22 @@ Files: `sync/observability/pii_redaction.py` (new) — redacts `clientes`
 `email`/`telefono`/`direccion`/`nombre`/`apellido` **only** in `sync_log` entries, structured logs,
 and `sync_conflict.datos_local`/`datos_remoto`; the replicated payload itself is **never** redacted;
 `tests/unit/test_pii_redaction.py` (new).
-- [ ] A `clientes` apply payload reaches `repo.versioned.close_and_insert` unredacted; the same
+- [x] A `clientes` apply payload reaches `repo.versioned.close_and_insert` unredacted; the same
       event's log line has the PII fields masked
+
+Status: done, against real Postgres (`pg_engine`/`alembic_upgrade` fixtures). One integration-flavored
+test inserts a `clientes` row via `repo.versioned.close_and_insert` with all 4 real PII columns set,
+confirms the STORED row is fully unredacted, then logs the same conceptual event via
+`observability.logs.log_sync_event(..., payload=...)` and confirms the captured JSON log line has the
+4 fields masked — and that the caller's own `payload` dict was never mutated. 2 real, pre-existing
+documentation discrepancies discovered and NOT silently papered over (schema unchanged per repo rule):
+(1) `models/V/clientes.py` (PR5) has no `direccion` column — the redactor masks it defensively by key
+name regardless, so a future column addition needs no redactor change; (2) `models/A/sync_conflict.py`
+(PR8) declares `datos_local`/`datos_cloud`, not `datos_remoto` — this task's (and REQ-OPS-007's) own
+wording say `datos_remoto`, inherited verbatim from design.md §6's original hook-contract text; a
+caller wiring this into `sync_conflict`-writing call sites should use the real column name
+(`datos_cloud`). 4 additional non-DB unit tests cover pass-through-for-non-`clientes`-tables,
+`None`-payload handling, and never-mutates-input.
 
 #### T-PR13-004: `infra/grafana/alerts/sync.yaml`
 Req: REQ-OPS-008 · Design: §9 · Depends on: T-PR13-001
@@ -2527,22 +2566,71 @@ Files: `infra/grafana/alerts/sync.yaml` (new) — 8 rules (`SyncBacklogHigh`,
 `SyncConflictRateHigh`, `HashChainBreak`, `OrphanWorkflowChain`, `BranchImportError`,
 `CatalogBackfillIncomplete`, `FEProviderError`, `FENumberingExhausted`), each with a `runbook_url`
 annotation; every `tipo_alerta` referenced is a generic identifier (addendum #5).
-- [ ] YAML validates against the Grafana alert-rule schema
+- [x] YAML validates against the Grafana alert-rule schema
+
+Status: done. Used Grafana's real alert-rule *file provisioning* schema (`apiVersion: 1` ->
+`groups` -> `rules`, each with `uid`/`title`/`condition`/`data`/`noDataState`/`execErrState`/`for`/
+`annotations`/`labels`; each `data` query with `refId`/`datasourceUid`/`model`) — not an invented
+shape. `datasourceUid: ${DS_PROMETHEUS}` is an explicit placeholder token (no live Grafana/Prometheus
+this connects to, per this task's own instructions). Conditions/severities/`for` windows copied
+verbatim from `specs/operations.md` REQ-OPS-008's table, with one documented bugfix:
+`SyncConflictRateHigh`'s condition used `status="conflict"` (lowercase) in that spec, but
+`ApplyResult.status` (`motor/apply_result.py::ApplyStatus`) — the real value `sync_apply_total`
+increments with — is the uppercase `Literal["APPLIED","CONFLICT","RETRY"]`; corrected to
+`status="CONFLICT"` in the YAML (a lowercase label would never match real data) and called out inline
+in a YAML comment. Only 2 of 8 rules reference a `tipo_alerta` label (`FEProviderError` ->
+`fe_provider_error`, `FENumberingExhausted` -> `fe_numbering_exhausted`) — matching REQ-OPS-008's exact
+conditions; the other 6 rules alert on dedicated counters/gauges with no `tipo_alerta` label at all,
+so no artificial 1:1 label was invented for them. No rule or annotation names the third-party DIAN
+provider (`factus`) — asserted by test. `tests/unit/test_grafana_alerts.py` (10 tests) validates the
+full schema shape, the exact 8 titles, unique uids, the `tipo_alerta` whitelist, the no-vendor-name
+guard, and the runbook-url bijection with T-PR13-005's 8 files.
 
 #### T-PR13-005: `docs/runbooks/sync/*.md` — 8 runbook stubs
 Req: REQ-OPS-008 · Design: §9 · Depends on: T-PR13-004
 Files: `docs/runbooks/sync/{sync_backlog,conflict_rate,chain_break,orphan_workflow,import_error,
 dependency_wait,backfill_stalled,client_volume}.md` (8 new files) — one stub per alert rule, using
 only generic identifiers.
-- [ ] Every `runbook_url` in `sync.yaml` resolves to an existing file in this set
+- [x] Every `runbook_url` in `sync.yaml` resolves to an existing file in this set
+
+Status: done, but flagging a real pre-existing inconsistency found between this task's own 8
+filenames and T-PR13-004's 8 rule names (not introduced by this PR, not silently resolved): 6 of 8
+filenames pair up cleanly by name (`sync_backlog`/`SyncBacklogHigh`, `conflict_rate`/
+`SyncConflictRateHigh`, `chain_break`/`HashChainBreak`, `orphan_workflow`/`OrphanWorkflowChain`,
+`import_error`/`BranchImportError`, `backfill_stalled`/`CatalogBackfillIncomplete`), but the remaining
+two filenames — `dependency_wait.md` and `client_volume.md` — do not describe either remaining rule
+(`FEProviderError`, `FENumberingExhausted`); those two filenames instead match design.md §9's
+now-superseded alert names (`DependencyWaitGrowing`, `ClientMasterVolumeHigh`), which T-PR13-004's own
+task text (and REQ-OPS-008) replaced with `FEProviderError`/`FENumberingExhausted` without updating
+this task's filename list to match. Resolved pragmatically: `dependency_wait.md` documents
+`FEProviderError`, `client_volume.md` documents `FENumberingExhausted` — both files carry an explicit
+top-of-file note explaining the mismatch. Recommend a follow-up rename (either the 2 filenames, or
+reconciling design.md §9 with the corrected rule names) so this does not persist. All 8 stubs follow
+the same structure (what it means / likely causes / diagnosis / resolution / escalation) and use only
+generic identifiers — asserted by `test_grafana_alerts.py`'s no-vendor-name guard.
 
 #### T-PR13-006: Commit + open PR13
 Depends on: T-PR13-001..005
 - [ ] Branch `feat/sync-overhaul-pr13-observability` pushed, target `dev`
 
+Status: not done — delivery step, explicitly left to the maintainer per this PR's instructions (no
+commit/push performed by the apply phase).
+
 ### PR13 acceptance
 - [ ] `GET /metrics` exposes all counters/gauges with PII-free labels
-- [ ] All 8 Grafana alert rules parse and reference an existing runbook
+- [x] All 8 Grafana alert rules parse and reference an existing runbook
+
+Status: first bullet intentionally left unchecked — a real `GET /metrics` HTTP exposition endpoint
+does not exist anywhere in this codebase yet (confirmed via repo-wide search); REQ-OPS-006 requires
+one, but wiring an endpoint was never in T-PR13-001's explicit "Files" list and would meaningfully
+exceed this PR's ~450 LOC budget. This mirrors the exact carve-out PR12 already documented for
+`catalog_backfill_complete` ("Exposition ... is a deploy-pipeline concern out of this PR's scope").
+All 4 counters/gauges this task's own scope requires DO exist as real `prometheus_client` objects with
+verified PII-free labels (`test_observability_metrics.py`); only the scrape endpoint itself, plus the
+4 additional counters `specs/operations.md` REQ-OPS-006/008 name (`sync_chain_anomalies_total`,
+`sync_import_errors_total`, `orphan_workflow_chain_alerts_total`, `alerta_total`) but which are outside
+every PR1-13 task's file list, remain a follow-up. Second bullet: done, verified by
+`test_grafana_alerts.py`.
 
 ---
 

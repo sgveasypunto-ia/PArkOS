@@ -22,6 +22,7 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-cov", specifier = ">=5" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "ruff" },
     { name = "testcontainers", extras = ["postgres"], specifier = ">=4" },
 ]

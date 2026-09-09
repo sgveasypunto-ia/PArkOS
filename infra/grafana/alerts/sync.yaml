@@ -1,0 +1,364 @@
+# infra/grafana/alerts/sync.yaml — T-PR13-004.
+#
+# REQ-OPS-008 (openspec/changes/sync-overhaul/specs/operations.md), design.md
+# §9. Grafana "file-based alert-rule provisioning" format (apiVersion 1,
+# groups -> rules), the schema Grafana's provisioning loader actually reads
+# (https://grafana.com/docs/grafana/latest/alerting/set-up/provision-alerting-resources/file-provisioning/).
+#
+# THIS IS DECLARATIVE CONFIG-AS-CODE ONLY — there is no live Grafana/
+# Prometheus instance this file talks to in this PR. `datasourceUid` is the
+# placeholder token `${DS_PROMETHEUS}`; a real deploy substitutes the
+# actual provisioned Prometheus datasource UID. Some `model.expr` values
+# reference metrics that are NOT YET implemented as real
+# `prometheus_client` objects in this codebase today
+# (`sync_queue_pending_rows`, `sync_chain_anomalies_total`,
+# `orphan_workflow_chain_alerts_total`, `sync_import_errors_total`,
+# `alerta_total`) — REQ-OPS-006/008 name them, but T-PR13-001's explicit
+# scope only shipped `sync_apply_total`, `sync_dependency_wait`,
+# `catalog_rows_total`, `sync_deferred_total`, plus PR12's
+# `catalog_backfill_complete`. A real `/metrics` HTTP exposition endpoint
+# also does not exist yet anywhere in this codebase (REQ-OPS-006 requires
+# one at `GET /metrics` port 8000). Both gaps are out of this PR's scope —
+# same carve-out precedent `sync/observability/metrics.py` already
+# documents for PR12 — and are called out explicitly in the PR13 apply
+# report so a follow-up PR wires the exposition endpoint + the remaining
+# counters this file's conditions assume.
+#
+# **Known naming inconsistency (documented, not silently resolved).** The
+# 8 rule names below come from tasks.md T-PR13-004 / operations.md
+# REQ-OPS-008 (both agree). The 8 runbook filenames come from tasks.md
+# T-PR13-005. Six of the eight pair up by clear name similarity
+# (SyncBacklogHigh/sync_backlog, SyncConflictRateHigh/conflict_rate,
+# HashChainBreak/chain_break, OrphanWorkflowChain/orphan_workflow,
+# BranchImportError/import_error, CatalogBackfillIncomplete/
+# backfill_stalled). The remaining two runbook filenames
+# (`dependency_wait.md`, `client_volume.md`) do not describe either
+# remaining alert (`FEProviderError`, `FENumberingExhausted`) — those two
+# filenames match design.md §9's now-superseded alert names
+# (`DependencyWaitGrowing`, `ClientMasterVolumeHigh`), not the corrected
+# `FEProviderError`/`FENumberingExhausted` names this PR's task list uses.
+# The pairing below is a best-effort, arbitrary (documented) resolution so
+# every rule has a `runbook_url` that resolves to one of the 8 requested
+# files; see the PR13 apply report for the recommended follow-up
+# (rename either the two runbook files or reconcile design.md §9).
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: sync-overhaul
+    folder: Sync Overhaul
+    interval: 1m
+    rules:
+      - uid: sync-backlog-high
+        title: SyncBacklogHigh
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: ${DS_PROMETHEUS}
+            model:
+              expr: sync_queue_pending_rows
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [1000]
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Sync queue backlog is abnormally high (REQ-OPS-008).
+          description: >-
+            sync_queue_pending_rows has been above 1000 for 10 minutes —
+            the apply loop is falling behind on one or both workers.
+          runbook_url: docs/runbooks/sync/sync_backlog.md
+        labels:
+          severity: warning
+
+      - uid: sync-conflict-rate-high
+        title: SyncConflictRateHigh
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: ${DS_PROMETHEUS}
+            model:
+              # NOTE (documented bugfix): REQ-OPS-008's literal wording uses
+              # status="conflict" (lowercase). ApplyResult.status
+              # (motor/apply_result.py::ApplyStatus) is the Literal
+              # ["APPLIED","CONFLICT","RETRY"] — UPPERCASE — the same value
+              # sync_apply_total{status=...} actually gets incremented
+              # with. A lowercase label value would never match real data;
+              # corrected here to the real emitted value.
+              expr: >-
+                rate(sync_apply_total{status="CONFLICT"}[1h])
+                / rate(sync_apply_total[1h])
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.005]
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: Sync conflict rate is above 0.5% of applies (REQ-OPS-008).
+          description: >-
+            rate(sync_apply_total{status="CONFLICT"}[1h]) /
+            rate(sync_apply_total[1h]) has been above 0.005 for 15 minutes.
+          runbook_url: docs/runbooks/sync/conflict_rate.md
+        labels:
+          severity: warning
+
+      - uid: hash-chain-break
+        title: HashChainBreak
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: ${DS_PROMETHEUS}
+            model:
+              expr: sync_chain_anomalies_total
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Hash chain integrity break detected (hash_chain_anomaly).
+          description: >-
+            sync_chain_anomalies_total incremented — the chain verifier
+            found a hash_chain_anomaly. Corresponds 1:1 to the
+            hash_chain_anomaly identifier seeded in prod.alert_types (T-PR8-002).
+          runbook_url: docs/runbooks/sync/chain_break.md
+        labels:
+          severity: critical
+
+      - uid: orphan-workflow-chain
+        title: OrphanWorkflowChain
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: ${DS_PROMETHEUS}
+            model:
+              expr: rate(orphan_workflow_chain_alerts_total[1h])
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Dependency-buffer TTL sweep found an unresolved parent wait.
+          description: >-
+            Corresponds 1:1 to the orphan_workflow_chain identifier seeded
+            in prod.alert_types (T-PR8-002).
+          runbook_url: docs/runbooks/sync/orphan_workflow.md
+        labels:
+          severity: warning
+
+      - uid: branch-import-error
+        title: BranchImportError
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: ${DS_PROMETHEUS}
+            model:
+              expr: rate(sync_import_errors_total[5m])
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Branch import errors detected on the sync pull loop.
+          description: >-
+            rate(sync_import_errors_total[5m]) > 0. Related to the
+            branch_offline_reauth_required identifier seeded in
+            prod.alert_types (T-PR8-002) when the root cause is JWT
+            re-authentication.
+          runbook_url: docs/runbooks/sync/import_error.md
+        labels:
+          severity: critical
+
+      - uid: catalog-backfill-incomplete
+        title: CatalogBackfillIncomplete
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: ${DS_PROMETHEUS}
+            model:
+              expr: catalog_backfill_complete
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 48h
+        annotations:
+          summary: >-
+            catalog_backfill_complete has stayed 0 for 48h after pairing
+            (R-D8 stage-4 gate reads this same gauge).
+          description: >-
+            catalog_backfill_complete{uuid_sucursal} == 0 for 48h after
+            pairing (REQ-OPS-008). A real prometheus_client.Gauge already
+            ships in sync/observability/metrics.py (T-PR12-008).
+          runbook_url: docs/runbooks/sync/backfill_stalled.md
+        labels:
+          severity: warning
+
+      - uid: fe-provider-error
+        title: FEProviderError
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: ${DS_PROMETHEUS}
+            model:
+              expr: rate(alerta_total{tipo_alerta="fe_provider_error"}[1h])
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: >-
+            Electronic-invoicing provider exchange exhausted its retry
+            budget (fe_provider_error).
+          description: >-
+            tipo_alerta="fe_provider_error" corresponds 1:1 to the
+            fe_provider_error identifier seeded in prod.alert_types
+            (T-PR8-002) — a generic identifier, never the third-party
+            provider's name (addendum #5, REQ-CAT-021/REQ-OPS-016).
+          runbook_url: docs/runbooks/sync/dependency_wait.md
+        labels:
+          tipo_alerta: fe_provider_error
+          severity: critical
+
+      - uid: fe-numbering-exhausted
+        title: FENumberingExhausted
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: ${DS_PROMETHEUS}
+            model:
+              expr: rate(alerta_total{tipo_alerta="fe_numbering_exhausted"}[1h])
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: B
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: >-
+            Authorized invoice numbering range (resolucion_facturacion)
+            exhausted (fe_numbering_exhausted).
+          description: >-
+            tipo_alerta="fe_numbering_exhausted" corresponds 1:1 to the
+            fe_numbering_exhausted identifier seeded in prod.alert_types
+            (T-PR8-002) — a generic identifier, never the third-party
+            provider's name (addendum #5, REQ-CAT-021/REQ-OPS-016).
+          runbook_url: docs/runbooks/sync/client_volume.md
+        labels:
+          tipo_alerta: fe_numbering_exhausted
+          severity: critical

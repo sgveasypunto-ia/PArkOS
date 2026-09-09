@@ -24,6 +24,11 @@ dev = [
     "ruff",
     "mypy",
     "faker[es-co]>=40.38.0",
+    # T-PR13-004: parses infra/grafana/alerts/sync.yaml in
+    # tests/unit/test_grafana_alerts.py. Already resolvable transitively
+    # (alembic/testcontainers pull it in), but declared explicitly here so
+    # the test's dependency is not an accidental transitive one.
+    "pyyaml>=6",
 ]
 
 # ---------------------------------------------------------------------------
