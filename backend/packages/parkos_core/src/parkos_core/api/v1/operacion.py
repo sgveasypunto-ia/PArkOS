@@ -9,11 +9,27 @@ Custom ``GET /ingresos/{uuid}/estado`` reads the derived view
 - ``abierto``: ingreso has no ``salidas`` row yet
 - ``cerrado``: matching ``salidas`` row exists
 - ``anulada``: matching ``anulaciones`` chain exists (PR6 mounts)
+
+**T-PR5-016 (REQ-CAT-017, addendum #2, design.md §2 Issue #11) —
+:func:`resolve_active_subscription_for_exit`.** The exit ("salida") HTTP
+endpoint itself is not built by any PR up to and including this one (no
+``salidas`` CRUD route exists yet in this router or elsewhere in
+``api/v1/``) — building it is out of PR5's scope. What PR5 DOES own per
+design.md §2 Issue #11 point 3 is the defense-in-depth VALIDATION QUERY the
+future CU-03M exit flow will call: a branch that never receives another
+branch's ``subscripciones_cliente`` row (``broadcast_policy="subscription"``
+scoping, R22) cannot validate against it — that is an *availability*
+control, not an *integrity* one, because a stale or manually-inserted row
+would still validate. This function explicitly filters
+``WHERE uuid_sucursal = :this_branch`` **in addition to** relying on the
+scoped sync, so it validates correctly the moment the exit endpoint is
+built on top of it, without repeating that mistake.
 """
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, ConfigDict
@@ -24,6 +40,9 @@ from ...api.deps import get_tenant_ctx, requires_issuer
 from ...auth.tenancy import TenantContext
 from ...db.engine import get_session
 from ...models.L_E.ingreso import Ingreso
+from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
+from ...models.V.subscripciones_cliente import SubscripcionesCliente
+from ...models.V.vehiculos import Vehiculos
 from ...repo.event import record_event
 from ...schemas.operacion import (
     IngresoCreate,
@@ -170,4 +189,92 @@ async def list_ingresos(
     return [IngresoRead.model_validate(r) for r in result.scalars().all()]
 
 
-__all__ = ["router"]
+# ---------------------------------------------------------------------------
+# T-PR5-016 (REQ-CAT-017, addendum #2) — CU-03M subscription lookup, R22
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SubscriptionLookupResult:
+    """Outcome of :func:`resolve_active_subscription_for_exit` (T-PR5-016).
+
+    ``message`` distinguishes the two operator-facing states design.md §2
+    Issue #11 point 4 requires kept distinct: "no subscription at this
+    branch" (R22 — a normal, silent, correct outcome; the vehicle may
+    legitimately be subscribed at a DIFFERENT branch, which this branch
+    cannot see by ``broadcast_policy="subscription"`` scoping) vs.
+    "subscription expired" (a subscription row DOES exist locally for this
+    branch, but ``fecha_vencimiento`` has passed).
+    """
+
+    found: bool
+    subscripcion: SubscripcionesCliente | None = None
+    message: str | None = None
+
+
+async def resolve_active_subscription_for_exit(
+    session: AsyncSession,
+    *,
+    placa: str,
+    uuid_sucursal: uuid_lib.UUID,
+    as_of: date | None = None,
+) -> SubscriptionLookupResult:
+    """CU-03M exit-with-subscription validation query (R22, design.md §2 Issue #11).
+
+    Looks up an OPEN ``subscripciones_cliente`` row covering ``placa``
+    (via the ``subscripcion_vehiculos`` junction, both currently-open
+    versions) that ALSO belongs to THIS branch.
+
+    **Defense in depth (belt and suspenders, not a contradiction of the
+    scoping decision).** ``broadcast_policy="subscription"`` sync already
+    means a non-selling branch's local ``subscripciones_cliente`` table
+    simply does not contain another branch's rows — that is an
+    *availability* control. This function ALSO filters explicitly on
+    ``uuid_sucursal == :this_branch`` so a stale or manually-inserted row
+    for another branch is rejected even if it were somehow present locally
+    — an *integrity* control, independent of the sync scoping.
+
+    Returns:
+        ``SubscriptionLookupResult(found=False, message="no subscription at
+        this branch")`` when no row matches — R22's normal, silent, correct
+        outcome (charge the standard tariff; no ``sync_conflict``, no
+        ``alerta``, no buffer row, no error metric).
+        ``SubscriptionLookupResult(found=False, message="subscription
+        expired")`` when a matching row exists but ``fecha_vencimiento`` is
+        in the past.
+        ``SubscriptionLookupResult(found=True, subscripcion=...)`` otherwise.
+    """
+    stmt = (
+        select(SubscripcionesCliente)
+        .join(
+            SubscripcionVehiculos,
+            SubscripcionVehiculos.uuid_subscripcion_cliente == SubscripcionesCliente.uuid,
+        )
+        .join(Vehiculos, Vehiculos.uuid == SubscripcionVehiculos.uuid_vehiculo)
+        .where(
+            SubscripcionesCliente.uuid_sucursal == uuid_sucursal,  # R22 defense in depth
+            SubscripcionesCliente.vigente_hasta.is_(None),
+            SubscripcionVehiculos.vigente_hasta.is_(None),
+            Vehiculos.vigente_hasta.is_(None),
+            Vehiculos.placa == placa,
+        )
+        .order_by(SubscripcionesCliente.vigente_desde.desc())
+    )
+    subscripcion = (await session.execute(stmt)).scalars().first()
+
+    if subscripcion is None:
+        return SubscriptionLookupResult(found=False, message="no subscription at this branch")
+
+    reference_date = as_of or datetime.now(UTC).date()
+    if (
+        subscripcion.fecha_vencimiento is not None
+        and subscripcion.fecha_vencimiento < reference_date
+    ):
+        return SubscriptionLookupResult(
+            found=False, subscripcion=subscripcion, message="subscription expired"
+        )
+
+    return SubscriptionLookupResult(found=True, subscripcion=subscripcion)
+
+
+__all__ = ["SubscriptionLookupResult", "resolve_active_subscription_for_exit", "router"]

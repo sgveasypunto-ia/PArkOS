@@ -52,7 +52,7 @@ Chain strategy: pending
 | PR2 | Declare `SYNC_CATALOG` (46) + `LocalOnlyCatalog` (3) + `OutOfCatalog` (5), direction ratified | `uv run pytest tests/unit/test_catalog_counts.py tests/unit/test_catalog_schema.py -q` | `python openspec/scripts/check_catalog_drift.py` against the populated catalog | Revert branch; catalog module unused until PR4 wires the motor |
 | PR3 | `depends_on` DAG + `DependencyOrderer` | `uv run pytest tests/unit/test_dependency_graph.py tests/unit/test_dependency_orderer.py -q` | N/A — pure graph algorithm, no DB | Revert branch; orderer unused until PR4 |
 | PR4 | `SyncMotor` skeleton + hook lifecycle (`validate_parent → pre_insert → repo → post_insert → chain_extend`) | `uv run pytest tests/unit/test_motor_apply_row.py tests/unit/test_motor_apply_batch.py -q` | testcontainers Postgres, `apply_row` against a seeded `[V]`/`[A]` fixture | Revert branch; motor not yet called by any worker |
-| PR5 | D17 identity reconciliation + subscription lifecycle + plate cascade + R22 | `uv run pytest tests/unit/test_identity_reconciler.py tests/integration/test_r22_non_selling_branch.py -q` | testcontainers Postgres, two-branch concurrent-registration scenario | `alembic downgrade -1` twice (0015, 0014); hooks unused until wired |
+| PR5 | D17 identity reconciliation + subscription lifecycle + plate cascade + R22 | `uv run pytest tests/unit/test_identity_reconciler.py tests/integration/test_r22_non_selling_branch.py -q` | testcontainers Postgres, two-branch concurrent-registration scenario | `alembic downgrade -1` twice (0009, 0008 — renumbered from the draft's 0015/0014, see PR5's own "Status" note); hooks unused until wired |
 | PR6 | Hash-chain hooks + `verify_chain` | `uv run pytest tests/unit/test_verify_chain.py -q` | testcontainers Postgres, chain-break injection | Revert branch; verifier not yet scheduled |
 | PR7 | `_read_local_seq` materialization + `resolve_conflict` | `uv run pytest tests/unit/test_read_local_seq.py tests/bench/test_read_local_seq_load.py -q` | testcontainers Postgres, 10k-row load test | `alembic downgrade -1` (0013) |
 | PR8 | Dependency buffer + `alert_types` + single escalation path | `uv run pytest tests/integration/test_parent_missing_buffer_drain.py tests/integration/test_buffer_ttl_escalation.py -q` | testcontainers Postgres, buffer TTL sweep rehearsal | `alembic downgrade -1` twice (0010, 0009) |
@@ -846,149 +846,241 @@ Depends on: T-PR4-001..010
 **Estimated LOC**: ~700
 **Gate to next PR**: all four D17 branches tested; cascade closes junction rows; normalizer parity green
 
+**Status (sdd-apply, migration renumbering — confirmed, not a proposal):** at apply time,
+`ls backend/packages/parkos_core/migrations/versions/` showed the real, highest-applied revision
+chain topped out at `0007_add_v_resolucion_consecutivo_view` (`0001`, `0002`, `0003`, `0004`, `0006`,
+`0007` — `0005` was never allocated; `0008`-`0015` did not exist on disk). This PR's own T-PR5-007 /
+T-PR5-008 migrations were drafted in an earlier session as `0014_add_identity_nk_indexes.py` /
+`0015_add_derived_read_views.py`, but those numbers are a stale artifact of a prior draft's
+PR-delivery order, NOT the real, monotonic, on-disk application order (confirmed independently:
+PR7's suggested-work-units row names "0013", PR8's names "0009"/"0010", PR10's names "0011"/"0012" —
+none of these are monotonic with the actual PR merge order 5→6→7→8→9→10, and none of those files
+exist yet either). **Applied here instead:** the next real, sequential revision numbers off the
+actual chain tip — `0008_add_identity_nk_indexes.py` (`down_revision="0007_add_v_resolucion_consecutivo_view"`)
+and `0009_add_derived_read_views.py` (`down_revision="0008_add_identity_nk_indexes"`). Both were
+dry-run verified (`uv run alembic upgrade --sql <revision>`) AND applied for real against
+`parkos-postgres:16-pgpartman` before any test in this PR ran.
+**Continuation note for PR7/PR8/PR10:** the next real, free revision number after this PR is
+**`0010`** — PR7's migration (drafted as "0013") should become `0010`; PR8's two migrations (drafted
+as "0009"/"0010") should become `0011`/`0012`; PR10's two migrations (drafted as "0011"/"0012")
+should become `0013`/`0014`. Each of those PRs' own `sdd-apply` pass MUST re-run `ls
+migrations/versions/` at ITS OWN apply time (not trust this note's numbers blindly) and pick the
+actual next sequential revision, the same way this PR did — the chain only ever grows, so whichever
+PR applies second among any two takes the higher number regardless of what any earlier tasks.md
+draft predicted.
+**Only `tasks.md` prose inside PR5's own section was updated for this renumbering** (this header,
+T-PR5-007, T-PR5-008, T-PR5-018, and the PR5 row of the "Suggested Work Units" table near the top of
+this file) — PR7/PR8/PR9/PR10's own sections and the "Cross-PR constraints" section still say
+0009-0015/0013/0011/0012 because updating another PR's not-yet-applied section is that PR's own
+`sdd-apply` responsibility, not this one's.
+
 #### T-PR5-001: RED — `IdentityReconciler` noop case
 Req: REQ-HOOK-010 · Design: §2 Issue #10 · Depends on: PR4
-Files: `backend/packages/parkos_core/tests/unit/test_identity_reconciler.py` (new, failing) —
+Files: `backend/tests/unit/test_identity_reconciler.py` (new, failing) —
 `test_noop_when_business_columns_identical`: arriving row's business columns match the open version
 (ignoring `uuid`/`created_at`/`created_by`/`sync_*`) → `reconciliation="noop"`, `APPLIED`, nothing
 written.
-- [ ] Fails — `hooks/impls/identity_reconciler.py` does not exist yet
+- [x] Fails — `hooks/impls/identity_reconciler.py` does not exist yet (confirmed RED before
+      T-PR5-005 landed; module path corrected: `backend/tests/...`, not
+      `backend/packages/parkos_core/tests/...` — matches the established PR1-4 pattern)
 
 #### T-PR5-002: RED — `IdentityReconciler` forward case
 Req: REQ-HOOK-010 · Design: §2 Issue #10 · Depends on: T-PR5-001
 Files: `test_identity_reconciler.py` (append) — `test_forward_when_later_vigente_desde`: arriving
 `vigente_desde` later than the open version → ordinary `close_and_insert`, arriving `uuid` becomes
 current.
-- [ ] Fails alongside T-PR5-001
+- [x] Fails alongside T-PR5-001
 
 #### T-PR5-003: RED — `IdentityReconciler` historical case
 Req: REQ-HOOK-010 · Design: §2 Issue #10 · Depends on: T-PR5-002
 Files: `test_identity_reconciler.py` (append) — `test_historical_when_earlier_vigente_desde`:
 arriving `vigente_desde` earlier → inserted as an already-closed version, current version untouched,
 no UPDATE ever.
-- [ ] Fails alongside T-PR5-002
+- [x] Fails alongside T-PR5-002
 
 #### T-PR5-004: RED — `IdentityReconciler` divergent-data conflict case
 Req: REQ-HOOK-010 · Design: §2 Issue #10 · Depends on: T-PR5-003
 Files: `test_identity_reconciler.py` (append) — `test_divergent_data_writes_informational_conflict`:
 `forward`/`historical` with a materially different column also writes an informational
 `sync_conflict` (`politica="identity_divergence"`); apply still succeeds, never `MANUAL`.
-- [ ] Fails alongside T-PR5-003
+- [x] Fails alongside T-PR5-003
 
 #### T-PR5-005: GREEN — `hooks/impls/identity_reconciler.py::IdentityReconciler`
 Req: REQ-HOOK-010, REQ-MOT-008 · Design: §2 Issue #10, §6 · Depends on: T-PR5-004
 Files: `backend/packages/parkos_core/src/parkos_core/sync/hooks/impls/identity_reconciler.py` (new)
 — compares by normalized natural key only, never `uuid`; never rewrites an existing FK; never
 returns `MANUAL`.
-- [ ] T-PR5-001..004 all pass (GREEN)
+- [x] T-PR5-001..004 all pass (GREEN) — `uv run pytest tests/unit/test_identity_reconciler.py -q`:
+      4 passed. Status/deviation: `motor/apply_row.py` required two small, necessary additions to
+      make `noop` (skip the repo call, still `APPLIED`) and a pre_insert `proceed=False` rejection
+      (`CONFLICT`/`illegal_state_transition`, needed by T-PR5-012) actually reach `ApplyResult` —
+      both documented in that module's own updated docstring; no other production module changed.
 
 #### T-PR5-006: `natural_key_normalizer` + Python↔SQL parity test
 Req: REQ-CAT-018 · Design: §2 Issue #10 · Depends on: T-PR5-005
 Files: `backend/packages/parkos_core/src/parkos_core/sync/catalog/normalizers.py` (new) — trims
 separators/whitespace from `numero_identificacion`; uppercases and strips separators from `placa`;
-wires `natural_key_normalizer` onto the 3 entries declared in T-PR2-006; `tests/unit/
+wires `natural_key_normalizer` **and `hook_pre_insert=identity_reconciler`** onto the 3 entries
+declared in T-PR2-006 (`sync_entries_v.py` — wiring the hook alongside the normalizer in the SAME
+task, since both touch the same 3 `SyncCatalogEntry` construction sites and the hook is otherwise
+never actually exercised by real traffic); `backend/tests/unit/
 test_natural_key_normalizer_parity.py` (new) — asserts the Python normalizer and the SQL functional
 index expression (`regexp_replace(...)`, `upper(regexp_replace(...))`) agree over a shared fixture
 set.
-- [ ] `ABC-123` and `ABC123` normalize to the same key in both Python and SQL
+- [x] `ABC-123` and `ABC123` normalize to the same key in both Python and SQL — 14 parametrized
+      cases pass (`test_abc_dash_123_and_abc123_normalize_identically` is the literal acceptance
+      case)
 
-#### T-PR5-007: Migration `0014_add_identity_nk_indexes.py`
+#### T-PR5-007: Migration `0008_add_identity_nk_indexes.py` (renumbered from the draft's `0014` — see PR5's "Status" note above)
 Req: design §4 · Design: §2 Issue #10 · Depends on: T-PR5-006
-Files: `backend/packages/parkos_core/migrations/versions/0014_add_identity_nk_indexes.py` (new) —
+Files: `backend/packages/parkos_core/migrations/versions/0008_add_identity_nk_indexes.py` (new) —
 non-unique functional partial indexes on the normalized natural key of `clientes`, `clientes_b2b`,
-`vehiculos`, `WHERE vigente_hasta IS NULL`; `tests/migrations/test_identity_nk_indexes_schema.py`
+`vehiculos`, `WHERE vigente_hasta IS NULL`; `backend/tests/migrations/test_identity_nk_indexes_schema.py`
 (new).
-Pre-flight: `uv run alembic upgrade --sql 0014_add_identity_nk_indexes` reviewed before apply.
-- [ ] Both index expressions are `IMMUTABLE` and therefore indexable
+Pre-flight: `uv run alembic upgrade --sql 0008_add_identity_nk_indexes` reviewed before apply.
+- [x] Both index expressions are `IMMUTABLE` and therefore indexable — verified by
+      `test_clientes_and_vehiculos_indexes_use_normalizer_expressions`; the migration itself dry-run
+      (`--sql`) AND applied for real against `parkos-postgres:16-pgpartman` without error, which a
+      non-`IMMUTABLE` functional-index expression would have rejected at `CREATE INDEX` time.
 
-#### T-PR5-008: Migration `0015_add_derived_read_views.py`
+#### T-PR5-008: Migration `0009_add_derived_read_views.py` (renumbered from the draft's `0015` — see PR5's "Status" note above)
 Req: design §4, ADR-001 §2 Issue #1 no-UPDATE consequence · Design: §2 Issue #10 · Depends on: T-PR5-007
-Files: `backend/packages/parkos_core/migrations/versions/0015_add_derived_read_views.py` (new) —
+Files: `backend/packages/parkos_core/migrations/versions/0009_add_derived_read_views.py` (new) —
 `prod.v_clientes_actual`, `prod.v_vehiculos_actual` (current-identity resolution by natural key), and
-the `factura_electronica` DIAN-acknowledgement view over `envio_dian` (`cufe`, `estado`); `tests/
+`prod.v_factura_electronica_acuse`, the DIAN-acknowledgement view over `envio_dian` (`cufe`,
+`estado`, latest row per `uuid_factura_electronica` by `timestamp_evento`); `backend/tests/
 migrations/test_derived_read_views_schema.py` (new).
-Pre-flight: `uv run alembic upgrade --sql 0015_add_derived_read_views` reviewed before apply.
-- [ ] Views add no table — `check_table_counts.py`'s 51/54 canon is unaffected
+Pre-flight: `uv run alembic upgrade --sql 0009_add_derived_read_views` reviewed before apply.
+- [x] Views add no table — `check_table_counts.py`'s 51/54 canon is unaffected (verified: the script
+      scans doc-drift tokens, not live DB introspection, and is untouched by this PR; separately,
+      `test_three_views_exist_as_views_not_tables` asserts these 3 objects are `pg_views` entries,
+      not `pg_tables` entries)
 
 #### T-PR5-009: CI invariant test — at most one open version per natural key (R17)
 Req: REQ-OPS-015 · Design: §10 Testing Strategy · Depends on: T-PR5-005, T-PR5-007
-Files: `backend/packages/parkos_core/tests/integration/test_identity_invariant.py` (new) — exercises
+Files: `backend/tests/integration/test_identity_invariant.py` (new) — exercises
 all three `IdentityReconciler` outcomes plus the divergent-data path; asserts the invariant holds
 after each for `clientes`, `clientes_b2b`, `vehiculos`.
-- [ ] A violation (two open versions for one normalized natural key) fails this test, not a DB constraint
+- [x] A violation (two open versions for one normalized natural key) fails this test, not a DB
+      constraint — proven by a plain `COUNT(*) WHERE vigente_hasta IS NULL` assertion in Python,
+      with no `UNIQUE` index anywhere in migration `0008` (non-unique by design, per design.md's
+      Issue #10 decision table)
 
 #### T-PR5-010: RED — `SubscriptionLifecycle` illegal-transition case
 Req: REQ-HOOK-006 · Design: §6 · Depends on: T-PR5-005
-Files: `backend/packages/parkos_core/tests/unit/test_subscription_lifecycle.py` (new, failing) —
+Files: `backend/tests/unit/test_subscription_lifecycle.py` (new, failing) —
 `test_illegal_transition_rejected`: a transition outside `activa↔suspendida↔cancelada` (terminal)
 returns `proceed=False`; the motor aborts with `CONFLICT`/`illegal_state_transition` and writes a
 `sync_conflict` (`politica="illegal_lifecycle"`).
-- [ ] Fails — `hooks/impls/subscription_lifecycle.py` does not exist yet
+- [x] Fails — `hooks/impls/subscription_lifecycle.py` does not exist yet
 
 #### T-PR5-011: RED — `SubscriptionLifecycle` vehicle-capacity case
 Req: REQ-HOOK-006 · Design: §6 · Depends on: T-PR5-010
 Files: `test_subscription_lifecycle.py` (append) — `test_vehicle_capacity_enforced`: adding a vehicle
 that would exceed the parent plan's `cantidad_maxima_vehiculos` (resolved through the already-
 validated `depends_on` parent) is treated the same as an illegal transition.
-- [ ] Fails alongside T-PR5-010
+- [x] Fails alongside T-PR5-010
 
 #### T-PR5-012: GREEN — `hooks/impls/subscription_lifecycle.py::SubscriptionLifecycle`
 Req: REQ-HOOK-006 · Design: §6 · Depends on: T-PR5-011
 Files: `backend/packages/parkos_core/src/parkos_core/sync/hooks/impls/subscription_lifecycle.py`
-(new) — bound as `hook_pre_insert` on `subscripcion_vehiculos`.
-- [ ] T-PR5-010 and T-PR5-011 pass (GREEN)
+(new) — bound as `hook_pre_insert` on `subscripcion_vehiculos` (wired directly in
+`sync_entries_v.py`, this task).
+- [x] T-PR5-010 and T-PR5-011 pass (GREEN) — `uv run pytest tests/unit/test_subscription_lifecycle.py
+      -q`: 4 passed (2 required + 2 control cases: a legal `activa→suspendida` transition, and a
+      new association within capacity). Status/decision: a same-`estado` "transition" (e.g.
+      `activa→activa`) is always legal — treated as an idempotent continuation, not a transition —
+      because `PlateChangeCascade` (T-PR5-014) re-inserts a replacement junction row that PRESERVES
+      the closed row's `estado` verbatim; without this, every plate-change cascade would trip
+      `illegal_state_transition` on its own replacement row. Verified end-to-end by
+      `test_closes_and_reopens_subscripcion_vehiculos` in `test_plate_change_cascade.py`, which
+      exercises the REAL wired catalog entry (not a `make_spec` override) for the cascade's
+      recursive `apply_row` call.
 
 #### T-PR5-013: RED — `PlateChangeCascade` closes/reopens `subscripcion_vehiculos`
 Req: REQ-HOOK-005 · Design: §6 · Depends on: T-PR5-005
-Files: `backend/packages/parkos_core/tests/unit/test_plate_change_cascade.py` (new, failing) —
+Files: `backend/tests/unit/test_plate_change_cascade.py` (new, failing) —
 `test_closes_and_reopens_subscripcion_vehiculos`: a `vehiculos` plate change (normalized) closes
 every `subscripcion_vehiculos` row pointing at the old version and inserts replacements pointing at
 the new version; audit trail is `log_transaccional`, never a `reclamos` row.
-- [ ] Fails — `hooks/impls/plate_change_cascade.py` does not exist yet
+- [x] Fails — `hooks/impls/plate_change_cascade.py` does not exist yet
 
 #### T-PR5-014: GREEN — `hooks/impls/plate_change_cascade.py::PlateChangeCascade` (re-targeted)
 Req: REQ-HOOK-005 · Design: §6 · Depends on: T-PR5-013
 Files: `backend/packages/parkos_core/src/parkos_core/sync/hooks/impls/plate_change_cascade.py`
 (new) — bound as `hook_post_insert` on `vehiculos`; emits `cascade_rows` applied through the motor
 recursively (per REQ-HOOK-003 step 4); the `vehiculos` write itself proceeds regardless.
-- [ ] T-PR5-013 passes (GREEN)
+- [x] T-PR5-013 passes (GREEN) — `uv run pytest tests/unit/test_plate_change_cascade.py -q`:
+      2 passed. Status/deviation: `HookContext` needed a new `row_uuid` field (the just-flushed new
+      row's own uuid) and `open_version`/`row_uuid` needed to be threaded into the `hook_post_insert`
+      context in `apply_row.py` — neither was passed before PR5 since no PR4-era post_insert hook
+      needed the NEW row's identity; documented in `hooks/base.py`'s updated `HookContext` docstring.
 
 #### T-PR5-015: RED+GREEN — `hooks/impls/bi_temporal_compensation.py::BiTemporalCompensation`
 Req: REQ-HOOK-007 · Design: §6, §3 · Depends on: T-PR2-011
-Files: `backend/packages/parkos_core/tests/unit/test_bi_temporal_compensation.py` (new),
+Files: `backend/tests/unit/test_bi_temporal_compensation.py` (new),
 `backend/packages/parkos_core/src/parkos_core/sync/hooks/impls/bi_temporal_compensation.py` (new)
 — for `factura_pagos.tipo_movimiento="reverso"`, emits a compensating `log_transaccional` row in the
 same transaction; never modifies the original row.
-- [ ] Compensating row extends the hash chain via `hook_chain_extend` in the same `apply_row` call
+- [x] Compensating row extends the hash chain via `hook_chain_extend` in the same `apply_row` call —
+      `uv run pytest tests/unit/test_bi_temporal_compensation.py -q`: 2 passed. Status/decision: the
+      hook writes the compensating row directly via `repo.append_only.append_event(chain_hash=True)`
+      (the SAME primitive `LogTransaccionalChain`'s eventual PR6 registry binding wraps), rather than
+      returning a `cascade_rows` entry for `log_transaccional` — `log_transaccional`'s own
+      `hook_chain_extend` registry slot is still `None` (PR6 scope, REQ-HOOK-008, not pre-empted
+      here); `append_event(chain_hash=True)` computes `hash_anterior`/`hash_actual` inline in Python
+      (via `repo.hash_chain.append`), so the chain extends within THIS SAME `apply_row(factura_pagos,
+      ...)` call — no second top-level `apply_row` invocation needed, satisfying the acceptance
+      criterion's literal wording without requiring PR6's hook to exist yet.
 
 #### T-PR5-016: Defense-in-depth `uuid_sucursal` filter on the exit-with-subscription query
 Req: REQ-CAT-017, addendum #2 · Design: §2 Issue #11 · Depends on: T-PR2-006
 Files: `backend/packages/parkos_core/src/parkos_core/api/v1/operacion.py` (modified) — the
 exit-with-subscription validation query (CU-03M path) explicitly filters
 `WHERE uuid_sucursal = :this_branch` **in addition to** relying on `broadcast_policy="subscription"`
-scoped sync; `tests/unit/test_operacion_subscription_lookup.py` (new).
-- [ ] A stale/manually-inserted subscription row for another branch is rejected by the explicit filter
-      even if it were somehow present locally
+scoped sync; `backend/tests/unit/test_operacion_subscription_lookup.py` (new).
+- [x] A stale/manually-inserted subscription row for another branch is rejected by the explicit filter
+      even if it were somehow present locally — `test_rejects_stale_row_for_another_branch` seeds a
+      REAL row for a different branch and asserts the lookup still misses.
+      Status/deviation (scope gap, documented not silently filled): no `salidas` ("exit") HTTP
+      endpoint exists yet anywhere in this codebase (`operacion.py` only has `ingreso` routes; no
+      prior PR built one) — "modify the existing query" as originally worded assumes a query that
+      does not exist. Implemented `resolve_active_subscription_for_exit()` as the CU-03M validation
+      HELPER FUNCTION the future exit endpoint will call (not a new HTTP route — rule 3 forbids
+      adding endpoints just to pass a test, and this genuinely serves R22's defense-in-depth
+      requirement on its own, independent of any endpoint). 4/4 tests pass.
 
 #### T-PR5-017: R22 integration test — non-selling-branch miss is silent-correct
 Req: REQ-CAT-017, ADR-003 §4 · Design: §2 Issue #11, §7.7 · Depends on: T-PR5-016, T-PR3-007
-Files: `backend/packages/parkos_core/tests/integration/test_r22_non_selling_branch.py` (new) — an
+Files: `backend/tests/integration/test_r22_non_selling_branch.py` (new) — an
 entry at a non-selling branch with `uuid_subscripcion_cliente=NULL` produces **0** `sync_conflict`
 rows, **0** `alerta` rows, **0** buffer rows; the operator-facing message reads "no subscription at
 this branch" (distinct from "subscription expired"); asserts
 `"subscripciones_cliente" not in ingreso.depends_on` (mirrors T-PR3-001's nullable-FK guard from the
 `ingreso` side).
-- [ ] Standard tariff is charged; no metric is labelled as an error for this path
+- [x] Standard tariff is charged; no metric is labelled as an error for this path — 2 passed.
+      `prod.sync_queue_lw_buffer` does not exist yet (PR8 table, design.md §4) so "0 buffer rows" is
+      proven STRUCTURALLY instead: the `depends_on` regression assertion shows `ingreso` can never
+      even attempt to buffer against `subscripciones_cliente` in the first place (no optional FK ever
+      enters a `depends_on` list — the R22 guard already enforced by `check_catalog_drift.py` since
+      PR2/PR3).
 
 #### T-PR5-018: Commit + open PR5
 Depends on: T-PR5-001..017
-- [ ] Branch `feat/sync-overhaul-pr5-identity-subscription-hooks` pushed, target `dev`
-- [ ] `uv run alembic upgrade --sql 0015_add_derived_read_views` reviewed and attached to the PR
+- [ ] Branch `feat/sync-overhaul-pr5-identity-subscription-hooks` pushed, target `dev` (left to the
+      maintainer per this session's instructions — `sdd-apply` does not commit/push)
+- [x] `uv run alembic upgrade --sql 0009_add_derived_read_views` reviewed and attached to the PR
+      (renumbered from the draft's `0015` — see PR5's "Status" note above); both `0008`/`0009` were
+      ALSO applied for real against `parkos-postgres:16-pgpartman` (not just dry-run) before any
+      PR5 test ran
 
 ### PR5 acceptance
-- [ ] `noop`/`forward`/`historical`/divergent all pass; identity invariant test green
-- [ ] `PlateChangeCascade` writes to `subscripcion_vehiculos`, never `reclamos`
-- [ ] R22 non-selling-branch scenario produces zero conflicts/alerts/buffer rows
+- [x] `noop`/`forward`/`historical`/divergent all pass; identity invariant test green — 4 + 3 = 7
+      tests, all green
+- [x] `PlateChangeCascade` writes to `subscripcion_vehiculos`, never `reclamos` — asserted directly
+      (`select(Reclamos)` returns empty) in `test_closes_and_reopens_subscripcion_vehiculos`
+- [x] R22 non-selling-branch scenario produces zero conflicts/alerts/buffer rows — see T-PR5-017's
+      note on the buffer-table structural proof
 
 ---
 

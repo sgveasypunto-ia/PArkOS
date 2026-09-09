@@ -47,6 +47,14 @@ from ....models.V.tipos_vehiculo import TiposVehiculo
 from ....models.V.usuarios import Usuarios
 from ....models.V.usuarios_sucursal import UsuariosSucursal
 from ....models.V.vehiculos import Vehiculos
+from ...hooks.impls.identity_reconciler import identity_reconciler
+from ...hooks.impls.plate_change_cascade import plate_change_cascade
+from ...hooks.impls.subscription_lifecycle import subscription_lifecycle
+from ..normalizers import (
+    clientes_b2b_natural_key_normalizer,
+    clientes_natural_key_normalizer,
+    vehiculos_natural_key_normalizer,
+)
 from ..schema import SyncCatalogEntry
 
 # ---------------------------------------------------------------------------
@@ -352,8 +360,9 @@ _CANTIDAD_VEHICULOS_SUCURSAL = SyncCatalogEntry(
 # T-PR2-006 — group 5: bidirectional identity masters + junctions (D17, §16 Q1)
 # ---------------------------------------------------------------------------
 #
-# natural_key_normalizer callables (trim/uppercase) are wired in PR5
-# (T-PR5-006); this task declares the natural_key tuple fields only.
+# natural_key_normalizer callables (trim/uppercase) + hook_pre_insert=
+# identity_reconciler are wired in PR5 (T-PR5-005/006) onto the 3 entries
+# that declare a non-empty natural_key.
 
 _CLIENTES = SyncCatalogEntry(
     name="clientes",
@@ -367,6 +376,8 @@ _CLIENTES = SyncCatalogEntry(
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
     natural_key=("tipo_identificador", "numero_identificacion"),
+    natural_key_normalizer=clientes_natural_key_normalizer,
+    hook_pre_insert=identity_reconciler,
 )
 
 _CLIENTES_B2B = SyncCatalogEntry(
@@ -381,6 +392,8 @@ _CLIENTES_B2B = SyncCatalogEntry(
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
     natural_key=("uuid_cliente",),
+    natural_key_normalizer=clientes_b2b_natural_key_normalizer,
+    hook_pre_insert=identity_reconciler,
 )
 
 _VEHICULOS = SyncCatalogEntry(
@@ -395,6 +408,11 @@ _VEHICULOS = SyncCatalogEntry(
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
     natural_key=("placa",),
+    natural_key_normalizer=vehiculos_natural_key_normalizer,
+    hook_pre_insert=identity_reconciler,
+    # T-PR5-014 (REQ-HOOK-005, re-targeted) — plate change cascades to
+    # subscripcion_vehiculos via hook_post_insert (repo call already ran).
+    hook_post_insert=plate_change_cascade,
 )
 
 _SUBSCRIPCIONES_CLIENTE = SyncCatalogEntry(
@@ -424,6 +442,9 @@ _SUBSCRIPCION_VEHICULOS = SyncCatalogEntry(
     depends_on=("subscripciones_cliente", "vehiculos"),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # T-PR5-012 (REQ-HOOK-006) — lifecycle transition + vehicle-capacity
+    # validation runs BEFORE the repo call (hook_pre_insert).
+    hook_pre_insert=subscription_lifecycle,
 )
 
 SYNC_ENTRIES_V: tuple[SyncCatalogEntry, ...] = (

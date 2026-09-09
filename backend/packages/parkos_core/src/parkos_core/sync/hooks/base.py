@@ -38,6 +38,17 @@ class HookContext:
     for ``hook_validate_parent``; ``open_version`` is set for
     ``natural_key`` specs (D17) so ``IdentityReconciler`` does not have to
     re-query the currently-open version.
+
+    ``row_uuid`` (T-PR5-014) is set for ``hook_post_insert`` to the just
+    -flushed row's own primary key (``apply_row`` reads
+    ``new_row.uuid`` right after ``session.flush()``, before invoking
+    ``hook_post_insert`` — see ``motor/apply_row.py``). ``PlateChangeCascade``
+    needs this to know which **new** ``vehiculos`` version its cascade rows
+    must point at; it is not derivable from ``payload`` alone when the
+    server-side ``gen_random_uuid()`` default (rather than an explicit
+    ``payload["uuid"]``) minted the row's identity. Added here rather than
+    inferred, since ``HookContext`` otherwise has no channel for "the row
+    that was just written" during ``hook_post_insert``.
     """
 
     spec: SyncCatalogEntry
@@ -48,6 +59,7 @@ class HookContext:
     parent_local: dict[str, Any] | None = None
     open_version: dict[str, Any] | None = None
     branch_uuid: uuid_lib.UUID | None = None
+    row_uuid: uuid_lib.UUID | None = None
 
 
 @dataclass(frozen=True)

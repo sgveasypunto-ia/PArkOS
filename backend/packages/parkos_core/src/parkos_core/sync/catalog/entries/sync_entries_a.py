@@ -21,6 +21,7 @@ from ....models.A.factura_pagos import FacturaPagos
 from ....models.A.log_transaccional import LogTransaccional
 from ....models.A.revocacion_factura import RevocacionFactura
 from ....models.A.salidas import Salidas
+from ...hooks.impls.bi_temporal_compensation import bi_temporal_compensation
 from ..schema import SyncCatalogEntry
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,9 @@ _FACTURA_PAGOS = SyncCatalogEntry(
     hash_chain=False,
     self_chain=True,
     parent_fk_column="uuid_pago_revertido",
+    # T-PR5-015 (REQ-HOOK-007) — a 'reverso' row emits a compensating
+    # log_transaccional row (own hash chain extended) in the same TX.
+    hook_post_insert=bi_temporal_compensation,
 )
 
 # ---------------------------------------------------------------------------

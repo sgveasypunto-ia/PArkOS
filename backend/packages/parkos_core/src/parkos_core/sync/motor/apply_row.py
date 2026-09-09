@@ -24,6 +24,22 @@ which could only observe an FK violation, not prevent it).
 unmodified all the way to the repo call — this module never reads a live
 catalog table (``impuestos``, ``otros_cobros``) to recompute them; see
 ``test_snapshot_columns_never_recomputed`` (T-PR4-007).
+
+**PR5 additions (T-PR5-005, T-PR5-010, D17, REQ-HOOK-006):**
+``hook_pre_insert`` can now short-circuit ``apply_row`` in two additional
+ways, both evaluated strictly BEFORE the repo call (same "prevent, don't
+observe" posture as ``hook_validate_parent``):
+
+  - ``HookResult(proceed=False, ...)`` -> ``ApplyResult(status=CONFLICT,
+    reason="illegal_state_transition")`` — ``SubscriptionLifecycle``
+    rejecting an illegal ``subscripcion_vehiculos`` transition or a
+    vehicle-capacity overrun (REQ-HOOK-006). The hook itself writes the
+    informational ``sync_conflict`` row before returning.
+  - ``HookResult(reconciliation="noop", ...)`` -> ``ApplyResult(
+    status=APPLIED, row_uuid=<open_version's uuid>)`` without ever calling
+    the repo — ``IdentityReconciler`` detecting the arriving row is
+    business-identical to the currently-open version (D17, REQ-HOOK-010).
+    This is what prevents version-chain inflation on re-delivery.
 """
 from __future__ import annotations
 
@@ -221,6 +237,35 @@ async def apply_row(
         if result.payload_override is not None:
             payload = result.payload_override
 
+        # T-PR5-010 (REQ-HOOK-006): a pre_insert hook rejecting the row
+        # (illegal lifecycle transition, capacity exceeded, ...) aborts
+        # BEFORE the repo call — same "never observe, always prevent"
+        # posture as hook_validate_parent's parent_missing short-circuit
+        # above. The hook itself is responsible for writing the
+        # informational ``sync_conflict`` row (it has ``ctx.session``);
+        # this module only maps the rejection to the ApplyResult contract.
+        if not result.proceed:
+            return ApplyResult(
+                status="CONFLICT",
+                row_uuid=None,
+                reason="illegal_state_transition",
+                metrics=metrics,
+            )
+
+        # T-PR5-005 (REQ-HOOK-010, D17): IdentityReconciler's "noop" case —
+        # the arriving row is business-identical to the currently-open
+        # version. The repo call MUST NOT run (this is what prevents
+        # version-chain inflation on every re-delivery of the same fact),
+        # but the outcome is still APPLIED, not a rejection.
+        if result.reconciliation == "noop":
+            noop_uuid = open_version.get("uuid") if open_version else None
+            return ApplyResult(
+                status="APPLIED",
+                row_uuid=noop_uuid,
+                reason=None,
+                metrics=metrics,
+            )
+
     # 3. Repo call — dispatches per spec.apply_strategy (REQ-MOT-001..004).
     #    snapshot_columns (D20) travel inside `payload` verbatim; nothing
     #    above or below this line re-reads a live catalog to recompute them.
@@ -246,6 +291,8 @@ async def apply_row(
             session=session,
             actor_uuid=actor_uuid,
             branch_uuid=branch_uuid,
+            open_version=open_version,
+            row_uuid=row_uuid,
         )
         result = await _invoke_hook(spec.hook_post_insert, ctx)
         metrics["hook_post_insert"] = True

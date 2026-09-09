@@ -84,6 +84,36 @@ for _p in (_PARKOS_CORE_SRC, _API_ADMIN_SRC, _API_SUCURSAL_SRC):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+# ---------------------------------------------------------------------------
+# PARKOS_DEPLOY session-wide safe default (discovered PR5 — see the PR5
+# apply report's "Issues Found" section).
+# ---------------------------------------------------------------------------
+#
+# ``parkos_core.api.v1``'s ``__init__.py`` reads ``PARKOS_DEPLOY`` ONCE, at
+# module-IMPORT time, to decide whether to mount the DIAN cloud router
+# (REQ-X3 boundary). Once that module is imported anywhere in a pytest
+# session, Python's module cache means the built router is FIXED for the
+# rest of the session — a later ``os.environ`` change has no effect.
+# ``tests/static/conftest.py`` already works around this for its own
+# directory (``os.environ.setdefault("PARKOS_DEPLOY", "branch")``), but
+# that conftest only loads once pytest starts COLLECTING ``tests/static/``
+# — alphabetically AFTER ``tests/integration/`` and ``tests/migrations/``.
+# Any test file in an earlier-collected directory that imports
+# ``parkos_core.api.v1`` (directly, or transitively via any
+# ``parkos_core.api.v1.<submodule>`` import) BEFORE that point bakes in the
+# unset-env-var default (``PARKOS_DEPLOY="cloud"``), which mounts the DIAN
+# cloud router into the SAME cached module object
+# ``tests/static/test_openapi_branch_excludes_cloud.py`` later asserts is
+# branch-only — an order-dependent failure with no per-test cause. Setting
+# the same safe default here, in the ROOT conftest (loaded before ANY test
+# file is collected, in any directory), closes the gap regardless of which
+# test happens to import ``parkos_core.api.v1`` first. Tests that need
+# ``PARKOS_DEPLOY=cloud`` already override this via
+# ``monkeypatch.setenv`` + explicit ``sys.modules`` cache-busting (see
+# ``tests/unit/dian/conftest.py``, ``tests/unit/test_admin_me.py``) — this
+# default never overrides an already-set value (``setdefault``).
+os.environ.setdefault("PARKOS_DEPLOY", "branch")
+
 
 # ---------------------------------------------------------------------------
 # Default test image — overridable via TEST_PG_IMAGE env var.
