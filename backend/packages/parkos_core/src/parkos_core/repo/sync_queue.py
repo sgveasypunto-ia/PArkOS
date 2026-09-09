@@ -76,16 +76,21 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def next_retry_delay(intentos: int) -> timedelta:
+def next_retry_delay(
+    intentos: int, *, schedule: tuple[timedelta, ...] | None = None
+) -> timedelta:
     """Return the next backoff delay for the given attempt count.
 
-    Indexes into :data:`BACKOFF_SCHEDULE`; the last entry (24h) is the
-    cap. ``intentos`` is clamped at the schedule length.
+    Indexes into ``schedule`` (T-PR9-006 override) or, when ``schedule``
+    is ``None`` (default), the module-level :data:`BACKOFF_SCHEDULE` — the
+    last entry of whichever schedule is in effect is the cap. ``intentos``
+    is clamped at the schedule length.
     """
+    curve = schedule if schedule is not None else BACKOFF_SCHEDULE
     intentos = max(intentos, 0)
-    if intentos >= len(BACKOFF_SCHEDULE):
-        return BACKOFF_SCHEDULE[-1]
-    return BACKOFF_SCHEDULE[intentos]
+    if intentos >= len(curve):
+        return curve[-1]
+    return curve[intentos]
 
 
 def _validate_update_columns(values: dict[str, object]) -> None:
@@ -209,6 +214,9 @@ async def mark_failed(
     session: AsyncSession,
     sq_uuid: uuid_lib.UUID,
     error: str,
+    *,
+    backoff_schedule: tuple[timedelta, ...] | None = None,
+    max_retries: int | None = None,
 ) -> None:
     """Mark the row as failed (``estado='fallido'``) and schedule the next retry.
 
@@ -229,6 +237,28 @@ async def mark_failed(
     Re-queues the row (``estado='pendiente'``) — the worker will pick it
     up again at ``next_retry_at``. Workers check ``estado='pendiente'``
     AND ``next_retry_at <= NOW()`` when polling (see :func:`list_pending`).
+
+    Args:
+        session: Active ``AsyncSession``.
+        sq_uuid: The ``sync_queue`` row to mark failed.
+        error: Human-readable failure detail (stored in ``ultimo_error``).
+        backoff_schedule: Per-entry override (T-PR9-006, design.md §2
+            Issue #9) — e.g. ``dian.backoff.DIAN_BACKOFF_SCHEDULE`` for
+            the ``factura_electronica`` / ``revocacion_factura`` catalog
+            entries. ``None`` (default) uses the module-level
+            :data:`BACKOFF_SCHEDULE` (the general curve) — unchanged
+            behavior for every other caller. The override is passed
+            **into** this function, never applied by the caller around
+            it, so the R-D3 sync_queue carve-out AST check still passes
+            (this module stays the ONLY place that computes
+            ``next_retry_at`` and issues the UPDATE).
+        max_retries: Per-entry terminal-attempt-count override, paired
+            with ``backoff_schedule``. Purely informational here — this
+            function only ever re-queues (``estado='pendiente'``); a
+            caller reading ``intentos >= max_retries`` decides whether to
+            treat the row as exhausted and raise its own
+            ``on_exhaustion`` alert instead of calling this function
+            again.
     """
     # Read current intentos so we can compute the new backoff window.
     # This is one extra SELECT per failure, but failures are rare and
@@ -246,8 +276,10 @@ async def mark_failed(
     new_intentos = current + 1
     # Delay is indexed by the attempt count *before* this failure (see the
     # docstring table above) — the first failure (current=0) gets the 1m
-    # entry, not the 5m one.
-    new_delay = next_retry_delay(current)
+    # entry, not the 5m one. ``backoff_schedule`` overrides which curve
+    # :func:`next_retry_delay` indexes into (T-PR9-006); ``None`` keeps
+    # today's general-curve behavior.
+    new_delay = next_retry_delay(current, schedule=backoff_schedule)
     new_retry_at = _now() + new_delay
 
     _validate_update_columns(

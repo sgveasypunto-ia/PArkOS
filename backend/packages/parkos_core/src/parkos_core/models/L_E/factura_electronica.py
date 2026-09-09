@@ -1,18 +1,28 @@
-"""ORM model for ``prod.factura_electronica`` (DIAN invoice [L-E], CLOUD-ONLY, PR6).
+"""ORM model for ``prod.factura_electronica`` (DIAN invoice [L-E], PR6; branch-local numbering since T-PR9-002, D1-rev).
 
 Maps 1:1 to the migration in ``0001_initial_schema.py`` (lines 875-891).
 
-Cloud-only by deployment topology: the schema is created in both cloud and
-branch DBs, but the BRANCH service MUST NOT insert here \u2014 only
-``api_admin`` writes, via :mod:`parkos_core.dian.cloud_router` which is
-import-guarded by ``PARKOS_DEPLOY=cloud``. The T-PR6-13 static test
-verifies the boundary (REQ-X3, SC-X6).
+**D1-rev correction (T-PR9-002).** The BRANCH is the authoring side: it
+inserts this row locally (``repo.event.record_event``, via
+``repo.resolucion_facturacion.assign_consecutivo`` for the ``consecutivo``
+allocation), offline-capable, then it replicates ``branch_to_cloud``
+through the ordinary sync catalog entry (``sync/catalog/entries/
+sync_entries_le.py``). The cloud only VALIDATES the received
+``consecutivo`` falls inside the resolution's authorized range
+(``dian/cloud/dispatcher.py::validate_consecutivo_range``, T-PR9-003) and
+forwards to the DIAN provider \u2014 it never assigns the number.
+
+This supersedes the prior (D1-original) claim that only ``api_admin``
+writes here via ``dian/cloud_router.py``'s ``SELECT ... FOR UPDATE`` +
+atomic ``consecutivo++`` (``dian/cloud/atomic_next_consecutivo.py``).
+That cloud-side endpoint still exists and is still live (out of PR9's
+scope to remove \u2014 see the PR9 apply report), but it is NOT the branch's
+numbering path; the two do not share the same call path.
 
 The UK ``(uuid_resolucion_facturacion, consecutivo)`` enforces uniqueness
-inside a ``resolucion_facturacion``'s range \u2014 the DIAN
-``numero_oficial`` invariant. Atomic ``consecutivo_actual++`` happens in
-``dian/cloud_router.py`` via ``SELECT ... FOR UPDATE`` on the
-``resolucion_facturacion`` row.
+inside a ``resolucion_facturacion``'s range \u2014 the DIAN ``numero_oficial``
+invariant, now enforced on INSERT (the UK) rather than relied upon solely
+via the allocator's own MAX()+1 read.
 """
 from __future__ import annotations
 

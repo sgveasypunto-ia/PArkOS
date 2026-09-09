@@ -12,6 +12,7 @@ double-chain hazard from the superseded dual-catalog design.
 """
 from __future__ import annotations
 
+from ....dian.backoff import DIAN_BACKOFF_SCHEDULE, DIAN_MAX_RETRIES
 from ....models.A.arqueo import Arqueo
 from ....models.A.caja import Caja
 from ....models.A.factura_detalle import FacturaDetalle
@@ -188,6 +189,14 @@ _REVOCACION_FACTURA = SyncCatalogEntry(
     # T-PR6-004 — REQ-HOOK-009. Replaces the manual dispatcher.py call
     # (T-PR6-005) — see revocacion_factura_chain.py's module docstring.
     hook_chain_extend=revocacion_factura_chain,
+    # T-PR9-010 — reuses the EXACT SAME DIAN curve as factura_electronica
+    # (imported, not a separate copy): same DIAN evidentiary chain
+    # (hash_chain + verify_chain), same regulatory deadline, and its
+    # cloud-side effect is also a provider submission (design.md §2
+    # Issue #9).
+    backoff_schedule=DIAN_BACKOFF_SCHEDULE,
+    max_retries=DIAN_MAX_RETRIES,
+    on_exhaustion="fe_provider_error",
 )
 
 SYNC_ENTRIES_A: tuple[SyncCatalogEntry, ...] = (

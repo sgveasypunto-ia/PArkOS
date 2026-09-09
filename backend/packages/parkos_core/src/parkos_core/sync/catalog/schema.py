@@ -14,7 +14,9 @@ locally; ``envio_dian`` is the ordinary return channel), ``direction_proposed``
 
 **Fields added**: ``depends_on``, ``parent_fk_column``, ``self_chain`` (D18);
 ``natural_key``, ``natural_key_normalizer`` (D17); ``originating_role``;
-``snapshot_columns`` (D20); ``justification``.
+``snapshot_columns`` (D20); ``justification``; ``backoff_schedule``,
+``max_retries``, ``on_exhaustion`` (T-PR9-005, design.md §2 Issue #9 —
+per-entry override for the DIAN critical path).
 
 **HookFn is intentionally loose here.** ``hooks/base.py::HookContext`` /
 ``HookResult`` ship in PR4 (design.md §3 Module Structure). PR2 only
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Literal
 
 from sqlalchemy.orm import DeclarativeBase
@@ -144,6 +147,16 @@ class SyncCatalogEntry:
     # --- Operational --------------------------------------------------------
     is_sync_outbox: bool = False
     state_mutable_columns: frozenset[str] | None = None
+
+    # --- Per-entry backoff override (T-PR9-005, design.md §2 Issue #9) -------
+    # ``None`` on every entry except ``factura_electronica`` /
+    # ``revocacion_factura`` (the DIAN critical path — ``dian/backoff.py::
+    # DIAN_BACKOFF_SCHEDULE``, imported, never re-declared here). Passed
+    # straight into ``repo/sync_queue.py::mark_failed`` as an override; a
+    # ``None`` value means "use the general curve" (unchanged semantics).
+    backoff_schedule: tuple[timedelta, ...] | None = None
+    max_retries: int | None = None
+    on_exhaustion: str | None = None
 
     # --- Metadata -------------------------------------------------------------
     justification: str | None = None

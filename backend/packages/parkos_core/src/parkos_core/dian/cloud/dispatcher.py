@@ -13,17 +13,48 @@ Per design §21.11 / tasks.md T-PR11-01:
 
 T-PR11-02 mirrors the same state machine for ``revocacion_factura``
 (``POST /api/revocacion``); on ``aceptado`` it additionally extends
-the SHA-256 chain on ``prod.revocacion_factura`` and emits a
-SyncBackEvent placeholder via ``prod.sync_queue`` so the branch learns
-the DIAN ack arrived.
+the SHA-256 chain on ``prod.revocacion_factura``. The branch learns the
+DIAN ack arrived through the ORDINARY ``envio_dian`` ``cloud_to_branch``
+catalog entry (``AFTER INSERT`` on ``envio_dian`` enqueues ``sync_queue``,
+PR2 §12) — D1-rev (design.md §0 amendment #1) withdrew the outbound
+placeholder this module used to enqueue here; see T-PR9-007/008.
 
-``AFTER INSERT`` on ``envio_dian`` enqueues ``sync_queue`` (PR2 §12).
+T-PR9 additions (design.md §2 Issue #9, §7.3):
+  8. Cloud-side range validation (:func:`validate_consecutivo_range`) runs
+     BEFORE a ``factura_electronica`` is forwarded to the provider —
+     rejects any document whose ``consecutivo`` falls outside its
+     resolution's authorized range and raises ``alerta
+     tipo_alerta='fe_numbering_exhausted'``.
+  9. :func:`dispatch_factura_electronica_with_backoff` /
+     :func:`dispatch_revocacion_with_backoff` drive the single-attempt
+     dispatch functions below across up to ``DIAN_MAX_RETRIES`` (6)
+     attempts, chained via ``uuid_envio_padre``, waiting
+     ``DIAN_BACKOFF_SCHEDULE[attempt]`` between non-``aceptado``
+     outcomes. Exhaustion stamps the terminal envio ``estado='error'`` /
+     ``estado_dian='error'`` and raises ``alerta
+     tipo_alerta='fe_provider_error'``. The single-attempt functions'
+     OWN internal transport retry (``_send_initial``/``_poll_loop``,
+     ``PARKOS_DIAN_RETRY_MAX``) is unchanged and runs INSIDE each
+     attempt — the two retry layers are deliberately distinct (design.md
+     §2 Issue #9: a per-attempt transport hiccup vs. the DIAN critical
+     path's own 1m/5m/15m/1h/6h/24h escalation).
 
 Known deviations from the design-as-written (model files immutable in
 T-PR11-01):
-  - ``envio_dian`` lacks a dedicated DIAN-outcome ``estado`` column;
-    the outcome lives in ``respuesta_proveedor`` JSONB. ``estado`` is
-    the bi-temporal versioning flag and stays untouched.
+  - ``envio_dian`` lacks a dedicated DIAN-outcome column; the outcome
+    lives in ``respuesta_proveedor`` JSONB (``estado_dian``). ``estado``
+    is declared elsewhere as the bi-temporal versioning flag
+    (``WorkflowBase``) — this module (T-PR9-008/009) ALSO mirrors the
+    SAME outcome value onto ``estado`` because
+    ``prod.v_factura_electronica_acuse`` (migration 0009) projects
+    ``estado`` directly for the branch to read. Root-insert writes
+    (``parent_uuid=None``, as done here) never validate against
+    ``repo.workflow.STATE_MACHINES`` — only a CHAINED transition does —
+    so this dual use does not collide with that state machine's own
+    ``pendiente``/``enviado``/``ack``/``error`` vocabulary at the ORM
+    layer, though the two vocabularies remain conceptually distinct
+    (pre-existing gap, not closed by this PR — see the PR9 apply
+    report).
   - ``envio_dian.fecha_retencion_hasta`` exists in the migration but
     isn't redeclared in the ORM class — stamped via raw SQL UPDATE.
   - ``Alerta`` lacks ``uuid_cadena_raiz`` / ``uuid_referencia``;
@@ -53,13 +84,15 @@ if os.environ.get("PARKOS_DEPLOY", "cloud").lower() == "branch":
     )
 
 from ...models.A.revocacion_factura import RevocacionFactura
-from ...models.A.sync_queue import SyncQueue
 from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_W.alerta import Alerta
 from ...models.L_W.envio_dian import EnvioDian
+from ...models.V.resolucion_facturacion import ResolucionFacturacion
+from ...repo import alert_types
 from ...repo.append_only import append_event
 from ...sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
 from ...sync.hooks.base import HookContext
+from ..backoff import DIAN_BACKOFF_SCHEDULE, DIAN_MAX_RETRIES
 from .dian_providers.factus import DianProvider, FactusProvider, PollResult
 from .ubl_serializer import serialize
 
@@ -75,6 +108,12 @@ ESTADO_ACEPTADO, ESTADO_RECHAZADO, ESTADO_TIMEOUT, ESTADO_EN_PROCESO = (
     "timeout",
     "en_proceso",
 )
+# T-PR9-008 — terminal outcome after the outer DIAN_BACKOFF_SCHEDULE retry
+# budget (DIAN_MAX_RETRIES attempts) is exhausted with no ``aceptado``.
+# Distinct from ESTADO_TIMEOUT (one attempt's own poll budget elapsed) —
+# ESTADO_ERROR means the WHOLE retry budget, across multiple attempts, is
+# spent.
+ESTADO_ERROR = "error"
 
 
 def _now_naive() -> datetime:
@@ -159,18 +198,38 @@ async def _send_initial(
 
 
 async def _write_alerta(
-    session: AsyncSession, *, envio: EnvioDian, tipo_alerta: str
+    session: AsyncSession,
+    *,
+    uuid_sucursal: uuid_lib.UUID | None,
+    uuid_arqueo: uuid_lib.UUID | None,
+    tipo_alerta: str,
 ) -> None:
-    """Chain-root alerta tied to envio (design §21.11).
+    """Chain-root alerta (design §21.11), validated against ``prod.alert_types``.
+
+    T-PR9 retrofit: ``repo/alert_types.py`` (T-PR8-002) documents this
+    call site as a "pre-existing alert-writing call site predating
+    prod.alert_types entirely" whose retrofit is "a documented, explicitly
+    out-of-scope follow-up for whichever PR next touches those modules" —
+    this PR touches this module (T-PR9-003/008 add ``fe_numbering_exhausted``
+    / ``fe_provider_error``), so the retrofit lands here.
 
     Uses ``append_event`` (Alerta is [L-W] not [A] so the static TypeVar
     bound to AppendOnlyBase is a narrow only — runtime is generic INSERT).
+
+    Args:
+        uuid_sucursal: Tenant scope for the alert.
+        uuid_arqueo: Reference back into the row this alert is about
+            (an ``envio_dian`` row for a dispatch outcome, or a
+            ``factura_electronica`` row for a range violation — the
+            column name is historical, not a literal ``arqueo`` FK).
+        tipo_alerta: Must be a registered ``prod.alert_types`` identifier.
     """
+    await alert_types.validate(session, tipo_alerta)
     attrs: dict[str, Any] = {
-        "uuid_sucursal": envio.uuid_sucursal,
+        "uuid_sucursal": uuid_sucursal,
         "tipo_alerta": tipo_alerta,
         "uuid_alerta_padre": None,  # chain root
-        "uuid_arqueo": envio.uuid,  # reference back into envio_dian
+        "uuid_arqueo": uuid_arqueo,  # reference back
         "timestamp_evento": _now_naive(),
     }
     await append_event(session, Alerta, attrs)  # type: ignore[arg-type]
@@ -211,18 +270,96 @@ async def _record_terminal(
         payload["motivo_rechazo"] = poll_result.motivo_rechazo
     envio.respuesta_proveedor = payload
     envio.timestamp_evento = _now_naive()
+    # T-PR9-009 — the branch reads the DIAN outcome through the derived
+    # view ``prod.v_factura_electronica_acuse`` (migration 0009,
+    # T-PR5-008), which projects ``envio_dian.estado`` directly. Mirror
+    # the SAME outcome value onto ``estado`` (not just
+    # ``respuesta_proveedor.estado_dian``) so that view carries something
+    # meaningful for the branch to read.
+    envio.estado = estado
 
     if estado == ESTADO_ACEPTADO:
         _stamp_envio_retention_on_attribute(envio)
     elif estado == ESTADO_RECHAZADO:
-        await _write_alerta(session, envio=envio, tipo_alerta="dian_rechazada")
+        await _write_alerta(
+            session,
+            uuid_sucursal=envio.uuid_sucursal,
+            uuid_arqueo=envio.uuid,
+            tipo_alerta="dian_rechazada",
+        )
     elif estado == ESTADO_TIMEOUT:
-        await _write_alerta(session, envio=envio, tipo_alerta="dian_timeout")
+        await _write_alerta(
+            session,
+            uuid_sucursal=envio.uuid_sucursal,
+            uuid_arqueo=envio.uuid,
+            tipo_alerta="dian_timeout",
+        )
     else:  # Unknown terminal → surface to operator.
-        await _write_alerta(session, envio=envio, tipo_alerta="dian_error")
+        await _write_alerta(
+            session,
+            uuid_sucursal=envio.uuid_sucursal,
+            uuid_arqueo=envio.uuid,
+            tipo_alerta="dian_error",
+        )
     await session.commit()
     await session.refresh(envio)
     return envio
+
+
+class ConsecutivoRangeError(RuntimeError):
+    """Raised when a ``factura_electronica``'s ``consecutivo`` falls
+    outside its ``resolucion_facturacion``'s authorized range (T-PR9-003).
+    """
+
+
+async def validate_consecutivo_range(
+    session: AsyncSession, *, factura: FacturaElectronica
+) -> None:
+    """Reject a document whose ``consecutivo`` is outside its resolution's range.
+
+    Design.md §7.3: the cloud validates the branch-assigned ``consecutivo``
+    on receipt, before forwarding to the DIAN provider. A missing
+    resolution, a missing ``consecutivo``, or a value outside
+    ``[rango_desde, rango_hasta]`` (whichever bounds are set) raises
+    :class:`ConsecutivoRangeError` AND writes ``alerta
+    tipo_alerta='fe_numbering_exhausted'`` — the branch has either
+    exhausted its authorized range or something is corrupt; either way an
+    operator must act (new resolution, or investigate).
+
+    Raises:
+        ConsecutivoRangeError: ``consecutivo`` is out of range (or the
+            resolution / the value itself is missing).
+    """
+    resolucion = (
+        await session.execute(
+            select(ResolucionFacturacion).where(
+                ResolucionFacturacion.uuid == factura.uuid_resolucion_facturacion
+            )
+        )
+    ).scalar_one_or_none()
+
+    consecutivo = factura.consecutivo
+    rango_desde = resolucion.rango_desde if resolucion is not None else None
+    rango_hasta = resolucion.rango_hasta if resolucion is not None else None
+
+    out_of_range = (
+        resolucion is None
+        or consecutivo is None
+        or (rango_desde is not None and consecutivo < rango_desde)
+        or (rango_hasta is not None and consecutivo > rango_hasta)
+    )
+    if out_of_range:
+        await _write_alerta(
+            session,
+            uuid_sucursal=factura.uuid_sucursal,
+            uuid_arqueo=factura.uuid,
+            tipo_alerta="fe_numbering_exhausted",
+        )
+        raise ConsecutivoRangeError(
+            f"factura_electronica {factura.uuid} consecutivo={consecutivo!r} "
+            f"outside resolucion_facturacion {factura.uuid_resolucion_facturacion} "
+            f"authorized range [{rango_desde}, {rango_hasta}]"
+        )
 
 
 async def _poll_loop(
@@ -253,12 +390,23 @@ async def dispatch_factura_electronica(
     actor_uuid: uuid_lib.UUID,
     dian_provider_url: str,
     dian_token_path: Path,
+    parent_envio_uuid: uuid_lib.UUID | None = None,
 ) -> EnvioDian:
     """Send ``factura_electronica`` to DIAN; return the terminal ``envio_dian``.
 
-    Raises ``RuntimeError`` if the source row is missing. The terminal
-    outcome (``aceptado`` | ``rechazado`` | ``timeout``) lives in
-    ``respuesta_proveedor.estado_dian`` of the returned row.
+    Raises ``RuntimeError`` if the source row is missing. Raises
+    :class:`ConsecutivoRangeError` if the row's ``consecutivo`` falls
+    outside its resolution's authorized range (T-PR9-003) — no HTTP call
+    is made in that case. The terminal outcome (``aceptado`` |
+    ``rechazado`` | ``timeout``) lives in ``respuesta_proveedor.estado_dian``
+    of the returned row.
+
+    Args:
+        parent_envio_uuid: When set, chains the new ``envio_dian`` row to
+            a prior attempt via ``uuid_envio_padre`` (T-PR9-008 — used by
+            :func:`dispatch_factura_electronica_with_backoff` across
+            retries). ``None`` (default) starts a fresh chain, matching
+            this function's original single-attempt behavior.
     """
     row = (
         await session.execute(
@@ -271,6 +419,8 @@ async def dispatch_factura_electronica(
         raise RuntimeError(
             f"factura_electronica {uuid_factura_electronica} not found"
         )
+
+    await validate_consecutivo_range(session, factura=row)
 
     xml_bytes = serialize(row)
     xml_sha256 = hashlib.sha256(xml_bytes).hexdigest()
@@ -287,7 +437,7 @@ async def dispatch_factura_electronica(
         uuid_factura_electronica=row.uuid,
         uuid_resolucion_facturacion=row.uuid_resolucion_facturacion,
         payload={"xml_sha256": xml_sha256, "estado_dian": "pendiente"},
-        uuid_envio_padre=None,
+        uuid_envio_padre=parent_envio_uuid,
         timestamp_evento=now,
         created_at=now,
         created_by=actor_uuid,
@@ -336,8 +486,14 @@ async def dispatch_revocacion(
     actor_uuid: uuid_lib.UUID | None = None,
     dian_provider_url: str,
     dian_token_path: Path,
+    parent_envio_uuid: uuid_lib.UUID | None = None,
 ) -> EnvioDian:
     """Send a ``revocacion_factura`` to DIAN (T-PR11-02, design §21.11 step 2).
+
+    Args:
+        parent_envio_uuid: When set, chains the new ``envio_dian`` row to
+            a prior attempt via ``uuid_envio_padre`` (T-PR9-010 — used by
+            :func:`dispatch_revocacion_with_backoff` across retries).
 
     Mirrors :func:`dispatch_factura_electronica` step-for-step so the
     two state machines stay symmetric and the existing helpers
@@ -351,10 +507,10 @@ async def dispatch_revocacion(
       (``RevocacionFacturaChain``, T-PR6-005) — the new row carries
       ``motivo='dian_confirmada'`` so it's distinguishable from the
       original webhook request. REQ-16 + REQ-X4.
-    - On ``aceptado`` a SyncBackEvent placeholder is enqueued via
-      :func:`repo.append_only.append_event` into ``prod.sync_queue``
-      (``operacion='sync_back_event'``). The follow-up T-PR9 worker
-      replaces this with the proper sync_back_events transport.
+    - On ``aceptado`` the branch learns the confirmation through the
+      ORDINARY ``envio_dian`` ``cloud_to_branch`` catalog entry (D1-rev,
+      design.md §0 amendment #1) — no separate outbound placeholder is
+      enqueued here (T-PR9-007/008 removed the withdrawn one).
 
     Raises ``RuntimeError`` if the source revocation row is missing.
     The terminal outcome (``aceptado`` | ``rechazado`` | ``timeout``)
@@ -397,7 +553,7 @@ async def dispatch_revocacion(
             "estado_dian": "pendiente",
             "uuid_revocacion_factura": str(row.uuid),
         },
-        uuid_envio_padre=None,
+        uuid_envio_padre=parent_envio_uuid,
         timestamp_evento=now,
         created_at=now,
         created_by=actor_uuid,
@@ -457,19 +613,21 @@ async def _finalize_revocacion(
     row: RevocacionFactura,
     actor_uuid: uuid_lib.UUID | None,
 ) -> EnvioDian:
-    """Stamp envio + (on ``aceptado``) extend the SHA-256 chain + emit SyncBackEvent.
+    """Stamp envio + (on ``aceptado``) extend the SHA-256 chain.
 
     The envio+alerta+retention stamp runs through the shared
     :func:`_record_terminal` helper (one commit). On ``aceptado`` we
-    ADDITIONALLY extend the ``prod.revocacion_factura`` SHA-256 chain
-    and enqueue a SyncBackEvent placeholder into ``prod.sync_queue``
-    in a second commit — the original ``_record_terminal`` already
-    committed the DIAN ack, so a chain-extension failure surfaces as
-    a DB error from the cloud-side verifier (PR10) instead of losing
-    the ack.
+    ADDITIONALLY extend the ``prod.revocacion_factura`` SHA-256 chain in a
+    second commit — the original ``_record_terminal`` already committed
+    the DIAN ack, so a chain-extension failure surfaces as a DB error
+    from the cloud-side verifier (PR10) instead of losing the ack.
 
-    TODO(T-PR9): swap the ``sync_queue`` placeholder for the proper
-    sync_back_events table + transport worker once T-PR9 lands.
+    D1-rev (design.md §0 amendment #1): the branch learns the DIAN ack
+    arrived through the ORDINARY ``envio_dian`` ``cloud_to_branch``
+    catalog entry, via the ``AFTER INSERT`` trigger `_record_terminal`'s
+    commit already fires (PR2 §12) — no separate sync_queue placeholder
+    is needed or written here (T-PR9-007/008 removed it; it predated this
+    PR and was never the shipped design).
     """
     envio = await _record_terminal(envio, terminal, session)
 
@@ -504,41 +662,143 @@ async def _finalize_revocacion(
                 actor_uuid=actor_uuid or uuid_lib.uuid4(),
             )
         )
-
-        # 8. SyncBackEvent placeholder. The sync_queue row carries the
-        # JSONB payload the T-PR9 worker will forward to the branch.
-        sync_attrs: dict[str, Any] = {
-            "uuid_sucursal": row.uuid_sucursal,
-            "operacion": "sync_back_event",
-            "tabla": "revocacion_factura",
-            "uuid_registro": row.uuid,
-            "datos": {
-                "event": "revocacion_confirmada",
-                "uuid_revocacion_factura": str(row.uuid),
-                "uuid_factura_electronica": (
-                    str(row.uuid_factura_electronica)
-                    if row.uuid_factura_electronica is not None
-                    else None
-                ),
-                "timestamp_evento": _now_naive().isoformat(),
-                "cufe": terminal.cufe,
-            },
-            "estado": "pendiente",
-            "intentos": 0,
-        }
-        await append_event(
-            session, SyncQueue, sync_attrs, actor_uuid=actor_uuid
-        )
         await session.commit()
 
     return envio
 
 
+# ---------------------------------------------------------------------------
+# T-PR9-008/010 — outer DIAN_BACKOFF_SCHEDULE retry budget
+# ---------------------------------------------------------------------------
+
+
+def _terminal_estado_dian(envio: EnvioDian) -> str | None:
+    """Read back the outcome :func:`_record_terminal` just stamped."""
+    if envio.respuesta_proveedor is None:
+        return None
+    return envio.respuesta_proveedor.get("estado_dian")
+
+
+async def _mark_provider_error_exhausted(
+    session: AsyncSession, envio: EnvioDian
+) -> EnvioDian:
+    """Stamp the outer retry budget as exhausted (design.md §2 Issue #9).
+
+    Distinct from a single attempt's own ``ESTADO_TIMEOUT``/
+    ``ESTADO_RECHAZADO`` — this fires once the WHOLE
+    ``DIAN_BACKOFF_SCHEDULE`` budget (``DIAN_MAX_RETRIES`` attempts) is
+    spent with no ``aceptado``. Raises the critical, budget-exhaustion
+    alert (``fe_provider_error``) distinct from any per-attempt alert
+    already written by :func:`_record_terminal`.
+    """
+    envio.respuesta_proveedor = {
+        **(envio.respuesta_proveedor or {}),
+        "estado_dian": ESTADO_ERROR,
+    }
+    envio.estado = ESTADO_ERROR
+    await _write_alerta(
+        session,
+        uuid_sucursal=envio.uuid_sucursal,
+        uuid_arqueo=envio.uuid,
+        tipo_alerta="fe_provider_error",
+    )
+    await session.commit()
+    await session.refresh(envio)
+    return envio
+
+
+async def dispatch_factura_electronica_with_backoff(
+    session: AsyncSession,
+    *,
+    uuid_factura_electronica: uuid_lib.UUID,
+    actor_uuid: uuid_lib.UUID,
+    dian_provider_url: str,
+    dian_token_path: Path,
+    max_retries: int = DIAN_MAX_RETRIES,
+) -> EnvioDian:
+    """Drive :func:`dispatch_factura_electronica` across the DIAN retry budget.
+
+    Each attempt is one full send+poll round trip, chained to the prior
+    attempt via ``uuid_envio_padre`` (the ``envio_dian`` catalog entry
+    declares ``self_chain=True``). A non-``aceptado`` terminal outcome
+    waits ``DIAN_BACKOFF_SCHEDULE[attempt]`` (T-PR9-004) before the next
+    attempt. After ``max_retries`` attempts with no ``aceptado``, the
+    LAST envio row is stamped ``estado='error'`` /
+    ``estado_dian='error'`` and ``alerta tipo_alerta='fe_provider_error'``
+    fires (T-PR9-008).
+
+    The single-attempt function's OWN internal transport retry
+    (``_send_initial``/``_poll_loop``, ``PARKOS_DIAN_RETRY_MAX``) is
+    untouched and runs INSIDE each attempt here — this is a SEPARATE,
+    outer retry layer.
+    """
+    parent_uuid: uuid_lib.UUID | None = None
+    envio: EnvioDian | None = None
+    for attempt in range(max_retries):
+        envio = await dispatch_factura_electronica(
+            session,
+            uuid_factura_electronica=uuid_factura_electronica,
+            actor_uuid=actor_uuid,
+            dian_provider_url=dian_provider_url,
+            dian_token_path=dian_token_path,
+            parent_envio_uuid=parent_uuid,
+        )
+        if _terminal_estado_dian(envio) == ESTADO_ACEPTADO:
+            return envio
+        parent_uuid = envio.uuid
+        if attempt < max_retries - 1:
+            await asyncio.sleep(DIAN_BACKOFF_SCHEDULE[attempt].total_seconds())
+
+    assert envio is not None  # max_retries >= 1 (DIAN_MAX_RETRIES == 6)
+    return await _mark_provider_error_exhausted(session, envio)
+
+
+async def dispatch_revocacion_with_backoff(
+    session: AsyncSession,
+    *,
+    uuid_revocacion_factura: uuid_lib.UUID,
+    actor_uuid: uuid_lib.UUID | None = None,
+    dian_provider_url: str,
+    dian_token_path: Path,
+    max_retries: int = DIAN_MAX_RETRIES,
+) -> EnvioDian:
+    """Drive :func:`dispatch_revocacion` across the DIAN retry budget.
+
+    Mirrors :func:`dispatch_factura_electronica_with_backoff` — T-PR9-010:
+    ``revocacion_factura`` reuses the EXACT SAME ``DIAN_BACKOFF_SCHEDULE``,
+    ``max_retries``, and ``on_exhaustion`` alert as ``factura_electronica``
+    (same DIAN evidentiary chain, same regulatory deadline).
+    """
+    parent_uuid: uuid_lib.UUID | None = None
+    envio: EnvioDian | None = None
+    for attempt in range(max_retries):
+        envio = await dispatch_revocacion(
+            session,
+            uuid_revocacion_factura=uuid_revocacion_factura,
+            actor_uuid=actor_uuid,
+            dian_provider_url=dian_provider_url,
+            dian_token_path=dian_token_path,
+            parent_envio_uuid=parent_uuid,
+        )
+        if _terminal_estado_dian(envio) == ESTADO_ACEPTADO:
+            return envio
+        parent_uuid = envio.uuid
+        if attempt < max_retries - 1:
+            await asyncio.sleep(DIAN_BACKOFF_SCHEDULE[attempt].total_seconds())
+
+    assert envio is not None  # max_retries >= 1 (DIAN_MAX_RETRIES == 6)
+    return await _mark_provider_error_exhausted(session, envio)
+
+
 __all__ = [
+    "ConsecutivoRangeError",
     "DianProvider",
     "EnvioDian",
     "FactusProvider",
     "PollResult",
     "dispatch_factura_electronica",
+    "dispatch_factura_electronica_with_backoff",
     "dispatch_revocacion",
+    "dispatch_revocacion_with_backoff",
+    "validate_consecutivo_range",
 ]

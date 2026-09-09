@@ -164,22 +164,77 @@ def factura_row() -> MagicMock:
     return row
 
 
-def mock_session_with_factura(row: MagicMock) -> MagicMock:
+def _resolucion_result(
+    *, rango_desde: int | None = None, rango_hasta: int | None = None
+) -> MagicMock:
+    """A ``select(ResolucionFacturacion)`` result double (T-PR9-003).
+
+    Defaults to an UNBOUNDED range (``None``, ``None``) — every existing
+    dispatcher test's fixed ``factura_row().consecutivo`` (990000001)
+    passes range validation trivially, so this fixture is backward
+    compatible. ``test_dian_range_validation.py`` overrides both bounds
+    to exercise the rejection path.
+    """
+    resolucion_result = MagicMock(name="ResolucionResult")
+    resolucion_row = MagicMock(name="ResolucionFacturacion")
+    resolucion_row.rango_desde = rango_desde
+    resolucion_row.rango_hasta = rango_hasta
+    resolucion_result.scalar_one_or_none = MagicMock(return_value=resolucion_row)
+    return resolucion_result
+
+
+def mock_session_with_factura(
+    row: MagicMock,
+    *,
+    resolucion_rango_desde: int | None = None,
+    resolucion_rango_hasta: int | None = None,
+) -> MagicMock:
     """``AsyncSession`` double wired for the dispatcher's exact call shape.
 
-    ``execute`` is an ``AsyncMock``; the awaited result is a ``MagicMock``
-    so both ``select(...).scalar_one_or_none()`` (load the factura) and
-    the ``text(...)`` retention UPDATE (result discarded) are covered by
-    one return value. Objects handed to ``add`` are tracked on
-    ``session.added``.
+    ``execute`` is an ``AsyncMock`` whose ``side_effect`` inspects the
+    compiled statement text so DIFFERENT queries get DIFFERENT canned
+    results (T-PR9-003 added a second query shape — ``select(
+    ResolucionFacturacion)`` — that must not collide with the
+    ``select(FacturaElectronica)`` lookup already covered here):
+
+    - anything compiling to SQL mentioning ``resolucion_facturacion`` ->
+      :func:`_resolucion_result` (range validation lookup).
+    - everything else (the factura lookup; the ``text(...)`` retention
+      UPDATE, result discarded) -> the original single canned result.
+
+    Objects handed to ``add`` are tracked on ``session.added``.
     """
     session = MagicMock(name="AsyncSession")
     added: list[Any] = []
 
-    result = MagicMock(name="Result")
-    result.scalar_one_or_none = MagicMock(return_value=row)
-    result.scalar = MagicMock(return_value=None)
-    session.execute = AsyncMock(return_value=result)
+    factura_result = MagicMock(name="FacturaResult")
+    factura_result.scalar_one_or_none = MagicMock(return_value=row)
+    factura_result.scalar = MagicMock(return_value=None)
+
+    resolucion_result = _resolucion_result(
+        rango_desde=resolucion_rango_desde, rango_hasta=resolucion_rango_hasta
+    )
+
+    def _targets_resolucion_facturacion(statement: object) -> bool:
+        """Distinguish ``select(ResolucionFacturacion)`` from any OTHER
+        select whose SELECT LIST merely references the FK column
+        ``uuid_resolucion_facturacion`` (a raw substring match on the
+        compiled SQL would false-positive on exactly that column name).
+        Inspects the ORM entity behind the statement instead of parsing
+        text.
+        """
+        descriptions = getattr(statement, "column_descriptions", None)
+        if not descriptions:
+            return False
+        entity = descriptions[0].get("entity")
+        return getattr(entity, "__tablename__", None) == "resolucion_facturacion"
+
+    async def _execute(statement: object, *args: object, **kwargs: object) -> MagicMock:
+        if _targets_resolucion_facturacion(statement):
+            return resolucion_result
+        return factura_result
+
+    session.execute = AsyncMock(side_effect=_execute)
 
     async def _flush() -> None:
         # Stand in for the server-side ``gen_random_uuid()`` PK default a

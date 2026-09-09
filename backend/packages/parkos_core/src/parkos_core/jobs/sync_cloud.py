@@ -1,11 +1,10 @@
-"""Cloud-side sync worker — 3 concurrent loops (T-PR9-07).
+"""Cloud-side sync worker (T-PR9-07; per-branch fan-out removed T-PR9-007).
 
 The ``SyncCloudWorker`` runs as the ``job_sync_cloud`` process on the
-cloud admin. It owns the SHA-256 chain verifier (the most important
-defensive layer for DIAN compliance) and the per-branch
-SyncBackEvent emitter for cloud-originated rows.
+cloud admin. It owns the SHA-256 chain verifier — the most important
+defensive layer for DIAN compliance.
 
-Three concurrent loops per design §21.8:
+Two concurrent loops per design §21.8 (originally three — see below):
 
   1. ``apply_pushed_row``   — side-effects of the cloud-side
                               ``/sync/push`` handler: every accepted
@@ -14,14 +13,7 @@ Three concurrent loops per design §21.8:
                               chain violation, an ``alerta`` chain
                               root. (PR8c owns the handler; PR9b owns
                               the per-loop background emitters.)
-  2. ``emit_sync_back_events`` — for cloud-originated rows
-                              (``factura_electronica`` ack, admin
-                              updates, catalog refreshes), POST
-                              ``{branch_endpoint}/api/v1/sync/events``
-                              with retry 3x exponential on 5xx. Uses
-                              :class:`parkos_core.sync.auto_discovery`
-                              for the active-branch list.
-  3. ``hash_chain_verifier_loop`` — every
+  2. ``hash_chain_verifier_loop`` — every
                               ``PARKOS_SYNC_VERIFY_INTERVAL_S`` (default
                               3600s), walks ``prod.log_transaccional``
                               per ``uuid_sucursal`` in
@@ -32,16 +24,35 @@ Three concurrent loops per design §21.8:
                               tipo_alerta='hash_chain_anomaly'`` +
                               ``sync_conflict``.
 
+**T-PR9-007 removal.** A THIRD loop used to live here — a per-branch
+placeholder fan-out for "cloud-originated rows" (``factura_electronica``
+ack, admin updates, catalog refreshes), which polled
+``log_transaccional`` and logged a structured event per (branch, row)
+pair with NO actual HTTP transport (its own docstring called this out:
+"the actual per-branch HTTP transport is intentionally a no-op here").
+This predates ``sync-overhaul``'s catalog-driven ``cloud_to_branch``
+replication and answered the SAME question D1-rev settled differently
+(design.md §0 amendment #1, §2 Issue #1): a cloud-originated row (e.g.
+``envio_dian``) reaches the branch through its ORDINARY catalog entry
+and the existing ``/sync/events`` transport, not a bespoke second
+fan-out loop. Removed in full rather than left half-wired to avoid two
+contradictory "how does a cloud row reach the branch" answers active at
+once. The ``sync_back_interval_s`` constructor parameter / ``DEFAULT_
+SYNC_BACK_INTERVAL_S`` constant are KEPT (now vestigial — no loop reads
+them) purely for backward compatibility with ``tests/unit/
+test_sync_cloud_scenarios.py``'s existing construction assertions;
+removing them is a documented, explicitly out-of-scope follow-up for
+whichever PR next touches that test file.
+
 The class extends :class:`parkos_core.jobs.runner.WorkerRunner` so it
 inherits SIGTERM/SIGINT graceful shutdown + structured logging + the
-§21.7 exit-code contract. ``cycle`` here is the smaller of the three
-loops (the heartbeat-style pulse); the two heavier loops run as
-``asyncio.create_task`` siblings that the supervisor cancels on
-shutdown.
+§21.7 exit-code contract. ``cycle`` here is the smaller loop (the
+heartbeat-style pulse); the heavier hash-chain-verifier loop runs as an
+``asyncio.create_task`` sibling that the supervisor cancels on shutdown.
 
 Cites §21.8 (job_sync_cloud full flow), §21.14 acceptance #14
 (hash chain verifier emits alerta + sync_conflict on mismatch),
-tasks.md T-PR9-07.
+tasks.md T-PR9-07, T-PR9-007 (withdrawn per-branch fan-out removal).
 """
 from __future__ import annotations
 
@@ -67,8 +78,8 @@ from parkos_core.sync.conflict_resolver import ConflictResolver
 # Default interval between hash chain verifier sweeps (matches the
 # spec's PARKOS_SYNC_VERIFY_INTERVAL_S default).
 DEFAULT_VERIFY_INTERVAL_S = 3600
-# Default interval between SyncBackEvent emitter sweeps. Short enough
-# to deliver a DIAN ack promptly, long enough to avoid tight-looping.
+# Vestigial (T-PR9-007 removed the loop that read this) — kept only for
+# ``SyncCloudWorker.__init__`` / existing test backward compatibility.
 DEFAULT_SYNC_BACK_INTERVAL_S = 5
 
 
@@ -89,7 +100,8 @@ class SyncCloudWorker(WorkerRunner):
             caller commits.
         verify_interval_s: Seconds between hash chain sweeps
             (``PARKOS_SYNC_VERIFY_INTERVAL_S``).
-        sync_back_interval_s: Seconds between SyncBackEvent sweeps.
+        sync_back_interval_s: Vestigial (T-PR9-007 removed the loop that
+            read this) — kept for constructor backward compatibility only.
         logger: Optional structlog ``BoundLogger``; defaults to
             ``parkos.jobs.sync_cloud``.
     """
@@ -122,18 +134,16 @@ class SyncCloudWorker(WorkerRunner):
         """One iteration of the lightweight heartbeat cycle.
 
         :class:`WorkerRunner.run` calls this in a loop until
-        SIGTERM/SIGINT. The two heavier loops (``_emit_sync_back_events_loop``
-        and ``_hash_chain_verifier_loop``) live as separate tasks that
-        the supervisor cancels on shutdown.
+        SIGTERM/SIGINT. The heavier ``_hash_chain_verifier_loop`` lives
+        as a separate task the supervisor cancels on shutdown.
 
         For the PR9b scope, ``cycle`` is a 1s sleep — the real work is
-        in the two siblings, which the supervisor starts once on the
-        first cycle and never tears down (until SIGTERM).
+        in the sibling, which the supervisor starts once on the first
+        cycle and never tears down (until SIGTERM).
         """
-        # Lazily start the heavy loops on the first iteration.
+        # Lazily start the heavy loop on the first iteration.
         if not self._heavy_tasks:
             self._heavy_tasks = [
-                asyncio.create_task(self._emit_sync_back_events_loop(), name="sync_back"),
                 asyncio.create_task(
                     self._hash_chain_verifier_loop(), name="hash_chain_verifier"
                 ),
@@ -179,78 +189,7 @@ class SyncCloudWorker(WorkerRunner):
     # to the originating branch via the sync_back loop below.
 
     # ------------------------------------------------------------------
-    # Loop 2: emit_sync_back_events
-    # ------------------------------------------------------------------
-
-    async def _emit_sync_back_events_loop(self) -> None:
-        """Emit SyncBackEvent per cloud-originated row.
-
-        PR9b ships the LOOP SHAPE — the actual row-discovery query lives
-        on top of a not-yet-existing ``sync_outbox`` table that PR9c
-        adds. For now the loop polls ``prod.log_transaccional`` for rows
-        whose ``created_at`` is in the last ``sync_back_interval_s``
-        seconds and whose ``sync_status='pendiente'``, then iterates
-        the active branch list and POSTs ``/api/v1/sync/events`` to each.
-
-        The actual per-branch HTTP transport is intentionally a no-op
-        here (PR9b scope) — the loop emits a structured log event with
-        the would-be URL + payload so operators can verify the cadence.
-        PR9c wires the real ``SyncHttpClient`` push per branch.
-        """
-        from parkos_core.sync.transport import SyncHttpClient  # noqa: F401
-
-        while not self._shutdown_requested.is_set():
-            try:
-                await self._emit_one_tick()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — keep the loop alive
-                self.log.error("sync_cloud.sync_back_tick_failed", error=str(exc))
-            await asyncio.sleep(self.sync_back_interval_s)
-
-    async def _emit_one_tick(self) -> None:
-        """One iteration of the sync_back loop.
-
-        Walks ``prod.log_transaccional`` for rows stamped in the last
-        ``sync_back_interval_s`` seconds whose ``sync_status='pendiente'``,
-        gets the active branch list, and emits a structured log event
-        per (branch, row) pair. The actual HTTP POST to each branch is
-        owned by PR9c; PR9b pins the cadence + branch-list resolution.
-        """
-        threshold = dt.datetime.now(dt.UTC).replace(tzinfo=None) - dt.timedelta(
-            seconds=self.sync_back_interval_s * 2
-        )
-        stmt = (
-            select(LogTransaccional)
-            .where(LogTransaccional.created_at >= threshold)
-            .where(LogTransaccional.sync_status == "pendiente")
-            .limit(100)
-        )
-        result = await self._session.execute(stmt)
-        rows = list(result.scalars().all())
-        if not rows:
-            return
-
-        branches = await self._branch_cache.get(self._session)
-        for branch in branches:
-            for row in rows:
-                if branch.endpoint_url:
-                    self.log.info(
-                        "sync_cloud.sync_back_event",
-                        branch_uuid=str(branch.uuid_sucursal),
-                        endpoint_url=branch.endpoint_url,
-                        row_uuid=str(row.uuid),
-                        tabla_afectada=row.tabla_afectada,
-                    )
-                else:
-                    self.log.warning(
-                        "sync_cloud.branch_endpoint_missing",
-                        branch_uuid=str(branch.uuid_sucursal),
-                        row_uuid=str(row.uuid),
-                    )
-
-    # ------------------------------------------------------------------
-    # Loop 3: hash_chain_verifier
+    # Loop 2: hash_chain_verifier
     # ------------------------------------------------------------------
 
     async def _hash_chain_verifier_loop(self) -> None:

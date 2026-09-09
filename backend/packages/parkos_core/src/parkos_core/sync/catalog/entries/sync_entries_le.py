@@ -20,6 +20,7 @@ observable ordering semantics.
 """
 from __future__ import annotations
 
+from ....dian.backoff import DIAN_BACKOFF_SCHEDULE, DIAN_MAX_RETRIES
 from ....models.L_E.factura_electronica import FacturaElectronica
 from ....models.L_E.facturas import Facturas
 from ....models.L_E.ingreso import Ingreso
@@ -74,6 +75,12 @@ _FACTURA_ELECTRONICA = SyncCatalogEntry(
     depends_on=("sucursal", "facturas", "clientes", "resolucion_facturacion"),
     has_uuid_sucursal=True,
     seq_strategy="max_created_at",
+    # T-PR9-005, design.md §2 Issue #9 — DIAN critical path: a consumed,
+    # sequential, no-gap consecutivo is already at stake the moment this
+    # row is emitted. Imported from dian/backoff.py, never re-declared.
+    backoff_schedule=DIAN_BACKOFF_SCHEDULE,
+    max_retries=DIAN_MAX_RETRIES,
+    on_exhaustion="fe_provider_error",
 )
 
 SYNC_ENTRIES_LE: tuple[SyncCatalogEntry, ...] = (

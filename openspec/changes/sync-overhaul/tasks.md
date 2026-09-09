@@ -1727,7 +1727,12 @@ Files: `backend/packages/parkos_core/tests/unit/test_consecutivo_assignment.py` 
 `test_sequential_no_gap_per_branch_resolution`: assignment is transactional and idempotent per
 source event; a retry never generates a number, discards it, and generates a new one; if the
 persisting transaction fails, no number is considered consumed.
-- [ ] Fails — the assignment helper does not exist yet
+- [x] Fails — the assignment helper does not exist yet
+
+Status: path corrected to `backend/tests/unit/test_consecutivo_assignment.py` (repo convention,
+same correction as PR1-8). 5 tests written (sequential no-gap, retry-reuses-number, failed-tx
+consumes-nothing, range-exhaustion, unknown-resolucion) confirmed RED against real Postgres before
+`repo/resolucion_facturacion.py` existed.
 
 #### T-PR9-002: GREEN — branch-local `consecutivo` assignment
 Req: REQ-CUT-014 · Design: §1 Executive Summary · Depends on: T-PR9-001
@@ -1735,7 +1740,37 @@ Files: `backend/packages/parkos_core/src/parkos_core/repo/resolucion_facturacion
 modified — verify against current repo layout before creating) — `assign_consecutivo(session,
 resolucion_uuid, source_event_uuid) -> int`, assigns within `rango_desde`/`rango_hasta`, keyed on
 the source event for idempotency.
-- [ ] T-PR9-001 passes (GREEN)
+- [x] T-PR9-001 passes (GREEN)
+
+Status: new file. `source_event_uuid` maps to `factura_electronica.uuid_factura` (the 1:1
+`facturas` row) for the idempotency lookup — the model has no dedicated event-id column. Idempotent
+lookup runs BEFORE the `SELECT ... FOR UPDATE` lock/`MAX()` read, so a retry of an already-committed
+event never touches `MAX()` again; a rolled-back attempt leaves nothing committed, so the next call
+recomputes the identical number. All 5 tests GREEN against real Postgres (`TEST_PG_IMAGE=parkos-
+postgres:16-pgpartman`).
+**`atomic_next_consecutivo.py` disposition (investigated per this PR's explicit instruction):**
+`backend/.../dian/cloud/atomic_next_consecutivo.py` predates `sync-overhaul` entirely — it shipped
+in a DIFFERENT, unrelated change (`create-49-table-apis` PR11a, commit `4a26674`, task ids
+`T-PR11-05/06`, no relation to this change's own T-PR9/PR11 numbering). It is the D1-ORIGINAL
+cloud-assigns-the-number allocator and it is **still live**: `dian/cloud_router.py`'s
+`POST /api/v1/factura-electronica` endpoint calls it directly, and that endpoint is mounted on the
+cloud admin app (`api/v1/__init__.py::_build_router`) — confirmed via `tests/static/
+test_dian_cloud_router_loads_on_cloud_deploy`. **Decision: left in place, NOT removed or modified.**
+It is out of this PR's assigned file list, and disabling a live cloud admin endpoint is a distinct,
+larger architectural decision (touching `cloud_router.py`, `api/v1/__init__.py`, `openapi.json`, and
+3 existing static tests) that deserves its own reviewed PR, not a side effect of PR9's numbering
+work. The two paths do NOT share a call path or a resolution scope in practice today (this endpoint
+is presumably reserved for an admin-initiated, online-only invoice creation flow distinct from the
+branch's offline flow this PR builds), but they DO both draw from the same
+`(uuid_resolucion_facturacion, consecutivo)` UK — if BOTH paths are ever used concurrently against
+the SAME resolution, the UK constraint prevents silent double-numbering (one INSERT fails with
+`UniqueViolation`) but does not prevent a confusing operator experience. Flagged explicitly as
+**[POSIBLE_SENSIBLE — needs a follow-up architectural decision]**: a future PR should decide whether
+`cloud_router.py`'s `/factura-electronica` endpoint is retired, gated to non-branch-scoped
+resolutions only, or intentionally kept as an admin emergency path — this PR does not decide that.
+Also found and corrected as part of this task: `models/L_E/factura_electronica.py`'s docstring
+claimed "the BRANCH service MUST NOT insert here" — stale, contradicted by this PR's own catalog
+entry (`branch_to_cloud`) and this task's own deliverable; corrected in place.
 
 #### T-PR9-003: Cloud-side range validation on receipt
 Req: REQ-CUT-014, R10 · Design: §7.3 · Depends on: T-PR9-002
@@ -1743,7 +1778,20 @@ Files: `backend/packages/parkos_core/src/parkos_core/dian/cloud/dispatcher.py` (
 any `factura_electronica` whose `consecutivo` falls outside the resolution's authorized range; range
 exhaustion raises `alerta tipo_alerta='fe_numbering_exhausted'`; `tests/unit/
 test_dian_range_validation.py` (new).
-- [ ] Out-of-range document is rejected; exhaustion emits the generic alert type
+- [x] Out-of-range document is rejected; exhaustion emits the generic alert type
+
+Status: `validate_consecutivo_range(session, *, factura)` added, called at the top of
+`dispatch_factura_electronica` (before any HTTP work). "Out of range" and "exhaustion" are treated
+as the SAME condition (any received `consecutivo` outside `[rango_desde, rango_hasta]`) per the
+task's own combined wording. Retrofit: `_write_alerta` now calls `repo/alert_types.py::validate`
+first — `repo/alert_types.py`'s own docstring (T-PR8-002) explicitly names this dispatcher module as
+a documented, deferred follow-up ("whichever PR next touches those modules"); this PR touches it.
+Required updating the shared mock in `tests/unit/dian/conftest.py::mock_session_with_factura` to
+distinguish a `select(ResolucionFacturacion)` query from `select(FacturaElectronica)` (previously one
+canned result served every query) — done via ORM-entity introspection (`column_descriptions[0]
+['entity'].__tablename__`), not string-matching (a naive substring match on compiled SQL false-
+positives on the `uuid_resolucion_facturacion` FK column name itself). All 16 pre-existing dispatcher
+tests still pass unmodified. 6 new tests GREEN.
 
 #### T-PR9-004: `dian/backoff.py::DIAN_BACKOFF_SCHEDULE`
 Req: design §2 Issue #9, addendum #3 · Design: §2 Issue #9 · Depends on: PR8
@@ -1751,8 +1799,14 @@ Files: `backend/packages/parkos_core/src/parkos_core/dian/backoff.py` (new) — 
 1m → 5m → 15m → 1h → 6h → 24h, terminal after 6 attempts; `tests/unit/test_dian_backoff.py` (new) —
 this is `factura_electronica`'s **own** curve, distinct from the general `sync_queue`
 `BACKOFF_SCHEDULE` (1s...300s, `FALLIDO_PERMANENTE` after 24h).
-- [ ] Curve values match exactly; test asserts it is imported (not duplicated) by the catalog entries
+- [x] Curve values match exactly; test asserts it is imported (not duplicated) by the catalog entries
       and the dispatcher
+
+Status: new file, no `PARKOS_DEPLOY=branch` import guard (deliberate — it is plain data imported by
+the shared sync catalog, which loads on BOTH deploys; `infra/docker/Dockerfile.branch` only excludes
+`**/dian/cloud/**`, not the whole `dian/` package, so this is physically safe). Also added
+`DIAN_MAX_RETRIES = len(DIAN_BACKOFF_SCHEDULE)` as a named constant. AST-based test confirms both the
+catalog entries and the dispatcher `import` the symbol (never redeclare a second literal tuple).
 
 #### T-PR9-005: Wire `backoff_schedule`/`max_retries`/`on_exhaustion` onto the catalog
 Req: design §2 Issue #9 · Design: §2 Issue #9 · Depends on: T-PR9-004, T-PR2-007, T-PR2-013
@@ -1760,15 +1814,31 @@ Files: `sync_entries_le.py` (modified — `factura_electronica`), `sync_entries_
 `revocacion_factura`) — both get `backoff_schedule=DIAN_BACKOFF_SCHEDULE`, `max_retries=6`,
 `on_exhaustion='fe_provider_error'`; `envio_dian` explicitly does NOT (its replication leg uses the
 general curve — the provider-facing retry lives in the `envio_dian` transition chain itself).
-- [ ] `envio_dian`'s catalog entry has `backoff_schedule=None`
+- [x] `envio_dian`'s catalog entry has `backoff_schedule=None`
+
+Status: also required adding the 3 fields (`backoff_schedule`, `max_retries`, `on_exhaustion`) to
+`sync/catalog/schema.py::SyncCatalogEntry` itself — implied by design.md §2 Issue #9's code snippet
+but not called out as its own file in this task's list; documented here rather than silently
+expanded. `envio_dian`'s entry (`sync_entries_lw.py`) gets an explanatory comment only (its fields
+already default to `None`, no code change). Verified via `tests/unit/test_catalog_schema.py`
+(unaffected — additive fields only) and the new `test_revocacion_factura_backoff.py`.
 
 #### T-PR9-006: `repo/sync_queue.py::mark_failed` accepts backoff override
 Req: design §2 Issue #9, R8 · Design: §11 · Depends on: T-PR9-005
 Files: `backend/packages/parkos_core/src/parkos_core/repo/sync_queue.py` (modified) —
 `mark_failed(session, sq_uuid, *, error, backoff_schedule=None, max_retries=None)`; the override is
 passed **into** this module, never applied around it, so the R-D3 carve-out AST check still passes.
-- [ ] `tests/unit/test_mark_failed_backoff_override.py` (new) asserts the DIAN curve is honored when
+- [x] `tests/unit/test_mark_failed_backoff_override.py` (new) asserts the DIAN curve is honored when
       passed, general curve when omitted
+
+Status: `next_retry_delay` gained a matching `schedule` kwarg (`None` → general curve, unchanged
+default). `max_retries` is accepted but intentionally NOT enforced inside `mark_failed` itself
+(documented in the docstring) — this function only ever re-queues; a caller reading
+`intentos >= max_retries` decides whether to treat a row as exhausted. **Known gap, explicitly
+flagged, not fixed in this PR**: nothing yet calls `mark_failed` with the override wired to a real
+per-entry lookup (`jobs/sync_sucursal.py`'s existing call sites are blanket, ignoring `tabla`) —
+`jobs/sync_sucursal.py` is outside this task's file list; wiring it is a natural T-PR10+ follow-up.
+4 new tests GREEN against real Postgres.
 
 #### T-PR9-007: Static test — no `sync_back_event` literals anywhere
 Req: R21 (early check; PR14 T-PR14-004 is the full repo-wide gate) · Design: §0 amendment log #1 ·
@@ -1776,7 +1846,21 @@ Depends on: T-PR9-002, T-PR9-003
 Files: `backend/packages/parkos_core/tests/static/test_no_sync_back_event_literals.py` (new) —
 greps `dian/cloud/dispatcher.py` and `jobs/sync_cloud.py` for `sync_back_event`, `SyncBackEvent`,
 `numero_temporal`, `numero_oficial`, `preliminar` — asserts zero hits.
-- [ ] Test passes against the PR9 diff
+- [x] Test passes against the PR9 diff
+
+Status: this test started genuinely RED. `dispatcher.py::_finalize_revocacion` had a literal
+`operacion='sync_back_event'` placeholder block (D1-ORIGINAL leftover, explicitly labeled
+`TODO(T-PR9)` in the source) — removed in full; the branch now learns the DIAN ack through the
+ordinary `envio_dian` `cloud_to_branch` catalog entry, already sufficient (design.md §2 Issue #1).
+**Beyond this task's stated file list but required for the test as literally specified**:
+`jobs/sync_cloud.py::SyncCloudWorker` had an ENTIRE third loop (`_emit_sync_back_events_loop` /
+`_emit_one_tick`, ~65 lines) implementing the withdrawn D1-original per-branch fan-out (own
+docstring: "the actual per-branch HTTP transport is intentionally a no-op here"). Removed in full
+(no test called these methods directly — confirmed via `tests/unit/test_sync_cloud_scenarios.py`
+before removing). `sync_back_interval_s`/`DEFAULT_SYNC_BACK_INTERVAL_S` were KEPT (now vestigial,
+documented as such) since 2 existing construction tests assert them and that test file is outside
+this task's scope to edit. Test passes; all pre-existing `test_sync_cloud_scenarios.py` tests still
+pass unmodified.
 
 #### T-PR9-008: `envio_dian` provider round trip + backoff
 Req: REQ-CUT-014 · Design: §7.3 · Depends on: T-PR9-004, T-PR9-003
@@ -1785,29 +1869,74 @@ provider; on success `INSERT envio_dian` (cloud-only, chained via `uuid_envio_pa
 applies `DIAN_BACKOFF_SCHEDULE`, transitions to `ERROR` and raises `alerta
 tipo_alerta='fe_provider_error'` after 6 attempts; `tests/integration/test_dian_round_trip.py`
 (new).
-- [ ] `cufe`/`estado` populated on the `envio_dian` row after a mocked-provider success
+- [x] `cufe`/`estado` populated on the `envio_dian` row after a mocked-provider success
+
+Status: added `dispatch_factura_electronica_with_backoff`/`dispatch_revocacion_with_backoff` —
+ADDITIVE wrapper functions (the existing single-attempt `dispatch_factura_electronica`/
+`dispatch_revocacion` are UNCHANGED in behavior for existing callers; both gained an optional
+`parent_envio_uuid` kwarg, default `None`, preserving today's behavior). Each wrapper drives up to
+`DIAN_MAX_RETRIES` (6) attempts, chained via `uuid_envio_padre` (the catalog entry's own
+`self_chain=True`), sleeping `DIAN_BACKOFF_SCHEDULE[attempt]` between non-`aceptado` outcomes
+(`asyncio.sleep`, patchable in tests exactly like the dispatcher's existing internal retry sleeps).
+Exhaustion stamps the LAST envio `estado='error'` / `respuesta_proveedor.estado_dian='error'`
+(`ESTADO_ERROR`, new constant) and raises `alerta tipo_alerta='fe_provider_error'`.
+**Deliberately NOT wired into `cloud_router.py`** (the still-live D1-original endpoint, see
+T-PR9-002's status note) — that file is outside this task's scope; the new wrappers are available
+for whichever future branch-triggered dispatch path calls them.
+**Bug found and fixed while implementing this task**: `_record_terminal` never set `envio.estado`
+(left at its DB default `'activo'` forever) even though `prod.v_factura_electronica_acuse`
+(migration `0009`) projects `estado` directly as the branch-visible DIAN outcome — the view would
+have exposed a permanently-wrong value. Fixed: `_record_terminal` now mirrors the same outcome onto
+`estado` as `respuesta_proveedor.estado_dian`. (Separately noted, NOT fixed — genuinely out of
+scope: `STATE_MACHINES['envio_dian']` in `repo/workflow.py` declares a DIFFERENT vocabulary
+(`pendiente`/`enviado`/`ack`/`error`) than the dispatcher's own outcome vocabulary
+(`aceptado`/`rechazado`/`timeout`/`en_proceso`/now `error`); reconciling the two, and moving the
+dispatcher onto `repo.workflow.append_transition` for real state-machine-validated writes, is a
+larger pre-existing architectural gap this PR does not attempt to close.)
+2 new integration tests GREEN against real Postgres (success-on-first-attempt;
+exhaustion-chains-six-attempts-with-alert), mocked DIAN provider transport only.
 
 #### T-PR9-009: `envio_dian` reaches the branch (`cloud_to_branch`)
 Req: REQ-CAT-008 · Design: §2 Issue #1 · Depends on: T-PR9-008, T-PR5-008
 Files: `tests/integration/test_envio_dian_reaches_branch.py` (new) — applies at the originating
 branch via `repo.workflow.append_transition`; `factura_electronica` is NEVER updated; `cufe`/`estado`
 are readable through the derived view (`0015`, T-PR5-008).
-- [ ] `factura_electronica` row's own columns are byte-identical before and after the apply
+- [x] `factura_electronica` row's own columns are byte-identical before and after the apply
+
+Status: the derived view is migration `0009_add_derived_read_views.py`
+(`prod.v_factura_electronica_acuse`) — the task text's "`0015`" cross-reference is stale (an earlier
+migration-numbering draft); verified against the actual merged migration set. Test asserts a full
+column-by-column snapshot equality (via `sqlalchemy.inspect`, not a hand-picked subset) before/after
+the `envio_dian` apply, plus reads `cufe`/`estado` back through the real view with a raw `SELECT`.
+1 integration test + 1 defensive unit test (snapshot helper covers every mapped column) GREEN
+against real Postgres.
 
 #### T-PR9-010: `revocacion_factura` reuses the DIAN backoff curve
 Req: REQ-CUT-014 last clause · Design: §2 Issue #9 · Depends on: T-PR9-005
 Files: `tests/unit/test_revocacion_factura_backoff.py` (new) — asserts `revocacion_factura`'s
 catalog entry shares `DIAN_BACKOFF_SCHEDULE`/`max_retries=6`/`on_exhaustion='fe_provider_error'`
 with `factura_electronica` — same DIAN evidentiary chain, same regulatory deadline.
-- [ ] Divergent per-table curve is explicitly rejected (test asserts equality, not just presence)
+- [x] Divergent per-table curve is explicitly rejected (test asserts equality, not just presence)
+
+Status: 3 tests GREEN — curve/max_retries/on_exhaustion equality (not just presence), the shared
+`hash_chain`/`verify_chain` DIAN evidentiary shape, and `envio_dian`'s explicit `None` (T-PR9-005
+cross-check).
 
 #### T-PR9-011: Commit + open PR9
 Depends on: T-PR9-001..010
 - [ ] Branch `feat/sync-overhaul-pr9-dian-branch-numbering` pushed, target `dev`
 
+Status: left unchecked deliberately — commit/branch/PR operations are explicitly reserved for the
+user in this session, not the implementer.
+
 ### PR9 acceptance
-- [ ] A branch-emitted document numbers offline and reaches the provider once connected
-- [ ] Zero `sync_back_event` rows or literals anywhere in this PR's diff
+- [x] A branch-emitted document numbers offline and reaches the provider once connected
+- [x] Zero `sync_back_event` rows or literals anywhere in this PR's diff
+
+Status: confirmed by `tests/integration/test_dian_round_trip.py` (offline branch-local numbering via
+`assign_consecutivo` + provider round trip, mocked provider) and
+`tests/static/test_no_sync_back_event_literals.py` (zero literals across `dispatcher.py` +
+`jobs/sync_cloud.py`, the two files this PR's diff touches in that domain).
 
 ---
 

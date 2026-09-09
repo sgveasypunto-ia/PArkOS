@@ -121,6 +121,15 @@ _ENVIO_DIAN = SyncCatalogEntry(
     apply_strategy="append_transition",
     originating_role="cloud",
     role_required="both",  # branch legitimately holds and reads these rows
+    # T-PR9-005, design.md §2 Issue #9 — explicitly NO backoff override
+    # here (stays at the default None -> general curve). Two clocks
+    # exist and must not be conflated: the PROVIDER-facing retry is the
+    # envio_dian transition chain itself (uuid_envio_padre, estado),
+    # driven by the cloud dispatcher, which adopts DIAN_BACKOFF_SCHEDULE
+    # directly (dian/backoff.py). The REPLICATION of an already-terminal
+    # envio_dian row cloud_to_branch has no external dependency; putting
+    # it on the DIAN curve would delay cufe visibility at the branch by
+    # up to 24h after a transient network blip.
     depends_on=("sucursal", "factura_electronica", "resolucion_facturacion"),
     has_uuid_sucursal=True,
     seq_strategy="seq_via_datos",
