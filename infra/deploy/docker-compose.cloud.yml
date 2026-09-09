@@ -78,6 +78,11 @@ services:
     restart: unless-stopped
     environment:
       PARKOS_DEPLOY: cloud
+      # T-PR11-007 (REQ-CUT-001, D22): default legacy until stage 3 —
+      # override locally (e.g. `PARKOS_SYNC_ENGINE=catalog docker compose
+      # -f infra/deploy/docker-compose.cloud.yml up`) to test another
+      # stage. Never inlines a real deploy value — see the module docstring.
+      PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-legacy}
       PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@cloud-db:5432/parkos
       DATABASE_URL: postgresql+asyncpg://parkos:parkos@cloud-db:5432/parkos
       PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
@@ -118,6 +123,9 @@ services:
     restart: unless-stopped
     environment:
       PARKOS_DEPLOY: cloud
+      # T-PR11-007 (REQ-CUT-001, D22): default legacy until stage 3 — see
+      # api-admin's identical env var above for the override pattern.
+      PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-legacy}
       PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@cloud-db:5432/parkos
       DATABASE_URL: postgresql+asyncpg://parkos:parkos@cloud-db:5432/parkos
       PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem

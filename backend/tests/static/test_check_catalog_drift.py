@@ -1,13 +1,34 @@
-"""test_check_catalog_drift.py — T-PR2-017 / T-PR3-007 acceptance for check_catalog_drift.py.
+"""test_check_catalog_drift.py — T-PR2-017 / T-PR3-007 / T-PR11-005 acceptance
+for check_catalog_drift.py.
 
-  - Script exits 0 against the populated catalog from T-PR2-002..015 with
-    rules 1-7 active (T-PR3-007 extends this same script).
+  - Script exits 0 against the populated catalog from T-PR2-002..015 (and
+    the amended, non-stub ``modelo_datos_er.mmd``) with rules 1-7 active
+    (T-PR3-007 extends this same script).
   - Script exits 1 naming the offending table on an injected direction
     mismatch fixture (rule 4).
   - Script exits 1 when a fixture nullable FK is injected into depends_on
     (rule 5, R22 guard).
   - Script exits 1 when priority is referenced in a fixture ordering
     function (rule 7, AST check).
+
+**T-PR11-005 rule-count finding.** ``tasks.md``'s T-PR11-005 wording assumes
+"the full 11-rule drift check" without having verified the number against
+the actual script. Counted directly from ``validator.py``'s exported
+``check_rule_N_*`` functions (and from this script's own ``main()`` call
+list): the script implements exactly **7** rules, not 11.
+``design.md``'s §11 amended list enumerates 11 numbered properties, but 4
+of them (its own #4 "exemption list" — folded into rules 2/3's counts here;
+#8 "``never_propagated`` set by exactly one table"; #9 "direction/
+broadcast_policy disjoint enums"; #10 "``natural_key`` non-empty for
+exactly 3 tables") are enforced elsewhere — at ``SyncCatalogEntry``
+construction time in ``catalog/schema.py``'s ``__post_init__`` and its
+module-level ``assert`` — not by this AST/CI script; and design's own #11
+("priority absent from the ordering path") is this script's rule 7 under a
+different number. ``operations.md``'s REQ-OPS-003 (the actual normative
+spec text) and the CI pipeline order comment in the same file both already
+say "rules 1-6" / "rules 1-6" — this script additionally ships rule 7
+(R12, priority-absence AST check), for **7** rules total. See
+``test_exactly_seven_rules_are_wired`` below for the executable proof.
 """
 from __future__ import annotations
 
@@ -23,6 +44,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 import check_catalog_drift  # noqa: E402
 from parkos_core.sync.catalog import SYNC_CATALOG  # noqa: E402
+from parkos_core.sync.catalog import validator as catalog_validator  # noqa: E402
 from parkos_core.sync.catalog.validator import (  # noqa: E402
     check_rule_4_direction_matches_er,
     check_rule_5_depends_on_matches_er,
@@ -34,10 +56,30 @@ from parkos_core.sync.catalog.validator import (  # noqa: E402
 def test_check_catalog_drift_exits_0_against_real_catalog() -> None:
     """Green path: the populated catalog matches the ER.
 
-    Rules 1-7 active (PR2 T-PR2-002..015, PR3 T-PR3-001..007).
+    Rules 1-7 active (PR2 T-PR2-002..015, PR3 T-PR3-001..007), run against
+    the real, now-populated catalog and the amended (non-stub)
+    ``modelo_datos_er.mmd`` — closes the PR1 placeholder (T-PR11-005).
     """
     exit_code = check_catalog_drift.main(["check_catalog_drift.py"])
     assert exit_code == 0
+
+
+def test_exactly_seven_rules_are_wired() -> None:
+    """T-PR11-005: the script implements exactly 7 rules today, not 11.
+
+    Counts the ``check_rule_N_*`` functions ``validator.py`` actually
+    exports (the source of truth this test refuses to hardcode past) and
+    cross-checks against the fixed set 1-7. A future rule addition (or
+    removal) MUST update this test deliberately rather than let the
+    "11 rules" claim from ``tasks.md``/``design.md`` silently drift back
+    into an unverified assumption.
+    """
+    rule_numbers = sorted(
+        int(name.removeprefix("check_rule_").split("_", 1)[0])
+        for name in catalog_validator.__all__
+        if name.startswith("check_rule_")
+    )
+    assert rule_numbers == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_rule_4_flags_injected_direction_mismatch() -> None:

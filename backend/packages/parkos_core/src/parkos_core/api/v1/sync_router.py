@@ -6,8 +6,12 @@ cloud-only — they're the only ``api_sucursal``-mounted paths besides
 the CRUD routers. The three-layer DIAN boundary (REQ-X3, §10) does
 NOT apply here because the sync transport is not DIAN.
 
-Six endpoints:
+Seven endpoints:
 
+- ``GET /api/v1/sync/hello`` — dual-protocol handshake (T-PR11-003,
+  REQ-CUT-003/004). NO auth required — a branch calls this BEFORE it has
+  decided which applier (and therefore which JWT flow) to use.
+  ``{protocol_version, min_branch_version, grace_until, catalog_revision}``.
 - ``POST /api/v1/sync/pair`` — branch consumes a pairing-token +
   branch_info; cloud mints a long-lived ``sync-agent-`` JWT. NO auth
   required (the pairing-token IS the credential).
@@ -19,9 +23,15 @@ Six endpoints:
 - ``POST /api/v1/sync/heartbeat`` — both directions. 10/min.
 - ``POST /api/v1/sync/rotate-jwt`` — both directions. Mints a new
   ``sync-agent-`` JWT after validating the current one. 1/min.
-- ``POST /api/v1/sync/events`` — cloud → branch push of
-  ``SyncBackEvent`` rows. Same auth chain. (Cloud-only request
-  shape; branch never sends.)
+- ``POST /api/v1/sync/events`` — bidirectional row push. Same auth
+  chain. Two coexisting shapes (T-PR11-006, REQ-CUT-015): legacy
+  ``SyncBackEvent`` provider-notification rows (``event_type`` +
+  ``payload``, reported ``delivered``) and catalog-driven rows
+  (``tabla`` set) applied through ``SyncMotor.apply_row`` and reported
+  via REQ-MOT-005's wire vocabulary (``applied`` / ``conflict`` /
+  ``retry_parent_missing``) — the cloud receives ``branch_to_cloud``
+  rows here, the branch receives ``cloud_to_branch`` rows here (PR12),
+  through the identical handler.
 
 Architecture notes:
 
@@ -60,7 +70,12 @@ from ...repo.pairing import (
     consume_pairing_token,
 )
 from ...repo.revoked_sync_jwt import is_revoked
+from ...runtime import engine_flag
 from ...runtime.clock import ClockSkewError
+from ...sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+from ...sync.cutover.dual_protocol import build_sync_hello_response
+from ...sync.motor.apply_result import ApplyResult
+from ...sync.motor.sync_motor import SyncMotor
 from ...sync.router_helpers import (
     RateLimit,
     SyncIdempotencyCache,
@@ -101,6 +116,18 @@ class _Base(BaseModel):
     """Strict ORM mapper; mirrors ``schemas.common._Base`` style."""
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class _SyncHelloResponse(_Base):
+    """Response for ``GET /sync/hello`` (T-PR11-003, REQ-CUT-004's exact shape).
+
+    ``grace_until`` is ``None`` iff ``protocol_version == "legacy"``.
+    """
+
+    protocol_version: str
+    min_branch_version: str
+    grace_until: str | None
+    catalog_revision: str
 
 
 class _BranchInfo(_Base):
@@ -205,16 +232,27 @@ class _RotateResponse(_Base):
 
 
 class _SyncBackEvent(_Base):
-    """A single SyncBackEvent (cloud → branch push).
+    """A single SyncBackEvent (cloud → branch push) OR a catalog-driven row.
 
-    The full schema ships in PR9 (DIAN dispatcher integration). PR8c
-    accepts a permissive shape so the endpoint compiles + the auth
-    chain is exercised; PR9 narrows the schema when the cloud-side
-    producer is wired.
+    The original PR8c shape (``event_type`` + ``payload``) accepted a
+    permissive provider-notification-style event so the endpoint compiled
+    and the auth chain was exercised end to end; PR11 (T-PR11-006, REQ-
+    CUT-015) narrows the schema for the catalog-driven case WITHOUT
+    breaking that original shape:
+
+    - ``tabla`` unset (``None``, the default) — legacy provider-event
+      behavior: no catalog dispatch, the row is reported ``delivered``
+      exactly as before.
+    - ``tabla`` set to a ``SYNC_CATALOG`` entry name — the row is applied
+      through ``SyncMotor.apply_row`` and the response reports the
+      REQ-MOT-005 wire status (``applied`` / ``conflict`` /
+      ``retry_parent_missing``) instead of a fixed ``delivered``.
     """
 
     event_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    tabla: str | None = None
+    uuid_registro: uuid_lib.UUID | None = None
 
 
 class _EventsRequest(_Base):
@@ -223,11 +261,59 @@ class _EventsRequest(_Base):
 
 class _EventResponseRow(_Base):
     event_type: str
-    status: str  # "delivered" | "skipped" | "error"
+    # "delivered" (legacy, no tabla) | "unknown_table" (tabla not in
+    # SYNC_CATALOG_BY_NAME) | "applied" | "conflict" | "retry_parent_missing"
+    # (REQ-MOT-005 / REQ-CUT-015 wire vocabulary for a catalog-driven row).
+    status: str
 
 
 class _EventsResponse(_Base):
     results: list[_EventResponseRow] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# REQ-MOT-005 / REQ-CUT-015 — ApplyResult.status -> per-row wire status
+# (T-PR11-006). Single source of truth for the mapping table; PR12's
+# branch-side receiver (T-PR12-004) reuses this exact function.
+# ---------------------------------------------------------------------------
+
+
+class UnmappedApplyStatusError(Exception):
+    """Raised when an ``ApplyResult`` cannot be mapped to a wire status.
+
+    REQ-CUT-015 requires the receiver to report a per-row status that is
+    NEVER a generic failure and NEVER a silent drop. Every ``RETRY``
+    producer in this codebase (``motor/apply_row.py``,
+    ``motor/dependency_buffer.py``) sets exactly ``reason="parent_missing"``
+    — a ``RETRY`` with any other reason is an unexpected internal state, and
+    raising here (instead of guessing a wire value) is that "never silent"
+    contract applied to it.
+    """
+
+
+def wire_status_for_apply_result(result: ApplyResult) -> str:
+    """REQ-MOT-005's per-row wire vocabulary.
+
+    | Motor ``ApplyResult.status`` | Wire status |
+    |---|---|
+    | ``APPLIED``  | ``applied`` |
+    | ``CONFLICT`` | ``conflict`` |
+    | ``RETRY`` (``reason="parent_missing"``) | ``retry_parent_missing`` |
+
+    A row whose declared ``depends_on`` parent has not yet arrived
+    (REQ-CUT-015) MUST report ``retry_parent_missing`` — never a generic
+    failure status and never a silent drop.
+    """
+    if result.status == "APPLIED":
+        return "applied"
+    if result.status == "CONFLICT":
+        return "conflict"
+    if result.status == "RETRY" and result.reason == "parent_missing":
+        return "retry_parent_missing"
+    raise UnmappedApplyStatusError(
+        f"no wire status defined for ApplyResult(status={result.status!r}, "
+        f"reason={result.reason!r})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +387,36 @@ async def _sync_agent_claims(
         ) from e
 
     return claims
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 0: GET /sync/hello
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/hello",
+    response_model=_SyncHelloResponse,
+    summary="Dual-protocol handshake (T-PR11-003, REQ-CUT-003/004).",
+)
+async def sync_hello() -> _SyncHelloResponse:
+    """Advertise the current protocol so a branch can auto-detect its applier.
+
+    NO auth required — a branch calls this BEFORE it has decided which
+    applier (and therefore which JWT-bearing flow) to use; the response
+    carries no sensitive data (REQ-CUT-004: protocol version + catalog
+    revision only). The branch MUST cache the response for
+    ``dual_protocol.BRANCH_CACHE_TTL_SECONDS`` (300s) to avoid hammering
+    the cloud (REQ-CUT-004) — branch-side wiring is PR12's
+    ``jobs/sync_sucursal.py`` concern (T-PR12-007).
+    """
+    result = build_sync_hello_response()
+    return _SyncHelloResponse(
+        protocol_version=result.protocol_version,
+        min_branch_version=result.min_branch_version,
+        grace_until=result.grace_until,
+        catalog_revision=result.catalog_revision,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -739,21 +855,30 @@ async def sync_rotate_jwt(
     "/events",
     response_model=_EventsResponse,
     status_code=status.HTTP_207_MULTI_STATUS,
-    summary="Cloud → branch SyncBackEvent push (issuer sync-agent-).",
+    summary="Cloud ↔ branch catalog-driven row push (issuer sync-agent-).",
 )
 async def sync_events(
     payload: _EventsRequest,
     request: Request,
     claims: dict[str, Any] = Depends(_sync_agent_claims),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
     x_request_id: str | None = Header(None, alias="X-Request-Id"),
 ) -> _EventsResponse:
-    """Cloud pushes SyncBackEvent rows to a branch.
+    """Cloud ↔ branch catalog-driven row push (mounted on both processes).
 
-    SyncBackEvents are the cloud's response to actions the branch took
-    (e.g. ``Factus.dispatch`` accepted → emit a ``SyncBackEvent`` to the
-    branch so its local cache of ``factura_electronica`` state updates).
-    PR8c accepts the events and returns 207; the branch-side applier
-    (which writes the events to local tables) lands in PR9.
+    Two request shapes coexist on the same wire endpoint (see
+    ``_SyncBackEvent``'s docstring):
+
+    - Legacy provider-notification events (``event_type`` + ``payload``,
+      no ``tabla``) — reported ``delivered`` exactly as PR8c shipped it.
+    - Catalog-driven rows (``tabla`` set) — applied through
+      ``SyncMotor.apply_row`` (T-PR11-001/006, REQ-CUT-015). The cloud's
+      receiver dispatches ``branch_to_cloud`` rows; PR12's branch-side
+      receiver (same handler, mounted on ``api_sucursal``) dispatches
+      ``cloud_to_branch`` rows through the identical code path — this is
+      the single source of truth for REQ-MOT-005's wire-status mapping
+      (``wire_status_for_apply_result``), never a generic failure and
+      never a silent drop for either direction.
     """
     issuer = claims.get("iss", "")
     subject = extract_subject_from_jwt(claims)
@@ -786,10 +911,47 @@ async def sync_events(
             headers={"Retry-After": str(e.retry_after_seconds)},
         ) from e
 
-    results = [
-        _EventResponseRow(event_type=ev.event_type, status="delivered")
-        for ev in payload.events
-    ]
+    actor_uuid = uuid_lib.UUID(subject)
+    # Lazily built — a legacy-shaped batch (no `tabla` on any event) never
+    # touches SyncMotor/PARKOS_SYNC_ENGINE at all, preserving the original
+    # PR8c behavior (and its test) for callers that never send `tabla`.
+    motor: SyncMotor | None = None
+
+    results: list[_EventResponseRow] = []
+    try:
+        for ev in payload.events:
+            if ev.tabla is None:
+                # Legacy provider-event shape (PR8c) — no catalog dispatch.
+                results.append(
+                    _EventResponseRow(event_type=ev.event_type, status="delivered")
+                )
+                continue
+
+            spec = SYNC_CATALOG_BY_NAME.get(ev.tabla)
+            if spec is None:
+                # Never a silent drop: an event naming an unrecognized table
+                # is reported, not swallowed. (Out-of-catalog infra tables
+                # are jobs/sync_cloud.py's is_infra_table concern, not this
+                # router's — a row reaching here with an unknown tabla is
+                # neither.)
+                results.append(
+                    _EventResponseRow(event_type=ev.event_type, status="unknown_table")
+                )
+                continue
+
+            if motor is None:
+                motor = SyncMotor(engine=engine_flag.get_engine())
+            apply_result = await motor.apply_row(
+                session, spec, ev.payload, actor_uuid=actor_uuid
+            )
+            wire_status = wire_status_for_apply_result(apply_result)
+            results.append(_EventResponseRow(event_type=ev.event_type, status=wire_status))
+
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+
     response_body = {"results": [r.model_dump(mode="json") for r in results]}
     if x_request_id:
         _IDEMPOTENCY.put(
@@ -799,4 +961,4 @@ async def sync_events(
     return _EventsResponse(results=results)
 
 
-__all__ = ["router"]
+__all__ = ["UnmappedApplyStatusError", "router", "wire_status_for_apply_result"]

@@ -256,6 +256,139 @@ class TestHashChainVerifierCatchesBreak:
 
 
 # ---------------------------------------------------------------------------
+# T-PR11-001: _verify_revocacion_factura_chain_once (REQ-MOT-006, motor.verify_chain)
+# ---------------------------------------------------------------------------
+
+
+class TestRevocacionFacturaVerifier:
+    """A real, pre-existing gap this PR closes: no cloud-side code swept
+    ``revocacion_factura``'s hash chain before T-PR11-001, even though it's
+    the OTHER ``verify_chain=True`` entry (REQ-CAT-009) alongside
+    ``log_transaccional``. Built on the PR6 ``motor.verify_chain`` module
+    (:func:`verify_chain_for_spec`) instead of a second hand-rolled walker.
+    """
+
+    @pytest.mark.asyncio
+    async def test_chain_break_emits_alerta_and_conflict_tagged_revocacion_factura(
+        self, worker: SyncCloudWorker, session_mock: MagicMock
+    ) -> None:
+        tenant_uuid = uuid_lib.uuid4()
+
+        row0 = _make_chain_row(
+            uuid=uuid_lib.uuid4(),
+            prior_hash=hc_helpers._genesis_hash(tenant_uuid),
+            payload_bytes=b"rf0",
+            timestamp="2026-01-01T00:00:00",
+        )
+        row1 = _make_chain_row(
+            uuid=uuid_lib.uuid4(),
+            # WRONG prior (should be row0.hash_actual) — forces a break.
+            prior_hash=hc_helpers._genesis_hash(tenant_uuid),
+            payload_bytes=b"rf1",
+            timestamp="2026-01-01T00:01:00",
+        )
+
+        tenants_result = MagicMock()
+        tenants_scalars = MagicMock()
+        tenants_scalars.all.return_value = [tenant_uuid]
+        tenants_result.scalars.return_value = tenants_scalars
+
+        rows_result = MagicMock()
+        rows_scalars = MagicMock()
+        rows_scalars.all.return_value = [row0, row1]
+        rows_result.scalars.return_value = rows_scalars
+
+        session_mock.execute = AsyncMock(side_effect=[tenants_result, rows_result])
+
+        with patch(
+            "parkos_core.jobs.sync_cloud.wf_helpers.append_transition",
+            AsyncMock(),
+        ) as append_transition_mock, patch(
+            "parkos_core.jobs.sync_cloud.ao_helpers.append_event",
+            AsyncMock(),
+        ) as append_event_mock:
+            await worker._verify_revocacion_factura_chain_once()
+
+        append_transition_mock.assert_awaited_once()
+        new_attrs = append_transition_mock.await_args.kwargs["new_attrs"]
+        assert new_attrs["tipo_alerta"] == "hash_chain_anomaly"
+        assert new_attrs["uuid_sucursal"] == tenant_uuid
+
+        append_event_mock.assert_awaited_once()
+        conflict_attrs = append_event_mock.await_args.kwargs["attrs"]
+        # T-PR11-001: tabla is tagged correctly, NOT hardcoded to
+        # "log_transaccional" (the bug this PR's _handle_chain_break
+        # `tabla` kwarg addition prevents).
+        assert conflict_attrs["tabla"] == "revocacion_factura"
+        assert conflict_attrs["politica"] == "chain_break"
+
+    @pytest.mark.asyncio
+    async def test_valid_chain_emits_nothing(
+        self, worker: SyncCloudWorker, session_mock: MagicMock
+    ) -> None:
+        tenant_uuid = uuid_lib.uuid4()
+        row0 = _make_chain_row(
+            uuid=uuid_lib.uuid4(),
+            prior_hash=hc_helpers._genesis_hash(tenant_uuid),
+            payload_bytes=b"rf0",
+            timestamp="2026-01-01T00:00:00",
+        )
+        row1 = _make_chain_row(
+            uuid=uuid_lib.uuid4(),
+            prior_hash=row0.hash_actual,
+            payload_bytes=b"rf1",
+            timestamp="2026-01-01T00:01:00",
+        )
+
+        tenants_result = MagicMock()
+        tenants_scalars = MagicMock()
+        tenants_scalars.all.return_value = [tenant_uuid]
+        tenants_result.scalars.return_value = tenants_scalars
+
+        rows_result = MagicMock()
+        rows_scalars = MagicMock()
+        rows_scalars.all.return_value = [row0, row1]
+        rows_result.scalars.return_value = rows_scalars
+
+        session_mock.execute = AsyncMock(side_effect=[tenants_result, rows_result])
+
+        with patch(
+            "parkos_core.jobs.sync_cloud.wf_helpers.append_transition",
+            AsyncMock(),
+        ) as append_transition_mock, patch(
+            "parkos_core.jobs.sync_cloud.ao_helpers.append_event",
+            AsyncMock(),
+        ) as append_event_mock:
+            await worker._verify_revocacion_factura_chain_once()
+
+        append_transition_mock.assert_not_awaited()
+        append_event_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_tenants_is_a_clean_noop(
+        self, worker: SyncCloudWorker, session_mock: MagicMock
+    ) -> None:
+        empty_result = MagicMock()
+        empty_scalars = MagicMock()
+        empty_scalars.all.return_value = []
+        empty_result.scalars.return_value = empty_scalars
+        session_mock.execute = AsyncMock(return_value=empty_result)
+
+        # Must not raise, must not touch either writer.
+        with patch(
+            "parkos_core.jobs.sync_cloud.wf_helpers.append_transition",
+            AsyncMock(),
+        ) as append_transition_mock, patch(
+            "parkos_core.jobs.sync_cloud.ao_helpers.append_event",
+            AsyncMock(),
+        ) as append_event_mock:
+            await worker._verify_revocacion_factura_chain_once()
+
+        append_transition_mock.assert_not_awaited()
+        append_event_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # T-PR9-15: apply_pushed_row uses repo helpers (no raw session.execute on [A])
 # ---------------------------------------------------------------------------
 

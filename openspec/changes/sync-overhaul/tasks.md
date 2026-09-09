@@ -2104,14 +2104,62 @@ Req: REQ-MOT-011 · Design: §17 · Depends on: PR10
 Files: `backend/packages/parkos_core/src/parkos_core/jobs/sync_cloud.py` (modified) — applier loops
 call `SyncMotor.apply_batch`/`verify_chain`; confirms no `_emit_sync_back_events_loop` (loop 2) is
 present — it was never built (D1-rev); `tests/integration/test_sync_cloud_catalog_driven.py` (new).
-- [ ] Loop applies a `[V]` and an `[A]` fixture row correctly end to end against testcontainers
+- [x] Loop applies a `[V]` and an `[A]` fixture row correctly end to end against testcontainers
+
+Status: Confirmed no `_emit_sync_back_events_loop` (or any second loop) exists anywhere in
+`jobs/sync_cloud.py` — grepped the whole repo; the only remaining textual trace is a comment in
+`backend/scripts/replicate_catalogs_to_branch.py` (untracked, explicitly listed in design.md §17
+"Explicitly NOT built on" — left untouched, out of this deliverable). Added `_apply_pending_loop` /
+`_apply_pending_batch_once` (drains `repo.sync_queue.list_pending`, wires `_maybe_skip_infra_row`
+BEFORE dispatch per T-PR10-003, applies via `SyncMotor.apply_batch`, settles every resolved row with
+one `mark_dispatched` sweep per REQ-MOT-005's mapping — APPLIED/CONFLICT/RETRY(parent_missing) all
+map to the same outbox action, so no per-row `ApplyResult`↔`sync_queue.uuid` correlation is needed).
+Repurposed the PR9b-vestigial `sync_back_interval_s`/`DEFAULT_SYNC_BACK_INTERVAL_S` as this loop's
+real cadence instead of leaving them dead. **Real bug found and fixed**: migration 0014's
+`fn_enqueue_sync_catalog()` trigger writes `to_jsonb(NEW)` (every column, incl. `uuid` and every
+audit/versioning column) plus an injected `seq` field into `sync_queue.datos` — that raw shape
+crashes `apply_row` (`TypeError: 'seq' is an invalid keyword argument`) and would corrupt
+`close_and_insert`'s bi-temporal invariants for `[V]` entries; added
+`_business_payload_for_apply` to strip queue/audit metadata before dispatch (see the block comment
+above it in `jobs/sync_cloud.py`). **Real gap found and fixed**: `log_transaccional`'s hand-rolled
+verifier never covered `revocacion_factura` (REQ-MOT-006's OTHER `verify_chain=True` entry) — added
+`_verify_revocacion_factura_chain_once` built on the PR6 `motor.verify_chain` module, wired into
+`_hash_chain_verifier_loop` as a separate call so the already-tested `log_transaccional` path
+(`tests/unit/test_sync_cloud_scenarios.py`) is untouched; `_handle_chain_break` gained a `tabla`
+kwarg (default `"log_transaccional"`, backward compatible) so the new path tags its `sync_conflict`
+row correctly instead of inheriting the hardcoded string. Added 3 new tests to
+`tests/unit/test_sync_cloud_scenarios.py` for the new verifier (not in this task's original file
+list — added because the new code path needed coverage). **Second real bug found and fixed (only
+surfaced running the FULL suite, not in isolation)**: the shared, session-scoped test Postgres
+(`tests/conftest.py`) accumulates `sync_queue` rows from unrelated tests across the whole session;
+`SyncMotor.apply_batch` is all-or-nothing, so one such pre-existing row with a payload `apply_row`
+could not bind (e.g. a stray key, or a JSONB-dumped date string a typed column rejects) aborted the
+ENTIRE batch and, via my own naive `except Exception: mark_failed-all; raise`, poisoned every OTHER
+row sharing that cycle too — including this test's own valid `[V]`/`[A]` fixture rows. Fixed by
+falling back to per-row `apply_row` retries on batch failure, each wrapped in its own
+`session.begin_nested()` SAVEPOINT (and the initial batch attempt too) so one bad row's rollback
+never undoes an earlier row's already-flushed success in the same call — added
+`test_apply_loop_isolates_one_poisoned_row_via_per_row_fallback` to prove it. Focused: 14/14
+new+existing `test_sync_cloud_scenarios.py` (10) + `test_sync_cloud_catalog_driven.py` (4) tests
+pass. Runtime harness: `tests/integration/test_sync_cloud_catalog_driven.py` against real
+`parkos-postgres:16-pgpartman` (4/4 pass) — proves `[V]` (`usuarios`) and `[A]` (`caja`) fixture rows
+apply end to end, an infra-table row (`sync_log`) settles without `mark_failed`, an unrecognized
+table is marked failed (never silently dropped), and one poisoned row never blocks a valid sibling
+row in the same batch. Confirmed clean against the FULL suite, not just in isolation (see the
+session-end full-suite result).
 
 #### T-PR11-002: `role_guard` regression — cloud process imports cleanly
 Req: REQ-OPS-005 · Design: §3 · Depends on: T-PR1-010, T-PR2-009
 Files: `backend/packages/parkos_core/tests/integration/test_role_guard.py` (modified) — adds the
 cloud-flavored companion case: a cloud process (`PARKOS_DEPLOY=cloud`) imports both `envio_dian` and
 `validacion_evento` without raising.
-- [ ] Passes alongside the existing branch-side raise case from PR1
+- [x] Passes alongside the existing branch-side raise case from PR1
+
+Status: Added `test_cloud_process_imports_validacion_evento_and_envio_dian_cleanly` — asserts
+`assert_role("cloud", table="validacion_evento")` does not raise (companion to the PR1 branch-side
+raise case), and imports the real `catalog/entries/sync_entries_lw.py` module (which imports both
+`EnvioDian` and `ValidacionEvento`) under `PARKOS_DEPLOY=cloud` to prove `envio_dian`'s
+`role_required="both"` entries never call the guard at all. 6/6 `test_role_guard.py` tests pass.
 
 #### T-PR11-003: `cutover/dual_protocol.py` + `/sync/hello`
 Req: REQ-CUT-003, REQ-CUT-004 · Design: §8 · Depends on: T-PR11-001
@@ -2119,22 +2167,60 @@ Files: `backend/packages/parkos_core/src/parkos_core/sync/cutover/dual_protocol.
 `backend/packages/parkos_core/src/parkos_core/api/v1/sync_router.py::sync_hello` (modified) —
 response shape `{protocol_version, min_branch_version, grace_until, catalog_revision}`, 300s branch
 cache; `tests/integration/test_dual_protocol.py` (new).
-- [ ] Response matches REQ-CUT-004 exactly; `grace_until` is null when `protocol_version=="legacy"`
+- [x] Response matches REQ-CUT-004 exactly; `grace_until` is null when `protocol_version=="legacy"`
+
+Status: `build_sync_hello_response` derives `protocol_version` from `PARKOS_SYNC_ENGINE`
+(`catalog`/`catalog_branch` → `"catalog"`; `legacy`/`catalog_admin`/`catalog_dian` → `"legacy"` —
+stages 1-2 are cloud-internal staging that don't yet flip what a branch should do, REQ-CUT-006);
+`grace_until` is a 14-day-ahead ISO-8601 string (`GRACE_PERIOD_DAYS`) iff `protocol_version=="catalog"`,
+else `None`. `BRANCH_CACHE_TTL_SECONDS=300` is exported for PR12's branch-side consumer
+(`jobs/sync_sucursal.py`, T-PR12-007) to use — this PR ships the cloud-side response builder +
+`GET /sync/hello` only; no auth required (mirrors `/sync/pair`'s "credential not yet available"
+reasoning). `catalog_revision` reads `PARKOS_CATALOG_REVISION` (deploy-injected git SHA), defaulting
+to `"unknown"` — wiring a real CI/deploy pipeline to set it is out of scope here (mirrors
+T-PR11-004's identical carve-out). 11/11 tests pass.
 
 #### T-PR11-004: `openspec/scripts/check_drain.py`
 Req: REQ-OPS-013, REQ-CUT-002 · Design: §11 · Depends on: T-PR11-001
 Files: `openspec/scripts/check_drain.py` (new) — queries
 `SELECT count(*) FROM prod.sync_queue WHERE estado='pendiente'`; exit 0 if 0, exit 1 with count +
 elapsed seconds otherwise; `tests/static/test_check_drain_green.py` (new).
-- [ ] Script invoked by the stage-4 gate automation reference in `.github/workflows/ci.yml`'s
+- [x] Script invoked by the stage-4 gate automation reference in `.github/workflows/ci.yml`'s
       comments (actual CI wiring is a deploy-pipeline concern, out of scope here)
+
+Status: `.github/workflows/ci.yml` NOT touched (explicit user instruction + out of this task's
+scope). `check_drain.py` follows `check_schema_match.py`'s exact CLI convention
+(`--database-url`/`DATABASE_URL`, psycopg v3, exit 0/1/2). "Elapsed seconds since the last cutover
+attempt" (REQ-OPS-013) has no existing state-tracking mechanism anywhere in this codebase; accepts an
+optional `--since`/`PARKOS_CUTOVER_ATTEMPT_STARTED_AT` ISO-8601 timestamp and reports 0.0s when
+neither is supplied — documented explicitly in the script's own docstring as a deliberate, minimal
+choice rather than inventing a new cross-PR state-tracking mechanism. 5/5 tests pass (4 mocked
+exit-code tests + 1 real-Postgres cross-check of `count_pending` against an independent query).
 
 #### T-PR11-005: `check_catalog_drift.py` re-derivation against the populated catalog
 Req: REQ-OPS-003 · Design: §11 · Depends on: T-PR2-017, T-PR3-007, T-PR10-005
 Files: `backend/packages/parkos_core/tests/static/test_check_catalog_drift_green.py` (modified) —
 closes the PR1 placeholder: runs the full 11-rule drift check against the now-populated catalog and
 amended `.mmd`, not an empty stub.
-- [ ] Script exits 0 with all rules through 11 active
+- [x] Script exits 0 with all rules through 11 active
+
+Status: **Verified by running the script, not assumed.** `python openspec/scripts/check_catalog_drift.py`
+against the real, populated catalog + the real (non-stub) `modelo_datos_er.mmd` exits 0 and prints
+"OK: no catalog drift found (rules 1-7)" — the script implements exactly **7** rules
+(`validator.py`'s `check_rule_1`..`check_rule_7`), NOT 11. `design.md` §11's "amended" list enumerates
+11 numbered properties, but 4 of them are enforced elsewhere — at `SyncCatalogEntry` construction
+time in `catalog/schema.py`'s `__post_init__` (design's #8, `never_propagated` + justification) and
+its module-level `assert` (design's #9, disjoint `direction`/`broadcast_policy` enums) — not by this
+script; design's #4 (exemption-list count) is folded into this script's rules 2/3; and design's #11
+("priority absent from ordering") IS this script's rule 7, just renumbered. `operations.md`'s
+REQ-OPS-003 (the actual normative spec text) and its own CI-pipeline-order comment both already say
+"rules 1-6"; this script additionally ships rule 7 (R12 AST check), for 7 total — matching what's
+really wired, confirmed by an executable test (`test_exactly_seven_rules_are_wired`), not a
+docstring claim. The file modified is `backend/tests/static/test_check_catalog_drift.py` (the
+established, already-existing path — corrected per the same PR1-10 "backend/tests/{unit,integration,
+static}/" convention this whole PR follows; no separate `..._green.py` file exists or was created for
+this checker, mirroring how PR1-10 already diverged from tasks.md's literal path for this one file).
+5/5 tests pass (4 existing + 1 new rule-count regression guard).
 
 #### T-PR11-006: Cloud-side `/sync/events` wire status `retry_parent_missing` (REQ-CUT-015, cloud leg)
 Req: REQ-CUT-015, REQ-MOT-005 · Design: §2 Issue #8 · Depends on: T-PR11-001, T-PR8-007
@@ -2142,24 +2228,52 @@ Files: `backend/packages/parkos_core/src/parkos_core/api/v1/sync_router.py` (mod
 `/sync/events` receiver reports `retry_parent_missing` for a `branch_to_cloud` row whose declared
 parent is not yet present, never a generic failure or a silent drop; `tests/unit/
 test_sync_router_wire_status.py` (new).
-- [ ] `APPLIED → applied`, `CONFLICT → conflict`, `RETRY(parent_missing) → retry_parent_missing`
+- [x] `APPLIED → applied`, `CONFLICT → conflict`, `RETRY(parent_missing) → retry_parent_missing`
       mapping table asserted exactly
+
+Status: `_SyncBackEvent` gained optional `tabla`/`uuid_registro` fields — `tabla` unset preserves the
+original PR8c "delivered" behavior exactly (backward compatible, existing
+`test_sync_router.py::TestSyncEvents` test untouched and still green); `tabla` set dispatches through
+`SyncMotor.apply_row` and maps the result via the new `wire_status_for_apply_result` (single source
+of truth PR12's T-PR12-004 branch-side receiver reuses). An unrecognized `tabla` reports
+`unknown_table` (never silent); the motor is built lazily so a legacy-only batch never touches
+`PARKOS_SYNC_ENGINE` at all. **Regression found and fixed during self-review**: an early version
+unconditionally read `engine_flag.get_engine()` at the top of the handler, breaking the existing
+PR8c test (unset `PARKOS_SYNC_ENGINE` in that test) — fixed by making motor construction lazy.
+32/32 `test_sync_router.py` + `test_sync_router_wire_status.py` + `test_dual_protocol.py` tests pass.
 
 #### T-PR11-007: `infra/deploy/docker-compose.{cloud,branch}.yml` — `PARKOS_SYNC_ENGINE` env
 Req: REQ-CUT-001 · Design: §17 · Depends on: T-PR1-004
 Files: `infra/deploy/docker-compose.cloud.yml` (modified), `infra/deploy/docker-compose.branch.yml`
 (modified) — adds `PARKOS_SYNC_ENGINE` (default `legacy` for cloud until stage 3; `catalog_branch`
 for branches after stage 4).
-- [ ] `.env.cloud` values are NOT inlined into the compose files (T-PR1-004's `.gitignore` still
+- [x] `.env.cloud` values are NOT inlined into the compose files (T-PR1-004's `.gitignore` still
       applies)
+
+Status: Added `PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-legacy}` to `api-admin` + `job-sync-cloud`
+(cloud) and `PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}` to `api-sucursal` +
+`job-sync-sucursal` (branch) — all 4 REQ-CUT-001-listed services. Variable substitution only (no
+literal `.env.cloud`/`.env.branch` values inlined); local operators override via
+`PARKOS_SYNC_ENGINE=<value> docker compose -f ... up` to test another stage. Confirmed
+`infra/deploy/.gitignore`'s `infra/deploy/.env.*` rule (root `.gitignore` line 22, T-PR1-004) is
+already in place and untouched. YAML syntax validated (`yaml.safe_load` on both files).
+`.github/workflows/ci.yml` NOT touched, per explicit instruction.
 
 #### T-PR11-008: Commit + open PR11
 Depends on: T-PR11-001..007
 - [ ] Branch `feat/sync-overhaul-pr11-cloud-cutover` pushed, target `dev`
 
+Status: Deliberately left unchecked — commit/push is explicitly the requesting user's own action for
+this session (apply phase does not commit or push).
+
 ### PR11 acceptance
-- [ ] `job_sync_cloud` applies via the catalog; `/sync/hello` returns the documented shape
-- [ ] Full 11-rule `check_catalog_drift.py` green against the real catalog
+- [x] `job_sync_cloud` applies via the catalog; `/sync/hello` returns the documented shape
+- [x] Full 11-rule `check_catalog_drift.py` green against the real catalog
+
+Status: The catalog-drift acceptance line's "11-rule" wording is the same stale assumption corrected
+in T-PR11-005 — the script is green against the real catalog with all **7** real rules active (not
+11); see T-PR11-005's Status note for the full accounting of where design.md's other 4 enumerated
+properties are actually enforced.
 
 ---
 

@@ -85,6 +85,11 @@ services:
     restart: unless-stopped
     environment:
       PARKOS_DEPLOY: branch
+      # T-PR11-007 (REQ-CUT-001, D22): default catalog_branch for branches
+      # after stage 4 — override locally (e.g. `PARKOS_SYNC_ENGINE=legacy
+      # docker compose -f infra/deploy/docker-compose.branch.yml up`) to
+      # test the legacy path. Never inlines a real deploy value.
+      PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}
       PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
       PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
       DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
@@ -124,6 +129,9 @@ services:
     restart: unless-stopped
     environment:
       PARKOS_DEPLOY: branch
+      # T-PR11-007 (REQ-CUT-001, D22): default catalog_branch for branches
+      # after stage 4 — see api-sucursal's identical env var above.
+      PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}
       PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
       PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
       DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos

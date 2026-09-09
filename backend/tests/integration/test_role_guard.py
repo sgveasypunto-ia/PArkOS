@@ -85,3 +85,43 @@ def test_defaults_to_cloud_when_parkos_deploy_unset(monkeypatch: pytest.MonkeyPa
     assert_role("cloud", table="validacion_evento") is None
     with pytest.raises(ImportError):
         assert_role("branch", table="some_branch_only_table")
+
+
+# ---------------------------------------------------------------------------
+# T-PR11-002 — cloud-flavored companion (REQ-OPS-005, REQ-MOT-012)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _cloud_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PARKOS_DEPLOY", "cloud")
+
+
+@pytest.mark.usefixtures("_cloud_deploy")
+def test_cloud_process_imports_validacion_evento_and_envio_dian_cleanly() -> None:
+    """Companion to ``test_cloud_only_entry_rejected_on_branch`` (PR1): under
+    ``PARKOS_DEPLOY=cloud`` — the deploy ``validacion_evento`` actually
+    requires (``role_required="cloud"``) — the guard does NOT raise, unlike
+    the branch case above.
+
+    ``envio_dian`` (``role_required="both"``) never calls ``assert_role`` at
+    all (REQ-OPS-005's amended scope, ``test_both_role_entry_applies_
+    cleanly_on_branch`` above) — importing the real production catalog
+    module that declares both entries (``catalog/entries/sync_entries_lw.py``,
+    which imports both ``EnvioDian`` and ``ValidacionEvento``) must succeed
+    cleanly under ``PARKOS_DEPLOY=cloud`` too, proving there is no hidden
+    cloud-side guard call for either table.
+    """
+    # validacion_evento: role_required="cloud" — the guard call every
+    # future cloud-only module makes must NOT raise when the deploy
+    # actually matches the required role.
+    assert assert_role("cloud", table="validacion_evento") is None
+
+    # envio_dian: role_required="both" — structurally unguarded; proven by
+    # importing the real catalog module (not a direct assert_role call,
+    # since none exists for a "both" entry) and asserting both ORM classes
+    # resolve without an ImportError anywhere in the import chain.
+    from parkos_core.sync.catalog.entries.sync_entries_lw import SYNC_ENTRIES_LW
+
+    names = {entry.name for entry in SYNC_ENTRIES_LW}
+    assert {"envio_dian", "validacion_evento"} <= names
