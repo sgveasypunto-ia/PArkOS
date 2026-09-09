@@ -53,7 +53,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid as uuid_lib
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, TypeVar
 
 from sqlalchemy import select
@@ -104,8 +104,26 @@ def _canonical_json(payload: dict[str, Any]) -> bytes:
 
 
 def _json_default(obj: Any) -> Any:
-    """``json.dumps`` default hook — serialise common ORM scalars to strings."""
+    """``json.dumps`` default hook — serialise common ORM scalars to strings.
+
+    ``date`` handling added wiring the post-PR14 full-catalog-sync closing
+    exercise: ``log_transaccional``/``revocacion_factura`` both carry a real
+    ``fecha_retencion_hasta`` ``Date`` column (DIAN retention,
+    ``RetentionMixin``/``_retention_column()``), populated by a DB
+    ``server_default`` the instant either row is inserted — a hash-chain
+    payload for either table can therefore legitimately carry a plain
+    ``datetime.date`` value (never just ``datetime.datetime``), and this
+    hook previously raised ``TypeError: Cannot JSON-serialize date`` on the
+    very first one it ever saw (``datetime.date`` is NOT a ``datetime.
+    datetime`` instance — ``isinstance(obj, datetime)`` is ``False`` for a
+    bare ``date``, so the existing branch never matched it). Checked AFTER
+    ``datetime`` — ``datetime.datetime`` is itself a subclass of
+    ``datetime.date``, so ``date`` must be the second, narrower check or it
+    would incorrectly swallow real datetimes first.
+    """
     if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, date):
         return obj.isoformat()
     if isinstance(obj, uuid_lib.UUID):
         return str(obj)

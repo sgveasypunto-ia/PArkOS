@@ -120,7 +120,7 @@ from parkos_core.repo import workflow as wf_helpers
 from parkos_core.runtime import engine_flag
 from parkos_core.sync.auto_discovery import BranchCache
 from parkos_core.sync.catalog.out_of_catalog import OUT_OF_CATALOG
-from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME, resolve_catalog_name
 from parkos_core.sync.conflict_resolver import ConflictResolver
 from parkos_core.sync.motor.sync_motor import SyncMotor
 from parkos_core.sync.motor.verify_chain import verify_chain_for_spec
@@ -152,8 +152,15 @@ def is_infra_table(tabla: str) -> bool:
     ``sync_queue`` row naming one of them is infra noise (e.g. from the
     pre-``0015`` legacy trigger set still running on a branch during the
     grace window), never a real replication failure.
+
+    Normalizes a pg_partman child-partition suffix first
+    (``resolve_catalog_name`` — see ``catalog/sync_catalog.py``'s own
+    docstring) — ``sync_log``/``sync_queue`` are two of the 8 tables
+    pg_partman partitions, so a raw trigger-sourced ``tabla`` for either
+    can arrive as e.g. ``sync_log_p_current``, which a bare membership
+    test against ``OUT_OF_CATALOG`` would miss.
     """
-    return tabla in OUT_OF_CATALOG
+    return resolve_catalog_name(tabla) in OUT_OF_CATALOG
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +386,31 @@ class SyncCloudWorker(WorkerRunner):
                 settled += 1
                 continue
 
+            # Deliberately NOT resolve_catalog_name(row.tabla) here (unlike
+            # is_infra_table above) — this loop APPLIES a recognized row
+            # directly into THIS SAME cloud database, whose own AFTER
+            # INSERT trigger fires again on that apply and re-enqueues
+            # ANOTHER "echo" row for the identical table. Normalizing the
+            # lookup here would make every partition-suffixed echo of a
+            # partitioned, catalog-driven table (log_transaccional, caja,
+            # arqueo, salidas, factura_detalle, factura_pagos)
+            # newly "recognized" and genuinely re-applied — which creates
+            # ANOTHER echo, which this SAME loop would recognize and
+            # re-apply again the next time it drains, an unbounded
+            # amplification confirmed empirically wiring the post-PR14
+            # full-catalog-sync closing exercise (log_transaccional_p_
+            # current pending rows grew from 181 to 196+ across a single
+            # shared-container test run once this lookup was normalized).
+            # An out-of-catalog-by-suffix name here is intentionally left
+            # as "unknown_table" (inert, backed off) rather than "fixed"
+            # into a self-feeding loop — see this module's own docstring
+            # discovered-issue note for the full, disclosed, NOT-fixed
+            # architectural gap (the trigger fires unconditionally on
+            # every INSERT, including ones this exact loop performs).
+            # jobs/sync_sucursal.py's push path is NOT exposed to this
+            # amplification (that push settles the BRANCH's own row and
+            # applies remotely on CLOUD — it never re-drains what it just
+            # applied), so normalizing there is safe and unchanged.
             spec = SYNC_CATALOG_BY_NAME.get(row.tabla)
             if spec is None:
                 await sq_helpers.mark_failed(self._session, row.uuid, "unknown_table")

@@ -82,7 +82,7 @@ from parkos_core.jobs.runner import WorkerRunner
 from parkos_core.jobs.sync_cloud import _business_payload_for_apply, is_infra_table
 from parkos_core.repo import sync_queue as sq_helpers
 from parkos_core.runtime import engine_flag
-from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME, resolve_catalog_name
 from parkos_core.sync.conflict_resolver import (
     ApplyOutcome,
     ConflictResolver,
@@ -497,7 +497,18 @@ class SyncSucursalWorker(WorkerRunner):
                 # sync in the first place; settle it, never mark_failed.
                 await sq_helpers.mark_dispatched(self._session, row.uuid)
                 continue
-            spec = SYNC_CATALOG_BY_NAME.get(tabla)
+            # Normalize a pg_partman child-partition suffix BEFORE the
+            # catalog lookup (see catalog/sync_catalog.py::resolve_catalog_
+            # name's docstring) — 3 of the 8 partitioned tables
+            # (log_transaccional, caja, arqueo) can be branch-authored
+            # branch_to_cloud rows reaching this exact push path, and a raw
+            # trigger-sourced ``tabla`` for them never matches
+            # SYNC_CATALOG_BY_NAME directly. The WIRE event below carries
+            # the already-normalized name so the cloud-side receiver
+            # (sync_router.py::sync_events, unmodified) never has to
+            # perform this normalization itself.
+            catalog_tabla = resolve_catalog_name(tabla) if tabla else tabla
+            spec = SYNC_CATALOG_BY_NAME.get(catalog_tabla)
             if spec is None:
                 # Never a silent drop (REQ-CUT-015) — a tabla outside the
                 # catalog is a genuine anomaly.
@@ -507,8 +518,8 @@ class SyncSucursalWorker(WorkerRunner):
             payload = _business_payload_for_apply(spec, row.datos or {})
             events.append(
                 {
-                    "event_type": tabla,
-                    "tabla": tabla,
+                    "event_type": catalog_tabla,
+                    "tabla": catalog_tabla,
                     "uuid_registro": str(row.uuid_registro) if row.uuid_registro else None,
                     "payload": payload,
                 }

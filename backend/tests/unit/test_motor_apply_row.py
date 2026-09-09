@@ -170,6 +170,12 @@ async def test_dispatch_per_apply_strategy_session_cycle_insert(make_spec) -> No
         actor_uuid=ACTOR_UUID,
         success=True,
         motivo=None,
+        # uuid=None here (not omitted) — apply_row now forwards
+        # payload.get("uuid") to record_login so a synced login row
+        # preserves the origin's identity (found wiring the post-PR14
+        # full-catalog-sync closing exercise; see record_login's own
+        # docstring). This payload carries no "uuid" key, so None.
+        uuid=None,
     )
     close_mock.assert_not_called()
     assert result.status == "APPLIED"
@@ -192,6 +198,83 @@ async def test_dispatch_per_apply_strategy_session_cycle_close(make_spec) -> Non
 
     close_mock.assert_awaited_once_with(session, login_uuid=LOGIN_UUID, actor_uuid=ACTOR_UUID)
     record_mock.assert_not_called()
+    assert result.status == "APPLIED"
+
+
+async def test_dispatch_per_apply_strategy_session_cycle_insert_sesion(make_spec) -> None:
+    """``session_cycle`` for ``sesion`` (open branch) -> ``repo.session_cycle.open_session``.
+
+    Regression test for a real bug found wiring the post-PR14 full-
+    catalog-sync closing exercise: both ``login`` AND ``sesion`` declare
+    ``apply_strategy="session_cycle"`` (``entries/sync_entries_ls.py``),
+    but the dispatch used to call ``session_cycle.record_login``/
+    ``close_login_with_log`` UNCONDITIONALLY — a synced ``sesion`` row was
+    silently misrouted into ``prod.login`` instead of ``prod.sesion``.
+    Fixed by dispatching on ``spec.name`` (see ``apply_row.py``'s own
+    ``_dispatch_repo_call`` docstring for the full note).
+    """
+    spec = make_spec("sesion")
+    session = _fake_session()
+    payload = {
+        "uuid": LOGIN_UUID,
+        "uuid_sucursal": SUCURSAL_UUID,
+        "uuid_usuario": USUARIO_UUID,
+        "valor_inicial_efectivo": 100000,
+        "valor_inicial_datafono": 0,
+    }
+
+    with (
+        patch(
+            "parkos_core.repo.session_cycle.open_session",
+            new=AsyncMock(return_value=_fake_row(LOGIN_UUID)),
+        ) as open_mock,
+        patch(
+            "parkos_core.repo.session_cycle.close_session_with_log", new=AsyncMock()
+        ) as close_mock,
+        patch("parkos_core.repo.session_cycle.record_login", new=AsyncMock()) as record_mock,
+    ):
+        result = await apply_row(session, spec, dict(payload), actor_uuid=ACTOR_UUID)
+
+    open_mock.assert_awaited_once_with(
+        session,
+        actor_uuid=ACTOR_UUID,
+        uuid_sucursal=SUCURSAL_UUID,
+        valor_inicial_efectivo=100000,
+        valor_inicial_datafono=0,
+        uuid_usuario=USUARIO_UUID,
+        # Preserves the origin's identity (see open_session's own
+        # docstring) — required once any FK-carrying child (arqueo,
+        # factura_pagos) syncs alongside its sesion parent.
+        uuid=LOGIN_UUID,
+    )
+    close_mock.assert_not_called()
+    record_mock.assert_not_called()
+    assert result.status == "APPLIED"
+
+
+async def test_dispatch_per_apply_strategy_session_cycle_close_sesion(make_spec) -> None:
+    """``session_cycle`` for ``sesion`` (close branch) -> ``close_session_with_log``."""
+    spec = make_spec("sesion")
+    session = _fake_session()
+    payload = {"uuid": LOGIN_UUID, "timestamp_cierre": "2026-09-09T00:00:00"}
+
+    with (
+        patch(
+            "parkos_core.repo.session_cycle.close_session_with_log",
+            new=AsyncMock(return_value=_fake_row(LOGIN_UUID)),
+        ) as close_mock,
+        patch("parkos_core.repo.session_cycle.open_session", new=AsyncMock()) as open_mock,
+    ):
+        result = await apply_row(session, spec, dict(payload), actor_uuid=ACTOR_UUID)
+
+    close_mock.assert_awaited_once_with(
+        session,
+        actor_uuid=ACTOR_UUID,
+        sesion_uuid=LOGIN_UUID,
+        valor_final_efectivo=None,
+        valor_final_datafono=None,
+    )
+    open_mock.assert_not_called()
     assert result.status == "APPLIED"
 
 

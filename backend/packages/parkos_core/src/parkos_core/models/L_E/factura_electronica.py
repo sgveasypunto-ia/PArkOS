@@ -27,8 +27,9 @@ via the allocator's own MAX()+1 read.
 from __future__ import annotations
 
 import uuid as uuid_lib
+from datetime import date
 
-from sqlalchemy import BigInteger, Numeric, String, UniqueConstraint
+from sqlalchemy import BigInteger, Date, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -60,6 +61,26 @@ class FacturaElectronica(LifecycleEventBase):
     prefijo: Mapped[str | None] = mapped_column(String, nullable=True)
     consecutivo: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     descuento: Mapped[float | None] = mapped_column(Numeric(precision=18, scale=4), nullable=True)
+
+    # --- DIAN 5-year retention (found wiring the post-PR14 full-catalog-
+    # sync closing exercise) ---
+    # Re-declared here so the ORM exposes the column
+    # ``0001_initial_schema.py::_retention_column()`` already creates on
+    # this table (line ~886) — ``LifecycleEventBase`` does NOT include
+    # ``RetentionMixin`` (only ``AppendOnlyBase`` does; see
+    # ``models/base.py``'s own module docstring), so this column existed
+    # in the real DB schema but was never mapped on this ORM class. A row
+    # this column's ``server_default`` had already populated (e.g. any
+    # row read back via ``to_jsonb(NEW)`` in a DB trigger, as the
+    # catalog-driven sync path does) raised ``TypeError: 'fecha_retencion_
+    # hasta' is an invalid keyword argument for FacturaElectronica`` the
+    # moment ``model_cls(**payload)`` tried to construct it — mirrors the
+    # EXACT same drift ``models/L_W/envio_dian.py`` already re-declares
+    # this column to fix (see that model's own docstring), applied here
+    # to close the same gap on this table. No migration/schema change —
+    # the physical column already exists; this only corrects the ORM
+    # mapping to match it.
+    fecha_retencion_hasta: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(

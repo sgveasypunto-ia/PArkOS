@@ -44,6 +44,7 @@ async def record_login(
     actor_uuid: uuid_lib.UUID | None = None,
     success: bool = True,
     motivo: str | None = None,
+    uuid: uuid_lib.UUID | None = None,
 ) -> Login:
     """REQ-42-S-LOGIN / REQ-43-S-LOGIN-FAILURE: INSERT a new ``login`` row.
 
@@ -54,6 +55,16 @@ async def record_login(
         actor_uuid: The audit actor. Defaults to ``usuario_uuid`` for self-service.
         success: ``True`` → ``estado='exitoso'``, ``False`` → ``estado='fallido'``.
         motivo: Optional failure reason (carried in the log row).
+        uuid: Optional explicit primary key (``None`` — the default —
+            keeps the original behavior: the DB's own
+            ``gen_random_uuid()`` server default mints it). Set by
+            ``motor/apply_row.py``'s catalog-driven ``session_cycle``
+            dispatch for ``login`` when applying an already-arrived
+            remote row, so the destination's copy carries the SAME
+            identity as the origin's — same reasoning as
+            ``open_session``'s own ``uuid`` parameter (see its
+            docstring); found alongside it wiring the post-PR14
+            full-catalog-sync closing exercise.
 
     Returns:
         The newly created :class:`Login` row (not yet committed).
@@ -72,6 +83,7 @@ async def record_login(
         created_at=now,
         created_by=actor_uuid or usuario_uuid,
         sync_status="pendiente",
+        **({"uuid": uuid} if uuid is not None else {}),
     )
     session.add(login_row)
 
@@ -170,6 +182,7 @@ async def open_session(
     valor_inicial_datafono: float,
     uuid_usuario: uuid_lib.UUID,
     log_tx: bool = True,
+    uuid: uuid_lib.UUID | None = None,
 ) -> Sesion:
     """Open a cash session — REQ-40-S-OPEN.
 
@@ -177,6 +190,26 @@ async def open_session(
     row in the same TX. The session-guard trigger validates the log row
     on the subsequent UPDATE (close) — but the INSERT itself doesn't
     require a log row first (the trigger only fires on UPDATE/DELETE).
+
+    Args:
+        uuid: Optional explicit primary key (``None`` — the default —
+            keeps the original behavior: the DB's own
+            ``gen_random_uuid()`` server default mints it). Set by
+            ``motor/apply_row.py``'s catalog-driven ``session_cycle``
+            dispatch for ``sesion`` when applying an already-arrived
+            remote row, so the destination's copy carries the SAME
+            identity as the origin's — found wiring the post-PR14
+            full-catalog-sync closing exercise: without this, ANY table
+            with a real ``ForeignKey`` to ``sesion.uuid`` (``arqueo``,
+            ``factura_pagos``) raises ``ForeignKeyViolationError`` the
+            moment it is synced alongside its ``sesion`` parent, because
+            the destination's own freshly-generated ``uuid`` never
+            matches the value the child row's FK still carries from the
+            origin. Every OTHER ``apply_strategy`` (``close_and_insert``
+            excepted, by design — see D17/D18 note elsewhere) already
+            preserves ``uuid`` this way since ``model_cls(**payload)``
+            naturally passes it through; ``open_session``'s fully-named
+            constructor call was the one place that did not.
     """
     from ..models.A.log_transaccional import LogTransaccional
 
@@ -192,6 +225,7 @@ async def open_session(
         uuid_usuario_cierre=None,
         created_at=now,
         created_by=actor_uuid,
+        **({"uuid": uuid} if uuid is not None else {}),
     )
     session.add(new_row)
 

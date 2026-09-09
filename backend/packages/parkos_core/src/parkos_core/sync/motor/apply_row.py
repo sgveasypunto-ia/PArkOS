@@ -43,10 +43,13 @@ observe" posture as ``hook_validate_parent``):
 """
 from __future__ import annotations
 
+import datetime as dt_lib
 import inspect
 import uuid as uuid_lib
 from typing import Any
 
+from sqlalchemy import Date, DateTime
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...repo import append_only, event, session_cycle, versioned, workflow
@@ -58,6 +61,61 @@ from .apply_result import ApplyResult
 
 class ApplyRowError(Exception):
     """Raised for a catalog entry with an unknown/unset ``apply_strategy``."""
+
+
+def _coerce_wire_payload(model_cls: type, payload: dict[str, Any]) -> dict[str, Any]:
+    """Coerce JSON-wire string values back to the native types asyncpg
+    requires for binding (found wiring the post-PR14 full-catalog-sync
+    closing exercise's real ``POST /sync/events`` round trip — every prior
+    test either stubbed ``SyncMotor`` or built its payload dict in-process,
+    never crossing an actual JSON boundary).
+
+    ``prod.sync_queue.datos`` is JSONB (populated by ``to_jsonb(NEW)`` in
+    the DB trigger) and the ``/sync/events`` wire contract is a plain JSON
+    body (``_CatalogPushEvent.payload: dict[str, Any]``, ``sync_router.py``)
+    — a ``Date``/``DateTime`` column therefore arrives here as an ISO-8601
+    string, not a ``datetime.date``/``datetime.datetime`` instance.
+    asyncpg's binary protocol requires the real instance for a
+    DATE/TIMESTAMP bind parameter and raises
+    ``asyncpg.exceptions.DataError`` on a bare string — unlike a UUID
+    column, which Postgres accepts via the ``::uuid`` text cast SQLAlchemy
+    already emits, so no equivalent failure ever surfaced for those columns.
+
+    Only touches keys that are real mapped columns on ``model_cls``; every
+    other key (the reserved dispatch keys ``current_uuid``/``parent_uuid``,
+    or any genuinely unrecognized key) passes through UNCHANGED — this
+    function coerces types, it never drops or filters keys. An earlier
+    version of this fix also silently dropped any key absent from
+    ``model_cls``'s mapped columns, reasoning it defended against ORM/DB
+    mapping drift (``models/L_E/factura_electronica.py`` was really
+    missing a ``fecha_retencion_hasta`` mapped attribute the DB's own
+    ``0001_initial_schema.py::_retention_column()`` call already creates
+    physically — see that model's own docstring for the real fix, now
+    applied there instead). That drop-anything-unmapped behavior was too
+    broad: it also silently defeated
+    ``tests/integration/test_sync_cloud_catalog_driven.py::
+    test_apply_loop_isolates_one_poisoned_row_via_per_row_fallback``'s
+    entire purpose (an intentionally-invalid extra payload key MUST still
+    raise, proving the per-row fallback isolates a genuinely poisoned row
+    from its batch siblings). Fixing the ONE real drift at its actual
+    source (the ORM model) instead of papering over ALL possible drift
+    generically here is the correct scope for this function.
+    """
+    mapper = sa_inspect(model_cls)
+    mapped_columns = {column.name: column for column in mapper.columns}
+    coerced: dict[str, Any] = {}
+    for key, value in payload.items():
+        column = mapped_columns.get(key)
+        if column is not None and isinstance(value, str):
+            # DateTime must be checked before Date — DateTime does not
+            # subclass Date in SQLAlchemy; the two branches are independent.
+            col_type = column.type
+            if isinstance(col_type, DateTime):
+                value = dt_lib.datetime.fromisoformat(value)
+            elif isinstance(col_type, Date):
+                value = dt_lib.date.fromisoformat(value)
+        coerced[key] = value
+    return coerced
 
 
 async def _invoke_hook(hook: registry.HookFn, ctx: HookContext) -> HookResult:
@@ -95,9 +153,20 @@ async def _dispatch_repo_call(
         the chain's root row); every other key is a business attribute.
       - ``record_event`` / ``append_event``: ``payload`` is passed through
         as the event's business attributes verbatim.
-      - ``session_cycle``: ``payload["estado"] == "cerrado"`` dispatches to
-        ``close_login_with_log`` (``payload["uuid"]`` names the login row);
-        anything else dispatches to ``record_login``.
+      - ``session_cycle``: dispatches on ``spec.name`` — ``login`` uses
+        ``record_login``/``close_login_with_log`` (``payload["estado"] ==
+        "cerrado"`` selects the close path, ``payload["uuid"]`` names the
+        login row); ``sesion`` uses ``open_session``/``close_session_with_log``
+        (``payload["timestamp_cierre"]`` set selects the close path,
+        ``payload["uuid"]`` names the sesion row). Both ``[L-S]`` catalog
+        entries (``entries/sync_entries_ls.py``) declare
+        ``apply_strategy="session_cycle"`` — dispatching on ``spec.name`` is
+        REQUIRED here, otherwise a ``sesion`` row is misrouted into
+        ``session_cycle.record_login`` and silently inserted into
+        ``prod.login`` instead of ``prod.sesion`` (found wiring the
+        post-PR14 full-catalog-sync closing exercise: ``payload["uuid_usuario"]``/
+        ``payload["uuid_sucursal"]`` happen to exist on BOTH tables, so the
+        misrouted call never raised — it just landed the wrong row).
     """
     strategy = spec.apply_strategy
 
@@ -145,6 +214,28 @@ async def _dispatch_repo_call(
         )
 
     if strategy == "session_cycle":
+        if spec.name == "sesion":
+            if payload.get("timestamp_cierre") is not None:
+                return await session_cycle.close_session_with_log(
+                    session,
+                    actor_uuid=actor_uuid,
+                    sesion_uuid=payload["uuid"],
+                    valor_final_efectivo=payload.get("valor_final_efectivo"),
+                    valor_final_datafono=payload.get("valor_final_datafono"),
+                )
+            return await session_cycle.open_session(
+                session,
+                actor_uuid=actor_uuid,
+                uuid_sucursal=payload["uuid_sucursal"],
+                valor_inicial_efectivo=payload["valor_inicial_efectivo"],
+                valor_inicial_datafono=payload["valor_inicial_datafono"],
+                uuid_usuario=payload["uuid_usuario"],
+                # Preserve the origin's identity — see open_session's own
+                # docstring ("uuid" arg) for why this is required, not
+                # optional, once any FK-carrying child (arqueo,
+                # factura_pagos) syncs alongside its sesion parent.
+                uuid=payload.get("uuid"),
+            )
         if payload.get("estado") == "cerrado":
             return await session_cycle.close_login_with_log(
                 session,
@@ -158,6 +249,9 @@ async def _dispatch_repo_call(
             actor_uuid=actor_uuid,
             success=payload.get("estado") != "fallido",
             motivo=payload.get("motivo"),
+            # Preserve the origin's identity — see record_login's own
+            # docstring ("uuid" arg) / open_session's fuller explanation.
+            uuid=payload.get("uuid"),
         )
 
     raise ApplyRowError(f"{spec.name}: unknown or unset apply_strategy: {strategy!r}")
@@ -192,6 +286,21 @@ async def apply_row(
         ``reason="parent_missing"`` when ``hook_validate_parent`` rejects a
         declared parent.
     """
+    # Coerce JSON-wire string values ONCE, here, before ANY hook or the repo
+    # dispatch sees ``payload`` — found wiring the post-PR14 full-catalog-
+    # sync closing exercise's real POST /sync/events round trip. Coercing
+    # only inside ``_dispatch_repo_call`` (an earlier version of this fix)
+    # left every hook (``hook_validate_parent``, ``hook_pre_insert``,
+    # ``hook_post_insert``, ``hook_chain_extend``) reading the ORIGINAL,
+    # uncoerced ``payload`` parameter — Python rebinds a reassigned
+    # parameter only inside the callee's own local scope, so
+    # ``_dispatch_repo_call``'s ``payload = _coerce_wire_payload(...)``
+    # never affected this function's own ``payload`` variable. See
+    # ``_coerce_wire_payload``'s own docstring for the full "why" (ISO
+    # string dates/datetimes from JSONB/JSON crossing the wire; asyncpg
+    # requires the real instance for a DATE/TIMESTAMP bind).
+    payload = _coerce_wire_payload(spec.model_cls, payload)
+
     metrics: dict[str, bool] = {
         "hook_validate_parent": False,
         "hook_pre_insert": False,
@@ -313,7 +422,32 @@ async def apply_row(
 
     # 5. hook_chain_extend (if hash_chain=True and set) — extends the
     #    SHA-256 chain (REQ-MOT-004, REQ-HOOK-003 step 5).
-    if spec.hash_chain and spec.hook_chain_extend is not None:
+    #
+    #    Skipped when ``strategy == "append_event"`` — that branch of step
+    #    3 above ALREADY passes ``chain_hash=spec.hash_chain`` into
+    #    ``repo.append_only.append_event``, which (when ``chain_hash=True``)
+    #    delegates the ENTIRE insert to ``repo.hash_chain.append`` itself —
+    #    the row is already chain-extended and already persisted by the
+    #    time step 5 would run. Both catalog entries this applies to today
+    #    (``log_transaccional``, ``revocacion_factura`` — REQ-CAT-009's
+    #    "only two ``hash_chain=True`` entries in the whole catalog", both
+    #    ``apply_strategy="append_event"``) also declare a
+    #    ``hook_chain_extend`` (``log_transaccional_chain`` /
+    #    ``revocacion_factura_chain``) for the DIAN-provider-dispatcher call
+    #    site (``dian/cloud/dispatcher.py``), which calls that hook
+    #    DIRECTLY, outside ``apply_row`` — not for this path. Without this
+    #    guard, EVERY catalog-driven sync of either table inserted the row
+    #    TWICE per incoming event (found wiring the post-PR14 full-catalog-
+    #    sync closing exercise's real ``revocacion_factura`` push: the
+    #    second, redundant ``hash_chain.append`` call also crashed outright,
+    #    since it read ``ctx.payload`` — the pre-coercion copy, see this
+    #    function's own payload-coercion comment above — but the duplicate
+    #    INSERT itself is the real defect, independent of that crash).
+    if (
+        spec.hash_chain
+        and spec.hook_chain_extend is not None
+        and spec.apply_strategy != "append_event"
+    ):
         ctx = HookContext(
             spec=spec,
             payload=payload,

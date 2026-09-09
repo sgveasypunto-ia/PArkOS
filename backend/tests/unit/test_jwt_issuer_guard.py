@@ -32,6 +32,28 @@ def _issue(issuer_prefix: str, **claims) -> str:
     )
 
 
+def _tamper_signature(token: str) -> str:
+    """Return ``token`` with its signature segment corrupted.
+
+    Flips a full DECODED byte of the signature rather than substituting the
+    token string's last character. Base64url packs 3 bytes into 4
+    characters; when the signature's byte length isn't a multiple of 3, the
+    final character encodes some bits that are pure padding and get
+    discarded on decode. Substituting that last character can therefore be
+    a no-op — the mutated string decodes back to the SAME signature bytes
+    (observed as an intermittent flake in this suite). Decoding, XOR-ing a
+    real byte, and re-encoding guarantees the underlying bytes actually
+    differ.
+    """
+    from base64 import urlsafe_b64decode, urlsafe_b64encode
+
+    header_b64, payload_b64, sig_b64 = token.split(".")
+    sig_bytes = bytearray(urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4)))
+    sig_bytes[0] ^= 0xFF
+    tampered_sig = urlsafe_b64encode(bytes(sig_bytes)).rstrip(b"=").decode("ascii")
+    return f"{header_b64}.{payload_b64}.{tampered_sig}"
+
+
 # ---------------------------------------------------------------------------
 # ``verify_token`` direct tests
 # ---------------------------------------------------------------------------
@@ -86,8 +108,7 @@ def test_verify_token_rejects_tampered_signature() -> None:
     from parkos_core.auth.tokens import JWTValidationError, verify_token
 
     token = _issue("admin", rol="admin")
-    # Replace the last character of the signature.
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    tampered = _tamper_signature(token)
     with pytest.raises(JWTValidationError):
         verify_token(tampered)
 
@@ -295,8 +316,7 @@ async def test_verify_jwt_returns_401_on_wrong_signature() -> None:
     from parkos_core.auth.jwt_issuer_guard import verify_jwt
 
     token = _issue("admin", rol="admin")
-    # Flip the last char of the signature so HMAC comparison fails.
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    tampered = _tamper_signature(token)
     request = Request(
         scope={
             "type": "http",

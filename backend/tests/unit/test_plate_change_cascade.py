@@ -87,6 +87,16 @@ async def test_closes_and_reopens_subscripcion_vehiculos(
             "uuid_tipo_vehiculo": tipo_vehiculo.uuid,
         }
 
+        # Snapshot BEFORE the cascade — this file's own reclamos-count
+        # check further below must prove the cascade itself never inserts
+        # one, not that the WHOLE shared pg_engine (session-scoped,
+        # shared across every OTHER integration/unit test in the same
+        # pytest run) has zero reclamos rows from unrelated activity.
+        from parkos_core.models.L_W.reclamos import Reclamos
+
+        reclamos_before = (await session.execute(select(Reclamos))).scalars().all()
+        reclamos_before_uuids = {row.uuid for row in reclamos_before}
+
         result = await apply_row(
             session, spec, payload, actor_uuid=ACTOR_UUID, log_tx=False
         )
@@ -122,11 +132,12 @@ async def test_closes_and_reopens_subscripcion_vehiculos(
         assert replacement.uuid_vehiculo == new_uuid
         assert replacement.estado == "activa"
 
-        # Audit trail is log_transaccional, never reclamos.
-        from parkos_core.models.L_W.reclamos import Reclamos
-
-        reclamos = (await session.execute(select(Reclamos))).scalars().all()
-        assert reclamos == []
+        # Audit trail is log_transaccional, never reclamos — no NEW reclamos
+        # row appeared as a result of THIS cascade (see the "before"
+        # snapshot above for why this isn't a bare "table is empty" check).
+        reclamos_after = (await session.execute(select(Reclamos))).scalars().all()
+        new_reclamos = [row for row in reclamos_after if row.uuid not in reclamos_before_uuids]
+        assert new_reclamos == []
 
 
 async def test_no_cascade_on_brand_new_vehiculo(

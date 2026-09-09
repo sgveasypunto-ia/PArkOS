@@ -119,7 +119,20 @@ async def test_push_catalog_preserves_list_pending_ordering(
         )
         await session.commit()
 
-        pending = await sq_helpers.list_pending(session, limit=100)
+        # A large limit (not the production default of 100) — this shared
+        # Postgres container accumulates ambient "pendiente" sync_queue
+        # rows across the WHOLE test session from every OTHER integration
+        # test that writes through the catalog-driven sync path (e.g. any
+        # log_transaccional insert also enqueues a pg_partman child-
+        # partition-named echo — see catalog/sync_catalog.py::
+        # resolve_catalog_name's own docstring — that nothing in this
+        # specific test drains). This test's OWN intent is ordering
+        # (prioridad DESC, intentos ASC, created_at ASC), not "are exactly
+        # these two rows within the first 100" — a large limit keeps that
+        # intent testable regardless of how much unrelated ambient volume
+        # has accumulated in the shared container by the time this test
+        # runs.
+        pending = await sq_helpers.list_pending(session, limit=100_000)
         pending_uuids = [row.uuid for row in pending]
         # High priority (10) must sort before low priority (1) — unchanged
         # list_pending contract, regardless of which applier pushes them.

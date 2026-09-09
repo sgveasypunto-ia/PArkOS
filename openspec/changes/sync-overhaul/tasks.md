@@ -2812,3 +2812,262 @@ or touch the branch; that step is the user's own to perform.
   `catalog_backfill_complete{uuid_sucursal}=1` (R-D8).
 - **No `prod.sync_back_events` table, hook, flag, or vocabulary anywhere** — D1-rev, gated by
   T-PR9-007 (early) and T-PR14-004 (final, repo-wide).
+
+---
+
+## E2E full-catalog sync exercise (post-PR14 closing verification)
+
+Not a numbered PR task — the explicit closing exercise requested once all 14
+sync-overhaul PRs merged to `dev`: for every one of the 46 `SYNC_CATALOG`
+entries, create one record via the legitimate service/repo layer, let the
+real DB trigger enqueue it, run the real job/motor code that moves it, and
+verify it lands in the destination database. New test:
+`backend/tests/integration/test_e2e_full_catalog_sync.py`.
+
+### Harness design decision — two real, physically separate Postgres containers
+
+`infra/deploy/docker-compose.{cloud,branch,local}.yml` confirm the production
+topology beyond doubt: `cloud-db` and `branch-db` are two independent
+Postgres *services* (separate containers, separate volumes, separate host
+ports), connected only over HTTP. The harness therefore boots a SECOND real
+`testcontainers` Postgres container (module-scoped fixtures mirroring
+`tests/conftest.py`'s own `postgres_container`/`alembic_upgrade`/`pg_engine`
+trio) — `pg_engine` (root conftest) is CLOUD, the new `branch_pg_engine` is
+BRANCH — each with the full `0001..0015` Alembic chain applied independently.
+
+- **`branch_to_cloud` / bidirectional-from-branch**: a real HTTP round trip —
+  an unmodified `SyncSucursalWorker` with a real `SyncHttpClient` whose
+  transport is `httpx.ASGITransport` bound to a real FastAPI app mounting the
+  real, unmodified `sync_router` (`POST /sync/events`). Only the auth
+  dependency (`_sync_agent_claims`) is overridden with a fixed claims dict —
+  the same override pattern PR11/PR12's own `test_sync_router_wire_status.py`
+  already established; auth itself is out of this exercise's scope.
+- **`cloud_to_branch`** (26 `[V]` entries + `envio_dian`): `GET/POST
+  /sync/pull` is still a literal stub (`sync_router.py::sync_pull` always
+  returns `{"rows": [], ...}` — verify-report gap (c), "backfill transport
+  unwired", pre-approved out of scope). The only real, wired mechanism this
+  codebase ships for this direction is `sync/cutover/backfill.py::
+  run_backfill` (confirmed: nothing under `jobs/*.py` calls it yet either —
+  its own docstring: "transport-agnostic by design ... the concrete HTTP
+  transport is a documented, deliberately out-of-scope follow-up"). The
+  harness's own `make_cloud_fetch_page` supplies `run_backfill`'s
+  `FetchPage` with a REAL, paginated `SELECT` against the CLOUD engine
+  (scoped by `uuid_sucursal` where applicable, to stay isolated from other
+  test files sharing the same session-scoped `pg_engine`) — never a
+  hardcoded/literal fixture dict.
+- `factura_electronica` / `revocacion_factura` / `envio_dian` are created via
+  the plain repo helpers (`record_event` / `append_event` / `append_transition`)
+  and moved by `SyncMotor`/`run_backfill` — neither path ever imports or calls
+  `dian.cloud.dispatcher` (the real provider-submission module), so no DIAN
+  mock fixture is needed; stated explicitly rather than silently assumed.
+
+### Real bugs found and fixed (motor/repo/catalog layer only — no schema, no API)
+
+1. **`sesion` silently misrouted into `prod.login`.** `motor/apply_row.py`'s
+   `session_cycle` dispatch called `session_cycle.record_login`/
+   `close_login_with_log` unconditionally, regardless of `spec.model_cls` —
+   both `login` AND `sesion` declare `apply_strategy="session_cycle"`, but
+   only `login` was ever applied correctly. Fixed by dispatching on
+   `spec.name` to the correct pair (`open_session`/`close_session_with_log`
+   for `sesion`).
+2. **Wire payload date/datetime strings never coerced.** `prod.sync_queue.datos`
+   is JSONB and the `/sync/events` wire body is plain JSON — a `Date`/
+   `DateTime` column arrives as an ISO-8601 string, and asyncpg's binary
+   protocol raises `DataError` on a bare string for a DATE/TIMESTAMP bind
+   (unlike UUID, which Postgres accepts via the `::uuid` text cast). Every
+   prior test either stubbed `SyncMotor` or built its payload in-process,
+   never crossing an actual JSON boundary, so this never surfaced. Fixed with
+   `apply_row.py::_coerce_wire_payload`, called once at the TOP of
+   `apply_row` (not only inside `_dispatch_repo_call`) so every hook
+   (`hook_validate_parent`/`hook_pre_insert`/`hook_post_insert`/
+   `hook_chain_extend`) also sees the coerced payload, not just the repo
+   dispatch.
+3. **`revocacion_factura`/`log_transaccional` double-inserted on every sync.**
+   `apply_row`'s step 3 (`append_event(chain_hash=spec.hash_chain)`) already
+   fully handles hash-chain extension for these two entries (the ONLY two
+   with `hash_chain=True`); step 5 (`hook_chain_extend`) ALSO ran
+   unconditionally, calling `hash_chain.append` a second time and inserting a
+   duplicate, wrongly-chained row for every single incoming
+   `revocacion_factura`/`log_transaccional` event. Fixed by skipping step 5
+   when `spec.apply_strategy == "append_event"` (the only strategy that
+   already handles `chain_hash` internally); `hook_chain_extend` remains
+   reachable for the DIAN dispatcher's own direct call site, unaffected.
+4. **`factura_electronica` ORM/DB mapping drift.** `0001_initial_schema.py`
+   creates a `fecha_retencion_hasta` column on `factura_electronica` via
+   `_retention_column()`, but `models/L_E/factura_electronica.py` never
+   declared it (`LifecycleEventBase` does not include `RetentionMixin`,
+   unlike `AppendOnlyBase`) — any real trigger-sourced payload for this table
+   raised `TypeError: 'fecha_retencion_hasta' is an invalid keyword argument`.
+   Fixed by re-declaring the column on the ORM class, mirroring the
+   IDENTICAL, already-precedented fix `models/L_W/envio_dian.py` applied for
+   the same gap. No migration/schema change — the physical column already
+   existed; this only corrects the ORM mapping.
+5. **`_json_default` (hash chain canonical JSON) rejected `date`.** Both
+   hash-chain tables carry a real `fecha_retencion_hasta` `Date` column
+   (server-populated on insert); `repo/hash_chain.py::_json_default` handled
+   `datetime`/`uuid.UUID` but not a bare `date`, raising `TypeError: Cannot
+   JSON-serialize date` the first time a genesis-row bootstrap (or any row
+   carrying that column) needed to be canonically hashed. Fixed by adding a
+   `date` branch (checked after `datetime`, since `datetime` is itself a
+   `date` subclass).
+6. **pg_partman child-partition names never resolved against the catalog.**
+   8 tables (`salidas`, `factura_detalle`, `factura_pagos`, `log_transaccional`,
+   `sync_log`, `sync_queue`, `caja`, `arqueo`) are pg_partman-partitioned;
+   Postgres clones each parent's `AFTER INSERT` trigger onto its child
+   partitions, and the trigger fires with `TG_TABLE_NAME` bound to the
+   PARTITION (e.g. `log_transaccional_p_current`), never the logical parent
+   name. `SYNC_CATALOG_BY_NAME`/`OUT_OF_CATALOG` are keyed by the parent name
+   only, so every row from these 8 tables was silently `mark_failed(...,
+   "unknown_table")` forever — a genuine "does not sync" bug for all 8.
+   Fixed with a new `catalog/sync_catalog.py::resolve_catalog_name` helper
+   (strips the `_p_current`/`_p_default`/`_p<8-digit-date>` suffix), wired
+   into `jobs/sync_sucursal.py`'s push path (`is_infra_table` check + catalog
+   lookup, and the wire event now carries the NORMALIZED name so the
+   cloud-side receiver needs no change) and into `jobs/sync_cloud.py`'s
+   `is_infra_table` check. Deliberately **NOT** wired into
+   `jobs/sync_cloud.py::_apply_pending_batch_once`'s OWN catalog lookup —
+   see finding (b) below for why.
+
+### Discovered — not fixed (documented, explicitly out of this exercise's scope)
+
+a. **`_business_payload_for_apply`'s blanket `uuid` strip for every `[V]`
+   entry** breaks referential identity the moment a `[V]` child is delivered
+   in the same backfill run as its `[V]` parent — the destination mints a
+   fresh, unrelated parent `uuid`, so the child's carried-over FK points at
+   nothing. `login`'s real `ForeignKey("prod.usuarios.uuid")`/
+   `ForeignKey("prod.sucursal.uuid")` constraints prove this at the DB layer.
+   Currently inert (`/sync/pull` is a stub; `_apply_pending_batch_once`
+   never receives a genuine fresh multi-level `[V]` chain in the catalog
+   engine mode today) — this test file's own `make_cloud_fetch_page`
+   deliberately does NOT reuse this helper, and preserves `uuid` instead, to
+   avoid manufacturing the exact breakage inside its own harness. Recommend
+   removing `"uuid"` from `_VERSIONED_ONLY_METADATA_KEYS` once the real
+   backfill/pull transport is wired.
+b. **The `AFTER INSERT` trigger fires unconditionally on every INSERT**,
+   including ones the sync motor performs while applying an already-incoming
+   row (an "echo") — confirmed to amplify without bound: normalizing
+   `jobs/sync_cloud.py::_apply_pending_batch_once`'s OWN catalog lookup (the
+   same fix as (6) above) made it genuinely re-apply its own echoes, which
+   re-triggers the SAME trigger, growing the echo count on every drain
+   (measured: a shared-container `log_transaccional_p_current` backlog grew
+   from 181 to 196+ rows across one test run once that lookup was
+   normalized). Reverted that one lookup specifically (kept everywhere else)
+   and documented in that function's own code comment. A real fix needs
+   either a session-local Postgres GUC the trigger checks (a migration/schema
+   change, outside this exercise's allowed edit surface) or a motor-layer
+   post-apply self-settle step — not attempted here.
+c. **`motor/apply_row.py`'s `append_transition` branch derives `parent_uuid =
+   payload.get("parent_uuid")`**, but a real trigger-sourced payload never
+   carries that literal key (only the table's own self-FK column name, e.g.
+   `uuid_reimpresion_padre`) — so `repo.workflow.append_transition`'s
+   state-machine validation (parent lookup + legal-transition check) never
+   actually runs for a synced NON-ROOT `[L-W]` transition. The row itself
+   still lands correctly (the real FK value survives inside `new_attrs`
+   untouched). A validation-bypass gap, not a "table doesn't sync" gap; every
+   `[L-W]` table this exercise creates is a ROOT transition where the bug is
+   inert either way. Not fixed, to keep this session's edit surface scoped to
+   the empirically-confirmed defects above.
+d. Two cosmetic follow-ups already on record from `sdd-verify`'s own pass
+   (AGENTS.md line 204 wording, the `sync_dependency_wait` label mismatch,
+   the buffer-table REVOKE wording, the two mismatched runbook filenames, the
+   stale migration numbers in this file's own Cross-PR constraints section)
+   remain unresolved — unrelated to this exercise, restated here only for
+   completeness against the verify-report's own recommendation list.
+
+### Result — 46/46 SYNC_CATALOG entries
+
+| # | Table | Audit | Direction | Mechanism exercised | Result |
+|---|---|---|---|---|---|
+| 1 | usuarios | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 2 | permisos | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 3 | tipo_persona | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 4 | tipos_vehiculo | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 5 | tipo_subscripciones | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 6 | tipo_tarifa | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 7 | tipo_sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 8 | tipo_arqueo | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 9 | impuestos | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 10 | otros_cobros | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 11 | costos_servicios | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 12 | empresa | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 13 | permisos_usuario | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 14 | configuracion_tolerancias | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 15 | configuracion_seguridad | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 16 | sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 17 | resolucion_facturacion | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 18 | usuarios_sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 19 | documentos | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 20 | tarifas_sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 21 | cantidad_vehiculos_sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 22 | clientes | V | bidirectional | `run_backfill` (V batch) | OK |
+| 23 | clientes_b2b | V | bidirectional | `run_backfill` (V batch) | OK |
+| 24 | vehiculos | V | bidirectional | `run_backfill` (V batch) | OK |
+| 25 | subscripciones_cliente | V | bidirectional | `run_backfill` (V batch) | OK |
+| 26 | subscripcion_vehiculos | V | bidirectional | `run_backfill` (V batch) | OK |
+| 27 | ingreso | L-E | branch_to_cloud | `SyncSucursalWorker` push → `/sync/events` | OK |
+| 28 | facturas | L-E | branch_to_cloud | push → `/sync/events` | OK |
+| 29 | factura_electronica | L-E | branch_to_cloud | push → `/sync/events` (bug #4 fixed) | OK |
+| 30 | reimpresion_ticket | L-W | branch_to_cloud | push → `/sync/events` | OK |
+| 31 | anulaciones | L-W | branch_to_cloud | push → `/sync/events` | OK |
+| 32 | reclamos | L-W | branch_to_cloud | push → `/sync/events` | OK |
+| 33 | alerta | L-W | branch_to_cloud | push → `/sync/events` | OK |
+| 34 | envio_dian | L-W | cloud_to_branch | `run_backfill` (single-entry, cloud-authored) | OK |
+| 35 | validacion_evento | L-W | **never_propagated** | N/A — deliberate non-propagation confirmed | NEVER_PROPAGATED (confirmed correct) |
+| 36 | login | L-S | branch_to_cloud | push → `/sync/events` (bug #1, #6 fixed) | OK |
+| 37 | sesion | L-S | branch_to_cloud | push → `/sync/events` (bug #1 fixed) | OK |
+| 38 | salidas | A | branch_to_cloud | push → `/sync/events` (bug #6 fixed) | OK |
+| 39 | factura_detalle | A | branch_to_cloud | push → `/sync/events` (bug #6 fixed) | OK |
+| 40 | caja | A | branch_to_cloud | push → `/sync/events` (bug #6 fixed) | OK |
+| 41 | arqueo | A | branch_to_cloud | push → `/sync/events` (bug #6 fixed) | OK |
+| 42 | factura_pagos | A | branch_to_cloud | push → `/sync/events` (bug #6 fixed) | OK |
+| 43 | factura_impuestos | A | branch_to_cloud | push → `/sync/events` | OK |
+| 44 | factura_otros_cobros | A | branch_to_cloud | push → `/sync/events` | OK |
+| 45 | log_transaccional | A | bidirectional | push → `/sync/events` (bug #2, #3, #6 fixed) | OK |
+| 46 | revocacion_factura | A | branch_to_cloud | push → `/sync/events` (bug #2, #3 fixed) | OK |
+
+All 46 entries accounted for; 45 sync correctly end to end through the real
+job/motor path, and `validacion_evento` is confirmed to correctly NEVER
+propagate — the intended behavior for the catalog's sole
+`sync_strategy="never_propagated"` entry, not a failure.
+
+### Test results
+
+Focused: `TEST_PG_IMAGE=parkos-postgres:16-pgpartman uv run pytest
+tests/integration/test_e2e_full_catalog_sync.py -v` → **1 passed** (includes
+an internal `motor.verify_chain` assertion — zero hash-chain anomalies for
+this test's own tenant across both `log_transaccional` and
+`revocacion_factura`).
+
+Full suite (post-fix): `TEST_PG_IMAGE=parkos-postgres:16-pgpartman uv run
+pytest -v` → **1263 passed, 14 skipped, 28 xfailed, 0 failed** (two
+consecutive clean runs; a `test_jwt_issuer_guard.py` failure seen in one
+intermediate run reproduced as a pre-existing, order-dependent flake
+unrelated to any change here — passes standalone and in every other full-suite
+run). 1263 = 1260 (PR14 baseline) + 1 (this file's own test) + 2 (new
+`sesion`-dispatch regression unit tests in `tests/unit/test_motor_apply_row.py`).
+The 28 xfailed are unchanged from the PR14 baseline (none newly resolved).
+
+Three PRE-EXISTING tests needed adjustment — not because this exercise's
+production fixes were wrong, but because their OWN assertions were fragile
+against the shared, session-scoped `pg_engine` container's ambient volume
+(all confirmed by reproducing with/without this session's changes, and
+with/without this exercise's own new test file, in isolation):
+
+- `tests/integration/test_sync_sucursal_apply_batch.py::
+  test_push_catalog_preserves_list_pending_ordering` — raised its OWN
+  `list_pending` query limit from the production default (100) to a large
+  value; the test's intent (ordering, not "top N happens to include mine")
+  is unchanged.
+- `tests/unit/test_plate_change_cascade.py::
+  test_closes_and_reopens_subscripcion_vehiculos` — its "audit trail is
+  never `reclamos`" assertion was a bare `SELECT * FROM reclamos == []`
+  (true only when nothing else in the shared session ever touched that
+  table); changed to a before/after snapshot proving the cascade itself
+  creates no NEW reclamos row.
+- `tests/unit/test_motor_apply_row.py::
+  test_dispatch_per_apply_strategy_session_cycle_insert` — updated to expect
+  the new, correct `uuid=None` keyword this exercise's own bug #1 fix adds
+  to the `record_login` call; two new tests
+  (`test_dispatch_per_apply_strategy_session_cycle_{insert,close}_sesion`)
+  cover the `sesion` branch this bug fix introduces, which had no prior
+  coverage at all.
