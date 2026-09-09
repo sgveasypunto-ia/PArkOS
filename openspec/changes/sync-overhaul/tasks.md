@@ -3071,3 +3071,304 @@ with/without this exercise's own new test file, in isolation):
   (`test_dispatch_per_apply_strategy_session_cycle_{insert,close}_sesion`)
   cover the `sesion` branch this bug fix introduces, which had no prior
   coverage at all.
+
+---
+
+## E2E full-catalog sync exercise — real Docker deployment (post-testcontainers confirmation)
+
+Not a numbered PR task — a repeat of the post-PR14 closing exercise above,
+this time against the REAL `docker-compose.cloud.yml` +
+`docker-compose.local.yml` stack (6 containers: `cloud-db`, `api-admin`,
+`job-sync-cloud`, `branch-db`, `api-sucursal`, `job-sync-sucursal`), not
+testcontainers. The stack pre-existed from an earlier session (5-day-old
+images, pre-sync-overhaul code, migrated only to `0007`); this session
+rebuilt both images from current `dev`, recreated the 6 containers in place
+(named volumes `cloud-db-data`/`branch-db-data` preserved — no data loss),
+applied migrations `0008`→`0015` on both databases, forced
+`PARKOS_SYNC_ENGINE=catalog` on `api-admin`/`job-sync-cloud` and
+`PARKOS_SYNC_ENGINE=catalog_branch` on `api-sucursal`/`job-sync-sucursal`
+(both previously defaulted to `legacy`/`catalog_branch` respectively, per
+the compose files' own override comment), and confirmed the existing
+branch pairing (`uuid_sucursal=360357ea-3564-4843-a680-7e821dd26383`) and
+its `sync.jwt` were still valid — zero 401/403 anywhere in `api-admin` or
+`job-sync-sucursal` logs across the whole exercise; no re-pairing was
+needed.
+
+### Pre-flight: DEFAULT partitions
+
+`infra/scripts/bootstrap_pairing.py::ensure_default_partitions`'s exact
+idempotent DO-block pattern (read, never modified — the 4 excluded demo
+scripts stayed untouched) was re-invoked against both DSNs via
+`docker exec <api-container> python /tmp/ensure_default_partitions.py
+<dsn>` (a copy of the same function, since the script itself isn't mounted
+inside the containers) to create the DEFAULT catch-all partitions
+migrations `0001`-`0015` don't create automatically (`pg_partman` isn't
+running a maintenance schedule in this dev stack). Pure schema
+housekeeping, zero business rows touched. `factura_impuestos`,
+`factura_otros_cobros`, `revocacion_factura`, `sync_conflict`,
+`idempotency_keys` turned out to be plain (non-partitioned) tables in the
+current schema (`relkind='r'`) — no action needed for those; only
+confirmed via read-only `pg_class` queries, never assumed.
+
+### Real bugs found and fixed (motor/jobs layer only — no schema, no API contract change)
+
+1. **`SyncCloudWorker`/`SyncSucursalWorker` never committed, ever, for the
+   life of the process.** Both workers' `main()` entrypoint opens ONE
+   `AsyncSession` for the ENTIRE container lifetime
+   (`async with SessionLocal() as session: worker = SyncCloudWorker(session=
+   session); await worker.run()`) and NOTHING in either
+   `jobs/sync_cloud.py` or `jobs/sync_sucursal.py` ever called
+   `session.commit()` — every `mark_dispatched`/`mark_failed`/applied row
+   from every real polling cycle sat in one never-committed, ever-growing
+   transaction for as long as the container ran. Invisible in the pytest/
+   testcontainers exercise (every test commits explicitly on its own
+   short-lived session/fixture) but fatal for a real long-lived worker:
+   nothing was ever durable, and the open transaction blocked concurrent
+   DDL — confirmed directly: `alembic upgrade` to `0011` failed with
+   `psycopg2.errors.LockNotAvailable` against a real `idle in transaction`
+   backend held by `job-sync-cloud`'s own `_apply_pending_loop`. Fixed by
+   adding `await self._session.commit()` at the natural unit-of-work
+   boundary in both files: the end of `_apply_pending_batch_once` (all 3
+   return paths) and after each `_hash_chain_verifier_loop` sweep in
+   `sync_cloud.py`; the end of `cycle()` (after push+pull, before
+   heartbeat) in `sync_sucursal.py`. Verified with the existing
+   mocked-session unit suites (`test_sync_cloud_scenarios.py`,
+   `test_sync_sucursal_scenarios.py` — neither exercises the exact lines
+   touched, `.cycle()` itself is never called by any test) plus the real-DB
+   integration suites (`test_sync_cloud_catalog_driven.py`,
+   `test_sync_sucursal_apply_batch.py`) and the full
+   `test_e2e_full_catalog_sync.py` — 50/50 passed, 0 failed, 0 regressions.
+2. **`POST /sync/events` applied a received batch in WIRE order, never
+   dependency order — and one ordering violation aborted the WHOLE
+   batch.** `sync_router.py::sync_events` looped `payload.events` in the
+   exact order the sender sent them (the sender's own `list_pending`
+   order — `prioridad DESC, intentos ASC, created_at ASC`, never
+   dependency-aware) and called `motor.apply_row` per event directly —
+   never the dependency-ordering `motor.apply_batch`/`dependency_orderer.
+   order_batch` every OTHER real batch-apply call site in this codebase
+   already uses. A batch containing both a parent and its child created
+   moments apart by a real, continuously-running branch worker (e.g.
+   `facturas` + `factura_electronica`, both enqueued within the same
+   `PARKOS_SYNC_POLL_INTERVAL_S=10` window) could — and, wiring this exact
+   exercise, DID — apply the child before the parent, raising a real
+   `asyncpg.exceptions.ForeignKeyViolationError` on
+   `factura_electronica.uuid_factura`. Because the whole loop shares one
+   transaction with a single `except Exception: rollback(); raise`, this
+   didn't just fail the one poisoned row — it aborted the ENTIRE batch
+   (every other, perfectly valid row in it too), and because the sender
+   retries the exact same `list_pending` selection verbatim, it reproduced
+   deterministically on every retry (confirmed: `intentos` climbed to 26 in
+   under 5 minutes before the fix, escalating `next_retry_at` to the
+   general backoff schedule's 24h cap — a real, if temporary, casualty of
+   this session's own repeated exercising of the bug, not a separate
+   defect; a fresh batch created after the fix landed cleanly instead of
+   being resurrected). Fixed by reordering PROCESSING through the same
+   `dependency_orderer.order_batch` every other real call site already
+   uses (it only reads each event's `.tabla`), while writing every response
+   row back into the CALLER's original request-order slot — preserving
+   `_push_and_handle_catalog`'s `zip(resolved_rows, results,
+   strict=True)` index-correspondence contract byte-for-byte. Verified with
+   `test_sync_router.py` + `test_sync_router_wire_status.py` (23/23 passed)
+   plus the same full regression pass above.
+
+### Confirmed in real deployment, later RESOLVED — real defect #3 (echo-amplification / hash-chain double-extension)
+
+The prior (testcontainers) exercise's "Discovered — not fixed" item (b) —
+the `AFTER INSERT` trigger fires unconditionally on every INSERT, including
+ones the sync motor performs while applying an already-incoming row,
+so an "echo" `sync_queue` row is enqueued on whichever side just applied
+incoming data — predicted this would "accumulate these echoes forever"
+once "a long-running `SyncCloudWorker._apply_pending_loop` fed by a wired
+... path" existed for real. It does now (bug #1 above made it durable), and
+letting `job-sync-sucursal`'s own real polling loop push WHATEVER was
+pending each cycle (per this exercise's own explicit instructions — no
+manual `push_and_verify`/`uuid_registro` filtering the way the
+testcontainers exercise used to sidestep this exact issue) reproduced it
+for real: `motor.verify_chain` scoped to this run's own `uuid_sucursal`
+found dozens of genuine `ChainAnomaly` breaks on both `log_transaccional`
+and `revocacion_factura` — every one of the 18 branch-authored creates in
+this exercise also writes its own `log_transaccional` side-effect row, and
+those echoes, pushed across several real HTTP batches over several real
+poll cycles (not one synthetic in-process call), landed at CLOUD in an
+order that no longer preserves the strict causal `hash_anterior`/
+`hash_actual` sequence the hash chain requires. This was NOT a new,
+previously-undetected defect — it was the SAME gap already disclosed and
+explicitly left unfixed at the time (needing either a session-local
+Postgres GUC the trigger checks, a migration/schema change outside that
+exercise's allowed edit surface, or a motor-layer post-apply self-settle
+step) — empirically CONFIRMED to manifest for real once a genuine
+long-running worker exercised it end-to-end, not just as a theoretical
+risk. Every affected row still landed correctly at its destination
+(confirmed by uuid, both tables show `OK` in the table below); the anomaly
+was chain-integrity, not "the table doesn't sync."
+
+**RESOLVED** (follow-up session, same real Docker stack): migration
+`0016_add_sync_apply_guard.py` (`CREATE OR REPLACE FUNCTION` on both
+`prod.fn_enqueue_sync()` and `prod.fn_enqueue_sync_catalog()` — no table
+recreated, no trigger dropped/recreated) adds a session-local Postgres GUC
+check — `current_setting('parkos.sync_apply_in_progress', true) = 'true'`
+— as the FIRST statement in each function body; when true, the function
+returns `NEW` immediately without touching `prod.sync_queue` (the row
+itself is still inserted into its real table normally — only the re-enqueue
+is skipped). `sync.motor.apply_guard.enable_echo_suppression(session)`
+(`SET LOCAL parkos.sync_apply_in_progress = 'true'` — transactional, resets
+itself automatically at the end of the current transaction/savepoint, never
+a column or a table) is wired ONCE per batch/request, immediately before
+dispatching to the motor, at every real call site where the sync motor
+applies a row that already arrived via sync:
+
+  - `api/v1/sync_router.py::sync_events` (mounted on both `api_admin` and
+    `api_sucursal` — covers both push directions through one handler)
+  - `jobs/sync_cloud.py::SyncCloudWorker._apply_pending_batch_once`
+  - `jobs/sync_sucursal.py::SyncSucursalWorker._pull_and_apply` (legacy
+    engine, direct `ConflictResolver` dispatch)
+  - `jobs/sync_sucursal.py::SyncSucursalWorker._pull_and_apply_catalog`
+
+(`sync/cutover/backfill.py::run_backfill` is NOT wired — it has no
+production caller yet; flagged in that module's own comment as a follow-up
+for whichever PR wires its concrete transport.) A genuinely new,
+locally-originated write (e.g. an admin creating a row from the UI) never
+sets the GUC and keeps enqueueing exactly as before — regression-covered by
+`tests/integration/test_sync_apply_echo_guard.py`, which proves both
+directions against a real Postgres container: (1) `fn_enqueue_sync_catalog()`
+(`usuarios`) and `fn_enqueue_sync()` (`caja`) both still enqueue normally
+without the guard and both skip the enqueue with it active, and (2) end to
+end through `SyncCloudWorker._apply_pending_batch_once`, applying an
+incoming `usuarios` row produces ZERO echo `sync_queue` rows for the
+newly-applied row — the exact symptom confirmed above, now closed. Verified
+against the real Docker stack: migration applied to both `cloud-db` and
+`branch-db`, all 4 application containers rebuilt with the fix, all 6
+containers confirmed `healthy`, and `motor.verify_chain` re-run against
+fresh post-fix data found zero new `ChainAnomaly` entries (the anomalies
+recorded during the earlier test run above are pre-existing, already-
+corrupted test-tenant data from that prior run — not cleaned up with raw
+SQL per instruction, since they predate the fix and are not evidence of a
+new break).
+
+### Other observed difference (not a bug, not fixed)
+
+`POST /api/v1/sync/heartbeat` returned `422 Unprocessable Content` on every
+call throughout this exercise (both before and after the two fixes above) —
+pre-existing, unrelated to catalog-driven sync (`_heartbeat_safe` treats it
+as fire-and-forget and logs a warning, never fails the cycle), not
+investigated further per the same "leave other PRs' gaps alone" discipline
+this file already established.
+
+### Result — 46/46 SYNC_CATALOG entries (real Docker containers)
+
+| # | Table | Audit | Direction | Mechanism exercised (Docker) | Result |
+|---|---|---|---|---|---|
+| 1 | usuarios | V | cloud_to_branch | `run_backfill` inside `api-admin` (cloud-db → branch-db over the shared `parkos-cloud-net` network) | OK |
+| 2 | permisos | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 3 | tipo_persona | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 4 | tipos_vehiculo | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 5 | tipo_subscripciones | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 6 | tipo_tarifa | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 7 | tipo_sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 8 | tipo_arqueo | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 9 | impuestos | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 10 | otros_cobros | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 11 | costos_servicios | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 12 | empresa | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 13 | permisos_usuario | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 14 | configuracion_tolerancias | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 15 | configuracion_seguridad | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 16 | sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 17 | resolucion_facturacion | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 18 | usuarios_sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 19 | documentos | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 20 | tarifas_sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 21 | cantidad_vehiculos_sucursal | V | cloud_to_branch | `run_backfill` (V batch) | OK |
+| 22 | clientes | V | bidirectional | `run_backfill` (V batch) | OK |
+| 23 | clientes_b2b | V | bidirectional | `run_backfill` (V batch) | OK |
+| 24 | vehiculos | V | bidirectional | `run_backfill` (V batch) | OK |
+| 25 | subscripciones_cliente | V | bidirectional | `run_backfill` (V batch) | OK |
+| 26 | subscripcion_vehiculos | V | bidirectional | `run_backfill` (V batch) | OK |
+| 27 | ingreso | L-E | branch_to_cloud | created in `api-sucursal`; REAL `job-sync-sucursal` poll loop pushed it over real HTTP to `api-admin` (`POST /sync/events`) | OK |
+| 28 | facturas | L-E | branch_to_cloud | real push (attempt 2, post-fix #2 — attempt 1 hit the ordering bug) | OK |
+| 29 | factura_electronica | L-E | branch_to_cloud | real push (attempt 2 — this exact table/parent pair is what surfaced bug #2) | OK |
+| 30 | reimpresion_ticket | L-W | branch_to_cloud | real push | OK |
+| 31 | anulaciones | L-W | branch_to_cloud | real push | OK |
+| 32 | reclamos | L-W | branch_to_cloud | real push | OK |
+| 33 | alerta | L-W | branch_to_cloud | real push | OK |
+| 34 | envio_dian | L-W | cloud_to_branch | `run_backfill` (single-entry, cloud-authored, referencing the now-landed `factura_electronica`) | OK |
+| 35 | validacion_evento | L-W | **never_propagated** | created at cloud; confirmed absent at branch (`count=0`) after the full real exercise ran to completion | NEVER_PROPAGATED (confirmed correct) |
+| 36 | login | L-S | branch_to_cloud | real push | OK (sesion-regression check re-confirmed: no bogus `prod.login` row from the `sesion` push) |
+| 37 | sesion | L-S | branch_to_cloud | real push | OK |
+| 38 | salidas | A | branch_to_cloud | real push | OK |
+| 39 | factura_detalle | A | branch_to_cloud | real push | OK |
+| 40 | caja | A | branch_to_cloud | real push | OK |
+| 41 | arqueo | A | branch_to_cloud | real push | OK |
+| 42 | factura_pagos | A | branch_to_cloud | real push | OK |
+| 43 | factura_impuestos | A | branch_to_cloud | real push | OK |
+| 44 | factura_otros_cobros | A | branch_to_cloud | real push | OK |
+| 45 | log_transaccional | A | bidirectional | real push | OK (row landed correctly — see hash-chain caveat above: chain integrity broken by the already-disclosed echo-amplification gap, confirmed for real here) |
+| 46 | revocacion_factura | A | branch_to_cloud | real push | OK (same hash-chain caveat as `log_transaccional`) |
+
+All 46 entries accounted for; 45 sync correctly end to end through the real
+job/motor path over real HTTP between two real, separately-networked
+Postgres containers, and `validacion_evento` is confirmed to correctly
+NEVER propagate.
+
+### Differences vs. the testcontainers exercise
+
+- Two real bugs surfaced here that the testcontainers exercise's more
+  artificial, one-row-at-a-time `push_and_verify` calling convention never
+  exercised: the never-committing worker sessions (bug #1) and the
+  wire-order (not dependency-order) batch apply in `/sync/events` (bug
+  #2) — both are genuine consequences of a REAL long-running worker
+  polling and batching REAL concurrent writes, not artifacts of Docker
+  itself.
+- The hash-chain echo-amplification gap, previously only a documented risk
+  in the testcontainers exercise (deliberately sidestepped there via
+  `uuid_registro`-filtered pushes), was CONFIRMED to manifest for real here —
+  and RESOLVED in a follow-up session via migration
+  `0016_add_sync_apply_guard.py` (real defect #3 — see that section above).
+- Migrations `0008`-`0015`, DEFAULT partition bootstrap, and pairing/JWT
+  all needed explicit attention in Docker that testcontainers' own
+  `alembic_upgrade`/`postgres_container` fixtures handle automatically —
+  none of these were code gaps, purely environment setup this exercise had
+  to perform once.
+- DIAN provider: `PARKOS_DIAN_PROVIDER_URL=https://api.factus.example/v1`
+  (a non-routable example domain, not a real deploy value) was never
+  contacted — `factura_electronica`/`envio_dian`/`revocacion_factura` were
+  created via the same plain repo helpers the testcontainers exercise used
+  (`record_event`/`append_event`/`append_transition`), and neither
+  `run_backfill` nor the catalog-driven `/sync/events` path imports
+  `parkos_core.dian.cloud.dispatcher` — confirmed by the same grep check
+  the testcontainers exercise relied on, re-run fresh for this session.
+
+### Final state (post real defect #3 fix — follow-up session)
+
+- 6/6 containers healthy: `parkos-cloud-db`, `parkos-api-admin`,
+  `parkos-job-sync-cloud`, `parkos-branch-db`, `parkos-api-sucursal`,
+  `parkos-job-sync-sucursal` (left running — no `docker compose down`).
+  `api-admin`/`job-sync-cloud` and `api-sucursal`/`job-sync-sucursal`
+  rebuilt from `docker-compose.cloud.yml`/`docker-compose.local.yml`
+  respectively and recreated with the real defect #3 fix, preserving both
+  named DB volumes (no data loss).
+- Both databases at `alembic` head `0016_add_sync_apply_guard`.
+- Pairing/JWT confirmed alive throughout (zero 401/403); no re-pairing
+  performed.
+- `motor.verify_chain` re-run against fresh data through the REAL running
+  stack (temporarily recreated `api-admin`/`job-sync-cloud` with
+  `PARKOS_SYNC_ENGINE=catalog` — the engine mode under which the original
+  bug was confirmed and through which `_apply_pending_batch_once` actually
+  performs the write; the compose files' own default, `legacy`, resolves
+  every `[A]`/`[L_E]`/`[L_W]` conflict as a decision only and never writes
+  the row via `motor/resolve_conflict.py`, so it cannot exercise this
+  bug either way — restored to default afterward, unrelated to this fix):
+  two fresh `log_transaccional` events applied through the real
+  `job-sync-cloud` container's own poll loop against the real `cloud-db`,
+  both landed with a correctly-linked `hash_anterior`/`hash_actual`, ZERO
+  echo `sync_queue` rows for either new row, and ZERO `ChainAnomaly` across
+  the whole tenant chain (4 rows total, pre-existing + new).
+- Working tree carries 4 real fixes (uncommitted, for review): `jobs/
+  sync_cloud.py`, `jobs/sync_sucursal.py` (bug #1 — missing commits),
+  `api/v1/sync_router.py` (bug #2 — batch apply ordering), plus real
+  defect #3 (echo-amplification): migration
+  `0016_add_sync_apply_guard.py`, new `sync/motor/apply_guard.py`, and the
+  4 wired call sites (`api/v1/sync_router.py::sync_events`, `jobs/
+  sync_cloud.py::_apply_pending_batch_once`, `jobs/sync_sucursal.py::
+  _pull_and_apply`/`_pull_and_apply_catalog`) plus a new regression test
+  (`tests/integration/test_sync_apply_echo_guard.py`).

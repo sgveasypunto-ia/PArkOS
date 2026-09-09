@@ -142,6 +142,28 @@ async def run_backfill(
     result = BackfillResult()
     any_buffered = False
 
+    # NOT wired to the echo-amplification fix (migration
+    # 0016_add_sync_apply_guard / sync.motor.apply_guard) yet. This function
+    # currently has NO production caller (see this module's own "Transport-
+    # agnostic by design" docstring note — every real call site today is a
+    # test with a fake ``fetch_page``/``session=object()``), so the confirmed
+    # real-Docker echo bug (post-PR14 closing exercise, real defect #3)
+    # cannot manifest through this path today. It WOULD apply the same way
+    # it does for every other real apply call site (``jobs/sync_cloud.py``,
+    # ``jobs/sync_sucursal.py``, ``api/v1/sync_router.py::sync_events``) once
+    # a concrete production ``FetchPage`` transport is wired here — a
+    # ``bidirectional`` entry (e.g. ``log_transaccional``) backfilled onto a
+    # freshly-paired branch would re-trigger that branch's own
+    # ``fn_enqueue_sync`` exactly like the steady-state loops did. Flagged
+    # here as a documented follow-up for whichever PR wires that transport
+    # (wire ``sync.motor.apply_guard.enable_echo_suppression(session)`` once,
+    # here, before the level loop, mirroring the other 4 call sites) —
+    # deliberately NOT added now: doing so would also require rebuilding
+    # ``tests/unit/test_catalog_backfill_gauge.py``'s ``session=object()``
+    # stubs (that suite's own documented contract: the gauge transition rule
+    # is a pure function of ``BatchResult``, independent of what the DB
+    # does), a real design tradeoff outside this fix's scope.
+
     levels: dict[int, list[SyncCatalogEntry]] = {}
     for entry in entries:
         levels.setdefault(topological_level(entry.name), []).append(entry)

@@ -89,6 +89,7 @@ from parkos_core.sync.conflict_resolver import (
 )
 from parkos_core.sync.cutover import dual_protocol
 from parkos_core.sync.jwt_manager import JwtAction, JwtManager
+from parkos_core.sync.motor import apply_guard
 from parkos_core.sync.motor.sync_motor import SyncMotor
 from parkos_core.sync.transport import (
     EventsPushResponse,
@@ -241,6 +242,23 @@ class SyncSucursalWorker(WorkerRunner):
             await self._pull_and_apply_catalog()
         else:
             await self._pull_and_apply()
+
+        # Real bug found + fixed (Docker deployment closing exercise,
+        # post-testcontainers): ``self._session`` is owned by ``main()``'s
+        # ``_run()`` for the ENTIRE container lifetime and NOTHING in this
+        # file ever called ``commit()`` — every ``mark_dispatched``/
+        # ``mark_failed``/applied row from steps 1-4 above sat in one
+        # never-committed, ever-growing transaction for as long as the
+        # process ran. Invisible in the pytest/testcontainers exercise
+        # (the test itself commits explicitly after calling
+        # ``_push_and_handle_catalog`` — see
+        # ``test_e2e_full_catalog_sync.py::push_and_verify``) but fatal
+        # for the real long-lived worker: nothing this cycle settles is
+        # ever durable, and the open transaction blocks concurrent DDL
+        # (confirmed: alembic upgrade 0011 failed with
+        # ``LockNotAvailable`` against a real ``idle in transaction``
+        # backend held by this same worker pattern on the cloud side).
+        await self._session.commit()
 
         # 5. Heartbeat (fire-and-forget; don't fail the cycle).
         await self._heartbeat_safe()
@@ -582,6 +600,22 @@ class SyncSucursalWorker(WorkerRunner):
             self.log.warning("sync_sucursal.pull_non_ok", status=pulled.status)
             return
 
+        if not pulled.rows:
+            return
+
+        # Echo-amplification fix (post-PR14 real-Docker closing exercise,
+        # real defect #3; migration 0016_add_sync_apply_guard). Every row
+        # ``pulled.rows`` applies below already arrived via sync — SET
+        # LOCAL the echo-suppression GUC ONCE for this whole cycle's
+        # ambient transaction (ended by ``cycle()``'s single
+        # ``session.commit()`` after both push and pull steps run, never
+        # per-row) before the very first ``apply_pushed_row`` call. The
+        # legacy applier writes to the SAME 48 trigger-attached tables the
+        # catalog applier does — the DB-level trigger does not care which
+        # Python code path performed the INSERT. See
+        # sync.motor.apply_guard's own docstring.
+        await apply_guard.enable_echo_suppression(self._session)
+
         applied = 0
         conflicts = 0
         errors = 0
@@ -645,6 +679,16 @@ class SyncSucursalWorker(WorkerRunner):
         if self._motor is None:
             self._motor = SyncMotor(engine=engine_flag.EngineMode.CATALOG_BRANCH)
         actor_uuid = uuid_lib.uuid4()
+
+        # Echo-amplification fix (post-PR14 real-Docker closing exercise,
+        # real defect #3; migration 0016_add_sync_apply_guard). Every row
+        # in ``resolved`` already arrived via sync — SET LOCAL the echo-
+        # suppression GUC ONCE, before entering the SAVEPOINT below, so it
+        # covers every row ``apply_batch`` applies in this call without
+        # being re-set per row (mirrors jobs/sync_cloud.py's own placement
+        # — see that file's comment for the transaction-nesting rationale,
+        # and sync.motor.apply_guard's own docstring for the full "why").
+        await apply_guard.enable_echo_suppression(self._session)
 
         try:
             async with self._session.begin_nested():

@@ -74,7 +74,9 @@ from ...runtime import engine_flag
 from ...runtime.clock import ClockSkewError
 from ...sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
 from ...sync.cutover.dual_protocol import build_sync_hello_response
+from ...sync.motor import apply_guard
 from ...sync.motor.apply_result import ApplyResult
+from ...sync.motor.dependency_orderer import order_batch
 from ...sync.motor.sync_motor import SyncMotor
 from ...sync.router_helpers import (
     RateLimit,
@@ -917,13 +919,49 @@ async def sync_events(
     # PR8c behavior (and its test) for callers that never send `tabla`.
     motor: SyncMotor | None = None
 
-    results: list[_EventResponseRow] = []
+    # Real bug found + fixed (Docker deployment closing exercise,
+    # post-testcontainers): this loop used to iterate ``payload.events`` in
+    # WIRE order (the sender's ``list_pending`` order — ``prioridad DESC,
+    # intentos ASC, created_at ASC`` — never dependency-aware), and applied
+    # each row one at a time with no dependency ordering at all. A batch
+    # containing both a parent and its child (e.g. ``facturas`` +
+    # ``factura_electronica``, created moments apart by a real long-running
+    # branch worker and pushed together in the SAME ``/sync/events`` call)
+    # could apply the child before the parent — confirmed via a real
+    # ``ForeignKeyViolationError`` on ``factura_electronica.uuid_factura``
+    # wiring the post-testcontainers Docker exercise. Worse, because the
+    # whole loop shares one transaction with a single
+    # ``except Exception: rollback(); raise``, one ordering violation
+    # aborted the ENTIRE batch (every other, perfectly valid row in it too)
+    # — and since the sender retries the exact same ``list_pending`` batch
+    # verbatim, this reproduced deterministically on every retry.
+    # ``order_batch`` (the same dependency-orderer ``apply_batch``/
+    # ``run_backfill`` already use elsewhere) only needs each event's
+    # ``.tabla`` — reordering PROCESSING here while keeping every response
+    # in the caller's ORIGINAL request order preserves
+    # ``_push_and_handle_catalog``'s
+    # ``zip(resolved_rows, results, strict=True)`` index-correspondence
+    # contract unchanged.
+    results_by_index: list[_EventResponseRow | None] = [None] * len(payload.events)
+    index_by_event: dict[int, int] = {id(ev): i for i, ev in enumerate(payload.events)}
     try:
-        for ev in payload.events:
+        # Echo-amplification fix (post-PR14 real-Docker closing exercise,
+        # real defect #3; migration 0016_add_sync_apply_guard). This
+        # handler is mounted on BOTH api_admin and api_sucursal and is the
+        # single receiver for every row that arrives via sync in either
+        # direction — every row this loop applies below is, by definition,
+        # an event that already arrived via sync, so SET LOCAL the echo-
+        # suppression GUC ONCE for this whole request's transaction
+        # (ended by the single `session.commit()`/`rollback()` below;
+        # never per-event) before any `motor.apply_row` call. See
+        # sync.motor.apply_guard's own docstring.
+        await apply_guard.enable_echo_suppression(session)
+        for ev in order_batch(list(payload.events)):
+            idx = index_by_event[id(ev)]
             if ev.tabla is None:
                 # Legacy provider-event shape (PR8c) — no catalog dispatch.
-                results.append(
-                    _EventResponseRow(event_type=ev.event_type, status="delivered")
+                results_by_index[idx] = _EventResponseRow(
+                    event_type=ev.event_type, status="delivered"
                 )
                 continue
 
@@ -934,8 +972,8 @@ async def sync_events(
                 # are jobs/sync_cloud.py's is_infra_table concern, not this
                 # router's — a row reaching here with an unknown tabla is
                 # neither.)
-                results.append(
-                    _EventResponseRow(event_type=ev.event_type, status="unknown_table")
+                results_by_index[idx] = _EventResponseRow(
+                    event_type=ev.event_type, status="unknown_table"
                 )
                 continue
 
@@ -945,7 +983,14 @@ async def sync_events(
                 session, spec, ev.payload, actor_uuid=actor_uuid
             )
             wire_status = wire_status_for_apply_result(apply_result)
-            results.append(_EventResponseRow(event_type=ev.event_type, status=wire_status))
+            results_by_index[idx] = _EventResponseRow(
+                event_type=ev.event_type, status=wire_status
+            )
+
+        assert all(r is not None for r in results_by_index), (
+            "sync_events: every request event must produce exactly one response row"
+        )
+        results: list[_EventResponseRow] = results_by_index  # type: ignore[assignment]
 
         await session.commit()
     except Exception:

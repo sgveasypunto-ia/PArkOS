@@ -122,6 +122,7 @@ from parkos_core.sync.auto_discovery import BranchCache
 from parkos_core.sync.catalog.out_of_catalog import OUT_OF_CATALOG
 from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME, resolve_catalog_name
 from parkos_core.sync.conflict_resolver import ConflictResolver
+from parkos_core.sync.motor import apply_guard
 from parkos_core.sync.motor.sync_motor import SyncMotor
 from parkos_core.sync.motor.verify_chain import verify_chain_for_spec
 
@@ -387,30 +388,31 @@ class SyncCloudWorker(WorkerRunner):
                 continue
 
             # Deliberately NOT resolve_catalog_name(row.tabla) here (unlike
-            # is_infra_table above) — this loop APPLIES a recognized row
+            # is_infra_table above). Historical context: before migration
+            # 0016_add_sync_apply_guard (real defect #3, post-PR14 real-
+            # Docker closing exercise), this loop APPLIED a recognized row
             # directly into THIS SAME cloud database, whose own AFTER
-            # INSERT trigger fires again on that apply and re-enqueues
-            # ANOTHER "echo" row for the identical table. Normalizing the
-            # lookup here would make every partition-suffixed echo of a
-            # partitioned, catalog-driven table (log_transaccional, caja,
-            # arqueo, salidas, factura_detalle, factura_pagos)
-            # newly "recognized" and genuinely re-applied — which creates
-            # ANOTHER echo, which this SAME loop would recognize and
-            # re-apply again the next time it drains, an unbounded
-            # amplification confirmed empirically wiring the post-PR14
-            # full-catalog-sync closing exercise (log_transaccional_p_
-            # current pending rows grew from 181 to 196+ across a single
-            # shared-container test run once this lookup was normalized).
-            # An out-of-catalog-by-suffix name here is intentionally left
-            # as "unknown_table" (inert, backed off) rather than "fixed"
-            # into a self-feeding loop — see this module's own docstring
-            # discovered-issue note for the full, disclosed, NOT-fixed
-            # architectural gap (the trigger fires unconditionally on
-            # every INSERT, including ones this exact loop performs).
-            # jobs/sync_sucursal.py's push path is NOT exposed to this
-            # amplification (that push settles the BRANCH's own row and
-            # applies remotely on CLOUD — it never re-drains what it just
-            # applied), so normalizing there is safe and unchanged.
+            # INSERT trigger fired again on that apply and re-enqueued
+            # ANOTHER "echo" row for the identical table — confirmed
+            # empirically (log_transaccional_p_current pending rows grew
+            # from 181 to 196+ across a single shared-container run once
+            # this lookup was normalized, which made every partition-
+            # suffixed echo newly "recognized" and genuinely re-applied,
+            # creating another echo in an unbounded loop). 0016 +
+            # sync.motor.apply_guard.enable_echo_suppression (SET LOCAL
+            # parkos.sync_apply_in_progress='true', called once per batch
+            # a few lines below) now stop the trigger from enqueueing an
+            # echo AT ALL while this loop applies a row, closing the root
+            # cause. This lookup is left un-normalized regardless, as
+            # defense-in-depth against any row that still reaches here
+            # without the guard active (e.g. a legacy-trigger-set branch
+            # during a dual-protocol window, or EngineMode.LEGACY) — an
+            # out-of-catalog-by-suffix name is inert ("unknown_table",
+            # backed off), never silently re-applied into another loop.
+            # jobs/sync_sucursal.py's push path was never exposed to this
+            # gap (that push settles the BRANCH's own row and applies
+            # remotely on CLOUD — it never re-drains what it just
+            # applied), so normalizing there remains safe and unchanged.
             spec = SYNC_CATALOG_BY_NAME.get(row.tabla)
             if spec is None:
                 await sq_helpers.mark_failed(self._session, row.uuid, "unknown_table")
@@ -421,7 +423,34 @@ class SyncCloudWorker(WorkerRunner):
             resolved_row_uuids.append(row.uuid)
 
         if not resolved:
+            # Real bug found + fixed (Docker deployment closing exercise,
+            # post-testcontainers): this session is owned by ``main()``'s
+            # ``_run()`` for the ENTIRE container lifetime (see this
+            # module's own ``main()``) and NOTHING in this file ever
+            # called ``commit()`` — every ``mark_dispatched``/
+            # ``mark_failed`` here (including the infra-row skip path
+            # above) sat in one never-committed, ever-growing transaction
+            # for as long as the process ran. Invisible in the pytest/
+            # testcontainers exercise (each test commits explicitly on
+            # its own short-lived session) but fatal for a real long-lived
+            # worker: nothing this loop settles is ever durable, and the
+            # open transaction blocks concurrent DDL (confirmed: alembic
+            # upgrade 0011 failed with ``LockNotAvailable`` against a real
+            # ``idle in transaction`` backend held by this exact loop).
+            await self._session.commit()
             return settled
+
+        # Echo-amplification fix (post-PR14 real-Docker closing exercise,
+        # real defect #3; migration 0016_add_sync_apply_guard). This loop
+        # is about to APPLY rows that already arrived via sync — SET LOCAL
+        # the echo-suppression GUC ONCE, before either the batch attempt or
+        # its per-row fallback below, both of which share this SAME
+        # ambient transaction (only the final `commit()` at the bottom of
+        # this method ends it, and each `begin_nested()` SAVEPOINT below is
+        # a CHILD of it) — so one SET LOCAL here covers every row this call
+        # applies, never per-row. See sync.motor.apply_guard's own
+        # docstring for the full "why a GUC" rationale.
+        await apply_guard.enable_echo_suppression(self._session)
 
         motor = SyncMotor(engine=engine_flag.get_engine())
         try:
@@ -451,10 +480,16 @@ class SyncCloudWorker(WorkerRunner):
                     await sq_helpers.mark_failed(self._session, row_uuid, str(row_exc))
                 else:
                     await sq_helpers.mark_dispatched(self._session, row_uuid)
+            # See the "not resolved" branch above for why this commit is
+            # required — same never-committed-session defect.
+            await self._session.commit()
             return settled + len(resolved_row_uuids)
 
         for row_uuid in resolved_row_uuids:
             await sq_helpers.mark_dispatched(self._session, row_uuid)
+        # See the "not resolved" branch above for why this commit is
+        # required — same never-committed-session defect.
+        await self._session.commit()
         return settled + len(resolved_row_uuids)
 
     # ------------------------------------------------------------------
@@ -504,6 +539,13 @@ class SyncCloudWorker(WorkerRunner):
             try:
                 await self._verify_hash_chains_once()
                 await self._verify_revocacion_factura_chain_once()
+                # Same never-committed-session defect as
+                # ``_apply_pending_batch_once`` (see that method's own
+                # comment) — a chain break's ``alerta``/``sync_conflict``
+                # writes (``_handle_chain_break``) must be durably
+                # committed here, not left in this worker's single,
+                # process-lifetime transaction.
+                await self._session.commit()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — keep the loop alive
