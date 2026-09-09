@@ -531,6 +531,47 @@ def v_fixture_factory() -> type[VFixtureFactory]:
     return VFixtureFactory
 
 
+# ---------------------------------------------------------------------------
+# make_spec (T-PR4-010, REQ-OPS-009, REQ-HOOK-015) — fluent hook-override
+# helper for SyncCatalogEntry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def make_spec() -> Callable[..., object]:
+    """Return ``make_spec(name, **overrides) -> SyncCatalogEntry`` (T-PR4-010).
+
+    Looks up the real entry by ``name`` in ``SYNC_CATALOG`` (falling back to
+    ``LOCAL_ONLY_CATALOG``) and returns a ``dataclasses.replace()`` copy with
+    ``overrides`` applied. A test overriding exactly one of the 4 hook slots
+    (``hook_pre_insert``, ``hook_post_insert``, ``hook_chain_extend``,
+    ``hook_validate_parent``) does not have to configure the other three —
+    they keep whatever the real catalog entry already declares (``None`` for
+    every PR4-era entry; concrete hook implementations land in PR5/PR6).
+
+    Usage::
+
+        spec = make_spec("login", hook_post_insert=lambda ctx: HookResult(proceed=True))
+    """
+
+    def _make_spec(name: str, **overrides: object) -> object:
+        from dataclasses import replace
+
+        from parkos_core.sync.catalog.local_only_catalog import LOCAL_ONLY_CATALOG
+        from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+
+        entry = SYNC_CATALOG_BY_NAME.get(name)
+        if entry is None:
+            entry = next((e for e in LOCAL_ONLY_CATALOG if e.name == name), None)
+        if entry is None:
+            raise KeyError(
+                f"make_spec: {name!r} is not a SYNC_CATALOG or LOCAL_ONLY_CATALOG entry"
+            )
+        return replace(entry, **overrides)
+
+    return _make_spec
+
+
 @pytest_asyncio.fixture
 async def seeded_sucursal_uuid(pg_engine: AsyncEngine) -> uuid_lib.UUID:
     """Insert one real ``sucursal`` row and return its uuid.
@@ -573,6 +614,7 @@ __all__ = [
     "alembic_upgrade",
     "app",
     "client",
+    "make_spec",
     "mint_admin_jwt",
     "mint_operador_jwt",
     "mint_sync_agent_jwt",

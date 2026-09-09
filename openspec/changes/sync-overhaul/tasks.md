@@ -661,6 +661,75 @@ Depends on: T-PR3-001..007
 **Dependencies**: PR3 merged
 **Estimated LOC**: ~650
 **Gate to next PR**: dispatch correct per `apply_strategy`; parent validation precedes persistence
+**Status**: All file-level tasks (T-PR4-001..010) verified complete on
+`feature/sync-overhaul-pr04-esqueleto-motor` (off `dev`, per the corrected branch topology already used
+by PR1-3). **Test path correction** (same pattern as PR1-3): this section's `Files:` lines point at
+`backend/packages/parkos_core/tests/unit/...`, which does not exist — both new test files landed at
+`backend/tests/unit/test_motor_apply_row.py` and `backend/tests/unit/test_motor_apply_batch.py`;
+`make_spec` (T-PR4-010) landed in `backend/tests/conftest.py` (not `packages/parkos_core/tests/`).
+
+**Design decisions not explicit in design.md/specs, made during apply (documented, not hidden):**
+- **`session` is an explicit parameter**, first positional arg, on `apply_row` (module function),
+  `SyncMotor.apply_row`, and `SyncMotor.apply_batch` — design.md §5's pseudocode signatures omit it,
+  but every `repo/*` helper this dispatches to requires an `AsyncSession`, and it must come from
+  somewhere. Kept consistent with the `repo/*` calling convention (session-first).
+- **`apply_row` flushes the session** (not commits — the caller still owns the transaction) right after
+  the repo call, before reading `new_row.uuid`. `repo/*` helpers deliberately don't flush/refresh (see
+  `repo/versioned.py`'s own docstring), so without an explicit flush, a server-generated
+  `uuid` (`server_default=gen_random_uuid()`) is still `None` in the Python object at that point —
+  `ApplyResult.row_uuid` would always be `None` and `hook_post_insert`/`hook_chain_extend` would never
+  see a real row_uuid either. Discovered via T-PR4-007's own DB-backed test failing on this exact
+  assertion; fixed by adding the flush, not by loosening the test.
+- **Payload conventions for `apply_row`'s `_dispatch_repo_call`** (not specified anywhere): a reserved
+  `current_uuid` key for `close_and_insert` (names the local row to close; absent/`None` = first
+  insert) and a reserved `parent_uuid` key for `append_transition` (names the previous chain row;
+  absent/`None` = chain root). Both keys are stripped from `new_attrs` before the repo call. For
+  `session_cycle`, `payload["estado"] == "cerrado"` dispatches to `close_login_with_log`
+  (`payload["uuid"]` names the login row); anything else dispatches to `record_login`.
+- **`SyncMotor(engine=EngineMode.LEGACY)`'s "legacy applier"**: confirmed by reading
+  `jobs/sync_cloud.py` that `sync/conflict_resolver.py::ConflictResolver.apply_pushed_row` IS the
+  existing legacy applier (already wired into `jobs/sync_cloud.py` today, per design.md §17's own
+  "Read-only" file list). `SyncMotor._apply_row_legacy` builds the `{tabla, uuid_registro, datos,
+  uuid_sucursal, timestamp_evento, actor_uuid}` shape `apply_pushed_row` expects and maps its
+  `ApplyOutcome` onto `ApplyResult.status` (`APPLIED→APPLIED`, `CONFLICT_V`/`CONFLICT_LS→CONFLICT`,
+  `ERROR→RETRY`) so callers see one uniform return type regardless of engine mode. This mapping is not
+  specified in design.md/specs and is a reasonable, documented bridge, not invented legacy logic.
+- **`apply_batch`'s dependency-buffer stub (T-PR4-009)** buffers **per table name**, in-memory, for the
+  lifetime of one `apply_batch` call — coarser than PR8's real `dependency_buffer.py` (which keys on
+  the exact `(tabla_padre, uuid_padre)`), because no generic mechanism exists yet to resolve which
+  payload field on a child row points at a specific parent row's uuid across all 46 catalog entries.
+  This is documented in `sync_motor.py`'s own docstring as a PR4-only simplification, strictly more
+  conservative (never under-buffers) than what PR8 replaces it with.
+- **`ApplyResult.metrics`** is typed `dict[str, bool]` (tasks.md's literal wording: "4 hook-invocation
+  booleans") rather than the spec's `dict[str, int]` (`0|1`) — `bool` is a subtype of `int` in Python,
+  so both are satisfied simultaneously; no behavior difference.
+- **`hooks/registry.py`'s `resolve()`** is used only for `hook_validate_parent` (so `apply_row` never
+  crashes calling `None(ctx)` when a spec has `depends_on` but no override). `hook_pre_insert` /
+  `hook_post_insert` / `hook_chain_extend` are invoked only `if spec.hook_pre_insert is not None`
+  (etc.) per REQ-HOOK-003's literal "(if set on the spec)" wording — they do NOT go through the
+  no-op default, so `ApplyResult.metrics` only ever reports `True` for a genuinely-configured hook,
+  not for every no-op phase. `registry.get_hook`/`register` exist for PR5/PR6's `hooks/impls/*` to
+  self-register named implementations; unused by production code in PR4 itself.
+
+**Bug found, out of PR4 scope, NOT fixed here**: `tests/unit/test_jwt_issuer_guard.py::
+test_verify_token_rejects_tampered_signature` is flaky (~1-in-5 runs fails with "DID NOT RAISE
+JWTValidationError"), reproduced in isolation across 5 runs, unrelated to any sync-overhaul code path
+(confirmed the flake occurs identically before and after this PR's changes). Root cause: the test
+flips the token's *last* base64url character
+(`token[:-1] + ("a" if token[-1] != "a" else "b")`); base64's last-character padding bits mean some
+substitutions decode to the byte-identical signature, so the tamper is a no-op on those runs and
+`verify_token` correctly does not raise. This is a test-construction bug in an unrelated auth-domain
+file (not sync/catalog/motor/hooks), pre-existing (also flaky on `dev` before this branch), and
+genuinely out of PR4's scope to fix — reported here per the "if you find a bug, report it" instruction,
+not silently hidden. Not marked `xfail` (it isn't part of this PR's assigned test files and doing so
+would touch unrelated test infra beyond PR4's mandate).
+
+Verification: `TEST_PG_IMAGE=parkos-postgres:16-pgpartman uv run pytest -q` — full suite: **933
+passed, 0 failed, 54 xfailed (strict, unchanged from PR3's baseline — none added, none touched), 17
+skipped (unchanged from PR3's baseline)**. 933 = 924 (PR3 baseline) + 9 new tests (6
+`test_dispatch_per_apply_strategy_*` + `test_parent_validation_precedes_persistence` +
+`test_snapshot_columns_never_recomputed` in `test_motor_apply_row.py`, +
+`test_retry_parent_missing_buffers_children_in_batch` in `test_motor_apply_batch.py`).
 
 #### T-PR4-001: RED — `apply_row` dispatch-per-strategy test
 Req: REQ-MOT-001 · Design: §5 API Contracts · Depends on: PR3
@@ -669,14 +738,19 @@ Files: `backend/packages/parkos_core/tests/unit/test_motor_apply_row.py` (new, f
 repo.versioned.close_and_insert`, `record_event → repo.event.record_event`, `append_event →
 repo.append_only.append_event(chain_hash=spec.hash_chain)`, `append_transition →
 repo.workflow.append_transition`, `session_cycle → record_login`/`close_login_with_log`).
-- [ ] Fails — `motor/apply_row.py` does not exist yet
+- [x] Fails — `motor/apply_row.py` does not exist yet. **Path correction**: landed at
+  `backend/tests/unit/test_motor_apply_row.py`, as 6 focused functions
+  (`test_dispatch_per_apply_strategy_{close_and_insert,record_event,append_event,append_transition,
+  session_cycle_insert,session_cycle_close}`) rather than one parametrized function — mock-target and
+  assertion shape genuinely differ per strategy (and `session_cycle` has 2 branches), so splitting is
+  more readable than a single body branching internally; same behavior coverage as the literal name.
 
 #### T-PR4-002: `motor/apply_result.py::ApplyResult`
 Req: REQ-MOT-005 · Design: §3, §5 · Depends on: T-PR4-001
 Files: `backend/packages/parkos_core/src/parkos_core/sync/motor/apply_result.py` (new) —
 `status: Literal["APPLIED","CONFLICT","RETRY"]`, `row_uuid`, `reason`, `metrics` (4 hook-invocation
 booleans).
-- [ ] Dataclass importable and used by T-PR4-005
+- [x] Dataclass importable and used by T-PR4-005
 
 #### T-PR4-003: `hooks/base.py::HookContext`/`HookResult`
 Req: REQ-HOOK-001, REQ-HOOK-002 · Design: §6 Hook Contract · Depends on: T-PR4-001
@@ -684,20 +758,24 @@ Files: `backend/packages/parkos_core/src/parkos_core/sync/hooks/base.py` (new) �
 (`spec`, `payload`, `session`, `actor_uuid`, `chain_head`, `parent_local`, `open_version`,
 `branch_uuid`); `HookResult` (`proceed`, `payload_override`, `chain_extension`, `parent_valid`,
 `reconciliation`, `cascade_rows`).
-- [ ] Both dataclasses carry the D17-added `open_version`/`reconciliation`/`cascade_rows` fields
+- [x] Both dataclasses carry the D17-added `open_version`/`reconciliation`/`cascade_rows` fields.
+  `spec: SyncCatalogEntry` is typed under `TYPE_CHECKING` only (avoids a runtime import cycle back to
+  `catalog/schema.py`); `catalog/schema.py`'s own loose `HookFn` alias was deliberately left untouched
+  (out of this PR's assigned file scope, low-risk to defer).
 
 #### T-PR4-004: `hooks/registry.py`
 Req: REQ-HOOK-015, REQ-OPS-009 · Design: §3 · Depends on: T-PR4-003
 Files: `backend/packages/parkos_core/src/parkos_core/sync/hooks/registry.py` (new) — factory by
 name → callable; default for every hook slot is `lambda ctx: HookResult(proceed=True)`.
-- [ ] Unset hook slots resolve to the no-op default without a test having to set them up
+- [x] Unset hook slots resolve to the no-op default without a test having to set them up
+  (`resolve()`; used by `apply_row` for `hook_validate_parent`)
 
 #### T-PR4-005: GREEN — `motor/apply_row.py` (hook lifecycle order)
 Req: REQ-MOT-001..004, REQ-HOOK-003 · Design: §5, §6 · Depends on: T-PR4-002, T-PR4-004
 Files: `backend/packages/parkos_core/src/parkos_core/sync/motor/apply_row.py` (new) — dispatches on
 `spec.apply_strategy`; lifecycle order `hook_validate_parent → hook_pre_insert → repo call →
 hook_post_insert → hook_chain_extend`; never writes to the DB directly, always via `repo/*`.
-- [ ] T-PR4-001 passes (GREEN)
+- [x] T-PR4-001 passes (GREEN) — 6/6 dispatch tests green
 
 #### T-PR4-006: RED — parent-validation-precedes-persistence test
 Req: REQ-HOOK-003 · Design: §6 · Depends on: T-PR4-005
@@ -705,7 +783,7 @@ Files: `test_motor_apply_row.py` (append) — `test_parent_validation_precedes_p
 whose `hook_validate_parent` returns `parent_valid=False` short-circuits with
 `ApplyResult(status=RETRY, reason="parent_missing")` **before** the repo call runs (mock asserts
 zero repo-layer calls).
-- [ ] Passes against T-PR4-005 (already GREEN by construction of the lifecycle order)
+- [x] Passes against T-PR4-005 (already GREEN by construction of the lifecycle order)
 
 #### T-PR4-007: RED+GREEN — snapshot columns never recomputed (D20)
 Req: REQ-CAT-020, REQ-MOT-003 · Design: §2 Issue #12 · Depends on: T-PR4-005
@@ -714,7 +792,10 @@ local `impuestos` catalog fixture, then apply a `factura_impuestos` row, assert 
 snapshot columns still match the payload verbatim, not the mutated catalog.
 Action: `motor/apply_row.py` (modified) — writes `spec.snapshot_columns` verbatim, never re-reads
 `impuestos`/`otros_cobros` during apply.
-- [ ] Test fails before the fix (recomputes), passes after
+- [x] DB-backed (real Postgres, not mocks): seeds an `impuestos` row, mutates it via
+  `close_and_insert` (new tax-rate version), applies a `factura_impuestos` row snapshotting the
+  ORIGINAL rate, asserts the persisted columns match the payload, not the mutated catalog. Surfaced
+  the session-flush gap documented above (fixed in `apply_row.py`, not worked around in the test).
 
 #### T-PR4-008: GREEN — `motor/sync_motor.py::SyncMotor`
 Req: REQ-MOT-011 · Design: §5 · Depends on: T-PR4-005, PR3
@@ -722,7 +803,8 @@ Files: `backend/packages/parkos_core/src/parkos_core/sync/motor/sync_motor.py` (
 `__init__(engine, session_grace_hours=24, dependency_buffer_ttl_hours=24)`; `apply_batch` calls
 `DependencyOrderer` then `apply_row` per row in topological order; reads `PARKOS_SYNC_ENGINE` via
 `engine_flag.get_engine()`.
-- [ ] `SyncMotor(engine=EngineMode.LEGACY)` dispatches to the legacy applier unchanged
+- [x] `SyncMotor(engine=EngineMode.LEGACY)` dispatches to the legacy applier unchanged — see the
+  "legacy applier" design decision above (`ConflictResolver.apply_pushed_row`)
 
 #### T-PR4-009: RED — `apply_batch` buffers children of a missing-parent row
 Req: REQ-MOT-015 · Design: §2 Issue #8 · Depends on: T-PR4-008
@@ -730,24 +812,30 @@ Files: `backend/packages/parkos_core/tests/unit/test_motor_apply_batch.py` (new,
 `test_retry_parent_missing_buffers_children_in_batch`: uses a stub in-memory buffer (the real
 `dependency_buffer.py` lands in PR8); asserts every child of a buffered row in the same batch is
 also buffered rather than attempted and failed.
-- [ ] Test documents the stub dependency on PR8 in a code comment; xfail is NOT used — the stub
-      satisfies the contract this task tests
+- [x] Test documents the stub dependency on PR8 in a code comment; xfail is NOT used — the stub
+      satisfies the contract this task tests. **Path correction**: landed at
+      `backend/tests/unit/test_motor_apply_batch.py`.
 
 #### T-PR4-010: `tests/conftest.py::make_spec` fluent hook-override helper (R7)
 Req: REQ-OPS-009, REQ-HOOK-015 · Design: §9 · Depends on: T-PR4-004
 Files: `backend/packages/parkos_core/tests/conftest.py` (modified) — `make_spec(name: str,
 **overrides) -> SyncCatalogEntry`; accepts overrides for all 4 hook slots.
-- [ ] A test can override exactly one hook slot without configuring the other three
+- [x] A test can override exactly one hook slot without configuring the other three — implemented as
+  `dataclasses.replace()` on the real `SYNC_CATALOG`/`LOCAL_ONLY_CATALOG` entry, so the other 3 hook
+  slots keep whatever the real entry declares (`None` for every PR4-era entry). **Path correction**:
+  landed in `backend/tests/conftest.py` (not `packages/parkos_core/tests/`).
 
 #### T-PR4-011: Commit + open PR4
 Depends on: T-PR4-001..010
-- [ ] Branch `feat/sync-overhaul-pr4-motor-skeleton` pushed, target `dev`
-- [ ] `uv run pytest tests/unit/test_motor_apply_row.py tests/unit/test_motor_apply_batch.py -q` green
+- [ ] Branch `feat/sync-overhaul-pr4-motor-skeleton` pushed, target `dev` — left to the orchestrator/
+  user per this run's instructions (no commit/push performed by the apply step)
+- [x] `uv run pytest tests/unit/test_motor_apply_row.py tests/unit/test_motor_apply_batch.py -q` green
+  (9/9 passed)
 
 ### PR4 acceptance
-- [ ] All 5 `apply_strategy` values dispatch to the correct `repo/*` helper
-- [ ] Hook lifecycle order matches `validate_parent → pre_insert → repo → post_insert → chain_extend`
-- [ ] Snapshot columns are never recomputed from a mutated live catalog
+- [x] All 5 `apply_strategy` values dispatch to the correct `repo/*` helper
+- [x] Hook lifecycle order matches `validate_parent → pre_insert → repo → post_insert → chain_extend`
+- [x] Snapshot columns are never recomputed from a mutated live catalog
 
 ---
 
