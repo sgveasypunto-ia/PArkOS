@@ -15,14 +15,15 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
-    { name = "factory-boy" },
-    { name = "httpx" },
+    { name = "factory-boy", specifier = ">=3" },
+    { name = "faker", extras = ["es-co"], specifier = ">=40.38.0" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-cov", specifier = ">=5" },
     { name = "ruff" },
-    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.15.0" },
+    { name = "testcontainers", extras = ["postgres"], specifier = ">=4" },
 ]
 
 [[package]]

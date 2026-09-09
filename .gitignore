@@ -18,11 +18,16 @@ __pycache__/
 .env.local
 .env.*.local
 
+# Deploy-specific env files (may hold provider URLs/token paths) â€” never commit
+infra/deploy/.env.*
+
 # Tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .vite/
+.coverage
+.coverage.*
 
 # IDE
 .vscode/
@@ -37,7 +42,10 @@ Thumbs.db
 tmp/
 temp/
 
-# Local dev secrets — never commit (see infra/deploy/secrets/README.md)
+# Local dev secrets ï¿½ never commit (see infra/deploy/secrets/README.md)
 infra/deploy/secrets/*.pem
 infra/deploy/secrets/*.jwt
 infra/deploy/secrets/factus_token
+
+# Agent workspace (aranda-agent-workspace)
+.agent-generated/

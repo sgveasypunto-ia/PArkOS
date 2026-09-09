@@ -49,7 +49,7 @@ rules:
     - Archive full audit folder (proposal + specs + design + tasks + verify-report) — never delete.
 
 testing:
-  strict_tdd: false
+  strict_tdd: true
   runner: ""
   layers:
     unit: false

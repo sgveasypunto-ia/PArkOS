@@ -1,0 +1,71 @@
+name: backend CI
+
+# T-PR1-013 (REQ-OPS-011) — first backend CI workflow. Gate ordering is
+# fixed: uv sync (frozen) -> sync_queue carve-out guard -> catalog drift
+# guard (placeholder until PR2 wires check_catalog_drift.py) -> ruff ->
+# mypy -> pytest+coverage -> Trivy (merge-to-dev only). Each step runs
+# sequentially and a failure in any step fails the job (default GitHub
+# Actions behaviour — no continue-on-error is set anywhere below).
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'openspec/scripts/**'
+      - 'openspec/config.yaml'
+      - '.github/workflows/ci.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'backend/**'
+      - 'openspec/scripts/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      UV_PROJECT_ENVIRONMENT: local
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Install dependencies (frozen lockfile)
+        run: uv sync --frozen --all-extras --dev
+
+      - name: sync_queue carve-out guard (R-D3, R8, REQ-OPS-004)
+        run: uv run python ../openspec/scripts/check_sync_queue_carveout.py packages/parkos_core/src
+
+      - name: catalog drift guard (placeholder — wired in PR2)
+        run: |
+          echo "openspec/scripts/check_catalog_drift.py does not exist yet (lands in PR2, T-PR2-017)."
+          echo "This step is an intentional no-op placeholder that preserves the gate's position"
+          echo "in the pipeline ahead of lint/type-check, per T-PR1-013's required ordering."
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Type-check (mypy)
+        run: uv run mypy packages/parkos_core/src
+
+      - name: Tests + coverage
+        # --cov-fail-under=80 lives here, not in addopts (backend/pyproject.toml) —
+        # a global threshold there would fail every *focused* PR-scoped test
+        # command in tasks.md's Suggested Work Units table. See the addopts
+        # comment for the reproduced evidence.
+        run: uv run pytest --cov --cov-report=xml --cov-fail-under=80
+
+      - name: Trivy vulnerability scan (merge-to-dev only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: backend
+          severity: CRITICAL,HIGH
+          exit-code: '1'
