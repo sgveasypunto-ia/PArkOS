@@ -36,9 +36,11 @@ against any FK-holding row. Current-identity resolution for readers happens
 by natural key at read time (``prod.v_clientes_actual`` /
 ``prod.v_vehiculos_actual``, migration ``0009_add_derived_read_views.py``).
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -70,19 +72,24 @@ def _business_columns(payload: dict[str, Any], open_version: dict[str, Any]) -> 
     return (set(payload) | set(open_version)) - _TECHNICAL_COLUMNS
 
 
-def _differs(
-    payload: dict[str, Any], open_version: dict[str, Any], columns: set[str]
-) -> bool:
+def _differs(payload: dict[str, Any], open_version: dict[str, Any], columns: set[str]) -> bool:
     return any(payload.get(column) != open_version.get(column) for column in columns)
 
 
 def _json_safe(value: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Coerce ``UUID``/``datetime`` leaf values so the dict is JSONB-storable.
+    """Coerce ``UUID``/``datetime``/``Decimal`` leaf values so the dict is
+    JSONB-storable.
 
     ``sync_conflict.datos_local`` / ``datos_cloud`` are JSONB columns;
-    ``asyncpg`` does not auto-serialize ``uuid.UUID`` or ``datetime``
-    values embedded in a plain ``dict``, so this hook stringifies them the
-    same way ``repo.hash_chain._json_default`` does for canonical hashing.
+    ``asyncpg`` does not auto-serialize ``uuid.UUID``, ``datetime``, or
+    ``decimal.Decimal`` values embedded in a plain ``dict``, so this hook
+    stringifies/floats them the same way ``repo.hash_chain._json_default``
+    does for canonical hashing. ``Decimal`` was never exercised by the 3
+    original identity masters (none has a ``Numeric`` business column) —
+    found live (``TypeError: Object of type Decimal is not JSON
+    serializable``) generalizing identity reconciliation to
+    ``Numeric``-carrying tables (``impuestos.porcentaje``,
+    ``configuracion_tolerancias.tolerancia_efectivo``, 2026-09-10).
     """
     if value is None:
         return None
@@ -92,6 +99,8 @@ def _json_safe(value: dict[str, Any] | None) -> dict[str, Any] | None:
             safe[key] = str(item)
         elif isinstance(item, datetime):
             safe[key] = item.isoformat()
+        elif isinstance(item, Decimal):
+            safe[key] = float(item)
         else:
             safe[key] = item
     return safe
