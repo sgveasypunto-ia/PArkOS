@@ -12,6 +12,7 @@ NOTE: This module is the ONLY allowed UPDATE writer on [V] tables. The AST
 test ``tests/static/test_no_raw_upsert_on_v_tables.py`` rejects
 ``session.execute(update(...))`` against [V] classes outside this module.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -147,6 +148,49 @@ async def close_and_insert(
     return new_row
 
 
+async def close_only(
+    session: AsyncSession,
+    model_cls: type[T],
+    uuid: uuid_lib.UUID,
+    *,
+    actor_uuid: uuid_lib.UUID,
+) -> None:
+    """Close an active ``[V]`` row with NO replacement version.
+
+    Same guarded ``UPDATE`` as :func:`close_and_insert`'s step 1, exposed on
+    its own for a corrective/administrative deactivation (e.g. collapsing an
+    erroneous duplicate) where a paired new version would be wrong — unlike
+    a real business update, there is no new state to insert.
+
+    Args:
+        session: Active ``AsyncSession`` (caller commits).
+        model_cls: The ``[V]`` ORM class to operate on.
+        uuid: The active row to close.
+        actor_uuid: JWT subject (the writer of the change) — unused today
+            (no ``[V]`` table carries a "closed_by" column) but required for
+            signature symmetry with :func:`close_and_insert` and to keep the
+            call site auditable if that column is ever added.
+
+    Raises:
+        RowNotFoundError: ``uuid`` doesn't match any currently-active row.
+    """
+    _ = actor_uuid
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    result = await session.execute(
+        update(model_cls)
+        .where(
+            model_cls.uuid == uuid,
+            model_cls.vigente_hasta.is_(None),
+        )
+        .values(
+            vigente_hasta=now,
+            estado="inactivo",
+        )
+    )
+    if result.rowcount == 0:
+        raise RowNotFoundError(f"no active row in {model_cls.__tablename__} for uuid={uuid}")
+
+
 async def current_version(
     session: AsyncSession,
     model_cls: type[T],
@@ -166,5 +210,6 @@ __all__ = [
     "VersioningError",
     "RowNotFoundError",
     "close_and_insert",
+    "close_only",
     "current_version",
 ]
