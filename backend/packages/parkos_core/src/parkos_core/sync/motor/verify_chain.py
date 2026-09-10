@@ -26,6 +26,7 @@ is a thin per-spec wrapper a future PR (PR10, the cloud-side verifier
 worker) adds; this module ships the walker itself, independently testable
 and already table-complete.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -80,19 +81,25 @@ async def verify_chain_for_spec(
     chain verified call this once per known ``uuid_sucursal`` (mirroring
     ``repo.hash_chain.append``'s own per-tenant scoping).
 
-    Rows are read in ``(timestamp_evento, uuid)`` order (matching
-    ``repo.hash_chain._read_prior_hash``'s own ``ORDER BY timestamp_evento
-    DESC, uuid DESC`` tie-break, just walked forward instead of finding the
-    single latest row). A mismatch does not stop the walk — every
-    subsequent row is still checked against ITS OWN immediate predecessor,
-    so a single corrupted link produces exactly one anomaly, not a cascade.
+    Rows are read in ``(created_at, uuid)`` order (matching
+    ``repo.hash_chain._read_prior_hash``'s own ``ORDER BY created_at
+    DESC, uuid DESC`` tie-break, just walked forward instead of finding
+    the single latest row) — NEVER ``timestamp_evento``, which is
+    business-supplied and can collide across a burst of events, making
+    this walk's reconstructed order disagree with the order
+    ``_read_prior_hash`` actually chained at write time (confirmed live:
+    real ``hash_chain_break`` false positives on data that was never
+    corrupted — see that function's docstring). A mismatch does not stop
+    the walk — every subsequent row is still checked against ITS OWN
+    immediate predecessor, so a single corrupted link produces exactly
+    one anomaly, not a cascade.
     """
     model_cls = spec.model_cls
     stmt = (
         select(model_cls)
         .where(model_cls.uuid_sucursal == uuid_sucursal)  # type: ignore[attr-defined]
         .order_by(
-            model_cls.timestamp_evento.asc(),  # type: ignore[attr-defined]
+            model_cls.created_at.asc(),  # type: ignore[attr-defined]
             model_cls.uuid.asc(),  # type: ignore[attr-defined]
         )
     )

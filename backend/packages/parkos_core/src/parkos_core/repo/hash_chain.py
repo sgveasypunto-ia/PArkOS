@@ -48,6 +48,7 @@ The cloud-side verifier (PR10 worker) walks the chain on every sync
 batch and raises :class:`HashChainIntegrityViolation` on a break. PR2
 ships the helper + unit tests; PR10 owns the worker.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -216,32 +217,38 @@ async def _read_prior_hash(
 ) -> str:
     """Return the chain head ``hash_actual`` for ``uuid_sucursal``.
 
-    Reads the latest row (by ``timestamp_evento`` when present,
-    otherwise by ``created_at``). When no prior row exists for the tenant,
-    bootstraps the real genesis row (:func:`_ensure_genesis_row`, PR6) and
-    returns its hash — the genesis anchor, now backed by an actual
-    persisted row rather than a value computed but never written.
+    Reads the latest row by ``created_at`` — the server-stamped append
+    order — NEVER by ``timestamp_evento``. ``timestamp_evento`` is a
+    business-supplied event time: two rows landing in the same burst
+    (batch backfill, several events in the same second) can carry the
+    IDENTICAL value, and the old ``ORDER BY timestamp_evento DESC, uuid
+    DESC`` tie-break then picks whichever existing row happens to have
+    the lexicographically-largest random UUID as "prior" — NOT the row
+    that was truly appended last. Confirmed live: a real Docker
+    deployment logged genuine ``hash_chain_break`` alerts
+    (``sync_cloud.hash_chain_break``) for ``log_transaccional`` rows
+    that were never actually corrupted, purely because
+    ``_verify_one_tenant_chain``'s reconstructed order (see
+    ``jobs/sync_cloud.py``) disagreed with the tie-break this function
+    used to pick each row's real ``hash_anterior`` at write time.
+    ``created_at`` doesn't have this problem — it's assigned once, in
+    Python, immediately before each row's own INSERT — so both sides of
+    the chain (this function's "find the prior" and the verifier's "walk
+    in order") now sort by the exact same, effectively-monotonic column.
+    When no prior row exists for the tenant, bootstraps the real genesis
+    row (:func:`_ensure_genesis_row`, PR6) and returns its hash — the
+    genesis anchor, now backed by an actual persisted row rather than a
+    value computed but never written.
     """
-    if hasattr(model_cls, "timestamp_evento"):
-        stmt = (
-            select(model_cls)
-            .where(model_cls.uuid_sucursal == uuid_sucursal)
-            .order_by(
-                model_cls.timestamp_evento.desc(),  # type: ignore[attr-defined]
-                model_cls.uuid.desc(),
-            )
-            .limit(1)
+    stmt = (
+        select(model_cls)
+        .where(model_cls.uuid_sucursal == uuid_sucursal)
+        .order_by(
+            model_cls.created_at.desc(),
+            model_cls.uuid.desc(),
         )
-    else:
-        stmt = (
-            select(model_cls)
-            .where(model_cls.uuid_sucursal == uuid_sucursal)
-            .order_by(
-                model_cls.created_at.desc(),
-                model_cls.uuid.desc(),
-            )
-            .limit(1)
-        )
+        .limit(1)
+    )
 
     result = await session.execute(stmt)
     prior = result.scalar_one_or_none()
