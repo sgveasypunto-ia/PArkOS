@@ -46,9 +46,12 @@ be re-set per row, and resets itself the moment that transaction commits or
 rolls back, never leaking into the next cycle or a genuinely new write on
 the same connection.
 """
+
 from __future__ import annotations
 
-from sqlalchemy import text
+from typing import Any
+
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 #: The session GUC name both trigger functions check (migration
@@ -68,4 +71,27 @@ async def enable_echo_suppression(session: AsyncSession) -> None:
     await session.execute(text(f"SET LOCAL {SYNC_APPLY_GUC} = 'true'"))
 
 
-__all__ = ["SYNC_APPLY_GUC", "enable_echo_suppression"]
+async def row_already_present(session: AsyncSession, model_cls: type, raw_uuid: Any) -> bool:
+    """``True`` when a row identified by ``raw_uuid`` already exists in
+    ``model_cls`` — regardless of audit class or ``[V]`` version state.
+
+    Complements :func:`enable_echo_suppression`: that GUC stops a trigger
+    from RE-ENQUEUEING the motor's own write; this stops the motor from
+    RE-INSERTING a row it (or a peer node) already applied. Both gaps were
+    confirmed real in Docker (T-PR11-001-era ``_apply_pending_batch_once``
+    re-applying its own cloud-authored ``[V]`` writes, and the equivalent
+    risk on a branch's repeated ``/sync/pull`` cycle) — see the two call
+    sites (``jobs/sync_cloud.py``, ``jobs/sync_sucursal.py``) for the full
+    defect writeups. A row missing ``uuid`` (stripped upstream, or a table
+    with no such identity) is treated as never-seen (``False``) — callers
+    own deciding whether that is safe for their specific payload shape.
+    """
+    if raw_uuid is None or not hasattr(model_cls, "uuid"):
+        return False
+    result = await session.execute(
+        select(model_cls.uuid).where(model_cls.uuid == raw_uuid).limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+__all__ = ["SYNC_APPLY_GUC", "enable_echo_suppression", "row_already_present"]
