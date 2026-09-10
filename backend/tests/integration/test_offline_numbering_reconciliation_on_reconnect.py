@@ -400,8 +400,13 @@ async def test_offline_numbering_reconciles_without_collision_on_reconnect(
                 "uuid_tipo_sucursal": C["tipo_sucursal"].uuid,
             },
         )
+        # uid()-suffixed — a literal "natural" collides with the canonical
+        # migration-seeded row (now identity-reconciled, T-PR12-011/D17) and
+        # with any other test's own "natural" row in this session-scoped
+        # shared DB (conftest.py::pg_engine). Same fix already applied in
+        # test_e2e_full_catalog_sync.py for the identical reason.
         C["tipo_persona"] = await create_origin_row(
-            session, SYNC_CATALOG_BY_NAME["tipo_persona"], {"tipo": "natural"}
+            session, SYNC_CATALOG_BY_NAME["tipo_persona"], {"tipo": f"natural-{uid()}"}
         )
         C["clientes"] = await create_origin_row(
             session,
