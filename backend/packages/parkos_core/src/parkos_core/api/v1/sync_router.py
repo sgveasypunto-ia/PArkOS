@@ -47,6 +47,7 @@ Architecture notes:
   PR9 will rotate the existing tokens to include the claim. Backward
   compat: PR8b-era tokens (no claim) skip the check silently.
 """
+
 from __future__ import annotations
 
 import logging
@@ -56,6 +57,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.jwt_issuer_guard import verify_jwt
@@ -72,10 +74,11 @@ from ...repo.pairing import (
 from ...repo.revoked_sync_jwt import is_revoked
 from ...runtime import engine_flag
 from ...runtime.clock import ClockSkewError
-from ...sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+from ...sync.catalog.sync_catalog import SYNC_CATALOG, SYNC_CATALOG_BY_NAME
 from ...sync.cutover.dual_protocol import build_sync_hello_response
 from ...sync.motor import apply_guard
 from ...sync.motor.apply_result import ApplyResult
+from ...sync.motor.broadcast_resolver import BroadcastPolicyError, resolve_broadcast_targets
 from ...sync.motor.dependency_orderer import order_batch
 from ...sync.motor.sync_motor import SyncMotor
 from ...sync.router_helpers import (
@@ -605,9 +608,7 @@ async def sync_push(
 
     # Persist in cache so a duplicate X-Request-Id replays.
     if x_request_id:
-        _IDEMPOTENCY.put(
-            issuer, cache_key_subject, x_request_id, 207, response_body
-        )
+        _IDEMPOTENCY.put(issuer, cache_key_subject, x_request_id, 207, response_body)
 
     return _PushResponse(results=results)
 
@@ -615,6 +616,135 @@ async def sync_push(
 # ---------------------------------------------------------------------------
 # Endpoint 3: POST /sync/pull
 # ---------------------------------------------------------------------------
+
+#: Entries a branch may ever pull — mirrors ``cutover/backfill.py``'s own
+#: ``_BACKFILL_DIRECTIONS`` (single source of truth for "can reach a
+#: branch" would be nicer, but that constant is private to its module and
+#: this endpoint's per-row broadcast filtering is a genuinely different
+#: shape from ``run_backfill``'s per-table pagination — see the module
+#: docstring above this router for why the two don't share one call path).
+_PULL_DIRECTIONS = frozenset({"cloud_to_branch", "bidirectional"})
+
+#: Hard cap on rows returned per pull call, across ALL tables combined —
+#: keeps one request bounded regardless of how much data has accumulated.
+_PULL_BATCH_LIMIT = 500
+
+#: Same stripping convention as ``jobs/sync_cloud.py``'s
+#: ``_business_payload_for_apply`` (audit/queue metadata never a real
+#: business attribute) — applied here in the OTHER direction: a live ORM
+#: row being serialized FOR the wire, not a queued payload being prepared
+#: to apply. Kept as a separate, smaller list here because a wire payload
+#: intentionally KEEPS ``uuid`` (the receiving branch needs it to detect a
+#: row it already applied — see ``apply_guard.row_already_present``),
+#: unlike ``_business_payload_for_apply``'s ``[V]`` stripping which removes
+#: it to avoid colliding with ``close_and_insert``'s own PK.
+_PULL_WIRE_METADATA_KEYS = frozenset(
+    {"created_at", "created_by", "sync_status", "sync_timestamp", "sync_attempts"}
+)
+
+
+def _row_seq(row: Any) -> int:
+    """Epoch-millisecond ``seq`` for a row — matches every real
+    ``cloud_to_branch``/``bidirectional`` catalog entry's own
+    ``seq_strategy="max_created_at"`` declaration (see
+    ``sync/catalog/entries/*.py``). Falls back to 0 for the rare row with
+    no ``created_at`` (append-only tables always have it; defensive only).
+    """
+    created_at = getattr(row, "created_at", None)
+    if created_at is None:
+        return 0
+    return int(created_at.replace(tzinfo=UTC).timestamp() * 1000)
+
+
+def _wire_payload(spec: Any, row: Any) -> dict[str, Any]:
+    """Serialize a live ORM row into a wire payload — raw Python values
+    (``uuid.UUID``, ``datetime``, ``Decimal``), NOT pre-stringified.
+
+    Keeping real types matters here specifically: :func:`resolve_broadcast_
+    targets` compares ``payload["uuid_sucursal"]``/``payload["uuid"]``
+    against real ``uuid.UUID`` branch identities — a stringified copy would
+    silently never match and every ``single_branch``/``subscription`` row
+    would look unowned. FastAPI's own response encoding (``_PullResponse``
+    is returned as a real pydantic model, ``mode="json"`` for the
+    idempotency-cache copy below) already JSON-encodes UUID/datetime
+    correctly wherever they end up nested inside this ``dict[str, Any]``.
+
+    Keeps ``uuid`` (unlike ``jobs/sync_cloud.py``'s queue-payload stripper)
+    so the receiving node's ``apply_guard.row_already_present`` can detect
+    an already-applied row on a repeated pull — the SAME class of
+    self/repeat-duplication bug already fixed on the cloud's own
+    ``_apply_pending_batch_once`` (T-PR11-001) applies here too: nothing
+    before this fix ever exercised a REAL repeated pull of the same row.
+    """
+    return {
+        column.name: getattr(row, column.name)
+        for column in spec.model_cls.__table__.columns
+        if column.name not in _PULL_WIRE_METADATA_KEYS
+    }
+
+
+async def _fetch_pull_rows(
+    session: AsyncSession,
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    since_seq: int,
+    limit: int = _PULL_BATCH_LIMIT,
+) -> tuple[list[_PushedRow], int]:
+    """Real, generalized cloud→branch pull: every catalog entry a branch may
+    receive, filtered to the rows THIS ``uuid_sucursal`` is actually owed —
+    per-table ``broadcast_policy``, resolved by the SAME
+    :func:`resolve_broadcast_targets` the (untested-until-now) push-side
+    fan-out logic already declares as the single source of truth for "who
+    gets this row" (T-PR12-003). Never keyed to a specific sucursal —
+    ``uuid_sucursal`` is a parameter, resolved by the caller from the
+    authenticated branch's own JWT claim, so ANY paired branch gets its own
+    correct slice from the same code path.
+
+    Not a true change-feed (no per-branch delivery cursor exists yet — see
+    this router's own module docstring, ``PR9`` follow-up); each call
+    re-evaluates the full current catalog and re-filters by ``since_seq``
+    (epoch-ms of ``created_at``), so a branch that pulls from ``since_seq=0``
+    every cycle (today's actual worker behavior) gets a full, idempotent
+    resnapshot rather than missing rows — safe specifically BECAUSE
+    :func:`apply_guard.row_already_present` (branch-side) now makes
+    re-delivery a no-op instead of a duplicate-key crash.
+    """
+    candidates: list[tuple[Any, Any, int]] = []
+    for spec in SYNC_CATALOG:
+        if spec.direction not in _PULL_DIRECTIONS or spec.broadcast_policy is None:
+            continue
+        stmt = select(spec.model_cls)
+        if spec.audit_class == "V":
+            stmt = stmt.where(spec.model_cls.vigente_hasta.is_(None))
+        rows = (await session.execute(stmt)).scalars().all()
+        for row in rows:
+            seq = _row_seq(row)
+            if seq <= since_seq:
+                continue
+            candidates.append((spec, row, seq))
+
+    pushed_rows: list[_PushedRow] = []
+    max_seq_seen = since_seq
+    for spec, row, seq in sorted(candidates, key=lambda item: item[2]):
+        payload = _wire_payload(spec, row)
+        try:
+            targets = await resolve_broadcast_targets(session, spec, payload)
+        except BroadcastPolicyError as exc:
+            logger.warning(
+                "sync_pull.broadcast_resolution_failed",
+                extra={"tabla": spec.name, "uuid_registro": str(row.uuid), "error": str(exc)},
+            )
+            continue
+        if not (targets.all_branches or uuid_sucursal in targets.branch_uuids):
+            continue
+        pushed_rows.append(
+            _PushedRow(tabla=spec.name, uuid_registro=row.uuid, seq=seq, datos=payload)
+        )
+        max_seq_seen = max(max_seq_seen, seq)
+        if len(pushed_rows) >= limit:
+            break
+
+    return pushed_rows, max_seq_seen
 
 
 @router.post(
@@ -631,10 +761,12 @@ async def sync_pull(
 ) -> _PullResponse:
     """Branch pulls a batch of rows from the cloud.
 
-    The full cloud-side applier (which reads ``sync_queue`` +
-    ``log_transaccional`` to materialize the per-branch sequence)
-    lands in PR9. PR8c returns an empty batch so the auth + cache +
-    rate-limit chain is verified.
+    The requesting branch is identified by its OWN JWT — never a caller-
+    supplied uuid — so this is generic across every paired sucursal, not
+    just whichever one exercised it first. Per-table ``broadcast_policy``
+    (``all_branches`` / ``all_branches_with_override`` / ``single_branch`` /
+    ``subscription``) is honored via :func:`resolve_broadcast_targets`
+    (T-PR12-003) — see :func:`_fetch_pull_rows`.
     """
     issuer = claims.get("iss", "")
     subject = extract_subject_from_jwt(claims)
@@ -666,13 +798,34 @@ async def sync_pull(
             headers={"Retry-After": str(e.retry_after_seconds)},
         ) from e
 
-    response_body = {"rows": [], "next_seq": payload.since_seq}
-    if x_request_id:
-        _IDEMPOTENCY.put(
-            issuer, subject, x_request_id, 200, response_body
+    # A pull only makes sense for a branch-scoped token — a "cloud" scope
+    # (used by cloud-side jobs on the OTHER sync-agent-bearing endpoints)
+    # names no single target branch.
+    if claims.get("scope") != "branch":
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "pull_requires_branch_scope"},
         )
+    try:
+        uuid_sucursal = uuid_lib.UUID(str(claims.get("sucursal")))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_or_invalid_sucursal_claim"},
+        ) from e
 
-    return _PullResponse(rows=[], next_seq=payload.since_seq)
+    rows, next_seq = await _fetch_pull_rows(
+        session, uuid_sucursal=uuid_sucursal, since_seq=payload.since_seq
+    )
+
+    response_body = {
+        "rows": [r.model_dump(mode="json") for r in rows],
+        "next_seq": next_seq,
+    }
+    if x_request_id:
+        _IDEMPOTENCY.put(issuer, subject, x_request_id, 200, response_body)
+
+    return _PullResponse(rows=rows, next_seq=next_seq)
 
 
 # ---------------------------------------------------------------------------
@@ -979,13 +1132,9 @@ async def sync_events(
 
             if motor is None:
                 motor = SyncMotor(engine=engine_flag.get_engine())
-            apply_result = await motor.apply_row(
-                session, spec, ev.payload, actor_uuid=actor_uuid
-            )
+            apply_result = await motor.apply_row(session, spec, ev.payload, actor_uuid=actor_uuid)
             wire_status = wire_status_for_apply_result(apply_result)
-            results_by_index[idx] = _EventResponseRow(
-                event_type=ev.event_type, status=wire_status
-            )
+            results_by_index[idx] = _EventResponseRow(event_type=ev.event_type, status=wire_status)
 
         assert all(r is not None for r in results_by_index), (
             "sync_events: every request event must produce exactly one response row"
@@ -999,9 +1148,7 @@ async def sync_events(
 
     response_body = {"results": [r.model_dump(mode="json") for r in results]}
     if x_request_id:
-        _IDEMPOTENCY.put(
-            issuer, subject, x_request_id, 207, response_body
-        )
+        _IDEMPOTENCY.put(issuer, subject, x_request_id, 207, response_body)
 
     return _EventsResponse(results=results)
 
