@@ -238,7 +238,19 @@ def _extract_business_attrs(spec: Any, row: Any) -> dict[str, Any]:
     return attrs
 
 
-def make_cloud_fetch_page(cloud_pg_engine: AsyncEngine):
+def make_cloud_fetch_page(cloud_pg_engine: AsyncEngine, *, known_uuids: set[Any] | None = None):
+    """Build a real ``FetchPage`` reading from the CLOUD engine.
+
+    ``known_uuids`` scopes every fetch to rows THIS test itself created.
+    Without it, on the shared, session-scoped ``pg_engine``
+    (``conftest.py``), a fetch of ``clientes`` picks up another test's own
+    open cliente row — one whose ``uuid_tipo_persona`` this test's own
+    ``backfill_catalog`` never carries to the branch — a real
+    ``ForeignKeyViolationError`` (confirmed real: same mechanism already
+    fixed in ``test_snapshot_columns_immutable_on_catalog_mutation.py``,
+    this file had its own separate copy of the helper still unscoped,
+    2026-09-10 full-suite run).
+    """
     from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
     from parkos_core.sync.cutover.backfill import BackfillPage
 
@@ -249,6 +261,8 @@ def make_cloud_fetch_page(cloud_pg_engine: AsyncEngine):
             stmt = select(spec.model_cls)
             if spec.audit_class == "V":
                 stmt = stmt.where(spec.model_cls.vigente_hasta.is_(None))
+            if known_uuids is not None:
+                stmt = stmt.where(spec.model_cls.uuid.in_(known_uuids))
             rows = (await session.execute(stmt)).scalars().all()
         page_rows = tuple(_extract_business_attrs(spec, row) for row in rows)
         return BackfillPage(rows=page_rows, next_cursor=None, has_more=False)
@@ -452,7 +466,7 @@ async def test_offline_numbering_reconciles_without_collision_on_reconnect(
         result = await run_backfill(
             branch_session,
             uuid_sucursal=C["sucursal"].uuid,
-            fetch_page=make_cloud_fetch_page(pg_engine),
+            fetch_page=make_cloud_fetch_page(pg_engine, known_uuids={row.uuid for row in C.values()}),
             actor_uuid=ACTOR_UUID,
             motor=SyncMotor(engine=engine_flag.EngineMode.CATALOG_BRANCH),
             catalog=backfill_catalog,
