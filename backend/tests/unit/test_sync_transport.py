@@ -217,7 +217,12 @@ class TestHeartbeat:
         # heartbeat() returns None; just verify it doesn't raise and posts.
         assert await client.heartbeat(state) is None
         post.assert_awaited_once()
-        assert post.call_args.kwargs["json"] == state
+        # The server's `_HeartbeatRequest` schema is `{"state": {...}}` —
+        # posting `state` unwrapped 422s on the real endpoint (confirmed
+        # in Docker logs). This assertion pins the wrapped shape so a
+        # regression back to the unwrapped body fails loudly here instead
+        # of silently 422ing in production.
+        assert post.call_args.kwargs["json"] == {"state": state}
 
 
 # ---------------------------------------------------------------------------
