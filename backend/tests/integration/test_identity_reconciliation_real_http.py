@@ -115,12 +115,20 @@ async def test_divergent_cliente_push_reconciles_to_one_open_row_real_http(
             "real divergent HTTP push — expected exactly 1"
         )
 
+        # Scoped to THIS test's own cliente row — the shared session-scoped
+        # DB (conftest.py::pg_engine) legitimately carries other tests' own
+        # "clientes" identity_divergence conflicts (e.g.
+        # test_identity_invariant.py's own forward-divergence case), which
+        # an unscoped count over the whole table would (incorrectly) count
+        # too. Confirmed real running the full suite together (2026-09-10).
         conflict_count = (
             await session.execute(
                 select(func.count())
                 .select_from(SyncConflict)
                 .where(
-                    SyncConflict.tabla == "clientes", SyncConflict.politica == "identity_divergence"
+                    SyncConflict.tabla == "clientes",
+                    SyncConflict.politica == "identity_divergence",
+                    SyncConflict.uuid_registro == local_open.uuid,
                 )
             )
         ).scalar_one()
