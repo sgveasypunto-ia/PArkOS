@@ -12,6 +12,7 @@ PR1b supports ``repo_kind="versioned"`` and ``"session_cycle"``. Other kinds
 (``"append_only"``, ``"event"``, ``"workflow"``) are stubbed in PR1b and
 filled in by their respective PRs.
 """
+
 from __future__ import annotations
 
 import logging
@@ -78,9 +79,7 @@ def make_router(
     # load time.
     from ..auth.permissions import require_permission
 
-    perm_dependency = (
-        require_permission(permission_required) if permission_required else None
-    )
+    perm_dependency = require_permission(permission_required) if permission_required else None
 
     # --- READ: list with cursor pagination ---
     @router.get("", response_model=read_list_schema)
@@ -149,6 +148,7 @@ def make_router(
 
     # --- READ: full history (all versions for the same business identity) ---
     if hasattr(model_cls, "vigente_hasta"):
+
         @router.get("/{uuid}/history", response_model=list[read_schema])
         async def history_endpoint(
             uuid: uuid_lib.UUID = Path(...),
@@ -169,14 +169,9 @@ def make_router(
     extra_deps = [Depends(perm_dependency)] if perm_dependency is not None else []
 
     if write_enabled and repo_kind == "versioned" and create_schema is not None:
-        @router.post(
-            "",
-            response_model=read_schema,
-            status_code=201,
-            dependencies=extra_deps,
-        )
+
         async def create_endpoint(
-            payload,  # FastAPI injects create_schema instance; using `Any` here
+            payload,
             session: AsyncSession = Depends(get_session),
             ctx: TenantContext = Depends(get_tenant_ctx),
             _claims: None = Depends(issuer_dep),
@@ -194,14 +189,32 @@ def make_router(
             await session.refresh(new_row)
             return read_schema.model_validate(new_row)
 
+        # Real defect confirmed via manual QA + HTTP-level regression test
+        # (test_router_factory_payload_body_binding.py): this module has
+        # ``from __future__ import annotations`` (PEP 563), so a plain
+        # ``payload: create_schema`` annotation would be stored as the
+        # STRING "create_schema" — and ``create_schema`` is a local closure
+        # variable of THIS ``make_router`` call, not a module global, so
+        # FastAPI's ``typing.get_type_hints()`` could never resolve it.
+        # Left unannotated (as before this fix), FastAPI fell back to
+        # treating ``payload`` as a required ``str`` QUERY parameter,
+        # never the JSON request body — every ``create``/``update``
+        # endpoint this factory ever built was broken against a real HTTP
+        # client. Setting ``__annotations__`` directly stores the REAL
+        # class object (not a string), so ``get_type_hints()`` returns it
+        # as-is with nothing left to resolve.
+        create_endpoint.__annotations__["payload"] = create_schema
+        router.post(
+            "",
+            response_model=read_schema,
+            status_code=201,
+            dependencies=extra_deps,
+        )(create_endpoint)
+
         if update_schema is not None:
-            @router.put(
-                "/{uuid}",
-                response_model=read_schema,
-                dependencies=extra_deps,
-            )
+
             async def update_endpoint(
-                payload,  # FastAPI injects update_schema instance
+                payload,
                 uuid: uuid_lib.UUID = Path(...),
                 session: AsyncSession = Depends(get_session),
                 ctx: TenantContext = Depends(get_tenant_ctx),
@@ -219,6 +232,14 @@ def make_router(
                 await session.commit()
                 await session.refresh(new_row)
                 return read_schema.model_validate(new_row)
+
+            # Same PEP-563 fix as create_endpoint above.
+            update_endpoint.__annotations__["payload"] = update_schema
+            router.put(
+                "/{uuid}",
+                response_model=read_schema,
+                dependencies=extra_deps,
+            )(update_endpoint)
 
     elif write_enabled and repo_kind == "session_cycle" and create_schema is not None:
         # Session-cycle tables expose only POST (record event) and PUT (close).
