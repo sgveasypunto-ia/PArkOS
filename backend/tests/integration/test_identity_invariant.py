@@ -32,6 +32,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 ACTOR_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000aa")
 
 
+def uid() -> str:
+    return uuid_lib.uuid4().hex[:8]
+
+
 def _row_dict(row: object) -> dict[str, object]:
     mapper = sa_inspect(type(row))
     return {column.name: getattr(row, column.name) for column in mapper.columns}
@@ -57,7 +61,12 @@ async def test_clientes_invariant_across_all_reconciliation_outcomes(
 ) -> None:
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        tipo = v_fixture_factory.build(TipoPersona, tipo="natural")
+        # uid()-suffixed — the literal "natural" collides with the
+        # canonical migration-seeded row (0020, identity-reconciled) and
+        # with any other test's own "natural" row on this session-scoped
+        # shared DB (conftest.py::pg_engine); this test only needs a valid
+        # FK target, never asserts on the tipo_persona value itself.
+        tipo = v_fixture_factory.build(TipoPersona, tipo=f"natural-{uid()}")
         session.add(tipo)
         await session.commit()
 
@@ -164,7 +173,8 @@ async def test_clientes_b2b_invariant(
 ) -> None:
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        tipo = v_fixture_factory.build(TipoPersona, tipo="natural")
+        # Same reasoning as test_clientes_invariant_across_all_reconciliation_outcomes above.
+        tipo = v_fixture_factory.build(TipoPersona, tipo=f"natural-{uid()}")
         session.add(tipo)
         await session.commit()
 

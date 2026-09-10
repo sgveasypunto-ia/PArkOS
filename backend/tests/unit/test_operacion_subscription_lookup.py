@@ -23,10 +23,17 @@ from parkos_core.models.V.vehiculos import Vehiculos
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 
+def uid() -> str:
+    return uuid_lib.uuid4().hex[:8]
+
+
 async def _seed_subscription_at_branch(
     session, v_fixture_factory, *, placa: str, uuid_sucursal, fecha_vencimiento=None
 ) -> None:
-    tipo_persona = v_fixture_factory.build(TipoPersona, tipo="natural")
+    # uid()-suffixed — the literal "natural" collides with the canonical
+    # migration-seeded row (0020, identity-reconciled) on this session-scoped
+    # shared DB (conftest.py::pg_engine); only a valid FK target is needed.
+    tipo_persona = v_fixture_factory.build(TipoPersona, tipo=f"natural-{uid()}")
     session.add(tipo_persona)
     tipo_subscripcion = v_fixture_factory.build(TipoSubscripciones, tipo="mensual")
     session.add(tipo_subscripcion)
