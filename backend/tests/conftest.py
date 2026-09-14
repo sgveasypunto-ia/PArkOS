@@ -163,6 +163,15 @@ def _testcontainers_url_to_psycopg(raw: str) -> str:
 # Container fixture
 # ---------------------------------------------------------------------------
 
+# Optional escape hatch: when ``PARKOS_DOCKER_TEST=1`` is set, skip
+# testcontainers entirely and reuse whatever ``DATABASE_URL`` points at
+# (typically the live ``parkos-branch-db`` reachable from inside the
+# ``parkos-api-sucursal`` container — see ``infra/deploy/docker-compose.local.yml``).
+# This is the path used by the §4.3 check suite, which runs pytest
+# inside the deployed container without a Docker-in-Docker socket.
+_DOCKER_TEST = os.environ.get("PARKOS_DOCKER_TEST") == "1"
+
+
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[object]:
     """Boot a testcontainers Postgres container (session-scope).
@@ -174,7 +183,21 @@ def postgres_container() -> Iterator[object]:
 
     The container is started lazily on first access; downstream fixtures
     (``alembic_upgrade``, ``pg_engine``) gate on the container being up.
+
+    When ``PARKOS_DOCKER_TEST=1`` is set, yields a sentinel object whose
+    ``get_connection_url()`` returns the live ``DATABASE_URL`` — no
+    testcontainers boot, the schema is taken as-is (migrations are
+    already applied to the running branch-db).
     """
+    if _DOCKER_TEST:
+        url = os.environ.get(
+            "DATABASE_URL",
+            "postgresql+asyncpg://parkos_app:parkos_app_dev@branch-db:5432/parkos",
+        )
+        sentinel = _DockerContainerSentinel(url)
+        yield sentinel
+        return
+
     try:
         from testcontainers.postgres import PostgresContainer
     except ImportError as exc:
@@ -189,6 +212,23 @@ def postgres_container() -> Iterator[object]:
         yield container
     finally:
         container.stop()
+
+
+class _DockerContainerSentinel:
+    """Stand-in for a testcontainers ``PostgresContainer`` when running
+    against the live ``parkos-branch-db``.
+
+    Exposes ``get_connection_url()`` returning the configured
+    ``DATABASE_URL`` (already in asyncpg form). The two DSN-translation
+    helpers below pass URLs through unchanged when they already start
+    with ``postgresql+asyncpg://`` or ``postgresql+psycopg://``.
+    """
+
+    def __init__(self, url: str) -> None:
+        self._url = url
+
+    def get_connection_url(self) -> str:
+        return self._url
 
 
 @pytest.fixture(scope="session")
@@ -210,6 +250,9 @@ def pg_async_dsn(postgres_container) -> str:
 @pytest.fixture(scope="session")
 def _wait_for_pg(pg_dsn: str) -> None:
     """Poll psycopg until the DB accepts connections (max 30s)."""
+    if _DOCKER_TEST:
+        # Live DB — assume reachable; alembic_upgrade is a no-op too.
+        return
     deadline = time.monotonic() + ALEMBIC_TIMEOUT_S
     last_err: Exception | None = None
     while time.monotonic() < deadline:
@@ -240,7 +283,13 @@ def alembic_upgrade(pg_dsn: str, _wait_for_pg: None) -> None:
     DB tests aren't bombarded with confusing ``UndefinedTable``
     errors. Override via ``TEST_PG_IMAGE=parkos-postgres:16-pgpartman``
     on a system where that image has been built.
+
+    Skipped entirely under ``PARKOS_DOCKER_TEST=1`` — the live
+    ``parkos-branch-db`` already has the schema applied.
     """
+    if _DOCKER_TEST:
+        return
+
     import subprocess
 
     migrations_pkg = _PARKOS_CORE_SRC.parent / "migrations"
@@ -488,10 +537,15 @@ async def client(app: str, pg_engine: AsyncEngine) -> AsyncIterator[object]:
     The DB URL env var is overridden to the testcontainers URL so the
     ``get_session`` dependency resolves to the test DB. We use ASGI
     transport — no real socket — for speed.
+
+    Under ``PARKOS_DOCKER_TEST=1`` the engine URL is already the live
+    ``parkos-branch-db`` DSN — ``os.environ`` is left untouched so the
+    app picks up the same connection the rest of the container uses.
     """
     import httpx
 
-    os.environ["DATABASE_URL"] = pg_engine.url.render_as_string(hide_password=False)
+    if not _DOCKER_TEST:
+        os.environ["DATABASE_URL"] = pg_engine.url.render_as_string(hide_password=False)
     # Force the lazy engine in parkos_core.db.engine to rebuild.
     import parkos_core.db.engine as _engine_mod
     _engine_mod._engine = None
@@ -701,11 +755,152 @@ async def seeded_usuario_uuid(pg_engine: AsyncEngine) -> uuid_lib.UUID:
         return usuario.uuid
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.2 shared fixtures (TASK-F1.2-3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def make_auth_user_with_branch(pg_engine: AsyncEngine):
+    """Factory: insert one ``usuarios`` + one ``usuarios_sucursal`` + one
+    ``sucursal`` with REAL bcrypt. Returns a tuple
+    ``(user_uuid, sucursal_uuid, email, plaintext_password)``.
+
+    Every test gets fresh UUIDs to avoid collisions on the shared
+    ``pg_engine`` (62 tests reuse it). The ``sucursal_uuid`` returned
+    is the branch the operator gets pinned to by the ``operador-`` JWT
+    issued from this fixture.
+    """
+    import bcrypt
+
+    from parkos_core.models.V.sucursal import Sucursal
+    from parkos_core.models.V.usuarios import Usuarios
+    from parkos_core.models.V.usuarios_sucursal import UsuariosSucursal
+
+    from tests.conftest import VFixtureFactory
+
+    factory: list[object] = []
+
+    async def _factory(
+        *,
+        email: str | None = None,
+        plaintext_password: str = "Correcta123!",
+        rol: str = "operador",
+        nombre: str = "Juan",
+        apellido: str = "Pérez",
+        branch_nombre: str = "Sucursal Norte",
+        branch_prefijo: str = "NTE",
+    ) -> tuple[uuid_lib.UUID, uuid_lib.UUID, str, str]:
+        from datetime import UTC, datetime
+
+        password_hash = bcrypt.hashpw(
+            plaintext_password.encode("utf-8"), bcrypt.gensalt()
+        ).decode("utf-8")
+        email = email or f"auth-me-{uuid_lib.uuid4().hex[:12]}@example.com"
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+        async with Session() as session:
+            sucursal = VFixtureFactory.build(
+                Sucursal,
+                nombre=branch_nombre,
+                prefijo_nombre=branch_prefijo,
+            )
+            session.add(sucursal)
+            await session.flush()
+
+            user = VFixtureFactory.build(
+                Usuarios,
+                email=email,
+                password_hash=password_hash,
+                rol=rol,
+                nombre=nombre,
+                apellido=apellido,
+            )
+            session.add(user)
+            await session.flush()
+
+            session.add(
+                VFixtureFactory.build(
+                    UsuariosSucursal,
+                    uuid_sucursal=sucursal.uuid,
+                    uuid_usuario=user.uuid,
+                )
+            )
+            await session.commit()
+            factory.append((user.uuid, sucursal.uuid, email, plaintext_password))
+            return (user.uuid, sucursal.uuid, email, plaintext_password)
+
+    return _factory
+
+
+@pytest_asyncio.fixture
+async def auth_seguridad_global(pg_engine: AsyncEngine) -> uuid_lib.UUID:
+    """Insert one ``configuracion_seguridad`` row with the GLOBAL default
+    ``max_intentos_login=5, minutos_bloqueo_login=15`` (R-F1.2-3,
+    plan.md:609).
+
+    Returns the ``uuid`` of the inserted row so callers can reference it.
+    Each test gets a fresh row (UUIDs collide on the ``vigente_desde``
+    UK if reused within the same TX — keep them separate).
+    """
+    from parkos_core.models.V.configuracion_seguridad import ConfiguracionSeguridad
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        cfg = VFixtureFactory.build(
+            ConfiguracionSeguridad,
+            uuid_sucursal=None,  # global default
+            max_intentos_login=5,
+            minutos_bloqueo_login=15,
+        )
+        session.add(cfg)
+        await session.commit()
+        return cfg.uuid
+
+
+@pytest_asyncio.fixture
+async def auth_seguridad_override(pg_engine: AsyncEngine) -> uuid_lib.UUID:
+    """Insert one ``configuracion_seguridad`` per-branch override
+    ``max_intentos_login=3, minutos_bloqueo_login=2``.
+
+    Returns the ``uuid_sucursal`` (branch) of the inserted override so
+    callers can both reference the branch and use the override config.
+    The branch override wins over the global default when present
+    (R-F1.2-3, plan.md:609).
+    """
+    from parkos_core.models.V.configuracion_seguridad import ConfiguracionSeguridad
+    from parkos_core.models.V.sucursal import Sucursal
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        sucursal = VFixtureFactory.build(
+            Sucursal,
+            nombre="Sucursal Override",
+            prefijo_nombre="OVR",
+        )
+        session.add(sucursal)
+        await session.flush()
+
+        cfg = VFixtureFactory.build(
+            ConfiguracionSeguridad,
+            uuid_sucursal=sucursal.uuid,
+            max_intentos_login=3,
+            minutos_bloqueo_login=2,
+        )
+        session.add(cfg)
+        await session.commit()
+        return sucursal.uuid
+
+
 __all__ = [
     "VFixtureFactory",
     "alembic_upgrade",
     "app",
+    "auth_seguridad_global",
+    "auth_seguridad_override",
     "client",
+    "make_auth_user_with_branch",
     "make_spec",
     "mint_admin_jwt",
     "mint_operador_jwt",

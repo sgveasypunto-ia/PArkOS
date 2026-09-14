@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import datetime
+from typing import Annotated
 
 from pydantic import EmailStr, Field, StringConstraints
-from typing_extensions import Annotated
 
 from .common import FilterBase, ReadListBase, _Base
-
 
 # ---------------------------------------------------------------------------
 # usuarios ([V])
@@ -263,32 +262,94 @@ class TokenPair(_Base):
     expires_in: int
 
 
+# ---------------------------------------------------------------------------
+# GET /auth/me — HU-F1.2 (R-F1.2-5..9)
+# ---------------------------------------------------------------------------
+
+
+class UserItem(_Base):
+    """Identity block of ``AuthMeResponse``.
+
+    Mirrors the columns the operator UI needs to render the avatar/name
+    panel from the access token alone — no extra roundtrip to ``/usuarios``
+    required.
+    """
+
+    uuid: uuid_lib.UUID
+    email: str | None = None
+    nombre: str | None = None
+    apellido: str | None = None
+    rol: str | None = None
+
+
+class SucursalItem(_Base):
+    """Branch block. Reused by both the singular ``sucursal`` (JWT claim)
+    and the plural ``sucursales_permitidas`` (DB-driven list of every
+    active assignment)."""
+
+    uuid: uuid_lib.UUID
+    nombre: str | None = None
+    prefijo_nombre: str | None = None
+
+
+class AuthMeResponse(_Base):
+    """``GET /api/v1/auth/me`` response — operator session profile.
+
+    Five populated blocks (R-F1.2-5..9):
+
+    - ``user`` — identity (from ``prod.usuarios``).
+    - ``sucursal`` — single branch pinned by the ``operador-`` JWT
+      (the ``sucursal`` claim). Mirrors the JWT pinneado.
+    - ``sucursales_permitidas`` — ALL active ``usuarios_sucursal`` for
+      the actor, ordered by ``sucursal.nombre ASC``. Includes the
+      singular ``sucursal`` above (subset relationship).
+    - ``permisos`` — list of permission codes (``[]`` if none).
+    - ``expires_at`` — ISO 8601 UTC derived from the JWT ``exp`` claim.
+
+    ASIMETRÍA (KD-4 del design): ``sucursal`` es el pinneado del JWT
+    (singular) y ``sucursales_permitidas`` es la lista completa de DB
+    (plural). El subset relationship
+    (``sucursal.uuid in {s.uuid for s in sucursales_permitidas}``)
+    se mantiene por invariante y se valida en
+    ``test_auth_me_multi_branch.py``.
+    """
+
+    user: UserItem
+    sucursal: SucursalItem
+    sucursales_permitidas: list[SucursalItem]
+    permisos: list[str]
+    expires_at: str  # ISO 8601 UTC, derivated from JWT exp claim
+
+
 __all__ = [
-    "UsuariosRead",
-    "UsuariosCreate",
-    "UsuariosUpdate",
-    "UsuariosFilter",
-    "UsuariosReadList",
-    "PermisosRead",
-    "PermisosCreate",
-    "PermisosUpdate",
-    "PermisosFilter",
-    "PermisosReadList",
-    "PermisosUsuarioRead",
-    "PermisosUsuarioCreate",
-    "PermisosUsuarioUpdate",
-    "PermisosUsuarioFilter",
-    "PermisosUsuarioReadList",
-    "UsuariosSucursalRead",
-    "UsuariosSucursalCreate",
-    "UsuariosSucursalUpdate",
-    "UsuariosSucursalFilter",
-    "UsuariosSucursalReadList",
-    "LoginRead",
+    "AuthMeResponse",
     "LoginCreate",
     "LoginFilter",
+    "LoginRead",
     "LoginReadList",
     "LoginRequest",
+    "PermisosCreate",
+    "PermisosFilter",
+    "PermisosRead",
+    "PermisosReadList",
+    "PermisosUpdate",
+    "PermisosUsuarioCreate",
+    "PermisosUsuarioFilter",
+    "PermisosUsuarioRead",
+    "PermisosUsuarioReadList",
+    "PermisosUsuarioUpdate",
     "RefreshRequest",
+    "SucursalItem",
     "TokenPair",
+    "UserItem",
+    "UsuariosCreate",
+    "UsuariosFilter",
+    "UsuariosRead",
+    "UsuariosReadList",
+    "UsuariosSucursalCreate",
+    "UsuariosSucursalFilter",
+    "UsuariosSucursalRead",
+    "UsuariosSucursalReadList",
+    "UsuariosSucursalUpdate",
+    "UsuariosUpdate",
 ]

@@ -40,7 +40,7 @@ async def record_login(
     session: AsyncSession,
     *,
     usuario_uuid: uuid_lib.UUID,
-    sucursal_uuid: uuid_lib.UUID,
+    sucursal_uuid: uuid_lib.UUID | None = None,
     actor_uuid: uuid_lib.UUID | None = None,
     success: bool = True,
     motivo: str | None = None,
@@ -51,7 +51,11 @@ async def record_login(
     Args:
         session: Active ``AsyncSession`` (caller commits).
         usuario_uuid: The user attempting login.
-        sucursal_uuid: The branch the login is against.
+        sucursal_uuid: The branch the login is against. ``None`` is valid
+            — the column is nullable; the bad-password path in
+            ``api/v1/auth.py::login`` records the failure BEFORE the
+            first branch assignment is resolved (R-F1.2-1), so this
+            helper accepts ``None`` to satisfy the audit invariant.
         actor_uuid: The audit actor. Defaults to ``usuario_uuid`` for self-service.
         success: ``True`` → ``estado='exitoso'``, ``False`` → ``estado='fallido'``.
         motivo: Optional failure reason (carried in the log row).
