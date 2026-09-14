@@ -438,6 +438,69 @@ vigencia. ISO-8601 con o sin tz; naive = UTC. Default en el handler: `datetime.n
 `TarifasSucursalFilter` (en el factory para los demás verbos, en tests, en scripts) MUST
 seguir funcionando sin cambios — el campo nuevo tiene default `None`.
 
+### REQ-OPS-022: GET `/api/v1/operacion/cotizar?uuid_ingreso` returns the fiscal breakdown
+**Given** an open `prod.ingreso` row for `uuid_ingreso=X` (i.e. without any non-anulada
+`prod.salidas`), an active row in `prod.tarifas_sucursal` for the
+`(uuid_sucursal, uuid_tipo_vehiculo)` combination that is vigente at `NOW()` per the
+bi-temporal predicate (`vigente_desde <= NOW() AND (vigente_hasta IS NULL OR
+vigente_hasta > NOW()) AND estado='activo'`), and an active row in `prod.impuestos`
+with `nombre='IVA'` and `porcentaje > 0` that is also vigente at `NOW()`
+**When** the handler receives the request with a valid JWT bearing an `operador-`
+or `admin-` issuer (`_ingreso_issuer_dep`)
+**Then** the PL/pgSQL `prod.calcular_cotizacion(p_uuid_ingreso)` MUST execute
+`SELECT … FOR SHARE` against the matched `tarifas_sucursal` row, MUST compute
+`subtotal`, `iva`, `total`, `tiempo_minutos`, and `vigente_hasta = NOW() + INTERVAL
+'15 minutes'`, MUST apply the formula `iva = total * porcentaje_impuesto` and
+`subtotal = total - iva`, and MUST return `200 OK` with body
+`{cobrar: true, subtotal, iva, total, tiempo_minutos, tarifa_uuid, vigente_hasta}`
+**And** the response MUST carry the header `Cache-Control: no-store` so no proxy
+or intermediary can serve a stale quote (R8).
+
+### REQ-OPS-023: Active monthly subscription by plate returns `cobrar: false`
+**Given** the `prod.ingreso` row exists and is open, AND the plate joined through
+`prod.subscripcion_vehiculos` → `prod.subscripciones_cliente` → `prod.vehiculos`
+has an active subscription vigente at `NOW()` per the same bi-temporal predicate
+**When** the handler invokes `prod.calcular_cotizacion(p_uuid_ingreso)`
+**Then** the PL/pgSQL MUST delegate to the SQL port of
+`resolve_active_subscription_for_exit` (precedent at
+`backend/.../api/v1/operacion.py:215-277`), MUST short-circuit the pricing
+pipeline, and MUST return `200 OK` with body `{cobrar: false,
+motivo: "mensualidad_vigente"}`
+**And** the PL/pgSQL MUST NOT acquire the `SELECT … FOR SHARE` lock on
+`tarifas_sucursal` and MUST NOT invoke the pricing formula, because no cash
+movement applies — the monthly fee is settled by the subscription, not the exit.
+
+### REQ-OPS-024: Typed errors with explicit precedence
+**Given** any valid request carrying a JWT signed by an allowed issuer
+**When** the PL/pgSQL function evaluates its preconditions for
+`p_uuid_ingreso`
+**Then** the function MUST return the first applicable error in this exact
+precedence order: (1) `jsonb_build_object('error', 'ingreso_no_encontrado')` →
+handler maps to `404 Not Found` when the `uuid_ingreso` does not exist in
+`prod.ingreso` or already has a non-anulada row in `prod.salidas`; (2)
+`jsonb_build_object('error', 'tarifa_no_vigente')` → handler maps to
+`404 Not Found` when the previous check passed but no `tarifas_sucursal` row
+satisfies the bi-temporal predicate for the
+`(uuid_sucursal, uuid_tipo_vehiculo)` combination at `NOW()` (KD-3); (3)
+`jsonb_build_object('error', 'iva_no_configurado')` → handler maps to
+`500 Internal Server Error` when the two previous checks passed but no
+`prod.impuestos` row has `nombre='IVA'` vigente at `NOW()` with
+`porcentaje > 0` (KD-IVA — seeding is out of scope of F1.8 and is owned by
+HU-F14.2 Parte II)
+**And** the precedence MUST be strictly
+`ingreso_no_encontrado > tarifa_no_vigente > iva_no_configurado`; no other
+ordering is permitted, and a single response MUST never combine two error codes.
+
+### REQ-OPS-025: `calcular_cotizacion` declares STABLE or VOLATILE; AST walk rejects mutations
+
+> **Note**: Originally letter-stated as `STABLE` only; reconciled 2026-09-14 to accept `VOLATILE` when `SELECT ... FOR SHARE` is required (Postgres rejects shared locks in STABLE/IMMUTABLE functions). The read-only guarantee is enforced by an AST walk over the migration body rejecting INSERT|UPDATE|DELETE|TRUNCATE|MERGE tokens, not by the volatility declaration.
+
+**Given** the Alembic migration 0022 declares the function with `LANGUAGE plpgsql STABLE` or `LANGUAGE plpgsql VOLATILE` (either is acceptable; VOLATILE is required when using `SELECT ... FOR SHARE`)
+**When** `pytest tests/static/test_no_write_in_calcular_cotizacion.py` runs
+**Then** the test MUST walk the migration body, parse `op.execute("""...""")`, and reject any `INSERT|UPDATE|DELETE|TRUNCATE|MERGE` token (case-insensitive, outside string literals and comments)
+**And** the test MUST be a regular part of the pytest collection (auto-discovered in `backend/tests/static/`)
+**And** the full `uv run pytest -q backend/tests/` MUST pass with this AST check included.
+
 ## Modified Capabilities
 
 - `backend/pyproject.toml` — adds the pytest stack and coverage

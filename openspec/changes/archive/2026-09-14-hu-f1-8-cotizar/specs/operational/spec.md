@@ -80,24 +80,15 @@ HU-F14.2 Parte II)
 `ingreso_no_encontrado > tarifa_no_vigente > iva_no_configurado`; no other
 ordering is permitted, and a single response MUST never combine two error codes.
 
-### REQ-OPS-025: `calcular_cotizacion` is `STABLE` and the AST suite rejects mutations
-**Given** the Alembic migration `0022_create_calcular_cotizacion.py` creates the
-function `prod.calcular_cotizacion(p_uuid_ingreso uuid) RETURNS jsonb` in
-`LANGUAGE plpgsql`
-**When** the test `tests/static/test_no_write_in_calcular_cotizacion.py` runs as
-part of `uv run pytest -q backend/tests/`
-**Then** the function MUST be declared `STABLE` (not `VOLATILE`) in the
-`CREATE FUNCTION` header so the planner can apply read-only optimizations and
-the contract documents that no side-effect is permitted
-**And** the AST walker MUST reject any occurrence of the SQL keywords
-`INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, or `MERGE` inside the function body,
-scanning both the SQL text inside the Alembic `op.execute()` call and the
-migration file as a whole, and MUST exit non-zero naming the offending
-construct when any such mutation appears
-**And** the full suite `uv run pytest -q backend/tests/` MUST pass after
-`sdd-apply`, including this AST check and the unit and integration tests
-introduced by the change (`tests/unit/test_calcular_cotizacion.py` and
-`tests/integration/test_calcular_cotizacion_db.py`).
+### REQ-OPS-025: `calcular_cotizacion` declares STABLE or VOLATILE; AST walk rejects mutations
+
+> **Note**: Originally letter-stated as `STABLE` only; reconciled 2026-09-14 to accept `VOLATILE` when `SELECT ... FOR SHARE` is required (Postgres rejects shared locks in STABLE/IMMUTABLE functions). The read-only guarantee is enforced by an AST walk over the migration body rejecting INSERT|UPDATE|DELETE|TRUNCATE|MERGE tokens, not by the volatility declaration.
+
+**Given** the Alembic migration 0022 declares the function with `LANGUAGE plpgsql STABLE` or `LANGUAGE plpgsql VOLATILE` (either is acceptable; VOLATILE is required when using `SELECT ... FOR SHARE`)
+**When** `pytest tests/static/test_no_write_in_calcular_cotizacion.py` runs
+**Then** the test MUST walk the migration body, parse `op.execute("""...""")`, and reject any `INSERT|UPDATE|DELETE|TRUNCATE|MERGE` token (case-insensitive, outside string literals and comments)
+**And** the test MUST be a regular part of the pytest collection (auto-discovered in `backend/tests/static/`)
+**And** the full `uv run pytest -q backend/tests/` MUST pass with this AST check included.
 
 ## Modified Capabilities
 
