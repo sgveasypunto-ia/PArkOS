@@ -31,7 +31,7 @@ import uuid as uuid_lib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,8 +43,18 @@ from ...models.L_E.ingreso import Ingreso
 from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.vehiculos import Vehiculos
+from ...repo.cotizacion import (
+    CotizacionError,
+    IngresoNoEncontrado,
+    IVANoConfigurado,
+    TarifaNoVigente,
+    cotizar_ingreso,
+)
 from ...repo.event import record_event
 from ...schemas.operacion import (
+    CotizarFacturacion,
+    CotizarMensualidad,
+    CotizarResponse,
     IngresoCreate,
     IngresoRead,
 )
@@ -190,6 +200,104 @@ async def list_ingresos(
 
 
 # ---------------------------------------------------------------------------
+# HU-F1.8 (REQ-OPS-022..025) -- GET /operacion/cotizar
+# ---------------------------------------------------------------------------
+
+
+def _cotizar_no_store_headers() -> dict[str, str]:
+    """Return the ``Cache-Control: no-store`` headers (R8).
+
+    Every response from ``/operacion/cotizar`` MUST carry this header
+    regardless of status code -- a proxy that serves a stale quote
+    would silently accept an out-of-date fiscal breakdown. The handler
+    attaches the header to both the success path (via ``response.headers``)
+    and the error path (via ``HTTPException(headers=...)``).
+    """
+    return {"Cache-Control": "no-store"}
+
+
+@router.get(
+    "/cotizar",
+    response_model=CotizarResponse,
+    summary="Server-side quotation for an open ingreso (HU-F1.8, GAP-BE-09)",
+    responses={
+        404: {"description": "Ingreso no existe o ya cerrado / sin tarifa vigente"},
+        500: {"description": "IVA no configurado (KD-IVA deployment blocker)"},
+    },
+)
+async def cotizar_ingreso_handler(
+    response: Response,
+    uuid_ingreso: uuid_lib.UUID = Query(  # noqa: B008
+        ...,
+        description="UUIDv4 del ingreso a cotizar",
+    ),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+) -> CotizarResponse:
+    """Compute the fiscal breakdown (or short-circuit) for ``uuid_ingreso``.
+
+    Thin adapter over ``repo.cotizacion.cotizar_ingreso`` -- the whole
+    pricing formula lives in PL/pgSQL (``prod.calcular_cotizacion``,
+    migration ``0022_create_calcular_cotizacion.py``) so the
+    ``SELECT ... FOR SHARE`` lock on ``tarifas_sucursal`` (KD-1) holds
+    for the whole transaction. Handler-side responsibilities:
+
+      1. Parse ``uuid_ingreso`` (Pydantic UUID4 via ``Query``).
+      2. Call the repo; map typed exceptions to ``HTTPException``
+         with the right status code and the ``Cache-Control: no-store``
+         header attached.
+      3. Map the jsonb payload to :class:`CotizarResponse` (discriminated
+         by ``cobrar: bool``).
+
+    The function does NOT commit the session -- the AsyncSession
+    dependency commits on context-manager exit (and the test suite uses
+    nested-rollback). The PL/pgSQL lock is released when the transaction
+    ends, which is the same boundary.
+    """
+    # Attach the no-store header to the SUCCESS path. The error path
+    # carries the same header via ``HTTPException(headers=...)`` below.
+    response.headers["Cache-Control"] = "no-store"
+
+    try:
+        payload = await cotizar_ingreso(session, uuid_ingreso=uuid_ingreso)
+    except IngresoNoEncontrado as err:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "ingreso_no_encontrado"},
+            headers=_cotizar_no_store_headers(),
+        ) from err
+    except TarifaNoVigente as err:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "tarifa_no_vigente"},
+            headers=_cotizar_no_store_headers(),
+        ) from err
+    except IVANoConfigurado as err:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "iva_no_configurado"},
+            headers=_cotizar_no_store_headers(),
+        ) from err
+    except CotizacionError as err:
+        # Unknown / unexpected error code from the PL/pgSQL function --
+        # surface as 500 with the original message; never silently swallow.
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "cotizacion_error"},
+            headers=_cotizar_no_store_headers(),
+        ) from err
+
+    # Map jsonb -> CotizarResponse. The PL/pgSQL function returns
+    # ``cobrar: false, motivo: 'mensualidad_vigente'`` OR
+    # ``cobrar: true, ...fiscal fields...`` -- Pydantic's discriminated
+    # union picks the variant by ``cobrar``.
+    if payload.get("cobrar") is True:
+        return CotizarFacturacion.model_validate(payload)
+    return CotizarMensualidad.model_validate(payload)
+
+
+# ---------------------------------------------------------------------------
 # T-PR5-016 (REQ-CAT-017, addendum #2) — CU-03M subscription lookup, R22
 # ---------------------------------------------------------------------------
 
@@ -277,4 +385,4 @@ async def resolve_active_subscription_for_exit(
     return SubscriptionLookupResult(found=True, subscripcion=subscripcion)
 
 
-__all__ = ["SubscriptionLookupResult", "resolve_active_subscription_for_exit", "router"]
+__all__ = ["SubscriptionLookupResult", "cotizar_ingreso_handler", "resolve_active_subscription_for_exit", "router"]

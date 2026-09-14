@@ -39,6 +39,10 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import datetime
+from decimal import Decimal
+from typing import Annotated, Literal
+
+from pydantic import ConfigDict, Field
 
 from .common import FilterBase, ReadListBase, _Base
 
@@ -122,6 +126,85 @@ class IngresoReadList(ReadListBase[IngresoRead]):
 
 
 __all__ = [
+    "IngresoCreate",
+    "IngresoFilter",
+    "IngresoRead",
+    "IngresoReadList",
+]
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.8 -- CotizarResponse (discriminated union by ``cobrar: bool``)
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class CotizarFacturacion(_Base):
+    """``cobrar=true`` variant -- full fiscal breakdown.
+
+    Returned when an ``ingreso`` exists, has no non-anulada ``salidas``,
+    has no active monthly subscription at the branch, has a vigente
+    ``tarifas_sucursal`` row for the combination, and has a vigente
+    ``impuestos`` row with ``nombre='IVA'``.
+
+    All seven GAP-BE-09 contract fields are REQUIRED (no defaults) --
+    the contract is exhaustive; missing any field is a server bug.
+
+    **``tiempo_minutos`` shape (apply-time correction).** The PL/pgSQL
+    function computes ``EXTRACT(EPOCH FROM (NOW() - fecha_ingreso)) / 60.0``
+    which returns a sub-second-precision ``numeric`` (e.g. ``89.0025``
+    for a 89-minute-old row). Postgres serializes it as a Python ``float``
+    via the asyncpg jsonb bridge, so the schema accepts ``int | float``.
+    Clients SHOULD treat it as informational (the actual billing uses
+    ``CEIL(tiempo_minutos)`` minutes inside the function); the design's
+    original ``int`` typing was relaxed in the apply phase to accept the
+    real wire value.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cobrar: Literal[True]
+    subtotal: Decimal
+    iva: Decimal
+    total: Decimal
+    tiempo_minutos: int | float
+    tarifa_uuid: uuid_lib.UUID
+    vigente_hasta: datetime
+
+
+class CotizarMensualidad(_Base):
+    """``cobrar=false`` variant -- short-circuit for an active monthly subscription.
+
+    Returned when the ingreso's plate has an open subscription at the
+    branch (REQ-OPS-023, design.md §3 step 2). The PL/pgSQL function
+    short-circuits the pricing pipeline; no fiscal data is computed.
+
+    ``motivo`` is a literal string so the contract is closed -- adding
+    a new motivo requires a new ``CotizarMensualidad`` variant, not
+    free-form string injection.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cobrar: Literal[False]
+    motivo: Literal["mensualidad_vigente"]
+
+
+# Discriminated union: Pydantic v2 picks the variant by the value of
+# ``cobrar`` (True -> CotizarFacturacion, False -> CotizarMensualidad).
+# ``Annotated[..., Field(discriminator=...)]`` is the v2-native form;
+# ``extra='forbid'`` on each variant still rejects smuggle attempts
+# like ``{"cobrar": True, "motivo": "mensualidad_vigente"}``.
+CotizarResponse = Annotated[
+    CotizarFacturacion | CotizarMensualidad,
+    Field(discriminator="cobrar"),
+]
+
+
+__all__ = [
+    "CotizarFacturacion",
+    "CotizarMensualidad",
+    "CotizarResponse",
     "IngresoCreate",
     "IngresoFilter",
     "IngresoRead",
