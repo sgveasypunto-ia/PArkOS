@@ -9,17 +9,27 @@ for ``prod.usuarios`` — best-effort until the ``intentos_fallo`` column
 lands). Every helper writes a co-transactional ``log_transaccional`` row
 to satisfy the DB-layer session-guard trigger on UPDATE.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime, timezone
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..exceptions import SesionAlreadyActive
 from ..models.L_S.login import Login
 from ..models.L_S.sesion import Sesion
 from ..models.V.usuarios import Usuarios
+
+# SQLSTATE for unique-constraint violation in Postgres. Used to
+# detect the partial unique index violation from migration 0023
+# (RE ``prod.uq_prod_sesion_one_active_per_user``) inside
+# ``open_session`` and translate it to the typed domain exception
+# ``SesionAlreadyActive`` (KD-2 / REQ-OPS-028).
+_UNIQUE_VIOLATION_SQLSTATE = "23505"
 
 
 class SessionGuardError(Exception):
@@ -133,9 +143,7 @@ async def close_login_with_log(
     # 1. Read current row (for datos_anteriores snapshot)
     from sqlalchemy import select
 
-    result = await session.execute(
-        select(Login).where(Login.uuid == login_uuid)
-    )
+    result = await session.execute(select(Login).where(Login.uuid == login_uuid))
     row = result.scalar_one_or_none()
     if row is None:
         raise SessionGuardError(f"login {login_uuid} not found")
@@ -162,9 +170,7 @@ async def close_login_with_log(
     from sqlalchemy import update
 
     await session.execute(
-        update(Login)
-        .where(Login.uuid == login_uuid)
-        .values(timestamp_cierre=now, estado="cerrado")
+        update(Login).where(Login.uuid == login_uuid).values(timestamp_cierre=now, estado="cerrado")
     )
 
     # Refresh the row so the caller sees the updated state
@@ -248,6 +254,20 @@ async def open_session(
         )
         session.add(log_row)
 
+    # KD-2 / REQ-OPS-028: the partial unique index from migration 0023
+    # (``prod.uq_prod_sesion_one_active_per_user``) rejects a second
+    # open sesion for the same ``uuid_usuario``. ``flush()`` forces the
+    # INSERTs through so the SA ``IntegrityError`` is inspectable in
+    # this frame rather than only at the implicit commit (the previous
+    # behaviour left the 500 surface to FastAPI without typed-mapping).
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
+        if pgcode == _UNIQUE_VIOLATION_SQLSTATE:
+            raise SesionAlreadyActive(uuid_usuario=uuid_usuario) from exc
+        raise
+
     return new_row
 
 
@@ -279,9 +299,7 @@ async def close_session_with_log(
 
     # 1. Read the current Sesion row (for uuid_sucursal + initial values
     #    to snapshot into datos_nuevos).
-    result = await session.execute(
-        select(Sesion).where(Sesion.uuid == sesion_uuid)
-    )
+    result = await session.execute(select(Sesion).where(Sesion.uuid == sesion_uuid))
     row = result.scalar_one_or_none()
     if row is None:
         raise SessionNotFoundError(f"sesion {sesion_uuid} not found")
@@ -298,19 +316,19 @@ async def close_session_with_log(
             datos_nuevos={
                 "valor_inicial_efectivo": (
                     str(row.valor_inicial_efectivo)
-                    if row.valor_inicial_efectivo is not None else None
+                    if row.valor_inicial_efectivo is not None
+                    else None
                 ),
                 "valor_inicial_datafono": (
                     str(row.valor_inicial_datafono)
-                    if row.valor_inicial_datafono is not None else None
+                    if row.valor_inicial_datafono is not None
+                    else None
                 ),
                 "valor_final_efectivo": (
-                    str(valor_final_efectivo)
-                    if valor_final_efectivo is not None else None
+                    str(valor_final_efectivo) if valor_final_efectivo is not None else None
                 ),
                 "valor_final_datafono": (
-                    str(valor_final_datafono)
-                    if valor_final_datafono is not None else None
+                    str(valor_final_datafono) if valor_final_datafono is not None else None
                 ),
             },
         )
@@ -324,9 +342,7 @@ async def close_session_with_log(
         .values(timestamp_cierre=now, uuid_usuario_cierre=actor_uuid)
     )
     if update_result.rowcount == 0:
-        raise SessionNotFoundError(
-            f"sesion {sesion_uuid} already closed or not found"
-        )
+        raise SessionNotFoundError(f"sesion {sesion_uuid} already closed or not found")
 
     # 4. Refresh and return so the caller sees the updated state
     await session.refresh(row)
@@ -383,6 +399,7 @@ async def clear_login_failures(
 
 
 __all__ = [
+    "SesionAlreadyActive",
     "SessionGuardError",
     "SessionNotFoundError",
     "clear_login_failures",

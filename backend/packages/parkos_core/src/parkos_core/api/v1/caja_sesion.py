@@ -10,16 +10,19 @@ Also adds ``GET /arqueos/{uuid}/diferencias`` reading the Arqueo row and
 computing expected vs reported deltas (SC-40-S-FULL-SHIFT — full-shift
 difference calculation).
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...exceptions import SesionAlreadyActive
 from ...models.L_S.sesion import Sesion
+from ...repo.sesion_activa import get_sesion_activa
 from ...repo.session_cycle import close_session_with_log, open_session
 from ...schemas.caja import (
     SesionCreate,
@@ -99,15 +102,25 @@ async def open_sesion(
     valor_efectivo = float(payload.valor_inicial_efectivo or 0)
     valor_datafono = float(payload.valor_inicial_datafono or 0)
 
-    new_row = await open_session(
-        session,
-        actor_uuid=ctx.actor_uuid,
-        uuid_sucursal=payload.uuid_sucursal,
-        valor_inicial_efectivo=valor_efectivo,
-        valor_inicial_datafono=valor_datafono,
-        uuid_usuario=payload.uuid_usuario,
-        log_tx=True,
-    )
+    try:
+        new_row = await open_session(
+            session,
+            actor_uuid=ctx.actor_uuid,
+            uuid_sucursal=payload.uuid_sucursal,
+            valor_inicial_efectivo=valor_efectivo,
+            valor_inicial_datafono=valor_datafono,
+            uuid_usuario=payload.uuid_usuario,
+            log_tx=True,
+        )
+    except SesionAlreadyActive as exc:
+        # KD-1 / REQ-OPS-028: the partial unique index from migration
+        # 0023 rejected the INSERT because the actor already has an
+        # OPEN sesion. Map to 409 with a typed body — NEVER surface
+        # the pgcode or raw driver message to the client.
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "sesion_already_active"},
+        ) from exc
     await session.commit()
     await session.refresh(new_row)
     return SesionRead.model_validate(new_row)
@@ -188,6 +201,46 @@ async def arqueo_diferencias(
         diferencia_efectivo=reportado_e - esperado_e,
         diferencia_datafono=reportado_d - esperado_d,
     )
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.3 — GET /api/v1/caja-sesion/sesion/me
+#
+# IMPORTANT route ordering: this handler MUST be declared BEFORE the
+# ``router.include_router(make_router(resource="sesion", ...))`` block
+# below. FastAPI matches routes in declaration order; the parametric
+# ``GET /sesion/{uuid}`` mounted by ``make_router`` would otherwise
+# match ``/sesion/me`` first and return 422 ("invalid uuid"). The
+# literal path ``/me`` wins by specificity once registered early.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/sesion/me",
+    response_model=SesionRead,
+    summary="Get the active session for the authenticated user (REQ-OPS-027, REQ-OPS-029).",
+)
+async def get_my_sesion(
+    response: Response,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_sesion_issuer_dep),
+) -> SesionRead:
+    """REQ-OPS-027 + REQ-OPS-029: return the actor's unique active
+    sesion or 404 ``sesion_no_active``.
+
+    The partial unique index from migration 0023 guarantees at most
+    one row satisfies the predicate; ``ORDER BY timestamp_apertura
+    DESC NULLS LAST LIMIT 1`` is defensive against future erosion.
+    """
+    row = await get_sesion_activa(session, actor_uuid=ctx.actor_uuid)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sesion_no_active"},
+        )
+    response.headers["Cache-Control"] = "no-store"
+    return SesionRead.model_validate(row)
 
 
 # Read-only mounts of sesion for GET endpoints (no write via router)
