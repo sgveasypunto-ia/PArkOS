@@ -501,6 +501,120 @@ ordering is permitted, and a single response MUST never combine two error codes.
 **And** the test MUST be a regular part of the pytest collection (auto-discovered in `backend/tests/static/`)
 **And** the full `uv run pytest -q backend/tests/` MUST pass with this AST check included.
 
+### REQ-OPS-026: Partial unique index on `prod.sesion(uuid_usuario) WHERE timestamp_cierre IS NULL` with pre-flight abort
+
+**Given** an Alembic migration `0023_add_sesion_unique_active.py` is
+applied against a Postgres database where `prod.sesion` already exists
+and may contain legacy data
+**When** the migration's `upgrade()` executes
+**Then** the migration MUST first run a pre-flight query of the form
+`SELECT uuid_usuario, count(*) FROM prod.sesion WHERE timestamp_cierre IS
+NULL GROUP BY uuid_usuario HAVING count(*) > 1`
+**And** if the pre-flight returns one or more rows, the migration MUST
+abort with an explicit error that names each affected `uuid_usuario` and
+the orphan count, MUST NOT proceed to `CREATE INDEX`, and MUST NOT leave
+the migration half-applied (Alembic records no version bump on abort)
+**And** the migration MUST then execute
+`CREATE UNIQUE INDEX CONCURRENTLY uq_prod_sesion_one_active_per_user
+ON prod.sesion(uuid_usuario) WHERE timestamp_cierre IS NULL`
+**And** the index MUST be a **partial** index (the `WHERE timestamp_cierre
+IS NULL` predicate is mandatory — a full unique index would forbid two
+historical closed sessions for the same user, which is legitimate)
+**And** the index MUST be created with `CONCURRENTLY` so the build does
+not take an `AccessExclusiveLock` against `prod.sesion` while the table
+is serving cashier operations
+**And** the `downgrade()` MUST execute `DROP INDEX CONCURRENTLY IF EXISTS
+prod.uq_prod_sesion_one_active_per_user`
+**RFC 2119**: MUST (pre-flight abort, `CONCURRENTLY`, partial predicate);
+SHOULD (downgrade uses `CONCURRENTLY` to match the upgrade build mode).
+
+### REQ-OPS-027: `GET /api/v1/caja-sesion/sesion/me` returns the actor's unique active session or 404
+
+**Given** a JWT request reaches the FastAPI router for
+`GET /api/v1/caja-sesion/sesion/me` with a valid `TenantContext` carrying
+`ctx.actor_uuid` (extracted from the token subject by HU-F1.2)
+**When** the dedicated handler `get_my_sesion` invokes
+`repo/sesion_activa.py::get_sesion_activa(session, *, actor_uuid)`
+**Then** the helper MUST execute a SQLAlchemy `SELECT` against `prod.sesion`
+with the predicate `Sesion.uuid_usuario == :actor_uuid AND
+Sesion.timestamp_cierre.is_(None)`
+**And** the helper MUST order the result by
+`Sesion.timestamp_apertura.desc().nulls_last()` and MUST apply `LIMIT 1`
+**And** the helper MUST return exactly one `Sesion` ORM instance if a
+match exists, or `None` otherwise (the partial unique index REQ-OPS-026
+guarantees at most one row satisfies the predicate)
+**And** the handler MUST return `200 OK` with the `SesionRead` payload
+when the helper returns a row
+**And** the handler MUST raise `HTTPException(status_code=404, detail=
+{"error": "sesion_no_active"})` when the helper returns `None`
+**And** the handler MUST be declared with `@router.get("/sesion/me")` and
+MUST be registered **before** the `include_router(make_router(resource=
+"sesion", ...))` block in `caja_sesion.py` so FastAPI matches the
+literal path `/me` ahead of the parametric `/sesion/{uuid}`
+**And** the `make_router` (HU-F1.1 GAP-BE-02 commit `f7cb37a`) MUST
+remain unmodified
+**RFC 2119**: MUST (literal path, ordering, `LIMIT 1`, 404 body shape);
+SHOULD (return 404 with `Cache-Control: no-store` if applicable to keep
+behaviour consistent with other read endpoints, but the contract does not
+require it).
+
+### REQ-OPS-028: `UniqueViolation` from partial unique index maps to 409 `sesion_already_active`, pgcode never exposed
+
+**Given** `repo/session_cycle.py::open_session` is invoked with a
+`uuid_usuario` that already has an active row in `prod.sesion`
+(`timestamp_cierre IS NULL`) — either via a TOCTOU race past the app-level
+fast-path check, or because the fast-path check returned a stale view
+**When** the underlying `INSERT INTO prod.sesion (...)` reaches Postgres
+**Then** Postgres MUST raise a unique-constraint violation because the
+partial unique index from REQ-OPS-026 forbids the row; the
+`psycopg2.errors.UniqueViolation` exception is surfaced with `pgcode ==
+"23505"`
+**And** `repo/session_cycle.open_session` MUST catch
+`psycopg2.errors.UniqueViolation` (identified by `pgcode == "23505"`, not
+by Python `isinstance` alone to remain robust to driver wrapping) and
+MUST re-raise a domain exception `SesionAlreadyActive(uuid_usuario=...)`
+**And** the HTTP handler `POST /api/v1/caja-sesion/sesiones` MUST catch
+`SesionAlreadyActive` and MUST raise `HTTPException(status_code=409,
+detail={"error": "sesion_already_active"})`
+**And** the response body MUST contain **only** `{"error":
+"sesion_already_active"}`; the pgcode `"23505"`, the raw Postgres error
+message, and any driver-level diagnostic strings MUST NOT appear in the
+response body, the response headers, or any log line emitted at `info` or
+higher visibility to client users
+**And** the contract MUST NOT introduce a pre-check `SELECT … WHERE
+uuid_usuario=:u AND timestamp_cierre IS NULL` before the `INSERT` (KD-3
+BD-only): the partial index is the authoritative invariant and a
+pre-check would duplicate round-trips and reopen a TOCTOU window
+**RFC 2119**: MUST (catch by pgcode, re-raise typed domain exception,
+409 mapping, no pgcode in body, no pre-check); SHOULD (log the
+occurrence at `warning` level with `event="sesion_already_active"` and
+the `uuid_usuario` for ops triage, but without the pgcode).
+
+### REQ-OPS-029: Both `operador-` and `admin-` issuers accepted on `GET /api/v1/caja-sesion/sesion/me`
+
+**Given** a JWT request reaches `GET /api/v1/caja-sesion/sesion/me` with
+either an `operador-` prefixed issuer or an `admin-` prefixed issuer
+**When** the dedicated handler `get_my_sesion` resolves its dependencies
+**Then** the dependency `_sesion_issuer_dep` (defined in `caja_sesion.py`
+line 35 with `requires_issuer("operador-", "admin-")`) MUST accept both
+issuer prefixes and MUST reject any other issuer with 401/403 (consistent
+with the rest of `caja_sesion.py`)
+**And** the handler MUST follow REQ-OPS-027 for both issuer classes: it
+MUST resolve `ctx.actor_uuid` from the JWT subject and MUST query
+`prod.sesion WHERE uuid_usuario = ctx.actor_uuid AND timestamp_cierre
+IS NULL ORDER BY timestamp_apertura DESC NULLS LAST LIMIT 1`
+**And** if an `admin-` issuer has no active session (the common case —
+admins rarely open a cashier shift), the response MUST be exactly the
+same 404 with body `{"error": "sesion_no_active"}` as for an `operador-`
+issuer; there is no special admin bypass, no synthetic "view any session"
+behaviour, and no 200 with `null` payload
+**And** if a future need arises to query "the active session of an
+arbitrary `uuid_usuario` from an `admin-` issuer", that is a separate
+endpoint with an explicit query parameter and is OUT OF SCOPE for HU-F1.3
+**RFC 2119**: MUST (accept both issuers, 404 same body, no admin bypass,
+no synthetic payload); SHOULD (document the issuer list in the FastAPI
+OpenAPI `tags` annotation alongside the rest of `caja_sesion.py`).
+
 ## Modified Capabilities
 
 - `backend/pyproject.toml` — adds the pytest stack and coverage
@@ -532,6 +646,16 @@ ordering is permitted, and a single response MUST never combine two error codes.
   (REQ-OPS-017, REQ-OPS-018, REQ-OPS-019).
 - `backend/tests/integration/test_tarifas_vigente_en_db.py` (NUEVO) — DB-backed contra
   `pg_engine` real (`parkos-postgres:16-pgpartman`).
+- `backend/packages/parkos_core/migrations/versions/0023_unique_active_sesion_per_user.py` (NUEVO) — pre-flight `DO $$` que aborta con `RAISE EXCEPTION USING ERRCODE = 'integrity_constraint_violation'` si hay `prod.sesion` con `timestamp_cierre IS NULL` agrupados por `uuid_usuario` con `count(*) > 1`, seguido de `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS prod.uq_prod_sesion_one_active_per_user ON prod.sesion(uuid_usuario) WHERE timestamp_cierre IS NULL`. `down_revision = "0022_create_calcular_cotizacion"` (REQ-OPS-026).
+- `backend/packages/parkos_core/src/parkos_core/api/v1/caja_sesion.py` (MODIFICAR) — handler dedicado `@router.get("/sesion/me")` registrado **antes** del bloque `include_router(make_router(resource="sesion", write_enabled=False, ...))`; filtros `uuid_usuario == ctx.actor_uuid AND timestamp_cierre.is_(None)`; ORDER BY `timestamp_apertura DESC NULLS LAST LIMIT 1`; 404 `{"error":"sesion_no_active"}`; mapping `SesionAlreadyActive → HTTPException(409, {"error":"sesion_already_active"})` en `open_sesion`; `_sesion_issuer_dep = requires_issuer("operador-", "admin-")` (REQ-OPS-027, REQ-OPS-028, REQ-OPS-029).
+- `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py` (MODIFICAR) — `open_session` captura `IntegrityError` por `pgcode == "23505"` (no `isinstance`, robusto a driver wrapping) y re-emite `raise SesionAlreadyActive(uuid_usuario=...) from exc`. KD-3 BD-only: NO pre-check (REQ-OPS-028).
+- `backend/packages/parkos_core/src/parkos_core/repo/sesion_activa.py` (NUEVO) — helper puro async `get_sesion_activa(session, *, actor_uuid) -> Sesion | None` con `ORDER BY timestamp_apertura DESC NULLS LAST LIMIT 1`. Reusable desde tests sin acoplar a HTTP (REQ-OPS-027).
+- `backend/packages/parkos_core/src/parkos_core/exceptions.py` (MODIFICAR) — nueva excepción de dominio `SesionAlreadyActive(uuid_usuario: UUID)`. NO contiene pgcode ni mensaje del driver (REQ-OPS-028).
+- `backend/tests/unit/test_caja_sesion_me.py` (NUEVO) — 4 tests HTTP (operador con sesión activa → 200; operador sin → 404 `sesion_no_active`; `cliente-` issuer → 403; dos cerradas + una abierta → 200 con la abierta).
+- `backend/tests/unit/test_open_session_unique.py` (NUEVO) — 1 test unit con `MagicMock(orig.pgcode="23505")` verifica que `repo/session_cycle.open_session` re-emite `SesionAlreadyActive` y el handler mapea a 409 sin pgcode en body ni headers.
+- `backend/tests/static/test_no_write_in_caja_sesion_me.py` (NUEVO) — AST walk (`ast.walk()` case-insensitive) sobre `caja_sesion.get_my_sesion` AND `repo/session_cycle.open_session` rechaza `INSERT|UPDATE|DELETE|TRUNCATE|MERGE` fuera de strings/comentarios. Mismo patrón que F1.8.
+- `backend/tests/integration/test_migration_0023_preflight.py` (NUEVO) — 1 test contra `parkos-branch-db` con `PARKOS_DOCKER_TEST=1`; assert que el pre-flight `DO $$` aborta con `integrity_constraint_violation` cuando hay huérfanos.
+- `backend/tests/integration/test_caja_sesion_unique_constraint_db.py` (NUEVO) — 2 tests DB: T1 doble INSERT activo mismo `uuid_usuario` → `UniqueViolation` sqlstate `23505`; T2 close + reopen OK (partial predicate excluye la cerrada).
 
 ## Out of Scope
 
