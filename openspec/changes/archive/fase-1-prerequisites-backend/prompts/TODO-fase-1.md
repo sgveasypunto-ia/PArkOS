@@ -22,7 +22,7 @@
 | 5 | HU-F1.5 | mv_ocupacion_diaria + GET /operacion/ocupacion | 160 LOC | `[ ]` | — | — | migración nueva + scheduler |
 | 6 | HU-F1.6 | Validaciones reales en POST /operacion/ingresos | 260 LOC | `[ ]` | — | — | depende F1.5 (cupo) + F1.4 (tarifa) |
 | 7 | HU-F1.7 | POST /operacion/salidas (rotación + mensualidad) | 220 LOC | `[ ]` | — | — | depende F1.8 (cotización) |
-| 8 | HU-F1.8 | calcular_cotizacion + GET /operacion/cotizar | 200 LOC | `[ ]` | — | — | función PL/pgSQL |
+| 8 | HU-F1.8 | calcular_cotizacion + GET /operacion/cotizar | 200 LOC | `[x]` | `9ebaed6` (docs) + `a3d0c39` (código) + `7682a57` (archive) | `openspec/changes/archive/2026-09-14-hu-f1-8-cotizar/archive-report.md` | PL/pgSQL VOLATILE (Postgres rechaza FOR SHARE en STABLE, AST walk preserva read-only). REQ-OPS-022..025 merged en openspec/specs/operations/spec.md. REQ-OPS-025 reconciliado. KD-IVA deployment blocker (impuestos.IVA siembra, ownership HU-F14.2 Parte II). verify-report PASS (0 CRITICAL/HIGH/MEDIUM, 2 LOW). 7/7 tests GREEN. |
 | 9 | HU-F1.9 | Facturación transaccional + NIT módulo 11 | 330 LOC | `[ ]` | — | — | depende F1.8 |
 | 10 | HU-F1.10 | Numeración FE + estado DIAN + reintento | 230 LOC | `[ ]` | — | — | assign_consecutivo ya existe |
 | 11 | HU-F1.11 | Workflow reimpresión tiquete (crear + anular) | 170 LOC | `[ ]` | — | — | gap huérfano: anulación |
