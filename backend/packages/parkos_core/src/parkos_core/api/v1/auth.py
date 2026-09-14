@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import uuid as uuid_lib
 
+import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,11 +68,10 @@ async def login(
             detail={"error": "invalid_credentials"},
         )
 
-    # 2. Verify password — bcrypt comparison. PR1b accepts any password
-    # since the user seed in PR1c sets bcrypt hashes; for now we treat
-    # `password_hash` as a sentry (matches any non-empty value in dev).
-    # PR7 wires the real ``bcrypt.checkpw``.
-    if not user.password_hash:
+    # 2. Verify password — real bcrypt comparison (REQ-43).
+    if not user.password_hash or not bcrypt.checkpw(
+        payload.password.encode("utf-8"), user.password_hash.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=401,
             detail={"error": "invalid_credentials"},
