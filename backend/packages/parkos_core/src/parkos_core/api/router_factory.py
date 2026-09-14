@@ -11,21 +11,34 @@ Generates the uniform C+Q+U surface per table:
 PR1b supports ``repo_kind="versioned"`` and ``"session_cycle"``. Other kinds
 (``"append_only"``, ``"event"``, ``"workflow"``) are stubbed in PR1b and
 filled in by their respective PRs.
+
+HU-F1.1 (GAP-BE-02, plan.md Parte IV §1.2): the ``order_by`` and the
+cursor comparison in ``list_endpoint`` now condition on the same
+``hasattr(model_cls, "vigente_desde")`` that already protects the
+``vigente_hasta IS NULL`` filter. Models without ``vigente_desde`` (the
+15 ``AppendOnlyBase`` ``[A]`` tables, ``Sesion`` ``[L_S]``, and the 3
+``[L_E]`` tables) order by ``created_at DESC, uuid ASC`` and carry
+``created_at`` (not ``vigente_desde``) in their cursor. The two cases
+share the helper :func:`_order_key` so the order-by clause, the cursor
+``WHERE``, and the ``next_cursor`` construction are all driven by the
+same ``(order_col, cursor_field)`` tuple.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid as uuid_lib
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.tenancy import TenantContext
 from ..db.engine import get_session
-from ..repo.pagination import Cursor, InvalidCursorError, decode as cursor_decode
+from ..repo.pagination import Cursor, InvalidCursorError
+from ..repo.pagination import decode as cursor_decode
 from ..repo.pagination import encode as cursor_encode
 from ..repo.versioned import close_and_insert, current_version
 from .deps import get_tenant_ctx, requires_issuer
@@ -36,14 +49,78 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _order_key(model_cls: type) -> tuple[ColumnElement, str]:
+    """Return ``(order_col_desc, cursor_field_name)`` for ``model_cls``.
+
+    The cursor field name MUST match a field on :class:`Cursor` — the
+    ``list_endpoint`` body reads it back off ``last`` via ``getattr``
+    and passes the value straight into the encoded payload. Today the
+    two options are:
+
+    - ``("vigente_desde", ...)`` — when ``model_cls`` declares the
+      ``vigente_desde`` column (all [V] tables + the [L-W]/[L-S]/[A]
+      models that re-declare it locally).
+    - ``("created_at", ...)`` — when ``model_cls`` does NOT declare
+      ``vigente_desde`` (the 15 ``AppendOnlyBase`` ``[A]`` tables that
+      don't re-declare it, ``Sesion`` ``[L_S]``, all 3 ``[L_E]`` tables,
+      and the ``AlertTypes`` registry — though the latter is not
+      currently mounted via :func:`make_router`).
+
+    ``AuditMixin`` guarantees ``created_at`` on every base that goes
+    through the standard mixin chain (VersionedBase / LifecycleEventBase
+    / WorkflowBase / SessionBase / AppendOnlyBase). ``AlertTypes``
+    re-declares it directly (see ``models/A/alert_types.py``); no
+    router in the codebase currently lists it, but if a future HU mounts
+    one, the helper resolves correctly.
+    """
+    if hasattr(model_cls, "vigente_desde"):
+        # ``type`` here is a generic placeholder for the ORM model class
+        # passed by the caller — mypy can't see the runtime mixin. The
+        # runtime ``hasattr`` above guarantees the attribute exists.
+        return (model_cls.vigente_desde.desc(), "vigente_desde")  # type: ignore[attr-defined]
+    return (model_cls.created_at.desc(), "created_at")  # type: ignore[attr-defined]
+
+
+def _parse_cursor_timestamp(value: str) -> datetime:
+    """Parse an ISO-8601 timestamp string from the cursor into a naive ``datetime``.
+
+    The cursor stores ``vigente_desde`` / ``created_at`` as ISO-8601
+    strings (REQ-OP-01: ``SC-OP-01`` round-trip via base64url(JSON)).
+    SQLAlchemy with the ``asyncpg`` driver does NOT auto-cast
+    ``varchar`` to ``timestamp without time zone`` in a ``WHERE``
+    comparison (``operator does not exist: timestamp without time zone
+    < character varying`` is the symptom — Postgres sees the string
+    literal as ``varchar``, not as a timestamp). Pre-HU-F1.1 the bug
+    was latent because the only call site (list_endpoint) never
+    exercised the comparison against a real DB with a cursor (the
+    existing ``test_pagination_cursor.py`` is a pure unit test). HU-F1.1
+    is the first integration test that round-trips a cursor through
+    Postgres, so the cast has to happen here.
+    """
+    # ``datetime.fromisoformat`` accepts the ``T`` separator since 3.7
+    # and the trailing ``Z`` since 3.11 — same shape ``decode`` validates.
+    # The ``.replace("Z", ...)`` is defensive: ``isoformat()`` never
+    # emits ``Z`` (it emits ``+00:00`` for tz-aware), but a future HU
+    # might hand-craft a cursor with ``Z`` for backward compat with the
+    # pre-HU-F1.1 string shape. The ``replace`` is intentional —
+    # suppress FURB162 with the noqa.
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))  # noqa: FURB162
+    # The DB column is ``DateTime(timezone=False)``: we must drop any
+    # tzinfo before binding, otherwise asyncpg sends ``timestamp with
+    # time zone`` and Postgres refuses the implicit cast.
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
 def make_router(
     *,
     resource: str,
     model_cls: type,
-    read_schema: type["BaseModel"],
-    read_list_schema: type["BaseModel"],
-    create_schema: type["BaseModel"] | None = None,
-    update_schema: type["BaseModel"] | None = None,
+    read_schema: type[BaseModel],
+    read_list_schema: type[BaseModel],
+    create_schema: type[BaseModel] | None = None,
+    update_schema: type[BaseModel] | None = None,
     repo_kind: str = "versioned",
     derived_view: str | None = None,
     issuer_required: str,
@@ -98,16 +175,26 @@ def make_router(
                 detail={"error": "invalid_cursor", "detail": str(e)},
             )
 
+        order_col, cursor_field = _order_key(model_cls)
+
         # Base query — only "current" rows for [V] tables (vigente_hasta IS NULL).
         stmt = select(model_cls)
         if hasattr(model_cls, "vigente_hasta"):
             stmt = stmt.where(model_cls.vigente_hasta.is_(None))
-        stmt = stmt.order_by(model_cls.vigente_desde.desc(), model_cls.uuid.asc())
+        stmt = stmt.order_by(order_col, model_cls.uuid.asc())
         if decoded is not None:
+            # The decoded cursor carries the SAME timestamp key the order
+            # was built from (the decoder enforces exactly-one), so the
+            # ``where`` clause and the ``order_col`` agree on the field.
+            # The cursor stores the timestamp as an ISO-8601 string; we
+            # parse it back to a naive ``datetime`` so SQLAlchemy binds
+            # it as a real timestamp value (see ``_parse_cursor_timestamp``
+            # docstring for why the cast is necessary under asyncpg).
+            cursor_ts = _parse_cursor_timestamp(getattr(decoded, cursor_field))  # type: ignore[attr-defined]
             stmt = stmt.where(
-                (model_cls.vigente_desde < decoded.vigente_desde)
+                (order_col.element < cursor_ts)
                 | (
-                    (model_cls.vigente_desde == decoded.vigente_desde)
+                    (order_col.element == cursor_ts)
                     & (model_cls.uuid > uuid_lib.UUID(decoded.uuid))
                 )
             )
@@ -122,7 +209,16 @@ def make_router(
             last = rows[-1]
             next_cursor = cursor_encode(
                 Cursor(
-                    vigente_desde=last.vigente_desde.isoformat(),
+                    vigente_desde=(
+                        last.vigente_desde.isoformat()
+                        if cursor_field == "vigente_desde"
+                        else None
+                    ),
+                    created_at=(
+                        last.created_at.isoformat()
+                        if cursor_field == "created_at"
+                        else None
+                    ),
                     uuid=str(last.uuid),
                 )
             )
