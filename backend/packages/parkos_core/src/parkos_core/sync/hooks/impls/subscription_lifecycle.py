@@ -38,7 +38,31 @@ written directly by this hook (it holds ``ctx.session``):
    snapshot pointers to a specific version (design's no-FK-rewriting rule),
    so both parent lookups are plain ``uuid ==`` reads, no "currently open"
    filter needed.
+
+**2026-09-10 extension — ``current_uuid`` fallback via ``ctx.open_version``.**
+``payload.get("current_uuid")`` is only ever populated by a LOCAL caller
+that already knows the row it is closing — ``PlateChangeCascade`` (its own
+query, same node, same transaction). A row arriving from REPLICATION
+(real ``/sync/events`` push or ``/sync/pull``) carries none of that: the
+wire payload is just ``to_jsonb(NEW)`` of the origin's newly-inserted row,
+which has no ``current_uuid`` column. Without a fallback, every replicated
+lifecycle change on this table looked like "no prior version" on the
+receiving node — the SAME universal defect ``identity_lookup.py`` closes
+for every other ``[V]`` table, just reachable here too because this table
+keeps its own ``hook_pre_insert`` instead of ``identity_reconciler``.
+``subscripcion_vehiculos`` now declares ``natural_key=
+(uuid_subscripcion_cliente, uuid_vehiculo)`` (``entries/sync_entries_v.py``),
+so ``SyncMotor.apply_row`` resolves ``ctx.open_version`` before calling this
+hook exactly as it does for ``identity_reconciler``-driven tables. When
+``payload`` carries no explicit ``current_uuid``, this hook now falls back
+to ``ctx.open_version["uuid"]`` (and reads ``old_state`` straight off
+``ctx.open_version`` instead of re-querying) and returns a
+``payload_override`` so the eventual ``close_and_insert`` closes the RIGHT
+local row instead of leaving it open forever. An explicit
+``payload["current_uuid"]`` (the local-cascade case) always wins — this
+fallback only fires when the wire payload didn't already say.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -95,17 +119,36 @@ async def subscription_lifecycle(ctx: HookContext) -> HookResult:
     from ....models.V.tipo_subscripciones import TipoSubscripciones
 
     payload = ctx.payload
-    current_uuid = payload.get("current_uuid")
+    open_version = ctx.open_version
+    explicit_current_uuid = payload.get("current_uuid")
+    # Fallback for a REPLICATED row (see module docstring's 2026-09-10
+    # extension) — the wire payload never carries current_uuid, but
+    # SyncMotor.apply_row already resolved the locally-open row for this
+    # natural key via identity_lookup.resolve_open_version.
+    resolved_via_open_version = explicit_current_uuid is None and open_version is not None
+    current_uuid = (
+        explicit_current_uuid
+        if explicit_current_uuid is not None
+        else (open_version.get("uuid") if open_version is not None else None)
+    )
     new_state = payload.get("estado")
 
     old_state: str | None = None
     if current_uuid is not None:
-        current_row = (
-            await ctx.session.execute(
-                select(SubscripcionVehiculos).where(SubscripcionVehiculos.uuid == current_uuid)
-            )
-        ).scalar_one_or_none()
-        old_state = current_row.estado if current_row is not None else None
+        if resolved_via_open_version and open_version is not None:
+            # Already have the full row (open_version) — no need to
+            # re-query for its estado. The redundant `open_version is not
+            # None` check is implied by `resolved_via_open_version`'s own
+            # definition above (mypy can't narrow across the boolean, so
+            # this spells it out for it).
+            old_state = open_version.get("estado")
+        else:
+            current_row = (
+                await ctx.session.execute(
+                    select(SubscripcionVehiculos).where(SubscripcionVehiculos.uuid == current_uuid)
+                )
+            ).scalar_one_or_none()
+            old_state = current_row.estado if current_row is not None else None
 
     if not _is_legal_transition(old_state, new_state):
         await _write_illegal_lifecycle_conflict(
@@ -151,11 +194,14 @@ async def subscription_lifecycle(ctx: HookContext) -> HookResult:
                 await _write_illegal_lifecycle_conflict(
                     ctx,
                     uuid_registro=uuid_subscripcion_cliente,
-                    reason=(
-                        f"vehicle capacity exceeded: {open_count + 1} > {cantidad_maxima}"
-                    ),
+                    reason=(f"vehicle capacity exceeded: {open_count + 1} > {cantidad_maxima}"),
                 )
                 return HookResult(proceed=False)
+
+    if resolved_via_open_version:
+        override = {k: v for k, v in payload.items() if k != "current_uuid"}
+        override["current_uuid"] = current_uuid
+        return HookResult(proceed=True, payload_override=override)
 
     return HookResult(proceed=True)
 

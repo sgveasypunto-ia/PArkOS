@@ -6,6 +6,7 @@ through ``repo.hash_chain.append`` (correct chain) and a raw, deliberately
 mismatched row (broken chain) to prove the anomaly detection + continuation
 behavior.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -100,9 +101,7 @@ async def test_walks_both_chain_bearing_tables(
                 "accion": "crear",
                 "tabla_afectada": "ingreso",
                 "uuid_registro_afectado": uuid_lib.uuid4(),
-                "timestamp_evento": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC).replace(
-                    tzinfo=None
-                ),
+                "timestamp_evento": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None),
             },
             actor_uuid=ACTOR_UUID,
         )
@@ -116,9 +115,7 @@ async def test_walks_both_chain_bearing_tables(
                 "uuid_sucursal": seeded_sucursal_uuid,
                 "uuid_factura_electronica": None,
                 "motivo": "dian_confirmada",
-                "timestamp_evento": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC).replace(
-                    tzinfo=None
-                ),
+                "timestamp_evento": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None),
             },
             actor_uuid=ACTOR_UUID,
         )
@@ -134,9 +131,7 @@ async def test_walks_both_chain_bearing_tables(
             uuid_sucursal=seeded_sucursal_uuid,
             accion="actualizar",
             uuid_registro_afectado=uuid_lib.uuid4(),
-            timestamp_evento=datetime(2026, 1, 2, 12, 0, 0, tzinfo=UTC).replace(
-                tzinfo=None
-            ),
+            timestamp_evento=datetime(2026, 1, 2, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None),
             hash_anterior="0" * 64,  # wrong on purpose
             hash_actual="1" * 64,
         )
@@ -144,9 +139,7 @@ async def test_walks_both_chain_bearing_tables(
         anomalies = await verify_chain(session, seeded_sucursal_uuid)
 
         log_anomalies = [a for a in anomalies if a.tabla == "log_transaccional"]
-        revocacion_anomalies = [
-            a for a in anomalies if a.tabla == "revocacion_factura"
-        ]
+        revocacion_anomalies = [a for a in anomalies if a.tabla == "revocacion_factura"]
 
         assert len(log_anomalies) == 1, (
             f"expected exactly 1 log_transaccional anomaly, got {len(log_anomalies)}"
@@ -175,9 +168,7 @@ async def test_mismatch_does_not_abort_the_walk(
                 "accion": "crear",
                 "tabla_afectada": "ingreso",
                 "uuid_registro_afectado": uuid_lib.uuid4(),
-                "timestamp_evento": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC).replace(
-                    tzinfo=None
-                ),
+                "timestamp_evento": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None),
             },
             actor_uuid=ACTOR_UUID,
         )
@@ -190,9 +181,7 @@ async def test_mismatch_does_not_abort_the_walk(
             uuid_sucursal=seeded_sucursal_uuid,
             accion="actualizar",
             uuid_registro_afectado=uuid_lib.uuid4(),
-            timestamp_evento=datetime(2026, 1, 2, 12, 0, 0, tzinfo=UTC).replace(
-                tzinfo=None
-            ),
+            timestamp_evento=datetime(2026, 1, 2, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None),
             hash_anterior="0" * 64,
             hash_actual="2" * 64,
         )
@@ -208,9 +197,7 @@ async def test_mismatch_does_not_abort_the_walk(
             accion="actualizar",
             tabla_afectada="ingreso",
             uuid_registro_afectado=uuid_lib.uuid4(),
-            timestamp_evento=datetime(2026, 1, 3, 12, 0, 0, tzinfo=UTC).replace(
-                tzinfo=None
-            ),
+            timestamp_evento=datetime(2026, 1, 3, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None),
             hash_anterior="2" * 64,  # matches broken row's hash_actual
             hash_actual="3" * 64,
         )
@@ -223,6 +210,84 @@ async def test_mismatch_does_not_abort_the_walk(
         assert anomalies[0].uuid == broken_uuid
         assert first.uuid not in {a.uuid for a in anomalies}
         assert third.uuid not in {a.uuid for a in anomalies}
+
+
+async def test_colliding_timestamp_evento_does_not_false_positive(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
+    """Rows sharing the IDENTICAL ``timestamp_evento`` must still verify
+    clean — the ordering key deciding "prior row" (both at append time in
+    ``repo.hash_chain._read_prior_hash`` and at verify time here) is
+    ``created_at``, never ``timestamp_evento``. ``timestamp_evento`` is
+    business-supplied and can collide across a burst of events; before
+    the fix, ``ORDER BY timestamp_evento DESC, uuid DESC`` picked
+    whichever EXISTING row happened to have the lexicographically-largest
+    random uuid as "prior" once 2+ rows shared a timestamp — NOT the row
+    that was truly appended last — permanently forking the chain. This is
+    the exact failure confirmed live in a real Docker deployment
+    (``sync_cloud.hash_chain_break`` fired on ``log_transaccional`` rows
+    that were never actually corrupted).
+
+    UUIDs are pinned explicitly (never left to ``gen_random_uuid()``) so
+    the old bug reproduces deterministically instead of only sometimes,
+    depending on how the random UUIDs happened to sort:
+    ``uuid_a`` (max) is appended FIRST, ``uuid_b`` (near-min) SECOND,
+    ``uuid_c`` THIRD — true append order is a -> b -> c, but the old
+    ``uuid DESC`` tie-break on the shared timestamp would pick "a"
+    (uuid_a > uuid_b) as the prior for "c", not "b".
+    """
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    spec = SYNC_CATALOG_BY_NAME["log_transaccional"]
+    same_timestamp = datetime(2026, 1, 5, 10, 0, 0, tzinfo=UTC).replace(tzinfo=None)
+
+    uuid_a = uuid_lib.UUID(int=(2**128 - 1))
+    uuid_b = uuid_lib.UUID(int=1)
+    uuid_c = uuid_lib.UUID(int=2**127)
+
+    def _attrs(row_uuid: uuid_lib.UUID) -> dict:
+        return {
+            "uuid": row_uuid,
+            "uuid_sucursal": seeded_sucursal_uuid,
+            "accion": "crear",
+            "tabla_afectada": "ingreso",
+            "uuid_registro_afectado": uuid_lib.uuid4(),
+            "timestamp_evento": same_timestamp,
+        }
+
+    async with Session() as session:
+        row_a = await hash_chain_append(
+            session, LogTransaccional, _attrs(uuid_a), actor_uuid=ACTOR_UUID
+        )
+        await session.commit()
+
+        # Only ONE existing row so far — even the old buggy tie-break
+        # can't go wrong yet (there's nothing to tie against).
+        row_b = await hash_chain_append(
+            session, LogTransaccional, _attrs(uuid_b), actor_uuid=ACTOR_UUID
+        )
+        await session.commit()
+
+        # NOW two existing rows (a, b) share ``same_timestamp`` — this is
+        # where the old ``uuid DESC`` tie-break would pick "a" instead of
+        # the truly-last-appended "b".
+        row_c = await hash_chain_append(
+            session, LogTransaccional, _attrs(uuid_c), actor_uuid=ACTOR_UUID
+        )
+        await session.commit()
+
+        assert row_c.hash_anterior == row_b.hash_actual, (
+            "row_c must chain onto the truly-last-appended row_b "
+            f"(hash_actual={row_b.hash_actual!r}), not row_a "
+            f"(hash_actual={row_a.hash_actual!r}); got "
+            f"hash_anterior={row_c.hash_anterior!r}"
+        )
+
+        anomalies = await verify_chain_for_spec(session, spec, seeded_sucursal_uuid)
+
+    assert anomalies == [], (
+        "a chain built entirely from rows sharing one timestamp_evento "
+        f"must still verify clean when ordered by created_at; got {anomalies!r}"
+    )
 
 
 def test_single_chain_per_tabla_uuid_sucursal() -> None:

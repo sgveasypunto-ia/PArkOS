@@ -83,8 +83,14 @@ services:
       # -f infra/deploy/docker-compose.cloud.yml up`) to test another
       # stage. Never inlines a real deploy value — see the module docstring.
       PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-legacy}
-      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@cloud-db:5432/parkos
-      DATABASE_URL: postgresql+asyncpg://parkos:parkos@cloud-db:5432/parkos
+      # T-CRUD-CONTRACT-001: the app connects as the least-privilege
+      # rol_app-inheriting login role (migration 0021), never as the
+      # `parkos` superuser — see that migration's docstring for why this
+      # was previously silently inert (rol_app was NOLOGIN, nothing ever
+      # authenticated as it). Dev/test default only; override both via env
+      # for a real deployment (must match migration 0021's PARKOS_APP_DB_PASSWORD).
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@cloud-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@cloud-db:5432/parkos
       PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_DIAN_PROVIDER_URL: ${PARKOS_DIAN_PROVIDER_URL:?PARKOS_DIAN_PROVIDER_URL required}
       PARKOS_DIAN_PROVIDER_TOKEN_PATH: /var/run/parkos/factus_token
@@ -126,8 +132,9 @@ services:
       # T-PR11-007 (REQ-CUT-001, D22): default legacy until stage 3 — see
       # api-admin's identical env var above for the override pattern.
       PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-legacy}
-      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@cloud-db:5432/parkos
-      DATABASE_URL: postgresql+asyncpg://parkos:parkos@cloud-db:5432/parkos
+      # T-CRUD-CONTRACT-001: see api-admin's identical env var above.
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@cloud-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@cloud-db:5432/parkos
       PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_DIAN_PROVIDER_URL: ${PARKOS_DIAN_PROVIDER_URL:?PARKOS_DIAN_PROVIDER_URL required}
       PARKOS_DIAN_PROVIDER_TOKEN_PATH: /var/run/parkos/factus_token

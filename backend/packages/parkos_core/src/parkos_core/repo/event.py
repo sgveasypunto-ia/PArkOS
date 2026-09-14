@@ -99,6 +99,21 @@ async def record_event[T: LifecycleEventBase](
         from ..models.A.log_transaccional import LogTransaccional
         from . import hash_chain
 
+        # Real defect confirmed live (qa-e2e audit session, 2026-09-10):
+        # `uuid` is `server_default=func.gen_random_uuid()` (models/base.py)
+        # — a DB-side default, never populated on `new_row` until a flush
+        # round-trips it back. Reading `new_row.uuid` here without a prior
+        # flush always returned `None`, so the very `log_transaccional` row
+        # meant to prove which event this is (REQ-16 evidentiary trail,
+        # hash-chained for tamper evidence) recorded
+        # `uuid_registro_afectado = NULL` for every branch-originated
+        # ``ingreso``/``facturas``/``factura_electronica`` — confirmed via a
+        # real ``POST /api/v1/operacion/ingresos`` whose log row's FK
+        # column came back empty. `versioned.close_and_insert` already
+        # flushes before reading `new_row.uuid` for the same reason; this
+        # mirrors that fix.
+        await session.flush()
+
         # Extend the SHA-256 chain per ``uuid_sucursal`` (REQ-16, REQ-X4).
         # ``repo/hash_chain.append`` reads the prior chain head for the
         # tenant, computes the new ``hash_actual`` over the canonical

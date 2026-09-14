@@ -95,13 +95,43 @@ names (``sync_queue``, ``sync_log``, ``sync_conflict``,
 ``mark_failed(unknown_table)`` — so a branch still emitting rows from the
 pre-``0015`` legacy trigger set during the dual-protocol grace window does
 not inflate the failure-rate metric.
+
+**Real defect confirmed in a running Docker container (2026-09-09):**
+``_apply_pending_loop`` and ``_hash_chain_verifier_loop`` are two SEPARATE
+``asyncio.create_task`` siblings (started together on ``cycle``'s first
+iteration) that both used to read/write the SAME single ``AsyncSession``
+instance (``self._session``, owned by ``main()`` for the whole process
+lifetime). ``AsyncSession`` is not safe for concurrent use from two
+coroutines — whenever both tasks' first ``session.execute`` call landed on
+the same event-loop tick (observed at container boot), SQLAlchemy raised
+``This session is provisioning a new connection; concurrent operations are
+not permitted``. The outer ``try/except`` in each loop swallowed it and
+kept the loop alive, so the failure was silent — but any iteration where
+both loops' timing coincided could make the hash-chain verifier (this
+file's own "most important defensive layer for DIAN compliance") skip an
+entire sweep. Fixed by giving the worker an optional ``session_factory``
+(a callable that returns a fresh ``AsyncSession``, e.g. ``SessionLocal``);
+when set, each loop iteration opens and commits its OWN session
+(``async with self._session_factory() as session:``) instead of sharing
+``self._session``. The ``session`` constructor argument and every
+``_once``/``_verify_*``/``_handle_chain_break`` method's positional call
+contract are unchanged (they now accept an optional ``session`` override,
+defaulting to ``self._session``), so this is additive: a worker built
+without ``session_factory`` (unit/integration tests that call the
+``_once`` methods directly against a single test session) keeps its
+existing single-session behavior. ``main()`` is the only caller that now
+passes ``session_factory=SessionLocal``. ``jobs/sync_sucursal.py`` never
+had this problem — its ``cycle()`` is sequential, a single loop, never two
+concurrent tasks sharing a session — and is intentionally left untouched.
 """
+
 from __future__ import annotations
 
 import asyncio
 import datetime as dt
 import sys
 import uuid as uuid_lib
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -201,10 +231,20 @@ def _business_payload_for_apply(spec: Any, raw_datos: dict[str, Any]) -> dict[st
     """
     payload = {k: v for k, v in raw_datos.items() if k not in _QUEUE_METADATA_KEYS}
     if spec.audit_class == "V":
-        payload = {
-            k: v for k, v in payload.items() if k not in _VERSIONED_ONLY_METADATA_KEYS
-        }
+        payload = {k: v for k, v in payload.items() if k not in _VERSIONED_ONLY_METADATA_KEYS}
     return payload
+
+
+async def _row_already_applied(session: AsyncSession, spec: Any, raw_datos: dict[str, Any]) -> bool:
+    """``True`` when a ``[V]`` queue row's own source ``uuid`` already exists
+    in ``spec.model_cls`` — i.e. this row originated on THIS node and is
+    already correctly applied. See the call site's comment for the real
+    defect this closes. Thin wrapper over the shared
+    :func:`apply_guard.row_already_present` (also used by
+    ``jobs/sync_sucursal.py``'s pull-apply path for the same class of
+    repeated-delivery duplication).
+    """
+    return await apply_guard.row_already_present(session, spec.model_cls, raw_datos.get("uuid"))
 
 
 class SyncCloudWorker(WorkerRunner):
@@ -213,7 +253,22 @@ class SyncCloudWorker(WorkerRunner):
     Args:
         session: Open ``AsyncSession`` for the cloud DB. Caller owns
             the session lifecycle; the worker adds rows to it and the
-            caller commits.
+            caller commits. Used as the fallback session for every
+            ``_once``/``_verify_*``/``_handle_chain_break`` method when no
+            ``session`` override is passed explicitly — this is what lets
+            existing tests call those methods directly with no args.
+        session_factory: Optional callable returning a fresh
+            ``AsyncSession`` (e.g. ``SessionLocal`` or any
+            ``async_sessionmaker``). When set, ``_apply_pending_loop`` and
+            ``_hash_chain_verifier_loop`` each open and commit their OWN
+            session per iteration instead of sharing ``session`` above —
+            required because those two loops run as concurrent
+            ``asyncio.create_task`` siblings and ``AsyncSession`` is not
+            safe for concurrent use across coroutines (see the module
+            docstring's "Real defect" note). ``None`` (the default)
+            preserves the pre-fix single-session behavior for any caller
+            that never runs the two loops concurrently (e.g. a test that
+            only calls ``_apply_pending_batch_once``/``_verify_*`` once).
         verify_interval_s: Seconds between hash chain sweeps
             (``PARKOS_SYNC_VERIFY_INTERVAL_S``).
         sync_back_interval_s: Cadence for ``_apply_pending_loop``
@@ -229,6 +284,7 @@ class SyncCloudWorker(WorkerRunner):
         self,
         *,
         session: AsyncSession,
+        session_factory: Callable[[], AsyncSession] | None = None,
         verify_interval_s: int = DEFAULT_VERIFY_INTERVAL_S,
         sync_back_interval_s: int = DEFAULT_SYNC_BACK_INTERVAL_S,
         apply_batch_limit: int = DEFAULT_APPLY_BATCH_LIMIT,
@@ -236,6 +292,7 @@ class SyncCloudWorker(WorkerRunner):
     ) -> None:
         super().__init__(name="sync_cloud")
         self._session = session
+        self._session_factory = session_factory
         self.verify_interval_s = max(1, int(verify_interval_s))
         self.sync_back_interval_s = max(1, int(sync_back_interval_s))
         self.apply_batch_limit = max(1, int(apply_batch_limit))
@@ -266,12 +323,8 @@ class SyncCloudWorker(WorkerRunner):
         # Lazily start the heavy loops on the first iteration.
         if not self._heavy_tasks:
             self._heavy_tasks = [
-                asyncio.create_task(
-                    self._apply_pending_loop(), name="apply_pending"
-                ),
-                asyncio.create_task(
-                    self._hash_chain_verifier_loop(), name="hash_chain_verifier"
-                ),
+                asyncio.create_task(self._apply_pending_loop(), name="apply_pending"),
+                asyncio.create_task(self._hash_chain_verifier_loop(), name="hash_chain_verifier"),
             ]
             self.log.info(
                 "sync_cloud.heavy_loops_started",
@@ -314,17 +367,27 @@ class SyncCloudWorker(WorkerRunner):
         a stage flip). Never lets one failed batch kill the loop — the
         outer ``try/except`` mirrors ``_hash_chain_verifier_loop``'s own
         "keep the loop alive" posture.
+
+        When ``self._session_factory`` is set, each iteration opens its OWN
+        fresh session (never shares one with the concurrently-running
+        ``_hash_chain_verifier_loop`` sibling — see the module docstring's
+        "Real defect" note). Falls back to the constructor's single
+        ``self._session`` when no factory was given.
         """
         while not self._shutdown_requested.is_set():
             try:
-                await self._apply_pending_batch_once()
+                if self._session_factory is not None:
+                    async with self._session_factory() as session:
+                        await self._apply_pending_batch_once(session=session)
+                else:
+                    await self._apply_pending_batch_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — keep the loop alive
                 self.log.error("sync_cloud.apply_loop_failed", error=str(exc))
             await asyncio.sleep(self.sync_back_interval_s)
 
-    async def _apply_pending_batch_once(self) -> int:
+    async def _apply_pending_batch_once(self, session: AsyncSession | None = None) -> int:
         """Fetch one ``list_pending`` batch and apply it (T-PR11-001).
 
         Per-row triage, in order:
@@ -370,10 +433,17 @@ class SyncCloudWorker(WorkerRunner):
         precedent (``actor = uuid_lib.uuid4()``) for a worker-initiated
         write with no human actor available at this layer.
 
+        Args:
+            session: Optional session override — the ``_apply_pending_loop``
+                caller passes a fresh per-iteration session (T-PR concurrent-
+                session fix); defaults to ``self._session`` when omitted,
+                which is what every existing direct-call test relies on.
+
         Returns:
             The number of rows settled (dispatched or failed) this call.
         """
-        rows = await sq_helpers.list_pending(self._session, limit=self.apply_batch_limit)
+        session = session if session is not None else self._session
+        rows = await sq_helpers.list_pending(session, limit=self.apply_batch_limit)
         if not rows:
             return 0
 
@@ -383,7 +453,7 @@ class SyncCloudWorker(WorkerRunner):
 
         for row in rows:
             if self._maybe_skip_infra_row(row.tabla):
-                await sq_helpers.mark_dispatched(self._session, row.uuid)
+                await sq_helpers.mark_dispatched(session, row.uuid)
                 settled += 1
                 continue
 
@@ -415,7 +485,36 @@ class SyncCloudWorker(WorkerRunner):
             # applied), so normalizing there remains safe and unchanged.
             spec = SYNC_CATALOG_BY_NAME.get(row.tabla)
             if spec is None:
-                await sq_helpers.mark_failed(self._session, row.uuid, "unknown_table")
+                await sq_helpers.mark_failed(session, row.uuid, "unknown_table")
+                settled += 1
+                continue
+
+            # Self-origin duplication guard (real defect confirmed in Docker,
+            # qa-e2e session 2026-09-09): for a ``[V]`` catalog, ``row.datos``
+            # is the trigger's ``to_jsonb(NEW)`` dump of the SOURCE row that
+            # caused this very enqueue. T-PR11-001's
+            # ``_business_payload_for_apply`` strips that source row's own
+            # ``uuid`` (see its block comment) to avoid a PK-collision crash
+            # against the still-live row — but the stripped payload then
+            # flows into ``close_and_insert(current_uuid=None, ...)``
+            # unchanged, which happily INSERTs a SECOND row with a freshly
+            # generated uuid instead of crashing. A table with an
+            # ``identity_reconciler`` hook (``clientes``, ``vehiculos``)
+            # never hits this — the reconciler recognizes the natural key
+            # and converges. A flat catalog like ``impuestos`` has no such
+            # hook, so nothing stopped the duplicate (confirmed: granting a
+            # ``permisos_usuario`` row produced 2 active rows, ~1.14s apart,
+            # from a single real trigger-fired queue entry).
+            #
+            # The row's own ``uuid`` already existing in ``spec.model_cls``
+            # means this row originated HERE and is already correctly
+            # applied — never re-apply it. A genuinely incoming row (from a
+            # branch, e.g. a bidirectional table's remote update) carries a
+            # uuid not yet present locally and is unaffected by this check.
+            if spec.audit_class == "V" and await _row_already_applied(
+                session, spec, row.datos or {}
+            ):
+                await sq_helpers.mark_dispatched(session, row.uuid)
                 settled += 1
                 continue
 
@@ -437,7 +536,7 @@ class SyncCloudWorker(WorkerRunner):
             # open transaction blocks concurrent DDL (confirmed: alembic
             # upgrade 0011 failed with ``LockNotAvailable`` against a real
             # ``idle in transaction`` backend held by this exact loop).
-            await self._session.commit()
+            await session.commit()
             return settled
 
         # Echo-amplification fix (post-PR14 real-Docker closing exercise,
@@ -450,7 +549,7 @@ class SyncCloudWorker(WorkerRunner):
         # a CHILD of it) — so one SET LOCAL here covers every row this call
         # applies, never per-row. See sync.motor.apply_guard's own
         # docstring for the full "why a GUC" rationale.
-        await apply_guard.enable_echo_suppression(self._session)
+        await apply_guard.enable_echo_suppression(session)
 
         motor = SyncMotor(engine=engine_flag.get_engine())
         try:
@@ -458,10 +557,8 @@ class SyncCloudWorker(WorkerRunner):
             # to this exact savepoint, not the whole outer transaction —
             # anything committed/flushed by a PRIOR call on this same
             # session stays intact.
-            async with self._session.begin_nested():
-                await motor.apply_batch(
-                    self._session, resolved, actor_uuid=uuid_lib.uuid4()
-                )
+            async with session.begin_nested():
+                await motor.apply_batch(session, resolved, actor_uuid=uuid_lib.uuid4())
         except Exception as batch_exc:  # noqa: BLE001 — deliberate per-row fallback below
             self.log.warning(
                 "sync_cloud.apply_batch_failed_falling_back_to_per_row",
@@ -472,24 +569,22 @@ class SyncCloudWorker(WorkerRunner):
                     # Each row gets its OWN savepoint — one poisoned row's
                     # rollback must not undo an earlier row's success
                     # within this SAME fallback pass.
-                    async with self._session.begin_nested():
-                        await motor.apply_row(
-                            self._session, spec, payload, actor_uuid=uuid_lib.uuid4()
-                        )
+                    async with session.begin_nested():
+                        await motor.apply_row(session, spec, payload, actor_uuid=uuid_lib.uuid4())
                 except Exception as row_exc:  # noqa: BLE001 — isolate one bad row, keep going
-                    await sq_helpers.mark_failed(self._session, row_uuid, str(row_exc))
+                    await sq_helpers.mark_failed(session, row_uuid, str(row_exc))
                 else:
-                    await sq_helpers.mark_dispatched(self._session, row_uuid)
+                    await sq_helpers.mark_dispatched(session, row_uuid)
             # See the "not resolved" branch above for why this commit is
             # required — same never-committed-session defect.
-            await self._session.commit()
+            await session.commit()
             return settled + len(resolved_row_uuids)
 
         for row_uuid in resolved_row_uuids:
-            await sq_helpers.mark_dispatched(self._session, row_uuid)
+            await sq_helpers.mark_dispatched(session, row_uuid)
         # See the "not resolved" branch above for why this commit is
         # required — same never-committed-session defect.
-        await self._session.commit()
+        await session.commit()
         return settled + len(resolved_row_uuids)
 
     # ------------------------------------------------------------------
@@ -534,29 +629,48 @@ class SyncCloudWorker(WorkerRunner):
         Both writes go through the repo helpers
         (``ao_helpers.append_event`` + ``repo.sync_conflict`` insert)
         so the AST scan stays clean.
+
+        When ``self._session_factory`` is set, each iteration opens its OWN
+        fresh session (never shares one with the concurrently-running
+        ``_apply_pending_loop`` sibling — see the module docstring's "Real
+        defect" note). Falls back to the constructor's single
+        ``self._session`` when no factory was given.
         """
         while not self._shutdown_requested.is_set():
             try:
-                await self._verify_hash_chains_once()
-                await self._verify_revocacion_factura_chain_once()
-                # Same never-committed-session defect as
-                # ``_apply_pending_batch_once`` (see that method's own
-                # comment) — a chain break's ``alerta``/``sync_conflict``
-                # writes (``_handle_chain_break``) must be durably
-                # committed here, not left in this worker's single,
-                # process-lifetime transaction.
-                await self._session.commit()
+                if self._session_factory is not None:
+                    async with self._session_factory() as session:
+                        await self._verify_hash_chains_once(session=session)
+                        await self._verify_revocacion_factura_chain_once(session=session)
+                        # Same never-committed-session defect as
+                        # ``_apply_pending_batch_once`` (see that method's
+                        # own comment) — a chain break's
+                        # ``alerta``/``sync_conflict`` writes
+                        # (``_handle_chain_break``) must be durably
+                        # committed here.
+                        await session.commit()
+                else:
+                    await self._verify_hash_chains_once()
+                    await self._verify_revocacion_factura_chain_once()
+                    await self._session.commit()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — keep the loop alive
                 self.log.error("sync_cloud.verifier_loop_failed", error=str(exc))
             await asyncio.sleep(self.verify_interval_s)
 
-    async def _verify_hash_chains_once(self) -> None:
-        """One full sweep of the log_transaccional hash chain."""
+    async def _verify_hash_chains_once(self, session: AsyncSession | None = None) -> None:
+        """One full sweep of the log_transaccional hash chain.
+
+        Args:
+            session: Optional session override (see ``_apply_pending_batch_once``'s
+                own ``session`` arg docstring for the same contract);
+                defaults to ``self._session`` when omitted.
+        """
+        session = session if session is not None else self._session
         # 1. Distinct tenants — empty + each non-null uuid_sucursal.
         tenants_stmt = select(LogTransaccional.uuid_sucursal).distinct()
-        tenants_result = await self._session.execute(tenants_stmt)
+        tenants_result = await session.execute(tenants_stmt)
         tenants = list(tenants_result.scalars().all())
 
         if not tenants:
@@ -565,25 +679,35 @@ class SyncCloudWorker(WorkerRunner):
 
         for tenant in tenants:
             try:
-                await self._verify_one_tenant_chain(tenant)
+                await self._verify_one_tenant_chain(tenant, session=session)
             except HashChainBreak as exc:
-                await self._handle_chain_break(tenant, exc)
+                await self._handle_chain_break(tenant, exc, session=session)
 
     async def _verify_one_tenant_chain(
         self,
         uuid_sucursal: uuid_lib.UUID | None,
+        session: AsyncSession | None = None,
     ) -> None:
-        """Walk one tenant's chain. Raise :class:`HashChainBreak` on mismatch."""
+        """Walk one tenant's chain. Raise :class:`HashChainBreak` on mismatch.
+
+        Order MUST mirror ``repo.hash_chain._read_prior_hash``'s own
+        ``ORDER BY created_at DESC, uuid DESC`` exactly (same columns,
+        reversed) — by ``created_at``, never ``timestamp_evento``. See
+        that function's docstring for the confirmed-live false-positive
+        this used to cause when a burst of rows shared one
+        ``timestamp_evento``.
+        """
+        session = session if session is not None else self._session
         stmt = (
             select(LogTransaccional)
             .where(LogTransaccional.uuid_sucursal == uuid_sucursal)
             .order_by(
-                LogTransaccional.timestamp_evento.asc().nulls_last(),
+                LogTransaccional.created_at.asc(),
                 LogTransaccional.uuid.asc(),
             )
             .limit(10000)
         )
-        result = await self._session.execute(stmt)
+        result = await session.execute(stmt)
         rows = list(result.scalars().all())
         if not rows:
             return
@@ -602,7 +726,9 @@ class SyncCloudWorker(WorkerRunner):
                 raise HashChainBreak(f"row {row.uuid} missing hash_actual")
             prior_hash = row.hash_actual
 
-    async def _verify_revocacion_factura_chain_once(self) -> None:
+    async def _verify_revocacion_factura_chain_once(
+        self, session: AsyncSession | None = None
+    ) -> None:
         """One full sweep of the ``revocacion_factura`` hash chain (T-PR11-001).
 
         REQ-MOT-006: ``verify_chain=True`` covers exactly two entries —
@@ -614,8 +740,9 @@ class SyncCloudWorker(WorkerRunner):
         hand-rolled walker, generalized across every tenant the same way
         ``_verify_hash_chains_once`` already enumerates them.
         """
+        session = session if session is not None else self._session
         tenants_stmt = select(RevocacionFactura.uuid_sucursal).distinct()
-        tenants_result = await self._session.execute(tenants_stmt)
+        tenants_result = await session.execute(tenants_stmt)
         tenants = list(tenants_result.scalars().all())
 
         if not tenants:
@@ -624,7 +751,7 @@ class SyncCloudWorker(WorkerRunner):
 
         spec = SYNC_CATALOG_BY_NAME["revocacion_factura"]
         for tenant in tenants:
-            anomalies = await verify_chain_for_spec(self._session, spec, tenant)
+            anomalies = await verify_chain_for_spec(session, spec, tenant)
             for anomaly in anomalies:
                 await self._handle_chain_break(
                     tenant,
@@ -634,6 +761,7 @@ class SyncCloudWorker(WorkerRunner):
                         f"{(anomaly.actual or '<null>')[:12]}"
                     ),
                     tabla="revocacion_factura",
+                    session=session,
                 )
 
     async def _handle_chain_break(
@@ -642,6 +770,7 @@ class SyncCloudWorker(WorkerRunner):
         exc: HashChainBreak,
         *,
         tabla: str = "log_transaccional",
+        session: AsyncSession | None = None,
     ) -> None:
         """Write the spec-required ``alerta`` + ``sync_conflict`` rows.
 
@@ -665,11 +794,14 @@ class SyncCloudWorker(WorkerRunner):
                 assertions on it, stay unchanged. T-PR11-001's
                 ``_verify_revocacion_factura_chain_once`` passes
                 ``tabla="revocacion_factura"`` explicitly.
+            session: Optional session override; defaults to ``self._session``
+                when omitted (same contract as the other ``_once`` methods).
         """
+        session = session if session is not None else self._session
         actor = uuid_lib.uuid4()
 
         await wf_helpers.append_transition(
-            self._session,
+            session,
             Alerta,
             actor_uuid=actor,
             new_attrs={
@@ -682,7 +814,7 @@ class SyncCloudWorker(WorkerRunner):
         )
 
         await ao_helpers.append_event(
-            self._session,
+            session,
             SyncConflict,
             attrs={
                 "uuid_sucursal": uuid_sucursal,
@@ -730,7 +862,13 @@ def main() -> int:  # pragma: no cover — exercised by docker smoke test
 
     async def _run() -> int:
         async with SessionLocal() as session:  # type: ignore[union-attr]
-            worker = SyncCloudWorker(session=session)
+            # session_factory=SessionLocal — required fix for the confirmed
+            # real-Docker-boot concurrency defect (see module docstring's
+            # "Real defect" note): _apply_pending_loop and
+            # _hash_chain_verifier_loop run as concurrent asyncio tasks and
+            # must each get their OWN fresh session per iteration, never
+            # share this one.
+            worker = SyncCloudWorker(session=session, session_factory=SessionLocal)
             exit_code = await worker.run()
             await worker.shutdown()
             return exit_code

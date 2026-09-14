@@ -234,11 +234,23 @@ class TestRecordEventNoCommit:
         session.commit.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_does_not_call_session_flush(self):
+    async def test_flushes_once_before_building_the_log_row(self):
+        """Real defect fixed 2026-09-10 (qa-e2e audit session): ``uuid`` is
+        ``server_default=func.gen_random_uuid()`` (models/base.py) — a
+        DB-side default never populated on ``new_row`` until a flush
+        round-trips it. Building ``log_attrs["uuid_registro_afectado"]``
+        from ``new_row.uuid`` without flushing first always read ``None``,
+        confirmed live via a real ``POST /api/v1/operacion/ingresos`` whose
+        resulting ``log_transaccional`` row came back with an EMPTY FK to
+        the very ingreso it was supposed to attest to — defeating the
+        table's evidentiary purpose (REQ-16, hash-chained for tamper
+        evidence). ``record_event`` now flushes once, exactly where
+        ``versioned.close_and_insert`` already does for the identical
+        reason, before building the log row's attributes."""
         session = _make_session()
         attrs = {"uuid_sucursal": SUCURSAL_UUID, "placa": "ABC123"}
         await record_event(session, Ingreso, actor_uuid=ACTOR_UUID, new_attrs=attrs)
-        session.flush.assert_not_called()
+        session.flush.assert_awaited_once()
 
 
 def test_lifecycle_event_forbidden_msg_is_string():

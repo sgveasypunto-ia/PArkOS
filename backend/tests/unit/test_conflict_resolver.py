@@ -22,20 +22,23 @@ Coverage:
   ``ValidateParentChain`` hook wired yet — see
   ``motor/resolve_conflict.py``'s docstring).
 - ``[L-S]`` happy path -> ``APPLIED`` (grace-window logic, REQ-MOT-013).
-- ``[V]`` (default fallback, e.g. ``empresa``) -> ``APPLIED`` on first write
+- ``[V]`` (default fallback, e.g. ``documentos`` — one of the 2 ``[V]``
+  entries the ER model itself declares no natural key for) -> ``APPLIED``
+  on first write
   when no local seq exists, ``CONFLICT_V`` on a stale/equal remote seq
   (now DB-backed, via the real ``ReadLocalSeq`` — no more monkey-patching
   a removed ``_read_local_seq`` method).
 - DB failure during resolution -> ``ERROR`` (caller retries).
 - Constructor rejects negative ``jwt_overlap_hours``; default is 24h.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from parkos_core.models.V.empresa import Empresa
+from parkos_core.models.V.documentos import Documentos
 from parkos_core.sync.conflict_resolver import ApplyOutcome, ConflictResolver
 
 # ---------------------------------------------------------------------------
@@ -43,9 +46,7 @@ from parkos_core.sync.conflict_resolver import ApplyOutcome, ConflictResolver
 # ---------------------------------------------------------------------------
 
 
-def _row(
-    tabla: str, *, uuid: str | None = None, timestamp_evento: datetime | None = None
-) -> dict:
+def _row(tabla: str, *, uuid: str | None = None, timestamp_evento: datetime | None = None) -> dict:
     """Build a minimal pushed-row dict for the resolver.
 
     ``timestamp_evento`` is a real ``datetime`` (not an ISO string) — real
@@ -100,7 +101,8 @@ async def test_session_table_applies_within_grace_window() -> None:
     resolver = ConflictResolver()
     recent = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
     outcome = await resolver.apply_pushed_row(
-        None, _row("login", timestamp_evento=recent)  # type: ignore[arg-type]
+        None,
+        _row("login", timestamp_evento=recent),  # type: ignore[arg-type]
     )
     assert outcome == ApplyOutcome.APPLIED
 
@@ -110,7 +112,8 @@ async def test_session_table_conflict_ls_past_grace_window() -> None:
     resolver = ConflictResolver()
     stale = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=30)
     outcome = await resolver.apply_pushed_row(
-        None, _row("login", timestamp_evento=stale)  # type: ignore[arg-type]
+        None,
+        _row("login", timestamp_evento=stale),  # type: ignore[arg-type]
     )
     assert outcome == ApplyOutcome.CONFLICT_LS
 
@@ -123,7 +126,7 @@ async def test_session_table_conflict_ls_past_grace_window() -> None:
 async def test_versioned_table_default_apply_when_no_local_seq(pg_session) -> None:
     """``[V]`` table with no locally-known row -> APPLIED (new version)."""
     resolver = ConflictResolver()
-    row = _row("empresa")
+    row = _row("documentos")
     row["datos"] = {"created_at": datetime.now(UTC).replace(tzinfo=None)}
     outcome = await resolver.apply_pushed_row(pg_session, row)
     assert outcome == ApplyOutcome.APPLIED
@@ -134,10 +137,10 @@ async def test_versioned_table_rejects_stale_seq(pg_session) -> None:
     resolver = ConflictResolver()
     row_uuid = uuid_lib.uuid4()
     local_created = datetime(2026, 1, 1)
-    pg_session.add(Empresa(uuid=row_uuid, created_at=local_created))
+    pg_session.add(Documentos(uuid=row_uuid, created_at=local_created))
     await pg_session.flush()
 
-    row = _row("empresa", uuid=str(row_uuid))
+    row = _row("documentos", uuid=str(row_uuid))
     row["datos"] = {"created_at": local_created}  # equal, not strictly newer
     outcome = await resolver.apply_pushed_row(pg_session, row)
     assert outcome == ApplyOutcome.CONFLICT_V
@@ -148,10 +151,10 @@ async def test_versioned_table_accepts_newer_seq(pg_session) -> None:
     resolver = ConflictResolver()
     row_uuid = uuid_lib.uuid4()
     local_created = datetime(2026, 1, 1)
-    pg_session.add(Empresa(uuid=row_uuid, created_at=local_created))
+    pg_session.add(Documentos(uuid=row_uuid, created_at=local_created))
     await pg_session.flush()
 
-    row = _row("empresa", uuid=str(row_uuid))
+    row = _row("documentos", uuid=str(row_uuid))
     row["datos"] = {"created_at": local_created + timedelta(days=1)}
     outcome = await resolver.apply_pushed_row(pg_session, row)
     assert outcome == ApplyOutcome.APPLIED
@@ -171,7 +174,8 @@ async def test_missing_tabla_returns_error() -> None:
 async def test_missing_uuid_registro_returns_error() -> None:
     resolver = ConflictResolver()
     outcome = await resolver.apply_pushed_row(
-        None, {"tabla": "sesion", "datos": {}}  # type: ignore[arg-type]
+        None,
+        {"tabla": "sesion", "datos": {}},  # type: ignore[arg-type]
     )
     assert outcome == ApplyOutcome.ERROR
 
@@ -188,7 +192,8 @@ async def test_out_of_catalog_table_applies_unconditionally() -> None:
     """A table outside SYNC_CATALOG (e.g. sync-infra itself) -> APPLIED."""
     resolver = ConflictResolver()
     outcome = await resolver.apply_pushed_row(
-        None, _row("sync_queue")  # type: ignore[arg-type]
+        None,
+        _row("sync_queue"),  # type: ignore[arg-type]
     )
     assert outcome == ApplyOutcome.APPLIED
 
@@ -204,7 +209,7 @@ async def test_db_failure_returns_error(pg_session, monkeypatch) -> None:
     monkeypatch.setattr(sync_motor_module.SyncMotor, "resolve_conflict", _boom)
 
     resolver = ConflictResolver()
-    outcome = await resolver.apply_pushed_row(pg_session, _row("empresa"))
+    outcome = await resolver.apply_pushed_row(pg_session, _row("documentos"))
     assert outcome == ApplyOutcome.ERROR
 
 

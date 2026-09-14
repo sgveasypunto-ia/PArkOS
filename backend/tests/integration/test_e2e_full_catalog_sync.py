@@ -172,6 +172,7 @@ sync correctly end to end through the real job/motor path (after the
 ``sesion`` fix), and ``validacion_evento`` is confirmed to correctly NEVER
 propagate (the sole ``never_propagated`` entry, by design).
 """
+
 from __future__ import annotations
 
 import os
@@ -206,6 +207,7 @@ def _catalog_engine_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PARKOS_SYNC_ENGINE", "catalog")
     engine_flag._reset_cache_for_tests()
 
+
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TEST_PG_IMAGE = os.environ.get("TEST_PG_IMAGE", "postgres:16-alpine")
 ALEMBIC_TIMEOUT_S = int(os.environ.get("TEST_ALEMBIC_TIMEOUT", "30"))
@@ -222,21 +224,21 @@ ALEMBIC_TIMEOUT_S = int(os.environ.get("TEST_ALEMBIC_TIMEOUT", "30"))
 
 def _to_asyncpg(raw: str) -> str:
     if raw.startswith("postgresql+psycopg://"):
-        return "postgresql+asyncpg://" + raw[len("postgresql+psycopg://"):]
+        return "postgresql+asyncpg://" + raw[len("postgresql+psycopg://") :]
     if raw.startswith("postgresql+psycopg2://"):
-        return "postgresql+asyncpg://" + raw[len("postgresql+psycopg2://"):]
+        return "postgresql+asyncpg://" + raw[len("postgresql+psycopg2://") :]
     if raw.startswith("postgresql://"):
-        return "postgresql+asyncpg://" + raw[len("postgresql://"):]
+        return "postgresql+asyncpg://" + raw[len("postgresql://") :]
     return raw
 
 
 def _to_psycopg(raw: str) -> str:
     if raw.startswith("postgresql+psycopg2://"):
-        return "postgresql://" + raw[len("postgresql+psycopg2://"):]
+        return "postgresql://" + raw[len("postgresql+psycopg2://") :]
     if raw.startswith("postgresql+psycopg://"):
-        return "postgresql://" + raw[len("postgresql+psycopg://"):]
+        return "postgresql://" + raw[len("postgresql+psycopg://") :]
     if raw.startswith("postgresql+asyncpg://"):
-        return "postgresql://" + raw[len("postgresql+asyncpg://"):]
+        return "postgresql://" + raw[len("postgresql+asyncpg://") :]
     return raw
 
 
@@ -318,9 +320,7 @@ def branch_alembic_upgrade(branch_pg_dsn: str, _branch_wait_for_pg: None) -> Non
 
 
 @pytest.fixture(scope="module")
-async def branch_pg_engine(
-    branch_pg_async_dsn: str, branch_alembic_upgrade: None
-) -> AsyncEngine:
+async def branch_pg_engine(branch_pg_async_dsn: str, branch_alembic_upgrade: None) -> AsyncEngine:
     engine = create_async_engine(branch_pg_async_dsn, pool_pre_ping=True)
     try:
         yield engine
@@ -435,7 +435,24 @@ async def create_origin_row(session: Any, spec: Any, attrs: dict[str, Any]) -> A
 _QUEUE_LIKE_KEYS = frozenset(
     {"created_at", "created_by", "sync_status", "sync_timestamp", "sync_attempts"}
 )
-_V_BITEMPORAL_KEYS = frozenset({"vigente_desde", "vigente_hasta", "estado"})
+#: ``vigente_hasta``/``estado`` excluded: every row ``fetch_page`` selects is
+#: already filtered ``WHERE vigente_hasta IS NULL`` (always ``None``) and
+#: ``estado`` is always the generic ``'activo'`` for an open [V] row (with
+#: the one exception, ``subscripcion_vehiculos``, out of this exclusion
+#: set's scope). ``vigente_desde`` is DELIBERATELY NOT excluded (found
+#: 2026-09-10, generalizing identity reconciliation past the 3 original
+#: identity masters): a real ``to_jsonb(NEW)``-captured production wire
+#: payload always carries the row's own ``vigente_desde`` — stripping it
+#: here made every arriving row look temporally ambiguous to
+#: ``identity_reconciler`` (``payload.get("vigente_desde") is None`` always
+#: resolves ``is_forward=True``, REGARDLESS of true chronological order),
+#: so whichever duplicate-natural-key row Postgres happened to return LAST
+#: from an unordered ``fetch_page`` SELECT silently won reconciliation
+#: instead of the genuinely latest one — surfaced as a real
+#: ``ForeignKeyViolationError`` when a stale same-natural-key row beat this
+#: run's own ``tipo_persona``/``configuracion_seguridad`` row for the
+#: "currently open" slot on BRANCH.
+_V_BITEMPORAL_KEYS = frozenset({"vigente_hasta", "estado"})
 
 
 def _extract_business_attrs(spec: Any, row: Any) -> dict[str, Any]:
@@ -533,9 +550,7 @@ def build_branch_worker(branch_session: Any, cloud_app: FastAPI, jwt_path: Path)
     from parkos_core.sync.transport import SyncHttpClient
 
     jwt_path.write_text("fake-jwt-not-verified-by-overridden-claims", encoding="utf-8")
-    worker = SyncSucursalWorker(
-        jwt_path=jwt_path, base_url="http://cloud", session=branch_session
-    )
+    worker = SyncSucursalWorker(jwt_path=jwt_path, base_url="http://cloud", session=branch_session)
     worker._http_client = SyncHttpClient(
         session_factory=lambda: httpx.AsyncClient(
             transport=httpx.ASGITransport(app=cloud_app), base_url="http://cloud"
@@ -691,8 +706,18 @@ async def test_full_catalog_sync_46_entries_e2e(
         C["permisos"] = await create_origin_row(
             session, SYNC_CATALOG_BY_NAME["permisos"], {"permiso": f"e2e_permiso_{uid()}"}
         )
+        # uid()-suffixed, like every other natural-key literal below (found
+        # 2026-09-10: this was the one hardcoded, non-unique value in this
+        # whole stage — harmless before identity_reconciler was wired onto
+        # tipo_persona, since every row landed independently regardless of
+        # natural-key collisions; now that reconciliation is real, a leftover
+        # "tipo_persona.tipo == natural" row from an EARLIER run of this same
+        # test against a reused container legitimately noops against THIS
+        # run's row on the branch — correct behavior for a genuine natural-
+        # key collision, but it silently dropped this run's own uuid, which
+        # `clientes.uuid_tipo_persona` below then referenced -> FK violation.
         C["tipo_persona"] = await create_origin_row(
-            session, SYNC_CATALOG_BY_NAME["tipo_persona"], {"tipo": "natural"}
+            session, SYNC_CATALOG_BY_NAME["tipo_persona"], {"tipo": f"natural-{uid()}"}
         )
         C["tipos_vehiculo"] = await create_origin_row(
             session, SYNC_CATALOG_BY_NAME["tipos_vehiculo"], {"tipo": f"carro-{uid()}"}
@@ -742,7 +767,7 @@ async def test_full_catalog_sync_46_entries_e2e(
             session,
             SYNC_CATALOG_BY_NAME["otros_cobros"],
             {
-                "nombre": "Propina",
+                "nombre": f"Propina-{uid()}",
                 "costo": 1000,
                 "tipo_calculo": "fijo",
                 "base_calculo": "total",
@@ -751,7 +776,7 @@ async def test_full_catalog_sync_46_entries_e2e(
         C["costos_servicios"] = await create_origin_row(
             session,
             SYNC_CATALOG_BY_NAME["costos_servicios"],
-            {"concepto": "Reimpresion", "costo": 500, "tipo_calculo": "fijo"},
+            {"concepto": f"Reimpresion-{uid()}", "costo": 500, "tipo_calculo": "fijo"},
         )
         C["empresa"] = await create_origin_row(
             session,
@@ -792,7 +817,7 @@ async def test_full_catalog_sync_46_entries_e2e(
                 "nombre": f"Sucursal E2E {uid()}",
                 "direccion": "Cra 1 # 2-3",
                 "telefono": "3000000001",
-                "prefijo_nombre": "E2E",
+                "prefijo_nombre": f"E2E{uid()}",
                 "ciudad": "Bogota",
                 "horario": "24h",
                 "uuid_tipo_sucursal": C["tipo_sucursal"].uuid,
@@ -804,14 +829,26 @@ async def test_full_catalog_sync_46_entries_e2e(
             SYNC_CATALOG_BY_NAME["vehiculos"],
             {"placa": f"E2E{uid().upper()}", "uuid_tipo_vehiculo": C["tipos_vehiculo"].uuid},
         )
+        # Values DELIBERATELY different from migration 0001's own seeded
+        # global-default row (dias_expiracion_password=90, max_intentos_
+        # login=5, minutos_bloqueo_login=15 — every fresh cloud/branch DB
+        # already has one such row from migration seeding, uuid_sucursal
+        # NULL). Found 2026-09-10: using the SAME values as the seed made
+        # identity_reconciler correctly classify this row as a "noop"
+        # (business-identical to the already-open global default) instead
+        # of "forward" — CORRECT reconciliation behavior, but it meant this
+        # test's OWN row was never actually inserted at BRANCH, so later
+        # asserting it landed there failed. A genuine override must carry
+        # genuinely different values, exactly like configuracion_tolerancias
+        # below already does relative to its own migration seed (0.00/0.00).
         C["configuracion_seguridad"] = await create_origin_row(
             session,
             SYNC_CATALOG_BY_NAME["configuracion_seguridad"],
             {
                 "uuid_sucursal": None,
-                "dias_expiracion_password": 90,
-                "max_intentos_login": 5,
-                "minutos_bloqueo_login": 15,
+                "dias_expiracion_password": 60,
+                "max_intentos_login": 3,
+                "minutos_bloqueo_login": 10,
             },
         )
         C["configuracion_tolerancias"] = await create_origin_row(
@@ -953,9 +990,18 @@ async def test_full_catalog_sync_46_entries_e2e(
         # the ACTUAL branch row objects for the ones whose non-uuid columns
         # this stage reads (placa, etc.) to avoid cross-session attribute
         # access on a detached cloud-session object.
-        for name in ("sucursal", "usuarios", "tipos_vehiculo", "vehiculos", "clientes",
-                     "resolucion_facturacion", "costos_servicios", "impuestos",
-                     "otros_cobros", "tipo_arqueo"):
+        for name in (
+            "sucursal",
+            "usuarios",
+            "tipos_vehiculo",
+            "vehiculos",
+            "clientes",
+            "resolucion_facturacion",
+            "costos_servicios",
+            "impuestos",
+            "otros_cobros",
+            "tipo_arqueo",
+        ):
             spec = SYNC_CATALOG_BY_NAME[name]
             B[name] = (
                 await branch_session.execute(
@@ -1287,9 +1333,7 @@ async def test_full_catalog_sync_46_entries_e2e(
     async with CloudSession() as cloud_verify:
         for name, (model_cls, row_uuid) in branch_authored.items():
             row = (
-                await cloud_verify.execute(
-                    select(model_cls).where(model_cls.uuid == row_uuid)
-                )
+                await cloud_verify.execute(select(model_cls).where(model_cls.uuid == row_uuid))
             ).scalar_one_or_none()
             assert row is not None, f"{name}: not found at CLOUD after push"
             results[name] = "OK"
@@ -1346,9 +1390,7 @@ async def test_full_catalog_sync_46_entries_e2e(
 
     async with BranchSession() as branch_verify:
         row = (
-            await branch_verify.execute(
-                select(EnvioDian).where(EnvioDian.uuid == envio_dian.uuid)
-            )
+            await branch_verify.execute(select(EnvioDian).where(EnvioDian.uuid == envio_dian.uuid))
         ).scalar_one_or_none()
         assert row is not None, "envio_dian: not found at BRANCH after backfill"
         assert row.uuid_factura_electronica == factura_electronica.uuid
@@ -1394,9 +1436,7 @@ async def test_full_catalog_sync_46_entries_e2e(
     # process from even importing this entry.
     async with BranchSession() as branch_verify:
         count = (
-            await branch_verify.execute(
-                select(func.count()).select_from(ValidacionEvento)
-            )
+            await branch_verify.execute(select(func.count()).select_from(ValidacionEvento))
         ).scalar_one()
         assert count == 0, "validacion_evento must NEVER reach the branch database"
     results["validacion_evento"] = "NEVER_PROPAGATED (confirmed correct)"

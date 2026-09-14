@@ -68,8 +68,10 @@ services:
       # legacy path instead. Never inlines a real deploy value.
       PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}
       PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
-      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
-      DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
+      # T-CRUD-CONTRACT-001: connects as the least-privilege rol_app-inheriting
+      # login role (migration 0021), never the `parkos` superuser.
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
       PARKOS_CLOUD_API_URL: http://api-admin:8000
       PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
@@ -108,8 +110,10 @@ services:
       # above for the override pattern.
       PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}
       PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
-      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
-      DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
+      # T-CRUD-CONTRACT-001: connects as the least-privilege rol_app-inheriting
+      # login role (migration 0021), never the `parkos` superuser.
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
       PARKOS_CLOUD_API_URL: http://api-admin:8000
       PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt

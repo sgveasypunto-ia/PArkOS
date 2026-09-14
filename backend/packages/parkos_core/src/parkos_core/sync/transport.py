@@ -213,11 +213,19 @@ class SyncHttpClient:
         )
 
     async def heartbeat(self, state: dict[str, Any]) -> None:
-        """POST /sync/heartbeat (both directions)."""
+        """POST /sync/heartbeat (both directions).
+
+        The endpoint's ``_HeartbeatRequest`` expects ``{"state": {...}}``
+        — the caller's ``state`` dict is the *value* of that key, not the
+        request body itself. Posting it unwrapped 422s on every single
+        call (confirmed in real Docker logs: every heartbeat from
+        ``sync_sucursal`` failed silently, since this client never checks
+        the response status).
+        """
         async with self._session_factory() as session:
             await session.post(
                 f"{self.base_url}/api/v1/sync/heartbeat",
-                json=state,
+                json={"state": state},
                 headers=self._auth_headers(),
             )
 

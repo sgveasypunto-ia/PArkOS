@@ -129,13 +129,25 @@ async def test_full_offline_flow(
     # -----------------------------------------------------------------
     # 2. Authorize — the SAME join auth.permissions.require_permission
     #    runs (PermisosUsuario x Permisos), against local data only.
+    #
+    #    Uses a throwaway, uniquely-suffixed code rather than a real
+    #    canonical one (e.g. "config_catalogo") — this file's own
+    #    ``Permisos`` row is a self-contained fixture for exercising the
+    #    join, not a grant of an actual canonical permission, and the
+    #    test DB is session-scoped/shared across the whole suite
+    #    (``conftest.py::pg_engine``). A fixed canonical code here would
+    #    insert a SECOND open row alongside the migration-seeded one,
+    #    breaking every other test's `scalar_one()` lookup on that code
+    #    for the rest of the run — confirmed real when the full suite
+    #    ran together for the first time (2026-09-10).
     # -----------------------------------------------------------------
+    codigo_permiso = f"test-offline-flow-{uuid_lib.uuid4().hex[:8]}"
     async with Session() as session:
         permiso = await versioned_helpers.close_and_insert(
             session,
             Permisos,
             current_uuid=None,
-            new_attrs={"permiso": "config_catalogo"},
+            new_attrs={"permiso": codigo_permiso},
             actor_uuid=uuid_lib.uuid4(),
         )
         await session.flush()
@@ -154,7 +166,7 @@ async def test_full_offline_flow(
             .where(
                 PermisosUsuario.uuid_usuario == usuario.uuid,
                 PermisosUsuario.vigente_hasta.is_(None),
-                Permisos.permiso == "config_catalogo",
+                Permisos.permiso == codigo_permiso,
             )
         )
         assert result.scalar_one_or_none() is not None

@@ -12,18 +12,26 @@ NOTE: This module is the ONLY allowed UPDATE writer on [V] tables. The AST
 test ``tests/static/test_no_raw_upsert_on_v_tables.py`` rejects
 ``session.execute(update(...))`` against [V] classes outside this module.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.base import VersionedBase
 
 T = TypeVar("T", bound=VersionedBase)
+
+# Columns close_and_insert always recomputes itself (step 2) — never carried
+# forward from the row being closed, even when present on the model.
+_RESERVED_COLUMNS = frozenset(
+    {"uuid", "vigente_desde", "vigente_hasta", "estado", "created_at", "created_by"}
+)
 
 
 class VersioningError(Exception):
@@ -53,7 +61,10 @@ async def close_and_insert(
         new_attrs: Column-name → value mapping for the new row. The caller
             supplies business attributes (e.g. ``nombre``, ``email``);
             ``vigente_desde``, ``vigente_hasta``, ``estado``, ``created_at``,
-            ``created_by`` are set server-side here.
+            ``created_by`` are set server-side here. When ``current_uuid`` is
+            given, any business column NOT present in ``new_attrs`` is
+            carried forward from the row being closed (see the real-defect
+            note below) — ``new_attrs`` only needs to name what changed.
         actor_uuid: JWT subject (the writer of the change).
         log_tx: Whether to write a ``log_transaccional`` row in the same TX
             (default ``True``). PR2 ships the helper; PR1b accepts the
@@ -72,9 +83,49 @@ async def close_and_insert(
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    # 1. Close the current version (if any)
+    # 1. Close the current version (if any), and carry forward any business
+    #    column not present in `new_attrs` from the row being closed.
+    #
+    #    Real defect confirmed via live HTTP against router_factory's
+    #    generic PUT /{uuid} (qa-e2e audit session, 2026-09-10): every
+    #    *Update schema derives its fields from the matching *Create schema
+    #    made Optional, and the endpoint sends `payload.model_dump(
+    #    exclude_none=True)` as `new_attrs` — a partial diff by construction
+    #    (renaming just `nombre` must not require resending `email`,
+    #    `telefono`, etc.). Before this fix, this function used `new_attrs`
+    #    as the COMPLETE new row verbatim, silently NULLing every business
+    #    column the caller omitted — confirmed live on `clientes`: a
+    #    PUT {"nombre": "..."} nulled `numero_identificacion` and
+    #    `tipo_identificador` on the new open version. Beyond plain data
+    #    loss, a NULLed natural-key column breaks `identity_reconciler`
+    #    (D17) for every subsequent cloud_to_branch/bidirectional sync of
+    #    that row, and the corruption then replicates to every other node.
+    #
+    #    The remote-replication caller (`sync.motor.apply_row`, via
+    #    `SyncMotor` push/pull) is unaffected: its `new_attrs` always
+    #    originates from the origin node's own `to_jsonb(NEW)` trigger
+    #    payload, which already carries every business column — merging
+    #    with the destination's current row there is a no-op (every key
+    #    `new_attrs` needs is already present and wins the merge).
+    carried_forward: dict[str, Any] = {}
     if current_uuid is not None:
         result = await session.execute(
+            select(model_cls).where(
+                model_cls.uuid == current_uuid,
+                model_cls.vigente_hasta.is_(None),
+            )
+        )
+        current_row = result.scalar_one_or_none()
+        if current_row is None:
+            raise RowNotFoundError(
+                f"no active row in {model_cls.__tablename__} for uuid={current_uuid}"
+            )
+        carried_forward = {
+            column.name: getattr(current_row, column.name)
+            for column in sa_inspect(model_cls).columns
+            if column.name not in _RESERVED_COLUMNS
+        }
+        await session.execute(
             update(model_cls)
             .where(
                 model_cls.uuid == current_uuid,
@@ -85,10 +136,8 @@ async def close_and_insert(
                 estado="inactivo",
             )
         )
-        if result.rowcount == 0:
-            raise RowNotFoundError(
-                f"no active row in {model_cls.__tablename__} for uuid={current_uuid}"
-            )
+
+    merged_attrs: dict[str, Any] = {**carried_forward, **new_attrs}
 
     # 2. Build the new row
     payload: dict[str, Any] = {
@@ -97,7 +146,7 @@ async def close_and_insert(
         "estado": "activo",
         "created_at": now,
         "created_by": actor_uuid,
-        **new_attrs,
+        **merged_attrs,
     }
     new_row = model_cls(**payload)
     session.add(new_row)
@@ -130,7 +179,7 @@ async def close_and_insert(
 
         log_attrs: dict[str, Any] = {
             "uuid_usuario": actor_uuid,
-            "uuid_sucursal": new_attrs.get("uuid_sucursal"),
+            "uuid_sucursal": merged_attrs.get("uuid_sucursal"),
             "accion": "actualizar" if current_uuid is not None else "crear",
             "tabla_afectada": model_cls.__tablename__,
             "uuid_registro_afectado": getattr(new_row, "uuid", None),
@@ -145,6 +194,49 @@ async def close_and_insert(
         )
 
     return new_row
+
+
+async def close_only(
+    session: AsyncSession,
+    model_cls: type[T],
+    uuid: uuid_lib.UUID,
+    *,
+    actor_uuid: uuid_lib.UUID,
+) -> None:
+    """Close an active ``[V]`` row with NO replacement version.
+
+    Same guarded ``UPDATE`` as :func:`close_and_insert`'s step 1, exposed on
+    its own for a corrective/administrative deactivation (e.g. collapsing an
+    erroneous duplicate) where a paired new version would be wrong — unlike
+    a real business update, there is no new state to insert.
+
+    Args:
+        session: Active ``AsyncSession`` (caller commits).
+        model_cls: The ``[V]`` ORM class to operate on.
+        uuid: The active row to close.
+        actor_uuid: JWT subject (the writer of the change) — unused today
+            (no ``[V]`` table carries a "closed_by" column) but required for
+            signature symmetry with :func:`close_and_insert` and to keep the
+            call site auditable if that column is ever added.
+
+    Raises:
+        RowNotFoundError: ``uuid`` doesn't match any currently-active row.
+    """
+    _ = actor_uuid
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    result = await session.execute(
+        update(model_cls)
+        .where(
+            model_cls.uuid == uuid,
+            model_cls.vigente_hasta.is_(None),
+        )
+        .values(
+            vigente_hasta=now,
+            estado="inactivo",
+        )
+    )
+    if result.rowcount == 0:
+        raise RowNotFoundError(f"no active row in {model_cls.__tablename__} for uuid={uuid}")
 
 
 async def current_version(
@@ -166,5 +258,6 @@ __all__ = [
     "VersioningError",
     "RowNotFoundError",
     "close_and_insert",
+    "close_only",
     "current_version",
 ]

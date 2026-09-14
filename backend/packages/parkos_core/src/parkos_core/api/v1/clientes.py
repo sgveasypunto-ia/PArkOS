@@ -3,6 +3,7 @@
 Branch-originated data (operator writes locally, admin reads cross-branch).
 ``make_router`` does NOT emit DELETE routes (REQ-33 / defense in depth).
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter
@@ -39,11 +40,22 @@ from ..router_factory import make_router
 router = APIRouter(prefix="/clientes", tags=["clientes"])
 
 _ROUTER_CONFIG = {
-    "clientes": ("operador-,admin-", "admin_clientes"),
-    "clientes-b2b": ("operador-,admin-", "admin_clientes_b2b"),
-    "subscripciones-cliente": ("operador-,admin-", "admin_subscripciones"),
-    "vehiculos": ("operador-,admin-", "admin_vehiculos"),
-    "subscripcion-vehiculos": ("operador-,admin-", "admin_subscripcion_vehiculos"),
+    # Real defect confirmed via manual QA + HTTP-level regression test
+    # (test_clientes_family_permission_codes.py): these 5 resources
+    # previously each required a distinct "admin_*" permission code that
+    # was never seeded anywhere in
+    # migrations/versions/0002_seed_permisos_canonicos.py's
+    # CANONICAL_PERMISOS (the single source of truth "per design section
+    # 7") — since require_permission looks up the code LIVE against
+    # prod.permisos, a code matching no row can never be granted to
+    # anyone, making every write in this whole family 403 for every
+    # caller since PR5. gestionar_clientes is the one real canonical code
+    # for this bounded context (clientes + everything under it).
+    "clientes": ("operador-,admin-", "gestionar_clientes"),
+    "clientes-b2b": ("operador-,admin-", "gestionar_clientes"),
+    "subscripciones-cliente": ("operador-,admin-", "gestionar_clientes"),
+    "vehiculos": ("operador-,admin-", "gestionar_clientes"),
+    "subscripcion-vehiculos": ("operador-,admin-", "gestionar_clientes"),
 }
 
 
