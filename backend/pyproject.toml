@@ -92,9 +92,13 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM", "PT", "RUF"]
 # PR1b-shipped API router files use FastAPI's ``Depends(...)`` in default-arg
 # style (B008). That's a FastAPI convention but ruff flags it; PR1c ships
 # the tests without restructuring the router code (which is PR1b-owned).
+# HU-F1.4 extends ``empresa.py`` with a dedicated handler that follows the
+# same convention.
 # Glob uses Unix-style path separators even on Windows.
 "backend/**/api/v1/auth.py" = ["B008"]
 "backend/**/api/v1/catalogos.py" = ["B008"]
+"backend/**/api/v1/empresa.py" = ["B008"]
+"src/parkos_core/api/v1/empresa.py" = ["B008"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI dependencies use ``Depends(...)`` as default — see B008 above.

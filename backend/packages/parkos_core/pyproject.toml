@@ -56,6 +56,10 @@ extend-select = ["I", "UP", "B", "ASYNC", "SIM", "PT", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
 "migrations/**/*.py" = ["E501"]
+# HU-F1.4 extends ``api/v1/empresa.py`` with a dedicated handler that
+# uses FastAPI's ``Query(...)`` / ``Depends(...)`` defaults (B008).
+# Same convention as the existing auth.py / catalogos.py ignores.
+"src/parkos_core/api/v1/empresa.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.13"

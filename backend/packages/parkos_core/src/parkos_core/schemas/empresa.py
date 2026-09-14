@@ -307,6 +307,10 @@ class TarifasSucursalFilter(FilterBase):
     uuid_sucursal: uuid_lib.UUID | None = None
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
     uuid_tipo_tarifa: uuid_lib.UUID | None = None
+    # HU-F1.4 / REQ-OPS-021: point-in-time for the bi-temporal predicate.
+    # Default ``None`` keeps the legacy factory / POST / PUT / GET-by-uuid
+    # paths untouched — only the dedicated list handler reads this.
+    vigente_en: datetime | None = None
 
 
 class TarifasSucursalReadList(ReadListBase[TarifasSucursalRead]):
