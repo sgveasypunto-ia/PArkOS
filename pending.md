@@ -7,15 +7,15 @@
 > **PR target**: `origin/dev` (gitflow).
 > **Estado al abrir**: Fase 1 Parte I cerrada (15 HU backend prerequisites, PR #56 abierto), Fase 2 cerrada (24 commits en `feat/fase-2-electron-scaffold`), Fase 3 arranca desde cero.
 
-## 1. HUs restantes (3)
+## 1. HUs restantes (2)
 
 | # | ID | Titulo | Tamano est. | Bloqueador | Notas |
 |---|---|---|---|---|---|
-| 1 | HU-F3.1 | Login con `email` + `password` (anti-enumeración + cookie `httpOnly`) | 190 LOC | depende F2.2 backend endpoints | 4 atomic tasks T1..T4 (Login page + POST /auth/login + authStore hidratar + e2e login). Backend endpoints POST /auth/login + GET /auth/me via HU-F1.2 (Fase 1 ya cerrada). Regla DEC-SUC-02: credencial es `email`, NUNCA `cedula`. 401 → `errors.invalid_credentials` único (anti-enumeración). |
+| 1 | HU-F3.1 | Login con `email` + `password` (anti-enumeración + cookie `httpOnly`) | 190 LOC | depende F2.2 backend endpoints | ✅ **CERRADO 2026-09-15** — 4 atomic commits `8961303..5fcfe66` archivados en `openspec/changes/archive/2026-09-15-hu-f3-1-login-email-password/` (~1008 net LOC production + tests). 7 new REQ-OPS-106..112 materialized al canonical `openspec/specs/operations/spec.md` (DELTA precedent — first user-facing DELTA en Fase 3, breaking F2.x NO-OP pattern). 5/7 gates PASS source-level + 2/7 SKIPPED-env (G6 e2e + G7 axe-core runtime) + 0 FAIL per F.6 precedent. |
 | 2 | HU-F3.2 | Lockout visible (countdown) + refresh transparente (50min auto + pre-flight) | 130 LOC | depende F3.1 | 4 atomic tasks T1..T4 (useCountdown hook + integrar en Login + refresh pre-flight en parkosFetch + e2e lockout). Trigger: 429 con `Retry-After` → disable form + countdown `setInterval(1000)`. Refresh pre-flight antes de POST /facturacion/* + POST /caja/arqueo. |
 | 3 | HU-F3.3 | Abrir / cerrar turno (caja-sesion con `valor_inicial_efectivo/datafono`) | 260 LOC | depende F3.1 | 5 atomic tasks T1..T5 (AbrirTurno page + CerrarTurno page placeholder + useSesionActiva SWR hook + rutas en App.tsx + e2e turno). Backend POST /caja-sesion/sesiones + GET /caja-sesion/sesion/me + PUT /caja-sesion/sesion/{uuid}/cerrar. 409 sesion_ya_abierta / sesion_ya_cerrada → mensajes claros. |
 
-**Total LOC restante**: ~580 LOC production + tests + configs (Fase 2 done 2026-09-15, ~6265 LOC de presupuesto consumido en F2.1+F2.2+F2.3; restante Fase 3 ~580).
+**Total LOC restante**: ~390 LOC production + tests + configs (Fase 2 done 2026-09-15, ~6265 LOC de presupuesto consumido en F2.1+F2.2+F2.3; restante Fase 3 ~390 — F3.1 ~190 ya consumido).
 
 ## 2. Bloqueadores de deployment
 
@@ -71,4 +71,4 @@
 
 **Opened by**: orchestrator (post-Fase 2 archive, pre-Fase 3 explore).
 **Engram**: persisted (topic_key=`sdd/fase-3-auth-turno/pending`, project=`easypuinto-parkos-software`).
-**Updated**: 2026-09-15 (post-F2.3 archive + Fase 2 closure) — Fase 2 3/3 cerrado (HU-F1.1/F2.1/F2.2/F2.3 archivados 2026-09-15); Fase 3 0/3 abierto; 24 commits total Fase 2 (`24500a4..44dcb60`); `apps/ui-kit/` poblado con `parkosFetch` + `authStore` + `useAuth` (F2.2) + Button + cn + tokens (F2.1); `apps/electron-sucursal/` bridge IPC + preload whitelist (F2.2) + 4 servicios runtime (updater + log-config + api-status + kiosko) + StatusBar (F2.3). Working tree clean post-archive.
+**Updated**: 2026-09-15 (post-F3.1 archive + Fase 3 HU-1 cierre) — Fase 2 3/3 cerrado (HU-F1.1/F2.1/F2.2/F2.3 archivados 2026-09-15); **Fase 3 1/3 cerrado (HU-F3.1 archivado 2026-09-15, F3.2+F3.3 pendientes)**; 28 commits total Fase 2+F3.1 (`24500a4..5fcfe66`); 4 atomic commits F3.1 (`8961303..5fcfe66`); `apps/ui-kit/` poblado con `parkosFetch` + `authStore` + `useAuth` (F2.2) + Button + cn + tokens (F2.1); `apps/electron-sucursal/` bridge IPC + preload whitelist (F2.2) + 4 servicios runtime (updater + log-config + api-status + kiosko) + StatusBar (F2.3) + `features/auth/` (Login + LoginForm + loginApi + loginSchema, F3.1) + ruta `/login` (F3.1 T3). Working tree clean post-archive.
