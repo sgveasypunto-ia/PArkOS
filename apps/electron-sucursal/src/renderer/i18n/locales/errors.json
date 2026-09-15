@@ -1,0 +1,12 @@
+{
+  "networkError": "Sin conexión al servidor",
+  "serverError": "Error del servidor",
+  "validationError": "Datos inválidos",
+  "unauthorized": "No autorizado",
+  "forbidden": "Acceso denegado",
+  "notFound": "Recurso no encontrado",
+  "timeout": "Tiempo agotado",
+  "unknown": "Error desconocido",
+  "reportar": "Reportar error",
+  "codigo": "Código"
+}

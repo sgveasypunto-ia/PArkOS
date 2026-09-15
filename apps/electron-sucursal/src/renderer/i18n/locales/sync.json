@@ -1,0 +1,12 @@
+{
+  "status": "Estado de sincronización",
+  "online": "Conectado",
+  "offline": "Sin conexión",
+  "syncing": "Sincronizando…",
+  "lastSync": "Última sincronización",
+  "pending": "Cambios pendientes",
+  "conflict": "Conflicto",
+  "forceResync": "Forzar resincronización",
+  "queueLength": "Cola",
+  "lastError": "Último error"
+}

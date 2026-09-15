@@ -1,0 +1,12 @@
+{
+  "appName": "Parkos Sucursal",
+  "bootstrapNotice": "Andamiaje Electron — Fase 2 en construcción.",
+  "loading": "Cargando…",
+  "error": "Algo salió mal",
+  "retry": "Reintentar",
+  "close": "Cerrar",
+  "save": "Guardar",
+  "cancel": "Cancelar",
+  "back": "Volver",
+  "next": "Siguiente"
+}
