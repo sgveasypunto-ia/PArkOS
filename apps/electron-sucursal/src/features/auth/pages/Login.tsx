@@ -20,13 +20,20 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
+import { useAuthStore } from '@parkos/ui-kit/store';
 
 import { LoginForm, type LoginErrorState } from '../components/LoginForm';
 import { loginSchema, type LoginInput } from '../api/loginSchema';
+import {
+  postLogin,
+  AccountLockedError,
+  InvalidCredentialsError,
+} from '../api/loginApi';
 
 export function Login(): JSX.Element {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading, user } = useAuth();
+  const setTokens = useAuthStore((s) => s.setTokens);
   const [errorState, setErrorState] = useState<LoginErrorState>(null);
 
   const form = useForm<LoginInput>({
@@ -44,10 +51,23 @@ export function Login(): JSX.Element {
     }
   }, [isAuthenticated, user, isLoading, navigate]);
 
-  // T1 placeholder onSubmit: limpia errorState. T2 wirea postLogin + setTokens
-  // + error mapping 401/429/5xx via `InvalidCredentialsError` / `AccountLockedError`.
-  const onSubmit = form.handleSubmit(() => {
+  const onSubmit = form.handleSubmit(async (values) => {
     setErrorState(null);
+    try {
+      const pair = await postLogin(values.email, values.password);
+      // DEC-F3.1-03 + authStore invariant: setTokens es atómico (access +
+      // refresh + expiresAt simultáneamente). El redirect lo dispara el
+      // useEffect cuando SWR resuelve `user` post-/auth/me.
+      setTokens(pair.access_token, pair.refresh_token, pair.expires_in);
+    } catch (err) {
+      if (err instanceof InvalidCredentialsError) {
+        setErrorState({ kind: 'invalid_credentials' });
+      } else if (err instanceof AccountLockedError) {
+        setErrorState({ kind: 'lockout', retryAfterSeconds: err.retryAfterSeconds });
+      } else {
+        setErrorState({ kind: 'network' });
+      }
+    }
   });
 
   return (
