@@ -50,7 +50,7 @@ def _mount_caja(
             update_schema=update_schema,
             repo_kind="versioned",
             issuer_required="operador-,admin-",
-            permission_required="emitir_factura",
+            permission_required="realizar_arqueo",  # GAP-BE-05 -- was emitir_factura
             write_enabled=False,  # PR7 is read-only; writes via custom endpoints (PR11)
         )
     )

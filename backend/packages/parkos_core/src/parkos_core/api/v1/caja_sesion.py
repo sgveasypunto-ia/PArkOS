@@ -254,7 +254,7 @@ router.include_router(
         update_schema=SesionUpdate,
         repo_kind="versioned",
         issuer_required="operador-,admin-",
-        permission_required="emitir_factura",
+        permission_required="abrir_cerrar_caja",  # GAP-BE-05 -- was emitir_factura
         write_enabled=False,
     )
 )
