@@ -86,4 +86,18 @@ from .caja_arqueo import router as caja_arqueo_router  # noqa: E402
 router.include_router(caja_arqueo_router)
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.14 / DEC-SYNC-02: dedicated router mount for the read-only
+# ``GET /api/v1/sync/estado`` endpoint. Mirrors the F1.13 mount
+# precedent above: the factory mount cannot model the typed response +
+# KD-3 issuer + ``audit_read`` permission gate, so we expose a
+# dedicated router and ``include_router`` it here. KD-SYNC-01 +
+# KD-SYNC-02: the handler is purely read-only -- NO UPDATE/DELETE on
+# ``prod.sync_log`` or ``prod.sync_queue``, NO ``await session.commit()``.
+# ---------------------------------------------------------------------------
+from .sync_estado import router as sync_estado_router  # noqa: E402
+
+router.include_router(sync_estado_router)
+
+
 __all__ = ["router"]
