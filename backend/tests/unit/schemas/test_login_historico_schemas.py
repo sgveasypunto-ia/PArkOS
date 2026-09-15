@@ -92,7 +92,7 @@ def test_login_intento_item_estado_literal_rejects_activoboolean() -> None:
     string would otherwise slip through).
     """
     schemas = importlib.import_module("parkos_core.schemas.usuarios")
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     with pytest.raises(ValidationError):
         schemas.LoginIntentoItem(
@@ -114,7 +114,7 @@ def test_login_intento_item_estado_null_raises() -> None:
     state from the wire payload.
     """
     schemas = importlib.import_module("parkos_core.schemas.usuarios")
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     with pytest.raises(ValidationError):
         schemas.LoginIntentoItem(
@@ -133,7 +133,7 @@ def test_login_intento_item_estado_literal_accepts_three_values() -> None:
     the Pydantic validator (DEC-LOGIN-10).
     """
     schemas = importlib.import_module("parkos_core.schemas.usuarios")
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     for value in ("exitoso", "fallido", "cerrado"):
         item = schemas.LoginIntentoItem(
@@ -159,7 +159,7 @@ def test_login_historico_list_response_envelope_shape() -> None:
     the dedicated router without breaking this contract.
     """
     schemas = importlib.import_module("parkos_core.schemas.usuarios")
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     items = [
         schemas.LoginIntentoItem(

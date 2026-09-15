@@ -22,7 +22,6 @@ Predecessor: F1.14 archived 2026-09-15 (MIGRATION 0032 alert_types siembra).
 """
 from alembic import op
 
-
 revision = "0033_login_historic_index"
 down_revision = "0032_seed_alert_types_operativos"
 branch_labels = None

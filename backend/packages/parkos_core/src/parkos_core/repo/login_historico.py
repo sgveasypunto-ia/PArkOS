@@ -45,7 +45,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.tenancy import TenantContext
 from ..models.L_S.login import Login
-from .pagination import Cursor, InvalidCursorError, decode as cursor_decode, encode as cursor_encode
+from .pagination import Cursor, InvalidCursorError
+from .pagination import decode as cursor_decode
+from .pagination import encode as cursor_encode
 
 # Hard ceiling for pagination (DEC-LOGIN-04 + design §10.1 Step 4).
 # The handler clamps to this ceiling before invoking the helper;
