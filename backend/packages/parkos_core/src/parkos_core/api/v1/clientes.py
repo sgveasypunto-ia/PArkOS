@@ -125,5 +125,11 @@ _mount_cliente(
     update_schema=SubscripcionVehiculosUpdate,
 )
 
+# HU-F1.12 -- mount POST /clientes/venta-suscripcion dedicated router
+# (DEC-VENTA-05 + DEC-VENTA-06 layer 5 mirror of F1.11 reimpresion).
+from .clientes_venta import router as venta_suscripcion_router  # noqa: E402
+
+router.include_router(venta_suscripcion_router)
+
 
 __all__ = ["router"]
