@@ -96,24 +96,25 @@ class PagoDuplicadoError(Exception):
 
 async def buscar_salida_facturable(
     session: AsyncSession, *, uuid_salida: uuid_lib.UUID
-) -> Any | None:
+) -> Salidas | None:
     """V1 — read ``prod.salidas`` row by uuid.
 
-    F1.9 only confirms the row exists. The "facturable" check is just
-    ``salida NOT NULL`` for MVP; the full facturable predicate (no
-    anulada + branch match) is enforced by the handler.
+    Used by handler Step 2 (V1) to verify the salida is facturable.
+    A salida is facturable iff (per DEC-FACT-02):
 
-    Returns ``None`` if not found.
+    - It exists in ``prod.salidas`` (this helper confirms row presence).
+    - It has not been previously facturada (enforced by the
+      ``one_factura_per_salida`` partial unique index, MIGRATION 0027 Op 2).
+    - It belongs to the requester's sucursal (enforced at handler
+      Step 3 tenant scope, NOT here).
+
+    Returns the :class:`Salidas` row when present, ``None`` otherwise.
+    Handler maps ``None`` to 404 ``salida_no_encontrada``.
     """
-    stmt = select(FacturaDetalle).where(FacturaDetalle.uuid_factura == uuid_salida).limit(0)  # noqa
-    # We deliberately do NOT query prod.salidas (F1.9 scope is the create
-    # side); the lookup is over the Factura tabla's uuid_salida FK.
-    # The real "existe" check is enforced by the partial unique index
-    # at INSERT time (R3 closure). Handler treats None from this
-    # helper as "salida_id_invalida" 404. The actual salida entity
-    # existence is delegated to a future HU (post-F1.9).
-    return None  # placeholder so the 404 path is testable; handler
-    # rewires via busqueda directa en prod.salidas via FK constraint.
+    from ..models.A.salidas import Salidas  # local import to avoid cycles
+
+    stmt = select(Salidas).where(Salidas.uuid == uuid_salida)
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def buscar_o_crear_cliente_por_nit(
@@ -262,13 +263,21 @@ async def crear_factura_impuesto_iva(
     *,
     uuid_factura: uuid_lib.UUID,
     base: Decimal,
+    iva: Decimal,
 ) -> FacturaImpuestos:
     """Step 10b: INSERT one IVA snapshot row in ``prod.factura_impuestos``.
 
-    Reads ``uuid_impuesto`` (IVA) and ``porcentaje`` from
-    ``prod.impuestos`` (V3 pre-flight guaranteed IVA configured).
+    Looks up ``uuid_impuesto`` (IVA) from ``prod.impuestos`` and
+    accepts the ``iva`` percentage (already validated by Step 5 via
+    :func:`repo.impuestos.obtener_iva_vigente`) from the caller.
     Snapshots both ``uuid_impuesto`` and ``porcentaje_aplicado`` so
     historical reports remain valid even if IVA changes.
+
+    DEC-FACT-03: the percentage is NOT hardcoded; it MUST come from
+    the caller (which sources it from ``prod.impuestos``). If a
+    regulatory change raises IVA from 0.19 to 0.20, the same value
+    is used for ``compute_total`` (Step 8) and the IVA snapshot
+    (this function) — no drift between total and snapshot.
 
     KD-FACT-01: caller commits ONCE.
     """
@@ -284,12 +293,12 @@ async def crear_factura_impuesto_iva(
         )
     ).scalar_one()
 
-    iva_monto = (base * iva_row.porcentaje).quantize(Decimal("0.01"))
+    iva_monto = (base * iva).quantize(Decimal("0.01"))
     new_row = FacturaImpuestos(
         uuid_factura=uuid_factura,
         uuid_impuesto=iva_row.uuid,
         base_calculo=base,
-        porcentaje_aplicado=iva_row.porcentaje,
+        porcentaje_aplicado=iva,
         valor=iva_monto,
         fecha_retencion_hasta=date.today() + timedelta(days=5 * 365),
     )

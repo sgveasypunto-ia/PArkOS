@@ -104,6 +104,17 @@ async def test_post_factura_invokes_session_commit_exactly_once(
     new_factura.total = Decimal("5950.00")
     new_factura.items = []
 
+    # Mock the created detalle ORM row (C1 fix: handler iterates this, not
+    # the Pydantic payload items). Carries .uuid so the FacturaItemRead
+    # construction in Step 12 succeeds.
+    detalle_creado = MagicMock()
+    detalle_creado.uuid = uuid_lib.uuid4()
+    detalle_creado.tipo = "servicio"
+    detalle_creado.concepto = "Parqueo 1h"
+    detalle_creado.cantidad = 1
+    detalle_creado.valor_unitario = Decimal("5000.00")
+    detalle_creado.subtotal = Decimal("5000.00")
+
     # Patch repo helpers
     async def _buscar_salida_facturable(*_args: object, **_kwargs: object) -> MagicMock:
         return salida
@@ -111,8 +122,8 @@ async def test_post_factura_invokes_session_commit_exactly_once(
     async def _buscar_o_crear_cliente(*_args: object, **_kwargs: object) -> None:
         return None
 
-    async def _validar_iva(*_args: object, **_kwargs: object) -> bool:
-        return True
+    async def _obtener_iva(*_args: object, **_kwargs: object) -> Decimal:
+        return Decimal("0.19")
 
     def _validar_items(items: list[FacturaItemCreate]) -> list[FacturaItemCreate]:
         return items
@@ -130,7 +141,7 @@ async def test_post_factura_invokes_session_commit_exactly_once(
         return new_factura
 
     async def _crear_factura_detalle_bulk(*_args: object, **_kwargs: object) -> list:
-        return []
+        return [detalle_creado]
 
     async def _crear_factura_impuesto_iva(*_args: object, **_kwargs: object) -> MagicMock:
         return MagicMock()
@@ -171,8 +182,8 @@ async def test_post_factura_invokes_session_commit_exactly_once(
         _crear_factura_pago,
     )
     monkeypatch.setattr(
-        "parkos_core.api.v1.facturacion.validar_iva_configurado",
-        _validar_iva,
+        "parkos_core.api.v1.facturacion.obtener_iva_vigente",
+        _obtener_iva,
     )
 
     # Invoke the handler
@@ -238,8 +249,8 @@ async def test_post_factura_v6_total_no_coherente_returns_422(
     async def _buscar_salida(*_args: object, **_kwargs: object) -> MagicMock:
         return salida
 
-    async def _validar_iva(*_args: object, **_kwargs: object) -> bool:
-        return True
+    async def _obtener_iva(*_args: object, **_kwargs: object) -> Decimal:
+        return Decimal("0.19")
 
     def _validar_items(items: list) -> list:
         return items
@@ -270,8 +281,8 @@ async def test_post_factura_v6_total_no_coherente_returns_422(
         _compute_total_wrong,
     )
     monkeypatch.setattr(
-        "parkos_core.api.v1.facturacion.validar_iva_configurado",
-        _validar_iva,
+        "parkos_core.api.v1.facturacion.obtener_iva_vigente",
+        _obtener_iva,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -281,3 +292,181 @@ async def test_post_factura_v6_total_no_coherente_returns_422(
     assert exc_info.value.detail["error"] == "total_no_coherente"
     assert "total_recibido" in exc_info.value.detail
     assert "total_calculado" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_post_factura_uses_db_iva_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C3 RED→GREEN: handler MUST pass the DB-read IVA % to compute_total,
+    NOT a hardcoded Decimal('0.19').
+
+    DEC-FACT-03 forbids hardcoded tax constants. We mock
+    ``obtener_iva_vigente`` to return ``Decimal('0.15')`` (a non-default
+    rate, e.g. simulating a regulatory change) and verify the value
+    forwarded to ``compute_total`` is 0.15, not the historical 0.19.
+    """
+    response = MagicMock()
+    # Payload with total = subtotal + 15% (matches the simulated
+    # regulatory change in ``_obtener_iva`` below): 5000 + 750 = 5750.
+    payload = FacturaCreate(
+        uuid_salida=uuid_lib.uuid4(),
+        items=[
+            FacturaItemCreate(
+                tipo="servicio",
+                concepto="Parqueo 1h",
+                cantidad=1,
+                valor_unitario=Decimal("5000.00"),
+                uuid_tarifa_sucursal=None,
+            ),
+        ],
+        subtotal=Decimal("5000.00"),
+        total=Decimal("5750.00"),
+        medio_pago="efectivo",
+        referencia=None,
+        fe_con_datos=False,
+        fe_datos_cliente=None,
+    )
+    session = AsyncMock()
+    ctx = MagicMock()
+
+    salida = MagicMock()
+    salida.uuid = payload.uuid_salida
+    salida.uuid_sucursal = uuid_lib.uuid4()
+    salida.uuid_ingreso = uuid_lib.uuid4()
+
+    # Tracking what value is passed to compute_total
+    captured: dict[str, object] = {}
+
+    async def _buscar_salida(*_args: object, **_kwargs: object) -> MagicMock:
+        return salida
+
+    async def _obtener_iva(*_args: object, **_kwargs: object) -> Decimal:
+        return Decimal("0.15")  # simulated regulatory change
+
+    def _validar_items(items: list) -> list:
+        return items
+
+    async def _lock(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def _compute_total_capture(
+        items: list, iva: Decimal, retencion: Decimal
+    ) -> Decimal:
+        captured["iva"] = iva
+        # subtotal 5000 + 15% = 5750
+        return Decimal("5750.00")
+
+    async def _crear_factura_evento(*_args: object, **_kwargs: object) -> MagicMock:
+        new_factura = MagicMock()
+        new_factura.uuid = uuid_lib.uuid4()
+        new_factura.created_at = "2026-09-14T10:00:00"
+        new_factura.uuid_sucursal = salida.uuid_sucursal
+        new_factura.uuid_ingreso = salida.uuid_ingreso
+        new_factura.uuid_salida = salida.uuid
+        new_factura.subtotal = Decimal("5000.00")
+        new_factura.descuento = Decimal("0")
+        new_factura.total = Decimal("5750.00")
+        return new_factura
+
+    async def _crear_factura_detalle_bulk(*_args: object, **_kwargs: object) -> list:
+        det = MagicMock()
+        det.uuid = uuid_lib.uuid4()
+        det.tipo = "servicio"
+        det.concepto = "Parqueo 1h"
+        det.cantidad = 1
+        det.valor_unitario = Decimal("5000.00")
+        det.subtotal = Decimal("5000.00")
+        return [det]
+
+    async def _crear_factura_impuesto_iva(
+        *_args: object, **_kwargs: object
+    ) -> MagicMock:
+        return MagicMock()
+
+    async def _crear_factura_pago(*_args: object, **_kwargs: object) -> MagicMock:
+        return MagicMock()
+
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.buscar_salida_facturable",
+        _buscar_salida,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.obtener_iva_vigente",
+        _obtener_iva,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.validar_items",
+        _validar_items,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.lock_tarifas_sucursal_para_items",
+        _lock,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.compute_total",
+        _compute_total_capture,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.crear_factura_evento",
+        _crear_factura_evento,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.crear_factura_detalle_bulk",
+        _crear_factura_detalle_bulk,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.crear_factura_impuesto_iva",
+        _crear_factura_impuesto_iva,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.crear_factura_pago",
+        _crear_factura_pago,
+    )
+
+    await create_factura(response, payload, session, ctx, None)
+
+    # DEC-FACT-03 enforcement: the IVA passed to compute_total MUST be
+    # the DB-derived value (0.15), not the historical hardcoded 0.19.
+    assert captured.get("iva") == Decimal("0.15"), (
+        f"DEC-FACT-03 violated: compute_total received iva={captured.get('iva')!r}, "
+        f"expected Decimal('0.15') from prod.impuestos."
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_factura_v3_iva_no_configurado_returns_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C3 regression: when no IVA row is vigente, handler returns 500
+    ``iva_no_configurado`` (handler does NOT silently fall back to 0.19)."""
+    response = MagicMock()
+    payload = _make_payload()
+    session = AsyncMock()
+    ctx = MagicMock()
+
+    salida = MagicMock()
+    salida.uuid = payload.uuid_salida
+    salida.uuid_sucursal = uuid_lib.uuid4()
+    salida.uuid_ingreso = uuid_lib.uuid4()
+
+    async def _buscar_salida(*_args: object, **_kwargs: object) -> MagicMock:
+        return salida
+
+    async def _obtener_iva(*_args: object, **_kwargs: object) -> None:
+        return None  # no vigente IVA row
+
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.buscar_salida_facturable",
+        _buscar_salida,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.obtener_iva_vigente",
+        _obtener_iva,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_factura(response, payload, session, ctx, None)
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail["error"] == "iva_no_configurado"

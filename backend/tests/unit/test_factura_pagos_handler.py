@@ -72,16 +72,43 @@ async def test_post_factura_pagos_datafono_con_referencia_vacia_returns_400() ->
 
     The handler uses ``not payload.referencia`` which treats empty string
     as missing. This matches the disk-side check the repo layer also
-    performs.
+    performs. We use :py:meth:`pydantic.BaseModel.model_construct` to
+    bypass the StringConstraints ``min_length=1`` schema gate so the
+    payload reaches the handler-level guard (the real production
+    scenario is a client that omits ``referencia`` entirely, leaving
+    ``referencia=None``, but the test also covers the empty-string
+    case at the handler boundary).
     """
+    from pydantic import ValidationError
+
+    from parkos_core.schemas.facturacion import FacturaPagoAdicionalCreate
+
     response = MagicMock()
-    payload = _make_payload(medio_pago="datafono", referencia="")
     session = AsyncMock()
     ctx = MagicMock()
 
-    # Pydantic would have already rejected empty string via StringConstraints
-    # min_length=1, but we simulate the path with a manually-constructed
-    # payload that bypasses Pydantic to verify the handler-level guard.
+    # Pydantic rejects empty string at the schema gate (min_length=1).
+    # Verify the schema-level rejection first (defense in depth).
+    with pytest.raises(ValidationError):
+        FacturaPagoAdicionalCreate(
+            uuid_factura=uuid_lib.uuid4(),
+            medio_pago="datafono",
+            valor=Decimal("1000.00"),
+            referencia="",
+            uuid_sesion=None,
+        )
+
+    # Bypass the schema gate via model_construct to exercise the
+    # handler-level guard (the original F1.9 intent — verify the
+    # handler rejects empty-string referencia, not just the schema).
+    payload = FacturaPagoAdicionalCreate.model_construct(
+        uuid_factura=uuid_lib.uuid4(),
+        medio_pago="datafono",
+        valor=Decimal("1000.00"),
+        referencia="",
+        uuid_sesion=None,
+    )
+
     with pytest.raises(HTTPException) as exc_info:
         await create_factura_pago(response, payload, session, ctx, None)
 

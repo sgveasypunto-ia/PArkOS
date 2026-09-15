@@ -53,7 +53,7 @@ from ...models.A.factura_pagos import FacturaPagos
 from ...models.L_E.facturas import Facturas
 from ...repo import factura as repo_factura
 from ...repo.factura_detalle import crear_factura_detalle_bulk
-from ...repo.impuestos import validar_iva_configurado
+from ...repo.impuestos import obtener_iva_vigente
 from ...schemas.facturacion import (
     FacturaCreate,
     FacturaDetalleCreate,
@@ -304,7 +304,12 @@ async def create_factura(
         cliente_uuid = cliente.uuid
 
     # --- Step 5: V3 (IVA configurado). ---------------------------------
-    if not await validar_iva_configurado(session):
+    # DEC-FACT-03: source the IVA rate from prod.impuestos (NOT a hardcoded
+    # constant). The same rate is then used in Step 8 (compute_total) and
+    # Step 10b (crear_factura_impuesto_iva) to keep the total coherent
+    # with the IVA snapshot.
+    iva_porcentaje = await obtener_iva_vigente(session)
+    if iva_porcentaje is None:
         raise HTTPException(
             status_code=500,
             detail={"error": "iva_no_configurado"},
@@ -327,7 +332,7 @@ async def create_factura(
 
     # --- Step 8: V6 server-side recompute total (±0.01 COP). -----------
     total_server = repo_factura.compute_total(
-        items=items_validados, iva=Decimal("0.19"), retencion=Decimal(0)
+        items=items_validados, iva=iva_porcentaje, retencion=Decimal(0)
     )
     if abs(total_server - payload.total) > Decimal("0.01"):
         raise HTTPException(
@@ -356,11 +361,11 @@ async def create_factura(
     )
 
     # --- Step 10: INSERT factura_detalle (N) + impuestos (1) + pago. --
-    await crear_factura_detalle_bulk(
+    detalles_creados = await crear_factura_detalle_bulk(
         session, uuid_factura=new_factura.uuid, items=items_validados
     )
     await repo_factura.crear_factura_impuesto_iva(
-        session, uuid_factura=new_factura.uuid, base=total_server
+        session, uuid_factura=new_factura.uuid, base=total_server, iva=iva_porcentaje
     )
     await repo_factura.crear_factura_pago(
         session,
@@ -396,7 +401,7 @@ async def create_factura(
                 valor_unitario=item.valor_unitario,
                 subtotal=item.subtotal,
             )
-            for item in items_validados
+            for item in detalles_creados
         ],
         estado="emitida",  # derived (always "emitida" at create time)
     )

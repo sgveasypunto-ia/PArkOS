@@ -5,7 +5,8 @@ MUST invoke the helpers in canonical order:
 
   Step 2 V1 salida            -> repo_factura.buscar_salida_facturable
   Step 4 V2 cliente           -> repo_factura.buscar_o_crear_cliente_por_nit
-  Step 5 V3 IVA               -> validar_iva_configurado
+  Step 5 V3 IVA               -> obtener_iva_vigente  (verify-report C3 fix;
+                                  was ``validar_iva_configurado`` pre-fix)
   Step 6 V4 detalle           -> repo_factura.validar_items
   Step 7 KD-FACT-02 lock      -> repo_factura.lock_tarifas_sucursal_para_items
   Step 8 V6 total             -> repo_factura.compute_total
@@ -45,10 +46,16 @@ _HANDLER_FILE = (
 # ``buscar_o_crear_cliente_por_nit`` is conditional on fe_con_datos
 # (Step 4 may be skipped in tests where fe_con_datos=False), so the
 # AST walk uses ``issubset`` rather than strict equality.
+#
+# verify-report C3: Step 5 V3 is now ``obtener_iva_vigente`` (returns
+# Decimal | None) instead of ``validar_iva_configurado`` (returns bool).
+# The helper change is required by DEC-FACT-03 — the handler MUST pass
+# the DB-derived IVA percentage to both ``compute_total`` (Step 8) and
+# ``crear_factura_impuesto_iva`` (Step 10b), not a hardcoded 0.19.
 _EXPECTED_CHAIN: list[str] = [
     "buscar_salida_facturable",          # Step 2 V1
     "buscar_o_crear_cliente_por_nit",    # Step 4 V2 (conditional)
-    "validar_iva_configurado",           # Step 5 V3
+    "obtener_iva_vigente",               # Step 5 V3 (C3 fix: was validar_iva_configurado)
     "validar_items",                     # Step 6 V4
     "lock_tarifas_sucursal_para_items",  # Step 7 KD-FACT-02
     "compute_total",                     # Step 8 V6
@@ -131,7 +138,7 @@ def test_create_factura_handler_invoca_helpers_en_orden_correcto() -> None:
     # match the expected ordered pattern exactly.
     unconditional = [
         "buscar_salida_facturable",          # Step 2
-        "validar_iva_configurado",           # Step 5
+        "obtener_iva_vigente",               # Step 5 (C3 fix)
         "validar_items",                     # Step 6
         "lock_tarifas_sucursal_para_items",  # Step 7
         "compute_total",                     # Step 8

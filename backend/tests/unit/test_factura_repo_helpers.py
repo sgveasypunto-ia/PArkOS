@@ -9,18 +9,26 @@ Phase 5). These unit tests catch regressions in:
 - ``factura_detalle.crear_factura_detalle_bulk`` pure
   preprocessing (without session).
 - Typed exception imports for handler 12-step chain discrimination.
+- ``buscar_salida_facturable`` DB lookup (REQ-OPS-054 -- previously
+  a placeholder that returned ``None``; verify-report C2 HIGH).
 """
 from __future__ import annotations
 
+import uuid as uuid_lib
 from decimal import Decimal
 
+import pytest
+from parkos_core.models.A.salidas import Salidas
+from parkos_core.models.V.impuestos import Impuestos
 from parkos_core.repo.factura import (
     FacturaDuplicadaError,
     PagoDuplicadoError,
     TotalNoCoherenteError,
+    buscar_salida_facturable,
     compute_total,
 )
 from parkos_core.repo.factura_detalle import crear_factura_detalle_bulk
+from parkos_core.repo.impuestos import obtener_iva_vigente
 from parkos_core.schemas.facturacion import FacturaItemCreate
 
 
@@ -91,4 +99,98 @@ def test_factura_detalle_bulk_signature() -> None:
     assert "uuid_factura" in params
     assert "items" in params
     # Returns list[FacturaDetalle]
-    assert "return" in sig.annotations or sig.return_annotation is not inspect.Signature.empty
+    assert sig.return_annotation is not inspect.Signature.empty
+
+
+@pytest.mark.asyncio
+async def test_buscar_salida_facturable_returns_salida(
+    pg_session: object,
+) -> None:
+    """C2 RED→GREEN: REQ-OPS-054 — lookup returns ``Salidas`` row, not ``None``.
+
+    The pre-fix placeholder returned ``None`` regardless of the input,
+    which caused handler Step 2 to wrongly raise 404 ``salida_no_encontrada``
+    on every happy-path POST. The helper MUST query ``prod.salidas`` by
+    ``uuid`` and return the row when present.
+    """
+    # Seed a Salidas row in the current session
+    salida_uuid = uuid_lib.uuid4()
+    salida = Salidas(
+        uuid=salida_uuid,
+        uuid_sucursal=None,  # nullable FK; isolation from real sucursal
+        uuid_ingreso=None,   # nullable FK; isolation from real ingreso
+    )
+    pg_session.add(salida)  # type: ignore[attr-defined]
+    await pg_session.flush()  # type: ignore[attr-defined]
+
+    result = await buscar_salida_facturable(
+        pg_session,  # type: ignore[arg-type]
+        uuid_salida=salida_uuid,
+    )
+    assert result is not None
+    assert isinstance(result, Salidas)
+    assert result.uuid == salida_uuid
+
+
+@pytest.mark.asyncio
+async def test_buscar_salida_facturable_missing_returns_none(
+    pg_session: object,
+) -> None:
+    """C2 regression: unknown ``uuid_salida`` returns ``None`` (handler 404)."""
+    result = await buscar_salida_facturable(
+        pg_session,  # type: ignore[arg-type]
+        uuid_salida=uuid_lib.uuid4(),
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_obtener_iva_vigente_returns_decimal(
+    pg_session: object,
+) -> None:
+    """C3 RED→GREEN: REQ-OPS-055 / DEC-FACT-03 — read active IVA % as Decimal.
+
+    The pre-fix handler passed the literal ``Decimal('0.19')`` to
+    ``compute_total`` AND to ``crear_factura_impuesto_iva``, breaking
+    the DEC-FACT-03 invariant that the IVA rate MUST come from
+    ``prod.impuestos`` (not be hardcoded). The new helper reads the
+    vigente row and returns its ``porcentaje`` as ``Decimal``.
+    """
+    from datetime import UTC, datetime
+
+    from parkos_core.models.base import AuditMixin  # noqa: F401
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    iva_row = Impuestos(
+        codigo="IVA",
+        nombre="IVA",
+        porcentaje=Decimal("0.19"),
+        vigente_desde=now,
+        vigente_hasta=None,
+        estado="activo",
+    )
+    pg_session.add(iva_row)  # type: ignore[attr-defined]
+    await pg_session.flush()  # type: ignore[attr-defined]
+
+    result = await obtener_iva_vigente(pg_session)  # type: ignore[arg-type]
+    assert result is not None
+    assert result == Decimal("0.19")
+
+
+@pytest.mark.asyncio
+async def test_obtener_iva_vigente_missing_returns_none() -> None:
+    """C3 regression: when no IVA row is vigente, helper returns ``None``.
+
+    Handler maps ``None`` to 500 ``iva_no_configurado``. Uses a
+    ``MagicMock`` session that returns no rows to keep the test
+    independent of any IVA rows seeded in the live DB.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_session = MagicMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none = MagicMock(return_value=None)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    result = await obtener_iva_vigente(mock_session)  # type: ignore[arg-type]
+    assert result is None
