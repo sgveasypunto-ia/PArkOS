@@ -615,6 +615,288 @@ endpoint with an explicit query parameter and is OUT OF SCOPE for HU-F1.3
 no synthetic payload); SHOULD (document the issuer list in the FastAPI
 OpenAPI `tags` annotation alongside the rest of `caja_sesion.py`).
 
+### REQ-OPS-030 — `GET /api/v1/operacion/ocupacion?uuid_sucursal=X` returns per-tipo breakdown with `Cache-Control: no-store`
+
+**Given** a JWT request reaches `GET /api/v1/operacion/ocupacion`
+carrying either an `operador-` or `admin-` issuer and a valid `TenantContext`
+(extracted by `get_tenant_ctx`, F1.2)
+**When** the handler `get_ocupacion` resolves the target `uuid_sucursal`
+via `(query_param OR ctx.sucursal_uuid)` and the `operador-/admin-`
+authorization chain (KD-3) passes
+**Then** the endpoint MUST return `200 OK` with a body matching
+`OcupacionResponse { uuid_sucursal: UUID, items: list[OcupacionItem],
+generado_en: datetime }` where each `OcupacionItem` carries
+`{ uuid_tipo_vehiculo: UUID, tipo: str, cupo_maximo: int, activos: int,
+disponible: int }` ordered `ORDER BY tv.tipo` (KD-4 deterministic order)
+**And** the response MUST include the header `Cache-Control: no-store`
+(consistent with F1.3 R8 / F1.8 R8) on every `2xx`/`4xx`/`5xx` response
+emitted by the handler
+**And** the endpoint MUST NOT mutate state: `INSERT|UPDATE|DELETE|TRUNCATE|MERGE`
+tokens MUST NOT appear in the handler body, enforced by the AST walk
+in `tests/static/test_no_write_in_ocupacion.py`
+**And** the SQL MUST use bind params (`:uuid_sucursal`) — NO string
+interpolation — enforced by the helper signature
+`get_ocupacion_puros_activos(session, *, uuid_sucursal: UUID)`.
+**RFC 2119**: MUST (response shape, header, ordering, bind params,
+no write verbs); SHALL (the JSON response use ISO-8601 with `Z` suffix
+for `generado_en`).
+
+#### Scenario: operador queries own branch returns 200 with breakdown
+**Given** an `operador-` JWT carrying `ctx.sucursal_uuid = X` and the
+branch has 1 active `ingreso(X, Auto)` with `cantidad_vehiculos_sucursal(X, Auto) = 50`
+and 0 active `ingreso(X, Moto)`
+**When** the operator calls
+`GET /operacion/ocupacion?uuid_sucursal=X`
+**Then** the response MUST be `200 OK` with
+`{ uuid_sucursal: X, items: [{ uuid_tipo_vehiculo: T_auto, tipo: "Auto",
+cupo_maximo: 50, activos: 1, disponible: 49 }, { uuid_tipo_vehiculo:
+T_moto, tipo: "Moto", cupo_maximo: 0, activos: 0, disponible: 0 }],
+generado_en: "2026-09-14T...Z" }`
+**And** the `Cache-Control: no-store` header MUST be present.
+
+#### Scenario: admin queries branch within permitted set returns 200
+**Given** an `admin-` JWT carrying `claims["sucursales_permitidas"] = [X, Y]`
+and the request includes `X-Sucursal-Context: X`
+**When** the admin calls
+`GET /operacion/ocupacion?uuid_sucursal=X`
+**Then** the response MUST be `200 OK` with the breakdown for branch X.
+**And** the `Cache-Control: no-store` header MUST be present.
+
+#### Scenario: cupo not configured surfaces `disponible < 0`, response remains 200
+**Given** branch X has `tipos_vehiculo(Auto, Moto)` vigente but no
+`cantidad_vehiculos_sucursal` row for `(X, Auto)` (admin has not
+configured capacity) and 3 active `ingreso(X, Auto)`
+**When** an operator calls `GET /operacion/ocupacion?uuid_sucursal=X`
+**Then** the response MUST be `200 OK` (NEVER `404` / `503`) with the
+Auto item carrying `{ cupo_maximo: 0, activos: 3, disponible: -3 }`
+**And** the `Cache-Control: no-store` header MUST be present.
+**And** the client is the authority on UX (`-3` is interpreted as
+"configuration missing, contact admin" — KD-6 invariant).
+
+### REQ-OPS-031 — Per-sucursal authorization with typed errors (KD-3 chain)
+
+**Given** a JWT request reaches `GET /api/v1/operacion/ocupacion` with
+either an `operador-` or `admin-` issuer prefix
+**When** the handler `get_ocupacion` resolves the target `uuid_sucursal`
+**Then** the dependency chain MUST be `_ingreso_issuer_dep =
+requires_issuer("operador-", "admin-")` (already defined at
+`api/v1/operacion.py:64`) followed by `get_tenant_ctx` and `get_session`
+**And** if `uuid_sucursal` query param is absent AND
+`ctx.sucursal_uuid is None` (e.g. `admin-` issuer without
+`X-Sucursal-Context` header and without `claims["sucursales_permitidas"]`),
+the handler MUST raise `HTTPException(status_code=400, detail={"error":
+"missing_sucursal_context"})`
+**And** if the issuer is `operador-` AND `target != ctx.sucursal_uuid`
+(cross-tenant), the handler MUST raise
+`TenantScopeViolation(actor_uuid=ctx.actor_uuid)` (existing typed error
+in `auth/tenancy.py:60-65`) which the global exception handler maps to
+`403 {"error": "tenant_scope_violation"}`
+**And** if the issuer is `admin-` AND `target not in
+ctx.claims["sucursales_permitidas"]`, the handler MUST raise
+`SucursalNotPermitted(target_sucursal=target)` (existing typed error in
+`auth/tenancy.py:115-131`) which maps to
+`403 {"error": "sucursal_not_permitted"}`
+**And** the response body MUST contain **only** the typed error
+discriminator (`tenant_scope_violation`, `sucursal_not_permitted`,
+`missing_sucursal_context`); the pgcode `"23505"`, the raw Postgres
+error message, the `uuid_sucursal` value, and any driver-level diagnostic
+strings MUST NOT appear in the body, headers, or any log line emitted
+at `info` or higher visibility
+**And** the precedence MUST be strictly
+`400 missing_sucursal_context > 403 tenant_scope_violation > 403 sucursal_not_permitted`;
+no other ordering is permitted.
+**RFC 2119**: MUST (issuer acceptance, 400, 403 mappings, no pgcode in
+body, precedence); SHALL (log the rejection at `warning` level with
+`event="ocupacion_authz_rejected"` and `actor_uuid`/`issuer_prefix` for
+ops triage, but without the pgcode and without the target value).
+
+#### Scenario: operador cross-tenant returns 403 `tenant_scope_violation`
+**Given** an `operador-` JWT with `ctx.sucursal_uuid = X`
+**When** the operator calls
+`GET /operacion/ocupacion?uuid_sucursal=Y` (different branch)
+**Then** the response MUST be `403 Forbidden` with body
+`{"error": "tenant_scope_violation"}`
+**And** the body MUST NOT contain `uuid_sucursal=Y`, no pgcode, no
+driver string.
+
+#### Scenario: admin without context returns 400 `missing_sucursal_context`
+**Given** an `admin-` JWT without `X-Sucursal-Context` header AND without
+`claims["sucursales_permitidas"]`
+**When** the admin calls `GET /operacion/ocupacion` (no query param)
+**Then** the response MUST be `400 Bad Request` with body
+`{"error": "missing_sucursal_context"}`
+**And** the body MUST NOT contain the `uuid_sucursal` value.
+
+#### Scenario: admin outside permitted set returns 403 `sucursal_not_permitted`
+**Given** an `admin-` JWT with `claims["sucursales_permitidas"] = [X]`
+**When** the admin calls
+`GET /operacion/ocupacion?uuid_sucursal=Z` (Z not in permits)
+**Then** the response MUST be `403 Forbidden` with body
+`{"error": "sucursal_not_permitted"}`
+**And** the body MUST NOT contain `uuid_sucursal=Z`.
+
+### REQ-OPS-032 — `prod.mv_ocupacion_diaria` materialized view with `CREATE UNIQUE INDEX CONCURRENTLY` + pre-flight `DO $$` (KD-7 10M NOTICE / 50M ABORT)
+
+**Given** an Alembic migration `0024_add_mv_ocupacion_diaria.py` is
+applied against a Postgres database where `prod.ingreso`,
+`prod.salidas`, `prod.anulaciones`, `prod.tipos_vehiculo`,
+`prod.cantidad_vehiculos_sucursal` already exist
+**When** the migration's `upgrade()` executes
+**Then** the migration MUST first execute a pre-flight `DO $$` block
+that runs `SELECT count(*) INTO _n_ingreso FROM prod.ingreso`,
+`SELECT count(*) INTO _n_anul FROM prod.anulaciones`, `SELECT count(*)
+INTO _n_salidas FROM prod.salidas`, and emits
+`RAISE NOTICE 'mv_ocupacion_diaria_preflight: prod.ingreso=% filas,
+prod.salidas=% filas, prod.anulaciones=% filas. El primer REFRESH puede
+tardar segundos a minutos.'`
+**And** if `_n_ingreso > 50_000_000` (KD-7 hard limit), the block MUST
+emit `RAISE EXCEPTION 'mv_ocupacion_diaria_preflight_abort: prod.ingreso
+tiene % filas (umbral 50M). Aplique índice (uuid_sucursal,
+uuid_tipo_vehiculo) en prod.ingreso antes de continuar.'` which aborts
+the migration with a typed message; Alembic MUST record no version
+bump on abort (rollback automatic)
+**And** the migration MUST then execute `CREATE MATERIALIZED VIEW
+prod.mv_ocupacion_diaria AS SELECT i.uuid_sucursal, i.uuid_tipo_vehiculo,
+count(*) AS activos FROM prod.ingreso i WHERE i.uuid_tipo_vehiculo IS
+NOT NULL AND NOT EXISTS (SELECT 1 FROM prod.salidas s WHERE
+s.uuid_ingreso = i.uuid AND s.uuid_sucursal = i.uuid_sucursal) AND NOT
+EXISTS (SELECT 1 FROM prod.anulaciones a WHERE a.uuid_ingreso = i.uuid
+AND a.estado = 'ejecutada' AND a.tipo_anulable IN ('ingreso', 'salida'))
+GROUP BY i.uuid_sucursal, i.uuid_tipo_vehiculo`
+**And** the migration MUST then execute `CREATE UNIQUE INDEX CONCURRENTLY
+IF NOT EXISTS prod.uq_mv_ocupacion_diaria_sucursal_tipo ON
+prod.mv_ocupacion_diaria (uuid_sucursal, uuid_tipo_vehiculo)` —
+mandatory for `REFRESH MATERIALIZED VIEW CONCURRENTLY` (KD-2); the
+natural composite is unique by the view's `GROUP BY`, NO synthetic
+column is added
+**And** the migration MUST then execute `GRANT SELECT ON
+prod.mv_ocupacion_diaria TO parkos_app`
+**And** `revision` MUST equal `"0024_mv_ocupacion_diaria"` and
+`down_revision` MUST equal `"0023_unique_active_sesion_per_user"` (F1.3
+chain head, commit `ca3f9bf`)
+**And** `downgrade()` MUST execute `DROP MATERIALIZED VIEW IF EXISTS
+prod.mv_ocupacion_diaria` (drops the view + its indexes).
+**RFC 2119**: MUST (pre-flight, threshold constants, MV definition,
+CONCURRENTLY, GRANT, downgrade symmetry, chain head); SHALL (constants
+`_PREFLIGHT_THRESHOLD_INFO = 10_000_000` and
+`_PREFLIGHT_THRESHOLD_ABORT = 50_000_000` extracted at module level for
+traceability); SHOULD (operator schedules rollback off-peak because
+`DROP MATERIALIZED VIEW` acquires `AccessExclusiveLock` regardless of
+`CONCURRENTLY`).
+
+#### Scenario: pre-flight NOTICE at 10M rows, no abort
+**Given** the `prod.ingreso` table holds between `10_000_001` and
+`50_000_000` rows
+**When** migration `0024_add_mv_ocupacion_diaria` applies
+**Then** the pre-flight MUST emit a `RAISE NOTICE` carrying the exact
+prefix `mv_ocupacion_diaria_preflight: prod.ingreso=` with the row count
+**And** the migration MUST NOT abort (10M is informational only).
+**And** the view MUST be created, the UNIQUE INDEX applied, and the
+GRANT issued.
+
+#### Scenario: pre-flight EXCEPTION at 50M+ rows aborts the migration
+**Given** the `prod.ingreso` table holds `50_000_001` rows (or more)
+**When** migration `0024_add_mv_ocupacion_diaria` applies
+**Then** the pre-flight MUST emit `RAISE EXCEPTION` carrying the exact
+prefix `mv_ocupacion_diaria_preflight_abort:` with the offending count
+**And** Alembic MUST record no version bump (no half-applied state)
+**And** the view MUST NOT exist after rollback (`prod.mv_ocupacion_diaria`
+absent from `pg_class`).
+
+#### Scenario: UNIQUE INDEX CONCURRENTLY is created outside transaction
+**Given** a clean Postgres database where the migration is being applied
+**When** the upgrade function reaches the UNIQUE INDEX statement
+**Then** Postgres MUST execute `CREATE UNIQUE INDEX CONCURRENTLY IF NOT
+EXISTS prod.uq_mv_ocupacion_diaria_sucursal_tipo ON
+prod.mv_ocupacion_diaria (uuid_sucursal, uuid_tipo_vehiculo)` without
+acquiring `AccessExclusiveLock` on the underlying table
+**And** `pg_index.indisunique` MUST equal `True` for the new index.
+**And** the migration MUST be idempotent against `alembic upgrade` retries
+(IF NOT EXISTS avoids `42P07` `duplicate_object`).
+
+### REQ-OPS-033 — `RefreshMvOcupacionWorker` executes `REFRESH CONCURRENTLY` + KD-5 fallback + `asyncio.sleep(refresh_interval_s=10)` post-cycle
+
+**Given** a dedicated NSSM service runs
+`python -m parkos_core.jobs.refresh_mv_ocupacion` against the branch
+database with `PARKOS_BRANCH_DB_DSN` configured
+**When** `RefreshMvOcupacionWorker(WorkerRunner)` enters its
+`async def cycle()` body
+**Then** the worker MUST first attempt
+`await self._session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY
+prod.mv_ocupacion_diaria"))` + `await self._session.commit()` (KD-5
+happy path)
+**And** if the CONCURRENTLY branch raises any exception (typically
+because the UNIQUE INDEX was dropped, or because Postgres is under
+load), the worker MUST log at `warning` level with structured
+`extra={"event": "refresh_mv_concurrently_failed_fallback",
+"exception_class": type(exc).__name__}` (NO pgcode, NO repr of the
+exception, NO DSN fragment — R6 mitigation), MUST
+`await self._session.rollback()`, and MUST fall back to
+`await self._session.execute(text("REFRESH MATERIALIZED VIEW
+prod.mv_ocupacion_diaria"))` + `await self._session.commit()` (KD-5
+fallback, plain REFRESH, brief `AccessExclusiveLock`)
+**And** if the fallback also raises, the worker MUST log at `error`
+level with `extra={"event": "refresh_mv_ocupacion_both_branches_failed",
+"exception_class": type(inner_exc).__name__}` and MUST
+`await self._session.rollback()` — the worker MUST NOT crash the loop;
+the next cycle retries fresh (NO circuit breaker)
+**And** after the refresh — successful or fallback — the worker MUST
+`await asyncio.sleep(self.refresh_interval_s)` (default `10s`, floored
+to `max(5, ...)` in `__init__`) before the next cycle (R1 startup
+resilience: refresh runs immediately after worker restart, not after
+sleep)
+**And** the CLI MUST be invokable as
+`python -m parkos_core.jobs.refresh_mv_ocupacion --refresh-interval-s 10
+--database-url $PARKOS_BRANCH_DB_DSN` with exit codes inherited from
+`WorkerRunner` (0 success / 1 application error / 2 SIGTERM)
+**And** the `WorkerRunner` base (`backend/packages/parkos_core/src/
+parkos_core/jobs/runner.py`) MUST remain unmodified — verified by the
+`worker_base_intact` CI gate (`git diff jobs/runner.py` returns empty).
+**RFC 2119**: MUST (cycle shape, KD-5 fallback, inner-resilience, log
+shape with `exception_class` only, post-cycle sleep, CLI, base intact);
+SHALL (the structured log keys `event` and `exception_class` be present
+in every warning/error line emitted by the worker cycle); SHOULD
+(deploy ONE service per branch DB — documented in the NSSM install guide,
+not in code).
+
+#### Scenario: normal cycle executes REFRESH CONCURRENTLY then sleeps
+**Given** a `RefreshMvOcupacionWorker(session=mock, refresh_interval_s=10)`
+with the UNIQUE INDEX present
+**When** `cycle()` is awaited once
+**Then** the worker MUST call `session.execute` with exactly
+`text("REFRESH MATERIALIZED VIEW CONCURRENTLY prod.mv_ocupacion_diaria")`
+**And** the worker MUST call `session.commit()`
+**And** the worker MUST call `asyncio.sleep(10)` AFTER the refresh
+(post-cycle sleep, R1 resilience).
+
+#### Scenario: KD-5 fallback when CONCURRENTLY fails
+**Given** a `RefreshMvOcupacionWorker(session=mock_with_concurrently_failure,
+refresh_interval_s=10)` whose first `session.execute` raises
+`psycopg2.errors.FeatureNotSupported` (simulating missing UNIQUE INDEX)
+**When** `cycle()` is awaited
+**Then** the worker MUST log a `warning` line with structured
+`event="refresh_mv_concurrently_failed_fallback"` and
+`exception_class="FeatureNotSupported"`
+**And** the worker MUST call `session.rollback()`
+**And** the worker MUST call `session.execute` again with exactly
+`text("REFRESH MATERIALIZED VIEW prod.mv_ocupacion_diaria")` (plain,
+no `CONCURRENTLY`)
+**And** the worker MUST call `session.commit()`
+**And** the worker MUST NOT raise (the cycle completes — KD-5 acceptance).
+**And** the captured log MUST NOT contain the substring `pgcode` or the
+literal `"23505"` (R6 mitigation).
+
+#### Scenario: both branches fail does not crash the loop
+**Given** a `RefreshMvOcupacionWorker(session=mock_double_failure)` whose
+both REFRESH attempts raise exceptions
+**When** `cycle()` is awaited
+**Then** the worker MUST log an `error` line with structured
+`event="refresh_mv_ocupacion_both_branches_failed"` and
+`exception_class=...` (matching the inner exception class)
+**And** the worker MUST call `session.rollback()` (twice)
+**And** the worker MUST return normally without raising (next cycle
+retries fresh — no crash, no circuit breaker).
+
 ## Modified Capabilities
 
 - `backend/pyproject.toml` — adds the pytest stack and coverage
@@ -656,6 +938,16 @@ OpenAPI `tags` annotation alongside the rest of `caja_sesion.py`).
 - `backend/tests/static/test_no_write_in_caja_sesion_me.py` (NUEVO) — AST walk (`ast.walk()` case-insensitive) sobre `caja_sesion.get_my_sesion` AND `repo/session_cycle.open_session` rechaza `INSERT|UPDATE|DELETE|TRUNCATE|MERGE` fuera de strings/comentarios. Mismo patrón que F1.8.
 - `backend/tests/integration/test_migration_0023_preflight.py` (NUEVO) — 1 test contra `parkos-branch-db` con `PARKOS_DOCKER_TEST=1`; assert que el pre-flight `DO $$` aborta con `integrity_constraint_violation` cuando hay huérfanos.
 - `backend/tests/integration/test_caja_sesion_unique_constraint_db.py` (NUEVO) — 2 tests DB: T1 doble INSERT activo mismo `uuid_usuario` → `UniqueViolation` sqlstate `23505`; T2 close + reopen OK (partial predicate excluye la cerrada).
+- `backend/packages/parkos_core/migrations/versions/0024_add_mv_ocupacion_diaria.py` (NUEVO, ~142 LOC) — pre-flight `DO $$` con `_n_ingreso/_n_anul/_n_salidas` + `RAISE NOTICE` 10M informativo / `RAISE EXCEPTION` 50M abort + `CREATE MATERIALIZED VIEW prod.mv_ocupacion_diaria` (NOT EXISTS salidas + NOT EXISTS anulaciones, GROUP BY `uuid_sucursal, uuid_tipo_vehiculo`) + `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS prod.uq_mv_ocupacion_diaria_sucursal_tipo ON prod.mv_ocupacion_diaria (uuid_sucursal, uuid_tipo_vehiculo)` (KD-2 mandatory for `REFRESH CONCURRENTLY`) + `GRANT SELECT ON prod.mv_ocupacion_diaria TO parkos_app` + `DROP MATERIALIZED VIEW` downgrade. `revision = "0024_mv_ocupacion_diaria"`, `down_revision = "0023_unique_active_sesion_per_user"`. KD-7 thresholds extraídas como constantes a nivel de módulo `_PREFLIGHT_THRESHOLD_INFO = 10_000_000` + `_PREFLIGHT_THRESHOLD_ABORT = 50_000_000`. (REQ-OPS-032).
+- `backend/packages/parkos_core/src/parkos_core/jobs/refresh_mv_ocupacion.py` (NUEVO, ~177 LOC) — `class RefreshMvOcupacionWorker(WorkerRunner)` con `DEFAULT_REFRESH_INTERVAL_S = 10`; `__init__(self, *, session: AsyncSession, refresh_interval_s: int = 10)` con floor `max(5, ...)`; `async def cycle()` ejecuta `REFRESH MATERIALIZED VIEW CONCURRENTLY prod.mv_ocupacion_diaria` + `commit()` (KD-5 happy path); on `Exception` cae a `REFRESH MATERIALIZED VIEW` plain + `commit()` con log estructurado `refresh_mv_concurrently_failed_fallback` (`exception_class=type(exc).__name__`, NO pgcode, NO repr); inner `refresh_mv_ocupacion_both_branches_failed` log en second failure (no crash, no circuit breaker); post-cycle `await asyncio.sleep(self.refresh_interval_s)` (R1 startup resilience); CLI `main(argv)` con `--refresh-interval-s` y `--database-url`; `python -m parkos_core.jobs.refresh_mv_ocupacion`. Zero modificaciones a `jobs/runner.py` — `worker_base_intact` CI gate. (REQ-OPS-033).
+- `backend/packages/parkos_core/src/parkos_core/repo/ocupacion.py` (NUEVO, ~128 LOC) — `@dataclass(frozen=True) class OcupacionItemRow` con `@property def disponible(self) -> int: return self.cupo_maximo - self.activos`; `async def get_ocupacion_puros_activos(session: AsyncSession, *, uuid_sucursal: uuid_lib.UUID) -> list[OcupacionItemRow]` con bind-param `text("SELECT … FROM prod.tipos_vehiculo tv LEFT JOIN prod.cantidad_vehiculos_sucursal cvs … LEFT JOIN prod.mv_ocupacion_diaria mv … WHERE tv.vigente_hasta IS NULL ORDER BY tv.tipo")`. **D-F1.5-1** KD-6-respecting: `tipos_vehiculo` drives (LEFT JOIN MV), no MV LEFT JOIN `tipos_vehiculo` — surface every configured tipo even when `activos == 0` (F4.3 `OcupacionStrip` empty-state UX); documentado en source docstring. KD-4 ordering preserved. (REQ-OPS-030).
+- `backend/packages/parkos_core/src/parkos_core/api/v1/operacion.py` (MODIFICAR, +106/-1 LOC) — handler `get_ocupacion` registrado via `@router.get("/ocupacion", response_model=OcupacionResponse, responses={400, 403, 503})`; KD-3 chain: target resolution → `400 missing_sucursal_context` → `403 tenant_scope_violation` (`operador-` cross-tenant) / `403 sucursal_not_permitted` (`admin-` fuera de `claims["sucursales_permitidas"]`); delega SQL a `repo/ocupacion.py::get_ocupacion_puros_activos`; set `response.headers["Cache-Control"] = "no-store"` en respuestas 200. `api/v1/__init__.py` intacto (router montado en línea 143). NO modificaciones a `make_router` (`factory_intact` CI gate). (REQ-OPS-030, REQ-OPS-031).
+- `backend/packages/parkos_core/src/parkos_core/schemas/operacion.py` (MODIFICAR, +38 LOC) — `OcupacionItem(uuid_tipo_vehiculo, tipo, cupo_maximo, activos, disponible)` y `OcupacionResponse(uuid_sucursal, items: list[OcupacionItem], generado_en: datetime)` append tras el bloque F1.8 `CotizarResponse`; ambos heredan `extra='forbid'` de `_Base`; `disponible` puede ser negativo (KD-6 documented inline). (REQ-OPS-030).
+- `backend/tests/unit/test_operacion_ocupacion.py` (NUEVO, ~510 LOC, 4 parametrized HTTP-level tests) — T1 operador self 200 con breakdown, T2 operador cross-tenant 403 `tenant_scope_violation`, T3 admin allowed branch 200, T4 admin no-context 400 `missing_sucursal_context`. `httpx.AsyncClient + ASGITransport` + JWT fixtures. (REQ-OPS-030, REQ-OPS-031).
+- `backend/tests/integration/test_mv_ocupacion_diaria_db.py` (NUEVO, ~380 LOC, 2 DB integration tests) — T1 `insert_ingreso + REFRESH → activos=1, cupo_maximo=0, disponible=-1` (KD-6 valid negative); T2 `insert_ingreso + insert_salida + REFRESH → empty` (NOT EXISTS predicate verified). Requiere `PARKOS_DOCKER_TEST=1`. (REQ-OPS-030, REQ-OPS-032).
+- `backend/tests/integration/test_migration_0024_mv.py` (NUEVO, ~462 LOC, 2 migration pre-flight tests) — T1 `apply with dirty data (5 ingresos, 2 con salidas, 1 anulada) → view + UNIQUE INDEX OK`; T2 `preflight_aborts_on_simulated_50m_rows` via mocked `count(*)`. (REQ-OPS-032).
+- `backend/tests/integration/test_refresh_mv_job.py` (NUEVO, ~221 LOC, 2 worker cycle tests) — T1 normal `cycle()` con `AsyncMock(spec=AsyncSession)`; T2 `FeatureNotSupported` on CONCURRENTLY → KD-5 fallback to plain REFRESH + `refresh_mv_concurrently_failed_fallback` log (no pgcode, no `repr(exc)`). (REQ-OPS-033).
+- `backend/tests/static/test_no_write_in_ocupacion.py` (NUEVO, ~127 LOC, 1 AST walk test) — `ast.walk()` sobre `api/v1/operacion.py::get_ocupacion` rechazando `INSERT|UPDATE|DELETE|TRUNCATE|MERGE|FOR UPDATE|FOR SHARE` tokens fuera de strings/comentarios. Lockea el read-only contract. (REQ-OPS-030).
 
 ## Out of Scope
 
