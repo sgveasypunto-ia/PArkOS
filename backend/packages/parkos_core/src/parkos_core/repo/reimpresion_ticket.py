@@ -28,7 +28,16 @@ re-enforce that NO ``UPDATE`` or ``DELETE`` on
 """
 from __future__ import annotations
 
+import uuid as uuid_lib
 from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models.L_E.facturas import Facturas
+from ..models.L_E.ingreso import Ingreso
+from ..models.L_W.reimpresion_ticket import ReimpresionTicket
+from ..models.V.costos_servicios import CostosServicios
 
 __all__ = [
     # Typed exceptions (5)
@@ -48,63 +57,215 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Typed exceptions (5) -- T2.3 GREEN carries real ``__init__`` payloads.
-# These are intentionally bare class declarations at T1.2 to satisfy the
-# module-import-surface test; helper bodies land in T2.3 alongside the
-# ``__all__`` re-export.
+# Typed exceptions (5)
 # ---------------------------------------------------------------------------
 
 
 class IngresoNoEncontradoError(Exception):
-    """V1: ``prod.ingreso`` row not found by PK (HTTP 404 create)."""
+    """V1 404 discriminator — ``prod.ingreso`` row not found by PK."""
+
+    def __init__(self, *, uuid_ingreso: uuid_lib.UUID) -> None:
+        self.uuid_ingreso = uuid_ingreso
+        super().__init__(f"ingreso_no_encontrado: uuid_ingreso={uuid_ingreso}")
 
 
 class ReimpresionNotFoundError(Exception):
-    """V1: ``prod.reimpresion_ticket`` row not found by PK (HTTP 404 anular)."""
+    """V1 404 discriminator — ``prod.reimpresion_ticket`` row not in chain."""
+
+    def __init__(self, *, uuid_reimpresion: uuid_lib.UUID) -> None:
+        self.uuid_reimpresion = uuid_reimpresion
+        super().__init__(
+            f"reimpresion_not_found: uuid_reimpresion={uuid_reimpresion}"
+        )
 
 
 class ReimpresionAlreadyPendingError(Exception):
-    """V2: chain-tip guard already finds an 'autorizada' row (HTTP 409)."""
+    """V2 409 discriminator — recent active reimpresion for uuid_ingreso."""
+
+    def __init__(
+        self,
+        *,
+        uuid_ingreso: uuid_lib.UUID,
+        uuid_reimpresion: uuid_lib.UUID,
+    ) -> None:
+        self.uuid_ingreso = uuid_ingreso
+        self.uuid_reimpresion = uuid_reimpresion
+        super().__init__(
+            f"reimpresion_already_pending: uuid_ingreso={uuid_ingreso}, "
+            f"uuid_reimpresion={uuid_reimpresion}"
+        )
 
 
 class AnulacionNoPermitidaError(Exception):
-    """V2: chain-tip already terminal (HTTP 409 anulacion terminal)."""
+    """V2 409 discriminator — chain-tip already terminal ``rechazada``."""
+
+    def __init__(self, *, uuid_reimpresion: uuid_lib.UUID) -> None:
+        self.uuid_reimpresion = uuid_reimpresion
+        super().__init__(
+            f"anulacion_no_permitida: uuid_reimpresion={uuid_reimpresion}"
+        )
 
 
 class CostoServicioNoConfiguradoError(Exception):
     """DEC-TKT-05 runtime defensive check (HTTP 409 create)."""
 
+    def __init__(self, *, concepto: str) -> None:
+        self.concepto = concepto
+        super().__init__(f"costo_servicio_no_configurado: concepto={concepto}")
+
 
 # ---------------------------------------------------------------------------
-# Helpers (stubs at T1.2 -- real bodies land in T2.3 / T2.4)
+# V1 helpers
 # ---------------------------------------------------------------------------
 
 
-async def buscar_ingreso_por_uuid(session: Any, *, uuid_ingreso: Any) -> Any:
-    """V1: lookup ``prod.ingreso`` by PK -- T2.3 GREEN carries the body."""
+async def buscar_ingreso_por_uuid(
+    session: AsyncSession, *, uuid_ingreso: uuid_lib.UUID
+) -> Ingreso | None:
+    """V1: SELECT ``prod.ingreso`` row by PK.
+
+    Returns the ORM row if found, else ``None``. The handler raises the
+    404 via HTTPException (DEC-TKT-06 layer-5 mapping).
+    """
+    return await session.get(Ingreso, uuid_ingreso)
 
 
-async def buscar_reimpresion_por_uuid(session: Any, *, uuid: Any) -> Any:
-    """V1/V2: lookup ``prod.reimpresion_ticket`` by PK -- T2.3 GREEN body."""
+async def buscar_reimpresion_por_uuid(
+    session: AsyncSession, *, uuid: uuid_lib.UUID
+) -> ReimpresionTicket | None:
+    """V1/V2: SELECT ``prod.reimpresion_ticket`` row by PK.
+
+    Returns the ORM row if found, else ``None``. Used by the anulacion
+    endpoint after ``read_chain_tip`` resolves the chain tip uuid, and
+    directly by the tenant-scope check to fetch ``uuid_sucursal``.
+    """
+    return await session.get(ReimpresionTicket, uuid)
+
+
+async def buscar_factura_por_uuid(
+    session: AsyncSession, *, uuid_factura: uuid_lib.UUID
+) -> Facturas | None:
+    """V3 (DEC-TKT-04, optional): SELECT ``prod.facturas`` row by PK.
+
+    Returns the ORM row if found, else ``None``. The handler raises the
+    404 only IF the payload supplied ``uuid_factura``.
+    """
+    return await session.get(Facturas, uuid_factura)
+
+
+# ---------------------------------------------------------------------------
+# V2 chain-tip guard (DEC-TKT-02 + KD-TKT-02 SELECT ... FOR UPDATE)
+# ---------------------------------------------------------------------------
 
 
 async def buscar_reimpresion_activa_por_ingreso(
-    session: Any, *, uuid_ingreso: Any
-) -> Any:
-    """V2 KD-TKT-02: chain-tip guard via ``SELECT ... FOR UPDATE`` -- T2.3 body."""
+    session: AsyncSession, *, uuid_ingreso: uuid_lib.UUID
+) -> dict[str, Any] | None:
+    """V2 chain-tip guard (DEC-TKT-02 + KD-TKT-02 ``SELECT ... FOR UPDATE``).
+
+    Returns ``{uuid, timestamp_evento, workflow_estado}`` of the
+    most-recent active ``prod.reimpresion_ticket`` row for the given
+    ``uuid_ingreso``, or ``None`` if no recent active row exists.
+
+    The lookup uses ``SELECT ... FOR UPDATE`` on the most-recent active
+    row to close the concurrent-create race (KD-TKT-02, mirror of F1.10
+    KD-FE-02). The row lock is held until ``await session.commit()`` in
+    the handler body. Two concurrent TXs attempting to create
+    reimpresions for the same ``uuid_ingreso`` serialize: the FIRST
+    acquires the lock and inserts; the SECOND blocks at SELECT FOR
+    UPDATE until the FIRST commits, then proceeds with the V2 check
+    (which now finds the recent row and returns 409
+    ``reimpresion_already_pending``).
+
+    Tie-break mirrors F1.5 PR5-016 REQ-X9:
+    ``(max(timestamp_evento DESC), lex(uuid DESC))`` — deterministic.
+    ``workflow_estado`` is synthesized as ``"autorizada"`` for MVP; the
+    full state machine derivation is F2.x (when manual authorization
+    reintroduces ``solicitada`` / ``ejecutada`` per DEC-TKT-02 §5.1.1).
+    """
+    stmt = (
+        select(ReimpresionTicket)
+        .where(
+            ReimpresionTicket.uuid_ingreso == uuid_ingreso,
+            ReimpresionTicket.vigente_hasta.is_(None),
+            ReimpresionTicket.estado == "activo",
+        )
+        .order_by(
+            ReimpresionTicket.timestamp_evento.desc(),
+            ReimpresionTicket.uuid.desc(),
+        )
+        .limit(1)
+        .with_for_update()
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        return None
+    return {
+        "uuid": row.uuid,
+        "timestamp_evento": row.timestamp_evento,
+        "workflow_estado": "autorizada",
+    }
 
 
-async def buscar_factura_por_uuid(session: Any, *, uuid_factura: Any) -> Any:
-    """V3 DEC-TKT-04: lookup ``prod.facturas`` by PK -- T2.3 GREEN body."""
+# ---------------------------------------------------------------------------
+# DEC-TKT-05 defensive siembra lookup
+# ---------------------------------------------------------------------------
 
 
 async def buscar_costo_servicio_vigente_por_concepto(
-    session: Any, *, concepto: Any
-) -> Any:
-    """DEC-TKT-05: vigente ``prod.costos_servicios`` lookup -- T2.4 body."""
+    session: AsyncSession, *, concepto: str
+) -> CostosServicios | None:
+    """DEC-TKT-05: SELECT vigente ``prod.costos_servicios`` row for ``concepto``.
+
+    Returns the ORM row if a vigente (``vigente_hasta IS NULL``,
+    ``estado='activo'``) row exists, else ``None``. The handler maps
+    ``None`` to 409 ``costo_servicio_no_configurado`` (defensive check
+    after MIGRATION 0029 Op 1 siembra; the cost is informational and
+    NOT snapshotted on the reimpresion row per DEC-TKT-04).
+
+    The handler calls this helper as the final guard before the
+    ``append_transition`` write so a missed siembra surfaces as a typed
+    409 rather than a downstream FK or trigger failure.
+    """
+    stmt = (
+        select(CostosServicios)
+        .where(
+            CostosServicios.concepto == concepto,
+            CostosServicios.vigente_hasta.is_(None),
+            CostosServicios.estado == "activo",
+        )
+        .order_by(CostosServicios.vigente_desde.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# ---------------------------------------------------------------------------
+# DEC-IDEM-01 idempotency-key cache wrapper (F1.6 reuse)
+# ---------------------------------------------------------------------------
 
 
 async def check_idempotency_key(
-    session: Any, *, idempotency_key: Any, endpoint: Any
-) -> Any:
-    """DEC-IDEM-01: thin ``prod.idempotency_keys`` wrapper -- T2.4 body."""
+    session: AsyncSession,
+    *,
+    idempotency_key: str,
+    endpoint: str,
+) -> dict[str, Any] | None:
+    """DEC-IDEM-01 thin wrapper around ``prod.idempotency_keys`` cache.
+
+    The actual cache lookup + short-circuit is performed by the F1.6
+    ``Idempotency-Key`` middleware (``api/middleware.py::idempotency_mw``)
+    which keys on ``(key, endpoint, actor_uuid)`` with a 7-day TTL.
+    F1.11 inherits that middleware verbatim — this helper exists for:
+
+      * testability — RED tests can drive the cache layer in isolation
+        without spinning up the full FastAPI app;
+      * explicit documentation — pinpoints the DEC-IDEM-01 reuse contract
+        at the reimpresion-repo layer so a future grep finds it.
+
+    Returns ``None`` (cache miss) in this environment because the
+    middleware owns the authoritative lookup. A real Postgres-backed
+    implementation would query ``prod.idempotency_keys`` with the same
+    key contract — out of scope for F1.11.
+    """
+    return None
