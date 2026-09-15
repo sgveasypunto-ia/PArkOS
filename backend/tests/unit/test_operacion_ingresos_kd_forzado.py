@@ -62,6 +62,31 @@ def test_validar_kd_forzado_observaciones_none_con_forzado_raises() -> None:
     assert ei.value.detail == {"error": "motivo_forzado_requerido"}
 
 
+def test_validar_kd_forzado_prefix_mid_string_no_startswith_returns_none() -> None:
+    """M1 regression (verify-report §5): prefix mid-string does NOT trigger
+    prefix contract. Per spec REQ-OPS-041.B, prefix detection uses
+    ``startswith`` — observations containing ``[FORZADO:`` later in the
+    string without a leading prefix must NOT be treated as prefix-bearing
+    when ``forzado=False``.
+    """
+    obs = "observacion regular [FORZADO: cliente]"
+    assert validar_kd_forzado(obs, forzado=False) is None
+
+
+def test_validar_kd_forzado_prefix_sin_cierre_raises_contradiccion() -> None:
+    """M1 regression (verify-report §5): spec uses ``startswith`` not
+    ``endswith``. When the observation starts with the prefix but has NO
+    closing ``]``, ``forzado=False`` MUST still raise ``forzado_contradiccion``
+    (the prefix was found at start; whether the bracket closes is a
+    separate matter handled by motivo extraction).
+    """
+    obs = "[FORZADO: motivo sin cierre de bracket"
+    with pytest.raises(HTTPException) as ei:
+        validar_kd_forzado(obs, forzado=False)
+    assert ei.value.status_code == 422
+    assert ei.value.detail == {"error": "forzado_contradiccion"}
+
+
 __all__ = [
     "test_validar_kd_forzado_forzado_true_sin_prefix_raises_motivo_forzado_requerido",
     "test_validar_kd_forzado_motivo_corto_raises_motivo_forzado_insuficiente",

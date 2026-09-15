@@ -13,6 +13,7 @@ import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta
 
 from parkos_core.models.L_E.ingreso import Ingreso
+from parkos_core.models.L_W.anulaciones import Anulaciones
 from parkos_core.models.V.cantidad_vehiculos_sucursal import (
     CantidadVehiculosSucursal,
 )
@@ -343,7 +344,99 @@ async def test_subscripcion_vencida_returns_422_sin_forzado(
     assert detail["error"] == "subscripcion_inactiva_o_vencida"
 
 
+# ---------------------------------------------------------------------------
+# T4: M2 regression -- ``pendiente`` anulacion must NOT block new ingreso
+# (verify-report §5). Per REQ-OPS-040 spec, the EXISTS filter requires
+# ``a.estado='ejecutada' AND a.tipo_anulable IN ('ingreso','salida')``;
+# a ``pendiente`` row is not yet ``ejecutada`` and must NOT count as a
+# blocker for V8.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_pending_anulacion(
+    pg_engine,
+    *,
+    uuid_ingreso: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID,
+    estado: str,
+    tipo_anulable: str,
+) -> None:
+    """Seed an anulaciones row in any non-ejecutada state (regression
+    fixture for M2). Range-partitioned monthly by ``fecha_retencion_hasta``;
+    ``fecha_retencion_hasta`` set to today so the row lands in the
+    current month's partition (pg_partman requirement)."""
+    now = _now_naive()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            Anulaciones(
+                uuid=uuid_lib.uuid4(),
+                fecha_retencion_hasta=now.date(),
+                uuid_sucursal=uuid_sucursal,
+                tipo_anulable=tipo_anulable,
+                uuid_ingreso=uuid_ingreso,
+                uuid_salida=None,
+                uuid_usuario=uuid_lib.uuid4(),
+                motivo="anulacion en prueba M2 regression",
+                uuid_anulacion_padre=None,
+                timestamp_evento=now,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado=estado,
+            )
+        )
+        await session.commit()
+
+
+async def test_anulacion_pendiente_no_bloquea_nuevo_ingreso(
+    pg_engine, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """M2 regression: a ``pendiente`` anulacion tied to the prior activo
+    ingreso MUST NOT count as ``ingreso_activo_existente`` for V8. The
+    EXISTS predicate should require ``estado='ejecutada'`` (M2 deviation
+    fixed at archive)."""
+    await _truncate(pg_dsn)
+    branch = uuid_lib.uuid4()
+    actor = uuid_lib.uuid4()
+    tipo_auto = uuid_lib.uuid4()
+
+    await _seed_branch(pg_engine, uuid_sucursal=branch)
+    await _seed_full_chain(
+        pg_engine, uuid_sucursal=branch, uuid_tipo_auto=tipo_auto, cupo_auto=50
+    )
+    prior = await _seed_prior(
+        pg_engine,
+        placa="ABC123",
+        uuid_sucursal=branch,
+        uuid_tipo_auto=tipo_auto,
+    )
+    # Seed a pendiente anulacion tied to the prior ingreso
+    await _seed_pending_anulacion(
+        pg_engine,
+        uuid_ingreso=prior,
+        uuid_sucursal=branch,
+        estado="activo",
+        tipo_anulable="ingreso",
+    )
+
+    token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=branch)
+    resp = await client.post(
+        "/api/v1/operacion/ingresos",
+        json={"placa": "ABC123"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Sucursal-Context": str(branch),
+        },
+    )
+    # Per M2 fix: pendiente anulacion (estado=activo, not ejecutada) does
+    # NOT count as a blocker -- the new ingreso proceeds (201), NOT 409.
+    assert resp.status_code == 201, (
+        f"pendiente anulacion must not block V8; got {resp.status_code}: {resp.text}"
+    )
+
+
 __all__ = [
+    "test_anulacion_pendiente_no_bloquea_nuevo_ingreso",
     "test_duplicado_activo_rechazado_con_uuid_ingreso_existente",
     "test_insert_ingreso_con_alerta_capacidad_agotada_same_tx",
     "test_subscripcion_vencida_returns_422_sin_forzado",

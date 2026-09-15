@@ -35,9 +35,8 @@ async def validar_tipo_vehiculo_vigente(
     session: AsyncSession,
     *,
     uuid_tipo_vehiculo: uuid_lib.UUID,
-    forzado: bool = False,
 ) -> bool:
-    """V4 (REQ-OPS-038): is ``uuid_tipo_vehiculo`` vigente at the DB?
+    """V4 (REQ-OPS-037): is ``uuid_tipo_vehiculo`` vigente at the DB?
 
     KD-V3: a forced ingreso NEVER bypasses catalog defects -- the tipo
     must be vigente in ``prod.tipos_vehiculo`` regardless of prefix.
@@ -76,8 +75,17 @@ async def existe_ingreso_activo(
           FROM prod.ingreso i
           WHERE i.uuid_sucursal = :uuid_sucursal
             AND i.placa = :placa
-            AND NOT EXISTS (SELECT 1 FROM prod.salidas s WHERE s.uuid_ingreso = i.uuid)
-            AND NOT EXISTS (SELECT 1 FROM prod.anulaciones a WHERE a.uuid_ingreso = i.uuid)
+            AND NOT EXISTS (
+              SELECT 1 FROM prod.salidas s
+              WHERE s.uuid_ingreso = i.uuid
+                AND s.uuid_sucursal = i.uuid_sucursal
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM prod.anulaciones a
+              WHERE a.uuid_ingreso = i.uuid
+                AND a.estado = 'ejecutada'
+                AND a.tipo_anulable IN ('ingreso', 'salida')
+            )
         ) AS exists
         """
     )
@@ -97,8 +105,17 @@ async def existe_ingreso_activo(
         FROM prod.ingreso i
         WHERE i.uuid_sucursal = :uuid_sucursal
           AND i.placa = :placa
-          AND NOT EXISTS (SELECT 1 FROM prod.salidas s WHERE s.uuid_ingreso = i.uuid)
-          AND NOT EXISTS (SELECT 1 FROM prod.anulaciones a WHERE a.uuid_ingreso = i.uuid)
+          AND NOT EXISTS (
+            SELECT 1 FROM prod.salidas s
+            WHERE s.uuid_ingreso = i.uuid
+              AND s.uuid_sucursal = i.uuid_sucursal
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM prod.anulaciones a
+            WHERE a.uuid_ingreso = i.uuid
+              AND a.estado = 'ejecutada'
+              AND a.tipo_anulable IN ('ingreso', 'salida')
+          )
         LIMIT 1
         """
     )
@@ -127,8 +144,7 @@ def validar_kd_forzado(observaciones: str | None, forzado: bool) -> str | None:
     """
     has_prefix = (
         observaciones is not None
-        and FORZADO_PREFIX in observaciones
-        and observaciones.rstrip().endswith("]")
+        and observaciones.startswith(FORZADO_PREFIX)
     )
     if forzado and not has_prefix:
         raise HTTPException(
@@ -143,9 +159,7 @@ def validar_kd_forzado(observaciones: str | None, forzado: bool) -> str | None:
     if not has_prefix:
         return None
     # Extract motivo between prefix and trailing "]".
-    start = observaciones.index(FORZADO_PREFIX) + len(FORZADO_PREFIX)
-    end = observaciones.rindex("]")
-    motivo = observaciones[start:end].strip()
+    motivo = observaciones[len(FORZADO_PREFIX):].rstrip("]").strip()
     if len(motivo) < FORZADO_MIN_MOTIVO_CHARS:
         raise HTTPException(
             status_code=422,
