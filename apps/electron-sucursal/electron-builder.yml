@@ -39,5 +39,17 @@ linux:
   category: Office
   artifactName: "${productName}-${version}.${ext}"
 
-# F2.3 flips this to true once auto-update wiring lands.
-autoUpdate: false
+# F2.3 enables auto-update via electron-updater (DEC-UPD-01..04).
+autoUpdate: true
+publish:
+  - provider: github
+    owner: easypunto_parkos
+    repo: easypunto_parkos
+    releaseType: release
+    allowPrerelease: false
+mac:
+  hardenedRuntime: true
+  gatekeeperAssess: false
+win:
+  # Windows Authenticode via electron-builder auto-sign.
+  # certificate file: process.env.WINDOWS_CERT_FILE (build pipeline concern).

@@ -1,5 +1,9 @@
 import { app, BrowserWindow, shell } from 'electron';
+import { autoUpdater } from 'electron-updater';
+import log from 'electron-log';
 import path from 'node:path';
+
+import { initUpdater } from './services/updater';
 
 const isDev = !app.isPackaged;
 
@@ -39,6 +43,7 @@ function createMainWindow(): void {
 }
 
 app.whenReady().then(() => {
+  initUpdater(autoUpdater, process.env, log);
   createMainWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -23,6 +23,7 @@
   },
   "include": [
     "electron/**/*.ts",
+    "electron/services/**/*.ts",
     "electron/**/*.d.ts",
     "src/main/**/*.ts",
     "src/shared/**/*.ts"
