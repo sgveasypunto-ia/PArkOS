@@ -14,7 +14,7 @@
  *               (hidratación transaccional, sin flash).
  * DEC-F3.1-08: anti-enumeración — 401 colapsa a `t('invalidCredentials')` único.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useNavigate } from 'react-router-dom';
@@ -51,6 +51,14 @@ export function Login(): JSX.Element {
     }
   }, [isAuthenticated, user, isLoading, navigate]);
 
+  // DEC-F3.2-02 (F3.2): reset errorState cuando countdown de lockout llega a 0.
+  // El `<LoginForm>` invoca `useCountdown({retryAfterSeconds, onComplete})` y
+  // cuando llega a 0 llama este callback → atomic setErrorState(null) →
+  // re-render con form re-habilitado.
+  const handleLockoutExpired = useCallback(() => {
+    setErrorState(null);
+  }, []);
+
   const onSubmit = form.handleSubmit(async (values) => {
     setErrorState(null);
     try {
@@ -76,6 +84,7 @@ export function Login(): JSX.Element {
       onSubmit={onSubmit}
       isSubmitting={form.formState.isSubmitting}
       error={errorState}
+      onLockoutExpired={handleLockoutExpired}
     />
   );
 }

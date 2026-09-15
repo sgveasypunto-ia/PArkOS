@@ -14,7 +14,7 @@
  *   Esta es una deviation D-axe-unit documentada en el verify-report.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -163,6 +163,62 @@ describe('<LoginForm />', () => {
     render(<Harness />);
     const submit = screen.getByTestId('login-submit') as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
+  });
+
+  it('U8: lockout error deshabilita email + password + submit + aria-disabled', () => {
+    function Harness(): JSX.Element {
+      const form = useForm<LoginInput>({
+        resolver: zodResolver(loginSchema),
+        mode: 'onBlur',
+        defaultValues: { email: '', password: '' },
+      });
+      return (
+        <I18nextProvider i18n={i18n}>
+          <LoginForm
+            form={form}
+            onSubmit={vi.fn()}
+            isSubmitting={false}
+            error={{ kind: 'lockout', retryAfterSeconds: 300 }}
+            onLockoutExpired={vi.fn()}
+          />
+        </I18nextProvider>
+      );
+    }
+    render(<Harness />);
+    const emailInput = screen.getByTestId('login-email') as HTMLInputElement;
+    const passwordInput = screen.getByTestId('login-password') as HTMLInputElement;
+    const submit = screen.getByTestId('login-submit') as HTMLButtonElement;
+    expect(emailInput.disabled).toBe(true);
+    expect(passwordInput.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    expect(submit).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('U9: countdown display visible durante lockout activo con formato mm:ss', () => {
+    function Harness(): JSX.Element {
+      const form = useForm<LoginInput>({
+        resolver: zodResolver(loginSchema),
+        mode: 'onBlur',
+        defaultValues: { email: '', password: '' },
+      });
+      return (
+        <I18nextProvider i18n={i18n}>
+          <LoginForm
+            form={form}
+            onSubmit={vi.fn()}
+            isSubmitting={false}
+            error={{ kind: 'lockout', retryAfterSeconds: 60 }}
+            onLockoutExpired={vi.fn()}
+          />
+        </I18nextProvider>
+      );
+    }
+    render(<Harness />);
+    const countdown = screen.getByTestId('login-countdown');
+    expect(countdown).toBeInTheDocument();
+    expect(countdown).toHaveAttribute('role', 'status');
+    expect(countdown).toHaveAttribute('aria-live', 'polite');
+    expect(countdown.textContent ?? '').toMatch(/\d{2}:\d{2}/);
   });
 
   // Reference unused import to satisfy linter

@@ -11,7 +11,7 @@
  * T3 adds U13/U14/U15 (useEffect redirect waits for user, fires after user).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -176,6 +176,51 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
       const alert = screen.getByTestId('login-error-lockout');
       expect(alert).toHaveAttribute('role', 'alert');
     });
+  });
+
+  it('U10: useCountdown isExpired resetea errorState → form re-habilitado', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      mockFetchOnce(
+        { error: 'account_locked' },
+        429,
+        { 'Retry-After': '2' },
+      ),
+    );
+
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: false,
+      isLoading: false,
+      user: null,
+    });
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <MemoryRouter>
+        <Login />
+      </MemoryRouter>,
+    );
+
+    await user.type(screen.getByTestId('login-email'), 'op@test.co');
+    await user.type(screen.getByTestId('login-password'), 'wrong-pass-1234');
+    await user.click(screen.getByTestId('login-submit'));
+
+    // Wait for lockout error to appear
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('login-error-lockout')).toBeInTheDocument();
+    });
+
+    // Advance timers past Retry-After (2s) — countdown reaches 0
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+
+    // After expiry, errorState resets → lockout alert no longer in document
+    await waitFor(() => {
+      expect(screen.queryByTestId('login-error-lockout')).not.toBeInTheDocument();
+    });
+
+    vi.useRealTimers();
   });
 });
 
