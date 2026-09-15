@@ -40,8 +40,12 @@ export interface USBDevice {
 }
 
 export interface ApiStatus {
-  online: boolean;
-  lastSync: string | null;
+  /** `true` solo si el backend respondió 2xx (independiente del latency). */
+  ok: boolean;
+  /** Latencia del ping en milisegundos. `-1` si no hay medición (cache inicial). */
+  latency_ms: number;
+  /** HTTP status code si la respuesta fue HTTP (4xx/5xx). Undefined para timeout/network error. */
+  code?: number;
 }
 
 export interface BridgeSurface {

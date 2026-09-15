@@ -82,6 +82,20 @@ describe('preload bridge contract', () => {
     expect(invokeSpy).toHaveBeenCalledWith('api:status');
   });
 
+  it('apiStatus.get retorna ApiStatus shape F2.3 (ok / latency_ms / code?)', () => {
+    const apiStatus = exposed.apiStatus as { get: () => Promise<unknown> };
+    // F2.3 shape per DEC-UPD-12: {ok, latency_ms, code?}.
+    invokeSpy.mockResolvedValueOnce({ ok: true, latency_ms: 42, code: 200 });
+    return apiStatus.get().then((status) => {
+      expect(status).toMatchObject({
+        ok: expect.any(Boolean),
+        latency_ms: expect.any(Number),
+      });
+      expect(typeof (status as { code?: number }).code === 'undefined' ||
+        typeof (status as { code?: number }).code === 'number').toBe(true);
+    });
+  });
+
   it('exposes `authStore.get/set/delete` invoking the matching channels', () => {
     const authStore = exposed.authStore as {
       get: (k: string) => Promise<string | null>;

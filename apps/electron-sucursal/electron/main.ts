@@ -1,10 +1,11 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from 'electron-log';
 import path from 'node:path';
 
 import { initUpdater } from './services/updater';
 import { initLogConfig } from './services/log-config';
+import { initApiStatus, getApiStatus } from './services/api-status';
 
 const isDev = !app.isPackaged;
 
@@ -51,13 +52,24 @@ function createMainWindow(): void {
 
 app.whenReady().then(() => {
   initUpdater(autoUpdater, process.env, log);
+  initApiStatus(
+    process.env['PARKOS_API_BASE'] ?? 'http://127.0.0.1:8000/health',
+    30_000,
+    5_000,
+    log,
+  );
   createMainWindow();
+  registerIpcHandlers();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
     }
   });
 });
+
+function registerIpcHandlers(): void {
+  ipcMain.handle('api:status', () => getApiStatus());
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
