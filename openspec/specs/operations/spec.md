@@ -897,6 +897,483 @@ both REFRESH attempts raise exceptions
 **And** the worker MUST return normally without raising (next cycle
 retries fresh — no crash, no circuit breaker).
 
+## ADDED Requirements
+
+### REQ-OPS-034 — V1: `cupo_no_configurado` returns 422 with `forzado_permitido: true`
+
+**Given** branch `X` has `prod.tipos_vehiculo(Auto)` vigente
+(`vigente_hasta IS NULL AND estado='activo'`) but NO row in
+`prod.cantidad_vehiculos_sucursal(X, Auto)` (admin has not configured
+capacity) and a JWT request reaches `POST /api/v1/operacion/ingresos`
+with valid KD-3 tenant context resolved for `X`
+**When** the dedicated handler `create_ingreso` invokes
+`repo/ocupacion.py::validar_cupo_disponible(session, *, uuid_sucursal=X,
+uuid_tipo_vehiculo=T_auto, forzado=false)` after V5 regex has derived
+`T_auto` from the placa
+**Then** the helper MUST return a result indicating
+`cupo_no_configurado=true` (no `cantidad_vehiculos_sucursal` row for
+`(X, T_auto)`)
+**And** the handler MUST raise
+`HTTPException(status_code=422, detail={"error":
+"cupo_no_configurado", "forzado_permitido": True})`
+**And** no INSERT into `prod.ingreso` MUST occur
+**And** the response MUST include the header `Cache-Control: no-store`
+(consistent with F1.3 / F1.5 / F1.8 R8).
+**RFC 2119**: MUST (422 shape, `forzado_permitido: true` literal,
+no INSERT, header).
+
+#### Scenario: operador posts valid placa on unconfigured branch without forzado returns 422
+
+**Given** an `operador-` JWT with `ctx.sucursal_uuid = X`, branch X has
+`tipos_vehiculo(Auto)` vigente and 0 `cantidad_vehiculos_sucursal` rows
+**When** the operator POSTs `{"placa": "ABC123"}` (no `forzado`,
+no `observaciones`)
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "cupo_no_configurado", "forzado_permitido": true}`
+**And** `prod.ingreso` MUST have no new rows.
+
+#### Scenario: admin posts valid placa on unconfigured branch with forzado bypass returns 201 (no alerta, V1 alone)
+
+**Given** the same unconfigured branch state
+**When** the admin POSTs `{"placa": "ABC123", "forzado": true,
+"observaciones": "[FORZADO: branch sin cupo configurado por admin nuevo]"}`
+**Then** the response MUST be `201 Created` with the happy-path body
+**And** `prod.alerta` MUST NOT receive a new `capacidad_agotada_forzado`
+row (R2 mitigation: alerta only when V2 was bypassed, not V1 — V1 bypass
+is "cupo missing", not "cupo full").
+
+### REQ-OPS-035 — V2: `motivo_forzado_requerido` returns 422 with `cupo_maximo` / `activos`; forzado bypass INSERTs + emits alerta
+
+**Given** branch `X` has `prod.cantidad_vehiculos_sucursal(X, Auto)` with
+`cantidad = 50` and `prod.mv_ocupacion_diaria` (refreshed within the
+last `2 × refresh_interval_s = 20s`, F1.5) reports `activos = 50` for
+`(X, Auto)` (cupo agotado) and a JWT request reaches
+`POST /api/v1/operacion/ingresos` with KD-3 chain resolved for `X`
+**When** the handler invokes
+`repo/ocupacion.py::validar_cupo_disponible(session, *, uuid_sucursal=X,
+uuid_tipo_vehiculo=T_auto, forzado=false)`
+**Then** the helper MUST return `cupo_no_configurado=false,
+cupo_agotado=true, cupo_maximo=50, activos=50`
+**And** the handler MUST raise
+`HTTPException(status_code=422, detail={"error":
+"motivo_forzado_requerido", "cupo_maximo": 50, "activos": 50})`
+**And** no INSERT into `prod.ingreso` MUST occur
+**And** no `prod.alerta` row MUST be inserted (R2 — V2 was not bypassed).
+**RFC 2119**: MUST (422 shape with literal keys, `cupo_agotado` detection,
+no INSERT, no alerta on rejection).
+
+#### Scenario: cupo agotado sin forzado returns 422 with cupo_maximo + activos
+
+**Given** the cupo-agotado state above
+**When** the operator POSTs `{"placa": "ABC123"}` (no `forzado`)
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "motivo_forzado_requerido", "cupo_maximo": 50, "activos": 50}`
+**And** `prod.ingreso` MUST have no new rows.
+
+#### Scenario: cupo agotado con forzado válido returns 201 and emits `capacidad_agotada_forzado` alerta same TX
+
+**Given** the cupo-agotado state above
+**When** the operator POSTs `{"placa": "ABC123", "forzado": true,
+"observaciones": "[FORZADO: cliente con cita medica urgente 2026-09-14]"}`
+**Then** the handler MUST pass V2 (`cupo_result.cupo_agotado=true AND
+forzado=true` ⇒ bypass, `bypass_reason="cupo_agotado"`) and proceed to
+the INSERT path
+**And** the handler MUST INSERT a row into `prod.ingreso` (`[L-E]`)
+**And** the handler MUST INSERT a row into `prod.alerta` with
+`tipo_alerta='capacidad_agotada_forzado'`, `estado='abierta'`,
+`datos_nuevos` carrying the motivo string (jsonb)
+**And** both INSERTs MUST commit in the SAME `await session.commit()`
+call (R5 — no huérfanas)
+**And** the response MUST be `201 Created` with `IngresoReadForzado`
+**And** `Cache-Control: no-store` MUST be present.
+
+### REQ-OPS-036 — V3: `tarifa_vigente_no_encontrada` returns 422 unless `forzado=true` (bi-temporal canónico from F1.4)
+
+**Given** no row in `prod.tarifas_sucursal(X, T_auto)` satisfies the
+bi-temporal canónico predicate
+`vigente_desde <= NOW() AND (vigente_hasta IS NULL OR vigente_hasta >
+NOW()) AND estado='activo'` (F1.4 `bitemporal_vigente_predicate`,
+`repo/tarifas_vigencia.py` constant) at `datetime.now(UTC)`
+**When** the handler invokes
+`repo/tarifas_vigencia.py::validar_tarifa_vigente(session, *,
+uuid_sucursal=X, uuid_tipo_vehiculo=T_auto, at=now(UTC),
+forzado=bypass_reason)`
+**Then** the helper MUST return `vigente=false`
+**And** the handler MUST raise
+`HTTPException(status_code=422, detail={"error":
+"tarifa_vigente_no_encontrada"})`
+**And** no INSERT into `prod.ingreso` MUST occur.
+**RFC 2119**: MUST (bi-temporal predicate reuse from F1.4, 422 shape,
+no INSERT).
+
+#### Scenario: tarifa no vigente sin forzado returns 422
+
+**Given** `prod.tarifas_sucursal(X, Auto)` has only one row with
+`vigente_hasta = '2025-01-01'` (already expired) and the request has
+`forzado=false`
+**When** the operator POSTs `{"placa": "ABC123"}`
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "tarifa_vigente_no_encontrada"}`.
+
+#### Scenario: tarifa no vigente con forzado válido bypasses V3
+
+**Given** the same expired-tarifa state
+**When** the operator POSTs `{"placa": "ABC123", "forzado": true,
+"observaciones": "[FORZADO: tarifa en renegociacion con operador X]"}`
+**Then** the handler MUST pass V3 (forzado bypass) and proceed; no alerta
+is emitted for V3 bypass (R2 — alerta only for V2 bypass).
+
+### REQ-OPS-037 — V4: `tipo_vehiculo_invalido` returns 422; no bypass (catalog bug, not operational)
+
+**Given** the `uuid_tipo_vehiculo` derived by V5 regex resolution maps
+to either (a) no row in `prod.tipos_vehiculo` with that UUID, or (b) a
+row with `vigente_hasta IS NOT NULL` (tipo dado de baja) or
+`estado='inactivo'`
+**When** the handler invokes
+`repo/ingreso.py::validar_tipo_vehiculo_vigente(session, *,
+uuid_tipo_vehiculo=T)`
+**Then** the helper MUST return `False`
+**And** the handler MUST raise
+`HTTPException(status_code=422, detail={"error":
+"tipo_vehiculo_invalido"})`
+**And** the handler MUST NOT honor `forzado=true` for V4 — V4 is a
+catalog integrity defect (R-KD-V3): the operator cannot force a catalog
+fix by stamping `forzado`
+**And** no INSERT into `prod.ingreso` MUST occur.
+**RFC 2119**: MUST (422 shape, `False` detection on missing OR
+`vigente_hasta IS NOT NULL` OR `estado='inactivo'`, no bypass on
+`forzado=true`).
+
+#### Scenario: catalog missing the regex-derived tipo returns 422
+
+**Given** `prod.tipos_vehiculo` has NO row with `tipo='Auto'` even
+though `FORMATO_AUTO` regex matches the placa `ABC123`
+**When** the handler invokes `validar_tipo_vehiculo_vigente(...)`
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "tipo_vehiculo_invalido"}`
+**And** the handler MUST NOT proceed even with `forzado=true`.
+
+#### Scenario: tipo dado de baja (`vigente_hasta IS NOT NULL`) returns 422
+
+**Given** `prod.tipos_vehiculo` has `tipo='Auto'` with
+`vigente_hasta = '2026-01-01'`
+**When** the operator POSTs `{"placa": "ABC123"}`
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "tipo_vehiculo_invalido"}`.
+
+### REQ-OPS-038 — V5: regex placa Colombia server-side + `placa_formato_invalido` 422 + `uuid_tipo_vehiculo` derivado y sobreescrito (BR2 CU-01)
+
+**Given** the request body contains `placa` as a string (after V5
+sequence begins; this is V5's input)
+**When** the handler invokes
+`repo/placa.py::detectar_tipo_vehiculo(placa)` with the regex constants
+`FORMATO_AUTO = r"^[A-Z]{3}[0-9]{3}$"` (Auto) and
+`FORMATO_MOTO = r"^[A-Z]{3}[0-9]{2}[A-Z]$"` (Moto), lazy lookup against
+`prod.tipos_vehiculo(tipo)` vigente
+**Then** if the regex matches `FORMATO_AUTO`, the helper MUST return the
+UUID of `tipos_vehiculo` where `tipo='Auto'` AND
+`vigente_hasta IS NULL AND estado='activo'`
+**And** if the regex matches `FORMATO_MOTO`, the helper MUST return the
+UUID of `tipos_vehiculo` where `tipo='Moto'` AND vigente
+**And** if neither regex matches, the helper MUST return `None`
+**And** if the helper returns `None`, the handler MUST raise
+`HTTPException(status_code=422, detail={"error":
+"placa_formato_invalido", "formatos_aceptados": ["ABC123", "ABC12D"]})`
+**And** the handler MUST overwrite the client-supplied
+`uuid_tipo_vehiculo` with the regex-derived UUID before passing to V4
+(BR2 CU-01, D-HU-F1.6-6 — defense in depth against stale client).
+**RFC 2119**: MUST (regex constants at module level, lazy UUID lookup,
+422 shape with literal `formatos_aceptados`, server-side overwrite);
+SHALL (the regex constants live in `repo/placa.py` as module-level
+constants so a future HU can swap them in one place).
+
+#### Scenario: placa Auto `ABC123` deriva `tipo='Auto'` UUID y sobreescribe cliente
+
+**Given** a valid JWT, `tipos_vehiculo(Auto)` vigente, and the request
+carries `{"placa": "ABC123", "uuid_tipo_vehiculo":
+"<uuid_moto_incorrecto>"}` (client bug)
+**When** the operator POSTs the payload
+**Then** the handler MUST use the `Auto` UUID (regex-derived) and
+overwrite the Moto UUID before V4 — the operator sees 201, not 422.
+
+#### Scenario: placa `abc123` (lowercase) returns 422 `placa_formato_invalido`
+
+**Given** the lowercase string does not match `FORMATO_AUTO`
+**When** the operator POSTs `{"placa": "abc123"}`
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "placa_formato_invalido", "formatos_aceptados":
+["ABC123", "ABC12D"]}`.
+
+#### Scenario: placa `AB12C` (4 chars / mixed) returns 422
+
+**Given** neither regex matches `AB12C`
+**When** the operator POSTs `{"placa": "AB12C"}`
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "placa_formato_invalido", "formatos_aceptados":
+["ABC123", "ABC12D"]}`.
+
+### REQ-OPS-039 — V6: `subscripcion_inactiva_o_vencida` returns 422 unless `forzado=true` (walk-in auditado)
+
+**Given** the request body contains
+`uuid_subscripcion_cliente = S` (non-None)
+**When** the handler invokes
+`repo/subscripcion_activa.py::validar_subscripcion_vigente(session, *,
+uuid_subscripcion_cliente=S, forzado=bypass_reason)` which checks
+`vigente_hasta IS NULL AND estado='activo' AND fecha_vencimiento >=
+NOW()` against `prod.subscripciones_cliente`
+**Then** if all three predicates hold, the helper MUST return
+`vigente=true`
+**And** if any predicate fails, the helper MUST return `vigente=false`
+**And** when `vigente=false` AND `forzado=false`, the handler MUST raise
+`HTTPException(status_code=422, detail={"error":
+"subscripcion_inactiva_o_vencia"})`
+**And** when `vigente=false` AND `forzado=true`, the handler MUST accept
+the request as a walk-in auditado (D-HU-F1.6-2 + KD-V3 — vencida is
+operational, not catalog) and proceed; no alerta is emitted for V6
+bypass (R2).
+**RFC 2119**: MUST (three predicates AND-ed, 422 shape, no alerta on
+V6 bypass).
+
+#### Scenario: subscripcion vigente procede sin forzado
+
+**Given** `prod.subscripciones_cliente(S)` has
+`vigente_hasta IS NULL`, `estado='activo'`,
+`fecha_vencimiento = '2026-12-31'` (future)
+**When** the operator POSTs `{"placa": "ABC123",
+"uuid_subscripcion_cliente": "S"}` (no `forzado`)
+**Then** the handler MUST pass V6 and proceed to V8 / INSERT.
+
+#### Scenario: subscripcion vencida sin forzado returns 422
+
+**Given** `prod.subscripciones_cliente(S)` has
+`fecha_vencimiento = '2026-01-01'` (past)
+**When** the operator POSTs `{"placa": "ABC123",
+"uuid_subscripcion_cliente": "S"}` (no `forzado`)
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "subscripcion_inactiva_o_vencida"}`.
+
+#### Scenario: subscripcion inactiva (`estado='inactivo'`) sin forzado returns 422
+
+**Given** `prod.subscripciones_cliente(S)` has `estado='inactivo'`
+**When** the operator POSTs `{"placa": "ABC123",
+"uuid_subscripcion_cliente": "S"}` (no `forzado`)
+**Then** the response MUST be `422 Unprocessable Entity` with body
+`{"error": "subscripcion_inactiva_o_vencida"}`.
+
+#### Scenario: subscripcion vencida con forzado válido walks-in
+
+**Given** the past-vencimiento state above
+**When** the operator POSTs `{"placa": "ABC123",
+"uuid_subscripcion_cliente": "S", "forzado": true,
+"observaciones": "[FORZADO: cliente pago en efectivo tras vencer 2026-01-15]"}`
+**Then** the handler MUST pass V6 (walk-in auditado) and proceed to V8 /
+INSERT — the resulting ingreso is `MENSUALIDAD` (V9 derivation,
+REQ-OPS-041) for ops reconciliation in F7.
+
+### REQ-OPS-040 — V8: `ingreso_activo_existente` returns 409 with `uuid_ingreso_existente`; `EXISTS` directo a tablas (no MV, no lock)
+
+**Given** the request body has reached V8 (all prior validations passed)
+**When** the handler invokes
+`repo/ingreso.py::existe_ingreso_activo(session, *, uuid_sucursal=X,
+placa=P)` which executes `EXISTS (SELECT 1 FROM prod.ingreso i WHERE
+i.uuid_sucursal=X AND i.placa=P AND NOT EXISTS (SELECT 1 FROM
+prod.salidas s WHERE s.uuid_ingreso=i.uuid AND
+s.uuid_sucursal=i.uuid_sucursal) AND NOT EXISTS (SELECT 1 FROM
+prod.anulaciones a WHERE a.uuid_ingreso=i.uuid AND a.estado='ejecutada'
+AND a.tipo_anulable IN ('ingreso','salida')))`
+**Then** if the predicate returns a row, the helper MUST return the
+`uuid` of the existing active ingreso
+**And** the handler MUST raise
+`HTTPException(status_code=409, detail={"error":
+"ingreso_activo_existente", "uuid_ingreso_existente": "<uuid>"})`
+**And** the handler MUST NOT acquire any `SELECT … FOR UPDATE/SHARE`
+lock — KD-V4 eventual consistency via `mv_ocupacion_diaria` is
+acceptable for V2 (R8); V8 goes directly to the authoritative tables
+(< 50ms p99 expected; EXPLAIN ANALYZE confirmed in design.md).
+**RFC 2119**: MUST (predicate shape with two `NOT EXISTS` clauses, 409
+with literal `uuid_ingreso_existente` key, no pessimistic lock).
+
+#### Scenario: placa activa sin salida ni anulación returns 409
+
+**Given** `prod.ingreso` already contains `(uuid_sucursal=X,
+placa=ABC123)` with no row in `prod.salidas` and no row in
+`prod.anulaciones` with `estado='ejecutada'`
+**When** the operator POSTs `{"placa": "ABC123"}` (all prior V
+validations pass)
+**Then** the response MUST be `409 Conflict` with body
+`{"error": "ingreso_activo_existente", "uuid_ingreso_existente":
+"<existing_uuid>"}`
+**And** `prod.ingreso` MUST have no new rows.
+
+#### Scenario: placa con salida previa no anulada permite nuevo ingreso
+
+**Given** the existing `(X, ABC123)` ingreso has a non-anulada row in
+`prod.salidas` (the previous ciclo closed)
+**When** the operator POSTs `{"placa": "ABC123"}`
+**Then** `existe_ingreso_activo` MUST return `None` (the previous activo
+was eliminated by the salida) and the handler MUST proceed to INSERT a
+new `prod.ingreso` row.
+
+#### Scenario: placa con anulación ejecutada permite nuevo ingreso
+
+**Given** the existing `(X, ABC123)` ingreso has a row in
+`prod.anulaciones` with `estado='ejecutada' AND
+tipo_anulable='ingreso'`
+**When** the operator POSTs `{"placa": "ABC123"}`
+**Then** `existe_ingreso_activo` MUST return `None` and the handler
+MUST proceed to INSERT.
+
+### REQ-OPS-041 — V9 + KD-FORZADO-01: `tipo_entrada` derivado server-side (nunca persistido) + bypass contract + alerta `capacidad_agotada_forzado`
+
+This requirement bundles three related contracts that share the same
+INVOCATION path through the handler:
+
+**(A) V9 — `tipo_entrada` derivación server-side (DEC-SUC-21)**:
+**Given** the INSERT path has reached the response-build step (all V
+validations passed)
+**When** the handler derives `tipo_entrada`
+**Then** the handler MUST set `tipo_entrada = "MENSUALIDAD"` if and only
+if `payload.uuid_subscripcion_cliente is not None` (the `forzado` flag
+is irrelevant — a walk-in with `forzado=true` still resolves to
+`MENSUALIDAD` if a `uuid_subscripcion_cliente` was provided), else
+`"ROTACION"`
+**And** the handler MUST include `tipo_entrada` in the
+`IngresoReadForzado` response body
+**And** the handler MUST NOT persist `tipo_entrada` in any column of
+`prod.ingreso` (DEC-SUC-21 — derived value, not a column).
+
+**(B) KD-FORZADO-01 — bypass contract (A-04)**:
+**Given** the request body carries `observaciones` (possibly None) and
+`forzado` (bool)
+**When** the handler invokes
+`repo/ingreso.py::validar_kd_forzado(observaciones, forzado)` (the
+prefix constant `FORZADO_PREFIX = "[FORZADO: "` and
+`FORZADO_MIN_MOTIVO_CHARS = 10` live at module level)
+**Then** the helper MUST enforce exactly three discriminators:
+
+1. If `forzado=false` AND `observaciones` starts with `FORZADO_PREFIX`,
+   the helper MUST raise `HTTPException(status_code=422, detail={"error":
+   "forzado_contradiccion"})` — D-HU-F1.6-5 defense in depth (the
+   prefix is the source of truth, not the bool flag).
+2. If `forzado=true` AND `observaciones` is None OR does not start with
+   `FORZADO_PREFIX`, the helper MUST raise `HTTPException(status_code=422,
+   detail={"error": "motivo_forzado_requerido"})`.
+3. If `forzado=true` AND `observaciones` starts with `FORZADO_PREFIX` AND
+   the motivo (substring after `FORZADO_PREFIX`, `rstrip("]")`) has
+   `len(motivo.strip()) < FORZADO_MIN_MOTIVO_CHARS = 10`, the helper MUST
+   raise `HTTPException(status_code=422, detail={"error":
+   "motivo_forzado_insuficiente", "min_chars": 10})`.
+
+**And** on a valid `forzado=true` + valid prefix + motivo ≥10 chars, the
+helper MUST return the stripped motivo string (and the handler records
+`forzado_en_creacion=true` + `motivo_forzado=<motivo>` in the response).
+
+**(C) Alerta `capacidad_agotada_forzado` same-TX INSERT (R2 + R5)**:
+**Given** the INSERT step for `prod.ingreso` is reached AND
+`bypass_reason == "cupo_agotado"` (V2 was bypassed)
+**When** the handler invokes `repo/event.record_event` for the `[L-E]`
+insert
+**Then** the handler MUST immediately afterwards (in the same
+transaction) invoke
+`repo/alerta.py::insertar_alerta_forzado(session, *, uuid_sucursal=X,
+uuid_ingreso=new_row.uuid, actor_uuid=ctx.actor_uuid, motivo=<motivo>)`
+which INSERTs into `prod.alerta` with
+`tipo_alerta='capacidad_agotada_forzado'`, `estado='abierta'`, and the
+motivo in `datos_nuevos` (jsonb)
+**And** both INSERTs MUST commit in ONE `await session.commit()` call —
+no `INSERT` for alerta without a corresponding `INSERT` for ingreso
+(no huérfanas, R5 mitigation)
+**And** if `bypass_reason != "cupo_agotado"` (for example, V1, V3, or V6
+bypassed), the handler MUST NOT INSERT a `capacidad_agotada_forzado`
+alerta — R2 mitigation (alerta only on V2 bypass, not other bypasses).
+**RFC 2119**: MUST (V9 derivation rule, prefix constants, three
+discriminators with literal key names, alerta only on V2 bypass, single
+commit for ingreso + alerta).
+
+#### Scenario: V9 happy path MENSUALIDAD con subscripcion vigente
+
+**Given** the request carries `{"placa": "ABC123",
+"uuid_subscripcion_cliente": "S"}` and V6 passed
+**When** the handler builds the response
+**Then** the response MUST be `201 Created` with
+`IngresoReadForzado` carrying
+`{"tipo_entrada": "MENSUALIDAD", "forzado_en_creacion": false,
+"motivo_forzado": null, …}`
+**And** a `SELECT tipo_entrada FROM prod.ingreso WHERE uuid=<new>`
+MUST error with "column does not exist" (DEC-SUC-21 — never persisted).
+
+#### Scenario: V9 happy path ROTACION sin subscripcion
+
+**Given** the request carries `{"placa": "ABC123"}` (no
+`uuid_subscripcion_cliente`)
+**When** the handler builds the response
+**Then** the response MUST be `201 Created` with
+`{"tipo_entrada": "ROTACION", "forzado_en_creacion": false,
+"motivo_forzado": null, …}`.
+
+#### Scenario: KD-FORZADO-01 `forzado_contradiccion` when forzado=false with prefix
+
+**Given** the request carries `{"placa": "ABC123", "forzado": false,
+"observaciones": "[FORZADO: prueba cliente]"}`
+**When** the handler invokes `validar_kd_forzado(observaciones, forzado)`
+**Then** the helper MUST raise `HTTPException(422, {"error":
+"forzado_contradiccion"})` (the bool flag contradicts the prefix).
+
+#### Scenario: KD-FORZADO-01 `motivo_forzado_requerido` when forzado=true without prefix
+
+**Given** the request carries `{"placa": "ABC123", "forzado": true,
+"observaciones": "cliente sin placa"}` (no prefix)
+**When** the handler invokes `validar_kd_forzado(observaciones, forzado)`
+**Then** the helper MUST raise `HTTPException(422, {"error":
+"motivo_forzado_requerido"})`.
+
+#### Scenario: KD-FORZADO-01 `motivo_forzado_insuficiente` when motivo <10 chars
+
+**Given** the request carries `{"placa": "ABC123", "forzado": true,
+"observaciones": "[FORZADO: a b]"}` (motivo "a b" = 3 chars after
+prefix + rstrip)
+**When** the handler invokes `validar_kd_forzado(observaciones, forzado)`
+**Then** the helper MUST raise `HTTPException(422, {"error":
+"motivo_forzado_insuficiente", "min_chars": 10})`.
+
+#### Scenario: KD-FORZADO-01 valid bypass on cupo agotado emits alerta same TX as ingreso
+
+**Given** cupo agotado for `(X, Auto)` (REQ-OPS-035 scenario)
+**When** the operator POSTs `{"placa": "ABC123", "forzado": true,
+"observaciones": "[FORZADO: cliente con cita medica urgente 2026-09-14]"}`
+**Then** `validar_kd_forzado` returns the stripped motivo
+**And** V2 is bypassed with `bypass_reason="cupo_agotado"`
+**And** the `prod.ingreso` INSERT and the `prod.alerta` INSERT both commit
+in ONE `await session.commit()` (verified by integration test
+`test_ingreso_create_db.py::T1`)
+**And** the response carries `{"tipo_entrada": "ROTACION",
+"forzado_en_creacion": true, "motivo_forzado": "cliente con cita
+medica urgente 2026-09-14", …}`.
+
+#### Scenario: KD-FORZADO-01 valid bypass on V1 (cupo no configurado) does NOT emit alerta
+
+**Given** branch X has no `cantidad_vehiculos_sucursal` for Auto
+(REQ-OPS-034 scenario)
+**When** the operator POSTs `{"placa": "ABC123", "forzado": true,
+"observaciones": "[FORZADO: branch sin cupo configurado por admin nuevo]"}`
+**Then** the handler MUST proceed (V1 bypassed) and commit the ingreso
+INSERT
+**And** the handler MUST NOT call `insertar_alerta_forzado` — R2
+mitigation (alerta only on V2 bypass)
+**And** `prod.alerta` MUST have no new rows for this UUID.
+
+#### Scenario: V9 `tipo_entrada=MENSUALIDAD` is derived even when forzado=true
+
+**Given** the request carries `{"placa": "ABC123",
+"uuid_subscripcion_cliente": "S", "forzado": true,
+"observaciones": "[FORZADO: cliente pago en efectivo tras vencer 2026-01-15]"}`
+(REQ-OPS-039 walk-in auditado scenario)
+**When** the handler builds the response
+**Then** the response MUST carry `{"tipo_entrada": "MENSUALIDAD",
+"forzado_en_creacion": true, "motivo_forzado": "cliente pago en
+efectivo tras vencer 2026-01-15", …}` — `tipo_entrada` is keyed on
+`uuid_subscripcion_cliente`, NOT on `forzado` (V9 invariant).
+
 ## Modified Capabilities
 
 - `backend/pyproject.toml` — adds the pytest stack and coverage
@@ -948,6 +1425,18 @@ retries fresh — no crash, no circuit breaker).
 - `backend/tests/integration/test_migration_0024_mv.py` (NUEVO, ~462 LOC, 2 migration pre-flight tests) — T1 `apply with dirty data (5 ingresos, 2 con salidas, 1 anulada) → view + UNIQUE INDEX OK`; T2 `preflight_aborts_on_simulated_50m_rows` via mocked `count(*)`. (REQ-OPS-032).
 - `backend/tests/integration/test_refresh_mv_job.py` (NUEVO, ~221 LOC, 2 worker cycle tests) — T1 normal `cycle()` con `AsyncMock(spec=AsyncSession)`; T2 `FeatureNotSupported` on CONCURRENTLY → KD-5 fallback to plain REFRESH + `refresh_mv_concurrently_failed_fallback` log (no pgcode, no `repr(exc)`). (REQ-OPS-033).
 - `backend/tests/static/test_no_write_in_ocupacion.py` (NUEVO, ~127 LOC, 1 AST walk test) — `ast.walk()` sobre `api/v1/operacion.py::get_ocupacion` rechazando `INSERT|UPDATE|DELETE|TRUNCATE|MERGE|FOR UPDATE|FOR SHARE` tokens fuera de strings/comentarios. Lockea el read-only contract. (REQ-OPS-030).
+
+- `backend/packages/parkos_core/src/parkos_core/repo/placa.py` (NUEVO, ~30 LOC) — module-level constants `FORMATO_AUTO = r"^[A-Z]{3}[0-9]{3}$"` y `FORMATO_MOTO = r"^[A-Z]{3}[0-9]{2}[A-Z]$"`; `detectar_tipo_vehiculo(placa)` con lazy lookup contra `prod.tipos_vehiculo` (vigente). Server overwrites client `uuid_tipo_vehiculo` (D-HU-F1.6-6). (REQ-OPS-038)
+- `backend/packages/parkos_core/src/parkos_core/repo/ingreso.py` (NUEVO, ~180 LOC) — 8 helpers de validación V1..V9 (V1+V2 re-export via `repo/ocupacion.py`; V3 re-export via `repo/tarifas_vigencia.py`; V4 + V6 + V8 + V9 propias) + `validar_kd_forzado` (3 discriminadores KD-FORZADO-01) + `crear_ingreso_evento` thin wrapper de `record_event` + `insertar_alerta_forzado` re-export via `repo/alerta.py`. M1 inline fix (archive): prefix detection alineada con spec `startswith`. M2 inline fix (archive): EXISTS predicate con `s.uuid_sucursal`, `a.estado='ejecutada'`, `a.tipo_anulable IN ('ingreso','salida')`. L1 inline fix (archive): `forzado` kwarg removido de V4 signature. (REQ-OPS-034..041)
+- `backend/packages/parkos_core/src/parkos_core/repo/subscripcion_activa.py` (NUEVO, ~50 LOC) — `validar_subscripcion_vigente` con bi-temporal `vigente_hasta IS NULL AND estado='activo' AND fecha_vencimiento >= NOW()`; `resolve_active_subscription_for_exit` extraído verbatim de `api/v1/operacion.py` (F1.5 `bb99e18`); R22 defense-in-depth `WHERE uuid_sucursal == :this_branch`. (REQ-OPS-039)
+- `backend/packages/parkos_core/src/parkos_core/repo/alerta.py` (NUEVO, ~60 LOC) — `insertar_alerta_forzado` puro; INSERT `Alerta(tipo_alerta='capacidad_agotada_forzado', estado='abierta', datos_nuevos={motivo, uuid_ingreso})` + `session.add` + `await session.flush()` (R-A2 jsonb audit). (REQ-OPS-041.C)
+- `backend/packages/parkos_core/src/parkos_core/repo/ocupacion.py` (MODIFICAR, +40 LOC) — `CupoValidationResult(cupo_no_configurado, cupo_agotado, cupo_maximo, activos)` + `validar_cupo_disponible` reusando `get_ocupacion_puros_activos` (F1.5); KD-V4 eventual consistency via `mv_ocupacion_diaria`. (REQ-OPS-034, REQ-OPS-035)
+- `backend/packages/parkos_core/src/parkos_core/repo/tarifas_vigencia.py` (MODIFICAR, +30 LOC) — `TarifaValidationResult(vigente, tarifa)` + `validar_tarifa_vigente` reusando `bitemporal_vigente_predicate` (F1.4); bi-temporal canónico. (REQ-OPS-036)
+- `backend/packages/parkos_core/src/parkos_core/api/v1/operacion.py` (MODIFICAR, replace `create_ingreso` líneas 92-114 → ~232 LOC) — handler dedicado con 9 validaciones V1..V9 + KD-FORZADO-01 chain + derivación `tipo_entrada`. KD-3 chain (`_ingreso_issuer_dep`, `get_tenant_ctx`) preservado; `response_model=IngresoReadForzado`, `status_code=201`, `Cache-Control: no-store` en 2xx/4xx/5xx. `api/v1/__init__.py` y `router_factory.py` intactos. Precedencia 11-step per D-HU-F1.6-11 (AST walk verificado). (REQ-OPS-034..041)
+- `backend/packages/parkos_core/src/parkos_core/schemas/operacion.py` (MODIFICAR, +116 LOC) — `IngresoCreateForzado(forzado: bool=False)` + `IngresoReadForzado(tipo_entrada: Literal["MENSUALIDAD","ROTACION"], forzado_en_creacion: bool=False, motivo_forzado: str|None=None)` + 7 clases de error tipadas (`CupoNoConfiguradoError`, `MotivoForzadoRequeridoError`, `TarifaVigenteNoEncontradaError`, `PlacaFormatoInvalidoError`, `SubscripcionInactivaOVencidaError`, `IngresoActivoExistenteError`, `TipoVehiculoInvalidoError`). `IngresoCreate`/`IngresoRead` preservados como alias deprecated (backward compat F1.5). `extra='forbid'` heredado de `_Base`. (REQ-OPS-034..041)
+- `backend/packages/parkos_core/migrations/versions/0025_add_alerta_datos_nuevos_and_alert_type.py` (NUEVO, ~141 LOC) — pre-flight `DO $$` sobre `prod.alerta` (KD-7) + `ALTER TABLE prod.alerta ADD COLUMN IF NOT EXISTS datos_nuevos JSONB` + `INSERT INTO prod.alert_types (..., 'capacidad_agotada_forzado', ...) ON CONFLICT (tipo_alerta) DO NOTHING` (idempotente; respeta `alert_types_inmutable` trigger). `revision = "0025_alerta_datos_nuevos"`, `down_revision = "0024_mv_ocupacion_diaria"`. (REQ-OPS-041.C)
+- `backend/tests/unit/test_operacion_ingresos_kd_forzado.py` (NUEVO + archive M1 regression) — 4 KD-FORZADO contract tests + 2 T-aux + 2 M1 regression tests (`prefix_mid_string_no_startswith_returns_none`, `prefix_sin_cierre_raises_contradiccion`) cubriendo el alineamiento con spec `startswith`. Pure helper, sin HTTP/DB. (REQ-OPS-041.B)
+- `backend/tests/integration/test_ingreso_create_db.py` (NUEVO + archive M2 regression) — 3 DB integration tests (T1 alerta same-TX, T2 duplicado, T3 sub vencida) + 1 M2 regression (`anulacion_pendiente_no_bloquea_nuevo_ingreso`) cubriendo el filtro `a.estado='ejecutada' AND a.tipo_anulable IN ('ingreso','salida')`. Requiere `PARKOS_DOCKER_TEST=1`. (REQ-OPS-040)
 
 ## Out of Scope
 
