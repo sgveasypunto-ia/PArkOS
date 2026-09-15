@@ -21,5 +21,10 @@
     "noUncheckedIndexedAccess": true,
     "types": ["node"]
   },
-  "include": ["electron/**/*.ts", "src/main/**/*.ts", "src/shared/**/*.ts"]
+  "include": [
+    "electron/**/*.ts",
+    "electron/**/*.d.ts",
+    "src/main/**/*.ts",
+    "src/shared/**/*.ts"
+  ]
 }
