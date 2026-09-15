@@ -547,7 +547,7 @@ class FacturaItemCreate(_Base):
     tipo: Literal["servicio", "producto"]
     concepto: Annotated[str, StringConstraints(min_length=1, max_length=255)]
     cantidad: int = Field(gt=0, le=999)
-    valor_unitario: Decimal = Field(ge=Decimal("0"), le=Decimal("999999999.9999"))
+    valor_unitario: Decimal = Field(ge=Decimal(0), le=Decimal("999999999.9999"))
     uuid_tarifa_sucursal: uuid_lib.UUID | None = None
 
 
@@ -606,7 +606,7 @@ class FacturaPagoAdicionalCreate(_Base):
 
     uuid_factura: uuid_lib.UUID
     medio_pago: Literal["efectivo", "tarjeta", "transferencia", "datafono", "mixto"]
-    valor: Decimal = Field(gt=Decimal("0"))
+    valor: Decimal = Field(gt=Decimal(0))
     referencia: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
     uuid_sesion: uuid_lib.UUID | None = None
 
@@ -660,12 +660,6 @@ __all__ = [
     "ClienteNoEncontradoErrorSchema",
     "DetalleInvalidoErrorSchema",
     "FacturaCreate",
-    "FacturaItemConDatosPropios",
-    "FacturaItemCreate",
-    "FacturaItemRead",
-    "FacturaPagoAdicionalCreate",
-    "FacturaPagoRead",
-    "FacturaRead",
     "FacturaDetalleCreate",
     "FacturaDetalleFilter",
     "FacturaDetalleRead",
@@ -681,17 +675,23 @@ __all__ = [
     "FacturaImpuestosRead",
     "FacturaImpuestosReadList",
     "FacturaImpuestosUpdate",
+    "FacturaItemConDatosPropios",
+    "FacturaItemCreate",
+    "FacturaItemRead",
     "FacturaOtrosCobrosCreate",
     "FacturaOtrosCobrosFilter",
     "FacturaOtrosCobrosRead",
     "FacturaOtrosCobrosReadList",
     "FacturaOtrosCobrosUpdate",
+    "FacturaPagoAdicionalCreate",
+    "FacturaPagoRead",
     "FacturaPagosCreate",
     "FacturaPagosFilter",
     "FacturaPagosRead",
     "FacturaPagosReadList",
     "FacturaPagosReversoCreate",
     "FacturaPagosUpdate",
+    "FacturaRead",
     "FacturasCreate",
     "FacturasFilter",
     "FacturasRead",

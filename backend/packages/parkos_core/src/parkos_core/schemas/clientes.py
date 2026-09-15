@@ -29,7 +29,7 @@ import uuid as uuid_lib
 from datetime import date, datetime
 from typing import Annotated, Any
 
-from pydantic import StringConstraints, field_validator, model_validator
+from pydantic import StringConstraints, model_validator
 
 from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
 from .common import FilterBase, ReadListBase, _Base

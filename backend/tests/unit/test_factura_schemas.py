@@ -17,8 +17,6 @@ import uuid as uuid_lib
 from decimal import Decimal
 
 import pytest
-from pydantic import ValidationError
-
 from parkos_core.schemas.clientes import ClientesCreate
 from parkos_core.schemas.facturacion import (
     FacturaCreate,
@@ -28,6 +26,7 @@ from parkos_core.schemas.facturacion import (
     FacturaPagoRead,
     FacturaRead,
 )
+from pydantic import ValidationError
 
 
 def test_clientes_create_rechaza_nit_dv_invalido() -> None:
