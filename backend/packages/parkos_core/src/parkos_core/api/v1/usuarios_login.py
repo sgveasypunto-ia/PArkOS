@@ -36,6 +36,8 @@ DEC-LOGIN-01..10 reference: the design decisions are recorded in
 from __future__ import annotations
 
 import uuid as uuid_lib
+from datetime import datetime
+from typing import cast
 
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,8 +46,10 @@ from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
 from ...repo import login_historico as repo_login_historico
 from ...schemas.usuarios import (
+    EstadoLogin,
     LoginHistoricoListResponse,
     LoginHistoricoQueryParams,
+    LoginIntentoItem,
 )
 from ..deps import requires_issuer
 from . import _helpers
@@ -126,15 +130,28 @@ async def get_login_historico(
 
     # --- Step 7: build {items, next_cursor} envelope (DEC-LOGIN-07) ---
     # Slicing rows[:params.limit] ensures we never serialize the
-    # ``limit + 1`` probe row used to detect EOF.
+    # ``limit + 1`` probe row used to detect EOF. ``LoginIntentoItem``
+    # instances (not dict literals) preserve mypy --strict typing.
+    #
+    # F1.15 T6 mypy clean-up (D3 deviation fix). The ORM types
+    # ``Login.timestamp_evento: datetime | None`` and
+    # ``Login.estado: str | None`` are nullable but the repo helper
+    # applies ``WHERE timestamp_evento IS NOT NULL AND estado IS NOT
+    # NULL`` -- the [L-S] lifecycle always stamps both values per the
+    # audit invariant and ``LoginIntentoItem`` schema contract. The
+    # ``cast()`` calls bridge the SQL-level type narrowing to Python
+    # types so mypy --strict is satisfied without losing runtime
+    # safety (Pydantic's ``LoginIntentoItem`` + ``LoginHistoricoListResponse``
+    # at the envelope level enforces the non-null contract via
+    # Layer 4 extra='forbid').
     items = [
-        {
-            "uuid": row.uuid,
-            "timestamp_evento": row.timestamp_evento,
-            "timestamp_cierre": row.timestamp_cierre,
-            "estado": row.estado,
-            "uuid_sucursal": row.uuid_sucursal,
-        }
+        LoginIntentoItem(
+            uuid=row.uuid,
+            timestamp_evento=cast(datetime, row.timestamp_evento),
+            timestamp_cierre=row.timestamp_cierre,
+            estado=cast(EstadoLogin, row.estado),
+            uuid_sucursal=row.uuid_sucursal,
+        )
         for row in rows[: params.limit]
     ]
     return LoginHistoricoListResponse(items=items, next_cursor=next_cursor)

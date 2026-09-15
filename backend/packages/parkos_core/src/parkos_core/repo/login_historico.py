@@ -104,6 +104,18 @@ async def listar_intentos_paginado(
     stmt = (
         select(Login)
         .where(Login.uuid_usuario == uuid_usuario)
+        # F1.15 T6 mypy clean-up (D3 deviation fix). The ORM column
+        # types are nullable (timestamp_evento: datetime | None,
+        # estado: str | None) but the [L-S] lifecycle always stamps
+        # both values -- the schema contract (LoginIntentoItem) and
+        # the audit invariant guarantee these are NEVER null in
+        # production rows. Filter at SQL layer so the rows returned
+        # have known-non-null types (mypy --strict happy) AND so the
+        # handler never serializes an incomplete audit row.
+        .where(
+            Login.timestamp_evento.is_not(None),
+            Login.estado.is_not(None),
+        )
         .order_by(Login.timestamp_evento.desc(), Login.uuid.asc())
         .limit(eff_limit + 1)
     )
