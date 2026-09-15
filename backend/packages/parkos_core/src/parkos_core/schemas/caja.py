@@ -257,20 +257,166 @@ class SesionReadList(ReadListBase[SesionRead]):
     """Cursor-paginated list of :class:`SesionRead` items."""
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.13 -- V2 endpoints (REQ-OPS-091..097 + REQ-OPS-XR6)
+# ---------------------------------------------------------------------------
+
+
+class ArqueoCreateV2(_Base):
+    """HU-F1.13 / REQ-OPS-091: POST /api/v1/caja/arqueo payload (V2).
+
+    Server-derived fields (``uuid_sucursal``, ``uuid_usuario``, ``alerta_uuid``,
+    ``alerta_generada``, ``descuadre_pct``, ``created_at``, ``created_by``)
+    are NOT exposed here -- the handler computes them. ``extra='forbid'``
+    (inherited from :class:`_Base`) blocks client smuggling of those
+    columns. The handler enforces ``justificacion`` REQUIRED when
+    ``tipo_arqueo.codigo in ('cierre_turno', 'cierre_dia')`` AND
+    diferencia != 0 (DEC-ARQUEO-07).
+    """
+
+    uuid_tipo_arqueo: uuid_lib.UUID
+    uuid_sesion: uuid_lib.UUID | None = None  # None when cierre_dia (DEC-ARQUEO-03)
+    valor_efectivo_reportado: Decimal
+    valor_datafono_reportado: Decimal
+    justificacion: str | None = None  # required for cierre_turno/cierre_dia + diferencia != 0
+
+
+class ArqueoReadForHandler(_Base):
+    """HU-F1.13 / REQ-OPS-091 Scenario 1: POST handler response shape.
+
+    Includes ``alerta_generada`` + ``alerta_uuid`` (Step 10 result) +
+    ``descuadre_pct`` (informational only, DEC-ARQUEO-04).
+    """
+
+    uuid: uuid_lib.UUID
+    uuid_tipo_arqueo: uuid_lib.UUID
+    codigo_tipo_arqueo: str
+    uuid_sesion: uuid_lib.UUID | None
+    valor_efectivo_esperado: Decimal
+    valor_datafono_esperado: Decimal
+    valor_efectivo_reportado: Decimal
+    valor_datafono_reportado: Decimal
+    diferencia_efectivo: Decimal
+    diferencia_datafono: Decimal
+    descuadre_pct: Decimal | None = None
+    alerta_generada: bool = False
+    alerta_uuid: uuid_lib.UUID | None = None
+
+
+class ArqueoResumenItem(_Base):
+    """HU-F1.13 / REQ-OPS-097: per-sesion row in GET /arqueo/resumen.
+
+    For ``cierre_dia`` aggregate items, ``uuid_sesion`` is ``None``
+    (DEC-ARQUEO-03).
+    """
+
+    uuid_sesion: uuid_lib.UUID | None
+    uuid_usuario: uuid_lib.UUID | None
+    timestamp_apertura: datetime | None
+    timestamp_cierre: datetime | None
+    estado: str | None
+    valor_efectivo_esperado: Decimal | None
+    valor_datafono_esperado: Decimal | None
+    valor_efectivo_reportado: Decimal | None
+    valor_datafono_reportado: Decimal | None
+    uuid_arqueo: uuid_lib.UUID | None
+
+
+class ArqueoResumenRead(_Base):
+    """HU-F1.13 / REQ-OPS-097: GET /arqueo/resumen response.
+
+    ``cierre_dia`` is ``None`` when no cierre_dia arqueo exists for
+    the (uuid_sucursal, fecha) pair. ``sesiones`` is ``[]`` for empty
+    days (REQ-OPS-097 Scenario 3).
+    """
+
+    fecha: date
+    uuid_sucursal: uuid_lib.UUID
+    sesiones: list[ArqueoResumenItem]
+    cierre_dia: ArqueoResumenItem | None = None
+
+
+class CierreDiarioQueryParams(_Base):
+    """HU-F1.13 / REQ-OPS-097: GET /arqueo/resumen query params.
+
+    Both fields are required (the endpoint returns 422 via Pydantic
+    when missing). ``extra='forbid'`` blocks client smuggling.
+    """
+
+    uuid_sucursal: uuid_lib.UUID
+    fecha: date
+
+
+# ---------------------------------------------------------------------------
+# Typed error schemas (Layer 5 -- mapped via HTTPException)
+# ---------------------------------------------------------------------------
+
+
+class TipoArqueoNoEncontradoErrorRead(_Base):
+    """V1 404 -- ``prod.tipo_arqueo`` row missing for UUID."""
+
+    error: str = "tipo_arqueo_no_encontrado"
+    uuid_tipo_arqueo: uuid_lib.UUID
+
+
+class SesionNoEncontradaErrorRead(_Base):
+    """V4 404 -- ``prod.sesion`` row missing for UUID."""
+
+    error: str = "sesion_no_encontrada"
+    uuid_sesion: uuid_lib.UUID
+
+
+class ToleranciaNoConfiguradaErrorRead(_Base):
+    """V3 404 -- no vigente ``prod.configuracion_tolerancias``."""
+
+    error: str = "tolerancia_no_configurada"
+    uuid_sucursal: uuid_lib.UUID | None
+
+
+class SesionYaCerradaErrorRead(_Base):
+    """V4 409 -- ``prod.sesion`` has ``timestamp_cierre IS NOT NULL``."""
+
+    error: str = "sesion_ya_cerrada"
+    uuid_sesion: uuid_lib.UUID
+
+
+class CierreDiaNoAceptaSesionErrorRead(_Base):
+    """V2 400 -- ``cierre_dia`` codigo requires ``uuid_sesion=null``."""
+
+    error: str = "cierre_dia_no_acepta_uuid_sesion"
+
+
+class JustificacionRequeridaErrorRead(_Base):
+    """V6 400 -- cierre_turno/cierre_dia + diferencia != 0 + sin justificacion."""
+
+    error: str = "justificacion_requerida"
+
+
 __all__ = [
     "ArqueoCreate",
+    "ArqueoCreateV2",
     "ArqueoFilter",
     "ArqueoRead",
+    "ArqueoReadForHandler",
     "ArqueoReadList",
+    "ArqueoResumenItem",
+    "ArqueoResumenRead",
     "ArqueoUpdate",
     "CajaCreate",
     "CajaFilter",
     "CajaRead",
     "CajaReadList",
     "CajaUpdate",
+    "CierreDiaNoAceptaSesionErrorRead",
+    "CierreDiarioQueryParams",
+    "JustificacionRequeridaErrorRead",
     "SesionCreate",
     "SesionFilter",
+    "SesionNoEncontradaErrorRead",
     "SesionRead",
     "SesionReadList",
     "SesionUpdate",
+    "SesionYaCerradaErrorRead",
+    "TipoArqueoNoEncontradoErrorRead",
+    "ToleranciaNoConfiguradaErrorRead",
 ]
