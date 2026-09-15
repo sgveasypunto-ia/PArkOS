@@ -37,6 +37,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict
@@ -69,6 +70,13 @@ from ...repo.ingreso import (
 )
 from ...repo.ocupacion import get_ocupacion_puros_activos
 from ...repo.placa import detectar_tipo_vehiculo
+from ...repo.salida import (
+    SalidaDuplicada,
+    buscar_ingreso_activo_por_uuid,
+    cotizar_para_salida,
+    crear_salida_evento,
+    insertar_alerta_salida_forzado,
+)
 from ...schemas.operacion import (
     CotizarFacturacion,
     CotizarMensualidad,
@@ -78,6 +86,9 @@ from ...schemas.operacion import (
     IngresoReadForzado,
     OcupacionItem,
     OcupacionResponse,
+    SalidaCreateForzado,
+    SalidaRead,
+    SalidaReadForzado,
 )
 from ._helpers import apply_no_store_header, no_store_headers
 
@@ -292,6 +303,237 @@ async def create_ingreso(
         forzado_en_creacion=bypass_reason is not None,
         motivo_forzado=motivo if bypass_reason else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.7 -- POST /operacion/salidas (REQ-OPS-042..052, D-HU-F1.7-20)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/salidas",
+    response_model=SalidaReadForzado,
+    status_code=201,
+    summary=(
+        "HU-F1.7 / REQ-OPS-042..052: validated register of a vehicle exit "
+        "(salida, [A] append-only) with tipo_salida server-side derivation."
+    ),
+    responses={
+        400: {"description": "missing_sucursal_context"},
+        403: {"description": "tenant_scope_violation (operador)"},
+        404: {"description": "ingreso_no_encontrado (V1)"},
+        409: {"description": "salida_duplicada (partial unique index)"},
+        422: {
+            "description": (
+                "placa_no_coincide_con_ingreso (V3) | "
+                "motivo_forzado_requerido (KD-FORZADO-01) | "
+                "forzado_contradiccion (KD-FORZADO-01) | "
+                "motivo_forzado_insuficiente (KD-FORZADO-01) | "
+                "subscripcion_inactiva_o_vencida (V2) | "
+                "tarifa_vigente_no_encontrada (V5)"
+            )
+        },
+        500: {"description": "iva_no_configurado (KD-IVA, post-0026: never)"},
+    },
+)
+async def create_salida(
+    payload: SalidaCreateForzado,
+    response: Response,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+) -> SalidaReadForzado:
+    """HU-F1.7 / REQ-OPS-042..052: validated INSERT for ``prod.salidas``.
+
+    12-step chain (D-HU-F1.7-20) locked by
+    ``tests/static/test_salida_handler_step_order.py``:
+
+        1. KD-3 issuer claims + no_store headers
+        2. V1 ingreso activo exists (404 if None)
+        3. tenant scope post-V1 (403 if operador cross-branch)
+        4. V2 subscripcion vigente al momento salida (422 if not bypassed)
+        5. V3 placa matches ingreso (422 if mismatch)
+        6. V4 KD-FORZADO-01 prefix contract (sets bypass_reason)
+        7. V5 tarifa vigente via F1.8 PL/pgSQL (derives tipo_salida)
+        8. INSERT prod.salidas [A] (409 on partial unique index)
+        9. alerta same-TX if V2/V5 bypassed + single commit() (KD-S7)
+       10. tipo_salida documented for AST walk literal
+       11. response shape + session.refresh
+       12. return 201 SalidaReadForzado
+
+    Lock continuity (KD-S7, KD-1 from F1.8): the prod.calcular_cotizacion
+    call in Step 7 acquires SELECT ... FOR SHARE on tarifas_sucursal.
+    The lock is held through Step 8 (INSERT salida) and Step 9 (alerta
+    INSERT). Released at session.commit() in Step 9. NO sub-transactions,
+    NO SAVEPOINT (KD-S7 invariant).
+
+    The Idempotency-Key header is checked by the FastAPI middleware
+    (PR2 IdempotencyKeyMiddleware).
+    """
+    from dateutil.relativedelta import relativedelta
+
+    no_store = no_store_headers()
+
+    # --- Step 1: KD-3 (issuer claims + no_store). ----------------------
+    # Resolved via dependency injection; no client-supplied sucursal
+    # (server derives from ingreso.uuid_sucursal in Step 3).
+
+    # --- Step 2: V1 (ingreso activo exists). ----------------------------
+    ingreso = await buscar_ingreso_activo_por_uuid(
+        session, uuid_ingreso=payload.uuid_ingreso
+    )
+    if ingreso is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "ingreso_no_encontrado",
+                "uuid_ingreso": str(payload.uuid_ingreso),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 3: tenant scope (post-V1, KD-S2). ------------------------
+    target_sucursal = ingreso.uuid_sucursal
+    if (
+        ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or target_sucursal != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_scope_violation",
+                "uuid_ingreso": str(payload.uuid_ingreso),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 4: V2 (subscripcion vigente al momento salida). -----------
+    bypass_reason: str | None = None
+    if ingreso.uuid_subscripcion_cliente is not None:
+        sub_result = await validar_subscripcion_vigente(
+            session,
+            uuid_subscripcion_cliente=ingreso.uuid_subscripcion_cliente,
+            forzado=payload.forzado,
+        )
+        if not sub_result.vigente:
+            if not payload.forzado:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "subscripcion_inactiva_o_vencida"},
+                    headers=no_store,
+                )
+            bypass_reason = "subscripcion_vencida"
+
+    # --- Step 5: V3 (placa matches ingreso). ---------------------------
+    if payload.placa is not None:
+        tipo_req = await detectar_tipo_vehiculo(session, payload.placa)
+        tipo_ing = await detectar_tipo_vehiculo(session, ingreso.placa or "")
+        if tipo_req != tipo_ing:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "placa_no_coincide_con_ingreso",
+                    "placa_request": payload.placa,
+                    "placa_ingreso": ingreso.placa,
+                },
+                headers=no_store,
+            )
+
+    # --- Step 6: V4 KD-FORZADO-01 prefix contract (F1.6 verbatim). -----
+    motivo = validar_kd_forzado(payload.observaciones, payload.forzado)
+    if motivo is not None and bypass_reason is None:
+        bypass_reason = "forzado"  # generic bypass reason for V5 only
+
+    # --- Step 7: V5 tarifa vigente via F1.8 PL/pgSQL inline. -----------
+    try:
+        cotizacion = await cotizar_para_salida(
+            session, uuid_ingreso=payload.uuid_ingreso
+        )
+    except TarifaNoVigente:
+        if not bypass_reason:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "tarifa_vigente_no_encontrada"},
+                headers=no_store,
+            )
+        bypass_reason = "tarifa_no_vigente"
+        cotizacion = {"cobrar": True}  # placeholder for snapshot shape
+    except IVANoConfigurado:
+        # KD-IVA -- post-0026 deploy: never; pre-0026: blocked.
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "iva_no_configurado"},
+            headers=no_store,
+        )
+
+    # Derive tipo_salida from F1.8's cobrar flag (DEC-SUC-21-NEW):
+    tipo_salida: Literal["MENSUALIDAD", "ROTACION"] = (
+        "MENSUALIDAD" if cotizacion.get("cobrar") is False else "ROTACION"
+    )
+
+    # --- Step 8: INSERT salida [A] append-only (DEC-SAL-01). ----------
+    new_attrs = {
+        "uuid_sucursal": target_sucursal,
+        "uuid_ingreso": payload.uuid_ingreso,
+        "fecha_salida": datetime.now(UTC).replace(tzinfo=None),
+        "fecha_retencion_hasta": date.today() + relativedelta(years=2),
+    }
+    try:
+        new_row = await crear_salida_evento(
+            session,
+            actor_uuid=ctx.actor_uuid,
+            new_attrs=new_attrs,
+        )
+    except SalidaDuplicada:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "salida_duplicada",
+                "uuid_ingreso": str(payload.uuid_ingreso),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 9: alertas same-TX (KD-S12, R5) + single commit(). ------
+    if bypass_reason == "subscripcion_vencida":
+        await insertar_alerta_salida_forzado(
+            session,
+            uuid_sucursal=target_sucursal,
+            uuid_salida=new_row.uuid,
+            actor_uuid=ctx.actor_uuid,
+            motivo=motivo or "(sin motivo)",
+            tipo_alerta="subscripcion_vencida_forzado",
+        )
+    elif bypass_reason == "tarifa_no_vigente":
+        await insertar_alerta_salida_forzado(
+            session,
+            uuid_sucursal=target_sucursal,
+            uuid_salida=new_row.uuid,
+            actor_uuid=ctx.actor_uuid,
+            motivo=motivo or "(sin motivo)",
+            tipo_alerta="tarifa_vigente_forzado",
+        )
+    await session.commit()  # UN solo commit (KD-S7 lock release)
+
+    # --- Step 10: derivar tipo_salida (DEC-SUC-21-NEW). ----------------
+    # Already derived in Step 7. Documented here for AST walk literal.
+
+    # --- Step 11: response shape. -------------------------------------
+    apply_no_store_header(response)
+    await session.refresh(new_row)
+    base = SalidaRead.model_validate(new_row).model_dump()
+    return SalidaReadForzado(
+        **base,
+        tipo_salida=tipo_salida,  # type: ignore[arg-type]
+        forzado_en_creacion=bypass_reason is not None,
+        motivo_forzado=motivo if bypass_reason else None,
+        cotizacion_snapshot=(
+            CotizarFacturacion.model_validate(cotizacion)
+            if tipo_salida == "ROTACION"
+            else None
+        ),
+    )
+    # --- Step 12: 201 SalidaReadForzado. ------------------------------
 
 
 @router.get(

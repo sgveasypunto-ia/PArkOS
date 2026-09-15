@@ -344,6 +344,112 @@ class TipoVehiculoInvalidoError(_Base):
     error: Literal["tipo_vehiculo_invalido"]
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.7 -- SalidaCreateForzado / SalidaReadForzado / 4 typed errors
+#            (REQ-OPS-042..052, D-HU-F1.7-19, D-HU-F1.7-20)
+# ---------------------------------------------------------------------------
+
+
+class SalidaCreateForzado(_Base):
+    """INSERT payload for ``prod.salidas`` ([A] append-only event, HU-F1.7).
+
+    Identifies the ingreso to close. Sucursal is resolved server-side from
+    the ingreso (NEW in F1.7 -- client does not send). Placa is optional:
+    if sent, server confirms against ingreso (V3); otherwise server trusts
+    ``uuid_ingreso``.
+
+    ``extra='forbid'`` (inherited from ``_Base``) rejects extra fields,
+    including attempts to inject ``tipo_salida`` (DEC-SUC-21-NEW).
+    """
+
+    uuid_ingreso: uuid_lib.UUID         # REQUIRED -- ingreso to close
+    placa: str | None = None            # OPTIONAL -- V3 confirmation
+    observaciones: str | None = None    # OPTIONAL -- KD-FORZADO-01 prefix
+    forzado: bool = False               # OPTIONAL -- bypass V2/V5
+
+
+class SalidaRead(_Base):
+    """Full ORM column mapping for ``prod.salidas``.
+
+    Inherits ``from_attributes=True`` and ``extra='forbid'`` from
+    :class:`_Base`. Used as the base class for :class:`SalidaReadForzado`.
+    """
+
+    # Inherited from LifecycleEventBase (IdMixin + AuditMixin + SyncMixin)
+    uuid: uuid_lib.UUID
+    created_at: datetime
+    created_by: uuid_lib.UUID | None
+    sync_status: str | None
+    sync_timestamp: datetime | None
+    sync_attempts: int | None
+
+    # Business columns (from models/L_S/salida.py)
+    uuid_sucursal: uuid_lib.UUID | None
+    uuid_ingreso: uuid_lib.UUID | None
+    fecha_salida: datetime | None
+
+
+class SalidaReadForzado(_Base):
+    """Response shape for ``POST /operacion/salidas`` (HU-F1.7).
+
+    Additive delta to ``SalidaRead`` (no field removed or renamed):
+    - ``tipo_salida``: Literal['MENSUALIDAD', 'ROTACION'] (DEC-SUC-21-NEW)
+    - ``forzado_en_creacion``: True iff KD-FORZADO-01 bypass was used
+    - ``motivo_forzado``: stripped motivo, or None
+    - ``cotizacion_snapshot``: CotizarFacturacion if ROTACION, None if MENSUALIDAD
+    """
+
+    # Inherited from LifecycleEventBase (IdMixin + AuditMixin + SyncMixin)
+    uuid: uuid_lib.UUID
+    created_at: datetime
+    created_by: uuid_lib.UUID | None
+    sync_status: str | None
+    sync_timestamp: datetime | None
+    sync_attempts: int | None
+
+    # Business columns (from models/L_S/salida.py)
+    uuid_sucursal: uuid_lib.UUID | None
+    uuid_ingreso: uuid_lib.UUID | None
+    fecha_salida: datetime | None
+
+    # NEW (F1.7):
+    tipo_salida: Literal["MENSUALIDAD", "ROTACION"]
+    forzado_en_creacion: bool = False
+    motivo_forzado: str | None = None
+    cotizacion_snapshot: CotizarFacturacion | None = None
+
+
+# --- Typed error schemas (D-HU-F1.7-19) ----------------------------------
+
+
+class IngresoNoEncontradoError(_Base):
+    """V1 404 discriminator -- uuid_ingreso no existe, ya cerrado, o anulado."""
+
+    error: Literal["ingreso_no_encontrado"]
+    uuid_ingreso: uuid_lib.UUID
+
+
+class SalidaDuplicadaError(_Base):
+    """Step 8 409 discriminator -- partial unique index violated."""
+
+    error: Literal["salida_duplicada"]
+    uuid_ingreso: uuid_lib.UUID
+
+
+class PlacaNoCoincideConIngresoError(_Base):
+    """V3 422 discriminator -- optional placa mismatch."""
+
+    error: Literal["placa_no_coincide_con_ingreso"]
+    placa_request: str
+    placa_ingreso: str
+
+
+class TarifaVigenteNoEncontradaSalidaError(_Base):
+    """V5 422 discriminator -- when not bypassed."""
+
+    error: Literal["tarifa_vigente_no_encontrada"]
+
+
 __all__ = [
     "CotizarFacturacion",
     "CotizarMensualidad",
@@ -353,6 +459,7 @@ __all__ = [
     "IngresoCreate",
     "IngresoCreateForzado",
     "IngresoFilter",
+    "IngresoNoEncontradoError",
     "IngresoRead",
     "IngresoReadForzado",
     "IngresoReadList",
@@ -360,7 +467,13 @@ __all__ = [
     "OcupacionItem",
     "OcupacionResponse",
     "PlacaFormatoInvalidoError",
+    "PlacaNoCoincideConIngresoError",
+    "SalidaCreateForzado",
+    "SalidaDuplicadaError",
+    "SalidaRead",
+    "SalidaReadForzado",
     "SubscripcionInactivaOVencidaError",
     "TarifaVigenteNoEncontradaError",
+    "TarifaVigenteNoEncontradaSalidaError",
     "TipoVehiculoInvalidoError",
 ]
