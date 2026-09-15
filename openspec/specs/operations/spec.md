@@ -4008,6 +4008,223 @@ F1.13 MUST apply the F1.10 + F1.11 + F1.12 defense-in-depth pattern (5 layers), 
 - **And** a role granted `abrir_cerrar_caja` only MUST pass through.
 
 ---
+### REQ-OPS-098 — `GET /api/v1/sync/estado` SELECT-only contract (KD-SYNC-01 + KD-SYNC-02)
+
+**Source**: HU-F1.14 (DEC-SYNC-01 + DEC-SYNC-02 + KD-SYNC-01 + KD-SYNC-02) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler `get_sync_estado` in the NEW dedicated router `api/v1/sync_estado.py` (mounted under `/sync` prefix via `router.include_router(sync_estado_router)` in `api/v1/caja.py` per DEC-SYNC-02 — F1.13 mount precedent at `caja.py:86`) MUST be a READ-ONLY endpoint that returns HTTP 200 with body `SyncEstadoRead(uuid_sucursal, ultima_sync_at, lag_seg, pendientes)`. The handler MUST execute exactly **2 SELECT queries**: one against `prod.sync_log` (computing `MAX(timestamp_evento) WHERE uuid_sucursal=X` via `repo_sync_estado.get_ultima_sync_at(session, uuid_sucursal)`) and one against `prod.sync_queue` (computing `count(*) WHERE uuid_sucursal=X AND estado='pendiente'` via `repo_sync_estado.count_pendientes_sync_queue(session, uuid_sucursal)`). The handler MUST NOT execute any `UPDATE`, `INSERT`, or `DELETE` statements on `sync_log` or `sync_queue` (KD-SYNC-01). The handler MUST NOT call `await session.commit()` (GET is naturally idempotent). The handler MUST NOT append any row in `prod.log_operaciones` or any `[A]` audit table. The response MUST include `Cache-Control: no-store` (DEC-SYNC-04).
+
+**Rationale**: HU-F11.1 `SyncBanner` polls every 30 seconds with `operador-` JWT. A read-only path preserves the `[A]` invariant on `sync_log` (append-only via AppendOnlyBase + `fn_sync_log_inmutable` trigger) and the REQ-OPS-004 carve-out on `sync_queue`. KD-SYNC-02 AST walk `tests/static/test_sync_estado_read_only.py` enforces the read-only invariant at static-parse time — defense in depth against accidental drift to a write path. The dedicated router with `requires_issuer("operador-", "admin-")` resolves the issuer-chain conflict on `/sync` prefix (DEC-SYNC-01 — `sync_router.py:358` rejects non-`sync-agent-` issuers, so the new endpoint MUST live in a separate router file to reach operador JWTs).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/api/v1/sync_router.py` lines 9-49 (docstring listing 7 endpoints — `/estado` NOT in list, no collision), line 95 (`APIRouter(prefix="/sync")`), line 358 (`sync-agent-` issuer guard); `backend/packages/parkos_core/src/parkos_core/api/v1/caja.py` line 86 (F1.13 mount precedent); `backend/packages/parkos_core/src/parkos_core/api/v1/_helpers.py` lines 18-31 (`no_store_headers` + `apply_no_store_header`); `backend/packages/parkos_core/src/parkos_core/models/A/{sync_log, sync_queue}.py` (verbatim ORM models); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` (`fn_sync_log_inmutable` trigger); F1.10 REQ-OPS-XR1 + F1.11 REQ-OPS-XR4 + F1.12 REQ-OPS-XR5 + F1.13 REQ-OPS-XR6 (AST walk precedents).
+
+**Scenario 1: Happy path — populated branch returns 200 with exact lag + count**
+- **Given** an `operador-` JWT with `audit_read` permission (DEC-SYNC-03.B) and `ctx.sucursal_uuid=:s` matching the request target
+- **And** `prod.sync_log` contains 5 rows for `uuid_sucursal=:s` with `timestamp_evento` spanning 60-300 seconds before NOW()
+- **And** `prod.sync_queue` contains 12 rows for `uuid_sucursal=:s` with `estado='pendiente'`
+- **And** `MAX(timestamp_evento)` over those 5 rows resolves to a single value `t_max`
+- **When** the operator invokes `GET /api/v1/sync/estado?uuid_sucursal=:s`
+- **Then** the handler MUST execute exactly 2 SELECT queries against `prod.sync_log` and `prod.sync_queue`
+- **And** MUST NOT execute any UPDATE, INSERT, or DELETE on either table
+- **And** MUST NOT call `await session.commit()`
+- **And** the response MUST be `200 OK` with `SyncEstadoRead{uuid_sucursal=:s, ultima_sync_at=t_max, lag_seg=NOW_seconds - t_max_seconds (±1s tolerance), pendientes=12}`
+- **And** the response MUST carry `Cache-Control: no-store`.
+
+**Scenario 2: Empty branch — no sync_log rows returns 200 with null lag, NOT 404**
+- **Given** an `operador-` JWT with `audit_read` permission and `ctx.sucursal_uuid=:s`
+- **And** `prod.sync_log` contains **ZERO** rows for `uuid_sucursal=:s` (branch has never synced)
+- **And** `prod.sync_queue` contains ZERO rows for `uuid_sucursal=:s`
+- **When** the operator invokes `GET /api/v1/sync/estado?uuid_sucursal=:s`
+- **Then** the handler MUST return `200 OK` (NOT 404 — branch exists, just no sync activity, DEC-SYNC-08)
+- **And** the response body MUST be `SyncEstadoRead{uuid_sucursal=:s, ultima_sync_at=null, lag_seg=null, pendientes=0}` (NOT lag_seg=0, NOT lag_seg=infinity)
+- **And** the response MUST carry `Cache-Control: no-store`.
+
+**Scenario 3: Empty sync_queue only — populated sync_log, zero pendientes**
+- **Given** an `operador-` JWT with `audit_read` permission and `ctx.sucursal_uuid=:s`
+- **And** `prod.sync_log` contains 3 rows for `uuid_sucursal=:s`
+- **And** `prod.sync_queue` contains **ZERO** rows for `uuid_sucursal=:s`
+- **When** the operator invokes `GET /api/v1/sync/estado?uuid_sucursal=:s`
+- **Then** the response MUST be `200 OK` with `lag_seg` computed from `t_max` AND `pendientes=0` (integer, NOT null, NOT negative — DEC-SYNC-09)
+- **And** the response MUST carry `Cache-Control: no-store`.
+
+**Scenario 4: AST walk — handler source contains NO `update`/`delete` on SyncLog/SyncQueue and NO `commit`**
+- **Given** the source file `api/v1/sync_estado.py` containing `get_sync_estado` handler
+- **When** `tests/static/test_sync_estado_read_only.py` runs an `ast.walk()` over the handler body
+- **Then** the AST walk MUST assert ZERO occurrences of `update(SyncLog)` or `update(SyncQueue)` or `delete(SyncLog)` or `delete(SyncQueue)` or `session.execute(text("UPDATE prod.sync_log"))` or `session.execute(text("DELETE FROM prod.sync_queue"))` in the handler body (KD-SYNC-01 + KD-SYNC-02)
+- **And** MUST assert ZERO occurrences of `await session.commit()` in the handler body (GET is naturally commit-free).
+
+---
+
+### REQ-OPS-099 — MIGRATION 0032 siembra 11 alert_types de negocio (idempotent, 10 net new) (DEC-SYNC-05 + DEC-SYNC-06 + DEC-SYNC-07)
+
+**Source**: HU-F1.14 (DEC-SYNC-05 + DEC-SYNC-06 + DEC-SYNC-07 + DEC-SYNC-10) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+MIGRATION 0032 (`0032_seed_alert_types_operativos.py`, `down_revision='0031_arqueo_cierre_dia_and_gap_be_05'`) MUST apply an idempotent siembra of the 11 business alert_types codes per plan.md line 1131 against `prod.alert_types` ([A] registry, migration 0013 lines 1-169). The seed MUST use `ON CONFLICT (tipo_alerta) DO NOTHING` for idempotency — `alert_types_inmutable` trigger (migration 0013:21-22) MUST remain enabled throughout the INSERT path (it only blocks BEFORE UPDATE OR DELETE, not INSERT — DEC-SYNC-07). The pre-F1.14 state MUST be preserved: 8 técnicos from migration 0013 (`hash_chain_anomaly`, `dian_rechazada`, `dian_timeout`, `dian_error`, `branch_offline_reauth_required`, `orphan_workflow_chain`, `fe_provider_error`, `fe_numbering_exhausted`) + 1 from F1.13 MIGRATION 0031 Op 2 (`descuadre_critico`, lines 169-175 of `0031_arqueo_cierre_dia_and_gap_be_05.py`) = 9 pre-existing rows. The F1.14 re-seed of `descuadre_critico` MUST become a no-op via `ON CONFLICT DO NOTHING` (DEC-SYNC-05). Net new rows MUST be **10** (NOT 11). Final total: **19** (8 técnicos + 1 F1.13 + 10 F1.14 — DEC-SUC-14).
+
+Severity mapping MUST follow plan.md line 1131 verbatim, mapped to the DB CHECK constraint values (DEC-SYNC-06): `alta` → `critical` (applied to `descuadre_critico`, `sync_fallida`, `evento_no_procesado`, `impresora_caida`, `fe_error_toppoint`, `numeracion_toppoint_agotada`), `media` → `warning` (applied to `capacidad_agotada`, `capacidad_agotada_forzado`, `arqueo_pendiente_24h`, `suscripcion_proxima_vencer`), `baja` → `info` (applied to `cache_desactualizado`). Each row MUST include a `descripcion` field per plan.md lines 2311-2323 (DEC-SYNC-10).
+
+**Rationale**: Fase 11 (HU-F11.2 AlertasPanel) JOINs `alerta.tipo_alerta = alert_types.tipo_alerta` to surface severity (A-08). Without the siembra, the JOIN returns null for these 11 codes and the operator UI shows "—" placeholder. `alert_types_inmutable` is the immutability contract — disabling it for re-seed would violate KD-3 (no migration may bypass DB-layer immutability). The `ON CONFLICT DO NOTHING` clause is atomic (no SELECT-then-INSERT race) and respects the trigger (it operates on INSERT, not UPDATE/DELETE).
+
+**Source**: `backend/packages/parkos_core/migrations/versions/0031_arqueo_cierre_dia_and_gap_be_05.py` lines 169-175 (F1.13 head, Op 2 `descuadre_critico` siembra precedent — DEC-ARQUEO-09b); `backend/packages/parkos_core/migrations/versions/0013_add_alert_types.py` lines 21-22 (`alert_types_inmutable` trigger), lines 67-108 (idempotent INSERT precedent), lines 119 (severity CHECK constraint), lines 129-130 (REVOKE/GRANT); `backend/packages/parkos_core/migrations/versions/0029_reimpresion_siembra_and_permiso_anular.py` lines 134-188 (conditional siembra pattern); `plan.md` line 429 (DEC-SUC-14: 19 totales), line 459 (A-08 severity JOIN), lines 2311-2323 (canonical descriptions per code); `modelo_datos_er.mmd` lines 1101-1114 (`alert_types` [A]).
+
+**Scenario 1: Upgrade applied on fresh DB after F1.13 head — net 10 rows added, total 19**
+- **Given** the DB at migration head `0031_arqueo_cierre_dia_and_gap_be_05` with `prod.alert_types` containing exactly **9** rows (8 técnicos + `descuadre_critico`)
+- **When** `alembic upgrade head` applies MIGRATION 0032
+- **Then** the pre-flight `DO $$` Op MUST verify `prod.alert_types` exists with PK `tipo_alerta` AND the `alert_types_inmutable` trigger is active AND the `severity` column has CHECK constraint accepting `('info', 'warning', 'critical')`
+- **And** the siembra MUST INSERT all 11 codes per plan.md line 1131 (including the `descuadre_critico` re-attempt)
+- **And** the `descuadre_critico` re-attempt MUST be silently absorbed by `ON CONFLICT DO NOTHING` (zero error, zero new row)
+- **And** exactly **10** net new rows MUST be visible (1+1+1+1+1+1+1+1+1+1 for `sync_fallida`, `capacidad_agotada`, `capacidad_agotada_forzado`, `evento_no_procesado`, `impresora_caida`, `fe_error_toppoint`, `numeracion_toppoint_agotada`, `cache_desactualizado`, `arqueo_pendiente_24h`, `suscripcion_proxima_vencer`)
+- **And** the final total MUST be **19** rows (`SELECT COUNT(*) FROM prod.alert_types` = 19)
+- **And** the `alert_types_inmutable` trigger MUST remain ENABLED after the upgrade (the `DISABLE TRIGGER`/`ENABLE TRIGGER` pair only appears in `downgrade()`).
+
+**Scenario 2: Upgrade idempotency — re-running on already-migrated DB is a clean no-op**
+- **Given** the DB already at migration head `0032_seed_alert_types_operativos` with `prod.alert_types` containing **19** rows
+- **When** `alembic upgrade head` is invoked again (idempotency check)
+- **Then** the siembra MUST execute `INSERT ... ON CONFLICT (tipo_alerta) DO NOTHING` for all 11 codes
+- **And** ZERO new rows MUST be added (count remains 19)
+- **And** the trigger MUST NOT raise (the conflict path is silent)
+- **And** NO error MUST be emitted.
+
+**Scenario 3: Severity exact match per plan.md line 1131**
+- **Given** MIGRATION 0032 has just been applied to a fresh DB
+- **When** `SELECT tipo_alerta, severity FROM prod.alert_types WHERE tipo_alerta IN (...)` runs against the 11 business codes
+- **Then** the mapping MUST be exact per DEC-SYNC-06:
+  - `descuadre_critico` → `critical`
+  - `sync_fallida` → `critical`
+  - `evento_no_procesado` → `critical`
+  - `impresora_caida` → `critical`
+  - `fe_error_toppoint` → `critical`
+  - `numeracion_toppoint_agotada` → `critical`
+  - `capacidad_agotada` → `warning`
+  - `capacidad_agotada_forzado` → `warning`
+  - `arqueo_pendiente_24h` → `warning`
+  - `suscripcion_proxima_vencer` → `warning`
+  - `cache_desactualizado` → `info`
+- **And** the `severity` column MUST satisfy the CHECK constraint for every row (no `alta`/`media`/`baja` neutral-Spanish values).
+
+**Scenario 4: Downgrade removes only the 10 F1.14 net new rows (NOT `descuadre_critico`)**
+- **Given** the DB at head `0032_seed_alert_types_operativos` with 19 rows
+- **When** `alembic downgrade -1` executes MIGRATION 0032's `downgrade()`
+- **Then** the `ALTER TABLE prod.alert_types DISABLE TRIGGER alert_types_inmutable` MUST precede the DELETE (trigger blocks DELETE by default — migration 0013:21-22)
+- **And** the DELETE MUST target only the 10 F1.14 net new codes (`sync_fallida`, `capacidad_agotada`, `capacidad_agotada_forzado`, `evento_no_procesado`, `impresora_caida`, `fe_error_toppoint`, `numeracion_toppoint_agotada`, `cache_desactualizado`, `arqueo_pendiente_24h`, `suscripcion_proxima_vencer`)
+- **And** the DELETE MUST NOT touch `descuadre_critico` (owned by F1.13 MIGRATION 0031 Op 2 lines 169-175)
+- **And** the DELETE MUST NOT touch any of the 8 técnicos (owned by MIGRATION 0013)
+- **And** after the DELETE + `ENABLE TRIGGER`, `prod.alert_types` MUST contain exactly **9** rows (8 técnicos + `descuadre_critico`).
+- **And** after `alembic upgrade head` is invoked again, `prod.alert_types` MUST contain **19** rows again (the cycle round-trips cleanly).
+
+---
+
+### REQ-OPS-100 — `lag_seg = null` semantics + `pendientes >= 0` invariant + UI rendering contract (DEC-SYNC-08 + DEC-SYNC-09)
+
+**Source**: HU-F1.14 (DEC-SYNC-08 + DEC-SYNC-09 + DEC-SYNC-04) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+Given a successful `GET /api/v1/sync/estado` response, the response shape MUST enforce the following invariants:
+- `ultima_sync_at: datetime | None` — nullable ISO-8601 naive UTC datetime. `None` semantically means "branch has never synced" (NOT 0, NOT a sentinel date).
+- `lag_seg: int | None` — nullable integer. `None` when `ultima_sync_at IS NULL` (DEC-SYNC-08). When non-null, MUST equal `int((NOW() - ultima_sync_at).total_seconds())` (positive integer >= 0).
+- `pendientes: int` — non-nullable integer >= 0 (DEC-SYNC-09). `SELECT count(*)` ALWAYS returns 0 for empty result set; the handler MUST NOT return `null`.
+
+The HU-F11.1 `SyncBanner` operator UI MUST render the response per the following contract:
+- `lag_seg = null` → "NEVER SYNCED" banner state (NOT "freshly synced", NOT error, NOT 404).
+- `lag_seg = 0..30` → VERDE (green, fresh sync).
+- `lag_seg = 31..300` → AMARILLO (yellow, degraded).
+- `lag_seg > 300` → ROJO (red, stale).
+- `pendientes >= 100` → inline alert badge rendered (DEC-SYNC-09 high-pile indicator).
+
+The response body MUST NEVER include `pgcode`, `pgerror`, `pgmessage`, or any PostgreSQL error internals. The response MUST ALWAYS include `Cache-Control: no-store` header (DEC-SYNC-04).
+
+**Rationale**: Returning `lag_seg = 0` for an empty branch would falsely reassure the operator that the sync is fresh — semantically wrong. Returning `None` forces the UI to handle the "never synced" state explicitly via the NEVER SYNCED banner. `count(*)` is by definition `>= 0`; returning `null` would force the client to special-case the empty result, which the SQL aggregate already handles. The pgcode/pgerror redaction is XR6 Layer 5 (defense in depth — prevents leaking schema internals via error responses).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/schemas/sync_infra.py` (NEW `SyncEstadoRead(_Base)` with `lag_seg: int | None`, `ultima_sync_at: datetime | None`, `pendientes: int`); `backend/packages/parkos_core/src/parkos_core/repo/sync_estado.py` (NEW `calcular_lag_seg(ultima_sync_at, now)` helper returns `None` when `ultima_sync_at IS None`); `backend/packages/parkos_core/src/parkos_core/schemas/common.py::_Base` (`extra='forbid'` base class); `plan.md` lines 2275-2291 (HU-F11.1 SyncBanner consumer — 30s polling, verde/amarillo/rojo umbrales from CU-14 BR1); `plan.md` lines 2305-2325 (HU-F11.2 AlertasPanel consumer); DEC-FE-06 / DEC-TKT-06 / DEC-VENTA-06 / DEC-ARQUEO-06 (XR6 `Cache-Control: no-store` precedent).
+
+**Scenario 1: `lag_seg = None` renders as NEVER SYNCED banner (NOT verde, NOT 0)**
+- **Given** the operator UI receives `SyncEstadoRead{uuid_sucursal=:s, ultima_sync_at=null, lag_seg=null, pendientes=0}`
+- **When** the SyncBanner renders the state
+- **Then** the banner MUST display "NEVER SYNCED" (or equivalent localized label — DEC-SYNC-08)
+- **And** MUST NOT display VERDE (green) state (lag_seg=null ≠ lag_seg=0)
+- **And** MUST NOT display an error indicator (the response is 200, not 4xx/5xx).
+
+**Scenario 2: `lag_seg = 120` renders as AMARILLO, `lag_seg = 600` as ROJO, `lag_seg = 5` as VERDE**
+- **Given** three successive poll responses: `lag_seg=5`, `lag_seg=120`, `lag_seg=600`
+- **When** the SyncBanner renders each state
+- **Then** the `lag_seg=5` banner MUST display VERDE (green — within 0-30s threshold)
+- **And** the `lag_seg=120` banner MUST display AMARILLO (yellow — within 31-300s threshold)
+- **And** the `lag_seg=600` banner MUST display ROJO (red — > 300s threshold).
+
+**Scenario 3: `pendientes = 0` MUST NOT be null; `pendientes >= 100` MUST render badge**
+- **Given** `SyncEstadoRead{pendientes=0}` (empty sync_queue) and `SyncEstadoRead{pendientes=247}` (large pile)
+- **When** the SyncBanner + AlertasPanel render the state
+- **Then** the `pendientes=0` case MUST render with no badge and no error
+- **And** the `pendientes=247` case MUST render an inline alert badge (DEC-SYNC-09 high-pile indicator)
+- **And** `pendientes` MUST NEVER be `null` in the response body (count(*) invariant — DEC-SYNC-09).
+
+**Scenario 4: Response NEVER includes pgcode/pgerror/pgmessage; ALWAYS includes `Cache-Control: no-store`**
+- **Given** any response from `GET /api/v1/sync/estado` (200 or 4xx, success or failure)
+- **When** the response is emitted
+- **Then** the response body MUST NOT contain the keys `pgcode`, `pgerror`, or `pgmessage` (XR6 Layer 5 redaction)
+- **And** the response MUST include the `Cache-Control: no-store` header on every status code (200, 403, 422 — DEC-SYNC-04).
+
+---
+
+### REQ-OPS-101 — XR6 cross-cutting defense in depth (REFERENCE to existing REQ-OPS-XR6)
+
+**Source**: HU-F1.14 (DEC-SYNC-01 + DEC-SYNC-03.B + DEC-SYNC-04 + KD-SYNC-02) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+Given that REQ-OPS-XR6 already exists at `openspec/specs/operations/spec.md:3951` from F1.13, F1.14's `GET /api/v1/sync/estado` endpoint MUST satisfy all 5 defense-in-depth layers defined in REQ-OPS-XR6, applied as follows:
+
+- **Layer 1 (KD-3 issuer chain + permission gate)** — NEW dedicated router `api/v1/sync_estado.py` declares `_sync_estado_issuer_dep = requires_issuer("operador-", "admin-")`. Permission gate is `audit_read` (DEC-SYNC-03.B, pre-seeded per `0002_seed_permisos_canonicos.py:48`). Branch operator with `audit_read` reads sync status; admin cross-branch.
+- **Layer 2 (Tenant scope post-V1)** — After resolving `target_sucursal` from `params.uuid_sucursal`, if `ctx.issuer_prefix == "operador-"` AND `(ctx.sucursal_uuid is None OR target_sucursal != ctx.sucursal_uuid)`, return `403 tenant_scope_violation` with `Cache-Control: no-store`. Admin (`admin-`) bypasses. KD-S2 analog from F1.7.
+- **Layer 3 (KD-SYNC-01 SELECT-only + KD-SYNC-02 read-only AST walk)** — The handler invokes ONLY the 3 typed SELECT helpers from `repo/sync_estado.py` (read-only path). The AST walk `tests/static/test_sync_estado_read_only.py` enforces NO `session.execute(update(SyncLog))`, `session.execute(update(SyncQueue))`, `session.execute(delete(SyncLog))`, `session.execute(delete(SyncQueue))`, and NO `await session.commit()` in the handler body. Mirrors F1.10 REQ-OPS-XR1 + F1.11 REQ-OPS-XR4 + F1.12 REQ-OPS-XR5 + F1.13 REQ-OPS-XR6.
+- **Layer 4 (Pydantic `extra='forbid'` + UUID required + nullable `lag_seg`)** — `SyncEstadoQueryParams(_Base)` + `SyncEstadoRead(_Base)` inherit `extra='forbid'` from `schemas/common.py::_Base` (blocks client smuggling of `actor_uuid`, `computed_at`, `cache_key`). `uuid_sucursal: UUID` is required. `lag_seg: int | None` (nullable, DEC-SYNC-08). `ultima_sync_at: datetime | None` (nullable). `pendientes: int` (non-nullable, DEC-SYNC-09).
+- **Layer 5 (Handler 200/422/403 mapping + `Cache-Control: no-store`)** — Every response (200 + 4xx + 5xx) on `GET /api/v1/sync/estado` carries `Cache-Control: no-store`. Typed exceptions map as follows: `UuidSucursalInvalidError` → 422 `uuid_sucursal_invalid` (Pydantic validator, Layer 4); `TenantScopeViolationError` → 403 `tenant_scope_violation` (handler Layer 2); `PermissionDeniedError` → 403 `permission_denied` (`require_permission` Layer 1). The pgcode / internal error code NEVER appears in response body, headers, or info+ logs.
+
+F1.14 MUST NOT create a new cross-cutting requirement (XR). REQ-OPS-XR6 is canonical and applies to F1.14 by reference. `openspec/changes/hu-f1-14-sync-estado/design.md` §13 (Cross-Cutting Requirements) MUST reference REQ-OPS-XR6 and the 5 layer mapping above. `openspec/changes/hu-f1-14-sync-estado/tasks.md` §10 (Test Plan) MUST include the `test_sync_estado_read_only.py` AST walk as a Layer 3 verification step.
+
+**Rationale**: XR6 is the canonical defense-in-depth contract for cross-cutting concerns. Creating a new XR (XR7) for F1.14 would duplicate the 5-layer contract and fragment the review surface. By referencing XR6, F1.14 inherits the testable invariants (AST walks, `extra='forbid'`, `Cache-Control: no-store`) without redefining them. Each layer is independently testable; failure of any one layer is contained by the other four (defense in depth principle).
+
+**Source**: `openspec/specs/operations/spec.md` line 3951 (REQ-OPS-XR6 canonical from F1.13); `backend/packages/parkos_core/src/parkos_core/api/v1/_helpers.py` lines 18-31 (`no_store_headers` + `apply_no_store_header` — Layer 5 helper); `backend/packages/parkos_core/src/parkos_core/schemas/common.py::_Base` (`extra='forbid'` — Layer 4 base); `backend/packages/parkos_core/src/parkos_core/auth/jwt_issuer_guard.py` (`requires_issuer` factory — Layer 1 dep); `backend/packages/parkos_core/src/parkos_core/auth/tenancy.py` (`get_tenant_ctx` — Layer 2 dep); F1.9 REQ-OPS-058 (factura_pagos immutability); F1.10 REQ-OPS-XR1 (single-commit AST walk precedent); F1.11 REQ-OPS-XR4 (insert-only AST walk precedent); F1.12 REQ-OPS-XR5 (5-layer defense precedent); F1.13 REQ-OPS-XR6 (caja-specific 5-layer defense precedent at `operations/spec.md:3951`).
+
+**Scenario 1: operador with `audit_read` + own branch — 200 OK (Layer 1 + Layer 2 PASS)**
+- **Given** an operador role granted `audit_read` permission via `prod.permisos_usuario`
+- **And** `ctx.sucursal_uuid=:s` matching the request's `params.uuid_sucursal`
+- **When** the operador invokes `GET /api/v1/sync/estado?uuid_sucursal=:s`
+- **Then** Layer 1 MUST pass (KD-3 issuer `operador-` accepted + `audit_read` permission granted)
+- **And** Layer 2 MUST pass (own-branch tenant scope)
+- **And** Layer 3 MUST execute exactly 2 SELECT queries (KD-SYNC-01)
+- **And** Layer 4 MUST validate the Pydantic schema (`uuid_sucursal` is a valid UUID, no extra fields)
+- **And** Layer 5 MUST return `200 OK` with `Cache-Control: no-store`.
+
+**Scenario 2: operador with `audit_read` + DIFFERENT branch — 403 `tenant_scope_violation` (Layer 2 short-circuits)**
+- **Given** an operador role granted `audit_read` permission
+- **And** `ctx.sucursal_uuid=:s_other` (operator's branch is `:s_other`, but the request target is `:s_target != :s_other`)
+- **When** the operador invokes `GET /api/v1/sync/estado?uuid_sucursal=:s_target`
+- **Then** Layer 1 MUST pass (issuer + permission OK)
+- **And** Layer 2 MUST reject with `403 Forbidden` and body `{"error": "tenant_scope_violation"}` and `Cache-Control: no-store`
+- **And** NO SELECT queries MUST execute against `prod.sync_log` / `prod.sync_queue` (Layer 2 short-circuits before Layer 3).
+
+**Scenario 3: operador with `audit_read` DENIED (no permission grant) — 403 `permission_denied` (Layer 1 short-circuits)**
+- **Given** an operador role WITHOUT `audit_read` permission (only `emitir_factura` granted)
+- **When** the operador invokes `GET /api/v1/sync/estado?uuid_sucursal=:s`
+- **Then** Layer 1 MUST reject with `403 Forbidden` and body `{"error": "permission_denied"}` and `Cache-Control: no-store`
+- **And** Layer 2 (tenant scope) MUST NOT be evaluated (Layer 1 short-circuits first)
+- **And** NO DB queries MUST execute (handler body unreachable).
+
+**Scenario 4: All responses (200 + 4xx + 5xx) carry `Cache-Control: no-store`**
+- **Given** any response from `GET /api/v1/sync/estado` (success or failure)
+- **When** the response is emitted
+- **Then** the `Cache-Control: no-store` header MUST be present on `200 OK`
+- **And** MUST be present on `403 tenant_scope_violation` / `403 permission_denied` / `422 uuid_sucursal_invalid`
+- **And** MUST be present on any uncaught 5xx (defense in depth).
+- **And** the response body MUST NOT contain `pgcode`, `pgerror`, or `pgmessage` keys.
+
+**Scenario 5: Read-only AST walk — handler source contains ZERO UPDATE/DELETE on SyncLog/SyncQueue and ZERO `commit`**
+- **Given** the source file `api/v1/sync_estado.py` containing `get_sync_estado`
+- **When** `tests/static/test_sync_estado_read_only.py` runs
+- **Then** the AST walk MUST assert ZERO occurrences of `update(SyncLog)` or `update(SyncQueue)` or `delete(SyncLog)` or `delete(SyncQueue)` or `session.execute(text("UPDATE prod.sync_log"))` or `session.execute(text("DELETE FROM prod.sync_queue"))` in the handler body (KD-SYNC-01 + KD-SYNC-02)
+- **And** MUST assert ZERO occurrences of `await session.commit()` in the handler body.
 ## Modified Capabilities
 
 - `backend/pyproject.toml` — adds the pytest stack and coverage

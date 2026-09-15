@@ -7,7 +7,7 @@
 > **PR target**: `origin/dev` (gitflow).
 > **Estado al abrir**: HU-F1.3 cerrada (4 commits), HU-F1.5 en explore.
 
-## 1. HUs restantes (4)
+## 1. HUs restantes (3)
 
 | # | ID | Título | Tamaño est. | Bloqueador | Notas |
 |---|---|---|---|---|---|
@@ -19,10 +19,10 @@
 | 11 | HU-F1.11 | Workflow reimpresión tiquete (crear + anular) | 170 LOC | siembra `costos_servicios.concepto='reimpresion'` | gap huérfano (anulación). |
 | 12 | HU-F1.12 | Venta atómica de suscripción | 260 LOC | ninguno | ampliación producto, no CU literal. |
 | 13 | HU-F1.13 | Endpoints arqueo + siembra `tipo_arqueo.cierre_dia` | 240 LOC | ✅ cerrado (2026-09-15, 8 commits `9e68b7b..83b5dfa`, archive 2026-09-15) | 8 REQs (091..097 + XR6) + 10 DECs + 5 KDs; 50 tests PASS across 12 files; MIGRATION 0031 REAL siembra (cierre_dia + descuadre_critico). Verify PASS WITH WARNINGS (2 LOW: D1 3 source bugs fixed inline + D2 LOC 4286 vs ~590 plan). Archived at `openspec/changes/archive/2026-09-15-hu-f1-13-arqueo/`. Canonical spec 96 → 104 REQs (8 new). |
-| 14 | HU-F1.14 | `GET /sync/estado` + 11 alert_types nuevos | 120 LOC | ✅ cerrado (2026-09-15, 5 commits `f4bfaf6..368120f` + T5) | 4 REQs (098..101) + REQ-OPS-XR6 REFERENCE; 10 DECs + 2 KDs; 31 tests PASS across 6 files; MIGRATION 0032 REAL siembra (10 net new + descuadre_critico idempotent). Apply-report: `openspec/changes/hu-f1-14-sync-estado/apply-report.md`. |
+| 14 | HU-F1.14 | `GET /sync/estado` + 11 alert_types nuevos | 120 LOC | ✅ cerrado (2026-09-15, 5 commits `f4bfaf6..57e79b1`, archive 2026-09-15) | 4 REQs (098..101) + REQ-OPS-XR6 REFERENCE; 10 DECs + 2 KDs; 31 tests PASS across 6 files; MIGRATION 0032 REAL siembra (10 net new + descuadre_critico idempotent). Archived at `openspec/changes/archive/2026-09-15-hu-f1-14-sync-estado/`. Canonical spec 104 → 108 REQs (4 new). |
 | 15 | HU-F1.15 | `GET /usuarios/{uuid}/login` histórico | 70 LOC | ninguno | gap huérfano. |
 
-**Total LOC restante**: 190 LOC en 2 HUs (F1.5 + F1.6 + F1.7 + F1.9 + F1.10 + F1.13 + F1.14 cerradas = -3925 LOC cumulative actual per D2 deviation; plan 1260 LOC en 6 HUs, real 190 LOC en 2 HUs). **F1.15 es la última HU pendiente antes de cierre de Fase 1 Parte I.**
+**Total LOC restante**: F1.14 cerrada; F1.15 es la ÚLTIMA HU pendiente antes de cierre de Fase 1 Parte I.
 
 ## 2. Bloqueadores de deployment (KD-IVA)
 
@@ -109,4 +109,4 @@ Ver `git status --short` al inicio de cada sesión. Basado en snapshot 2026-09-1
 
 **Opened by**: orchestrator (post-F1.3 archive, pre-F1.5 explore).
 **Engram**: persisted (topic_key=`sdd/fase-1-prerequisites-backend/pending`, project=`easypuinto-parkos-software`).
-**Updated**: 2026-09-15 post-F1.14 apply — F1.14 cerrado (5 commits `f4bfaf6..368120f` + T5), §1 HUs restantes 5 → 4 (190 LOC, ahora solo F1.15); 4 REQs (098..101) + REQ-OPS-XR6 REFERENCE; MIGRATION 0032 REAL siembra (10 net new + descuadre_critico idempotent); D1+D2 deviations documented in `openspec/changes/hu-f1-14-sync-estado/apply-report.md`.
+**Updated**: 2026-09-15 post-F1.14 archive — F1.14 cerrado (5 commits `f4bfaf6..57e79b1`), §1 HUs restantes 4 → 3 (70 LOC en 1 HU F1.15); 2 LOW deviations documented (D1 5 seed tests vs 4, D2 op.execute vs bulk_insert for UUID column).
