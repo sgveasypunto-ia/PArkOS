@@ -26,7 +26,7 @@ vi.mock('../fetch/parkosFetch', async () => {
 });
 
 import { parkosFetch } from '../fetch/parkosFetch';
-import { useAuth } from './useAuth';
+import { REFRESH_INTERVAL_MS, useAuth } from './useAuth';
 
 const mockedParkosFetch = parkosFetch as ReturnType<typeof vi.fn>;
 
@@ -104,7 +104,7 @@ describe('useAuth — auth-state driven SWR', () => {
     expect(result.current.permisos).toEqual(SAMPLE_ME.permisos);
   });
 
-  it('H3: SWR config refreshInterval es exactamente 5 min (300_000 ms)', async () => {
+  it('H3: SWR config refreshInterval consume REFRESH_INTERVAL_MS (50min F3.2)', async () => {
     useAuthStore.setState({
       accessToken: 'jwt',
       refreshToken: 'ref',
@@ -116,14 +116,14 @@ describe('useAuth — auth-state driven SWR', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     // SWR's resolved options aren't exposed at runtime, so we verify the
-    // design-time constant via a regex over the hook source. This keeps
-    // a reviewer-visible cross-ref to `plan.md:1208`.
+    // design-time constant via a regex over the hook source. F3.2 DEC-F3.2-04
+    // changes from `5 * 60 * 1000` (F2.2 baseline) → `REFRESH_INTERVAL_MS`
+    // (50min, DEC-SUC-03 verbatim per plan.md:418).
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
-    // Resolve via cwd (vitest's jsdom env strips fileURLToPath support).
     const sourcePath = path.join(process.cwd(), 'src/hooks/useAuth.ts');
     const src = await fs.readFile(sourcePath, 'utf8');
-    expect(src).toMatch(/refreshInterval:\s*5\s*\*\s*60\s*\*\s*1000/);
+    expect(src).toMatch(/refreshInterval:\s*REFRESH_INTERVAL_MS/);
   });
 
   it('H4: shouldRetryOnError rechaza ParkosHttpError 401 (no retry)', async () => {
@@ -170,5 +170,10 @@ describe('useAuth — auth-state driven SWR', () => {
 
     expect(mockedParkosFetch).toHaveBeenCalledTimes(2);
     expect(result.current.permisos).toEqual(['dashboard:read', 'reports:read']);
+  });
+
+  it('U11 (F3.2): REFRESH_INTERVAL_MS exportado = 50 * 60 * 1000 (DEC-SUC-03)', () => {
+    expect(REFRESH_INTERVAL_MS).toBe(50 * 60 * 1000);
+    expect(REFRESH_INTERVAL_MS).toBe(3_000_000);
   });
 });

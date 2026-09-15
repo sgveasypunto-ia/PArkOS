@@ -5,8 +5,9 @@
  * Design (DEC-FETCH-07):
  *   - Zustand owns the small, sync, frequently-updated tokens.
  *   - SWR owns the large, async, infrequently-fetched profile data.
- *   - `refreshInterval: 5 * 60 * 1000` revalidates every 5 minutes per
- *     `plan.md:1208` — balance between freshness and bandwidth.
+ *   - `refreshInterval: REFRESH_INTERVAL_MS` (50 min, F3.2) revalidates per
+ *     `DEC-SUC-03` verbatim (plan.md:418) — 10min safety margin vs
+ *     `ACCESS_TOKEN_TTL=3600` in backend auth.py:71.
  *   - When there is no accessToken the SWR key is `null`, so SWR skips
  *     the fetch entirely (no redundant network on first render).
  *   - 401 from `/auth/me` triggers `useAuthStore.clear()` AND fires the
@@ -19,6 +20,15 @@ import useSWR from 'swr';
 
 import { parkosFetch, ParkosHttpError } from '../fetch/parkosFetch';
 import { useAuthStore } from '../store/authStore';
+
+/**
+ * SWR refresh interval en ms (50min). DEC-SUC-03 verbatim (plan.md:418).
+ * Exportado para testabilidad determinista (no magic numbers).
+ *
+ * Safety margin: ACCESS_TOKEN_TTL=3600s (auth.py:71) - REFRESH_INTERVAL_MS=3000s
+ * = 600s = 10min entre refresh y TTL real. Cubre network latency + clock skew.
+ */
+export const REFRESH_INTERVAL_MS = 50 * 60 * 1000;
 
 export interface AuthUser {
   id: string;
@@ -57,7 +67,7 @@ export function useAuth(): UseAuthReturn {
     accessToken ? '/auth/me' : null,
     parkosFetch,
     {
-      refreshInterval: 5 * 60 * 1000,
+      refreshInterval: REFRESH_INTERVAL_MS,
       revalidateOnFocus: true,
       shouldRetryOnError: (err) =>
         !(err instanceof ParkosHttpError && err.status === 401),

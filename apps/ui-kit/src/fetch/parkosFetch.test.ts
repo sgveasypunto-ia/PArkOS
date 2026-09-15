@@ -301,3 +301,151 @@ describe('parkosFetch — typed wrapper error mapping', () => {
     await expect(parkosFetch('/api/boom')).rejects.toBeInstanceOf(ParkosHttpError);
   });
 });
+
+describe('parkosFetch — pre-flight gate F3.2 (DEC-F3.2-03 + DEC-F3.2-07)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  it('U12: pre-flight fires refresh cuando expiresAt < 5min + POST /facturacion/*', async () => {
+    useAuthStore.setState({
+      accessToken: 'old-jwt',
+      refreshToken: 'valid-refresh',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), // 60s < 5min
+    });
+
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      // 1) pre-flight /auth/refresh
+      .mockResolvedValueOnce(
+        jsonResponse({
+          access_token: 'new-jwt',
+          refresh_token: 'new-refresh',
+          expires_in: 3600,
+        }),
+      )
+      // 2) actual POST /facturacion/emision
+      .mockResolvedValueOnce(jsonResponse({ data: 'ok' }));
+
+    const promise = parkosFetchRaw('/api/v1/facturacion/emision', {
+      method: 'POST',
+      body: JSON.stringify({ amount: 100 }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    const firstUrl = String(spy.mock.calls[0]?.[0]);
+    const secondUrl = String(spy.mock.calls[1]?.[0]);
+    expect(firstUrl).toBe('/api/v1/auth/refresh');
+    expect(secondUrl).toBe('/api/v1/facturacion/emision');
+  });
+
+  it('U13: pre-flight skipped cuando expiresAt > 5min', async () => {
+    useAuthStore.setState({
+      accessToken: 'jwt',
+      refreshToken: 'ref',
+      expiresAt: new Date(Date.now() + 600_000).toISOString(), // 10min > 5min
+    });
+
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ data: 'ok' }));
+
+    const promise = parkosFetchRaw('/api/v1/facturacion/emision', {
+      method: 'POST',
+      body: JSON.stringify({ amount: 100 }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0]?.[0])).toBe('/api/v1/facturacion/emision');
+  });
+
+  it('U14: GET request NO triggerea pre-flight incluso si expiresAt < 5min', async () => {
+    useAuthStore.setState({
+      accessToken: 'jwt',
+      refreshToken: 'ref',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), // 60s < 5min
+    });
+
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ data: 'ok' }));
+
+    const promise = parkosFetchRaw('/api/v1/catalogos');
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0]?.[0])).toBe('/api/v1/catalogos');
+  });
+
+  it('U15: pre-flight refresh failure NO bloquea request (graceful degradation)', async () => {
+    useAuthStore.setState({
+      accessToken: 'old-jwt',
+      refreshToken: 'invalid-refresh',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), // 60s < 5min
+    });
+
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      // 1) pre-flight /auth/refresh → 401 (refresh fails, returns null)
+      .mockResolvedValueOnce(emptyResponse(401))
+      // 2) actual POST /facturacion still proceeds with old token
+      .mockResolvedValueOnce(jsonResponse({ data: 'ok' }));
+
+    const promise = parkosFetchRaw('/api/v1/facturacion/emision', {
+      method: 'POST',
+      body: JSON.stringify({ amount: 100 }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await vi.runAllTimersAsync();
+    const res = await promise;
+
+    // Request still succeeded despite refresh failure.
+    expect(res.ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('U16: pre-flight gate Mutex shared — UNA sola llamada a refresh en concurrent pre-flight + 401', async () => {
+    useAuthStore.setState({
+      accessToken: 'old-jwt',
+      refreshToken: 'valid-refresh',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), // 60s < 5min
+    });
+
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      // 1) pre-flight /auth/refresh (Mutex acquired, shared promise)
+      .mockResolvedValueOnce(
+        jsonResponse({
+          access_token: 'new-jwt',
+          refresh_token: 'new-refresh',
+          expires_in: 3600,
+        }),
+      )
+      // 2) actual POST /facturacion with new token → 200
+      .mockResolvedValueOnce(jsonResponse({ data: 'ok' }));
+
+    // Trigger pre-flight refresh + 401 caller concurrently.
+    // The Mutex in refreshAccessToken ensures only ONE /auth/refresh call.
+    const preFlightCall = parkosFetchRaw('/api/v1/facturacion/emision', {
+      method: 'POST',
+      body: JSON.stringify({ amount: 100 }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await vi.runAllTimersAsync();
+    await preFlightCall;
+
+    // Only ONE /auth/refresh call (Mutex invariant preserved per DEC-FETCH-03).
+    const refreshCalls = spy.mock.calls.filter(
+      ([url]) => String(url) === '/api/v1/auth/refresh',
+    );
+    expect(refreshCalls.length).toBe(1);
+  });
+});

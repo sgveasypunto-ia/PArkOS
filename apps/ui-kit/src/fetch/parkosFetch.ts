@@ -13,6 +13,14 @@
  *   - 401 → refresh-once via Mutex singleton (DEC-FETCH-03); on refresh failure
  *     clear authStore + emit `parkos:auth:cleared` window event.
  *
+ * Pre-flight gate (F3.2 — DEC-F3.2-03 + DEC-F3.2-07):
+ *   - Antes de POST `/facturacion/*` + `POST /caja/arqueo` con `expiresAt <
+ *     PRE_FLIGHT_THRESHOLD_MS` (5min), triggerea `refreshAccessToken()`
+ *     proactivamente. Reusa Mutex F2.2 (DEC-FETCH-03 invariant preserved).
+ *   - Si refresh falla o tarda, el request continúa con token existente
+ *     (graceful degradation, DEC-F3.2-07). `handle401` cubre 401 post.
+ *   - GET requests NO triggerean pre-flight (handle401 cubre).
+ *
  * Timeout (DEC-FETCH-04): `AbortController` fires after `init.timeoutMs`
  * (default 30_000) and rejects with an AbortError.
  *
@@ -27,6 +35,45 @@ import { refreshAccessToken, useAuthStore } from '../store/authStore';
 const BACKOFF_MS: readonly number[] = [300, 600, 1200];
 const DEFAULT_TIMEOUT_MS = 30_000;
 const SUCURSAL_STORAGE_KEY = 'parkos.lastSelectedSucursal';
+
+/**
+ * Paths críticos que triggerean pre-flight refresh gate (DEC-F3.2-03).
+ * Regex módulo-level compilada UNA VEZ (no recompilada per request).
+ *
+ * Cobertura: `/facturacion/*` (HU-F1.8 shipped, REQ-OPS-030) +
+ * `/caja/arqueo*` (forward hook F3.3+ / Fase 10).
+ * Forward extensibility: agregar nuevos paths aquí o via env var (DEC-F3.2-10).
+ */
+export const PRE_FLIGHT_PATHS = /\/facturacion(\/|$)|\/caja\/arqueo/;
+
+/**
+ * Umbral de expiración en ms para invocar pre-flight (5min antes de TTL).
+ * DEC-F3.2-07 latency budget: refresh proactivo ≤200ms p95.
+ */
+export const PRE_FLIGHT_THRESHOLD_MS = 5 * 60 * 1000;
+
+/**
+ * Pre-flight refresh proactivo del access_token si está por expirar.
+ *
+ * Reusa `refreshAccessToken()` Mutex F2.2 (DEC-FETCH-03 invariant preserved).
+ * Si 401 caller llega mid-pre-flight, ambos comparten UNA promesa.
+ * No-op si `expiresAt === null` (pre-login).
+ *
+ * Try/catch silencia rejection → graceful degradation (DEC-F3.2-07). El
+ * request continúa con el token existente; `handle401` cubre 401 post.
+ */
+async function refreshIfExpiringSoon(): Promise<void> {
+  const { expiresAt } = useAuthStore.getState();
+  if (expiresAt === null) return;
+  const msUntilExpiry = Date.parse(expiresAt) - Date.now();
+  if (msUntilExpiry < PRE_FLIGHT_THRESHOLD_MS) {
+    try {
+      await refreshAccessToken();
+    } catch {
+      /* graceful degradation — handle401 cubre 401 post-refresh */
+    }
+  }
+}
 
 export interface ParkosFetchInit extends Omit<RequestInit, 'signal'> {
   /** Timeout en ms. Default 30_000. AbortController dispara AbortError. */
@@ -152,6 +199,14 @@ export async function parkosFetchRaw(
   attempt: number = 1,
 ): Promise<Response> {
   const finalInit = await buildInit(input, init);
+
+  // F3.2 — DEC-F3.2-03: pre-flight gate solo para POST críticos antes del fetch.
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const url = typeof input === 'string' ? input : input.toString();
+  if (method === 'POST' && PRE_FLIGHT_PATHS.test(url)) {
+    await refreshIfExpiringSoon();
+  }
+
   const controller = new AbortController();
   const timeoutMs = init?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let timedOut = false;
