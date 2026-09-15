@@ -481,4 +481,67 @@ async def create_factura_pago(
     )
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.10 — Numeración FE + estado DIAN + reintento (T1.5 stub).
+#
+# The full 12-step chain lives in commit 4 (T4.2). This stub is the
+# minimum wiring that:
+#   - registers the POST /factura-electronica route so the router does not
+#     404 on the F1.10 contract;
+#   - depends on ``_fe_issuer_dep = requires_issuer("operador-", "admin-")``
+#     (KD-3 layer 1 of defense in depth);
+#   - imports ``assign_consecutivo`` + ``ConsecutivoRangeExhaustedError``
+#     from ``repo.resolucion_facturacion`` (DEC-FE-05 reuse, no modification).
+#
+# DEC-FE-01..07 + KD-FE-01 invariants apply to the full impl.
+# ---------------------------------------------------------------------------
+from ...repo.resolucion_facturacion import (  # noqa: E402
+    ConsecutivoRangeExhaustedError,
+    assign_consecutivo,
+)
+from ...schemas.facturacion import (  # noqa: E402
+    EnvioDianRead,
+    FacturaElectronicaCreate,
+    FacturaElectronicaRead,
+)
+
+_fe_issuer_dep = requires_issuer("operador-", "admin-")
+
+
+@router.post(
+    "/factura-electronica",
+    response_model=FacturaElectronicaRead,
+    status_code=201,
+    summary=(
+        "HU-F1.10 / REQ-OPS-064..067 (stub): assign prefijo+consecutivo via "
+        "assign_consecutivo (SELECT FOR UPDATE), INSERT prod.factura_electronica "
+        "+ initial prod.envio_dian in single await session.commit() (KD-FE-01). "
+        "Full 12-step impl in commit 4."
+    ),
+    responses={
+        403: {"description": "tenant_scope_violation"},
+        404: {"description": "factura_no_encontrada (V1)"},
+        409: {
+            "description": (
+                "factura_electronica_ya_existe | resolucion_no_vigente | "
+                "numeracion_agotada"
+            )
+        },
+    },
+)
+async def create_factura_electronica(
+    response: Response,
+    payload: FacturaElectronicaCreate,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_fe_issuer_dep),
+) -> FacturaElectronicaRead:
+    """HU-F1.10 / REQ-OPS-064..067: stub returns 501 (full impl in commit 4)."""
+    # KD-3 issuer chain + ``assign_consecutivo`` import wired so commit 4
+    # only needs to replace the body. The lint-protected ``_ =`` usages
+    # here keep the symbols alive for the AST walk + static analysis.
+    _ = (assign_consecutivo, ConsecutivoRangeExhaustedError, payload, ctx, session)
+    raise NotImplementedError("HU-F1.10 full impl in commit 4 (T4.2)")
+
+
 __all__ = ["router"]
