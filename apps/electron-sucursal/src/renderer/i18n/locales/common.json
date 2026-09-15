@@ -8,5 +8,13 @@
   "save": "Guardar",
   "cancel": "Cancelar",
   "back": "Volver",
-  "next": "Siguiente"
+  "next": "Siguiente",
+  "statusBar": {
+    "ok": "API OK",
+    "slow": "API lento",
+    "offline": "Sin API",
+    "ok.aria": "Conexión con el backend estable",
+    "slow.aria": "Conexión con el backend lenta",
+    "offline.aria": "Sin conexión con el backend"
+  }
 }
