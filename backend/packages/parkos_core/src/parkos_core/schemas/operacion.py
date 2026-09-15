@@ -201,6 +201,42 @@ CotizarResponse = Annotated[
 ]
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.5 -- OcupacionItem / OcupacionResponse (REQ-OPS-030)
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class OcupacionItem(_Base):
+    """Una fila del breakdown por tipo de vehiculo (REQ-OPS-030).
+
+    ``disponible`` puede ser negativo si ``cantidad_vehiculos_sucursal``
+    no tiene fila para ``(uuid_sucursal, uuid_tipo_vehiculo)`` (KD-6);
+    el cliente interpreta ``disponible < 0`` como "configuracion
+    faltante, contacte al admin" y renderiza "N/A" en el strip.
+    """
+
+    uuid_tipo_vehiculo: uuid_lib.UUID
+    tipo: str  # "Auto", "Moto", etc.
+    cupo_maximo: int  # 0 si COALESCE(NULL) -> 0 (KD-6)
+    activos: int  # count(*) de la MV materializada
+    disponible: int  # cupo_maximo - activos (derivado server-side)
+
+
+class OcupacionResponse(_Base):
+    """Response shape de ``GET /operacion/ocupacion`` (REQ-OPS-030).
+
+    ``generado_en`` se construye en el handler con
+    ``datetime.now(tz=timezone.utc)``; Pydantic serializa como
+    ISO-8601 con sufijo ``Z``. El timestamp captura cuando se
+    ensamblo la respuesta (no cuando se refresco la MV).
+    """
+
+    uuid_sucursal: uuid_lib.UUID
+    items: list[OcupacionItem]
+    generado_en: datetime
+
+
 __all__ = [
     "CotizarFacturacion",
     "CotizarMensualidad",
@@ -209,4 +245,6 @@ __all__ = [
     "IngresoFilter",
     "IngresoRead",
     "IngresoReadList",
+    "OcupacionItem",
+    "OcupacionResponse",
 ]

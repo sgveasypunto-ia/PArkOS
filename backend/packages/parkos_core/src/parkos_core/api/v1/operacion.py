@@ -51,12 +51,15 @@ from ...repo.cotizacion import (
     cotizar_ingreso,
 )
 from ...repo.event import record_event
+from ...repo.ocupacion import get_ocupacion_puros_activos
 from ...schemas.operacion import (
     CotizarFacturacion,
     CotizarMensualidad,
     CotizarResponse,
     IngresoCreate,
     IngresoRead,
+    OcupacionItem,
+    OcupacionResponse,
 )
 
 router = APIRouter(prefix="/operacion", tags=["operacion"])
@@ -385,4 +388,105 @@ async def resolve_active_subscription_for_exit(
     return SubscriptionLookupResult(found=True, subscripcion=subscripcion)
 
 
-__all__ = ["SubscriptionLookupResult", "cotizar_ingreso_handler", "resolve_active_subscription_for_exit", "router"]
+# ---------------------------------------------------------------------------
+# HU-F1.5 (REQ-OPS-030, REQ-OPS-031) -- GET /operacion/ocupacion
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/ocupacion",
+    response_model=OcupacionResponse,
+    summary=(
+        "HU-F1.5 / REQ-OPS-030: per-tipo occupancy breakdown for the "
+        "branch, derived from prod.mv_ocupacion_diaria."
+    ),
+    responses={
+        400: {"description": "missing_sucursal_context"},
+        403: {
+            "description": (
+                "tenant_scope_violation (operador) | "
+                "sucursal_not_permitted (admin)"
+            )
+        },
+    },
+)
+async def get_ocupacion(
+    response: Response,
+    uuid_sucursal: uuid_lib.UUID | None = Query(  # noqa: B008
+        None,
+        description=(
+            "uuid_sucursal to query. Default = ctx.sucursal_uuid. "
+            "Operador- sees only ctx.sucursal_uuid; admin- sees only "
+            "branches in claims['sucursales_permitidas']."
+        ),
+    ),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+) -> OcupacionResponse:
+    """REQ-OPS-030 + REQ-OPS-031: ``GET /operacion/ocupacion``.
+
+    Dependency chain:
+        ``_ingreso_issuer_dep`` -> ``requires_issuer('operador-', 'admin-')``
+        ``get_tenant_ctx``      -> ``TenantContext { actor_uuid, sucursal_uuid, ... }``
+        ``get_session``         -> ``AsyncSession`` (request-scoped)
+
+    Body: thin pass-through to ``repo.ocupacion.get_ocupacion_puros_activos``,
+    encapsulating the SQL JOIN (mv x tv LEFT JOIN cvs). KD-3 enforces
+    per-sucursal authz: ``operador-`` pinned to ``ctx.sucursal_uuid``
+    (cross-tenant -> ``403 tenant_scope_violation``); ``admin-`` bounded
+    by ``claims['sucursales_permitidas']`` (missing -> ``400
+    missing_sucursal_context``).
+
+    The endpoint is read-only by contract (REQ-OPS-030 + REQ-OPS-031);
+    defense in depth enforced by
+    ``tests/static/test_no_write_in_ocupacion.py``.
+    """
+    # 1. Resolve target sucursal (KD-3 chain):
+    #    - query param wins;
+    #    - else ctx.sucursal_uuid;
+    #    - else 400 missing_sucursal_context.
+    target = uuid_sucursal or ctx.sucursal_uuid
+    if target is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+
+    # 2. Authorization (KD-3):
+    #    - operador- pinned to ctx.sucursal_uuid (cross-tenant -> 403
+    #      tenant_scope_violation);
+    #    - admin- bounded by claims['sucursales_permitidas'] enforced by
+    #      ``get_tenant_ctx`` itself, which already validated the
+    #      ``X-Sucursal-Context`` header before this handler runs. An
+    #      admin- token that reaches this handler has therefore already
+    #      been validated for ``target`` -- no further check needed.
+    if (
+        ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or target != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "tenant_scope_violation"},
+        )
+
+    # 3. Repo call (READ-ONLY; encapsulated JOIN).
+    items = await get_ocupacion_puros_activos(session, uuid_sucursal=target)
+
+    # 4. Cache-Control: no-store (consistent with F1.3 R8 / F1.8 R8).
+    response.headers["Cache-Control"] = "no-store"
+
+    return OcupacionResponse(
+        uuid_sucursal=target,
+        items=[OcupacionItem.model_validate(it) for it in items],
+        generado_en=datetime.now(tz=UTC),
+    )
+
+
+__all__ = [
+    "SubscriptionLookupResult",
+    "cotizar_ingreso_handler",
+    "get_ocupacion",
+    "resolve_active_subscription_for_exit",
+    "router",
+]
