@@ -11,11 +11,11 @@
 
 | # | ID | Titulo | Tamano est. | Bloqueador | Notas |
 |---|---|---|---|---|---|
-| 1 | HU-F2.1 | Scaffold del proyecto + `ui-kit` compartido + shadcn/ui | 700 LOC | ninguno | 9 atomic tasks (T1..T9). Crea `apps/electron-sucursal/` desde cero. `apps/ui-kit/` existe como directorio pero sin `package.json` ni `Button`/`cn`/`tokens` — T5 los pobla. |
+| 1 | HU-F2.1 | Scaffold del proyecto + `ui-kit` compartido + shadcn/ui | 700 LOC | ninguno | ✅ cerrado (2026-09-15, 4 commits `24500a4..1b744bb`, archive 2026-09-15) | 9 atomic tasks ejecutados via 4 clusters C1→C2→C3→C4; apps/electron-sucursal/ creado desde cero (54 files / 2465 inserciones); apps/ui-kit/ poblado con package.json + Button + cn + tokens; 14 shadcn/ui components generados; 7 i18n namespaces (es-CO); axe-core WCAG 2.1 AA desde día 1. Archived at openspec/changes/archive/2026-09-15-hu-f2-1-electron-scaffold/ (7 archivos: exploration + proposal + design + tasks + specs/operations/spec + verify-report + archive-report). Veredicto PASS WITH WARNINGS (4/10 gates PASS, 6/10 SKIPPED env-blocked, 10/10 DEC-ELEC-NN satisfied). Habilita F2.2 (parkosFetch+IPC+authStore) y F2.3 (auto-update+kiosko). |
 | 2 | HU-F2.2 | Cliente HTTP `parkosFetch`, bridge IPC y `authStore` | 450 LOC | depende F2.1 | 7 atomic tasks (T1..T7). 14 + 8 escenarios MSW + axe-core. |
 | 3 | HU-F2.3 | Auto-actualizacion, single-instance y kiosko | 450 LOC | depende F2.1 | 7 atomic tasks (T1..T7). 3 e2e (segunda instancia, kiosko Ctrl+W, PIN incorrecto). |
 
-**Total LOC restante**: ~1600 LOC production + tests + configs.
+**Total LOC restante**: ~900 LOC production + tests + configs (F2.1 done 2026-09-15, ~700 LOC de presupuesto consumido; restantes F2.2 ~450 + F2.3 ~450).
 
 ## 2. Bloqueadores de deployment
 
@@ -62,4 +62,4 @@
 
 **Opened by**: orchestrator (post-Fase 1 Parte I housekeeping, pre-Fase 2 explore).
 **Engram**: persisted (topic_key=`sdd/fase-2-electron-scaffold/pending`, project=`easypuinto-parkos-software`).
-**Updated**: 2026-09-15 — Fase 2 arranque; 3 HU pendientes (F2.1, F2.2, F2.3); `apps/electron-sucursal/` por crear; `apps/ui-kit/` por poblar.
+**Updated**: 2026-09-15 (post-F2.1 archive) — Fase 2 1/3 cerrado (HU-F2.1 archived 2026-09-15-hu-f2-1-electron-scaffold); 2 HU pendientes (F2.2, F2.3); `apps/electron-sucursal/` creado y poblado; `apps/ui-kit/` poblado con Button + cn + tokens; 4 commits `24500a4..1b744bb`; veredicto PASS WITH WARNINGS.
