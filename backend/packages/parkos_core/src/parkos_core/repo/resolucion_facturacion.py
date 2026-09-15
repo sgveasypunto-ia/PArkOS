@@ -149,8 +149,35 @@ async def assign_consecutivo(
     return next_value
 
 
+async def buscar_resolucion_vigente_por_sucursal(
+    session: AsyncSession, *, uuid_sucursal: uuid_lib.UUID
+) -> ResolucionFacturacion | None:
+    """REQ-OPS-073 / R2 mitigation — locate the vigente resolution.
+
+    A given ``uuid_sucursal`` may have multiple version rows over time
+    (bi-temporal close+insert). The vigente row is the one whose
+    ``vigente_hasta IS NULL`` (open interval) AND ``estado='activo'``.
+    In the (defensive) case that more than one row satisfies both,
+    ``ORDER BY vigente_desde DESC LIMIT 1`` returns the latest.
+
+    Returns the ORM row, or ``None`` if no vigente row exists.
+    """
+    stmt = (
+        select(ResolucionFacturacion)
+        .where(
+            ResolucionFacturacion.uuid_sucursal == uuid_sucursal,
+            ResolucionFacturacion.vigente_hasta.is_(None),
+            ResolucionFacturacion.estado == "activo",
+        )
+        .order_by(ResolucionFacturacion.vigente_desde.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 __all__ = [
     "ConsecutivoRangeExhaustedError",
     "ResolucionFacturacionNotFoundError",
     "assign_consecutivo",
+    "buscar_resolucion_vigente_por_sucursal",
 ]
