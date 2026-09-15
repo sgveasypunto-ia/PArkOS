@@ -36,14 +36,19 @@ DEC-VENTA-08 WITHDRAWN: all 5 [V] sync catalog entries pre-exist at
 """
 from __future__ import annotations
 
+import calendar
 import uuid as uuid_lib
+from datetime import UTC
 from datetime import date as date_cls
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.V.clientes import Clientes
+from ..models.V.subscripcion_vehiculos import SubscripcionVehiculos
+from ..models.V.subscripciones_cliente import SubscripcionesCliente
 from ..models.V.tipo_subscripciones import TipoSubscripciones
 from ..models.V.vehiculos import Vehiculos
 from . import placa as repo_placa
@@ -308,31 +313,47 @@ async def buscar_o_crear_vehiculo_por_placa(
 
 
 # ---------------------------------------------------------------------------
-# T4 stubs (placeholders -- bodies added in T4)
+# T4 -- validations + prorrateo + INSERTs
 # ---------------------------------------------------------------------------
 
 
 def validar_placas_mismo_tipo_vehiculo(
-    *, plan: Any, vehiculos: list[Any]
+    *, plan: TipoSubscripciones, vehiculos: list[Vehiculos]
 ) -> None:
     """V5 (REQ-OPS-087): same-tipo validation when ``plan.mismo_tipo_vehiculo``.
 
-    Raises ``TipoVehiculoIncompatibleError`` BEFORE any INSERT. Pure
-    in-process comparison of ``vehiculo.uuid_tipo_vehiculo``. Body
-    lands in T4.
+    When ``plan.mismo_tipo_vehiculo`` is ``True``, all provided
+    ``vehiculos`` MUST share the same ``uuid_tipo_vehiculo``. Otherwise
+    raises :class:`TipoVehiculoIncompatibleError` BEFORE any INSERT
+    (the handler maps to 422 ``tipo_vehiculo_incompatible`` via Layer 5).
+
+    When ``plan.mismo_tipo_vehiculo`` is ``False`` (or ``None``), the
+    check is SKIPPED -- heterogeneous types are allowed (the plan
+    permits them).
     """
-    raise NotImplementedError("V5 body added in T4 (HU-F1.12)")
+    if not plan.mismo_tipo_vehiculo:
+        return
+    tipos = {v.uuid_tipo_vehiculo for v in vehiculos}
+    if len(tipos) > 1:
+        raise TipoVehiculoIncompatibleError(
+            tipos_encontrados=sorted(str(t) for t in tipos)
+        )
 
 
 def validar_cantidad_maxima_vehiculos(
-    *, plan: Any, n_placas: int
+    *, plan: TipoSubscripciones, n_placas: int
 ) -> None:
-    """V6 (REQ-OPS-088): ``len(placas) <= plan.cantidad_maxima_vehiculos``.
+    """V6 (REQ-OPS-088): ``n_placas <= plan.cantidad_maxima_vehiculos``.
 
-    Raises ``CantidadMaximaExcedidaError`` BEFORE any INSERT. Pure
-    in-process count. Body lands in T4.
+    Raises :class:`CantidadMaximaExcedidaError` BEFORE any INSERT. Pure
+    in-process count -- no DB query required (the handler already
+    holds the plan row from V2).
     """
-    raise NotImplementedError("V6 body added in T4 (HU-F1.12)")
+    if plan.cantidad_maxima_vehiculos is not None and n_placas > plan.cantidad_maxima_vehiculos:
+        raise CantidadMaximaExcedidaError(
+            cantidad_maxima_vehiculos=plan.cantidad_maxima_vehiculos,
+            placas_proporcionadas=n_placas,
+        )
 
 
 async def validar_placa_duplicada_subscripcion(
@@ -345,20 +366,62 @@ async def validar_placa_duplicada_subscripcion(
     """V4 (REQ-OPS-089): per-placa reverse-direction active-sub lookup.
 
     Reuses ``repo.subscripcion_activa.resolve_active_subscription_for_exit``
-    (F1.7). Raises ``SubscripcionDuplicadaPlacaError`` on hit. Body
-    lands in T4.
+    (F1.7, lifted from F1.5 commit ``bb99e18``). The lookup joins
+    ``prod.subscripciones_cliente`` x ``prod.subscripcion_vehiculos``
+    x ``prod.vehiculos`` filtering by ``placa`` + branch + vigente +
+    estado='activo'. If a matching ACTIVE subscription exists,
+    raises :class:`SubscripcionDuplicadaPlacaError` (the handler maps
+    to 422 ``suscripcion_duplicada_placa``).
+
+    The ``fecha_inicio_cobertura`` arg is reserved for a future
+    date-window predicate (out-of-scope for F1.12 -- the current
+    implementation only checks for any vigente sub for the placa).
     """
-    raise NotImplementedError("V4 body added in T4 (HU-F1.12)")
+    from .subscripcion_activa import resolve_active_subscription_for_exit
+
+    result = await resolve_active_subscription_for_exit(
+        session,
+        placa=placa,
+        uuid_sucursal=uuid_sucursal,
+        as_of=fecha_inicio_cobertura,
+    )
+    if result.found:
+        raise SubscripcionDuplicadaPlacaError(
+            placa=placa,
+            uuid_sucursal=uuid_sucursal,
+        )
 
 
-def calcular_prorrateo(*, plan: Any, fecha_inicio_cobertura: date_cls) -> Any:
-    """V7 (REQ-OPS-090 / A-09): ``valor_dia * dias_restantes_mes`` after day-15.
+def calcular_prorrateo(
+    *, plan: TipoSubscripciones, fecha_inicio_cobertura: date_cls
+) -> Decimal:
+    """V7 (REQ-OPS-090 / A-09 prorrateo, DEC-VENTA-03).
 
-    Returns the prorrateo ``Decimal`` (or ``None`` if before day 16).
-    Raises ``PlanDuracionDiasInvalidoError`` on ``ZeroDivisionError``.
-    Body lands in T4.
+    Triggers proportional prorrateo when ``fecha_inicio_cobertura.day > 15``
+    (covers the second half of the month). Returns:
+
+    - ``plan.valor`` (full) when ``day <= 15``
+    - ``valor_dia * dias_restantes`` when ``day > 15``
+      where ``valor_dia = plan.valor / plan.duracion_dias`` and
+      ``dias_restantes = days_in_month - day``
+
+    Raises :class:`PlanDuracionDiasInvalidoError` when
+    ``plan.duracion_dias <= 0`` (ZeroDivisionError catch -- 422
+    ``plan_duracion_dias_invalido``).
     """
-    raise NotImplementedError("V7 body added in T4 (HU-F1.12)")
+    try:
+        valor_dia = plan.valor / plan.duracion_dias
+    except ZeroDivisionError as exc:
+        raise PlanDuracionDiasInvalidoError() from exc
+    if fecha_inicio_cobertura.day > 15:
+        dias_en_mes = calendar.monthrange(
+            fecha_inicio_cobertura.year, fecha_inicio_cobertura.month
+        )[1]
+        dias_restantes = dias_en_mes - fecha_inicio_cobertura.day
+        return (Decimal(valor_dia) * Decimal(dias_restantes)).quantize(
+            Decimal("0.01")
+        )
+    return Decimal(plan.valor).quantize(Decimal("0.01"))
 
 
 async def crear_subscripcion_cliente(
@@ -370,12 +433,26 @@ async def crear_subscripcion_cliente(
     uuid_tipo_subscripcion: uuid_lib.UUID,
     fecha_inicio_cobertura: date_cls,
     fecha_vencimiento: date_cls,
-) -> Any:
+) -> SubscripcionesCliente:
     """V9a: INSERT ``prod.subscripciones_cliente`` row (no close -- first version).
 
-    Body lands in T4.
+    Bi-temporal invariants are set by ``close_and_insert`` server-side:
+    ``vigente_desde = NOW()``, ``vigente_hasta = NULL``, ``estado = 'activo'``.
+    The handler commits at Step 10 (KD-VENTA-01).
     """
-    raise NotImplementedError("V9a body added in T4 (HU-F1.12)")
+    return await versioned.close_and_insert(
+        session,
+        SubscripcionesCliente,
+        current_uuid=None,
+        new_attrs={
+            "uuid_cliente": uuid_cliente,
+            "uuid_sucursal": uuid_sucursal,
+            "uuid_tipo_subscripcion": uuid_tipo_subscripcion,
+            "fecha_inicio_cobertura": fecha_inicio_cobertura,
+            "fecha_vencimiento": fecha_vencimiento,
+        },
+        actor_uuid=actor_uuid,
+    )
 
 
 async def crear_subscripcion_vehiculos_bulk(
@@ -384,9 +461,54 @@ async def crear_subscripcion_vehiculos_bulk(
     actor_uuid: uuid_lib.UUID,
     uuid_subscripcion_cliente: uuid_lib.UUID,
     uuid_vehiculos: list[uuid_lib.UUID],
-) -> list[Any]:
+) -> list[SubscripcionVehiculos]:
     """V9b: ``pg_advisory_xact_lock`` + bulk INSERT ``prod.subscripcion_vehiculos``.
 
-    Body lands in T4.
+    The advisory lock serializes concurrent inserts targeting the same
+    ``uuid_subscripcion_cliente`` so that the V6
+    ``cantidad_maxima_vehiculos`` invariant cannot be violated by a
+    race (REQ-OP-08 mirror). The lock is held until the handler's
+    single commit at Step 10 (KD-VENTA-01).
+
+    Returns the list of newly inserted ORM rows.
     """
-    raise NotImplementedError("V9b body added in T4 (HU-F1.12)")
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": uuid_to_int64(uuid_subscripcion_cliente)},
+    )
+    rows: list[SubscripcionVehiculos] = []
+    for v_uuid in uuid_vehiculos:
+        row = SubscripcionVehiculos(
+            uuid_subscripcion_cliente=uuid_subscripcion_cliente,
+            uuid_vehiculo=v_uuid,
+            vigente_desde=datetime_utcnow(),
+            vigente_hasta=None,
+            estado="activo",
+            created_at=datetime_utcnow(),
+            created_by=actor_uuid,
+        )
+        session.add(row)
+        rows.append(row)
+    await session.flush()
+    return rows
+
+
+def uuid_to_int64(uuid_val: uuid_lib.UUID) -> int:
+    """Convert a UUID to a signed 64-bit int (Postgres ``bigint``).
+
+    Used as the key for ``pg_advisory_xact_lock`` so that the lock
+    namespace matches the ``uuid_subscripcion_cliente`` value.
+    """
+    return uuid_val.int & 0x7FFFFFFFFFFFFFFF
+
+
+def datetime_utcnow() -> Any:
+    """Lightweight ``datetime.now(UTC)`` -- replaces deprecated ``datetime.utcnow()``.
+
+    Returns naive UTC datetime (matches the F1.5 ``created_at`` column
+    convention -- no tzinfo so SQLAlchemy stores as ``timestamp without
+    time zone``).
+    """
+    from datetime import datetime
+
+    return datetime.now(UTC).replace(tzinfo=None)
