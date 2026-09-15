@@ -4654,6 +4654,250 @@ El componente `<LoginForm>` MUST pasar el scan `axe-core` (vía `@axe-core/playw
 - **And** el orden MUST ser el document order (no `tabindex` overrides).
 
 ---
+### REQ-OPS-113 — `useCountdown(retryAfterSeconds, options?)` hook con `Date.now()` baseline (DEC-F3.2-01)
+
+**Source**: HU-F3.2 (`plan.md:1311` + `DEC-F3.2-01` Date.now baseline + R1 mitigation drift resistance) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El hook `useCountdown(retryAfterSeconds: number, options?: { onComplete?: () => void }): { secondsLeft: number; isExpired: boolean }` MUST computar `endTime = Date.now() + retryAfterSeconds * 1000` en mount (wall clock anchor) y recalcular `secondsLeft = Math.max(0, Math.ceil((endTime - Date.now()) / 1000))` en cada tick de `setInterval(1000)` (NO accumulator pattern `secondsLeft--` — R1 mitigation contra drift si tab inactive + system sleep pause `setInterval`). El hook MUST limpiar el interval via `clearInterval(intervalId)` retornado en `useEffect` cleanup (R4 mitigation — unmount no deja memory leak ni late callbacks). Cuando `Date.now() >= endTime`, el hook MUST retornar `{secondsLeft: 0, isExpired: true}` e invocar `onComplete()` callback si fue provisto (exactly once). El hook MUST exportarse desde `apps/electron-sucursal/src/features/auth/hooks/useCountdown.ts` para forward consumption (F4.x retry buttons + F11.x sync reintentos).
+
+**Rationale**: Accumulator pattern (`secondsLeft--`) acumula drift cuando el browser throttle `setInterval` durante tab inactive o system sleep (60s+ intervals compressed). `Date.now()` baseline es drift-resistant — siempre recalcula desde wall clock. El hook se reutiliza cross-feature (F4.x retry buttons, F11.x sync reintentos) — primer hook genuinely reusable del feature `auth`.
+
+**Source**: `apps/electron-sucursal/src/features/auth/hooks/useCountdown.ts` (NEW, T1 ~40 LOC — `Date.now()` baseline + `setInterval(1000)` + cleanup + `onComplete`); `apps/electron-sucursal/src/features/auth/hooks/useCountdown.test.ts` (NEW, T1 ~50 LOC — U1 baseline + U2 cleanup + U3 onComplete + U4 drift resistance via `vi.advanceTimersByTime(2000)`); R1 risk + R4 risk en `exploration.md §8`.
+
+**Scenario 1: Mount con retryAfterSeconds=600 → secondsLeft decreciente 1Hz**
+- **Given** el operador está en lockout state con `retryAfterSeconds: 600` (10 minutos)
+- **When** el hook `useCountdown(600, { onComplete })` se monta en `<LoginForm>`
+- **Then** el primer render MUST retornar `{secondsLeft: 600, isExpired: false}` (`endTime = Date.now() + 600_000ms`)
+- **And** cada tick de 1000ms MUST recalcular `secondsLeft = Math.max(0, Math.ceil((endTime - Date.now()) / 1000))`
+- **And** tras 3 ticks verificados con `vi.advanceTimersByTime(3000)`, `secondsLeft` MUST ser `597` (NO `600 - 3 = 597` accidental accumulator — el test verifica el wall-clock path).
+
+**Scenario 2: Drift resistance — tab inactive 30s + recovery recalcula desde wall clock**
+- **Given** `useCountdown(600)` está activo con `endTime = Date.now() + 600_000ms`
+- **When** el tab se vuelve inactive por 30s (browser throttle `setInterval` a >1000ms intervals)
+- **Then** cuando el tab recupera foco, el primer tick post-recovery MUST recalcular `secondsLeft` desde `Date.now()` baseline, NO desde accumulator pausado
+- **And** el display MUST saltar al valor real (e.g., `570` si pasaron 30s wall clock), NO al valor pausado (`597`).
+
+**Scenario 3: Cleanup en unmount — clearInterval se ejecuta**
+- **Given** `useCountdown(600)` está activo en `<LoginForm>`
+- **When** el componente se desmonta (`navigate('/')` post-success, o `<LoginForm>` unmount por tree change)
+- **Then** el `useEffect` cleanup MUST ejecutar `clearInterval(intervalId)`
+- **And** NO MUST haber late callbacks del interval después de unmount (R4 mitigation).
+
+**Scenario 4: onComplete callback fires cuando secondsLeft llega a 0**
+- **Given** `useCountdown(600, { onComplete: spy })` está activo y `endTime` está a <1000ms en el futuro
+- **When** el tick handler detecta `Date.now() >= endTime`
+- **Then** el hook MUST retornar `{secondsLeft: 0, isExpired: true}`
+- **And** `spy` MUST ser invocado exactamente una vez (not twice — el interval se limpia post-isExpired).
+
+---
+
+### REQ-OPS-114 — `<LoginForm>` renderiza countdown visible + aplica `disabled` durante lockout (DEC-F3.2-02 + DEC-F3.2-05 + DEC-F3.2-06)
+
+**Source**: HU-F3.2 (`plan.md:1309` + `DEC-F3.2-02` form disabled + `DEC-F3.2-05` axe-core WCAG + `DEC-F3.2-06` 3 i18n keys) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El componente `<LoginForm>` MUST consumir `useCountdown(error.retryAfterSeconds)` cuando `error?.kind === 'lockout'` y renderizar `<p role="status" aria-live="polite" data-testid="login-countdown" aria-label={t('lockoutLabel', {time: formatTime(secondsLeft)})}>{t('lockoutCountdown', {time: formatTime(secondsLeft)})}</p>` ENTRE el `<p role="alert">{t('lockout')}</p>` (mensaje estático F3.1) y los inputs. Mientras `error?.kind === 'lockout' && !isExpired`, los `<Input>` y `<Button type="submit">` MUST renderizarse con `disabled={true}` + `aria-disabled="true"` (DEC-F3.2-02 — `disabled` previene submit + typing; `readonly` rejected por UX inconsistente). El helper `formatTime(secondsLeft)` MUST retornar string `mm:ss` (e.g., `"09:47"` para 587 segundos; max display `99:59`). Las 3 i18n keys MUST agregarse a `apps/electron-sucursal/src/renderer/i18n/locales/auth.json`: `lockoutCountdown` ("Reintento disponible en {{time}}"), `lockoutReEnable` ("El formulario se ha reactivado. Puedes intentar de nuevo."), `lockoutLabel` ("Tiempo restante para reintentar: {{time}}").
+
+**Rationale**: F3.1 REQ-OPS-109 surfacea texto estático "Cuenta bloqueada. Intenta de nuevo en N minutos." sin countdown — el operador no sabe cuánto falta. F3.2 entrega UX profesional con countdown decreciente + form disabled. WCAG 2.1 AA compliance: `role="status"` + `aria-live="polite"` anuncia cambios a screen readers (NO `aria-live="assertive"` — interruptivo). `aria-label` describe el countdown contextualmente.
+
+**Source**: `apps/electron-sucursal/src/features/auth/components/LoginForm.tsx` (MODIFY F3.2 T2 +25 LOC — consume `useCountdown`, renderiza countdown display, aplica `disabled`); `apps/electron-sucursal/src/renderer/i18n/locales/auth.json` (MODIFY F3.2 T2 +3 keys); `apps/electron-sucursal/src/features/auth/components/LoginForm.test.tsx` (MODIFY F3.2 T2 +25 LOC — U8 lockout disables form, U9 countdown decrements); F3.1 `LoginForm.tsx:120-124` (texto estático precedent — F3.2 reemplaza por countdown); R6 risk en `exploration.md §8`.
+
+**Scenario 1: lockout state activo → countdown visible + form disabled**
+- **Given** `<LoginForm>` recibe `error: { kind: 'lockout', retryAfterSeconds: 587 }`
+- **When** el hook `useCountdown(587)` retorna `{secondsLeft: 587, isExpired: false}`
+- **Then** el componente MUST renderizar `<p role="status" aria-live="polite" data-testid="login-countdown">{t('lockoutCountdown', {time: '09:47'})}</p>`
+- **And** los `<Input name="email">` + `<Input name="password">` MUST estar `disabled={true}` + `aria-disabled="true"`
+- **And** el `<Button type="submit">` MUST estar `disabled={true}` + `aria-disabled="true"`.
+
+**Scenario 2: Countdown decrementa visible 1Hz — `09:47` → `09:46` tras 1 tick**
+- **Given** el countdown display muestra `"09:47"` (`secondsLeft: 587`)
+- **When** `vi.advanceTimersByTime(1000)` ejecuta el siguiente tick
+- **Then** el componente MUST re-renderizar con `<p data-testid="login-countdown">{t('lockoutCountdown', {time: '09:46'})}</p>`
+- **And** el screen reader (axe-core scan) MUST detectar 0 violaciones (RNF-022 compliance).
+
+**Scenario 3: form NO submitea durante lockout (defense anti-retry)**
+- **Given** el form está en lockout state con `secondsLeft > 0`
+- **When** el operador presiona Enter o click submit (forzado vía DOM)
+- **Then** el form MUST NO invocar `onSubmit` (HTML `disabled` previene submit)
+- **And** el backend MUST NO recibir un POST `/auth/login` con credenciales (defense contra retry hostil antes del Retry-After).
+
+**Scenario 4: `formatTime(587)` retorna `"09:47"` (mm:ss con zero-padding)**
+- **Given** `secondsLeft: 587` (9 minutos 47 segundos)
+- **When** `formatTime(587)` ejecuta
+- **Then** el retorno MUST ser el string `"09:47"` (mm padded con cero + `:` + ss padded con cero)
+- **And** `formatTime(0)` MUST ser `"00:00"` (boundary inferior)
+- **And** `formatTime(5999)` MUST ser `"99:59"` (boundary superior — max 99:59 para `minutos_bloqueo_login` configurable hasta 60min per `auth.py`).
+
+---
+
+### REQ-OPS-115 — Countdown auto re-enable al llegar a 0 (DEC-F3.2-02)
+
+**Source**: HU-F3.2 (`plan.md:1315` + `DEC-F3.2-02` form re-enable + `DEC-F3.2-06` i18n `lockoutReEnable` notice) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El componente `<Login>` (container) MUST detectar cuando `useCountdown().isExpired === true` y resetear `errorState` a `null` para re-habilitar el form (inputs + submit vuelven a `disabled={false}`). Tras el reset, el componente MUST aplicar foco automático al primer input (`<Input name="email">`) vía `inputRef.current?.focus()` para que el operador pueda tipear inmediatamente. Opcionalmente, el componente MUST mostrar `<p role="status" aria-live="polite">{t('lockoutReEnable')}</p>` por ~3000ms antes de ocultarlo (DEC-F3.2-06 — UX feedback "El formulario se ha reactivado. Puedes intentar de nuevo."). El `useEffect` MUST tener deps `[isExpired, onResetErrorState]` para evitar loops infinitos.
+
+**Rationale**: Sin auto re-enable, el operador queda atrapado en lockout state para siempre (o hasta refresh manual). El countdown llegando a 0 MUST trigger un cleanup completo: interval cleanup + errorState reset + foco ready para retry. UX profesional: el operador ve el feedback "reactivado" y sabe que puede intentar de nuevo.
+
+**Source**: `apps/electron-sucursal/src/features/auth/pages/Login.tsx` (MODIFY F3.2 T2 +10 LOC — wire `useCountdown.isExpired` reset `errorState`); `apps/electron-sucursal/src/features/auth/components/LoginForm.tsx` (MODIFY F3.2 T2 — `disabled` prop ahora depende de `!isExpired` además de `error.kind === 'lockout'`); `apps/electron-sucursal/src/features/auth/pages/Login.test.tsx` (MODIFY F3.2 T2 +15 LOC — U10 isExpired resets errorState); R7 risk en `exploration.md §8` (429 sin Retry-After → `useCountdown(0)` retorna inmediato `{secondsLeft: 0, isExpired: true}` → form re-enabled sin display numérico).
+
+**Scenario 1: isExpired true → errorState reset a null + form re-enabled**
+- **Given** `<Login>` está en lockout state con `errorState = { kind: 'lockout', retryAfterSeconds: 10 }`
+- **When** `useCountdown(10)` retorna `{secondsLeft: 0, isExpired: true}` (post-`vi.advanceTimersByTime(10_000)`)
+- **Then** el `useEffect([isExpired])` MUST disparar `setErrorState(null)` (reset atómico)
+- **And** el form MUST re-renderizar con `<Input>` + `<Button>` en `disabled={false}`
+- **And** el foco MUST estar en `<Input name="email">` (auto-focus para retry inmediato).
+
+**Scenario 2: Auto re-enable notice (`lockoutReEnable`) visible 3s**
+- **Given** `isExpired === true` acaba de disparar
+- **When** `<LoginForm>` renderiza el notice
+- **Then** MUST aparecer `<p role="status" aria-live="polite" data-testid="lockout-re-enable">{t('lockoutReEnable')}</p>`
+- **And** tras `vi.advanceTimersByTime(3000)`, el notice MUST desaparecer (cleanup state local)
+- **And** NO MUST quedar el notice permanentemente (UX: el operador ya sabe que puede reintentar).
+
+**Scenario 3: 429 sin Retry-After → `useCountdown(0)` inmediato re-enable**
+- **Given** el backend anomaly omite el header `Retry-After` (R7 risk)
+- **And** `loginApi.parseRetryAfter` retorna 0 (fallback)
+- **When** `<Login>` recibe `AccountLockedError(retryAfterSeconds: 0)`
+- **Then** `useCountdown(0)` MUST retornar inmediato `{secondsLeft: 0, isExpired: true}`
+- **And** el componente MUST NO renderizar el countdown display (`secondsLeft === 0` se omite)
+- **And** el componente MUST mostrar solo `<p role="alert">{t('lockout')}</p>` (texto estático fallback sin "N minutos")
+- **And** el form MUST re-enabled inmediato (sin esperar).
+
+---
+
+### REQ-OPS-116 — `parkosFetch` pre-flight gate antes de POST críticos (DEC-F3.2-03 + DEC-F3.2-07 + DEC-FETCH-03 invariant)
+
+**Source**: HU-F3.2 (`plan.md:1311` + `DEC-F3.2-03` regex path match + `DEC-F3.2-07` latency budget ≤200ms + `DEC-FETCH-03` Mutex preserved) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+La función `parkosFetchRaw(url, init)` MUST invocar `refreshIfExpiringSoon()` ANTES del `fetch` cuando se cumplen TODAS las condiciones: (1) `init.method === 'POST'`, (2) `url.match(PRE_FLIGHT_PATHS)` donde `PRE_FLIGHT_PATHS = /\/facturacion(\/|$)|\/caja\/arqueo/` (regex módulo-level, NO recompilar per request), (3) `useAuthStore.expiresAt !== null`, (4) `Date.parse(useAuthStore.expiresAt) - Date.now() < PRE_FLIGHT_THRESHOLD_MS` donde `PRE_FLIGHT_THRESHOLD_MS = 5 * 60 * 1000` (5min). La función `refreshIfExpiringSoon()` MUST invocar `useAuthStore.getState().refreshAccessToken()` (Mutex singleton F2.2 — `DEC-FETCH-03` invariant preserved) y NO retornar hasta que la promesa resuelva (success O failure). Si `refreshAccessToken()` falla, el request MUST continuar con el token existente (graceful degradation — `handle401` cubre 401 post-refresh). El pre-flight MUST NO triggerearse en GET requests (idempotentes, 401 retry cubre). El pre-flight MUST NO triggerearse en `POST /auth/login` (anónimo, `expiresAt === null` skip automático per R7 mitigation). Latency budget p95 MUST ser ≤200ms (DEC-F3.2-07 — soft target, no hard fail).
+
+**Rationale**: Si el access_token expira JUSTO en el medio de un POST crítico (e.g., emisión de factura con payload >100KB que tarda >2s en serializar), el backend responde 401 → handle401 reactivo → refresh → retry. Esto causa race correctness donde el backend recibe el POST original (¿se procesa dos veces?) y el operador ve error transitorio. El pre-flight gate verifica `expiresAt` proactivamente y refresca ANTES de que el POST viaje, garantizando token fresco. El Mutex F2.2 preserva el invariant de single refresh incluso si 401 reactivo dispara concurrent.
+
+**Source**: `apps/ui-kit/src/fetch/parkosFetch.ts` (MODIFY F3.2 T3 +20 LOC — `PRE_FLIGHT_PATHS` regex + `PRE_FLIGHT_THRESHOLD_MS` const + `refreshIfExpiringSoon()` internal function + integration en `parkosFetchRaw` antes del fetch); `apps/ui-kit/src/store/authStore.ts:71-128` (F2.2 READ ONLY — `setTokens` + `clear` + `refreshAccessToken` Mutex; F3.2 consume as-is); `apps/ui-kit/src/fetch/parkosFetch.ts:119-140` (F2.2 `handle401` Mutex — F3.2 invariant preserved); `apps/ui-kit/src/fetch/parkosFetch.test.ts` (MODIFY F3.2 T3 +60 LOC — U5 expiring soon triggers refresh, U6 not expiring skips refresh, U7 GET no triggerea, U8 refresh failure graceful degradation, U9 Mutex shared with 401 path); `backend/.../auth.py:21,71-72,279,285,297,306,343,348` (READ ONLY — `ACCESS_TOKEN_TTL = 3600`, `REFRESH_TOKEN_TTL = 7d`); R2 risk + R5 risk en `exploration.md §8`.
+
+**Scenario 1: POST `/facturacion/*` con expiresAt < 5min → pre-flight triggerea refresh**
+- **Given** `useAuthStore.expiresAt = new Date(Date.now() + 60_000).toISOString()` (60s, < 5min threshold)
+- **And** el operador submita `POST /api/v1/facturacion/emision` con payload de factura
+- **When** `parkosFetchRaw('/api/v1/facturacion/emision', { method: 'POST', body })` ejecuta
+- **Then** ANTES del `fetch`, MUST invocar `refreshIfExpiringSoon()` → `await useAuthStore.getState().refreshAccessToken()`
+- **And** el `POST /facturacion/emision` MUST viajar con el `Authorization: Bearer <nuevo_access>` header (post-refresh)
+- **And** la request MUST NO recibir 401 (porque el token está fresco).
+
+**Scenario 2: POST `/facturacion/*` con expiresAt > 5min → pre-flight SKIP**
+- **Given** `useAuthStore.expiresAt = new Date(Date.now() + 600_000).toISOString()` (10min, > 5min threshold)
+- **And** el operador submita `POST /api/v1/facturacion/emision`
+- **When** `parkosFetchRaw` ejecuta
+- **Then** `refreshIfExpiringSoon()` MUST retornar sin invocar `refreshAccessToken` (skip optimization)
+- **And** el `POST` MUST viajar con el `Authorization: Bearer <access_vigente>` (no refresh necesario).
+
+**Scenario 3: GET requests NO triggerean pre-flight (idempotentes)**
+- **Given** `useAuthStore.expiresAt < 5min from now` (expira soon)
+- **And** el operador carga `GET /api/v1/facturacion/ocupacion`
+- **When** `parkosFetchRaw('/api/v1/facturacion/ocupacion', { method: 'GET' })` ejecuta
+- **Then** el pre-flight MUST NO triggerearse (`method !== 'POST'`)
+- **And** la GET MUST proceder normal; si el token expira durante la request, `handle401` cubre.
+
+**Scenario 4: POST `/auth/login` anónimo → pre-flight skip (expiresAt null)**
+- **Given** `useAuthStore.expiresAt === null` (estado pre-login)
+- **And** el operador submita `POST /api/v1/auth/login` (anonymous, NO matchea `PRE_FLIGHT_PATHS`)
+- **When** `parkosFetchRaw` ejecuta
+- **Then** el pre-flight MUST NO triggerearse (path doesn't match — `/auth/login` not in regex; even if it did, `expiresAt === null` short-circuits)
+- **And** `loginApi.postLogin` MUST usar `fetch` raw (DEC-F3.1-05 — pre-login NO usa parkosFetch).
+
+**Scenario 5: Refresh failure durante pre-flight → graceful degradation**
+- **Given** `expiresAt < 5min` y `useAuthStore.getState().refreshAccessToken` rechaza con error (backend 5xx)
+- **When** `refreshIfExpiringSoon()` ejecuta
+- **Then** el error MUST ser capturado (try/catch)
+- **And** el `POST /facturacion` MUST continuar con el token existente (graceful degradation)
+- **And** si el backend responde 401 post-refresh-failure, `handle401` cubre el retry-once.
+
+**Scenario 6: Mutex shared entre pre-flight + 401 reactivo (no doble refresh)**
+- **Given** un POST `/facturacion` está en pre-flight awaiting `refreshAccessToken`
+- **When** concurrentemente, otra request recibe 401 y dispara `handle401` que también awaits `refreshAccessToken`
+- **Then** ambas llamadas MUST compartir la MISMA promesa Mutex (F2.2 `DEC-FETCH-03`)
+- **And** el backend MUST recibir UN solo `POST /auth/refresh` (no dos).
+
+---
+
+### REQ-OPS-117 — `useAuth.refreshInterval: 50min` alineado con `ACCESS_TOKEN_TTL = 3600` (DEC-F3.2-04 + DEC-SUC-03)
+
+**Source**: HU-F3.2 (`plan.md:1311, 418` + `DEC-F3.2-04` constante exportada + `DEC-SUC-03` 50min verbatim) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El hook `useAuth()` (SWR) MUST setear `refreshInterval: REFRESH_INTERVAL_MS` donde `REFRESH_INTERVAL_MS = 50 * 60 * 1000` (3_000_000ms). La constante `REFRESH_INTERVAL_MS` MUST estar exportada desde `apps/ui-kit/src/hooks/useAuth.ts` para testabilidad determinista (vitest puede importarla y verificar el valor sin magic numbers). El JSDoc del hook MUST documentar el safety margin: `ACCESS_TOKEN_TTL (3600s) - REFRESH_INTERVAL_MS (3000s) = 600s = 10min` — si un refresh falla, el operador tiene 10min antes de 401 forzado. El SWR MUST disparar `parkosFetch('/auth/me')` cada 50 minutos para hidratar `useAuthStore` con `user`, `sucursal`, `permisos[]`, `expiresAt`. SWR's `refreshInterval` MUST coexistir con `revalidateOnFocus: true` (F2.2 baseline) — un focus event refetcha inmediato sin esperar el interval. `REFRESH_INTERVAL_MS` MUST NO ser configurable via UI (DEC-SUC-03 verbatim — hardcoded para kiosko desatendido; env var `PARKOS_REFRESH_INTERVAL_MS` es forward hook F3.x).
+
+**Rationale**: F2.2 baseline (`refreshInterval: 5 * 60 * 1000` = 12 refreshes/hora) es 12x bandwidth waste vs `ACCESS_TOKEN_TTL = 3600` (1 refresh/hora es suficiente con safety margin). 50min deja 10min safety margin vs TTL — si un refresh falla, el operador tiene 10min para retry antes de que `expiresAt` expire y `useAuth()` emita `parkos:auth:cleared`. Constante exportada permite tests deterministas sin magic numbers.
+
+**Source**: `apps/ui-kit/src/hooks/useAuth.ts` (MODIFY F3.2 T3 line 60 — `refreshInterval: 5 * 60 * 1000` → `REFRESH_INTERVAL_MS = 50 * 60 * 1000` + JSDoc update); `apps/ui-kit/src/hooks/useAuth.test.ts` (MODIFY F3.2 T3 +10 LOC — verify `REFRESH_INTERVAL_MS = 50 * 60 * 1000`); `apps/ui-kit/src/fetch/parkosFetch.ts:92-96` (F2.2 READ ONLY — `Authorization: Bearer` injection automático, refresh NO toca este path); `plan.md:418` (DEC-SUC-03 verbatim "Refresh transparente cada 50 minutos y antes de escrituras críticas"); R3 risk en `exploration.md §8` (SWR refresh coincide con active request — SWR mutation isolation + non-blocking, NO conflicto).
+
+**Scenario 1: `useAuth()` se monta → SWR configura refreshInterval 50min**
+- **Given** el operador está autenticado con `accessToken !== null` post-login
+- **When** el componente destino (e.g., `<LoginPage>` redirect a `/`) monta `<Routes>` que consumen `useAuth()`
+- **Then** SWR MUST configurar `refreshInterval: 50 * 60 * 1000`
+- **And** SWR MUST disparar el primer `parkosFetch('/auth/me')` inmediatamente (key change)
+- **And** tras 50min, SWR MUST disparar el siguiente `parkosFetch('/auth/me')` (refresh automático).
+
+**Scenario 2: Constante `REFRESH_INTERVAL_MS` exportada y testeable**
+- **Given** `useAuth.test.ts` importa `REFRESH_INTERVAL_MS` desde `apps/ui-kit/src/hooks/useAuth.ts`
+- **When** el test ejecuta `expect(REFRESH_INTERVAL_MS).toBe(50 * 60 * 1000)`
+- **Then** el assertion MUST pasar (50 * 60 * 1000 = 3_000_000ms exact)
+- **And** el test MUST NO usar magic numbers (cero `expect(refreshInterval).toBe(3_000_000)` hardcoded).
+
+**Scenario 3: Safety margin 10min — refresh falla + operador tiene 10min antes de 401**
+- **Given** `accessToken` emitió a T0 con `expiresAt = T0 + 3600s`
+- **And** SWR refresh scheduled at T0 + 3000s (50min)
+- **When** el refresh a T0 + 3000s falla (backend 5xx transitorio)
+- **Then** el operador puede continuar usando el `accessToken` hasta T0 + 3600s (TTL expiration)
+- **And** entre T0 + 3000s y T0 + 3600s hay 600s = 10min de safety margin
+- **And** el próximo SWR refresh scheduled at T0 + 6000s (100min) puede recuperar la sesión.
+
+**Scenario 4: SWR refresh coincide con active request POST — NO conflicto**
+- **Given** SWR tiene un refresh scheduled a T+50min
+- **And** a T+50min, el operador submita `POST /facturacion/emision` concurrentemente
+- **When** ambos requests ejecutan en paralelo
+- **Then** SWR MUST ejecutar `parkosFetch('/auth/me')` con el MISMO `accessToken` (read at request start)
+- **And** el `POST /facturacion` MUST ejecutar con el MISMO `accessToken`
+- **And** MUST NO haber interference (SWR mutation isolation + non-blocking fetch).
+
+---
+
+### REQ-OPS-118 — WCAG 2.1 AA compliance via axe-core 0 violaciones en `<LoginForm>` durante lockout state (DEC-F3.2-05)
+
+**Source**: HU-F3.2 (`plan.md:1315` + `DEC-F3.2-05` axe-core countdown state + `RNF-022` WCAG 2.1 AA + REQ-OPS-112 F3.1 precedent) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El componente `<LoginForm>` MUST pasar el scan `axe-core` (vía `@axe-core/playwright` extension) con 0 violaciones de WCAG 2.1 AA durante lockout state (countdown activo). Cobertura mandatory: (1) `<p role="status" aria-live="polite" data-testid="login-countdown">` con `aria-label` descriptivo (`t('lockoutLabel')`); (2) `<Input>` + `<Button>` con `aria-disabled="true"` durante lockout; (3) `<p role="alert">{t('lockout')}</p>` (mensaje estático F3.1) — countdown display NO debe duplicar role=alert (R6 risk — interruptivo); (4) tab order secuencial preservado durante lockout (foco pasa por inputs disabled pero el orden es consistente); (5) contraste de color mínimo 4.5:1 entre countdown display foreground y background (CSS tokens de `apps/ui-kit/src/tokens.ts` — F2.1 baseline); (6) NO errores de axe-core sobre `aria-live="polite"` mal usado (el `<p>` debe tener contenido textual). El e2e test `apps/electron-sucursal/e2e/auth/lockout.spec.ts` MUST incluir un test `axe-core scan on /login during lockout state` que ejecute el analyzer post-render del countdown (E1 mockea 429 + Retry-After → countdown visible → A1 ejecuta axe-core).
+
+**Rationale**: RNF-022 (`docs/01-requisitos/no-funcionales.md:126`) exige WCAG 2.1 AA compliance para todas las pantallas transaccionales. F3.1 sentó el patrón a11y para LoginForm (REQ-OPS-112, axe-core 0 violaciones en estado normal). F3.2 extiende al lockout state — el countdown display + form disabled deben pasar el scan con 0 violaciones. Si axe-core reporta violaciones, el kiosko desatendido pierde la cobertura a11y que el operador en piso necesita.
+
+**Source**: `apps/electron-sucursal/package.json:55-56` (`@playwright/test@^1.48.0` + `@axe-core/playwright@^4.10.0` — F2.1 baseline); `docs/01-requisitos/no-funcionales.md:126` (RNF-022 anchor); `apps/electron-sucursal/e2e/a11y/wcag-2.1-aa.spec.ts` (F2.1 axe-core pattern precedent — F3.2 replica el patrón en `e2e/auth/lockout.spec.ts`); REQ-OPS-112 F3.1 (precedent verbatim pattern); R6 risk en `exploration.md §8`.
+
+**Scenario 1: axe-core scan durante countdown state — 0 violaciones**
+- **Given** el operador accede a `/login` y la e2e mockea un 429 con `Retry-After: 600` (10min)
+- **And** `<LoginForm>` renderiza el countdown display `<p role="status" aria-live="polite" data-testid="login-countdown" aria-label="Tiempo restante para reintentar: 10:00">{t('lockoutCountdown', {time: '10:00'})}</p>`
+- **And** los inputs + submit están `disabled={true}` + `aria-disabled="true"`
+- **When** `e2e/auth/lockout.spec.ts::test_axe_core_lockout` ejecuta `new AxeBuilder({page}).analyze()` con tags `wcag2a, wcag2aa, wcag21a, wcag21aa`
+- **Then** el array `result.violations` MUST estar vacío (length === 0)
+- **And** el test MUST pasar verde (no skip en CI).
+
+**Scenario 2: axe-core scan post auto re-enable — 0 violaciones**
+- **Given** el countdown llegó a 0 (`isExpired === true`) y el form re-enabled
+- **And** `<LoginForm>` ya no muestra countdown (cleanup state local)
+- **When** `e2e/auth/lockout.spec.ts::test_axe_core_re_enable` ejecuta axe-core scan
+- **Then** el array `result.violations` MUST estar vacío
+- **And** el form MUST pasar WCAG 2.1 AA en estado normal (sin countdown — REQ-OPS-112 F3.1 regression check).
+
+**Scenario 3: `role="status"` + `aria-live="polite"` semánticamente correctos**
+- **Given** el countdown display renderiza con `role="status" aria-live="polite"`
+- **When** axe-core valida el patrón (rules `aria-roles`, `aria-valid-attr-value`)
+- **Then** MUST haber 0 violaciones sobre los atributos ARIA
+- **And** el `<p>` MUST contener contenido textual (`{t('lockoutCountdown', {time: formatTime(secondsLeft)})}`) — axe-core rechaza `aria-live` regions vacías.
+
+---
+
 
 ## Modified Capabilities
 
