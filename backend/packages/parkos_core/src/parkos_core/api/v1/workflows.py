@@ -71,7 +71,7 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 # Issuer-permission defaults per resource (T-PR6-10).
 _ROUTER_CONFIG = {
-    "reimpresion-ticket": ("operador-,admin-", "emitir_reimpresion"),
+    "reimpresion-ticket": ("operador-,admin-", "reimprimir_ticket"),
     "anulaciones": ("operador-,admin-", "anular_ingreso_salida"),
     "reclamos": ("operador-,admin-", "registrar_reclamo"),
     "alerta": ("operador-,admin-", "registrar_alerta"),

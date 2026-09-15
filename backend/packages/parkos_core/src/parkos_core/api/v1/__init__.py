@@ -101,6 +101,7 @@ from . import (
     sucursal,
     sync_router,  # T-PR8-16 wire-in: /sync/* (REQ-OP-03, both deploys)
     workflows,
+    workflows_reimpresion,  # HU-F1.11: POST /workflows/reimpresion-ticket + .../{uuid}/anular
 )
 
 # Re-use the same per-resource sub-routers that ``empresa.router``
@@ -143,6 +144,9 @@ def _build_router() -> APIRouter:
     r.include_router(operacion.router)
     r.include_router(facturacion.router)  # PR6
     r.include_router(workflows.router)  # PR6
+    # HU-F1.11 / DEC-TKT-06: POST /workflows/reimpresion-ticket + /{uuid}/anular
+    # live on a dedicated router to keep the factory path reserved for C+Q.
+    r.include_router(workflows_reimpresion.router)
     r.include_router(caja.router)  # T-PR7-09
     r.include_router(caja_sesion.router)  # T-PR7-09
     r.include_router(sync_router.router)  # T-PR8-16: /sync/* (both deploys, REQ-OP-03)
