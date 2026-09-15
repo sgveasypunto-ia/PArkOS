@@ -1,4 +1,4 @@
-"""Operation HTTP routes (PR5 — ingreso lifecycle event).
+"""Operation HTTP routes (PR5 — ingreso lifecycle event + F1.5/F1.6/F1.8 deltas).
 
 ``ingreso`` is ``[L-E]`` (insert-only event). Writes MUST go through
 ``repo.event.record_event`` (REQ-30, REQ-33). NO PUT/DELETE — events are
@@ -24,6 +24,13 @@ would still validate. This function explicitly filters
 ``WHERE uuid_sucursal = :this_branch`` **in addition to** relying on the
 scoped sync, so it validates correctly the moment the exit endpoint is
 built on top of it, without repeating that mistake.
+
+HU-F1.6 (REQ-OPS-034..041) extends ``POST /operacion/ingresos`` with the
+11-step server-side validation chain (D-HU-F1.6-11): KD-3 → V5 → V4 →
+KD-FORZADO-01 → V1+V2 → V3 → V6 → V8 → INSERT → alerta (same TX) → V9
+derivation. The handler delegates to ``repo.ingreso.*`` helpers; see
+``tests/static/test_kd_forzado_in_handler.py`` for the AST walk that locks
+the invocation order.
 """
 from __future__ import annotations
 
@@ -50,17 +57,29 @@ from ...repo.cotizacion import (
     TarifaNoVigente,
     cotizar_ingreso,
 )
-from ...repo.event import record_event
+from ...repo.ingreso import (
+    crear_ingreso_evento,
+    existe_ingreso_activo,
+    insertar_alerta_forzado,
+    validar_cupo_disponible,
+    validar_kd_forzado,
+    validar_subscripcion_vigente,
+    validar_tarifa_vigente,
+    validar_tipo_vehiculo_vigente,
+)
 from ...repo.ocupacion import get_ocupacion_puros_activos
+from ...repo.placa import detectar_tipo_vehiculo
 from ...schemas.operacion import (
     CotizarFacturacion,
     CotizarMensualidad,
     CotizarResponse,
-    IngresoCreate,
+    IngresoCreateForzado,
     IngresoRead,
+    IngresoReadForzado,
     OcupacionItem,
     OcupacionResponse,
 )
+from ._helpers import apply_no_store_header, no_store_headers
 
 router = APIRouter(prefix="/operacion", tags=["operacion"])
 
@@ -85,33 +104,194 @@ class IngresoEstadoResponse(BaseModel):
 
 @router.post(
     "/ingresos",
-    response_model=IngresoRead,
+    response_model=IngresoReadForzado,
     status_code=201,
-    summary="Register a vehicle entry (ingreso, [L-E] event)",
+    summary="HU-F1.6: validated register of a vehicle entry (ingreso, [L-E] event)",
+    responses={
+        400: {"description": "missing_sucursal_context"},
+        403: {
+            "description": (
+                "tenant_scope_violation (operador) | "
+                "sucursal_not_permitted (admin)"
+            )
+        },
+        409: {"description": "ingreso_activo_existente (V8)"},
+        422: {
+            "description": (
+                "placa_formato_invalido (V5) | tipo_vehiculo_invalido (V4) | "
+                "forzado_contradiccion (KD-FORZADO-01) | "
+                "motivo_forzado_requerido (V2) | "
+                "motivo_forzado_insuficiente (KD-FORZADO-01) | "
+                "cupo_no_configurado (V1) | "
+                "tarifa_vigente_no_encontrada (V3) | "
+                "subscripcion_inactiva_o_vencida (V6)"
+            )
+        },
+    },
 )
 async def create_ingreso(
-    payload: IngresoCreate,
+    response: Response,
+    payload: IngresoCreateForzado,
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_ingreso_issuer_dep),
-) -> IngresoRead:
-    """Insert-only write for an ingreso event.
+) -> IngresoReadForzado:
+    """HU-F1.6 / REQ-OPS-034..041: validated INSERT for ``prod.ingreso``.
 
-    The Idempotency-Key header is checked by the FastAPI middleware
-    (PR2 IdempotencyKeyMiddleware). Body goes through Pydantic validation
-    (``IngresoCreate``). Persistence goes through ``repo.event.record_event``
-    (REQ-30).
+    11-step chain (D-HU-F1.6-11). Every step raises ``HTTPException``
+    with the typed discriminator + ``Cache-Control: no-store``. Order is
+    locked by ``tests/static/test_kd_forzado_in_handler.py``.
     """
-    new_row = await record_event(
+    no_store = no_store_headers()
+
+    # --- Step 1: KD-3 (resolve target sucursal + tenant scope). ---------
+    target = payload.uuid_sucursal or ctx.sucursal_uuid
+    if target is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+            headers=no_store,
+        )
+    if (
+        ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or target != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "tenant_scope_violation"},
+            headers=no_store,
+        )
+
+    # --- Step 2: V5 (regex-derived uuid_tipo_vehiculo). -----------------
+    uuid_tipo_vehiculo = await detectar_tipo_vehiculo(session, payload.placa)
+    if uuid_tipo_vehiculo is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "placa_formato_invalido",
+                "formatos_aceptados": ["ABC123", "ABC12D"],
+            },
+            headers=no_store,
+        )
+
+    # --- Step 3: V4 (catalog vigente check, KD-V3 no bypass). ----------
+    if not await validar_tipo_vehiculo_vigente(
+        session, uuid_tipo_vehiculo=uuid_tipo_vehiculo
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "tipo_vehiculo_invalido"},
+            headers=no_store,
+        )
+
+    # --- Step 4: KD-FORZADO-01 (prefix contract). ----------------------
+    motivo = validar_kd_forzado(payload.observaciones, payload.forzado)
+    bypass_reason: str | None = "forzado" if motivo is not None else None
+
+    # --- Step 5: V1+V2 (cupo no config + agotado). ---------------------
+    cupo_result = await validar_cupo_disponible(
         session,
-        Ingreso,
-        actor_uuid=ctx.actor_uuid,
-        new_attrs=payload.model_dump(exclude_none=True),
-        log_tx=True,
+        uuid_sucursal=target,
+        uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+        forzado=bool(bypass_reason),
     )
+    if cupo_result.cupo_no_configurado:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "cupo_no_configurado",
+                "forzado_permitido": True,
+            },
+            headers=no_store,
+        )
+    if cupo_result.cupo_agotado:
+        if not bypass_reason:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "motivo_forzado_requerido",
+                    "cupo_maximo": cupo_result.cupo_maximo,
+                    "activos": cupo_result.activos,
+                },
+                headers=no_store,
+            )
+        bypass_reason = "cupo_agotado"
+
+    # --- Step 6: V3 (tarifa vigente, bi-temporal). ---------------------
+    tarifa_result = await validar_tarifa_vigente(
+        session,
+        uuid_sucursal=target,
+        uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+        at=datetime.now(UTC).replace(tzinfo=None),
+        forzado=bool(bypass_reason),
+    )
+    if not tarifa_result.vigente and not bypass_reason:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "tarifa_vigente_no_encontrada"},
+            headers=no_store,
+        )
+
+    # --- Step 7: V6 (subscripcion vigente, bi-temporal). --------------
+    if payload.uuid_subscripcion_cliente is not None:
+        sub_result = await validar_subscripcion_vigente(
+            session,
+            uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente,
+            forzado=bool(bypass_reason),
+        )
+        if not sub_result.vigente and not bypass_reason:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "subscripcion_inactiva_o_vencida"},
+                headers=no_store,
+            )
+
+    # --- Step 8: V8 (no duplicate active ingreso, NO lock pesimista). --
+    uuid_activo = await existe_ingreso_activo(
+        session, uuid_sucursal=target, placa=payload.placa or ""
+    )
+    if uuid_activo is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "ingreso_activo_existente",
+                "uuid_ingreso_existente": str(uuid_activo),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 9: INSERT + alerta (same TX, R5). ------------------------
+    new_attrs = payload.model_dump(exclude_none=True, exclude={"forzado"})
+    new_attrs["uuid_tipo_vehiculo"] = uuid_tipo_vehiculo
+    new_attrs["uuid_sucursal"] = target
+    new_row = await crear_ingreso_evento(
+        session,
+        actor_uuid=ctx.actor_uuid,
+        new_attrs=new_attrs,
+    )
+    if bypass_reason == "cupo_agotado":
+        await insertar_alerta_forzado(
+            session,
+            uuid_sucursal=target,
+            uuid_ingreso=new_row.uuid,
+            actor_uuid=ctx.actor_uuid,
+            motivo=motivo or "(sin motivo)",
+        )
     await session.commit()
+
+    # --- Step 10: V9 derivation (DEC-SUC-21). --------------------------
+    tipo_entrada: str = "MENSUALIDAD" if payload.uuid_subscripcion_cliente else "ROTACION"
+
+    # --- Step 11: response shape. --------------------------------------
+    apply_no_store_header(response)
     await session.refresh(new_row)
-    return IngresoRead.model_validate(new_row)
+    base = IngresoRead.model_validate(new_row).model_dump()
+    return IngresoReadForzado(
+        **base,
+        tipo_entrada=tipo_entrada,  # type: ignore[arg-type]
+        forzado_en_creacion=bypass_reason is not None,
+        motivo_forzado=motivo if bypass_reason else None,
+    )
 
 
 @router.get(
@@ -208,15 +388,9 @@ async def list_ingresos(
 
 
 def _cotizar_no_store_headers() -> dict[str, str]:
-    """Return the ``Cache-Control: no-store`` headers (R8).
-
-    Every response from ``/operacion/cotizar`` MUST carry this header
-    regardless of status code -- a proxy that serves a stale quote
-    would silently accept an out-of-date fiscal breakdown. The handler
-    attaches the header to both the success path (via ``response.headers``)
-    and the error path (via ``HTTPException(headers=...)``).
-    """
-    return {"Cache-Control": "no-store"}
+    """Legacy F1.8 helper. Kept as a module-level shim that delegates to the
+    shared :func:`api.v1._helpers.no_store_headers` (R-A6 mitigation)."""
+    return no_store_headers()
 
 
 @router.get(

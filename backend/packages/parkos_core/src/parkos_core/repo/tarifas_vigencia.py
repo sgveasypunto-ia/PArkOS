@@ -19,6 +19,7 @@ so the unit tests can reference it without re-encoding the SQL.
 from __future__ import annotations
 
 import uuid as uuid_lib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import ColumnElement, and_, or_, select
@@ -163,6 +164,54 @@ async def list_tarifas_vigentes(
 
 __all__ = [
     "BITEMPORAL_VIGENTE_PREDICATE_TEMPLATE",
+    "TarifaValidationResult",
     "bitemporal_vigente_predicate",
     "list_tarifas_vigentes",
+    "validar_tarifa_vigente",
 ]
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.6 -- V3 (REQ-OPS-036) thin wrapper on F1.4 bi-temporal predicate.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TarifaValidationResult:
+    """Outcome of :func:`validar_tarifa_vigente`."""
+
+    vigente: bool
+    tarifa: TarifasSucursal | None = None
+
+
+async def validar_tarifa_vigente(
+    session: AsyncSession,
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    uuid_tipo_vehiculo: uuid_lib.UUID,
+    at: datetime,
+    forzado: bool = False,
+) -> TarifaValidationResult:
+    """V3 (REQ-OPS-036): is there a vigente ``tarifas_sucursal`` row?
+
+    Reuses :data:`bitemporal_vigente_predicate` verbatim from F1.4
+    (``vigente_desde <= :v AND (vigente_hasta IS NULL OR vigente_hasta
+    > :v) AND estado = 'activo'``). KD-FORZADO does NOT bypass V3 -- a
+    forced ingreso still requires a vigente tariff to bill against.
+    The ``forzado`` param is accepted for symmetry with the other
+    validators but ignored.
+    """
+    v_utc = _to_utc_naive(at)
+    stmt = (
+        select(TarifasSucursal)
+        .where(
+            TarifasSucursal.uuid_sucursal == uuid_sucursal,
+            TarifasSucursal.uuid_tipo_vehiculo == uuid_tipo_vehiculo,
+        )
+        .where(bitemporal_vigente_predicate(TarifasSucursal, v_utc))
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is not None:
+        return TarifaValidationResult(vigente=True, tarifa=row)
+    return TarifaValidationResult(vigente=False, tarifa=None)

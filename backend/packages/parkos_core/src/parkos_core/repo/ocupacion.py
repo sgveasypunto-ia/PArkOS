@@ -123,6 +123,92 @@ async def get_ocupacion_puros_activos(
 
 
 __all__ = [
+    "CupoValidationResult",
     "OcupacionItemRow",
     "get_ocupacion_puros_activos",
+    "validar_cupo_disponible",
 ]
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.6 -- V1+V2 validation (REQ-OPS-034/035) on top of the F1.5 MV.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CupoValidationResult:
+    """Outcome of :func:`validar_cupo_disponible`.
+
+    Discriminators:
+
+    - ``cupo_no_configurado=True`` (V1): the branch has no
+      ``cantidad_vehiculos_sucursal`` row for ``uuid_tipo_vehiculo``
+      (``cupo_maximo=0``) -- 422 ``cupo_no_configurado`` (bypass permitted).
+    - ``cupo_agotado=True`` (V2): ``activos >= cupo_maximo`` AND
+      ``forzado=False`` -- 422 ``motivo_forzado_requerido``.
+    - Both flags ``False``: cup available (proceed).
+    """
+
+    cupo_no_configurado: bool
+    cupo_agotado: bool
+    cupo_maximo: int
+    activos: int
+
+    @classmethod
+    def ok(cls, *, cupo_maximo: int, activos: int) -> CupoValidationResult:
+        return cls(
+            cupo_no_configurado=False,
+            cupo_agotado=False,
+            cupo_maximo=cupo_maximo,
+            activos=activos,
+        )
+
+
+async def validar_cupo_disponible(
+    session: AsyncSession,
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    uuid_tipo_vehiculo: uuid_lib.UUID,
+    forzado: bool = False,
+) -> CupoValidationResult:
+    """V1+V2 (REQ-OPS-034/035): enough cup to accept a new ingreso?
+
+    Reads :func:`get_ocupacion_puros_activos` (F1.5) and narrows to
+    the row matching ``uuid_tipo_vehiculo``. KD-V4 (RIESCO-SUC-02):
+    eventual consistency via MV; lag <= 10s accepted as live risk.
+
+    KD-V8: KD-FORZADO chain may BYPASS a V2 agotado; the helper returns
+    ``cupo_agotado=False`` in that case so the handler proceeds to
+    INSERT. Caller is responsible for raising the alerta INSERT.
+    """
+    items = await get_ocupacion_puros_activos(session, uuid_sucursal=uuid_sucursal)
+    match: OcupacionItemRow | None = next(
+        (it for it in items if it.uuid_tipo_vehiculo == uuid_tipo_vehiculo),
+        None,
+    )
+    if match is None:
+        # No tipo registered at all -- treat as V1 (no config).
+        return CupoValidationResult(
+            cupo_no_configurado=True,
+            cupo_agotado=False,
+            cupo_maximo=0,
+            activos=0,
+        )
+    if match.cupo_maximo == 0:
+        return CupoValidationResult(
+            cupo_no_configurado=True,
+            cupo_agotado=False,
+            cupo_maximo=0,
+            activos=match.activos,
+        )
+    if match.activos >= match.cupo_maximo and not forzado:
+        return CupoValidationResult(
+            cupo_no_configurado=False,
+            cupo_agotado=True,
+            cupo_maximo=match.cupo_maximo,
+            activos=match.activos,
+        )
+    return CupoValidationResult.ok(
+        cupo_maximo=match.cupo_maximo,
+        activos=match.activos,
+    )

@@ -237,14 +237,130 @@ class OcupacionResponse(_Base):
     generado_en: datetime
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.6 -- IngresoCreateForzado / IngresoReadForzado (REQ-OPS-034..041)
+# ---------------------------------------------------------------------------
+
+
+class IngresoCreateForzado(_Base):
+    """INSERT payload for ``prod.ingreso`` with KD-FORZADO-01 bypass.
+
+    Adds ``forzado: bool = False`` to the F1.5 ``IngresoCreate`` shape.
+    Server-side validation enforces the prefix contract (D-HU-F1.6-5);
+    ``forzado`` is NOT persisted in ``prod.ingreso``.
+
+    ``extra='forbid'`` (inherited from ``_Base``) rejects extra fields
+    including ``tipo_entrada`` (an attempted injection of a non-existent
+    column).
+    """
+
+    # uuid_sucursal defaults to ctx.sucursal_uuid in the handler
+    # (KD-3 chain); the field is Optional here.
+    uuid_sucursal: uuid_lib.UUID | None = None
+    placa: str | None = None
+    # Server overwrites via V5 (regex-derived UUID wins over client value).
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None
+    uuid_subscripcion_cliente: uuid_lib.UUID | None = None
+    fecha_ingreso: datetime | None = None
+    observaciones: str | None = None
+    forzado: bool = False  # D-HU-F1.6-5; validated against prefix
+
+
+class IngresoReadForzado(_Base):
+    """Response shape for ``POST /operacion/ingresos`` (REQ-OPS-041).
+
+    Additive delta to ``IngresoRead`` (no field removed or renamed):
+    - ``tipo_entrada``: Literal['MENSUALIDAD', 'ROTACION'] (DEC-SUC-21)
+    - ``forzado_en_creacion``: True iff KD-FORZADO-01 bypass was used
+    - ``motivo_forzado``: stripped motivo, or None
+    """
+
+    # Inherited from IngresoRead (6 base + 6 business columns):
+    uuid: uuid_lib.UUID
+    created_at: datetime
+    created_by: uuid_lib.UUID | None
+    sync_status: str | None
+    sync_timestamp: datetime | None
+    sync_attempts: int | None
+    uuid_sucursal: uuid_lib.UUID | None
+    placa: str | None
+    uuid_tipo_vehiculo: uuid_lib.UUID | None
+    uuid_subscripcion_cliente: uuid_lib.UUID | None
+    fecha_ingreso: datetime | None
+    observaciones: str | None
+    # NEW:
+    tipo_entrada: Literal["MENSUALIDAD", "ROTACION"]
+    forzado_en_creacion: bool = False
+    motivo_forzado: str | None = None
+
+
+# --- Typed error schemas (D-HU-F1.6-10) ----------------------------------
+
+
+class CupoNoConfiguradoError(_Base):
+    """V1 422 discriminator."""
+
+    error: Literal["cupo_no_configurado"]
+    forzado_permitido: Literal[True]
+
+
+class MotivoForzadoRequeridoError(_Base):
+    """V2 422 discriminator (when cupo agotado without forzado)."""
+
+    error: Literal["motivo_forzado_requerido"]
+    cupo_maximo: int
+    activos: int
+
+
+class TarifaVigenteNoEncontradaError(_Base):
+    """V3 422 discriminator."""
+
+    error: Literal["tarifa_vigente_no_encontrada"]
+
+
+class PlacaFormatoInvalidoError(_Base):
+    """V5 422 discriminator."""
+
+    error: Literal["placa_formato_invalido"]
+    formatos_aceptados: list[str]
+
+
+class SubscripcionInactivaOVencidaError(_Base):
+    """V6 422 discriminator."""
+
+    error: Literal["subscripcion_inactiva_o_vencida"]
+
+
+class IngresoActivoExistenteError(_Base):
+    """V8 409 discriminator."""
+
+    error: Literal["ingreso_activo_existente"]
+    uuid_ingreso_existente: uuid_lib.UUID
+
+
+class TipoVehiculoInvalidoError(_Base):
+    """V4 422 discriminator."""
+
+    error: Literal["tipo_vehiculo_invalido"]
+
+
 __all__ = [
     "CotizarFacturacion",
     "CotizarMensualidad",
     "CotizarResponse",
+    "CupoNoConfiguradoError",
+    "IngresoActivoExistenteError",
     "IngresoCreate",
+    "IngresoCreateForzado",
     "IngresoFilter",
     "IngresoRead",
+    "IngresoReadForzado",
     "IngresoReadList",
+    "MotivoForzadoRequeridoError",
     "OcupacionItem",
     "OcupacionResponse",
+    "PlacaFormatoInvalidoError",
+    "SubscripcionInactivaOVencidaError",
+    "TarifaVigenteNoEncontradaError",
+    "TipoVehiculoInvalidoError",
 ]
