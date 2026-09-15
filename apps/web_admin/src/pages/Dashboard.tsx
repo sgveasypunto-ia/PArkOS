@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 import { BranchSelector, type BranchOption } from '@/components/branch-selector/BranchSelector';
-import { parkosFetch } from '@/lib/fetch';
+import { parkosFetchRaw } from '@/lib/fetch';
 import { useSucursal } from '@/lib/sucursal-context';
 
 /**
@@ -62,7 +62,7 @@ const DASHBOARD_KEY = (uuid: string): string =>
   `/api/v1/admin/sucursales/${uuid}/dashboard`;
 
 const jsonFetcher = async <T,>(url: string): Promise<T> => {
-  const res = await parkosFetch(url, { headers: { Accept: 'application/json' } });
+  const res = await parkosFetchRaw(url, { headers: { Accept: 'application/json' } });
   if (!res.ok) {
     throw new Error(`fetch ${url} failed: ${res.status}`);
   }

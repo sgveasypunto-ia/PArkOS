@@ -1,66 +1,28 @@
 /**
- * parkosFetch — global fetch wrapper for the web_admin PWA.
+ * parkosFetch — re-export from `@parkos/ui-kit/fetch` (F2.2 — DEC-FETCH-01).
  *
- * Injects two cross-cutting headers on every request:
+ * F2.1 shipped a local wrapper here (~66 LOC) that injected Bearer + X-Sucursal-Context.
+ * F2.2 moves the canonical implementation into `@parkos/ui-kit` so the same
+ * wrapper powers web_admin (here) and `electron-sucursal` (renderer).
  *
- *   1. `Authorization: Bearer <token>` — the `admin-` JWT, read from
- *      `localStorage` (`parkos.auth.token`). The login flow (PR11d) is
- *      responsible for writing the token here; this wrapper just reads.
- *   2. `X-Sucursal-Context: <uuid>` — the currently selected branch,
- *      read from `localStorage` via `getSucursalHeader()` (T-PR10-12).
- *      The admin views (`/admin/sucursales/{uuid}/dashboard`, etc.)
- *      enforce this header against `sucursales_permitidas` (REQ-X2).
+ * Backwards-compatible surface: `import { parkosFetch } from '@/lib/fetch'`
+ * continues to resolve to the same name and signature; consumers like
+ * `apps/web_admin/src/pages/Dashboard.tsx` keep working unchanged.
  *
- * `setAuthToken()` is exported so the login flow (or future token
- * refresh hook) can persist the JWT without leaking implementation
- * details to callers.
+ * Capabilities ADDED in F2.2 (transparent to callers):
+ *   - retry 5xx + 408 with backoff 300/600/1200 ms
+ *   - 401 refresh-once via Mutex singleton (DEC-FETCH-03)
+ *   - Idempotency-Key SHA-256 on mutaciones (DEC-FETCH-04)
+ *   - Zod validation boundary via `parkosFetch<T>(url, init, schema)`
+ *   - AbortController timeout via `init.timeoutMs`
+ *
+ * Legacy helpers `setAuthToken` / `getAuthToken` (F2.1 localStorage-based)
+ * are removed; the new auth surface lives in `@parkos/ui-kit/store`
+ * (authStore Zustand) and is consumed in F3.1+ via the `useAuth()` hook.
  */
-import { getSucursalHeader } from './sucursal-context';
-
-const TOKEN_KEY = 'parkos.auth.token';
-
-function readToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return window.localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export async function parkosFetch(
-  input: RequestInfo | URL,
-  init: RequestInit = {},
-): Promise<Response> {
-  const headers = new Headers(init.headers);
-
-  const token = readToken();
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
-
-  const sucursalHeader = getSucursalHeader();
-  for (const [k, v] of Object.entries(sucursalHeader)) {
-    headers.set(k, v);
-  }
-
-  return fetch(input, { ...init, headers });
-}
-
-export function setAuthToken(token: string | null): void {
-  if (typeof window === 'undefined') return;
-  try {
-    if (token) {
-      window.localStorage.setItem(TOKEN_KEY, token);
-    } else {
-      window.localStorage.removeItem(TOKEN_KEY);
-    }
-  } catch {
-    // localStorage unavailable — fail silently; the in-memory auth
-    // state (added by future hooks) still works for this session.
-  }
-}
-
-export function getAuthToken(): string | null {
-  return readToken();
-}
+export {
+  parkosFetch,
+  parkosFetchRaw,
+  ParkosHttpError,
+  type ParkosFetchInit,
+} from '@parkos/ui-kit/fetch';
