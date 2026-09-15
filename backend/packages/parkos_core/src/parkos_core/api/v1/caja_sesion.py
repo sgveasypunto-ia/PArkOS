@@ -81,7 +81,7 @@ async def open_sesion(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_sesion_issuer_dep),
-):
+) -> SesionRead:
     """Insert a new Sesion row + log_transaccional (REQ-40)."""
     if payload.uuid_sucursal is None or payload.uuid_usuario is None:
         raise HTTPException(
@@ -137,7 +137,7 @@ async def cerrar_sesion(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_sesion_issuer_dep),
-):
+) -> SesionRead:
     """Close the Sesion row + write log_transaccional FIRST.
 
     The DB trigger ``ls_session_guard`` validates the log exists in the
@@ -165,7 +165,7 @@ async def arqueo_diferencias(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_sesion_issuer_dep),
-):
+) -> ArqueoDiferenciasResponse:
     """Read the Arqueo row + compute expected-vs-reported deltas.
 
     Returns 404 if no Arqueo row exists for the given ``uuid``. The

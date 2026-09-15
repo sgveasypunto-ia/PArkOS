@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime, timezone
+from typing import Any, cast
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -336,11 +338,16 @@ async def close_session_with_log(
         await session.flush()  # ensure log row is visible to the trigger
 
     # 3. UPDATE the Sesion row (the trigger fires here and validates the log row)
-    update_result = await session.execute(
+    update_result_raw = await session.execute(
         update(Sesion)
         .where(Sesion.uuid == sesion_uuid, Sesion.timestamp_cierre.is_(None))
         .values(timestamp_cierre=now, uuid_usuario_cierre=actor_uuid)
     )
+    # mypy --strict sees ``Result[Any]`` from ``session.execute``;
+    # ``rowcount`` is only on ``CursorResult``. The UPDATE statement
+    # always returns a ``CursorResult`` at runtime (no RETURNING
+    # clause, no scalar projection), so the cast is safe.
+    update_result = cast(CursorResult[Any], update_result_raw)
     if update_result.rowcount == 0:
         raise SessionNotFoundError(f"sesion {sesion_uuid} already closed or not found")
 
