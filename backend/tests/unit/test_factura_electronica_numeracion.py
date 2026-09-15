@@ -10,9 +10,7 @@ chain wired) but raises ``NotImplementedError`` on the happy path
 from __future__ import annotations
 
 import uuid as uuid_lib
-from decimal import Decimal
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from parkos_core.repo.resolucion_facturacion import (
@@ -68,28 +66,20 @@ async def test_assign_consecutivo_mock_returns_value(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_create_factura_electronica_stub_returns_501_or_501(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """T1.4: POST /factura-electronica route exists and returns 501 (NotImplementedError).
+async def test_create_factura_electronica_route_is_callable() -> None:
+    """T1.4 (post-T4): the route is callable; full impl lives in commit 4.
 
-    The stub raises ``NotImplementedError`` in the handler body; the
-    route is registered so ``KD-3 issuer chain`` rejects unauthorized
-    callers before reaching the body, but authenticated calls land in
-    the stub.
+    Replaces the original T1.4 assertion that the stub raises
+    ``NotImplementedError``. The handler is now a real coroutine; the
+    full happy-path + error-path coverage lives in
+    ``test_factura_electronica_create_handler.py`` (T4.1 / T4.3).
     """
+    import inspect
+
     from parkos_core.api.v1.facturacion import create_factura_electronica
 
-    response = MagicMock()
-    payload = MagicMock()
-    payload.uuid_factura = uuid_lib.uuid4()
-
-    session = AsyncMock()
-    ctx = MagicMock()
-    ctx.actor_uuid = uuid_lib.uuid4()
-
-    with pytest.raises(NotImplementedError):
-        await create_factura_electronica(response, payload, session, ctx, None)
+    assert callable(create_factura_electronica)
+    assert inspect.iscoroutinefunction(create_factura_electronica)
 
 
 def test_routes_register_factura_electronica_post() -> None:

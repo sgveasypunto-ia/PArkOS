@@ -482,24 +482,26 @@ async def create_factura_pago(
 
 
 # ---------------------------------------------------------------------------
-# HU-F1.10 — Numeración FE + estado DIAN + reintento (T1.5 stub).
+# HU-F1.10 — Numeración FE + estado DIAN + reintento (T4.2 full impl).
 #
-# The full 12-step chain lives in commit 4 (T4.2). This stub is the
-# minimum wiring that:
-#   - registers the POST /factura-electronica route so the router does not
-#     404 on the F1.10 contract;
-#   - depends on ``_fe_issuer_dep = requires_issuer("operador-", "admin-")``
-#     (KD-3 layer 1 of defense in depth);
-#   - imports ``assign_consecutivo`` + ``ConsecutivoRangeExhaustedError``
-#     from ``repo.resolucion_facturacion`` (DEC-FE-05 reuse, no modification).
+# Three new handlers on the existing router (DEC-FE-01..07 + KD-FE-01..02):
+#   - POST   /factura-electronica                       (12-step chain)
+#   - GET    /factura-electronica/{uuid}                (3-step chain, view JOIN)
+#   - POST   /factura-electronica/{uuid}/reintentar     (8-step chain, NEVER UPDATE)
 #
-# DEC-FE-01..07 + KD-FE-01 invariants apply to the full impl.
+# Defense in depth: KD-3 issuer chain + tenant scope post-V1 + DB
+# partial UK `one_fe_per_factura` (MIGRATION 0028 Op 2) + `assign_consecutivo`
+# SELECT FOR UPDATE (KD-FE-02, REUSE from F1.9) + handler 409 mapping
+# (8 typed error schemas).
 # ---------------------------------------------------------------------------
-from ...repo.resolucion_facturacion import (  # noqa: E402
+from ...repo import factura_electronica as repo_factura_electronica
+from ...repo.alert_types import AlertaFactory
+from ...repo.resolucion_facturacion import (
     ConsecutivoRangeExhaustedError,
     assign_consecutivo,
+    buscar_resolucion_vigente_por_sucursal,
 )
-from ...schemas.facturacion import (  # noqa: E402
+from ...schemas.facturacion import (
     EnvioDianRead,
     FacturaElectronicaCreate,
     FacturaElectronicaRead,
@@ -513,10 +515,9 @@ _fe_issuer_dep = requires_issuer("operador-", "admin-")
     response_model=FacturaElectronicaRead,
     status_code=201,
     summary=(
-        "HU-F1.10 / REQ-OPS-064..067 (stub): assign prefijo+consecutivo via "
+        "HU-F1.10 / REQ-OPS-064..067: assign prefijo+consecutivo via "
         "assign_consecutivo (SELECT FOR UPDATE), INSERT prod.factura_electronica "
-        "+ initial prod.envio_dian in single await session.commit() (KD-FE-01). "
-        "Full 12-step impl in commit 4."
+        "+ initial prod.envio_dian in single await session.commit() (KD-FE-01)."
     ),
     responses={
         403: {"description": "tenant_scope_violation"},
@@ -536,12 +537,170 @@ async def create_factura_electronica(
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_fe_issuer_dep),
 ) -> FacturaElectronicaRead:
-    """HU-F1.10 / REQ-OPS-064..067: stub returns 501 (full impl in commit 4)."""
-    # KD-3 issuer chain + ``assign_consecutivo`` import wired so commit 4
-    # only needs to replace the body. The lint-protected ``_ =`` usages
-    # here keep the symbols alive for the AST walk + static analysis.
-    _ = (assign_consecutivo, ConsecutivoRangeExhaustedError, payload, ctx, session)
-    raise NotImplementedError("HU-F1.10 full impl in commit 4 (T4.2)")
+    """REQ-OPS-064..067: create FE + initial envio row atomically (KD-FE-01).
+
+    Sequence (locked by AST walk, file tests/static/test_fe_handler_single_commit.py):
+        1. KD-3 issuer claims + no_store headers (DI)
+        2. V1 prod.facturas.uuid exists (404 if None)
+        3. tenant scope post-V1 (403 if operador- cross-branch)
+        4. V2 NO existing prod.factura_electronica row for uuid_factura (409)
+        5. V3 vigente prod.resolucion_facturacion row for the sucursal (409)
+        6. KD-FE-01 assign_consecutivo (SELECT FOR UPDATE on resolucion row)
+           On ConsecutivoRangeExhaustedError -> 409 numeracion_agotada + alerta
+        7. INSERT prod.factura_electronica [L-E] with prefijo snapshot
+        8. INSERT initial prod.envio_dian row (estado='pendiente', uuid_envio_padre=NULL)
+        9. Mock DIAN POST (real deferred Fase 4; cloud dispatcher reads via sync)
+       10. KD-FE-01 single commit (lock release, FE row + envio row atomic)
+       11. Response shape FacturaElectronicaRead with envio_actual
+       12. DEC-FE-06: Cache-Control: no-store header
+
+    Idempotency-Key: same header (DEC-IDEM-01 reuse from F1.6 + F1.9).
+    """
+    no_store = no_store_headers()
+
+    # --- Step 2: V1 (prod.facturas.uuid exists). -----------------------
+    factura = await repo_factura_electronica.buscar_factura_por_uuid(
+        session, uuid_factura=payload.uuid_factura
+    )
+    if factura is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "factura_no_encontrada",
+                "uuid_factura": str(payload.uuid_factura),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 3: tenant scope (post-V1, KD-S2 analog from F1.7). -------
+    target_sucursal = factura.uuid_sucursal
+    if (
+        target_sucursal is not None
+        and ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or target_sucursal != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_scope_violation",
+                "uuid_factura": str(payload.uuid_factura),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 4: V2 (NO existing prod.factura_electronica row). -------
+    existing_fe = await repo_factura_electronica.buscar_factura_electronica_por_factura(
+        session, uuid_factura=payload.uuid_factura
+    )
+    if existing_fe is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "factura_electronica_ya_existe",
+                "uuid_factura": str(payload.uuid_factura),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 5: V3 (vigente prod.resolucion_facturacion row). ---------
+    if target_sucursal is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "resolucion_no_vigente",
+                "uuid_sucursal": "null",
+            },
+            headers=no_store,
+        )
+    resolucion = await buscar_resolucion_vigente_por_sucursal(
+        session, uuid_sucursal=target_sucursal
+    )
+    if resolucion is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "resolucion_no_vigente",
+                "uuid_sucursal": str(target_sucursal),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 6: KD-FE-01 assign_consecutivo (SELECT FOR UPDATE). ------
+    try:
+        consecutivo = await assign_consecutivo(
+            session,
+            resolucion_uuid=resolucion.uuid,
+            source_event_uuid=payload.uuid_factura,
+        )
+    except ConsecutivoRangeExhaustedError as exc:
+        # DEC-FE-03: fire alerta + 409 numeracion_agotada
+        await AlertaFactory(session, ctx).fire(
+            "fe_numbering_exhausted", motivo=str(exc)
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "numeracion_agotada",
+                "uuid_resolucion_facturacion": str(resolucion.uuid),
+                "rango_hasta": resolucion.rango_hasta,
+                "prefijo": resolucion.prefijo,
+            },
+            headers=no_store,
+        ) from exc
+
+    # --- Step 7: INSERT prod.factura_electronica [L-E] (snapshot prefijo). ---
+    new_fe = await repo_factura_electronica.crear_factura_electronica_inicial(
+        session,
+        actor_uuid=ctx.actor_uuid,
+        uuid_sucursal=target_sucursal,
+        uuid_factura=payload.uuid_factura,
+        uuid_resolucion_facturacion=resolucion.uuid,
+        prefijo=resolucion.prefijo,  # snapshot from V3 (REQ-OPS-074)
+        consecutivo=consecutivo,
+    )
+
+    # --- Step 8: INSERT initial prod.envio_dian row. --------------------
+    new_envio = await repo_factura_electronica.crear_envio_dian_inicial(
+        session,
+        actor_uuid=ctx.actor_uuid,
+        uuid_sucursal=target_sucursal,
+        uuid_factura_electronica=new_fe.uuid,
+        uuid_resolucion_facturacion=resolucion.uuid,
+        payload={
+            "prefijo": resolucion.prefijo,
+            "consecutivo": consecutivo,
+            "uuid_factura": str(payload.uuid_factura),
+        },
+    )
+
+    # --- Step 9: Mock DIAN POST (real deferred Fase 4). ---------------
+    # Cloud dispatcher reads via sync (branch_to_cloud direction per
+    # MIGRATION 0028 Op 1) and writes transition rows asynchronously.
+    # No synchronous DIAN call.
+
+    # --- Step 10: KD-FE-01 single commit (FE row + envio row atomic). -
+    await session.commit()  # UN solo commit (lock release, KD-FE-02)
+
+    # --- Step 11: response shape. -------------------------------------
+    # --- Step 12: DEC-FE-06 (Cache-Control: no-store header). ---------
+    apply_no_store_header(response)
+    return FacturaElectronicaRead(
+        uuid=new_fe.uuid,
+        prefijo=new_fe.prefijo,  # type: ignore[arg-type]
+        consecutivo=new_fe.consecutivo,  # type: ignore[arg-type]
+        uuid_factura=new_fe.uuid_factura,  # type: ignore[arg-type]
+        uuid_resolucion_facturacion=new_fe.uuid_resolucion_facturacion,  # type: ignore[arg-type]
+        created_at=new_fe.created_at,  # type: ignore[arg-type]
+        envio_actual=EnvioDianRead(
+            uuid=new_envio.uuid,
+            uuid_factura_electronica=new_fe.uuid,
+            estado="pendiente",
+            timestamp_evento=new_envio.timestamp_evento,
+            uuid_envio_padre=None,
+            cufe=None,
+            motivo_rechazo=None,
+        ),
+    )
 
 
 __all__ = ["router"]
