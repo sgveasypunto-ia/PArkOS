@@ -4225,6 +4225,220 @@ F1.14 MUST NOT create a new cross-cutting requirement (XR). REQ-OPS-XR6 is canon
 - **When** `tests/static/test_sync_estado_read_only.py` runs
 - **Then** the AST walk MUST assert ZERO occurrences of `update(SyncLog)` or `update(SyncQueue)` or `delete(SyncLog)` or `delete(SyncQueue)` or `session.execute(text("UPDATE prod.sync_log"))` or `session.execute(text("DELETE FROM prod.sync_queue"))` in the handler body (KD-SYNC-01 + KD-SYNC-02)
 - **And** MUST assert ZERO occurrences of `await session.commit()` in the handler body.
+### REQ-OPS-102 — `GET /api/v1/usuarios/{uuid}/login` SELECT-only contract (KD-LOGIN-01 + KD-LOGIN-02)
+
+**Source**: HU-F1.15 (DEC-LOGIN-01 + DEC-LOGIN-02 + DEC-LOGIN-09.B + KD-LOGIN-01 + KD-LOGIN-02) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler `get_login_historico` in the NEW dedicated router `api/v1/usuarios_login.py` (mounted at FastAPI app-level under `/usuarios` prefix — sibling of `auth.py`, NOT nested in `caja.py` per DEC-LOGIN-01.A separation-of-concerns rationale: `auth.py:69` is POST-mutating-only and adding a GET for login history there would couple read-of-history with the login write path; Parte 2's `api/v1/usuarios.py` will EXTEND this router without collision) MUST be a READ-ONLY endpoint that returns HTTP 200 with body `LoginHistoricoListResponse(items, next_cursor)` per the canonical `{items, next_cursor}` envelope (`api/router_factory.py:227`). The handler MUST execute exactly **1 SELECT query** against `prod.login` via `repo/login_historico.listar_intentos_paginado(session, uuid_usuario, cursor, limit, tenant_ctx)`. The handler MUST NOT execute any `UPDATE`, `INSERT`, or `DELETE` statements on `prod.login` (KD-LOGIN-01 — preserves the `_NARROW_UPDATE_LS_TABLES["login"] = ("timestamp_cierre", "estado")` whitelist at `0021_least_privilege_and_immutability_contract.py:206` and the [L-S] immutability invariant). The handler MUST NOT call `await session.commit()` (GET is naturally idempotent). The handler MUST NOT append any row in `prod.log_operaciones` or any `[A]` audit table. The response MUST include `Cache-Control: no-store` (DEC-LOGIN-05, XR6 mirror).
+
+KD-3 issuer chain `_login_historico_issuer_dep = requires_issuer("operador-", "admin-")` (DEC-LOGIN-02 — operador needs own-branch lockout diagnostic; admin needs cross-branch security audit). Permission gate `audit_read` (DEC-LOGIN-09.B, pre-seeded per `0002_seed_permisos_canonicos.py:48` — same audit domain as F1.14's `GET /sync/estado` per F1.14 DEC-SYNC-03.B precedent). Path param `uuid: UUID` (Pydantic validator; required). Query params `limit: int = 10` (ge=1, le=100 validators per DEC-LOGIN-04) + `cursor: str | None = None`. Response items MUST be ordered by `timestamp_evento DESC, uuid ASC` (most recent first per `plan.md` line 1143 verbatim). Each item MUST have exactly 5 fields: `uuid` (UUID), `timestamp_evento` (ISO 8601 naive UTC datetime), `timestamp_cierre` (ISO 8601 naive UTC datetime or null), `estado` (`Literal["exitoso", "fallido", "cerrado"]` — the REAL [L-S] lifecycle value per DEC-LOGIN-10; NEVER a synthetic boolean `activo`), `uuid_sucursal` (UUID or null).
+
+**Rationale**: Operator/admin diagnostic on "why is user X locked out" or "did user Y just authenticate" is the gap huérfano per `plan.md` line 1139 + `pending.md` row 15. F1.15 surfaces this without adding a UI surface (UI deferred to Fase 11+). The dedicated router resolves the Parte 1 vs Parte 2 endpoint-ownership conflict (DEC-LOGIN-01 — both F1.15 and HU-F16.1/F16.5 propose the same URL per `plan.md` lines 7571-7574; F1.15 ships the minimal slice, Parte 2 extends). KD-LOGIN-02 AST walk `tests/static/test_login_historico_read_only.py` enforces the read-only invariant at static-parse time — defense in depth against accidental drift to a write path. Mirrors the F1.10 REQ-OPS-XR1 + F1.11 REQ-OPS-XR4 + F1.12 REQ-OPS-XR5 + F1.13 REQ-OPS-XR6 + F1.14 KD-SYNC-02 pattern.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/api/v1/auth.py:69` (POST-mutating-only rationale for DEC-LOGIN-01.A — dedicated router); `backend/packages/parkos_core/src/parkos_core/api/v1/_helpers.py` lines 18-31 (`no_store_headers` + `apply_no_store_header` — DEC-LOGIN-05); `backend/packages/parkos_core/src/parkos_core/models/L_S/login.py:33-74` (verbatim ORM model — 5 business columns + FK + audit mixin); `backend/packages/parkos_core/src/parkos_core/models/V/usuarios.py` (Usuarios ORM — F1.15 reads `uuid` only for optional existence check); `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py:49-146` (`record_login` write helper — F1.15 NEVER calls it; only references the table it writes to); `backend/packages/parkos_core/src/parkos_core/repo/tarifas_vigencia.py:79-162` (cursor pagination precedent — `list_tarifas_vigentes`); `backend/packages/parkos_core/src/parkos_core/api/router_factory.py:127-227` (cursor pagination + `{items, next_cursor}` envelope pattern — DEC-LOGIN-04 + DEC-LOGIN-07); `backend/packages/parkos_core/src/parkos_core/schemas/common.py::_Base` (`extra='forbid'` — Layer 4 base); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` lines 511-523 (login table), 2203-2214 (`login_ls_session_guard` trigger), 2533-2541 (audit+set_vigente_inicial triggers), 2777-2788 (`login_enqueue_sync` trigger — none fire on F1.15's read path); `backend/packages/parkos_core/migrations/versions/0021_least_privilege_and_immutability_contract.py:206` (`_NARROW_UPDATE_LS_TABLES["login"]` whitelist — KD-LOGIN-02 enforces); `backend/packages/parkos_core/migrations/versions/0002_seed_permisos_canonicos.py:48` (`audit_read` pre-seeded — DEC-LOGIN-09.B); `tests/static/{test_sync_estado_read_only,test_arqueo_handler_single_commit,test_no_raw_dml_on_ls_tables}.py` (AST walk precedents); F1.10 REQ-OPS-XR1 + F1.11 REQ-OPS-XR4 + F1.12 REQ-OPS-XR5 + F1.13 REQ-OPS-XR6 + F1.14 KD-SYNC-02 (AST walk precedents for KD-LOGIN-02).
+
+**Scenario 1: Happy path — populated user returns 200 with exact DESC ordering**
+- **Given** a KD-3 issuer session (`operador-` or `admin-` JWT) with `audit_read` permission granted via `prod.permisos_usuario`
+- **And** a path `uuid` (valid Pydantic UUID format) that has 5 rows in `prod.login` with `timestamp_evento` spanning 60-300 seconds before NOW() and mixed `estado ∈ {exitoso, fallido, cerrado}`
+- **When** the handler `GET /api/v1/usuarios/{uuid}/login` is invoked with `limit=10` and no cursor
+- **Then** the handler MUST execute exactly **1 SELECT query** against `prod.login` via `repo/login_historico.listar_intentos_paginado`
+- **And** MUST NOT execute any `UPDATE`, `INSERT`, or `DELETE` on `prod.login` (KD-LOGIN-01)
+- **And** MUST NOT call `await session.commit()`
+- **And** the response MUST be `200 OK` with `Cache-Control: no-store` and body `LoginHistoricoListResponse{items: [5 LoginIntentoItem], next_cursor: <base64-encoded JSON of last item's (timestamp_evento, uuid) pair>}`
+- **And** the 5 items MUST be ordered by `(timestamp_evento DESC, uuid ASC)` (most recent first per `plan.md` line 1143 verbatim).
+
+**Scenario 2: Empty user (zero rows) — 200 with `items=[]`, NEVER 404**
+- **Given** a KD-3 issuer session with `audit_read` permission
+- **And** a path `uuid` (valid Pydantic UUID) that has **ZERO** rows in `prod.login` (either the user does not exist OR exists but never authenticated)
+- **When** the handler `GET /api/v1/usuarios/{uuid}/login` is invoked
+- **Then** the response MUST be `200 OK` (NOT 404 — anti-enumeration per DEC-LOGIN-08, mirroring F1.2 R-F1.2-10 / R-F1.2-11 rationale)
+- **And** the body MUST be `LoginHistoricoListResponse{items: [], next_cursor: null}`
+- **And** the response MUST carry `Cache-Control: no-store`.
+
+**Scenario 3: Cursor pagination — second page resumes EXACTLY at the next boundary**
+- **Given** a KD-3 issuer session with `audit_read` permission
+- **And** a path `uuid` with 12 rows in `prod.login` ordered by `(timestamp_evento DESC, uuid ASC)`
+- **And** the first page (no cursor) returned 10 items + a non-null `next_cursor` (the base64-encoded JSON of item #10's `(timestamp_evento, uuid)` pair per `router_factory.py:185-200`)
+- **When** the client invokes `GET /api/v1/usuarios/{uuid}/login?limit=10&cursor=<that next_cursor>`
+- **Then** the handler MUST execute the `WHERE` clause `(timestamp_evento < cursor_ts) OR (timestamp_evento = cursor_ts AND uuid > cursor_uuid)` (DEC-LOGIN-04 mirror of `api/router_factory.py:185-200`)
+- **And** MUST return EXACTLY the remaining 2 items in DESC order — no row repeated, no row skipped
+- **And** `next_cursor` MUST be `null` (last page).
+
+**Scenario 4: AST walk — handler source contains NO `update`/`delete` on `Login` and NO `commit`**
+- **Given** the source file `api/v1/usuarios_login.py` containing `get_login_historico` handler
+- **When** `tests/static/test_login_historico_read_only.py` runs an `ast.walk()` over the handler body
+- **Then** the AST walk MUST assert ZERO occurrences of `update(Login)` or `delete(Login)` or `session.execute(text("UPDATE prod.login"))` or `session.execute(text("DELETE FROM prod.login"))` in the handler body (KD-LOGIN-01 + KD-LOGIN-02)
+- **And** MUST assert ZERO occurrences of `await session.commit()` in the handler body (GET is naturally commit-free).
+
+---
+
+### REQ-OPS-103 — Cursor pagination invariants + empty-user contract (DEC-LOGIN-04 + DEC-LOGIN-07 + DEC-LOGIN-08 + DEC-LOGIN-10)
+
+**Source**: HU-F1.15 (DEC-LOGIN-04 + DEC-LOGIN-07 + DEC-LOGIN-08 + DEC-LOGIN-10) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+Given a successful or empty-user response from `GET /api/v1/usuarios/{uuid}/login`, the response shape MUST enforce the following invariants:
+
+- **Ordering**: Items MUST be ordered by `(timestamp_evento DESC, uuid ASC)`. The `DESC` matches `plan.md` line 1143 verbatim ("los intentos más recientes primero"); the `uuid ASC` secondary key is the canonical tie-breaker for same-second INSERTs (e.g., F1.2 lockout writes batch multiple failed attempts at the same instant — pagination correctness requires the tie-breaker).
+- **Cursor encoding**: `next_cursor` MUST encode the LAST item's `(timestamp_evento_iso, uuid_str)` pair as base64-encoded JSON (mirrors `api/router_factory.py:127-140` verbatim — `cursor_encode`/`cursor_decode` helpers reused). The `next_cursor` field MUST be `null` iff there are NO more rows after the current page (handler uses `LIMIT N+1` then slices to N to detect presence — DEC-LOGIN-04 mirror of `router_factory.py:185-200`).
+- **Limit bounds**: `limit: int = 10` (default per `plan.md` line 1143 verbatim) with Pydantic validators `ge=1, le=100`. Out-of-range values MUST raise 422 before the handler body runs.
+- **Item shape**: Each `LoginIntentoItem` MUST have exactly 5 fields, with no extras: `uuid` (UUID, required), `timestamp_evento` (ISO 8601 naive UTC datetime, required), `timestamp_cierre` (ISO 8601 naive UTC datetime or `null`, nullable for open sessions), `estado` (`Literal["exitoso", "fallido", "cerrado"]` — DEC-LOGIN-10 — the REAL [L-S] lifecycle value, NEVER a synthetic boolean `activo`), `uuid_sucursal` (UUID or `null`, nullable FK to `prod.sucursal`).
+- **Envelope**: `LoginHistoricoListResponse{items: list[LoginIntentoItem], next_cursor: str | None}`. NO `activo`, NO `count`, NO `total`, NO `has_more` in F1.15 — the canonical `{items, next_cursor}` shape per `router_factory.py:227` is forward-compatible with Parte 2's HU-F16.1/F16.5 added filtros (`?activo=`) and closure action (`POST /usuarios/{uuid}/login/{login_uuid}/cerrar`) without breaking F1.15's response (DEC-LOGIN-07).
+- **Empty-user contract**: ZERO `prod.login` rows for the requested `uuid` MUST return `200 OK` with `items=[]` and `next_cursor=null` — NEVER `404` (DEC-LOGIN-08 anti-enumeration). Mirrors F1.2 R-F1.2-10 / R-F1.2-11 rationale: returning `404` for an unknown `uuid_usuario` would let an attacker enumerate valid user UUIDs by comparing `404` vs `200`. F1.15 returns `200` with empty items regardless of whether the user exists, has zero login rows, or has only cross-branch rows (operador Layer 2 filter — DEC-LOGIN-03.A returns no rows → `items=[]`).
+- **Malformed cursor**: A `cursor` value that fails base64 decode or fails JSON parse or is missing the `timestamp_evento` / `uuid` keys or has invalid types MUST return `400 Bad Request` with body `{"error": "cursor_invalid"}` and `Cache-Control: no-store`. NEVER `500` (typed exception handler converts decode errors to `CursorInvalidError`).
+- **Cache-Control**: EVERY response (200, 400, 403, 422) MUST carry `Cache-Control: no-store` (DEC-LOGIN-05). XR6 Layer 5 mirror from F1.10..F1.14.
+- **Pydantic redaction**: Response body MUST NEVER include `pgcode`, `pgerror`, `pgmessage`, or any PostgreSQL error internals. `extra='forbid'` (inherited from `schemas/common.py::_Base`) blocks client smuggling of `actor_uuid`, `computed_at`, `cache_key`, `activo`.
+
+**Rationale**: Stable cursor pagination under concurrent INSERTs (F1.2 lockout writes from `record_login` may add rows during pagination — cursor pagination tolerates this; offset pagination would shift rows). The 3-value `estado` domain is the canonical truth per `plan.md` line 1143 verbatim; introducing a synthetic `activo` boolean would create a derived field that requires UI to interpret (`activo=True` → `cerrado OR exitoso`?). The anti-enumeration `200 + items=[]` contract prevents user UUID discovery via response code differential analysis.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/api/router_factory.py:127-140` (`cursor_encode` / `cursor_decode` / `Cursor` dataclass — DEC-LOGIN-04 reuse); `api/router_factory.py:185-200` (LIMIT N+1 + slice-to-N next_cursor detection — DEC-LOGIN-04 mirror); `api/router_factory.py:227` (`{items, next_cursor}` envelope — DEC-LOGIN-07); `backend/packages/parkos_core/src/parkos_core/repo/tarifas_vigencia.py:79-162` (cursor pagination helper precedent — `ORDER BY vigente_desde DESC, uuid ASC`); `backend/packages/parkos_core/src/parkos_core/models/L_S/login.py:33-74` (verbatim ORM model — 5 business columns + state enum); `backend/packages/parkos_core/src/parkos_core/auth.py:239-246` (`fallido`), `:260-266` (`exitoso`), `:352-393` (`cerrado`) — `estado` lifecycle sources; `plan.md` line 1143 verbatim ("cada uno con su `estado` real (`exitoso|fallido|cerrado`) — nunca un campo booleano `activo`, que no existe en el dominio real de `login.estado`"); `plan.md` lines 7571-7574 (Parte 2 forward-compatibility — DEC-LOGIN-07); DEC-LOGIN-08 (anti-enumeration rationale mirrors F1.2 R-F1.2-10 / R-F1.2-11); `backend/packages/parkos_core/src/parkos_core/schemas/common.py::_Base` (`extra='forbid'` — Layer 4 base).
+
+**Scenario 1: `limit + cursor` pagination — `next_cursor` non-null iff more rows exist**
+- **Given** a KD-3 issuer session with `audit_read` permission
+- **And** a path `uuid` with EXACTLY 15 rows in `prod.login` ordered by `(timestamp_evento DESC, uuid ASC)`
+- **When** the client invokes `GET /api/v1/usuarios/{uuid}/login?limit=10`
+- **Then** the response MUST contain AT MOST 10 items
+- **And** MUST include a non-null `next_cursor` (base64 JSON of the 10th item's `(timestamp_evento, uuid)` pair — DEC-LOGIN-04 LIMIT N+1 detection)
+- **And** MUST include `Cache-Control: no-store`.
+
+**Scenario 2: Cursor resume — subsequent page resumes EXACTLY at the next `(timestamp_evento, uuid)` boundary**
+- **Given** the response from Scenario 1: 10 items + `next_cursor=C1`
+- **When** the client invokes `GET /api/v1/usuarios/{uuid}/login?limit=10&cursor=C1`
+- **Then** the handler MUST execute the `WHERE` clause `(timestamp_evento < cursor_ts) OR (timestamp_evento = cursor_ts AND uuid > cursor_uuid)`
+- **And** MUST return EXACTLY 5 items (the remaining rows)
+- **And** MUST include `next_cursor=null` (last page)
+- **And** NO row from the first page MUST be repeated; NO row from the 15 total MUST be skipped.
+
+**Scenario 3: Empty user (zero rows) — 200 with `items=[]`, NEVER 404**
+- **Given** a KD-3 issuer session with `audit_read` permission
+- **And** a path `uuid` (valid Pydantic UUID) that has ZERO `prod.login` rows
+- **When** the handler is invoked (with or without `limit`/`cursor`)
+- **Then** the response MUST be `200 OK` with `items=[]` and `next_cursor=null`
+- **And** MUST NEVER be `404 Not Found` (anti-enumeration per DEC-LOGIN-08)
+- **And** MUST carry `Cache-Control: no-store`.
+
+**Scenario 4: Malformed cursor — 400 with `cursor_invalid`, NEVER 500**
+- **Given** a KD-3 issuer session with `audit_read` permission
+- **And** a path `uuid` with rows in `prod.login`
+- **When** the client invokes `GET /api/v1/usuarios/{uuid}/login?cursor=<malformed>` (e.g., not base64, base64 of `{}`, base64 of `{"timestamp_evento": "garbage"}`)
+- **Then** the response MUST be `400 Bad Request` with body `{"error": "cursor_invalid"}`
+- **And** MUST carry `Cache-Control: no-store`
+- **And** MUST NEVER be `500 Internal Server Error` (typed exception handler converts decode errors to `CursorInvalidError`).
+
+---
+
+### REQ-OPS-104 — Empty-user 200 response + response-time parity + anti-enumeration (DEC-LOGIN-08)
+
+**Source**: HU-F1.15 (DEC-LOGIN-08) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+When `prod.login` contains ZERO rows for the requested path `uuid` (regardless of whether the user exists in `prod.usuarios`, has zero login rows, or has only rows from branches the operador cannot see via the Layer 2 filter per DEC-LOGIN-03.A), the handler `get_login_historico` MUST return `200 OK` with body `LoginHistoricoListResponse{items: [], next_cursor: null}` and `Cache-Control: no-store` — NEVER `404 Not Found`. The response time MUST be identical (within ±5%) to a populated-user query on the same `uuid` (no extra DB roundtrip for a separate `prod.usuarios` existence check; the FK existence of zero `prod.login` rows IS the existence check).
+
+The audit log MUST record the attempt (KD-LOGIN-02 SELECT-only still permits structured log emission for security audit; the handler MUST NOT log `prod.login` rows themselves — only the request metadata: actor UUID, target UUID, timestamp, response size). The pgcode / internal error code MUST NEVER appear in the response body, headers, or info+ logs (XR6 Layer 5 redaction).
+
+**Rationale**: Same rationale as F1.2 `GET /auth/me` R-F1.2-10 + R-F1.2-11 (anti-enumeration by response code differential). Returning `404` for an unknown `uuid_usuario` would let an attacker enumerate valid user UUIDs by comparing `404` vs `200`. The response-time parity constraint prevents a SECOND enumeration vector: an attacker who measures response time could distinguish "user exists but zero rows" from "user does not exist" if the handler issued an extra DB roundtrip for an existence check. By relying on the FK existence of zero `prod.login` rows as the implicit existence check, the handler runs exactly the same query (1 SELECT) for both cases, and the response time is identical. KD-LOGIN-02 AST walk still applies to the empty path (no UPDATE/DELETE/COMMIT).
+
+**Source**: F1.2 R-F1.2-10 / R-F1.2-11 (anti-enumeration rationale — `openspec/specs/operations/spec.md` REQ-OPS-029 mirror); `openspec/specs/operations/spec.md` line 4034-4041 (REQ-OPS-100 empty-branch precedent at F1.14 — DEC-LOGIN-08 mirror); `backend/packages/parkos_core/src/parkos_core/models/L_S/login.py:33-74` (Login ORM FK to `prod.usuarios`); `backend/packages/parkos_core/src/parkos_core/models/V/usuarios.py` (Usuarios ORM — F1.15 reads `uuid` only for optional existence check; SKIPPED per DEC-LOGIN-08); KD-LOGIN-02 AST walk `tests/static/test_login_historico_read_only.py` (extends to the empty path).
+
+**Scenario 1: Zero rows for an EXISTING user (user exists but never authenticated) — 200 with `items=[]`**
+- **Given** a KD-3 issuer session with `audit_read` permission
+- **And** a path `uuid` that EXISTS in `prod.usuarios` (FK row present) but has ZERO rows in `prod.login`
+- **When** the handler `GET /api/v1/usuarios/{uuid}/login` is invoked
+- **Then** the response MUST be `200 OK` with `LoginHistoricoListResponse{items: [], next_cursor: null}`
+- **And** MUST carry `Cache-Control: no-store`
+- **And** MUST NOT be `404 Not Found` (the user exists; this is a zero-data response, not a missing-resource response).
+
+**Scenario 2: Zero rows for an UNKNOWN user (anti-enumeration) — 200 indistinguishable from Scenario 1**
+- **Given** a KD-3 issuer session with `audit_read` permission
+- **And** a path `uuid` that does NOT exist in `prod.usuarios` (FK row absent) AND has ZERO rows in `prod.login`
+- **When** the handler `GET /api/v1/usuarios/{uuid}/login` is invoked
+- **Then** the response MUST be `200 OK` with `LoginHistoricoListResponse{items: [], next_cursor: null}`
+- **And** MUST carry `Cache-Control: no-store`
+- **And** MUST NOT be `404 Not Found` (anti-enumeration — same response shape as Scenario 1 prevents UUID discovery).
+
+**Scenario 3: Response time parity — zero-row response time within ±5% of populated-row response time**
+- **Given** two identical KD-3 issuer sessions with `audit_read` permission
+- **And** path `uuid_a` with ZERO `prod.login` rows
+- **And** path `uuid_b` with 100 `prod.login` rows
+- **When** both handlers are invoked with the same `limit=10` query
+- **Then** the wall-clock response time for `uuid_a` MUST be within ±5% of the response time for `uuid_b` (no extra DB roundtrip for `prod.usuarios` existence check — DEC-LOGIN-08 evidence-of-no-distinguishable-side-channel)
+- **And** the audit log MUST record the attempt for BOTH requests (actor UUID, target UUID, timestamp, response size)
+- **And** the audit log MUST NOT include the `prod.login` row contents themselves (KD-LOGIN-02 SELECT-only invariant extends to log emission).
+
+---
+
+### REQ-OPS-105 — XR6 cross-cutting defense in depth (REFERENCE to existing REQ-OPS-XR6)
+
+**Source**: HU-F1.15 (DEC-LOGIN-01 + DEC-LOGIN-02 + DEC-LOGIN-03 + DEC-LOGIN-05 + DEC-LOGIN-09.B + KD-LOGIN-02) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+Given that REQ-OPS-XR6 already exists at `openspec/specs/operations/spec.md:3951` from F1.13, F1.15's `GET /api/v1/usuarios/{uuid}/login` endpoint MUST satisfy all 5 defense-in-depth layers defined in REQ-OPS-XR6, applied as follows:
+
+- **Layer 1 (KD-3 issuer chain + permission gate)** — NEW dedicated router `api/v1/usuarios_login.py` declares `_login_historico_issuer_dep = requires_issuer("operador-", "admin-")` (DEC-LOGIN-02 — same KD-3 chain as F1.14 `sync_estado.py`). Permission gate is `audit_read` (DEC-LOGIN-09.B, pre-seeded per `0002_seed_permisos_canonicos.py:48`). Operador with `audit_read` reads own-branch login history (DEC-LOGIN-03.A); admin cross-branch.
+- **Layer 2 (Tenant scope post-V1)** — After resolving `ctx.sucursal_uuid` from the JWT, if `ctx.issuer_prefix == "operador-"` AND `tenant_ctx.sucursal_uuid is not None`, the SQL query MUST be filtered by `login.uuid_sucursal = ctx.sucursal_uuid` at the SQL layer (DEC-LOGIN-03.A — own-branch audit history only). Cross-branch login history is implicitly NOT returned to operador (no rows match the filter → `items=[]`). Admin (`admin-`) bypasses Layer 2 and sees ALL branches. KD-S2 analog from F1.7. The filter is applied at SQL layer via `repo/login_historico.listar_intentos_paginado` — NOT a Python-side post-filter (which would leak row metadata).
+- **Layer 3 (KD-LOGIN-01 SELECT-only + KD-LOGIN-02 read-only AST walk)** — The handler invokes ONLY the 1 typed SELECT helper from `repo/login_historico.py` (read-only path). The AST walk `tests/static/test_login_historico_read_only.py` enforces NO `session.execute(update(Login))`, `session.execute(delete(Login))`, `session.execute(text("UPDATE prod.login"))`, `session.execute(text("DELETE FROM prod.login"))`, and NO `await session.commit()` in the handler body. Mirrors F1.10 REQ-OPS-XR1 + F1.11 REQ-OPS-XR4 + F1.12 REQ-OPS-XR5 + F1.13 REQ-OPS-XR6 + F1.14 KD-SYNC-02.
+- **Layer 4 (Pydantic `extra='forbid'` + UUID required + `Literal[estado]` + limit validators)** — `LoginHistoricoQueryParams(_Base)` + `LoginIntentoItem(_Base)` + `LoginHistoricoListResponse(_Base)` inherit `extra='forbid'` from `schemas/common.py::_Base` (blocks client smuggling of `actor_uuid`, `computed_at`, `cache_key`, `activo`). `uuid: UUID` is required (Pydantic validator, 422 on malformed). `estado: Literal["exitoso", "fallido", "cerrado"]` enforces the 3-value domain at the type level (DEC-LOGIN-10). `limit: int = 10` with `ge=1, le=100` validators (DEC-LOGIN-04). `cursor: str | None = None` (base64-encoded JSON from previous page's next_cursor).
+- **Layer 5 (Handler 200/422/403/400 mapping + `Cache-Control: no-store`)** — Every response (200 + 4xx + 5xx) on `GET /api/v1/usuarios/{uuid}/login` carries `Cache-Control: no-store`. Success: `apply_no_store_header(response)`. Error: `HTTPException(headers=no_store_headers())`. Typed exceptions map as follows: `UuidUsuarioInvalidError` → 422 `uuid_usuario_invalid` (Pydantic validator, Layer 4); `CursorInvalidError` → 400 `cursor_invalid` (base64 decode failure, Layer 4); `TenantScopeViolationError` → 403 `tenant_scope_violation` (handler Layer 2, enforced via SQL filter — DEC-LOGIN-03.A); `PermissionDeniedError` → 403 `permission_denied` (`require_permission` Layer 1). The pgcode / internal error code NEVER appears in response body, headers, or info+ logs.
+
+F1.15 MUST NOT create a new cross-cutting requirement (XR). REQ-OPS-XR6 is canonical and applies to F1.15 by reference. `openspec/changes/hu-f1-15-login-historico/design.md` §13 (Cross-Cutting Requirements) MUST reference REQ-OPS-XR6 and the 5 layer mapping above. `openspec/changes/hu-f1-15-login-historico/tasks.md` §10 (Test Plan) MUST include the `test_login_historico_read_only.py` AST walk as a Layer 3 verification step.
+
+**Rationale**: XR6 is the canonical defense-in-depth contract for cross-cutting concerns. Creating a new XR (XR7) for F1.15 would duplicate the 5-layer contract and fragment the review surface. By referencing XR6, F1.15 inherits the testable invariants (AST walks, `extra='forbid'`, `Cache-Control: no-store`, KD-3 issuer chain, permission gate) without redefining them. Each layer is independently testable; failure of any one layer is contained by the other four (defense in depth principle). The Layer 2 SQL-side filter (DEC-LOGIN-03.A) prevents operator cross-branch data leaks while preserving the same canonical response shape as admin — no client-side discriminator needed.
+
+**Source**: `openspec/specs/operations/spec.md` line 3951 (REQ-OPS-XR6 canonical from F1.13); `backend/packages/parkos_core/src/parkos_core/api/v1/_helpers.py` lines 18-31 (`no_store_headers` + `apply_no_store_header` — Layer 5 helper); `backend/packages/parkos_core/src/parkos_core/schemas/common.py::_Base` (`extra='forbid'` — Layer 4 base); `backend/packages/parkos_core/src/parkos_core/auth/jwt_issuer_guard.py` (`requires_issuer` factory — Layer 1 dep); `backend/packages/parkos_core/src/parkos_core/auth/tenancy.py` (`get_tenant_ctx` — Layer 2 dep); F1.7 KD-S2 (Layer 2 precedent); F1.9 REQ-OPS-058 (factura_pagos immutability); F1.10 REQ-OPS-XR1 (single-commit AST walk precedent); F1.11 REQ-OPS-XR4 (insert-only AST walk precedent); F1.12 REQ-OPS-XR5 (5-layer defense precedent); F1.13 REQ-OPS-XR6 (caja-specific 5-layer defense precedent at `operations/spec.md:3951`); F1.14 KD-SYNC-02 (read-only AST walk precedent for `sync_estado`); `backend/packages/parkos_core/migrations/versions/0002_seed_permisos_canonicos.py:48` (`audit_read` pre-seeded — DEC-LOGIN-09.B Layer 1 anchor).
+
+**Scenario 1: operador with `audit_read` + own branch — 200 OK (Layer 1 + Layer 2 PASS)**
+- **Given** an operador role granted `audit_read` permission via `prod.permisos_usuario`
+- **And** `ctx.sucursal_uuid=:s` matching at least one `prod.login.uuid_sucursal` for the requested `uuid`
+- **When** the operador invokes `GET /api/v1/usuarios/{uuid}/login?limit=10`
+- **Then** Layer 1 MUST pass (KD-3 issuer `operador-` accepted + `audit_read` permission granted)
+- **And** Layer 2 MUST pass (own-branch SQL filter `login.uuid_sucursal = ctx.sucursal_uuid` — DEC-LOGIN-03.A)
+- **And** Layer 3 MUST execute exactly 1 SELECT query against `prod.login` (KD-LOGIN-01)
+- **And** Layer 4 MUST validate the Pydantic schema (`uuid` is a valid UUID, no extra fields)
+- **And** Layer 5 MUST return `200 OK` with `Cache-Control: no-store`.
+
+**Scenario 2: operador with `audit_read` + NO own-branch rows (cross-branch only) — 200 with `items=[]` (Layer 2 filter applied at SQL layer)**
+- **Given** an operador role granted `audit_read` permission
+- **And** `ctx.sucursal_uuid=:s_other` (operator's branch is `:s_other`)
+- **And** the requested `uuid` has `prod.login` rows ONLY in branches DIFFERENT from `:s_other` (no `uuid_sucursal = :s_other` matches)
+- **When** the operador invokes `GET /api/v1/usuarios/{uuid}/login`
+- **Then** Layer 1 MUST pass (issuer + permission OK)
+- **And** Layer 2 MUST apply the SQL filter `login.uuid_sucursal = :s_other` — NO cross-branch rows returned
+- **And** the response MUST be `200 OK` with `LoginHistoricoListResponse{items: [], next_cursor: null}` (anti-enumeration, DEC-LOGIN-08)
+- **And** MUST carry `Cache-Control: no-store`
+- **And** MUST NOT be `403 tenant_scope_violation` (the user exists; only the branch filter excludes the rows — same as the empty-user contract).
+
+**Scenario 3: operador with `audit_read` DENIED (no permission grant) — 403 `permission_denied` (Layer 1 short-circuits)**
+- **Given** an operador role WITHOUT `audit_read` permission (only `emitir_factura` granted)
+- **When** the operador invokes `GET /api/v1/usuarios/{uuid}/login`
+- **Then** Layer 1 MUST reject with `403 Forbidden` and body `{"error": "permission_denied"}` and `Cache-Control: no-store`
+- **And** Layer 2 (tenant scope) MUST NOT be evaluated (Layer 1 short-circuits first)
+- **And** NO DB queries MUST execute (handler body unreachable).
+
+**Scenario 4: admin with `audit_read` — 200 OK with cross-branch rows (Layer 2 bypassed)**
+- **Given** an admin role granted `audit_read` permission via `prod.permisos_usuario`
+- **And** the requested `uuid` has `prod.login` rows across MULTIPLE branches
+- **When** the admin invokes `GET /api/v1/usuarios/{uuid}/login`
+- **Then** Layer 1 MUST pass (KD-3 issuer `admin-` accepted + `audit_read` permission granted)
+- **And** Layer 2 MUST be bypassed (admin bypasses the `uuid_sucursal` filter per DEC-LOGIN-03.A — sees ALL branches)
+- **And** the response MUST be `200 OK` with all rows from all branches in `(timestamp_evento DESC, uuid ASC)` order
+- **And** MUST carry `Cache-Control: no-store`.
+
+**Scenario 5: All responses (200 + 4xx + 5xx) carry `Cache-Control: no-store`**
+- **Given** any response from `GET /api/v1/usuarios/{uuid}/login` (success or failure)
+- **When** the response is emitted
+- **Then** the `Cache-Control: no-store` header MUST be present on `200 OK`
+- **And** MUST be present on `400 cursor_invalid` / `403 tenant_scope_violation` / `403 permission_denied` / `422 uuid_usuario_invalid`
+- **And** MUST be present on any uncaught 5xx (defense in depth)
+- **And** the response body MUST NOT contain `pgcode`, `pgerror`, or `pgmessage` keys (XR6 Layer 5 redaction).
+
+**Scenario 6: Read-only AST walk — handler source contains ZERO UPDATE/DELETE on `Login` and ZERO `commit`**
+- **Given** the source file `api/v1/usuarios_login.py` containing `get_login_historico`
+- **When** `tests/static/test_login_historico_read_only.py` runs
+- **Then** the AST walk MUST assert ZERO occurrences of `update(Login)` or `delete(Login)` or `session.execute(text("UPDATE prod.login"))` or `session.execute(text("DELETE FROM prod.login"))` in the handler body (KD-LOGIN-01 + KD-LOGIN-02)
+- **And** MUST assert ZERO occurrences of `await session.commit()` in the handler body (GET is naturally commit-free).
+
+---
 ## Modified Capabilities
 
 - `backend/pyproject.toml` — adds the pytest stack and coverage

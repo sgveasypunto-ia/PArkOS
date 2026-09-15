@@ -7,7 +7,7 @@
 > **PR target**: `origin/dev` (gitflow).
 > **Estado al abrir**: HU-F1.3 cerrada (4 commits), HU-F1.5 en explore.
 
-## 1. HUs restantes (3)
+## 1. HUs restantes (0)
 
 | # | ID | Título | Tamaño est. | Bloqueador | Notas |
 |---|---|---|---|---|---|
@@ -20,7 +20,7 @@
 | 12 | HU-F1.12 | Venta atómica de suscripción | 260 LOC | ninguno | ampliación producto, no CU literal. |
 | 13 | HU-F1.13 | Endpoints arqueo + siembra `tipo_arqueo.cierre_dia` | 240 LOC | ✅ cerrado (2026-09-15, 8 commits `9e68b7b..83b5dfa`, archive 2026-09-15) | 8 REQs (091..097 + XR6) + 10 DECs + 5 KDs; 50 tests PASS across 12 files; MIGRATION 0031 REAL siembra (cierre_dia + descuadre_critico). Verify PASS WITH WARNINGS (2 LOW: D1 3 source bugs fixed inline + D2 LOC 4286 vs ~590 plan). Archived at `openspec/changes/archive/2026-09-15-hu-f1-13-arqueo/`. Canonical spec 96 → 104 REQs (8 new). |
 | 14 | HU-F1.14 | `GET /sync/estado` + 11 alert_types nuevos | 120 LOC | ✅ cerrado (2026-09-15, 5 commits `f4bfaf6..57e79b1`, archive 2026-09-15) | 4 REQs (098..101) + REQ-OPS-XR6 REFERENCE; 10 DECs + 2 KDs; 31 tests PASS across 6 files; MIGRATION 0032 REAL siembra (10 net new + descuadre_critico idempotent). Archived at `openspec/changes/archive/2026-09-15-hu-f1-14-sync-estado/`. Canonical spec 104 → 108 REQs (4 new). |
-| 15 | HU-F1.15 | `GET /usuarios/{uuid}/login` histórico | 70 LOC | ✅ cerrado (2026-09-15, 5 commits `6d9b1a1..b308d6c`, apply-report pending T5 commit) | 4 REQs (102..105) + REQ-OPS-XR6 REFERENCE; 10 DECs (DEC-LOGIN-01..10) + 2 KDs (KD-LOGIN-01 SELECT-only + KD-LOGIN-02 read-only AST walk); 29 tests PASS + 2 Docker-gated SKIP across 5 files; MIGRATION 0033 REAL DDL composite index `prod.idx_login_uuid_usuario_evento ON (uuid_usuario, timestamp_evento DESC)` via `CREATE INDEX CONCURRENTLY`. Apply-report at `openspec/changes/hu-f1-15-login-historico/apply-report.md`. Canonical spec 108 → 112 REQs (4 new). **Fase 1 Parte I cerrada.** |
+| 15 | HU-F1.15 | `GET /usuarios/{uuid}/login` histórico | 70 LOC | ✅ cerrado (2026-09-15, 5 commits `6d9b1a1..6ea63f9`, archive 2026-09-15) | 4 REQs (102..105) + REQ-OPS-XR6 REFERENCE; 10 DECs (DEC-LOGIN-01..10) + 2 KDs (KD-LOGIN-01 SELECT-only + KD-LOGIN-02 read-only AST walk); 29 tests PASS + 2 Docker-gated SKIP across 5 files; MIGRATION 0033 REAL DDL composite index `prod.idx_login_uuid_usuario_evento ON (uuid_usuario, timestamp_evento DESC)` via `CREATE INDEX CONCURRENTLY`. Archived at `openspec/changes/archive/2026-09-15-hu-f1-15-login-historico/` (8 files: apply-report + design + exploration + proposal + specs/operations/spec + tasks + verify-report + archive-report). Canonical spec 108 → 112 REQs (4 new). 3 LOW deviations documented (D1 path-param placement, D2 29 tests vs 8 matrix, D3 mypy --strict violation on handler at `api/v1/usuarios_login.py:140` — runtime correct, recommended T6 follow-up ~5 LOC). **Fase 1 Parte I cerrada.** |
 
 **Total LOC restante**: **0 HU pendientes** — Fase 1 Parte I está completa con F1.15 cerrado.
 
@@ -105,8 +105,10 @@ Ver `git status --short` al inicio de cada sesión. Basado en snapshot 2026-09-1
 
 **PR de cierre**: `feat/fase-1-prerequisites-backend` → `dev` con merge commit + tag `fase-1-parte-i-complete`.
 
+**Fase 1 Parte I CERRADA** (2026-09-15 con archivo HU-F1.15). Proceder a housekeeping commits + final PR. Open follow-up D3 mypy --strict violation recommended como T6 clean-up commit (~5 LOC, zero runtime impact).
+
 ---
 
 **Opened by**: orchestrator (post-F1.3 archive, pre-F1.5 explore).
 **Engram**: persisted (topic_key=`sdd/fase-1-prerequisites-backend/pending`, project=`easypuinto-parkos-software`).
-**Updated**: 2026-09-15 post-F1.15 apply — F1.15 cerrado (5 commits `6d9b1a1..b308d6c`), §1 HUs restantes 3 → 0 (**Fase 1 Parte I completa**); 2 LOW deviations documented (D1 schema `uuid` moved to path-param + D2 29 tests vs 8 matrix).
+**Updated**: 2026-09-15 post-F1.15 archive — F1.15 cerrado (5 commits `6d9b1a1..6ea63f9`, archive 2026-09-15), §1 HUs restantes 0 (**Fase 1 Parte I completa**); 3 LOW deviations documented (D1 schema `uuid` moved to path-param + D2 29 tests vs 8 matrix + D3 mypy --strict violation on handler at `api/v1/usuarios_login.py:140` — runtime correct, recommended T6 follow-up ~5 LOC).
