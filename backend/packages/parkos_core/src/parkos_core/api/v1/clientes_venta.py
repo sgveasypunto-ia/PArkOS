@@ -150,27 +150,67 @@ async def venta_suscripcion(
         vehiculos.append(v)
 
     # --- Step 5: V5 mismo_tipo_vehiculo (in-process). ------------------
-    repo_venta.validar_placas_mismo_tipo_vehiculo(plan=plan, vehiculos=vehiculos)
+    try:
+        repo_venta.validar_placas_mismo_tipo_vehiculo(
+            plan=plan, vehiculos=vehiculos
+        )
+    except repo_venta.TipoVehiculoIncompatibleError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "tipo_vehiculo_incompatible",
+                "tipos_encontrados": exc.tipos_encontrados,
+            },
+            headers=no_store,
+        ) from exc
 
     # --- Step 6: V6 cantidad_maxima_vehiculos (in-process). ------------
-    repo_venta.validar_cantidad_maxima_vehiculos(
-        plan=plan, n_placas=len(payload.placas)
-    )
+    try:
+        repo_venta.validar_cantidad_maxima_vehiculos(
+            plan=plan, n_placas=len(payload.placas)
+        )
+    except repo_venta.CantidadMaximaExcedidaError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "cantidad_maxima_excedida",
+                "cantidad_maxima_vehiculos": exc.cantidad_maxima_vehiculos,
+                "placas_proporcionadas": exc.placas_proporcionadas,
+            },
+            headers=no_store,
+        ) from exc
 
     # --- Step 7: V4 per-placa duplicate detection (F1.7 reuse). --------
     for placa in payload.placas:
-        await repo_venta.validar_placa_duplicada_subscripcion(
-            session,
-            placa=placa,
-            uuid_sucursal=target_sucursal or ctx.sucursal_uuid,
-            fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
-        )
+        try:
+            await repo_venta.validar_placa_duplicada_subscripcion(
+                session,
+                placa=placa,
+                uuid_sucursal=target_sucursal or ctx.sucursal_uuid,
+                fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
+            )
+        except repo_venta.SubscripcionDuplicadaPlacaError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "suscripcion_duplicada_placa",
+                    "placa": exc.placa,
+                },
+                headers=no_store,
+            ) from exc
 
     # --- Step 8: V7 A-09 prorrateo compute (DEC-VENTA-03). -------------
-    monto_proporcional = repo_venta.calcular_prorrateo(
-        plan=plan,
-        fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
-    )
+    try:
+        monto_proporcional = repo_venta.calcular_prorrateo(
+            plan=plan,
+            fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
+        )
+    except repo_venta.PlanDuracionDiasInvalidoError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "plan_duracion_dias_invalido"},
+            headers=no_store,
+        ) from exc
 
     # --- Step 9: V9 INSERT subscription + junction (REQ-OP-08 lock). ---
     duracion_dias = plan.duracion_dias or 0
