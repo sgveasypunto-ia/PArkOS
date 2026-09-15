@@ -42,11 +42,10 @@ from typing import Any
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.A.alerta import Alerta
 from ..models.A.arqueo import Arqueo
 from ..models.A.factura_pagos import FacturaPagos
 from ..models.L_S.sesion import Sesion
-from ..models.L_W.alerta import Alerta as AlertaModel  # noqa: F401 (re-export)
+from ..models.L_W.alerta import Alerta
 from ..models.V.configuracion_tolerancias import ConfiguracionTolerancias
 from ..models.V.tipo_arqueo import TipoArqueo
 from . import append_only, workflow
@@ -285,7 +284,7 @@ def _to_decimal(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
-def _sum_factura_pagos_by_medio_pago(
+async def _sum_factura_pagos_by_medio_pago(
     session: AsyncSession,
     *,
     uuid_sesion: uuid_lib.UUID | None,

@@ -245,20 +245,22 @@ async def post_arqueo(
         descuadre_pct = (
             ((diferencia_efectivo + diferencia_datafono) / esperado_total) * 100
         )
-    uuid_arqueo = await repo_arqueo.insertar_arqueo(
-        session,
-        actor_uuid=ctx.actor_uuid,
-        uuid_tipo_arqueo=tipo_arqueo.uuid,
-        uuid_sesion=payload.uuid_sesion,
-        valor_efectivo_esperado=esperado_efectivo,
-        valor_datafono_esperado=esperado_datafono,
-        valor_efectivo_reportado=payload.valor_efectivo_reportado,
-        valor_datafono_reportado=payload.valor_datafono_reportado,
-        diferencia_efectivo=diferencia_efectivo,
-        diferencia_datafono=diferencia_datafono,
-        descuadre_pct=descuadre_pct,
-        justificacion=payload.justificacion,
-    )
+    uuid_arqueo = (
+        await repo_arqueo.insertar_arqueo(
+            session,
+            actor_uuid=ctx.actor_uuid,
+            uuid_tipo_arqueo=tipo_arqueo.uuid,
+            uuid_sesion=payload.uuid_sesion,
+            valor_efectivo_esperado=esperado_efectivo,
+            valor_datafono_esperado=esperado_datafono,
+            valor_efectivo_reportado=payload.valor_efectivo_reportado,
+            valor_datafono_reportado=payload.valor_datafono_reportado,
+            diferencia_efectivo=diferencia_efectivo,
+            diferencia_datafono=diferencia_datafono,
+            descuadre_pct=descuadre_pct,
+            justificacion=payload.justificacion,
+        )
+    ).uuid
 
     # --- Step 9 (DEC-ARQUEO-03 + KD-ARQUEO-03): cierre_dia path only -- mass close sesiones.
     if tipo_arqueo.codigo == "cierre_dia":
@@ -273,7 +275,7 @@ async def post_arqueo(
     alerta_uuid: uuid_lib.UUID | None = None
     alerta_generada = False
     if es_critico:
-        alerta_uuid = await repo_arqueo.insertar_alerta_descuadre_critico(
+        alerta_row = await repo_arqueo.insertar_alerta_descuadre_critico(
             session,
             actor_uuid=ctx.actor_uuid,
             uuid_arqueo=uuid_arqueo,
@@ -302,6 +304,7 @@ async def post_arqueo(
                 ),
             },
         )
+        alerta_uuid = alerta_row.uuid
         alerta_generada = True
 
     # --- Step 12: KD-ARQUEO-01 SINGLE COMMIT (covers 4 table families).

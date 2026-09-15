@@ -61,6 +61,20 @@ def _build_payload(
     return payload
 
 
+def _build_arqueo_row() -> MagicMock:
+    """Mock Arqueo ORM row -- the handler reads ``.uuid`` from this."""
+    row = MagicMock()
+    row.uuid = uuid_lib.uuid4()
+    return row
+
+
+def _build_alerta_row() -> MagicMock:
+    """Mock Alerta ORM row -- the handler reads ``.uuid`` from this."""
+    row = MagicMock()
+    row.uuid = uuid_lib.uuid4()
+    return row
+
+
 def _build_tipo_arqueo(*, codigo: str) -> MagicMock:
     row = MagicMock()
     row.uuid = uuid_lib.uuid4()
@@ -106,9 +120,9 @@ async def test_arqueo_sin_diferencia_201() -> None:
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
     m_calcular_esperado = AsyncMock(return_value=(Decimal("148000"), Decimal("320000")))
-    m_insertar_arqueo = AsyncMock(return_value=uuid_lib.uuid4())
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
-    m_insertar_alerta = AsyncMock()
+    m_insertar_alerta = AsyncMock(return_value=_build_alerta_row())
 
     with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
@@ -158,9 +172,9 @@ async def test_arqueo_diferencia_justificada_201() -> None:
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
     m_calcular_esperado = AsyncMock(return_value=(Decimal("100000"), Decimal("50000")))
-    m_insertar_arqueo = AsyncMock(return_value=uuid_lib.uuid4())
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
-    m_insertar_alerta = AsyncMock()
+    m_insertar_alerta = AsyncMock(return_value=_build_alerta_row())
 
     with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
@@ -202,13 +216,15 @@ async def test_arqueo_descuadre_sobre_tolerancia_201_con_alerta() -> None:
     session.commit = AsyncMock()
 
     alerta_uuid = uuid_lib.uuid4()
+    alerta_row = MagicMock()
+    alerta_row.uuid = alerta_uuid
     m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="cierre_turno"))
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
     m_calcular_esperado = AsyncMock(return_value=(Decimal("100000"), Decimal("50000")))
-    m_insertar_arqueo = AsyncMock(return_value=uuid_lib.uuid4())
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
-    m_insertar_alerta = AsyncMock(return_value=alerta_uuid)
+    m_insertar_alerta = AsyncMock(return_value=alerta_row)
 
     with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
@@ -254,7 +270,7 @@ async def test_arqueo_diferencia_sin_justificacion_400() -> None:
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
     m_calcular_esperado = AsyncMock(return_value=(Decimal("100000"), Decimal("50000")))
-    m_insertar_arqueo = AsyncMock(return_value=uuid_lib.uuid4())
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
 
     with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
@@ -304,9 +320,9 @@ async def test_arqueo_auditoria_con_diferencia_sin_justificacion_accepted() -> N
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
     m_calcular_esperado = AsyncMock(return_value=(Decimal("100000"), Decimal("50000")))
-    m_insertar_arqueo = AsyncMock(return_value=uuid_lib.uuid4())
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
-    m_insertar_alerta = AsyncMock()
+    m_insertar_alerta = AsyncMock(return_value=_build_alerta_row())
 
     with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \

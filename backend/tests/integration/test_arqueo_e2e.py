@@ -110,7 +110,7 @@ async def test_arqueo_e2e_auditoria_sin_diferencia_single_commit() -> None:
     )
     m_insertar_arqueo = AsyncMock(return_value=arqueo_row)
     m_cerrar_bulk = AsyncMock(return_value=0)
-    m_insertar_alerta = AsyncMock()
+    m_insertar_alerta = AsyncMock(return_value=MagicMock(uuid=uuid_lib.uuid4()))
 
     patchers = [
         patch.object(

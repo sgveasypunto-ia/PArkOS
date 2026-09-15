@@ -60,8 +60,8 @@ def _build_payload(*, uuid_sesion: uuid_lib.UUID | None = None) -> MagicMock:
     payload = MagicMock()
     payload.uuid_tipo_arqueo = uuid_lib.uuid4()
     payload.uuid_sesion = uuid_sesion  # None for cierre_dia
-    payload.valor_efectivo_reportado = Decimal("100000")
-    payload.valor_datafono_reportado = Decimal("50000")
+    payload.valor_efectivo_reportado = Decimal("300000")
+    payload.valor_datafono_reportado = Decimal("150000")
     payload.justificacion = "Sin diferencias"
     return payload
 
@@ -91,11 +91,13 @@ async def test_cierre_dia_3_sesiones_2_cerradas_1_abierta_cerrar_solo_abierta() 
         return_value=(Decimal("300000"), Decimal("150000"))
     )
     m_cerrar_bulk = AsyncMock(return_value=1)  # 1 abierta cerrada, 2 SKIPPED
+    arqueo_row = MagicMock()
+    arqueo_row.uuid = uuid_lib.uuid4()
 
     with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
          patch.object(handler_mod.repo_arqueo, "calcular_esperado_cierre_dia", m_calcular_esperado_cierre_dia), \
-         patch.object(handler_mod.repo_arqueo, "insertar_arqueo", AsyncMock(return_value=uuid_lib.uuid4())), \
+         patch.object(handler_mod.repo_arqueo, "insertar_arqueo", AsyncMock(return_value=arqueo_row)), \
          patch.object(handler_mod.repo_arqueo, "cerrar_sesiones_del_dia_bulk", m_cerrar_bulk):
         result = await handler_mod.post_arqueo(
             response=response,
