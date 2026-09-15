@@ -29,8 +29,9 @@ import uuid as uuid_lib
 from datetime import date, datetime
 from typing import Annotated, Any
 
-from pydantic import StringConstraints, model_validator
+from pydantic import StringConstraints, field_validator, model_validator
 
+from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
 from .common import FilterBase, ReadListBase, _Base
 
 # ---------------------------------------------------------------------------
@@ -60,29 +61,78 @@ class ClientesRead(_Base):
 
 
 class ClientesCreate(_Base):
-    """REQ-03-V-INSERCION. Versioning columns excluded by ``extra='forbid'``."""
+    """REQ-03-V-INSERCION. Versioning columns excluded by ``extra='forbid'``.
+
+    HU-F1.9 / REQ-OPS-058: NIT módulo 11 validation when
+    ``tipo_identificador='NIT'`` AND ``dv`` is provided.
+    CC / CE / pasaporte do NOT require DV
+    (DEC-FACT-08 consumidor final placeholder).
+    """
 
     tipo_identificador: str | None = None
     numero_identificacion: str | None = None
+    dv: str | None = None  # HU-F1.9 — DV for NIT modulo 11 validation
     nombre: str | None = None
     apellido: str | None = None
     telefono: str | None = None
     email: str | None = None
     uuid_tipo_persona: uuid_lib.UUID | None = None
     registro: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validar_nit_dv(self) -> ClientesCreate:
+        """HU-F1.9 / REQ-OPS-058: cross-field NIT módulo 11 validation.
+
+        Runs after all fields are populated (mode='after'), so ``dv`` is
+        available regardless of declaration order. Only validates when
+        ALL three are present: ``tipo_identificador='NIT'``,
+        ``numero_identificacion``, ``dv``. If ``dv`` is absent for a
+        NIT, no-ops — caller may populate DV later via UPDATE.
+        """
+        if (
+            self.tipo_identificador == "NIT"
+            and self.numero_identificacion
+            and self.dv
+        ):
+            if not validar_nit_modulo11(self.numero_identificacion, self.dv):
+                expected = dv_esperado(self.numero_identificacion)
+                raise ValueError(
+                    f"DV inválido: recibido={self.dv}, esperado={expected}"
+                )
+        return self
 
 
 class ClientesUpdate(_Base):
-    """REQ-04-V-ACTUALIZACION. Same shape as :class:`ClientesCreate`."""
+    """REQ-04-V-ACTUALIZACION. Same shape as :class:`ClientesCreate`.
+
+    HU-F1.9: also accepts optional ``dv`` for NIT módulo 11 re-validation
+    on update flows where the identificador is changed.
+    """
 
     tipo_identificador: str | None = None
     numero_identificacion: str | None = None
+    dv: str | None = None
     nombre: str | None = None
     apellido: str | None = None
     telefono: str | None = None
     email: str | None = None
     uuid_tipo_persona: uuid_lib.UUID | None = None
     registro: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validar_nit_dv(self) -> ClientesUpdate:
+        """HU-F1.9 / REQ-OPS-058 mirror on :class:`ClientesUpdate`."""
+        if (
+            self.tipo_identificador == "NIT"
+            and self.numero_identificacion
+            and self.dv
+        ):
+            if not validar_nit_modulo11(self.numero_identificacion, self.dv):
+                expected = dv_esperado(self.numero_identificacion)
+                raise ValueError(
+                    f"DV inválido: recibido={self.dv}, esperado={expected}"
+                )
+        return self
 
 
 class ClientesFilter(FilterBase):
