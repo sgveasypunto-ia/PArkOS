@@ -383,7 +383,7 @@ class SalidaRead(_Base):
     sync_timestamp: datetime | None
     sync_attempts: int | None
 
-    # Business columns (from models/L_S/salida.py)
+    # Business columns (from models/A/salidas.py)
     uuid_sucursal: uuid_lib.UUID | None
     uuid_ingreso: uuid_lib.UUID | None
     fecha_salida: datetime | None
@@ -399,7 +399,9 @@ class SalidaReadForzado(_Base):
     - ``cotizacion_snapshot``: CotizarFacturacion if ROTACION, None if MENSUALIDAD
     """
 
-    # Inherited from LifecycleEventBase (IdMixin + AuditMixin + SyncMixin)
+    # Inherited from AppendOnlyBase (IdMixin + AuditMixin + SyncMixin) on
+    # models/A/salidas.py::Salidas. Composite PK (uuid, fecha_retencion_hasta)
+    # is mapped at the ORM; the schema only carries the uuid business key.
     uuid: uuid_lib.UUID
     created_at: datetime
     created_by: uuid_lib.UUID | None
@@ -407,7 +409,7 @@ class SalidaReadForzado(_Base):
     sync_timestamp: datetime | None
     sync_attempts: int | None
 
-    # Business columns (from models/L_S/salida.py)
+    # Business columns (from models/A/salidas.py)
     uuid_sucursal: uuid_lib.UUID | None
     uuid_ingreso: uuid_lib.UUID | None
     fecha_salida: datetime | None

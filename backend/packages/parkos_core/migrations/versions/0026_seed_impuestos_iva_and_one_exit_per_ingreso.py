@@ -218,10 +218,12 @@ def downgrade() -> None:
     )
 
     # Op 2 reverse: DELETE prod.impuestos.IVA (superuser).
-    # Caveat (R8): if impuestos_inmutable trigger is present, this DELETE
-    # may be blocked. Verification pre-F1.7-apply:
-    #   grep -r "impuestos_inmutable" migrations/
-    # If trigger exists, the workaround is:
+    # The downgrade DELETE on prod.impuestos succeeds because no
+    # impuestos_inmutable trigger exists on that table (verified
+    # pre-0026: only `fn_factura_impuestos_inmutable` exists, on a
+    # different table -- prod.factura_impuestos).
+    # If a future migration adds an impuestos_inmutable trigger to
+    # prod.impuestos, the workaround is:
     #   UPDATE prod.impuestos
     #   SET estado='inactivo', vigente_hasta=NOW() AT TIME ZONE 'UTC'
     #   WHERE codigo='IVA' AND vigente_hasta IS NULL;
