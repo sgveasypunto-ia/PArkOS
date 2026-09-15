@@ -1,0 +1,379 @@
+openapi: 3.0.0
+info:
+  title: parkos-billing-facturacion
+  version: 1.0.0
+  description: |
+    HU-F1.9 / REQ-OPS-053..063 -- Billing transactions surface (atomic 4-table
+    insert). Two endpoints mount under ``/api/v1/facturacion/``:
+
+    - ``POST /factura`` -- atomic 4-table insert for a billing transaction
+      (facturas + factura_detalle + factura_impuestos + factura_pagos in one
+      ``await session.commit()`` -- KD-FACT-01).
+    - ``POST /factura-pagos`` -- additional pago on an existing factura
+      (voucher_requerido for ``medio_pago="datafono"`` -- V7).
+
+    Auth: JWT bearer with issuer prefix ``operador-`` or ``admin-``. The
+    operator (cajero) is scoped to their own ``uuid_sucursal`` (KD-3 tenant
+    scope, F1.6 pattern). The admin may issue cross-branch.
+
+    Cache-Control: no-store on all responses (R-A6 reuse from F1.6/F1.7).
+
+    Idempotency: ``Idempotency-Key`` HTTP header (DEC-IDEM-01 reuse from F1.6).
+
+  contact:
+    name: Parkos Dev
+    email: dev@parkos.local
+
+servers:
+  - url: https://api.parkos.local/api/v1/facturacion
+    description: Production (branch deploy)
+  - url: http://localhost:8000/api/v1/facturacion
+    description: Local dev
+
+tags:
+  - name: facturacion
+    description: Billing transactions (HU-F1.9)
+
+paths:
+  /api/v1/facturacion/factura:
+    post:
+      tags: [facturacion]
+      summary: Atomic 4-table insert (KD-FACT-01)
+      description: |
+        Emits a billing transaction materializing ``prod.facturas`` +
+        ``prod.factura_detalle`` + ``prod.factura_impuestos`` +
+        ``prod.factura_pagos`` in exactly ONE ``await session.commit()``.
+
+        Server-side validation chain (D-HU-F1.9-11, 12 steps):
+
+          Step 1 KD-3 issuer claims + no_store headers
+          Step 2 V1 salida existe y es facturable (404)
+          Step 3 tenant scope post-V1 (403)
+          Step 4 V2 cliente existe cuando fe_con_datos=true (404)
+          Step 5 V3 IVA configurado (500)
+          Step 6 V4 detalle items coherentes (422)
+          Step 7 KD-FACT-02 lock FOR SHARE per-row
+          Step 8 V6 server-side recompute total (422)
+          Step 9 INSERT prod.facturas [L-E]
+          Step 10 INSERT detalle + impuestos + pagos (atomic)
+          Step 11 single commit (KD-FACT-01, KD-FACT-02 release)
+          Step 12 response shape FacturaRead
+      operationId: createFactura
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FacturaCreate'
+      responses:
+        '201':
+          description: Factura emitida (atomic 4-table insert)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FacturaRead'
+        '400':
+          description: voucher_requerido (V7, POST /factura-pagos only)
+        '403':
+          description: tenant_scope_violation (cajero cross-branch)
+        '404':
+          description: salida_no_encontrada (V1) | cliente_no_encontrado (V2)
+        '409':
+          description: factura_duplicada (one_factura_per_salida)
+        '422':
+          description: |
+            nit_invalido (V5) | detalle_invalido (V4) | total_no_coherente (V6)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/NitInvalidoErrorSchema'
+                  - $ref: '#/components/schemas/DetalleInvalidoErrorSchema'
+                  - $ref: '#/components/schemas/TotalNoCoherenteErrorSchema'
+        '500':
+          description: "iva_no_configurado (V3, post-0026: unreachable)"
+
+  /api/v1/facturacion/factura-pagos:
+    post:
+      tags: [facturacion]
+      summary: Additional pago on existing factura (V7 voucher_requerido)
+      description: |
+        Records an additional ``prod.factura_pagos`` row for an existing
+        factura. V7 server-side check: ``medio_pago="datafono"`` MUST include
+        a ``referencia`` (voucher number from the datafono terminal);
+        otherwise 400 ``voucher_requerido``.
+
+        Sequence (5-step chain):
+          Step 1 KD-3 issuer
+          Step 2 V7 voucher_requerido (datafono sin referencia → 400)
+          Step 3 INSERT prod.factura_pagos [A]
+          Step 4 single commit (KD-FACT-01)
+          Step 5 response FacturaPagoRead
+      operationId: createFacturaPago
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FacturaPagoAdicionalCreate'
+      responses:
+        '201':
+          description: Pago adicional registrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FacturaPagoRead'
+        '400':
+          description: voucher_requerido (V7, datafono sin referencia)
+        '404':
+          description: factura_no_encontrada
+        '409':
+          description: pago_duplicado (init pago ya existe)
+        '422':
+          description: valor_invalido (schema gate)
+
+components:
+  schemas:
+    # ---- Request schemas -------------------------------------------------
+    FacturaCreate:
+      type: object
+      required: [uuid_salida, items, subtotal, total, medio_pago, fe_con_datos]
+      properties:
+        uuid_salida:
+          type: string
+          format: uuid
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/FacturaItemCreate'
+        subtotal:
+          type: string
+          pattern: '^\d+\.\d{2}$'
+        total:
+          type: string
+          pattern: '^\d+\.\d{2}$'
+        medio_pago:
+          type: string
+          enum: [efectivo, tarjeta, transferencia, datafono, mixto]
+        referencia:
+          type: string
+          maxLength: 255
+          nullable: true
+        fe_con_datos:
+          type: boolean
+        fe_datos_cliente:
+          oneOf:
+            - $ref: '#/components/schemas/FacturaItemConDatosPropios'
+            - type: 'null'
+
+    FacturaItemCreate:
+      type: object
+      required: [tipo, concepto, cantidad, valor_unitario]
+      properties:
+        tipo:
+          type: string
+        concepto:
+          type: string
+          maxLength: 255
+        cantidad:
+          type: integer
+          minimum: 1
+        valor_unitario:
+          type: string
+          pattern: '^\d+\.\d{2}$'
+        uuid_tarifa_sucursal:
+          type: string
+          format: uuid
+          nullable: true
+
+    FacturaItemConDatosPropios:
+      type: object
+      required: [tipo_identificador, numero_identificacion]
+      properties:
+        tipo_identificador:
+          type: string
+          enum: [NIT, CC, CE, pasaporte]
+        numero_identificacion:
+          type: string
+          maxLength: 32
+        dv:
+          type: string
+          maxLength: 2
+          nullable: true
+          description: REQUIRED only when tipo_identificador=NIT
+        nombre:
+          type: string
+          maxLength: 255
+        apellido:
+          type: string
+          maxLength: 255
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        telefono:
+          type: string
+          maxLength: 32
+          nullable: true
+
+    FacturaPagoAdicionalCreate:
+      type: object
+      required: [uuid_factura, medio_pago, valor]
+      properties:
+        uuid_factura:
+          type: string
+          format: uuid
+        medio_pago:
+          type: string
+          enum: [efectivo, tarjeta, transferencia, datafono, mixto]
+        valor:
+          type: string
+          pattern: '^\d+\.\d{2}$'
+          description: MUST be > 0 (gt constraint)
+        referencia:
+          type: string
+          minLength: 1
+          maxLength: 255
+          nullable: true
+        uuid_sesion:
+          type: string
+          format: uuid
+          nullable: true
+
+    # ---- Response schemas ------------------------------------------------
+    FacturaItemRead:
+      type: object
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        tipo:
+          type: string
+        concepto:
+          type: string
+        cantidad:
+          type: integer
+        valor_unitario:
+          type: string
+        subtotal:
+          type: string
+
+    FacturaRead:
+      type: object
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        uuid_sucursal:
+          type: string
+          format: uuid
+        uuid_ingreso:
+          type: string
+          format: uuid
+          nullable: true
+        uuid_salida:
+          type: string
+          format: uuid
+          nullable: true
+        subtotal:
+          type: string
+        descuento:
+          type: string
+        total:
+          type: string
+        uuid_cliente:
+          type: string
+          format: uuid
+          nullable: true
+          description: DEC-FACT-06 server-derived; NOT persisted
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacturaItemRead'
+        estado:
+          type: string
+          enum: [emitida, pagada, anulada]
+
+    FacturaPagoRead:
+      type: object
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        uuid_factura:
+          type: string
+          format: uuid
+        medio_pago:
+          type: string
+        valor:
+          type: string
+        referencia:
+          type: string
+          nullable: true
+        timestamp_evento:
+          type: string
+          format: date-time
+
+    # ---- Typed error schemas (D-HU-F1.9-19) ------------------------------
+    NitInvalidoErrorSchema:
+      type: object
+      required: [error, dv_esperado, dv_recibido]
+      properties:
+        error:
+          type: string
+          enum: [nit_invalido]
+        dv_esperado:
+          type: integer
+          minimum: 0
+          maximum: 10
+        dv_recibido:
+          type: string
+
+    ClienteNoEncontradoErrorSchema:
+      type: object
+      required: [error, numero_identificacion]
+      properties:
+        error:
+          type: string
+          enum: [cliente_no_encontrado]
+        numero_identificacion:
+          type: string
+
+    DetalleInvalidoErrorSchema:
+      type: object
+      required: [error, min_items]
+      properties:
+        error:
+          type: string
+          enum: [detalle_invalido]
+        min_items:
+          type: integer
+          minimum: 1
+
+    TotalNoCoherenteErrorSchema:
+      type: object
+      required: [error, total_recibido, total_calculado, diferencia]
+      properties:
+        error:
+          type: string
+          enum: [total_no_coherente]
+        total_recibido:
+          type: string
+        total_calculado:
+          type: string
+        diferencia:
+          type: string
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - BearerAuth: []
