@@ -74,4 +74,16 @@ _mount_caja(
 )
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.13 / DEC-ARQUEO-05: dedicated router mount for the atomic
+# ``POST /api/v1/caja/arqueo`` + ``GET /api/v1/caja/arqueo/resumen`` pair.
+# The factory mount above stays read-only; the dedicated router carries
+# the cross-table atomic write (1 [A] Arqueo + N [L-S] sesion + 1 [L-W]
+# alerta + N+1 log_transaccional in a single commit -- KD-ARQUEO-01).
+# ---------------------------------------------------------------------------
+from .caja_arqueo import router as caja_arqueo_router  # noqa: E402
+
+router.include_router(caja_arqueo_router)
+
+
 __all__ = ["router"]
