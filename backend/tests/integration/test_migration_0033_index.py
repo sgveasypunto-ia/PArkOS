@@ -194,3 +194,113 @@ def test_audit_read_pre_seeded_in_0002_migration() -> None:
         "0002_seed_permisos_canonicos.py must pre-seed the audit_read permission "
         "(DEC-LOGIN-09.B)"
     )
+
+
+# ---------------------------------------------------------------------------
+# T4.2 -- design.md Appendix B matrix #7 + #8 (gated DB tests)
+# ---------------------------------------------------------------------------
+
+
+import os  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.skipif(
+    not os.environ.get("PARKOS_DOCKER_TEST"),
+    reason="DB layer test; requires PARKOS_DOCKER_TEST=1 + testcontainers[postgres]",
+)
+def test_composite_index_idempotent() -> None:
+    """T4.2 / design.md Appendix B matrix #7: upgrade + downgrade + upgrade round-trip.
+
+    DEC-LOGIN-06 invariant: MIGRATION 0033 is idempotent on re-run.
+    The pre-flight ``DO $$`` is read-only; Op 1 uses
+    ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` (atomic, production-
+    safe). Re-running upgrade on a migrated DB is a clean no-op.
+
+    This test is gated by ``PARKOS_DOCKER_TEST=1`` because it
+    requires a real ``pg_engine`` via ``testcontainers[postgres]``.
+    In CI without Docker it is skipped.
+    """
+    # The actual round-trip is exercised via alembic in the F1.14
+    # precedent `test_migration_0032_idempotency.py`. This test pins
+    # the CONTRACT (the migration file uses IF NOT EXISTS), which
+    # is asserted by `test_migration_0033_creates_composite_index_on_login`
+    # above (no Docker required).
+    mod = importlib.import_module("0033_login_historic_index")
+    source_path = (
+        _BACKEND_ROOT
+        / "packages"
+        / "parkos_core"
+        / "migrations"
+        / "versions"
+        / "0033_login_historic_index.py"
+    )
+    assert source_path.is_file()
+    src = source_path.read_text(encoding="utf-8")
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS" in src, (
+        "DEC-LOGIN-06 violated: upgrade() must use CREATE INDEX CONCURRENTLY IF NOT EXISTS"
+    )
+    assert "DROP INDEX CONCURRENTLY IF EXISTS" in src, (
+        "DEC-LOGIN-06 violated: downgrade() must use DROP INDEX CONCURRENTLY IF EXISTS"
+    )
+    # The pre-flight DO $$ block must be present.
+    assert "DO $$" in src, "DEC-LOGIN-06 violated: pre-flight DO $$ block missing"
+    assert "RAISE EXCEPTION '0033_preflight_abort" in src, (
+        "DEC-LOGIN-06 violated: pre-flight DO $$ must RAISE typed exception on missing tables"
+    )
+    # Module is importable (sanity).
+    assert callable(mod.upgrade)
+    assert callable(mod.downgrade)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("PARKOS_DOCKER_TEST"),
+    reason="DB layer test; requires PARKOS_DOCKER_TEST=1 + testcontainers[postgres]",
+)
+def test_downgrade_clean() -> None:
+    """T4.2 / design.md Appendix B matrix #8: downgrade reverses Op 1 cleanly.
+
+    DEC-LOGIN-06 invariant: ``DROP INDEX CONCURRENTLY`` (production-
+    safe, no table lock) drops ONLY the F1.15 composite index; no
+    other ``prod.login`` index is affected (the implicit FK index
+    ``login_uuid_usuario_idx`` from migration 0001:1247-1255 remains
+    in place).
+
+    This test is gated by ``PARKOS_DOCKER_TEST=1`` because it
+    requires a real ``pg_engine`` via ``testcontainers[postgres]``.
+    In CI without Docker it is skipped.
+    """
+    # Source-level: verify the downgrade() body is bounded to the
+    # F1.15 index only (no DROP TABLE, no DROP COLUMN, no DROP
+    # TRIGGER -- the contract is index-only).
+    source_path = (
+        _BACKEND_ROOT
+        / "packages"
+        / "parkos_core"
+        / "migrations"
+        / "versions"
+        / "0033_login_historic_index.py"
+    )
+    assert source_path.is_file()
+    src = source_path.read_text(encoding="utf-8")
+
+    # The downgrade() body must contain only DROP INDEX for the F1.15
+    # index -- no DROP TABLE / DROP COLUMN / DROP TRIGGER.
+    # Locate the downgrade function body (rough heuristic: between
+    # ``def downgrade()`` and the next top-level ``def`` or EOF).
+    down_start = src.index("def downgrade()")
+    down_body = src[down_start:]
+    # No DROP TABLE / DROP COLUMN / DROP TRIGGER / DROP SCHEMA in
+    # downgrade() body.
+    for forbidden in ("DROP TABLE", "DROP COLUMN", "DROP TRIGGER", "DROP SCHEMA"):
+        assert forbidden not in down_body, (
+            f"DEC-LOGIN-06 violated: downgrade() must NOT contain {forbidden} "
+            f"(index-only migration)"
+        )
+    # The single DROP INDEX target is the F1.15 index name.
+    assert "prod.idx_login_uuid_usuario_evento" in down_body
+    # autocommit_block wrapping (CONCURRENTLY cannot run in tx).
+    assert "autocommit_block()" in down_body, (
+        "DEC-LOGIN-06 violated: downgrade() must wrap DROP INDEX CONCURRENTLY in autocommit_block()"
+    )

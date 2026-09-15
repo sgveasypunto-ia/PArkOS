@@ -50,7 +50,13 @@ def test_repo_login_historico_module_imports_with_helpers() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_login_row(*, uuid: uuid_lib.UUID, ts, estado: str, uuid_sucursal: uuid_lib.UUID | None) -> MagicMock:
+def _make_login_row(
+    *,
+    uuid: uuid_lib.UUID,
+    ts,
+    estado: str,
+    uuid_sucursal: uuid_lib.UUID | None,
+) -> MagicMock:
     """Build a Login-like ORM row for assertions."""
     row = MagicMock()
     row.uuid = uuid
@@ -61,6 +67,16 @@ def _make_login_row(*, uuid: uuid_lib.UUID, ts, estado: str, uuid_sucursal: uuid
     return row
 
 
+def _empty_session() -> AsyncMock:
+    """Build an AsyncMock session whose execute() resolves to an empty result set."""
+    empty_inner = MagicMock(return_value=[])
+    empty_scalars = MagicMock(return_value=MagicMock(all=empty_inner))
+    empty_result = MagicMock(scalars=empty_scalars)
+    session = AsyncMock()
+    session.execute.return_value = empty_result
+    return session
+
+
 @pytest.mark.asyncio
 async def test_listar_intentos_paginado_select_only_returns_rows() -> None:
     """T2.3: ``session.execute`` is called exactly once with a SELECT (KD-LOGIN-01).
@@ -69,8 +85,7 @@ async def test_listar_intentos_paginado_select_only_returns_rows() -> None:
     (anti-enumeration empty-user contract).
     """
     mod = importlib.import_module("parkos_core.repo.login_historico")
-    session = AsyncMock()
-    session.execute.return_value = MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))))
+    session = _empty_session()
     ctx = MagicMock(issuer_prefix="operador-", sucursal_uuid=uuid_lib.uuid4())
 
     rows = await mod.listar_intentos_paginado(
@@ -98,8 +113,7 @@ async def test_listar_intentos_paginado_layer2_filter_operador() -> None:
     never enters the result set.
     """
     mod = importlib.import_module("parkos_core.repo.login_historico")
-    session = AsyncMock()
-    session.execute.return_value = MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))))
+    session = _empty_session()
     ctx = MagicMock(issuer_prefix="operador-", sucursal_uuid=uuid_lib.uuid4())
 
     await mod.listar_intentos_paginado(
@@ -127,8 +141,7 @@ async def test_listar_intentos_paginado_layer2_bypass_admin() -> None:
     predicate on the SELECT for admin- issuer.
     """
     mod = importlib.import_module("parkos_core.repo.login_historico")
-    session = AsyncMock()
-    session.execute.return_value = MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))))
+    session = _empty_session()
     ctx = MagicMock(issuer_prefix="admin-", sucursal_uuid=uuid_lib.uuid4())
 
     await mod.listar_intentos_paginado(
@@ -164,8 +177,7 @@ async def test_listar_intentos_paginado_no_commit_anywhere() -> None:
     tracked; we assert it was never awaited.
     """
     mod = importlib.import_module("parkos_core.repo.login_historico")
-    session = AsyncMock()
-    session.execute.return_value = MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))))
+    session = _empty_session()
     ctx = MagicMock(issuer_prefix="operador-", sucursal_uuid=uuid_lib.uuid4())
 
     await mod.listar_intentos_paginado(
@@ -193,7 +205,7 @@ def test_encode_next_cursor_items_fit_within_limit_returns_none() -> None:
     last page (no next cursor).
     """
     mod = importlib.import_module("parkos_core.repo.login_historico")
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     items = [
         _make_login_row(
@@ -217,7 +229,7 @@ def test_encode_next_cursor_more_than_limit_returns_base64() -> None:
     the ``limit``-th item (index ``limit - 1``).
     """
     mod = importlib.import_module("parkos_core.repo.login_historico")
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     items = [
         _make_login_row(
@@ -240,7 +252,7 @@ def test_encode_next_cursor_more_than_limit_returns_base64() -> None:
     assert payload["uuid"] == str(items[9].uuid), (
         f"cursor must encode item[9].uuid; got {payload!r}"
     )
-    assert "vigente_desde" in payload and payload["vigente_desde"], (
+    assert payload.get("vigente_desde"), (
         f"cursor must carry vigente_desde ISO timestamp; got {payload!r}"
     )
 
@@ -251,7 +263,7 @@ def test_encode_next_cursor_pure_function_no_side_effects() -> None:
     Calling twice with the same inputs yields identical outputs.
     """
     mod = importlib.import_module("parkos_core.repo.login_historico")
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     items = [
         _make_login_row(
