@@ -22,7 +22,7 @@
  */
 import type { z } from 'zod';
 
-import { useAuthStore } from '../store/authStore';
+import { refreshAccessToken, useAuthStore } from '../store/authStore';
 
 const BACKOFF_MS: readonly number[] = [300, 600, 1200];
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -116,41 +116,10 @@ async function buildInit(
   return { ...init, headers };
 }
 
-// ─── Mutex singleton para refresh-once (DEC-FETCH-03) ────────────────
-let refreshPromise: Promise<string | null> | null = null;
-
-interface TokenPair {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-}
-
-async function refreshAccessToken(): Promise<string | null> {
-  if (refreshPromise) return refreshPromise;
-  refreshPromise = (async () => {
-    try {
-      const { refreshToken } = useAuthStore.getState();
-      if (!refreshToken) return null;
-      const res = await fetch('/api/v1/auth/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      });
-      if (!res.ok) return null;
-      const pair = (await res.json()) as TokenPair;
-      useAuthStore
-        .getState()
-        .setTokens(pair.access_token, pair.refresh_token, pair.expires_in);
-      return pair.access_token;
-    } catch {
-      return null;
-    } finally {
-      refreshPromise = null;
-    }
-  })();
-  return refreshPromise;
-}
-
+// ─── 401 handler (refresh-once via shared Mutex) ────────────────────
+// The Mutex singleton lives in `authStore.ts` so it's testable in isolation
+// (A6 in authStore.test.ts) AND shared with any future consumer that needs
+// to refresh the token outside of parkosFetch (e.g. background tickers).
 async function handle401(
   input: RequestInfo | URL,
   init: ParkosFetchInit | undefined,
