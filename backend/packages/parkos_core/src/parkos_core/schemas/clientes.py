@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import date, datetime
-from typing import Annotated, Any
+from decimal import Decimal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import StringConstraints, model_validator
+from pydantic import Field, StringConstraints, model_validator
 
 from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
 from .common import FilterBase, ReadListBase, _Base
@@ -397,6 +398,82 @@ class SubscripcionVehiculosReadList(ReadListBase[SubscripcionVehiculosRead]):
     pass
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.12 — Venta atómica de suscripción (REQ-OPS-083..090 + XR5)
+# ---------------------------------------------------------------------------
+
+
+class VentaSuscripcionCreate(_Base):
+    """HU-F1.12: POST /api/v1/clientes/venta-suscripcion payload.
+
+    cliente OR uuid_cliente (discriminated XOR): exactly one is required.
+    For embedded ``cliente``, ``dv`` is validated by Pydantic
+    (DEC-VENTA-07) but NOT persisted -- ``prod.clientes`` has no ``dv``
+    column.
+
+    ``extra='forbid'`` (inherited from ``_Base``) blocks client
+    smuggling of ``uuid_sucursal``, ``vigente_desde``, ``estado``,
+    ``created_at``, ``created_by``, ``monto_prorrateado``, ``valor_dia``,
+    ``dias_restantes_mes``.
+
+    ``placas`` is bounded 1-2 by ``Field(min_length=1, max_length=2)``
+    (the per-placa + cross-placa validation runs in the handler /
+    repo layer; this is the request-shape guard only).
+    """
+
+    cliente: ClientesCreate | None = None
+    uuid_cliente: uuid_lib.UUID | None = None
+    placas: Annotated[list[str], Field(min_length=1, max_length=2)]
+    uuid_tipo_subscripcion: uuid_lib.UUID
+    fecha_inicio_cobertura: date
+    cobrar_ahora: bool = False
+    emitir_factura_electronica: bool = False
+    medio_pago: Literal["efectivo", "tarjeta", "datafono", "transferencia"] = (
+        "efectivo"
+    )
+    referencia: str | None = None
+
+    @model_validator(mode="after")
+    def _check_cliente_xor_uuid(self) -> Self:
+        """T2.2: exactly-one-of (``cliente`` XOR ``uuid_cliente``).
+
+        Raises ``ValueError`` (Pydantic maps to 422) when both are
+        populated (would over-write existing cliente) or both are
+        absent (no way to identify the buyer).
+        """
+        if (self.cliente is None) == (self.uuid_cliente is None):
+            raise ValueError(
+                "exactly one of cliente or uuid_cliente is required"
+            )
+        return self
+
+
+class VentaSuscripcionResponse(_Base):
+    """HU-F1.12: POST /api/v1/clientes/venta-suscripcion response.
+
+    Returns the full set of created UUIDs (cliente, subscripcion,
+    vehiculos) + dates + amounts.
+
+    DEC-VENTA-03: ``monto_prorrateado`` is ``None`` when
+    ``cobrar_ahora=False`` (V7 prorrateo not persisted -- V8 cobro
+    sub-chain runs only when ``cobrar_ahora=True``). Optional cobro
+    artifacts (``uuid_factura``, ``uuid_factura_electronica``,
+    ``uuid_envio_dian``) are ``None`` when not requested.
+    """
+
+    uuid_cliente: uuid_lib.UUID
+    uuid_subscripcion: uuid_lib.UUID
+    uuid_vehiculos: list[uuid_lib.UUID]
+    uuid_sucursal: uuid_lib.UUID
+    fecha_inicio_cobertura: date
+    fecha_vencimiento: date
+    valor_total_plan: Decimal
+    monto_prorrateado: Decimal | None = None
+    uuid_factura: uuid_lib.UUID | None = None
+    uuid_factura_electronica: uuid_lib.UUID | None = None
+    uuid_envio_dian: uuid_lib.UUID | None = None
+
+
 __all__ = [
     "ClientesB2BCreate",
     "ClientesB2BFilter",
@@ -423,4 +500,6 @@ __all__ = [
     "VehiculosRead",
     "VehiculosReadList",
     "VehiculosUpdate",
+    "VentaSuscripcionCreate",
+    "VentaSuscripcionResponse",
 ]
