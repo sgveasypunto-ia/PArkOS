@@ -503,6 +503,7 @@ from ...repo.resolucion_facturacion import (
 )
 from ...schemas.facturacion import (
     EnvioDianRead,
+    EnvioDianRetryRead,
     FacturaElectronicaCreate,
     FacturaElectronicaRead,
 )
@@ -700,6 +701,284 @@ async def create_factura_electronica(
             cufe=None,
             motivo_rechazo=None,
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.10 / T5 — GET /factura-electronica/{uuid}
+#
+# 3-step handler. Read-only endpoint that returns the FE row + the LATEST
+# envio_dian chain tip via the JOIN to ``prod.v_factura_electronica_acuse``.
+# Reuses ``leer_factura_electronica_con_envio_via_view`` (repo
+# helper, T2.1). Defense in depth:
+#   - KD-3 issuer chain (``operador-,admin-``)
+#   - tenant scope (post-V1) — operador cross-branch → 403
+#   - Defensive null mapping (REQ-OPS-068 Scenario 2): an FE with zero
+#     envio rows still returns 200, with ``envio_actual`` constructed from
+#     a synthesized "pendiente" placeholder — NOT a fabricated
+#     ``reportado_dian`` boolean (plan.md línea 947 FORBIDDEN).
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/factura-electronica/{uuid}",
+    response_model=FacturaElectronicaRead,
+    status_code=200,
+    summary=(
+        "HU-F1.10 / REQ-OPS-068: GET FE row + latest envio_dian chain tip "
+        "via prod.v_factura_electronica_acuse view."
+    ),
+    responses={
+        403: {"description": "tenant_scope_violation"},
+        404: {"description": "factura_electronica_no_encontrada (V1)"},
+    },
+)
+async def get_factura_electronica(
+    response: Response,
+    uuid: uuid_lib.UUID,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_fe_issuer_dep),
+) -> FacturaElectronicaRead:
+    """REQ-OPS-068: 3-step GET chain.
+
+    Sequence:
+        1. KD-3 issuer claims + no_store headers (DI)
+        2. V1 SELECT prod.factura_electronica by uuid (404 if None)
+        3. Tenant scope post-V1 (403 if operador cross-branch)
+        4. JOIN prod.v_factura_electronica_acuse → latest envio_dian
+           tip (defensive null mapping when the chain is empty)
+        5. Response shape FacturaElectronicaRead with envio_actual
+        6. DEC-FE-06: Cache-Control: no-store header
+    """
+    no_store = no_store_headers()
+
+    # --- Step 2: V1 (FE row exists). -----------------------------------
+    fe_row, ack_row = await repo_factura_electronica.leer_factura_electronica_con_envio_via_view(
+        session, uuid=uuid
+    )
+    if fe_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "factura_electronica_no_encontrada",
+                "uuid_factura_electronica": str(uuid),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 3: tenant scope (post-V1, KD-S2 analog from F1.7). -------
+    target_sucursal = fe_row.uuid_sucursal
+    if (
+        target_sucursal is not None
+        and ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or target_sucursal != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_scope_violation",
+                "uuid_factura_electronica": str(uuid),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 4: defensive null mapping (REQ-OPS-068 Scenario 2). -----
+    # The view returns NULL when the FE has zero envio rows (defensive —
+    # should not happen because KD-FE-01 always creates the initial envio
+    # row in the same TX as the FE row, but the read path must tolerate
+    # either case).
+    envio_actual: EnvioDianRead
+    if ack_row is None:
+        envio_actual = EnvioDianRead(
+            uuid=uuid_lib.uuid4(),  # defensive placeholder; not persisted
+            uuid_factura_electronica=fe_row.uuid,  # type: ignore[arg-type]
+            estado="pendiente",
+            timestamp_evento=fe_row.created_at,  # type: ignore[arg-type]
+            uuid_envio_padre=None,
+            cufe=None,
+            motivo_rechazo=None,
+        )
+    else:
+        envio_actual = EnvioDianRead(
+            uuid=ack_row["uuid"],
+            uuid_factura_electronica=fe_row.uuid,  # type: ignore[arg-type]
+            estado=ack_row["estado"],
+            timestamp_evento=ack_row["timestamp_evento"],
+            uuid_envio_padre=None,  # chain tip is the row itself; no parent
+            cufe=ack_row.get("cufe"),
+            motivo_rechazo=ack_row.get("motivo_rechazo"),
+        )
+
+    # --- Step 5: response shape. ---------------------------------------
+    apply_no_store_header(response)
+    return FacturaElectronicaRead(
+        uuid=fe_row.uuid,  # type: ignore[arg-type]
+        prefijo=fe_row.prefijo,  # type: ignore[arg-type]
+        consecutivo=fe_row.consecutivo,  # type: ignore[arg-type]
+        uuid_factura=fe_row.uuid_factura,  # type: ignore[arg-type]
+        uuid_resolucion_facturacion=fe_row.uuid_resolucion_facturacion,  # type: ignore[arg-type]
+        created_at=fe_row.created_at,  # type: ignore[arg-type]
+        envio_actual=envio_actual,
+    )
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.10 / T6 — POST /factura-electronica/{uuid}/reintentar
+#
+# 8-step handler. Creates a NEW envio_dian retry row (NEVER UPDATE on the
+# existing chain). The chain IS the audit trail — DEC-FE-02 + DEC-FE-07.
+#
+# Defense in depth:
+#   - KD-3 issuer chain (``operador-,admin-``)
+#   - tenant scope (post-V1)
+#   - V2 chain-tip state machine (4 valid states):
+#       aceptado  → 409 reintento_no_permitido (DEC-FE-04)
+#       pendiente → 409 envio_dian_already_pending (rapid-retry guard)
+#       rechazado → proceed (insert NEW retry row)
+#       enviado   → proceed (DIAN timed out; insert NEW retry row)
+#   - KD-FE-01 single commit (same as POST /factura-electronica).
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/factura-electronica/{uuid}/reintentar",
+    response_model=EnvioDianRetryRead,
+    status_code=201,
+    summary=(
+        "HU-F1.10 / REQ-OPS-069..070: insert NEW envio_dian retry row "
+        "with uuid_envio_padre=<chain_tip.uuid> (DEC-FE-02 + DEC-FE-07). "
+        "NEVER UPDATE on existing envio rows."
+    ),
+    responses={
+        403: {"description": "tenant_scope_violation"},
+        404: {"description": "factura_electronica_no_encontrada (V1)"},
+        409: {
+            "description": (
+                "reintento_no_permitido | envio_dian_already_pending"
+            )
+        },
+    },
+)
+async def retry_envio_dian(
+    response: Response,
+    uuid: uuid_lib.UUID,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_fe_issuer_dep),
+) -> EnvioDianRetryRead:
+    """REQ-OPS-069..070: 8-step retry chain.
+
+    Sequence (locked by AST walk, file tests/static/test_retry_no_update.py):
+        1. KD-3 issuer claims + no_store headers (DI)
+        2. V1 SELECT prod.factura_electronica by uuid (404 if None)
+        3. Tenant scope post-V1 (403 if operador cross-branch)
+        4. V2 chain-tip lookup (buscar_envio_dian_chain_tip)
+        5. V2 state-machine validation:
+           - aceptado  → 409 reintento_no_permitido
+           - pendiente → 409 envio_dian_already_pending
+           - rechazado → proceed
+           - enviado   → proceed (DIAN timed out; retry)
+           - None      → proceed (defensive; empty chain)
+        6. KD-FE-01 INSERT NEW prod.envio_dian retry row
+           (uuid_envio_padre=<tip.uuid>, estado='pendiente')
+        7. KD-FE-01 single commit (atomic)
+        8. DEC-FE-06: Cache-Control: no-store header + response shape
+    """
+    no_store = no_store_headers()
+
+    # --- Step 2: V1 (FE row exists). -----------------------------------
+    fe_row = await repo_factura_electronica.buscar_factura_electronica_por_uuid(
+        session, uuid=uuid
+    )
+    if fe_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "factura_electronica_no_encontrada",
+                "uuid_factura_electronica": str(uuid),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 3: tenant scope (post-V1). -------------------------------
+    target_sucursal = fe_row.uuid_sucursal
+    if (
+        target_sucursal is not None
+        and ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or target_sucursal != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_scope_violation",
+                "uuid_factura_electronica": str(uuid),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 4: V2 chain-tip lookup. ----------------------------------
+    chain_tip = await repo_factura_electronica.buscar_envio_dian_chain_tip(
+        session, uuid_factura_electronica=fe_row.uuid  # type: ignore[arg-type]
+    )
+
+    # --- Step 5: V2 state-machine validation. -------------------------
+    if chain_tip is not None:
+        tip_estado = chain_tip.estado
+        if tip_estado == "aceptado":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "reintento_no_permitido",
+                    "uuid_factura_electronica": str(uuid),
+                    "estado_actual": tip_estado,
+                },
+                headers=no_store,
+            )
+        if tip_estado == "pendiente":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "envio_dian_already_pending",
+                    "uuid_factura_electronica": str(uuid),
+                    "uuid_envio_pendiente": str(chain_tip.uuid),
+                },
+                headers=no_store,
+            )
+        # tip_estado in ('rechazado', 'enviado', None) → proceed
+        uuid_envio_padre = chain_tip.uuid
+    else:
+        # Defensive: empty chain (shouldn't happen post-KD-FE-01). Allow
+        # retry by creating an orphan row with uuid_envio_padre=None.
+        uuid_envio_padre = None  # type: ignore[assignment]
+
+    # --- Step 6: INSERT NEW envio_dian retry row (DEC-FE-02). --------
+    new_envio = await repo_factura_electronica.crear_envio_dian_reintento(
+        session,
+        actor_uuid=ctx.actor_uuid,
+        uuid_sucursal=target_sucursal,
+        uuid_factura_electronica=fe_row.uuid,  # type: ignore[arg-type]
+        uuid_resolucion_facturacion=fe_row.uuid_resolucion_facturacion,  # type: ignore[arg-type]
+        payload={
+            "prefijo": fe_row.prefijo,
+            "consecutivo": fe_row.consecutivo,
+            "uuid_factura_electronica": str(fe_row.uuid),
+            "trigger": "manual_retry",
+        },
+        uuid_envio_padre=uuid_envio_padre,  # type: ignore[arg-type]
+    )
+
+    # --- Step 7: KD-FE-01 single commit. ------------------------------
+    await session.commit()
+
+    # --- Step 8: response shape. ---------------------------------------
+    apply_no_store_header(response)
+    return EnvioDianRetryRead(
+        uuid=new_envio.uuid,
+        uuid_factura_electronica=fe_row.uuid,  # type: ignore[arg-type]
+        estado="pendiente",
+        timestamp_evento=new_envio.timestamp_evento,  # type: ignore[arg-type]
+        uuid_envio_padre=uuid_envio_padre,  # type: ignore[arg-type]
     )
 
 
