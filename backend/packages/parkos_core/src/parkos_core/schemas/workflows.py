@@ -57,6 +57,17 @@ class ReimpresionTicketRead(_Base):
     Single-PK (``uuid`` only). The chain tip is walked by
     ``repo.workflow.read_chain_tip(uuid_ingreso)`` via the
     ``uuid_reimpresion_padre`` self-FK.
+
+    DEC-TKT-04 / DEC-TKT-06 — extends with two server-derived fields:
+
+    * ``motivo_anulacion`` (str | None) — populated only on the
+      ``rechazada`` tip row written by the anulacion endpoint; chains
+      with ``estado == 'activo'`` leave this ``None``.
+    * ``workflow_estado`` (str | None) — the derived chain-tip state
+      (``"autorizada"`` for MVP; full state machine in F2.x). Distinct
+      from the bi-temporal ``estado`` column (``'activo' | 'inactivo'``)
+      because INSERT-only chains use the ``vigente_hasta IS NULL`` row
+      as the tip and the workflow reasoning lives above the row level.
     """
 
     uuid: uuid_lib.UUID
@@ -77,6 +88,9 @@ class ReimpresionTicketRead(_Base):
     vigente_desde: datetime | None
     vigente_hasta: datetime | None
     estado: str | None  # 'activo' | 'inactivo'
+    # DEC-TKT-04 / DEC-TKT-06 extensions (server-derived on the tip row)
+    motivo_anulacion: str | None = None
+    workflow_estado: str | None = None
 
 
 class ReimpresionTicketCreate(_Base):
@@ -542,12 +556,121 @@ class ValidacionEventoReadList(ReadListBase[ValidacionEventoRead]):
     """Cursor-paginated list of :class:`ValidacionEventoRead` items."""
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.11 — reimpresion tiquete endpoints + typed errors
+# (REQ-OPS-075..080 + REQ-OPS-XR4; DEC-TKT-04 / DEC-TKT-06)
+# ---------------------------------------------------------------------------
+
+
+class ReimpresionTicketCreateEndpoint(_Base):
+    """V1 POST ``/api/v1/workflows/reimpresion-ticket`` request body.
+
+    Two-layer defense:
+
+    * :attr:`motivo` is bounded to 10..500 chars per DEC-TKT-06 audit cap.
+      Below 10 is rejected as ``422`` Pydantic (insufficient justification);
+      above 500 is rejected as too verbose for the audit row.
+    * :attr:`uuid_factura` is OPTIONAL per DEC-TKT-04: when ``None`` the
+      handler skips the ``prod.facturas`` existence check entirely. When
+      supplied, the handler validates via
+      ``repo.reimpresion_ticket.buscar_factura_por_uuid``.
+    * Server-set fields (``uuid_sucursal``, ``uuid_usuario``,
+      ``costo_aplicado``, ``vigente_desde``, ``vigente_hasta``, ``estado``,
+      ``uuid_reimpresion_padre``) are EXCLUDED from the request body.
+      ``uuid_sucursal`` is derived from JWT context (tenant scope);
+      ``uuid_usuario`` from JWT ``sub``; ``uuid_reimpresion_padre`` from
+      ``buscar_reimpresion_activa_por_ingreso`` (DEC-TKT-02 chain tip).
+    * ``extra='forbid'`` (inherited from ``_Base``) rejects client
+      smuggling of ``estado`` / ``vigente_desde`` etc. — confirmed by
+      ``test_create_endpoint_rejects_estado_injection_via_extra_forbid``.
+    """
+
+    motivo: Annotated[str, StringConstraints(min_length=10, max_length=500)]
+    uuid_ingreso: uuid_lib.UUID
+    uuid_factura: uuid_lib.UUID | None = None
+
+
+class ReimpresionTicketAnularEndpoint(_Base):
+    """V2 POST ``/api/v1/workflows/reimpresion-ticket/{uuid}/anular`` request body.
+
+    * :attr:`motivo_anulacion` is bounded to 10..500 chars per DEC-TKT-06
+      audit cap (mirrors create).
+    * The ``uuid_reimpresion`` is supplied via the URL path, NOT the body,
+      so it is intentionally absent from the request schema.
+    * Server-set fields (``uuid_sucursal``, ``uuid_usuario``,
+      ``vigente_desde``, ``vigente_hasta``, ``estado``,
+      ``uuid_reimpresion_padre``) are EXCLUDED.
+    * ``extra='forbid'`` rejects client smuggling of ``estado`` /
+      ``uuid_reimpresion_padre`` — confirmed by
+      ``test_anular_endpoint_rejects_state_injection_via_extra_forbid``.
+    """
+
+    motivo_anulacion: Annotated[str, StringConstraints(min_length=10, max_length=500)]
+
+
+# Typed error schemas — discriminator-driven HTTP-status mapping. The
+# handler raises one of these as a Pydantic-validated 4xx body in a
+# ``HTTPException(detail=...)`` envelope. The closed ``Literal`` on
+# ``error`` pins the wire contract so the OpenAPI schema documents each
+# error variant per REQ-OPS-077 V2.
+
+
+class ReimpresionAlreadyPendingError(_Base):
+    """V2 409 — recent active reimpresion exists for ``uuid_ingreso``.
+
+    ``error`` discriminator is the closed literal
+    ``"reimpresion_already_pending"``.
+    """
+
+    error: Literal["reimpresion_already_pending"]
+    uuid_ingreso: uuid_lib.UUID
+    uuid_reimpresion: uuid_lib.UUID
+
+
+class AnulacionNoPermitidaError(_Base):
+    """V2 409 — chain-tip is already terminal ``rechazada``.
+
+    The ``estado_actual`` field is the closed literal ``"rechazada"`` —
+    the only state from which annulment is forbidden.
+    """
+
+    error: Literal["anulacion_no_permitida"]
+    uuid_reimpresion: uuid_lib.UUID
+    estado_actual: Literal["rechazada"]
+
+
+class ReimpresionNotFoundError(_Base):
+    """V1/V2 404 — ``prod.reimpresion_ticket`` row absent by PK."""
+
+    error: Literal["reimpresion_not_found"]
+    uuid_reimpresion: uuid_lib.UUID
+
+
+class IngresoNoEncontradoError(_Base):
+    """V1 404 — ``prod.ingreso`` row absent by PK."""
+
+    error: Literal["ingreso_no_encontrado"]
+    uuid_ingreso: uuid_lib.UUID
+
+
+class FacturaNoEncontradaReimpresionError(_Base):
+    """V1 404 (optional path) — ``prod.facturas`` row absent by PK.
+
+    Only emitted when the V1 payload supplied ``uuid_factura``. When the
+    client omits the field the handler never looks up the facturas table.
+    """
+
+    error: Literal["factura_no_encontrada"]
+    uuid_factura: uuid_lib.UUID
+
+
 __all__ = [
     "AlertaCreate",
     "AlertaFilter",
     "AlertaRead",
     "AlertaReadList",
     "AlertaUpdate",
+    "AnulacionNoPermitidaError",
     "AnulacionesCreate",
     "AnulacionesFilter",
     "AnulacionesRead",
@@ -558,13 +681,19 @@ __all__ = [
     "EnvioDianRead",
     "EnvioDianReadList",
     "EnvioDianUpdate",
+    "FacturaNoEncontradaReimpresionError",
+    "IngresoNoEncontradoError",
     "ReclamoCreate",
     "ReclamosCreate",
     "ReclamosFilter",
     "ReclamosRead",
     "ReclamosReadList",
     "ReclamosUpdate",
+    "ReimpresionAlreadyPendingError",
+    "ReimpresionNotFoundError",
+    "ReimpresionTicketAnularEndpoint",
     "ReimpresionTicketCreate",
+    "ReimpresionTicketCreateEndpoint",
     "ReimpresionTicketFilter",
     "ReimpresionTicketRead",
     "ReimpresionTicketReadList",

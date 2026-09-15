@@ -349,7 +349,24 @@ async def pg_engine(pg_async_dsn: str, alembic_upgrade: None) -> AsyncEngine:
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
-async def _bootstrap_global_hash_chain_genesis(pg_engine: AsyncEngine) -> None:
+async def _bootstrap_global_hash_chain_genesis(request) -> None:
+    """F1.11 fix: do not declare pg_engine as a fixture arg.
+
+    When pg_engine is an argument, pytest computes its dependency chain
+    (postgres_container -> pg_dsn -> alembic_upgrade -> pg_engine) at
+    fixture-resolution time. If any link in that chain calls
+    ``pytest.skip`` (because Docker is unreachable on this host) the
+    skip cascades to THIS autouse fixture, which in turn cascades to
+    EVERY test in the session — including pure-Pydantic tests and
+    AST-walk tests that have nothing to do with Postgres.
+
+    By resolving pg_engine lazily via ``request.getfixturevalue`` inside
+    a try/except, the autouse fixture controls its own skip semantics:
+    a missing pg_engine is a silent no-op for this best-effort
+    bootstrap (matches the previous F1.10 baseline: the autouse's
+    genesis bootstrap is skipped but other tests are not cascade-
+    skipped).
+    """
     """Bootstrap the GLOBAL (``uuid_sucursal IS NULL``) hash-chain genesis row.
 
     PR6 (``repo/hash_chain.py::_ensure_genesis_row``) bootstraps the genesis
@@ -385,16 +402,46 @@ async def _bootstrap_global_hash_chain_genesis(pg_engine: AsyncEngine) -> None:
     except Exception:  # noqa: BLE001
         pytest.skip("parkos_core models / repo not importable for genesis bootstrap")
 
+    # Lazily resolve pg_engine so a cascade-skip in its dep chain does
+    # NOT abort this autouse fixture (F1.11 fix).
+    # NOTE: pytest.skip() raises ``Skipped`` which inherits from
+    # ``OutcomeException(BaseException)`` — NOT ``Exception`` — so we MUST
+    # catch ``Skipped`` explicitly. ``Skipped`` indicates "upstream fixture
+    # cascade" which we silently no-op past so that pure-Pydantic and
+    # AST-walk tests (no DB dependency) are not cascade-skipped.
+    from _pytest.outcomes import Skipped
+
+    try:
+        pg_engine = request.getfixturevalue("pg_engine")
+    except Skipped:
+        # Upstream fixture chain skipped (Docker unreachable, etc.) —
+        # silent no-op per F1.11 / F1.10 baseline.
+        return
+    except pytest.Failed:
+        raise
+    except Exception:
+        # DB unreachable or other transient — silent no-op per
+        # F1.10 baseline; tests that need genesis on a reachable DB
+        # call ``seed_hash_chain_genesis_row_sync`` directly.
+        return
+
+    if pg_engine is None:
+        return
+
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     try:
         async with Session() as session:
             await _ensure_genesis_row(session, LogTransaccional, None)
             await session.commit()
-    except Exception as exc:  # noqa: BLE001 - DB unreachable → skip cleanly
-        pytest.skip(
-            f"_bootstrap_global_hash_chain_genesis could not reach DB "
-            f"({type(exc).__name__}: {exc!s}); autouse genesis bootstrap skipped."
-        )
+    except Exception:  # noqa: BLE001 - DB unreachable → silent no-op (F1.10 baseline)
+        # When the Docker daemon is unreachable the upstream
+        # ``postgres_container`` fixture already yielded a sentinel; the
+        # autouse bootstrap is best-effort and MUST NOT cascade to a
+        # session-level skip (which would also block pure-Pydantic and
+        # AST-walk tests that don't need the genesis row). Tests that
+        # actually need the genesis bootstrap on a reachable DB call
+        # ``seed_hash_chain_genesis_row_sync`` directly with their own DSN.
+        return
 
 
 def seed_hash_chain_genesis_row_sync(
