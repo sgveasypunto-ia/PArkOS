@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from 'electron-log';
 import path from 'node:path';
@@ -6,6 +6,7 @@ import path from 'node:path';
 import { initUpdater } from './services/updater';
 import { initLogConfig } from './services/log-config';
 import { initApiStatus, getApiStatus } from './services/api-status';
+import { applyKiosko, tryUnlockKiosko, type StoreLike } from './services/kiosko';
 
 const isDev = !app.isPackaged;
 
@@ -74,7 +75,21 @@ app.whenReady().then(() => {
     log,
   );
   createMainWindow();
-  registerIpcHandlers();
+
+  // DEC-UPD-08: kiosko mode is a deploy-time decision (env var), not an
+  // operator toggle. Activating it locks the window into full-screen
+  // and blocks Ctrl+W / Alt+F4.
+  const store: StoreLike = {
+    get: (key: string): unknown => null,
+    set: (key: string, value: unknown): void => {
+      log.warn('kiosko.store.unbacked_write', { key, type: typeof value });
+    },
+  };
+  if (process.env['PARKOS_KIOSK_MODE'] === '1' && mainWindow) {
+    applyKiosko(mainWindow, Menu, true, log);
+  }
+
+  registerIpcHandlers(store);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
@@ -82,8 +97,21 @@ app.whenReady().then(() => {
   });
 });
 
-function registerIpcHandlers(): void {
+function registerIpcHandlers(kioskoStore: StoreLike): void {
   ipcMain.handle('api:status', () => getApiStatus());
+  ipcMain.handle('kiosk:unlock', (_e, pin: string) =>
+    tryUnlockKiosko(pin, kioskoStore, log),
+  );
+  ipcMain.on('kiosk:toggle', (_e, on: boolean) => {
+    if (!mainWindow) return;
+    if (on) {
+      applyKiosko(mainWindow, Menu, true, log);
+    } else {
+      mainWindow.setKiosk(false);
+      Menu.setApplicationMenu(null);
+    }
+  });
+  ipcMain.on('app:quit', () => app.quit());
 }
 
 app.on('window-all-closed', () => {
