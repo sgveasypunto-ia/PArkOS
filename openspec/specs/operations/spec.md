@@ -3366,7 +3366,648 @@ blocker is resolved (verified by F1.8 regression test
 
 - AST walk `tests/static/test_workflow_handler_no_update_on_reimpresion_ticket.py` PASSES for both `create_reimpresion_ticket` and `anular_reimpresion_ticket`.
 
+## ADDED Requirements
 
+### REQ-OPS-083 — Single-commit atomicity across 9 tables (KD-VENTA-01)
+
+**Source**: HU-F1.12 (DEC-VENTA-01) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler MUST issue exactly one `await session.commit()` at the END of the request body (Step 10 of the 10-step chain), covering all 5 `[V]` writes (`prod.clientes`, `prod.vehiculos`, `prod.subscripciones_cliente`, `prod.subscripcion_vehiculos`, `prod.tipo_subscripciones` lock-only) + the 4 optional `[A]`/`[L-E]` cobro writes (`prod.facturas`, `prod.factura_detalle`, `prod.factura_impuestos`, `prod.factura_pagos`) when `cobrar_ahora=true` + the 2 optional `[L-W]`/`[L-E]` FE writes (`prod.factura_electronica`, `prod.envio_dian`) when `emitir_factura_electronica=true` + N `prod.log_transaccional` co-INSERTs. The handler MUST NOT use `session.begin_nested()` or `SAVEPOINT`. All helper functions (`crear_*`) MUST stay commit-free — they `session.add()` + `await session.flush()` only.
+
+**Rationale**: Cross-domain atomicity is the entire business requirement (plan.md line 1014: "sin que un fallo a mitad de camino deje datos inconsistentes"). F1.10 KD-FE-01 + F1.11 KD-TKT-01 establish the single-commit invariant as the canonical pattern for multi-table writes. The 9-table single commit is well within PostgreSQL's capabilities — `[V]` tables have minimal locking (UK checks), `[A]`/`[L-E]`/`[L-W]` writes are INSERT-only, no long-held locks.
+
+**Source**: `plan.md` line 1014 (atomicity mandate); `backend/packages/parkos_core/src/parkos_core/repo/versioned.py::close_and_insert` (commit-free contract); F1.10 REQ-OPS-065 (KD-FE-01 precedent); F1.11 REQ-OPS-XR3 (KD-TKT-01 single-commit precedent).
+
+**Scenario 1: Happy path — all writes succeed in 1 commit, all rows visible post-response**
+- **Given** a `VentaSuscripcionCreate` payload with valid `cliente` (new), 1 placa `ABC123`, a vigente `uuid_tipo_subscripcion`, `fecha_inicio_cobertura='2026-09-12'`, `cobrar_ahora=true`, `emitir_factura_electronica=true`
+- **When** the handler reaches Step 10 and calls `await session.commit()` exactly once
+- **Then** exactly one `prod.clientes` row MUST be visible (uuid matches response)
+- **And** exactly one `prod.vehiculos` row MUST be visible (placa=`ABC123`)
+- **And** exactly one `prod.subscripciones_cliente` row MUST be visible
+- **And** exactly one `prod.subscripcion_vehiculos` row MUST be visible (junctions the subscription to the vehiculo)
+- **And** exactly one `prod.facturas` row + 1 `prod.factura_detalle` row + 1 `prod.factura_impuestos` row + 1 `prod.factura_pagos` row MUST be visible
+- **And** exactly one `prod.factura_electronica` row + 1 `prod.envio_dian` row MUST be visible
+- **And** the response MUST be `201 Created` with `VentaSuscripcionResponse` carrying all nested UUIDs + `Cache-Control: no-store`.
+
+**Scenario 2: Mid-flight failure — any helper raise rolls back the entire TX**
+- **Given** the same valid payload but Step 8a (`_factura_sub_chain` when `cobrar_ahora=true`) raises `IvaNoConfiguradoError` because `prod.impuestos.IVA` row is missing
+- **When** the handler catches the exception and returns `500 iva_no_configurado`
+- **Then** `await session.commit()` MUST NOT be called (KD-VENTA-01)
+- **And** the entire TX MUST be rolled back — ZERO `prod.clientes`, `prod.vehiculos`, `prod.subscripciones_cliente`, `prod.subscripcion_vehiculos`, `prod.facturas`, `prod.factura_detalle`, `prod.factura_impuestos`, `prod.factura_pagos` rows MUST exist after the rollback (no orphan clientes / vehiculos / subscripciones if cobro failed)
+- **And** NO `prod.factura_electronica` / `prod.envio_dian` rows MUST exist.
+
+**Scenario 3: AST walk — handler source contains EXACTLY ONE `await session.commit()` call**
+- **Given** the source file `api/v1/clientes_venta.py` containing `venta_suscripcion` handler
+- **When** `tests/static/test_venta_handler_single_commit.py` runs an `ast.walk()` over the handler body
+- **Then** the AST walk MUST assert `len([n for n in ast.walk(body) if isinstance(n, ast.Await) and getattr(n.value.func, 'attr', '') == 'commit']) == 1` (exactly one `await session.commit()` call)
+- **And** MUST assert `len([n for n in ast.walk(body) if isinstance(n, ast.Await) and getattr(getattr(n.value, 'func', None), 'attr', '') == 'begin_nested']) == 0` (no SAVEPOINT)
+- **And** MUST assert NO occurrence of the literal string `"SAVEPOINT"` in the handler body (defense in depth).
+
+---
+
+### REQ-OPS-084 — Plan lock `SELECT FOR UPDATE` on `prod.tipo_subscripciones` (KD-VENTA-02 + DEC-VENTA-04)
+
+**Source**: HU-F1.12 (DEC-VENTA-02 + DEC-VENTA-04) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler MUST take `SELECT ... FOR UPDATE` (exclusive, NOT `FOR SHARE`) on the vigente `prod.tipo_subscripciones` row identified by `payload.uuid_tipo_subscripcion` BEFORE any other lock is acquired (Step 2 of the 10-step chain). The lock MUST be held until `await session.commit()` at Step 10. If the lookup returns no vigente row, the handler MUST raise `HTTPException(404, {"error": "tipo_subscripcion_no_encontrado", "uuid_tipo_subscripcion": str(payload.uuid_tipo_subscripcion)}, headers=no_store_headers())`. If multiple vigentes exist (corrupt DB), the handler MUST deterministically pick the latest by `vigente_desde DESC LIMIT 1`.
+
+**Rationale**: The plan read mutates the sale semantics — `fecha_inicio_cobertura` is captured, and concurrent ventas on the SAME plan with different `fecha_inicio_cobertura` would produce different A-09 prorrateo amounts. `FOR SHARE` (F1.9 KD-FACT-02 pattern) is insufficient because two concurrent ventas could compute prorrateo on a stale snapshot. `FOR UPDATE` serializes the calc.
+
+**Source**: `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` lines 195-210 (`tipo_subscripciones` schema + bi-temporal VersionedBase); F1.9 KD-FACT-02 (`FOR SHARE` precedent, intentionally diverged); F1.10 REQ-OPS-064 (`assign_consecutivo` `FOR UPDATE` precedent); `plan.md` lines 1010-1054 (KD-VENTA-02).
+
+**Scenario 1: Single venta on plan — lock acquired, sold, released on commit**
+- **Given** a vigente `prod.tipo_subscripciones` row with `uuid=:p`, `valor=50000`, `duracion_dias=30`, `cantidad_maxima_vehiculos=2`, `mismo_tipo_vehiculo=true`
+- **When** the handler invokes `SELECT * FROM prod.tipo_subscripciones WHERE uuid=:p AND vigente_hasta IS NULL ORDER BY vigente_desde DESC LIMIT 1 FOR UPDATE`
+- **Then** the row lock MUST be acquired (the TX owns the lock until commit)
+- **And** the handler MUST proceed to Step 3 (cliente lookup-or-create)
+- **And** after `await session.commit()` at Step 10, the lock MUST be released (other TXs can now lock the same row).
+
+**Scenario 2: Concurrent ventas on SAME plan — second venta waits, then succeeds with fresh `fecha_inicio_cobertura` capture**
+- **Given** two concurrent TXs both POST `/api/v1/clientes/venta-suscripcion` with the SAME `uuid_tipo_subscripcion=:p` but DIFFERENT `fecha_inicio_cobertura` (TX-A: `'2026-09-10'`, TX-B: `'2026-09-25'`)
+- **When** both TXs reach Step 2 simultaneously
+- **Then** TX-A MUST acquire `SELECT FOR UPDATE` on `:p` first
+- **And** TX-B MUST block at the `SELECT FOR UPDATE` until TX-A commits
+- **And** TX-B MUST re-read `:p` (no read snapshot taken before the lock release) and compute prorrateo on its OWN `fecha_inicio_cobertura='2026-09-25'` (after-day-15 prorrateo path)
+- **And** TX-A MUST compute prorrateo on its OWN `fecha_inicio_cobertura='2026-09-10'` (no prorrateo, full `plan.valor`)
+- **And** both ventas MUST succeed atomically with DIFFERENT prorrateo amounts persisted in each `prod.factura_detalle` row (no cross-contamination).
+
+**Scenario 3: Concurrent ventas on DIFFERENT plans — NOT serialized, both succeed**
+- **Given** two vigentes `prod.tipo_subscripciones` rows `:p1` (plan "mensualidad") and `:p2` (plan "trimestral")
+- **When** two concurrent TXs POST with `uuid_tipo_subscripcion=:p1` and `uuid_tipo_subscripcion=:p2` respectively
+- **Then** both TXs MUST acquire their respective plan locks independently (no mutual blocking)
+- **And** both ventas MUST succeed atomically in their own TXs without serialization on the plan row.
+
+---
+
+### REQ-OPS-085 — Lock ordering: plan lock before cliente lock (deadlock prevention)
+
+**Source**: HU-F1.12 (DEC-VENTA-02) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+When `payload.uuid_cliente` is provided (existing cliente), the handler MUST acquire the plan lock (`SELECT FOR UPDATE` on `prod.tipo_subscripciones`) FIRST (Step 2), then the cliente lock (`SELECT FOR UPDATE` on `prod.clientes`) AFTER (Step 3a). When `payload.cliente` is provided (new cliente, no existing row), the cliente lock is not acquired because `close_and_insert(current_uuid=None, ...)` INSERTs a new row without a prior lock. The handler MUST NOT reverse the ordering (cliente first, then plan).
+
+**Rationale**: A consistent global lock ordering prevents deadlocks under concurrent ventas. Without it, Plan A could hold the cliente lock waiting for the plan lock while Plan B holds the plan lock waiting for the cliente lock — a classic AB-BA deadlock that PostgreSQL would resolve by killing one TX with `deadlock_detected`. F1.10 KD-FE-01 established the "external lock (resolution row) before internal write" pattern; F1.12 mirrors it for plan-before-cliente.
+
+**Source**: F1.10 REQ-OPS-064 (external-lock-first pattern); `backend/packages/parkos_core/src/parkos_core/repo/workflow.py` lines 66-72 (state machine lock ordering precedent).
+
+**Scenario 1: Plan A + existing cliente X, Plan B + existing cliente X — no deadlock**
+- **Given** two concurrent ventas, both for the same existing cliente `:c` (uuid_cliente=:c):
+  - TX-A: `uuid_tipo_subscripcion=:p1` (plan A), `uuid_cliente=:c`
+  - TX-B: `uuid_tipo_subscripcion=:p2` (plan B), `uuid_cliente=:c`
+- **When** both TXs reach Step 2 simultaneously
+- **Then** TX-A MUST acquire the plan lock on `:p1` first
+- **And** TX-B MUST acquire the plan lock on `:p2` (independent plan lock, no contention with TX-A)
+- **And** TX-A MUST then acquire the cliente lock on `:c` (Step 3a) — no other TX holds `:c` yet
+- **And** TX-B MUST wait at the cliente lock on `:c` until TX-A commits
+- **And** after TX-A commits, TX-B MUST acquire `:c`, read the now-committed cliente state, and proceed to Step 4+ — no deadlock, no abort.
+
+**Scenario 2: Reversed ordering — cliente first, then plan — REJECTED, would deadlock**
+- **Given** a hypothetical handler that acquires `SELECT FOR UPDATE` on `prod.clientes` BEFORE `prod.tipo_subscripciones`
+- **When** the two TXs from Scenario 1 run
+- **Then** TX-A MUST acquire cliente lock `:c` first
+- **And** TX-B MUST block at cliente lock `:c`
+- **And** TX-A MUST then attempt to acquire plan lock `:p1` — succeeds independently
+- **And** TX-A MUST commit and release `:c` and `:p1`
+- **And** TX-B MUST acquire `:c`, then attempt to acquire `:p2` — also independent, no deadlock here
+- **But** a third scenario (TX-A: plan A + cliente X; TX-B: plan B + cliente Y, where X and Y have a pending FK relationship via another join path) could exhibit a deadlock — the reversed ordering is REJECTED in DEC-VENTA-02 §6.2.
+
+---
+
+### REQ-OPS-086 — Placa format validation (V3 — `FORMATO_AUTO` / `FORMATO_MOTO`)
+
+**Source**: HU-F1.12 (V3) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+Each placa string in `payload.placas` MUST match one of two regex patterns: `FORMATO_AUTO = re.compile(r"^[A-Z]{3}[0-9]{3}$")` for automobiles (e.g. `ABC123`) OR `FORMATO_MOTO = re.compile(r"^[A-Z]{3}[0-9]{2}[A-Z]$")` for motorcycles (e.g. `ABC12D`). Both patterns are defined in `backend/packages/parkos_core/src/parkos_core/repo/placa.py`. If any placa in the list fails both regexes, the handler MUST raise `HTTPException(422, {"error": "placa_formato_invalido", "placa": <offending_placa>}, headers=no_store_headers())`. The Pydantic schema MUST also enforce `Annotated[list[str], Field(min_length=1, max_length=2)]` on `placas` AND `Annotated[str, StringConstraints(min_length=1, max_length=16)]` on each placa string. Layered defense: Pydantic rejects at parse time (Layer 4) AND `repo.placa` rejects at handler time (Layer 3 via KD-VENTA-02 plan lock ordering).
+
+**Rationale**: F1.6 introduced `FORMATO_AUTO` + `FORMATO_MOTO` as the canonical placa validators. The 422 mapping ensures the operator gets a typed error pointing at the offending placa. The `min_length=1, max_length=2` on the list enforces the plan's `cantidad_maxima_vehiculos` upper bound at the schema layer (defense in depth against V6).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/placa.py` lines 12-25 (regex constants); `plan.md` lines 1010-1054 (V3 mandate); F1.6 REQ-OPS-038 (placa validators precedent).
+
+**Scenario 1: `ABC123` matches AUTO format — OK**
+- **Given** a payload with `placas: ["ABC123"]`
+- **When** the handler Step 4 invokes `repo.placa.validar_formato_placa("ABC123")`
+- **Then** the validator MUST return `True` (matches `FORMATO_AUTO`)
+- **And** the handler MUST proceed to `repo.placa.detectar_tipo_vehiculo("ABC123")` for V5.
+
+**Scenario 2: `ABC12D` matches MOTO format — OK**
+- **Given** a payload with `placas: ["ABC12D"]`
+- **When** the handler Step 4 invokes `repo.placa.validar_formato_placa("ABC12D")`
+- **Then** the validator MUST return `True` (matches `FORMATO_MOTO`)
+- **And** the handler MUST proceed to lookup-or-create the vehiculo with `uuid_tipo_vehiculo` corresponding to "moto".
+
+**Scenario 3: `abc123` (lowercase) — 422 `placa_formato_invalido`**
+- **Given** a payload with `placas: ["abc123"]`
+- **When** the handler Step 4 invokes `repo.placa.validar_formato_placa("abc123")`
+- **Then** the validator MUST return `False` (lowercase `a` fails both `[A-Z]{3}` patterns)
+- **And** the handler MUST raise `HTTPException(422, {"error": "placa_formato_invalido", "placa": "abc123"}, headers=no_store_headers())`
+- **And** NO `prod.vehiculos` row MUST be INSERTed (validation failure short-circuits before Step 4 INSERT).
+
+---
+
+### REQ-OPS-087 — Tipo vehículo compatible constraint (V5 — `mismo_tipo_vehiculo`)
+
+**Source**: HU-F1.12 (V5) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+When the resolved `prod.tipo_subscripciones.mismo_tipo_vehiculo=true`, the handler MUST verify that ALL placas in `payload.placas` derive the SAME `uuid_tipo_vehiculo` via `repo.placa.detectar_tipo_vehiculo(session, placa)`. If the derived tipos differ (e.g. one placa matches AUTO format and another matches MOTO format, OR two placas match AUTO format but one resolves to a catalog variant like "taxi" while the other resolves to "particular"), the handler MUST raise `HTTPException(422, {"error": "tipo_vehiculo_incompatible", "tipos_encontrados": [<list of distinct tipos>]}, headers=no_store_headers())`. When `mismo_tipo_vehiculo=false`, mixed tipos are accepted and no V5 check applies.
+
+**Rationale**: Some plans are tipo-restricted (e.g. "plan solo para automóviles"). A plan with `mismo_tipo_vehiculo=true` means ALL subscribed vehicles must share the same tipo. The 422 mapping gives the operator a typed error listing the distinct tipos found.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/placa.py` lines 27-65 (`detectar_tipo_vehiculo`); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` line 207 (`mismo_tipo_vehiculo` column); F1.6 REQ-OPS-038 (placa-to-tipo mapping precedent).
+
+**Scenario 1: Plan with `mismo_tipo_vehiculo=true` + 2 placas of tipo "auto" — OK**
+- **Given** a plan `:p` with `mismo_tipo_vehiculo=true`, `cantidad_maxima_vehiculos=2`
+- **And** a payload with `placas: ["ABC123", "DEF456"]` (both match `FORMATO_AUTO`)
+- **And** `repo.placa.detectar_tipo_vehiculo` returns the SAME `uuid_tipo_vehiculo` for both placas (catalog lookup against `prod.tipos_vehiculo`)
+- **When** the handler Step 5 invokes `repo_venta.validar_placas_mismo_tipo_vehiculo(session, plan=:p, vehiculos=[<v1>, <v2>])`
+- **Then** the validator MUST return without raising
+- **And** the handler MUST proceed to Step 6 (V6 cantidad maxima check).
+
+**Scenario 2: Plan with `mismo_tipo_vehiculo=true` + 1 auto + 1 moto — 422 `tipo_vehiculo_incompatible`**
+- **Given** a plan `:p` with `mismo_tipo_vehiculo=true`, `cantidad_maxima_vehiculos=2`
+- **And** a payload with `placas: ["ABC123", "XYZ12A"]` (AUTO + MOTO format)
+- **When** the handler Step 5 invokes `validar_placas_mismo_tipo_vehiculo`
+- **Then** the validator MUST detect that `detectar_tipo_vehiculo("ABC123")` returns `uuid_tipo_vehiculo=:t_auto` AND `detectar_tipo_vehiculo("XYZ12A")` returns `uuid_tipo_vehiculo=:t_moto` AND `:t_auto != :t_moto`
+- **And** MUST raise `HTTPException(422, {"error": "tipo_vehiculo_incompatible", "tipos_encontrados": [":t_auto", ":t_moto"]}, headers=no_store_headers())`
+- **And** NO `prod.subscripciones_cliente` row MUST be INSERTed (V5 failure short-circuits before Step 9).
+
+**Scenario 3: Plan with `mismo_tipo_vehiculo=false` + mixed tipos — OK**
+- **Given** a plan `:p` with `mismo_tipo_vehiculo=false`, `cantidad_maxima_vehiculos=2`
+- **And** a payload with `placas: ["ABC123", "XYZ12A"]` (AUTO + MOTO format, distinct tipos)
+- **When** the handler Step 5 invokes `validar_placas_mismo_tipo_vehiculo`
+- **Then** the validator MUST return without raising (V5 check is SKIPPED because `mismo_tipo_vehiculo=false`)
+- **And** the handler MUST proceed to Step 6.
+
+---
+
+### REQ-OPS-088 — Cantidad máxima vehículos constraint (V6 — `cantidad_maxima_vehiculos`)
+
+**Source**: HU-F1.12 (V6) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler MUST verify that `len(payload.placas) <= plan.cantidad_maxima_vehiculos`. If `len(payload.placas) > plan.cantidad_maxima_vehiculos`, the handler MUST raise `HTTPException(422, {"error": "cantidad_maxima_excedida", "cantidad_maxima_vehiculos": <plan.cantidad_maxima_vehiculos>, "placas_proporcionadas": <len(payload.placas)>}, headers=no_store_headers())`. The Pydantic schema MUST also enforce `Field(min_length=1, max_length=2)` on `placas` (Layer 4 defense in depth), so any payload with `len(placas) > 2` is rejected before reaching the handler body.
+
+**Rationale**: Plans have a hard cap on how many vehicles a single subscription can cover (e.g. "plan mensual para 1 vehiculo" vs "plan familiar para 2 vehiculos"). The V6 check enforces the business contract. The Pydantic `max_length=2` is the hard upper bound across all plans (no plan in the catalog allows > 2 vehicles); the V6 helper adds the per-plan check.
+
+**Source**: `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` line 206 (`cantidad_maxima_vehiculos` column); `plan.md` lines 1010-1054 (V6 mandate, 1-2 placas per plan).
+
+**Scenario 1: Plan allows 1 vehiculo + 1 placa — OK**
+- **Given** a plan `:p` with `cantidad_maxima_vehiculos=1`
+- **And** a payload with `placas: ["ABC123"]`
+- **When** the handler Step 6 invokes `validar_cantidad_maxima_vehiculos(session, plan=:p, n_placas=1)`
+- **Then** the validator MUST return without raising (`1 <= 1`).
+
+**Scenario 2: Plan allows 1 vehiculo + 2 placas — 422 `cantidad_maxima_excedida`**
+- **Given** a plan `:p` with `cantidad_maxima_vehiculos=1`
+- **And** a payload with `placas: ["ABC123", "DEF456"]`
+- **When** the handler Step 6 invokes `validar_cantidad_maxima_vehiculos(session, plan=:p, n_placas=2)`
+- **Then** the validator MUST detect that `2 > 1`
+- **And** MUST raise `HTTPException(422, {"error": "cantidad_maxima_excedida", "cantidad_maxima_vehiculos": 1, "placas_proporcionadas": 2}, headers=no_store_headers())`
+- **And** NO `prod.subscripcion_vehiculos` rows MUST be INSERTed (V6 failure short-circuits before Step 9b).
+
+---
+
+### REQ-OPS-089 — Placa duplicate detection (V4 — `suscripcion_duplicada_placa`)
+
+**Source**: HU-F1.12 (V4) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+For each placa in `payload.placas`, the handler MUST call `repo.subscripcion_activa.resolve_active_subscription_for_exit(session, placa=<p>, uuid_sucursal=ctx.sucursal_uuid, fecha_salida=payload.fecha_inicio_cobertura)` (F1.7 reuse, return-truthy semantics — `found=True` when ANY active subscription exists at this branch for this placa). If the helper returns `found=True` for ANY placa, the handler MUST raise `HTTPException(422, {"error": "suscripcion_duplicada_placa", "placa": <offending_placa>, "uuid_sucursal": str(ctx.sucursal_uuid)}, headers=no_store_headers())`. The branch-pinned `WHERE uuid_sucursal == :this_branch` predicate (R22 defense-in-depth from F1.7) MUST be enforced — placas with active subscriptions at a DIFFERENT branch are accepted (cross-branch check NOT enforced in F1.12, deferred to a future cross-branch consistency HU).
+
+**Rationale**: A placa cannot be subscribed twice at the same branch simultaneously (operator mis-clicks, fraudulent resubscription attempts). The reverse-direction reuse of `resolve_active_subscription_for_exit` is semantically equivalent to the F1.7 exit-check: "is there ANY active subscription for placa?" — F1.12 asks the same question before INSERTing the new subscription.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/subscripcion_activa.py` lines 93-141 (`resolve_active_subscription_for_exit`); F1.7 REQ-OPS-039 (R22 branch-pinned predicate precedent); `plan.md` lines 1010-1054 (V4 mandate).
+
+**Scenario 1: Placa new to branch — OK**
+- **Given** a placa `ABC123` with NO active `prod.subscripciones_cliente` row at `ctx.sucursal_uuid=:s`
+- **And** a payload with `placas: ["ABC123"]`
+- **When** the handler Step 7 invokes `resolve_active_subscription_for_exit(session, placa="ABC123", uuid_sucursal=:s, fecha_salida=<fecha_inicio_cobertura>)`
+- **Then** the helper MUST return `found=False` (no active subscription at this branch)
+- **And** the handler MUST proceed to Step 8 (A-09 prorrateo calc).
+
+**Scenario 2: Placa has active subscription at SAME branch — 422 `suscripcion_duplicada_placa`**
+- **Given** an existing `prod.subscripciones_cliente` row `:sc1` with `uuid_cliente=:c1`, `uuid_sucursal=:s`, `uuid_tipo_subscripcion=:p`, `fecha_vencimiento='2026-12-31'` (active)
+- **And** a `prod.vehiculos` row `:v` with `placa='ABC123'`
+- **And** a `prod.subscripcion_vehiculos` row linking `:sc1` to `:v`
+- **And** a new payload with `placas: ["ABC123"]`, `uuid_tipo_subscripcion=:p_new`, `uuid_cliente=:c2` (different cliente, same placa)
+- **When** the handler Step 7 invokes `resolve_active_subscription_for_exit(session, placa="ABC123", uuid_sucursal=:s, fecha_salida=<new.fecha_inicio_cobertura>)`
+- **Then** the helper MUST return `found=True` with `uuid_subscripcion=:sc1`
+- **And** the handler MUST raise `HTTPException(422, {"error": "suscripcion_duplicada_placa", "placa": "ABC123", "uuid_sucursal": ":s"}, headers=no_store_headers())`
+- **And** NO NEW `prod.subscripciones_cliente` row MUST be INSERTed (V4 failure short-circuits before Step 9).
+
+**Scenario 3: Placa has active subscription at DIFFERENT branch — OK (cross-branch check not enforced in F1.12)**
+- **Given** an existing `prod.subscripciones_cliente` row `:sc1` with `uuid_sucursal=:s_other` (different from `ctx.sucursal_uuid=:s_this`)
+- **And** a `prod.vehiculos` row `:v` with `placa='ABC123'`
+- **And** a new payload with `placas: ["ABC123"]`, `uuid_tipo_subscripcion=:p_new`
+- **When** the handler Step 7 invokes `resolve_active_subscription_for_exit(session, placa="ABC123", uuid_sucursal=:s_this, fecha_salida=<new.fecha_inicio_cobertura>)`
+- **Then** the helper MUST return `found=False` (the `:s_other` subscription is filtered out by the `WHERE uuid_sucursal == :this_branch` predicate)
+- **And** the handler MUST proceed to Step 8 (cross-branch check is out of F1.12 scope; the new subscription is recorded at `:s_this` independently).
+
+---
+
+### REQ-OPS-090 — A-09 prorrateo calc and persistence (DEC-VENTA-03)
+
+**Source**: HU-F1.12 (DEC-VENTA-03) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler MUST compute the A-09 prorrateo at Step 8 via `repo_venta.calcular_prorrateo(plan=plan, fecha_inicio_cobertura=payload.fecha_inicio_cobertura)`. The formula: `valor_dia = plan.valor / plan.duracion_dias` (when `plan.duracion_dias > 0`, else `PlanDuracionDiasInvalidoError`); `dias_restantes_mes = (<last day of fecha_inicio_cobertura.month> - fecha_inicio_cobertura.day)` (calendar month after `fecha_inicio_cobertura`); `monto_proporcional = valor_dia * dias_restantes_mes` IF `fecha_inicio_cobertura.day > 15` ELSE `None` (no prorrateo before day 16). When `cobrar_ahora=true`, the handler MUST persist `monto_proporcional` in `prod.factura_detalle.valor_unitario` AND `prod.factura_detalle.subtotal` of the SINGLE detail row with `concepto='subscripcion_mensual_prorrateada'`, `cantidad=1`. When `cobrar_ahora=false`, the handler MUST NOT persist prorrateo anywhere — the prorrateo amount is returned in the response body's `monto_prorrateado` field only when `monto_proporcional is not None`, else `null`.
+
+**Rationale**: plan.md line 460 explicitly: "no hay columna para el monto prorrateado en `subscripciones_cliente`. Se calcula al momento de la venta y el resultado sí queda persistido, pero en `factura_detalle.valor_unitario`/`subtotal` — no en la tabla de suscripción misma, que no necesita columna nueva." The decay rule (`day > 15`) is the plan.md trigger condition (line 1053 T2).
+
+**Source**: `plan.md` line 460 (A-09 spec), line 1053 (T2 day > 15 trigger); `backend/packages/parkos_core/src/parkos_core/repo/factura.py::crear_factura_detalle_bulk` (F1.9 helper, reused with `concepto='subscripcion_mensual_prorrateada'`); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` lines 483-496 (`subscripciones_cliente` has NO prorrateo column by design).
+
+**Scenario 1: `fecha_inicio_cobertura.day = 20` + `cobrar_ahora=true` — prorrateo persisted in `factura_detalle`**
+- **Given** a plan `:p` with `valor=30000`, `duracion_dias=30`
+- **And** a payload with `fecha_inicio_cobertura='2026-09-20'`, `cobrar_ahora=true`
+- **When** the handler Step 8 invokes `calcular_prorrateo(plan=:p, fecha_inicio_cobertura='2026-09-20')`
+- **Then** the helper MUST compute `valor_dia = 30000 / 30 = 1000.0` AND `dias_restantes_mes = (30 - 20) = 10` (September has 30 days)
+- **And** MUST return `monto_proporcional = 1000.0 * 10 = 10000.0`
+- **And** Step 8a (`_factura_sub_chain`) MUST persist `prod.factura_detalle` row with `concepto='subscripcion_mensual_prorrateada'`, `valor_unitario=10000.0`, `cantidad=1`, `subtotal=10000.0`
+- **And** the response MUST include `monto_prorrateado=10000.0`.
+
+**Scenario 2: `fecha_inicio_cobertura.day = 10` — no prorrateo, full `plan.valor` charged**
+- **Given** a plan `:p` with `valor=30000`, `duracion_dias=30`
+- **And** a payload with `fecha_inicio_cobertura='2026-09-10'`, `cobrar_ahora=true`
+- **When** the handler Step 8 invokes `calcular_prorrateo(plan=:p, fecha_inicio_cobertura='2026-09-10')`
+- **Then** the helper MUST detect `day=10` is NOT `> 15` and MUST return `monto_proporcional = None`
+- **And** Step 8a MUST persist `prod.factura_detalle` row with `concepto='subscripcion_mensual'`, `valor_unitario=30000.0`, `cantidad=1`, `subtotal=30000.0` (full `plan.valor`, no prorrateo)
+- **And** the response MUST include `monto_prorrateado=null` (no prorrateo applied).
+
+**Scenario 3: `fecha_inicio_cobertura.day = 20` + `cobrar_ahora=false` — `monto_prorrateado` in response body only, no persistence**
+- **Given** a plan `:p` with `valor=30000`, `duracion_dias=30`
+- **And** a payload with `fecha_inicio_cobertura='2026-09-20'`, `cobrar_ahora=false` (deferred billing)
+- **When** the handler Step 8 invokes `calcular_prorrateo(plan=:p, fecha_inicio_cobertura='2026-09-20')`
+- **Then** the helper MUST return `monto_proporcional = 10000.0` (same calc as Scenario 1)
+- **And** Step 8a MUST be SKIPPED (no `_factura_sub_chain` call because `cobrar_ahora=false`)
+- **And** NO `prod.factura_detalle` row MUST be INSERTed with prorrateo (the prorrateo is NOT persisted when not charging)
+- **And** the response MUST include `monto_prorrateado=10000.0` (informational, returned for the operator's records but NOT in the DB)
+- **And** `uuid_factura` MUST be `null` in the response (no factura was created).
+
+---
+
+### REQ-OPS-XR5 — Defense in depth: 5 layers + single-commit AST walk
+
+**Source**: HU-F1.12 (KD-VENTA-01 + KD-VENTA-02 + DEC-VENTA-05 + DEC-VENTA-06) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+F1.12 MUST apply the F1.10 + F1.11 defense-in-depth pattern (5 layers), each independently testable, with failure of any one layer contained by the other four:
+- **Layer 1 — KD-3 issuer chain + permission gate**: `_venta_suscripcion_issuer_dep = requires_issuer("operador-", "admin-")` (FastAPI dependency) + permission `gestionar_clientes` inherited from the existing `clientes.py` factory mount via `router.include_router(...)` (DEC-VENTA-05).
+- **Layer 2 — Tenant scope post-V1**: After resolving the target sucursal from `ctx.issuer_prefix`, if `ctx.issuer_prefix == "operador-"` and `ctx.sucursal_uuid != target_sucursal`, the handler MUST return `403 tenant_scope_violation` with `Cache-Control: no-store`. Admin (`admin-` prefix) bypasses.
+- **Layer 3 — KD-VENTA-01 single-commit + KD-VENTA-02 plan lock**: AST walk `tests/static/test_venta_handler_single_commit.py` enforces EXACTLY ONE `await session.commit()` in the handler body. `SELECT FOR UPDATE` on `prod.tipo_subscripciones` (Step 2) precedes all other locks (REQ-OPS-084).
+- **Layer 4 — Pydantic `extra='forbid'` + placa constraints + NIT DV validator**: `VentaSuscripcionCreate(_Base)` inherits `extra='forbid'` from `schemas/common.py` (blocks client smuggling of `uuid_sucursal`, `vigente_desde`, `estado`, `created_at`, `created_by`, `monto_prorrateado`, `valor_dia`, `dias_restantes_mes` — all server-derived). `placas: Annotated[list[str], Field(min_length=1, max_length=2)]` + per-placa `StringConstraints(min_length=1, max_length=16)` (REQ-OPS-086). NIT DV validator via `ClientesCreate._validar_nit_dv` (F1.9 REQ-OPS-058 reuse, DEC-VENTA-07 — `dv` is validated by Pydantic then discarded before INSERT).
+- **Layer 5 — Handler 422/409/404 mapping + `Cache-Control: no-store`**: Every response (201 + 4xx + 5xx) carries `Cache-Control: no-store`. Success: `apply_no_store_header(response)`. Error: `HTTPException(headers=no_store_headers())`. Typed exceptions (`TipoSubscripcionNoVigenteError` 409, `TipoSubscripcionNoEncontradoError` 404, `SubscripcionDuplicadaPlacaError` 422, `TipoVehiculoIncompatibleError` 422, `CantidadMaximaExcedidaError` 422, `PlanDuracionDiasInvalidoError` 422, `PlacaFormatoInvalidoError` 422, `TipoVehiculoInvalidoError` 422, `NitInvalidoError` 422, `ClienteNoEncontradoError` 404, `TenantScopeViolationError` 403, `PermissionDeniedError` 403, `IdempotencyKeyRequiredError` 400, `IdempotencyConflictError` 409) map to the typed bodies documented in `schemas/clientes.py` §9.2. The pgcode / internal error code NEVER appears in response body, headers, or info+ logs.
+
+**Rationale**: Defense in depth against accidental drift in any single layer. The AST walk is the F1.10 XR1 + F1.11 XR4 mirror for F1.12. The 5-layer pattern is the canonical backend invariant for multi-table atomic writes (F1.9 KD-FACT-01, F1.10 KD-FE-01, F1.11 KD-TKT-01).
+
+**Source**: F1.9 REQ-OPS-058 (NIT DV validator precedent); F1.10 REQ-OPS-XR1 (single-commit AST walk precedent); F1.11 REQ-OPS-XR4 (insert-only AST walk precedent); `backend/packages/parkos_core/src/parkos_core/api/v1/_helpers.py` lines 18-31 (`no_store_headers` + `apply_no_store_header`); `backend/packages/parkos_core/src/parkos_core/schemas/common.py::_Base` (`extra='forbid'`).
+
+**Scenario 1: operador with `gestionar_clientes` + own branch — OK**
+- **Given** an operador role granted `gestionar_clientes` permission via `prod.permisos_usuario`
+- **And** `ctx.sucursal_uuid=:s` matching the operator's branch
+- **And** a valid `VentaSuscripcionCreate` payload
+- **When** the operador POSTs `/api/v1/clientes/venta-suscripcion`
+- **Then** the request MUST pass Layer 1 (KD-3 issuer chain + permission gate) AND Layer 2 (tenant scope) AND reach the handler body
+- **And** MUST return `201 Created` on the happy path.
+
+**Scenario 2: operador with `gestionar_clientes` + DIFFERENT branch — 403 `tenant_scope_violation`**
+- **Given** an operador role granted `gestionar_clientes` permission
+- **And** `ctx.sucursal_uuid=:s_other` (operator's branch is `:s_other`, but the request's target sucursal is `:s_target != :s_other`)
+- **When** the operador POSTs `/api/v1/clientes/venta-suscripcion`
+- **Then** Layer 2 MUST reject with `403 Forbidden` and body `{"error": "tenant_scope_violation"}` and `Cache-Control: no-store`
+- **And** NO DB writes MUST occur (handler body unreachable).
+
+**Scenario 3: operador WITHOUT `gestionar_clientes` — 403 `permission_denied`**
+- **Given** an operador role WITHOUT `gestionar_clientes` permission (e.g. role "operador-lectura")
+- **When** the operador POSTs `/api/v1/clientes/venta-suscripcion`
+- **Then** Layer 1 MUST reject with `403 Forbidden` and body `{"error": "permission_denied"}` and `Cache-Control: no-store`
+- **And** Layer 2 (tenant scope) MUST NOT be evaluated (Layer 1 short-circuits first).
+
+**Scenario 4: All responses (201 + 4xx + 5xx) carry `Cache-Control: no-store`**
+- **Given** any response from `POST /api/v1/clientes/venta-suscripcion` (success or failure)
+- **When** the response is emitted
+- **Then** the `Cache-Control: no-store` header MUST be present on `201 Created`
+- **And** MUST be present on `400 idempotency_key_required` / `403 tenant_scope_violation` / `403 permission_denied` / `404 tipo_subscripcion_no_encontrado` / `404 cliente_no_encontrado` / `409 tipo_subscripcion_no_vigente` / `409 idempotency_conflict` / `422 placa_formato_invalido` / `422 tipo_vehiculo_incompatible` / `422 cantidad_maxima_excedida` / `422 plan_duracion_dias_invalido` / `422 nit_dv_invalido` / `422 suscripcion_duplicada_placa` / `500 iva_no_configurado`
+- **And** MUST be present on any uncaught 5xx (defense-in-depth).
+
+### REQ-OPS-091 — POST `/api/v1/caja/arqueo` single-commit atomicity (KD-ARQUEO-01 + DEC-ARQUEO-01)
+
+**Source**: HU-F1.13 (KD-ARQUEO-01 + DEC-ARQUEO-01) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler `post_arqueo` in `api/v1/caja_arqueo.py` MUST execute exactly ONE `await session.commit()` at the END of the request body (Step 12 of the 12-step chain), covering all 4 table families in a single TX: (1) one `prod.arqueo` [A] INSERT via `repo/append_only.append_event` (KD-ARQUEO-02), (2) N `prod.sesion` [L-S] UPDATEs when `tipo_arqueo.codigo == 'cierre_dia'` via `repo/session_cycle.close_session_with_log` per row (KD-ARQUEO-03 + `ls_session_guard` trigger), (3) one conditional `prod.alerta` [L-W] INSERT initial via `repo/workflow.append_transition` when `|diferencia_efectivo| > tolerancia_efectivo OR |diferencia_datafono| > tolerancia_datafono` (KD-ARQUEO-04 + KD-ARQUEO-05), (4) N+1 `prod.log_transaccional` [A] co-INSERTs auto-emitted by the helpers. The handler MUST NOT use `session.begin_nested()` or `SAVEPOINT`. All helper functions (`insertar_arqueo`, `cerrar_sesiones_del_dia_bulk`, `insertar_alerta_descuadre_critico`) MUST stay commit-free — they `session.add()` + `await session.flush()` only. On any helper raise, the entire TX MUST roll back (no SAVEPOINT partial commits). The response MUST return `201 Created` with `Cache-Control: no-store`.
+
+**Rationale**: Cross-domain atomicity for the `arqueo + alerta` pair is the entire business requirement — no arqueo without its alerta when `descuadre_critico` is true. A SAVEPOINT strategy would partially commit, leaving orphan arqueos without the matched alerta. The `ls_session_guard` per-row DB trigger mandates log-first ordering for every sesion UPDATE — the per-row `(log INSERT + flush + UPDATE)` pattern in `close_session_with_log` is the only allowed path inside the outer TX. The single-commit invariant becomes the AST walk contract `tests/static/test_arqueo_handler_single_commit.py` (mirror of `tests/static/test_venta_handler_single_commit.py`).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/append_only.py` lines 64-124 (`append_event` commit-free contract); `backend/packages/parkos_core/src/parkos_core/repo/workflow.py` lines 110-237 (`append_transition` commit-free); `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py` lines 274-349 (`close_session_with_log` + `ls_session_guard` trigger lines 286-289); F1.11 KD-TKT-01 + F1.12 KD-VENTA-01 (single-commit precedents).
+
+**Scenario 1: Happy path — all writes succeed in 1 commit, all rows visible post-response**
+- **Given** an `operador-` issuer with `realizar_arqueo` permission and `ctx.sucursal_uuid=:s`
+- **And** a vigente `prod.tipo_arqueo` row with `codigo='cierre_turno'`, `vigente_hasta IS NULL`
+- **And** a vigente `prod.sesion` row `:ses` with `uuid_sucursal=:s`, `estado='abierta'`, `timestamp_cierre IS NULL`
+- **And** a vigente `prod.configuracion_tolerancias` row with `uuid_sucursal=:s`, `tolerancia_efectivo=100`, `tolerancia_datafono=200`
+- **And** an `ArqueoCreateV2` payload with `uuid_tipo_arqueo=<uuid for cierre_turno>`, `uuid_sesion=<:ses>`, `valor_efectivo_reportado=148000`, `valor_datafono_reportado=320000`, `justificacion=null` (sin diferencia)
+- **When** the handler reaches Step 12 and calls `await session.commit()` exactly once
+- **Then** exactly one `prod.arqueo` row MUST be visible (uuid matches response)
+- **And** exactly one `prod.log_transaccional` row MUST be visible (auto-co-inserted by `append_event`)
+- **And** `prod.sesion` MUST be UNCHANGED (UPDATE not required for `cierre_turno` without descuadre; Step 9 only runs on `cierre_dia`)
+- **And** NO `prod.alerta` row MUST be visible (descuadre_critico did NOT trigger — diferencia == 0)
+- **And** the response MUST be `201 Created` with `ArqueoReadForHandler` carrying `alerta_generada=false`, `alerta_uuid=null` + `Cache-Control: no-store`.
+
+**Scenario 2: Mid-flight failure — any helper raise rolls back the entire TX**
+- **Given** the same valid payload but Step 9 (cierre_dia path) raises `SesionNoEncontradaError` because the sesion was deleted mid-flight by a concurrent TX
+- **When** the handler catches the exception and returns `404 sesion_no_encontrada`
+- **Then** `await session.commit()` MUST NOT be called (KD-ARQUEO-01)
+- **And** the entire TX MUST be rolled back — ZERO `prod.arqueo`, ZERO `prod.log_transaccional` rows MUST exist after the rollback
+- **And** the response MUST carry `Cache-Control: no-store`.
+
+**Scenario 3: AST walk — handler source contains EXACTLY ONE `await session.commit()` call**
+- **Given** the source file `api/v1/caja_arqueo.py` containing `post_arqueo` handler
+- **When** `tests/static/test_arqueo_handler_single_commit.py` runs an `ast.walk()` over the handler body
+- **Then** the AST walk MUST assert `len([n for n in ast.walk(body) if isinstance(n, ast.Await) and getattr(n.value.func, 'attr', '') == 'commit']) == 1` (exactly one `await session.commit()` call)
+- **And** MUST assert `len([n for n in ast.walk(body) if isinstance(n, ast.Await) and getattr(getattr(n.value, 'func', None), 'attr', '') == 'begin_nested']) == 0` (no SAVEPOINT)
+- **And** MUST assert NO occurrence of the literal string `"SAVEPOINT"` in the handler body (defense in depth).
+
+---
+
+### REQ-OPS-092 — `cierre_dia` mass sesion UPDATE through `session_cycle` helper only (KD-ARQUEO-03 + DEC-ARQUEO-03)
+
+**Source**: HU-F1.13 (KD-ARQUEO-03 + DEC-ARQUEO-03) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+For `tipo_arqueo.codigo == 'cierre_dia'` with `uuid_sesion=null` and N open sesiones at `ctx.sucursal_uuid`, the handler MUST execute Step 9 by iterating per open sesion and calling `repo.session_cycle.close_session_with_log(session, uuid_sesion=<uuid>, log_tx=True)` for each one. The handler MUST NOT execute raw `session.execute(update(Sesion))` or `session.execute(text("UPDATE prod.sesion ..."))` — the `ls_session_guard` DB trigger (per `repo/session_cycle.py:286-289`) REJECTS direct UPDATE without co-transactional `log_transaccional` row. Each `close_session_with_log` iteration MUST perform `(log_transaccional INSERT + flush + sesion UPDATE estado='cerrada', timestamp_cierre=...)` inside the outer TX. The `ls_session_guard` DB trigger MUST NOT reject any iteration. The AST walk `tests/static/test_arqueo_handler_cierre_dia_uses_session_cycle.py` MUST PASS (NEW walk — no precedent; mirrors `test_venta_handler_no_raw_dml.py` shape).
+
+**Rationale**: `ls_session_guard` per-row DB trigger mandates log-first ordering for every sesion UPDATE — bulk UPDATE without per-row log would trigger the rejection. The `close_session_with_log` helper is the only allowed path. The new AST walk locks the contract at static-parse time (defense in depth against accidental drift).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py` lines 274-349 (`close_session_with_log` + `ls_session_guard` reference lines 286-289); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` (trigger definition); `tests/static/test_no_raw_dml_on_ls_tables.py` (F1.5 PR5-016 precedent for [L-S] AST walks).
+
+**Scenario 1: `cierre_dia` + 3 open sesiones — all 3 closed via `close_session_with_log`**
+- **Given** a `cierre_dia` `ArqueoCreateV2` payload with `uuid_tipo_arqueo=<uuid for cierre_dia>`, `uuid_sesion=null`
+- **And** 3 open `prod.sesion` rows `:ses1`, `:ses2`, `:ses3` at `ctx.sucursal_uuid=:s` with `estado='abierta'`, `timestamp_cierre IS NULL`
+- **When** the handler Step 9 invokes `repo_arqueo.cerrar_sesiones_del_dia_bulk(session, target_sucursal=:s, fecha=<today>)`
+- **Then** the helper MUST iterate per open sesion and call `close_session_with_log(session, uuid_sesion=<each>, log_tx=True)` exactly 3 times
+- **And** each iteration MUST emit one `prod.log_transaccional` row + one `prod.sesion` UPDATE inside the outer TX
+- **And** the final state MUST be `prod.sesion[ses1].estado='cerrada'`, `prod.sesion[ses2].estado='cerrada'`, `prod.sesion[ses3].estado='cerrada'` with `timestamp_cierre` set to NOW()
+- **And** NO `prod.sesion` row MUST remain in `estado='abierta'` at `ctx.sucursal_uuid=:s` for the day after the commit.
+
+**Scenario 2: `cierre_dia` + 2 cerradas + 1 abierta — only the open sesion is closed**
+- **Given** 3 `prod.sesion` rows where `:ses1` and `:ses2` already have `estado='cerrada'`, `timestamp_cierre=<yesterday>`, and `:ses3` has `estado='abierta'`, `timestamp_cierre IS NULL`
+- **And** a `cierre_dia` payload
+- **When** the handler Step 9 invokes `cerrar_sesiones_del_dia_bulk`
+- **Then** the helper MUST iterate over the single open sesion `:ses3` only
+- **And** MUST call `close_session_with_log(session, uuid_sesion=<:ses3>, log_tx=True)` exactly 1 time (NOT 3)
+- **And** `:ses1` and `:ses2` MUST remain UNCHANGED (no UPDATE applied, no log row emitted).
+
+**Scenario 3: AST walk — `post_arqueo` for `cierre_dia` calls `close_session_with_log`, NOT raw UPDATE**
+- **Given** the source file `api/v1/caja_arqueo.py` containing `post_arqueo` handler
+- **When** `tests/static/test_arqueo_handler_cierre_dia_uses_session_cycle.py` runs
+- **Then** the AST walk MUST detect at least one call to `close_session_with_log(...)` inside the `if tipo_arqueo.codigo == 'cierre_dia':` branch (KD-ARQUEO-03)
+- **And** MUST assert NO occurrence of `update(Sesion)` or `text("UPDATE prod.sesion ...")` or `session.execute(update(Sesion))` anywhere in the handler body
+- **And** MUST assert that within the `cierre_dia` branch the literal string `"UPDATE prod.sesion"` does NOT appear.
+
+---
+
+### REQ-OPS-093 — Tolerancia evaluated as ABSOLUTE monto (KD-ARQUEO-04 + DEC-ARQUEO-04)
+
+**Source**: HU-F1.13 (KD-ARQUEO-04 + DEC-ARQUEO-04) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler MUST evaluate `es_descuadre_critico(diferencia_efectivo, diferencia_datafono, tolerancia_efectivo, tolerancia_datafono)` by computing `abs(diferencia_efectivo) > tolerancia_efectivo OR abs(diferencia_datafono) > tolerancia_datafono`. The comparison MUST use the **absolute monto**, NOT a percentage. The `descuadre_pct` field (computed as `((diferencia_efectivo + diferencia_datafono) / (esperado_efectivo + esperado_datafono)) * 100` when esperado > 0, else `None`) MUST be returned in the response body as **informational only** and MUST NOT participate in the alerta decision. plan.md line 1065 mandates: "tolerancia = monto absoluto (no porcentaje)". The Fase 10 reconciliation may revise to percentage — out of F1.13 scope.
+
+**Rationale**: plan.md line 1065 + line 1093 explicit mandate. Fase 10 owns the percentage reconciliation. Mixing the two would silently accept descuadres > tolerance (R5). The `descuadre_pct` field is informational for the operator's UX (visualization) but the alerta decision uses absolute monto per the F1.13 contract.
+
+**Source**: `plan.md` line 1065 (tolerancia = monto absoluto), line 1093 (4 mandated unit tests); `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py::es_descuadre_critico` (NEW helper, pure function); `backend/packages/parkos_core/src/parkos_core/schemas/caja.py::ArqueoReadForHandler.descuadre_pct` (informational marker).
+
+**Scenario 1: `|diferencia| < tolerancia` — NO descuadre alerta**
+- **Given** a sesion with `valor_efectivo_esperado=100000` and `valor_efectivo_reportado=100050`
+- **And** `tolerancia_efectivo=100`, `tolerancia_datafono=200`
+- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=50, diferencia_datafono=0, tolerancia_efectivo=100, tolerancia_datafono=200)`
+- **Then** the helper MUST compute `abs(50)=50 > 100 → False` AND `abs(0)=0 > 200 → False` → return `False`
+- **And** the handler MUST NOT call `insertar_alerta_descuadre_critico` (Step 10 SKIPPED)
+- **And** the response MUST include `alerta_generada=false`, `alerta_uuid=null` AND `descuadre_pct=0.05` (informational only).
+
+**Scenario 2: `|diferencia| > tolerancia` — alerta generated**
+- **Given** the same sesion but `valor_efectivo_reportado=100150`
+- **And** `tolerancia_efectivo=100`
+- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=150, diferencia_datafono=0, tolerancia_efectivo=100, tolerancia_datafono=200)`
+- **Then** the helper MUST compute `abs(150)=150 > 100 → True` → return `True`
+- **And** Step 10 MUST call `insertar_alerta_descuadre_critico` via `append_transition` (REQ-OPS-095)
+- **And** the response MUST include `alerta_generada=true`, `alerta_uuid=<uuid>`.
+
+**Scenario 3: `|diferencia| == tolerancia` — boundary, NO alerta**
+- **Given** `valor_efectivo_reportado=100100`, `tolerancia_efectivo=100` → `|diferencia_efectivo|=100`
+- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=100, diferencia_datafono=0, tolerancia_efectivo=100, tolerancia_datafono=200)`
+- **Then** the helper MUST compute `abs(100)=100 > 100 → False` (strict inequality)
+- **And** the handler MUST NOT generate alerta (`>` not `>=`)
+- **And** `descuadre_pct` MUST appear in response body (informational, not decision-driving).
+
+---
+
+### REQ-OPS-094 — `justificacion` REQUIRED on `cierre_turno`/`cierre_dia` when diferencia != 0 (DEC-ARQUEO-07)
+
+**Source**: HU-F1.13 (DEC-ARQUEO-07) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler MUST validate the request body at Step 6: when `tipo_arqueo.codigo in ('cierre_turno', 'cierre_dia')` AND (`diferencia_efectivo != 0` OR `diferencia_datafono != 0`) AND `payload.justificacion is None` (or empty string), the handler MUST raise `HTTPException(400, {"error": "justificacion_requerida"}, headers=no_store_headers())`. When `tipo_arqueo.codigo == 'auditoria'` with diferencia != 0, the handler MUST accept the request without `justificacion` (advertencia only — not bloqueante per plan.md lines 1086-1091 + line 2476 mandate).
+
+**Rationale**: plan.md line 2476 asymmetry. `auditoria` is an internal control step (advertencia only); `cierre_turno`/`cierre_dia` are operational commitments (justification required when there is a delta). The 400 mapping gives the operator a typed error so the UI can prompt for the missing field.
+
+**Source**: `plan.md` lines 1086-1091 + line 2476 (justification asymmetry mandate); `backend/packages/parkos_core/src/parkos_core/schemas/caja.py::ArqueoCreateV2.justificacion` (`str | None = None`); `backend/packages/parkos_core/src/parkos_core/api/v1/caja_arqueo.py::post_arqueo` Step 6.
+
+**Scenario 1: `cierre_turno` + diferencia != 0 + justificacion=null → 400 `justificacion_requerida`**
+- **Given** a `cierre_turno` `ArqueoCreateV2` with `valor_efectivo_reportado=148050` (esperado=148000, diferencia_efectivo=50, != 0)
+- **And** `justificacion=null` (omitted from payload)
+- **When** the handler Step 6 validates the body
+- **Then** it MUST raise `HTTPException(400, {"error": "justificacion_requerida"}, headers=no_store_headers())`
+- **And** the response MUST carry `Cache-Control: no-store`
+- **And** NO `prod.arqueo` row MUST be INSERTed (Step 6 short-circuits before Step 8)
+- **And** NO `prod.alerta` row MUST be INSERTed.
+
+**Scenario 2: `auditoria` + diferencia != 0 + justificacion=null → ACCEPTED (advertencia)**
+- **Given** an `auditoria` `ArqueoCreateV2` with `valor_efectivo_reportado=148050` (diferencia_efectivo=50)
+- **And** `justificacion=null`
+- **When** the handler Step 6 validates the body
+- **Then** it MUST NOT raise (DEC-ARQUEO-07 asymmetry — auditoria is advertencia only)
+- **And** the handler MUST proceed to Step 7 (es_descuadre_critico) → Step 8 (INSERT arqueo)
+- **And** the response MUST be `201 Created` with `ArqueoReadForHandler` carrying `alerta_generada` per the tolerance check.
+
+**Scenario 3: `cierre_dia` + diferencia != 0 + justificacion=null → 400 `justificacion_requerida`**
+- **Given** a `cierre_dia` `ArqueoCreateV2` with the aggregated day having diferencia != 0
+- **And** `justificacion=null`
+- **When** the handler Step 6 validates the body
+- **Then** it MUST raise `HTTPException(400, {"error": "justificacion_requerida"}, headers=no_store_headers())`
+- **And** NO `prod.sesion` row MUST be UPDATEd (Step 6 short-circuits before Step 9).
+
+---
+
+### REQ-OPS-095 — `alerta 'descuadre_critico'` INSERTed conditionally via `append_transition` (KD-ARQUEO-05 + DEC-ARQUEO-05)
+
+**Source**: HU-F1.13 (KD-ARQUEO-05 + DEC-ARQUEO-05) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+When Step 7 evaluates `es_descuadre_critico == True`, the handler MUST call `repo_arqueo.insertar_alerta_descuadre_critico(session, actor_uuid=ctx.actor_uuid, uuid_arqueo=<uuid_arqueo>, uuid_sucursal=target_sucursal, diferencia_efectivo=<diff_e>, diferencia_datafono=<diff_d>, payload_json={...})` at Step 10. The helper MUST internally call `repo.workflow.append_transition(session, tabla='alerta', tipo_alerta='descuadre_critico', estado_inicial='activa', ...)` — NOT raw `session.execute(insert(Alerta))`. The `append_transition` helper MUST validate `tipo_alerta='descuadre_critico'` against `prod.alert_types` (MIGRATION 0031 Op 2 seeded this entry idempotently). The `alerta_generada=true` + `alerta_uuid=<uuid>` MUST appear in the `201 Created` response body. The AST walk `tests/static/test_arqueo_handler_no_raw_dml.py` MUST NOT detect raw INSERT/UPDATE on `prod.alerta`.
+
+**Rationale**: `WorkflowBase` provides DB-layer state machine integrity (initial state `{activa -> descartada | resuelta}` only). `append_transition` centralizes the audit/sync columns. Raw INSERT bypasses the state machine guard and the audit/sync column computation. MIGRATION 0031 Op 2 seeds `descuadre_critico` into `prod.alert_types` with `ON CONFLICT DO NOTHING` (idempotent — F1.14's planned seed becomes no-op).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/workflow.py` lines 110-237 (`append_transition` + `STATE_MACHINES['alerta']` lines 85-90); `backend/packages/parkos_core/migrations/versions/0013_add_alert_types.py` (registry + `alert_types_inmutable` trigger lines 21-22); `backend/packages/parkos_core/migrations/versions/0031_arqueo_cierre_dia_and_gap_be_05.py` (NEW, MIGRATION 0031 Op 2 seeds `descuadre_critico`).
+
+**Scenario 1: `|diferencia_efectivo| > tolerancia_efectivo` → alerta INSERTed via `append_transition`**
+- **Given** Step 7 evaluated `es_descuadre_critico == True` (REQ-OPS-093 Scenario 2)
+- **And** `prod.alert_types` has the row `('descuadre_critico', 'critical')` seeded by MIGRATION 0031 Op 2
+- **When** the handler Step 10 invokes `insertar_alerta_descuadre_critico(...)`
+- **Then** the helper MUST call `repo.workflow.append_transition(session, tabla='alerta', tipo_alerta='descuadre_critico', estado_inicial='activa', severity='critical', uuid_recurso_origen=<uuid_arqueo>, tipo_recurso_origen='arqueo', payload_json={...})`
+- **And** exactly one `prod.alerta` row MUST be visible after the commit (uuid matches response `alerta_uuid`)
+- **And** the response MUST include `alerta_generada=true` + `alerta_uuid=<uuid>`.
+
+**Scenario 2: `|diferencia| <= tolerancia` → NO alerta INSERTed**
+- **Given** Step 7 evaluated `es_descuadre_critico == False` (REQ-OPS-093 Scenario 1)
+- **When** the handler Step 10 checks `if es_critico:`
+- **Then** the handler MUST NOT call `insertar_alerta_descuadre_critico` (the if-branch is SKIPPED)
+- **And** ZERO `prod.alerta` rows MUST exist after the commit
+- **And** the response MUST include `alerta_generada=false` + `alerta_uuid=null`.
+
+**Scenario 3: AST walk — no raw INSERT/UPDATE on `prod.alerta` in handler body**
+- **Given** the source file `api/v1/caja_arqueo.py` containing `post_arqueo`
+- **When** `tests/static/test_arqueo_handler_no_raw_dml.py` runs
+- **Then** the AST walk MUST assert NO occurrence of `session.execute(insert(Alerta))` or `session.execute(text("INSERT INTO prod.alerta ..."))` or `update(Alerta)` in the handler body
+- **And** MUST assert that `append_transition` (or a helper wrapping it) is the ONLY path that inserts into `prod.alerta`.
+
+---
+
+### REQ-OPS-096 — Sesion MUST be abierta for `cierre_turno` (KD-ARQUEO-06)
+
+**Source**: HU-F1.13 (KD-ARQUEO-06) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+When `tipo_arqueo.codigo == 'cierre_turno'` (or `'auditoria'`) AND `payload.uuid_sesion is not None`, the handler MUST validate at Step 4 that the referenced `prod.sesion` row has `estado='abierta'` AND `timestamp_cierre IS NULL`. The handler MUST call `repo_arqueo.validar_sesion_abierta_para_arqueo(session, uuid_sesion=<uuid>, target_sucursal=ctx.sucursal_uuid)` which returns the sesion object when open OR raises `SesionYaCerradaError` when `timestamp_cierre IS NOT NULL`. The handler MUST map `SesionYaCerradaError` to `HTTPException(409, {"error": "sesion_ya_cerrada", "uuid_sesion": str(payload.uuid_sesion)}, headers=no_store_headers())`. For `cierre_dia`, the sesion validation is SKIPPED (the request carries `uuid_sesion=null` per DEC-ARQUEO-03 — the helper iterates ALL open sesiones for the day). The AST walk MUST enforce that `validar_sesion_abierta_para_arqueo` is called BEFORE any INSERT into `prod.arqueo`.
+
+**Rationale**: A sesion that has already been closed (`timestamp_cierre IS NOT NULL`) cannot be closed or audited again — the arqueo would create a duplicate or contradictory record. The 409 mapping gives the operator a typed error pointing at the offending sesion.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py::validar_sesion_abierta` (F1.3/F1.5 precedent, reused); `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py::validar_sesion_abierta_para_arqueo` (NEW wrapper, raises `SesionYaCerradaError`).
+
+**Scenario 1: `cierre_turno` + sesion abierta → OK**
+- **Given** a `cierre_turno` `ArqueoCreateV2` with `uuid_sesion=<:ses>`
+- **And** `prod.sesion[:ses]` has `estado='abierta'`, `timestamp_cierre IS NULL`
+- **When** the handler Step 4 invokes `validar_sesion_abierta_para_arqueo(session, uuid_sesion=<:ses>, target_sucursal=:s)`
+- **Then** the helper MUST return the sesion object (not raise)
+- **And** the handler MUST proceed to Step 5 (compute esperado + diferencia).
+
+**Scenario 2: `cierre_turno` + sesion already cerrada → 409 `sesion_ya_cerrada`**
+- **Given** `prod.sesion[:ses]` has `estado='cerrada'`, `timestamp_cierre='2026-09-14T18:30:00Z'`
+- **And** a `cierre_turno` `ArqueoCreateV2` with `uuid_sesion=<:ses>`
+- **When** the handler Step 4 invokes `validar_sesion_abierta_para_arqueo`
+- **Then** the helper MUST raise `SesionYaCerradaError(uuid_sesion=<:ses>)`
+- **And** the handler MUST translate to `HTTPException(409, {"error": "sesion_ya_cerrada", "uuid_sesion": "<:ses>"}, headers=no_store_headers())`
+- **And** NO `prod.arqueo` row MUST be INSERTed (Step 4 short-circuits before Step 8).
+
+**Scenario 3: `auditoria` + sesion abierta → OK (auditoria also requires sesion validate)**
+- **Given** an `auditoria` `ArqueoCreateV2` with `uuid_sesion=<:ses>`
+- **And** `prod.sesion[:ses]` has `estado='abierta'`
+- **When** the handler Step 4 invokes `validar_sesion_abierta_para_arqueo`
+- **Then** the helper MUST return the sesion object (auditoria is an internal control — applies to the open sesion too)
+- **And** the handler MUST proceed to Step 5.
+
+---
+
+### REQ-OPS-097 — GET `/api/v1/caja/arqueo/resumen` JOIN sesion + `factura_pagos` SUM (KD-ARQUEO-07 + DEC-ARQUEO-10)
+
+**Source**: HU-F1.13 (KD-ARQUEO-07 + DEC-ARQUEO-10) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The handler `get_arqueo_resumen` in `api/v1/caja_arqueo.py` MUST execute a read query (Step 3 + Step 4) that returns one row per `prod.sesion` of the day at `params.uuid_sucursal` with `timestamp_apertura::date = params.fecha`. For each sesion, the row MUST compute `valor_efectivo_esperado = sesion.valor_inicial_efectivo + COALESCE((SELECT SUM(valor) FROM prod.factura_pagos WHERE uuid_sesion=sesion.uuid AND medio_pago='efectivo' AND tipo_movimiento='pago'), 0)` and `valor_datafono_esperado = sesion.valor_inicial_datafono + COALESCE((SELECT SUM(valor) FROM prod.factura_pagos WHERE uuid_sesion=sesion.uuid AND medio_pago IN ('tarjeta', 'datafono') AND tipo_movimiento='pago'), 0)`. The query MUST NOT execute any UPDATE/INSERT/DELETE on `prod.factura_pagos` (F1.9 immutability, KD-ARQUEO-08 read-only). If a `cierre_dia` arqueo exists for `(uuid_sucursal, fecha)`, it MUST appear in the `cierre_dia` aggregate field at the bottom of the response. The response MUST be `200 OK` with `Cache-Control: no-store` (DEC-ARQUEO-06).
+
+**Rationale**: F1.9 `prod.factura_pagos` is immutable (F1.9 REQ-OPS-058 + `fn_factura_pagos_inmutable` trigger migration 0001 lines 2024-2088). F1.13 reads only via the direct FK `prod.factura_pagos.uuid_sesion` (migration 0001 line 716). The grouping matches the arqueo contract (plan.md lines 1062-1065).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py::listar_sesiones_del_dia`, `repo/arqueo.py::construir_resumen_sesion`, `repo/arqueo.py::obtener_cierre_dia_del_dia` (NEW helpers); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` line 716 (`factura_pagos.uuid_sesion` FK), lines 2024-2088 (`fn_factura_pagos_inmutable` trigger); F1.9 REQ-OPS-058 (`factura_pagos` immutability precedent).
+
+**Scenario 1: Resumen con 1 sesion + 1 arqueo → 1 item con totales calculados**
+- **Given** a GET `?uuid_sucursal=<:s>&fecha=2026-09-15`
+- **And** 1 `prod.sesion` row `:ses` at `:s` with `timestamp_apertura::date='2026-09-15'`, `valor_inicial_efectivo=50000`, `valor_inicial_datafono=0`
+- **And** 2 `prod.factura_pagos` rows for `:ses`: `(medio_pago='efectivo', valor=30000, tipo_movimiento='pago')` and `(medio_pago='tarjeta', valor=20000, tipo_movimiento='pago')`
+- **And** 1 `prod.arqueo` row for `:ses` (cierre_turno or auditoria)
+- **When** the handler Step 3 + Step 4 execute the read query
+- **Then** the response MUST include exactly 1 `ArqueoResumenItem` for `:ses`
+- **And** the item MUST have `valor_efectivo_esperado = 50000 + 30000 = 80000` AND `valor_datafono_esperado = 0 + 20000 = 20000`
+- **And** `cierre_dia` MUST be `null` (no cierre_dia arqueo for this date).
+
+**Scenario 2: Resumen con cierre_dia existente → aggregate al fondo**
+- **Given** 3 sesiones at `:s` for `fecha='2026-09-15'`
+- **And** 1 `cierre_dia` arqueo row with `uuid_sucursal=:s`, `uuid_sesion=null`, `fecha_retencion_hasta IN ('2026-09-15', ...)`
+- **When** the handler Step 4 invokes `obtener_cierre_dia_del_dia(session, uuid_sucursal=:s, fecha='2026-09-15')`
+- **Then** the response MUST include 3 items in `sesiones[]` AND 1 item in `cierre_dia` (the aggregate arqueo row)
+- **And** the `cierre_dia` item MUST have `uuid_sesion=null` (because `cierre_dia` carries `uuid_sesion=null` per DEC-ARQUEO-03).
+
+**Scenario 3: Resumen con día vacío → 200 con `sesiones=[]`, `cierre_dia=null`**
+- **Given** a GET `?uuid_sucursal=<:s>&fecha=2026-09-15`
+- **And** ZERO `prod.sesion` rows at `:s` for that date AND ZERO `cierre_dia` arqueos
+- **When** the handler Step 3 invokes `listar_sesiones_del_dia`
+- **Then** the helper MUST return `[]` (empty list, NOT 404)
+- **And** the response MUST be `200 OK` with `{"fecha": "2026-09-15", "uuid_sucursal": "<:s>", "sesiones": [], "cierre_dia": null}` + `Cache-Control: no-store`.
+
+---
+
+### REQ-OPS-XR6 — Defense in depth: 5 layers + AST walks (mirror XR1..XR5)
+
+**Source**: HU-F1.13 (KD-ARQUEO-01 + KD-ARQUEO-08 + DEC-ARQUEO-05 + DEC-ARQUEO-06 + DEC-ARQUEO-08) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+F1.13 MUST apply the F1.10 + F1.11 + F1.12 defense-in-depth pattern (5 layers), each independently testable, with failure of any one layer contained by the other four:
+- **Layer 1 — KD-3 issuer chain + permission gate**: `_caja_arqueo_issuer_dep = requires_issuer("operador-", "admin-")` (FastAPI dependency) + permission `realizar_arqueo` (after GAP-BE-05 fix at `api/v1/caja.py:53` — DEC-ARQUEO-08). For `caja_sesion.py:257` permission `abrir_cerrar_caja` (after GAP-BE-05 fix at site #2). Branch operator with `realizar_arqueo` performs arqueo; admin cross-branch.
+- **Layer 2 — Tenant scope post-V1**: After resolving `target_sucursal` from `ctx.sucursal_uuid` (V1 in POST) or from `params.uuid_sucursal` (in GET), if `ctx.issuer_prefix == "operador-"` AND `(ctx.sucursal_uuid is None OR target_sucursal != ctx.sucursal_uuid)`, return `403 tenant_scope_violation` with `Cache-Control: no-store`. Admin (`admin-`) bypasses. KD-S2 analog from F1.7.
+- **Layer 3 — KD-ARQUEO-01 single-commit + KD-ARQUEO-08 lock ordering**: AST walk `tests/static/test_arqueo_handler_single_commit.py` enforces EXACTLY ONE `await session.commit()` in the `post_arqueo` body. `SELECT FOR UPDATE` on `prod.tipo_arqueo` (Step 1) precedes all other locks (REQ-OPS-091 Scenario 1, KD-ARQUEO-08 deadlock prevention). AST walk `tests/static/test_arqueo_handler_cierre_dia_uses_session_cycle.py` enforces `close_session_with_log` usage on the `cierre_dia` path (REQ-OPS-092 Scenario 3). AST walk `tests/static/test_arqueo_handler_no_raw_dml.py` enforces no raw INSERT/UPDATE/DELETE on `[A]`/`[V]` tables outside the `repo/arqueo.py` helpers.
+- **Layer 4 — Pydantic `extra='forbid'` + numeric Decimal + UUID required**: `ArqueoCreateV2(_Base)` + `ArqueoReadForHandler` + `ArqueoResumenItem` + `ArqueoResumenRead` + `CierreDiarioQueryParams` inherit `extra='forbid'` from `schemas/common.py::_Base` (blocks client smuggling of `uuid_usuario`, `fecha_retencion_hasta`, `alerta_generada`, `alerta_uuid`, `descuadre_pct`, `created_at`, `created_by` — all server-derived). Numeric `valor_efectivo_reportado`/`valor_datafono_reportado` use `Decimal` with `ge=0`. UUID fields required where mandated (REQ-OPS-096 sesion validate).
+- **Layer 5 — Handler 422/409/404/403/400 mapping + `Cache-Control: no-store`**: Every response (201 + 4xx + 5xx) on BOTH endpoints carries `Cache-Control: no-store`. Success: `apply_no_store_header(response)`. Error: `HTTPException(headers=no_store_headers())`. Typed exceptions (`TipoArqueoNoEncontradoError` 404, `SesionNoEncontradaError` 404, `ToleranciaNoConfiguradaError` 404, `SesionYaCerradaError` 409, `CierreDiaNoAceptaSesionError` 400, `JustificacionRequeridaError` 400, `TenantScopeViolationError` 403, `PermissionDeniedError` 403, `IdempotencyKeyRequiredError` 400, `IdempotencyConflictError` 409) map to the typed bodies documented in `schemas/caja.py` §9.3. The pgcode / internal error code NEVER appears in response body, headers, or info+ logs.
+
+**Rationale**: Defense in depth against accidental drift in any single layer. The AST walk is the F1.10 XR1 + F1.11 XR4 + F1.12 XR5 mirror for F1.13. The 5-layer pattern is the canonical backend invariant for multi-table atomic writes (F1.9 KD-FACT-01, F1.10 KD-FE-01, F1.11 KD-TKT-01, F1.12 KD-VENTA-01, F1.13 KD-ARQUEO-01).
+
+**Source**: F1.9 REQ-OPS-058 (factura_pagos immutability precedent); F1.10 REQ-OPS-XR1 (single-commit AST walk precedent); F1.11 REQ-OPS-XR4 (insert-only AST walk precedent); F1.12 REQ-OPS-XR5 (5-layer defense precedent); `backend/packages/parkos_core/src/parkos_core/api/v1/_helpers.py` lines 18-31 (`no_store_headers` + `apply_no_store_header`); `backend/packages/parkos_core/src/parkos_core/schemas/common.py::_Base` (`extra='forbid'`); `backend/packages/parkos_core/src/parkos_core/api/v1/caja.py` line 53 (GAP-BE-05 site #1) + `api/v1/caja_sesion.py` line 257 (GAP-BE-05 site #2).
+
+**Scenario 1: operador with `realizar_arqueo` + own branch — OK**
+- **Given** an operador role granted `realizar_arqueo` permission via `prod.permisos_usuario`
+- **And** `ctx.sucursal_uuid=:s` matching the operator's branch
+- **And** a valid `ArqueoCreateV2` payload (sin diferencia, justificacion optional for auditoria)
+- **When** the operador POSTs `/api/v1/caja/arqueo`
+- **Then** the request MUST pass Layer 1 (KD-3 issuer chain + permission gate) AND Layer 2 (tenant scope) AND reach the handler body
+- **And** MUST return `201 Created` on the happy path with `Cache-Control: no-store`.
+
+**Scenario 2: operador with `emitir_factura` only (pre-GAP-BE-05 behavior) — 403 `permission_denied`**
+- **Given** an operador role granted `emitir_factura` permission (NOT `realizar_arqueo`)
+- **When** the operador POSTs `/api/v1/caja/arqueo` (after GAP-BE-05 fix applied to `caja.py:53`)
+- **Then** Layer 1 MUST reject with `403 Forbidden` and body `{"error": "permission_denied"}` and `Cache-Control: no-store`
+- **And** Layer 2 (tenant scope) MUST NOT be evaluated (Layer 1 short-circuits first)
+- **And** NO DB writes MUST occur (handler body unreachable).
+
+**Scenario 3: operador with `realizar_arqueo` + DIFFERENT branch — 403 `tenant_scope_violation`**
+- **Given** an operador role granted `realizar_arqueo` permission
+- **And** `ctx.sucursal_uuid=:s_other` (operator's branch is `:s_other`, but the request's resolved target sucursal is `:s_target != :s_other`)
+- **When** the operador POSTs `/api/v1/caja/arqueo`
+- **Then** Layer 2 MUST reject with `403 Forbidden` and body `{"error": "tenant_scope_violation"}` and `Cache-Control: no-store`
+- **And** NO DB writes MUST occur (handler body unreachable).
+
+**Scenario 4: All responses (201 + 4xx + 5xx) carry `Cache-Control: no-store`**
+- **Given** any response from `POST /api/v1/caja/arqueo` or `GET /api/v1/caja/arqueo/resumen` (success or failure)
+- **When** the response is emitted
+- **Then** the `Cache-Control: no-store` header MUST be present on `201 Created`
+- **And** MUST be present on `400 idempotency_key_required` / `400 cierre_dia_no_acepta_uuid_sesion` / `400 justificacion_requerida` / `403 tenant_scope_violation` / `403 permission_denied` / `404 tipo_arqueo_no_encontrado` / `404 sesion_no_encontrada` / `404 tolerancia_no_configurada` / `409 sesion_ya_cerrada` / `409 idempotency_conflict` / `422 missing_query_params`
+- **And** MUST be present on any uncaught 5xx (defense-in-depth).
+
+**Scenario 5: GAP-BE-05 unit test — `caja_arqueo` endpoint requires `realizar_arqueo` not `emitir_factura`**
+- **Given** the source file `api/v1/caja.py` at line 53
+- **When** `tests/unit/test_gap_be_05.py::test_caja_arqueo_endpoint_requires_realizar_arqueo_not_emitir_factura` runs
+- **Then** the test MUST assert `permission_required="realizar_arqueo"` is the bound permission
+- **And** a role granted `emitir_factura` only MUST receive `403 permission_denied` on POST `/api/v1/caja/arqueo`
+- **And** a role granted `realizar_arqueo` only MUST receive `201 Created` on the happy path.
+
+**Scenario 6: GAP-BE-05 unit test — `caja_sesion` mount requires `abrir_cerrar_caja` not `emitir_factura`**
+- **Given** the source file `api/v1/caja_sesion.py` at line 257
+- **When** `tests/unit/test_gap_be_05.py::test_caja_sesion_endpoint_requires_abrir_cerrar_caja_not_emitir_factura` runs
+- **Then** the test MUST assert `permission_required="abrir_cerrar_caja"` is the bound permission
+- **And** a role granted `emitir_factura` only MUST receive `403 permission_denied` on `GET /api/v1/caja/sesion/...`
+- **And** a role granted `abrir_cerrar_caja` only MUST pass through.
+
+---
 ## Modified Capabilities
 
 - `backend/pyproject.toml` — adds the pytest stack and coverage
