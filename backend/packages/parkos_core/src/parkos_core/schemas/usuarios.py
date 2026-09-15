@@ -39,18 +39,17 @@ EstadoLogin = Literal["exitoso", "fallido", "cerrado"]
 class LoginHistoricoQueryParams(_Base):
     """Query params for ``GET /api/v1/usuarios/{uuid}/login``.
 
-    The ``uuid`` is the path param (validated by FastAPI ``uuid``
-    converter + Pydantic UUID type). ``limit`` is bounded to
-    ``1..100`` per DEC-LOGIN-04 (default 10). ``cursor`` is the
-    opaque base64 JSON cursor from a previous page (``None`` for
-    first page).
+    The user ``uuid`` is a PATH param (validated by FastAPI's
+    ``uuid`` path converter). This schema covers only the QUERY
+    string params: ``limit`` (1..100 per DEC-LOGIN-04, default 10)
+    and ``cursor`` (opaque base64 JSON from a previous page, ``None``
+    for first page).
 
     Layer 4 (extra='forbid'): a client smuggling an unknown field
     (e.g. ``actor_uuid``, ``computed_at``, ``cache_key``, ``activo``)
     triggers ``ValidationError`` and FastAPI returns ``422``.
     """
 
-    uuid: uuid_lib.UUID
     limit: int = Field(default=10, ge=1, le=100)
     cursor: str | None = None
 

@@ -42,7 +42,7 @@ def test_login_historico_query_params_extra_forbid() -> None:
     schemas = importlib.import_module("parkos_core.schemas.usuarios")
     with pytest.raises(ValidationError) as exc_info:
         schemas.LoginHistoricoQueryParams(
-            uuid=uuid_lib.uuid4(),
+            limit=10,
             actor_uuid="x",  # smuggled field, MUST be rejected
         )
     assert "actor_uuid" in str(exc_info.value), (
@@ -63,7 +63,7 @@ def test_login_historico_query_params_limit_zero_raises() -> None:
     """
     schemas = importlib.import_module("parkos_core.schemas.usuarios")
     with pytest.raises(ValidationError):
-        schemas.LoginHistoricoQueryParams(uuid=uuid_lib.uuid4(), limit=0)
+        schemas.LoginHistoricoQueryParams(limit=0)
 
 
 def test_login_historico_query_params_limit_too_large_raises() -> None:
@@ -74,7 +74,7 @@ def test_login_historico_query_params_limit_too_large_raises() -> None:
     """
     schemas = importlib.import_module("parkos_core.schemas.usuarios")
     with pytest.raises(ValidationError):
-        schemas.LoginHistoricoQueryParams(uuid=uuid_lib.uuid4(), limit=101)
+        schemas.LoginHistoricoQueryParams(limit=101)
 
 
 # ---------------------------------------------------------------------------

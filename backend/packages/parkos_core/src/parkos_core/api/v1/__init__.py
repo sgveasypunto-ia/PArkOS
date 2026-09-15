@@ -100,6 +100,7 @@ from . import (
     operacion,
     sucursal,
     sync_router,  # T-PR8-16 wire-in: /sync/* (REQ-OP-03, both deploys)
+    usuarios_login,  # HU-F1.15: GET /usuarios/{uuid}/login (DEC-LOGIN-01.A)
     workflows,
     workflows_reimpresion,  # HU-F1.11: POST /workflows/reimpresion-ticket + .../{uuid}/anular
 )
@@ -150,6 +151,7 @@ def _build_router() -> APIRouter:
     r.include_router(caja.router)  # T-PR7-09
     r.include_router(caja_sesion.router)  # T-PR7-09
     r.include_router(sync_router.router)  # T-PR8-16: /sync/* (both deploys, REQ-OP-03)
+    r.include_router(usuarios_login.router)  # HU-F1.15: GET /usuarios/{uuid}/login (DEC-LOGIN-01.A)
 
     # Empresa resources — selectively mounted (DIAN boundary, REQ-X3).
     r.include_router(_build_empresa_router())
