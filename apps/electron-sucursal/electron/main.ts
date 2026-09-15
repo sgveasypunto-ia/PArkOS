@@ -4,8 +4,15 @@ import log from 'electron-log';
 import path from 'node:path';
 
 import { initUpdater } from './services/updater';
+import { initLogConfig } from './services/log-config';
 
 const isDev = !app.isPackaged;
+
+// DEC-UPD-11: configure electron-log rotation BEFORE any other init so we
+// capture boot-time crashes (uncaughtException / unhandledRejection).
+initLogConfig(log, app);
+process.on('uncaughtException', (err) => log.error('uncaughtException', err));
+process.on('unhandledRejection', (reason) => log.error('unhandledRejection', reason));
 
 let mainWindow: BrowserWindow | null = null;
 
