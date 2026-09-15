@@ -9,11 +9,26 @@ import { initApiStatus, getApiStatus } from './services/api-status';
 
 const isDev = !app.isPackaged;
 
+// DEC-UPD-07: SINGLE-INSTANCE LOCK — before any other init so a second
+// invocation never touches the filesystem of the primary process.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+
 // DEC-UPD-11: configure electron-log rotation BEFORE any other init so we
 // capture boot-time crashes (uncaughtException / unhandledRejection).
 initLogConfig(log, app);
 process.on('uncaughtException', (err) => log.error('uncaughtException', err));
 process.on('unhandledRejection', (reason) => log.error('unhandledRejection', reason));
+
+// DEC-UPD-07: SECOND-INSTANCE LISTENER — focus the existing window when a
+// second invocation tries to start; prevents DB / lock races.
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
 
 let mainWindow: BrowserWindow | null = null;
 
