@@ -4,7 +4,8 @@
   "private": true,
   "workspaces": [
     "ui-kit",
-    "web_admin"
+    "web_admin",
+    "electron-sucursal"
   ],
   "scripts": {
     "dev": "npm-run-all --parallel dev:*",
