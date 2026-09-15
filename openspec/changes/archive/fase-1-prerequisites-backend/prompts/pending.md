@@ -15,14 +15,14 @@
 | 6 | HU-F1.6 | Validaciones reales en `POST /operacion/ingresos` | 260 LOC | depende F1.5 + F1.4 | **cerrado** (2026-09-14, archive `21097c8`). |
 | 7 | HU-F1.7 | `POST /operacion/salidas` (rotación + mensualidad) | 220 LOC | ✅ cerrado (2026-09-14, 5 commits `c320d0f..def754d`) | KD-IVA resuelto inline en MIGRATION 0026 Op 2. |
 | 9 | HU-F1.9 | Facturación transaccional + NIT módulo 11 | 330 LOC | ✅ cerrado (2026-09-14, 11 commits `6d2c457..f00c848`) | NIT módulo 11 Variant A canónica; 5 capas defense; KD-FACT-01 + KD-FACT-02; MIGRATION 0027. |
-| 10 | HU-F1.10 | Numeración FE + estado DIAN + reintento | 230 LOC | ninguno | `assign_consecutivo` ya existe. |
+| 10 | HU-F1.10 | Numeración FE + estado DIAN + reintento | 230 LOC | ✅ cerrado (2026-09-14, 9 commits `a9a8f47..05bb7ac`) | 11 REQs (064..074) + 3 XR merged. `assign_consecutivo` ya existe. MIGRATION 0028. |
 | 11 | HU-F1.11 | Workflow reimpresión tiquete (crear + anular) | 170 LOC | siembra `costos_servicios.concepto='reimpresion'` | gap huérfano (anulación). |
 | 12 | HU-F1.12 | Venta atómica de suscripción | 260 LOC | ninguno | ampliación producto, no CU literal. |
 | 13 | HU-F1.13 | Endpoints arqueo + siembra `tipo_arqueo.cierre_dia` | 240 LOC | ninguno | GAP-BE-05 (permiso mal) bundleado acá. |
 | 14 | HU-F1.14 | `GET /sync/estado` + 11 alert_types nuevos | 120 LOC | ninguno | 8 técnicos ya sembrados; total 19 idempotente. |
 | 15 | HU-F1.15 | `GET /usuarios/{uuid}/login` histórico | 70 LOC | ninguno | gap huérfano. |
 
-**Total LOC restante**: 1.090 LOC en 6 HUs (F1.5 + F1.6 + F1.7 + F1.9 cerradas = -640 LOC).
+**Total LOC restante**: 860 LOC en 5 HUs (F1.5 + F1.6 + F1.7 + F1.9 + F1.10 cerradas = -870 LOC).
 
 ## 2. Bloqueadores de deployment (KD-IVA)
 
@@ -109,4 +109,4 @@ Ver `git status --short` al inicio de cada sesión. Basado en snapshot 2026-09-1
 
 **Opened by**: orchestrator (post-F1.3 archive, pre-F1.5 explore).
 **Engram**: persisted (topic_key=`sdd/fase-1-prerequisites-backend/pending`, project=`easypuinto-parkos-software`).
-**Updated**: 2026-09-14 post-F1.9 archive — F1.9 cerrado (11 commits `6d2c457..f00c848`), §2 KD-IVA sigue resuelto, §3.1 housekeeping pendiente (4 mypy pre-existentes), §4 working tree mess pre-existente.
+**Updated**: 2026-09-14 post-F1.10 archive — F1.10 cerrado (9 commits `a9a8f47..05bb7ac`), §2 KD-IVA sigue resuelto, §3.1 housekeeping pendiente (4 mypy pre-existentes), §4 working tree mess pre-existente.
