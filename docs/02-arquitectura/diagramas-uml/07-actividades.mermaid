@@ -1,0 +1,37 @@
+%% Flowchart del algoritmo real de aplicación de una fila sincronizada.
+%% Fuentes verificadas con codegraph_explore:
+%%   - backend/packages/parkos_core/src/parkos_core/sync/motor/sync_motor.py
+%%     (SyncMotor.apply_row: guard de duplicados apply_guard.row_already_present,
+%%     resolve_open_version, dispatch a _catalog_apply_row)
+%%   - backend/packages/parkos_core/src/parkos_core/sync/motor/dependency_buffer.py
+%%     (handle_parent_missing)
+%%   - backend/packages/parkos_core/src/parkos_core/models/A/revocacion_factura.py y
+%%     backend/packages/parkos_core/src/parkos_core/sync/hooks/impls/revocacion_factura_chain.py
+%%     (cadena hash SHA256 real: hash_anterior/hash_actual, HashChainIntegrityViolation,
+%%     trigger DB prod.fn_extend_hash_chain -> HASH_CHAIN_MISMATCH)
+%%   - backend/packages/parkos_core/src/parkos_core/sync/conflict_resolver.py
+%%     (ConflictResolver, para conflictos de datos reales -- distinto de una ruptura de cadena hash)
+flowchart TD
+    Inicio(("Llega fila para aplicar (apply_row)"))
+    Inicio --> Dup{"¿Ya fue aplicada?<br/>apply_guard.row_already_present"}
+    Dup -- "Sí" --> RetApplied["Retorna APPLIED sin reinsertar (idempotencia)"]
+    RetApplied --> FinOk((Fin: fila aplicada))
+
+    Dup -- "No" --> Padre{"¿Declara padre?<br/>spec.depends_on / FK"}
+    Padre -- "No declara" --> Hash
+    Padre -- "Sí" --> ExistePadre{"¿Padre existe localmente?"}
+    ExistePadre -- "No" --> Buffer["dependency_buffer.handle_parent_missing:<br/>INSERT sync_queue_lw_buffer (estado='pendiente')"]
+    Buffer --> Retry["ApplyResult(status='RETRY', reason='parent_missing')"]
+    Retry --> FinRetry((Fin: en espera de reintento / drain))
+
+    ExistePadre -- "Sí" --> Hash{"¿Tabla con hash_chain=true?<br/>(log_transaccional / revocacion_factura)"}
+    Hash -- "Sí" --> Verifica["repo.hash_chain.append:<br/>calcula hash_actual = sha256(payload + hash_anterior)"]
+    Verifica --> Integra{"¿Cadena íntegra?<br/>(trigger prod.fn_extend_hash_chain)"}
+    Integra -- "No" --> Rota["HashChainIntegrityViolation / HASH_CHAIN_MISMATCH"]
+    Rota --> FinConflicto((Fin: falla de integridad))
+
+    Integra -- "Sí" --> Aplica
+    Hash -- "No" --> Aplica["Aplica la fila:<br/>INSERT/UPDATE según apply_strategy del SyncCatalogEntry"]
+    Aplica --> PostInsert["Ejecuta hook_post_insert<br/>(ej. drain_dependency_buffer si esta fila era padre esperado)"]
+    PostInsert --> Continua["Continúa con la siguiente fila del batch (apply_batch)"]
+    Continua --> FinAplicada((Fin: fila aplicada))

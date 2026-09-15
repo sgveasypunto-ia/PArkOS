@@ -1,0 +1,27 @@
+%% Ciclo de vida real de una fila en prod.sync_queue (cola de salida de sincronización).
+%% Elegido sobre el buffer de dependencias (sync_queue_lw_buffer, ver 06-secuencia.mermaid)
+%% y sobre el workflow [L-W] "anulaciones" (models/L_W/anulaciones.py) por ser el que tiene
+%% soporte más completo y verbatim en el código: nombres de estado y de función exactos,
+%% sin zonas del código no confirmadas.
+%% Fuente verificada con codegraph_explore:
+%%   - backend/packages/parkos_core/src/parkos_core/repo/sync_queue.py
+%%     (enqueue, mark_in_progress, mark_dispatched, mark_failed, next_retry_delay, list_pending)
+%%   - backend/packages/parkos_core/src/parkos_core/models/A/sync_queue.py
+%%     (columnas reales: estado, intentos, next_retry_at, ultimo_error)
+stateDiagram-v2
+    [*] --> pendiente : enqueue() (trigger prod.fn_enqueue_sync)
+    pendiente --> en_progreso : mark_in_progress()
+    en_progreso --> exitoso : mark_dispatched()
+    en_progreso --> pendiente : mark_failed() (reintenta con backoff)
+    exitoso --> [*]
+
+    note right of pendiente
+        list_pending(): estado='pendiente' AND
+        (next_retry_at IS NULL OR next_retry_at <= NOW())
+        orden: prioridad DESC, intentos ASC, created_at ASC
+    end note
+
+    note right of en_progreso
+        Backoff exponencial (next_retry_delay, repo/sync_queue.py):
+        intentos 0->1m  1->5m  2->30m  3->2h  4->12h  >=5->24h (tope)
+    end note

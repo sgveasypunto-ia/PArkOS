@@ -1,0 +1,63 @@
+%% Secuencia real: aplicar una fila sincronizada cuyo padre (FK) aún no ha llegado,
+%% bufferearla, y drenarla cuando el padre finalmente llega.
+%% Fuentes verificadas con codegraph_explore:
+%%   - backend/packages/parkos_core/src/parkos_core/api/v1/sync_router.py
+%%     (endpoint sync_events, POST /sync/events; vocabulario real de estado:
+%%     "applied" | "conflict" | "retry_parent_missing" | "unknown_table")
+%%   - backend/packages/parkos_core/src/parkos_core/sync/motor/sync_motor.py (SyncMotor.apply_row)
+%%   - backend/packages/parkos_core/src/parkos_core/sync/motor/apply_row.py (apply_row catálogo-driven)
+%%   - backend/packages/parkos_core/src/parkos_core/sync/motor/dependency_buffer.py
+%%     (handle_parent_missing, buffer_row, drain_dependency_buffer, tabla sync_queue_lw_buffer,
+%%     estados reales 'pendiente' -> 'aplicado' / 'fallido')
+%%   - backend/tests/integration/test_parent_missing_buffer_drain.py (escenario probado end-to-end)
+sequenceDiagram
+    participant Sucursal as job_sync_sucursal (SyncSucursalWorker)
+    participant Api as api_admin (sync_router.sync_events)
+    participant Motor as SyncMotor.apply_row
+    participant Apply as motor.apply_row.apply_row
+    participant Buffer as dependency_buffer
+    participant DB as Postgres cloud (sync_queue_lw_buffer)
+
+    Sucursal ->> Api: POST /sync/events (fila hija, ej. factura_electronica)
+    activate Api
+    Api ->> Motor: apply_row(spec, payload, actor_uuid)
+    activate Motor
+    Motor ->> Apply: apply_row(session, spec, payload)
+    activate Apply
+    Apply ->> DB: valida existencia del padre declarado (spec.depends_on)
+    DB -->> Apply: padre no encontrado
+    Apply ->> Buffer: handle_parent_missing(uuid_registro, tabla_padre, uuid_padre)
+    activate Buffer
+    Buffer ->> DB: INSERT sync_queue_lw_buffer (estado='pendiente', expires_at=+24h)
+    Buffer -->> Apply: ApplyResult(status="RETRY", reason="parent_missing")
+    deactivate Buffer
+    Apply -->> Motor: RETRY(parent_missing)
+    deactivate Apply
+    Motor -->> Api: status="retry_parent_missing"
+    deactivate Motor
+    Api -->> Sucursal: 207 multi-status (retry_parent_missing)
+    deactivate Api
+
+    Note over Sucursal,DB: tiempo después: llega la fila padre (ej. "clientes")
+
+    Sucursal ->> Api: POST /sync/events (fila padre)
+    activate Api
+    Api ->> Motor: apply_row(spec_padre, payload_padre, actor_uuid)
+    activate Motor
+    Motor ->> Apply: apply_row(session, spec_padre, payload_padre)
+    activate Apply
+    Apply ->> DB: INSERT fila padre (aplicada)
+    Apply ->> Buffer: hook_post_insert -> drain_dependency_buffer(tabla_padre, uuid_padre)
+    activate Buffer
+    Buffer ->> DB: SELECT hijos pendientes WHERE (tabla_padre, uuid_padre)
+    DB -->> Buffer: fila bufferizada (factura_electronica)
+    Buffer ->> Apply: apply_row(child_spec, datos bufferizados)
+    Apply ->> DB: INSERT fila hija (aplicada)
+    Buffer ->> DB: UPDATE sync_queue_lw_buffer SET estado='aplicado'
+    deactivate Buffer
+    Apply -->> Motor: APPLIED
+    deactivate Apply
+    Motor -->> Api: status="applied"
+    deactivate Motor
+    Api -->> Sucursal: 207 multi-status (applied)
+    deactivate Api

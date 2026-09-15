@@ -1,0 +1,23 @@
+%% NOTA DE SUSTITUCIÓN DE SINTAXIS: se pidió originalmente "timingDiagram", pero ese tipo
+%% NO existe en Mermaid (no es un tipo de diagrama soportado/real). Se sustituye por "gantt",
+%% que sí es sintaxis Mermaid real y soporta "section" + escalas de tiempo finas
+%% (dateFormat/axisFormat a nivel de milisegundos) para representar la línea de tiempo de
+%% una request de sincronización.
+%% Duraciones estimadas (no medidas en producción), a partir del recorrido real del código:
+%%   - backend/packages/parkos_core/src/parkos_core/sync/transport.py (envío HTTP, SyncHttpClient)
+%%   - backend/packages/parkos_core/src/parkos_core/api/v1/sync_router.py (sync_events, recepción)
+%%   - backend/packages/parkos_core/src/parkos_core/sync/motor/sync_motor.py
+%%     (SyncMotor.apply_row: validación + aplicación)
+%% Ver también 06-secuencia.mermaid para el mismo flujo en detalle (incluye el caso con
+%% padre faltante, cuya espera es de horas por TTL y por eso no se mezcla en esta escala).
+gantt
+    title Ciclo de tiempo de una request de sincronización (POST /sync/events, caso sin conflicto)
+    dateFormat HH:mm:ss.SSS
+    axisFormat %H:%M:%S.%L
+
+    section Request de sync (fila aplicada sin conflicto)
+    Envio (job_sync_sucursal via HTTP)        :a1, 00:00:00.000, 00:00:00.040
+    Recepcion (api_admin / sync_router)       :a2, 00:00:00.040, 00:00:00.070
+    Validacion (JWT + esquema + padre FK)     :a3, 00:00:00.070, 00:00:00.150
+    Aplicacion (SyncMotor.apply_row + INSERT) :a4, 00:00:00.150, 00:00:00.280
+    Respuesta (207 multi-status)              :a5, 00:00:00.280, 00:00:00.320
