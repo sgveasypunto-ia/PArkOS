@@ -8,5 +8,6 @@
   "registrar": "Registrar",
   "imprimir": "Imprimir ticket",
   "anular": "Anular",
-  "confirmar": "Confirmar"
+  "confirmar": "Confirmar",
+  "placa_formato_invalido": "Placa no coincide con ningún formato conocido (Auto: ABC123, Moto: ABC12D)"
 }
