@@ -36,6 +36,7 @@ nothing maps ``sesion``'s own ``timestamp_apertura``/``timestamp_cierre``
 onto that key. A missing key resolves ``MANUAL`` (safe, operator-reviewable)
 rather than crashing or silently inventing a mapping.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -74,8 +75,9 @@ class ConflictResolution:
 
     ``status``: ``APPLIED`` | ``MANUAL`` | ``RETRY``.
     ``reason``: ``None`` on ``APPLIED``; ``"seq_tiebreak"`` /
-    ``"missing_timestamp_evento"`` / ``"grace_window_expired"`` on
-    ``MANUAL``; ``"parent_missing"`` on ``RETRY``.
+    ``"missing_timestamp_evento"`` / ``"invalid_timestamp_evento"`` /
+    ``"grace_window_expired"`` on ``MANUAL``; ``"parent_missing"`` on
+    ``RETRY``.
     ``reconciliation``: set only for the ``[V]`` + ``natural_key`` branch —
     the ``IdentityReconciler`` classification (``noop`` | ``forward`` |
     ``historical``).
@@ -255,9 +257,7 @@ async def resolve_conflict(
         # remote_seq is None (can't prove the incoming row is newer) or
         # remote_seq <= local_seq — both escalate to MANUAL for operator
         # review, recording both sides for offline reconciliation.
-        await _write_seq_tiebreak_conflict(
-            session, spec, uuid_registro, branch_uuid, local, remote
-        )
+        await _write_seq_tiebreak_conflict(session, spec, uuid_registro, branch_uuid, local, remote)
         return ConflictResolution(status="MANUAL", reason="seq_tiebreak")
 
     if spec.audit_class in _PARENT_RESOLVED_AUDIT_CLASSES:
@@ -285,6 +285,22 @@ async def resolve_conflict(
         timestamp_evento = remote.get("timestamp_evento")
         if timestamp_evento is None:
             return ConflictResolution(status="MANUAL", reason="missing_timestamp_evento")
+        # ``remote`` is the incoming wire payload — over JSON, a datetime
+        # always arrives as an ISO-8601 string, never a ``datetime``
+        # instance. Confirmed live: a real Docker deployment crashed here
+        # with "unsupported operand type(s) for -: 'datetime.datetime'
+        # and 'str'" on every login/sesion row, silently masked by
+        # ``sync_cloud``'s per-row fallback (which hit the exact same
+        # crash on every retry, forever). Only local/test callers ever
+        # passed an already-parsed ``datetime`` here, so both shapes
+        # must be accepted.
+        if isinstance(timestamp_evento, str):
+            try:
+                timestamp_evento = datetime.fromisoformat(timestamp_evento)
+            except ValueError:
+                return ConflictResolution(status="MANUAL", reason="invalid_timestamp_evento")
+        if timestamp_evento.tzinfo is not None:
+            timestamp_evento = timestamp_evento.astimezone(UTC).replace(tzinfo=None)
         now = datetime.now(UTC).replace(tzinfo=None)
         grace_age = now - timestamp_evento
         if grace_age <= timedelta(hours=grace_hours):

@@ -19,6 +19,7 @@ proposal.md §6.1's per-table "apply / seq" column.
 Groups mirror tasks.md's split (T-PR2-002..006) so each group's `depends_on`
 matches REQ-CAT-015 / proposal §6.4 exactly.
 """
+
 from __future__ import annotations
 
 from ....models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
@@ -72,6 +73,13 @@ _USUARIOS = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (cedula, vigente_desde). Single-authority (cloud_to_branch)
+    # but still [V]/renameable — without this, a cloud-side rename never
+    # closes the branch's stale open row (no AFTER UPDATE trigger anywhere
+    # in the schema; see identity_lookup.py's module docstring for the
+    # general defect class this closes for every cloud_to_branch [V] table).
+    natural_key=("cedula",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _PERMISOS = SyncCatalogEntry(
@@ -85,6 +93,9 @@ _PERMISOS = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (permiso, vigente_desde).
+    natural_key=("permiso",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _TIPO_PERSONA = SyncCatalogEntry(
@@ -98,6 +109,9 @@ _TIPO_PERSONA = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (tipo, vigente_desde).
+    natural_key=("tipo",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _TIPOS_VEHICULO = SyncCatalogEntry(
@@ -111,6 +125,9 @@ _TIPOS_VEHICULO = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (tipo, vigente_desde).
+    natural_key=("tipo",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _TIPO_SUBSCRIPCIONES = SyncCatalogEntry(
@@ -124,6 +141,9 @@ _TIPO_SUBSCRIPCIONES = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (tipo, vigente_desde).
+    natural_key=("tipo",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _TIPO_TARIFA = SyncCatalogEntry(
@@ -137,6 +157,9 @@ _TIPO_TARIFA = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (tipo, vigente_desde).
+    natural_key=("tipo",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _TIPO_SUCURSAL = SyncCatalogEntry(
@@ -150,6 +173,9 @@ _TIPO_SUCURSAL = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (codigo, vigente_desde).
+    natural_key=("codigo",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _TIPO_ARQUEO = SyncCatalogEntry(
@@ -163,6 +189,9 @@ _TIPO_ARQUEO = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (codigo, vigente_desde).
+    natural_key=("codigo",),
+    hook_pre_insert=identity_reconciler,
 )
 
 # ---------------------------------------------------------------------------
@@ -180,6 +209,9 @@ _IMPUESTOS = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (codigo, vigente_desde).
+    natural_key=("codigo",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _OTROS_COBROS = SyncCatalogEntry(
@@ -193,6 +225,9 @@ _OTROS_COBROS = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (nombre, vigente_desde).
+    natural_key=("nombre",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _COSTOS_SERVICIOS = SyncCatalogEntry(
@@ -206,6 +241,9 @@ _COSTOS_SERVICIOS = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (concepto, vigente_desde).
+    natural_key=("concepto",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _EMPRESA = SyncCatalogEntry(
@@ -224,6 +262,9 @@ _EMPRESA = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (nit, vigente_desde).
+    natural_key=("nit",),
+    hook_pre_insert=identity_reconciler,
 )
 
 # ---------------------------------------------------------------------------
@@ -241,6 +282,9 @@ _PERMISOS_USUARIO = SyncCatalogEntry(
     depends_on=("usuarios", "permisos"),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (uuid_usuario, uuid_permiso, vigente_desde).
+    natural_key=("uuid_usuario", "uuid_permiso"),
+    hook_pre_insert=identity_reconciler,
 )
 
 _CONFIGURACION_TOLERANCIAS = SyncCatalogEntry(
@@ -255,6 +299,13 @@ _CONFIGURACION_TOLERANCIAS = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=True,  # nullable — NULL row is the global default
     seq_strategy="max_created_at",
+    # ER UK01 (uuid_sucursal, vigente_desde) — NULL uuid_sucursal is itself
+    # the (single) global-default identity, not "unknown"; identity_lookup.py
+    # registers a dedicated resolver for this table (NULL-safe equality) so
+    # the generic natural-key resolver's "skip on NULL" default doesn't
+    # wrongly treat the global-default row as unresolvable.
+    natural_key=("uuid_sucursal",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _CONFIGURACION_SEGURIDAD = SyncCatalogEntry(
@@ -269,6 +320,10 @@ _CONFIGURACION_SEGURIDAD = SyncCatalogEntry(
     depends_on=(),
     has_uuid_sucursal=True,  # nullable — NULL row is the global default
     seq_strategy="max_created_at",
+    # ER UK01 (uuid_sucursal, vigente_desde) — see configuracion_tolerancias
+    # above for the NULL-is-global-default resolver note.
+    natural_key=("uuid_sucursal",),
+    hook_pre_insert=identity_reconciler,
 )
 
 # ---------------------------------------------------------------------------
@@ -289,6 +344,9 @@ _SUCURSAL = SyncCatalogEntry(
     # cada sede contiene solo sus filas" narrative, not a self-referencing FK.
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (prefijo_nombre, vigente_desde).
+    natural_key=("prefijo_nombre",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _RESOLUCION_FACTURACION = SyncCatalogEntry(
@@ -302,6 +360,9 @@ _RESOLUCION_FACTURACION = SyncCatalogEntry(
     depends_on=("sucursal",),
     has_uuid_sucursal=True,
     seq_strategy="max_created_at",
+    # ER UK01 (numero_resolucion, vigente_desde).
+    natural_key=("numero_resolucion",),
+    hook_pre_insert=identity_reconciler,
 )
 
 _USUARIOS_SUCURSAL = SyncCatalogEntry(
@@ -315,8 +376,17 @@ _USUARIOS_SUCURSAL = SyncCatalogEntry(
     depends_on=("usuarios", "sucursal"),
     has_uuid_sucursal=True,
     seq_strategy="max_created_at",
+    # ER UK01 (uuid_sucursal, uuid_usuario, vigente_desde).
+    natural_key=("uuid_sucursal", "uuid_usuario"),
+    hook_pre_insert=identity_reconciler,
 )
 
+# documentos deliberately declares NO natural_key — the ER model itself
+# declares no UK for this table beyond its uuid PK: every document upload
+# (logo, plantilla_ticket, certificado) is its own independent [V] row with
+# no business identity two versions must be reconciled against. There is
+# nothing for identity_reconciler to key on here; leaving natural_key empty
+# is the correct, honest classification (not an oversight).
 _DOCUMENTOS = SyncCatalogEntry(
     name="documentos",
     model_cls=Documentos,
@@ -341,6 +411,9 @@ _TARIFAS_SUCURSAL = SyncCatalogEntry(
     depends_on=("sucursal", "tipos_vehiculo", "tipo_tarifa"),
     has_uuid_sucursal=True,
     seq_strategy="max_created_at",
+    # ER UK01 (uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa, vigente_desde).
+    natural_key=("uuid_sucursal", "uuid_tipo_vehiculo", "uuid_tipo_tarifa"),
+    hook_pre_insert=identity_reconciler,
 )
 
 _CANTIDAD_VEHICULOS_SUCURSAL = SyncCatalogEntry(
@@ -354,6 +427,9 @@ _CANTIDAD_VEHICULOS_SUCURSAL = SyncCatalogEntry(
     depends_on=("sucursal", "tipos_vehiculo"),
     has_uuid_sucursal=True,
     seq_strategy="max_created_at",
+    # ER UK01 (uuid_sucursal, uuid_tipo_vehiculo, vigente_desde).
+    natural_key=("uuid_sucursal", "uuid_tipo_vehiculo"),
+    hook_pre_insert=identity_reconciler,
 )
 
 # ---------------------------------------------------------------------------
@@ -361,8 +437,16 @@ _CANTIDAD_VEHICULOS_SUCURSAL = SyncCatalogEntry(
 # ---------------------------------------------------------------------------
 #
 # natural_key_normalizer callables (trim/uppercase) + hook_pre_insert=
-# identity_reconciler are wired in PR5 (T-PR5-005/006) onto the 3 entries
-# that declare a non-empty natural_key.
+# identity_reconciler were originally wired in PR5 (T-PR5-005/006) onto only
+# these 3 entries. Extended 2026-09-10 (real defect: auditing every [V]
+# entry against modelo_datos_er.mmd's own UK01 markers found 20 more tables
+# with a genuine ER-declared natural key and NO reconciliation — a
+# cloud-side rename/update on any of them left the branch with a
+# permanently-stale open row, since no sync trigger anywhere is AFTER
+# UPDATE; see identity_lookup.py's module docstring). Every [V] entry in
+# this module now declares natural_key unless the ER model itself declares
+# none for that table (documentos, subscripciones_cliente — see their own
+# entries below for why).
 
 _CLIENTES = SyncCatalogEntry(
     name="clientes",
@@ -415,6 +499,15 @@ _VEHICULOS = SyncCatalogEntry(
     hook_post_insert=plate_change_cascade,
 )
 
+# subscripciones_cliente deliberately declares NO natural_key — the ER
+# model's own comment on this table is explicit: "renovar = fila nueva"
+# (a renewal is modeled as a brand-new, independent row, not a
+# close_and_insert of the SAME logical contract). There is no stable
+# business identity across two subscripciones_cliente rows to reconcile;
+# every row's own uuid IS its identity for the row's whole lifetime. Not an
+# oversight — confirmed by grepping modelo_datos_er.mmd for a UK marker on
+# this table (none exists, unlike every other bidirectional/cloud_to_branch
+# [V] entry in this module).
 _SUBSCRIPCIONES_CLIENTE = SyncCatalogEntry(
     name="subscripciones_cliente",
     model_cls=SubscripcionesCliente,
@@ -442,6 +535,17 @@ _SUBSCRIPCION_VEHICULOS = SyncCatalogEntry(
     depends_on=("subscripciones_cliente", "vehiculos"),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
+    # ER UK01 (uuid_subscripcion_cliente, uuid_vehiculo, vigente_desde).
+    # Bidirectional WITHOUT identity_reconciler was the real gap here (found
+    # auditing modelo_datos_er.mmd against every [V] SYNC_CATALOG entry,
+    # 2026-09-10): on a REPLICATED apply (not the local plate-change-cascade
+    # path, which already supplies current_uuid itself), this table's wire
+    # payload never carries current_uuid either — same universal defect as
+    # every cloud_to_branch [V] table. hook_pre_insert stays
+    # subscription_lifecycle (its own lifecycle/capacity validation is still
+    # required and cannot be replaced by identity_reconciler), but that hook
+    # is now also open_version-aware — see its own module docstring.
+    natural_key=("uuid_subscripcion_cliente", "uuid_vehiculo"),
     # T-PR5-012 (REQ-HOOK-006) — lifecycle transition + vehicle-capacity
     # validation runs BEFORE the repo call (hook_pre_insert).
     hook_pre_insert=subscription_lifecycle,

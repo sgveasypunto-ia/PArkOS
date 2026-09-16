@@ -26,6 +26,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 ACTOR_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000aa")
 
 
+def uid() -> str:
+    return uuid_lib.uuid4().hex[:8]
+
+
 async def test_closes_and_reopens_subscripcion_vehiculos(
     pg_engine, alembic_upgrade, v_fixture_factory, make_spec
 ) -> None:
@@ -39,7 +43,10 @@ async def test_closes_and_reopens_subscripcion_vehiculos(
         session.add(tipo_vehiculo)
         tipo_sucursal = v_fixture_factory.build(TipoSucursal, codigo="propia")
         session.add(tipo_sucursal)
-        tipo_persona = v_fixture_factory.build(TipoPersona, tipo="natural")
+        # uid()-suffixed — the literal "natural" collides with the canonical
+        # migration-seeded row (0020, identity-reconciled) on this
+        # session-scoped shared DB (conftest.py::pg_engine).
+        tipo_persona = v_fixture_factory.build(TipoPersona, tipo=f"natural-{uid()}")
         session.add(tipo_persona)
         tipo_subscripcion = v_fixture_factory.build(
             TipoSubscripciones, tipo="mensual", cantidad_maxima_vehiculos=5

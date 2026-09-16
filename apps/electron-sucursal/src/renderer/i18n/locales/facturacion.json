@@ -1,0 +1,12 @@
+{
+  "nuevaFactura": "Nueva factura",
+  "cliente": "Cliente",
+  "items": "Items",
+  "subtotal": "Subtotal",
+  "impuestos": "Impuestos",
+  "total": "Total",
+  "emitir": "Emitir",
+  "anular": "Anular factura",
+  "reimprimir": "Reimprimir",
+  "numero": "Número"
+}

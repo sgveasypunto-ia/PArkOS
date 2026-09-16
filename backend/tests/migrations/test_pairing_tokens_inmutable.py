@@ -28,6 +28,7 @@ Mirrors ``test_idempotency_inmutable.py`` (PR2 test for the 50th [A]
 table) and ``test_a_inmutable.py`` (PR1a test for the original 11 [A]
 tables).
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -56,17 +57,12 @@ _TABLES: tuple[tuple[str, str, str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 
-_XFAIL_PARTITION = pytest.mark.xfail(
-    reason=(
-        "Gap preexistente de mantenimiento de partición partman en "
-        "pairing_tokens (falta partición 'ahora'), fuera del alcance de "
-        "sync-overhaul — requiere fix dedicado"
-    ),
-    strict=True,
-)
+# The partition gap this suite used to xfail against ("Gap preexistente de
+# mantenimiento de partición partman en pairing_tokens") is fixed by
+# migration 0018_add_default_partitions_pairing_revoked_jwts — both tables
+# now carry a DEFAULT partition, so every real INSERT below succeeds.
 
 
-@_XFAIL_PARTITION
 @pytest.mark.parametrize(("table_name", "_fn", "_trig", "_tag"), _TABLES)
 async def test_insert_succeeds(
     pg_dsn: str, table_name: str, _fn: str, _trig: str, _tag: str
@@ -98,7 +94,6 @@ async def test_insert_succeeds(
         assert row_uuid is not None, f"INSERT into {table_name} returned no row"
 
 
-@_XFAIL_PARTITION
 @pytest.mark.parametrize(("table_name", "_fn", "_trig", "expected_tag"), _TABLES)
 async def test_update_blocked(
     pg_dsn: str, table_name: str, _fn: str, _trig: str, expected_tag: str
@@ -127,10 +122,19 @@ async def test_update_blocked(
         row_uuid = (await cur.fetchone())[0]
         await conn.commit()
 
-        # New TX: UPDATE — the BEFORE UPDATE OR DELETE trigger raises.
+        # New TX: UPDATE — blocked by whichever defense layer this
+        # connection's role hits first. ``rol_app`` has no UPDATE grant at
+        # all (migration 0006's own REVOKE), so Postgres raises
+        # ``InsufficientPrivilege`` before the BEFORE trigger ever runs;
+        # a role that DOES hold the grant (e.g. table owner, an emergency
+        # manual fix) reaches the trigger itself, which raises the
+        # table-specific tagged ``RaiseException``. Both are a correctly
+        # blocked mutation — only the tag assertion is meaningful when the
+        # trigger is the one that actually fired.
+        mutate_column = "used = true" if table_name == "pairing_tokens" else "motivo = 'mutated'"
         try:
             await cur.execute(
-                f"UPDATE prod.{table_name} SET motivo = 'mutated' WHERE uuid = %s",
+                f"UPDATE prod.{table_name} SET {mutate_column} WHERE uuid = %s",
                 (row_uuid,),
             )
             await conn.commit()
@@ -140,13 +144,12 @@ async def test_update_blocked(
                 f"{table_name}: trigger raised but missing tag; "
                 f"expected '{expected_tag}' in '{msg}'"
             )
+        except psycopg.errors.InsufficientPrivilege:
+            pass  # blocked at the GRANT level before the trigger ran — also correct.
         else:  # pragma: no cover
-            pytest.fail(
-                f"{table_name}: UPDATE succeeded but trigger should have blocked it"
-            )
+            pytest.fail(f"{table_name}: UPDATE succeeded but should have been blocked")
 
 
-@_XFAIL_PARTITION
 @pytest.mark.parametrize(("table_name", "_fn", "_trig", "expected_tag"), _TABLES)
 async def test_delete_blocked(
     pg_dsn: str, table_name: str, _fn: str, _trig: str, expected_tag: str
@@ -174,6 +177,7 @@ async def test_delete_blocked(
         row_uuid = (await cur.fetchone())[0]
         await conn.commit()
 
+        # Same two valid defense layers as test_update_blocked above.
         try:
             await cur.execute(
                 f"DELETE FROM prod.{table_name} WHERE uuid = %s",
@@ -186,10 +190,10 @@ async def test_delete_blocked(
                 f"{table_name}: trigger raised but missing tag; "
                 f"expected '{expected_tag}' in '{msg}'"
             )
+        except psycopg.errors.InsufficientPrivilege:
+            pass  # blocked at the GRANT level before the trigger ran — also correct.
         else:  # pragma: no cover
-            pytest.fail(
-                f"{table_name}: DELETE succeeded but trigger should have blocked it"
-            )
+            pytest.fail(f"{table_name}: DELETE succeeded but should have been blocked")
 
 
 # ---------------------------------------------------------------------------
@@ -238,20 +242,32 @@ async def test_rol_app_cannot_delete_table(pg_dsn: str, table_name: str) -> None
 
 @pytest.mark.parametrize("trigger_name", [t[2] for t in _TABLES])
 async def test_inmutable_trigger_exists(pg_dsn: str, trigger_name: str) -> None:
-    """``pg_trigger`` MUST have exactly one row for the trigger name.
+    """``pg_trigger`` MUST have exactly one row for the trigger name ON THE
+    PARTITIONED PARENT TABLE (``relkind = 'p'``).
 
-    Uses the same predicate that ``tests/static/`` and the canonical
-    schema-match verifier use — a future migration that accidentally
-    drops the trigger surfaces here.
+    Since migration 0018 attached a real ``DEFAULT`` partition to both
+    tables, Postgres itself clones each parent trigger onto the partition
+    (same ``tgname``, different ``tgrelid`` — expected, correct behavior:
+    the immutability guarantee must hold on the partition that physically
+    stores the rows too). Filtering to the parent's own ``relkind='p'`` row
+    is the precise re-statement of this test's original intent ("the
+    trigger is declared exactly once") without being tripped up by that
+    expected per-partition clone.
     """
     import psycopg
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT count(*) FROM pg_trigger WHERE tgname = %s",
+            """
+            SELECT count(*)
+            FROM pg_trigger t
+            JOIN pg_class c ON c.oid = t.tgrelid
+            WHERE t.tgname = %s AND c.relkind = 'p'
+            """,
             (trigger_name,),
         )
         count = (await cur.fetchone())[0]
         assert count == 1, (
-            f"{trigger_name}: expected exactly 1 pg_trigger row, got {count}"
+            f"{trigger_name}: expected exactly 1 pg_trigger row on the "
+            f"partitioned parent table, got {count}"
         )

@@ -15,6 +15,15 @@ created in T-PR6-06:
 This is the DB-layer enforcement of ``reverse_payment()``'s at-most-once
 invariant (REQ-OP-09, SC-11) \u2014 a second reversal raises
 ``UniqueViolation`` and surfaces as ``DuplicateReversoError`` (409).
+
+Additionally, F1.9 / MIGRATION 0027 Op 3 installs the BEFORE INSERT
+trigger ``fn_factura_pagos_init_pago_uniqueness`` on this table,
+rejecting a second ``pago``/``ajuste`` row for the same ``uuid_factura``.
+This is the only DB-layer defense against duplicate init-pago rows
+because ``prod.factura_pagos`` is range-partitioned by
+``fecha_retencion_hasta`` (partial unique index infeasible across
+partitions). Violations surface as ``PagoDuplicadoError`` (409) in
+``repo.factura.crear_factura_pago``.
 """
 from __future__ import annotations
 

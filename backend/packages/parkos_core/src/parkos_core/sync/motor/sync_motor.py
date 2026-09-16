@@ -29,6 +29,7 @@ buffered row), but sufficient to prove the "children of a buffered row are
 never attempted" contract this PR ships, and strictly more conservative
 (it never under-buffers) than the real thing that replaces it.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -41,9 +42,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...runtime import engine_flag
 from ..catalog.schema import SyncCatalogEntry
 from ..conflict_resolver import ApplyOutcome, ConflictResolver
+from . import apply_guard
 from .apply_result import ApplyResult
 from .apply_row import apply_row as _catalog_apply_row
 from .dependency_orderer import order_batch
+from .identity_lookup import resolve_open_version
 from .read_local_seq import ReadLocalSeq
 from .resolve_conflict import ConflictResolution
 from .resolve_conflict import resolve_conflict as _resolve_conflict
@@ -121,11 +124,57 @@ class SyncMotor:
         switch (D12) that lets a stage be rolled back without a restart.
         Every other mode dispatches through the catalog-driven
         ``motor.apply_row.apply_row``.
+
+        Real defect confirmed via manual QA + real HTTP identity-divergence
+        exercise (2026-09-10): ``motor.apply_row.apply_row`` never resolves
+        ``open_version`` itself — it only forwards whatever this method
+        passes it. This was ALWAYS ``None`` on every real call (this is the
+        one and only production caller of the catalog applier), so
+        ``identity_reconciler`` never saw the currently-open row for a
+        ``clientes``/``clientes_b2b``/``vehiculos`` natural key and always
+        inserted a fresh, never-closed version — confirmed live: 2-3
+        simultaneously-open rows for the same natural key across cloud +
+        branch after one real push+pull cycle.
+        ``motor.identity_lookup.resolve_open_version`` closes this by doing,
+        automatically, exactly what ``test_identity_invariant.py`` used to
+        do by hand for its own assertions only.
         """
         if self.engine is engine_flag.EngineMode.LEGACY:
             return await self._apply_row_legacy(session, spec, payload, actor_uuid=actor_uuid)
+
+        # Universal self/repeat-duplication guard (real defect confirmed
+        # live, 2026-09-10): every one of the 4 real apply entry points
+        # (``api/v1/sync_router.py::sync_events``, ``jobs/sync_cloud.py::
+        # _apply_pending_batch_once``, ``jobs/sync_sucursal.py::
+        # _pull_and_apply_catalog``, ``sync/cutover/backfill.py::
+        # run_backfill``) funnels through THIS method — placing the check
+        # here, once, covers all of them instead of the first 3 needing
+        # their own copy (already added separately, before this one, kept
+        # as harmless defense-in-depth) and ``sync_events`` silently
+        # missing it. Confirmed live: migration ``0019``'s deterministic
+        # ``permisos`` uuid landed on cloud AND branch independently (each
+        # side's own migration run), each side's own enqueue trigger fired
+        # for its own INSERT, and BOTH pushed the "same" row to the other
+        # via the real ``/sync/events`` receiver — which, lacking this
+        # check, blindly inserted a THIRD, fresh-uuid duplicate on each
+        # side instead of recognizing the incoming uuid already existed.
+        if spec.audit_class == "V" and await apply_guard.row_already_present(
+            session, spec.model_cls, payload.get("uuid")
+        ):
+            return ApplyResult(status="APPLIED", row_uuid=payload.get("uuid"), reason=None)
+
+        open_version = (
+            await resolve_open_version(session, spec, payload)
+            if spec.hook_pre_insert is not None
+            else None
+        )
         return await _catalog_apply_row(
-            session, spec, payload, actor_uuid=actor_uuid, log_tx=log_tx
+            session,
+            spec,
+            payload,
+            actor_uuid=actor_uuid,
+            log_tx=log_tx,
+            open_version=open_version,
         )
 
     async def _apply_row_legacy(

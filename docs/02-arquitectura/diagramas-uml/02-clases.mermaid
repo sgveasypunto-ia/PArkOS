@@ -1,0 +1,77 @@
+%% Diagrama de clases: catálogo de sincronización + modelo de autenticación de sucursal.
+%% Fuentes reales verificadas con codegraph_explore:
+%%   - backend/packages/parkos_core/src/parkos_core/sync/catalog/schema.py
+%%     (SyncCatalogEntry: dataclass frozen, SyncCatalogEntrySchemaError)
+%%   - backend/packages/parkos_core/src/parkos_core/sync/catalog/validator.py (DriftViolation)
+%%   - backend/packages/parkos_core/src/parkos_core/models/A/pairing_tokens.py (PairingToken)
+%%   - backend/packages/parkos_core/src/parkos_core/models/A/revoked_sync_jwts.py (RevokedSyncJwt)
+%%   - backend/packages/parkos_core/src/parkos_core/models/base.py (AppendOnlyBase y mixins [A])
+%%   - backend/packages/parkos_core/src/parkos_core/sync/catalog/local_only_catalog.py
+%%     (confirma que PairingToken y RevokedSyncJwt son model_cls de entradas SyncCatalogEntry reales)
+%% Tipos (AuditClass, SyncStrategy, Direction, ApplyStrategy, RoleRequired, HookFn) son los
+%% alias reales importados/usados en schema.py, no simplificaciones inventadas.
+%% Ver también ../modelo-datos.md (ER completo de las 54 tablas físicas: 46 sync + 5 fuera de
+%% catálogo + 3 no-ER, según sync/catalog/validator.py::check_rule_3_counts).
+classDiagram
+    class SyncCatalogEntry {
+        +str name
+        +type model_cls
+        +AuditClass audit_class
+        +SyncStrategy sync_strategy
+        +Direction direction
+        +tuple~str~ depends_on
+        +ApplyStrategy apply_strategy
+        +bool hash_chain
+        +bool verify_chain
+        +RoleRequired role_required
+        +HookFn hook_pre_insert
+        +HookFn hook_post_insert
+        +int priority
+        +__post_init__()
+    }
+
+    class SyncCatalogEntrySchemaError {
+        <<exception>>
+    }
+
+    class DriftViolation {
+        +int rule
+        +str detail
+        +__str__()
+    }
+
+    class AppendOnlyBase {
+        <<abstract>>
+        +UUID uuid
+        +datetime created_at
+        +UUID created_by
+    }
+
+    class PairingToken {
+        +UUID uuid
+        +date fecha_retencion_hasta
+        +UUID uuid_sucursal
+        +str pairing_token_hash
+        +datetime expires_at
+        +bool used
+        +datetime used_at
+        +dict used_by_branch_info
+        +datetime revoked_at
+        +UUID revoked_by
+    }
+
+    class RevokedSyncJwt {
+        +UUID uuid
+        +date fecha_retencion_hasta
+        +str jwt_kid
+        +str jwt_uuid
+        +datetime expires_at
+        +UUID revoked_by
+        +str motivo
+    }
+
+    SyncCatalogEntry ..> SyncCatalogEntrySchemaError : valida y lanza
+    AppendOnlyBase <|-- PairingToken
+    AppendOnlyBase <|-- RevokedSyncJwt
+    SyncCatalogEntry "1" ..> "0..1" PairingToken : model_cls (catálogo local_only)
+    SyncCatalogEntry "1" ..> "0..1" RevokedSyncJwt : model_cls (catálogo local_only)

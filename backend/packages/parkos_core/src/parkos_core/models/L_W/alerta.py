@@ -17,6 +17,7 @@ import uuid as uuid_lib
 from datetime import date, datetime
 
 from sqlalchemy import Date, DateTime, Numeric, PrimaryKeyConstraint, String, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -68,6 +69,13 @@ class Alerta(WorkflowBase):
     )
     timestamp_evento: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False),
+        nullable=True,
+    )
+    # HU-F1.6 / REQ-OPS-041.C — JSONB payload carried by
+    # ``capacidad_agotada_forzado`` alerts (motivo + uuid_ingreso).
+    # Added by migration 0025; column is nullable for pre-existing rows.
+    datos_nuevos: Mapped[dict | None] = mapped_column(
+        JSONB,
         nullable=True,
     )
 

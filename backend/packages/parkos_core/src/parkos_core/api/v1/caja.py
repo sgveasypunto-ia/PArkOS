@@ -50,7 +50,7 @@ def _mount_caja(
             update_schema=update_schema,
             repo_kind="versioned",
             issuer_required="operador-,admin-",
-            permission_required="emitir_factura",
+            permission_required="realizar_arqueo",  # GAP-BE-05 -- was emitir_factura
             write_enabled=False,  # PR7 is read-only; writes via custom endpoints (PR11)
         )
     )
@@ -72,6 +72,32 @@ _mount_caja(
     create_schema=ArqueoCreate,
     update_schema=ArqueoUpdate,
 )
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.13 / DEC-ARQUEO-05: dedicated router mount for the atomic
+# ``POST /api/v1/caja/arqueo`` + ``GET /api/v1/caja/arqueo/resumen`` pair.
+# The factory mount above stays read-only; the dedicated router carries
+# the cross-table atomic write (1 [A] Arqueo + N [L-S] sesion + 1 [L-W]
+# alerta + N+1 log_transaccional in a single commit -- KD-ARQUEO-01).
+# ---------------------------------------------------------------------------
+from .caja_arqueo import router as caja_arqueo_router  # noqa: E402
+
+router.include_router(caja_arqueo_router)
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.14 / DEC-SYNC-02: dedicated router mount for the read-only
+# ``GET /api/v1/sync/estado`` endpoint. Mirrors the F1.13 mount
+# precedent above: the factory mount cannot model the typed response +
+# KD-3 issuer + ``audit_read`` permission gate, so we expose a
+# dedicated router and ``include_router`` it here. KD-SYNC-01 +
+# KD-SYNC-02: the handler is purely read-only -- NO UPDATE/DELETE on
+# ``prod.sync_log`` or ``prod.sync_queue``, NO ``await session.commit()``.
+# ---------------------------------------------------------------------------
+from .sync_estado import router as sync_estado_router  # noqa: E402
+
+router.include_router(sync_estado_router)
 
 
 __all__ = ["router"]

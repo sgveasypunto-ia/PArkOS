@@ -1,0 +1,42 @@
+%% Diagrama de componentes: módulos reales de easypunto_parkos y sus dependencias.
+%% Verificado con codegraph_explore contra:
+%%   - backend/packages/api_admin/src/api_admin_main/app.py (api_admin)
+%%   - backend/packages/api_sucursal/src/api_sucursal_main/app.py (api_sucursal)
+%%   - backend/packages/parkos_core/src/parkos_core/jobs/sync_cloud.py (job_sync_cloud)
+%%   - backend/packages/parkos_core/src/parkos_core/jobs/sync_sucursal.py
+%%     (job_sync_sucursal, clase SyncSucursalWorker, "6-step main loop")
+%%   - backend/packages/parkos_core/src/parkos_core/api/v1/sync_router.py (canal HTTP real de sync)
+%%   - backend/packages/parkos_core/src/parkos_core/sync/transport.py (SyncHttpClient)
+%%   - apps/web_admin/src/App.tsx y apps/web_admin/src/lib/sucursal-context.tsx (web_admin)
+%%   - infra/deploy/docker-compose.cloud.yml y docker-compose.branch.yml (topología real de red)
+%% HALLAZGO (corrige la topología simplificada "job_sync_cloud <-> job_sync_sucursal"):
+%% el canal HTTP real de sincronización es job_sync_sucursal -> api_admin (sync_router).
+%% job_sync_cloud NO expone API HTTP: es un worker de fondo que solo toca cloud-db
+%% (verify_chain, cola de salida) -- ver docker-compose.cloud.yml: "cloud-db <- api-admin,
+%% job_sync_cloud" (ambos hermanos sobre la misma base, sin llamada directa entre sí).
+%% web_sucursal (planeado, aún no existe en el repo) se marca explícitamente como futuro.
+graph TB
+    subgraph Sucursal["Sucursal (edge)"]
+        api_sucursal["api_sucursal (FastAPI)"]
+        job_sync_sucursal["job_sync_sucursal (SyncSucursalWorker)"]
+        branch_db[("Postgres sucursal<br/>parkos-branch-db")]
+        web_sucursal["web_sucursal (futuro, aún no implementado)"]
+    end
+
+    subgraph CloudEnv["Cloud (central)"]
+        api_admin["api_admin (FastAPI, sync_router)"]
+        job_sync_cloud["job_sync_cloud (worker, verify_chain)"]
+        cloud_db[("Postgres cloud<br/>parkos-cloud-db")]
+    end
+
+    web_admin["web_admin (React, apps/web_admin)"]
+
+    web_admin -->|"HTTP, JWT admin-, X-Sucursal-Context"| api_admin
+    web_sucursal -.->|"futuro"| api_sucursal
+
+    api_admin --> cloud_db
+    job_sync_cloud --> cloud_db
+
+    api_sucursal --> branch_db
+    job_sync_sucursal --> branch_db
+    job_sync_sucursal -->|"HTTP, JWT sync-agent-: /sync/pair /sync/events /sync/push /sync/pull"| api_admin

@@ -30,6 +30,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 ACTOR_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000aa")
 
 
+def uid() -> str:
+    return uuid_lib.uuid4().hex[:8]
+
+
 def _row_dict(row: object) -> dict[str, object]:
     """Every column of an ORM instance as a plain dict (open_version shape)."""
     mapper = sa_inspect(type(row))
@@ -37,7 +41,11 @@ def _row_dict(row: object) -> dict[str, object]:
 
 
 async def _seed_tipo_persona(session, v_fixture_factory) -> uuid_lib.UUID:
-    tipo = v_fixture_factory.build(TipoPersona, tipo="natural")
+    # uid()-suffixed — the literal "natural" collides with the canonical
+    # migration-seeded row (0020, identity-reconciled) and with any other
+    # test's own "natural" row on this session-scoped shared DB
+    # (conftest.py::pg_engine); this helper only needs a valid FK target.
+    tipo = v_fixture_factory.build(TipoPersona, tipo=f"natural-{uid()}")
     session.add(tipo)
     await session.commit()
     return tipo.uuid

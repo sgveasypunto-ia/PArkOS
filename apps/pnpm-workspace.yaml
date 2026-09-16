@@ -1,0 +1,4 @@
+packages:
+  - 'ui-kit'
+  - 'web_admin'
+  - 'electron-sucursal'

@@ -62,6 +62,7 @@ the next cycle picks up any rows still ``pendiente``).
 Cites §21.7 (job_sync_sucursal main loop), tasks.md T-PR9-06,
 T-PR12-004..007.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -176,9 +177,7 @@ class SyncSucursalWorker(WorkerRunner):
         self.poll_interval_s = max(1, int(poll_interval_s))
         self.batch_size = max(1, int(batch_size))
         self.branch_version = (
-            branch_version
-            or os.environ.get("PARKOS_BRANCH_VERSION")
-            or DEFAULT_BRANCH_VERSION
+            branch_version or os.environ.get("PARKOS_BRANCH_VERSION") or DEFAULT_BRANCH_VERSION
         )
         self.log = logger or structlog.get_logger("parkos.jobs.sync_sucursal")
 
@@ -458,9 +457,7 @@ class SyncSucursalWorker(WorkerRunner):
             return mode
 
         if hello.status != 200 or hello.protocol_version is None:
-            self.log.warning(
-                "sync_sucursal.hello_non_ok_fallback_legacy", status=hello.status
-            )
+            self.log.warning("sync_sucursal.hello_non_ok_fallback_legacy", status=hello.status)
             mode = ApplierMode.LEGACY
         elif hello.protocol_version == "legacy":
             mode = ApplierMode.LEGACY
@@ -663,16 +660,43 @@ class SyncSucursalWorker(WorkerRunner):
 
         resolved: list[tuple[Any, dict[str, Any]]] = []
         unresolved = 0
+        already_applied = 0
         for row in pulled.rows:
             tabla = row.get("tabla")
             spec = SYNC_CATALOG_BY_NAME.get(tabla)
             if spec is None:
                 unresolved += 1
                 continue
+
+            # Real defect this closes: today's ``since_seq=0`` every-cycle
+            # call (see this method's own re-request below) means the SAME
+            # row is delivered again on the next cycle — a blind
+            # ``close_and_insert`` would try to re-insert it with a FRESH
+            # uuid (identical class of bug already fixed in
+            # ``jobs/sync_cloud.py``'s ``_apply_pending_batch_once``, see
+            # its own comment). A row whose own ``uuid_registro`` already
+            # exists in this table on THIS branch is already correctly
+            # applied — skip it instead of duplicating or crashing on a
+            # PK collision.
+            raw_uuid_registro = row.get("uuid_registro")
+            try:
+                uuid_registro = (
+                    uuid_lib.UUID(str(raw_uuid_registro)) if raw_uuid_registro is not None else None
+                )
+            except ValueError:
+                uuid_registro = None
+            if uuid_registro is not None and await apply_guard.row_already_present(
+                self._session, spec.model_cls, uuid_registro
+            ):
+                already_applied += 1
+                continue
+
             resolved.append((spec, row.get("datos") or {}))
 
         if unresolved:
             self.log.warning("sync_sucursal.pull_unknown_tables", count=unresolved)
+        if already_applied:
+            self.log.debug("sync_sucursal.pull_skipped_already_applied", count=already_applied)
         if not resolved:
             return
 

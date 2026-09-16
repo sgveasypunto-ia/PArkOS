@@ -14,6 +14,7 @@ The ``SubscripcionVehiculosCreate`` /
 ``test_subscripcion_vehiculos_validator.py`` (T-PR5-10) — here we only
 cover basic shape.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -78,12 +79,22 @@ class TestRouterIssuerPolicy:
         ],
     )
     def test_router_accepts_operador_and_admin(self, resource: str) -> None:
+        # Real defect confirmed via manual QA +
+        # test_clientes_family_permission_codes.py: this test used to only
+        # check a `startswith("admin_")` NAMING CONVENTION, never that the
+        # code was an actual, seeded permission — which is exactly how 5
+        # permission codes that matched NO row in
+        # migrations/versions/0002_seed_permisos_canonicos.py's
+        # CANONICAL_PERMISOS shipped unnoticed (every write in this whole
+        # family 403'd for every caller since PR5). Now asserts the real
+        # canonical code directly instead of a made-up prefix.
         issuer, perm = _ROUTER_CONFIG[resource]
         assert issuer == "operador-,admin-", (
             f"Router {resource} must accept operador-,admin-; got {issuer!r}"
         )
-        assert perm.startswith("admin_"), (
-            f"Router {resource} permission must start with admin_; got {perm!r}"
+        assert perm == "gestionar_clientes", (
+            f"Router {resource} permission must be the real canonical "
+            f"'gestionar_clientes' code; got {perm!r}"
         )
 
     def test_all_5_resources_configured(self) -> None:

@@ -114,9 +114,19 @@ _ENVIO_DIAN = SyncCatalogEntry(
     model_cls=EnvioDian,
     audit_class="L_W",
     sync_strategy="append",
-    # Flipped from branch_to_cloud (D1-rev, D5-rev) — ER: "CLOUD-ONLY: único
-    # punto de salida hacia el proveedor de factura electrónica DIAN".
-    direction="cloud_to_branch",
+    # HU-F1.10 / DEC-FE-01 — flipped from ``cloud_to_branch`` (D1-rev /
+    # D5-rev, module docstring lines 3-7) to ``branch_to_cloud``. The
+    # branch is the AUTHOR of the envio_dian chain (initial + retry
+    # transitions); the cloud dispatcher consumes the chain via sync
+    # replication for analytics + state-machine advancement
+    # (``pendiente → enviado → aceptado | rechazado``).
+    #
+    # MIGRATION 0028 Op 1 records this flip at the schema level. The
+    # ER diagram comment is updated post-archive from "CLOUD-ONLY" to
+    # "BRANCH-INITIATED, cloud consumer via sync" in a separate PR
+    # (F1.10 ER docstring drift pattern, matches F1.9
+    # ``models/A/factura_pagos.py`` lines 9-18).
+    direction="branch_to_cloud",
     broadcast_policy="single_branch",
     apply_strategy="append_transition",
     originating_role="cloud",

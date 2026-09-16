@@ -19,6 +19,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 
+def uid() -> str:
+    return uuid_lib.uuid4().hex[:8]
+
+
 async def test_three_views_exist_as_views_not_tables(pg_engine, alembic_upgrade) -> None:
     async with pg_engine.connect() as conn:
         rows = (
@@ -58,7 +62,10 @@ async def test_v_clientes_actual_resolves_latest_open_version_per_natural_key(
 ) -> None:
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        tipo = v_fixture_factory.build(TipoPersona, tipo="natural")
+        # uid()-suffixed — the literal "natural" collides with the canonical
+        # migration-seeded row (0020, identity-reconciled) on this
+        # session-scoped shared DB (conftest.py::pg_engine).
+        tipo = v_fixture_factory.build(TipoPersona, tipo=f"natural-{uid()}")
         session.add(tipo)
         await session.commit()
 

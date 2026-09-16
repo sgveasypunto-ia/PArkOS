@@ -1,0 +1,34 @@
+%% Diagrama de despliegue basado literalmente en los 3 docker-compose reales:
+%%   - infra/deploy/docker-compose.cloud.yml
+%%   - infra/deploy/docker-compose.branch.yml
+%%   - infra/deploy/docker-compose.local.yml (combinado, solo desarrollo)
+%% Contenedores (container_name), imágenes y puertos tomados tal cual de esos 3 archivos.
+%% Nota de credenciales: por política de anonimización se omiten valores de contraseñas/
+%% usuarios de entorno (POSTGRES_PASSWORD, etc.) presentes en los compose; solo se
+%% documentan nombres de variables de entorno relevantes a la arquitectura, no sus valores.
+graph TB
+    subgraph ComposeCloud["docker-compose.cloud.yml -- red parkos-cloud-net"]
+        cloud_db[("parkos-cloud-db<br/>image: parkos-postgres:16-pgpartman<br/>puerto 5432:5432")]
+        api_admin_c["parkos-api-admin<br/>image: parkos:api-admin-test<br/>puerto 8000:8000"]
+        job_sync_cloud_c["parkos-job-sync-cloud<br/>image: parkos:job-sync-cloud-test<br/>sin puerto publicado (healthz interno)"]
+        api_admin_c -->|"depends_on: service_healthy"| cloud_db
+        job_sync_cloud_c -->|"depends_on: service_healthy"| cloud_db
+    end
+
+    subgraph ComposeBranch["docker-compose.branch.yml -- red parkos-branch-net (independiente)"]
+        branch_db_b[("parkos-branch-db<br/>image: parkos-postgres:16-pgpartman<br/>puerto 5433:5432")]
+        api_sucursal_b["parkos-api-sucursal<br/>image: parkos:api-sucursal-test<br/>puerto 8000:8000"]
+        job_sync_sucursal_b["parkos-job-sync-sucursal<br/>image: parkos:job-sync-sucursal-test<br/>sin puerto publicado"]
+        api_sucursal_b -->|"depends_on: service_healthy"| branch_db_b
+        job_sync_sucursal_b -->|"depends_on: service_healthy"| branch_db_b
+        job_sync_sucursal_b -.->|"PARKOS_CLOUD_API_URL (HTTP por Internet/LAN)"| api_admin_c
+    end
+
+    subgraph ComposeLocal["docker-compose.local.yml -- combinado dev, reutiliza parkos-cloud_parkos-cloud-net"]
+        branch_db_l[("parkos-branch-db<br/>puerto 5433:5432")]
+        api_sucursal_l["parkos-api-sucursal<br/>puerto 8100:8000 (offset para no chocar con cloud)"]
+        job_sync_sucursal_l["parkos-job-sync-sucursal<br/>sin puerto publicado"]
+        api_sucursal_l -->|"depends_on: service_healthy"| branch_db_l
+        job_sync_sucursal_l -->|"depends_on: service_healthy"| branch_db_l
+        job_sync_sucursal_l -->|"http://api-admin:8000 (misma red docker compartida)"| api_admin_c
+    end

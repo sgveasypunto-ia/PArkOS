@@ -39,6 +39,10 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import datetime
+from decimal import Decimal
+from typing import Annotated, Literal
+
+from pydantic import ConfigDict, Field
 
 from .common import FilterBase, ReadListBase, _Base
 
@@ -126,4 +130,352 @@ __all__ = [
     "IngresoFilter",
     "IngresoRead",
     "IngresoReadList",
+]
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.8 -- CotizarResponse (discriminated union by ``cobrar: bool``)
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class CotizarFacturacion(_Base):
+    """``cobrar=true`` variant -- full fiscal breakdown.
+
+    Returned when an ``ingreso`` exists, has no non-anulada ``salidas``,
+    has no active monthly subscription at the branch, has a vigente
+    ``tarifas_sucursal`` row for the combination, and has a vigente
+    ``impuestos`` row with ``nombre='IVA'``.
+
+    All seven GAP-BE-09 contract fields are REQUIRED (no defaults) --
+    the contract is exhaustive; missing any field is a server bug.
+
+    **``tiempo_minutos`` shape (apply-time correction).** The PL/pgSQL
+    function computes ``EXTRACT(EPOCH FROM (NOW() - fecha_ingreso)) / 60.0``
+    which returns a sub-second-precision ``numeric`` (e.g. ``89.0025``
+    for a 89-minute-old row). Postgres serializes it as a Python ``float``
+    via the asyncpg jsonb bridge, so the schema accepts ``int | float``.
+    Clients SHOULD treat it as informational (the actual billing uses
+    ``CEIL(tiempo_minutos)`` minutes inside the function); the design's
+    original ``int`` typing was relaxed in the apply phase to accept the
+    real wire value.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cobrar: Literal[True]
+    subtotal: Decimal
+    iva: Decimal
+    total: Decimal
+    tiempo_minutos: int | float
+    tarifa_uuid: uuid_lib.UUID
+    vigente_hasta: datetime
+
+
+class CotizarMensualidad(_Base):
+    """``cobrar=false`` variant -- short-circuit for an active monthly subscription.
+
+    Returned when the ingreso's plate has an open subscription at the
+    branch (REQ-OPS-023, design.md §3 step 2). The PL/pgSQL function
+    short-circuits the pricing pipeline; no fiscal data is computed.
+
+    ``motivo`` is a literal string so the contract is closed -- adding
+    a new motivo requires a new ``CotizarMensualidad`` variant, not
+    free-form string injection.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cobrar: Literal[False]
+    motivo: Literal["mensualidad_vigente"]
+
+
+# Discriminated union: Pydantic v2 picks the variant by the value of
+# ``cobrar`` (True -> CotizarFacturacion, False -> CotizarMensualidad).
+# ``Annotated[..., Field(discriminator=...)]`` is the v2-native form;
+# ``extra='forbid'`` on each variant still rejects smuggle attempts
+# like ``{"cobrar": True, "motivo": "mensualidad_vigente"}``.
+CotizarResponse = Annotated[
+    CotizarFacturacion | CotizarMensualidad,
+    Field(discriminator="cobrar"),
+]
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.5 -- OcupacionItem / OcupacionResponse (REQ-OPS-030)
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class OcupacionItem(_Base):
+    """Una fila del breakdown por tipo de vehiculo (REQ-OPS-030).
+
+    ``disponible`` puede ser negativo si ``cantidad_vehiculos_sucursal``
+    no tiene fila para ``(uuid_sucursal, uuid_tipo_vehiculo)`` (KD-6);
+    el cliente interpreta ``disponible < 0`` como "configuracion
+    faltante, contacte al admin" y renderiza "N/A" en el strip.
+    """
+
+    uuid_tipo_vehiculo: uuid_lib.UUID
+    tipo: str  # "Auto", "Moto", etc.
+    cupo_maximo: int  # 0 si COALESCE(NULL) -> 0 (KD-6)
+    activos: int  # count(*) de la MV materializada
+    disponible: int  # cupo_maximo - activos (derivado server-side)
+
+
+class OcupacionResponse(_Base):
+    """Response shape de ``GET /operacion/ocupacion`` (REQ-OPS-030).
+
+    ``generado_en`` se construye en el handler con
+    ``datetime.now(tz=timezone.utc)``; Pydantic serializa como
+    ISO-8601 con sufijo ``Z``. El timestamp captura cuando se
+    ensamblo la respuesta (no cuando se refresco la MV).
+    """
+
+    uuid_sucursal: uuid_lib.UUID
+    items: list[OcupacionItem]
+    generado_en: datetime
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.6 -- IngresoCreateForzado / IngresoReadForzado (REQ-OPS-034..041)
+# ---------------------------------------------------------------------------
+
+
+class IngresoCreateForzado(_Base):
+    """INSERT payload for ``prod.ingreso`` with KD-FORZADO-01 bypass.
+
+    Adds ``forzado: bool = False`` to the F1.5 ``IngresoCreate`` shape.
+    Server-side validation enforces the prefix contract (D-HU-F1.6-5);
+    ``forzado`` is NOT persisted in ``prod.ingreso``.
+
+    ``extra='forbid'`` (inherited from ``_Base``) rejects extra fields
+    including ``tipo_entrada`` (an attempted injection of a non-existent
+    column).
+    """
+
+    # uuid_sucursal defaults to ctx.sucursal_uuid in the handler
+    # (KD-3 chain); the field is Optional here.
+    uuid_sucursal: uuid_lib.UUID | None = None
+    placa: str | None = None
+    # Server overwrites via V5 (regex-derived UUID wins over client value).
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None
+    uuid_subscripcion_cliente: uuid_lib.UUID | None = None
+    fecha_ingreso: datetime | None = None
+    observaciones: str | None = None
+    forzado: bool = False  # D-HU-F1.6-5; validated against prefix
+
+
+class IngresoReadForzado(_Base):
+    """Response shape for ``POST /operacion/ingresos`` (REQ-OPS-041).
+
+    Additive delta to ``IngresoRead`` (no field removed or renamed):
+    - ``tipo_entrada``: Literal['MENSUALIDAD', 'ROTACION'] (DEC-SUC-21)
+    - ``forzado_en_creacion``: True iff KD-FORZADO-01 bypass was used
+    - ``motivo_forzado``: stripped motivo, or None
+    """
+
+    # Inherited from IngresoRead (6 base + 6 business columns):
+    uuid: uuid_lib.UUID
+    created_at: datetime
+    created_by: uuid_lib.UUID | None
+    sync_status: str | None
+    sync_timestamp: datetime | None
+    sync_attempts: int | None
+    uuid_sucursal: uuid_lib.UUID | None
+    placa: str | None
+    uuid_tipo_vehiculo: uuid_lib.UUID | None
+    uuid_subscripcion_cliente: uuid_lib.UUID | None
+    fecha_ingreso: datetime | None
+    observaciones: str | None
+    # NEW:
+    tipo_entrada: Literal["MENSUALIDAD", "ROTACION"]
+    forzado_en_creacion: bool = False
+    motivo_forzado: str | None = None
+
+
+# --- Typed error schemas (D-HU-F1.6-10) ----------------------------------
+
+
+class CupoNoConfiguradoError(_Base):
+    """V1 422 discriminator."""
+
+    error: Literal["cupo_no_configurado"]
+    forzado_permitido: Literal[True]
+
+
+class MotivoForzadoRequeridoError(_Base):
+    """V2 422 discriminator (when cupo agotado without forzado)."""
+
+    error: Literal["motivo_forzado_requerido"]
+    cupo_maximo: int
+    activos: int
+
+
+class TarifaVigenteNoEncontradaError(_Base):
+    """V3 422 discriminator."""
+
+    error: Literal["tarifa_vigente_no_encontrada"]
+
+
+class PlacaFormatoInvalidoError(_Base):
+    """V5 422 discriminator."""
+
+    error: Literal["placa_formato_invalido"]
+    formatos_aceptados: list[str]
+
+
+class SubscripcionInactivaOVencidaError(_Base):
+    """V6 422 discriminator."""
+
+    error: Literal["subscripcion_inactiva_o_vencida"]
+
+
+class IngresoActivoExistenteError(_Base):
+    """V8 409 discriminator."""
+
+    error: Literal["ingreso_activo_existente"]
+    uuid_ingreso_existente: uuid_lib.UUID
+
+
+class TipoVehiculoInvalidoError(_Base):
+    """V4 422 discriminator."""
+
+    error: Literal["tipo_vehiculo_invalido"]
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.7 -- SalidaCreateForzado / SalidaReadForzado / 4 typed errors
+#            (REQ-OPS-042..052, D-HU-F1.7-19, D-HU-F1.7-20)
+# ---------------------------------------------------------------------------
+
+
+class SalidaCreateForzado(_Base):
+    """INSERT payload for ``prod.salidas`` ([A] append-only event, HU-F1.7).
+
+    Identifies the ingreso to close. Sucursal is resolved server-side from
+    the ingreso (NEW in F1.7 -- client does not send). Placa is optional:
+    if sent, server confirms against ingreso (V3); otherwise server trusts
+    ``uuid_ingreso``.
+
+    ``extra='forbid'`` (inherited from ``_Base``) rejects extra fields,
+    including attempts to inject ``tipo_salida`` (DEC-SUC-21-NEW).
+    """
+
+    uuid_ingreso: uuid_lib.UUID         # REQUIRED -- ingreso to close
+    placa: str | None = None            # OPTIONAL -- V3 confirmation
+    observaciones: str | None = None    # OPTIONAL -- KD-FORZADO-01 prefix
+    forzado: bool = False               # OPTIONAL -- bypass V2/V5
+
+
+class SalidaRead(_Base):
+    """Full ORM column mapping for ``prod.salidas``.
+
+    Inherits ``from_attributes=True`` and ``extra='forbid'`` from
+    :class:`_Base`. Used as the base class for :class:`SalidaReadForzado`.
+    """
+
+    # Inherited from LifecycleEventBase (IdMixin + AuditMixin + SyncMixin)
+    uuid: uuid_lib.UUID
+    created_at: datetime
+    created_by: uuid_lib.UUID | None
+    sync_status: str | None
+    sync_timestamp: datetime | None
+    sync_attempts: int | None
+
+    # Business columns (from models/A/salidas.py)
+    uuid_sucursal: uuid_lib.UUID | None
+    uuid_ingreso: uuid_lib.UUID | None
+    fecha_salida: datetime | None
+
+
+class SalidaReadForzado(_Base):
+    """Response shape for ``POST /operacion/salidas`` (HU-F1.7).
+
+    Additive delta to ``SalidaRead`` (no field removed or renamed):
+    - ``tipo_salida``: Literal['MENSUALIDAD', 'ROTACION'] (DEC-SUC-21-NEW)
+    - ``forzado_en_creacion``: True iff KD-FORZADO-01 bypass was used
+    - ``motivo_forzado``: stripped motivo, or None
+    - ``cotizacion_snapshot``: CotizarFacturacion if ROTACION, None if MENSUALIDAD
+    """
+
+    # Inherited from AppendOnlyBase (IdMixin + AuditMixin + SyncMixin) on
+    # models/A/salidas.py::Salidas. Composite PK (uuid, fecha_retencion_hasta)
+    # is mapped at the ORM; the schema only carries the uuid business key.
+    uuid: uuid_lib.UUID
+    created_at: datetime
+    created_by: uuid_lib.UUID | None
+    sync_status: str | None
+    sync_timestamp: datetime | None
+    sync_attempts: int | None
+
+    # Business columns (from models/A/salidas.py)
+    uuid_sucursal: uuid_lib.UUID | None
+    uuid_ingreso: uuid_lib.UUID | None
+    fecha_salida: datetime | None
+
+    # NEW (F1.7):
+    tipo_salida: Literal["MENSUALIDAD", "ROTACION"]
+    forzado_en_creacion: bool = False
+    motivo_forzado: str | None = None
+    cotizacion_snapshot: CotizarFacturacion | None = None
+
+
+# --- Typed error schemas (D-HU-F1.7-19) ----------------------------------
+
+
+class IngresoNoEncontradoError(_Base):
+    """V1 404 discriminator -- uuid_ingreso no existe, ya cerrado, o anulado."""
+
+    error: Literal["ingreso_no_encontrado"]
+    uuid_ingreso: uuid_lib.UUID
+
+
+class SalidaDuplicadaError(_Base):
+    """Step 8 409 discriminator -- partial unique index violated."""
+
+    error: Literal["salida_duplicada"]
+    uuid_ingreso: uuid_lib.UUID
+
+
+class PlacaNoCoincideConIngresoError(_Base):
+    """V3 422 discriminator -- optional placa mismatch."""
+
+    error: Literal["placa_no_coincide_con_ingreso"]
+    placa_request: str
+    placa_ingreso: str
+
+
+class TarifaVigenteNoEncontradaSalidaError(_Base):
+    """V5 422 discriminator -- when not bypassed."""
+
+    error: Literal["tarifa_vigente_no_encontrada"]
+
+
+__all__ = [
+    "CotizarFacturacion",
+    "CotizarMensualidad",
+    "CotizarResponse",
+    "CupoNoConfiguradoError",
+    "IngresoActivoExistenteError",
+    "IngresoCreate",
+    "IngresoCreateForzado",
+    "IngresoFilter",
+    "IngresoNoEncontradoError",
+    "IngresoRead",
+    "IngresoReadForzado",
+    "IngresoReadList",
+    "MotivoForzadoRequeridoError",
+    "OcupacionItem",
+    "OcupacionResponse",
+    "PlacaFormatoInvalidoError",
+    "PlacaNoCoincideConIngresoError",
+    "SalidaCreateForzado",
+    "SalidaDuplicadaError",
+    "SalidaRead",
+    "SalidaReadForzado",
+    "SubscripcionInactivaOVencidaError",
+    "TarifaVigenteNoEncontradaError",
+    "TarifaVigenteNoEncontradaSalidaError",
+    "TipoVehiculoInvalidoError",
 ]

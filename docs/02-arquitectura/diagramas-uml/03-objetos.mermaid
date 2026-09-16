@@ -1,0 +1,54 @@
+%% Diagrama de objetos: instancias de ejemplo de las clases documentadas en 02-clases.mermaid.
+%% Mermaid no tiene un tipo "object diagram" nativo; se usa classDiagram con el patrón
+%% `class id["instancia : Clase"]` y miembros `campo = valor`.
+%% Valores tomados o derivados directamente de código real:
+%%   - backend/packages/parkos_core/src/parkos_core/sync/catalog/local_only_catalog.py:
+%%     "pairingTokensEntry" son los valores LITERALES reales de la entrada _PAIRING_TOKENS
+%%     (SyncCatalogEntry(name="pairing_tokens", model_cls=PairingToken, audit_class="A",
+%%     sync_strategy="local_only", direction=None, apply_strategy=None, role_required="both",
+%%     depends_on=(), has_uuid_sucursal=False)).
+%%   - backend/packages/parkos_core/src/parkos_core/sync/catalog/validator.py:
+%%     "drift1" reproduce el patrón real del mensaje de check_rule_3_counts.
+%%   - backend/packages/parkos_core/src/parkos_core/repo/revoked_sync_jwt.py:
+%%     "revoked1.motivo" reproduce el patrón real documentado en revoke_jwt
+%%     (ej. "admin_revoked_at_<ts>").
+%%   - backend/packages/parkos_core/src/parkos_core/auth/tokens.py:
+%%     "revoked1.jwt_kid" reproduce el formato real kid = f"{issuer}{_kid_suffix(issuer)}".
+%% Los UUID, hashes y horarios de "pairing1"/"revoked1" son ilustrativos, no datos de producción.
+classDiagram
+    class pairing1["pairing1 : PairingToken"] {
+        uuid = "0b1e2a3c-9f4d-4a7e-8c2b-1d5e6f708192"
+        uuid_sucursal = "a7c1e9f0-2b3d-4c5e-9f10-b2c3d4e5f607"
+        pairing_token_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"
+        expires_at = "2026-09-11T14:30:00"
+        used = false
+        used_at = null
+    }
+
+    class pairingTokensEntry["pairingTokensEntry : SyncCatalogEntry"] {
+        name = "pairing_tokens"
+        model_cls = "PairingToken"
+        audit_class = "A"
+        sync_strategy = "local_only"
+        direction = null
+        apply_strategy = null
+        role_required = "both"
+        depends_on = "()"
+        has_uuid_sucursal = false
+    }
+
+    class drift1["drift1 : DriftViolation"] {
+        rule = 3
+        detail = "SYNC_CATALOG has 45 entries, want 46"
+    }
+
+    class revoked1["revoked1 : RevokedSyncJwt"] {
+        uuid = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a"
+        jwt_kid = "sync-agent-a1b2c3"
+        jwt_uuid = "9f8e7d6c-5b4a-4c3d-9e8f-1a2b3c4d5e6f"
+        expires_at = "2026-09-12T00:00:00"
+        revoked_by = "1e2d3c4b-5a69-4788-9c0d-2e3f4a5b6c7d"
+        motivo = "admin_revoked_at_2026-09-10T18:00:00"
+    }
+
+    pairingTokensEntry ..> pairing1 : model_cls instancia

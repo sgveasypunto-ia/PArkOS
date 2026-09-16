@@ -1,0 +1,12 @@
+{
+  "ingreso": "Ingreso",
+  "salida": "Salida",
+  "placa": "Placa",
+  "tipo": "Tipo de vehículo",
+  "tarifa": "Tarifa",
+  "total": "Total",
+  "registrar": "Registrar",
+  "imprimir": "Imprimir ticket",
+  "anular": "Anular",
+  "confirmar": "Confirmar"
+}

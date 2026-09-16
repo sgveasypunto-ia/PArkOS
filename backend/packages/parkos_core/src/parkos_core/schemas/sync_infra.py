@@ -45,6 +45,7 @@ from datetime import date, datetime
 
 from ..repo.sync_queue import Operacion
 from .common import _Base
+from pydantic import Field
 
 # `Operacion` is re-exported below in __all__ so callers can write
 # `from parkos_core.schemas.sync_infra import Operacion` and get the
@@ -363,8 +364,59 @@ __all__ = [
     "RevocacionFacturaRead",
     "SyncConflictCreate",
     "SyncConflictRead",
+    "SyncEstadoQueryParams",
+    "SyncEstadoRead",
     "SyncLogCreate",
     "SyncLogRead",
     "SyncQueueCreate",
     "SyncQueueRead",
 ]
+
+
+# ---------------------------------------------------------------------------
+# SyncEstadoRead + SyncEstadoQueryParams (HU-F1.14)
+# ---------------------------------------------------------------------------
+
+
+class SyncEstadoQueryParams(_Base):
+    """Query params for ``GET /api/v1/sync/estado``.
+
+    Layer 4 defense: inherits ``extra='forbid'`` from :class:`_Base`,
+    so a client smuggling an unknown field (e.g. ``actor_uuid``,
+    ``computed_at``, ``cache_key``) triggers ``ValidationError`` and
+    FastAPI returns ``422``.
+
+    The branch identifier is required (``uuid_sucursal: UUID``) -- the
+    Pydantic UUID validator rejects malformed values (R9 LOW, design
+    §12). ``administrador`` cross-branch queries carry the operator's
+    session UUID here directly; ``operador`` queries carry their own
+    pinned branch (Layer 2 tenant scope checks ``ctx.sucursal_uuid``).
+    """
+
+    uuid_sucursal: uuid_lib.UUID
+
+
+class SyncEstadoRead(_Base):
+    """Response shape for ``GET /api/v1/sync/estado``.
+
+    Mirrors the contract per design §10.4 + spec REQ-OPS-100:
+
+    * ``uuid_sucursal`` -- the branch the snapshot describes.
+    * ``ultima_sync_at`` -- ``datetime | None``. ``None`` means the
+      branch has never synced (DEC-SYNC-08).
+    * ``lag_seg`` -- ``int | None``. ``None`` when ``ultima_sync_at`` is
+      ``None``; otherwise ``int((NOW() - ultima_sync_at).total_seconds())``
+      with ``>= 0`` (DEC-SYNC-08). SyncBanner renders this as
+      NEVER SYNCED / VERDE / AMARILLO / ROJO per plan.md lines
+      2275-2291.
+    * ``pendientes`` -- ``int >= 0`` (DEC-SYNC-09). ``count(*)``
+      semantics: NEVER null, ALWAYS non-negative. SyncBanner renders
+      a high-pile alert badge when ``pendientes >= 100``.
+
+    Layer 4: ``extra='forbid'`` blocks unknown response fields.
+    """
+
+    uuid_sucursal: uuid_lib.UUID
+    ultima_sync_at: datetime | None
+    lag_seg: int | None
+    pendientes: int = Field(ge=0)

@@ -1,0 +1,42 @@
+%% Casos de uso reales de easypunto_parkos.
+%% Actores derivados de los 3 issuers JWT reales (ISSUER_PREFIXES en
+%% backend/packages/parkos_core/src/parkos_core/auth/tokens.py: "admin-",
+%% "operador-", "sync-agent-").
+%% Casos de uso verificados con codegraph_explore contra:
+%%   - backend/packages/parkos_core/src/parkos_core/api/v1/sucursal.py (pairing_token, admin- only)
+%%   - backend/packages/parkos_core/src/parkos_core/api/v1/sync_router.py (POST /sync/pair, POST /sync/events)
+%%   - backend/packages/parkos_core/src/parkos_core/repo/workflow.py y
+%%     backend/packages/parkos_core/src/parkos_core/schemas/workflows.py (tipo_anulable: ingreso/salida)
+%%   - backend/packages/parkos_core/migrations/versions/0002_seed_permisos_canonicos.py
+%%     (permisos reales: config_catalogo, emitir_factura, emitir_factura_electronica,
+%%     revocar_factura, aprobar_anulacion, ejecutar_anulacion -- confirma que facturación y
+%%     anulaciones son operaciones de sucursal ("operator-facing"), no de Admin central)
+%%   - backend/packages/parkos_core/src/parkos_core/dian/cloud_router.py (revocación DIAN)
+%%   - backend/packages/parkos_core/src/parkos_core/sync/conflict_resolver.py (ConflictResolver)
+%% Ver también ../modelo-datos.md y ../seguridad.md (mapa de documentación del equipo).
+graph LR
+    Admin((Admin))
+    Operador((Operador de sucursal))
+    SyncSystem((Sistema de sincronización))
+
+    UC1(Gestionar catálogos)
+    UC2(Emitir token de pairing de sucursal)
+    UC3(Emparejar sucursal con la nube)
+    UC4(Registrar ingreso de vehículo)
+    UC5(Registrar salida de vehículo)
+    UC6(Gestionar anulaciones: solicitar / aprobar / ejecutar)
+    UC7(Facturar electrónicamente ante la DIAN)
+    UC8(Revocar factura electrónica)
+    UC9(Aplicar fila sincronizada)
+    UC10(Resolver conflicto de sincronización)
+
+    Admin --> UC1
+    Admin --> UC2
+    Operador --> UC3
+    Operador --> UC4
+    Operador --> UC5
+    Operador --> UC6
+    Operador --> UC7
+    Operador --> UC8
+    SyncSystem --> UC9
+    SyncSystem --> UC10

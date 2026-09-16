@@ -1,0 +1,55 @@
+appId: co.parkos.electron-sucursal
+productName: Parkos Sucursal
+copyright: Copyright © 2026 Parkos
+directories:
+  output: dist/electron
+  buildResources: build
+files:
+  - out/**/*
+  - dist/renderer/**/*
+  - package.json
+extraMetadata:
+  main: out/main.js
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: "${productName}-Setup-${version}.${ext}"
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: build/icon.icns
+  category: public.app-category.business
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  icon: build/icon.png
+  category: Office
+  artifactName: "${productName}-${version}.${ext}"
+
+# F2.3 enables auto-update via electron-updater (DEC-UPD-01..04).
+autoUpdate: true
+publish:
+  - provider: github
+    owner: easypunto_parkos
+    repo: easypunto_parkos
+    releaseType: release
+    allowPrerelease: false
+mac:
+  hardenedRuntime: true
+  gatekeeperAssess: false
+win:
+  # Windows Authenticode via electron-builder auto-sign.
+  # certificate file: process.env.WINDOWS_CERT_FILE (build pipeline concern).

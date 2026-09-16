@@ -38,6 +38,7 @@ whatever concrete :data:`FetchPage` a follow-up PR builds when one is
 configured; this module is fully unit/integration-testable today with a
 fake fetcher (see ``tests/integration/test_pairing_flow.py``).
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -51,6 +52,7 @@ from ...runtime import engine_flag
 from ..catalog.dependency_graph import topological_level
 from ..catalog.schema import SyncCatalogEntry
 from ..catalog.sync_catalog import SYNC_CATALOG
+from ..motor import apply_guard
 from ..motor.sync_motor import SyncMotor
 from ..observability.metrics import catalog_backfill_complete
 
@@ -175,12 +177,36 @@ async def run_backfill(
             while True:
                 page = await fetch_page(entry.name, cursor, page_size)
                 if page.rows:
-                    resolved = [(entry, dict(row)) for row in page.rows]
-                    batch_result = await active_motor.apply_batch(
-                        session, resolved, actor_uuid=actor_uuid
-                    )
-                    result.applied += len(batch_result.applied)
-                    level_buffered += len(batch_result.buffered)
+                    # Real defect confirmed via manual QA (2026-09-10):
+                    # once ``permisos``' uuids became deterministic across
+                    # nodes (migration 0019, fixing the SAME class of
+                    # cross-node duplication this guard already closes for
+                    # the two REAL apply loops — see
+                    # jobs/sync_cloud.py::_apply_pending_batch_once and
+                    # jobs/sync_sucursal.py::_pull_and_apply_catalog), a
+                    # fresh branch's own independently-seeded canonical
+                    # permisos rows collide (PK violation, not a silent
+                    # duplicate) with cloud's identical rows during initial
+                    # backfill. This function has no production caller yet
+                    # (see this module's own docstring), but skipping a
+                    # row whose uuid already exists here too keeps it
+                    # consistent with the two real call sites instead of
+                    # leaving a THIRD, differently-behaved apply path.
+                    fresh_rows = []
+                    for row in page.rows:
+                        row_dict = dict(row)
+                        if await apply_guard.row_already_present(
+                            session, entry.model_cls, row_dict.get("uuid")
+                        ):
+                            continue
+                        fresh_rows.append(row_dict)
+                    resolved = [(entry, row_dict) for row_dict in fresh_rows]
+                    if resolved:
+                        batch_result = await active_motor.apply_batch(
+                            session, resolved, actor_uuid=actor_uuid
+                        )
+                        result.applied += len(batch_result.applied)
+                        level_buffered += len(batch_result.buffered)
                 cursor = page.next_cursor
                 if not page.has_more:
                     break

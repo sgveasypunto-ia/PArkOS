@@ -52,10 +52,20 @@ packages = ["src/parkos_core"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+
+# F1.15 housekeeping §3.4: top-level ``extend-select`` deprecated,
+# moved under ``[tool.ruff.lint]``. Layered config intent preserved
+# (workspace ``[tool.ruff.lint].select`` + package ``extend-select``
+# to ADD to the workspace's enabled rules without overriding them).
+[tool.ruff.lint]
 extend-select = ["I", "UP", "B", "ASYNC", "SIM", "PT", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
 "migrations/**/*.py" = ["E501"]
+# HU-F1.4 extends ``api/v1/empresa.py`` with a dedicated handler that
+# uses FastAPI's ``Query(...)`` / ``Depends(...)`` defaults (B008).
+# Same convention as the existing auth.py / catalogos.py ignores.
+"src/parkos_core/api/v1/empresa.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.13"

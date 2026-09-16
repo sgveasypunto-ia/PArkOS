@@ -35,7 +35,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import StringConstraints
 
@@ -479,7 +479,327 @@ class FacturaPagosReadList(ReadListBase[FacturaPagosRead]):
     """Cursor-paginated list of :class:`FacturaPagosRead` items."""
 
 
+# ---------------------------------------------------------------------------
+# HU-F1.9 / REQ-OPS-053..063 -- billing transactional surfaces
+# ---------------------------------------------------------------------------
+# See design §9.5. Defense in depth:
+#
+# - ``FacturaItemConDatosPropios._validar_nit_modulo11`` Pydantic v2
+#   @field_validator rejects NIT with bad DV → ValidationError → 422
+#   with discriminator ``nit_invalido`` (D-HU-F1.9-19).
+# - ``extra='forbid'`` (from :class:`_Base`) rejects client-side attempts
+#   to inject ``uuid_cliente`` (DEC-FACT-06), ``correlacion_id``
+#   (DEC-IDEM-01), and ``prefijo`` / ``consecutivo`` (DEC-FACT-05).
+# - ``medio_pago`` is a 5-value Literal — NO ``prod.forma_pago`` catalog
+#   in MVP (DEC-FACT-07 Opción A).
+# - ``uuid_cliente`` on the response is **server-derived**, NEVER persisted
+#   on ``prod.facturas`` (DEC-FACT-06).
+# ---------------------------------------------------------------------------
+
+from pydantic import Field, field_validator
+
+from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
+
+
+class FacturaItemConDatosPropios(_Base):
+    """Client data block for ``fe_con_datos=true`` payloads.
+
+    Validates NIT módulo 11 via Pydantic v2 ``@field_validator`` when
+    ``tipo_identificador='NIT'``. Re-uses :mod:`repo.nit_modulo11`.
+
+    ``extra='forbid'`` (inherited from :class:`_Base`) rejects extra
+    fields including attempts to inject ``uuid_cliente`` (DEC-FACT-06).
+    """
+
+    tipo_identificador: Literal["NIT", "CC", "CE", "pasaporte"]
+    numero_identificacion: Annotated[str, StringConstraints(min_length=5, max_length=20)]
+    dv: Annotated[str, StringConstraints(min_length=1, max_length=2)] | None = None
+    nombre: Annotated[str, StringConstraints(min_length=1, max_length=120)]
+    apellido: Annotated[str, StringConstraints(min_length=1, max_length=120)] | None = None
+    email: Annotated[str, StringConstraints(min_length=5, max_length=120)] | None = None
+    telefono: Annotated[str, StringConstraints(min_length=7, max_length=20)] | None = None
+
+    @field_validator("numero_identificacion")
+    @classmethod
+    def _validar_nit_modulo11(cls, v: str, info: Any) -> str:
+        """If ``tipo_identificador='NIT'``, apply módulo 11 algorithm.
+
+        Raises ``ValueError`` (Pydantic v2 maps to ``ValidationError`` →
+        HTTP 422) when:
+
+        - ``dv`` is missing for NIT (cannot validate without it).
+        - the DV does not match the computed módulo 11 result.
+        """
+        tipo = info.data.get("tipo_identificador")
+        if tipo == "NIT":
+            dv = info.data.get("dv")
+            if dv is None:
+                raise ValueError("dv required when tipo_identificador='NIT'")
+            if not validar_nit_modulo11(v, dv):
+                expected = dv_esperado(v)
+                raise ValueError(f"DV inválido: recibido={dv}, esperado={expected}")
+        return v
+
+
+class FacturaItemCreate(_Base):
+    """INSERT payload for one ``prod.factura_detalle`` row."""
+
+    tipo: Literal["servicio", "producto"]
+    concepto: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    cantidad: int = Field(gt=0, le=999)
+    valor_unitario: Decimal = Field(ge=Decimal(0), le=Decimal("999999999.9999"))
+    uuid_tarifa_sucursal: uuid_lib.UUID | None = None
+
+
+class FacturaCreate(_Base):
+    """HU-F1.9: POST ``/api/v1/facturacion/factura`` payload.
+
+    12-step handler chain (see design §7) consumes this payload. KD-FACT-01
+    enforces single-commit atomicity on the 4-table insert.
+    """
+
+    uuid_salida: uuid_lib.UUID
+    items: list[FacturaItemCreate] = Field(min_length=1, max_length=50)
+    subtotal: Decimal
+    total: Decimal
+    medio_pago: Literal["efectivo", "tarjeta", "transferencia", "datafono", "mixto"]
+    referencia: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
+    fe_con_datos: bool = False
+    fe_datos_cliente: FacturaItemConDatosPropios | None = None
+
+
+class FacturaItemRead(_Base):
+    """Read-back for one ``prod.factura_detalle`` row."""
+
+    uuid: uuid_lib.UUID
+    tipo: str
+    concepto: str
+    cantidad: int
+    valor_unitario: Decimal
+    subtotal: Decimal
+
+
+class FacturaRead(_Base):
+    """HU-F1.9: POST ``/api/v1/facturacion/factura`` response.
+
+    ``uuid_cliente`` is **server-derived** (DEC-FACT-06). NOT persisted on
+    ``prod.facturas``. ``estado`` is derived from the ``V_FACTURA_ESTADO``
+    view (PR6 schema work, referenced in
+    ``models/L_E/facturas.py`` lines 12-14 docstring).
+    """
+
+    uuid: uuid_lib.UUID
+    created_at: datetime
+    uuid_sucursal: uuid_lib.UUID
+    uuid_ingreso: uuid_lib.UUID | None
+    uuid_salida: uuid_lib.UUID | None
+    subtotal: Decimal
+    descuento: Decimal
+    total: Decimal
+    uuid_cliente: uuid_lib.UUID | None  # DEC-FACT-06 derivado, no persistido
+    items: list[FacturaItemRead]
+    estado: Literal["emitida", "pagada", "anulada"]
+
+
+class FacturaPagoAdicionalCreate(_Base):
+    """HU-F1.9: POST ``/api/v1/facturacion/factura-pagos`` payload."""
+
+    uuid_factura: uuid_lib.UUID
+    medio_pago: Literal["efectivo", "tarjeta", "transferencia", "datafono", "mixto"]
+    valor: Decimal = Field(gt=Decimal(0))
+    referencia: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
+    uuid_sesion: uuid_lib.UUID | None = None
+
+
+class FacturaPagoRead(_Base):
+    """HU-F1.9: POST ``/api/v1/facturacion/factura-pagos`` response."""
+
+    uuid: uuid_lib.UUID
+    uuid_factura: uuid_lib.UUID
+    medio_pago: str
+    valor: Decimal
+    referencia: str | None
+    timestamp_evento: datetime
+
+
+# --- Typed error schemas (D-HU-F1.9-19) -------------------------------------
+
+
+class NitInvalidoErrorSchema(_Base):
+    """V5 422 discriminator — NIT módulo 11 mismatch."""
+
+    error: Literal["nit_invalido"]
+    dv_esperado: int
+    dv_recibido: str
+
+
+class ClienteNoEncontradoErrorSchema(_Base):
+    """V2 404 discriminator — cliente does not exist (when fe_con_datos=true)."""
+
+    error: Literal["cliente_no_encontrado"]
+    numero_identificacion: str
+
+
+class DetalleInvalidoErrorSchema(_Base):
+    """V4 422 discriminator — items vacío."""
+
+    error: Literal["detalle_invalido"]
+    min_items: int
+
+
+class TotalNoCoherenteErrorSchema(_Base):
+    """V6 422 discriminator — total differs by >0.01 COP."""
+
+    error: Literal["total_no_coherente"]
+    total_recibido: str
+    total_calculado: str
+    diferencia: str
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.10 / REQ-OPS-064..074 — Numeración FE + estado DIAN + reintento
+# ---------------------------------------------------------------------------
+#
+# Defense in depth (DEC-FE-01..07 + KD-FE-01):
+#
+# - ``FacturaElectronicaCreate`` EXCLUDES ``prefijo``, ``consecutivo``, and
+#   ``uuid_resolucion_facturacion`` (all server-assigned by
+#   ``assign_consecutivo`` + V3 vigente lookup). ``extra='forbid'`` blocks
+#   client smuggling; the server is the only source of truth.
+# - ``FacturaElectronicaRead`` embeds ``envio_actual`` (the latest envio
+#   chain tip from ``prod.v_factura_electronica_acuse``); ``estado`` is a
+#   strict ``Literal`` (``pendiente|enviado|aceptado|rechazado``) — NEVER a
+#   fabricated ``reportado_dian`` boolean (plan.md línea 947 FORBIDDEN).
+# - 8 typed error schemas carry the discriminator strings the handler
+#   emits (V1..V4 + /reintentar discriminators).
+#
+# KD-FE-01: the create handler commits ONCE; the response shape is built
+# in-memory from the ORM rows after the single commit materializes FE row
+# + initial envio row atomically.
+# ---------------------------------------------------------------------------
+
+
+class EnvioDianRead(_Base):
+    """Read-back for one ``prod.envio_dian`` row (used inside FE responses)."""
+
+    uuid: uuid_lib.UUID
+    uuid_factura_electronica: uuid_lib.UUID
+    estado: Literal["pendiente", "enviado", "aceptado", "rechazado"]
+    timestamp_evento: datetime | None
+    uuid_envio_padre: uuid_lib.UUID | None
+    cufe: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
+    motivo_rechazo: Annotated[str, StringConstraints(max_length=500)] | None = None
+
+
+class FacturaElectronicaCreate(_Base):
+    """POST ``/api/v1/facturacion/factura-electronica`` payload.
+
+    Server assigns ``prefijo``, ``consecutivo``, and resolves
+    ``uuid_resolucion_facturacion`` from V3 vigente lookup. Client only
+    supplies ``uuid_factura`` (the commercial invoice to number).
+    ``extra='forbid'`` (inherited from :class:`_Base`) blocks smuggling.
+    """
+
+    uuid_factura: uuid_lib.UUID
+
+
+class FacturaElectronicaRead(_Base):
+    """POST/GET ``/factura-electronica`` response shape."""
+
+    uuid: uuid_lib.UUID
+    prefijo: Annotated[str, StringConstraints(min_length=1, max_length=10)]
+    consecutivo: int = Field(ge=0)
+    uuid_factura: uuid_lib.UUID
+    uuid_resolucion_facturacion: uuid_lib.UUID
+    created_at: datetime
+    envio_actual: EnvioDianRead
+
+
+class EnvioDianRetryRead(_Base):
+    """POST ``/factura-electronica/{uuid}/reintentar`` response shape.
+
+    A retry response is the NEW envio row (chain tip), so ``estado`` is
+    ALWAYS ``pendiente`` on write.
+    """
+
+    uuid: uuid_lib.UUID
+    uuid_factura_electronica: uuid_lib.UUID
+    estado: Literal["pendiente"]
+    timestamp_evento: datetime
+    uuid_envio_padre: uuid_lib.UUID
+
+
+# --- Typed error schemas for HU-F1.10 (8 discriminators) ---------------------
+
+
+class NumeracionAgotadaError(_Base):
+    """V4 409 — DIAN resolution's ``rango_hasta`` reached (DEC-FE-03)."""
+
+    error: Literal["numeracion_agotada"]
+    uuid_resolucion_facturacion: uuid_lib.UUID
+    rango_hasta: int
+    prefijo: str
+
+
+class ReintentoNoPermitidoError(_Base):
+    """V2 409 (retry) — chain tip is ``aceptado`` (DEC-FE-04)."""
+
+    error: Literal["reintento_no_permitido"]
+    uuid_factura_electronica: uuid_lib.UUID
+    estado_actual: str | None
+
+
+class EnvioDianAlreadyPendingError(_Base):
+    """V2 409 (retry) — chain tip is ``pendiente`` (rapid-retry guard)."""
+
+    error: Literal["envio_dian_already_pending"]
+    uuid_factura_electronica: uuid_lib.UUID
+    uuid_envio_pendiente: uuid_lib.UUID
+
+
+class FacturaElectronicaYaExisteError(_Base):
+    """V2 409 (create) — partial UK ``one_fe_per_factura`` race (REQ-OPS-067)."""
+
+    error: Literal["factura_electronica_ya_existe"]
+    uuid_factura: uuid_lib.UUID
+
+
+class ResolucionNoVigenteError(_Base):
+    """V3 409 (create) — no vigente resolution for the sucursal (REQ-OPS-073)."""
+
+    error: Literal["resolucion_no_vigente"]
+    uuid_sucursal: uuid_lib.UUID
+
+
+class FacturaNoEncontradaElectronicaError(_Base):
+    """V1 404 (create) — ``prod.facturas.uuid`` not found."""
+
+    error: Literal["factura_no_encontrada"]
+    uuid_factura: uuid_lib.UUID
+
+
+class FacturaElectronicaNoEncontradaError(_Base):
+    """V1 404 (GET + retry) — ``prod.factura_electronica.uuid`` not found."""
+
+    error: Literal["factura_electronica_no_encontrada"]
+    uuid_factura_electronica: uuid_lib.UUID
+
+
+class NumeracionDuplicadaError(_Base):
+    """UK01 race — pgcode 23505 on ``factura_electronica_uk01``."""
+
+    error: Literal["numeracion_duplicada"]
+    uuid_resolucion_facturacion: uuid_lib.UUID
+    consecutivo: int
+
+
 __all__ = [
+    "ClienteNoEncontradoErrorSchema",
+    "DetalleInvalidoErrorSchema",
+    "EnvioDianAlreadyPendingError",
+    "EnvioDianRead",
+    "EnvioDianRetryRead",
+    "FacturaCreate",
     "FacturaDetalleCreate",
     "FacturaDetalleFilter",
     "FacturaDetalleRead",
@@ -487,28 +807,43 @@ __all__ = [
     "FacturaDetalleUpdate",
     "FacturaElectronicaCreate",
     "FacturaElectronicaFilter",
+    "FacturaElectronicaNoEncontradaError",
     "FacturaElectronicaRead",
     "FacturaElectronicaReadList",
     "FacturaElectronicaUpdate",
+    "FacturaElectronicaYaExisteError",
     "FacturaImpuestosCreate",
     "FacturaImpuestosFilter",
     "FacturaImpuestosRead",
     "FacturaImpuestosReadList",
     "FacturaImpuestosUpdate",
+    "FacturaItemConDatosPropios",
+    "FacturaItemCreate",
+    "FacturaItemRead",
+    "FacturaNoEncontradaElectronicaError",
     "FacturaOtrosCobrosCreate",
     "FacturaOtrosCobrosFilter",
     "FacturaOtrosCobrosRead",
     "FacturaOtrosCobrosReadList",
     "FacturaOtrosCobrosUpdate",
+    "FacturaPagoAdicionalCreate",
+    "FacturaPagoRead",
     "FacturaPagosCreate",
     "FacturaPagosFilter",
     "FacturaPagosRead",
     "FacturaPagosReadList",
     "FacturaPagosReversoCreate",
     "FacturaPagosUpdate",
+    "FacturaRead",
     "FacturasCreate",
     "FacturasFilter",
     "FacturasRead",
     "FacturasReadList",
     "FacturasUpdate",
+    "NitInvalidoErrorSchema",
+    "NumeracionAgotadaError",
+    "NumeracionDuplicadaError",
+    "ReintentoNoPermitidoError",
+    "ResolucionNoVigenteError",
+    "TotalNoCoherenteErrorSchema",
 ]

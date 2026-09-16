@@ -9,17 +9,29 @@ for ``prod.usuarios`` — best-effort until the ``intentos_fallo`` column
 lands). Every helper writes a co-transactional ``log_transaccional`` row
 to satisfy the DB-layer session-guard trigger on UPDATE.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime, timezone
+from typing import Any, cast
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..exceptions import SesionAlreadyActive
 from ..models.L_S.login import Login
 from ..models.L_S.sesion import Sesion
 from ..models.V.usuarios import Usuarios
+
+# SQLSTATE for unique-constraint violation in Postgres. Used to
+# detect the partial unique index violation from migration 0023
+# (RE ``prod.uq_prod_sesion_one_active_per_user``) inside
+# ``open_session`` and translate it to the typed domain exception
+# ``SesionAlreadyActive`` (KD-2 / REQ-OPS-028).
+_UNIQUE_VIOLATION_SQLSTATE = "23505"
 
 
 class SessionGuardError(Exception):
@@ -40,7 +52,7 @@ async def record_login(
     session: AsyncSession,
     *,
     usuario_uuid: uuid_lib.UUID,
-    sucursal_uuid: uuid_lib.UUID,
+    sucursal_uuid: uuid_lib.UUID | None = None,
     actor_uuid: uuid_lib.UUID | None = None,
     success: bool = True,
     motivo: str | None = None,
@@ -51,7 +63,11 @@ async def record_login(
     Args:
         session: Active ``AsyncSession`` (caller commits).
         usuario_uuid: The user attempting login.
-        sucursal_uuid: The branch the login is against.
+        sucursal_uuid: The branch the login is against. ``None`` is valid
+            — the column is nullable; the bad-password path in
+            ``api/v1/auth.py::login`` records the failure BEFORE the
+            first branch assignment is resolved (R-F1.2-1), so this
+            helper accepts ``None`` to satisfy the audit invariant.
         actor_uuid: The audit actor. Defaults to ``usuario_uuid`` for self-service.
         success: ``True`` → ``estado='exitoso'``, ``False`` → ``estado='fallido'``.
         motivo: Optional failure reason (carried in the log row).
@@ -129,9 +145,7 @@ async def close_login_with_log(
     # 1. Read current row (for datos_anteriores snapshot)
     from sqlalchemy import select
 
-    result = await session.execute(
-        select(Login).where(Login.uuid == login_uuid)
-    )
+    result = await session.execute(select(Login).where(Login.uuid == login_uuid))
     row = result.scalar_one_or_none()
     if row is None:
         raise SessionGuardError(f"login {login_uuid} not found")
@@ -158,9 +172,7 @@ async def close_login_with_log(
     from sqlalchemy import update
 
     await session.execute(
-        update(Login)
-        .where(Login.uuid == login_uuid)
-        .values(timestamp_cierre=now, estado="cerrado")
+        update(Login).where(Login.uuid == login_uuid).values(timestamp_cierre=now, estado="cerrado")
     )
 
     # Refresh the row so the caller sees the updated state
@@ -244,6 +256,20 @@ async def open_session(
         )
         session.add(log_row)
 
+    # KD-2 / REQ-OPS-028: the partial unique index from migration 0023
+    # (``prod.uq_prod_sesion_one_active_per_user``) rejects a second
+    # open sesion for the same ``uuid_usuario``. ``flush()`` forces the
+    # INSERTs through so the SA ``IntegrityError`` is inspectable in
+    # this frame rather than only at the implicit commit (the previous
+    # behaviour left the 500 surface to FastAPI without typed-mapping).
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
+        if pgcode == _UNIQUE_VIOLATION_SQLSTATE:
+            raise SesionAlreadyActive(uuid_usuario=uuid_usuario) from exc
+        raise
+
     return new_row
 
 
@@ -275,9 +301,7 @@ async def close_session_with_log(
 
     # 1. Read the current Sesion row (for uuid_sucursal + initial values
     #    to snapshot into datos_nuevos).
-    result = await session.execute(
-        select(Sesion).where(Sesion.uuid == sesion_uuid)
-    )
+    result = await session.execute(select(Sesion).where(Sesion.uuid == sesion_uuid))
     row = result.scalar_one_or_none()
     if row is None:
         raise SessionNotFoundError(f"sesion {sesion_uuid} not found")
@@ -294,19 +318,19 @@ async def close_session_with_log(
             datos_nuevos={
                 "valor_inicial_efectivo": (
                     str(row.valor_inicial_efectivo)
-                    if row.valor_inicial_efectivo is not None else None
+                    if row.valor_inicial_efectivo is not None
+                    else None
                 ),
                 "valor_inicial_datafono": (
                     str(row.valor_inicial_datafono)
-                    if row.valor_inicial_datafono is not None else None
+                    if row.valor_inicial_datafono is not None
+                    else None
                 ),
                 "valor_final_efectivo": (
-                    str(valor_final_efectivo)
-                    if valor_final_efectivo is not None else None
+                    str(valor_final_efectivo) if valor_final_efectivo is not None else None
                 ),
                 "valor_final_datafono": (
-                    str(valor_final_datafono)
-                    if valor_final_datafono is not None else None
+                    str(valor_final_datafono) if valor_final_datafono is not None else None
                 ),
             },
         )
@@ -314,15 +338,18 @@ async def close_session_with_log(
         await session.flush()  # ensure log row is visible to the trigger
 
     # 3. UPDATE the Sesion row (the trigger fires here and validates the log row)
-    update_result = await session.execute(
+    update_result_raw = await session.execute(
         update(Sesion)
         .where(Sesion.uuid == sesion_uuid, Sesion.timestamp_cierre.is_(None))
         .values(timestamp_cierre=now, uuid_usuario_cierre=actor_uuid)
     )
+    # mypy --strict sees ``Result[Any]`` from ``session.execute``;
+    # ``rowcount`` is only on ``CursorResult``. The UPDATE statement
+    # always returns a ``CursorResult`` at runtime (no RETURNING
+    # clause, no scalar projection), so the cast is safe.
+    update_result = cast(CursorResult[Any], update_result_raw)
     if update_result.rowcount == 0:
-        raise SessionNotFoundError(
-            f"sesion {sesion_uuid} already closed or not found"
-        )
+        raise SessionNotFoundError(f"sesion {sesion_uuid} already closed or not found")
 
     # 4. Refresh and return so the caller sees the updated state
     await session.refresh(row)
@@ -379,6 +406,7 @@ async def clear_login_failures(
 
 
 __all__ = [
+    "SesionAlreadyActive",
     "SessionGuardError",
     "SessionNotFoundError",
     "clear_login_failures",
