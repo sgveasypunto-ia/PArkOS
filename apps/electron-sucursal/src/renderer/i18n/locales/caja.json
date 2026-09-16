@@ -8,5 +8,11 @@
   "movimiento": "Movimiento",
   "ingreso": "Ingreso",
   "egreso": "Egreso",
-  "motivo": "Motivo"
+  "motivo": "Motivo",
+  "abrirTurno": "Abrir turno",
+  "valorInicialEfectivo": "Valor inicial efectivo",
+  "valorInicialDatafono": "Valor inicial datáfono",
+  "observaciones": "Observaciones",
+  "sesionYaAbierta": "Ya tenés un turno abierto",
+  "irAlTurno": "Ir al turno"
 }
