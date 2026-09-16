@@ -14,5 +14,11 @@
   "valorInicialDatafono": "Valor inicial datáfono",
   "observaciones": "Observaciones",
   "sesionYaAbierta": "Ya tenés un turno abierto",
-  "irAlTurno": "Ir al turno"
+  "irAlTurno": "Ir al turno",
+  "cerrarTurno": "Cerrar turno",
+  "valorFinalEfectivo": "Valor final efectivo",
+  "valorFinalDatafono": "Valor final datáfono",
+  "turnoCerradoExito": "Turno cerrado exitosamente",
+  "confirmarCierre": "Confirmar cierre",
+  "sesionYaCerrada": "Esta sesión ya está cerrada"
 }

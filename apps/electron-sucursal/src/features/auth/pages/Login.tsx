@@ -17,7 +17,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
 import { useAuthStore } from '@parkos/ui-kit/store';
@@ -32,8 +33,13 @@ import {
 
 export function Login(): JSX.Element {
   const navigate = useNavigate();
+  // F3.3 — DEC-F3.3-09 + REQ-OPS-124: detecta ?closed=true para feedback
+  // post-cierre de turno (operador kiosko redirigido tras cerrar turno).
+  const location = useLocation();
+  const showClosedNotice = location.search.includes('closed=true');
   const { isAuthenticated, isLoading, user } = useAuth();
   const setTokens = useAuthStore((s) => s.setTokens);
+  const { t } = useTranslation(['auth', 'caja']);
   const [errorState, setErrorState] = useState<LoginErrorState>(null);
 
   const form = useForm<LoginInput>({
@@ -79,12 +85,26 @@ export function Login(): JSX.Element {
   });
 
   return (
-    <LoginForm
-      form={form}
-      onSubmit={onSubmit}
-      isSubmitting={form.formState.isSubmitting}
-      error={errorState}
-      onLockoutExpired={handleLockoutExpired}
-    />
+    <>
+      {/* F3.3 — REQ-OPS-124: feedback post-cierre turno (DEC-F3.3-09).
+          role=status + aria-live=polite WCAG 2.1 AA compliant (mismo
+          pattern F3.2 REQ-OPS-118 countdown). NO interrumpe screen reader. */}
+      {showClosedNotice && (
+        <p
+          role="status"
+          aria-live="polite"
+          data-testid="turno-cerrado-exito"
+        >
+          {t('caja:turnoCerradoExito')}
+        </p>
+      )}
+      <LoginForm
+        form={form}
+        onSubmit={onSubmit}
+        isSubmitting={form.formState.isSubmitting}
+        error={errorState}
+        onLockoutExpired={handleLockoutExpired}
+      />
+    </>
   );
 }

@@ -1,5 +1,5 @@
 /**
- * Unit tests for `<Login />` container (F3.1 — T1, T2, T3).
+ * Unit tests for `<Login />` container (F3.1 — T1, T2, T3, F3.3 — T3 MODIFY).
  *
  * T1 RED/GREEN coverage (placeholder onSubmit, no postLogin wired):
  *   U11: Zod email inválido → fetch NOT called + FormMessage muestra
@@ -9,6 +9,7 @@
  *
  * T2 adds U9 (submit OK → setTokens + redirect) + U10 (401 → invalidCredentials).
  * T3 adds U13/U14/U15 (useEffect redirect waits for user, fires after user).
+ * F3.3 adds U18 (?closed=true detection + role=status + aria-live=polite).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
@@ -285,5 +286,50 @@ describe('<Login /> container — T3 useEffect redirect transaccional', () => {
     await waitFor(() => {
       expect(mockNavigate).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('<Login /> container — F3.3 T3 MODIFY: ?closed=true feedback (DEC-F3.3-09 + REQ-OPS-124)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: false,
+      isLoading: false,
+      user: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('U18a: mount con ?closed=true → render <p data-testid="turno-cerrado-exito"> visible arriba del form', () => {
+    render(
+      <MemoryRouter initialEntries={['/login?closed=true']}>
+        <Login />
+      </MemoryRouter>,
+    );
+    const notice = screen.getByTestId('turno-cerrado-exito');
+    expect(notice).toBeInTheDocument();
+    expect(notice).toHaveAttribute('role', 'status');
+    expect(notice).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('U18b: mount SIN ?closed=true → NO renderiza el feedback', () => {
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <Login />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId('turno-cerrado-exito')).not.toBeInTheDocument();
+  });
+
+  it('U18c: mount con query param distinto (?error=foo) → NO renderiza el feedback', () => {
+    render(
+      <MemoryRouter initialEntries={['/login?error=foo']}>
+        <Login />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId('turno-cerrado-exito')).not.toBeInTheDocument();
   });
 });
