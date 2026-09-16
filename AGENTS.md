@@ -293,6 +293,130 @@ and an explicit failure handling rule. Default timeout policy:
    Delegate to a fresh `general` sub-agent with a `timeout` budget and
    require structured return.
 
+## Gitflow Estricto (workflow obligatorio)
+
+### Ramas
+
+| Rama | Propósito | Creada desde | Mergea a | Regla |
+|---|---|---|---|---|
+| `main` | Producción. Solo recibe merges de `release/*`. | `release/*` | nunca mergea hacia atrás | NUNCA commit directo, NUNCA push directo (proteger en GitHub con branch protection: require PR + 1 review + status checks) |
+| `dev` | Integración. Recibe PRs/merges de `feature/*` y `fix/*`. | `main` | NUNCA mergea hacia `main` (eso es solo via release) | PRs feature → dev. Fast-forward `--ff-only` cuando sea posible |
+| `feature/<HU-id>-<slug>` | Trabajo nuevo (HU del plan). | `dev` | `dev` (vía PR o merge directo con squash) | Borrar después de merge. Nombre: `feature/hu-f4-1-deteccion-tipo-vehiculo` |
+| `fix/<HU-id>-<slug>` | Bugfix o cleanup. | `dev` | `dev` | Borrar después de merge |
+| `release/<version>` | Candidato a producción. | `dev` | `main` (producción) + `dev` (re-sync) | Tag en main post-merge. Borrar después |
+
+### Naming convention
+
+- **Feature branches**: `feature/<hu-id>-<slug-kebab-case>` — ejemplo: `feature/hu-f4-1-deteccion-tipo-vehiculo`, `feature/fase-3-electron-scaffold`
+- **Fix branches**: `fix/<hu-id>-<slug>` — ejemplo: `fix/hu-f3-3-cleanup-ts-strict`
+- **Release branches**: `release/vX.Y.Z` — ejemplo: `release/v0.2.0`
+- **NO usar prefijos alternativos**: `feat/` → renombrar a `feature/`. Hotfixes → `fix/`.
+
+### Conventional Commits (obligatorio)
+
+Formato: `<type>(<scope>): <description>`
+
+**Types permitidos:**
+- `feat` — nueva funcionalidad
+- `fix` — bug fix
+- `chore` — tooling, deps, refactor no funcional
+- `docs` — solo documentación
+- `test` — solo tests
+- `refactor` — reescritura sin cambio de comportamiento
+- `perf` — mejora de performance
+
+**Scopes del proyecto:** `caja`, `operacion`, `facturacion`, `auth`, `suscripciones`, `sync`, `reimpresion`, `apps`, `backend`, `infra`, `sdd`
+
+**Description**: imperativo presente, lowercase, sin punto final, ≤72 caracteres.
+
+**Body**: explicar WHY (no WHAT — el diff ya lo muestra). Wrap a 72 columnas.
+
+**Footer**: `Refs: HU-F4.1` para referenciar historias; `BREAKING CHANGE:` para incompatibilidades.
+
+**PROHIBIDO**:
+- `Co-authored-by: AI trailers` (no atribución a IA en commits — canon AGENTS.md)
+- Mensajes vagos: `fix`, `update`, `changes`, `wip` (usar `chore:` con descripción específica)
+- Mezcla de mayúsculas/minúsculas
+- Mezcla de tipos en un commit (un commit = un concern)
+
+### Workflow de feature (paso a paso)
+
+```powershell
+# 1. Sync con origin/dev
+git fetch origin dev
+git checkout dev
+git -c user.name='Parkos Dev' -c user.email='dev@parkos.local' merge --ff-only origin/dev
+
+# 2. Crear rama feature
+git checkout -b feature/hu-f4-1-deteccion-tipo-vehiculo
+
+# 3. Trabajar — NUNCA commits directos a dev
+# 4. Push de la rama (trackearla)
+git push -u origin feature/hu-f4-1-deteccion-tipo-vehiculo
+
+# 5. PR via gh (si la rama está en GitHub) — F3.x requiere review de 1 persona
+gh pr create --base dev --head feature/hu-f4-1-deteccion-tipo-vehiculo --title "feat(caja): ..." --body "..."
+
+# 6. Después de merge a dev, borrar la rama
+git branch -d feature/hu-f4-1-deteccion-tipo-vehiculo
+git push origin --delete feature/hu-f4-1-deteccion-tipo-vehiculo
+```
+
+### Reglas duras
+
+1. **NUNCA commit directo a `main`**. `main` solo recibe merges desde `release/*` (releases certificados).
+2. **NUNCA commit directo a `dev`** sin pasar por una rama feature/fix. Excepción: housekeeping commits materializando REQ-OPS al spec canónico (estos SÍ pueden ir directo a dev porque son artefactos SDD, no código).
+3. **SIEMPRE `--ff-only` merge a dev** cuando la rama feature es descendiente directo. Si no es descendiente directo (rebase upstream), usar `--no-ff` para preservar merge commit (preferible para trazabilidad SDD).
+4. **SIEMPRE borrar la rama** después de merge a dev (local + remoto).
+5. **SIEMPRE configurar author** antes del primer commit: `git -c user.name='Parkos Dev' -c user.email='dev@parkos.local' ...` — nunca usar IA como autor.
+6. **NUNCA forzar push** (`--force`, `--force-with-lease`) sin consultar al usuario. Si hay conflictos, resolver localmente o rebase.
+7. **SIEMPRE hacer `git fetch --prune origin`** antes de listar ramas remotas (evita mostrar ramas ya borradas en GitHub).
+
+### Git config helper (ejecutar una vez por máquina)
+
+```powershell
+git config --global user.name 'Parkos Dev'
+git config --global user.email 'dev@parkos.local'
+git config --global init.defaultBranch main
+git config --global push.autoSetupRemote true   # 'git push' crea upstream automático
+git config --global pull.ff only                 # solo pull si es fast-forward
+git config --global rerere.enabled true          # reuse recorded resolution en rebase
+```
+
+### Branch protection (configurar en GitHub repo settings → Branches)
+
+- **`main`**: Require pull request before merging (1 approval), require status checks (CI), require linear history (no merge commits), restrict push access (solo release branches).
+- **`dev`**: Require pull request before merging (1 approval), allow squash/rebase merge, allow delete (rama feature se borra después de merge).
+
+### Post-merge: invalidar Vite cache
+
+Vite pre-bundlea deps en `.vite/`. Después de un merge, ese cache queda stale y errores 500 aleatorios aparecen en imports nuevos. **SIEMPRE** después de un merge:
+
+```powershell
+Get-NetTCPConnection -LocalPort 5173 | Stop-Process -Id {$_.OwningProcess} -Force
+cd apps\electron-sucursal
+Start-Process -FilePath "..\node_modules\.bin\vite.CMD" -ArgumentList "--port","5173","--host","127.0.0.1","--force" -WindowStyle Hidden
+```
+
+El flag `--force` limpia `.vite/` deps cache. Esperado ~5s para que Vite vuelva a bootear.
+
+### Comandos rápidos de cleanup
+
+```powershell
+# Listar ramas mergeadas a dev (candidatas a borrar)
+git branch --merged dev | Where-Object { $_ -notmatch "^\*|main|dev" } | ForEach-Object { $_.Trim().TrimStart('*').Trim() }
+
+# Borrar todas las mergeadas locales
+git branch --merged dev | Where-Object { $_ -notmatch "^\*|main|dev" } | ForEach-Object { git branch -d $_.Trim().TrimStart('*').Trim() }
+
+# Borrar una rama mergeada del remoto
+git push origin --delete <branch-name>
+
+# Fetch + prune de referencias remotas borradas en GitHub
+git fetch --prune origin
+```
+
+
 ### Anti-patterns (NEVER DO)
 
 - ❌ `vite` / `npm run dev` / `pnpm install` foreground with 600 s timeout
