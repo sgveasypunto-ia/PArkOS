@@ -19,5 +19,28 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/renderer/test-setup.ts'],
     css: false,
+    coverage: {
+      provider: 'v8',
+      thresholds: {
+        // HU-F4.1 (T1) — función pura de detección de placa
+        'src/lib/validation/placa.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 90,
+        },
+        // HU-F4.1 (T2) — typed wrapper HTTP con 404 → []
+        'src/features/catalogos/api/tiposVehiculoApi.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+        // HU-F4.1 (T2) — SWR hook con fallback hardcoded + 401 clear
+        'src/features/catalogos/hooks/useTiposVehiculo.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+      },
+    },
   },
 });
