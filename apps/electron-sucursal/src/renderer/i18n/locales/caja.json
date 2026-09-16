@@ -20,5 +20,6 @@
   "valorFinalDatafono": "Valor final datáfono",
   "turnoCerradoExito": "Turno cerrado exitosamente",
   "confirmarCierre": "Confirmar cierre",
-  "sesionYaCerrada": "Esta sesión ya está cerrada"
+  "sesionYaCerrada": "Esta sesión ya está cerrada",
+  "turnoActivo": "Turno activo"
 }
