@@ -26,8 +26,8 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from '@/renderer/components/ui/card';
-import { Button } from '@/renderer/components/ui/button';
+} from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 
 import type { SesionRead } from '../api/sesionActivaApi';
 import { formatCOP, formatTiempoTranscurrido } from '../lib/format';

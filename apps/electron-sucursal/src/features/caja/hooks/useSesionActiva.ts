@@ -58,8 +58,11 @@ export function useSesionActiva(): UseSesionActivaReturn {
     {
       refreshInterval: REFRESH_INTERVAL_MS,
       dedupingInterval: DEDUPING_INTERVAL_MS,
+      // 404 = "no hay sesión activa" (operador sin turno, REQ-OPS-120 S3) —
+      // estado válido, NO error. 422 = backend bug temporal (path matchea
+      // /{uuid} antes que /me) — tratar como "no hay sesión" para no romper UX.
       shouldRetryOnError: (err) => {
-        return !(err instanceof ParkosHttpError && err.status === 404);
+        return !(err instanceof ParkosHttpError && (err.status === 404 || err.status === 422));
       },
       onError: (err) => {
         if (err instanceof ParkosHttpError && err.status === 401) {
@@ -73,7 +76,9 @@ export function useSesionActiva(): UseSesionActivaReturn {
   );
 
   const normalizedError =
-    error instanceof ParkosHttpError && error.status === 404 ? undefined : error;
+    error instanceof ParkosHttpError && (error.status === 404 || error.status === 422)
+      ? undefined
+      : error;
 
   return {
     sesion: data ?? null,

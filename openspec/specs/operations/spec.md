@@ -4899,6 +4899,272 @@ El componente `<LoginForm>` MUST pasar el scan `axe-core` (vía `@axe-core/playw
 ---
 
 
+### REQ-OPS-119 — `AbrirTurno` flow con POST `/caja-sesion/sesiones` + 409 `sesion_already_active` (DEC-F3.3-01 + DEC-F3.3-02 + DEC-F3.3-08)
+
+**Source**: HU-F3.3 (`plan.md:1327-1352` + `DEC-F3.3-01` container/presentational + `DEC-F3.3-02` inputMode decimal + `DEC-F3.3-08` DELTA verdict + plan.md:1338 Zod schema verbatim) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El componente `<AbrirTurno>` (page container) MUST invocar `sesionActivaApi.abrirSesion(payload)` que ejecuta `parkosFetch<SesionRead>('/caja-sesion/sesiones', { method: 'POST', body: payload, idempotencyKey: auto })` cuando el operador submitea el form. El payload MUST contener `uuid_sucursal` (leído de `useAuth().user.sucursal.uuid`) + `uuid_usuario` (leído de `useAuth().user.id`) + `valor_inicial_efectivo: number ≥0` + `valor_inicial_datafono: number ≥0` + `observaciones: string` opcional. La validación local Zod MUST aplicar `z.object({ valor_inicial_efectivo: z.number().min(0), valor_inicial_datafono: z.number().min(0), observaciones: z.string().optional() })` (plan.md:1338 verbatim). Los `<Input>` MUST renderizarse con `type="number" inputMode="decimal" step="0.01"` (DEC-F3.3-02 — teclado numérico mobile + WCAG compliance). El submit MUST invocar `useForm` con `zodResolver(turnoSchema)` antes del `parkosFetch` (defense in depth — Zod local + backend Pydantic validan ambos lados). Ante respuesta `200 OK` con `SesionRead` válido, el componente MUST ejecutar `navigate('/')` (replace) — `useSesionActiva()` re-fetcha automáticamente por SWR key change. Ante respuesta `409 Conflict` con body `{"error": "sesion_already_active"}` (proveniente de `partial unique index prod.uq_prod_sesion_one_active_per_user` migration 0023 — KD-3 BD-only, sin pre-check), `sesionActivaApi.abrirSesion` MUST rechazar con `SesionAlreadyActiveError extends ParkosHttpError` (status=409, code='sesion_already_active') y `<AbrirTurno>` MUST renderizar `<FormMessage role="alert">{t('caja.sesionYaAbierta')}</FormMessage>` + un `<Button onClick={() => navigate('/')}>{t('caja.irAlTurno')}</Button>` (UX clara, no error genérico).
+
+**Rationale**: La partial unique index garantiza BD-level que un mismo `uuid_usuario` no tenga DOS filas con `timestamp_cierre IS NULL`. Sin el mapping 409→UX claro, el operador kiosko no entiende por qué "Algo salió mal" cuando intenta abrir un segundo turno. Defense in depth bidireccional: backend rechaza BD-level; frontend valida UX-level. El `inputMode="decimal"` es crítico para kiosko mobile — sin él, el operador ve teclado QWERTY completo en mobile/electron (DEC-F3.3-02).
+
+**Source**: `apps/electron-sucursal/src/features/caja/pages/AbrirTurno.tsx` (NEW T2 ~70 LOC); `apps/electron-sucursal/src/features/caja/components/AbrirTurnoForm.tsx` (NEW T2 ~50 LOC presentational); `apps/electron-sucursal/src/features/caja/api/sesionActivaApi.ts` (NEW T1 ~25 LOC — `abrirSesion` + `SesionAlreadyActiveError`); `apps/electron-sucursal/src/renderer/i18n/locales/caja.json` (MODIFY T2 +6 keys: `abrirTurno`, `valorInicialEfectivo`, `valorInicialDatafono`, `observaciones`, `sesionYaAbierta`, `irAlTurno`); `apps/electron-sucursal/src/features/caja/pages/AbrirTurno.test.tsx` (NEW T2 ~50 LOC — U9 submit OK + U10 409 mensaje + U11 validaciones Zod); `backend/packages/parkos_core/src/parkos_core/api/v1/caja_sesion.py:73-243` (READ ONLY — endpoint ya shipped F1.3); `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py:188-356` (READ ONLY — `open_session` + `SesionAlreadyActive` mapping 23505 → 409).
+
+#### Scenario 1: AbrirTurno happy path — 200 OK → SesionRead + redirect `/`
+- **Given** el operador autenticado con `useAuth().user.sucursal.uuid = :s` y `useAuth().user.id = :u`
+- **And** el form completo con `valor_inicial_efectivo = 50000`, `valor_inicial_datafono = 0`, `observaciones = 'Apertura turno mañana'`
+- **And** MSW mockea `POST /caja-sesion/sesiones` retornando `200 OK` con `SesionRead{uuid: 'new-uuid', uuid_sucursal: ':s', uuid_usuario: ':u', valor_inicial_efectivo: 50000, valor_inicial_datafono: 0, timestamp_apertura: NOW(), timestamp_cierre: null}`
+- **When** el operador hace click en "Abrir turno" (submit form)
+- **Then** Zod validation MUST pasar (los 3 campos cumplen schema)
+- **And** `parkosFetch` MUST enviar `POST /caja-sesion/sesiones` con `Authorization: Bearer <accessToken>` + body JSON con los 3 campos
+- **And** el componente MUST ejecutar `navigate('/')` (replace)
+- **And** `useSesionActiva()` MUST re-fetchar (SWR detecta key change → nueva sesión activa retornada)
+- **And** `<Dashboard>` MUST renderizar `<TurnoActivoPanel>` con los valores enviados.
+
+#### Scenario 2: 409 `sesion_already_active` → UX "ya tenés un turno abierto" + botón "Ir al turno"
+- **Given** el operador intenta abrir un segundo turno mientras tiene sesión activa
+- **And** MSW mockea `POST /caja-sesion/sesiones` retornando `409 Conflict` con body `{"error": "sesion_already_active"}` (proveniente de partial unique index 0023)
+- **When** el operador submitea el form
+- **Then** `sesionActivaApi.abrirSesion` MUST rechazar con `SesionAlreadyActiveError(status=409, code='sesion_already_active')`
+- **And** `<AbrirTurno>` MUST renderizar `<FormMessage role="alert">{t('caja.sesionYaAbierta')}</FormMessage>` (mensaje "Ya tenés un turno abierto")
+- **And** MUST renderizar `<Button onClick={() => navigate('/')}>{t('caja.irAlTurno')}</Button>` ("Ir al turno")
+- **And** el operador MUST ver el mensaje i18n claro, NO "Algo salió mal" genérico.
+
+#### Scenario 3: Validación Zod local rechaza `valor_inicial_efectivo < 0` antes del POST
+- **Given** el operador tipea `valor_inicial_efectivo = -100` en el `<Input type="number">`
+- **When** el operador hace blur del campo o intenta submit
+- **Then** Zod resolver MUST retornar error de validación (`min(0)` violated)
+- **And** `<FormMessage>` MUST mostrar mensaje inline de error (no se envía POST al backend)
+- **And** el `parkosFetch` MUST NO invocarse (defense in depth — Zod local previene request inválido)
+- **And** MSW MUST NO recibir el POST (test verifica que el handler `sesion-create` no fue llamado).
+
+---
+
+### REQ-OPS-120 — `useSesionActiva()` SWR hook con refresh 50min + 404 null + 401 clear (DEC-F3.3-04 + DEC-SUC-03 + F3.2 REQ-OPS-117 precedent)
+
+**Source**: HU-F3.3 (`plan.md:1336` + `DEC-F3.3-04` SWR config + `DEC-SUC-03` 50min verbatim + F3.2 REQ-OPS-117 refresh precedent) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El hook `useSesionActiva(): { sesion: SesionRead | null; isLoading: boolean; error: Error | undefined; refresh: () => Promise<SesionRead | undefined> }` MUST consumir `useAuthStore(s => s.accessToken)` y MUST configurar `useSWR` con: (1) `key: accessToken ? '/caja-sesion/sesion/me' : null` (key null sin token, idéntico pattern F3.1 useAuth); (2) `fetcher: () => sesionActivaApi.getSesionActiva()`; (3) `refreshInterval: REFRESH_INTERVAL_MS` donde `REFRESH_INTERVAL_MS = 50 * 60 * 1000` constante exportada desde el módulo (DEC-SUC-03 verbatim heredado F3.2 — `ACCESS_TOKEN_TTL (3600s) - REFRESH_INTERVAL_MS (3000s) = 600s = 10min` safety margin); (4) `dedupingInterval: 10 * 1000` (evita refetch simultáneo cuando múltiples componentes consumen el hook — Dashboard + CerrarTurno consumen en paralelo); (5) `shouldRetryOnError: (err) => err?.status !== 404` (404 es estado esperado cuando operador sin sesión activa — NO retry spam); (6) `onError: (err) => { if (err?.status === 401) { useAuthStore.getState().clear() /* borra tokens vía IPC bridge.authStore.delete */; window.dispatchEvent(new Event('parkos:auth:cleared')) /* forward hook AuthGuard F3.x+ */ } }` (401 dispara logout defensivo, idéntico pattern F3.1 useAuth). El fetcher MUST invocar `sesionActivaApi.getSesionActiva()` que internamente ejecuta `parkosFetch('/caja-sesion/sesion/me')` con manejo 404 → retorna `null` (NO lanza error — operador sin sesión es estado válido). El hook MUST retornar `{ sesion: data ?? null, isLoading, error: error?.status === 404 ? undefined : error, refresh: mutate }` — `error` se omite cuando es 404 para no contaminar consumers (Dashboard no muestra error cuando operador sin sesión, simplemente muestra redirect).
+
+**Rationale**: Mismo pattern F3.1 useAuth (F2.2 baseline) + F3.2 REQ-OPS-117 50min refresh. SWR `dedupingInterval: 10s` evita refetch simultáneo cuando múltiples componentes (Dashboard + CerrarTurno + TurnoActivoPanel en el futuro F11.x) consumen el hook en paralelo. Forward extensibilidad: F4.x+ consumen `useSesionActiva()` para garantizar sesión activa antes de POST críticos (ya cubiertos por pre-flight gate F3.2 para `/facturacion/*` + `/caja/arqueo` per DEC-F3.3-10).
+
+**Source**: `apps/electron-sucursal/src/features/caja/hooks/useSesionActiva.ts` (NEW T1 ~40 LOC); `apps/electron-sucursal/src/features/caja/hooks/useSesionActiva.test.ts` (NEW T1 ~40 LOC — U1 SWR key null sin token + U2 SWR fetch OK + U3 SWR 404 → sesion null + U4 SWR 401 dispara `parkos:auth:cleared`); `apps/electron-sucursal/src/features/caja/api/sesionActivaApi.ts` (NEW T1 ~25 LOC — `getSesionActiva` con manejo 404 → null); `apps/ui-kit/src/store/authStore.ts:71-128` (F2.2 READ ONLY — `setTokens` + `clear` + `refreshAccessToken` Mutex); `apps/ui-kit/src/hooks/useAuth.ts:60` (F2.2/F3.2 — `refreshInterval: REFRESH_INTERVAL_MS = 50min` precedent); `apps/ui-kit/src/fetch/parkosFetch.ts` (F2.2/F3.2 READ ONLY — `Idempotency-Key` auto + 401 retry-once via Mutex); `backend/packages/parkos_core/src/parkos_core/api/v1/caja_sesion.py:218-243` (READ ONLY — `GET /sesion/me` retorna 404 si sin sesión activa).
+
+#### Scenario 1: SWR key null sin token — hook retorna sesion null sin fetch
+- **Given** el operador no está autenticado (`useAuthStore.accessToken === null`)
+- **When** un componente invoca `useSesionActiva()`
+- **Then** la SWR key MUST ser `null` (string vacío convertido a null por la expresión ternaria)
+- **And** SWR MUST NO ejecutar el fetcher (key null skip)
+- **And** el hook MUST retornar `{ sesion: null, isLoading: false, error: undefined, refresh: <fn> }`
+- **And** ningún `parkosFetch('/caja-sesion/sesion/me')` MUST ejecutarse (verificable con MSW handler spy — no calls).
+
+#### Scenario 2: SWR fetch OK con sesión activa — hook retorna sesion poblada
+- **Given** el operador está autenticado (`useAuthStore.accessToken !== null`)
+- **And** MSW mockea `GET /caja-sesion/sesion/me` retornando `200 OK` con `SesionRead{uuid: 'active-uuid', valor_inicial_efectivo: 50000, timestamp_apertura: '2026-09-15T08:00:00Z', ...}`
+- **When** un componente invoca `useSesionActiva()` por primera vez
+- **Then** SWR MUST ejecutar `parkosFetch('/caja-sesion/sesion/me')` con la SWR key `/caja-sesion/sesion/me`
+- **And** el hook MUST retornar `{ sesion: { uuid: 'active-uuid', ... }, isLoading: false, error: undefined, refresh: <fn> }`.
+
+#### Scenario 3: SWR fetch 404 — hook retorna sesion null sin error (operador sin turno es estado válido)
+- **Given** el operador autenticado pero sin sesión activa
+- **And** MSW mockea `GET /caja-sesion/sesion/me` retornando `404 Not Found` con body `{"error": "sesion_no_active"}`
+- **When** un componente invoca `useSesionActiva()`
+- **Then** `sesionActivaApi.getSesionActiva()` MUST capturar el 404 y retornar `null` (NO lanza error)
+- **And** SWR MUST NO reintentar (`shouldRetryOnError: err?.status !== 404`)
+- **And** el hook MUST retornar `{ sesion: null, isLoading: false, error: undefined, refresh: <fn> }`
+- **And** `<Dashboard>` MUST leer `sesion === null` y ejecutar `navigate('/caja/abrir-turno')` per REQ-OPS-123.
+
+#### Scenario 4: SWR 401 onError → `useAuthStore.clear()` + `parkos:auth:cleared` window event
+- **Given** el operador autenticado pero con token expirado (backend responde 401 a `GET /sesion/me`)
+- **And** MSW mockea `GET /caja-sesion/sesion/me` retornando `401 Unauthorized`
+- **When** un componente invoca `useSesionActiva()` y SWR ejecuta el fetcher
+- **Then** `onError` MUST capturar el error con `status === 401`
+- **And** MUST invocar `useAuthStore.getState().clear()` (borra accessToken/refreshToken/expiresAt vía IPC `bridge.authStore.delete` per F2.2)
+- **And** MUST despachar `new Event('parkos:auth:cleared')` en `window` (forward hook para AuthGuard F3.x+ que intercepta y navega a `/login?next=...'`)
+- **And** el hook MUST retornar `{ sesion: null, isLoading: false, error: <error401>, refresh: <fn> }`.
+
+#### Scenario 5: refreshInterval 50min alinea con ACCESS_TOKEN_TTL = 3600s (DEC-SUC-03 verbatim)
+- **Given** `REFRESH_INTERVAL_MS` exportado desde `useSesionActiva.ts`
+- **When** `useSesionActiva.test.ts` ejecuta `expect(REFRESH_INTERVAL_MS).toBe(50 * 60 * 1000)`
+- **Then** el assertion MUST pasar (3_000_000ms exact, F3.2 precedent REQ-OPS-117 Scenario 2)
+- **And** el test MUST verificar safety margin 10min — si SWR refresh scheduled at T+50min falla, el operador tiene hasta T+60min antes de 401 forzado (TTL expiration).
+
+---
+
+### REQ-OPS-121 — `TurnoActivoPanel` organism con uuid + timestamp + valores iniciales + botón cerrar (DEC-F3.3-05)
+
+**Source**: HU-F3.3 (`plan.md:1336` + `DEC-F3.3-05` Dashboard/TurnoActivoPanel layout + `plan.md:1338` Zod + DEC-F3.3-02 inputMode decimal) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El componente presentational `<TurnoActivoPanel sesion={...} onCerrarClick={...}>` MUST renderizar un `<Card>` de shadcn con: (1) `<CardTitle>{t('caja.turnoActivo')}</CardTitle>` (título i18n); (2) `<CardContent>` con `<p><strong>UUID:</strong> {sesion.uuid}</p>` (identificador visible al operador — copyable via click + tooltip, útil para soporte), `<p><strong>Apertura:</strong> {formatDistanceToNow(sesion.timestamp_apertura, { locale: es, addSuffix: true })}</p>` (formato relativo con `date-fns` para kiosko UX legible — "hace 2 horas" en vez de timestamp ISO crudo), `<p><strong>Valor inicial efectivo:</strong> {formatCOP(sesion.valor_inicial_efectivo)}</p>` (formato moneda colombiana con separador de miles), `<p><strong>Valor inicial datáfono:</strong> {formatCOP(sesion.valor_inicial_datafono)}</p>`, y opcionalmente `<p><strong>Observaciones:</strong> {sesion.observaciones}</p>` solo si `sesion.observaciones` es truthy; (3) `<CardFooter>` con `<Button variant="default" onClick={onCerrarClick}>{t('caja.cerrarTurno')}</Button>` (botón primario "Cerrar turno" — wired al callback que ejecuta `navigate('/caja/cerrar-turno')` desde `<Dashboard>` container). El componente MUST ser puramente presentational — NO consume `useSesionActiva`, NO invoca `parkosFetch`, NO maneja estado interno más allá de props (idéntico pattern F3.1 `LoginForm` container/presentational split DEC-F3.1-02). El `formatCOP` helper MUST usar `Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })` (formato local colombiano — sin decimales para efectivo/datáfono kiosko, aunque DB persiste NUMERIC(18,4) per `modelo_datos_er.mmd`). El componente MUST ser accesible WCAG 2.1 AA: `<Card>` con `role="region"` implícito vía shadcn semantics, headings semánticos (`<CardTitle>` → `<h3>`), contraste de color ≥4.5:1 via CSS tokens F2.1 baseline, foco visible al tab del `<Button>`.
+
+**Rationale**: El operador kiosko llega al terminal, hace login (F3.1), ve `<Dashboard>` que renderiza `<TurnoActivoPanel>` con el resumen de su turno abierto. Sin este resumen legible, el operador no sabe cuánto tiempo lleva de turno ni cuánto efectivo declaró al abrir. F3.3 entrega la información mínima legible para que el operador se ubique y decida si cierra turno. Container/Presentational split mantiene testeabilidad (DEC-F3.1-02 verbatim) — presentational testeable con `@testing-library/react` sin mocks; container (Dashboard) testea orquestación.
+
+**Source**: `apps/electron-sucursal/src/features/caja/components/TurnoActivoPanel.tsx` (NEW T4 ~30 LOC); `apps/electron-sucursal/src/features/caja/pages/Dashboard.tsx` (NEW T4 ~30 LOC container que renderiza `<TurnoActivoPanel>`); `apps/electron-sucursal/src/features/caja/components/TurnoActivoPanel.test.tsx` (NEW T4 ~25 LOC — snapshot test + render tests); `apps/electron-sucursal/src/renderer/i18n/locales/caja.json` (MODIFY T4 +1 key `turnoActivo`); `date-fns` (F3.3 introduce dep opcional — ya shipped F2.1 baseline per package.json); `apps/electron-sucursal/src/renderer/components/ui/Card.tsx` (F2.1 shadcn primitives — Card + CardHeader + CardTitle + CardContent + CardFooter READ ONLY).
+
+#### Scenario 1: TurnoActivoPanel renderiza uuid + timestamp + valores iniciales
+- **Given** el operador tiene sesión activa con `sesion = { uuid: 'sess-uuid-123', timestamp_apertura: '2026-09-15T08:00:00Z', valor_inicial_efectivo: 50000, valor_inicial_datafono: 0, observaciones: 'Apertura turno mañana' }`
+- **When** `<Dashboard>` renderiza `<TurnoActivoPanel sesion={sesion} onCerrarClick={jest.fn()} />`
+- **Then** el componente MUST renderizar `<CardTitle>Turno activo</CardTitle>`
+- **And** MUST renderizar `<p>UUID: sess-uuid-123</p>`
+- **And** MUST renderizar `<p>Apertura: hace 2 horas</p>` (formato `formatDistanceToNow` con `addSuffix: true` y `locale: es` desde `date-fns/locale/es`)
+- **And** MUST renderizar `<p>Valor inicial efectivo: $ 50.000</p>` (formato `Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP' })`)
+- **And** MUST renderizar `<p>Valor inicial datáfono: $ 0</p>`
+- **And** MUST renderizar `<p>Observaciones: Apertura turno mañana</p>` (porque `sesion.observaciones` es truthy).
+
+#### Scenario 2: TurnoActivoPanel OMITE bloque Observaciones cuando observaciones es null/empty
+- **Given** sesión activa con `observaciones = null` o `observaciones = ''`
+- **When** `<Dashboard>` renderiza `<TurnoActivoPanel sesion={sesion} onCerrarClick={jest.fn()} />`
+- **Then** el componente MUST NO renderizar el bloque `<p>Observaciones: ...</p>` (operador sin notas no ve línea vacía).
+
+#### Scenario 3: Botón "Cerrar turno" invoca callback onCerrarClick (wired al navigate)
+- **Given** `<Dashboard>` renderiza `<TurnoActivoPanel onCerrarClick={() => navigate('/caja/cerrar-turno')} />`
+- **When** el operador hace click en el `<Button>Cerrar turno</Button>`
+- **Then** el callback `onCerrarClick` MUST invocarse exactamente una vez
+- **And** `<Dashboard>` MUST ejecutar `navigate('/caja/cerrar-turno')` que monta `<CerrarTurno>` (REQ-OPS-122).
+
+---
+
+### REQ-OPS-122 — `CerrarTurno` flow con PUT `/sesion/{uuid}/cerrar` + logout implícito + 404→"ya cerrada" UX (DEC-F3.3-03 + DEC-F3.3-06 + DEC-F3.3-07)
+
+**Source**: HU-F3.3 (`plan.md:1336` + `DEC-F3.3-03` logout implícito + `DEC-F3.3-06` placeholder arqueo + `DEC-F3.3-07` 404 mapping + `plan.md:1340` errores verbatim) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El componente `<CerrarTurno>` (page container) MUST invocar `sesionActivaApi.cerrarSesion(sesion.uuid, payload)` que ejecuta `parkosFetch<SesionRead>('/caja-sesion/sesion/{uuid}/cerrar', { method: 'PUT', body: payload, idempotencyKey: auto })` cuando el operador submitea el form con confirmación. El payload MUST contener `valor_final_efectivo: number ≥0` + `valor_final_datafono: number ≥0` + `observaciones_cierre: string` opcional. La validación local Zod MUST aplicar `z.object({ valor_final_efectivo: z.number().min(0), valor_final_datafono: z.number().min(0), observaciones_cierre: z.string().optional() })` (mismo shape que apertura, sin `uuid_sucursal`/`uuid_usuario` — el uuid viene del path param). El componente MUST leer el `uuid` de la sesión activa vía `useSesionActiva()` (REQ-OPS-120). El `<CerrarTurnoForm>` (presentational) MUST mostrar resumen del turno arriba del form (uuid + timestamp apertura formateado con `formatDistanceToNow` + valores iniciales via `formatCOP` — mismo helper que REQ-OPS-121) + un botón "Confirmar cierre" + un botón "Cancelar" (`variant="ghost"` → `navigate('/')`). Ante respuesta `200 OK` con `SesionRead` válido (con `timestamp_cierre` poblado por backend), el componente MUST ejecutar **atómicamente**: (1) `useAuthStore.getState().clear()` (borra accessToken/refreshToken/expiresAt vía IPC `bridge.authStore.delete` per F2.2 — logout implícito post-cierre DEC-F3.3-03); (2) `window.dispatchEvent(new Event('parkos:auth:cleared'))` (forward hook AuthGuard F3.x+); (3) `navigate('/login?closed=true', { replace: true })` (redirect a Login con query param para feedback). Ante respuesta `404 Not Found` con body `{"error": "sesion_not_found"}` (proveniente de `SessionNotFoundError` en `session_cycle.py:351-352` cuando sesión ya cerrada o no existe — REST semantics, NO 409 per DEC-F3.3-07), `sesionActivaApi.cerrarSesion` MUST rechazar con `SesionAlreadyClosedError extends ParkosHttpError` (status=404, code='sesion_not_found') y `<CerrarTurno>` MUST renderizar `<FormMessage role="alert">{t('caja.sesionYaCerrada')}</FormMessage>` ("Esta sesión ya está cerrada") + ejecutar `navigate('/login')` (redirect login, mismo efecto UX que 409 desde perspectiva operador — DEC-F3.3-07 resuelve inconsistencia plan.md:1340 vs backend real).
+
+**Rationale**: Logout implícito post-200 cierra el ciclo de vida del operador kiosko — sin él, el operador queda logged-in sin turno activo (estado inconsistente donde backend rechaza POST `/facturacion/*` por `permisos[]` insuficiente). DEC-F3.3-03 ratifica: redirección directa a `/login?closed=true` es UX limpia para kiosko desatendido. El 404 mapping (DEC-F3.3-07) resuelve la inconsistencia plan.md:1340 ("409 sesion_ya_cerrada") vs backend real (`SessionNotFoundError` → 404 per REST semantics): UX mensaje "ya está cerrada" es idéntico desde perspectiva operador, sin cambios backend.
+
+**Source**: `apps/electron-sucursal/src/features/caja/pages/CerrarTurno.tsx` (NEW T3 ~60 LOC); `apps/electron-sucursal/src/features/caja/components/CerrarTurnoForm.tsx` (NEW T3 ~40 LOC presentational); `apps/electron-sucursal/src/features/caja/api/sesionActivaApi.ts` (MODIFY T1 ~25 LOC — `cerrarSesion` + `SesionAlreadyClosedError`); `apps/electron-sucursal/src/features/caja/pages/CerrarTurno.test.tsx` (NEW T3 ~40 LOC — U12 form submit OK + U13 404 mensaje + U14 useAuthStore.clear post-200); `apps/electron-sucursal/src/renderer/i18n/locales/caja.json` (MODIFY T3 +5 keys: `cerrarTurno`, `valorFinalEfectivo`, `valorFinalDatafono`, `turnoCerradoExito`, `confirmarCierre`); `apps/ui-kit/src/store/authStore.ts:81` (F2.2 READ ONLY — `clear()` borra tokens vía IPC); `backend/packages/parkos_core/src/parkos_core/api/v1/caja_sesion.py:213-217` (READ ONLY — `PUT /sesion/{uuid}/cerrar` endpoint ya shipped F1.13); `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py:188-356` (READ ONLY — `close_session_with_log` + `SessionNotFoundError:351-352`).
+
+#### Scenario 1: CerrarTurno happy path — 200 OK + logout implícito + redirect `/login?closed=true`
+- **Given** el operador con sesión activa `sesion.uuid = 'sess-uuid-123'`
+- **And** form completo con `valor_final_efectivo = 75000`, `valor_final_datafono = 25000`, `observaciones_cierre = 'Cierre turno tarde'`
+- **And** MSW mockea `PUT /caja-sesion/sesion/sess-uuid-123/cerrar` retornando `200 OK` con `SesionRead{ uuid: 'sess-uuid-123', timestamp_cierre: NOW(), ... }`
+- **When** el operador hace click en "Confirmar cierre" (submit form)
+- **Then** Zod validation MUST pasar
+- **And** `parkosFetch` MUST enviar `PUT /caja-sesion/sesion/sess-uuid-123/cerrar` con body JSON
+- **And** post-200, `<CerrarTurno>` MUST invocar `useAuthStore.getState().clear()` (verificable con spy en `authStore.clear`)
+- **And** MUST despachar `new Event('parkos:auth:cleared')` en `window`
+- **And** MUST ejecutar `navigate('/login?closed=true', { replace: true })`
+- **And** la siguiente invocación de `useSesionActiva()` MUST retornar `sesion: null` (key null sin token per REQ-OPS-120 Scenario 1).
+
+#### Scenario 2: 404 `sesion_not_found` → UX "esta sesión ya está cerrada" + redirect login
+- **Given** el operador intenta cerrar una sesión que ya está cerrada (race condition: cerró desde otra pestaña)
+- **And** MSW mockea `PUT /caja-sesion/sesion/sess-uuid-123/cerrar` retornando `404 Not Found` con body `{"error": "sesion_not_found"}` (proveniente de `SessionNotFoundError` per backend)
+- **When** el operador submitea el form
+- **Then** `sesionActivaApi.cerrarSesion` MUST rechazar con `SesionAlreadyClosedError(status=404, code='sesion_not_found')`
+- **And** `<CerrarTurno>` MUST renderizar `<FormMessage role="alert">{t('caja.sesionYaCerrada')}</FormMessage>` ("Esta sesión ya está cerrada")
+- **And** MUST ejecutar `navigate('/login')` (redirect login, sin `?closed=true` porque no fue cierre exitoso del operador actual).
+
+#### Scenario 3: Validación Zod local rechaza `valor_final_efectivo < 0` antes del PUT
+- **Given** el operador tipea `valor_final_efectivo = -50` en el `<Input type="number">`
+- **When** el operador intenta submit
+- **Then** Zod resolver MUST retornar error de validación (`min(0)` violated)
+- **And** `<FormMessage>` MUST mostrar mensaje inline de error
+- **And** el `parkosFetch` MUST NO invocarse (defense in depth)
+- **And** MSW MUST NO recibir el PUT (test verifica que el handler `sesion-cerrar` no fue llamado).
+
+#### Scenario 4: Botón "Cancelar" → navigate('/') sin invocar cerrarSesion
+- **Given** `<CerrarTurnoForm>` muestra el botón "Cancelar" (`variant="ghost"`)
+- **When** el operador hace click en "Cancelar"
+- **Then** el componente MUST ejecutar `navigate('/')` (vuelve al Dashboard sin cerrar sesión)
+- **And** `parkosFetch` MUST NO invocarse (PUT NO viaja)
+- **And** `useAuthStore` MUST NO limpiarse (operador sigue autenticado).
+
+---
+
+### REQ-OPS-123 — `Dashboard` `/` redirect rule según sesión activa (DEC-F3.3-05)
+
+**Source**: HU-F3.3 (`plan.md:1350` + `DEC-F3.3-05` Dashboard redirect + `plan.md:1333` `/` resuelve dashboard con resumen del turno) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El componente `<Dashboard>` (page container en ruta `/`) MUST consumir `useSesionActiva()` (REQ-OPS-120) y MUST aplicar la siguiente decision tree atómica en cada render: (1) **`sesion === null && !isLoading && !error` → `navigate('/caja/abrir-turno', { replace: true })`** (operador autenticado sin sesión activa → redirige a pantalla de apertura; `replace` previene back-button infinite loop — operador no vuelve al dashboard presionando back); (2) **`sesion !== null` → render `<TurnoActivoPanel sesion={sesion} onCerrarClick={() => navigate('/caja/cerrar-turno')} />`** (operador con sesión activa ve resumen + botón cerrar); (3) **`isLoading === true` → render `<Skeleton>` o `<p>...</p>` neutral** (estado de carga mientras SWR fetcha; evita flash de "sesión no iniciada" durante refetch de 50min); (4) **`error !== undefined && error?.status !== 404`** → render error state con `<Button onClick={() => refresh()}>{t('common.retry')}</Button>` (errores distintos a 404 — operador puede reintentar manualmente). El `useEffect` que ejecuta el redirect MUST tener deps `[sesion, isLoading, error]` para evitar loops infinitos. La ruta `/` MUST ser registrada en `App.tsx` como `<Route path="/" element={<Dashboard />} />` (replace la ruta placeholder F3.1 que retornaba `<Navigate to="/login" />`). El componente MUST NO consumir `useAuth()` directamente para verificar autenticación — eso es responsabilidad de un futuro `<AuthGuard>` (forward hook F3.x+). El componente MUST NO mostrar contenido mientras ejecuta el redirect (NO flash de "Sesión no iniciada" antes de navegar).
+
+**Rationale**: El operador kiosko NO navega manualmente — llega al terminal, hace login (F3.1), y debe ser redirigido al estado correcto. UX transaccional sin flash de pantalla vacía. El `replace: true` previene back-button infinite loop (operador presiona back después del redirect → vuelve al login, no al dashboard vacío que redirige otra vez). El decision tree exhaustivo cubre los 4 estados posibles de `useSesionActiva()` — sin ambigüedad.
+
+**Source**: `apps/electron-sucursal/src/features/caja/pages/Dashboard.tsx` (NEW T4 ~30 LOC); `apps/electron-sucursal/src/features/caja/components/TurnoActivoPanel.tsx` (NEW T4 ~30 LOC — REQ-OPS-121); `apps/electron-sucursal/src/features/caja/pages/Dashboard.test.tsx` (NEW T4 ~25 LOC — U15 redirect abrir-turno sin sesión + U16 render TurnoActivoPanel con sesión + U17 error state con retry); `apps/electron-sucursal/src/renderer/App.tsx` (MODIFY T4 +10 LOC — registra ruta `/` → `<Dashboard>` + `/caja/abrir-turno` + `/caja/cerrar-turno`); `apps/electron-sucursal/src/renderer/i18n/locales/caja.json` (MODIFY T4 +1 key `turnoActivo`); `react-router-dom@6.27.0` (F2.1 baseline — `navigate` + `replace` READ ONLY).
+
+#### Scenario 1: Operador autenticado sin sesión activa → redirect `/caja/abrir-turno` (replace)
+- **Given** el operador está autenticado (`useAuthStore.accessToken !== null`) pero sin sesión activa
+- **And** MSW mockea `GET /caja-sesion/sesion/me` retornando `404 Not Found` (operador sin turno)
+- **When** el operador navega a `/` (o es redirigido post-login)
+- **Then** `<Dashboard>` MUST ejecutar `navigate('/caja/abrir-turno', { replace: true })` en el primer render donde `sesion === null && !isLoading && !error`
+- **And** `<AbrirTurno>` MUST montar (REQ-OPS-119)
+- **And** el operador MUST NO ver flash de dashboard vacío — el redirect es síncrono post-resolución SWR.
+
+#### Scenario 2: Operador con sesión activa → render `<TurnoActivoPanel>` con resumen + botón cerrar
+- **Given** el operador con sesión activa `sesion = { uuid: 'sess-uuid-123', ... }`
+- **And** MSW mockea `GET /caja-sesion/sesion/me` retornando `200 OK` con SesionRead
+- **When** el operador navega a `/`
+- **Then** `<Dashboard>` MUST renderizar `<TurnoActivoPanel sesion={sesion} onCerrarClick={...} />` per REQ-OPS-121
+- **And** el operador MUST NO ser redirigido a `/caja/abrir-turno`
+- **And** el botón "Cerrar turno" MUST ejecutar `navigate('/caja/cerrar-turno')` que monta `<CerrarTurno>` per REQ-OPS-122.
+
+#### Scenario 3: SWR isLoading → render Skeleton (sin redirect)
+- **Given** el operador navega a `/` con SWR fetching (estado inicial `isLoading === true`)
+- **When** `<Dashboard>` renderiza por primera vez
+- **Then** MUST renderizar `<Skeleton>` o `<p>{t('common.loading')}</p>` neutral
+- **And** MUST NO ejecutar redirect (todavía no se sabe si hay sesión o no).
+
+#### Scenario 4: Error distinto a 404 → error state + botón retry
+- **Given** `GET /caja-sesion/sesion/me` retorna `500 Internal Server Error` (backend caído)
+- **When** SWR ejecuta el fetcher
+- **Then** `<Dashboard>` MUST renderizar `<Alert variant="destructive">{t('errors.networkError')}</Alert>`
+- **And** MUST renderizar `<Button onClick={() => refresh()}>{t('common.retry')}</Button>`
+- **And** MUST NO ejecutar redirect (error !== undefined, status !== 404).
+
+---
+
+### REQ-OPS-124 — `Login` `?closed=true` detection + WCAG 2.1 AA compliance en AbrirTurno + CerrarTurno + TurnoActivoPanel (DEC-F3.3-09 + DEC-F3.3-08 + RNF-022)
+
+**Source**: HU-F3.3 (`plan.md:1334` + `DEC-F3.3-09` `?closed=true` query param + `DEC-F3.3-08` DELTA verdict + RNF-022 WCAG 2.1 AA + REQ-OPS-112 F3.1 precedent + REQ-OPS-118 F3.2 precedent) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+El componente `<Login>` (F3.1, MODIFY T3) MUST detectar `useLocation().search.includes('closed=true')` y MUST renderizar `<p role="status" aria-live="polite" data-testid="turno-cerrado-exito">{t('caja.turnoCerradoExito')}</p>` **arriba del form de login** (sin reemplazar el form, sin alterar la lógica de autenticación F3.1). El `<p>` MUST usar `role="status"` + `aria-live="polite"` (WCAG 2.1 AA — patrón idéntico a F3.2 REQ-OPS-118 countdown precedent, screen reader anuncia el cambio sin interrumpir). El i18n key `turnoCerradoExito` MUST agregarse a `caja.json` (español neutro: "Turno cerrado exitosamente"). El `<Login>` MUST NO alterar el comportamiento de submit (F3.1 REQ-OPS-106..112 intacto). F3.3 MUST extender WCAG 2.1 AA compliance al state post-cierre: el scan `axe-core` vía `@axe-core/playwright` MUST retornar 0 violaciones de WCAG 2.1 AA en `<AbrirTurno>` (estado normal + estado 409) + `<CerrarTurno>` (estado normal + estado 404) + `<TurnoActivoPanel>` (estado con/sin observaciones) + el feedback `?closed=true` en `<Login>`. Cobertura mandatory incluye: (1) `<p role="status" aria-live="polite">` con `aria-label` descriptivo si aplica; (2) `<Input>` numéricos con `<label>` asociado vía `<FormField>` shadcn; (3) `<FormMessage role="alert">` para errores (no duplicar `role=status`); (4) contraste de color ≥4.5:1 entre foreground/background (CSS tokens F2.1 baseline); (5) tab order secuencial preservado (foco pasa por inputs + submit en orden lógico); (6) NO errores de axe-core sobre `aria-live="polite"` mal usado (`<p>` con contenido textual). El e2e test `apps/electron-sucursal/e2e/caja/turno.spec.ts::A1` MUST incluir `test_axe_core_turno` que ejecuta `new AxeBuilder({page}).analyze()` con tags `wcag2a, wcag2aa, wcag21a, wcag21aa` post-render de cada componente (4 escenarios: abrir normal, abrir 409, cerrar normal, cerrar 404).
+
+**Rationale**: Operador kiosko cierra turno → redirect a `/login?closed=true` (REQ-OPS-122) → Login page muestra feedback "Turno cerrado exitosamente" — confirma la acción. Sin feedback, operador puede pensar que el kiosko se colgó. WCAG 2.1 AA compliance extiende F3.1 REQ-OPS-112 (LoginForm normal) + F3.2 REQ-OPS-118 (LoginForm lockout state) a F3.3 — AbrirTurno + CerrarTurno + TurnoActivoPanel + post-cierre feedback. Si axe-core reporta violaciones, el kiosko desatendido pierde la cobertura a11y que el operador en piso necesita (RNF-022).
+
+**Source**: `apps/electron-sucursal/src/features/auth/pages/Login.tsx` (MODIFY T3 +5 LOC — detecta `?closed=true` y renderiza `<p role="status">`); `apps/electron-sucursal/src/renderer/i18n/locales/caja.json` (MODIFY T3 +1 key `turnoCerradoExito`); `apps/electron-sucursal/src/renderer/i18n/locales/auth.json` (MODIFY T3 +1 key `closedSessionNotice` aria-live polite — alias opcional F3.3 mantiene namespace caja por consistencia con `turnoCerradoExito`); `apps/electron-sucursal/e2e/caja/turno.spec.ts` (NEW T5 ~80 LOC — E1 abrir OK + E2 409 segundo intento + E3 cerrar OK + A1 axe-core WCAG 2.1 AA 4 estados); `docs/01-requisitos/no-funcionales.md:126` (RNF-022 anchor WCAG 2.1 AA); `apps/electron-sucursal/e2e/a11y/wcag-2.1-aa.spec.ts` (F2.1 axe-core pattern precedent — F3.3 replica); REQ-OPS-112 F3.1 + REQ-OPS-118 F3.2 (WCAG patterns precedente verbatim).
+
+#### Scenario 1: Login detecta `?closed=true` → render `<p role="status" aria-live="polite">` arriba del form
+- **Given** el operador es redirigido a `/login?closed=true` post-cierre de turno (REQ-OPS-122 Scenario 1)
+- **When** `<Login>` monta
+- **Then** `useLocation().search.includes('closed=true')` MUST retornar `true`
+- **And** MUST renderizar `<p role="status" aria-live="polite" data-testid="turno-cerrado-exito">{t('caja.turnoCerradoExito')}</p>` **arriba del form** (verificable con `getByTestId('turno-cerrado-exito')` seguido de `getByRole('form')` — orden DOM)
+- **And** el form de login MUST quedar intacto (no se reemplaza, no se altera su lógica de submit F3.1).
+
+#### Scenario 2: axe-core scan post-render del feedback `?closed=true` — 0 violaciones
+- **Given** el operador navega a `/login?closed=true` (post-cierre)
+- **When** `e2e/caja/turno.spec.ts::A1` ejecuta `new AxeBuilder({page}).analyze()` con tags `wcag2a, wcag2aa, wcag21a, wcag21aa`
+- **Then** el array `result.violations` MUST estar vacío (length === 0)
+- **And** el `<p role="status" aria-live="polite">` MUST contener contenido textual (axe-core rechaza `aria-live` regions vacías)
+- **And** el test MUST pasar verde (no skip en CI).
+
+#### Scenario 3: axe-core scan en `<AbrirTurno>` estado normal — 0 violaciones
+- **Given** el operador navega a `/caja/abrir-turno`
+- **When** axe-core scan ejecuta sobre el page completo
+- **Then** el array `result.violations` MUST estar vacío
+- **And** los `<Input type="number" inputMode="decimal" step="0.01">` MUST tener `<label>` asociado vía shadcn `<FormField>`
+- **And** el contraste de color MUST ser ≥4.5:1 (CSS tokens F2.1).
+
+#### Scenario 4: axe-core scan en `<AbrirTurno>` con error 409 visible — 0 violaciones
+- **Given** el operador submitea AbrirTurno y recibe 409 (sesión ya activa)
+- **When** `<AbrirTurno>` renderiza `<FormMessage role="alert">{t('caja.sesionYaAbierta')}</FormMessage>` + botón "Ir al turno"
+- **And** axe-core scan ejecuta
+- **Then** el array `result.violations` MUST estar vacío
+- **And** el `<FormMessage>` con `role="alert"` MUST coexistir sin violar axe-core (NO duplica `role=status` — R6 risk F3.2 verbatim).
+
+#### Scenario 5: axe-core scan en `<CerrarTurno>` + `<TurnoActivoPanel>` — 0 violaciones
+- **Given** el operador navega a `/caja/cerrar-turno` (con sesión activa) y también navega a `/` con sesión activa
+- **When** axe-core scan ejecuta en ambos pages
+- **Then** ambos scans MUST retornar `result.violations.length === 0`
+- **And** el `<TurnoActivoPanel>` MUST tener headings semánticos (`<CardTitle>` → `<h3>`)
+- **And** el `<CerrarTurnoForm>` MUST tener `<label>` en cada `<Input>` (RNF-022 compliance).
+
+---
+
+
 ## Modified Capabilities
 
 - `backend/pyproject.toml` — adds the pytest stack and coverage

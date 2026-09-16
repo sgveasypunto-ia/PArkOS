@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { Route, Routes } from 'react-router-dom';
 
 import { StatusBar } from './components/StatusBar';
+import { ProtectedRoute } from './components/ProtectedRoute';
 import { Login } from '../features/auth/pages/Login';
 import { Dashboard } from '../features/caja/pages/Dashboard';
 import { AbrirTurno } from '../features/caja/pages/AbrirTurno';
@@ -31,21 +32,45 @@ export default function App() {
   return (
     <>
       <StatusBar />
-      <main lang="es-CO">
-        <h1>{t('appName')}</h1>
-        <p>{t('bootstrapNotice')}</p>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/caja/abrir-turno" element={<AbrirTurno />} />
-          <Route path="/caja/cerrar-turno" element={<CerrarTurno />} />
-          <Route
-            path="*"
-            element={
-              <p role="status">{t('error', { defaultValue: '404' })}</p>
-            }
-          />
-        </Routes>
+      <main
+        lang="es-CO"
+        className="flex min-h-[calc(100vh-2rem)] items-center justify-center bg-muted/40 p-4"
+      >
+        <div className="w-full max-w-md">
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/caja/abrir-turno"
+              element={
+                <ProtectedRoute>
+                  <AbrirTurno />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/caja/cerrar-turno"
+              element={
+                <ProtectedRoute>
+                  <CerrarTurno />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="*"
+              element={
+                <p role="status">{t('error', { defaultValue: '404' })}</p>
+              }
+            />
+          </Routes>
+        </div>
       </main>
     </>
   );

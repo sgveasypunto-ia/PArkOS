@@ -240,7 +240,95 @@ for the full contract and rationale.
 4. In interactive mode: orchestrator shows result + asks before next phase
 5. Chained PRs recommended when forecast >800 LOC; `gitflow` model — PRs land on `dev`, releases to `main`
 
-## Risk Registers (project-wide)
+## Operational Timeouts (HARD RULE — applies to every shell command)
+
+Windows PowerShell 5.1 + this repo's toolchain has several processes that
+**silently hang and never return** (e.g. `pnpm install` over workspace deps,
+`vite` foreground, `docker compose logs -f`, `npm install` with sandbox
+limitations). Every bash command MUST have an explicit `timeout` parameter
+and an explicit failure handling rule. Default timeout policy:
+
+| Command type | Default timeout | Reasoning |
+|---|---|---|
+| `Get-ChildItem`, `Get-Process`, `Test-Path`, `Get-Content` (≤1MB) | **15 s** | Filesystem ops; should be instant |
+| `git status`, `git log`, `git diff`, `git branch` | **15 s** | Repo ops; should be instant |
+| `Invoke-WebRequest`, `curl` to known-good endpoints | **15 s** | HTTP calls; should be instant |
+| `npm install`, `pnpm install` in workspace root | **300 s** | First-time install may take 1-5 min |
+| `pnpm add`, `pnpm install` in sub-workspace | **120 s** | Sub-install should be quick |
+| `vite` foreground / `npm run dev` foreground | **20 s** | Just to verify it boots; abort and use detached for runtime |
+| `docker ps`, `docker logs <container>` | **15 s** | Container introspection |
+| `docker compose up`, `docker build` | **600 s** | Image build may take minutes |
+| `uv run pytest`, `alembic upgrade head` | **300 s** | DB ops may be slow |
+| `eslint`, `tsc --noEmit`, `vitest run` | **120 s** | Static analysis should be quick |
+| Read, Glob, Grep | **30 s** | Tool calls; if it hangs, narrow the query |
+| Sub-agent Task launch | **600 s** | Long-running delegation |
+
+### Rules
+
+1. **Always pass `timeout` explicitly** to the `bash` tool. The shell tool
+   defaults to 120000 ms (2 min) which is too long for "verify this works" ops.
+2. **Detached / background processes**: NEVER run `vite`, `npm run dev`,
+   `docker logs -f`, `pnpm install`, or any server/foreground process with a
+   long timeout. Use `Start-Process -WindowStyle Hidden -RedirectStandardOutput
+   ...` + `Start-Sleep -Seconds N` + `Test-NetConnection -Port ...` to verify
+   boot in <15 s, then return. Use `Get-Process` / `Stop-Process -Id` to
+   manage.
+3. **Hangs**: If a command times out, the shell tool returns with partial
+   output. NEVER retry blindly. Diagnose first: `Get-Process` to see if the
+   process is alive, `Test-NetConnection` for ports, read `*.log` files for
+   error context. Then choose the next step (kill process, fix config,
+   try alternative command).
+4. **Cancellation**: A hung `bash` call must NOT block the user-visible
+   response. When timeout fires, surface the partial state to the user
+   in ≤1 sentence and continue or stop, never silently retry.
+5. **Workaround for sandbox F.6 limitations** (npm 11.16.0 + PowerShell 5.1):
+   - Use `pnpm` (always available at `C:\Users\mccra\AppData\Roaming\npm\pnpm.ps1`)
+     instead of `npm install` when workspaces are involved.
+   - Use `cmd /c mklink /J <link> <target>` for directory junctions (no
+     admin required) instead of `New-Item -ItemType SymbolicLink`.
+   - Use `Start-Process -WindowStyle Hidden` to launch dev servers as
+     detached processes; verify with `Test-NetConnection -Port`.
+6. **Per-action delegation is allowed** for installs and process launches
+   when the orchestration loop would otherwise hang waiting for output.
+   Delegate to a fresh `general` sub-agent with a `timeout` budget and
+   require structured return.
+
+### Anti-patterns (NEVER DO)
+
+- ❌ `vite` / `npm run dev` / `pnpm install` foreground with 600 s timeout
+  hoping it finishes — it WILL hang and burn the budget silently.
+- ❌ `pnpm install` with `--no-frozen-lockfile` AND `--force` from the
+  workspace root — known to hang indefinitely on this sandbox.
+- ❌ Retry a timed-out command without diagnosing WHY it timed out.
+- ❌ Use `npm install` directly in a subdir that has `workspace:*` deps —
+  npm 11.16.0 throws EUNSUPPORTEDPROTOCOL.
+
+### Example patterns
+
+**Detached Vite dev server:**
+```powershell
+Start-Process -FilePath "..\node_modules\.bin\vite.CMD" `
+  -ArgumentList "--port","5173","--host","127.0.0.1" `
+  -RedirectStandardOutput "$env:TEMP\vite-out.log" `
+  -RedirectStandardError "$env:TEMP\vite-err.log" `
+  -WindowStyle Hidden -PassThru | Select-Object Id
+Start-Sleep -Seconds 4
+Test-NetConnection -ComputerName "127.0.0.1" -Port 5173 -InformationLevel Quiet
+```
+
+**Kill a hung process:**
+```powershell
+Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess | ForEach-Object {
+    Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+  }
+```
+
+**Diagnose a hang:**
+```powershell
+Get-Process -Id <pid> | Select-Object Id, ProcessName, StartTime, CPU
+Get-Content "$env:TEMP\<process>-err.log" -Tail 50
+```
 
 | Risk | Mitigation |
 |---|---|

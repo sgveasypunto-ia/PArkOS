@@ -24,8 +24,14 @@
 import type { UseFormReturn } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 
-import { Button } from '@/renderer/components/ui/button';
-import { Input } from '@/renderer/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import {
   Form,
   FormControl,
@@ -33,7 +39,7 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
-} from '@/renderer/components/ui/form';
+} from '@/components/ui/form';
 
 import type { LoginInput } from '../api/loginSchema';
 import { useCountdown } from '../hooks/useCountdown';
@@ -89,8 +95,15 @@ export function LoginForm({
         noValidate
         aria-labelledby="login-title"
         data-testid="login-form"
+        className="space-y-4"
       >
-        <h1 id="login-title">{t('loginTitle')}</h1>
+        <Card>
+          <CardHeader>
+            <CardTitle id="login-title" asChild>
+              <h1>{t('loginTitle')}</h1>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
 
         <FormField
           control={form.control}
@@ -154,6 +167,7 @@ export function LoginForm({
           disabled={isFormDisabled}
           aria-disabled={isFormDisabled}
           data-testid="login-submit"
+          className="w-full mt-4"
         >
           {isSubmitting ? t('common:loading') : t('submit')}
         </Button>
@@ -169,6 +183,8 @@ export function LoginForm({
             {t('errors:serverError')}
           </p>
         )}
+          </CardContent>
+        </Card>
       </form>
     </Form>
   );

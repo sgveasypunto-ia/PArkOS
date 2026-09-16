@@ -29,24 +29,31 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
+import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { TurnoActivoPanel } from '../components/TurnoActivoPanel';
-import { Skeleton } from '@/renderer/components/ui/skeleton';
-import { Button } from '@/renderer/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Button } from '@/components/ui/button';
 
 export function Dashboard(): JSX.Element {
   const { sesion, isLoading, error, refresh } = useSesionActiva();
+  const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
   const navigate = useNavigate();
   const { t } = useTranslation(['caja', 'common']);
 
-  // DEC-F3.3-05: redirect atómico cuando no hay sesión activa + NO loading + NO error.
-  // Deps exhaustivas para evitar loop infinito.
+  // DEC-F3.3-05 + auth guard: redirect atómico cuando no hay sesión activa Y
+  // el operador está autenticado. Sin auth previa → /login (no salta el login).
   useEffect(() => {
+    if (isAuthLoading) return;
+    if (!isAuthenticated) {
+      navigate('/login', { replace: true });
+      return;
+    }
     if (!sesion && !isLoading && !error) {
       navigate('/caja/abrir-turno', { replace: true });
     }
-  }, [sesion, isLoading, error, navigate]);
+  }, [isAuthenticated, isAuthLoading, sesion, isLoading, error, navigate]);
 
   // (c) Loading state → Skeleton neutral.
   if (isLoading) {

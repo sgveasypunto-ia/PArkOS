@@ -60,7 +60,14 @@ interface StatusBarState {
   lastAnnouncedAt: number;
 }
 
-export function StatusBar(): JSX.Element {
+export function StatusBar(): JSX.Element | null {
+  // F2.3 + dev: StatusBar solo se renderiza dentro de Electron (donde
+  // window.bridge existe). En navegador (Vite standalone para dev/test) NO
+  // se muestra — evita ruido visual tipo "🔴 Sin API" + "Fase 2 en construcción"
+  // cuando la app corre fuera de Electron.
+  const inElectron = typeof window !== 'undefined' && typeof (window as { bridge?: unknown }).bridge !== 'undefined';
+  if (!inElectron) return null;
+
   const [state, setState] = useState<StatusBarState>({
     apiStatus: null,
     display: 'offline',

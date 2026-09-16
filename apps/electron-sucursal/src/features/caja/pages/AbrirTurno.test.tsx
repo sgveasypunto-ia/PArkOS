@@ -9,7 +9,7 @@
  *         inline + NO se invoca POST.
  *
  * Sandbox F.6 caveat: este test depende de `@radix-ui/react-label` (transitivo
- * de `@/renderer/components/ui/form`) y `@testing-library/user-event`. La
+ * de `@/components/ui/form`) y `@testing-library/user-event`. La
  * instalación de workspace deps falla con `EUNSUPPORTEDPROTOCOL workspace:*`
  * en este sandbox (precedent F2.1+F2.2+F2.3+F3.1+F3.2 verbatim). En
  * CI/local con deps instaladas el suite corre verde.

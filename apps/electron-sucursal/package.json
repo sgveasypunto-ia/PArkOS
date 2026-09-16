@@ -37,7 +37,7 @@
     "electron-log": "^5.1.7",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.3.9",
-    "escpos-usb": "^2.0.0",
+    "escpos-usb": "^3.0.0-alpha.4",
     "i18next": "^23.15.2",
     "lucide-react": "^0.453.0",
     "react": "^18.3.1",

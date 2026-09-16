@@ -20,8 +20,14 @@
 import type { UseFormReturn } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 
-import { Button } from '@/renderer/components/ui/button';
-import { Input } from '@/renderer/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import {
   Form,
   FormControl,
@@ -30,7 +36,7 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
-} from '@/renderer/components/ui/form';
+} from '@/components/ui/form';
 
 import type { AbrirTurnoInput } from '../api/schemas/turnoSchema';
 
@@ -65,12 +71,19 @@ export function AbrirTurnoForm({
   return (
     <Form {...form}>
       <form
-        onSubmit={form.handleSubmit(onSubmit)}
+        onSubmit={onSubmit}
         noValidate
         aria-labelledby="abrir-turno-title"
         data-testid="abrir-turno-form"
+        className="space-y-4"
       >
-        <h1 id="abrir-turno-title">{t('caja:abrirTurno')}</h1>
+        <Card>
+          <CardHeader>
+            <CardTitle id="abrir-turno-title" asChild>
+              <h1>{t('caja:abrirTurno')}</h1>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
 
         <FormField
           control={form.control}
@@ -170,9 +183,12 @@ export function AbrirTurnoForm({
           disabled={isSubmitting}
           aria-disabled={isSubmitting}
           data-testid="abrir-turno-submit"
+          className="w-full mt-4"
         >
           {isSubmitting ? t('common:loading') : t('caja:abrirTurno')}
         </Button>
+          </CardContent>
+        </Card>
       </form>
     </Form>
   );

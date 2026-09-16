@@ -27,8 +27,8 @@
 import type { UseFormReturn } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 
-import { Button } from '@/renderer/components/ui/button';
-import { Input } from '@/renderer/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Form,
   FormControl,
@@ -37,7 +37,7 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
-} from '@/renderer/components/ui/form';
+} from '@/components/ui/form';
 
 import type { CerrarTurnoInput } from '../api/schemas/turnoSchema';
 import type { SesionRead } from '../api/sesionActivaApi';
