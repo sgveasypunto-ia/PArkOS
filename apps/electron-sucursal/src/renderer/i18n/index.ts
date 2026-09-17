@@ -8,12 +8,13 @@ import caja from './locales/caja.json';
 import facturacion from './locales/facturacion.json';
 import reimpresion from './locales/reimpresion.json';
 import suscripciones from './locales/suscripciones.json';
+import alertas from './locales/alertas.json';
 import sync from './locales/sync.json';
 import errors from './locales/errors.json';
 
 /**
- * i18n bootstrap — 9 namespaces per DEC-ELEC-06 + PR-4 (reimpresion)
- * + PR-5 (suscripciones).
+ * i18n bootstrap — 10 namespaces per DEC-ELEC-06 + PR-4 (reimpresion)
+ * + PR-5 (suscripciones) + PR-6 (alertas).
  */
 void i18n.use(initReactI18next).init({
   resources: {
@@ -25,6 +26,7 @@ void i18n.use(initReactI18next).init({
       facturacion,
       reimpresion,
       suscripciones,
+      alertas,
       sync,
       errors,
     },
@@ -40,6 +42,7 @@ void i18n.use(initReactI18next).init({
     'facturacion',
     'reimpresion',
     'suscripciones',
+    'alertas',
     'sync',
     'errors',
   ],
