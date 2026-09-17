@@ -26,13 +26,16 @@ vi.mock('./PlacaInput', () => ({
   PlacaInput: ({
     onValidSubmit,
     disabled,
+    initialValue,
   }: {
     onValidSubmit: (placa: string) => void;
     disabled?: boolean;
+    initialValue?: string | null;
   }) => (
     <button
       type="button"
       data-testid="placa-input-stub"
+      data-initial-value={initialValue ?? ''}
       disabled={disabled}
       onClick={() => onValidSubmit('ABC123')}
     >
@@ -164,5 +167,28 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
 
     // Forzar modal is mounted lazily once the 422 path triggers.
     expect(screen.getByTestId('forzar-modal-stub')).toBeInTheDocument();
+  });
+
+  it('I5: initialPlaca="ABC123" is threaded to PlacaInput as initialValue (pre-fill)', () => {
+    render(
+      <MemoryRouter>
+        <IngresoPanel initialPlaca="ABC123" />
+      </MemoryRouter>,
+    );
+    const stub = screen.getByTestId('placa-input-stub');
+    expect(stub.getAttribute('data-initial-value')).toBe('ABC123');
+    // Cold-mount invariant: the panel does NOT auto-submit when pre-filled.
+    expect(mockPostIngreso).not.toHaveBeenCalled();
+    expect(window.bridge.imprimir).not.toHaveBeenCalled();
+  });
+
+  it('I6: initialPlaca="ABC12D" (moto shape) is accepted and forwarded', () => {
+    render(
+      <MemoryRouter>
+        <IngresoPanel initialPlaca="ABC12D" />
+      </MemoryRouter>,
+    );
+    const stub = screen.getByTestId('placa-input-stub');
+    expect(stub.getAttribute('data-initial-value')).toBe('ABC12D');
   });
 });

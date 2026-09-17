@@ -49,7 +49,19 @@ interface SuccessState {
   tipo_entrada: 'MENSUALIDAD' | 'ROTACION';
 }
 
-export function IngresoPanel(): JSX.Element {
+export interface IngresoPanelProps {
+  /**
+   * Optional plate pre-fill. When supplied AND matching the F4.1
+   * regexes (Auto | Moto), the panel's `PlacaInput` shows the plate
+   * already typed in so the operator only has to press Enter / click
+   * "Registrar" once. We DO NOT auto-submit — the operator must
+   * confirm. The 409 → /operacion/salida redirect remains the safety
+   * net after the manual POST.
+   */
+  initialPlaca?: string | null;
+}
+
+export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): JSX.Element {
   const { t } = useTranslation('operacion');
   const navigate = useNavigate();
   const tiposVehiculo = useTiposVehiculo();
@@ -216,7 +228,7 @@ export function IngresoPanel(): JSX.Element {
         </p>
       </header>
 
-      <PlacaInput onValidSubmit={handlePlacaSubmit} disabled={submitting} />
+      <PlacaInput onValidSubmit={handlePlacaSubmit} disabled={submitting} initialValue={initialPlaca} />
 
       {tipoDetectado && (
         <p className="text-sm text-muted-foreground" role="status">

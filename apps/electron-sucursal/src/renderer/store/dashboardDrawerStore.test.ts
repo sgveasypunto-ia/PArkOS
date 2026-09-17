@@ -2,15 +2,20 @@
  * State-machine tests for `useDashboardDrawerStore` (REQ-OPS-138).
  *
  * Coverage:
- *   D1: initial state — `openDrawer: null`, `lastAnchorId: null`.
+ *   D1: initial state — `openDrawer: null`, `lastAnchorId: null`,
+ *       `initialPlaca: null`.
  *   D2: `open(kind, anchorId)` sets state correctly.
  *   D3: opening a second drawer while one is already open swaps cleanly
  *       (single-drawer invariant).
- *   D4: `close()` resets both fields to null.
+ *   D4: `close()` resets all three fields to null.
  *   D5: `close()` after `close()` is a no-op (idempotent).
  *   D6: state is decoupled between hooks — both observers see the same
  *       store (singleton).
  *   D7: `isDrawerOpen` helper returns the right boolean for each kind.
+ *   D8: `open(kind, anchorId, placa)` records `initialPlaca`; the
+ *       default arg leaves it `null` (back-compat for callers that
+ *       don't pass a placa).
+ *   D9: `close()` clears `initialPlaca` after a placa-bearing open.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 
@@ -30,6 +35,7 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
     const s = useDashboardDrawerStore.getState();
     expect(s.openDrawer).toBeNull();
     expect(s.lastAnchorId).toBeNull();
+    expect(s.initialPlaca).toBeNull();
   });
 
   it('D2: open(kind, anchorId) sets openDrawer + lastAnchorId', () => {
@@ -38,6 +44,7 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
     const s = useDashboardDrawerStore.getState();
     expect(s.openDrawer).toBe('pago');
     expect(s.lastAnchorId).toBe('anchor-pago');
+    expect(s.initialPlaca).toBeNull();
   });
 
   it('D3: opening a second drawer swaps cleanly (single-drawer guard)', () => {
@@ -47,15 +54,17 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
     const s = useDashboardDrawerStore.getState();
     expect(s.openDrawer).toBe('arqueo');
     expect(s.lastAnchorId).toBe('anchor-arqueo');
+    expect(s.initialPlaca).toBeNull();
   });
 
-  it('D4: close() resets both fields to null', () => {
+  it('D4: close() resets all three fields to null', () => {
     const { open, close } = useDashboardDrawerStore.getState();
-    open('reimpresion', 'anchor-reimpresion');
+    open('reimpresion', 'anchor-reimpresion', 'ABC123');
     close();
     const s = useDashboardDrawerStore.getState();
     expect(s.openDrawer).toBeNull();
     expect(s.lastAnchorId).toBeNull();
+    expect(s.initialPlaca).toBeNull();
   });
 
   it('D5: close() is idempotent (no-op after no-op)', () => {
@@ -65,6 +74,7 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
     const s = useDashboardDrawerStore.getState();
     expect(s.openDrawer).toBeNull();
     expect(s.lastAnchorId).toBeNull();
+    expect(s.initialPlaca).toBeNull();
   });
 
   it('D6: store is a singleton — two hook consumers see the same state', () => {
@@ -75,6 +85,7 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
     expect(observerA.openDrawer).toBe('fe-retry');
     expect(observerB.openDrawer).toBe('fe-retry');
     expect(observerA.lastAnchorId).toBe(observerB.lastAnchorId);
+    expect(observerA.initialPlaca).toBe(observerB.initialPlaca);
   });
 
   it('D7: isDrawerOpen helper reflects active kind', () => {
@@ -86,16 +97,47 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
     expect(isDrawerOpen(reopened, 'pago')).toBe(true);
     expect(isDrawerOpen(reopened, 'arqueo')).toBe(false);
 
-    // Type-level smoke: the helper accepts every non-null DrawerKind.
+    // Type-level smoke: the helper accepts every non-null DrawerKind,
+    // including the F6/F7 kinds wired up in `fix/dashboard-f6-wire`.
     const kinds: NonNullDrawerKind[] = [
       'pago',
       'fe-retry',
       'reimpresion',
       'arqueo',
       'cierre-diario',
+      'ingreso',
+      'salida',
+      'suscripciones',
+      'inventario',
     ];
     for (const k of kinds) {
       expect(typeof isDrawerOpen(reopened, k)).toBe('boolean');
     }
+  });
+
+  it('D8: open(kind, anchorId, placa) records initialPlaca; default arg is null', () => {
+    const { open } = useDashboardDrawerStore.getState();
+
+    // With placa: recorded.
+    open('ingreso', 'anchor-placa', 'ABC123');
+    const s1 = useDashboardDrawerStore.getState();
+    expect(s1.openDrawer).toBe('ingreso');
+    expect(s1.lastAnchorId).toBe('anchor-placa');
+    expect(s1.initialPlaca).toBe('ABC123');
+
+    // Re-open without placa → initialPlaca is cleared (single-open
+    // swap semantics; no stale placa leaks from the previous open).
+    open('salida', 'anchor-hotkey');
+    const s2 = useDashboardDrawerStore.getState();
+    expect(s2.openDrawer).toBe('salida');
+    expect(s2.initialPlaca).toBeNull();
+  });
+
+  it('D9: close() clears initialPlaca after a placa-bearing open', () => {
+    const { open, close } = useDashboardDrawerStore.getState();
+    open('ingreso', 'anchor-placa', 'ABC12D');
+    expect(useDashboardDrawerStore.getState().initialPlaca).toBe('ABC12D');
+    close();
+    expect(useDashboardDrawerStore.getState().initialPlaca).toBeNull();
   });
 });

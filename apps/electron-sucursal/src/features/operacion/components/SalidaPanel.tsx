@@ -15,7 +15,7 @@
  * server returns an active `uuid_ingreso`, `useCotizacion` key is
  * `null` and no `/cotizar` fetch is issued.
  */
-import { useCallback, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -59,11 +59,18 @@ export interface SalidaPanelProps {
     nit_cliente: string;
     voucher?: string;
   }) => Promise<void>;
+  /**
+   * Optional plate pre-fill from the dashboard's PlacaInputHero. When
+   * provided, the panel's placa form is pre-filled on mount so the
+   * operator only has to press Enter to cotizar. We DO NOT auto-submit.
+   */
+  initialPlaca?: string | null;
 }
 
 export function SalidaPanel({
   uuid_ingreso,
   onPagoSubmit,
+  initialPlaca = null,
 }: SalidaPanelProps): JSX.Element {
   const { t } = useTranslation(['operacion', 'facturacion']);
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
@@ -77,6 +84,16 @@ export function SalidaPanel({
     defaultValues: { placa: '' },
     mode: 'onSubmit',
   });
+
+  // Pre-fill placa on mount so the operator only has to press Enter
+  // to trigger the cotizacion flow. We do not auto-submit.
+  useEffect(() => {
+    if (!initialPlaca) return;
+    form.setValue('placa', initialPlaca.toUpperCase().replace(/\s+/g, ''), {
+      shouldValidate: false,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPlaca]);
 
   const { data: cotizacion, error: cotError } = useCotizacion(uuid_ingreso);
 

@@ -7,16 +7,26 @@
  * effect (REQ-OPS-138 §Esc).
  *
  * Drawer kinds mounted:
- *   - `'pago'`        → `<PagoSheet />` (PR-3, F8.1)
+ *   - `'pago'`           → `<PagoSheet />` (PR-3, F8.1)
+ *   - `'reimpresion'`    → `<ReimprimirTiqueteSheet />`
+ *   - `'arqueo'`         → `<ArqueoSheet />`
+ *   - `'cierre-diario'`  → `<CierreDiarioDialog />`
+ *   - `'ingreso'`        → `<IngresoSheet />` (F6.1 — wires the
+ *                          dashboard's PlacaInputHero to the ingreso flow)
+ *   - `'salida'`         → `<SalidaSheet />` (F7.1 — same for salida)
  *
- * Future PRs add: `'fe-retry'` (PR-4), `'reimpresion'` (PR-4),
- * `'arqueo'` (PR-5), `'cierre-diario'` (PR-5).
+ * Kinds still future: `'suscripciones'` (F3 — drawer TBD), `'inventario'`
+ * (F5 — drawer TBD), `'fe-retry'` (PR-4 — drawer TBD). The
+ * single-drawer invariant holds because the store guarantees only ONE
+ * kind is active at a time and the un-wired branches return `null`.
  */
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
 import { ReimprimirTiqueteSheet } from '../../reimpresion/components/ReimprimirTiqueteSheet';
 import { ArqueoSheet } from '../../caja/components/ArqueoSheet';
 import { CierreDiarioDialog } from '../../caja/components/CierreDiarioDialog';
+import { IngresoSheet } from '../../operacion/components/IngresoSheet';
+import { SalidaSheet } from '../../operacion/components/SalidaSheet';
 
 export function DrawerHost(): JSX.Element | null {
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
@@ -44,8 +54,14 @@ export function DrawerHost(): JSX.Element | null {
   if (openDrawer === 'cierre-diario') {
     return <CierreDiarioDialog uuid_sucursal={null} uuid_sesion={null} />;
   }
+  if (openDrawer === 'ingreso') {
+    return <IngresoSheet />;
+  }
+  if (openDrawer === 'salida') {
+    return <SalidaSheet />;
+  }
 
-  // For kinds not yet wired (fe-retry), render nothing — single-drawer
-  // invariant preserved.
+  // For kinds not yet wired (suscripciones / inventario / fe-retry),
+  // render nothing — single-drawer invariant preserved.
   return null;
 }
