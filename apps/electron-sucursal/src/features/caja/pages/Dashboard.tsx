@@ -42,6 +42,7 @@ import { OcupacionPanel } from '../components/OcupacionPanel';
 import { IngresoPanel } from '../../operacion/components/IngresoPanel';
 import { SalidaPanel } from '../../operacion/components/SalidaPanel';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
+import { SuscripcionesPanel } from '../../suscripciones/components/SuscripcionesPanel';
 import {
   Card,
   CardContent,

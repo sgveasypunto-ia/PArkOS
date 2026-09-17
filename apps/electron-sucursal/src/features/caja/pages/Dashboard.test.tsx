@@ -77,6 +77,12 @@ vi.mock('../../operacion/components/IngresoPanel', () => ({
   IngresoPanel: () => <div data-testid="ingreso-panel-mock" />,
 }));
 
+// Stub SuscripcionesPanel — uses useSuscripcionesList which would
+// require parkosFetch + authStore mocks.
+vi.mock('../../suscripciones/components/SuscripcionesPanel', () => ({
+  SuscripcionesPanel: () => <div data-testid="suscripciones-panel-mock" />,
+}));
+
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { Dashboard } from './Dashboard';
 

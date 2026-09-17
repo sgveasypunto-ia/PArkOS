@@ -15,6 +15,8 @@
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
 import { ReimprimirTiqueteSheet } from '../../reimpresion/components/ReimprimirTiqueteSheet';
+import { ArqueoSheet } from '../../caja/components/ArqueoSheet';
+import { CierreDiarioDialog } from '../../caja/components/CierreDiarioDialog';
 
 export function DrawerHost(): JSX.Element | null {
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
@@ -36,8 +38,14 @@ export function DrawerHost(): JSX.Element | null {
   if (openDrawer === 'reimpresion') {
     return <ReimprimirTiqueteSheet />;
   }
+  if (openDrawer === 'arqueo') {
+    return <ArqueoSheet uuid_sesion={null} />;
+  }
+  if (openDrawer === 'cierre-diario') {
+    return <CierreDiarioDialog uuid_sucursal={null} uuid_sesion={null} />;
+  }
 
-  // For kinds not yet wired (fe-retry / arqueo / cierre-diario),
-  // render nothing — single-drawer invariant preserved.
+  // For kinds not yet wired (fe-retry), render nothing — single-drawer
+  // invariant preserved.
   return null;
 }

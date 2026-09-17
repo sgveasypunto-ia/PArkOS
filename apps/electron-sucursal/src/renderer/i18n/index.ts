@@ -7,15 +7,13 @@ import operacion from './locales/operacion.json';
 import caja from './locales/caja.json';
 import facturacion from './locales/facturacion.json';
 import reimpresion from './locales/reimpresion.json';
+import suscripciones from './locales/suscripciones.json';
 import sync from './locales/sync.json';
 import errors from './locales/errors.json';
 
 /**
- * i18n bootstrap — 8 namespaces per DEC-ELEC-06 + PR-4 (reimpresion).
- *
- * F2.1 ships the registry with placeholder keys; Fase 3+ populates each
- * namespace as features land. Namespaces follow the bounded contexts
- * declared in proposal.md §6.6.
+ * i18n bootstrap — 9 namespaces per DEC-ELEC-06 + PR-4 (reimpresion)
+ * + PR-5 (suscripciones).
  */
 void i18n.use(initReactI18next).init({
   resources: {
@@ -26,6 +24,7 @@ void i18n.use(initReactI18next).init({
       caja,
       facturacion,
       reimpresion,
+      suscripciones,
       sync,
       errors,
     },
@@ -40,6 +39,7 @@ void i18n.use(initReactI18next).init({
     'caja',
     'facturacion',
     'reimpresion',
+    'suscripciones',
     'sync',
     'errors',
   ],
