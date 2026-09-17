@@ -41,7 +41,7 @@ import { TurnoActivoPanel } from '../components/TurnoActivoPanel';
 import { OcupacionPanel } from '../components/OcupacionPanel';
 import { IngresoPanel } from '../../operacion/components/IngresoPanel';
 import { SalidaPanel } from '../../operacion/components/SalidaPanel';
-import { PagoSheet } from '../../facturacion/components/PagoSheet';
+import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
 import { SuscripcionesPanel } from '../../suscripciones/components/SuscripcionesPanel';
 import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
 import { AlertasPanel } from '../../sync/components/AlertasPanel';
@@ -57,7 +57,7 @@ import { Button } from '@/components/ui/button';
 
 import { DrawerHost } from './DrawerHost';
 
-export function Dashboard(): JSX.Element {
+export function Dashboard(): JSX.Element | null {
   const { sesion, isLoading, error, refresh } = useSesionActiva();
   const { isAuthenticated, isLoading: isAuthLoading, sucursal } = useAuth();
   const navigate = useNavigate();
@@ -139,6 +139,15 @@ export function Dashboard(): JSX.Element {
 
         <section data-testid="dashboard-section-alertas" aria-label={t('caja:dashboard.alertas', { defaultValue: 'Alertas' })}>
           <AlertasPanel uuid_sucursal={uuid_sucursal} />
+        </section>
+
+        {/* Slot 7 — FacturaElectronicaRetryPanel (F8.2, PR-4 mount).
+            Lazy-mount: passes uuid_fe={null} because no ingreso currently
+            exposes a pending FE trigger; the panel issues ZERO fetches
+            while uuid_fe is null (REQ-OPS-139 cold-Dashboard invariant).
+            Once a uuid_fe source is wired (PR-X), pass it through here. */}
+        <section data-testid="dashboard-section-fe-retry" aria-label={t('facturacion:fe.titulo', { defaultValue: 'Factura electrónica' })}>
+          <FacturaElectronicaRetryPanel uuid_fe={null} />
         </section>
 
         {/* DrawerHost — single-drawer invariant (REQ-OPS-138). */}

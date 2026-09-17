@@ -83,6 +83,12 @@ vi.mock('../../suscripciones/components/SuscripcionesPanel', () => ({
   SuscripcionesPanel: () => <div data-testid="suscripciones-panel-mock" />,
 }));
 
+// Stub FacturaElectronicaRetryPanel — uses useFacturaElectronica SWR
+// which would require parkosFetch + authStore mocks.
+vi.mock('../../facturacion/components/FacturaElectronicaRetryPanel', () => ({
+  FacturaElectronicaRetryPanel: () => <div data-testid="fe-retry-panel-mock" />,
+}));
+
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { Dashboard } from './Dashboard';
 
