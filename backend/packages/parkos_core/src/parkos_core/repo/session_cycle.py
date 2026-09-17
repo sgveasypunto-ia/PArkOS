@@ -298,6 +298,7 @@ async def close_session_with_log(
     sesion_uuid: uuid_lib.UUID,
     valor_final_efectivo: float | None = None,
     valor_final_datafono: float | None = None,
+    observaciones: str | None = None,
     log_tx: bool = True,
 ) -> Sesion:
     """Close a cash session — REQ-41, SC-42.
@@ -311,7 +312,10 @@ async def close_session_with_log(
     Final cash counts (``valor_final_*``) are recorded in the log row's
     ``datos_nuevos`` JSONB — the Sesion table only carries
     ``valor_inicial_*`` columns, so the initial values are preserved and
-    the deltas live in the audit log.
+    the deltas live in the audit log. The optional ``observaciones``
+    free-text operator note is also stamped into the log row
+    (caller-supplied via the PUT ``/caja-sesion/sesion/{uuid}/cerrar``
+    payload, mirroring REQ-OPS-119/135 for the open path).
     """
     from ..models.A.log_transaccional import LogTransaccional
 
@@ -326,6 +330,26 @@ async def close_session_with_log(
 
     # 2. Log row FIRST (so the DB-layer session-guard trigger accepts the UPDATE)
     if log_tx:
+        datos_nuevos: dict[str, object] = {
+            "valor_inicial_efectivo": (
+                str(row.valor_inicial_efectivo)
+                if row.valor_inicial_efectivo is not None
+                else None
+            ),
+            "valor_inicial_datafono": (
+                str(row.valor_inicial_datafono)
+                if row.valor_inicial_datafono is not None
+                else None
+            ),
+            "valor_final_efectivo": (
+                str(valor_final_efectivo) if valor_final_efectivo is not None else None
+            ),
+            "valor_final_datafono": (
+                str(valor_final_datafono) if valor_final_datafono is not None else None
+            ),
+        }
+        if observaciones is not None:
+            datos_nuevos["observaciones"] = observaciones
         log_row = LogTransaccional(
             uuid_usuario=actor_uuid,
             uuid_sucursal=row.uuid_sucursal,
@@ -333,24 +357,7 @@ async def close_session_with_log(
             tabla_afectada="sesion",
             uuid_registro_afectado=sesion_uuid,
             timestamp_evento=now,
-            datos_nuevos={
-                "valor_inicial_efectivo": (
-                    str(row.valor_inicial_efectivo)
-                    if row.valor_inicial_efectivo is not None
-                    else None
-                ),
-                "valor_inicial_datafono": (
-                    str(row.valor_inicial_datafono)
-                    if row.valor_inicial_datafono is not None
-                    else None
-                ),
-                "valor_final_efectivo": (
-                    str(valor_final_efectivo) if valor_final_efectivo is not None else None
-                ),
-                "valor_final_datafono": (
-                    str(valor_final_datafono) if valor_final_datafono is not None else None
-                ),
-            },
+            datos_nuevos=datos_nuevos,
         )
         session.add(log_row)
         await session.flush()  # ensure log row is visible to the trigger
