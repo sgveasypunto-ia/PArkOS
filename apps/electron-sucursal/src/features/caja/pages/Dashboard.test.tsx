@@ -3,16 +3,19 @@
  *
  * Coverage (verbatim tasks.md §2):
  *   U15: Operador sin sesión activa → `navigate('/caja/abrir-turno', { replace: true })`.
- *   U16: Operador con sesión activa → renderiza `<TurnoActivoPanel>` con
- *        resumen + botón cerrar + secciones placeholder.
+ *   U16: Operador con sesión activa → renderiza el hub con placa hero
+ *        + secciones placeholder (suscripciones / sync / alertas / fe-retry).
  *   U17: SWR 500 error → `<Alert>` + retry button.
  *   U18: isLoading=true → `<Skeleton>` sin redirect.
  *   U19: secciones renderizan con `data-testid="dashboard-section-*"`
- *        (REQ-OPS-137 §composable-section contract).
+ *        (REQ-OPS-137 §composable-section contract). Note: ingreso and
+ *        salida wrappers were removed in `fix/dashboard-f6-wire` —
+ *        those panels now live inside DrawerHost via IngresoSheet /
+ *        SalidaSheet, not as sr-only anchors here.
  *
  * Mocking strategy: vi.mock('../hooks/useSesionActiva') → return control.
  * `useAuth` se mockea para devolver `{ isAuthenticated: true }` por
- * default. `<TurnoActivoPanel>` y `<OcupacionPanel>` se mockean como
+ * default. `<TurnoActivoToggle>` y `<OcupacionPanel>` se mockean como
  * passthrough con data-testid para evitar cargar primitives de Radix.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -48,20 +51,22 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
   },
 }));
 
-// Passthrough TurnoActivoPanel — expone data-testid para verificar render.
-vi.mock('../components/TurnoActivoPanel', () => ({
-  TurnoActivoPanel: ({
-    sesion,
-    onCerrarClick,
-  }: {
-    sesion: { uuid: string };
-    onCerrarClick: () => void;
-  }) => (
-    <div data-testid="turno-activo-panel">
+// Stub useIngresoActivo so PlacaInputHero doesn't try to fetch SWR.
+vi.mock('../../operacion/hooks/useIngresoActivo', () => ({
+  useIngresoActivo: () => ({
+    hasActive: false,
+    latestIngreso: null,
+    isLoading: false,
+    error: undefined,
+    refresh: vi.fn(),
+  }),
+}));
+
+// Passthrough TurnoActivoToggle — expone data-testid para verificar render.
+vi.mock('../components/TurnoActivoToggle', () => ({
+  TurnoActivoToggle: ({ sesion }: { sesion: { uuid: string } }) => (
+    <div data-testid="turno-activo-toggle-mock">
       <p>UUID: {sesion.uuid}</p>
-      <button type="button" onClick={onCerrarClick} data-testid="turno-activo-cerrar">
-        Cerrar turno
-      </button>
     </div>
   ),
 }));
@@ -71,10 +76,14 @@ vi.mock('../components/OcupacionPanel', () => ({
   OcupacionPanel: () => <div data-testid="ocupacion-panel-mock" />,
 }));
 
-// Stub IngresoPanel so the Dashboard test doesn't need PlacaInput +
-// useTiposVehiculo + window.bridge stubs.
-vi.mock('../../operacion/components/IngresoPanel', () => ({
-  IngresoPanel: () => <div data-testid="ingreso-panel-mock" />,
+// Stub IngresoSheet + SalidaSheet — DrawerHost tests cover the
+// real wiring; here we just need to render the dashboard without
+// SWR / IPC dependencies.
+vi.mock('../../operacion/components/IngresoSheet', () => ({
+  IngresoSheet: () => <div data-testid="ingreso-sheet-mock" />,
+}));
+vi.mock('../../operacion/components/SalidaSheet', () => ({
+  SalidaSheet: () => <div data-testid="salida-sheet-mock" />,
 }));
 
 // Stub SuscripcionesPanel — uses useSuscripcionesList which would
@@ -133,7 +142,7 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     });
   });
 
-  it('U16: sesion poblado → render hub con TurnoActivoPanel + sección ocupación + secciones placeholder', () => {
+  it('U16: sesion poblado → render hub con placa hero + secciones placeholder', () => {
     mockUseSesionActiva.mockReturnValue({
       sesion: baseSesion,
       isLoading: false,
@@ -146,35 +155,20 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
       </MemoryRouter>,
     );
     expect(screen.getByTestId('dashboard-hub')).toBeInTheDocument();
-    expect(screen.getByTestId('turno-activo-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('turno-activo-toggle-mock')).toBeInTheDocument();
     expect(screen.getByText(/UUID: sess-uuid-123/)).toBeInTheDocument();
-    expect(screen.getByTestId('turno-activo-cerrar')).toBeInTheDocument();
     expect(screen.getByTestId('ocupacion-panel-mock')).toBeInTheDocument();
-    // Placeholder sections for upcoming PRs.
-    expect(screen.getByTestId('dashboard-section-ingreso')).toBeInTheDocument();
-    expect(screen.getByTestId('ingreso-panel-mock')).toBeInTheDocument();
+    // The placa hero (REQ-OPS-136 smart-routing entry point).
+    expect(screen.getByTestId('placa-hero-input')).toBeInTheDocument();
+    // Legacy sections retained as sr-only anchors for tests/audit.
+    // Ingreso + salida wrappers were removed in fix/dashboard-f6-wire
+    // because those panels now live inside DrawerHost.
     expect(screen.getByTestId('dashboard-section-suscripciones')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-section-sync')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-section-alertas')).toBeInTheDocument();
+    expect(screen.queryByTestId('dashboard-section-ingreso')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dashboard-section-salida')).not.toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalledWith('/caja/abrir-turno', expect.anything());
-  });
-
-  it('U16b: click en botón cerrar → navigate("/caja/cerrar-turno")', async () => {
-    mockUseSesionActiva.mockReturnValue({
-      sesion: baseSesion,
-      isLoading: false,
-      error: undefined,
-      refresh: mockRefresh,
-    });
-    // No usar @testing-library/user-event (F.6 sandbox missing); usar fireEvent-like dispatch.
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-    const cerrar = screen.getByTestId('turno-activo-cerrar');
-    cerrar.click();
-    expect(mockNavigate).toHaveBeenCalledWith('/caja/cerrar-turno');
   });
 
   it('U17: error ParkosHttpError(500) → dashboard-error + retry button → click llama refresh', () => {

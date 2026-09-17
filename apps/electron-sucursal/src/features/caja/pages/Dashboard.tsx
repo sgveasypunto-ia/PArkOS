@@ -20,14 +20,21 @@
  * `useDashboardDrawerStore` Zustand singleton (REQ-OPS-138 single-drawer
  * invariant). Esc closes any active drawer.
  *
+ * The PlacaInputHero (center column) is the primary action surface.
+ * Pressing Enter on a typed plate opens the matching drawer with the
+ * plate pre-filled (REQ-OPS-136 smart routing):
+ *   - plate already has an active ingreso in this branch → `salida`
+ *   - otherwise → `ingreso`
+ *
  * Sections previously listed in 2-col grid (REQ-OPS-136 PR-1..PR-6) are
  * now collapsed into:
  *   - Top header bar (operador + status + cerrar)
  *   - Left sidebar (5 navigation actions)
  *   - Placa input hero (the operator's only primary action during the turn)
  *   - Right sidebar (live counts + active vehicles + pending cobros)
- *   - DrawerHost (single-drawer mounted for: PagoSheet, FE-Retry, Reimprimir,
- *     ArqueoSheet, CierreDiarioDialog — triggered by sidebar OR hotkey)
+ *   - DrawerHost (single-drawer mounted for: IngresoSheet, SalidaSheet,
+ *     PagoSheet, ReimprimirTiqueteSheet, ArqueoSheet, CierreDiarioDialog —
+ *     triggered by sidebar, hotkey, OR the PlacaInputHero)
  */
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -38,12 +45,11 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { OcupacionPanel } from '../components/OcupacionPanel';
-import { IngresoPanel } from '../../operacion/components/IngresoPanel';
-import { SalidaPanel } from '../../operacion/components/SalidaPanel';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
 import { SuscripcionesPanel } from '../../suscripciones/components/SuscripcionesPanel';
 import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
 import { AlertasPanel } from '../../sync/components/AlertasPanel';
+import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
 import {
   Card,
   CardContent,
@@ -91,7 +97,9 @@ export function Dashboard(): JSX.Element | null {
       const target = DRAWER_BY_HOTKEY[e.key];
       if (target !== undefined) {
         e.preventDefault();
-        openDrawer(target);
+        // Anchor id is empty for hotkey-driven opens — focus restore
+        // is a no-op when the trigger is the global F-key listener.
+        openDrawer(target, '');
       }
     }
     window.addEventListener('keydown', onKey);
@@ -172,8 +180,9 @@ export function Dashboard(): JSX.Element | null {
               <kbd
                 key={key}
                 data-testid={`hotkey-${kind}`}
+                id={`hotkey-chip-${kind}`}
                 className="inline-flex h-6 cursor-pointer items-center rounded border border-border bg-background px-2 text-xs hover:bg-accent"
-                onClick={() => openDrawer(kind)}
+                onClick={() => openDrawer(kind, `hotkey-chip-${kind}`)}
               >
                 {key}
               </kbd>
@@ -212,7 +221,7 @@ export function Dashboard(): JSX.Element | null {
             data-testid="sidebar-suscripciones"
             className="justify-start text-sm"
             onClick={() => {
-              openDrawer('suscripciones');
+              openDrawer('suscripciones', 'sidebar-suscripciones');
               setMobileNavOpen(false);
             }}
           >
@@ -223,7 +232,7 @@ export function Dashboard(): JSX.Element | null {
             data-testid="sidebar-arqueo"
             className="justify-start text-sm"
             onClick={() => {
-              openDrawer('arqueo');
+              openDrawer('arqueo', 'sidebar-arqueo');
               setMobileNavOpen(false);
             }}
           >
@@ -234,7 +243,7 @@ export function Dashboard(): JSX.Element | null {
             data-testid="sidebar-cierre-diario"
             className="justify-start text-sm"
             onClick={() => {
-              openDrawer('cierre-diario');
+              openDrawer('cierre-diario', 'sidebar-cierre-diario');
               setMobileNavOpen(false);
             }}
           >
@@ -246,7 +255,7 @@ export function Dashboard(): JSX.Element | null {
             data-testid="sidebar-inventario"
             className="justify-start text-sm"
             onClick={() => {
-              openDrawer('inventario');
+              openDrawer('inventario', 'sidebar-inventario');
               setMobileNavOpen(false);
             }}
           >
@@ -258,7 +267,7 @@ export function Dashboard(): JSX.Element | null {
             data-testid="sidebar-facturas"
             className="justify-start text-sm"
             onClick={() => {
-              openDrawer('reimpresion');
+              openDrawer('reimpresion', 'sidebar-facturas');
               setMobileNavOpen(false);
             }}
           >
@@ -317,19 +326,11 @@ export function Dashboard(): JSX.Element | null {
           </Card>
 
           {/* Hidden: legacy section panels for compatibility with the F4.4
-              `OcupacionStrip` removal. Render collapsed so any consumer still
-              polling `data-testid="dashboard-section-ingreso"` etc. finds the
-              anchor without breaking the layout. */}
-          <div aria-hidden className="sr-only">
-            <section data-testid="dashboard-section-ingreso">
-              <IngresoPanel />
-            </section>
-          </div>
-          <div aria-hidden className="sr-only">
-            <section data-testid="dashboard-section-salida">
-              <SalidaPanel uuid_ingreso={null} onPagoSubmit={async () => {}} />
-            </section>
-          </div>
+              `OcupacionStrip` removal. The ingreso/salida panels now live
+              inside DrawerHost (via IngresoSheet / SalidaSheet) so they
+              no longer need an `sr-only` anchor here. The remaining
+              panels stay because they are referenced by tests via
+              `data-testid="dashboard-section-..."`. */}
           <div aria-hidden className="sr-only">
             <section data-testid="dashboard-section-suscripciones">
               <SuscripcionesPanel uuid_sucursal={uuid_sucursal} />
@@ -413,24 +414,43 @@ export function Dashboard(): JSX.Element | null {
 // ── Sub-components ───────────────────────────────────────────────────────
 
 function PlacaInputHero({
-  uuid_sucursal,
+  uuid_sucursal: _uuid_sucursal,
 }: {
   uuid_sucursal: string | null;
 }): JSX.Element {
   const { t } = useTranslation('caja');
   const openDrawer = useDashboardDrawerStore((s) => s.open);
 
+  // Controlled input so the typed plate can drive `useIngresoActivo`
+  // and be passed to the drawer (REQ-OPS-136 smart routing).
+  const [value, setValue] = useState('');
+  const normalized = value.trim().toUpperCase().replace(/\s+/g, '');
+  // Only probe for an active ingreso once the typed plate is at least
+  // 5 chars and shaped like a vehicle plate — avoids spamming SWR for
+  // every keystroke and false-positives on prefixes that can't match
+  // either regex yet.
+  const probePlaca = normalized.length >= 5 ? normalized : null;
+  const { latestIngreso } = useIngresoActivo(probePlaca);
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>): void {
+    setValue(e.target.value.toUpperCase().replace(/\s+/g, '').slice(0, 6));
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
-    if (e.key === 'Enter') {
-      const value = (e.currentTarget as HTMLInputElement).value.trim().toUpperCase();
-      if (value === '') return;
-      // Smart routing per plan.md §CU-02: if ingreso activo → F2 (salida/cobro);
-      // else → F1 (ingreso). The hook handles the lookup.
-      e.preventDefault();
-      // Lazy heuristic: open the ingreso drawer; the panel re-checks
-      // useIngresoActivo and redirects to salida or pago internally.
-      openDrawer('ingreso');
+    if (e.key !== 'Enter') return;
+    const placa = value.trim();
+    if (placa === '') return;
+    e.preventDefault();
+    // Smart routing per plan.md §CU-02: if the plate already has an
+    // active ingreso in this branch → open the salida drawer;
+    // otherwise → open the ingreso drawer. Both sheets pre-fill the
+    // plate so the operator only has to press Enter / click once more.
+    if (latestIngreso) {
+      openDrawer('salida', 'placa-hero-input', placa);
+    } else {
+      openDrawer('ingreso', 'placa-hero-input', placa);
     }
+    setValue('');
   }
 
   return (
@@ -438,14 +458,17 @@ function PlacaInputHero({
       type="text"
       autoFocus
       data-testid="placa-hero-input"
+      id="placa-hero-input"
       placeholder="ABC123"
+      value={value}
+      onChange={handleChange}
       maxLength={6}
       className="block w-full rounded border border-input bg-background px-4 py-3 text-center font-mono text-5xl uppercase tracking-[0.4em] outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
       onKeyDown={onKeyDown}
       aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
       // uuid_sucursal is consumed by IngresoPanel inside the drawer; this
       // hero input is the entry-point keyboard handler.
-      data-uuid-sucursal={uuid_sucursal ?? ''}
+      data-uuid-sucursal={_uuid_sucursal ?? ''}
     />
   );
 }
