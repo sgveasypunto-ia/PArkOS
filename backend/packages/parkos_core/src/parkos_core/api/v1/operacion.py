@@ -174,16 +174,25 @@ async def create_ingreso(
         )
 
     # --- Step 2: V5 (regex-derived uuid_tipo_vehiculo). -----------------
-    uuid_tipo_vehiculo = await detectar_tipo_vehiculo(session, payload.placa)
+    # REQ-OPS-134 (qa-2026-09-17 bug 4): honor the explicit
+    # ``payload.uuid_tipo_vehiculo`` BEFORE falling back to the regex
+    # helper. This is defense in depth -- the F6.1 frontend sends a
+    # UUID that may not match the regex (e.g. operator override of a
+    # moto plate whose tipo was chosen by a dropdown, not the regex).
+    # The explicit UUID short-circuits the regex; ``placa`` is still
+    # validated separately by the V8/V1/V2 chain below.
+    uuid_tipo_vehiculo = payload.uuid_tipo_vehiculo
     if uuid_tipo_vehiculo is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "placa_formato_invalido",
-                "formatos_aceptados": ["ABC123", "ABC12D"],
-            },
-            headers=no_store,
-        )
+        uuid_tipo_vehiculo = await detectar_tipo_vehiculo(session, payload.placa)
+        if uuid_tipo_vehiculo is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "placa_formato_invalido",
+                    "formatos_aceptados": ["ABC123", "ABC12D"],
+                },
+                headers=no_store,
+            )
 
     # --- Step 3: V4 (catalog vigente check, KD-V3 no bypass). ----------
     if not await validar_tipo_vehiculo_vigente(

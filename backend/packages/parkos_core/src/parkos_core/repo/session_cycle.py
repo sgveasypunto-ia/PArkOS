@@ -195,6 +195,7 @@ async def open_session(
     uuid_usuario: uuid_lib.UUID,
     log_tx: bool = True,
     uuid: uuid_lib.UUID | None = None,
+    observaciones: str | None = None,
 ) -> Sesion:
     """Open a cash session — REQ-40-S-OPEN.
 
@@ -222,6 +223,15 @@ async def open_session(
             preserves ``uuid`` this way since ``model_cls(**payload)``
             naturally passes it through; ``open_session``'s fully-named
             constructor call was the one place that did not.
+        observaciones: REQ-OPS-135 (Bug 5 of qa-2026-09-17) free-text
+            notes supplied at open time by the F3.3 frontend (capped at
+            500 chars by ``SesionCreate``). Persisted into the new
+            ``prod.sesion.observaciones`` column added by migration
+            0035 (PG11+ instant, no rewrite). When non-NULL, the value
+            is mirrored into ``prod.log_transaccional.datos_nuevos``
+            for audit (REQ-OPS-021 AUDIT-FIRST canon). When None or
+            empty string, neither the column nor the audit payload
+            carries the field — no empty-key noise.
     """
     from ..models.A.log_transaccional import LogTransaccional
 
@@ -237,11 +247,22 @@ async def open_session(
         uuid_usuario_cierre=None,
         created_at=now,
         created_by=actor_uuid,
+        observaciones=observaciones,
         **({"uuid": uuid} if uuid is not None else {}),
     )
     session.add(new_row)
 
     if log_tx:
+        # REQ-OPS-135: when observaciones is provided, mirror it into
+        # datos_nuevos for audit. Strip empty strings to NULL-shaped
+        # JSON (``None``) so the log row does not carry an empty key.
+        datos_nuevos: dict[str, str | None] = {
+            "valor_inicial_efectivo": str(valor_inicial_efectivo),
+            "valor_inicial_datafono": str(valor_inicial_datafono),
+        }
+        if observaciones:
+            datos_nuevos["observaciones"] = observaciones
+
         log_row = LogTransaccional(
             uuid_usuario=actor_uuid,
             uuid_sucursal=uuid_sucursal,
@@ -249,10 +270,7 @@ async def open_session(
             tabla_afectada="sesion",
             uuid_registro_afectado=getattr(new_row, "uuid", None),
             timestamp_evento=now,
-            datos_nuevos={
-                "valor_inicial_efectivo": str(valor_inicial_efectivo),
-                "valor_inicial_datafono": str(valor_inicial_datafono),
-            },
+            datos_nuevos=datos_nuevos,
         )
         session.add(log_row)
 

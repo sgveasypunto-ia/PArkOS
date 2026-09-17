@@ -110,7 +110,7 @@ async def _seed_tipos_y_cupo(
         session.add(
             TiposVehiculo(
                 uuid=uuid_tipo_auto,
-                tipo="Auto",
+                tipo="carro",
                 vigente_desde=now,
                 vigente_hasta=None,
                 estado="activo",
@@ -124,7 +124,7 @@ async def _seed_tipos_y_cupo(
         session.add(
             TiposVehiculo(
                 uuid=uuid_tipo_moto,
-                tipo="Moto",
+                tipo="moto",
                 vigente_desde=now,
                 vigente_hasta=None,
                 estado="activo",

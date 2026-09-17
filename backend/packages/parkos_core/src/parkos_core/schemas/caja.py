@@ -40,6 +40,8 @@ import uuid as uuid_lib
 from datetime import date, datetime
 from decimal import Decimal
 
+from pydantic import Field
+
 from .common import FilterBase, ReadListBase, _Base
 
 # ---------------------------------------------------------------------------
@@ -204,6 +206,13 @@ class SesionCreate(_Base):
     Server-assigned ``timestamp_apertura`` is filled by
     ``open_session()`` — clients SHOULD NOT send it. ``extra='forbid'``
     blocks smuggling it; the helper ignores any client value.
+
+    REQ-OPS-135 (Bug 5 of qa-2026-09-17): ``observaciones`` is the
+    free-text notes the operator may attach to a sesion open
+    (typically the reason for opening, e.g. ``"Apertura turno
+    mañana"``). Capped at 500 chars (F3.3 cap). When omitted, the
+    column is ``NULL`` and the field is not surfaced into
+    ``prod.log_transaccional.datos_nuevos``.
     """
 
     valor_inicial_efectivo: Decimal | None = None
@@ -213,6 +222,7 @@ class SesionCreate(_Base):
     timestamp_apertura: datetime | None = None
     timestamp_cierre: datetime | None = None
     uuid_usuario_cierre: uuid_lib.UUID | None = None
+    observaciones: str | None = Field(default=None, max_length=500)
 
 
 class SesionUpdate(_Base):
