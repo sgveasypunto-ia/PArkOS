@@ -14,29 +14,30 @@
  */
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
+import { ReimprimirTiqueteSheet } from '../../reimpresion/components/ReimprimirTiqueteSheet';
 
 export function DrawerHost(): JSX.Element | null {
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
 
   if (!openDrawer) return null;
 
-  // PR-3 mounts PagoSheet. PR-4 adds fe-retry/reimpresion; PR-5 adds
-  // arqueo/cierre-diario. The single-drawer invariant is upheld
-  // because only ONE branch mounts at a time.
+  // Single-drawer invariant (REQ-OPS-138): only ONE branch mounts.
   if (openDrawer === 'pago') {
     return (
       <PagoSheet
         uuid_ingreso={null}
         total_cop={0}
         onSubmit={async () => {
-          /* PR-3 placeholder — the SalidaPanel wires its own onSubmit
-             via prop drilling once the active flujo is in scope. */
+          /* PR-3 placeholder */
         }}
       />
     );
   }
+  if (openDrawer === 'reimpresion') {
+    return <ReimprimirTiqueteSheet />;
+  }
 
-  // For kinds not yet wired, render nothing (consistent with the
-  // pre-PR-3 placeholder behavior — DrawerHost is structural).
+  // For kinds not yet wired (fe-retry / arqueo / cierre-diario),
+  // render nothing — single-drawer invariant preserved.
   return null;
 }
