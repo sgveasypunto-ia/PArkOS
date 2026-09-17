@@ -1,5 +1,5 @@
 /**
- * End-to-end payload → Buffer tests for `escposBuilder.build(...)` (HU-F5.2).
+ * End-to-end payload → Buffer tests for `escposBuilder.build(...)` (HU-F5.2 / F6.2).
  *
  * One test per tiquete tipo. Each test asserts:
  *   1. The returned `Buffer` starts with `0x1B 0x40` (init).
@@ -8,6 +8,9 @@
  *   4. The sello bytes (`0x1B 0x21 0x30` text 2x) appear where applicable.
  *   5. Specific byte sequences are NOT present when forbidden (e.g.
  *      salida-mensualidad MUST NOT contain `Subtotal:`).
+ *
+ * F6.2 — entrada sello was renamed from "*** ENTRADA ***" to
+ * "*** TIQUETE DE ENTRADA ***" per the CU-15E contrato.
  */
 import { describe, it, expect } from 'vitest';
 
@@ -55,7 +58,7 @@ describe('build("entrada", payload)', () => {
     const buf = build('entrada', validEntradaPayload());
     // 1. starts with init
     expect(startsWith(buf, [0x1b, 0x40])).toBe(true);
-    // 2. contains sello (text 2x) for "*** ENTRADA ***"
+    // 2. contains sello (text 2x) for "*** TIQUETE DE ENTRADA ***"
     expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(true);
     // 3. contains bold on/off
     expect(contains(buf, Buffer.from([0x1b, 0x45]))).toBe(true);
@@ -63,6 +66,8 @@ describe('build("entrada", payload)', () => {
     // 4. body contains placa + folio
     expect(contains(buf, Buffer.from('ABC123'))).toBe(true);
     expect(contains(buf, Buffer.from('00000000-0000-4000-8000-000000000001'))).toBe(true);
+    // F6.2 — TIQUETE DE ENTRADA sello
+    expect(contains(buf, Buffer.from('*** TIQUETE DE ENTRADA ***'))).toBe(true);
     // 5. ends with cut + LF
     expect(endsWith(buf, [0x1d, 0x56, 0x00, 0x0a])).toBe(true);
   });
@@ -160,8 +165,8 @@ describe('build("reimpresion", payload)', () => {
     expect(contains(buf, Buffer.from('REIMPRESION'))).toBe(true);
     expect(contains(buf, Buffer.from('Tiquete extraviado por cliente'))).toBe(true);
     expect(contains(buf, Buffer.from('00000000-0000-4000-8000-000000000099'))).toBe(true);
-    // entrada sello
-    expect(contains(buf, Buffer.from('*** ENTRADA ***'))).toBe(true);
+    // entrada sello (F6.2 renamed from "*** ENTRADA ***" to "*** TIQUETE DE ENTRADA ***")
+    expect(contains(buf, Buffer.from('*** TIQUETE DE ENTRADA ***'))).toBe(true);
     expect(endsWith(buf, [0x1d, 0x56, 0x00, 0x0a])).toBe(true);
   });
 });

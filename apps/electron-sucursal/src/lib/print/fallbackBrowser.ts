@@ -2,6 +2,7 @@
  * `fallbackBrowser.ts` — DOM-target fallback for the thermal printer.
  *
  * HU-F5.2 (Fase 5 — base de impresión) / DEC-SUC-08.
+ * HU-F6.2 (Fase 6 — tiquete de entrada CU-15E) / DEC-SUC-26.
  *
  * When the thermal printer does not respond (caller-driven signal — F5.2
  * only owns rendering + invocation, F5.1's bridge decides IF), this
@@ -9,6 +10,15 @@
  * injects a `<style>` declaring `@page { size: 80mm auto; margin: 2mm }`
  * (DEC-SUC-08 verbatim), and calls `window.print()`. The injected
  * `<style>` is removed from the DOM after the print call resolves.
+ *
+ * F6.2 — `renderEntradaTiqueteHtml(payload)` mirrors the 17-field
+ * layout of `escposBuilder.buildEntradaBuffer()` in semantic
+ * `<h1>` / `<p>` / `<img>` tags. QR + logo render as inline `<img>`
+ * with their data URLs verbatim (the browser print dialog rasterizes
+ * them automatically). When `payload.esMensualidad === true`, the
+ * renderer emits a `<strong>MENSUALIDAD</strong>` tag under the sello.
+ * Empty `logoDataUrl` renders the placeholder glyph `▢` per
+ * `design.md` §"Render-time guard for missing `documentos` row".
  *
  * Coupling:
  *   - This module is DOM-bound — it is the ONLY file in `src/lib/print/`
@@ -89,27 +99,85 @@ function fechaCorta(iso: string): string {
   return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
 }
 
-function renderEntradaHtml(payload: EntradaPayload): string {
+/**
+ * `renderEntradaTiqueteHtml(payload)` — F6.2 17-field HTML layout.
+ *
+ * Mirrors the `escposBuilder.buildEntradaBuffer()` body in semantic
+ * `<h1>` / `<p>` / `<img>` tags. The 17 conceptual fields live in
+ * `escposTemplates.ts::TiqueteEntradaCampos` (Spanish ordinals).
+ *
+ *   primero        → Encabezado           → `<h1>PARKINGOS</h1>`
+ *   segundo        → Nombre de la empresa → `<p>{empresa.nombre}</p>`
+ *   tercero        → Dirección            → `<p>{empresa.direccion}</p>`
+ *   cuarto         → NIT                  → `<p>NIT {empresa.nit}</p>`
+ *   quinto         → Régimen              → `<p>{empresa.regimen}</p>`
+ *   sexto          → Operario             → `<p>Operario: {operario}</p>`
+ *   septimo        → Sello                → `<h2>*** TIQUETE DE ENTRADA ***</h2>`
+ *   octavo         → Folio                → `<p>Folio: {folio}</p>`
+ *   noveno         → Tarifa aplicada      → `<p>Tarifa: {formatCOP}/hora</p>`
+ *   decimo         → Fecha operación      → `<p>Fecha: dd/MM/yyyy</p>`
+ *   onceavo        → Hora entrada         → `<p>Hora: HH:mm</p>`
+ *   doceavo        → Placa                → `<p>Placa: {placa}</p>`
+ *   treceavo       → Horario atención     → `<p>Horario: {horario}</p>`
+ *   catorceavo     → Póliza RC            → `<p>Poliza RC: {poliza}</p>` (optional)
+ *   quinceavo      → Observaciones        → `<p>Observaciones: ...</p>` (optional)
+ *   qrDataUrl      → QR                   → `<img src="{qrDataUrl}" />`
+ *   logoDataUrl    → Logo                 → `<img src="{logoDataUrl}" />` or `▢`
+ *
+ * Mensualidad tag (DEC-SUC-21): `<strong>MENSUALIDAD</strong>` emitted
+ * under the sello when `payload.esMensualidad === true`.
+ *
+ * Logo placeholder (DEC-SUC-08): when `payload.logoDataUrl === ''`,
+ * the renderer emits the glyph `▢` instead of an `<img>` so the
+ * operator sees the tiquete is OK to print.
+ */
+export function renderEntradaTiqueteHtml(payload: EntradaPayload): string {
   const poliza = payload.polizaRC
     ? `<p>Poliza RC: ${escapeHtml(payload.polizaRC)}</p>`
     : '';
+  const observaciones = payload.observaciones
+    ? `<p>Observaciones: ${escapeHtml(payload.observaciones)}</p>`
+    : '';
+  const mensualidadTag = payload.esMensualidad === true
+    ? '<p><strong>MENSUALIDAD</strong></p>'
+    : '';
+  const logoHtml = payload.logoDataUrl === ''
+    ? '<p>Logo: \u25A2</p>'
+    : `<p><img src="${escapeHtml(payload.logoDataUrl)}" alt="Logo" /></p>`;
+  const fechaParts = fechaCorta(payload.fechaEntrada).split(' ');
+  const fechaStr = fechaParts[0] ?? '';
+  const horaStr = fechaParts[1] ?? '';
   return `
     <h1>PARKINGOS</h1>
+    ${logoHtml}
     <p>${escapeHtml(payload.empresa.nombre)}</p>
-    <p>NIT ${escapeHtml(payload.empresa.nit)}</p>
     <p>${escapeHtml(payload.empresa.direccion)}</p>
+    <p>NIT ${escapeHtml(payload.empresa.nit)}</p>
     <p>${escapeHtml(payload.empresa.regimen)}</p>
-    <h2>*** ENTRADA ***</h2>
-    <p>Folio: ${escapeHtml(payload.folio)}</p>
-    <p>Placa: ${escapeHtml(payload.placa)}</p>
-    <p>Fecha: ${fechaCorta(payload.fechaEntrada)}</p>
     <p>Operario: ${escapeHtml(payload.operario)}</p>
+    <h2>*** TIQUETE DE ENTRADA ***</h2>
+    ${mensualidadTag}
+    <p>Folio: ${escapeHtml(payload.folio)}</p>
     <p>Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora</p>
+    <p>Fecha: ${fechaStr}</p>
+    <p>Hora: ${horaStr}</p>
+    <p>Placa: ${escapeHtml(payload.placa)}</p>
     <p>Horario: ${escapeHtml(payload.horarioAtencion)}</p>
     ${poliza}
+    ${observaciones}
+    <p><img src="${escapeHtml(payload.qrDataUrl)}" alt="QR ingreso" /></p>
     <p>Conserve este tiquete para la salida.</p>
   `;
 }
+
+/**
+ * Backward-compatible alias for the F5.2 reimpresion dispatcher.
+ * `renderReimpresionHtml` calls `renderEntradaHtml(payload.payload)`
+ * when `originalTipo === 'entrada'`; F6.2 renamed the public entry
+ * to `renderEntradaTiqueteHtml`. This alias preserves the call site
+ * without modifying `renderReimpresionHtml`.
+ */
+const renderEntradaHtml = renderEntradaTiqueteHtml;
 
 function renderSalidaHtml(payload: SalidaPayload): string {
   const poliza = payload.polizaRC
@@ -211,7 +279,8 @@ export function print(tipo: TiqueteTipo, payload: unknown): void {
   switch (tipo) {
     case 'entrada': {
       const p = entradaPayloadSchema.parse(payload) as EntradaPayload;
-      html = renderEntradaHtml(p);
+      // F6.2 — dispatcher calls the renamed 17-field renderer.
+      html = renderEntradaTiqueteHtml(p);
       break;
     }
     case 'salida': {

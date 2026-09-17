@@ -15,5 +15,8 @@
   "ocupacion_legend_yellow": "entre 70% y 90% — acercarse al lleno",
   "ocupacion_legend_red": "más del 90% — casi lleno",
   "ocupacion_legend_stale": "dato desactualizado por falla de polling",
-  "cupo_no_configurado": "cupo no configurado, contacte al administrador"
+  "cupo_no_configurado": "cupo no configurado, contacte al administrador",
+  "tiquete_entrada_titulo": "Tiquete de entrada",
+  "ingreso_registrado_exitoso": "Ingreso registrado exitosamente",
+  "ingreso_observaciones_forzado": "Observaciones obligatorias para este ingreso"
 }

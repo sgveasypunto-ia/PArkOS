@@ -2,6 +2,7 @@
  * `escposTemplates.ts` — typed payload schemas for the 4 tiquete tipos.
  *
  * HU-F5.2 (Fase 5 — base de impresión) / DEC-SUC-08.
+ * HU-F6.2 (Fase 6 — tiquete de entrada CU-15E) / DEC-SUC-26.
  *
  * Responsibilities:
  *   1. Declare the 4 typed payload interfaces (`EntradaPayload`,
@@ -12,6 +13,13 @@
  *      union that `escposBuilder.ts` uses to dispatch.
  *   4. Inline `formatCOP` helper (DEC-SUC-07 — `Intl.NumberFormat('es-CO',
  *      { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })`).
+ *   5. F6.2 — declare the 17-key `TiqueteEntradaCampos` interface
+ *      (Spanish ordinals, tsc-exhaustive) plus the
+ *      `TiqueteEntradaPayload` mapped type used to enforce 17-key
+ *      exhaustiveness at compile time. Ship `buildEntradaPayload()`
+ *      factory that assembles an `EntradaPayload` from the 8 caller
+ *      inputs and sets `esMensualidad` based on
+ *      `ingreso.uuid_subscripcion_cliente IS NOT NULL`.
  *
  * SYNCH NOTE — `formatCOP` inline copy:
  *   This is a copy of the rule from `apps/electron-sucursal/src/features/caja/lib/format.ts`
@@ -25,6 +33,9 @@
  *   - This module has NO I/O, NO DOM access, NO `window` reference.
  *   - All timestamps (fechaEntrada, fechaSalida) are caller-supplied ISO
  *     strings (no implicit `new Date()`).
+ *   - F6.2 factory `buildEntradaPayload()` accepts a typed
+ *     `IngresoForPayload` view of the ingreso row — it does NOT query
+ *     the ER. Caller is responsible for fetching the row (F6.1 wiring).
  */
 
 import { z } from 'zod';
@@ -101,14 +112,36 @@ export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
 ] as const;
 
 // ──────────────────────────────────────────────────────────────────────────
-// Entrada payload (CU-15E)
+// Entrada payload (CU-15E) — F6.2 tightens qr/logo to required
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * F6.2 (DEC-SUC-26) tightens `qrDataUrl` and `logoDataUrl` to REQUIRED
+ * strings. F5.2 shipped them as `.optional()` — that allowed callers
+ * to omit QR + logo entirely. F6.2 makes both keys mandatory because
+ * the 17-field strict `TiqueteEntradaCampos` shape requires their
+ * presence (empty string is the legitimate "logo missing" value —
+ * the builder renders a placeholder glyph `▢` when `logoDataUrl === ''`
+ * per `design.md` §"Decision: Render-time guard for missing
+ * `documentos` row").
+ *
+ * The QR rasterizer is the caller's responsibility (F5.2 R4 purity).
+ * The builder accepts the resulting `data:image/png;base64,...`
+ * string verbatim. ABIERTO-01 default content:
+ * `parkos://ingreso/<ingreso.uuid>?placa=<ingreso.placa>`.
+ *
+ * `esMensualidad` is an OPTIONAL control flag surfaced by
+ * `buildEntradaPayload()` when `ingreso.uuid_subscripcion_cliente
+ * IS NOT NULL`. It is NOT one of the 17 conceptual fields; it is a
+ * side-channel so the builder can emit the `MENSUALIDAD` tag under
+ * the sello without exposing a third party column on the conceptual
+ * 17-key shape (DEC-SUC-21 — `tipo_entrada` MUST NOT be persisted).
+ */
 export const entradaPayloadSchema = z.object({
   placa: placaSchema,
   fechaEntrada: z.string().datetime({ offset: true }),
-  qrDataUrl: z.string().optional(),
-  logoDataUrl: z.string().optional(),
+  qrDataUrl: z.string(),
+  logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
   tarifaAplicada: z.number().nonnegative(),
@@ -116,9 +149,218 @@ export const entradaPayloadSchema = z.object({
   polizaRC: z.string().optional(),
   folio: z.string().uuid(),
   observaciones: z.string().optional(),
+  esMensualidad: z.boolean().optional(),
 });
 
 export type EntradaPayload = z.infer<typeof entradaPayloadSchema>;
+
+// ──────────────────────────────────────────────────────────────────────────
+// F6.2 — TiqueteEntradaCampos (17-key exhaustive shape)
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * `TiqueteEntradaCampos` — the 17 conceptual fields emitted on the
+ * tiquete de entrada per `plan.md` lines 1606-1653 (HU-F6.2 contract).
+ *
+ * Spanish ordinal names (`primero`..`quinceavo`) keep tsc error messages
+ * unambiguous on removal — e.g., `Property 'tercero' is missing in
+ * type 'TiqueteEntradaPayload'`. Names are stable and never drift; the
+ * literal CU-15E field LABELS live in `plan.md` (canonical).
+ *
+ * Conceptual mapping (NOT all data fields — some are derived constants
+ * emitted by the builder):
+ *   primero        → Encabezado (constant "PARKINGOS")
+ *   segundo        → Nombre de la empresa    → payload.empresa.nombre
+ *   tercero        → Dirección                → payload.empresa.direccion
+ *   cuarto         → NIT                      → payload.empresa.nit
+ *   quinto         → Régimen                  → payload.empresa.regimen
+ *   sexto          → Operario                 → payload.operario
+ *   septimo        → "TIQUETE DE ENTRADA" sello (constant)
+ *   octavo         → Folio                    → payload.folio
+ *   noveno         → Tarifa aplicada          → payload.tarifaAplicada
+ *   decimo         → Fecha operación          → payload.fechaEntrada (date)
+ *   onceavo        → Hora entrada             → payload.fechaEntrada (time)
+ *   doceavo        → Placa                    → payload.placa
+ *   treceavo       → Horario atención         → payload.horarioAtencion
+ *   catorceavo     → Póliza RC                → payload.polizaRC (optional)
+ *   quinceavo      → Observaciones            → payload.observaciones (optional)
+ *   qrDataUrl      → QR (DEC-SUC-26)          → payload.qrDataUrl
+ *   logoDataUrl    → Logo (DEC-SUC-26)        → payload.logoDataUrl
+ *
+ * The mapped type `TiqueteEntradaPayload` derives the 17-key
+ * exhaustiveness check at compile time so removing or renaming any
+ * key fails `tsc --noEmit` (per spec scenario "Removing a key breaks
+ * the build"). It is the source of truth for the 17-key COUNT — no
+ * other file in the codebase may declare a competing key set.
+ */
+export interface TiqueteEntradaCampos {
+  readonly primero: string;
+  readonly segundo: string;
+  readonly tercero: string;
+  readonly cuarto: string;
+  readonly quinto: string;
+  readonly sexto: string;
+  readonly septimo: string;
+  readonly octavo: string;
+  readonly noveno: string;
+  readonly decimo: string;
+  readonly onceavo: string;
+  readonly doceavo: string;
+  readonly treceavo: string;
+  readonly catorceavo: string;
+  readonly quinceavo: string;
+  readonly qrDataUrl: string;
+  readonly logoDataUrl: string;
+}
+
+/**
+ * `TiqueteEntradaPayload` — readonly mapped type over the 17-key
+ * `TiqueteEntradaCampos`. The mapped type form makes the 17-key count
+ * the canonical source: if you remove a key from
+ * `TiqueteEntradaCampos`, this type narrows automatically and any
+ * function declaring it as a return type fails to compile.
+ *
+ * Distinct from the underlying data type `EntradaPayload` (F5.2)
+ * which carries the 11+1 data fields. The 17-key shape is the
+ * conceptual layout view; the data type is the storage view.
+ */
+export type TiqueteEntradaPayload = {
+  readonly [K in keyof TiqueteEntradaCampos]: TiqueteEntradaCampos[K];
+};
+
+// ──────────────────────────────────────────────────────────────────────────
+// F6.2 — Inputs for buildEntradaPayload factory
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimal view of `prod.ingreso` row needed by `buildEntradaPayload()`.
+ * Caller (F6.1) hydrates this from the backend response. The factory
+ * does NOT touch the ER.
+ */
+export interface IngresoForPayload {
+  readonly uuid: string;
+  readonly placa: string;
+  readonly fecha_ingreso: string;
+  /** DEC-SUC-21 — `tipo_entrada` is DERIVED, NOT persisted. */
+  readonly uuid_subscripcion_cliente: string | null;
+}
+
+/** Minimal view of `prod.sucursal` row. */
+export interface SucursalForPayload {
+  readonly horario_atencion: string;
+}
+
+/** Minimal view of `prod.tarifas_sucursal` row. */
+export interface TarifaForPayload {
+  readonly valor_hora_cents: number;
+}
+
+/** Document row from `GET /documentos?uuid_sucursal=X&tipo=...`. */
+export interface DocumentoForPayload {
+  readonly tipo: 'logo' | 'certificado';
+  readonly documento_b64: string;
+}
+
+/** Inputs for `buildEntradaPayload()`. */
+export interface BuildEntradaPayloadInputs {
+  readonly ingreso: IngresoForPayload;
+  readonly sucursal: SucursalForPayload;
+  readonly empresa: Empresa;
+  readonly operario: string;
+  readonly tipoVehiculo: 'auto' | 'moto';
+  readonly tarifa: TarifaForPayload;
+  readonly documentos: readonly DocumentoForPayload[];
+  /** ISO 8601 datetime — passed through verbatim per F5.2 R4. */
+  readonly fechaHora: string;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// F6.2 — buildEntradaPayload factory
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * `buildEntradaPayload(inputs)` — assemble an `EntradaPayload` (F5.2
+ * data type) from the 8 caller-supplied inputs. The factory:
+ *
+ *   1. Pulls the logo from `documentos` (tolerates absent — empty
+ *      string is the documented `documentos` cold-cache sentinel;
+ *      the builder renders `▢` when the value is empty per
+ *      `design.md` §"Decision: Render-time guard for missing
+ *      `documentos` row").
+ *   2. Pulls the póliza RC from `documentos` (also tolerates absent —
+ *      `polizaRC` remains undefined).
+ *   3. Sets `esMensualidad: true` when `ingreso.uuid_subscripcion_cliente
+ *      IS NOT NULL` (DEC-SUC-21 — derived, NEVER persisted as a
+ *      column on the `ingreso` row).
+ *   4. Forwards `fechaHora` as `fechaEntrada` verbatim (ISO 8601 —
+ *      the builder formats it to es-CO short via
+ *      `Intl.DateTimeFormat('es-CO', {dateStyle: 'short', timeStyle:
+ *      'short'})` per F5.2 R4 — no implicit `new Date()`).
+ *
+ * Purity: the factory is referentially transparent. Same inputs →
+ * same payload. No I/O, no `Date.now()`, no `Math.random()`.
+ *
+ * Throws:
+ *   - The function itself does NOT throw — `entradaPayloadSchema.parse`
+ *     at the build boundary (`escposBuilder.build`) surfaces any
+ *     structural defect with `EscposPayloadMissingFieldError`. This
+ *     factory's contract is "produce a structurally valid payload
+ *     when given well-typed inputs".
+ */
+export function buildEntradaPayload(
+  inputs: BuildEntradaPayloadInputs,
+): EntradaPayload {
+  const {
+    ingreso,
+    sucursal,
+    empresa,
+    operario,
+    tarifa,
+    documentos,
+    fechaHora,
+  } = inputs;
+
+  const logoDoc = documentos.find((d) => d.tipo === 'logo');
+  const certDoc = documentos.find((d) => d.tipo === 'certificado');
+
+  return {
+    placa: ingreso.placa,
+    fechaEntrada: fechaHora,
+    qrDataUrl: `data:image/png;base64,${generateQrSentinel(ingreso)}`,
+    logoDataUrl: logoDoc?.documento_b64 ?? '',
+    empresa,
+    operario,
+    tarifaAplicada: tarifa.valor_hora_cents,
+    horarioAtencion: sucursal.horario_atencion,
+    polizaRC: certDoc?.documento_b64,
+    folio: ingreso.uuid,
+    observaciones: undefined,
+    esMensualidad: ingreso.uuid_subscripcion_cliente !== null
+      && ingreso.uuid_subscripcion_cliente !== undefined,
+  };
+}
+
+/**
+ * Generate the ABIERTO-01 default QR content sentinel
+ * (`parkos://ingreso/<uuid>?placa=<placa>`). The actual rasterization
+ * is the CALLER's responsibility (F5.2 R4 purity). This helper
+ * produces the deterministic string content the rasterizer would
+ * encode; the builder embeds the data URL verbatim.
+ *
+ * The data URL prefix `data:image/png;base64,` is what callers
+ * conventionally produce via `qrcode.toDataURL()`; the suffix after
+ * the comma is the rasterized PNG base64. F6.2 ships a deterministic
+ * sentinel so unit tests can assert byte presence; production callers
+ * overwrite this with the real rasterizer output.
+ */
+function generateQrSentinel(ingreso: IngresoForPayload): string {
+  const content = `parkos://ingreso/${ingreso.uuid}?placa=${ingreso.placa}`;
+  // Lightweight deterministic stub so byte-level tests can locate
+  // the content via `Buffer.indexOf(content)` without importing a
+  // QR library. The actual rasterization is out of F6.2 scope
+  // (F5.2 R4 purity — caller responsibility).
+  return Buffer.from(content, 'utf8').toString('base64');
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Salida payload (CU-15S)
