@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/lib/print/escposTemplates.ts",
+    "src/lib/print/escposBuilder.ts",
+    "src/lib/print/fallbackBrowser.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "e2e/**/*"
+  ]
+}

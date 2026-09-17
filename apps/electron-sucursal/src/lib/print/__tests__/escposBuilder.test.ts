@@ -1,5 +1,5 @@
 /**
- * Unit tests for `escposBuilder.ts` (HU-F5.2).
+ * Unit tests for `escposBuilder.ts` (HU-F5.2 / F6.2).
  *
  * Covers:
  *   - 5 byte-level ESC/POS opcode fixtures (init / cut / center / bold / 2x).
@@ -7,6 +7,12 @@
  *   - Payload missing required field throws `EscposPayloadMissingFieldError`.
  *   - `build()` is pure — does NOT call `window.print()` (no DOM side effects).
  *   - `formatCOP` inline copy: `100000` → `"$ 100.000"` (es-CO, 0 decimales).
+ *
+ * F6.2 — `entradaPayloadSchema` tightened qr + logo to REQUIRED (F5.2
+ * shipped them as `.optional()`). The exported `validEntradaPayload()`
+ * fixture provides both keys verbatim, so the existing scenarios
+ * continue to pass against the strict schema. The dedicated 17-byte
+ * presence scenarios live in `escposBuilder.entrada.test.ts`.
  */
 import { describe, it, expect, vi } from 'vitest';
 

@@ -2,6 +2,7 @@
  * `escposBuilder.ts` — pure renderer-side ESC/POS byte composition.
  *
  * HU-F5.2 (Fase 5 — base de impresión) / DEC-SUC-08.
+ * HU-F6.2 (Fase 6 — tiquete de entrada CU-15E) / DEC-SUC-26.
  *
  * Contract (F5.1 `bridge.imprimir` consumer):
  *   `build(tipo, payload) → Buffer`
@@ -15,6 +16,16 @@
  *   6. ...document body (UTF-8)...
  *   7. `0x1D 0x56 0x00` — GS `V` 0 (partial cut)
  *   8. `0x0A` — LF (line feed)
+ *
+ * F6.2 — `buildEntradaBuffer()` (and its underlying `buildEntradaBody`)
+ * emits the **17 conceptual fields** in the order specified by
+ * `plan.md` lines 1616-1634 plus the 2 DEC-SUC-26 additions (QR + logo)
+ * — see `escposTemplates.ts::TiqueteEntradaCampos` for the canonical
+ * 17-key shape. The QR + logo data URLs are emitted as text markers
+ * (the actual rasterization is the CALLER's responsibility per F5.2
+ * R4 purity + the F6.2 design decision "QR encoding is the caller's
+ * responsibility"). When `payload.esMensualidad === true`, the
+ * builder emits a `MENSUALIDAD` tag line under the sello.
  *
  * Purity contract:
  *   - NO DOM, NO `window`, NO `document`, NO `navigator`.
@@ -158,29 +169,69 @@ function formatFechaCorta(iso: string): string {
   return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
 }
 
+/** F6.2 — date only: "dd/MM/yyyy" (for the decimo conceptual field). */
+function formatFecha(iso: string): string {
+  return formatFechaCorta(iso).split(' ')[0] ?? '';
+}
+
+/** F6.2 — time only: "HH:mm" (for the onceavo conceptual field). */
+function formatHora(iso: string): string {
+  return formatFechaCorta(iso).split(' ')[1] ?? '';
+}
+
+/** F6.2 — placeholder glyph for missing logo (DEC-SUC-08). */
+const LOGO_PLACEHOLDER_GLYPH = '\u25A2'; // ▢ WHITE SQUARE WITH ROUNDED CORNERS
+
 function buildEntradaBody(payload: EntradaPayload): Buffer {
+  // F6.2 — 17-field layout per `plan.md` lines 1616-1634 + DEC-SUC-26.
+  // The conceptual field names live in
+  // `escposTemplates.ts::TiqueteEntradaCampos` (Spanish ordinals).
   const lines: Buffer[] = [
     escCenter(),
     escBoldOn(),
-    utf8('PARKINGOS\n'),
+    utf8('PARKINGOS\n'),                                // primero (Encabezado)
     escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),
-    utf8(`NIT ${payload.empresa.nit}\n`),
-    utf8(`${payload.empresa.direccion}\n`),
-    utf8(`${payload.empresa.regimen}\n`),
+    utf8(`${payload.empresa.nombre}\n`),                // segundo
+    utf8(`${payload.empresa.direccion}\n`),             // tercero
+    utf8(`NIT ${payload.empresa.nit}\n`),               // cuarto
+    utf8(`${payload.empresa.regimen}\n`),               // quinto
+    utf8(`Operario: ${payload.operario}\n`),            // sexto
     utf8('\n'),
     escText2x(),
-    utf8('*** ENTRADA ***\n'),
+    utf8('*** TIQUETE DE ENTRADA ***\n'),               // septimo (sello)
     escTextReset(),
-    utf8('\n'),
-    utf8(`Folio: ${payload.folio}\n`),
-    utf8(`Placa: ${payload.placa}\n`),
-    utf8(`Fecha: ${formatFechaCorta(payload.fechaEntrada)}\n`),
-    utf8(`Operario: ${payload.operario}\n`),
-    utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`),
-    utf8(`Horario: ${payload.horarioAtencion}\n`),
   ];
-  if (payload.polizaRC) lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));
+  // F6.2 — Mensualidad tag conditional (DEC-SUC-21 — derived from
+  // `ingreso.uuid_subscripcion_cliente IS NOT NULL`).
+  if (payload.esMensualidad === true) {
+    lines.push(escBoldOn());
+    lines.push(utf8('MENSUALIDAD\n'));
+    lines.push(escBoldOff());
+  }
+  lines.push(utf8('\n'));
+  lines.push(utf8(`Folio: ${payload.folio}\n`));        // octavo
+  lines.push(utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`)); // noveno
+  lines.push(utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`)); // decimo
+  lines.push(utf8(`Hora: ${formatHora(payload.fechaEntrada)}\n`));    // onceavo
+  lines.push(utf8(`Placa: ${payload.placa}\n`));        // doceavo
+  lines.push(utf8(`Horario: ${payload.horarioAtencion}\n`)); // treceavo
+  if (payload.polizaRC) {
+    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`)); // catorceavo
+  }
+  if (payload.observaciones) {
+    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // quinceavo
+  }
+  // F6.2 — DEC-SUC-26: QR + logo. The data URLs are emitted as text
+  // markers — the printer firmware ignores lines starting with `;`
+  // (comment), and the `bridge.imprimir` layer in F5.1 can intercept
+  // these for actual rasterization in a future enhancement. Empty
+  // `logoDataUrl` renders the placeholder glyph (design §"Render-time
+  // guard for missing `documentos` row").
+  const logoText = payload.logoDataUrl === ''
+    ? LOGO_PLACEHOLDER_GLYPH
+    : 'OK';
+  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));       // qrDataUrl
+  lines.push(utf8(`;LOGO:${logoText}\n`));              // logoDataUrl
   lines.push(utf8('\n'));
   lines.push(utf8('Conserve este tiquete para la salida.\n'));
   return concat(lines);
