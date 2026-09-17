@@ -1,19 +1,23 @@
 /**
- * `<OcupacionPanel />` — in-dashboard occupancy section (HU-F4.3, F4.4
- * relocate).
+ * `<OcupacionPanel />` — in-dashboard inventory section (HU-F4.3,
+ * F4.4 relocate, plus the "elegant" per-tipo rendering added by the
+ * 2026-09-17 dashboard-hub iteration).
  *
- * Logic is intentionally a near-clone of `<OcupacionStrip />`
- * (`renderer/components/OcupacionStrip.tsx`) so the global mount at
- * `App.tsx:48` (F4.3 "TEMPORAL") can be deleted in PR-6 without any
- * behavioral change. The diff is structural only: this panel lives
- * inside the dashboard route (not at the SPA root) so the strip
- * disappears when the operator navigates to `/login`,
- * `/caja/abrir-turno`, or `/caja/cerrar-turno`. REQ-OPS-140 Scenario
- * "App.tsx global strip removed" verifies the swap.
+ * Layout (one compact row per admin-configured tipo):
  *
- * `data-testid="ocupacion-panel"` distinguishes this in-dashboard
- * variant from the soon-to-be-deleted global `<OcupacionStrip />`
- * (which kept `data-testid="ocupacion-strip"`).
+ *   [●]  carro  1/0   ━━━━━━━━━━   100%  (red dot when full)
+ *   [●]  moto   0/10  ────────────    0%
+ *   [●]  bici   2/5   ━━━━━         40%
+ *
+ * Each row communicates at a glance:
+ *   - Dot color = current occupancy status (green < 66%, amber 66-90%, red > 90%)
+ *   - count `activos / cupo_maximo`
+ *   - thin progress bar showing the occupancy ratio (only when cupo_maximo > 0)
+ *
+ * The parent card already says "INVENTARIO"; per UX feedback we dropped
+ * the redundant "Ocupación en vivo" header label. Stale state is
+ * surfaced by a tiny amber AlertCircle icon to the left of the list
+ * (with a tooltip explaining the legend).
  */
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -35,26 +39,37 @@ export interface OcupacionPanelProps {
 
 type ColorLevel = ReturnType<typeof classForPorcentaje>;
 
-const COLOR_CLASS: Record<ColorLevel, string> = {
-  green: 'bg-green-500 text-white',
-  yellow: 'bg-amber-500 text-white',
-  red: 'bg-destructive text-destructive-foreground',
+// Dot color (left of each row) — semantic by occupancy ratio.
+const DOT_BG: Record<ColorLevel, string> = {
+  green: 'bg-emerald-500',
+  yellow: 'bg-amber-500',
+  red: 'bg-red-500',
+};
+const PROGRESS_BG: Record<ColorLevel, string> = {
+  green: 'bg-emerald-500',
+  yellow: 'bg-amber-500',
+  red: 'bg-red-500',
+};
+const TEXT_MUTED: Record<ColorLevel, string> = {
+  green: 'text-emerald-700 dark:text-emerald-300',
+  yellow: 'text-amber-700 dark:text-amber-300',
+  red: 'text-red-700 dark:text-red-300',
 };
 
 function legendKeyFor(color: ColorLevel, cupoMaximo: number): string {
-  // KD-6: cuando el admin no configuró cupo, el chip surface es "cupo no
-  // configurado" en lugar del legend genérico por color.
+  // KD-6: when admin hasn't configured a cupo, the surface text is
+  // "cupo no configurado" instead of a generic colored legend.
   if (cupoMaximo === 0) return 'cupo_no_configurado';
   if (color === 'green') return 'ocupacion_legend_green';
   if (color === 'yellow') return 'ocupacion_legend_yellow';
   return 'ocupacion_legend_red';
 }
 
-/**
- * In-dashboard occupancy section. Polls `GET /operacion/ocupacion` every
- * 10s via `useOcupacion` (REQ-OPS-132 fetcher-closure idiom — the
- * closure receives the bare UUID, NOT the SWR key).
- */
+function progressPct(activos: number, cupo: number): number {
+  if (cupo <= 0) return 0;
+  return Math.max(0, Math.min(100, (activos / cupo) * 100));
+}
+
 export function OcupacionPanel({ uuid_sucursal }: OcupacionPanelProps): JSX.Element {
   const { t } = useTranslation('operacion');
   const { data, isStale } = useOcupacion(uuid_sucursal);
@@ -75,62 +90,91 @@ export function OcupacionPanel({ uuid_sucursal }: OcupacionPanelProps): JSX.Elem
 
   return (
     <TooltipProvider delayDuration={150}>
-      <div
+      <ul
         role="status"
         data-testid="ocupacion-panel"
         data-stale={isStale ? 'true' : 'false'}
-        className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm"
+        className="flex flex-col gap-1.5 text-sm"
       >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span
-              className="flex items-center gap-1 font-medium text-foreground"
-              data-testid="ocupacion-panel-title"
-            >
-              {t('ocupacion_titulo')}
-              {isStale ? (
-                <AlertCircle
-                  className="h-4 w-4 text-amber-500"
-                  aria-hidden="true"
-                  data-testid="ocupacion-panel-stale-icon"
-                />
-              ) : null}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>
-            {t(isStale ? 'ocupacion_legend_stale' : 'ocupacion_titulo')}
-          </TooltipContent>
-        </Tooltip>
+        {isStale ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <AlertCircle
+                className="h-4 w-4 self-end text-amber-500"
+                aria-hidden="true"
+                data-testid="ocupacion-panel-stale-icon"
+              />
+            </TooltipTrigger>
+            <TooltipContent>{t('ocupacion_legend_stale')}</TooltipContent>
+          </Tooltip>
+        ) : null}
 
         {items.length === 0 ? (
-          <span className="text-muted-foreground" data-testid="ocupacion-panel-empty">
+          <li
+            className="text-muted-foreground"
+            data-testid="ocupacion-panel-empty"
+          >
             —
-          </span>
+          </li>
         ) : (
           items.map((item) => {
             const color = classForPorcentaje(
               item.cupo_maximo === 0 ? Number.POSITIVE_INFINITY : item.activos / item.cupo_maximo,
             );
             const legendKey = legendKeyFor(color, item.cupo_maximo);
+            const pct = progressPct(item.activos, item.cupo_maximo);
             return (
               <Tooltip key={item.uuid_tipo_vehiculo}>
                 <TooltipTrigger asChild>
-                  <span
-                    data-testid={`ocupacion-panel-chip-${item.tipo}`}
+                  <li
+                    data-testid={`ocupacion-panel-row-${item.tipo}`}
                     data-color={color}
                     aria-live="polite"
                     aria-atomic="false"
-                    className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${COLOR_CLASS[color]}`}
+                    className="flex items-center gap-2"
                   >
-                    {item.tipo}: {item.activos}/{item.cupo_maximo}
-                  </span>
+                    {/* status dot */}
+                    <span
+                      aria-hidden
+                      className={`inline-block h-2 w-2 shrink-0 rounded-full ${DOT_BG[color]}`}
+                    />
+                    {/* tipo label, fixed width via uppercase tracking */}
+                    <span className="w-16 shrink-0 truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      {item.tipo}
+                    </span>
+                    {/* X / Y count */}
+                    <span
+                      className={`w-14 shrink-0 text-right text-xs font-mono tabular-nums ${TEXT_MUTED[color]}`}
+                    >
+                      {item.activos}
+                      <span className="mx-0.5 text-muted-foreground">/</span>
+                      {item.cupo_maximo}
+                    </span>
+                    {/* progress bar (only when admin configured a cupo) */}
+                    {item.cupo_maximo > 0 ? (
+                      <span
+                        aria-hidden
+                        className="relative inline-block h-1.5 flex-1 overflow-hidden rounded-full bg-muted"
+                      >
+                        <span
+                          className={`absolute left-0 top-0 h-full rounded-full transition-all ${PROGRESS_BG[color]}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </span>
+                    ) : (
+                      <span
+                        aria-hidden
+                        className="h-1.5 flex-1 rounded-full bg-muted/50"
+                      />
+                    )}
+                  </li>
                 </TooltipTrigger>
                 <TooltipContent>{t(legendKey)}</TooltipContent>
               </Tooltip>
             );
           })
         )}
-      </div>
+      </ul>
     </TooltipProvider>
   );
 }
