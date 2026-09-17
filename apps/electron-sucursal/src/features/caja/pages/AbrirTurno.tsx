@@ -48,7 +48,14 @@ export function AbrirTurno(): JSX.Element {
     mode: 'onBlur',
     defaultValues: {
       uuid_sucursal: sucursal?.uuid ?? '',
-      uuid_usuario: user?.id ?? '',
+      // REQ-OPS-131 (qa-2026-09-17 bug 1): backend canonical identity
+      // is ``UserItem.uuid`` (renamed from legacy ``id``); reading
+      // ``user?.uuid`` produces a non-empty UUID so Zod's
+      // ``uuid_usuario: z.string().uuid()`` validation passes
+      // (previously the legacy ``id`` field was either empty or a
+      // non-UUID string, surfacing as a silent 422 with no inline
+      // ``<FormMessage>``).
+      uuid_usuario: user?.uuid ?? '',
       valor_inicial_efectivo: 0,
       valor_inicial_datafono: 0,
       observaciones: '',

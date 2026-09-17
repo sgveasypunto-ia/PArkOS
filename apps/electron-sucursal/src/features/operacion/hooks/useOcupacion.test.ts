@@ -60,6 +60,7 @@ let swrKey: string | null | undefined;
 const mutateMock = vi.fn();
 let currentData: unknown = undefined;
 let currentError: unknown = undefined;
+let swrFetcher: ((k: string) => Promise<unknown>) | undefined;
 
 vi.mock('../api/ocupacionApi', () => ({
   getOcupacion: (...args: unknown[]) => getOcupacionMock(...args),
@@ -68,10 +69,11 @@ vi.mock('../api/ocupacionApi', () => ({
 vi.mock('swr', () => ({
   default: (
     key: string | null | undefined,
-    _fetcher: (k: string) => Promise<unknown>,
+    fetcher: (k: string) => Promise<unknown>,
     options: Record<string, unknown>,
   ) => {
     swrKey = key;
+    swrFetcher = fetcher;
     swrOptions = options;
     return {
       get data() {
@@ -93,6 +95,7 @@ import type { OcupacionResponse } from '../api/ocupacionApi';
 beforeEach(() => {
   swrOptions = undefined;
   swrKey = undefined;
+  swrFetcher = undefined;
   currentData = undefined;
   currentError = undefined;
 });
@@ -265,5 +268,47 @@ describe('useOcupacion — return shape', () => {
     expect(r).toBeInstanceOf(Promise);
     await r;
     expect(mutateMock).toHaveBeenCalled();
+  });
+});
+
+describe('useOcupacion — fetcher-closure contract (REQ-OPS-132 / U-O10)', () => {
+  it('U-O10: fetcher closure receives the raw UUID, NOT the SWR cache key', async () => {
+    useAuthStoreMock.mockReturnValue('jwt-abc');
+    getOcupacionMock.mockResolvedValueOnce(SAMPLE_OK);
+
+    // Mount: this captures the SWR fetcher in swrFetcher (see mocked SWR above).
+    useOcupacion('suc-uuid-1');
+
+    expect(swrFetcher).toBeDefined();
+    expect(typeof swrFetcher).toBe('function');
+
+    // Invoke the fetcher directly with the cache key — REQ-OBS-132
+    // says the fetcher must IGNORE that arg and use the closure
+    // capture (the bare UUID).
+    const result = await swrFetcher!(
+      '/operacion/ocupacion?uuid_sucursal=suc-uuid-1',
+    );
+
+    // The fetcher must have invoked getOcupacion with 'suc-uuid-1'
+    // (the raw UUID, NOT the key with the ?...query string).
+    expect(getOcupacionMock).toHaveBeenCalledTimes(1);
+    expect(getOcupacionMock.mock.calls[0]?.[0]).toBe('suc-uuid-1');
+    // Belt-and-braces: the first arg has NO '?' (no query-string leak).
+    expect(String(getOcupacionMock.mock.calls[0]?.[0])).not.toContain('?');
+    expect(result).toEqual(SAMPLE_OK);
+  });
+
+  it('U-O10b: fetcher closure uses the uuid_sucursal captured at hook-call time', async () => {
+    useAuthStoreMock.mockReturnValue('jwt-abc');
+    getOcupacionMock.mockResolvedValueOnce(SAMPLE_OK);
+
+    // Mount the hook with one UUID, then trigger the fetcher with
+    // an entirely different cache-key string — the closure capture
+    // wins.
+    useOcupacion('first-uuid');
+    expect(swrFetcher).toBeDefined();
+    await swrFetcher!('/operacion/ocupacion?uuid_sucursal=DIFFERENT');
+
+    expect(getOcupacionMock.mock.calls[0]?.[0]).toBe('first-uuid');
   });
 });

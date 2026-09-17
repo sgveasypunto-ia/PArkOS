@@ -31,7 +31,21 @@ import { useAuthStore } from '../store/authStore';
 export const REFRESH_INTERVAL_MS = 50 * 60 * 1000;
 
 export interface AuthUser {
-  id: string;
+  /**
+   * REQ-OPS-131 (qa-2026-09-17 bug 1): backend canonical identity is
+   * ``UserItem.uuid`` (``schemas/auth.py``) — the F3.1 contract was a
+   * pre-bug ``id`` field that produced Zod silent rejects in
+   * ``AbrirTurno`` because the AbrirTurno schema's
+   * ``uuid_usuario: uuid_lib.UUID`` validation failed on an empty
+   * UUID derived from ``user.id ?? ''``. Renaming to ``uuid``
+   * aligns the ui-kit surface with the backend canonical field and
+   * stops the silent 422.
+   *
+   * Breaking change (workspace-internal): all in-tree consumers must
+   * read ``user?.uuid`` instead of ``user?.id``. ``apps/ui-kit``
+   * package version bumped to ``0.3.0``.
+   */
+  uuid: string;
   email: string;
 }
 

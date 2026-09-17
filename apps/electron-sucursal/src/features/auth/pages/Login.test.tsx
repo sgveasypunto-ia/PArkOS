@@ -256,7 +256,10 @@ describe('<Login /> container — T3 useEffect redirect transaccional', () => {
     mockUseAuth.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
-      user: { id: 'u-1', email: 'op@test.co' },
+      // REQ-OPS-131 (qa-2026-09-17 bug 1): ``uuid`` replaces the
+      // legacy ``id`` field; ui-kit's breaking change is reflected
+      // in the mock shape.
+      user: { uuid: 'u-1', email: 'op@test.co' },
     });
 
     render(
