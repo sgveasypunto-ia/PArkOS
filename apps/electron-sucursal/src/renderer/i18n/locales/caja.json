@@ -21,5 +21,17 @@
   "turnoCerradoExito": "Turno cerrado exitosamente",
   "confirmarCierre": "Confirmar cierre",
   "sesionYaCerrada": "Esta sesión ya está cerrada",
-  "turnoActivo": "Turno activo"
+  "turnoActivo": "Turno activo",
+  "turnoVigenteLabel": "Turno vigente",
+  "arqueoParcial": "Arqueo parcial",
+  "cierreDiario": "Cierre diario",
+  "dashboard": {
+    "turnoActivo": "Resumen del turno",
+    "operar": "Ingreso",
+    "ocupacion": "Ocupación",
+    "suscripciones": "Suscripciones",
+    "sync": "Sincronización",
+    "alertas": "Alertas",
+    "placeholderDesc": "Sección pendiente."
+  }
 }
