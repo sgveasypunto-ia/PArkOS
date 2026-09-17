@@ -68,6 +68,7 @@ export default function Principal() {
   const [tipoDetectado, setTipoDetectado] = useState<'carro' | 'moto' | null>(
     null,
   );
+  const [observaciones, setObservaciones] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState<SuccessState | null>(null);
   const [forzarOpen, setForzarOpen] = useState(false);
@@ -98,9 +99,6 @@ export default function Principal() {
       setSubmitError(null);
       setPlaca(nextPlaca);
 
-      // Determine the uuid_tipo_vehiculo for the detected tipo. The
-      // catalog hook returns `{auto, moto}` (F4.1 hardcoded fallback
-      // or live API data) with the canonical UUIDs.
       const tipoNombre = detectarTipoVehiculo(nextPlaca);
       if (tipoNombre === null) {
         // PlacaInput already Zod-validates, so this branch is
@@ -108,17 +106,28 @@ export default function Principal() {
         setSubmitError('placa_formato_invalido');
         return;
       }
-      const tipoEntry = tiposVehiculo.tipos.find(
-        (tv) => tv.tipo === tipoNombre,
-      );
-      if (!tipoEntry) {
-        setSubmitError('cupo_no_configurado');
-        return;
+
+      // Sentinel UUID guard (fix tipo_vehiculo_invalido). When the
+      // catalog is degraded (HARDCODED_CATALOG fallback, DEC-F4.1-05),
+      // the sentinel UUIDs (00000000-...0001/0002) do NOT exist in
+      // prod.tipos_vehiculo. Omit the UUID and let the backend derive
+      // it from the placa regex via V5 (operacion.py:184-195).
+      let uuid_tipo_vehiculo: string | undefined;
+      if (!tiposVehiculo.isFromFallback) {
+        const tipoEntry = tiposVehiculo.tipos.find(
+          (tv) => tv.tipo === tipoNombre,
+        );
+        if (!tipoEntry) {
+          setSubmitError('cupo_no_configurado');
+          return;
+        }
+        uuid_tipo_vehiculo = tipoEntry.uuid;
       }
 
       const payload: PostIngresoPayload = {
         placa: nextPlaca,
-        uuid_tipo_vehiculo: tipoEntry.uuid,
+        uuid_tipo_vehiculo,
+        observaciones: observaciones.trim() === '' ? undefined : observaciones.trim(),
       };
 
       setSubmitting(true);
@@ -132,7 +141,7 @@ export default function Principal() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tiposVehiculo.tipos, navigate],
+    [tiposVehiculo.tipos, tiposVehiculo.isFromFallback, observaciones, navigate],
   );
 
   const handleForzarConfirm = useCallback(
@@ -237,6 +246,7 @@ export default function Principal() {
     setSuccess(null);
     setPlaca(null);
     setTipoDetectado(null);
+    setObservaciones('');
     setSubmitError(null);
     void refreshIngresoActivo();
   }, [refreshIngresoActivo]);
@@ -259,6 +269,35 @@ export default function Principal() {
         onValidSubmit={handlePlacaSubmit}
         disabled={submitting}
       />
+
+      <div className="space-y-1">
+        <label
+          htmlFor="principal-observaciones"
+          className="text-sm font-medium"
+        >
+          {t('ingreso_observaciones_label', { defaultValue: 'Observaciones (opcional)' })}
+        </label>
+        <textarea
+          id="principal-observaciones"
+          data-testid="principal-observaciones"
+          value={observaciones}
+          onChange={(e) => setObservaciones(e.target.value.slice(0, 500))}
+          placeholder={t('ingreso_observaciones_placeholder', {
+            defaultValue: 'Estado del vehículo, objetos visibles, notas del operador',
+          })}
+          disabled={submitting}
+          maxLength={500}
+          rows={2}
+          aria-describedby="principal-observaciones-help"
+          className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
+        />
+        <p
+          id="principal-observaciones-help"
+          className="text-xs text-muted-foreground"
+        >
+          {observaciones.length}/500
+        </p>
+      </div>
 
       {tipoDetectado && (
         <p className="text-sm text-muted-foreground" role="status">
