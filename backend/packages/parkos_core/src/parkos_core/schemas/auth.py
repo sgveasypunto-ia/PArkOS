@@ -20,8 +20,9 @@ import uuid as uuid_lib
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import EmailStr, Field, StringConstraints
+from pydantic import Field, StringConstraints
 
+from ._email import ParkosEmail
 from .common import FilterBase, ReadListBase, _Base
 
 # ---------------------------------------------------------------------------
@@ -55,7 +56,7 @@ class UsuariosCreate(_Base):
     nombre: Annotated[str | None, StringConstraints(max_length=255)] = None
     apellido: Annotated[str | None, StringConstraints(max_length=255)] = None
     cedula: Annotated[str | None, StringConstraints(max_length=64)] = None
-    email: EmailStr | None = None
+    email: ParkosEmail | None = None
     password_hash: Annotated[str, StringConstraints(min_length=1)] = Field(
         ..., description="Already-hashed bcrypt; never accept plaintext here."
     )
@@ -73,7 +74,7 @@ class UsuariosUpdate(_Base):
     nombre: Annotated[str | None, StringConstraints(max_length=255)] = None
     apellido: Annotated[str | None, StringConstraints(max_length=255)] = None
     cedula: Annotated[str | None, StringConstraints(max_length=64)] = None
-    email: EmailStr | None = None
+    email: ParkosEmail | None = None
     password_hash: Annotated[str | None, StringConstraints(min_length=1)] = None
     fecha_cambio_password: datetime | None = None
     rol: Annotated[str | None, StringConstraints(max_length=32)] = None
@@ -243,7 +244,7 @@ class LoginReadList(ReadListBase[LoginRead]):
 class LoginRequest(_Base):
     """POST /auth/login body."""
 
-    email: EmailStr
+    email: ParkosEmail
     password: Annotated[str, StringConstraints(min_length=8, max_length=128)]
 
 

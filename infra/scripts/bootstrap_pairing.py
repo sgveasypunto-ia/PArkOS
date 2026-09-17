@@ -56,12 +56,22 @@ def ensure_admin_user(cloud_dsn: str) -> uuid_lib.UUID:
     The admin user gets the ``gestionar_dian`` permission (required by
     ``POST /admin/pairing-tokens`` per pairing.py:80) so the bootstrap
     pairing flow works end-to-end without manual DB fiddling.
+
+    Why we compute the hash here instead of hard-coding it: pydantic.EmailStr
+    (or our lenient ParkosEmail in api-sucursal/api-admin) must accept the
+    login attempt BEFORE bcrypt.compare runs. If the hash stored here is a
+    sentinel (e.g., ``"$2b$12$dummy..."``) ``bcrypt.checkpw`` will raise
+    ``ValueError`` on the malformed sentinel and the operator will get HTTP
+    500 instead of a clean 401 ``invalid_credentials``. So we always compute
+    a real bcrypt hash for ``ADMIN_PASSWORD`` at bootstrap time.
     """
+    import bcrypt
     import psycopg
 
-    ADMIN_BCRYPT_HASH = (
-        "$2b$12$dummy.hash.for.dev.smoke.test.Admin12345!"
-    )
+    ADMIN_BCRYPT_HASH = bcrypt.hashpw(
+        ADMIN_PASSWORD.encode("utf-8"),
+        bcrypt.gensalt(rounds=12),
+    ).decode("utf-8")
     REQUIRED_PERMISSIONS = (
         "gestionar_dian",
         "config_catalogo",
