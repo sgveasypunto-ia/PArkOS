@@ -267,7 +267,7 @@ async def test_insert_ingreso_then_refresh_view_includes_row(
     uuid_tipo = uuid_lib.uuid4()
 
     await _seed_empresa_sucursal(pg_engine, uuid_sucursal=uuid_sucursal)
-    await _seed_tipo_vehiculo(pg_engine, uuid_tipo=uuid_tipo, tipo="Auto")
+    await _seed_tipo_vehiculo(pg_engine, uuid_tipo=uuid_tipo, tipo="carro")
     await _seed_ingreso(
         pg_engine,
         uuid_sucursal=uuid_sucursal,
@@ -331,7 +331,7 @@ async def test_insert_salida_then_refresh_view_decrements_activos(
     uuid_tipo = uuid_lib.uuid4()
 
     await _seed_empresa_sucursal(pg_engine, uuid_sucursal=uuid_sucursal)
-    await _seed_tipo_vehiculo(pg_engine, uuid_tipo=uuid_tipo, tipo="Moto")
+    await _seed_tipo_vehiculo(pg_engine, uuid_tipo=uuid_tipo, tipo="moto")
     ingreso_uuid = await _seed_ingreso(
         pg_engine,
         uuid_sucursal=uuid_sucursal,

@@ -246,7 +246,7 @@ class Diff:
         return not self.issues
 
 
-def diff_schema(tables: dict[str, Table], conn) -> Diff:
+def diff_schema(tables: dict[str, Table], conn, schema: str = "prod") -> Diff:
     """Run all 8 checks against the live DB and accumulate issues."""
     diff = Diff()
 
@@ -426,6 +426,47 @@ def diff_schema(tables: dict[str, Table], conn) -> Diff:
         # Informational, not failure — extra partman parents are OK.
         print(f"(h) info: pg_partman has additional parents: {sorted(extra_partman)}")
 
+    # --- (i) MV canon guard — REQ-OPS-133 / Bug 3 of qa-2026-09-17 ---
+    # The ``prod.mv_ocupacion_diaria`` materialized view is a hard
+    # contract for F4.3 / REQ-OPS-031 polling. Without it the GET
+    # /operacion/ocupacion handler returns 500. The view is created by
+    # migration 0024 (and re-asserted by migration 0034 after partial-
+    # commit drift) but the contract is independent of the migration
+    # table — an operator could in principle drop the view manually and
+    # the migration table would still claim 0024/0034 as applied. This
+    # check closes the loop with ``to_regclass`` and exits non-zero if
+    # the MV is missing. The script's exit-code aggregator then bubbles
+    # this up to CI as a failure.
+    cur.execute("SELECT to_regclass(%s)", (f"{schema}.mv_ocupacion_diaria",))
+    mv_regclass = cur.fetchone()[0]
+    if mv_regclass is None:
+        diff.fail(
+            "(i) mv_ocupacion_diaria_missing: prod.mv_ocupacion_diaria is "
+            "absent. Run migration 0034 to recreate it. See REQ-OPS-133."
+        )
+
+    # The MV also carries a UNIQUE INDEX required by
+    # ``REFRESH MATERIALIZED VIEW CONCURRENTLY``. Without it, the 10s
+    # refresh worker falls back to plain REFRESH (which takes an
+    # AccessExclusiveLock briefly). Surface this as a CI failure so
+    # the operator fixes it before the worker silently falls back in
+    # production.
+    cur.execute(
+        """
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE n.nspname = current_schema()
+          AND c.relkind = 'i'
+          AND c.relname = 'uq_mv_ocupacion_diaria_sucursal_tipo';
+        """
+    )
+    if cur.fetchone() is None:
+        diff.fail(
+            "(i) mv_ocupacion_diaria_index_missing: "
+            "prod.uq_mv_ocupacion_diaria_sucursal_tipo UNIQUE INDEX is "
+            "absent. REFRESH CONCURRENTLY will not work. See REQ-OPS-133."
+        )
+
     return diff
 
 
@@ -468,7 +509,7 @@ def main(argv: list[str]) -> int:
     try:
         with psycopg.connect(dsn) as conn:
             conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(args.schema)))
-            diff = diff_schema(tables, conn)
+            diff = diff_schema(tables, conn, schema=args.schema)
     except psycopg.OperationalError as e:
         print(f"ERROR: DB connection failed: {e}", file=sys.stderr)
         return 2

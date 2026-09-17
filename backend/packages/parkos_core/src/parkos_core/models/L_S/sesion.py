@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 from datetime import datetime
 
-from sqlalchemy import DateTime, Numeric
+from sqlalchemy import DateTime, Numeric, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,6 +38,13 @@ class Sesion(SessionBase):
     timestamp_apertura: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     timestamp_cierre: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     uuid_usuario_cierre: Mapped[uuid_lib.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # REQ-OPS-135 (Bug 5 of qa-2026-09-17): free-text notes supplied at
+    # open time by the F3.3 frontend. NULL is the legitimate value
+    # (an operator who has nothing to say). Column added by migration
+    # 0035 (PG11+ instant, no rewrite). When non-NULL on open, the
+    # value is mirrored into ``prod.log_transaccional.datos_nuevos``
+    # via ``repo.session_cycle.open_session`` for audit (REQ-OPS-021).
+    observaciones: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
     __table_args__ = (
         {

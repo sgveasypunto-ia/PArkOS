@@ -174,16 +174,25 @@ async def create_ingreso(
         )
 
     # --- Step 2: V5 (regex-derived uuid_tipo_vehiculo). -----------------
-    uuid_tipo_vehiculo = await detectar_tipo_vehiculo(session, payload.placa)
+    # REQ-OPS-134 (qa-2026-09-17 bug 4): honor the explicit
+    # ``payload.uuid_tipo_vehiculo`` BEFORE falling back to the regex
+    # helper. This is defense in depth -- the F6.1 frontend sends a
+    # UUID that may not match the regex (e.g. operator override of a
+    # moto plate whose tipo was chosen by a dropdown, not the regex).
+    # The explicit UUID short-circuits the regex; ``placa`` is still
+    # validated separately by the V8/V1/V2 chain below.
+    uuid_tipo_vehiculo = payload.uuid_tipo_vehiculo
     if uuid_tipo_vehiculo is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "placa_formato_invalido",
-                "formatos_aceptados": ["ABC123", "ABC12D"],
-            },
-            headers=no_store,
-        )
+        uuid_tipo_vehiculo = await detectar_tipo_vehiculo(session, payload.placa)
+        if uuid_tipo_vehiculo is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "placa_formato_invalido",
+                    "formatos_aceptados": ["ABC123", "ABC12D"],
+                },
+                headers=no_store,
+            )
 
     # --- Step 3: V4 (catalog vigente check, KD-V3 no bypass). ----------
     if not await validar_tipo_vehiculo_vigente(
@@ -449,22 +458,22 @@ async def create_salida(
         cotizacion = await cotizar_para_salida(
             session, uuid_ingreso=payload.uuid_ingreso
         )
-    except TarifaNoVigente:
+    except TarifaNoVigente as exc:
         if not bypass_reason:
             raise HTTPException(
                 status_code=422,
                 detail={"error": "tarifa_vigente_no_encontrada"},
                 headers=no_store,
-            )
+            ) from exc
         bypass_reason = "tarifa_no_vigente"
         cotizacion = {"cobrar": True}  # placeholder for snapshot shape
-    except IVANoConfigurado:
+    except IVANoConfigurado as exc:
         # KD-IVA -- post-0026 deploy: never; pre-0026: blocked.
         raise HTTPException(
             status_code=500,
             detail={"error": "iva_no_configurado"},
             headers=no_store,
-        )
+        ) from exc
 
     # Derive tipo_salida from F1.8's cobrar flag (DEC-SUC-21-NEW):
     tipo_salida: Literal["MENSUALIDAD", "ROTACION"] = (
@@ -484,7 +493,7 @@ async def create_salida(
             actor_uuid=ctx.actor_uuid,
             new_attrs=new_attrs,
         )
-    except SalidaDuplicada:
+    except SalidaDuplicada as exc:
         raise HTTPException(
             status_code=409,
             detail={
@@ -492,7 +501,7 @@ async def create_salida(
                 "uuid_ingreso": str(payload.uuid_ingreso),
             },
             headers=no_store,
-        )
+        ) from exc
 
     # --- Step 9: alertas same-TX (KD-S12, R5) + single commit(). ------
     if bypass_reason == "subscripcion_vencida":

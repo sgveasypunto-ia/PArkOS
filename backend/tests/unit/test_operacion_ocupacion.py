@@ -294,14 +294,14 @@ async def test_operador_self_returns_200_with_ocupacion_response(
         pg_engine,
         uuid_sucursal=branch_uuid,
         uuid_tipo_vehiculo=tipo_auto,
-        tipo="Auto",
+        tipo="carro",
         cupo_maximo=50,
     )
     await _seed_tipo_y_cantidad(
         pg_engine,
         uuid_sucursal=branch_uuid,
         uuid_tipo_vehiculo=tipo_moto,
-        tipo="Moto",
+        tipo="moto",
         cupo_maximo=20,
     )
     await _seed_ingreso(
@@ -419,7 +419,7 @@ async def test_admin_allowed_branch_returns_200(
         pg_engine,
         uuid_sucursal=branch_uuid,
         uuid_tipo_vehiculo=tipo_auto,
-        tipo="Auto",
+        tipo="carro",
         cupo_maximo=30,
     )
 

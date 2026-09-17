@@ -74,33 +74,49 @@ export function useOcupacion(uuid_sucursal: string | null): UseOcupacionReturn {
   const accessToken = useAuthStore((s) => s.accessToken);
   const key = buildKey(uuid_sucursal, accessToken);
 
-  const { data, error, mutate } = useSWR<OcupacionResponse>(key, getOcupacion, {
-    refreshInterval: OPERACION_REFRESH_INTERVAL_MS,
-    dedupingInterval: OPERACION_DEDUPING_INTERVAL_MS,
-    // 401 → let auth store react; 403/404 → terminal, no retry spam.
-    shouldRetryOnError: (err) => {
-      if (err instanceof ParkosHttpError) {
-        return err.status !== 401 && err.status !== 403 && err.status !== 404;
-      }
-      // Unknown error shape (e.g. network) → retry per SWR defaults.
-      return true;
-    },
-    onError: (err) => {
-      // 401 is the only signal that the token is dead — defensive logout
-      // mirrors F3.3 / F4.1 behavior. All other errors are operational and
-      // MUST NOT log the operator out.
-      if (err instanceof ParkosHttpError && err.status === 401) {
-        useAuthStore.getState().clear();
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new Event('parkos:auth:cleared'));
+  // REQ-OPS-132 (qa-2026-09-17 bug 2): the SWR fetcher receives the
+  // raw UUID, NOT the cache key. Previously we passed ``getOcupacion``
+  // directly as the second argument, so SWR invoked it with the full
+  // ``/operacion/ocupacion?uuid_sucursal=...`` key string — that
+  // produced a 422 ``placa_formato_invalido`` / 500 on the backend
+  // because the helper expected a bare UUID.
+  //
+  // The closure captures ONLY the UUID (no query-string encoding).
+  // This mirrors the established precedent in
+  // ``useSesionActiva.ts:55-57`` and ``useIngresoActivo.ts:67-69``:
+  // SWR convention is that the key is opaque (used only for cache
+  // identity) and the fetcher gets the actual payload argument.
+  const { data, error, mutate } = useSWR<OcupacionResponse>(
+    key,
+    () => getOcupacion(uuid_sucursal),
+    {
+      refreshInterval: OPERACION_REFRESH_INTERVAL_MS,
+      dedupingInterval: OPERACION_DEDUPING_INTERVAL_MS,
+      // 401 → let auth store react; 403/404 → terminal, no retry spam.
+      shouldRetryOnError: (err) => {
+        if (err instanceof ParkosHttpError) {
+          return err.status !== 401 && err.status !== 403 && err.status !== 404;
         }
-        return;
-      }
-      // Operational telemetry only — `console.error` would surface as a hard
-      // error in production logs even though the failure is recoverable.
-      console.warn('[useOcupacion] polling failed', err);
+        // Unknown error shape (e.g. network) → retry per SWR defaults.
+        return true;
+      },
+      onError: (err) => {
+        // 401 is the only signal that the token is dead — defensive logout
+        // mirrors F3.3 / F4.1 behavior. All other errors are operational and
+        // MUST NOT log the operator out.
+        if (err instanceof ParkosHttpError && err.status === 401) {
+          useAuthStore.getState().clear();
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new Event('parkos:auth:cleared'));
+          }
+          return;
+        }
+        // Operational telemetry only — `console.error` would surface as a hard
+        // error in production logs even though the failure is recoverable.
+        console.warn('[useOcupacion] polling failed', err);
+      },
     },
-  });
+  );
 
   const isStale = data !== undefined && error !== undefined;
 

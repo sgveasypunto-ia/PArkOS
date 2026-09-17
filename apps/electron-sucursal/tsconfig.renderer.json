@@ -27,5 +27,17 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "src/shared/**/*.ts"]
+  "include": [
+    "src/renderer/**/*.ts",
+    "src/renderer/**/*.tsx",
+    "src/features/operacion/**/*.ts",
+    "src/features/operacion/**/*.tsx",
+    "src/features/caja/**/*.ts",
+    "src/features/caja/**/*.tsx",
+    "src/features/catalogos/**/*.ts",
+    "src/features/catalogos/**/*.tsx",
+    "src/features/auth/**/*.ts",
+    "src/features/auth/**/*.tsx",
+    "src/shared/**/*.ts"
+  ]
 }

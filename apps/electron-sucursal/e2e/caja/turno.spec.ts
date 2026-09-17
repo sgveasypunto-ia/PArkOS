@@ -45,7 +45,7 @@ test.describe('Turno flow — F3.3 T5', () => {
       route.fulfill({
         status: 200,
         body: JSON.stringify({
-          user: { id: 'usr-uuid-1', email: 'op@test.co' },
+          user: { uuid: 'usr-uuid-1', email: 'op@test.co' },
           sucursal: { uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' },
           sucursales_permitidas: [{ uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' }],
           permisos: ['abrir_cerrar_caja'],
@@ -104,7 +104,7 @@ test.describe('Turno flow — F3.3 T5', () => {
       route.fulfill({
         status: 200,
         body: JSON.stringify({
-          user: { id: 'usr-uuid-1', email: 'op@test.co' },
+          user: { uuid: 'usr-uuid-1', email: 'op@test.co' },
           sucursal: { uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' },
           sucursales_permitidas: [{ uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' }],
           permisos: ['abrir_cerrar_caja'],
@@ -150,7 +150,7 @@ test.describe('Turno flow — F3.3 T5', () => {
       route.fulfill({
         status: 200,
         body: JSON.stringify({
-          user: { id: 'usr-uuid-1', email: 'op@test.co' },
+          user: { uuid: 'usr-uuid-1', email: 'op@test.co' },
           sucursal: { uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' },
           sucursales_permitidas: [{ uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' }],
           permisos: ['abrir_cerrar_caja'],
@@ -203,7 +203,7 @@ test.describe('Turno flow — F3.3 T5', () => {
       route.fulfill({
         status: 200,
         body: JSON.stringify({
-          user: { id: 'usr-uuid-1', email: 'op@test.co' },
+          user: { uuid: 'usr-uuid-1', email: 'op@test.co' },
           sucursal: { uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' },
           sucursales_permitidas: [{ uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' }],
           permisos: ['abrir_cerrar_caja'],

@@ -129,7 +129,10 @@ import { AbrirTurno } from './AbrirTurno';
 beforeEach(() => {
   vi.clearAllMocks();
   mockUseAuth.mockReturnValue({
-    user: { id: 'usr-uuid-1', email: 'op@test.co' },
+    // REQ-OPS-131 (qa-2026-09-17 bug 1): ``uuid`` replaces the legacy
+    // ``id`` field; the F3.3 mock surface reflects the ui-kit breaking
+    // change.
+    user: { uuid: 'usr-uuid-1', email: 'op@test.co' },
     sucursal: { uuid: 'suc-uuid-1', nombre: 'Sucursal Centro' },
   });
 });

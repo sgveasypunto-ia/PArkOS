@@ -160,7 +160,7 @@ async def _seed_tarifa_vigente(
         session.add(
             TiposVehiculo(
                 uuid=uuid_tipo_auto,
-                tipo="Auto",
+                tipo="carro",
                 vigente_desde=now,
                 vigente_hasta=None,
                 estado="activo",

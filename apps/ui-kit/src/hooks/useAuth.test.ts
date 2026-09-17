@@ -40,7 +40,9 @@ function wrapper({ children }: { children: ReactNode }): JSX.Element {
 }
 
 interface MePayload {
-  user: { id: string; email: string };
+  // REQ-OPS-131 (qa-2026-09-17 bug 1): ``uuid`` replaces the legacy
+  // ``id`` field; the backend canonical field is ``UserItem.uuid``.
+  user: { uuid: string; email: string };
   sucursal: { uuid: string; nombre: string } | null;
   sucursales_permitidas: Array<{ uuid: string; nombre: string }>;
   permisos: string[];
@@ -48,7 +50,7 @@ interface MePayload {
 }
 
 const SAMPLE_ME: MePayload = {
-  user: { id: 'u-1', email: 'admin@parkos.local' },
+  user: { uuid: 'u-1', email: 'admin@parkos.local' },
   sucursal: { uuid: 'suc-1', nombre: 'Sucursal 1' },
   sucursales_permitidas: [{ uuid: 'suc-1', nombre: 'Sucursal 1' }],
   permisos: ['dashboard:read'],
