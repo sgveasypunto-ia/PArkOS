@@ -4,7 +4,9 @@ import { contextBridge, ipcRenderer } from 'electron';
  * Preload — exposes a typed bridge to the renderer via contextBridge.
  *
  * F2.2 expands the F2.1 empty placeholder with the 8-method whitelist
- * defined in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation):
+ * defined in `bridge.d.ts`; F4.2 (this commit) extends it to the
+ * 11-method whitelist by adding `tarifasStore` for the catalogos cache
+ * (DEC-FETCH-08 + R4 mitigation):
  *
  *   imprimir          → ipcRenderer.invoke('print:ticket', payload)
  *   usb.list          → ipcRenderer.invoke('usb:list')
@@ -14,6 +16,9 @@ import { contextBridge, ipcRenderer } from 'electron';
  *   authStore.get     → ipcRenderer.invoke('auth-store:get', key)
  *   authStore.set     → ipcRenderer.invoke('auth-store:set', key, value)
  *   authStore.delete  → ipcRenderer.invoke('auth-store:delete', key)
+ *   tarifasStore.get     → ipcRenderer.invoke('tarifas-store:get', key)
+ *   tarifasStore.set     → ipcRenderer.invoke('tarifas-store:set', key, value)
+ *   tarifasStore.delete  → ipcRenderer.invoke('tarifas-store:delete', key)
  *
  * CRITICAL — explicit whitelist, NO spread. Spreading `ipcRenderer`
  * would expose every IPC channel + listener API to the renderer, which
@@ -44,5 +49,11 @@ contextBridge.exposeInMainWorld('bridge', {
     get: (key) => ipcRenderer.invoke('auth-store:get', key),
     set: (key, value) => ipcRenderer.invoke('auth-store:set', key, value),
     delete: (key) => ipcRenderer.invoke('auth-store:delete', key),
+  },
+
+  tarifasStore: {
+    get: (key) => ipcRenderer.invoke('tarifas-store:get', key),
+    set: (key, value) => ipcRenderer.invoke('tarifas-store:set', key, value),
+    delete: (key) => ipcRenderer.invoke('tarifas-store:delete', key),
   },
 });

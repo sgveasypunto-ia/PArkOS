@@ -1,16 +1,21 @@
 /**
  * Preload contract test — validates `preload.ts` exposes exactly the
- * 8 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
+ * 11 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
+ *
+ * F2.2 introduced 8 methods across 6 groups; F4.2 (HU-F4.2) extends the
+ * whitelist with `tarifasStore` (+3 methods, 1 group) for the catalogos
+ * cache. Net: 7 groups, 11 methods.
  *
  * Vitest aliases the `electron` module to `./__mocks__/electron.ts`
  * (see `vitest.config.ts`), so `preload.ts` calls the stub's
  * `contextBridge.exposeInMainWorld` / `ipcRenderer.invoke` / `send`
  * spies. The contract test asserts:
- *   1. Exactly the 6 top-level groups are present (no spread, no extras).
+ *   1. Exactly the 7 top-level groups are present (no spread, no extras).
  *   2. Each method invokes the correct IPC channel with the correct args.
  *   3. The raw `ipcRenderer` handle is NOT exposed.
  */
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { vi } from 'vitest';
 
 import { contextBridge, ipcRenderer } from '../__mocks__/electron';
 
@@ -37,9 +42,9 @@ beforeEach(() => {
 });
 
 describe('preload bridge contract', () => {
-  it('exposes exactly the 6 top-level groups (no spread, no extras)', () => {
+  it('exposes exactly the 7 top-level groups (no spread, no extras)', () => {
     expect(Object.keys(exposed).sort()).toEqual(
-      ['apiStatus', 'app', 'authStore', 'imprimir', 'kiosk', 'usb'].sort(),
+      ['apiStatus', 'app', 'authStore', 'imprimir', 'kiosk', 'tarifasStore', 'usb'].sort(),
     );
   });
 
@@ -114,6 +119,32 @@ describe('preload bridge contract', () => {
 
     void authStore.delete('parkos.auth');
     expect(invokeSpy).toHaveBeenLastCalledWith('auth-store:delete', 'parkos.auth');
+  });
+
+  it('exposes `tarifasStore.get/set/delete` invoking the matching channels (F4.2)', () => {
+    const tarifasStore = exposed.tarifasStore as {
+      get: (k: string) => Promise<string | null>;
+      set: (k: string, v: string) => Promise<void>;
+      delete: (k: string) => Promise<void>;
+    };
+    expect(typeof tarifasStore).toBe('object');
+    expect(tarifasStore).not.toBeNull();
+    expect(typeof tarifasStore.get).toBe('function');
+    expect(typeof tarifasStore.set).toBe('function');
+    expect(typeof tarifasStore.delete).toBe('function');
+
+    void tarifasStore.get('parkos.tarifas.cache.v1');
+    expect(invokeSpy).toHaveBeenLastCalledWith('tarifas-store:get', 'parkos.tarifas.cache.v1');
+
+    void tarifasStore.set('parkos.tarifas.cache.v1', '{"items":[]}');
+    expect(invokeSpy).toHaveBeenLastCalledWith(
+      'tarifas-store:set',
+      'parkos.tarifas.cache.v1',
+      '{"items":[]}',
+    );
+
+    void tarifasStore.delete('parkos.tarifas.cache.v1');
+    expect(invokeSpy).toHaveBeenLastCalledWith('tarifas-store:delete', 'parkos.tarifas.cache.v1');
   });
 
   it('does NOT leak the raw ipcRenderer handle (whitelist-only)', () => {
