@@ -27,12 +27,25 @@ from .jwt_issuer_guard import verify_jwt
 
 @dataclass(frozen=True)
 class TenantContext:
-    """Per-request tenant scope + actor identity."""
+    """Per-request tenant scope + actor identity.
+
+    ``uuid_sesion`` is the active ``prod.sesion`` uuid when the request is made
+    inside an open operator turno (F3.3 / F8.1 caller convention). It is sourced
+    from the JWT ``sesion`` claim for ``operador-`` issuers; ``admin-`` and
+    ``sync-agent-`` carry ``uuid_sesion=None`` because they don't operate a
+    turno. ``None`` is also the value when the operator is authenticated but
+    has no active ``prod.sesion`` (e.g., login mid-shift before opening turno).
+
+    Closing the pre-existing F1.9 gap (``facturacion.py:376,466`` referenced
+    ``ctx.uuid_sesion`` which would ``AttributeError``); V8 in F1.12 was the
+    first caller that needed this field for real (``prod.factura_pagos`` FK).
+    """
 
     actor_uuid: uuid_lib.UUID
     actor_rol: str
     issuer_prefix: str  # 'admin-' | 'operador-' | 'sync-agent-'
     sucursal_uuid: uuid_lib.UUID | None  # operador- pins; admin- reads from header
+    uuid_sesion: uuid_lib.UUID | None = None  # operador- active turno session, if any
 
 
 class MissingSucursalContextError(HTTPException):
@@ -96,6 +109,20 @@ async def get_tenant_ctx(
                 status_code=401,
                 detail={"error": "malformed_sucursal_in_jwt", "detail": str(e)},
             )
+        # uuid_sesion sourced from JWT ``sesion`` claim (F3.3 sets it on
+        # ``POST /caja-sesion/sesiones`` -> ``uuid_sesion`` is the active
+        # ``prod.sesion.uuid``). ``None`` when the operator has no active
+        # turno (login before abrir-turno). ``None`` is also the value when
+        # the claim is malformed; we do not raise 401 on a missing claim
+        # because that would lock out operators mid-shift who happen to be
+        # outside a turno (a valid business state).
+        sesion_str = claims.get("sesion")
+        uuid_sesion_ctx: uuid_lib.UUID | None = None
+        if sesion_str:
+            try:
+                uuid_sesion_ctx = uuid_lib.UUID(sesion_str)
+            except (ValueError, TypeError):
+                uuid_sesion_ctx = None
         # X-Sucursal-Context header is OPTIONAL; if present, MUST match
         if x_sucursal_context is not None:
             try:
@@ -110,6 +137,7 @@ async def get_tenant_ctx(
             actor_rol=actor_rol,
             issuer_prefix=issuer_prefix,
             sucursal_uuid=sucursal_uuid,
+            uuid_sesion=uuid_sesion_ctx,
         )
 
     if issuer_prefix == "admin-":
@@ -128,6 +156,8 @@ async def get_tenant_ctx(
             actor_rol=actor_rol,
             issuer_prefix=issuer_prefix,
             sucursal_uuid=header_uuid,
+            # ``admin-`` does not operate a turno; uuid_sesion always None.
+            uuid_sesion=None,
         )
 
     if issuer_prefix == "sync-agent-":
@@ -147,6 +177,8 @@ async def get_tenant_ctx(
             actor_rol="sync-agent",
             issuer_prefix=issuer_prefix,
             sucursal_uuid=sucursal_uuid,
+            # ``sync-agent-`` does not operate a turno; uuid_sesion always None.
+            uuid_sesion=None,
         )
 
     raise HTTPException(

@@ -58,6 +58,15 @@ class Facturas(LifecycleEventBase):
         PG_UUID(as_uuid=True),
         nullable=True,
     )
+    # MIGRATION 0037 (F1.12 V8) -- nullable FK to ``prod.subscripciones_cliente``.
+    # Populated by ``POST /clientes/venta-suscripcion`` when ``cobrar_ahora=true``.
+    # ``ON DELETE SET NULL`` at the DB level (see MIGRATION 0037) preserves
+    # historical Factura rows when the originating subscripcion is closed-and-archived
+    # (DIAN retention forbids cascade-delete of issued invoices).
+    uuid_subscripcion_cliente: Mapped[uuid_lib.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=True,
+    )
 
     __table_args__ = (
         PrimaryKeyConstraint(

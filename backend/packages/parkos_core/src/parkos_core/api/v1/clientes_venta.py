@@ -41,14 +41,31 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
+from ...repo import (
+    factura as repo_factura,
+)
+from ...repo import (
+    factura_detalle as repo_factura_detalle,
+)
+from ...repo import (
+    factura_electronica as repo_factura_electronica,
+)
+from ...repo import (
+    impuestos as repo_impuestos,
+)
+from ...repo import (
+    resolucion_facturacion as repo_resolucion,
+)
 from ...repo import venta_suscripcion as repo_venta
 from ...schemas.clientes import VentaSuscripcionCreate, VentaSuscripcionResponse
+from ...schemas.facturacion import FacturaItemCreate
 from ..deps import requires_issuer
 from . import _helpers
 
@@ -232,22 +249,197 @@ async def venta_suscripcion(
     )
 
     # --- Step 8a: Optional V8 cobro sub-chain (F1.9 helpers reused). ----
+    # V8 wires 4 sub-chain tables (facturas + factura_detalle +
+    # factura_impuestos + factura_pagos) onto the same atomic TX as the
+    # subscripcion INSERTs. The cobro amount is:
+    # - monto_proporcional if fecha_inicio_cobertura.day > 15 (A-09 prorrateo,
+    #   persisted as `concepto='subscripcion_mensual_prorrateada'`)
+    # - plan.valor otherwise (`concepto='subscripcion_mensual'`)
+    # IVA is server-sourced from prod.impuestos.IVA (DEC-FACT-03: never
+    # hardcoded). The medio_pago='datafono' branch enforces voucher
+    # presence inline (mirror F1.9 facturacion.py:449-457; the typed
+    # VoucherRequeridoError exists but is dead code across the codebase).
     uuid_factura: uuid_lib.UUID | None = None
     if payload.cobrar_ahora:
-        # F1.9 ``crear_factura_evento`` + ``crear_factura_detalle_bulk`` +
-        # ``crear_factura_impuesto_iva`` + ``crear_factura_pago`` chained
-        # -- out of scope for F1.12 stub. Implementation deferred to a
-        # follow-up HU once the F1.9 cobro pattern is audited end-to-end.
-        uuid_factura = None
+        # Voucher check (Q4 mirror, inline).
+        if payload.medio_pago == "datafono" and not payload.referencia:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "voucher_requerido",
+                    "medio_pago": payload.medio_pago,
+                },
+                headers=no_store,
+            )
+
+        # IVA gate (Q3 handler-level, before any INSERT).
+        iva_porcentaje = await repo_impuestos.obtener_iva_vigente(session)
+        if iva_porcentaje is None:
+            raise HTTPException(
+                status_code=500,
+                detail={"error": "iva_no_configurado"},
+                headers=no_store,
+            )
+
+        # Compute cobro base.
+        plan_valor_raw = plan.valor if plan.valor is not None else Decimal(0)
+        plan_valor: Decimal = (
+            Decimal(plan_valor_raw) if not isinstance(plan_valor_raw, Decimal) else plan_valor_raw
+        )
+        monto_a_cobrar: Decimal = (
+            Decimal(monto_proporcional)
+            if monto_proporcional is not None
+            else plan_valor
+        )
+        detalle_concepto = (
+            "subscripcion_mensual_prorrateada"
+            if monto_proporcional is not None
+            else "subscripcion_mensual"
+        )
+        iva_monto = (monto_a_cobrar * iva_porcentaje).quantize(Decimal("0.01"))
+        total_con_iva = (monto_a_cobrar + iva_monto).quantize(Decimal("0.01"))
+
+        # Step 9 (F1.9 equivalent): INSERT prod.facturas.
+        uuid_factura = (
+            await repo_factura.crear_factura_evento(
+                session,
+                actor_uuid=ctx.actor_uuid,
+                new_attrs={
+                    "uuid_sucursal": target_sucursal or ctx.sucursal_uuid,
+                    "subtotal": monto_a_cobrar,
+                    "descuento": Decimal(0),
+                    "total": total_con_iva,
+                    # Q1-A: nullable FK to prod.subscripciones_cliente
+                    # populated by V8 (subscripcion already INSERTed at
+                    # Step 9 above). F1.8/F1.9 callers leave it None and
+                    # use uuid_ingreso / uuid_salida instead.
+                    "uuid_subscripcion_cliente": subscripcion.uuid,
+                },
+            )
+        ).uuid
+
+        # Step 10a (F1.9 equivalent): INSERT prod.factura_detalle.
+        await repo_factura_detalle.crear_factura_detalle_bulk(
+            session,
+            uuid_factura=uuid_factura,
+            items=[
+                FacturaItemCreate(
+                    tipo="servicio",
+                    concepto=detalle_concepto,
+                    cantidad=1,
+                    valor_unitario=monto_a_cobrar,
+                ),
+            ],
+        )
+
+        # Step 10b: INSERT prod.factura_impuestos (IVA snapshot).
+        await repo_factura.crear_factura_impuesto_iva(
+            session,
+            uuid_factura=uuid_factura,
+            base=monto_a_cobrar,
+            iva=iva_porcentaje,
+        )
+
+        # Step 10c: INSERT prod.factura_pagos (initial pago).
+        # Q2: ``ctx.uuid_sesion`` is the active operator turno session
+        # (sourced from JWT ``sesion`` claim). May be None when the
+        # operator is between turnos; ``prod.factura_pagos.uuid_sesion``
+        # is nullable so the INSERT is valid either way.
+        await repo_factura.crear_factura_pago(
+            session,
+            uuid_factura=uuid_factura,
+            medio_pago=payload.medio_pago,
+            valor=total_con_iva,
+            referencia=payload.referencia,
+            uuid_sesion=ctx.uuid_sesion,
+        )
 
     # --- Step 8b: Optional V8b FE sub-chain (F1.10 helpers reused). ----
+    # V8b wires 2 more tables (factura_electronica + envio_dian) onto the
+    # same atomic TX, gated on uuid_factura existing from Step 8a. It
+    # auto-assigns the branch-local `consecutivo` from the vigente
+    # `resolucion_facturacion` for `uuid_sucursal` (F1.10 REQ-OPS-064..074
+    # single-commit invariant KD-FE-01).
     uuid_fe: uuid_lib.UUID | None = None
     uuid_envio: uuid_lib.UUID | None = None
     if payload.emitir_factura_electronica and uuid_factura is not None:
-        # F1.10 ``crear_factura_electronica_inicial`` + ``crear_envio_dian_inicial``
-        # -- out of scope for F1.12 stub. Same deferral as V8.
-        uuid_fe = None
-        uuid_envio = None
+        target_sucursal_fe = target_sucursal or ctx.sucursal_uuid
+        if target_sucursal_fe is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "missing_sucursal_context"},
+                headers=no_store,
+            )
+        resolucion = await repo_resolucion.buscar_resolucion_vigente_por_sucursal(
+            session, uuid_sucursal=target_sucursal_fe
+        )
+        if resolucion is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "resolucion_facturacion_no_encontrada",
+                    "uuid_sucursal": str(target_sucursal_fe),
+                },
+                headers=no_store,
+            )
+        # assign_consecutivo is idempotent on (resolucion_uuid,
+        # source_event_uuid); using subscripcion.uuid as the source
+        # makes the FE consecutivo a deterministic function of the
+        # subscripcion (no collisions across replays).
+        try:
+            consecutivo = await repo_resolucion.assign_consecutivo(
+                session,
+                resolucion_uuid=resolucion.uuid,
+                source_event_uuid=subscripcion.uuid,
+            )
+        except repo_resolucion.ConsecutivoRangeExhaustedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "numeracion_agotada",
+                    "uuid_resolucion_facturacion": str(resolucion.uuid),
+                    "detail": str(exc),
+                },
+                headers=no_store,
+            ) from exc
+
+        if not resolucion.prefijo:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "resolucion_sin_prefijo",
+                    "uuid_resolucion_facturacion": str(resolucion.uuid),
+                },
+                headers=no_store,
+            )
+
+        fe_row = await repo_factura_electronica.crear_factura_electronica_inicial(
+            session,
+            actor_uuid=ctx.actor_uuid,
+            uuid_sucursal=target_sucursal_fe,
+            uuid_factura=uuid_factura,
+            uuid_resolucion_facturacion=resolucion.uuid,
+            prefijo=resolucion.prefijo,
+            consecutivo=consecutivo,
+        )
+        uuid_fe = fe_row.uuid
+
+        await repo_factura_electronica.crear_envio_dian_inicial(
+            session,
+            actor_uuid=ctx.actor_uuid,
+            uuid_sucursal=target_sucursal_fe,
+            uuid_factura_electronica=uuid_fe,
+            uuid_resolucion_facturacion=resolucion.uuid,
+            payload={
+                "prefijo": resolucion.prefijo,
+                "consecutivo": consecutivo,
+                "uuid_factura": str(uuid_factura),
+                "uuid_subscripcion_cliente": str(subscripcion.uuid),
+            },
+        )
+        uuid_envio = None  # envio_dian is created via the helper; UUIDs are
+        # not returned (no return value). For Fase 3 traceability, the
+        # caller can SELECT envio_dian WHERE uuid_factura_electronica = uuid_fe.
 
     # --- Step 10: KD-VENTA-01 SINGLE COMMIT. ---------------------------
     await session.commit()
@@ -262,7 +454,9 @@ async def venta_suscripcion(
         fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
         fecha_vencimiento=fecha_vencimiento,
         valor_total_plan=plan.valor,
-        monto_prorrateado=monto_proporcional if payload.cobrar_ahora else None,
+        monto_prorrateado=monto_proporcional
+        if (payload.cobrar_ahora and monto_proporcional is not None)
+        else None,
         uuid_factura=uuid_factura,
         uuid_factura_electronica=uuid_fe,
         uuid_envio_dian=uuid_envio,
