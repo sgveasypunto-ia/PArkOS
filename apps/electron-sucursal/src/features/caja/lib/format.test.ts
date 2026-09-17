@@ -3,6 +3,8 @@
  *
  * U1: formatCOP(50000) → "$ 50.000" (es-CO, 0 decimales).
  * U2: formatCOP(0) → "$ 0".
+ * U2-plan: formatCOP(8000) → "$ 8.000" (F4.2 plan.md T2 verbatim literal).
+ * U2b: formatCOP(1234567) → "$ 1.234.567".
  * U3: formatTiempoTranscurrido(fecha hace 30s) → "recién".
  * U4: formatTiempoTranscurrido(fecha hace 5min) → "hace 5 minutos".
  * U5: formatTiempoTranscurrido(fecha hace 2h) → "hace 2 horas".
@@ -23,6 +25,13 @@ describe('formatCOP', () => {
   it('U2: formatCOP(0) → "$ 0"', () => {
     const result = formatCOP(0);
     expect(result.replace(/\s/g, ' ')).toMatch(/^\$\s?0$/);
+  });
+
+  it('U2-plan: formatCOP(8000) → "$ 8.000" (F4.2 plan.md T2 verbatim fixture)', () => {
+    const result = formatCOP(8000);
+    // es-CO Intl uses non-breaking space between $ and number on some platforms;
+    // accept any whitespace separator.
+    expect(result.replace(/\s/g, ' ')).toMatch(/^\$\s?8\.000$/);
   });
 
   it('U2b: formatCOP(1234567) → "$ 1.234.567"', () => {

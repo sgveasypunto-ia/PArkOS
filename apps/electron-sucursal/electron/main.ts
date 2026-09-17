@@ -7,6 +7,11 @@ import { initUpdater } from './services/updater';
 import { initLogConfig } from './services/log-config';
 import { initApiStatus, getApiStatus } from './services/api-status';
 import { applyKiosko, tryUnlockKiosko, type StoreLike } from './services/kiosko';
+import {
+  readTarifasValue,
+  writeTarifasValue,
+  removeTarifasValue,
+} from './services/tarifas-store';
 
 const isDev = !app.isPackaged;
 
@@ -79,17 +84,26 @@ app.whenReady().then(() => {
   // DEC-UPD-08: kiosko mode is a deploy-time decision (env var), not an
   // operator toggle. Activating it locks the window into full-screen
   // and blocks Ctrl+W / Alt+F4.
-  const store: StoreLike = {
-    get: (key: string): unknown => null,
+  // The `electronStore` stub here is a placeholder for the real
+  // electron-store instance (F4.2 leaves the upgrade path open — the
+  // `tarifasStore` alias shares the same backing store as kiosko).
+  const electronStore: StoreLike = {
+    get: (_key: string): unknown => null,
     set: (key: string, value: unknown): void => {
       log.warn('kiosko.store.unbacked_write', { key, type: typeof value });
     },
   };
+  // F4.2: catalogos tarifa cache lives under the same electron-store
+  // namespace as kiosko (DEC-SUC-05: electron-store for cross-restart
+  // catálogos cache). Both share the current backing stub; a follow-up
+  // PR can swap it for a real electron-store instance without changing
+  // the handler surface.
+  const tarifasStore: StoreLike = electronStore;
   if (process.env['PARKOS_KIOSK_MODE'] === '1' && mainWindow) {
     applyKiosko(mainWindow, Menu, true, log);
   }
 
-  registerIpcHandlers(store);
+  registerIpcHandlers(electronStore, tarifasStore);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
@@ -97,7 +111,7 @@ app.whenReady().then(() => {
   });
 });
 
-function registerIpcHandlers(kioskoStore: StoreLike): void {
+function registerIpcHandlers(kioskoStore: StoreLike, tarifasStoreRef: StoreLike): void {
   ipcMain.handle('api:status', () => getApiStatus());
   ipcMain.handle('kiosk:unlock', (_e, pin: string) =>
     tryUnlockKiosko(pin, kioskoStore, log),
@@ -112,6 +126,20 @@ function registerIpcHandlers(kioskoStore: StoreLike): void {
     }
   });
   ipcMain.on('app:quit', () => app.quit());
+
+  // F4.2 — catalogos tarifa cache (DEC-SUC-05: electron-store for cross-restart cache).
+  // Thin handlers: persistence logic lives in `tarifas-store.ts` so it can be
+  // unit-tested without spinning up Electron. `.then` is defensive in case
+  // the underlying store later upgrades to an async implementation.
+  ipcMain.handle('tarifas-store:get', (_e, key: string) =>
+    Promise.resolve(readTarifasValue(tarifasStoreRef, key)),
+  );
+  ipcMain.handle('tarifas-store:set', (_e, key: string, value: string) => {
+    writeTarifasValue(tarifasStoreRef, key, value);
+  });
+  ipcMain.handle('tarifas-store:delete', (_e, key: string) => {
+    removeTarifasValue(tarifasStoreRef, key);
+  });
 }
 
 app.on('window-all-closed', () => {
