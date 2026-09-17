@@ -65,7 +65,7 @@ export default function Principal() {
   const tiposVehiculo = useTiposVehiculo();
 
   const [placa, setPlaca] = useState<string | null>(null);
-  const [tipoDetectado, setTipoDetectado] = useState<'Auto' | 'Moto' | null>(
+  const [tipoDetectado, setTipoDetectado] = useState<'carro' | 'moto' | null>(
     null,
   );
   const [submitting, setSubmitting] = useState(false);

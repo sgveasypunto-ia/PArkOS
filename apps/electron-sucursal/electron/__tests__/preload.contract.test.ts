@@ -1,15 +1,18 @@
 /**
  * Preload contract test — validates `preload.ts` exposes exactly the
- * 11 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
+ * 14 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
+ * Post-F4.2 closure (2026-09-17) the surface grew to 7 groups / 14 methods.
  *
  * Vitest aliases the `electron` module to `./__mocks__/electron.ts`
  * (see `vitest.config.ts`), so `preload.ts` calls the stub's
  * `contextBridge.exposeInMainWorld` / `ipcRenderer.invoke` / `send`
  * spies. The contract test asserts:
- *   1. Exactly the 6 top-level groups are present (no spread, no extras).
+ *   1. Exactly the 7 top-level groups are present (no spread, no extras).
  *   2. `imprimir` is an OBJECT (callable + helpers per F5.1) and the
  *      helpers route to the correct channels.
  *   3. The raw `ipcRenderer` handle is NOT exposed.
+ *   4. `tarifasStore` routes to the IPC handlers wired in `main.ts`
+ *      (F4.2 closure — was previously missing; this test is the regression guard).
  */
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { vi } from 'vitest';
@@ -43,9 +46,41 @@ beforeEach(() => {
 });
 
 describe('preload bridge contract', () => {
-  it('exposes exactly the 6 top-level groups (no spread, no extras)', () => {
+  it('exposes exactly the 7 top-level groups (no spread, no extras)', () => {
     expect(Object.keys(exposed).sort()).toEqual(
-      ['apiStatus', 'app', 'authStore', 'imprimir', 'kiosk', 'usb'].sort(),
+      ['apiStatus', 'app', 'authStore', 'imprimir', 'kiosk', 'tarifasStore', 'usb'].sort(),
+    );
+  });
+
+  it('tarifasStore.get routes to tarifas-store:get with the key verbatim', () => {
+    const tarifasStore = exposed.tarifasStore as {
+      get: (k: string) => Promise<unknown>;
+      set: (k: string, v: string) => Promise<unknown>;
+      delete: (k: string) => Promise<unknown>;
+    };
+    void tarifasStore.get('parkos.tarifas.cache.v1:suc-1');
+    expect(invokeSpy).toHaveBeenCalledWith(
+      'tarifas-store:get',
+      'parkos.tarifas.cache.v1:suc-1',
+    );
+  });
+
+  it('tarifasStore.set routes to tarifas-store:set with (key, value) verbatim', () => {
+    const tarifasStore = exposed.tarifasStore as {
+      set: (k: string, v: string) => Promise<unknown>;
+    };
+    void tarifasStore.set('k', '{"items":[]}');
+    expect(invokeSpy).toHaveBeenCalledWith('tarifas-store:set', 'k', '{"items":[]}');
+  });
+
+  it('tarifasStore.delete routes to tarifas-store:delete with the key verbatim', () => {
+    const tarifasStore = exposed.tarifasStore as {
+      delete: (k: string) => Promise<unknown>;
+    };
+    void tarifasStore.delete('parkos.tarifas.cache.v1:suc-1');
+    expect(invokeSpy).toHaveBeenCalledWith(
+      'tarifas-store:delete',
+      'parkos.tarifas.cache.v1:suc-1',
     );
   });
 

@@ -61,14 +61,14 @@ const DEDUPING_INTERVAL_MS = 5 * 60 * 1000;
 const HARDCODED_CATALOG: TipoVehiculo[] = [
   {
     uuid: '00000000-0000-0000-0000-000000000001',
-    tipo: 'Auto',
+    tipo: 'carro',
     vigente_desde: '2026-01-01T00:00:00Z',
     vigente_hasta: null,
     estado: 'activo',
   },
   {
     uuid: '00000000-0000-0000-0000-000000000002',
-    tipo: 'Moto',
+    tipo: 'moto',
     vigente_desde: '2026-01-01T00:00:00Z',
     vigente_hasta: null,
     estado: 'activo',

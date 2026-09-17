@@ -52,8 +52,8 @@ vi.mock('./ForzarIngresoModal', () => ({
 vi.mock('../../catalogos/hooks/useTiposVehiculo', () => ({
   useTiposVehiculo: () => ({
     tipos: [
-      { uuid: '00000000-0000-0000-0000-000000000010', tipo: 'Auto' },
-      { uuid: '00000000-0000-0000-0000-000000000020', tipo: 'Moto' },
+      { uuid: '00000000-0000-0000-0000-000000000010', tipo: 'carro' },
+      { uuid: '00000000-0000-0000-0000-000000000020', tipo: 'moto' },
     ],
     isLoading: false,
     error: undefined,

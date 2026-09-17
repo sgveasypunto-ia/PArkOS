@@ -55,7 +55,7 @@ export function IngresoPanel(): JSX.Element {
   const tiposVehiculo = useTiposVehiculo();
 
   const [placa, setPlaca] = useState<string | null>(null);
-  const [tipoDetectado, setTipoDetectado] = useState<'Auto' | 'Moto' | null>(null);
+  const [tipoDetectado, setTipoDetectado] = useState<'carro' | 'moto' | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState<SuccessState | null>(null);
   const [forzarOpen, setForzarOpen] = useState(false);

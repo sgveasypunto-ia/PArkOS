@@ -48,29 +48,36 @@ export const REGEX_AUTO = /^[A-Z]{3}[0-9]{3}$/;
 export const REGEX_MOTO = /^[A-Z]{3}[0-9]{2}[A-Z]$/;
 
 /**
- * Detecta tipo de vehículo (Auto / Moto) a partir de la placa digitada.
+ * Detecta tipo de vehículo (carro / moto) a partir de la placa digitada.
  *
  * Función pura determinista — sin acceso a red, store, DOM. Testeable sin
  * mocks (6 unit tests U1..U6 verbatim `plan.md:1381`).
+ *
+ * Lowercase match (REQ-OPS-134 + canon `repo/placa.py:75,77`): el backend
+ * retorna `'carro'/'moto'` en minúsculas cuando `tipos_vehiculo.tipo IN
+ * ('carro','moto','bicicleta','patineta')`. Para que F6.1
+ * `Principal.tsx:111-117` lookup `tipos.find(tv => tv.tipo === tipoNombre)`
+ * funcione contra la respuesta API real, esta función DEBE retornar
+ * lowercase. Cambio aplicado en audit Fase 4 cierre (2026-09-17).
  *
  * @param placa Placa digitada por el operador. Acepta minúsculas, espacios
  *              internos y whitespace al inicio/fin — todos normalizados
  *              antes del regex. NO acepta caracteres especiales (`@`, `.`,
  *              `-`, etc.) ni tolerancia de tipeo `O↔0`/`I↔1`/`B↔8`.
- * @returns `'Auto'` si matchea `REGEX_AUTO`, `'Moto'` si matchea `REGEX_MOTO`,
+ * @returns `'carro'` si matchea `REGEX_AUTO`, `'moto'` si matchea `REGEX_MOTO`,
  *          `null` si ninguna regex matchea (formato inválido).
  *
  * @example
- *   detectarTipoVehiculo('ABC123');   // → 'Auto'
- *   detectarTipoVehiculo('ABC12D');   // → 'Moto'
- *   detectarTipoVehiculo('abc123');   // → 'Auto' (normalizado)
- *   detectarTipoVehiculo('  ABC123  '); // → 'Auto' (normalizado)
+ *   detectarTipoVehiculo('ABC123');   // → 'carro'
+ *   detectarTipoVehiculo('ABC12D');   // → 'moto'
+ *   detectarTipoVehiculo('abc123');   // → 'carro' (normalizado)
+ *   detectarTipoVehiculo('  ABC123  '); // → 'carro' (normalizado)
  *   detectarTipoVehiculo('ABCD12');   // → null (formato inválido)
  *   detectarTipoVehiculo('');         // → null (placa vacía)
  */
-export function detectarTipoVehiculo(placa: string): 'Auto' | 'Moto' | null {
+export function detectarTipoVehiculo(placa: string): 'carro' | 'moto' | null {
   const normalizada = placa.trim().toUpperCase().replace(/\s+/g, '');
-  if (REGEX_AUTO.test(normalizada)) return 'Auto';
-  if (REGEX_MOTO.test(normalizada)) return 'Moto';
+  if (REGEX_AUTO.test(normalizada)) return 'carro';
+  if (REGEX_MOTO.test(normalizada)) return 'moto';
   return null;
 }
