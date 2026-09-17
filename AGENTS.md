@@ -371,6 +371,7 @@ git push origin --delete feature/hu-f4-1-deteccion-tipo-vehiculo
 5. **SIEMPRE configurar author** antes del primer commit: `git -c user.name='Parkos Dev' -c user.email='dev@parkos.local' ...` — nunca usar IA como autor.
 6. **NUNCA forzar push** (`--force`, `--force-with-lease`) sin consultar al usuario. Si hay conflictos, resolver localmente o rebase.
 7. **SIEMPRE hacer `git fetch --prune origin`** antes de listar ramas remotas (evita mostrar ramas ya borradas en GitHub).
+8. **SIEMPRE cerrar la sesión con merge a `dev`** (override usuario 2026-09-17). Cada ajuste de desarrollo — feature, bugfix, refactor, scaffolding, artefacto SDD, incluso housekeeping — debe terminar con el orchestrator ejecutando `git merge --no-ff feature/<hu-id>-<slug>` (o `--ff-only` si la feature es descendiente directo de `dev`) sobre `dev`, resolviendo conflictos en el momento, seguido de `git push origin dev`, **antes de declarar la sesión cerrada**. Los PRs que abrió cada feature siguen siendo artefactos de trazabilidad; GitHub los cierra automáticamente cuando `dev` los alcanza. Esta regla es **no-negociable**: NO dejar trabajo en una feature branch local esperando merge manual via GitHub UI. La excepción pre-existente "housekeeping commits materializando REQ-OPS al spec canónico pueden ir directo a dev" se mantiene solo para micro-cambios de docs/SDD que no justifican una rama; cualquier cambio con código va con rama + merge-to-dev al cierre.
 
 ### Git config helper (ejecutar una vez por máquina)
 

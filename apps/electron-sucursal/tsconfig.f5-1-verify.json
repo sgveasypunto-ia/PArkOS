@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.main.json",
+  "include": [
+    "electron/types/print.ts",
+    "electron/types/escpos-usb.d.ts",
+    "electron/services/printer.ts",
+    "electron/services/printQueue.ts",
+    "electron/ipc/imprimir.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "electron/main.ts",
+    "electron/preload.ts",
+    "electron/__tests__/**",
+    "electron/__mocks__/**",
+    "e2e/**/*"
+  ]
+}
