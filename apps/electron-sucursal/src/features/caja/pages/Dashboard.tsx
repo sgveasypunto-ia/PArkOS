@@ -43,6 +43,8 @@ import { IngresoPanel } from '../../operacion/components/IngresoPanel';
 import { SalidaPanel } from '../../operacion/components/SalidaPanel';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
 import { SuscripcionesPanel } from '../../suscripciones/components/SuscripcionesPanel';
+import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
+import { AlertasPanel } from '../../sync/components/AlertasPanel';
 import {
   Card,
   CardContent,
@@ -128,33 +130,15 @@ export function Dashboard(): JSX.Element {
         </section>
 
         <section data-testid="dashboard-section-suscripciones" aria-label={t('caja:dashboard.suscripciones', { defaultValue: 'Suscripciones' })}>
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('caja:dashboard.suscripciones', { defaultValue: 'Suscripciones' })}</CardTitle>
-              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-5).' })}</CardDescription>
-            </CardHeader>
-            <CardContent />
-          </Card>
+          <SuscripcionesPanel uuid_sucursal={uuid_sucursal} />
         </section>
 
         <section data-testid="dashboard-section-sync" aria-label={t('caja:dashboard.sync', { defaultValue: 'Sincronización' })}>
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('caja:dashboard.sync', { defaultValue: 'Sincronización' })}</CardTitle>
-              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-6).' })}</CardDescription>
-            </CardHeader>
-            <CardContent />
-          </Card>
+          <SyncStatusStrip uuid_sucursal={uuid_sucursal} />
         </section>
 
         <section data-testid="dashboard-section-alertas" aria-label={t('caja:dashboard.alertas', { defaultValue: 'Alertas' })}>
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('caja:dashboard.alertas', { defaultValue: 'Alertas' })}</CardTitle>
-              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-6).' })}</CardDescription>
-            </CardHeader>
-            <CardContent />
-          </Card>
+          <AlertasPanel uuid_sucursal={uuid_sucursal} />
         </section>
 
         {/* DrawerHost — single-drawer invariant (REQ-OPS-138). */}
