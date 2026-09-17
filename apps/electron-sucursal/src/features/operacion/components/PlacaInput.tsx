@@ -63,13 +63,20 @@ export interface PlacaInputProps {
   onValidSubmit: (placa: string) => void;
   /** Disable while the parent is processing (e.g. confirming). */
   disabled?: boolean;
+  /**
+   * Optional pre-fill. When provided AND matching the F4.1 regexes
+   * (Auto | Moto), the input value is set on mount so the operator
+   * sees the plate and just has to press Enter / "Registrar" once.
+   * We DO NOT auto-submit — the operator must confirm explicitly.
+   */
+  initialValue?: string | null;
 }
 
 /**
  * F6.1 plate input — auto-focus on mount, uppercase normalization,
  * Enter-submit, Zod validation against F4.1 regexes.
  */
-export function PlacaInput({ onValidSubmit, disabled }: PlacaInputProps) {
+export function PlacaInput({ onValidSubmit, disabled, initialValue }: PlacaInputProps) {
   const { t } = useTranslation('operacion');
   const inputRef = useRef<HTMLInputElement | null>(null);
   const form = useForm<PlacaFormValues>({
@@ -83,6 +90,22 @@ export function PlacaInput({ onValidSubmit, disabled }: PlacaInputProps) {
     // uppercase + auto-focused".
     inputRef.current?.focus();
   }, []);
+
+  // Pre-fill on mount only (initialValue is read-once). If the supplied
+  // value matches the F4.1 regexes, set it in the form so the operator
+  // sees the plate and can submit with one Enter / one click. We do not
+  // submit on the operator's behalf — they must confirm.
+  useEffect(() => {
+    if (!initialValue) return;
+    if (!REGEX_AUTO.test(initialValue) && !REGEX_MOTO.test(initialValue)) return;
+    form.setValue('placa', initialValue, { shouldValidate: false });
+    // Re-focus the input so the operator can immediately press Enter.
+    inputRef.current?.focus();
+    // form is stable; only re-run if the initialValue changes between
+    // mount cycles (the typical case is mount-only, but tests may
+    // re-render with different values).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialValue]);
 
   return (
     <Form {...form}>
