@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-# Resolve from the test file's location: tests/static/<file>.py -> 2 levels up
+# Resolve from the test file's location: tests/static/<file>.py → 2 levels up
 # reaches ``backend/``. Both artifacts live at ``backend/packages/<pkg>/``.
 _OPENAPI_ADMIN = (
     Path(__file__).resolve().parents[2] / "packages" / "api_admin" / "openapi.json"
@@ -36,11 +36,11 @@ _OPENAPI_BRANCH = (
 
 
 def _load_or_skip(path: Path) -> dict | None:
-    """Load a JSON file as an OpenAPI spec, or skip if the artifact is absent.
+    """Load a JSON file as OpenAPI spec, or skip if the artifact is absent.
 
     Tests under ``tests/static/`` must NOT depend on a build step; if a
-    reviewer runs the suite locally without the committed artifacts, the
-    test skips with a clear pointer rather than erroring.
+    reviewer is running the suite locally without the committed artifacts,
+    the test skips with a clear pointer rather than erroring.
     """
     if not path.exists():
         pytest.skip(f"OpenAPI artifact not found: {path}")
