@@ -2,11 +2,15 @@ import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from 'electron-log';
 import path from 'node:path';
+import Store from 'electron-store';
 
 import { initUpdater } from './services/updater';
 import { initLogConfig } from './services/log-config';
 import { initApiStatus, getApiStatus } from './services/api-status';
 import { applyKiosko, tryUnlockKiosko, type StoreLike } from './services/kiosko';
+import { PrintQueue } from './services/printQueue';
+import { print, mapEscposError, PrinterError } from './services/printer';
+import { registerImprimirHandlers } from './ipc/imprimir';
 
 const isDev = !app.isPackaged;
 
@@ -66,6 +70,30 @@ function createMainWindow(): void {
   }
 }
 
+// Single, named electron-store instance shared by kiosko + F5.1 queue.
+// (F5.1 T3.3: previously the kiosko handler received an inline stub;
+// replacing it with the real store is harmless because kiosko only
+// reads/writes the `kiosk.*` keys and PrintQueue only reads/writes
+// the `parkos.print.queue.v1` key — they do not overlap.)
+const electronStore = new Store();
+
+const printQueue = new PrintQueue(
+  electronStore,
+  log,
+  async (item) => {
+    const buf = Buffer.from(item.buffer, 'base64');
+    try {
+      await print(buf, item.vid, item.pid, log);
+    } catch (err) {
+      if (err instanceof PrinterError) throw err;
+      throw new PrinterError(mapEscposError(err), String(err), { cause: err });
+    }
+  },
+  (event) => {
+    mainWindow?.webContents.send('print:status', event);
+  },
+);
+
 app.whenReady().then(() => {
   initUpdater(autoUpdater, process.env, log);
   initApiStatus(
@@ -79,17 +107,17 @@ app.whenReady().then(() => {
   // DEC-UPD-08: kiosko mode is a deploy-time decision (env var), not an
   // operator toggle. Activating it locks the window into full-screen
   // and blocks Ctrl+W / Alt+F4.
-  const store: StoreLike = {
-    get: (key: string): unknown => null,
-    set: (key: string, value: unknown): void => {
-      log.warn('kiosko.store.unbacked_write', { key, type: typeof value });
-    },
-  };
+  const kioskoStore: StoreLike = electronStore;
   if (process.env['PARKOS_KIOSK_MODE'] === '1' && mainWindow) {
     applyKiosko(mainWindow, Menu, true, log);
   }
 
-  registerIpcHandlers(store);
+  // F5.1 — wire the print IPC handlers BEFORE the legacy `registerIpcHandlers`
+  // so the same `ipcMain.handle` batch contains both new and legacy channels.
+  registerImprimirHandlers({ ipcMain, queue: printQueue, mainWindow, log });
+  registerIpcHandlers(kioskoStore);
+  printQueue.start();
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
@@ -118,4 +146,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  // F5.1 — cancel the drain timer so the process can exit cleanly even
+  // if the OS is mid-sleep when the user clicks "Quit".
+  printQueue.stop();
 });

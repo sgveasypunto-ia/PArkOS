@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  HU-F5.1 — macOS entitlements for `electron-sucursal`.
+
+  Enables the hardened runtime to talk to USB thermal printers via
+  `escpos-usb` (`libusb` binding). Without this entitlement the macOS
+  sandbox rejects the `IOUSBHost` open request and `print()` raises
+  `printer_offline` permanently even when the cable is plugged in.
+
+  Required since F5.1 is the first Electron release that uses USB
+  hardware (F2.x / F3.x / F4.x were pure IPC + disk). electron-builder
+  consumes this file via the `mac.entitlements` + `mac.entitlementsInherit`
+  keys introduced in T1.5.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.usb</key>
+  <true/>
+</dict>
+</plist>

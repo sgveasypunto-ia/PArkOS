@@ -1,22 +1,26 @@
 /**
  * Preload contract test — validates `preload.ts` exposes exactly the
- * 8 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
+ * 11 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
  *
  * Vitest aliases the `electron` module to `./__mocks__/electron.ts`
  * (see `vitest.config.ts`), so `preload.ts` calls the stub's
  * `contextBridge.exposeInMainWorld` / `ipcRenderer.invoke` / `send`
  * spies. The contract test asserts:
  *   1. Exactly the 6 top-level groups are present (no spread, no extras).
- *   2. Each method invokes the correct IPC channel with the correct args.
+ *   2. `imprimir` is an OBJECT (callable + helpers per F5.1) and the
+ *      helpers route to the correct channels.
  *   3. The raw `ipcRenderer` handle is NOT exposed.
  */
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { vi } from 'vitest';
 
 import { contextBridge, ipcRenderer } from '../__mocks__/electron';
 
 const exposeSpy = contextBridge.exposeInMainWorld as ReturnType<typeof vi.fn>;
 const invokeSpy = ipcRenderer.invoke as ReturnType<typeof vi.fn>;
 const sendSpy = ipcRenderer.send as ReturnType<typeof vi.fn>;
+const onSpy = ipcRenderer.on as ReturnType<typeof vi.fn>;
+const offSpy = ipcRenderer.off as ReturnType<typeof vi.fn>;
 
 let exposed: Record<string, unknown> = {};
 
@@ -34,6 +38,8 @@ beforeAll(async () => {
 beforeEach(() => {
   invokeSpy.mockClear();
   sendSpy.mockClear();
+  onSpy.mockClear();
+  offSpy.mockClear();
 });
 
 describe('preload bridge contract', () => {
@@ -43,15 +49,44 @@ describe('preload bridge contract', () => {
     );
   });
 
-  it('exposes `imprimir(payload)` and invokes print:ticket', () => {
-    const imprimir = exposed.imprimir as (p: unknown) => Promise<unknown>;
+  it('exposes `imprimir` as an object with callable + getQueue + onStatus (F5.1)', () => {
+    const imprimir = exposed.imprimir as {
+      (p: unknown): Promise<unknown>;
+      getQueue: () => Promise<unknown>;
+      onStatus: (h: (event: unknown) => void) => () => void;
+    };
+    // F5.1: `imprimir` is no longer a plain function — it's an Object.assign(fn, helpers).
     expect(typeof imprimir).toBe('function');
-    void imprimir({ ticketId: 't-1', lines: [], cut: true });
+    expect(typeof imprimir.getQueue).toBe('function');
+    expect(typeof imprimir.onStatus).toBe('function');
+  });
+
+  it('`imprimir(payload)` invokes print:ticket with the payload verbatim', () => {
+    const imprimir = exposed.imprimir as (p: unknown) => Promise<unknown>;
+    void imprimir({ buffer: 'AA==', ticketId: 't-1', cut: true });
     expect(invokeSpy).toHaveBeenCalledWith('print:ticket', {
+      buffer: 'AA==',
       ticketId: 't-1',
-      lines: [],
       cut: true,
     });
+  });
+
+  it('`imprimir.getQueue()` invokes print:queue:get', () => {
+    const imprimir = exposed.imprimir as { getQueue: () => Promise<unknown> };
+    void imprimir.getQueue();
+    expect(invokeSpy).toHaveBeenCalledWith('print:queue:get');
+  });
+
+  it('`imprimir.onStatus(handler)` registers on print:status and returns an unsubscribe', () => {
+    const imprimir = exposed.imprimir as {
+      onStatus: (h: (event: unknown) => void) => () => void;
+    };
+    const handler = (_e: unknown): void => undefined;
+    const unsubscribe = imprimir.onStatus(handler);
+    expect(onSpy).toHaveBeenCalledWith('print:status', expect.any(Function));
+    expect(typeof unsubscribe).toBe('function');
+    unsubscribe();
+    expect(offSpy).toHaveBeenCalledWith('print:status', expect.any(Function));
   });
 
   it('exposes `usb.list()` and invokes usb:list', () => {
