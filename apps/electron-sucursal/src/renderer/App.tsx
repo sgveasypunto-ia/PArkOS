@@ -2,7 +2,6 @@ import { useTranslation } from 'react-i18next';
 import { Route, Routes } from 'react-router-dom';
 
 import { StatusBar } from './components/StatusBar';
-import { TurnoActivoBadge } from './components/TurnoActivoBadge';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { Login } from '../features/auth/pages/Login';
 import { Dashboard } from '../features/caja/pages/Dashboard';
@@ -18,11 +17,10 @@ import { CerrarTurno } from '../features/caja/pages/CerrarTurno';
  * (F4.3 "TEMPORAL" comment honoured).
  *
  * Layout: full-bleed (no centered max-width) so the 6-section dashboard
- * uses the whole viewport without scroll at 1080p. The persistent
- * `<TurnoActivoBadge />` floats top-right and remains visible across
- * ALL routes (login excluded) so the operator always has a corner-anchored
- * read on whether they have a turno open — even when a drawer covers
- * most of the viewport.
+ * uses the whole viewport without scroll at 1080p.
+ *
+ * The persistent turno indicator (chip + expandable details) lives inside
+ * `<Dashboard />` as `<TurnoActivoToggle />` — see F3.3 + REQ-OPS-027.
  *
  * The root renders a semantic `<main>` with one `<h1>` so axe-core's
  * WCAG 2.1 AA audit (RNF-022) is satisfied from day one.
@@ -33,7 +31,6 @@ export default function App(): JSX.Element {
   return (
     <>
       <StatusBar />
-      <TurnoActivoBadge />
       <main
         lang="es-CO"
         className="block min-h-[calc(100vh-2rem)] w-full bg-muted/40 px-4 py-3"
