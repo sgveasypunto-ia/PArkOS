@@ -68,6 +68,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
 
   const [placa, setPlaca] = useState<string | null>(null);
   const [tipoDetectado, setTipoDetectado] = useState<'carro' | 'moto' | null>(null);
+  const [observaciones, setObservaciones] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState<SuccessState | null>(null);
   const [forzarOpen, setForzarOpen] = useState(false);
@@ -75,6 +76,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const { latestIngreso, refresh: refreshIngresoActivo } = useIngresoActivo(placa);
+  const tiposVehiculoIsFallback = tiposVehiculo.isFromFallback;
 
   useEffect(() => {
     if (!placa) {
@@ -151,15 +153,28 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         setSubmitError('placa_formato_invalido');
         return;
       }
-      const tipoEntry = tiposVehiculo.tipos.find((tv) => tv.tipo === tipoNombre);
-      if (!tipoEntry) {
-        setSubmitError('cupo_no_configurado');
-        return;
+
+      // Sentinel UUID guard (fix tipo_vehiculo_invalido).
+      // `tiposVehiculo.tipos` may come from the HARDCODED_CATALOG fallback
+      // (DEC-F4.1-05), whose UUIDs (00000000-0000-...0001/0002) do NOT
+      // exist in prod.tipos_vehiculo. Sending them triggers V4 in
+      // operacion.py:198-205. When the catalog is degraded, omit the
+      // UUID and let the backend derive it from the placa regex via the
+      // V5 layer (operacion.py:184-195).
+      let uuid_tipo_vehiculo: string | undefined;
+      if (!tiposVehiculoIsFallback) {
+        const tipoEntry = tiposVehiculo.tipos.find((tv) => tv.tipo === tipoNombre);
+        if (!tipoEntry) {
+          setSubmitError('cupo_no_configurado');
+          return;
+        }
+        uuid_tipo_vehiculo = tipoEntry.uuid;
       }
 
       const payload: PostIngresoPayload = {
         placa: nextPlaca,
-        uuid_tipo_vehiculo: tipoEntry.uuid,
+        uuid_tipo_vehiculo,
+        observaciones: observaciones.trim() === '' ? undefined : observaciones.trim(),
       };
 
       setSubmitting(true);
@@ -173,7 +188,14 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tiposVehiculo.tipos, navigate, openSuccessWithAutoPrint, handlePostError],
+    [
+      tiposVehiculo.tipos,
+      tiposVehiculoIsFallback,
+      observaciones,
+      navigate,
+      openSuccessWithAutoPrint,
+      handlePostError,
+    ],
   );
 
   const handleForzarConfirm = useCallback(
@@ -207,6 +229,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
     setSuccess(null);
     setPlaca(null);
     setTipoDetectado(null);
+    setObservaciones('');
     setSubmitError(null);
     void refreshIngresoActivo();
   }, [refreshIngresoActivo]);
@@ -229,6 +252,35 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       </header>
 
       <PlacaInput onValidSubmit={handlePlacaSubmit} disabled={submitting} initialValue={initialPlaca} />
+
+      <div className="space-y-1">
+        <label
+          htmlFor="ingreso-observaciones"
+          className="text-sm font-medium"
+        >
+          {t('ingreso_observaciones_label', { defaultValue: 'Observaciones (opcional)' })}
+        </label>
+        <textarea
+          id="ingreso-observaciones"
+          data-testid="ingreso-observaciones"
+          value={observaciones}
+          onChange={(e) => setObservaciones(e.target.value.slice(0, 500))}
+          placeholder={t('ingreso_observaciones_placeholder', {
+            defaultValue: 'Estado del vehículo, objetos visibles, notas del operador',
+          })}
+          disabled={submitting}
+          maxLength={500}
+          rows={2}
+          aria-describedby="ingreso-observaciones-help"
+          className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
+        />
+        <p
+          id="ingreso-observaciones-help"
+          className="text-xs text-muted-foreground"
+        >
+          {observaciones.length}/500
+        </p>
+      </div>
 
       {tipoDetectado && (
         <p className="text-sm text-muted-foreground" role="status">

@@ -18,6 +18,21 @@
 - **Data architecture**: Audit-First / Compliance-Driven with Bi-Temporal model and logical deletion only — see [Architectural Principles](#architectural-principles) below
 - **API contract**: C/Q/U only — Consulta, Inserción, Actualización (bi-temporal). **No physical DELETE at any layer.**
 
+## Dev Credentials (LOCAL DEV ONLY)
+
+These credentials exist in the local dev database for end-to-end testing.
+**Never use them against staging or production environments.**
+
+| Role | Email | Password | Use case |
+|------|-------|----------|----------|
+| Branch operator | `operador@parkos.local` | `Pass1234word` | Login from `web_sucursal`, post ingresos / salidas / arqueos |
+
+**WARNING**: password is plaintext in this repo. Compromise of this file =
+compromise of the dev DB. Rotate by re-running the local seed (`backend/scripts/`).
+The email TLD `.local` is intentionally permitted by
+`parkos_core/schemas/_email.py::_parkos_email_lenient` (RFC 6762 mDNS reserved)
+so the bootstrap login flow works against Pydantic's strict default validator.
+
 ## Architectural Principles
 
 These principles are project-wide canon. Every sub-agent (and every human
