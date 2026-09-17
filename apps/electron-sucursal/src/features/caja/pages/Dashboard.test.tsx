@@ -71,6 +71,12 @@ vi.mock('../components/OcupacionPanel', () => ({
   OcupacionPanel: () => <div data-testid="ocupacion-panel-mock" />,
 }));
 
+// Stub IngresoPanel so the Dashboard test doesn't need PlacaInput +
+// useTiposVehiculo + window.bridge stubs.
+vi.mock('../../operacion/components/IngresoPanel', () => ({
+  IngresoPanel: () => <div data-testid="ingreso-panel-mock" />,
+}));
+
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { Dashboard } from './Dashboard';
 
@@ -134,6 +140,7 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     expect(screen.getByTestId('ocupacion-panel-mock')).toBeInTheDocument();
     // Placeholder sections for upcoming PRs.
     expect(screen.getByTestId('dashboard-section-ingreso')).toBeInTheDocument();
+    expect(screen.getByTestId('ingreso-panel-mock')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-section-suscripciones')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-section-sync')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-section-alertas')).toBeInTheDocument();

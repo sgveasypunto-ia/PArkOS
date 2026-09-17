@@ -39,6 +39,7 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { TurnoActivoPanel } from '../components/TurnoActivoPanel';
 import { OcupacionPanel } from '../components/OcupacionPanel';
+import { IngresoPanel } from '../../operacion/components/IngresoPanel';
 import {
   Card,
   CardContent,
@@ -105,18 +106,9 @@ export function Dashboard(): JSX.Element {
           <OcupacionPanel uuid_sucursal={uuid_sucursal} />
         </section>
 
-        {/* Slots 2..6 — placeholder slots reserved for upcoming PRs.
-            They mount only when their respective feature lands
-            (REQ-OPS-139 cold-Dashboard 0-fetches invariant: the placeholders
-            do not issue any HTTP request). */}
+        {/* Slot 2 — IngresoPanel (F6.1, PR-2). */}
         <section data-testid="dashboard-section-ingreso" aria-label={t('caja:dashboard.operar', { defaultValue: 'Ingreso' })}>
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('caja:dashboard.operar', { defaultValue: 'Ingreso' })}</CardTitle>
-              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-2).' })}</CardDescription>
-            </CardHeader>
-            <CardContent />
-          </Card>
+          <IngresoPanel />
         </section>
 
         <section data-testid="dashboard-section-suscripciones" aria-label={t('caja:dashboard.suscripciones', { defaultValue: 'Suscripciones' })}>
