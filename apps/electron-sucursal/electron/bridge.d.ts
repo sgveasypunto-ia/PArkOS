@@ -2,15 +2,16 @@
  * Bridge IPC typed surface — exposed to the renderer via contextBridge.
  *
  * Stable contract (DEC-FETCH-08 + design.md §6.1):
- *   6 groups, 11 methods.
- *   - imprimir          (3)  — print ticket via escpos-usb  (F5.1 main)
+ *   7 groups, 14 methods (post-F4.2 closure 2026-09-17).
+ *   - imprimir          (3)  → print ticket via escpos-usb  (F5.1 main)
  *                              + getQueue() poll status
  *                              + onStatus(handler) push events
- *   - usb               (1)  — list USB devices            (F5.1 consumer)
- *   - kiosk             (1)  — toggle kiosk mode           (F2.3 consumer)
- *   - app               (1)  — quit Electron app           (F2.3 consumer)
- *   - apiStatus         (1)  — backend health probe        (F11.x consumer)
- *   - authStore         (3)  — electron-store get/set/del  (F2.2 authStore)
+ *   - usb               (1)  → list USB devices            (F5.1 consumer)
+ *   - kiosk             (1)  → toggle kiosk mode           (F2.3 consumer)
+ *   - app               (1)  → quit Electron app           (F2.3 consumer)
+ *   - apiStatus         (1)  → backend health probe        (F11.x consumer)
+ *   - authStore         (3)  → electron-store get/set/del  (F2.2 authStore)
+ *   - tarifasStore      (3)  → electron-store get/set/del  (F4.2 cache)
  *
  * Implemented by `preload.ts` via whitelist (no spread) so the renderer
  * never sees the raw `ipcRenderer` handle — the only legitimate channel
@@ -90,6 +91,15 @@ export interface BridgeSurface {
     /** electron-store write. F2.2 authStore consumer. */
     set(key: string, value: string): Promise<void>;
     /** electron-store delete. F2.2 authStore consumer. */
+    delete(key: string): Promise<void>;
+  };
+
+  tarifasStore: {
+    /** electron-store read. F4.2 useTarifasVigentes cache consumer. */
+    get(key: string): Promise<string | null>;
+    /** electron-store write. F4.2 useTarifasVigentes cache consumer. */
+    set(key: string, value: string): Promise<void>;
+    /** electron-store delete. F4.2 useTarifasVigentes cache consumer. */
     delete(key: string): Promise<void>;
   };
 }

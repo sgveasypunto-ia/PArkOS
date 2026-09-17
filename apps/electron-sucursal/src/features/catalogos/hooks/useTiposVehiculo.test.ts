@@ -106,8 +106,8 @@ describe('useTiposVehiculo — SWR config', () => {
     const result = useTiposVehiculo();
     expect(swrKey).toBeNull();
     expect(result.tipos).toHaveLength(2);
-    expect(result.tipos[0]?.tipo).toBe('Auto');
-    expect(result.tipos[1]?.tipo).toBe('Moto');
+    expect(result.tipos[0]?.tipo).toBe('carro');
+    expect(result.tipos[1]?.tipo).toBe('moto');
     expect(result.isFromFallback).toBe(true);
     expect(result.isLoading).toBe(false);
   });
@@ -138,8 +138,8 @@ describe('useTiposVehiculo — SWR config', () => {
     useTiposVehiculo();
     const fallback = swrOptions?.fallbackData as unknown[];
     expect(fallback).toHaveLength(2);
-    expect((fallback[0] as { tipo: string }).tipo).toBe('Auto');
-    expect((fallback[1] as { tipo: string }).tipo).toBe('Moto');
+    expect((fallback[0] as { tipo: string }).tipo).toBe('carro');
+    expect((fallback[1] as { tipo: string }).tipo).toBe('moto');
   });
 });
 

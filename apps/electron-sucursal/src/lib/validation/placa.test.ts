@@ -23,11 +23,11 @@ import { detectarTipoVehiculo, REGEX_AUTO, REGEX_MOTO } from './placa';
 
 describe('detectarTipoVehiculo', () => {
   it('U1: ABC123 → Auto (happy path Auto)', () => {
-    expect(detectarTipoVehiculo('ABC123')).toBe('Auto');
+    expect(detectarTipoVehiculo('ABC123')).toBe('carro');
   });
 
-  it('U2: ABC12D → Moto (happy path Moto)', () => {
-    expect(detectarTipoVehiculo('ABC12D')).toBe('Moto');
+  it('U2: ABC12D → moto (happy path moto)', () => {
+    expect(detectarTipoVehiculo('ABC12D')).toBe('moto');
   });
 
   it('U3: ABCD12 → null (formato inválido, 4 letras + 2 dígitos)', () => {
@@ -39,11 +39,11 @@ describe('detectarTipoVehiculo', () => {
   });
 
   it('U5: abc123 → Auto (minúsculas normalizadas vía toUpperCase)', () => {
-    expect(detectarTipoVehiculo('abc123')).toBe('Auto');
+expect(detectarTipoVehiculo('abc123')).toBe('carro');
   });
 
-  it('U6: "  ABC123  " → Auto (espacios trim inicio/fin)', () => {
-    expect(detectarTipoVehiculo('  ABC123  ')).toBe('Auto');
+  it('U6: placa con espacios (\'  ABC123  \') → \'carro\' (normalización via', () => {
+    expect(detectarTipoVehiculo('  ABC123  ')).toBe('carro');
   });
 });
 

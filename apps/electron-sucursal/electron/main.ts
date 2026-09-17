@@ -11,6 +11,11 @@ import { applyKiosko, tryUnlockKiosko, type StoreLike } from './services/kiosko'
 import { PrintQueue } from './services/printQueue';
 import { print, mapEscposError, PrinterError } from './services/printer';
 import { registerImprimirHandlers } from './ipc/imprimir';
+import {
+  readTarifasValue,
+  writeTarifasValue,
+  removeTarifasValue,
+} from './services/tarifas-store';
 
 const isDev = !app.isPackaged;
 
@@ -140,6 +145,21 @@ function registerIpcHandlers(kioskoStore: StoreLike): void {
     }
   });
   ipcMain.on('app:quit', () => app.quit());
+
+  // F4.2 (2026-09-17 closure) — wire IPC handlers for the tarifas electron-store
+  // cache layer. Thin shells that delegate to `services/tarifas-store.ts`
+  // (mirrors `tryUnlockKiosko` precedent — persistence logic in a unit-testable
+  // service module, IPC handler is the contract carrier). The service module
+  // is JSON-string-safe (defensive coercion) and a no-op for missing keys.
+  ipcMain.handle('tarifas-store:get', (_e, key: string) =>
+    readTarifasValue(kioskoStore, key),
+  );
+  ipcMain.handle('tarifas-store:set', (_e, key: string, value: string) => {
+    writeTarifasValue(kioskoStore, key, value);
+  });
+  ipcMain.handle('tarifas-store:delete', (_e, key: string) => {
+    removeTarifasValue(kioskoStore, key);
+  });
 }
 
 app.on('window-all-closed', () => {
