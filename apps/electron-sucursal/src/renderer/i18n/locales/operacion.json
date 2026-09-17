@@ -9,5 +9,11 @@
   "imprimir": "Imprimir ticket",
   "anular": "Anular",
   "confirmar": "Confirmar",
-  "placa_formato_invalido": "Placa no coincide con ningún formato conocido (Auto: ABC123, Moto: ABC12D)"
+  "placa_formato_invalido": "Placa no coincide con ningún formato conocido (Auto: ABC123, Moto: ABC12D)",
+  "ocupacion_titulo": "Ocupación en vivo",
+  "ocupacion_legend_green": "menos del 70% — hay cupo disponible",
+  "ocupacion_legend_yellow": "entre 70% y 90% — acercarse al lleno",
+  "ocupacion_legend_red": "más del 90% — casi lleno",
+  "ocupacion_legend_stale": "dato desactualizado por falla de polling",
+  "cupo_no_configurado": "cupo no configurado, contacte al administrador"
 }
