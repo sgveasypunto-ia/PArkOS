@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.renderer.json",
+  "include": [
+    "src/features/operacion/**/*",
+    "src/lib/validation/**/*",
+    "src/features/catalogos/hooks/useTiposVehiculo.ts",
+    "src/features/catalogos/api/tiposVehiculoApi.ts",
+    "src/renderer/components/ui/**/*",
+    "src/renderer/lib/**/*",
+    "src/renderer/i18n/**/*",
+    "src/renderer/global.d.ts",
+    "electron/bridge.d.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "e2e/**/*"
+  ]
+}
