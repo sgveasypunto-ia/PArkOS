@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,13 +43,21 @@ class SesionCerrarRequest(BaseModel):
 
     The ``valor_final_*`` values are recorded in the ``log_transaccional``
     row's ``datos_nuevos`` JSONB — the Sesion table only stores the
-    initial values (REQ-41).
+    initial values (REQ-41). The optional ``observaciones_cierre``
+    free-text operator note is stamped into ``LogTransaccional.datos_nuevos``
+    on the close-side log row (mirroring REQ-OPS-119/135 on the open path;
+    frontend field name preserved at the wire — see CerrarTurno.tsx).
     """
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     valor_final_efectivo: float | None = None
     valor_final_datafono: float | None = None
+    observaciones_cierre: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Free-text operator note (close-side; mirrors SesionCreate.observaciones from REQ-OPS-119).",
+    )
 
 
 class ArqueoDiferenciasResponse(BaseModel):
@@ -149,6 +157,7 @@ async def cerrar_sesion(
         sesion_uuid=uuid,
         valor_final_efectivo=payload.valor_final_efectivo,
         valor_final_datafono=payload.valor_final_datafono,
+        observaciones=payload.observaciones_cierre,
         log_tx=True,
     )
     await session.commit()
