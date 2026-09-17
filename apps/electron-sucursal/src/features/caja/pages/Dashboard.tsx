@@ -1,28 +1,33 @@
 /**
- * `<Dashboard />` — container (F3.3 — T4, DEC-F3.3-05 verbatim).
+ * `<Dashboard />` — container (F3.3 — T4, DEC-F3.3-05 + REQ-OPS-136/137).
  *
- * Página `/` que consume `useSesionActiva()` (T1 hook) y decide redirect
- * atómicamente via `useEffect([sesion, isLoading, error])`:
+ * Página `/` que consume `useSesionActiva()` y decide redirect atómicamente:
  *
  *   (a) `sesion === null && !isLoading && !error`
- *       → `navigate('/caja/abrir-turno', { replace: true })`
- *       (replace previene back-button infinite loop — operador kiosko no
- *       vuelve al dashboard presionando back).
+ *       → `navigate('/caja/abrir-turno', { replace: true })` (replace previene
+ *         back-button infinite loop en kiosko).
  *
- *   (b) `sesion !== null`
- *       → renderiza `<TurnoActivoPanel sesion onCerrarClick={() => navigate('/caja/cerrar-turno')} />`
- *       (REQ-OPS-121 organism).
+ *   (b) `sesion !== null` → renderiza el hub persistente que orquesta:
+ *       - `<TurnoActivoPanel />` (F3.3) en la parte superior.
+ *       - `<OcupacionPanel />` (F4.3, F4.4 relocate).
+ *       - 4 slots de sección para features futuros (ingreso / salida /
+ *         facturacion / reimpresion / suscripciones / sync / alertas) —
+ *         cada uno lazy-mount según REQ-OPS-139.
+ *       - 1 `<DrawerHost />` que consume `useDashboardDrawerStore` y
+ *         monta el único drawer activo (REQ-OPS-138).
  *
- *   (c) `isLoading === true`
- *       → render `<Skeleton>` neutral (no flash de "sesión no iniciada"
- *       durante refetch 50min).
+ *   (c) `isLoading === true` → `<Skeleton>` neutral.
  *
- *   (d) `error && status !== 404`
- *       → render error state con retry button.
+ *   (d) `error && status !== 404/422` → error + retry button.
+ *
+ * Note: el `<OcupacionStrip />` global en `App.tsx:48` se mantiene hasta
+ * PR-6 (REQ-OPS-140). Durante PR-1..PR-5 coexisten el strip global y el
+ * panel in-dashboard — el panel es el nuevo mount canónico, el strip
+ * global se borra al final.
  *
  * DEC-F3.3-05 single source of truth: Dashboard consume `useSesionActiva`
- * y NO verifica autenticación directamente — futuro `<AuthGuard>` (F3.x+)
- * interceptará `parkos:auth:cleared` y navegará a `/login?next=...`.
+ * y NO verifica autenticación directamente — `<ProtectedRoute>` (App.tsx)
+ * intercepta `parkos:auth:cleared` y navega a `/login?next=...`.
  */
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -33,14 +38,25 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { TurnoActivoPanel } from '../components/TurnoActivoPanel';
+import { OcupacionPanel } from '../components/OcupacionPanel';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 
+import { DrawerHost } from './DrawerHost';
+
 export function Dashboard(): JSX.Element {
   const { sesion, isLoading, error, refresh } = useSesionActiva();
-  const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
+  const { isAuthenticated, isLoading: isAuthLoading, sucursal } = useAuth();
   const navigate = useNavigate();
-  const { t } = useTranslation(['caja', 'common']);
+  const { t } = useTranslation(['caja', 'common', 'operacion']);
+  const uuid_sucursal = sucursal?.uuid ?? null;
 
   // DEC-F3.3-05 + auth guard: redirect atómico cuando no hay sesión activa Y
   // el operador está autenticado. Sin auth previa → /login (no salta el login).
@@ -72,13 +88,70 @@ export function Dashboard(): JSX.Element {
     );
   }
 
-  // (b) Sesión activa → TurnoActivoPanel.
+  // (b) Sesión activa → hub persistente.
   if (sesion) {
     return (
-      <TurnoActivoPanel
-        sesion={sesion}
-        onCerrarClick={() => navigate('/caja/cerrar-turno')}
-      />
+      <div
+        className="flex w-full max-w-5xl flex-col gap-4"
+        data-testid="dashboard-hub"
+      >
+        <TurnoActivoPanel
+          sesion={sesion}
+          onCerrarClick={() => navigate('/caja/cerrar-turno')}
+        />
+
+        {/* Slot 1 — OcupacionPanel (F4.3 relocated). */}
+        <section data-testid="dashboard-section-ocupacion" aria-label={t('caja:dashboard.ocupacion', { defaultValue: 'Ocupación' })}>
+          <OcupacionPanel uuid_sucursal={uuid_sucursal} />
+        </section>
+
+        {/* Slots 2..6 — placeholder slots reserved for upcoming PRs.
+            They mount only when their respective feature lands
+            (REQ-OPS-139 cold-Dashboard 0-fetches invariant: the placeholders
+            do not issue any HTTP request). */}
+        <section data-testid="dashboard-section-ingreso" aria-label={t('caja:dashboard.operar', { defaultValue: 'Ingreso' })}>
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('caja:dashboard.operar', { defaultValue: 'Ingreso' })}</CardTitle>
+              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-2).' })}</CardDescription>
+            </CardHeader>
+            <CardContent />
+          </Card>
+        </section>
+
+        <section data-testid="dashboard-section-suscripciones" aria-label={t('caja:dashboard.suscripciones', { defaultValue: 'Suscripciones' })}>
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('caja:dashboard.suscripciones', { defaultValue: 'Suscripciones' })}</CardTitle>
+              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-5).' })}</CardDescription>
+            </CardHeader>
+            <CardContent />
+          </Card>
+        </section>
+
+        <section data-testid="dashboard-section-sync" aria-label={t('caja:dashboard.sync', { defaultValue: 'Sincronización' })}>
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('caja:dashboard.sync', { defaultValue: 'Sincronización' })}</CardTitle>
+              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-6).' })}</CardDescription>
+            </CardHeader>
+            <CardContent />
+          </Card>
+        </section>
+
+        <section data-testid="dashboard-section-alertas" aria-label={t('caja:dashboard.alertas', { defaultValue: 'Alertas' })}>
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('caja:dashboard.alertas', { defaultValue: 'Alertas' })}</CardTitle>
+              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-6).' })}</CardDescription>
+            </CardHeader>
+            <CardContent />
+          </Card>
+        </section>
+
+        {/* DrawerHost — single-drawer invariant (REQ-OPS-138). */}
+        <DrawerHost />
+      </div>
     );
   }
 
