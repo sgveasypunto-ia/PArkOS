@@ -31,6 +31,7 @@ import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { ForzarIngresoModal } from './ForzarIngresoModal';
 import { PlacaInput } from './PlacaInput';
 import { TiqueteModal } from './TiqueteModal';
+import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import {
   type PostIngresoPayload,
@@ -238,28 +239,30 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
     <div
       className="space-y-4"
       data-testid="ingreso-panel"
-      aria-labelledby="ingreso-panel-titulo"
     >
-      <header className="space-y-1">
-        <h3 id="ingreso-panel-titulo" className="text-lg font-semibold">
-          {t('ingreso', { defaultValue: 'Ingreso' })}
-        </h3>
-        <p className="text-sm text-muted-foreground">
-          {t('ingreso_subtitulo', {
-            defaultValue: 'Digita la placa del vehículo para registrar el ingreso.',
-          })}
-        </p>
-      </header>
-
-      <PlacaInput onValidSubmit={handlePlacaSubmit} disabled={submitting} initialValue={initialPlaca} />
+      <PlacaInput
+        onValidSubmit={handlePlacaSubmit}
+        disabled={submitting}
+        initialValue={initialPlaca}
+        hideSubmitButton
+        formId="ingreso-placa-form"
+      />
 
       <div className="space-y-1">
-        <label
-          htmlFor="ingreso-observaciones"
-          className="text-sm font-medium"
-        >
-          {t('ingreso_observaciones_label', { defaultValue: 'Observaciones (opcional)' })}
-        </label>
+        <div className="flex items-baseline justify-between">
+          <label
+            htmlFor="ingreso-observaciones"
+            className="text-sm font-medium"
+          >
+            {t('ingreso_observaciones_label', { defaultValue: 'Observaciones' })}
+          </label>
+          <span
+            className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+            data-testid="ingreso-observaciones-badge"
+          >
+            {t('common:opcional', { defaultValue: 'Opcional' })}
+          </span>
+        </div>
         <textarea
           id="ingreso-observaciones"
           data-testid="ingreso-observaciones"
@@ -281,6 +284,17 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           {observaciones.length}/500
         </p>
       </div>
+
+      <Button
+        type="submit"
+        form="ingreso-placa-form"
+        disabled={submitting}
+        size="lg"
+        className="w-full"
+        data-testid="ingreso-registrar"
+      >
+        {t('ingreso_registrar_boton', { defaultValue: 'Registrar ingreso' })}
+      </Button>
 
       {tipoDetectado && (
         <p className="text-sm text-muted-foreground" role="status">

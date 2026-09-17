@@ -22,7 +22,7 @@
  *   - `ingreso_placa_label` (F6.1) — label
  *   - `ingreso_registrar` (F6.1) — submit button text
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -70,13 +70,36 @@ export interface PlacaInputProps {
    * We DO NOT auto-submit — the operator must confirm explicitly.
    */
   initialValue?: string | null;
+  /**
+   * When `true`, the internal submit button is omitted. The parent
+   * renders its own submit button at the bottom of the form and passes
+   * `formId` to that external button's `form` attribute so HTML's
+   * native form submission still fires RHF + Zod validation. Use this
+   * when you want a single CTA at the bottom of a multi-field layout.
+   */
+  hideSubmitButton?: boolean;
+  /**
+   * HTML `id` for the inner `<form>`. When `hideSubmitButton` is `true`,
+   * the parent must reference this id from its own submit button via
+   * `<Button type="submit" form={formId}>` (HTML5 form-attribute).
+   * Defaults to a stable `useId()`-generated id.
+   */
+  formId?: string;
 }
 
 /**
  * F6.1 plate input — auto-focus on mount, uppercase normalization,
  * Enter-submit, Zod validation against F4.1 regexes.
  */
-export function PlacaInput({ onValidSubmit, disabled, initialValue }: PlacaInputProps) {
+export function PlacaInput({
+  onValidSubmit,
+  disabled,
+  initialValue,
+  hideSubmitButton = false,
+  formId,
+}: PlacaInputProps) {
+  const generatedId = useId();
+  const formElementId = formId ?? generatedId;
   const { t } = useTranslation('operacion');
   const inputRef = useRef<HTMLInputElement | null>(null);
   const form = useForm<PlacaFormValues>({
@@ -110,6 +133,7 @@ export function PlacaInput({ onValidSubmit, disabled, initialValue }: PlacaInput
   return (
     <Form {...form}>
       <form
+        id={formElementId}
         onSubmit={form.handleSubmit((values) => onValidSubmit(values.placa))}
         className="space-y-4"
       >
@@ -153,9 +177,11 @@ export function PlacaInput({ onValidSubmit, disabled, initialValue }: PlacaInput
             </FormItem>
           )}
         />
-        <Button type="submit" disabled={disabled}>
-          {t('ingreso_registrar', { defaultValue: 'Registrar' })}
-        </Button>
+        {!hideSubmitButton && (
+          <Button type="submit" disabled={disabled}>
+            {t('ingreso_registrar', { defaultValue: 'Registrar' })}
+          </Button>
+        )}
       </form>
     </Form>
   );

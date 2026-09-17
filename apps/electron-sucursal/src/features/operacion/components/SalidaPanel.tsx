@@ -107,17 +107,6 @@ export function SalidaPanel({
 
   return (
     <div className="space-y-4" data-testid="salida-panel">
-      <header className="space-y-1">
-        <h3 className="text-lg font-semibold">
-          {t('operacion:salida', { defaultValue: 'Salida' })}
-        </h3>
-        <p className="text-sm text-muted-foreground">
-          {t('operacion:salidaSubtitulo', {
-            defaultValue: 'Digita la placa para cotizar y cobrar.',
-          })}
-        </p>
-      </header>
-
       <Form {...form}>
         <form onSubmit={handlePlacaSubmit} className="space-y-2">
           <FormField
