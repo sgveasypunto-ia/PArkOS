@@ -321,3 +321,173 @@ async def test_clientes_module_mounts_venta_suscripcion_router() -> None:
         f"T5.4 violated: POST /clientes/venta-suscripcion not mounted on the "
         f"factory router; got {all_paths}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-17 F1.12 V8/V8b STUB closure: cobro + FE sub-chains are now real
+# (REQ-OPS-090 canon + plan.md line 1053 T2). These tests pin the new
+# contract that the original archive-report deferred as "D2 LOW".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_venta_suscripcion_voucher_requerido_datafono_sin_referencia() -> None:
+    """F1.12 V8: ``medio_pago='datafono'`` without ``referencia`` -> 400 voucher_requerido.
+
+    Mirrors F1.9 ``facturacion.py:449-457`` inline check. Fires BEFORE
+    ``crear_factura_evento`` so the cobro sub-chain is not half-executed.
+    """
+    from parkos_core.api.v1 import clientes_venta as handler_mod
+
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload(cobrar_ahora=True)
+    payload.medio_pago = "datafono"
+    payload.referencia = None  # missing voucher reference
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    plan = _make_plan()
+    cliente_row = MagicMock()
+    cliente_row.uuid = uuid_lib.uuid4()
+    vehiculo_row = MagicMock()
+    vehiculo_row.uuid = uuid_lib.uuid4()
+
+    with patch.object(
+        handler_mod.repo_venta, "buscar_tipo_subscripcion_vigente_por_uuid",
+        new=AsyncMock(return_value=plan),
+    ), patch.object(
+        handler_mod.repo_venta, "buscar_cliente_por_uuid_o_crear",
+        new=AsyncMock(return_value=cliente_row),
+    ), patch.object(
+        handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa",
+        new=AsyncMock(return_value=(vehiculo_row, False)),
+    ), patch.object(
+        handler_mod.repo_venta, "validar_placas_mismo_tipo_vehiculo",
+    ), patch.object(
+        handler_mod.repo_venta, "validar_cantidad_maxima_vehiculos",
+    ), patch.object(
+        handler_mod.repo_venta, "validar_placa_duplicada_subscripcion",
+        new=AsyncMock(),
+    ), patch.object(
+        handler_mod.repo_venta, "calcular_prorrateo",
+        return_value=Decimal("10000.00"),
+    ), patch.object(
+        handler_mod.repo_venta, "crear_subscripcion_cliente",
+        new=AsyncMock(),
+    ), patch.object(
+        handler_mod.repo_venta, "crear_subscripcion_vehiculos_bulk",
+        new=AsyncMock(return_value=[vehiculo_row]),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await handler_mod.venta_suscripcion(
+                response=response,
+                payload=payload,
+                session=session,
+                ctx=ctx,
+                _claims=None,
+            )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["error"] == "voucher_requerido"
+    assert exc_info.value.detail["medio_pago"] == "datafono"
+    # KD-VENTA-01: NO commit on validation failure
+    assert session.commit.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_ahora() -> None:
+    """F1.12 V8: ``cobrar_ahora=True`` wires the 4-table cobro sub-chain.
+
+    Verifies that ``crear_factura_evento`` is called with
+    ``uuid_subscripcion_cliente`` set (the new FK added by MIGRATION 0037),
+    and that ``crear_factura_detalle_bulk``, ``crear_factura_impuesto_iva``,
+    and ``crear_factura_pago`` are all called in the same atomic TX.
+    """
+    from parkos_core.api.v1 import clientes_venta as handler_mod
+
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload(cobrar_ahora=True)
+    payload.medio_pago = "efectivo"
+    payload.referencia = None
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    plan = _make_plan()
+    cliente_row = MagicMock()
+    cliente_row.uuid = uuid_lib.uuid4()
+    vehiculo_row = MagicMock()
+    vehiculo_row.uuid = uuid_lib.uuid4()
+    subscripcion_row = MagicMock()
+    subscripcion_row.uuid = uuid_lib.uuid4()
+    factura_row = MagicMock()
+    factura_row.uuid = uuid_lib.uuid4()
+
+    with patch.object(
+        handler_mod.repo_venta, "buscar_tipo_subscripcion_vigente_por_uuid",
+        new=AsyncMock(return_value=plan),
+    ), patch.object(
+        handler_mod.repo_venta, "buscar_cliente_por_uuid_o_crear",
+        new=AsyncMock(return_value=cliente_row),
+    ), patch.object(
+        handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa",
+        new=AsyncMock(return_value=(vehiculo_row, False)),
+    ), patch.object(
+        handler_mod.repo_venta, "validar_placas_mismo_tipo_vehiculo",
+    ), patch.object(
+        handler_mod.repo_venta, "validar_cantidad_maxima_vehiculos",
+    ), patch.object(
+        handler_mod.repo_venta, "validar_placa_duplicada_subscripcion",
+        new=AsyncMock(),
+    ), patch.object(
+        handler_mod.repo_venta, "calcular_prorrateo",
+        return_value=Decimal("10000.00"),
+    ), patch.object(
+        handler_mod.repo_venta, "crear_subscripcion_cliente",
+        new=AsyncMock(return_value=subscripcion_row),
+    ), patch.object(
+        handler_mod.repo_venta, "crear_subscripcion_vehiculos_bulk",
+        new=AsyncMock(return_value=[vehiculo_row]),
+    ), patch.object(
+        handler_mod.repo_impuestos, "obtener_iva_vigente",
+        new=AsyncMock(return_value=Decimal("0.19")),
+    ), patch.object(
+        handler_mod.repo_factura, "crear_factura_evento",
+        new=AsyncMock(return_value=factura_row),
+    ) as mock_factura, patch.object(
+        handler_mod.repo_factura_detalle, "crear_factura_detalle_bulk",
+        new=AsyncMock(),
+    ) as mock_detalle, patch.object(
+        handler_mod.repo_factura, "crear_factura_impuesto_iva",
+        new=AsyncMock(),
+    ) as mock_iva, patch.object(
+        handler_mod.repo_factura, "crear_factura_pago",
+        new=AsyncMock(),
+    ) as mock_pago:
+        result = await handler_mod.venta_suscripcion(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
+
+    # KD-VENTA-01: exactly one commit (atomic TX includes subscripcion + factura + ...)
+    assert session.commit.await_count == 1
+    # V8 sub-chain: all 4 helpers called once
+    assert mock_factura.await_count == 1
+    assert mock_detalle.await_count == 1
+    assert mock_iva.await_count == 1
+    assert mock_pago.await_count == 1
+    # Q1-A: uuid_subscripcion_cliente propagated to crear_factura_evento
+    new_attrs = mock_factura.await_args.kwargs["new_attrs"]
+    assert new_attrs["uuid_subscripcion_cliente"] == subscripcion_row.uuid
+    # REQ-OPS-090: subtotal + total server-computed (no client supply)
+    assert isinstance(new_attrs["subtotal"], Decimal)
+    assert isinstance(new_attrs["total"], Decimal)
+    # A-09 prorrateo: dia=20 -> monto_proporcional=10000 -> subtotal=10000
+    assert new_attrs["subtotal"] == Decimal("10000.00")
+    # DEC-VENTA-03: response.monto_prorrateado set when cobrar_ahora=True
+    assert result.monto_prorrateado == Decimal("10000.00")
+    assert result.uuid_factura == factura_row.uuid
