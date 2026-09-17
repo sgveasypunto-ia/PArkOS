@@ -725,6 +725,7 @@
         uuid uuid_usuario_cierre FK "quién ejecutó el cierre (columna de control; puede ser un supervisor distinto del titular)"
         %% Lifecycle (UPDATE permitido solo en cierre, con log obligatorio)
         string estado "abierta | cerrada"
+        text observaciones "notas opcionales del operador al abrir el turno (REQ-OPS-135, max 500 chars)"
         %% Audit
         timestamp created_at "cuándo la DB registró la fila (UTC)"
         uuid created_by "usuario que originó la inserción"

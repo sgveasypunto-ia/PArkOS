@@ -55,20 +55,24 @@ sys.path.insert(
 
 
 def test_migration_0034_module_imports_with_canonical_revision() -> None:
-    """T1 RED/GREEN: module imports + revision metadata chains off 0024.
+    """T1 RED/GREEN: module imports + revision metadata chains off 0033.
 
-    MIGRATION 0034 chains off the F1.5 head
-    (``0024_mv_ocupacion_diaria``) and uses revision id
-    ``0034_recreate_mv_ocupacion_diaria_idempotent``. Pre-implementation
-    this raises ``ModuleNotFoundError`` -- that is the RED state.
+    MIGRATION 0034 chains off the current pre-PR head
+    (``0033_login_historic_index``) — NOT off 0024 (which would create a
+    second head and break ``alembic upgrade head`` with a "Multiple head
+    revisions are present" error). Verified by verify 2026-09-17.
+    Pre-implementation this raises ``ModuleNotFoundError`` -- that is the
+    RED state.
     """
     mod = importlib.import_module("0034_recreate_mv_ocupacion_diaria_idempotent")
     assert mod.revision == "0034_recreate_mv_ocupacion_diaria_idempotent", (
         f"unexpected revision id: {mod.revision!r}"
     )
-    assert mod.down_revision == "0024_mv_ocupacion_diaria", (
-        "REQ-OPS-133 violated: MIGRATION 0034 must chain off 0024 head; "
-        f"got {mod.down_revision!r}"
+    assert mod.down_revision == "0033_login_historic_index", (
+        "REQ-OPS-133 violated: MIGRATION 0034 must chain off 0033 head "
+        "(verify 2026-09-17 found that 0024 branching created multiple "
+        "alembic heads and broke the upgrade chain); got "
+        f"{mod.down_revision!r}"
     )
 
 
@@ -88,12 +92,19 @@ def test_migration_0034_upgrade_and_downgrade_are_callable() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_migration_0034_uses_create_or_replace_materialized_view() -> None:
-    """T2 GREEN: ``upgrade()`` emits ``CREATE OR REPLACE MATERIALIZED VIEW``.
+def test_migration_0034_uses_create_materialized_view_if_not_exists() -> None:
+    """T2 GREEN: ``upgrade()`` emits ``CREATE MATERIALIZED VIEW IF NOT EXISTS``.
 
-    REQ-OPS-133 invariant: the DDL must be ``CREATE OR REPLACE`` so the
-    same migration heals both the missing-MV state and the present-MV
-    state (which would otherwise be a hard error with plain CREATE).
+    REQ-OPS-133 invariant: the DDL must be ``CREATE MATERIALIZED VIEW
+    IF NOT EXISTS`` so the same migration heals both the missing-MV
+    state and the present-MV state (which would otherwise be a hard
+    error with plain CREATE).
+
+    Note: PG does NOT support ``CREATE OR REPLACE MATERIALIZED VIEW``
+    (verified live 2026-09-17 against PG 16.15). The original test
+    (which asserted the OR REPLACE form) was based on the false premise
+    that PG accepted that syntax; replaced with the canonical
+    ``IF NOT EXISTS`` pattern that matches migration 0024.
     """
     from unittest.mock import MagicMock, patch
 
@@ -105,15 +116,16 @@ def test_migration_0034_uses_create_or_replace_materialized_view() -> None:
     with patch.object(mod, "op", mock_op):
         mod.upgrade()
 
-    create_replace_sqls = [
-        s for s in captured_sqls if "CREATE OR REPLACE MATERIALIZED VIEW" in s
+    create_sqls = [
+        s for s in captured_sqls
+        if "CREATE MATERIALIZED VIEW" in s and "IF NOT EXISTS" in s
     ]
-    assert len(create_replace_sqls) == 1, (
+    assert len(create_sqls) == 1, (
         "REQ-OPS-133 violated: upgrade() must emit exactly one "
-        "CREATE OR REPLACE MATERIALIZED VIEW; got "
-        f"{len(create_replace_sqls)}"
+        "CREATE MATERIALIZED VIEW IF NOT EXISTS; got "
+        f"{len(create_sqls)}"
     )
-    sql = create_replace_sqls[0]
+    sql = create_sqls[0]
     assert "prod.mv_ocupacion_diaria" in sql, (
         f"upgrade() must target prod.mv_ocupacion_diaria; got {sql!r}"
     )
@@ -304,5 +316,5 @@ __all__ = [
     "test_migration_0034_module_imports_with_canonical_revision",
     "test_migration_0034_reasserts_unique_index_and_grant",
     "test_migration_0034_upgrade_and_downgrade_are_callable",
-    "test_migration_0034_uses_create_or_replace_materialized_view",
+    "test_migration_0034_uses_create_materialized_view_if_not_exists",
 ]

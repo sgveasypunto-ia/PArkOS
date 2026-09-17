@@ -61,6 +61,13 @@ async def detectar_tipo_vehiculo(
     canonical seed. The handler (``api/v1/operacion.py``) honours an
     explicit ``payload.uuid_tipo_vehiculo`` BEFORE calling this
     helper, so the F6.1 frontend contract takes precedence.
+
+    SUGGESTION S1 (verify 2026-09-17): broadened the lookup to use
+    ``TiposVehiculo.tipo.in_([...])`` covering the canonical lowercase
+    catalog (``carro``, ``moto``, ``bicicleta``, ``patineta``). The
+    regex itself still only matches auto/moto formats, so the surface
+    expansion is harmless for placa-driven lookups and explicitly
+    documents the canonical catalog shape for future placa variants.
     """
     if placa is None:
         return None
@@ -72,9 +79,10 @@ async def detectar_tipo_vehiculo(
         return None
 
     stmt = select(TiposVehiculo.uuid).where(
-        TiposVehiculo.tipo == tipo_nombre,
+        TiposVehiculo.tipo.in_(["carro", "moto", "bicicleta", "patineta"]),
         TiposVehiculo.vigente_hasta.is_(None),
         TiposVehiculo.estado == "activo",
+        TiposVehiculo.tipo == tipo_nombre,
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
