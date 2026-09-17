@@ -8,5 +8,30 @@
   "emitir": "Emitir",
   "anular": "Anular factura",
   "reimprimir": "Reimprimir",
-  "numero": "Número"
+  "numero": "Número",
+  "pago": {
+    "titulo": "Cobrar",
+    "descripcion": "Registra el pago y emite la factura.",
+    "medioPago": "Medio de pago",
+    "montoRecibido": "Monto recibido",
+    "nit": "NIT del cliente",
+    "voucher": "Voucher (datáfono)",
+    "confirmar": "Confirmar pago"
+  },
+  "fe": {
+    "titulo": "Factura electrónica",
+    "estado": "Estado DIAN",
+    "aceptado": "Aceptado",
+    "rechazado": "Rechazado",
+    "pendiente": "Pendiente",
+    "reintentar": "Reintentar",
+    "cufe": "CUFE"
+  },
+  "reimprimir": {
+    "titulo": "Reimprimir tiquete",
+    "motivoLabel": "Motivo (mín. 10 caracteres)",
+    "motivoPlaceholder": "Describe el motivo",
+    "buscar": "Buscar",
+    "confirmar": "Reimprimir"
+  }
 }
