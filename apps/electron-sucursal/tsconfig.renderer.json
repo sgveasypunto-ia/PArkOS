@@ -38,6 +38,14 @@
     "src/features/catalogos/**/*.tsx",
     "src/features/auth/**/*.ts",
     "src/features/auth/**/*.tsx",
+    "src/features/facturacion/**/*.ts",
+    "src/features/facturacion/**/*.tsx",
+    "src/features/reimpresion/**/*.ts",
+    "src/features/reimpresion/**/*.tsx",
+    "src/features/suscripciones/**/*.ts",
+    "src/features/suscripciones/**/*.tsx",
+    "src/features/sync/**/*.ts",
+    "src/features/sync/**/*.tsx",
     "src/shared/**/*.ts"
   ]
 }
