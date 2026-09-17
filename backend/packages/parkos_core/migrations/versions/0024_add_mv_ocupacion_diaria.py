@@ -86,7 +86,7 @@ def upgrade() -> None:
     #    identical to the repo helper's underlying predicate.
     op.execute(
         """
-        CREATE MATERIALIZED VIEW prod.mv_ocupacion_diaria AS
+        CREATE MATERIALIZED VIEW IF NOT EXISTS prod.mv_ocupacion_diaria AS
         SELECT
             i.uuid_sucursal,
             i.uuid_tipo_vehiculo,
