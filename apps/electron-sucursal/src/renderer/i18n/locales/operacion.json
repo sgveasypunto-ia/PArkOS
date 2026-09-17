@@ -46,5 +46,22 @@
   "error_cupo_no_configurado": "Cupo no configurado. Contacte al administrador.",
   "error_tarifa_vigente_no_encontrada": "No hay tarifa vigente configurada. Contacte al administrador.",
   "error_subscripcion_inactiva_o_vencida": "Suscripción inactiva o vencida.",
-  "error_network_error": "Sin conexión. Reintentaremos en cuanto vuelvas a estar en línea."
+  "error_network_error": "Sin conexión. Reintentaremos en cuanto vuelvas a estar en línea.",
+  "dashboard": {
+    "ingreso": {
+      "placaLabel": "Placa del vehículo",
+      "mensualidadActiva": "Mensualidad activa",
+      "rotacionLabel": "Rotación",
+      "motivoForzado": "Motivo (mín. 10 caracteres)"
+    }
+  },
+  "cotizar": {
+    "titulo": "Cotización",
+    "minutos": "Minutos",
+    "base": "Base",
+    "fraccion": "Fracción",
+    "total": "Total",
+    "expira": "Cotización expira en",
+    "expirada": "Cotización expirada"
+  }
 }
