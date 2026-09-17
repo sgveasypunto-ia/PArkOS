@@ -2,16 +2,13 @@
  * Preload contract test — validates `preload.ts` exposes exactly the
  * 11 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
  *
- * F2.2 introduced 8 methods across 6 groups; F4.2 (HU-F4.2) extends the
- * whitelist with `tarifasStore` (+3 methods, 1 group) for the catalogos
- * cache. Net: 7 groups, 11 methods.
- *
  * Vitest aliases the `electron` module to `./__mocks__/electron.ts`
  * (see `vitest.config.ts`), so `preload.ts` calls the stub's
  * `contextBridge.exposeInMainWorld` / `ipcRenderer.invoke` / `send`
  * spies. The contract test asserts:
- *   1. Exactly the 7 top-level groups are present (no spread, no extras).
- *   2. Each method invokes the correct IPC channel with the correct args.
+ *   1. Exactly the 6 top-level groups are present (no spread, no extras).
+ *   2. `imprimir` is an OBJECT (callable + helpers per F5.1) and the
+ *      helpers route to the correct channels.
  *   3. The raw `ipcRenderer` handle is NOT exposed.
  */
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -22,6 +19,8 @@ import { contextBridge, ipcRenderer } from '../__mocks__/electron';
 const exposeSpy = contextBridge.exposeInMainWorld as ReturnType<typeof vi.fn>;
 const invokeSpy = ipcRenderer.invoke as ReturnType<typeof vi.fn>;
 const sendSpy = ipcRenderer.send as ReturnType<typeof vi.fn>;
+const onSpy = ipcRenderer.on as ReturnType<typeof vi.fn>;
+const offSpy = ipcRenderer.off as ReturnType<typeof vi.fn>;
 
 let exposed: Record<string, unknown> = {};
 
@@ -39,24 +38,55 @@ beforeAll(async () => {
 beforeEach(() => {
   invokeSpy.mockClear();
   sendSpy.mockClear();
+  onSpy.mockClear();
+  offSpy.mockClear();
 });
 
 describe('preload bridge contract', () => {
-  it('exposes exactly the 7 top-level groups (no spread, no extras)', () => {
+  it('exposes exactly the 6 top-level groups (no spread, no extras)', () => {
     expect(Object.keys(exposed).sort()).toEqual(
-      ['apiStatus', 'app', 'authStore', 'imprimir', 'kiosk', 'tarifasStore', 'usb'].sort(),
+      ['apiStatus', 'app', 'authStore', 'imprimir', 'kiosk', 'usb'].sort(),
     );
   });
 
-  it('exposes `imprimir(payload)` and invokes print:ticket', () => {
-    const imprimir = exposed.imprimir as (p: unknown) => Promise<unknown>;
+  it('exposes `imprimir` as an object with callable + getQueue + onStatus (F5.1)', () => {
+    const imprimir = exposed.imprimir as {
+      (p: unknown): Promise<unknown>;
+      getQueue: () => Promise<unknown>;
+      onStatus: (h: (event: unknown) => void) => () => void;
+    };
+    // F5.1: `imprimir` is no longer a plain function — it's an Object.assign(fn, helpers).
     expect(typeof imprimir).toBe('function');
-    void imprimir({ ticketId: 't-1', lines: [], cut: true });
+    expect(typeof imprimir.getQueue).toBe('function');
+    expect(typeof imprimir.onStatus).toBe('function');
+  });
+
+  it('`imprimir(payload)` invokes print:ticket with the payload verbatim', () => {
+    const imprimir = exposed.imprimir as (p: unknown) => Promise<unknown>;
+    void imprimir({ buffer: 'AA==', ticketId: 't-1', cut: true });
     expect(invokeSpy).toHaveBeenCalledWith('print:ticket', {
+      buffer: 'AA==',
       ticketId: 't-1',
-      lines: [],
       cut: true,
     });
+  });
+
+  it('`imprimir.getQueue()` invokes print:queue:get', () => {
+    const imprimir = exposed.imprimir as { getQueue: () => Promise<unknown> };
+    void imprimir.getQueue();
+    expect(invokeSpy).toHaveBeenCalledWith('print:queue:get');
+  });
+
+  it('`imprimir.onStatus(handler)` registers on print:status and returns an unsubscribe', () => {
+    const imprimir = exposed.imprimir as {
+      onStatus: (h: (event: unknown) => void) => () => void;
+    };
+    const handler = (_e: unknown): void => undefined;
+    const unsubscribe = imprimir.onStatus(handler);
+    expect(onSpy).toHaveBeenCalledWith('print:status', expect.any(Function));
+    expect(typeof unsubscribe).toBe('function');
+    unsubscribe();
+    expect(offSpy).toHaveBeenCalledWith('print:status', expect.any(Function));
   });
 
   it('exposes `usb.list()` and invokes usb:list', () => {
@@ -119,32 +149,6 @@ describe('preload bridge contract', () => {
 
     void authStore.delete('parkos.auth');
     expect(invokeSpy).toHaveBeenLastCalledWith('auth-store:delete', 'parkos.auth');
-  });
-
-  it('exposes `tarifasStore.get/set/delete` invoking the matching channels (F4.2)', () => {
-    const tarifasStore = exposed.tarifasStore as {
-      get: (k: string) => Promise<string | null>;
-      set: (k: string, v: string) => Promise<void>;
-      delete: (k: string) => Promise<void>;
-    };
-    expect(typeof tarifasStore).toBe('object');
-    expect(tarifasStore).not.toBeNull();
-    expect(typeof tarifasStore.get).toBe('function');
-    expect(typeof tarifasStore.set).toBe('function');
-    expect(typeof tarifasStore.delete).toBe('function');
-
-    void tarifasStore.get('parkos.tarifas.cache.v1');
-    expect(invokeSpy).toHaveBeenLastCalledWith('tarifas-store:get', 'parkos.tarifas.cache.v1');
-
-    void tarifasStore.set('parkos.tarifas.cache.v1', '{"items":[]}');
-    expect(invokeSpy).toHaveBeenLastCalledWith(
-      'tarifas-store:set',
-      'parkos.tarifas.cache.v1',
-      '{"items":[]}',
-    );
-
-    void tarifasStore.delete('parkos.tarifas.cache.v1');
-    expect(invokeSpy).toHaveBeenLastCalledWith('tarifas-store:delete', 'parkos.tarifas.cache.v1');
   });
 
   it('does NOT leak the raw ipcRenderer handle (whitelist-only)', () => {

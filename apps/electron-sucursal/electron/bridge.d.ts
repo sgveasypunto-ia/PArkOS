@@ -2,19 +2,23 @@
  * Bridge IPC typed surface — exposed to the renderer via contextBridge.
  *
  * Stable contract (DEC-FETCH-08 + design.md §6.1):
- *   7 groups, 11 methods.
- *   - imprimir          (1)  — print ticket via escpos-usb  (F5.1+ consumer)
- *   - usb               (1)  — list USB devices            (F5.1+ consumer)
+ *   6 groups, 11 methods.
+ *   - imprimir          (3)  — print ticket via escpos-usb  (F5.1 main)
+ *                              + getQueue() poll status
+ *                              + onStatus(handler) push events
+ *   - usb               (1)  — list USB devices            (F5.1 consumer)
  *   - kiosk             (1)  — toggle kiosk mode           (F2.3 consumer)
  *   - app               (1)  — quit Electron app           (F2.3 consumer)
  *   - apiStatus         (1)  — backend health probe        (F11.x consumer)
  *   - authStore         (3)  — electron-store get/set/del  (F2.2 authStore)
- *   - tarifasStore      (3)  — electron-store get/set/del  (F4.2 catalogos cache)
  *
  * Implemented by `preload.ts` via whitelist (no spread) so the renderer
  * never sees the raw `ipcRenderer` handle — the only legitimate channel
  * for cross-process communication.
  */
+import type { PrintPayload, PrintResult, PrintStatusEvent, QueueStatus } from './types/print';
+
+export type { PrintPayload, PrintResult, QueueStatus, PrintStatusEvent } from './types/print';
 
 export interface PrintLine {
   text: string;
@@ -22,22 +26,13 @@ export interface PrintLine {
   align?: 'left' | 'center' | 'right';
 }
 
-export interface PrintPayload {
-  ticketId: string;
-  lines: PrintLine[];
-  cut: boolean;
-  cashDrawer?: boolean;
-}
-
-export interface PrintResult {
-  ok: boolean;
-}
-
 export interface USBDevice {
   vendorId: number;
   productId: number;
   productName: string | null;
   serialNumber: string | null;
+  /** USB-IF class code; F5.1 sets `0x07` for printers. */
+  class: number;
 }
 
 export interface ApiStatus {
@@ -50,11 +45,27 @@ export interface ApiStatus {
 }
 
 export interface BridgeSurface {
-  /** Imprime ticket en impresora térmica USB. F5.1+ consumer. */
-  imprimir(payload: PrintPayload): Promise<PrintResult>;
+  /**
+   * Print a thermal ticket.
+   *
+   * The function itself returns the immediate attempt result. The two
+   * helpers attached to it support the renderer's async UX needs:
+   *   - `getQueue()` polls the persisted queue status (banners).
+   *   - `onStatus(handler)` subscribes to push events from the drain
+   *     loop and returns an unsubscribe function.
+   *
+   * The pattern (`Object.assign(fn, { … })`) preserves the original
+   * call signature so the F2.2 call site (`bridge.imprimir(payload)`)
+   * keeps working unchanged.
+   */
+  imprimir: {
+    (payload: PrintPayload): Promise<PrintResult>;
+    getQueue(): Promise<QueueStatus>;
+    onStatus(handler: (event: PrintStatusEvent) => void): () => void;
+  };
 
   usb: {
-    /** Lista dispositivos USB conectados. F5.1+ consumer. */
+    /** Lista dispositivos USB conectados (Printer class `0x07`). F5.1+ consumer. */
     list(): Promise<USBDevice[]>;
   };
 
@@ -79,15 +90,6 @@ export interface BridgeSurface {
     /** electron-store write. F2.2 authStore consumer. */
     set(key: string, value: string): Promise<void>;
     /** electron-store delete. F2.2 authStore consumer. */
-    delete(key: string): Promise<void>;
-  };
-
-  tarifasStore: {
-    /** electron-store read. F4.2 catalogos tarifas cache consumer. */
-    get(key: string): Promise<string | null>;
-    /** electron-store write. F4.2 catalogos tarifas cache consumer. */
-    set(key: string, value: string): Promise<void>;
-    /** electron-store delete. F4.2 catalogos tarifas cache consumer. */
     delete(key: string): Promise<void>;
   };
 }

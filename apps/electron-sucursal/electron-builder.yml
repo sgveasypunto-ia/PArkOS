@@ -19,25 +19,8 @@ win:
         - x64
   icon: build/icon.ico
   artifactName: "${productName}-Setup-${version}.${ext}"
-
-mac:
-  target:
-    - target: dmg
-      arch:
-        - x64
-        - arm64
-  icon: build/icon.icns
-  category: public.app-category.business
-  artifactName: "${productName}-${version}-${arch}.${ext}"
-
-linux:
-  target:
-    - target: AppImage
-      arch:
-        - x64
-  icon: build/icon.png
-  category: Office
-  artifactName: "${productName}-${version}.${ext}"
+  # Windows Authenticode via electron-builder auto-sign.
+  # certificate file: process.env.WINDOWS_CERT_FILE (build pipeline concern).
 
 # F2.3 enables auto-update via electron-updater (DEC-UPD-01..04).
 autoUpdate: true
@@ -47,9 +30,30 @@ publish:
     repo: easypunto_parkos
     releaseType: release
     allowPrerelease: false
+
+# F5.1 — T1.5 housekeeping: consolidated the two pre-existing `mac:`
+# blocks (target/icon/category + hardenedRuntime) into ONE block,
+# added `entitlements` + `entitlementsInherit` referencing the USB
+# entitlement plist so hardenedRuntime can talk to libusb.
 mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: build/icon.icns
+  category: public.app-category.business
+  artifactName: "${productName}-${version}-${arch}.${ext}"
   hardenedRuntime: true
   gatekeeperAssess: false
-win:
-  # Windows Authenticode via electron-builder auto-sign.
-  # certificate file: process.env.WINDOWS_CERT_FILE (build pipeline concern).
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  icon: build/icon.png
+  category: Office
+  artifactName: "${productName}-${version}.${ext}"
