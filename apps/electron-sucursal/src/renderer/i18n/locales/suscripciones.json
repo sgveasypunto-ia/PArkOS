@@ -1,0 +1,9 @@
+{
+  "titulo": "Suscripciones",
+  "activa": "Activa",
+  "vencida": "Vencida",
+  "vacio": "Sin suscripciones activas.",
+  "error": "Error al cargar suscripciones.",
+  "vencePronto": "Vence pronto",
+  "proximaAVencer": "Suscripción próxima a vencer"
+}
