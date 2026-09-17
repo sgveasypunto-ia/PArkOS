@@ -40,6 +40,8 @@ import { useSesionActiva } from '../hooks/useSesionActiva';
 import { TurnoActivoPanel } from '../components/TurnoActivoPanel';
 import { OcupacionPanel } from '../components/OcupacionPanel';
 import { IngresoPanel } from '../../operacion/components/IngresoPanel';
+import { SalidaPanel } from '../../operacion/components/SalidaPanel';
+import { PagoSheet } from '../../facturacion/components/PagoSheet';
 import {
   Card,
   CardContent,
@@ -109,6 +111,19 @@ export function Dashboard(): JSX.Element {
         {/* Slot 2 — IngresoPanel (F6.1, PR-2). */}
         <section data-testid="dashboard-section-ingreso" aria-label={t('caja:dashboard.operar', { defaultValue: 'Ingreso' })}>
           <IngresoPanel />
+        </section>
+
+        {/* Slot 3 — SalidaPanel (F7.1+F7.2, PR-3). */}
+        <section data-testid="dashboard-section-salida" aria-label={t('operacion:salida', { defaultValue: 'Salida' })}>
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('operacion:salida', { defaultValue: 'Salida' })}</CardTitle>
+              <CardDescription>{t('caja:dashboard.placeholderDesc', { defaultValue: 'Sección pendiente (PR-3).' })}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <SalidaPanel uuid_ingreso={null} onPagoSubmit={async () => {}} />
+            </CardContent>
+          </Card>
         </section>
 
         <section data-testid="dashboard-section-suscripciones" aria-label={t('caja:dashboard.suscripciones', { defaultValue: 'Suscripciones' })}>

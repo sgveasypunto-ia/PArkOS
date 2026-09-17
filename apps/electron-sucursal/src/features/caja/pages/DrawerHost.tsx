@@ -3,32 +3,40 @@
  * `useDashboardDrawerStore` (REQ-OPS-138).
  *
  * Renders ONE drawer at a time, gated by `openDrawer === <kind>`. Each
- * future PR adds its own drawer kind + mount branch (PagoSheet in PR-3,
- * ReimprimirTiqueteSheet in PR-4, ArqueoSheet + CierreDiarioDialog in
- * PR-5). For PR-1 the host is intentionally empty — no drawer is
- * available yet, but the infrastructure is in place to add kinds.
+ * drawer branch owns its own focus-restore in its `onOpenChange(false)`
+ * effect (REQ-OPS-138 §Esc).
  *
- * Focus restoration per REQ-OPS-138 §Esc: when a drawer closes, the
- * `useDashboardDrawerStore` consumer restores DOM focus to the
- * `data-anchor-for="<kind>"` element. Each drawer branch in this
- * component is responsible for its own focus-restore in its
- * `onOpenChange(false)` effect; this host is the structural seam.
+ * Drawer kinds mounted:
+ *   - `'pago'`        → `<PagoSheet />` (PR-3, F8.1)
+ *
+ * Future PRs add: `'fe-retry'` (PR-4), `'reimpresion'` (PR-4),
+ * `'arqueo'` (PR-5), `'cierre-diario'` (PR-5).
  */
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
+import { PagoSheet } from '../../facturacion/components/PagoSheet';
 
-/**
- * PR-1 placeholder: no drawer is wired yet. Future PRs add branches
- * here (`if (openDrawer === 'pago') ...`).
- *
- * Returns `JSX.Element | null` to satisfy strict React 18 typing —
- * returning `null` from a React component is the idiomatic "render
- * nothing" signal.
- */
 export function DrawerHost(): JSX.Element | null {
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
 
-  // No drawer is wired in PR-1 — the host exists so future PRs can
-  // add branches by adding `if (openDrawer === 'pago')` etc.
   if (!openDrawer) return null;
+
+  // PR-3 mounts PagoSheet. PR-4 adds fe-retry/reimpresion; PR-5 adds
+  // arqueo/cierre-diario. The single-drawer invariant is upheld
+  // because only ONE branch mounts at a time.
+  if (openDrawer === 'pago') {
+    return (
+      <PagoSheet
+        uuid_ingreso={null}
+        total_cop={0}
+        onSubmit={async () => {
+          /* PR-3 placeholder — the SalidaPanel wires its own onSubmit
+             via prop drilling once the active flujo is in scope. */
+        }}
+      />
+    );
+  }
+
+  // For kinds not yet wired, render nothing (consistent with the
+  // pre-PR-3 placeholder behavior — DrawerHost is structural).
   return null;
 }
