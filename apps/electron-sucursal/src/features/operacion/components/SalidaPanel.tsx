@@ -2,8 +2,12 @@
  * `<SalidaPanel />` — F7.1+F7.2 dashboard section for vehicle-exit.
  *
  * Composes:
- *   - Plate input that reuses `useCotizacion(uuid_ingreso)` polling.
- *   - Cotización breakdown rendered as semantic `<dl>` per plan.md:1677.
+ *   - Plate input that calls `buscarIngresoTolerante(placa)` on submit
+ *     (DEC-SUC-22 tolerance: `O↔0`/`I↔1`/`B↔8`).
+ *   - `useCotizacion(uuid_ingreso)` polling via canonical F1.8
+ *     discriminated union (REQ-OPS-143).
+ *   - `<CotizacionPanel />` renders the breakdown `<dl>` (rotación) or
+ *     mensualidad info banner.
  *   - `<PagoSheet />` trigger that opens the right-side drawer.
  *
  * REQ-OPS-138 (single-drawer): the panel does NOT maintain its own
@@ -14,6 +18,9 @@
  * REQ-OPS-139 (lazy-mount): until the operator types a plate and the
  * server returns an active `uuid_ingreso`, `useCotizacion` key is
  * `null` and no `/cotizar` fetch is issued.
+ *
+ * REQ-OPS-146 (countdown): `useCountdown(15 * 60)` from F3.2 feeds the
+ * `<CotizacionPanel />` countdown; <120s flips to destructive UX.
  */
 import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -32,13 +39,22 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
+import { useCountdown } from '../../auth/hooks/useCountdown';
 import { useCotizacion } from '../hooks/useCotizacion';
+import {
+  buscarIngresoTolerante,
+  type ToleranteResultado,
+} from '../../../lib/validation/placaTolerante';
+import { getIngresosByPlaca } from '../api/ingresoActivoApi';
+import { CotizacionPanel } from './CotizacionPanel';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 
 const placaSchema = z.object({
   placa: z.string().trim().min(5, 'placa_formato_invalido'),
 });
 type PlacaValues = z.infer<typeof placaSchema>;
+
+const COTIZAR_VIDA_UTIL_S = 15 * 60;
 
 export interface SalidaPanelProps {
   /**
@@ -78,6 +94,7 @@ export function SalidaPanel({
   const pagoAnchorId = useId();
 
   const [placa, setPlaca] = useState<string | null>(null);
+  const [tolerante, setTolerante] = useState<ToleranteResultado | null>(null);
 
   const form = useForm<PlacaValues>({
     resolver: zodResolver(placaSchema),
@@ -95,15 +112,25 @@ export function SalidaPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPlaca]);
 
-  const { data: cotizacion, error: cotError } = useCotizacion(uuid_ingreso);
+  const { data: cotizacion, error: cotError, refresh } = useCotizacion(uuid_ingreso);
 
-  const handlePlacaSubmit = form.handleSubmit((values) => {
+  const handlePlacaSubmit = form.handleSubmit(async (values) => {
     setPlaca(values.placa);
+    setTolerante(null);
+    try {
+      const resultado = await buscarIngresoTolerante(values.placa, getIngresosByPlaca);
+      setTolerante(resultado);
+    } catch {
+      setTolerante({ kind: 'none', placaProbada: values.placa });
+    }
   });
 
   const handleOpenPago = useCallback(() => {
     open('pago', pagoAnchorId);
   }, [open, pagoAnchorId]);
+
+  // Countdown 15 min (REQ-OPS-146). `useCountdown` is reusable from F3.2.
+  const { secondsLeft } = useCountdown(COTIZAR_VIDA_UTIL_S);
 
   return (
     <div className="space-y-4" data-testid="salida-panel">
@@ -141,40 +168,44 @@ export function SalidaPanel({
         </p>
       )}
 
-      {cotizacion && uuid_ingreso && (
+      {tolerante?.kind === 'multiple' && (
         <Card>
           <CardHeader>
             <CardTitle>
-              {t('operacion:cotizar.titulo', { defaultValue: 'Cotización' })}
+              {t('operacion:cotizar.candidatos_titulo', { defaultValue: 'Múltiples candidatos' })}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <dl className="grid grid-cols-2 gap-y-1 text-sm" data-testid="cotizacion-dl">
-              <dt>{t('operacion:cotizar.minutos', { defaultValue: 'Minutos' })}</dt>
-              <dd>{cotizacion.minutos_transcurridos}</dd>
-              <dt>{t('operacion:cotizar.base', { defaultValue: 'Base' })}</dt>
-              <dd>${cotizacion.base_cop.toLocaleString('es-CO')}</dd>
-              <dt>{t('operacion:cotizar.fraccion', { defaultValue: 'Fracción' })}</dt>
-              <dd>${cotizacion.fraccion_cop.toLocaleString('es-CO')}</dd>
-              <dt className="font-semibold">{t('operacion:cotizar.total', { defaultValue: 'Total' })}</dt>
-              <dd className="font-semibold" data-testid="cotizacion-total">
-                ${cotizacion.total_cop.toLocaleString('es-CO')}
-              </dd>
-            </dl>
-
-            <div className="mt-4">
-              <Button
-                type="button"
-                id={pagoAnchorId}
-                data-anchor-for="pago"
-                onClick={handleOpenPago}
-                data-testid="salida-cobrar"
-              >
-                {t('facturacion:pago.titulo', { defaultValue: 'Cobrar' })}
-              </Button>
-            </div>
+            <ul className="space-y-1 text-sm">
+              {tolerante.candidatos.map((c) => (
+                <li key={c.uuid_ingreso} data-testid={`candidato-${c.uuid_ingreso}`}>
+                  {c.placaReal}
+                </li>
+              ))}
+            </ul>
           </CardContent>
         </Card>
+      )}
+
+      {tolerante?.kind === 'none' && (
+        <p role="alert" className="text-sm text-destructive">
+          {t('operacion:cotizar.errors.ingreso_no_encontrado', {
+            defaultValue: 'No hay ingreso activo para esta placa en esta sucursal',
+          })}
+        </p>
+      )}
+
+      {cotizacion && uuid_ingreso && (
+        <div data-anchor-for="pago" id={pagoAnchorId}>
+          <CotizacionPanel
+            data={cotizacion}
+            secondsLeft={secondsLeft}
+            onConfirmar={handleOpenPago}
+            onRecalcular={() => {
+              void refresh();
+            }}
+          />
+        </div>
       )}
 
       {placa && !cotizacion && (
