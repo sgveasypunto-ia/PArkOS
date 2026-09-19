@@ -5820,3 +5820,127 @@ The counter is per-`uuid_usuario`; the policy (`max_intentos_login`, `minutos_bl
 
 **Source**: `backend/packages/parkos_core/src/parkos_core/api/v1/auth.py` lines 12-15 (lockout rationale), 81 (`DEFAULT_MINUTOS_BLOQUEO = 15`), 84-99 (`_resolve_lockout_params` resolver), 148 (`@router.post("/login")`), 175 (cookie `httponly=True, secure=True, samesite="lax"` comment), 291-294 (`response.set_cookie(..., httponly=True, ...)`), 310 (POST /refresh), 352 (POST /logout), 419 (`@router.get("/me", response_model=AuthMeResponse)`). `backend/packages/parkos_core/src/parkos_core/models/V/configuracion_seguridad.py:39` `minutos_bloqueo_login: Mapped[int | None]` column seeded by MIGRATION 0001. The frontend F3.1 login UI consumes REQ-OPS-106..112 (separate from this backend contract).
 
+
+
+## ADDED Requirements (delta: 2026-09-19-fase-7-1-busqueda-tolerante-cotizacion, REQ-OPS-143..151)
+
+### REQ-OPS-143 — <CotizacionPanel /> consumes the canonical F1.8 discriminated union
+
+The system SHALL render the fiscal breakdown via the pure presentational component <CotizacionPanel data={cotizacion} secondsLeft={n} onConfirmar={fn} onRecalcular={fn} /> where cotizacion is the discriminated-union type CotizarFacturacion | CotizarMensualidad defined as z.infer<typeof CotizacionSchema> from useCotizacion.ts (Zod canonical schema mirroring ackend/.../schemas/operacion.py:251-263). [Cite: REQ-OPS-022..025 | proposal.md §2.1 R1]
+
+#### Scenario: rotación branch renders the full fiscal breakdown
+
+- **Given** cotizacion.cobrar === true and the canonical discriminated payload {cobrar: true, subtotal: 41000, iva: 7790, total: 48790, tiempo_minutos: 32.5, tarifa_uuid: '...', vigente_hasta: '...'}
+- **When** <CotizacionPanel /> mounts in the operator dashboard
+- **Then** the component MUST render a semantic <dl> with the keys cotizar.subtotal, cotizar.iva, cotizar.total, cotizar.tiempo_minutos, cotizar.tarifa, cotizar.vigencia (F4.2 i18n namespace precedent)
+- **And** the monetary values MUST be rendered through ormatCOP(value) from pps/electron-sucursal/src/features/caja/lib/format.ts:31 (no raw .toLocaleString('es-CO') + '$' per REQ-OPS-147)
+- **And** the onConfirmar callback MUST be wired by the parent to useDashboardDrawerStore.open('pago', pagoAnchorId) (REQ-OPS-138 single-drawer invariant preserved).
+
+#### Scenario: mensualidad branch short-circuits to the info banner
+
+- **Given** cotizacion.cobrar === false and the payload {cobrar: false, motivo: 'mensualidad_vigente'}
+- **When** <CotizacionPanel /> mounts
+- **Then** the component MUST NOT render the <dl> breakdown
+- **And** MUST render the cotizar.mensualidad.titulo and cotizar.mensualidad.descripcion info banner
+- **And** the confirm button MUST surface cotizar.mensualidad.accion ("Confirmar salida por mensualidad") and invoke onConfirmar with the mensualidad branch — a different parent handler than the rotación branch (forward to HU-F7.2 SalidaMensualidad POST — out of scope for F7.1, but the prop interface supports it).
+
+### REQ-OPS-144 — uscarIngresoTolerante(placa) applies DEC-SUC-22 tolerance and lives in a separate file
+
+The system SHALL export uscarIngresoTolerante(placa: string, getIngresosByPlaca: (placa: string) => Promise<readonly Ingreso[]>): Promise<ToleranteResultado> from pps/electron-sucursal/src/lib/validation/placaTolerante.ts — a separate file from pps/electron-sucursal/src/lib/validation/placa.ts per DEC-SUC-22. The function MUST apply the tolerance map O↔0, I↔1, B↔8 (exported as TOLERANCIA_PLACA) and return up to N placa variants via generarVariantesTolerantes(placa: string): readonly string[] for downstream getIngresosByPlaca queries. [Cite: DEC-SUC-22 | proposal.md §2.1 T1 + §3.1 | F4.1 proposal.md line 17 "lives in a separate function in a separate file by design"]
+
+#### Scenario: typo AB0123 (O↔0) resolves to unique ingreso
+
+- **Given** the branch DB holds one active ingreso(X, ABC123) (no salida, no anulación ejecutada)
+- **When** the operator submits the form with the typo placa uscarIngresoTolerante('AB0123', getIngresosByPlaca)
+- **Then** the function MUST generate the variants [AB0123, ABC123] (1 typo at position 4: O↔0)
+- **And** MUST iterate the variants through getIngresosByPlaca
+- **And** MUST return {kind: 'found', uuid_ingreso: 'X', placaReal: 'ABC123', varianteUsada: 'AB0123'} (early-exit on first hit)
+- **And** MUST NOT mutate the ingreso table or invoke detectarTipoVehiculo (DEC-SUC-22 strict detector stays in placa.ts).
+
+### REQ-OPS-145 — useCotizacion polls at 1s with 5s timeout, 401 clears auth
+
+The system SHALL export useCotizacion(uuid_ingreso: string | null) from pps/electron-sucursal/src/features/operacion/hooks/useCotizacion.ts as an SWR hook polling GET /api/v1/operacion/cotizar?uuid_ingreso=X at efreshInterval: OPERACION_COTIZAR_REFRESH_INTERVAL_MS = 1_000 while the panel is mounted, with efreshInterval: 0 (no polling) when uuid_ingreso === null. Each fetch MUST abort after OPERACION_COTIZAR_TIMEOUT_MS = 5_000 via AbortController. shouldRetryOnError MUST exclude 401/403/404. On HTTP 401, the hook MUST call useAuthStore.clear() AND dispatch the parkos:auth:cleared event (preserved invariant from current impl lines 96-105). [Cite: proposal.md §2.1 T2 + R1 | plan.md:1685]
+
+#### Scenario: HTTP 401 from cotizar clears auth and redirects to login
+
+- **Given** an SWR key of '/operacion/cotizar?uuid_ingreso=X' and the branch API returns 401 Unauthorized because the JWT expired during the polling window
+- **When** useCotizacion(X) receives the 401 response
+- **Then** the hook MUST invoke useAuthStore.getState().clear() AND emit window.dispatchEvent(new Event('parkos:auth:cleared')) (this is the F3.1 logout contract from REQ-OPS-107..110)
+- **And** the hook MUST set shouldRetryOnError to alse for that error so SWR does not re-poll the endpoint
+- **And** the operator dashboard MUST redirect to /login via the F3.1 redirect rule (REQ-OPS-111).
+
+### REQ-OPS-146 — 15-minute countdown turns red with ria-live ticks when secondsLeft < 120
+
+The system SHALL wrap the countdown <div> inside <CotizacionPanel /> in ria-live="polite" (WCAG 2.1 AA, RNF-022) so screen readers announce each tick. The countdown MUST turn 	ext-destructive (shadcn CSS variable --destructive), MUST render the <AlertTriangle /> icon from lucide-react, and MUST set ole="alert" when secondsLeft < 120 (2-minute threshold). The countdown MUST reuse useCountdown(15 * 60) from pps/electron-sucursal/src/features/auth/hooks/useCountdown.ts (F3.2 DEC-F3.2-01 drift-resistant Date.now() baseline). [Cite: REQ-OPS-113 | proposal.md §2.1 T3]
+
+#### Scenario: countdown crosses the 2-minute red threshold
+
+- **Given** <CotizacionPanel data={cotizacion} secondsLeft={n} /> is mounted with secondsLeft decrementing once per second via useCountdown(15 * 60)
+- **When** useCountdown transitions secondsLeft from 120 to 119 (2-minute threshold crossed)
+- **Then** the countdown <div> MUST render with className="text-destructive" (shadcn semantic token), MUST show the <AlertTriangle /> icon beside the countdown text, and MUST set ole="alert"
+- **And** the outer <div> MUST carry ria-live="polite" so screen readers announce each subsequent tick as the countdown approaches zero
+- **And** MUST show the message cotizar.countdown.expiring_soon ("Cotización expira pronto — confirma o recalcula") when secondsLeft < 120 and secondsLeft > 0
+- **And** MUST show cotizar.countdown.expirada ("Cotización expirada — recalculando…") when secondsLeft === 0 (the SWR re-fetch will produce a fresh igente_hasta and the countdown resets).
+
+### REQ-OPS-147 — ormatCOP(value) for all monetary rendering (no raw .toLocaleString('es-CO') + '$')
+
+The system SHALL import and use ormatCOP(value: number): string from pps/electron-sucursal/src/features/caja/lib/format.ts:31 (F3.3 shipped, tested at ormat.test.ts:15-29) for every monetary value rendered by <CotizacionPanel />. Raw .toLocaleString('es-CO') + literal '$' concatenation MUST NOT appear in <CotizacionPanel />, <SalidaPanel />, or any new component this PR introduces. [Cite: proposal.md §2.1 R2 | F3.3 format.ts:31]
+
+#### Scenario: COP value 12300.00 formats as "$ 12.300" (es-CO locale)
+
+- **Given** ormatCOP is imported from eatures/caja/lib/format.ts and the test fixture is the canonical F3.3 verbatim test
+- **When** <CotizacionPanel /> renders data.total = 12300
+- **Then** the visible text MUST equal "$ 12.300" (es-CO locale, thousands separator ., no decimals for COP)
+- **And** an automated grep git grep -nE "toLocaleString\\('es-CO'\\)" apps/electron-sucursal/src/features/operacion/ MUST return zero matches
+- **And** an automated grep git grep -nE "\\\$\\{?[^}]*\\.toLocaleString" in the same directory MUST return zero matches.
+
+### REQ-OPS-148 — cotizar.errors.iva_no_configurado surfaces a non-blocking banner (no crash)
+
+The system SHALL render the cotizar.errors.iva_no_configurado info banner in <CotizacionPanel /> (NOT a thrown error, NOT a blank panel) when useCotizacion returns {error: ParkosHttpError(500)} from GET /operacion/cotizar?uuid_ingreso=X with the body {"error": "iva_no_configurado"}. The banner MUST be localizable via the i18n key cotizar.errors.iva_no_configurado ("IVA no configurado en el sistema. Contacte al administrador."), MUST NOT crash the operator dashboard, and MUST keep the rest of the UI (occupancy strip, ingreso form) usable. [Cite: proposal.md §2.1 R2 + Risks R3 | plan.md:1665 KD-IVA]
+
+#### Scenario: branch without impuestos.IVA seeded renders banner, not crash
+
+- **Given** the branch DB has NO row in prod.impuestos with codigo='IVA' (pre-MIGRATION 0026 state, or KD-IVA blocker before HU-F14.2 Parte II seeding)
+- **When** the operator submits a placa and useCotizacion(X) receives the 500 response with body {"error": "iva_no_configurado"}
+- **Then** <CotizacionPanel /> MUST render the cotizar.errors.iva_no_configurado banner with the localized message
+- **And** the panel MUST NOT render the <dl> breakdown
+- **And** the panel MUST NOT render the countdown (no igente_hasta to count down to)
+- **And** the operator dashboard MUST remain usable: the operator can see the occupancy strip (REQ-OPS-130), the ingreso form, and the other dashboard panels.
+
+### REQ-OPS-149 — useCotizacion.test.ts covers rotación, mensualidad, and tiempo ≥ tarifa-plena
+
+The system SHALL add 3 NEW hook tests to pps/electron-sucursal/src/features/operacion/hooks/useCotizacion.test.ts covering the canonical discriminated union (per plan.md:1689): (1) otación mocks cobrar:true with the full fiscal breakdown and asserts the SWR key + parser path; (2) mensualidad mocks cobrar:false with motivo:'mensualidad_vigente' and asserts the short-circuit branch; (3) 	iempo ≥ tarifa-plena mocks a high 	iempo_minutos (≥ the tarifa_plena threshold, e.g. 24 hours = 1440) with 	otal === valor_plena and asserts no fraction accumulation. The existing 3 tests in useCotizacion.test.ts (C1: null key no fetch, C2: fetcher-closure, C3: 401 → useAuthStore.clear) MUST be migrated to the canonical Zod schema mocks. The 4 existing tests in SalidaPanel.test.tsx MUST be migrated to canonical schema mocks asserting ormatCOP(x) output (literal "$ 50.000" fixture) instead of '$'+x.toLocaleString('es-CO'). [Cite: proposal.md §2.1 T4 + R4 + R5 | plan.md:1689]
+
+#### Scenario: all 6 useCotizacion tests pass with the canonical schema
+
+- **Given** useCotizacion.ts exposes the rewritten Zod discriminated union schema (R1) and useCotizacion.test.ts declares the 3 migrated tests + 3 new tests (total 6)
+- **When** pnpm --filter electron-sucursal test -- --run useCotizacion executes
+- **Then** all 6 tests MUST pass (3 migrated: null key no fetch / fetcher-closure / 401 logout; 3 new: rotación / mensualidad / tiempo ≥ tarifa-plena)
+- **And** the SalidaPanel.test.tsx 4 existing tests MUST pass with canonical schema mocks (assertions on ormatCOP literal "$ 50.000", not raw '$'+x.toLocaleString)
+- **And** total new + migrated test count is 10 across both files; the coverage report MUST reflect ≥90% lines and ≥85% branches per REQ-OPS-150.
+
+### REQ-OPS-150 — Per-file coverage thresholds added atomically with file creation
+
+The system SHALL add 3 entries to itest.config.ts perFileThresholds (F4.x precedent at itest.config.ts:25-43) atomically with the file creation in this PR: pps/electron-sucursal/src/lib/validation/placaTolerante.ts (lines ≥95, functions ≥95, branches ≥90 — pure function mirror of placa.ts thresholds); pps/electron-sucursal/src/features/operacion/hooks/useCotizacion.ts (lines ≥90, functions ≥90, branches ≥85 — SWR hook + Zod discriminated union); pps/electron-sucursal/src/features/operacion/components/CotizacionPanel.tsx (lines ≥90, functions ≥90, branches ≥85 — presentational with two render paths). [Cite: proposal.md §2.1 R6 | F4.1 vitest.config.ts precedent]
+
+#### Scenario: vitest gate passes with the 3 new per-file thresholds
+
+- **Given** the 3 new per-file threshold entries are present in itest.config.ts AND the 3 corresponding implementation files exist with their tests
+- **When** pnpm --filter electron-sucursal test:coverage executes
+- **Then** the coverage gate MUST pass for all 8 per-file thresholds (5 existing + 3 new)
+- **And** any missing branch (e.g. the cobrar === false path untested) MUST drop coverage below threshold and fail CI before the PR can land
+- **And** the threshold MUST be enforced from PR creation (no retrofitted gates after merge).
+
+### REQ-OPS-151 — Client-side placa variant generation bounds the search space
+
+The system SHALL export generarVariantesTolerantes(placa: string): readonly string[] from pps/electron-sucursal/src/lib/validation/placaTolerante.ts as a pure deterministic function. The function MUST return the input placa as the first entry (no-tolerance happy path), MUST emit at most one variant per (position, confusable-class) pair (binary O↔0, I↔1, B↔8 — 3 confusable pairs), MUST skip two-position variants if single-position variants exceed 50 entries (bounded heuristic), and MUST bound the worst-case combinatorial explosion to ≤729 variants (6 positions × 3 confusable classes × 3 binary replacements). The realistic case (1 typo) yields ≤13 variants and the hook early-exits on first hit. [Cite: proposal.md §2.1 R7 + §3.1 | F6.1 design.md Decision Path 1 precedent]
+
+#### Scenario: ABC123 with no typo returns 1 variant; AB0123 with 1 typo returns ≤13 variants
+
+- **Given** generarVariantesTolerantes is imported from pps/electron-sucursal/src/lib/validation/placaTolerante.ts
+- **When** the function is called with the canonical test fixtures
+- **Then** generarVariantesTolerantes('ABC123') MUST return ['ABC123'] exactly (no confusables present in the input; 1 variant, no false positives)
+- **And** generarVariantesTolerantes('AB0123') MUST return ['AB0123', 'ABC123'] (1 confusable at position 3:  ↔O — 2 variants)
+- **And** generarVariantesTolerantes('OBC113') MUST return ≤3 variants (1 confusable at position 1: O↔0, plus the input)
+- **And** the worst-case test fixture (a 6-char placa with 3 confusables at all positions) MUST yield ≤729 variants, with the bounded heuristic skipping two-position variants if single-position variants exceed 50
+- **And** uscarIngresoTolerante MUST short-circuit on the first hit, so realistic operator flows trigger ≤3 backend queries per placa.
