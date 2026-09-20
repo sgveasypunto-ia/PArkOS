@@ -156,6 +156,23 @@ export default defineConfig({
           functions: 80,
           branches: 75,
         },
+        // HU-F9.2 (REQ-OPS-181) — SWR polling hook + 401-clear + filter
+        // exclude-vencidas + sort ASC. ≥90/90/85 mirrors useRegistrarPago
+        // precedent (F8.1) — same shape (data hook + auth invariant).
+        'src/features/suscripciones/hooks/useSuscripcionesProximasVencer.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+        // HU-F9.2 (REQ-OPS-182) — page composing inline SWR fetch + 5
+        // column DataTable + client-side search filter. ≥80/80/75 mirrors
+        // Venta.tsx (F9.1) precedent — page renders conditionals (loading,
+        // error, empty, list) and reuses shadcn table primitives.
+        'src/features/suscripciones/pages/Listado.tsx': {
+          lines: 80,
+          functions: 80,
+          branches: 75,
+        },
       },
     },
   },
