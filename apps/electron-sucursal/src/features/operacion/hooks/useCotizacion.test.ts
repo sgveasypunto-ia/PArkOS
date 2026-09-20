@@ -109,7 +109,7 @@ describe('useCotizacion — REQ-OPS-132 fetcher-closure + lazy-mount', () => {
 
     // ParkosHttpError(401) thrown by parkosFetch.
     const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockFetch.mockRejectedValue(new ParkosHttpError(401));
+    mockFetch.mockRejectedValue(new ParkosHttpError(401, 'unauthorized', '/api/v1/operacion/cotizar'));
 
     // Distinct UUID to avoid SWR cache collision with C2 (which used
     // UUID_INGRESO with a successful mock).

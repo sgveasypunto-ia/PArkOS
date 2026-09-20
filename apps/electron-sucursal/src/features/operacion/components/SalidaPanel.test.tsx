@@ -13,7 +13,6 @@
  *   S5: mensualidad (cobrar:false) renders the mensualidad banner,
  *       not the `<dl>` breakdown.
  */
-import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 
@@ -57,14 +56,14 @@ const cotizacionMensualidad = {
 describe('<SalidaPanel /> — F7.1+F7.2 dashboard section (canonical schema)', () => {
   it('S1: panel renders placa input on mount', () => {
     mockUseCotizacion.mockReturnValue({ data: undefined, error: undefined, refresh: vi.fn() });
-    render(<SalidaPanel uuid_ingreso={null} onPagoSubmit={vi.fn()} />);
+    render(<SalidaPanel uuid_ingreso={null} />);
     expect(screen.getByTestId('salida-panel')).toBeInTheDocument();
     expect(screen.getByTestId('salida-placa')).toBeInTheDocument();
   });
 
   it('S2: idle mode — uuid_ingreso=null → useCotizacion key=null (no fetch)', () => {
     mockUseCotizacion.mockReturnValue({ data: undefined, error: undefined, refresh: vi.fn() });
-    render(<SalidaPanel uuid_ingreso={null} onPagoSubmit={vi.fn()} />);
+    render(<SalidaPanel uuid_ingreso={null} />);
     expect(mockUseCotizacion).toHaveBeenCalledWith(null);
   });
 
@@ -77,7 +76,7 @@ describe('<SalidaPanel /> — F7.1+F7.2 dashboard section (canonical schema)', (
     render(
       <SalidaPanel
         uuid_ingreso={UUID_INGRESO_A}
-        onPagoSubmit={vi.fn()}
+       
       />,
     );
     expect(screen.getByTestId('cotizacion-dl')).toBeInTheDocument();
@@ -94,7 +93,7 @@ describe('<SalidaPanel /> — F7.1+F7.2 dashboard section (canonical schema)', (
     render(
       <SalidaPanel
         uuid_ingreso={UUID_INGRESO_B}
-        onPagoSubmit={vi.fn()}
+       
       />,
     );
     expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
@@ -111,7 +110,7 @@ describe('<SalidaPanel /> — F7.1+F7.2 dashboard section (canonical schema)', (
     render(
       <SalidaPanel
         uuid_ingreso={UUID_INGRESO_A}
-        onPagoSubmit={vi.fn()}
+       
       />,
     );
     expect(screen.getByTestId('cotizacion-mensualidad-banner')).toBeInTheDocument();

@@ -11,9 +11,9 @@
  *       and `text-destructive` class.
  *   T4: click handlers — `onConfirmar` and `onRecalcular` fire on click.
  */
-import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -101,5 +101,29 @@ describe('<CotizacionPanel /> — pure presentational (REQ-OPS-143)', () => {
     fireEvent.click(screen.getByTestId('cotizacion-recalcular'));
     expect(onRecalcular).toHaveBeenCalledTimes(1);
     cleanup();
+  });
+
+  it('T5: HTTP 500 iva_no_configurado → banner no-bloqueante (REQ-OPS-148)', () => {
+    const error = new ParkosHttpError(
+      500,
+      JSON.stringify({ error: 'iva_no_configurado' }),
+      '/api/v1/operacion/cotizar',
+    );
+    render(
+      <CotizacionPanel
+        data={undefined}
+        error={error}
+        secondsLeft={900}
+        onConfirmar={vi.fn()}
+        onRecalcular={vi.fn()}
+      />,
+    );
+    // Banner present, no <dl>, no countdown UI for rotation.
+    expect(screen.getByTestId('cotizacion-error-banner')).toBeInTheDocument();
+    expect(screen.queryByTestId('cotizacion-dl')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('cotizacion-mensualidad-banner')).not.toBeInTheDocument();
+    // Localized message references IVA not configured.
+    const banner = screen.getByTestId('cotizacion-error-banner');
+    expect(banner.textContent).toMatch(/IVA/i);
   });
 });

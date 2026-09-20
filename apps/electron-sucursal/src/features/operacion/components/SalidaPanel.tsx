@@ -64,18 +64,6 @@ export interface SalidaPanelProps {
    */
   uuid_ingreso: string | null;
   /**
-   * Callback fired once the cotizacion is ready and the operator
-   * confirms payment. PR-3 wires this to `POST /facturacion/factura`
-   * + `POST /facturacion/factura-pagos`.
-   */
-  onPagoSubmit: (payload: {
-    uuid_ingreso: string;
-    medio_pago: 'efectivo' | 'datafono';
-    monto_recibido_cop: number;
-    nit_cliente: string;
-    voucher?: string;
-  }) => Promise<void>;
-  /**
    * Optional plate pre-fill from the dashboard's PlacaInputHero. When
    * provided, the panel's placa form is pre-filled on mount so the
    * operator only has to press Enter to cotizar. We DO NOT auto-submit.
@@ -85,7 +73,6 @@ export interface SalidaPanelProps {
 
 export function SalidaPanel({
   uuid_ingreso,
-  onPagoSubmit,
   initialPlaca = null,
 }: SalidaPanelProps): JSX.Element {
   const { t } = useTranslation(['operacion', 'facturacion']);
@@ -162,12 +149,6 @@ export function SalidaPanel({
         </form>
       </Form>
 
-      {cotError && (
-        <p role="alert" className="text-sm text-destructive">
-          {t('operacion:error_network_error', { defaultValue: 'Sin conexión' })}
-        </p>
-      )}
-
       {tolerante?.kind === 'multiple' && (
         <Card>
           <CardHeader>
@@ -195,10 +176,11 @@ export function SalidaPanel({
         </p>
       )}
 
-      {cotizacion && uuid_ingreso && (
+      {uuid_ingreso && (cotizacion || cotError) && (
         <div data-anchor-for="pago" id={pagoAnchorId}>
           <CotizacionPanel
             data={cotizacion}
+            error={cotError}
             secondsLeft={secondsLeft}
             onConfirmar={handleOpenPago}
             onRecalcular={() => {

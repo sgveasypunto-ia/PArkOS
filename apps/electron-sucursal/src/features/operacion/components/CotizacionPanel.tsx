@@ -30,13 +30,23 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 import { formatCOP } from '../../caja/lib/format';
 import type { Cotizacion } from '../hooks/useCotizacion';
+import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 export interface CotizacionPanelProps {
   /**
    * Canonical discriminated union (REQ-OPS-143). `cobrar === false`
-   * short-circuits to the mensualidad info banner.
+   * short-circuits to the mensualidad info banner. `undefined` (with
+   * `error` set) renders the `cotizar.errors.iva_no_configurado` banner
+   * per REQ-OPS-148.
    */
-  data: Cotizacion;
+  data: Cotizacion | undefined;
+  /**
+   * Optional fetch error from `useCotizacion`. When `status === 500` with
+   * body `{"error":"iva_no_configurado"}`, the panel renders a
+   * non-blocking info banner (REQ-OPS-148). All other errors also render
+   * the banner — the operator dashboard must remain usable.
+   */
+  error?: Error | null;
   /** Seconds until `vigente_hasta` — from `useCountdown(15 * 60)`. */
   secondsLeft: number;
   /**
@@ -50,18 +60,63 @@ export interface CotizacionPanelProps {
 }
 
 /**
- * Pure presentational component. Two render paths based on the
- * discriminated union: `cobrar === true` (rotación) or `cobrar ===
- * false` (mensualidad).
+ * Pure presentational component. Three render paths:
+ *  - `error` set (iva_no_configurado or any 5xx) → REQ-OPS-148 banner.
+ *  - `data.cobrar === false` → mensualidad info banner.
+ *  - `data.cobrar === true` → semantic `<dl>` with formatCOP values.
  */
 function CotizacionPanelImpl({
   data,
+  error,
   secondsLeft,
   onConfirmar,
   onRecalcular,
 }: CotizacionPanelProps): JSX.Element {
   const isExpiring = secondsLeft < 120;
   const isExpired = secondsLeft === 0;
+
+  // Error branch — non-blocking banner (REQ-OPS-148). The operator
+  // dashboard must remain usable; this is NEVER a thrown error.
+  if (error || !data) {
+    const isIvaNoConfigurado =
+      error instanceof ParkosHttpError && error.status === 500;
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Cotización</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div
+            role="alert"
+            className="rounded border border-warning bg-warning/10 p-3 text-sm"
+            data-testid="cotizacion-error-banner"
+          >
+            <p className="font-medium">
+              {isIvaNoConfigurado
+                ? 'IVA no configurado en el sistema. Contacte al administrador.'
+                : 'No se pudo obtener la cotización'}
+            </p>
+            <p className="text-muted-foreground">
+              {isIvaNoConfigurado
+                ? 'La facturación requiere el impuesto IVA sembrado en el sistema.'
+                : 'Reintente en unos segundos. Si persiste, contacte al administrador.'}
+            </p>
+          </div>
+
+          <div className="mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              data-testid="cotizacion-recalcular"
+              onClick={onRecalcular}
+            >
+              Reintentar
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   // Mensualidad branch — short-circuits to the info banner (REQ-OPS-143
   // scenario 2). No `<dl>` rendered.
