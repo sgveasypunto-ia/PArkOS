@@ -111,7 +111,7 @@ describe('build("salida-mensualidad", payload)', () => {
       qrDataUrl: 'data:image/png;base64,CCC',
       logoDataUrl: 'data:image/png;base64,DDD',
       empresa: {
-        nombre: 'PARKINGOS S.A.S.',
+        nombre: 'Parkos Demo S.A.S.',
         nit: '900123456-7',
         direccion: 'Calle 1 #2-3, Bogota',
         regimen: 'Responsable de IVA',
@@ -121,6 +121,8 @@ describe('build("salida-mensualidad", payload)', () => {
       polizaRC: 'POL-99999',
       folio: '00000000-0000-4000-8000-000000000007',
       observaciones: 'Mensualidad vigente',
+      sucursal: { encabezado: 'Sucursal Sur' },
+      tiempoTotal: '360h 00m',
       esMensualidad: true as const,
     };
     const buf = build('salida-mensualidad', payload);
@@ -131,6 +133,8 @@ describe('build("salida-mensualidad", payload)', () => {
     expect(contains(buf, Buffer.from('PAGO CON MENSUALIDAD'))).toBe(true);
     // placa token
     expect(contains(buf, Buffer.from('ABC12D'))).toBe(true);
+    // DEC-SUC-28 dynamic header
+    expect(contains(buf, Buffer.from('Sucursal Sur'))).toBe(true);
     // NO money fields
     expect(contains(buf, Buffer.from('Subtotal:'))).toBe(false);
     expect(contains(buf, Buffer.from('TOTAL:'))).toBe(false);

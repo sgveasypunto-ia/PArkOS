@@ -452,18 +452,40 @@ export type SalidaPayload = z.infer<typeof salidaPayloadSchema>;
 // Salida-mensualidad payload (CU-15SM)
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * F7.3 (DEC-SUC-28 + DEC-SUC-26) tightens the F5.2
+ * `salidaMensualidadPayloadSchema`:
+ *   - `sucursal.encabezado` is REQUIRED (DEC-SUC-28 — dynamic branch
+ *     header replaces the F5.2 "PARKINGOS" constant).
+ *   - `qrDataUrl` and `logoDataUrl` are REQUIRED (DEC-SUC-26 — same as
+ *     F6.2 tightened CU-15E). Empty `logoDataUrl` is the legitimate
+ *     "documentos cold-cache" sentinel (renders placeholder `▢`).
+ *   - `tiempoTotal` is REQUIRED (was implicit in the F5.2 stub via
+ *     combined `Entrada:` + `Salida:` lines; F7.3 splits into
+ *     `Fecha:` / `Hora entrada:` / `Hora salida:` / `Tiempo:` per
+ *     the 15-field canonical layout in `plan.md:1810`).
+ *
+ * NO monetary fields (DEC-SUC-23 verbatim — `salidas` has NO `valor`
+ * column; the mensualidad fee is settled by the subscription, NOT
+ * the exit).
+ */
 export const salidaMensualidadPayloadSchema = z.object({
   placa: placaSchema,
   fechaEntrada: z.string().datetime({ offset: true }),
   fechaSalida: z.string().datetime({ offset: true }),
-  qrDataUrl: z.string().optional(),
-  logoDataUrl: z.string().optional(),
+  qrDataUrl: z.string(),
+  logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
   horarioAtencion: z.string().min(1),
   polizaRC: z.string().optional(),
   folio: z.string().uuid(),
   observaciones: z.string().optional(),
+  // DEC-SUC-28 — dynamic branch header.
+  sucursal: sucursalSchema,
+  // F7.3 — split duration into explicit field (Fecha + Hora entrada +
+  // Hora salida + Tiempo) per the 15-field layout.
+  tiempoTotal: z.string().min(1),
   // Discriminator — used by the renderer to swap to "PAGO CON MENSUALIDAD"
   // branding in the sello slot. NOT a money field (DEC-SUC-27 — salida
   // mensualidad NO emite subtotal/iva/total/medioPago).

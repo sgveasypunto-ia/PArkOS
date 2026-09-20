@@ -282,28 +282,56 @@ function buildSalidaBody(payload: SalidaPayload): Buffer {
 }
 
 function buildSalidaMensualidadBody(payload: SalidaMensualidadPayload): Buffer {
+  // F7.3 (HU-F7.3 / REQ-OPS-159) — 15-field CU-15SM layout per
+  // `plan.md:1810` + 2 DEC-SUC-26 additions (QR + logo markers).
+  //
+  // DEC-SUC-27 invariant: the sello `*** PAGO CON MENSUALIDAD ***` is
+  // wrapped by `escText2x()` (text 2x height) before and
+  // `escTextReset()` (1x1 reset) after — visual distinguisher that
+  // prevents the cajero from confusing a tiquete sin cobro with one
+  // cobrado (CU-15S uses `*** SALIDA ***` instead).
+  //
+  // NO monetary fields (DEC-SUC-23): the mensualidad fee is settled
+  // by the subscription, NOT the exit. The buffer MUST NOT contain
+  // `Subtotal:`, `IVA:`, `TOTAL:`, or `Medio de pago:`.
+  //
+  // The header is `payload.sucursal.encabezado` (DEC-SUC-28 dynamic),
+  // NOT the F5.2 "PARKINGOS" constant.
   const lines: Buffer[] = [
     escCenter(),
     escBoldOn(),
-    utf8('PARKINGOS\n'),
+    utf8(`${payload.sucursal.encabezado}\n`),               // 1: Encabezado
     escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),
-    utf8(`NIT ${payload.empresa.nit}\n`),
-    utf8(`${payload.empresa.direccion}\n`),
-    utf8(`${payload.empresa.regimen}\n`),
+    utf8(`${payload.empresa.nombre}\n`),                    // 2: Empresa
+    utf8(`NIT ${payload.empresa.nit}\n`),                   // 4: NIT
+    utf8(`${payload.empresa.direccion}\n`),                 // 3: Dirección
+    utf8(`${payload.empresa.regimen}\n`),                   // 5: Régimen
+    utf8(`Operario: ${payload.operario}\n`),                // 6: Operario
     utf8('\n'),
     escText2x(),
-    utf8('*** PAGO CON MENSUALIDAD ***\n'),
+    utf8('*** PAGO CON MENSUALIDAD ***\n'),                 // 7: Sello (DEC-SUC-27)
     escTextReset(),
     utf8('\n'),
-    utf8(`Folio: ${payload.folio}\n`),
-    utf8(`Placa: ${payload.placa}\n`),
-    utf8(`Entrada: ${formatFechaCorta(payload.fechaEntrada)}\n`),
-    utf8(`Salida:  ${formatFechaCorta(payload.fechaSalida)}\n`),
-    utf8(`Operario: ${payload.operario}\n`),
-    utf8(`Horario: ${payload.horarioAtencion}\n`),
+    utf8(`Folio: ${payload.folio}\n`),                      // 8: Folio
+    utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`),  // 9: Fecha (date-only)
+    utf8(`Hora entrada: ${formatHora(payload.fechaEntrada)}\n`), // 10: Hora entrada
+    utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),   // 11: Hora salida
+    utf8(`Tiempo: ${payload.tiempoTotal}\n`),               // 12: Tiempo total
+    utf8(`Placa: ${payload.placa}\n`),                      // 13: Placa
+    utf8(`Horario: ${payload.horarioAtencion}\n`),          // 14: Horario atención
   ];
-  if (payload.polizaRC) lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));
+  if (payload.polizaRC) {
+    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));   // 15a: Póliza RC
+  }
+  if (payload.observaciones) {
+    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // 15b: Observaciones
+  }
+  // F7.3 — DEC-SUC-26 QR + logo markers (mirror F6.2 entrada precedent).
+  const logoText = payload.logoDataUrl === ''
+    ? LOGO_PLACEHOLDER_GLYPH
+    : 'OK';
+  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));
+  lines.push(utf8(`;LOGO:${logoText}\n`));
   lines.push(utf8('\n'));
   lines.push(utf8('Conserve este tiquete como soporte.\n'));
   return concat(lines);
