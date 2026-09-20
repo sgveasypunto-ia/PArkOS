@@ -101,6 +101,30 @@ export default defineConfig({
           functions: 90,
           branches: 85,
         },
+        // HU-F8.3 (REQ-OPS-173) — SWR mutation hook with motivo Zod
+        // pre-validation + Idempotency-Key SHA-256 + 401 auth-clear.
+        // Mirrors useRegistrarPago precedent.
+        'src/features/facturacion/hooks/useReimprimir.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+        // HU-F8.3 (REQ-OPS-174) — SWR mutation hook with motivo_anulacion
+        // Zod + INSERT-only chain invariant + Idempotency-Key SHA-256.
+        'src/features/facturacion/hooks/useAnularReimpresion.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+        // HU-F8.3 (REQ-OPS-171) — page composing useReimprimir +
+        // useAnularReimpresion with alertdialog + RHF + Zod. Lower
+        // threshold because the page renders 2 dialogs + a success
+        // card (some unreachable branches when result===null).
+        'src/features/facturacion/pages/ReimprimirTiquete.tsx': {
+          lines: 80,
+          functions: 80,
+          branches: 75,
+        },
       },
     },
   },

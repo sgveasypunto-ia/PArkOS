@@ -51,6 +51,32 @@
     "motivoLabel": "Motivo (mín. 10 caracteres)",
     "motivoPlaceholder": "Describe el motivo",
     "buscar": "Buscar",
-    "confirmar": "Reimprimir"
+    "confirmar": "Reimprimir",
+    "placa": {
+      "label": "UUID ingreso"
+    },
+    "tipo": {
+      "label": "Tipo de tiquete",
+      "entrada": "Entrada",
+      "salida": "Salida"
+    },
+    "alertdialog": {
+      "title": "Confirmar cobro de reimpresión",
+      "description": "Esta acción registra un cobro en la factura del ingreso. ¿Desea continuar?"
+    },
+    "errors": {
+      "motivo_muy_corto": "El motivo debe tener al menos 10 caracteres",
+      "costo_no_configurado": "No hay costo configurado para reimpresion. Contactar admin.",
+      "already_pending": "Ya existe una reimpresion activa para este ingreso"
+    },
+    "success": {
+      "titulo": "Reimpresion registrada"
+    },
+    "anular": {
+      "titulo": "Anular reimpresion",
+      "descripcion": "La anulacion registra una fila nueva en la cadena y no modifica la reimpresion original.",
+      "motivoLabel": "Motivo de anulacion (min. 10 caracteres)",
+      "confirmar": "Anular"
+    }
   }
 }
