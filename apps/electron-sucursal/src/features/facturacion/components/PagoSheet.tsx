@@ -22,6 +22,7 @@
  */
 import { useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -75,7 +76,6 @@ function deferredSafePrint(
     try {
       emit(tipo, payload);
     } catch (err) {
-      // eslint-disable-next-line no-console -- operator-facing: printer offline.
       console.warn(
         `[PagoSheet] bridge.imprimir(${tipo}) failed (printer_offline / disconnected):`,
         err,
@@ -95,6 +95,7 @@ export function PagoSheet({
   firePrintEnvelope,
 }: PagoSheetProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
+  const navigate = useNavigate();
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
   const lastAnchorId = useDashboardDrawerStore((s) => s.lastAnchorId);
   const close = useDashboardDrawerStore((s) => s.close);
@@ -138,6 +139,16 @@ export function PagoSheet({
             },
           };
       const result = await trigger(post);
+      // HU-F8.2 (REQ-OPS-169/170) — navigate to the FE detail page if
+      // the pago created an electronic invoice. The `as` cast is
+      // defensive — `FacturaReadSchema.factura_electronica: z.unknown()`
+      // (ABIERTO-F8.2-01 follow-up tightens this). Narrow via
+      // `typeof` so a missing/null/unknown FE just falls through to
+      // the normal close + print sequence.
+      const fe = result.factura_electronica as { uuid?: unknown } | null | undefined;
+      if (fe && typeof fe === 'object' && typeof fe.uuid === 'string') {
+        navigate(`/factura-electronica/${fe.uuid}`);
+      }
       // DEC-SUC-27 — CU-15S print fires AFTER pago, then recibo de pago.
       const emit = firePrintEnvelope ?? defaultFirePrintEnvelope;
       deferredSafePrint(emit, 'salida', { uuid_factura: result.uuid });
@@ -147,7 +158,7 @@ export function PagoSheet({
       });
       close();
     },
-    [uuid_ingreso, total_cop, trigger, firePrintEnvelope, close],
+    [uuid_ingreso, total_cop, trigger, firePrintEnvelope, close, navigate],
   );
 
   return (
