@@ -234,6 +234,17 @@ export function Venta(): JSX.Element {
           {t('suscripciones:venta.titulo', { defaultValue: 'Venta de suscripción' })}
         </h1>
       </header>
+      {/*
+        PagoModal composition (REQ-OPS-180, OD-2 ratified):
+        step 4 reuses F8.1 `<PagoModal />` from
+        `../../facturacion/components/PagoModal`. PagoModal owns
+        vueltos live + FE con datos + NIT módulo 11 validation —
+        no duplicate UI in the wizard. `total_cop = monto_proporcional
+        ?? plan.valor` so vueltos live reflects the actual charge
+        (informational; authoritative amount is `factura_detalle.valor_unitario`).
+        On pago 201, `handlePagoSubmit` calls `trigger` + navigates
+        to `/suscripciones` (F9.2 list).
+      */}
 
       {state.paso === 1 && (
         <section className="space-y-3" data-testid="venta-paso-1">
