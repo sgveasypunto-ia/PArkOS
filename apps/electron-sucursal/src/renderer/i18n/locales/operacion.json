@@ -57,10 +57,33 @@
   },
   "cotizar": {
     "titulo": "Cotización",
-    "minutos": "Minutos",
-    "base": "Base",
-    "fraccion": "Fracción",
-    "total": "Total",
+    "minutos": "Tiempo",
+    "subtotal": "Subtotal",
+    "iva": "IVA",
+    "total": "Total a pagar",
+    "tarifa": "Tarifa aplicada",
+    "vigencia": "Cotización vigente hasta",
+    "countdown": {
+      "label": "Tiempo restante",
+      "expiring_soon": "Cotización expira pronto — confirma o recalcula",
+      "expirada": "Cotización expirada — recalculando…"
+    },
+    "mensualidad": {
+      "titulo": "Vehículo con mensualidad",
+      "descripcion": "Este vehículo tiene mensualidad vigente. La salida no genera cobro.",
+      "accion": "Confirmar salida por mensualidad"
+    },
+    "errors": {
+      "ingreso_no_encontrado": "No hay ingreso activo para esta placa en esta sucursal",
+      "tarifa_no_vigente": "No hay tarifa vigente configurada. Contacte al administrador.",
+      "iva_no_configurado": "IVA no configurado en el sistema. Contacte al administrador.",
+      "cotizacion_expirada": "El cálculo expiró, recalculando…",
+      "network": "El cálculo está tardando más de lo esperado, reintentando…"
+    },
+    "retry": "Reintentar",
+    "recalcular": "Recalcular",
+    "confirmar": "Confirmar salida",
+    "candidatos_titulo": "Múltiples candidatos",
     "expira": "Cotización expira en",
     "expirada": "Cotización expirada"
   }

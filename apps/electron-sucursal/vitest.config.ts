@@ -28,6 +28,12 @@ export default defineConfig({
           functions: 95,
           branches: 90,
         },
+        // HU-F7.1 (T1) — pure tolerant placa search + variant generator
+        'src/lib/validation/placaTolerante.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 90,
+        },
         // HU-F4.1 (T2) — typed wrapper HTTP con 404 → []
         'src/features/catalogos/api/tiposVehiculoApi.ts': {
           lines: 90,
@@ -36,6 +42,18 @@ export default defineConfig({
         },
         // HU-F4.1 (T2) — SWR hook con fallback hardcoded + 401 clear
         'src/features/catalogos/hooks/useTiposVehiculo.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+        // HU-F7.1 (T2+R1) — SWR hook con Zod discriminated union + 401 clear
+        'src/features/operacion/hooks/useCotizacion.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+        // HU-F7.1 (T3) — presentational panel con dos ramas de render
+        'src/features/operacion/components/CotizacionPanel.tsx': {
           lines: 90,
           functions: 90,
           branches: 85,

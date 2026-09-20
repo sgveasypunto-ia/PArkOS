@@ -1,5 +1,5 @@
 /**
- * Constants for the `operacion` feature (HU-F4.3).
+ * Constants for the `operacion` feature (HU-F4.3 + HU-F7.1).
  *
  * `OPERACION_REFRESH_INTERVAL_MS` is the SWR `refreshInterval` for the
  * `useOcupacion()` hook. It MUST stay in lockstep with the backend
@@ -21,3 +21,24 @@ export const OPERACION_REFRESH_INTERVAL_MS = 10_000;
  * mounts within the same window share the cached payload.
  */
 export const OPERACION_DEDUPING_INTERVAL_MS = 5_000;
+
+/**
+ * SWR `refreshInterval` for the cotizar polling (HU-F7.1, useCotizacion).
+ * 1 second cadence — the cotización may change every minute as time
+ * accumulates; we re-fetch once per second so the operator sees the
+ * breakdown update near-realtime without overwhelming the backend.
+ *
+ * Rationale (plan.md:1685): the backend `vigente_hasta` is 15 minutes;
+ * the renderer polls 60× within that window. Backend has no rate limit
+ * concern — this is a single endpoint with bounded cardinality
+ * (1 ingreso at a time).
+ */
+export const OPERACION_COTIZAR_REFRESH_INTERVAL_MS = 1_000;
+
+/**
+ * Per-fetch timeout for `useCotizacion` (HU-F7.1, useCotizacion).
+ * 5 seconds — generous for localhost; aborts if the backend is hung.
+ * Triggers SWR retry per the `shouldRetryOnError` policy (excludes
+ * 401/403/404 terminal codes).
+ */
+export const OPERACION_COTIZAR_TIMEOUT_MS = 5_000;
