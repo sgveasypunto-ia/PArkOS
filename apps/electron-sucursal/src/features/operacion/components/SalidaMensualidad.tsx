@@ -16,6 +16,7 @@ import { useState } from 'react';
 
 import {
   useRegistrarSalida,
+  SalidaDuplicadaError,
 } from '../hooks/useRegistrarSalida';
 import type { SalidaReadForzado } from '../api/salidaApi';
 import { CotizacionPanel } from './CotizacionPanel';
@@ -65,7 +66,7 @@ export function SalidaMensualidad({
         }
       }
     } catch (err) {
-      if (err instanceof ParkosHttpError) {
+      if (err instanceof SalidaDuplicadaError || err instanceof ParkosHttpError) {
         setError(err);
       } else {
         setError(err as Error);

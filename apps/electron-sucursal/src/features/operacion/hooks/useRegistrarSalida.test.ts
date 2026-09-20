@@ -48,7 +48,7 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
 
 import { act, renderHook } from '@testing-library/react';
 
-import { useRegistrarSalida } from './useRegistrarSalida';
+import { useRegistrarSalida, SalidaDuplicadaError } from './useRegistrarSalida';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
 const UUID_INGRESO = '00000000-0000-0000-0000-000000000001';
@@ -168,5 +168,33 @@ describe('useRegistrarSalida — REQ-OPS-154 rotación | mensualidad', () => {
     // Defensive logout invariant: clear + dispatched event.
     expect(useAuthStore.getState().clear).toHaveBeenCalledTimes(1);
     expect(dispatched).toContain('parkos:auth:cleared');
+  });
+
+  it('R5: 409 salida_duplicada → SalidaDuplicadaError con uuid_ingreso (REQ-OPS-156)', async () => {
+    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+    // Backend 409 body shape per F1.7 Pydantic `SalidaDuplicadaError`:
+    // {error: "salida_duplicada", uuid_ingreso: "..."}.
+    mockFetch.mockRejectedValueOnce(
+      new ParkosHttpError(
+        409,
+        JSON.stringify({ error: 'salida_duplicada', uuid_ingreso: UUID_INGRESO }),
+        '/api/v1/operacion/salidas',
+      ),
+    );
+
+    const { result } = renderHook(() => useRegistrarSalida());
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.trigger({ uuid_ingreso: UUID_INGRESO });
+      } catch (e) {
+        caught = e;
+      }
+    });
+
+    expect(caught).toBeInstanceOf(SalidaDuplicadaError);
+    expect((caught as { uuid_ingreso: string }).uuid_ingreso).toBe(UUID_INGRESO);
+    expect((caught as { status: number }).status).toBe(409);
   });
 });

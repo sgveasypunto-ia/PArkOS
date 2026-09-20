@@ -29,10 +29,27 @@ export interface RegistrarSalidaInput {
   uuid_ingreso: string;
 }
 
+/**
+ * Typed error for 409 `salida_duplicada` (REQ-OPS-156). The backend
+ * F1.7 Pydantic schema `SalidaDuplicadaError` at
+ * `backend/.../schemas/operacion.py:434-438` carries `uuid_ingreso`
+ * (the ingreso with the conflicting salida). Mirrors that field
+ * exactly.
+ */
+export class SalidaDuplicadaError extends Error {
+  public readonly status = 409;
+  public readonly uuid_ingreso: string;
+  constructor(uuid_ingreso: string) {
+    super('salida_duplicada');
+    this.name = 'SalidaDuplicadaError';
+    this.uuid_ingreso = uuid_ingreso;
+  }
+}
+
 export interface UseRegistrarSalidaReturn {
   trigger: (input: RegistrarSalidaInput) => Promise<SalidaReadForzado>;
   isMutating: boolean;
-  error: ParkosHttpError | undefined;
+  error: ParkosHttpError | SalidaDuplicadaError | undefined;
   data: SalidaReadForzado | undefined;
 }
 
@@ -68,10 +85,30 @@ async function mutateFn(
     const raw = await postSalidaWithIdempotency(body, idempotencyKey);
     return SalidaReadForzadoSchema.parse(raw);
   } catch (err) {
-    if (err instanceof ParkosHttpError && err.status === 401) {
-      return handle401();
+    if (err instanceof ParkosHttpError) {
+      if (err.status === 401) {
+        return handle401();
+      }
+      if (err.status === 409) {
+        // F1.7 maps partial unique index `one_exit_per_ingreso` violation
+        // to `SalidaDuplicadaError` body: `{error, uuid_ingreso}`.
+        const uuid = parseSalidaDuplicadaUuid(err.body) ?? init.arg.uuid_ingreso;
+        throw new SalidaDuplicadaError(uuid);
+      }
     }
     throw err;
+  }
+}
+
+function parseSalidaDuplicadaUuid(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { error?: string; uuid_ingreso?: string };
+    if (parsed.error === 'salida_duplicada' && typeof parsed.uuid_ingreso === 'string') {
+      return parsed.uuid_ingreso;
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -105,6 +142,7 @@ async function postSalidaWithIdempotency(
  *
  * 401 → `useAuthStore.clear()` + `parkos:auth:cleared` (preserved
  * invariant from F3.1 / `useCotizacion.ts`).
+ * 409 → `SalidaDuplicadaError(uuid_ingreso)`.
  */
 export function useRegistrarSalida(): UseRegistrarSalidaReturn {
   const swr: SWRMutationResponse<SalidaReadForzado, Error, string, RegistrarSalidaInput> =
@@ -113,7 +151,7 @@ export function useRegistrarSalida(): UseRegistrarSalidaReturn {
   return {
     trigger: swr.trigger as UseRegistrarSalidaReturn['trigger'],
     isMutating: swr.isMutating,
-    error: swr.error as ParkosHttpError | undefined,
+    error: swr.error as ParkosHttpError | SalidaDuplicadaError | undefined,
     data: swr.data,
   };
 }

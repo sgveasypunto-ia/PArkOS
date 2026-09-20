@@ -19,7 +19,7 @@ import { useState } from 'react';
 
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 
-import { useRegistrarSalida } from '../hooks/useRegistrarSalida';
+import { useRegistrarSalida, SalidaDuplicadaError } from '../hooks/useRegistrarSalida';
 import type { SalidaReadForzado } from '../api/salidaApi';
 import { CotizacionPanel } from './CotizacionPanel';
 import type { CotizarFacturacion } from '../hooks/useCotizacion';
@@ -77,11 +77,10 @@ export function SalidaFlow({
         }
       }
     } catch (err) {
-      // 409 → handle as ParkosHttpError (commit 5 will refine to
-      // `SalidaDuplicadaError` with the existing `uuid_salida`).
+      // 409 → SalidaDuplicadaError (typed, carries uuid_ingreso).
       // 401 → already handled inside useRegistrarSalida (auth clear).
       // Other → bubble up as a generic Error.
-      if (err instanceof ParkosHttpError) {
+      if (err instanceof SalidaDuplicadaError || err instanceof ParkosHttpError) {
         setRegistrarError(err);
       } else {
         setRegistrarError(err as Error);
