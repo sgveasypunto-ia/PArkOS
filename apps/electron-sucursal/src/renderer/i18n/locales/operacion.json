@@ -78,8 +78,10 @@
       "tarifa_no_vigente": "No hay tarifa vigente configurada. Contacte al administrador.",
       "iva_no_configurado": "IVA no configurado en el sistema. Contacte al administrador.",
       "cotizacion_expirada": "El cálculo expiró, recalculando…",
-      "network": "El cálculo está tardando más de lo esperado, reintentando…"
+      "network": "El cálculo está tardando más de lo esperado, reintentando…",
+      "salida_duplicada": "Este ingreso ya tiene una salida registrada"
     },
+    "confirmar_salida": "Confirmar salida",
     "retry": "Reintentar",
     "recalcular": "Recalcular",
     "confirmar": "Confirmar salida",
