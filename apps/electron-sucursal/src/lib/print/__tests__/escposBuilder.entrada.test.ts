@@ -62,7 +62,7 @@ function makeTarifa(): TarifaForPayload {
 
 function makeEmpresa(): Empresa {
   return {
-    nombre: 'PARKINGOS S.A.S.',
+    nombre: 'Parkos Demo S.A.S.',
     nit: '900123456-7',
     direccion: 'Calle 1 #2-3, Bogota',
     regimen: 'Responsable de IVA',
@@ -105,7 +105,7 @@ describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
 
   it('segundo (Nombre de la empresa) — emits empresa.nombre', () => {
     const buf = build('entrada', validEntradaPayload());
-    expect(buf.indexOf(Buffer.from('PARKINGOS S.A.S.'))).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf(Buffer.from('Parkos Demo S.A.S.'))).toBeGreaterThanOrEqual(0);
   });
 
   it('tercero (Dirección) — emits empresa.direccion', () => {

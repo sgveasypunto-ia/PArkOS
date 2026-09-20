@@ -151,7 +151,7 @@ export function validEntradaPayload() {
     qrDataUrl: 'data:image/png;base64,AAA',
     logoDataUrl: 'data:image/png;base64,BBB',
     empresa: {
-      nombre: 'PARKINGOS S.A.S.',
+      nombre: 'Parkos Demo S.A.S.',
       nit: '900123456-7',
       direccion: 'Calle 1 #2-3, Bogota',
       regimen: 'Responsable de IVA',
@@ -168,6 +168,7 @@ export function validEntradaPayload() {
 export function validSalidaPayload() {
   return {
     ...validEntradaPayload(),
+    sucursal: { encabezado: 'Sucursal Norte' },
     fechaSalida: '2026-09-16T10:30:00Z',
     tiempoTotal: '2h 00m',
     subtotal: 10000,
