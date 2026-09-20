@@ -19,6 +19,9 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/renderer/test-setup.ts'],
     css: false,
+    // Exclude Playwright e2e specs (they live in `e2e/` and run under
+    // `pnpm exec playwright test`, not Vitest).
+    exclude: ['**/e2e/**', '**/node_modules/**', '**/dist/**'],
     coverage: {
       provider: 'v8',
       thresholds: {
@@ -121,6 +124,34 @@ export default defineConfig({
         // threshold because the page renders 2 dialogs + a success
         // card (some unreachable branches when result===null).
         'src/features/facturacion/pages/ReimprimirTiquete.tsx': {
+          lines: 80,
+          functions: 80,
+          branches: 75,
+        },
+        // HU-F9.1 (REQ-OPS-178) — pure A-09 prorrateo mirror. ≥95/95/90
+        // because the function has 3 branches (day≤15 → null, day>15
+        // with positive duracion, day>15 with duracion≤0 → throw) and
+        // the date arithmetic is easy to cover exhaustively.
+        'src/features/suscripciones/lib/prorrateo.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 90,
+        },
+        // HU-F9.1 (REQ-OPS-177 + REQ-OPS-179) — SWR mutation hook with
+        // 401 clear + Idempotency-Key SHA-256 closure + 3 typed error
+        // subclasses (422 mapping). ≥90/90/85 mirrors useRegistrarPago
+        // precedent (F8.1) — both are POST mutations with the same
+        // 401-handling and idempotency invariants.
+        'src/features/suscripciones/hooks/useVentaSuscripcion.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+        // HU-F9.1 (REQ-OPS-176) — page composing useVentaSuscripcion +
+        // PagoModal (F8.1) with 4-step wizard + per-step Zod. Lower
+        // threshold because the page renders 4 conditional steps and
+        // embeds PagoModal (which has its own coverage).
+        'src/features/suscripciones/pages/Venta.tsx': {
           lines: 80,
           functions: 80,
           branches: 75,
