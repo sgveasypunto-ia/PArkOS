@@ -166,7 +166,9 @@ describe('build("reimpresion", payload)', () => {
     };
     const buf = build('reimpresion', payload);
     expect(startsWith(buf, [0x1b, 0x40])).toBe(true);
-    expect(contains(buf, Buffer.from('REIMPRESION'))).toBe(true);
+    // F8.3 — sello upgrades to '*** REIMPRESIÓN ***' (with U+00D3 accent per
+    // `plan.md:2006` verbatim copy; REQ-OPS-172).
+    expect(contains(buf, Buffer.from('REIMPRESIÓN'))).toBe(true);
     expect(contains(buf, Buffer.from('Tiquete extraviado por cliente'))).toBe(true);
     expect(contains(buf, Buffer.from('00000000-0000-4000-8000-000000000099'))).toBe(true);
     // entrada sello (F6.2 renamed from "*** ENTRADA ***" to "*** TIQUETE DE ENTRADA ***")

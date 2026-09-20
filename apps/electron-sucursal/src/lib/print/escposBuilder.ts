@@ -349,6 +349,14 @@ function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
   // parity, we extract `sucursal.encabezado` from the inner payload.
   // The discriminated union narrows `payload.payload` to one of the
   // three subtypes — all three carry `sucursal.encabezado` after F7.3.
+  //
+  // F8.3 (REQ-OPS-172) — the sello label upgrades to `'*** REIMPRESIÓN
+  // ***'` (with U+00D3 accent per `plan.md:2006` verbatim copy) and a
+  // subline `'--- COPIA AUTORIZADA ---'` is emitted between sello and
+  // motivo. The inner body is wrapped with `escBoldOn()`/`escBoldOff()`
+  // (0x1B 0x45 / 0x1B 0x46) so the entire reimpreso body is visually
+  // distinct from the original tiquete. The dispatch key remains
+  // `'reimpresion'` (REQ-OPS-175 drift anchor — NOT `'reimprimir'`).
   const innerSucursalEncabezado = payload.payload.sucursal.encabezado;
   const header: Buffer[] = [
     escCenter(),
@@ -361,9 +369,10 @@ function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
     utf8(`${payload.empresa.regimen}\n`),
     utf8('\n'),
     escText2x(),
-    utf8('*** REIMPRESION ***\n'),
+    utf8('*** REIMPRESIÓN ***\n'),                      // F8.3 — accent
     escTextReset(),
     utf8('\n'),
+    utf8('--- COPIA AUTORIZADA ---\n'),                 // F8.3 — subline
     utf8(`Motivo: ${payload.motivo}\n`),
     utf8(`Folio original: ${payload.folioOriginal}\n`),
     utf8('\n'),
@@ -380,7 +389,8 @@ function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
       body = buildSalidaMensualidadBody(payload.payload);
       break;
   }
-  return concat([...header, body]);
+  // F8.3 — bold marca wraps the inner body (REQ-OPS-172).
+  return concat([...header, escBoldOn(), body, escBoldOff()]);
 }
 
 function buildReciboPagoBody(payload: ReciboPagoPayload): Buffer {
