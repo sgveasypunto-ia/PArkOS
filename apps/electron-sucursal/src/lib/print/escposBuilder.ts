@@ -49,6 +49,8 @@ import {
   salidaMensualidadPayloadSchema,
   reimpresionPayloadSchema,
   formatCOP,
+  formatFecha,
+  formatHora,
   type EntradaPayload,
   type SalidaPayload,
   type SalidaMensualidadPayload,
@@ -158,27 +160,6 @@ function concat(parts: readonly Buffer[]): Buffer {
   return Buffer.concat(parts);
 }
 
-/** RFC 3339 (es-CO short): "dd/MM/yyyy HH:mm". */
-function formatFechaCorta(iso: string): string {
-  const d = new Date(iso);
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yyyy = d.getFullYear();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
-}
-
-/** F6.2 — date only: "dd/MM/yyyy" (for the decimo conceptual field). */
-function formatFecha(iso: string): string {
-  return formatFechaCorta(iso).split(' ')[0] ?? '';
-}
-
-/** F6.2 — time only: "HH:mm" (for the onceavo conceptual field). */
-function formatHora(iso: string): string {
-  return formatFechaCorta(iso).split(' ')[1] ?? '';
-}
-
 /** F6.2 — placeholder glyph for missing logo (DEC-SUC-08). */
 const LOGO_PLACEHOLDER_GLYPH = '\u25A2'; // ▢ WHITE SQUARE WITH ROUNDED CORNERS
 
@@ -186,10 +167,13 @@ function buildEntradaBody(payload: EntradaPayload): Buffer {
   // F6.2 — 17-field layout per `plan.md` lines 1616-1634 + DEC-SUC-26.
   // The conceptual field names live in
   // `escposTemplates.ts::TiqueteEntradaCampos` (Spanish ordinals).
+  //
+  // F7.3 (DEC-SUC-28) — the header is `payload.sucursal.encabezado`
+  // (dynamic branch header). NOT the F5.2 "PARKINGOS" constant.
   const lines: Buffer[] = [
     escCenter(),
     escBoldOn(),
-    utf8('PARKINGOS\n'),                                // primero (Encabezado)
+    utf8(`${payload.sucursal.encabezado}\n`),           // primero (Encabezado)
     escBoldOff(),
     utf8(`${payload.empresa.nombre}\n`),                // segundo
     utf8(`${payload.empresa.direccion}\n`),             // tercero
@@ -238,73 +222,136 @@ function buildEntradaBody(payload: EntradaPayload): Buffer {
 }
 
 function buildSalidaBody(payload: SalidaPayload): Buffer {
+  // F7.3 (HU-F7.3 / REQ-OPS-158) — 19-field CU-15S layout per
+  // `plan.md:1789-1807` + 2 DEC-SUC-26 additions (QR + logo markers).
+  //
+  // The header is `payload.sucursal.encabezado` (DEC-SUC-28 dynamic),
+  // NOT the F5.2 "PARKINGOS" constant. The `;QR:` + `;LOGO:` text
+  // markers mirror F6.2 — the actual rasterization is the CALLER's
+  // responsibility per F5.2 R4 purity (see
+  // `escposBuilder.ts:223-234` precedent on the entrada body).
   const lines: Buffer[] = [
     escCenter(),
     escBoldOn(),
-    utf8('PARKINGOS\n'),
+    utf8(`${payload.sucursal.encabezado}\n`),                 // 1: Encabezado
     escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),
-    utf8(`NIT ${payload.empresa.nit}\n`),
-    utf8(`${payload.empresa.direccion}\n`),
-    utf8(`${payload.empresa.regimen}\n`),
+    utf8(`${payload.empresa.nombre}\n`),                      // 2: Empresa
+    utf8(`${payload.empresa.direccion}\n`),                   // 3: Dirección
+    utf8(`NIT ${payload.empresa.nit}\n`),                     // 4: NIT
+    utf8(`${payload.empresa.regimen}\n`),                     // 5: Régimen
+    utf8(`Operario: ${payload.operario}\n`),                  // 6: Operario
     utf8('\n'),
     escText2x(),
-    utf8('*** SALIDA ***\n'),
+    utf8('*** SALIDA ***\n'),                                 // 7: Sello
     escTextReset(),
     utf8('\n'),
-    utf8(`Folio: ${payload.folio}\n`),
-    utf8(`Placa: ${payload.placa}\n`),
-    utf8(`Entrada: ${formatFechaCorta(payload.fechaEntrada)}\n`),
-    utf8(`Salida:  ${formatFechaCorta(payload.fechaSalida)}\n`),
-    utf8(`Tiempo: ${payload.tiempoTotal}\n`),
+    utf8(`Folio: ${payload.folio}\n`),                        // 8: Folio
+    utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`), // 9: Tarifa
+    utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`),    // 10: Fecha (date-only)
+    utf8(`Hora entrada: ${formatHora(payload.fechaEntrada)}\n`), // 11: Hora entrada
+    utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),  // 12: Hora salida
+    utf8(`Tiempo: ${payload.tiempoTotal}\n`),                 // 13: Tiempo total
     utf8('\n'),
-    utf8(`Subtotal: ${formatCOP(payload.subtotal)}\n`),
-    utf8(`IVA: ${formatCOP(payload.iva)}\n`),
+    utf8(`Subtotal: ${formatCOP(payload.subtotal)}\n`),       // 14: Subtotal
+    utf8(`IVA: ${formatCOP(payload.iva)}\n`),                 // 15: IVA
     escBoldOn(),
-    utf8(`TOTAL: ${formatCOP(payload.total)}\n`),
+    utf8(`TOTAL: ${formatCOP(payload.total)}\n`),             // 16: TOTAL
     escBoldOff(),
-    utf8(`Medio de pago: ${payload.medioPago}\n`),
-    utf8(`Resolucion FE: ${payload.resolucionFE}\n`),
+    utf8(`Medio de pago: ${payload.medioPago}\n`),            // 17: Medio de pago
+    utf8(`Placa: ${payload.placa}\n`),                        // 18: Placa
+    utf8(`Horario: ${payload.horarioAtencion}\n`),            // 19a: Horario atención
   ];
-  if (payload.polizaRC) lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));
+  if (payload.polizaRC) {
+    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));     // 19b: Póliza RC
+  }
+  lines.push(utf8(`Resolucion FE: ${payload.resolucionFE}\n`));// 19c: Resolución FE
+  if (payload.observaciones) {
+    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // 19d: Observaciones
+  }
+  // F7.3 — DEC-SUC-26 QR + logo markers (mirror F6.2 entrada precedent).
+  // The caller is responsible for the actual rasterization; the buffer
+  // emits the `;`-prefixed text markers only so the printer firmware
+  // ignores them and the F5.1 bridge can intercept for future
+  // rasterization.
+  const logoText = payload.logoDataUrl === ''
+    ? LOGO_PLACEHOLDER_GLYPH
+    : 'OK';
+  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));
+  lines.push(utf8(`;LOGO:${logoText}\n`));
   lines.push(utf8('\n'));
   lines.push(utf8('Gracias por su visita.\n'));
   return concat(lines);
 }
 
 function buildSalidaMensualidadBody(payload: SalidaMensualidadPayload): Buffer {
+  // F7.3 (HU-F7.3 / REQ-OPS-159) — 15-field CU-15SM layout per
+  // `plan.md:1810` + 2 DEC-SUC-26 additions (QR + logo markers).
+  //
+  // DEC-SUC-27 invariant: the sello `*** PAGO CON MENSUALIDAD ***` is
+  // wrapped by `escText2x()` (text 2x height) before and
+  // `escTextReset()` (1x1 reset) after — visual distinguisher that
+  // prevents the cajero from confusing a tiquete sin cobro with one
+  // cobrado (CU-15S uses `*** SALIDA ***` instead).
+  //
+  // NO monetary fields (DEC-SUC-23): the mensualidad fee is settled
+  // by the subscription, NOT the exit. The buffer MUST NOT contain
+  // `Subtotal:`, `IVA:`, `TOTAL:`, or `Medio de pago:`.
+  //
+  // The header is `payload.sucursal.encabezado` (DEC-SUC-28 dynamic),
+  // NOT the F5.2 "PARKINGOS" constant.
   const lines: Buffer[] = [
     escCenter(),
     escBoldOn(),
-    utf8('PARKINGOS\n'),
+    utf8(`${payload.sucursal.encabezado}\n`),               // 1: Encabezado
     escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),
-    utf8(`NIT ${payload.empresa.nit}\n`),
-    utf8(`${payload.empresa.direccion}\n`),
-    utf8(`${payload.empresa.regimen}\n`),
+    utf8(`${payload.empresa.nombre}\n`),                    // 2: Empresa
+    utf8(`NIT ${payload.empresa.nit}\n`),                   // 4: NIT
+    utf8(`${payload.empresa.direccion}\n`),                 // 3: Dirección
+    utf8(`${payload.empresa.regimen}\n`),                   // 5: Régimen
+    utf8(`Operario: ${payload.operario}\n`),                // 6: Operario
     utf8('\n'),
     escText2x(),
-    utf8('*** PAGO CON MENSUALIDAD ***\n'),
+    utf8('*** PAGO CON MENSUALIDAD ***\n'),                 // 7: Sello (DEC-SUC-27)
     escTextReset(),
     utf8('\n'),
-    utf8(`Folio: ${payload.folio}\n`),
-    utf8(`Placa: ${payload.placa}\n`),
-    utf8(`Entrada: ${formatFechaCorta(payload.fechaEntrada)}\n`),
-    utf8(`Salida:  ${formatFechaCorta(payload.fechaSalida)}\n`),
-    utf8(`Operario: ${payload.operario}\n`),
-    utf8(`Horario: ${payload.horarioAtencion}\n`),
+    utf8(`Folio: ${payload.folio}\n`),                      // 8: Folio
+    utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`),  // 9: Fecha (date-only)
+    utf8(`Hora entrada: ${formatHora(payload.fechaEntrada)}\n`), // 10: Hora entrada
+    utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),   // 11: Hora salida
+    utf8(`Tiempo: ${payload.tiempoTotal}\n`),               // 12: Tiempo total
+    utf8(`Placa: ${payload.placa}\n`),                      // 13: Placa
+    utf8(`Horario: ${payload.horarioAtencion}\n`),          // 14: Horario atención
   ];
-  if (payload.polizaRC) lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));
+  if (payload.polizaRC) {
+    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));   // 15a: Póliza RC
+  }
+  if (payload.observaciones) {
+    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // 15b: Observaciones
+  }
+  // F7.3 — DEC-SUC-26 QR + logo markers (mirror F6.2 entrada precedent).
+  const logoText = payload.logoDataUrl === ''
+    ? LOGO_PLACEHOLDER_GLYPH
+    : 'OK';
+  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));
+  lines.push(utf8(`;LOGO:${logoText}\n`));
   lines.push(utf8('\n'));
   lines.push(utf8('Conserve este tiquete como soporte.\n'));
   return concat(lines);
 }
 
 function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
+  // F7.3 (DEC-SUC-28) — reimpresion envelopes its inner body (entrada /
+  // salida / salida-mensualidad) which already carry the dynamic
+  // header. The reimpresion-specific header uses
+  // `payload.empresa.nombre` only as a fallback; for dynamic header
+  // parity, we extract `sucursal.encabezado` from the inner payload.
+  // The discriminated union narrows `payload.payload` to one of the
+  // three subtypes — all three carry `sucursal.encabezado` after F7.3.
+  const innerSucursalEncabezado = payload.payload.sucursal.encabezado;
   const header: Buffer[] = [
     escCenter(),
     escBoldOn(),
-    utf8('PARKINGOS\n'),
+    utf8(`${innerSucursalEncabezado}\n`),               // DEC-SUC-28 dynamic
     escBoldOff(),
     utf8(`${payload.empresa.nombre}\n`),
     utf8(`NIT ${payload.empresa.nit}\n`),

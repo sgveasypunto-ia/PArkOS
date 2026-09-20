@@ -70,6 +70,17 @@ export default defineConfig({
           functions: 95,
           branches: 90,
         },
+        // HU-F7.3 (REQ-OPS-158..160) — pure renderer-side ESC/POS byte
+        // composition. Tightened to 19-CU-15S + 15-CU-15SM fields +
+        // dynamic header + QR + logo markers (DEC-SUC-26..28). Per the
+        // preflight budget review: ≥85/85/80 (lower than the >90% strict
+        // mode because the builder has 4 typed bodies — some EOpcode
+        // branches are defensive by design).
+        'src/lib/print/escposBuilder.ts': {
+          lines: 85,
+          functions: 85,
+          branches: 80,
+        },
       },
     },
   },

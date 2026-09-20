@@ -79,7 +79,9 @@ describe('EscposInvalidTipoError', () => {
   it('throws with code=escpos_invalid_tipo and given=bogus', () => {
     let captured: EscposInvalidTipoError | null = null;
     try {
-      build('foo-bar', {});
+      // Cast required: `TiqueteTipo` is a strict union; we intentionally
+      // bypass it to exercise the runtime error path.
+      build('foo-bar' as unknown as Parameters<typeof build>[0], {});
     } catch (err) {
       captured = err as EscposInvalidTipoError;
     }
@@ -151,7 +153,7 @@ export function validEntradaPayload() {
     qrDataUrl: 'data:image/png;base64,AAA',
     logoDataUrl: 'data:image/png;base64,BBB',
     empresa: {
-      nombre: 'PARKINGOS S.A.S.',
+      nombre: 'Parkos Demo S.A.S.',
       nit: '900123456-7',
       direccion: 'Calle 1 #2-3, Bogota',
       regimen: 'Responsable de IVA',
@@ -162,12 +164,15 @@ export function validEntradaPayload() {
     polizaRC: 'POL-12345',
     folio: '00000000-0000-4000-8000-000000000001',
     observaciones: 'Sin novedad',
+    // F7.3 (DEC-SUC-28) — branch header replaces F5.2 "PARKINGOS" constant.
+    sucursal: { encabezado: 'Sucursal Centro' },
   };
 }
 
 export function validSalidaPayload() {
   return {
     ...validEntradaPayload(),
+    sucursal: { encabezado: 'Sucursal Norte' },
     fechaSalida: '2026-09-16T10:30:00Z',
     tiempoTotal: '2h 00m',
     subtotal: 10000,

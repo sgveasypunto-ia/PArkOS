@@ -65,6 +65,45 @@ export function formatCOP(value: number): string {
   return copFormatter.format(value);
 }
 
+/**
+ * F6.2 — date only (es-CO short): "dd/MM/yyyy" (for the decimo
+ * conceptual field — CU-15E field 10, CU-15S field 10, CU-15SM field 9).
+ *
+ * Pure helper — caller must pass an ISO 8601 string (no implicit
+ * `new Date()` inside the helper; we go through `new Date(iso)`
+ * once here and split). Exported so byte-level tests can compose
+ * the expected payload deterministically.
+ */
+export function formatFecha(iso: string): string {
+  const d = new Date(iso);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}/${d.getFullYear()}`;
+}
+
+/**
+ * F6.2 — time only: "HH:mm" (es-CO short, for the onceavo conceptual
+ * field — CU-15E field 11, CU-15S field 11/12, CU-15SM field 10/11).
+ *
+ * Pure helper — same caveat as `formatFecha`.
+ */
+export function formatHora(iso: string): string {
+  const d = new Date(iso);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${min}`;
+}
+
+/**
+ * F6.2 + F7.3 — combined date+time (es-CO short): "dd/MM/yyyy HH:mm".
+ * Used for CU-15E campo vacio (legacy) when no separate date/time split
+ * is desired. CU-15S + CU-15SM use `formatFecha` + `formatHora`
+ * separately so the spec's field-by-field split is preserved.
+ */
+export function formatFechaCorta(iso: string): string {
+  return `${formatFecha(iso)} ${formatHora(iso)}`;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Empresa / common sub-schemas
 // ──────────────────────────────────────────────────────────────────────────
@@ -78,6 +117,21 @@ const empresaSchema = z.object({
 });
 
 export type Empresa = z.infer<typeof empresaSchema>;
+
+/**
+ * F7.3 (DEC-SUC-28) — `sucursal` payload shape. The `encabezado` field
+ * is the dynamic branch header that REPLACES the F5.2 "PARKINGOS"
+ * constant across ALL THREE bodies (`entrada`, `salida`,
+ * `salida-mensualidad`) plus the `reimpresion` envelope. Required on
+ * all payloads — Zod rejects with `EscposPayloadMissingFieldError`
+ * when missing, matching the `plan.md` invariant that each tiquete
+ * prints the sucursal of issue.
+ */
+const sucursalSchema = z.object({
+  encabezado: z.string().min(1),
+});
+
+export type Sucursal = z.infer<typeof sucursalSchema>;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Placa regex (DRY with src/lib/validation/placa.ts)
@@ -125,6 +179,13 @@ export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
  * per `design.md` §"Decision: Render-time guard for missing
  * `documentos` row").
  *
+ * F7.3 (DEC-SUC-28) tightens `sucursal.encabezado` to REQUIRED across
+ * ALL THREE tiquete payloads (`entrada`, `salida`,
+ * `salida-mensualidad`) — see the spec drift reconciliation table at
+ * `openspec/changes/fase-7-3-tiquetes-salida/specs/operacion.md`. The
+ * F5.2 "PARKINGOS" header constant is replaced by the dynamic branch
+ * header.
+ *
  * The QR rasterizer is the caller's responsibility (F5.2 R4 purity).
  * The builder accepts the resulting `data:image/png;base64,...`
  * string verbatim. ABIERTO-01 default content:
@@ -150,6 +211,8 @@ export const entradaPayloadSchema = z.object({
   folio: z.string().uuid(),
   observaciones: z.string().optional(),
   esMensualidad: z.boolean().optional(),
+  // F7.3 (DEC-SUC-28) — branch header replaces "PARKINGOS" constant
+  sucursal: sucursalSchema,
 });
 
 export type EntradaPayload = z.infer<typeof entradaPayloadSchema>;
@@ -169,7 +232,7 @@ export type EntradaPayload = z.infer<typeof entradaPayloadSchema>;
  *
  * Conceptual mapping (NOT all data fields — some are derived constants
  * emitted by the builder):
- *   primero        → Encabezado (constant "PARKINGOS")
+ *   primero        → Encabezado (payload.sucursal.encabezado)
  *   segundo        → Nombre de la empresa    → payload.empresa.nombre
  *   tercero        → Dirección                → payload.empresa.direccion
  *   cuarto         → NIT                      → payload.empresa.nit
@@ -248,6 +311,12 @@ export interface IngresoForPayload {
 /** Minimal view of `prod.sucursal` row. */
 export interface SucursalForPayload {
   readonly horario_atencion: string;
+  /**
+   * F7.3 (DEC-SUC-28) — branch header that REPLACES the F5.2
+   * "PARKINGOS" constant. Required on every payload that flows
+   * through the printer pipeline.
+   */
+  readonly encabezado: string;
 }
 
 /** Minimal view of `prod.tarifas_sucursal` row. */
@@ -337,6 +406,8 @@ export function buildEntradaPayload(
     observaciones: undefined,
     esMensualidad: ingreso.uuid_subscripcion_cliente !== null
       && ingreso.uuid_subscripcion_cliente !== undefined,
+    // F7.3 (DEC-SUC-28) — branch header replaces F5.2 "PARKINGOS" constant
+    sucursal: { encabezado: sucursal.encabezado },
   };
 }
 
@@ -366,7 +437,23 @@ function generateQrSentinel(ingreso: IngresoForPayload): string {
 // Salida payload (CU-15S)
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * F7.3 (DEC-SUC-28) tightens the F5.2 `salidaPayloadSchema` to require
+ * `sucursal.encabezado` (dynamic branch header — replaces the
+ * "PARKINGOS" constant). The other 19-field requirements were
+ * inherited from `entradaPayloadSchema` (F6.2 — `tarifaAplicada`,
+ * `horarioAtencion`, `observaciones`, `qrDataUrl`, `logoDataUrl`,
+ * `polizaRC`).
+ *
+ * Why the spread and not a re-declare: the CU-15S payload is a strict
+ * superset of the CU-15E payload — `.extend()` keeps the
+ * `TiqueteEntradaCampos` (17-key) shape convergent across both
+ * builders and makes the field drift visible at review time
+ * (rename a key on `entradaPayloadSchema` and the same key on
+ * `salidaPayloadSchema` follows automatically).
+ */
 export const salidaPayloadSchema = entradaPayloadSchema.extend({
+  sucursal: sucursalSchema,
   fechaSalida: z.string().datetime({ offset: true }),
   tiempoTotal: z.string().min(1),
   subtotal: z.number().nonnegative(),
@@ -382,18 +469,40 @@ export type SalidaPayload = z.infer<typeof salidaPayloadSchema>;
 // Salida-mensualidad payload (CU-15SM)
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * F7.3 (DEC-SUC-28 + DEC-SUC-26) tightens the F5.2
+ * `salidaMensualidadPayloadSchema`:
+ *   - `sucursal.encabezado` is REQUIRED (DEC-SUC-28 — dynamic branch
+ *     header replaces the F5.2 "PARKINGOS" constant).
+ *   - `qrDataUrl` and `logoDataUrl` are REQUIRED (DEC-SUC-26 — same as
+ *     F6.2 tightened CU-15E). Empty `logoDataUrl` is the legitimate
+ *     "documentos cold-cache" sentinel (renders placeholder `▢`).
+ *   - `tiempoTotal` is REQUIRED (was implicit in the F5.2 stub via
+ *     combined `Entrada:` + `Salida:` lines; F7.3 splits into
+ *     `Fecha:` / `Hora entrada:` / `Hora salida:` / `Tiempo:` per
+ *     the 15-field canonical layout in `plan.md:1810`).
+ *
+ * NO monetary fields (DEC-SUC-23 verbatim — `salidas` has NO `valor`
+ * column; the mensualidad fee is settled by the subscription, NOT
+ * the exit).
+ */
 export const salidaMensualidadPayloadSchema = z.object({
   placa: placaSchema,
   fechaEntrada: z.string().datetime({ offset: true }),
   fechaSalida: z.string().datetime({ offset: true }),
-  qrDataUrl: z.string().optional(),
-  logoDataUrl: z.string().optional(),
+  qrDataUrl: z.string(),
+  logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
   horarioAtencion: z.string().min(1),
   polizaRC: z.string().optional(),
   folio: z.string().uuid(),
   observaciones: z.string().optional(),
+  // DEC-SUC-28 — dynamic branch header.
+  sucursal: sucursalSchema,
+  // F7.3 — split duration into explicit field (Fecha + Hora entrada +
+  // Hora salida + Tiempo) per the 15-field layout.
+  tiempoTotal: z.string().min(1),
   // Discriminator — used by the renderer to swap to "PAGO CON MENSUALIDAD"
   // branding in the sello slot. NOT a money field (DEC-SUC-27 — salida
   // mensualidad NO emite subtotal/iva/total/medioPago).

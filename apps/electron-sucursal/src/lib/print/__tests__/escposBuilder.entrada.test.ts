@@ -53,7 +53,7 @@ function makeIngreso(overrides?: Partial<IngresoForPayload>): IngresoForPayload 
 }
 
 function makeSucursal(): SucursalForPayload {
-  return { horario_atencion: '24 horas' };
+  return { horario_atencion: '24 horas', encabezado: 'Sucursal Test' };
 }
 
 function makeTarifa(): TarifaForPayload {
@@ -62,7 +62,7 @@ function makeTarifa(): TarifaForPayload {
 
 function makeEmpresa(): Empresa {
   return {
-    nombre: 'PARKINGOS S.A.S.',
+    nombre: 'Parkos Demo S.A.S.',
     nit: '900123456-7',
     direccion: 'Calle 1 #2-3, Bogota',
     regimen: 'Responsable de IVA',
@@ -98,14 +98,17 @@ function buildPayload(opts?: { withLogo?: boolean; withCert?: boolean; ingreso?:
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
-  it('primero (Encabezado) — emits "PARKINGOS" header', () => {
+  it('primero (Encabezado) — emits payload.sucursal.encabezado header (DEC-SUC-28 dynamic)', () => {
     const buf = build('entrada', validEntradaPayload());
-    expect(buf.indexOf(Buffer.from('PARKINGOS'))).toBeGreaterThanOrEqual(0);
+    // F7.3 (DEC-SUC-28) — dynamic branch header replaces the F5.2
+    // "PARKINGOS" constant. Drift guard: PARKINGOS MUST NOT appear.
+    expect(buf.indexOf(Buffer.from('Sucursal Centro'))).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf(Buffer.from('PARKINGOS'))).toBe(-1);
   });
 
   it('segundo (Nombre de la empresa) — emits empresa.nombre', () => {
     const buf = build('entrada', validEntradaPayload());
-    expect(buf.indexOf(Buffer.from('PARKINGOS S.A.S.'))).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf(Buffer.from('Parkos Demo S.A.S.'))).toBeGreaterThanOrEqual(0);
   });
 
   it('tercero (Dirección) — emits empresa.direccion', () => {
