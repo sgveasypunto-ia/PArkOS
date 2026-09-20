@@ -82,7 +82,10 @@ const pagoDatafonoSchema = z.object({
     .or(z.literal('')),
 });
 
-export const pagoFormSchema = z.discriminatedUnion('medio_pago', [
+// Schema defined locally; only the type is exported for consumers
+// (PagoModal.test.tsx, PagoSheet.test.tsx). Constraining exports
+// to the type-only satisfies react-refresh/only-export-components.
+const pagoFormSchema = z.discriminatedUnion('medio_pago', [
   pagoEfectivoSchema,
   pagoDatafonoSchema,
 ]);
