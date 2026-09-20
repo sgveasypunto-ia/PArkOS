@@ -5,5 +5,33 @@
   "vacio": "Sin suscripciones activas.",
   "error": "Error al cargar suscripciones.",
   "vencePronto": "Vence pronto",
-  "proximaAVencer": "Suscripción próxima a vencer"
+  "proximaAVencer": "Suscripción próxima a vencer",
+  "venta": {
+    "titulo": "Venta de suscripción",
+    "paso1": {
+      "titulo": "Cliente",
+      "siguiente": "Siguiente"
+    },
+    "paso2": {
+      "titulo": "Vehículos",
+      "siguiente": "Siguiente"
+    },
+    "paso3": {
+      "titulo": "Plan",
+      "siguiente": "Siguiente"
+    },
+    "paso4": {
+      "titulo": "Pago"
+    },
+    "errors": {
+      "suscripcion_duplicada_placa": "Esta placa ya tiene una suscripción vigente",
+      "tipo_vehiculo_incompatible": "Este plan exige que todas las placas sean del mismo tipo",
+      "cantidad_maxima_excedida": "Cantidad máxima de vehículos excedida",
+      "placa_formato_invalido": "Formato de placa inválido"
+    },
+    "prorrateo": {
+      "label": "Monto prorrateado",
+      "dia15_aviso": "Aplica prorrateo desde el día 16"
+    }
+  }
 }

@@ -73,26 +73,3 @@ export function useSuscripcionesList(uuid_sucursal: string | null): {
     refresh: async () => mutate(),
   };
 }
-
-/**
- * `useVentaSuscripcion` — POST mutation for the subscription sale flow.
- */
-export function useVentaSuscripcion() {
-  return {
-    async submit(payload: {
-      uuid_cliente: string;
-      uuid_plan: string;
-      placa: string;
-      fecha_inicio: string;
-      fecha_fin: string;
-    }): Promise<{ uuid: string }> {
-      const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-      const raw = await parkosFetch<unknown>(
-        '/api/v1/clientes/venta-suscripcion',
-        { method: 'POST', body: JSON.stringify(payload) },
-      );
-      const parsed = z.object({ uuid: z.string().uuid() }).parse(raw);
-      return parsed;
-    },
-  };
-}
