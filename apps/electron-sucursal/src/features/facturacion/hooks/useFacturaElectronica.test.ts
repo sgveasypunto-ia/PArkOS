@@ -84,7 +84,9 @@ describe('useFacturaElectronica — REQ-OPS-132 fetcher-closure + lazy-mount', (
     }) as typeof window.dispatchEvent;
 
     const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockFetch.mockRejectedValueOnce(new ParkosHttpError(401));
+    mockFetch.mockRejectedValueOnce(
+      new ParkosHttpError(401, '{"error":"unauthorized"}', '/api/v1/facturacion/factura-electronica/00000000-0000-0000-0000-000000000012'),
+    );
 
     renderHook(() => useFacturaElectronica('00000000-0000-0000-0000-000000000012'));
 
@@ -99,11 +101,7 @@ describe('useFacturaElectronica — REQ-OPS-132 fetcher-closure + lazy-mount', (
     // HU-F8.2 REQ-OPS-166: non-terminal states keep polling at FE_REFRESH_INTERVAL_MS.
     expect(
       computeRefreshInterval({
-        uuid_factura_electronica: '00000000-0000-0000-0000-000000000020',
-        uuid_factura: '00000000-0000-0000-0000-000000000021',
         estado_dian: 'pendiente',
-        respuesta_proveedor: null,
-        actualizado_en: '2026-09-19T10:00:00Z',
       }),
     ).toBe(30_000);
   });
@@ -113,11 +111,7 @@ describe('useFacturaElectronica — REQ-OPS-132 fetcher-closure + lazy-mount', (
     // per F1.10 DEC-FE-04 — SWR treats `0` as "do not poll".
     expect(
       computeRefreshInterval({
-        uuid_factura_electronica: '00000000-0000-0000-0000-000000000022',
-        uuid_factura: '00000000-0000-0000-0000-000000000023',
         estado_dian: 'aceptado',
-        respuesta_proveedor: null,
-        actualizado_en: '2026-09-19T10:00:00Z',
       }),
     ).toBe(0);
   });
@@ -127,11 +121,7 @@ describe('useFacturaElectronica — REQ-OPS-132 fetcher-closure + lazy-mount', (
     // new chain tip is `pendiente` (non-terminal).
     expect(
       computeRefreshInterval({
-        uuid_factura_electronica: '00000000-0000-0000-0000-000000000024',
-        uuid_factura: '00000000-0000-0000-0000-000000000025',
         estado_dian: 'rechazado',
-        respuesta_proveedor: null,
-        actualizado_en: '2026-09-19T10:00:00Z',
       }),
     ).toBe(0);
   });

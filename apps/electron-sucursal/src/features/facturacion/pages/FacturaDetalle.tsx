@@ -48,10 +48,9 @@ export function FacturaDetalle(): JSX.Element {
   const cufe = data?.respuesta_proveedor?.cufe ?? null;
 
   const estadoLabel = (() => {
-    if (estado === 'aceptado') return t('fe.estado.aceptado', { defaultValue: 'Aceptado' });
-    if (estado === 'rechazado') return t('fe.estado.rechazado', { defaultValue: 'Rechazado' });
-    if (estado === 'enviado') return t('fe.estado.enviado', { defaultValue: 'Enviado' });
-    return t('fe.estado.pendiente', { defaultValue: 'Pendiente' });
+    if (estado === 'aceptado') return t('fe.estado_dian.aceptado', { defaultValue: 'Aceptado' });
+    if (estado === 'rechazado') return t('fe.estado_dian.rechazado', { defaultValue: 'Rechazado' });
+    return t('fe.estado_dian.pendiente', { defaultValue: 'Pendiente' });
   })();
 
   const handleReintentar = async (): Promise<void> => {

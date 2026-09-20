@@ -25,6 +25,7 @@
  *       preserving the F3.1 invariant shared across all SWR mutations.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as SwrType from 'swr';
 
 vi.mock('@parkos/ui-kit/store', () => {
   const state = { accessToken: 'tok-abc', clear: vi.fn() };
@@ -44,6 +45,7 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
   ParkosHttpError: class extends Error {
     public readonly status: number;
     public readonly body: string;
+    public readonly url: string;
     constructor(status: number, body = '', url = '') {
       super(`ParkosHttpError ${status}`);
       this.name = 'ParkosHttpError';
@@ -57,7 +59,7 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
 // Mock SWR's `mutate` (cache invalidation) so R1 can assert the cache
 // was revalidated after a successful POST.
 vi.mock('swr', async () => {
-  const actual = await vi.importActual<typeof import('swr')>('swr');
+  const actual = await vi.importActual<typeof SwrType>('swr');
   return {
     ...actual,
     mutate: (...args: unknown[]) => mockMutate(...args),
