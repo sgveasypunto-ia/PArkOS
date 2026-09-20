@@ -49,6 +49,30 @@ export type FacturaElectronicaEstado = z.infer<typeof FacturaElectronicaEstadoSc
 
 const FE_REFRESH_INTERVAL_MS = 30_000;
 
+/**
+ * Terminal FE states per F1.10 DEC-FE-04 — both `aceptado` and
+ * `rechazado` are terminal. `pendiente` and `no_enviado` keep polling.
+ * HU-F8.2 REQ-OPS-166 terminal-gating polling.
+ */
+const TERMINAL_STATES: ReadonlySet<'aceptado' | 'rechazado'> = new Set([
+  'aceptado',
+  'rechazado',
+]);
+
+/**
+ * SWR `refreshInterval` callback. SWR treats `0` as "do not poll" — the
+ * next mutation (e.g. `useReintentarFE.trigger()`'s `mutate()`) re-engages
+ * polling because the new chain tip is `pendiente`.
+ */
+export function computeRefreshInterval(
+  latest: Pick<FacturaElectronicaEstado, 'estado_dian'> | undefined,
+): number {
+  if (!latest) return FE_REFRESH_INTERVAL_MS;
+  return TERMINAL_STATES.has(latest.estado_dian as 'aceptado' | 'rechazado')
+    ? 0
+    : FE_REFRESH_INTERVAL_MS;
+}
+
 export interface UseFacturaElectronicaReturn {
   data: FacturaElectronicaEstado | undefined;
   error: Error | undefined;
@@ -81,7 +105,7 @@ export function useFacturaElectronica(
     key,
     () => fetchFE(uuid as string),
     {
-      refreshInterval: FE_REFRESH_INTERVAL_MS,
+      refreshInterval: computeRefreshInterval,
       revalidateOnFocus: false,
       shouldRetryOnError: (err) => {
         if (err instanceof ParkosHttpError) {
