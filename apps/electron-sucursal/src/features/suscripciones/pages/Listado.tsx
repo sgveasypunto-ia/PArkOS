@@ -56,7 +56,7 @@ export interface ListadoRow {
  * `cliente_nombre`. Empty query passes the rows through (REQ-OPS-182
  * "empty search shows all rows"). Exported for testability.
  */
-export function filterListado(rows: ListadoRow[], query: string): ListadoRow[] {
+function filterListado(rows: ListadoRow[], query: string): ListadoRow[] {
   const q = query.trim().toLowerCase();
   if (!q) return rows;
   return rows.filter(
@@ -71,7 +71,7 @@ export function filterListado(rows: ListadoRow[], query: string): ListadoRow[] {
  * Negative means already expired (rendered via badge, NOT in the
  * banner hook — REQ-OPS-181 filter excludes those).
  */
-export function diasRestantes(fecha_vencimiento: string, now: Date): number {
+function diasRestantes(fecha_vencimiento: string, now: Date): number {
   const v = new Date(`${fecha_vencimiento}T00:00:00Z`).getTime();
   return Math.floor((v - now.getTime()) / ONE_DAY_MS);
 }
