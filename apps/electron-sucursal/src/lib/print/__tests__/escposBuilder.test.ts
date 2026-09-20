@@ -79,7 +79,9 @@ describe('EscposInvalidTipoError', () => {
   it('throws with code=escpos_invalid_tipo and given=bogus', () => {
     let captured: EscposInvalidTipoError | null = null;
     try {
-      build('foo-bar', {});
+      // Cast required: `TiqueteTipo` is a strict union; we intentionally
+      // bypass it to exercise the runtime error path.
+      build('foo-bar' as unknown as Parameters<typeof build>[0], {});
     } catch (err) {
       captured = err as EscposInvalidTipoError;
     }
