@@ -6,6 +6,24 @@
   "error": "Error al cargar suscripciones.",
   "vencePronto": "Vence pronto",
   "proximaAVencer": "Suscripción próxima a vencer",
+  "listado": {
+    "titulo": "Suscripciones",
+    "searchPlaceholder": "Buscar por placa o cliente",
+    "colCliente": "Cliente",
+    "colPlan": "Plan",
+    "colFechaVencimiento": "Fecha vencimiento",
+    "colDiasRestantes": "Días restantes",
+    "colEstado": "Estado"
+  },
+  "dashboard": {
+    "bannerVencimiento": "Suscripción de esta placa vence en {{dias}} días ({{fecha}}). Considere renovación.",
+    "panelVencimiento": {
+      "titulo": "Suscripciones por vencer",
+      "diasRestantesUno": "vence en {{dias}} día",
+      "diasRestantesMuchos": "vence en {{dias}} días",
+      "vencida": "vencida"
+    }
+  },
   "venta": {
     "titulo": "Venta de suscripción",
     "paso1": {

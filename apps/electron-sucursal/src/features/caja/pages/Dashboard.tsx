@@ -50,6 +50,7 @@ import { SuscripcionesPanel } from '../../suscripciones/components/Suscripciones
 import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
 import { AlertasPanel } from '../../sync/components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
+import { useSuscripcionesProximasVencer } from '../../suscripciones/hooks/useSuscripcionesProximasVencer';
 import {
   Card,
   CardContent,
@@ -78,12 +79,35 @@ export function Dashboard(): JSX.Element | null {
   const { sesion, isLoading, error, refresh } = useSesionActiva();
   const { isAuthenticated, isLoading: isAuthLoading, sucursal, user } = useAuth();
   const navigate = useNavigate();
-  const { t } = useTranslation(['caja', 'common', 'operacion']);
+  const { t } = useTranslation(['caja', 'common', 'operacion', 'suscripciones']);
   const uuid_sucursal = sucursal?.uuid ?? null;
   const openDrawer = useDashboardDrawerStore((s) => s.open);
   const closeDrawer = useDashboardDrawerStore((s) => s.close);
   const openDrawerKind = useDashboardDrawerStore((s) => s.openDrawer);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // HU-F9.2 (REQ-OPS-183) — banner + top-5 panel de suscripciones
+  // próximas a vencer en la sede. El hook aplica el filtro
+  // `dias >= 0` (excluye vencidas) y ordena por `fecha_vencimiento`
+  // ASC, así que `data[0]` es la suscripción MÁS próxima a vencer
+  // y `data.slice(0, 5)` es el top 5 de la pantalla. El
+  // ABIRTO-05/REQ-OPS-184 (override per-suscripción) NO está
+  // implementado en este PR — default global `7 días` via
+  // `DEFAULT_DIAS_ALERTA_PRE_VENCIMIENTO` en `lib/constants.ts`.
+  const { data: suscripcionesPorVencer } =
+    useSuscripcionesProximasVencer(uuid_sucursal);
+  const topVencer = suscripcionesPorVencer?.slice(0, 5) ?? [];
+  const totalVencer = suscripcionesPorVencer?.length ?? 0;
+  const firstVencer = suscripcionesPorVencer?.[0];
+
+  const bannerText = firstVencer
+    ? t('suscripciones:dashboard.bannerVencimiento', {
+        dias: firstVencer.dias_para_vencer,
+        fecha: firstVencer.fecha_vencimiento,
+        defaultValue:
+          'Suscripción de esta placa vence en X días (fecha). Considere renovación.',
+      })
+    : null;
 
   // F1-F6 hotkey listener → openDrawer + Esc closes.
   useEffect(() => {
@@ -290,6 +314,26 @@ export function Dashboard(): JSX.Element | null {
           lang="es-CO"
           className="row-start-2 col-start-1 flex flex-col gap-3 overflow-y-auto p-3 lg:col-start-2 lg:p-3"
         >
+          {/*
+            HU-F9.2 banner literal (REQ-OPS-183) — inline amarillo
+            renderiza SOLO cuando hay al menos una suscripción por
+            vencer. El texto es literal canónico de plan.md:2100;
+            `dias` y `fecha` se interpolan del PRIMER item del array
+            (que el hook ya ordena por `fecha_vencimiento` ASC).
+          */}
+          {bannerText !== null && (
+            <div
+              data-testid="dashboard-vencimiento-banner"
+              role="alert"
+              className="rounded border border-yellow-300 bg-yellow-50 px-3 py-2 text-sm text-yellow-900"
+            >
+              <span aria-hidden className="mr-2 font-semibold">
+                ⚠
+              </span>
+              {bannerText}
+            </div>
+          )}
+
           <Card data-testid="placa-card">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
@@ -400,6 +444,49 @@ export function Dashboard(): JSX.Element | null {
               </CardContent>
             </Card>
           </div>
+
+          {/*
+            HU-F9.2 panel "Suscripciones por vencer" (REQ-OPS-183).
+            Muestra el TOTAL (`totalVencer`) y los primeros 5 items
+            del array ordenado por `fecha_vencimiento` ASC que devuelve
+            el hook `useSuscripcionesProximasVencer`.
+          */}
+          <Card data-testid="dashboard-vencimiento-panel" className="overflow-hidden">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
+                {t('suscripciones:dashboard.panelVencimiento.titulo', {
+                  defaultValue: 'Suscripciones por vencer',
+                })}{' '}
+                <span data-testid="dashboard-vencimiento-panel-count">
+                  ({totalVencer})
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-1 overflow-y-auto p-2 text-sm">
+              {topVencer.length === 0 && (
+                <p className="text-muted-foreground" data-testid="dashboard-vencimiento-panel-empty">
+                  {t('caja:dashboard.sinCobros', { defaultValue: 'Sin suscripciones por vencer.' })}
+                </p>
+              )}
+              <ul className="space-y-1" data-testid="dashboard-vencimiento-panel-list">
+                {topVencer.map((it) => (
+                  <li
+                    key={it.uuid}
+                    className="flex items-center justify-between rounded border border-border bg-background px-2 py-1"
+                    data-testid={`dashboard-vencimiento-item-${it.placa}`}
+                  >
+                    <span className="font-mono uppercase">{it.placa}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {t('suscripciones:dashboard.panelVencimiento.diasRestantesMuchos', {
+                        dias: it.dias_para_vencer,
+                        defaultValue: `vence en ${it.dias_para_vencer} días`,
+                      })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
         </aside>
 
         {/* ── DrawerHost mounts the SINGLE active drawer (REQ-OPS-138) ─── */}

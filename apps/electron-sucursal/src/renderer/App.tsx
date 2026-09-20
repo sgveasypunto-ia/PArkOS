@@ -10,6 +10,7 @@ import { CerrarTurno } from '../features/caja/pages/CerrarTurno';
 import { FacturaDetalle } from '../features/facturacion/pages/FacturaDetalle';
 import { ReimprimirTiquete } from '../features/facturacion/pages/ReimprimirTiquete';
 import { Venta } from '../features/suscripciones/pages/Venta';
+import { Listado } from '../features/suscripciones/pages/Listado';
 
 /**
  * App — F2.1 router + F2.3 StatusBar mount + F3.1 Login + F3.3 caja
@@ -85,6 +86,14 @@ export default function App(): JSX.Element {
             element={
               <ProtectedRoute>
                 <Venta />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/suscripciones"
+            element={
+              <ProtectedRoute>
+                <Listado />
               </ProtectedRoute>
             }
           />
