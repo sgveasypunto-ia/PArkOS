@@ -23,7 +23,6 @@
  *   M5: click "Confirmar pago" → onSubmit called with the parsed
  *       PagoFormValues (discriminated union by medio).
  */
-import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 
@@ -133,7 +132,9 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     expect(onSubmit).toHaveBeenCalledTimes(1);
     const arg = onSubmit.mock.calls[0]?.[0] as PagoFormValues;
     expect(arg.medio_pago).toBe('efectivo');
-    expect(arg.monto_recibido_cop).toBe(41000);
+    if (arg.medio_pago === 'efectivo') {
+      expect(arg.monto_recibido_cop).toBe(41000);
+    }
     expect(arg.nombre_cliente).toBeDefined();
   });
 });

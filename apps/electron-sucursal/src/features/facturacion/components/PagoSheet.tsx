@@ -40,17 +40,17 @@ import { PagoModal, type PagoFormValues } from './PagoModal';
 export interface PagoSheetProps {
   /**
    * UUID del ingreso activo que se está pagando. The store consumer
-   * threads this through the `drawerContext` payload; the sheet reads
+   * threads this through the `pagoContext` payload; the sheet reads
    * it from props because the form needs it for the POST body.
    */
   uuid_ingreso: string | null;
   total_cop: number;
   /**
-   * Bridge print-envelope emitter for CU-15S (F7.3). Defaults to
-   * `window.bridge?.imprimir('salida', payload)` via a tiny helper
-   * that swallows IPC failures (DEC-SUC-08). F8.1 ALSO fires a
-   * second envelope (`recibo_pago`) AFTER the CU-15S envelope
-   * per DEC-SUC-27 verbatim.
+   * Bridge print-envelope emitter for CU-15S (F7.3) + recibo_pago
+   * (F8.1). Defaults to `window.bridge?.imprimir(tipo, payload)`
+   * via a tiny helper that swallows IPC failures (DEC-SUC-08). The
+   * post-pago envelope sequence is DEC-SUC-27 verbatim: CU-15S
+   * fires AFTER pago, then recibo de pago.
    */
   firePrintEnvelope?: (tipo: 'salida' | 'recibo_pago', payload: unknown) => void;
 }

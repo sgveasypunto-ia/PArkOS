@@ -88,7 +88,10 @@ export function validarNitModulo11(
   // Compute modulo-11 DV under the published DIAN algorithm.
   let sum = 0;
   for (let i = 0; i < digits.length; i++) {
-    const w = WEIGHTS[i % WEIGHTS.length];
+    // `WEIGHTS[i % WEIGHTS.length]` is always defined because
+    // `i < digits.length < ∞` and `WEIGHTS.length === 16 > 0`;
+    // the `!` non-null assertion satisfies `noUncheckedIndexedAccess`.
+    const w = WEIGHTS[i % WEIGHTS.length]!;
     sum += Number(digits[i]) * w;
   }
   const mod = sum % 11;

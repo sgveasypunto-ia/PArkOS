@@ -114,8 +114,23 @@ export function SalidaPanel({
   });
 
   const handleOpenPago = useCallback(() => {
-    open('pago', pagoAnchorId);
-  }, [open, pagoAnchorId]);
+    // F8.1 (HU-F8.1 — PagoModal) — push the live cotizacion context
+    // onto the drawer store BEFORE opening the `pago` drawer. The
+    // `<DrawerHost>` reads `pagoContext` and forwards it to
+    // `<PagoSheet>` so the form can build the
+    // `POST /facturacion/factura` body without re-fetching the
+    // cotizacion. `uuid_ingreso` is the Path-1 result from the parent
+    // (typed via the `SalidaPanelProps.uuid_ingreso` prop); the
+    // `total_cop` is the freshly-validated `cotizacion.total` that
+    // the operator just approved by clicking "Cobrar".
+    if (!uuid_ingreso || !cotizacion || cotizacion.cobrar === false) {
+      return;
+    }
+    open('pago', pagoAnchorId, null, {
+      uuid_ingreso,
+      total_cop: cotizacion.total,
+    });
+  }, [open, pagoAnchorId, uuid_ingreso, cotizacion]);
 
   // Countdown 15 min (REQ-OPS-146). `useCountdown` is reusable from F3.2.
   const { secondsLeft } = useCountdown(COTIZAR_VIDA_UTIL_S);
