@@ -108,7 +108,6 @@ export function Venta(): JSX.Element {
   const [state, setState] = useState<VentaStepState>({ paso: 1 });
   const [placaError, setPlacaError] = useState<string | null>(null);
   const [clienteError, setClienteError] = useState<string | null>(null);
-  const [planError, setPlanError] = useState<string | null>(null);
   const [clienteNitInput, setClienteNitInput] = useState('');
   const [clienteNombreInput, setClienteNombreInput] = useState('');
   const [placaInput, setPlacaInput] = useState('');
@@ -159,11 +158,8 @@ export function Venta(): JSX.Element {
       fecha_inicio_cobertura: DEFAULT_FECHA_INICIO,
     });
     if (!parsed.success) {
-      const issue = parsed.error.issues[0];
-      setPlanError(issue?.message ?? 'invalid');
       return;
     }
-    setPlanError(null);
     setState((s) => ({
       ...s,
       paso: 4,

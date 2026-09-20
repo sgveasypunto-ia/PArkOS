@@ -26,7 +26,7 @@ vi.mock('react-i18next', () => ({
 const mockTrigger = vi.fn();
 const mockIsMutating = vi.fn(() => false);
 vi.mock('../hooks/useVentaSuscripcion', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../hooks/useVentaSuscripcion')>();
+  const actual = await importOriginal();
   return {
     ...actual,
     useVentaSuscripcion: () => ({
