@@ -63,9 +63,6 @@ export function SalidaSheet(): JSX.Element | null {
         </SheetHeader>
         <SalidaPanel
           uuid_ingreso={null}
-          onPagoSubmit={async () => {
-            // TODO: PR-3 — wire to POST /facturacion/factura + pagos.
-          }}
           initialPlaca={initialPlaca}
         />
       </SheetContent>
