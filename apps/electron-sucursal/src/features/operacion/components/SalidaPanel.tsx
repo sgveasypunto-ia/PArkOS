@@ -46,7 +46,8 @@ import {
   type ToleranteResultado,
 } from '../../../lib/validation/placaTolerante';
 import { getIngresosByPlaca } from '../api/ingresoActivoApi';
-import { CotizacionPanel } from './CotizacionPanel';
+import { SalidaFlow } from './SalidaFlow';
+import { SalidaMensualidad } from './SalidaMensualidad';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 
 const placaSchema = z.object({
@@ -178,15 +179,42 @@ export function SalidaPanel({
 
       {uuid_ingreso && (cotizacion || cotError) && (
         <div data-anchor-for="pago" id={pagoAnchorId}>
-          <CotizacionPanel
-            data={cotizacion}
-            error={cotError}
-            secondsLeft={secondsLeft}
-            onConfirmar={handleOpenPago}
-            onRecalcular={() => {
-              void refresh();
-            }}
-          />
+          {cotizacion?.cobrar === false ? (
+            <SalidaMensualidad uuidIngreso={uuid_ingreso} />
+          ) : cotizacion ? (
+            <SalidaFlow
+              uuidIngreso={uuid_ingreso}
+              cotizacion={cotizacion}
+              secondsLeft={secondsLeft}
+              error={cotError}
+              pagoAnchorId={pagoAnchorId}
+              onRecalcular={() => {
+                void refresh();
+              }}
+            />
+          ) : (
+            // cotizacion undefined + cotError set: render the error
+            // banner via SalidaFlow (CotizacionPanel handles the error
+            // branch internally). F7.1 behavior preserved.
+            <SalidaFlow
+              uuidIngreso={uuid_ingreso}
+              cotizacion={{
+                cobrar: true,
+                subtotal: 0,
+                iva: 0,
+                total: 0,
+                tiempo_minutos: 0,
+                tarifa_uuid: '00000000-0000-0000-0000-000000000000',
+                vigente_hasta: '1970-01-01T00:00:00Z',
+              }}
+              secondsLeft={secondsLeft}
+              error={cotError}
+              pagoAnchorId={pagoAnchorId}
+              onRecalcular={() => {
+                void refresh();
+              }}
+            />
+          )}
         </div>
       )}
 
