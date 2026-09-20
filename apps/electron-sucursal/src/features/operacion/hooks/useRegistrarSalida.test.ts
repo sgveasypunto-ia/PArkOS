@@ -36,12 +36,11 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
   ParkosHttpError: class extends Error {
     public readonly status: number;
     public readonly body: string;
-    constructor(status: number, body = '', url = '') {
+    constructor(status: number, body = '') {
       super(`ParkosHttpError ${status}`);
       this.name = 'ParkosHttpError';
       this.status = status;
       this.body = body;
-      this.url = url;
     }
   },
 }));

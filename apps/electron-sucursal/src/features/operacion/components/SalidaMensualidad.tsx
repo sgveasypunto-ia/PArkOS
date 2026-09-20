@@ -39,7 +39,8 @@ export interface SalidaMensualidadProps {
  * we fall back to the test override.
  */
 function defaultFirePrintEnvelope(payload: { uuid_salida: string }): void {
-  const bridge = (globalThis as { window?: { bridge?: { imprimir?: (k: string, p: unknown) => void } } }).window?.bridge;
+  const w = globalThis as unknown as { window?: { bridge?: { imprimir?: (k: string, p: unknown) => void } } };
+  const bridge = w.window?.bridge;
   if (bridge?.imprimir) {
     bridge.imprimir('salida_mensualidad', payload);
   }
