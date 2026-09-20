@@ -5,8 +5,9 @@
  * HU-F6.2 (Fase 6 — tiquete de entrada CU-15E) / DEC-SUC-26.
  *
  * Responsibilities:
- *   1. Declare the 4 typed payload interfaces (`EntradaPayload`,
- *      `SalidaPayload`, `SalidaMensualidadPayload`, `ReimpresionPayload`).
+ *   1. Declare the 5 typed payload interfaces (`EntradaPayload`,
+ *      `SalidaPayload`, `SalidaMensualidadPayload`, `ReimpresionPayload`,
+ *      `ReciboPagoPayload`).
  *   2. Ship matching Zod schemas so callers get validation errors at the
  *      build boundary, not as silent garbage bytes.
  *   3. Provide the union `TiqueteTipo` and `TiquetePayload` discriminated
@@ -20,6 +21,10 @@
  *      factory that assembles an `EntradaPayload` from the 8 caller
  *      inputs and sets `esMensualidad` based on
  *      `ingreso.uuid_subscripcion_cliente IS NOT NULL`.
+ *   6. F8.1 (HU-F8.1) — `ReciboPagoPayload` extends `SalidaPayload` with
+ *      the typed `medio_pago` discriminator + `numero_recibo` line for
+ *      the post-pago print emitted AFTER the CU-15S tiquete de salida
+ *      (DEC-SUC-27 + DEC-SUC-28).
  *
  * SYNCH NOTE — `formatCOP` inline copy:
  *   This is a copy of the rule from `apps/electron-sucursal/src/features/caja/lib/format.ts`
@@ -155,14 +160,25 @@ const placaSchema = z
 // Tipo literal + payload union
 // ──────────────────────────────────────────────────────────────────────────
 
-/** The 4 tiquete tipos supported by F5.2. */
-export type TiqueteTipo = 'entrada' | 'salida' | 'salida-mensualidad' | 'reimpresion';
+/**
+ * The 5 tiquete tipos supported by the print dispatcher. F8.1 (HU-F8.1
+ * — PagoModal) adds `recibo_pago` — the post-pago print emitted AFTER
+ * the CU-15S tiquete de salida per DEC-SUC-27 verbatim ("CU-15S print
+ * fires AFTER pago, then recibo de pago").
+ */
+export type TiqueteTipo =
+  | 'entrada'
+  | 'salida'
+  | 'salida-mensualidad'
+  | 'reimpresion'
+  | 'recibo_pago';
 
 export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
   'entrada',
   'salida',
   'salida-mensualidad',
   'reimpresion',
+  'recibo_pago',
 ] as const;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -547,6 +563,37 @@ export const reimpresionPayloadSchema = z.discriminatedUnion('originalTipo', [
 export type ReimpresionPayload = z.infer<typeof reimpresionPayloadSchema>;
 
 // ──────────────────────────────────────────────────────────────────────────
+// Recibo de pago payload (post-pago print) — F8.1 (HU-F8.1)
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * F8.1 (HU-F8.1 — PagoModal / DEC-SUC-27 + DEC-SUC-28):
+ *   - The recibo de pago prints AFTER the CU-15S tiquete de salida
+ *     (DEC-SUC-27 verbatim: "CU-15S print fires AFTER pago, then
+ *     recibo de pago"). It carries the SAME 19 CU-15S conceptual
+ *     fields PLUS two additions:
+ *       - `numero_recibo` — backend F1.10 assigns
+ *         `sucursal-YYYYMMDD-NNNNNN` (DEC-SUC-28 verbatim).
+ *       - `medio_pago` — typed literal `efectivo` | `datafono` that
+ *         REPLACES the CU-15S `medioPago: z.string().min(1)`. The
+ *         discriminator enforces the strict medio enum at the build
+ *         boundary (a `transferencia` medio would be rejected).
+ *   - `sucursal.encabezado` is REQUIRED (DEC-SUC-28 — same as CU-15S).
+ *   - `qrDataUrl` and `logoDataUrl` are REQUIRED (DEC-SUC-26 — same
+ *     as CU-15S tightened by F6.2).
+ *
+ * The schema extends `salidaPayloadSchema` so the 19-CU-15S field set
+ * stays convergent across both builders; the two additions override
+ * `medioPago` with the strict literal.
+ */
+export const reciboPagoPayloadSchema = salidaPayloadSchema.extend({
+  numero_recibo: z.string().regex(/^sucursal-\d{8}-\d{6}$/, 'numero_recipo_formato'),
+  medio_pago: z.enum(['efectivo', 'datafono']),
+});
+
+export type ReciboPagoPayload = z.infer<typeof reciboPagoPayloadSchema>;
+
+// ──────────────────────────────────────────────────────────────────────────
 // Per-tipo schema map (consumed by escposBuilder.validatePayload)
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -557,4 +604,5 @@ export const payloadSchemaByTipo: {
   salida: salidaPayloadSchema,
   'salida-mensualidad': salidaMensualidadPayloadSchema,
   reimpresion: reimpresionPayloadSchema,
+  recibo_pago: reciboPagoPayloadSchema,
 };
