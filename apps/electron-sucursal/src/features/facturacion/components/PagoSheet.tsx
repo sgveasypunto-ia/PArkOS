@@ -2,23 +2,26 @@
  * `<PagoSheet />` — F8.1 right-side drawer for the payment flow
  * (REQ-OPS-138 single-drawer invariant + REQ-OPS-139 lazy-mount).
  *
- * Composes:
- *   - `<Sheet>` (shadcn Drawer primitive) — opens via
- *     `useDashboardDrawerStore.open('pago', anchorId)`.
- *   - Form fields: medio de pago (efectivo | datáfono), NIT, voucher.
- *   - FE always defaults to consumidor final (NIT `222222222222222`).
- *   - Idempotency-Key header (parkosFetch handles this for POSTs).
+ * The sheet is a THIN SHELL after F8.1's PagoModal extraction:
+ *   - Mounts `<PagoModal />` inside `<Sheet>` (the form is owned by
+ *     PagoModal; this file only handles drawer concerns).
+ *   - Wires the `onSubmit` callback to `useRegistrarPago` +
+ *     post-pago print triggers (DEC-SUC-27: CU-15S fires AFTER
+ *     pago, then recibo de pago).
+ *   - Manages focus restore on close (REQ-OPS-138 §Esc).
  *
- * The component receives `uuid_ingreso` from the store context
- * (`drawerContext.uuid_ingreso`) and posts `POST /facturacion/factura`
- * + `POST /facturacion/factura-pagos`. On success, the sheet closes
- * and `useFacturaElectronica` (PR-4) takes over for FE status polling.
+ * Print envelope:
+ *   - Both `bridge.imprimir('salida', payload)` (CU-15S) and
+ *     `bridge.imprimir('recibo_pago', payload)` (recibo de pago)
+ *     are deferred to the next microtask via `queueMicrotask` so
+ *     the React render commit completes BEFORE the IPC round-trip
+ *     begins.
+ *   - Both calls are wrapped in `try/catch` — printer offline /
+ *     disconnected MUST NOT block the operator (the pago is already
+ *     persisted in `prod.factura`).
  */
-import { useEffect, useId } from 'react';
+import { useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -29,83 +32,75 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { Input } from '@/components/ui/input';
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form';
 
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
-
-/**
- * FE always defaults to consumidor final per plan.md:1828-1922
- * (NIT `222222222222222`).
- */
-const NIT_CONSUMIDOR_FINAL = '222222222222222';
-
-const pagoSchema = z.object({
-  medio_pago: z.enum(['efectivo', 'datafono']),
-  monto_recibido_cop: z.coerce.number().int().positive(),
-  nit_cliente: z
-    .string()
-    .trim()
-    .default(NIT_CONSUMIDOR_FINAL),
-  voucher: z.string().trim().optional(),
-});
-export type PagoFormValues = z.infer<typeof pagoSchema>;
+import { useRegistrarPago } from '../hooks/useRegistrarPago';
+import { PagoModal, type PagoFormValues } from './PagoModal';
 
 export interface PagoSheetProps {
   /**
    * UUID del ingreso activo que se está pagando. The store consumer
-   * threads this through the `drawerContext` payload; the sheet reads
+   * threads this through the `pagoContext` payload; the sheet reads
    * it from props because the form needs it for the POST body.
    */
   uuid_ingreso: string | null;
   total_cop: number;
   /**
-   * Called when the operator submits the payment form. The parent
-   * (`<SalidaPanel />`) wires this to the actual `POST /facturacion/*`.
+   * Bridge print-envelope emitter for CU-15S (F7.3) + recibo_pago
+   * (F8.1). Defaults to `window.bridge?.imprimir(tipo, payload)`
+   * via a tiny helper that swallows IPC failures (DEC-SUC-08). The
+   * post-pago envelope sequence is DEC-SUC-27 verbatim: CU-15S
+   * fires AFTER pago, then recibo de pago.
    */
-  onSubmit: (values: PagoFormValues) => Promise<void>;
+  firePrintEnvelope?: (tipo: 'salida' | 'recibo_pago', payload: unknown) => void;
 }
 
+function defaultFirePrintEnvelope(
+  tipo: 'salida' | 'recibo_pago',
+  payload: unknown,
+): void {
+  const w = globalThis as unknown as { window?: { bridge?: { imprimir?: (k: string, p: unknown) => void } } };
+  const bridge = w.window?.bridge;
+  if (bridge?.imprimir) {
+    bridge.imprimir(tipo, payload);
+  }
+}
+
+function deferredSafePrint(
+  emit: (tipo: 'salida' | 'recibo_pago', payload: unknown) => void,
+  tipo: 'salida' | 'recibo_pago',
+  payload: unknown,
+): void {
+  queueMicrotask(() => {
+    try {
+      emit(tipo, payload);
+    } catch (err) {
+      // eslint-disable-next-line no-console -- operator-facing: printer offline.
+      console.warn(
+        `[PagoSheet] bridge.imprimir(${tipo}) failed (printer_offline / disconnected):`,
+        err,
+      );
+    }
+  });
+}
+
+/**
+ * `<PagoSheet />` — thin shell that mounts `<PagoModal>` inside the
+ * right-side drawer, wires `useRegistrarPago` to the submit handler,
+ * and fires the post-pago print envelopes (DEC-SUC-27).
+ */
 export function PagoSheet({
   uuid_ingreso,
   total_cop,
-  onSubmit,
+  firePrintEnvelope,
 }: PagoSheetProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
   const lastAnchorId = useDashboardDrawerStore((s) => s.lastAnchorId);
   const close = useDashboardDrawerStore((s) => s.close);
+  const { trigger } = useRegistrarPago();
 
   const open = openDrawer === 'pago';
-  const formId = useId();
-
-  const form = useForm<PagoFormValues>({
-    resolver: zodResolver(pagoSchema),
-    defaultValues: {
-      medio_pago: 'efectivo',
-      monto_recibido_cop: total_cop,
-      nit_cliente: NIT_CONSUMIDOR_FINAL,
-      voucher: '',
-    },
-    mode: 'onSubmit',
-  });
-
-  // Reset defaults when total changes (e.g. operator re-cotiza).
-  useEffect(() => {
-    form.reset({
-      medio_pago: 'efectivo',
-      monto_recibido_cop: total_cop,
-      nit_cliente: NIT_CONSUMIDOR_FINAL,
-      voucher: '',
-    });
-  }, [total_cop, form]);
 
   // Focus restore per REQ-OPS-138 §Esc.
   useEffect(() => {
@@ -115,11 +110,45 @@ export function PagoSheet({
     }
   }, [open, lastAnchorId]);
 
-  const handleSubmit = form.handleSubmit(async (values) => {
-    if (!uuid_ingreso) return;
-    await onSubmit(values);
-    close();
-  });
+  const handleSubmit = useCallback(
+    async (values: PagoFormValues): Promise<void> => {
+      if (!uuid_ingreso) return;
+      // Build the discriminated POST payload from the form values.
+      const post = values.medio_pago === 'efectivo'
+        ? {
+            uuid_ingreso,
+            medio_pago: 'efectivo' as const,
+            monto_recibido_cents: values.monto_recibido_cop,
+            total_cents: total_cop,
+            cliente: {
+              nit: values.fe ? values.nit ?? '' : '222222222222222',
+              nombre: values.fe ? values.nombre_cliente ?? 'Consumidor final' : 'Consumidor final',
+              email: values.fe ? values.email_cliente ?? null : null,
+            },
+          }
+        : {
+            uuid_ingreso,
+            medio_pago: 'datafono' as const,
+            total_cents: total_cop,
+            voucher: values.voucher,
+            cliente: {
+              nit: values.fe ? values.nit ?? '' : '222222222222222',
+              nombre: values.fe ? values.nombre_cliente ?? 'Consumidor final' : 'Consumidor final',
+              email: values.fe ? values.email_cliente ?? null : null,
+            },
+          };
+      const result = await trigger(post);
+      // DEC-SUC-27 — CU-15S print fires AFTER pago, then recibo de pago.
+      const emit = firePrintEnvelope ?? defaultFirePrintEnvelope;
+      deferredSafePrint(emit, 'salida', { uuid_factura: result.uuid });
+      deferredSafePrint(emit, 'recibo_pago', {
+        uuid_factura: result.uuid,
+        numero_recibo: result.numero_recibo,
+      });
+      close();
+    },
+    [uuid_ingreso, total_cop, trigger, firePrintEnvelope, close],
+  );
 
   return (
     <Sheet
@@ -138,83 +167,11 @@ export function PagoSheet({
           </SheetDescription>
         </SheetHeader>
 
-        <Form {...form}>
-          <form id={formId} onSubmit={handleSubmit} className="space-y-4 py-4">
-            <FormField
-              control={form.control}
-              name="medio_pago"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('facturacion:pago.medioPago', { defaultValue: 'Medio de pago' })}</FormLabel>
-                  <FormControl>
-                    <select
-                      data-testid="pago-medio-pago"
-                      className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
-                      value={field.value}
-                      onChange={field.onChange}
-                      onBlur={field.onBlur}
-                    >
-                      <option value="efectivo">Efectivo</option>
-                      <option value="datafono">Datáfono</option>
-                    </select>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="monto_recibido_cop"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('facturacion:pago.montoRecibido', { defaultValue: 'Monto recibido' })}</FormLabel>
-                  <FormControl>
-                    <Input
-                      type="number"
-                      inputMode="numeric"
-                      data-testid="pago-monto-recibido"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="nit_cliente"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('facturacion:pago.nit', { defaultValue: 'NIT del cliente' })}</FormLabel>
-                  <FormControl>
-                    <Input
-                      data-testid="pago-nit"
-                      placeholder={NIT_CONSUMIDOR_FINAL}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="voucher"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('facturacion:pago.voucher', { defaultValue: 'Voucher (datáfono)' })}</FormLabel>
-                  <FormControl>
-                    <Input data-testid="pago-voucher" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </form>
-        </Form>
+        <PagoModal
+          uuid_ingreso={uuid_ingreso}
+          total_cop={total_cop}
+          onSubmit={handleSubmit}
+        />
 
         <SheetFooter>
           <Button
@@ -224,14 +181,6 @@ export function PagoSheet({
             data-testid="pago-cancelar"
           >
             {t('common:cancel', { defaultValue: 'Cancelar' })}
-          </Button>
-          <Button
-            type="submit"
-            form={formId}
-            disabled={!uuid_ingreso || form.formState.isSubmitting}
-            data-testid="pago-confirmar"
-          >
-            {t('facturacion:pago.confirmar', { defaultValue: 'Confirmar pago' })}
           </Button>
         </SheetFooter>
       </SheetContent>

@@ -81,6 +81,26 @@ export default defineConfig({
           functions: 85,
           branches: 80,
         },
+        // HU-F8.1 (BR7 / DEC-SUC-29) — pure DIAN módulo-11 NIT
+        // verification with strict 16-prime-weight vector. ≥95/95/90
+        // because the function has minimal branching (just length
+        // validation + the modulo walk + DV comparison) — easy to
+        // cover exhaustively.
+        'src/lib/validation/nit.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 90,
+        },
+        // HU-F8.1 (REQ-OPS-167) — SWR mutation hook with 401 clear +
+        // Idempotency-Key SHA-256 closure + Zod discriminated-union
+        // response parse. ≥90/90/85 mirrors `useRegistrarSalida.ts`
+        // precedent (F7.2) — both are POST mutations with the same
+        // 401-handling and idempotency invariants.
+        'src/features/facturacion/hooks/useRegistrarPago.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
       },
     },
   },

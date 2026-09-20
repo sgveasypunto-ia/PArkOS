@@ -92,11 +92,12 @@ describe('EscposInvalidTipoError', () => {
     expect(captured!.message).toContain('foo-bar');
   });
 
-  it('isTiqueteTipo narrows the 4-allowed union', () => {
+  it('isTiqueteTipo narrows the 5-allowed union (F8.1 adds recibo_pago)', () => {
     expect(isTiqueteTipo('entrada')).toBe(true);
     expect(isTiqueteTipo('salida')).toBe(true);
     expect(isTiqueteTipo('salida-mensualidad')).toBe(true);
     expect(isTiqueteTipo('reimpresion')).toBe(true);
+    expect(isTiqueteTipo('recibo_pago')).toBe(true);
     expect(isTiqueteTipo('FOO')).toBe(false);
     expect(isTiqueteTipo(123)).toBe(false);
     expect(isTiqueteTipo(null)).toBe(false);

@@ -35,7 +35,7 @@
  *   - All timestamps are caller-supplied (no `new Date()`).
  *
  * Error surface (named subclasses for `instanceof` checks):
- *   - `EscposInvalidTipoError` — `tipo` is not in the 4-allowed union.
+ *   - `EscposInvalidTipoError` — `tipo` is not in the 5-allowed union.
  *   - `EscposPayloadMissingFieldError` — Zod parse failed; `err.issues`
  *     carries the underlying Zod issues.
  */
@@ -48,6 +48,7 @@ import {
   salidaPayloadSchema,
   salidaMensualidadPayloadSchema,
   reimpresionPayloadSchema,
+  reciboPagoPayloadSchema,
   formatCOP,
   formatFecha,
   formatHora,
@@ -55,6 +56,7 @@ import {
   type SalidaPayload,
   type SalidaMensualidadPayload,
   type ReimpresionPayload,
+  type ReciboPagoPayload,
   type TiqueteTipo,
 } from './escposTemplates';
 
@@ -63,7 +65,7 @@ import {
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Thrown by `build()` when the `tipo` argument is not in the 4-allowed
+ * Thrown by `build()` when the `tipo` argument is not in the 5-allowed
  * union. Carries the offending `given` string and a stable `code` for
  * callers to discriminate on (instead of `instanceof` chains).
  */
@@ -381,6 +383,73 @@ function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
   return concat([...header, body]);
 }
 
+function buildReciboPagoBody(payload: ReciboPagoPayload): Buffer {
+  // F8.1 (HU-F8.1 — PagoModal) — Recibo de pago. Carries the SAME 19
+  // CU-15S conceptual fields PLUS two additions:
+  //   - `numero_recibo` — backend F1.10 assigns
+  //     `sucursal-YYYYMMDD-NNNNNN` (DEC-SUC-28).
+  //   - `medio_pago` — typed literal `efectivo` | `datafono`.
+  //
+  // Layout (mirrors `buildSalidaBody` field-by-field with two swaps):
+  //   - Sello slot shows `*** RECIBO DE PAGO ***` (NOT `*** SALIDA ***`).
+  //   - Header still uses `payload.sucursal.encabezado` (DEC-SUC-28).
+  //   - The `Medio de pago:` line uses the typed `payload.medio_pago`.
+  //
+  // DEC-SUC-27 verbatim: "CU-15S print fires AFTER pago, then recibo de
+  // pago." Caller order is `<SalidaPanel>::handleOpenPago` →
+  // `useRegistrarPago.trigger` → `bridge.imprimir('salida', ...)` →
+  // `bridge.imprimir('recibo_pago', ...)`. The recibo MUST never fire
+  // before the CU-15S tiquete.
+  const lines: Buffer[] = [
+    escCenter(),
+    escBoldOn(),
+    utf8(`${payload.sucursal.encabezado}\n`),                 // 1: Encabezado
+    escBoldOff(),
+    utf8(`${payload.empresa.nombre}\n`),                      // 2: Empresa
+    utf8(`${payload.empresa.direccion}\n`),                   // 3: Dirección
+    utf8(`NIT ${payload.empresa.nit}\n`),                     // 4: NIT
+    utf8(`${payload.empresa.regimen}\n`),                     // 5: Régimen
+    utf8(`Operario: ${payload.operario}\n`),                  // 6: Operario
+    utf8('\n'),
+    escText2x(),
+    utf8('*** RECIBO DE PAGO ***\n'),                         // 7: Sello (recibo)
+    escTextReset(),
+    utf8('\n'),
+    utf8(`Numero de recibo: ${payload.numero_recibo}\n`),     // F8.1 addition
+    utf8(`Folio: ${payload.folio}\n`),                        // 8: Folio
+    utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`), // 9: Tarifa
+    utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`),    // 10: Fecha
+    utf8(`Hora entrada: ${formatHora(payload.fechaEntrada)}\n`), // 11: Hora entrada
+    utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),  // 12: Hora salida
+    utf8(`Tiempo: ${payload.tiempoTotal}\n`),                 // 13: Tiempo total
+    utf8('\n'),
+    utf8(`Subtotal: ${formatCOP(payload.subtotal)}\n`),       // 14: Subtotal
+    utf8(`IVA: ${formatCOP(payload.iva)}\n`),                 // 15: IVA
+    escBoldOn(),
+    utf8(`TOTAL: ${formatCOP(payload.total)}\n`),             // 16: TOTAL
+    escBoldOff(),
+    utf8(`Medio de pago: ${payload.medio_pago}\n`),           // 17: Medio (typed)
+    utf8(`Placa: ${payload.placa}\n`),                        // 18: Placa
+    utf8(`Horario: ${payload.horarioAtencion}\n`),            // 19a: Horario atención
+  ];
+  if (payload.polizaRC) {
+    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));     // 19b: Póliza RC
+  }
+  lines.push(utf8(`Resolucion FE: ${payload.resolucionFE}\n`));// 19c: Resolución FE
+  if (payload.observaciones) {
+    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // 19d: Observaciones
+  }
+  // F7.3 — DEC-SUC-26 QR + logo markers (mirror CU-15S precedent).
+  const logoText = payload.logoDataUrl === ''
+    ? LOGO_PLACEHOLDER_GLYPH
+    : 'OK';
+  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));
+  lines.push(utf8(`;LOGO:${logoText}\n`));
+  lines.push(utf8('\n'));
+  lines.push(utf8('Gracias por su pago.\n'));
+  return concat(lines);
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Public per-tipo builders (exported for tests)
 // ──────────────────────────────────────────────────────────────────────────
@@ -421,6 +490,15 @@ export function buildReimpresionBuffer(payload: ReimpresionPayload): Buffer {
   ]);
 }
 
+export function buildReciboPagoBuffer(payload: ReciboPagoPayload): Buffer {
+  return concat([
+    escInit(),
+    buildReciboPagoBody(payload),
+    cutPartial(),
+    lf(),
+  ]);
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Top-level dispatcher
 // ──────────────────────────────────────────────────────────────────────────
@@ -428,7 +506,7 @@ export function buildReimpresionBuffer(payload: ReimpresionPayload): Buffer {
 /**
  * Validate `tipo` and `payload`, then dispatch to the matching
  * `build*Buffer()` function. Throws:
- *   - `EscposInvalidTipoError` if `tipo` is not in the 4-allowed union.
+ *   - `EscposInvalidTipoError` if `tipo` is not in the 5-allowed union.
  *   - `EscposPayloadMissingFieldError` if Zod parse fails.
  *
  * @param tipo One of `TiqueteTipo`.
@@ -465,6 +543,10 @@ export function build(tipo: TiqueteTipo, payload: unknown): Buffer {
       const p = reimpresionPayloadSchema.parse(payload) as ReimpresionPayload;
       return buildReimpresionBuffer(p);
     }
+    case 'recibo_pago': {
+      const p = reciboPagoPayloadSchema.parse(payload) as ReciboPagoPayload;
+      return buildReciboPagoBuffer(p);
+    }
     default: {
       // Exhaustiveness — should be unreachable because isTiqueteTipo
       // narrows above. Defensive throw to satisfy `noImplicitReturns`.
@@ -474,8 +556,8 @@ export function build(tipo: TiqueteTipo, payload: unknown): Buffer {
 }
 
 /**
- * Narrow a runtime string to the 4-allowed union. Returns true if the
- * input is one of `'entrada' | 'salida' | 'salida-mensualidad' | 'reimpresion'`.
+ * Narrow a runtime string to the 5-allowed union. Returns true if the
+ * input is one of `'entrada' | 'salida' | 'salida-mensualidad' | 'reimpresion' | 'recibo_pago'`.
  */
 export function isTiqueteTipo(value: unknown): value is TiqueteTipo {
   return (
@@ -504,6 +586,8 @@ export function validatePayload(
       return runSafeParse(salidaMensualidadPayloadSchema, payload);
     case 'reimpresion':
       return runSafeParse(reimpresionPayloadSchema, payload);
+    case 'recibo_pago':
+      return runSafeParse(reciboPagoPayloadSchema, payload);
     default:
       return null;
   }

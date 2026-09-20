@@ -30,18 +30,31 @@ import { SalidaSheet } from '../../operacion/components/SalidaSheet';
 
 export function DrawerHost(): JSX.Element | null {
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
+  const pagoContext = useDashboardDrawerStore((s) => s.pagoContext);
 
   if (!openDrawer) return null;
 
   // Single-drawer invariant (REQ-OPS-138): only ONE branch mounts.
   if (openDrawer === 'pago') {
+    // F8.1 (HU-F8.1 — PagoModal) — read the live pagoContext the
+    // `<SalidaPanel>` pushed via `open('pago', anchorId, null, ctx)`
+    // and forward it to `<PagoSheet>` so the form can build the
+    // `POST /facturacion/factura` body. When the context is absent
+    // (e.g. a hotkey-driven `open('pago', ...)`), we fall back to
+    // placeholders so the sheet still mounts but the submit is
+    // blocked by `uuid_ingreso === null` (defense in depth — the
+    // submit button is disabled when `uuid_ingreso` is null per
+    // `<PagoModal>` `disabled={!uuid_ingreso || ...}`).
+    //
+    // `<PagoSheet>` owns its own `onSubmit` (wired to
+    // `useRegistrarPago` + post-pago print triggers per DEC-SUC-27).
+    // `<DrawerHost>` is a pure shell — no onSubmit forwarding needed.
+    const uuidIngreso = pagoContext?.uuid_ingreso ?? null;
+    const totalCop = pagoContext?.total_cop ?? 0;
     return (
       <PagoSheet
-        uuid_ingreso={null}
-        total_cop={0}
-        onSubmit={async () => {
-          /* PR-3 placeholder */
-        }}
+        uuid_ingreso={uuidIngreso}
+        total_cop={totalCop}
       />
     );
   }

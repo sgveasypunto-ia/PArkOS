@@ -16,7 +16,17 @@
     "montoRecibido": "Monto recibido",
     "nit": "NIT del cliente",
     "voucher": "Voucher (datáfono)",
-    "confirmar": "Confirmar pago"
+    "confirmar": "Confirmar pago",
+    "medio_efectivo": "Efectivo",
+    "medio_datafono": "Datáfono",
+    "voucher_label": "Voucher (datáfono)",
+    "vueltos": "Vueltos",
+    "fe_toggle": "Generar factura electrónica",
+    "fe_nit": "NIT del cliente",
+    "fe_dv": "DV (módulo 11)",
+    "fe_consumidor_final": "Consumidor final = 222222222222222",
+    "fe_nombre": "Nombre del cliente",
+    "fe_email": "Email (opcional)"
   },
   "fe": {
     "titulo": "Factura electrónica",

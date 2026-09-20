@@ -42,11 +42,13 @@ import {
   type SalidaPayload,
   type SalidaMensualidadPayload,
   type ReimpresionPayload,
+  type ReciboPagoPayload,
   type TiqueteTipo,
   entradaPayloadSchema,
   salidaPayloadSchema,
   salidaMensualidadPayloadSchema,
   reimpresionPayloadSchema,
+  reciboPagoPayloadSchema,
   formatCOP,
 } from './escposTemplates';
 import {
@@ -267,6 +269,38 @@ function renderReimpresionHtml(payload: ReimpresionPayload): string {
   return `${header}\n${body}`;
 }
 
+function renderReciboPagoHtml(payload: ReciboPagoPayload): string {
+  // F8.1 (HU-F8.1) — HTML fallback for the recibo de pago. Mirrors
+  // `renderSalidaHtml` with two swaps:
+  //   - Sello slot uses `*** RECIBO DE PAGO ***` (NOT `*** SALIDA ***`).
+  //   - `Medio de pago:` line uses the typed `payload.medio_pago`.
+  // Plus a leading `Numero de recibo:` line per DEC-SUC-28.
+  const poliza = payload.polizaRC
+    ? `<p>Poliza RC: ${escapeHtml(payload.polizaRC)}</p>`
+    : '';
+  return `
+    <h1>${escapeHtml(payload.sucursal.encabezado)}</h1>
+    <p>${escapeHtml(payload.empresa.nombre)}</p>
+    <p>NIT ${escapeHtml(payload.empresa.nit)}</p>
+    <p>${escapeHtml(payload.empresa.direccion)}</p>
+    <p>${escapeHtml(payload.empresa.regimen)}</p>
+    <h2>*** RECIBO DE PAGO ***</h2>
+    <p>Numero de recibo: ${escapeHtml(payload.numero_recibo)}</p>
+    <p>Folio: ${escapeHtml(payload.folio)}</p>
+    <p>Placa: ${escapeHtml(payload.placa)}</p>
+    <p>Entrada: ${fechaCorta(payload.fechaEntrada)}</p>
+    <p>Salida:  ${fechaCorta(payload.fechaSalida)}</p>
+    <p>Tiempo: ${escapeHtml(payload.tiempoTotal)}</p>
+    <p>Subtotal: ${formatCOP(payload.subtotal)}</p>
+    <p>IVA: ${formatCOP(payload.iva)}</p>
+    <p><strong>TOTAL: ${formatCOP(payload.total)}</strong></p>
+    <p>Medio de pago: ${escapeHtml(payload.medio_pago)}</p>
+    <p>Resolucion FE: ${escapeHtml(payload.resolucionFE)}</p>
+    ${poliza}
+    <p>Gracias por su pago.</p>
+  `;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Top-level dispatcher
 // ──────────────────────────────────────────────────────────────────────────
@@ -277,7 +311,7 @@ function renderReimpresionHtml(payload: ReimpresionPayload): string {
  * cleans up the injected `<style>` afterward.
  *
  * Throws:
- *   - `EscposInvalidTipoError` if `tipo` is not in the 4-allowed union.
+ *   - `EscposInvalidTipoError` if `tipo` is not in the 5-allowed union.
  *   - `EscposPayloadMissingFieldError` if Zod parse fails.
  */
 export function print(tipo: TiqueteTipo, payload: unknown): void {
@@ -310,6 +344,11 @@ export function print(tipo: TiqueteTipo, payload: unknown): void {
     case 'reimpresion': {
       const p = reimpresionPayloadSchema.parse(payload) as ReimpresionPayload;
       html = renderReimpresionHtml(p);
+      break;
+    }
+    case 'recibo_pago': {
+      const p = reciboPagoPayloadSchema.parse(payload) as ReciboPagoPayload;
+      html = renderReciboPagoHtml(p);
       break;
     }
     default:
