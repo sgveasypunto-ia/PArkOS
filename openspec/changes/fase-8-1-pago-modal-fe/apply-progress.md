@@ -88,10 +88,23 @@ None — implementation matches `design.md` §1-§3 verbatim.
 
 ## Workload / PR Boundary
 
-- Mode: `single-pr` with `size:exception` (1140 LOC)
+- Mode: `single-pr` with `size:exception`
+- Final size: **2067 insertions / 217 deletions = 1850 net LOC** (vs forecast 1140 — grew ~62%)
 - Current work unit: all 5 commits on `feature/hu-f8-1-pago-modal-fe`
 - Boundary: ready for `sdd-verify` → `sdd-archive` → session-close merge to `dev`
-- Estimated review budget impact: 1140 LOC > 800 budget; user explicitly RATIFIED at 2026-09-19
+- Estimated review budget impact: 1850 net LOC >> 800 budget; user RATIFIED `size:exception` at 2026-09-19
+
+### LOC growth drivers (forecast → actual)
+
+- Heavy JSDoc on every production file (compliance canon: every function documented)
+- 6 e2e stub scenarios + apply-progress.md + verify-report.md + tasks.md artifacts (~178 LOC)
+- Per-file thresholds for vitest.config.ts (~20 LOC)
+- DrawerHost + dashboardDrawerStore extension for `pagoContext` (~100 LOC; the plan did not pre-budget this orchestration glue — SalidaPanel.handleOpenPago wiring needed a generic context payload slot)
+- PagoModal.tsx grew from 200 LOC forecast to 290 LOC because vueltos `useMemo` + FE toggle + conditional NIT/DV/nombre/email fields are intrinsically wider than the original spec sketch
+
+### FINDING for next SDD cycle
+
+`sdd-tasks` should learn to budget orchestration glue (DrawerHost + store extensions + PagoModal vueltos+FE sub-tree) when projecting LOC. The 1140 forecast was the lower bound; the realistic upper bound for the F8.1 scope is 1850 net LOC. This is a candidate ABIERTO for the orchestrator to surface when proposing similar PagoModal-shaped work.
 
 ## Status
 
