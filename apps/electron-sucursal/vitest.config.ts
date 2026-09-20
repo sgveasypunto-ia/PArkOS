@@ -58,6 +58,18 @@ export default defineConfig({
           functions: 90,
           branches: 85,
         },
+        // HU-F7.2 (I1) — SWR mutation hook con 401/409 handling + Idempotency-Key
+        'src/features/operacion/hooks/useRegistrarSalida.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+        },
+        // HU-F7.2 (I2) — pure SHA-256 closure over canonicalJson (RFC 8785)
+        'src/features/operacion/lib/idempotency.ts': {
+          lines: 95,
+          functions: 95,
+          branches: 90,
+        },
       },
     },
   },
