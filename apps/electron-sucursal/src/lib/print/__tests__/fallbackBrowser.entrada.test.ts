@@ -32,7 +32,7 @@ function buildPayloadFromFactory(opts?: { esMensualidad?: boolean; emptyLogo?: b
     ingreso: makeIngreso({
       uuid_subscripcion_cliente: opts?.esMensualidad ? 'sub-uuid-123' : null,
     }),
-    sucursal: { horario_atencion: '24 horas' },
+    sucursal: { horario_atencion: '24 horas', encabezado: 'Sucursal Demo' },
     empresa: {
       nombre: 'Parkos Demo S.A.S.',
       nit: '900123456-7',
@@ -57,9 +57,12 @@ function buildPayloadFromFactory(opts?: { esMensualidad?: boolean; emptyLogo?: b
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('renderEntradaTiqueteHtml — 17-field HTML layout', () => {
-  it('renders the ENCABEZADO as <h1>PARKINGOS</h1>', () => {
+  it('renders the ENCABEZADO as <h1>{payload.sucursal.encabezado}</h1> (DEC-SUC-28 dynamic)', () => {
     const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<h1>PARKINGOS</h1>');
+    // F7.3 (DEC-SUC-28) — dynamic branch header replaces the F5.2
+    // "PARKINGOS" constant. Drift guard: PARKINGOS MUST NOT appear.
+    expect(html).toContain('<h1>Sucursal Centro</h1>');
+    expect(html).not.toContain('<h1>PARKINGOS</h1>');
   });
 
   it('renders empresa.nombre, direccion, nit, regimen as <p> tags', () => {

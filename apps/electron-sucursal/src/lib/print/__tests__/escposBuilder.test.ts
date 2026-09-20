@@ -162,6 +162,8 @@ export function validEntradaPayload() {
     polizaRC: 'POL-12345',
     folio: '00000000-0000-4000-8000-000000000001',
     observaciones: 'Sin novedad',
+    // F7.3 (DEC-SUC-28) — branch header replaces F5.2 "PARKINGOS" constant.
+    sucursal: { encabezado: 'Sucursal Centro' },
   };
 }
 

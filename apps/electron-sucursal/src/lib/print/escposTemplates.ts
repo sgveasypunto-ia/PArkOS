@@ -179,6 +179,13 @@ export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
  * per `design.md` §"Decision: Render-time guard for missing
  * `documentos` row").
  *
+ * F7.3 (DEC-SUC-28) tightens `sucursal.encabezado` to REQUIRED across
+ * ALL THREE tiquete payloads (`entrada`, `salida`,
+ * `salida-mensualidad`) — see the spec drift reconciliation table at
+ * `openspec/changes/fase-7-3-tiquetes-salida/specs/operacion.md`. The
+ * F5.2 "PARKINGOS" header constant is replaced by the dynamic branch
+ * header.
+ *
  * The QR rasterizer is the caller's responsibility (F5.2 R4 purity).
  * The builder accepts the resulting `data:image/png;base64,...`
  * string verbatim. ABIERTO-01 default content:
@@ -204,6 +211,8 @@ export const entradaPayloadSchema = z.object({
   folio: z.string().uuid(),
   observaciones: z.string().optional(),
   esMensualidad: z.boolean().optional(),
+  // F7.3 (DEC-SUC-28) — branch header replaces "PARKINGOS" constant
+  sucursal: sucursalSchema,
 });
 
 export type EntradaPayload = z.infer<typeof entradaPayloadSchema>;
@@ -223,7 +232,7 @@ export type EntradaPayload = z.infer<typeof entradaPayloadSchema>;
  *
  * Conceptual mapping (NOT all data fields — some are derived constants
  * emitted by the builder):
- *   primero        → Encabezado (constant "PARKINGOS")
+ *   primero        → Encabezado (payload.sucursal.encabezado)
  *   segundo        → Nombre de la empresa    → payload.empresa.nombre
  *   tercero        → Dirección                → payload.empresa.direccion
  *   cuarto         → NIT                      → payload.empresa.nit
@@ -302,6 +311,12 @@ export interface IngresoForPayload {
 /** Minimal view of `prod.sucursal` row. */
 export interface SucursalForPayload {
   readonly horario_atencion: string;
+  /**
+   * F7.3 (DEC-SUC-28) — branch header that REPLACES the F5.2
+   * "PARKINGOS" constant. Required on every payload that flows
+   * through the printer pipeline.
+   */
+  readonly encabezado: string;
 }
 
 /** Minimal view of `prod.tarifas_sucursal` row. */
@@ -391,6 +406,8 @@ export function buildEntradaPayload(
     observaciones: undefined,
     esMensualidad: ingreso.uuid_subscripcion_cliente !== null
       && ingreso.uuid_subscripcion_cliente !== undefined,
+    // F7.3 (DEC-SUC-28) — branch header replaces F5.2 "PARKINGOS" constant
+    sucursal: { encabezado: sucursal.encabezado },
   };
 }
 

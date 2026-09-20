@@ -53,7 +53,7 @@ function makeIngreso(overrides?: Partial<IngresoForPayload>): IngresoForPayload 
 }
 
 function makeSucursal(): SucursalForPayload {
-  return { horario_atencion: '24 horas' };
+  return { horario_atencion: '24 horas', encabezado: 'Sucursal Test' };
 }
 
 function makeTarifa(): TarifaForPayload {
@@ -98,9 +98,12 @@ function buildPayload(opts?: { withLogo?: boolean; withCert?: boolean; ingreso?:
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
-  it('primero (Encabezado) — emits "PARKINGOS" header', () => {
+  it('primero (Encabezado) — emits payload.sucursal.encabezado header (DEC-SUC-28 dynamic)', () => {
     const buf = build('entrada', validEntradaPayload());
-    expect(buf.indexOf(Buffer.from('PARKINGOS'))).toBeGreaterThanOrEqual(0);
+    // F7.3 (DEC-SUC-28) — dynamic branch header replaces the F5.2
+    // "PARKINGOS" constant. Drift guard: PARKINGOS MUST NOT appear.
+    expect(buf.indexOf(Buffer.from('Sucursal Centro'))).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf(Buffer.from('PARKINGOS'))).toBe(-1);
   });
 
   it('segundo (Nombre de la empresa) — emits empresa.nombre', () => {

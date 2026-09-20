@@ -155,7 +155,7 @@ describe('build("reimpresion", payload)', () => {
       qrDataUrl: 'data:image/png;base64,EEE',
       logoDataUrl: 'data:image/png;base64,FFF',
       empresa: {
-        nombre: 'PARKINGOS S.A.S.',
+        nombre: 'Parkos Demo S.A.S.',
         nit: '900123456-7',
         direccion: 'Calle 1 #2-3, Bogota',
         regimen: 'Responsable de IVA',

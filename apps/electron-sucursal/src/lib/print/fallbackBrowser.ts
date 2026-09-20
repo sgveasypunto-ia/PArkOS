@@ -3,6 +3,7 @@
  *
  * HU-F5.2 (Fase 5 — base de impresión) / DEC-SUC-08.
  * HU-F6.2 (Fase 6 — tiquete de entrada CU-15E) / DEC-SUC-26.
+ * HU-F7.3 (Fase 7 — tiquetes de salida + salida-mensualidad) / DEC-SUC-28.
  *
  * When the thermal printer does not respond (caller-driven signal — F5.2
  * only owns rendering + invocation, F5.1's bridge decides IF), this
@@ -19,6 +20,13 @@
  * renderer emits a `<strong>MENSUALIDAD</strong>` tag under the sello.
  * Empty `logoDataUrl` renders the placeholder glyph `▢` per
  * `design.md` §"Render-time guard for missing `documentos` row".
+ *
+ * F7.3 (DEC-SUC-28) — all four HTML renderers (`entrada`, `salida`,
+ * `salida-mensualidad`, `reimpresion`) read `<h1>` from
+ * `payload.sucursal.encabezado` (dynamic branch header), NOT the
+ * F5.2 "PARKINGOS" literal. Drift guard:
+ * `grep -r 'PARKINGOS' apps/electron-sucursal/src/lib/print` returns
+ * 0 matches after this commit lands.
  *
  * Coupling:
  *   - This module is DOM-bound — it is the ONLY file in `src/lib/print/`
@@ -106,7 +114,7 @@ function fechaCorta(iso: string): string {
  * `<h1>` / `<p>` / `<img>` tags. The 17 conceptual fields live in
  * `escposTemplates.ts::TiqueteEntradaCampos` (Spanish ordinals).
  *
- *   primero        → Encabezado           → `<h1>PARKINGOS</h1>`
+ *   primero        → Encabezado           → `<h1>{sucursal.encabezado}</h1>` (DEC-SUC-28)
  *   segundo        → Nombre de la empresa → `<p>{empresa.nombre}</p>`
  *   tercero        → Dirección            → `<p>{empresa.direccion}</p>`
  *   cuarto         → NIT                  → `<p>NIT {empresa.nit}</p>`
@@ -148,7 +156,7 @@ export function renderEntradaTiqueteHtml(payload: EntradaPayload): string {
   const fechaStr = fechaParts[0] ?? '';
   const horaStr = fechaParts[1] ?? '';
   return `
-    <h1>PARKINGOS</h1>
+    <h1>${escapeHtml(payload.sucursal.encabezado)}</h1>
     ${logoHtml}
     <p>${escapeHtml(payload.empresa.nombre)}</p>
     <p>${escapeHtml(payload.empresa.direccion)}</p>
@@ -184,7 +192,7 @@ function renderSalidaHtml(payload: SalidaPayload): string {
     ? `<p>Poliza RC: ${escapeHtml(payload.polizaRC)}</p>`
     : '';
   return `
-    <h1>PARKINGOS</h1>
+    <h1>${escapeHtml(payload.sucursal.encabezado)}</h1>
     <p>${escapeHtml(payload.empresa.nombre)}</p>
     <p>NIT ${escapeHtml(payload.empresa.nit)}</p>
     <p>${escapeHtml(payload.empresa.direccion)}</p>
@@ -210,7 +218,7 @@ function renderSalidaMensualidadHtml(payload: SalidaMensualidadPayload): string 
     ? `<p>Poliza RC: ${escapeHtml(payload.polizaRC)}</p>`
     : '';
   return `
-    <h1>PARKINGOS</h1>
+    <h1>${escapeHtml(payload.sucursal.encabezado)}</h1>
     <p>${escapeHtml(payload.empresa.nombre)}</p>
     <p>NIT ${escapeHtml(payload.empresa.nit)}</p>
     <p>${escapeHtml(payload.empresa.direccion)}</p>
@@ -228,8 +236,14 @@ function renderSalidaMensualidadHtml(payload: SalidaMensualidadPayload): string 
 }
 
 function renderReimpresionHtml(payload: ReimpresionPayload): string {
+  // F7.3 (DEC-SUC-28) — the reimpresion envelope uses the inner
+  // payload's `sucursal.encabezado` (the inner payload already carries
+  // the dynamic header post-F7.3). The discriminated union narrows
+  // `payload.payload` to one of the three subtypes — all three carry
+  // `sucursal.encabezado` after F7.3.
+  const innerSucursalEncabezado = payload.payload.sucursal.encabezado;
   const header = `
-    <h1>PARKINGOS</h1>
+    <h1>${escapeHtml(innerSucursalEncabezado)}</h1>
     <p>${escapeHtml(payload.empresa.nombre)}</p>
     <p>NIT ${escapeHtml(payload.empresa.nit)}</p>
     <p>${escapeHtml(payload.empresa.direccion)}</p>

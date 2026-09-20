@@ -49,7 +49,6 @@ import {
   salidaMensualidadPayloadSchema,
   reimpresionPayloadSchema,
   formatCOP,
-  formatFechaCorta,
   formatFecha,
   formatHora,
   type EntradaPayload,
@@ -168,10 +167,13 @@ function buildEntradaBody(payload: EntradaPayload): Buffer {
   // F6.2 — 17-field layout per `plan.md` lines 1616-1634 + DEC-SUC-26.
   // The conceptual field names live in
   // `escposTemplates.ts::TiqueteEntradaCampos` (Spanish ordinals).
+  //
+  // F7.3 (DEC-SUC-28) — the header is `payload.sucursal.encabezado`
+  // (dynamic branch header). NOT the F5.2 "PARKINGOS" constant.
   const lines: Buffer[] = [
     escCenter(),
     escBoldOn(),
-    utf8('PARKINGOS\n'),                                // primero (Encabezado)
+    utf8(`${payload.sucursal.encabezado}\n`),           // primero (Encabezado)
     escBoldOff(),
     utf8(`${payload.empresa.nombre}\n`),                // segundo
     utf8(`${payload.empresa.direccion}\n`),             // tercero
@@ -338,10 +340,18 @@ function buildSalidaMensualidadBody(payload: SalidaMensualidadPayload): Buffer {
 }
 
 function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
+  // F7.3 (DEC-SUC-28) — reimpresion envelopes its inner body (entrada /
+  // salida / salida-mensualidad) which already carry the dynamic
+  // header. The reimpresion-specific header uses
+  // `payload.empresa.nombre` only as a fallback; for dynamic header
+  // parity, we extract `sucursal.encabezado` from the inner payload.
+  // The discriminated union narrows `payload.payload` to one of the
+  // three subtypes — all three carry `sucursal.encabezado` after F7.3.
+  const innerSucursalEncabezado = payload.payload.sucursal.encabezado;
   const header: Buffer[] = [
     escCenter(),
     escBoldOn(),
-    utf8('PARKINGOS\n'),
+    utf8(`${innerSucursalEncabezado}\n`),               // DEC-SUC-28 dynamic
     escBoldOff(),
     utf8(`${payload.empresa.nombre}\n`),
     utf8(`NIT ${payload.empresa.nit}\n`),
