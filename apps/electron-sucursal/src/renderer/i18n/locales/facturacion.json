@@ -35,7 +35,16 @@
     "rechazado": "Rechazado",
     "pendiente": "Pendiente",
     "reintentar": "Reintentar",
-    "cufe": "CUFE"
+    "cufe": "CUFE",
+    "estado_dian": {
+      "pendiente": "Pendiente",
+      "enviado": "Enviado",
+      "aceptado": "Aceptado",
+      "rechazado": "Rechazado"
+    },
+    "errors": {
+      "numeracion_agotada": "Numeración agotada. Contactar proveedor."
+    }
   },
   "reimprimir": {
     "titulo": "Reimprimir tiquete",

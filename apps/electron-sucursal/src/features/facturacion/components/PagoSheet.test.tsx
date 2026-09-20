@@ -17,11 +17,22 @@
  *   P5: store swap from pago → arqueo enforces single-drawer invariant.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as ReactRouterDom from 'react-router-dom';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+
+// HU-F8.2 — PagoSheet now calls `navigate('/factura-electronica/<uuid>')`
+// after pago 201 (REQ-OPS-169). Stub the navigate hook so the tests
+// stay unit-scoped (no router wrapper needed). The navigate call is
+// end-to-end covered by the e2e fe.spec.ts S1 stub.
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof ReactRouterDom>('react-router-dom');
+  return { ...actual, useNavigate: () => mockNavigate };
+});
 
 import {
   useDashboardDrawerStore,

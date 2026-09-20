@@ -7,6 +7,7 @@ import { Login } from '../features/auth/pages/Login';
 import { Dashboard } from '../features/caja/pages/Dashboard';
 import { AbrirTurno } from '../features/caja/pages/AbrirTurno';
 import { CerrarTurno } from '../features/caja/pages/CerrarTurno';
+import { FacturaDetalle } from '../features/facturacion/pages/FacturaDetalle';
 
 /**
  * App — F2.1 router + F2.3 StatusBar mount + F3.1 Login + F3.3 caja
@@ -58,6 +59,14 @@ export default function App(): JSX.Element {
             element={
               <ProtectedRoute>
                 <CerrarTurno />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/factura-electronica/:uuid"
+            element={
+              <ProtectedRoute>
+                <FacturaDetalle />
               </ProtectedRoute>
             }
           />

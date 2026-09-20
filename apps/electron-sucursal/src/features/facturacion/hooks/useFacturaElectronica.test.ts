@@ -6,6 +6,13 @@
  *   F2: uuid set + accessToken set → fetcher invoked with bare UUID
  *       (NOT the SWR key), proving REQ-OPS-132 fetcher-closure.
  *   F3: 401 → defensive logout fired.
+ *   F4 (HU-F8.2): estado_dian='pendiente' (non-terminal) →
+ *       `computeRefreshInterval(latest)` returns `FE_REFRESH_INTERVAL_MS`
+ *       (active 30 s polling).
+ *   F5 (HU-F8.2): estado_dian='aceptado' (terminal) →
+ *       `computeRefreshInterval(latest)` returns `0` (polling stopped).
+ *   F6 (HU-F8.2): estado_dian='rechazado' (terminal) →
+ *       `computeRefreshInterval(latest)` returns `0` (polling stopped).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -34,7 +41,7 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
 
 import { renderHook, act } from '@testing-library/react';
 
-import { useFacturaElectronica } from './useFacturaElectronica';
+import { useFacturaElectronica, computeRefreshInterval } from './useFacturaElectronica';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -77,7 +84,9 @@ describe('useFacturaElectronica — REQ-OPS-132 fetcher-closure + lazy-mount', (
     }) as typeof window.dispatchEvent;
 
     const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockFetch.mockRejectedValue(new ParkosHttpError(401));
+    mockFetch.mockRejectedValueOnce(
+      new ParkosHttpError(401, '{"error":"unauthorized"}', '/api/v1/facturacion/factura-electronica/00000000-0000-0000-0000-000000000012'),
+    );
 
     renderHook(() => useFacturaElectronica('00000000-0000-0000-0000-000000000012'));
 
@@ -86,5 +95,34 @@ describe('useFacturaElectronica — REQ-OPS-132 fetcher-closure + lazy-mount', (
     });
 
     expect(dispatched).toContain('parkos:auth:cleared');
+  });
+
+  it('F4: estado_dian=pendiente → computeRefreshInterval(latest) === 30_000 (active polling)', () => {
+    // HU-F8.2 REQ-OPS-166: non-terminal states keep polling at FE_REFRESH_INTERVAL_MS.
+    expect(
+      computeRefreshInterval({
+        estado_dian: 'pendiente',
+      }),
+    ).toBe(30_000);
+  });
+
+  it('F5: estado_dian=aceptado → computeRefreshInterval(latest) === 0 (terminal, polling stops)', () => {
+    // HU-F8.2 REQ-OPS-166: both `aceptado` and `rechazado` are terminal
+    // per F1.10 DEC-FE-04 — SWR treats `0` as "do not poll".
+    expect(
+      computeRefreshInterval({
+        estado_dian: 'aceptado',
+      }),
+    ).toBe(0);
+  });
+
+  it('F6: estado_dian=rechazado → computeRefreshInterval(latest) === 0 (terminal, polling stops)', () => {
+    // HU-F8.2 REQ-OPS-166: reintentar re-engages polling because the
+    // new chain tip is `pendiente` (non-terminal).
+    expect(
+      computeRefreshInterval({
+        estado_dian: 'rechazado',
+      }),
+    ).toBe(0);
   });
 });
