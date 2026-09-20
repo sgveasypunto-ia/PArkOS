@@ -21,9 +21,29 @@ vi.mock('react-i18next', () => ({
 }));
 
 const mockUseCotizacion = vi.fn();
-vi.mock('../hooks/useCotizacion', () => ({
-  useCotizacion: (...args: unknown[]) => mockUseCotizacion(...args),
-}));
+const mockUseRegistrarSalida = vi.fn();
+vi.mock('../hooks/useCotizacion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useCotizacion')>();
+  return {
+    ...actual,
+    useCotizacion: (...args: unknown[]) => mockUseCotizacion(...args),
+  };
+});
+vi.mock('../hooks/useRegistrarSalida', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useRegistrarSalida')>();
+  return {
+    ...actual,
+    useRegistrarSalida: () => {
+      const result = mockUseRegistrarSalida();
+      return {
+        trigger: result.trigger,
+        isMutating: false,
+        error: undefined,
+        data: undefined,
+      };
+    },
+  };
+});
 
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { SalidaPanel } from './SalidaPanel';
@@ -31,6 +51,24 @@ import { SalidaPanel } from './SalidaPanel';
 beforeEach(() => {
   useDashboardDrawerStore.getState().close();
   mockUseCotizacion.mockReset();
+  mockUseRegistrarSalida.mockReset();
+  mockUseRegistrarSalida.mockReturnValue({
+    trigger: vi.fn().mockResolvedValue({
+      uuid: '00000000-0000-0000-0000-0000000000c1',
+      uuid_sucursal: '00000000-0000-0000-0000-0000000000c2',
+      uuid_ingreso: UUID_INGRESO_A,
+      fecha_salida: '2026-09-19T11:00:00Z',
+      created_at: '2026-09-19T11:00:00Z',
+      created_by: '00000000-0000-0000-0000-0000000000c3',
+      sync_status: 'pending',
+      sync_timestamp: null,
+      sync_attempts: 0,
+      tipo_salida: 'ROTACION',
+      forzado_en_creacion: false,
+      motivo_forzado: null,
+      cotizacion_snapshot: null,
+    }),
+  });
   cleanup();
 });
 
@@ -84,7 +122,7 @@ describe('<SalidaPanel /> — F7.1+F7.2 dashboard section (canonical schema)', (
     expect(screen.getByTestId('cotizacion-dl').textContent).toContain('48.790');
   });
 
-  it('S4: clicking "Confirmar salida" abre el drawer pago via store (REQ-OPS-138)', () => {
+  it('S4: clicking "Confirmar salida" → useRegistrarSalida.trigger → 201 ROTACION → abre pago drawer (REQ-OPS-138)', async () => {
     mockUseCotizacion.mockReturnValue({
       data: cotizacionRotacion,
       error: undefined,
@@ -98,6 +136,8 @@ describe('<SalidaPanel /> — F7.1+F7.2 dashboard section (canonical schema)', (
     );
     expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
     fireEvent.click(screen.getByTestId('cotizacion-confirmar'));
+    // Allow the async trigger promise to resolve.
+    await new Promise((r) => setTimeout(r, 10));
     expect(useDashboardDrawerStore.getState().openDrawer).toBe('pago');
   });
 

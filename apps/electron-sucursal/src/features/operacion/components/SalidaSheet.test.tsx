@@ -23,7 +23,6 @@ const mockSalidaPanel = vi.fn();
 vi.mock('./SalidaPanel', () => ({
   SalidaPanel: (props: {
     uuid_ingreso: string | null;
-    onPagoSubmit: (payload: unknown) => Promise<void>;
     initialPlaca?: string | null;
   }) => {
     mockSalidaPanel(props);
@@ -59,7 +58,7 @@ describe('<SalidaSheet /> — REQ-OPS-138 + F7.1 wiring', () => {
     useDashboardDrawerStore.getState().close();
   });
 
-  it('SS2: open via store → mounts SalidaPanel with uuid_ingreso=null and onPagoSubmit stub', () => {
+  it('SS2: open via store → mounts SalidaPanel with uuid_ingreso=null and initialPlaca', () => {
     useDashboardDrawerStore.getState().open('salida', 'placa-hero-input', 'ABC123');
     render(<SalidaSheet />);
     expect(mockSalidaPanel).toHaveBeenCalled();
@@ -69,8 +68,6 @@ describe('<SalidaSheet /> — REQ-OPS-138 + F7.1 wiring', () => {
         initialPlaca: 'ABC123',
       }),
     );
-    // onPagoSubmit is a function (PR-3 placeholder for now).
-    expect(typeof mockSalidaPanel.mock.calls[0]?.[0]?.onPagoSubmit).toBe('function');
   });
 
   it('SS3: Sheet onOpenChange(false) → close() → store clears openDrawer', () => {
