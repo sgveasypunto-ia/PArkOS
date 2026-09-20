@@ -11,7 +11,7 @@
 |---|---|---|---|---|---|
 | 1 | `d85d505` | `feat(suscripciones): useSuscripcionesProximasVencer + 3 tests` | feat | RED→GREEN | ✅ |
 | 2 | `b1e9b8b` | `feat(suscripciones): Listado page + 3 component tests` | feat | RED→GREEN | ✅ |
-| 3 | `TBD` | `feat(suscripciones): Principal banner + i18n + e2e + apply-progress` | mechanical | integration | ✅ |
+| 3 | `7c05808` | `feat(suscripciones): Principal banner + i18n + e2e + apply-progress` | mechanical | integration | ✅ |
 
 ## Tests Passing
 
