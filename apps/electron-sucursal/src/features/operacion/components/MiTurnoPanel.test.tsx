@@ -18,7 +18,7 @@
  *   - vi.mock('react-router-dom')       -> capture navigate calls.
  *   - vi.mock('react-i18next')          -> stub t().
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 
 const navigateMock = vi.fn();
@@ -32,7 +32,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 const useMiTurnoMock = vi.fn();
-vi.mock('../../hooks/useMiTurno', () => ({
+vi.mock('../hooks/useMiTurno', () => ({
   useMiTurno: (uuid_sesion: string | null) => useMiTurnoMock(uuid_sesion),
 }));
 
