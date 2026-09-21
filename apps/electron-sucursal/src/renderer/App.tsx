@@ -15,6 +15,7 @@ import { Venta } from '../features/suscripciones/pages/Venta';
 import { Listado } from '../features/suscripciones/pages/Listado';
 import { SyncBanner } from '../components/SyncBanner';
 import { LocalApiDownBanner } from '../components/LocalApiDownBanner';
+import { AlertasPanel } from '../components/AlertasPanel';
 import { useAuth } from '@parkos/ui-kit/hooks';
 
 /**
@@ -33,6 +34,13 @@ import { useAuth } from '@parkos/ui-kit/hooks';
  *      gated on `useAuth().sucursal?.uuid != null` so the
  *      /sync/estado SWR poll fires only when the operator has a
  *      branch context (REQ-OPS-139 lazy-mount precedent).
+ *
+ * F11.2 mount order (HU-F11.2 — AlertasPanel):
+ *   4. `<AlertasPanel />` — branch-side alertas list (REQ-OPS-178).
+ *      Gated on `branchUuid != null` so the SWR fetcher does not fire
+ *      on `/login` / `/caja/abrir-turno` before the operator has a
+ *      branch context. Mounted AFTER the banners so the visual
+ *      hierarchy reads top-down: API → sync → alertas.
  *
  * Layout: full-bleed (no centered max-width) so the 6-section dashboard
  * uses the whole viewport without scroll at 1080p.
@@ -53,6 +61,7 @@ export default function App(): JSX.Element {
       <StatusBar />
       <LocalApiDownBanner />
       <SyncBanner uuid_sucursal={branchUuid} />
+      <AlertasPanel uuid_sucursal={branchUuid} />
       <main
         lang="es-CO"
         className="block min-h-[calc(100vh-2rem)] w-full bg-muted/40 px-4 py-3"

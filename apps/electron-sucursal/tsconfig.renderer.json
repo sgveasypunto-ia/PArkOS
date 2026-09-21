@@ -51,6 +51,8 @@
     "src/features/suscripciones/**/*.tsx",
     "src/features/sync/**/*.ts",
     "src/features/sync/**/*.tsx",
+    "src/features/alertas/**/*.ts",
+    "src/features/alertas/**/*.tsx",
     "src/shared/**/*.ts"
   ]
 }
