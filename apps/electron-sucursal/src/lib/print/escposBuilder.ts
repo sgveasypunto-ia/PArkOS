@@ -49,14 +49,17 @@ import {
   salidaMensualidadPayloadSchema,
   reimpresionPayloadSchema,
   reciboPagoPayloadSchema,
+  arqueoPayloadSchema,
   formatCOP,
   formatFecha,
+  formatFechaCorta,
   formatHora,
   type EntradaPayload,
   type SalidaPayload,
   type SalidaMensualidadPayload,
   type ReimpresionPayload,
   type ReciboPagoPayload,
+  type ArqueoPayload,
   type TiqueteTipo,
 } from './escposTemplates';
 
@@ -460,6 +463,62 @@ function buildReciboPagoBody(payload: ReciboPagoPayload): Buffer {
   return concat(lines);
 }
 
+function buildArqueoBody(payload: ArqueoPayload): Buffer {
+  // F10.1 (HU-F10.1 — Arqueo Parcial / REQ-OPS-155) — 12-conceptual-line
+  // body per spec scenario 2. Layout: 32 cols, left-aligned except for
+  // the header (centered) and the sello (text 2x height). Reuses
+  // `formatCOP` (DEC-SUC-07) and `formatFechaCorta` (es-CO short per
+  // F6.2). The `Justificacion:` line is emitted ONLY when
+  // `payload.justificacion.length > 0` — silent omission per spec
+  // scenario 3.
+  //
+  // Sign-prefix contract for `Diferencia` lines:
+  //   - diferencia > 0 → `+<formatCOP(|diferencia|)>`
+  //   - diferencia < 0 → `-<formatCOP(|diferencia|)>`
+  //   - diferencia === 0 → `<formatCOP(0)>` (no sign)
+  // NEVER `±` glyph (spec verbatim: "sign MUST be `+` for non-negative,
+  // `-` for negative — NEVER `±`").
+  const diferenciaEfectivoSign = payload.diferencia_efectivo < 0
+    ? `-${formatCOP(Math.abs(payload.diferencia_efectivo))}`
+    : `+${formatCOP(payload.diferencia_efectivo)}`;
+  const diferenciaDatafonoSign = payload.diferencia_datafono < 0
+    ? `-${formatCOP(Math.abs(payload.diferencia_datafono))}`
+    : `+${formatCOP(payload.diferencia_datafono)}`;
+
+  const lines: Buffer[] = [
+    escCenter(),
+    escBoldOn(),
+    utf8(`ARQUEO PARCIAL — ${payload.sucursal.encabezado}\n`), // 1: Encabezado
+    escBoldOff(),
+    utf8('\n'),
+    escText2x(),
+    utf8('Sello: *** ARQUEO PARCIAL ***\n'), // 2: Sello (DEC-SUC-04)
+    escTextReset(),
+    utf8('\n'),
+    utf8(`Codigo: ${payload.auditoria_codigo}\n`), // 3: Codigo
+    utf8(`Fecha: ${formatFechaCorta(payload.fecha)}\n`), // 4: Fecha
+    utf8(`Sesion: ${payload.uuid_sesion_short}\n`), // 5: Sesion (last 8 chars)
+    utf8('\n'),
+    utf8(`Base: ${formatCOP(payload.base_efectivo_cop)}\n`), // 6: Base
+    utf8('\n'),
+    utf8(`Esperado efectivo: ${formatCOP(payload.valor_esperado_efectivo)}\n`), // 7
+    utf8(`Reportado efectivo: ${formatCOP(payload.valor_reportado_efectivo)}\n`), // 8
+    utf8(`Diferencia efectivo: ${diferenciaEfectivoSign}\n`), // 9 (signed)
+    utf8(`Tolerancia efectivo: ${formatCOP(payload.tolerancia_efectivo)}\n`), // 10
+    utf8('\n'),
+    utf8(`Esperado datafono: ${formatCOP(payload.valor_esperado_datafono)}\n`), // 11a
+    utf8(`Reportado datafono: ${formatCOP(payload.valor_reportado_datafono)}\n`), // 11b
+    utf8(`Diferencia datafono: ${diferenciaDatafonoSign}\n`), // 11c (signed)
+    utf8(`Tolerancia datafono: ${formatCOP(payload.tolerancia_datafono)}\n`), // 11d
+  ];
+  // 12: Justificacion — silent omission when empty (spec scenario 3).
+  if (payload.justificacion && payload.justificacion.length > 0) {
+    lines.push(utf8('\n'));
+    lines.push(utf8(`Justificacion: ${payload.justificacion}\n`));
+  }
+  return concat(lines);
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Public per-tipo builders (exported for tests)
 // ──────────────────────────────────────────────────────────────────────────
@@ -504,6 +563,15 @@ export function buildReciboPagoBuffer(payload: ReciboPagoPayload): Buffer {
   return concat([
     escInit(),
     buildReciboPagoBody(payload),
+    cutPartial(),
+    lf(),
+  ]);
+}
+
+export function buildArqueoBuffer(payload: ArqueoPayload): Buffer {
+  return concat([
+    escInit(),
+    buildArqueoBody(payload),
     cutPartial(),
     lf(),
   ]);
@@ -557,6 +625,10 @@ export function build(tipo: TiqueteTipo, payload: unknown): Buffer {
       const p = reciboPagoPayloadSchema.parse(payload) as ReciboPagoPayload;
       return buildReciboPagoBuffer(p);
     }
+    case 'arqueo': {
+      const p = arqueoPayloadSchema.parse(payload) as ArqueoPayload;
+      return buildArqueoBuffer(p);
+    }
     default: {
       // Exhaustiveness — should be unreachable because isTiqueteTipo
       // narrows above. Defensive throw to satisfy `noImplicitReturns`.
@@ -598,6 +670,8 @@ export function validatePayload(
       return runSafeParse(reimpresionPayloadSchema, payload);
     case 'recibo_pago':
       return runSafeParse(reciboPagoPayloadSchema, payload);
+    case 'arqueo':
+      return runSafeParse(arqueoPayloadSchema, payload);
     default:
       return null;
   }

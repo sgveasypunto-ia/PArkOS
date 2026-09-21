@@ -38,9 +38,9 @@ import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useArqueo, useArqueoResumen } from '../hooks/useArqueo';
 
 const cierreSchema = z.object({
-  efectivo_contado_cop: z.coerce.number().int().nonnegative(),
-  datafono_contado_cop: z.coerce.number().int().nonnegative(),
-  observaciones: z.string().trim().optional(),
+  valor_efectivo_reportado: z.coerce.number().int().nonnegative(),
+  valor_datafono_reportado: z.coerce.number().int().nonnegative(),
+  justificacion: z.string().trim().optional(),
 });
 type CierreValues = z.infer<typeof cierreSchema>;
 
@@ -67,9 +67,9 @@ export function CierreDiarioDialog({
   const form = useForm<CierreValues>({
     resolver: zodResolver(cierreSchema),
     defaultValues: {
-      efectivo_contado_cop: 0,
-      datafono_contado_cop: 0,
-      observaciones: '',
+      valor_efectivo_reportado: 0,
+      valor_datafono_reportado: 0,
+      justificacion: '',
     },
     mode: 'onSubmit',
   });
@@ -89,9 +89,9 @@ export function CierreDiarioDialog({
     await submit({
       uuid_sesion,
       tipo_arqueo: 'cierre_dia',
-      efectivo_contado_cop: values.efectivo_contado_cop,
-      datafono_contado_cop: values.datafono_contado_cop,
-      observaciones: values.observaciones,
+      valor_efectivo_reportado: values.valor_efectivo_reportado,
+      valor_datafono_reportado: values.valor_datafono_reportado,
+      justificacion: values.justificacion,
     });
     close();
   });
@@ -126,7 +126,7 @@ export function CierreDiarioDialog({
           <form id={formId} onSubmit={handleSubmit} className="space-y-4 py-4">
             <FormField
               control={form.control}
-              name="efectivo_contado_cop"
+              name="valor_efectivo_reportado"
               render={({ field }) => (
                 <FormItem>
                   <FormControl>
@@ -143,7 +143,7 @@ export function CierreDiarioDialog({
             />
             <FormField
               control={form.control}
-              name="datafono_contado_cop"
+              name="valor_datafono_reportado"
               render={({ field }) => (
                 <FormItem>
                   <FormControl>
@@ -160,13 +160,13 @@ export function CierreDiarioDialog({
             />
             <FormField
               control={form.control}
-              name="observaciones"
+              name="justificacion"
               render={({ field }) => (
                 <FormItem>
                   <FormControl>
                     <Input
-                      data-testid="cierre-observaciones"
-                      placeholder="Observaciones"
+                      data-testid="cierre-justificacion"
+                      placeholder="Justificación (requerida si hay diferencia)"
                       {...field}
                     />
                   </FormControl>
