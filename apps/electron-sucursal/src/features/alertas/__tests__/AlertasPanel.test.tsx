@@ -26,8 +26,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
-import { render, screen, cleanup } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -50,7 +49,6 @@ import { AlertasPanel } from '../../components/AlertasPanel';
 
 const VALID_UUID = '00000000-0000-0000-0000-000000000001';
 const ARQUEO_UUID = '00000000-0000-0000-0000-0000000000aa';
-const INGRESO_UUID = '00000000-0000-0000-0000-0000000000bb';
 
 const BUSINESS_TIPO_ALERTAS = [
   'descuadre_critico',
@@ -165,8 +163,7 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
     expect(console.error).not.toHaveBeenCalled();
   });
 
-  it('T2: filter chips toggle visibility client-side WITHOUT triggering parkosFetch', async () => {
-    const user = userEvent.setup();
+  it('T2: filter chips toggle visibility client-side WITHOUT triggering parkosFetch', () => {
     const payload = makeFullPayload();
     useAlertasMock.mockReturnValue(payload);
     useResolverAlertaMock.mockReturnValue({
@@ -181,7 +178,7 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
     // panel MUST re-render with ONLY the alta subset. parkosFetch
     // is the SWR fetcher — it MUST NOT be re-invoked by a chip click.
     const altaChip = screen.getByRole('button', { name: /severidad-alta/ });
-    await user.click(altaChip);
+    fireEvent.click(altaChip);
 
     // The chip filter is purely client-side: the same `mergedAlertas`
     // array is consumed, and the panel renders the alta subset. We
@@ -190,8 +187,7 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
     expect(useAlertasMock).toHaveBeenCalledTimes(1);
   });
 
-  it('T3: drill-down button navigates to /caja/arqueo/{uuid_arqueo} for descuadre_critico', async () => {
-    const user = userEvent.setup();
+  it('T3: drill-down button navigates to /caja/arqueo/{uuid_arqueo} for descuadre_critico', () => {
     const payload = makeFullPayload();
     useAlertasMock.mockReturnValue({
       ...payload,
@@ -209,14 +205,13 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
     renderPanel();
 
     const drillDown = screen.getByRole('link', { name: /drilldown-descuadre_critico/ });
-    await user.click(drillDown);
+    fireEvent.click(drillDown);
     // After click, react-router-dom navigated. We assert on the
     // rendered href (MemoryRouter updates the URL synchronously).
     expect(drillDown.getAttribute('href')).toBe(`/caja/arqueo/${ARQUEO_UUID}`);
   });
 
-  it('T4: "marcar revisada" calls parkosFetch POST with append-only payload (DEC-SUC-25)', async () => {
-    const user = userEvent.setup();
+  it('T4: "marcar revisada" calls parkosFetch POST with append-only payload (DEC-SUC-25)', () => {
     const resolveMock = vi.fn(async () => undefined);
     const payload = makeFullPayload();
     useAlertasMock.mockReturnValue(payload);
@@ -230,7 +225,7 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
 
     const button = screen.getAllByRole('button', { name: /marcar-revisada/ })[0];
     if (!button) throw new Error('resolver button missing');
-    await user.click(button);
+    fireEvent.click(button);
     expect(resolveMock).toHaveBeenCalledTimes(1);
   });
 
