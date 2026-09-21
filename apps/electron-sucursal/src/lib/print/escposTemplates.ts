@@ -627,8 +627,12 @@ export type ReciboPagoPayload = z.infer<typeof reciboPagoPayloadSchema>;
  *     preflight).
  *   - `justificacion` — optional; emitted ONLY when length > 0
  *     (silent omission per spec scenario 3).
- *   - `auditoria_codigo` — server-assigned `^AUD-\d{8}-\d{6}$` (the
- *     codigo line is the canonical audit anchor).
+ *   - `auditoria_codigo` — either server-assigned `^AUD-\d{8}-\d{6}$`
+ *     (F10.1 arqueo parcial canonical format) OR one of the typed
+ *     discriminators `'auditoria' | 'cierre_turno' | 'cierre_dia'`
+ *     (HU-F10.2 / F10.3 forward hook — DA-F10.2-5 RESOLVED). The
+ *     builder emits `Codigo: ${payload.auditoria_codigo}\n` for both
+ *     formats; the regex accepts both.
  *   - `fecha` — ISO 8601 datetime; the builder formats it via
  *     `formatFechaCorta` (es-CO short per F6.2).
  */
@@ -645,7 +649,10 @@ export const arqueoPayloadSchema = z.object({
   tolerancia_efectivo: z.number().int().nonnegative(),
   tolerancia_datafono: z.number().int().nonnegative(),
   justificacion: z.string().optional(),
-  auditoria_codigo: z.string().regex(/^AUD-\d{8}-\d{6}$/, 'auditoria_codigo_formato'),
+  auditoria_codigo: z.string().regex(
+    /^(?:AUD-\d{8}-\d{6}|auditoria|cierre_turno|cierre_dia)$/,
+    'auditoria_codigo_formato',
+  ),
   fecha: z.string().datetime({ offset: true }),
   uuid_sesion_short: z.string().min(1),
 });

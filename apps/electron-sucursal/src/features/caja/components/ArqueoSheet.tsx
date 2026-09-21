@@ -38,14 +38,16 @@ import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useArqueo } from '../hooks/useArqueo';
 
 /**
- * `arqueoSchema` — module-private Zod refinement. The refinement
- * requires `justificacion.min(3)` when `|diferencia_efectivo| +
- * |diferencia_datafono| > 0`, mirroring the F10.1 spec scenario
- * (REQ-OPS-154). The wire-shape guard is exercised by the
- * hook-level contract test (`hooks/__tests__/useArqueo.test.ts`)
- * which mirrors the same refinement independently.
+ * `arqueoSchemaLenient` — F10.1 lenient Zod refinement (REQ-OPS-154).
+ * The refinement requires `justificacion.min(3)` when `|diferencia|>0`.
+ * The F10.1 `<ArqueoParcial>` page consumes this schema via
+ * `requiredMode={undefined}` (the regression-clean default).
+ *
+ * The wire-shape guard is exercised by the hook-level contract test
+ * (`hooks/__tests__/useArqueo.test.ts`) which mirrors the same
+ * refinement independently.
  */
-const arqueoSchema = z
+const arqueoSchemaLenient = z
   .object({
     valor_efectivo_reportado: z.coerce.number().int().nonnegative(),
     valor_datafono_reportado: z.coerce.number().int().nonnegative(),
@@ -64,7 +66,30 @@ const arqueoSchema = z
       });
     }
   });
-type ArqueoValues = z.infer<typeof arqueoSchema>;
+
+/**
+ * `arqueoSchemaStrict` — HU-F10.2 strict-mode variant (REQ-OPS-158).
+ * `justificacion` is declared at the TOP level as
+ * `z.string().trim().min(3, 'justificacion_requerida')` — NOT
+ * `.optional()`, NOT behind `superRefine`. The diferencia refinement
+ * is applied separately as a UI affordance but does NOT gate the
+ * validation. Used by `requiredMode='cierre_turno'` and
+ * `requiredMode='cierre_dia'` (F10.3 forward hook).
+ */
+const arqueoSchemaStrict = z.object({
+  valor_efectivo_reportado: z.coerce.number().int().nonnegative(),
+  valor_datafono_reportado: z.coerce.number().int().nonnegative(),
+  diferencia_efectivo: z.number().int(),
+  diferencia_datafono: z.number().int(),
+  justificacion: z
+    .string()
+    .trim()
+    .min(3, 'justificacion_requerida'),
+});
+
+type ArqueoValuesLenient = z.infer<typeof arqueoSchemaLenient>;
+type ArqueoValuesStrict = z.infer<typeof arqueoSchemaStrict>;
+type ArqueoValues = ArqueoValuesLenient | ArqueoValuesStrict;
 
 export interface ArqueoSheetProps {
   uuid_sesion: string | null;
@@ -80,11 +105,27 @@ export interface ArqueoSheetProps {
     tolerancia_efectivo: number;
     tolerancia_datafono: number;
   } | null;
+  /**
+   * HU-F10.2 (REQ-OPS-158, AD-1) — discriminator for the strict-mode
+   * Zod branch. When `'cierre_turno'` or `'cierre_dia'`, `justificacion`
+   * is required at the TOP level (`min(3)`) and the Confirmar button
+   * stays disabled on initial render while `justificacion.length < 3`.
+   *
+   * `'parcial'` and `undefined` preserve the F10.1 lenient
+   * `superRefine` path bit-identical (REQ-OPS-158 scenario 1).
+   *
+   * NOTE: the discriminator is the UI surface role, NOT the backend
+   * `tipo_arqueo` discriminator. The F10.1 drawer calls
+   * `tipo_arqueo='auditoria'` but the prop is keyed on the UI surface
+   * (`'parcial'` for the ArqueoParcial page).
+   */
+  requiredMode?: 'parcial' | 'cierre_turno' | 'cierre_dia';
 }
 
 export function ArqueoSheet({
   uuid_sesion,
   expected: _expected = null,
+  requiredMode,
 }: ArqueoSheetProps): JSX.Element {
   const { t } = useTranslation('caja');
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
@@ -93,8 +134,15 @@ export function ArqueoSheet({
   const open = openDrawer === 'arqueo';
 
   const formId = useId();
+  // HU-F10.2 (REQ-OPS-158, AD-1) — branch the Zod schema by
+  // `requiredMode`. When `undefined` or `'parcial'`, the F10.1 lenient
+  // schema (superRefine) is used bit-identically. When `'cierre_turno'`
+  // or `'cierre_dia'`, the strict-mode schema requires
+  // `justificacion.min(3)` at the TOP level.
+  const isStrictMode =
+    requiredMode === 'cierre_turno' || requiredMode === 'cierre_dia';
   const form = useForm<ArqueoValues>({
-    resolver: zodResolver(arqueoSchema),
+    resolver: zodResolver(isStrictMode ? arqueoSchemaStrict : arqueoSchemaLenient) as never,
     defaultValues: {
       valor_efectivo_reportado: 0,
       valor_datafono_reportado: 0,
@@ -102,7 +150,7 @@ export function ArqueoSheet({
       diferencia_datafono: 0,
       justificacion: '',
     },
-    mode: 'onSubmit',
+    mode: isStrictMode ? 'onChange' : 'onSubmit',
   });
 
   const { submit } = useArqueo();
@@ -127,6 +175,14 @@ export function ArqueoSheet({
     void wireBody;
     close();
   });
+
+  // HU-F10.2 (REQ-OPS-158) — strict-mode gates submit on
+  // `justificacion.length >= 3` BEFORE any user interaction. The
+  // `onChange` mode above surfaces the validation error eagerly so
+  // the button stays disabled while the justificacion is too short.
+  const watchJustificacion = form.watch('justificacion') ?? '';
+  const strictModeButtonDisabled =
+    isStrictMode && watchJustificacion.trim().length < 3;
 
   return (
     <Sheet
@@ -184,7 +240,11 @@ export function ArqueoSheet({
                 <FormItem>
                   <FormControl>
                     <Input
-                      data-testid="arqueo-justificacion"
+                      data-testid={
+                        isStrictMode
+                          ? 'arqueo-required-justificacion'
+                          : 'arqueo-justificacion'
+                      }
                       placeholder="Justificación (requerida si hay diferencia)"
                       {...field}
                     />
@@ -203,7 +263,11 @@ export function ArqueoSheet({
           <Button
             type="submit"
             form={formId}
-            disabled={!uuid_sesion || form.formState.isSubmitting}
+            disabled={
+              !uuid_sesion ||
+              form.formState.isSubmitting ||
+              strictModeButtonDisabled
+            }
             data-testid="arqueo-confirmar"
           >
             Confirmar
