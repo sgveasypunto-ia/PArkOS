@@ -143,12 +143,31 @@ class CotizarFacturacion(_Base):
     """``cobrar=true`` variant -- full fiscal breakdown.
 
     Returned when an ``ingreso`` exists, has no non-anulada ``salidas``,
-    has no active monthly subscription at the branch, has a vigente
-    ``tarifas_sucursal`` row for the combination, and has a vigente
-    ``impuestos`` row with ``nombre='IVA'``.
+    has a vigente ``tarifas_sucursal`` row for the combination, and has
+    a vigente ``impuestos`` row with ``nombre='IVA'``.
+
+    Three reachable caller paths feed this variant:
+
+      a) **No subscription at all** (parking-lot walk-in) — the function
+         short-circuits the ``subscripcion`` branch and runs Steps 3-5
+         directly. ``motivo`` is ``None``.
+      b) **1st plate of a subscription in patio** — covered by
+         :class:`CotizarMensualidad` (separate variant, REQ-OPS-023).
+      c) **2nd (or later) plate of the same ``subscripciones_cliente``
+         already in patio** (CU-03M / DEC-SUC-21, plan.md:64,
+         plan.md:436) — the function falls through to Steps 3-5 with a
+         ``v_motivo := 'segunda_placa_misma_mensualidad'`` flag. The full
+         fiscal breakdown IS returned; ``motivo`` carries the
+         informational literal so the handler / auditor can trace the
+         2nd-plate provenance. The salida handler (``api/v1/
+         operacion.py::create_salida``) derives
+         ``tipo_salida='ROTACION'`` from ``cobrar=True`` and exposes
+         the snapshot via ``SalidaReadForzado.cotizacion_snapshot``.
 
     All seven GAP-BE-09 contract fields are REQUIRED (no defaults) --
     the contract is exhaustive; missing any field is a server bug.
+    ``motivo`` is OPTIONAL (``None`` for paths (a) and (b); the literal
+    ``'segunda_placa_misma_mensualidad'`` for path (c)).
 
     **``tiempo_minutos`` shape (apply-time correction).** The PL/pgSQL
     function computes ``EXTRACT(EPOCH FROM (NOW() - fecha_ingreso)) / 60.0``
@@ -170,27 +189,30 @@ class CotizarFacturacion(_Base):
     tiempo_minutos: int | float
     tarifa_uuid: uuid_lib.UUID
     vigente_hasta: datetime
+    motivo: Literal["segunda_placa_misma_mensualidad"] | None = None
 
 
 class CotizarMensualidad(_Base):
-    """``cobrar=false`` variant -- short-circuit for a monthly-subscription scenario.
+    """``cobrar=false`` variant -- 1st-plate free-exit short-circuit.
 
-    Returned when the ingreso's plate has an open subscription at the
-    branch (REQ-OPS-023, design.md §3 step 2). The PL/pgSQL function
-    short-circuits the pricing pipeline; no fiscal data is computed.
+    Returned ONLY when the ingreso's plate is the first plate of its
+    subscription currently inside the patio (REQ-OPS-023, design.md §3
+    step 2). The PL/pgSQL function short-circuits the pricing pipeline;
+    no fiscal data is computed; the salida handler (``api/v1/operacion.
+    py::create_salida``) derives ``tipo_salida='MENSUALIDAD'``.
 
-    Two ``motivo`` literals cover the CU-03M / DEC-SUC-21 second-vehicle
-    rule (plan.md:64, ``prod.calcular_cotizacion`` Step 2):
+    Single ``motivo`` literal: ``'mensualidad_vigente'``.
 
-      - ``'mensualidad_vigente'`` -- first plate of the subscription in
-        patio; exits free (REQ-OPS-023 baseline).
-      - ``'segunda_placa_misa_mensualidad'`` -- a different plate of the
-        same ``subscripciones_cliente.uuid`` is already inside the patio;
-        the salida handler (HU-F1.7 / HU-F7.2) MUST apply rotation
-        pricing at cobro time (DEC-SUC-21 "detección de otra placa de
-        la misma mensualidad ya en el patio"). The derivation lives in
-        the quotation response only; nothing is persisted on
-        ``prod.ingreso``.
+    .. note::
+       The CU-03M / DEC-SUC-21 second-vehicle rotation rule (plan.md:64,
+       plan.md:436) is NO LONGER expressed via :class:`CotizarMensualidad`.
+       Migration ``0038_calcular_cotizacion_2nd_plate_rotation`` flipped
+       the 2nd-plate case from ``{cobrar: false, motivo: 'segunda_placa_
+       misma_mensualidad'}`` to ``{cobrar: true, <fiscal fields>, motivo:
+       'segunda_placa_misma_mensualidad'}`` -- the 2nd plate now parses
+       as :class:`CotizarFacturacion` with the informational ``motivo``
+       key. The handler then derives ``tipo_salida='ROTACION'`` and
+       applies rotation pricing at cobro time.
 
     ``motivo`` is a closed literal so the contract is exhaustive --
     adding a new motivo requires a new ``Literal`` member, not
@@ -200,7 +222,7 @@ class CotizarMensualidad(_Base):
     model_config = ConfigDict(extra="forbid")
 
     cobrar: Literal[False]
-    motivo: Literal["mensualidad_vigente", "segunda_placa_misma_mensualidad"]
+    motivo: Literal["mensualidad_vigente"]
 
 
 # Discriminated union: Pydantic v2 picks the variant by the value of

@@ -717,57 +717,107 @@ async def test_cotizar_sin_tarifa_vigente_devuelve_404_tarifa_no_vigente(
 
 
 # ---------------------------------------------------------------------------
-# Caso 5 — CU-03M / DEC-SUC-21 second-vehicle motivo literal (mock-based,
-# DB-independent — runs in CI without testcontainers).
+# Caso 5 — CU-03M / DEC-SUC-21 second-vehicle rotation contract after
+#          migration 0038 (Pydantic-level, DB-independent).
 # ---------------------------------------------------------------------------
 
 
-def test_cotizar_mensualidad_acepta_motivo_segunda_placa_misma_mensualidad(
+def test_cotizar_facturacion_acepta_motivo_segunda_placa_misma_mensualidad(
     app: str,
 ) -> None:
-    """CU-03M second-vehicle rotation rule (plan.md:64, DEC-SUC-21).
+    """CU-03M second-vehicle rotation rule (plan.md:64, plan.md:436,
+    DEC-SUC-21) — schema contract after migration 0038.
 
     Pure Pydantic-level contract test — does NOT require the DB. Verifies
-    that ``CotizarMensualidad.model_validate(...)`` accepts the NEW
-    ``motivo='segunda_placa_misa_mensualidad'`` literal (CU-03M
-    second-plate rotation signal) AND that the existing
-    ``'mensualidad_vigente'`` literal still validates (regression).
+    that:
+
+      1. ``CotizarFacturacion.model_validate(...)`` accepts the NEW
+         ``motivo='segunda_placa_misma_mensualidad'`` literal on the
+         ``cobrar=true`` rotation-pricing variant. This is the
+         end-to-end fix: after migration 0038 the PL/pgSQL function
+         returns the full fiscal breakdown with the informational
+         motivo, and the handler derives ``tipo_salida='ROTACION'``.
+
+      2. ``CotizarFacturacion.motivo`` is OPTIONAL — omitting the
+         ``motivo`` key on a regular walk-in rotation quotation
+         (path (a) in the schema docstring) parses cleanly with
+         ``motivo=None`` (regression).
+
+      3. ``CotizarMensualidad`` retains the baseline 1st-plate literal
+         ``'mensualidad_vigente'`` (regression — REQ-OPS-023).
+
+      4. The OLD motivo literal ``'segunda_placa_misma_mensualidad'``
+         is REJECTED on ``CotizarMensualidad`` (it has moved to
+         ``CotizarFacturacion.motivo``).
 
     The companion DB-backed scenario lives in
     ``tests/integration/test_calcular_cotizacion_db.py::
     test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo``
     which exercises the PL/pgSQL count subquery directly. This test is
-    the no-DB fallback so CI can still verify the contract extension
-    on hosts where testcontainers cannot reach a Docker daemon.
+    the no-DB fallback so CI can still verify the schema contract on
+    hosts where testcontainers cannot reach a Docker daemon.
     """
-    from parkos_core.schemas.operacion import CotizarMensualidad
+    import uuid as uuid_lib
+    from datetime import UTC, datetime
 
-    # 1) The new motivo literal is accepted.
-    parsed = CotizarMensualidad.model_validate(
-        {"cobrar": False, "motivo": "segunda_placa_misma_mensualidad"}
+    from parkos_core.schemas.operacion import (
+        CotizarFacturacion,
+        CotizarMensualidad,
     )
-    assert parsed.cobrar is False
-    assert parsed.motivo == "segunda_placa_misma_mensualidad"
 
-    # 2) The baseline motivo literal still validates (regression — the
-    #    Literal extension must NOT drop the existing member).
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    # 1) CotizarFacturacion accepts the NEW rotation motivo.
+    parsed_rotation = CotizarFacturacion.model_validate(
+        {
+            "cobrar": True,
+            "subtotal": "1000",
+            "iva": "190",
+            "total": "1190",
+            "tiempo_minutos": 30.0,
+            "tarifa_uuid": str(uuid_lib.uuid4()),
+            "vigente_hasta": now.isoformat(),
+            "motivo": "segunda_placa_misma_mensualidad",
+        }
+    )
+    assert parsed_rotation.cobrar is True
+    assert parsed_rotation.motivo == "segunda_placa_misma_mensualidad"
+    assert parsed_rotation.subtotal == Decimal("1000")
+
+    # 2) CotizarFacturacion WITHOUT motivo (path (a) walk-in rotation).
+    parsed_walkin = CotizarFacturacion.model_validate(
+        {
+            "cobrar": True,
+            "subtotal": "500",
+            "iva": "95",
+            "total": "595",
+            "tiempo_minutos": 15.0,
+            "tarifa_uuid": str(uuid_lib.uuid4()),
+            "vigente_hasta": now.isoformat(),
+        }
+    )
+    assert parsed_walkin.cobrar is True
+    assert parsed_walkin.motivo is None, (
+        "CotizarFacturacion.motivo MUST default to None when omitted "
+        "(walk-in rotation, path (a)); got "
+        f"{parsed_walkin.motivo!r}"
+    )
+
+    # 3) CotizarMensualidad baseline literal still validates (regression).
     parsed_baseline = CotizarMensualidad.model_validate(
         {"cobrar": False, "motivo": "mensualidad_vigente"}
     )
     assert parsed_baseline.cobrar is False
     assert parsed_baseline.motivo == "mensualidad_vigente"
 
-    # 3) An unknown motivo literal is rejected by the closed-Literal
-    #    contract (``extra='forbid'`` would catch smuggle attempts
-    #    too, but the wrong literal is a closed-Literal ValidationError).
+    # 4) The 2nd-plate motivo literal is REJECTED on CotizarMensualidad
+    #    (it has moved to CotizarFacturacion per migration 0038).
     import pydantic
 
     with pytest.raises(pydantic.ValidationError) as exc_info:
         CotizarMensualidad.model_validate(
-            {"cobrar": False, "motivo": "motivo_inventado"}
+            {"cobrar": False, "motivo": "segunda_placa_misma_mensualidad"}
         )
-    # ``Literal[...]`` failure surfaces as ``invalid_value`` on the
-    # ``motivo`` field — the assertion proves the closed contract.
     errors = exc_info.value.errors()
     motivo_errors = [e for e in errors if e.get("loc") == ("motivo",)]
     assert motivo_errors, (
@@ -779,7 +829,7 @@ def test_cotizar_mensualidad_acepta_motivo_segunda_placa_misma_mensualidad(
 __all__ = [
     "test_cotizar_default_devuelve_desglose_fiscal",
     "test_cotizar_con_mensualidad_vigente_devuelve_cobrar_false",
-    "test_cotizar_mensualidad_acepta_motivo_segunda_placa_misma_mensualidad",
+    "test_cotizar_facturacion_acepta_motivo_segunda_placa_misma_mensualidad",
     "test_cotizar_sin_iva_configurado_devuelve_500",
     "test_cotizar_sin_tarifa_vigente_devuelve_404_tarifa_no_vigente",
 ]

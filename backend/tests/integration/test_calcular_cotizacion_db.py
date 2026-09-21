@@ -2,7 +2,7 @@
 
 TDD RED → GREEN for the PL/pgSQL function ``prod.calcular_cotizacion``
 introduced by Alembic migration ``0022_create_calcular_cotizacion.py``.
-Two scenarios:
+Three scenarios:
 
   1. ``test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos`` — full
      seed (IVA + tarifa + ingreso) → 200 with the jsonb payload matching
@@ -14,19 +14,26 @@ Two scenarios:
      jsonb ``{"error":"ingreso_no_encontrado"}``.
 
   3. ``test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo``
-     — CU-03M second-vehicle rotation rule (plan.md:64, DEC-SUC-21):
-     two plates on the same ``subscripciones_cliente.uuid``, both with
-     an active ``ingreso`` in the patio. The SECOND plate's quotation
-     returns ``{cobrar: false, motivo: 'segunda_placa_misma_mensualidad'}``
-     so the salida handler (HU-F1.7 / HU-F7.2) applies rotation pricing;
-     the FIRST plate's quotation still returns the baseline
-     ``{cobrar: false, motivo: 'mensualidad_vigente'}`` (regression
-     coverage).
+     — CU-03M second-vehicle rotation rule (plan.md:64, plan.md:436,
+     DEC-SUC-21): two plates on the same ``subscripciones_cliente.uuid``,
+     both with an active ``ingreso`` in the patio. After migration
+     ``0038_calcular_cotizacion_2nd_plate_rotation`` (closes the
+     CU-03M end-to-end), EITHER plate's quotation returns the FULL
+     ``CotizarFacturacion`` payload (``cobrar=true`` + fiscal fields)
+     with the informational ``motivo='segunda_placa_misma_mensualidad'``
+     key — the salida handler (HU-F1.7 / HU-F7.2) then derives
+     ``tipo_salida='ROTACION'`` and the FE chain consumes the snapshot.
+     The 1st-plate short-circuit ``{cobrar: false, motivo: 'mensualidad_
+     vigente'}`` is preserved for single-plate subscriptions
+     (regression: ``test_calcular_cotizacion_db_solo_una_placa_devuelve_
+     mensualidad_vigente``).
 
 All tests assert directly on the jsonb payload via ``session.execute``
 + ``text()`` — no HTTP layer, no Pydantic mapping yet. The HTTP layer
-is covered by ``tests/unit/test_calcular_cotizacion.py``. The split
-mirrors the precedent ``tests/integration/test_dual_protocol.py`` /
+is covered by ``tests/unit/test_calcular_cotizacion.py`` + the new
+handler-level coverage in ``tests/integration/test_salida_create_db.py``
+(T2 ``test_salida_segunda_placa_misma_mensualidad_aplica_rotacion``).
+The split mirrors the precedent ``tests/integration/test_dual_protocol.py`` /
 ``tests/integration/test_branch_offline_flow.py``: DB-only invariants
 stay out of the HTTP test folder.
 
@@ -511,7 +518,8 @@ async def _seed_two_plate_subscription(
 async def test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo(
     pg_engine, alembic_upgrade, pg_dsn
 ) -> None:
-    """CU-03M / DEC-SUC-21 second-vehicle rotation rule (plan.md:64).
+    """CU-03M / DEC-SUC-21 second-vehicle rotation rule (plan.md:64,
+    plan.md:436) — end-to-end contract after migration 0038.
 
     Scenario:
       - One subscription ``subscripciones_cliente.uuid`` at the branch.
@@ -520,25 +528,41 @@ async def test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa
       - TWO active ``ingreso`` rows, one per placa, both with no
         matching ``salidas`` row (the "active" derivation).
 
+    After migration ``0038_calcular_cotizacion_2nd_plate_rotation``
+    closes the CU-03M end-to-end fix, the PL/pgSQL function falls
+    through to Steps 3-5 (tarifa lookup + IVA + fiscal breakdown) for
+    the 2nd-plate case. EITHER plate's quotation (with both
+    simultaneously in patio) returns the full ``CotizarFacturacion``
+    payload with the informational ``motivo='segunda_placa_misma_
+    mensualidad'`` key — the salida handler then derives
+    ``tipo_salida='ROTACION'`` and exposes the snapshot via
+    ``SalidaReadForzado.cotizacion_snapshot``.
+
     Assertions (one test, two assertions — keeps the scenario atomic):
 
-      a) Quoting PLACA-B's ingreso (the second to be inserted, with
-         PLACA-A already in patio) MUST return
-         ``{cobrar: false, motivo: 'segunda_placa_misma_mensualidad'}``
-         — the new contract literal that tells the salida handler
-         (HU-F1.7 / HU-F7.2) to apply rotation pricing at cobro time.
+      a) Quoting PLACA-B's ingreso (with PLACA-A already in patio)
+         MUST return ``cobrar=true`` + the 7 fiscal fields +
+         ``motivo='segunda_placa_misma_mensualidad'``. NOT a free-exit
+         short-circuit; the salida handler MUST apply rotation pricing.
 
-      b) Quoting PLACA-A's ingreso (the first, no other plate of the
-         same subscription in patio at the time of its own quotation)
-         MUST still return the baseline
-         ``{cobrar: false, motivo: 'mensualidad_vigente'}`` — regression
-         coverage that the new subquery does NOT regress the
-         first-plate short-circuit (REQ-OPS-023).
+      b) Quoting PLACA-A's ingreso (also with PLACA-B in patio — both
+         plates are simultaneously active) MUST also return
+         ``cobrar=true`` + fiscal fields + the same motivo. The
+         quotation primitive has no exit-order awareness — the
+         conservative rule is "if any other plate of the same
+         subscription is in patio, this plate is billed as rotation
+         regardless of which plate exits first" (per plan.md:64 +
+         plan.md:436). The exit-order signal is operational, not
+         pricing-time.
 
     The test is run in this order (B then A) so the "other plate in
     patio" precondition holds for B's quotation. The order of inserts
     is B's ingreso AFTER A's ingreso, mirroring the real-world scenario
     "first plate is already inside, the second arrives and exits".
+    The 1st-plate short-circuit ``{cobrar: false, motivo: 'mensualidad_
+    vigente'}`` is regression-covered separately by
+    ``test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_
+    vigente``.
     """
     await _truncate_tables(pg_dsn)
 
@@ -548,11 +572,9 @@ async def test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa
     placa_b = "CU03B"
 
     # Seed empresa + sucursal + tipos_vehiculo + tipo_tarifa + tarifa + IVA
-    # via the existing happy-path helper (it inserts everything we need
-    # for tarifa lookup to succeed — which is irrelevant here because
-    # both plates will short-circuit at Step 2 BEFORE Step 3 tarifa
-    # lookup, but the helper is the canonical setup and we keep it for
-    # symmetry with the other tests).
+    # via the existing happy-path helper (now actually needed: with
+    # migration 0038 the 2nd-plate path runs Steps 3-5 tarifa + IVA
+    # computation; tarifa + IVA must be vigente for the test to land).
     await _seed_minimal_happy_path(
         pg_engine,
         uuid_sucursal=branch_uuid,
@@ -620,7 +642,8 @@ async def test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa
         )
         await session.commit()
 
-    # 3) Quote PLACA-B (second plate) — expects the new motivo.
+    # 3) Quote PLACA-B (second plate) — expects full rotation pricing
+    #    payload + informational motivo.
     async with Session() as session:
         payload_b = (
             await session.execute(
@@ -629,58 +652,45 @@ async def test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa
             )
         ).scalar_one()
 
-    assert payload_b == {"cobrar": False, "motivo": "segunda_placa_misma_mensualidad"}, (
+    # Sanity: the discriminator value ``cobrar=true`` means the
+    # handler will derive ``tipo_salida='ROTACION'``. The fiscal
+    # fields are present so ``CotizarFacturacion.model_validate``
+    # succeeds. The motivo key carries the informational 2nd-plate
+    # provenance for the auditor.
+    assert payload_b.get("cobrar") is True, (
         f"CU-03M second-vehicle rule: when a DIFFERENT plate of the same "
         f"subscription is already in patio, the current plate's quotation "
-        f"MUST return {{cobrar: false, motivo: 'segunda_placa_misma_mensualidad'}} "
-        f"so the salida handler applies rotation pricing (plan.md:64, "
-        f"DEC-SUC-21, migration 0022 Step 2); got {payload_b!r}"
-    )
-
-    # 4) Quote PLACA-A (first plate) — regression: still the baseline.
-    #    We run the query WITHOUT removing PLACA-B's ingreso so the
-    #    count subquery WOULD match — the only thing preventing the
-    #    rotation rule from firing for A is ``i.placa <> v_ingreso.placa``
-    #    (A's placa differs from A's placa = false, so A's own row is
-    #    rejected and B's row matches — wait, that's the SAME row A is
-    #    quoting, so the count returns 1 and we'd trigger rotation for A
-    #    too). Let me re-check the logic.
-    #
-    #    The PL/pgSQL count subquery joins ingreso -> subscripcion_
-    #    vehiculos -> vehiculos, looking for OTHER plates of the same
-    #    subscription that are currently in patio. The filter is
-    #    ``i.placa <> v_ingreso.placa``. For A's quotation: v_ingreso.
-    #    placa = 'CU03A'; the join finds ingreso rows where the joined
-    #    vehiculo's placa is in subscripcion_vehiculos for the same
-    #    subscription. Both A's and B's ingresos match the join (A is
-    #    linked to PLACA-A's vehiculo, B is linked to PLACA-B's
-    #    vehiculo). The filter ``i.placa <> 'CU03A'`` rejects A's own
-    #    ingreso but accepts B's. So count = 1 and A would ALSO get the
-    #    rotation motivo.
-    #
-    #    That is CORRECT per plan.md:64 + DEC-SUC-21: "el primer
-    #    vehículo en patio no paga al salir; un segundo vehículo de la
-    #    misma suscripción en patio simultáneamente paga como
-    #    Rotación" — BOTH quotes happen AFTER both plates are in
-    #    patio, so BOTH plates are "second" by the strict reading.
-    #    The semantic is "the FIRST plate to EXIT pays as monthly;
-    #    the second plate to exit pays as rotation" — but the
-    #    quotation primitive has no way to know exit ordering, so
-    #    the conservative rule is: if any other plate of the same
-    #    subscription is in patio, this quotation MUST signal
-    #    rotation, regardless of which plate exits first.
-    #
-    #    Update the assertion for A: it now ALSO gets the rotation
-    #    motivo, because both plates are simultaneously in patio.
-    assert payload_b.get("cobrar") is False, (
-        f"second-plate quotation MUST short-circuit (cobrar=false) per "
-        f"REQ-OPS-023; got {payload_b!r}"
+        f"MUST return cobrar=true so the salida handler derives "
+        f"tipo_salida='ROTACION' (plan.md:64, plan.md:436, DEC-SUC-21, "
+        f"migration 0038); got {payload_b!r}"
     )
     assert payload_b.get("motivo") == "segunda_placa_misma_mensualidad", (
-        f"second-plate quotation MUST carry the new motivo literal "
-        f"'segunda_placa_misma_mensualidad'; got {payload_b!r}"
+        f"2nd-plate quotation MUST carry the informational motivo "
+        f"'segunda_placa_misma_mensualidad' so the auditor can trace "
+        f"why a subscription-having vehicle is paying as rotation; "
+        f"got {payload_b!r}"
+    )
+    # Fiscal fields present (handler will populate cotizacion_snapshot).
+    assert payload_b.get("subtotal") is not None
+    assert payload_b.get("iva") is not None
+    assert payload_b.get("total") is not None
+    assert payload_b.get("tarifa_uuid") is not None
+    assert payload_b.get("vigente_hasta") is not None
+    # tiempo_minutos is informational; assert presence + range.
+    assert 4.0 < float(payload_b["tiempo_minutos"]) < 6.0 * 60, (
+        f"tiempo_minutos must reflect elapsed time since PLACA-B's "
+        f"ingreso (5 minutes ago at seed time); got "
+        f"{payload_b.get('tiempo_minutos')!r}"
     )
 
+    # 4) Quote PLACA-A (first plate) — both plates are simultaneously
+    #    in patio, so the count subquery (with v_ingreso.placa='CU03A')
+    #    finds PLACA-B's row in the count, v_count_other_plate > 0,
+    #    v_motivo is set, and the function falls through to Steps 3-5
+    #    the same way as for PLACA-B. The quotation primitive has no
+    #    exit-order awareness — see plan.md:64 + plan.md:436 + DEC-SUC-21
+    #    for the conservative rule: "if any other plate of the same
+    #    subscription is in patio, this plate is billed as rotation".
     async with Session() as session:
         payload_a = (
             await session.execute(
@@ -689,15 +699,17 @@ async def test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa
             )
         ).scalar_one()
 
-    # When both plates are simultaneously in patio, BOTH quotations
-    # carry the rotation motivo — the quotation primitive does not
-    # know exit order. See the long comment in step (4) above.
-    assert payload_a == {"cobrar": False, "motivo": "segunda_placa_misma_mensualidad"}, (
-        f"with two plates of the same subscription simultaneously in patio, "
-        f"EITHER plate's quotation MUST surface the rotation motivo (plan.md:64, "
-        f"DEC-SUC-21); the quotation primitive has no exit-order awareness. "
-        f"Got A={payload_a!r} (B was {payload_b!r})."
+    assert payload_a.get("cobrar") is True, (
+        f"with two plates of same subscription simultaneously in patio, "
+        f"EITHER plate's quotation MUST surface rotation pricing "
+        f"(plan.md:64, plan.md:436, DEC-SUC-21); got A={payload_a!r}"
     )
+    assert payload_a.get("motivo") == "segunda_placa_misma_mensualidad", (
+        f"both quotations (A and B) carry the rotation motivo when "
+        f"both plates are simultaneously in patio; got A={payload_a!r} "
+        f"(B was {payload_b!r})"
+    )
+    assert payload_a.get("tarifa_uuid") is not None
 
 
 async def test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigente(
