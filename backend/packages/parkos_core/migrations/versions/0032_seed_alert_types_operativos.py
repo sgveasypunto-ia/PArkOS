@@ -170,12 +170,26 @@ def upgrade() -> None:
     # 0013:21-22 -- the trigger blocks UPDATE/DELETE only, not INSERT).
     # DB defaults fire on created_at (server_default NOW()) and
     # created_by (nullable, defaults to NULL).
+    #
+    # NOTE -- INSERT column order is intentionally
+    # ``(tipo_alerta, severity, descripcion)`` (NOT the 0013/0025/0026
+    # convention ``(tipo_alerta, descripcion, severity)``) to match the
+    # ``_SEED_ROWS`` tuple shape above (line 81) -- the values literal
+    # ``('{t}', '{s}', '{d}')`` emits columns in the SAME order as the
+    # tuple. Mismatching column order vs value order makes the long
+    # Spanish description land in the ``severity`` column and triggers
+    # the ``alert_types_severity_check`` CHECK constraint (a column the
+    # DB guards with ``severity IN ('info','warning','critical')``).
+    # This deviation from the 0013/0025/0026 INSERT pattern is
+    # intentional and unit-test-validated by
+    # ``tests/unit/test_alert_types_seed.py`` (asserts the tuple's
+    # second slot is the severity per ``_SEED_ROWS`` comment).
     values_sql = ",\n            ".join(
         f"('{t}', '{s}', '{d}')" for t, s, d in _SEED_ROWS
     )
     op.execute(
         f"""
-        INSERT INTO prod.alert_types (tipo_alerta, descripcion, severity)
+        INSERT INTO prod.alert_types (tipo_alerta, severity, descripcion)
         VALUES
             {values_sql}
         ON CONFLICT (tipo_alerta) DO NOTHING;
