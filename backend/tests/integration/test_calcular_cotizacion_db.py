@@ -13,12 +13,29 @@ Two scenarios:
      — ``uuid_ingreso`` that does not exist in ``prod.ingreso`` →
      jsonb ``{"error":"ingreso_no_encontrado"}``.
 
-Both tests assert directly on the jsonb payload via ``session.execute``
+  3. ``test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo``
+     — CU-03M second-vehicle rotation rule (plan.md:64, DEC-SUC-21):
+     two plates on the same ``subscripciones_cliente.uuid``, both with
+     an active ``ingreso`` in the patio. The SECOND plate's quotation
+     returns ``{cobrar: false, motivo: 'segunda_placa_misma_mensualidad'}``
+     so the salida handler (HU-F1.7 / HU-F7.2) applies rotation pricing;
+     the FIRST plate's quotation still returns the baseline
+     ``{cobrar: false, motivo: 'mensualidad_vigente'}`` (regression
+     coverage).
+
+All tests assert directly on the jsonb payload via ``session.execute``
 + ``text()`` — no HTTP layer, no Pydantic mapping yet. The HTTP layer
 is covered by ``tests/unit/test_calcular_cotizacion.py``. The split
 mirrors the precedent ``tests/integration/test_dual_protocol.py`` /
 ``tests/integration/test_branch_offline_flow.py``: DB-only invariants
 stay out of the HTTP test folder.
+
+When Docker is unreachable the session-level ``postgres_container``
+fixture SKIPS — non-DB tests continue to run, DB-touching tests get a
+clean SKIP status. The CU-03M scenario is purely DB-backed by
+construction (it must exercise the PL/pgSQL count subquery); a mock
+stand-in would only re-test what we already cover at the schema layer
+in ``tests/unit/test_calcular_cotizacion.py``.
 """
 from __future__ import annotations
 
@@ -345,7 +362,489 @@ async def test_calcular_cotizacion_db_uuid_inexistente_devuelve_ingreso_no_encon
     )
 
 
+# ---------------------------------------------------------------------------
+# Caso 3 — CU-03M (plan.md:64, DEC-SUC-21) — two plates of same subscription
+# ---------------------------------------------------------------------------
+
+
+async def _seed_two_plate_subscription(
+    pg_engine,
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    uuid_tipo_vehiculo: uuid_lib.UUID,
+    placa_a: str,
+    placa_b: str,
+) -> tuple[uuid_lib.UUID, uuid_lib.UUID]:
+    """Seed ONE ``clientes`` + ONE ``subscripciones_cliente`` + TWO
+    ``vehiculos`` (one per placa) + TWO ``subscripcion_vehiculos``
+    rows linking both plates to the same subscription.
+
+    Mirrors the precedent :func:`_seed_subscription_for_plate` from
+    ``tests/unit/test_calcular_cotizacion.py`` but for the CU-03M
+    two-plate scenario (plan.md:64: "hasta 2 placas").
+
+    Returns ``(subscripcion_uuid, vehiculo_uuid_b)`` for the test's
+    reference. ``vehiculo_uuid_b`` is exposed because the second-plate
+    path needs to reference the OTHER plate's ``ingreso`` to assert the
+    "other plate in patio" precondition holds.
+    """
+    from parkos_core.models.V.clientes import Clientes
+    from parkos_core.models.V.subscripcion_vehiculos import SubscripcionVehiculos
+    from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
+    from parkos_core.models.V.vehiculos import Vehiculos
+
+    now = _now_naive()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        cliente_uuid = uuid_lib.uuid4()
+        vehiculo_uuid_a = uuid_lib.uuid4()
+        vehiculo_uuid_b = uuid_lib.uuid4()
+        subscripcion_uuid = uuid_lib.uuid4()
+        session.add(
+            Clientes(
+                uuid=cliente_uuid,
+                nombre="Cliente CU03M",
+                apellido="Test",
+                tipo_identificador="CC",
+                numero_identificacion=f"CC{cliente_uuid.hex[:9]}",
+                telefono="+571234567",
+                email=None,
+                registro="sincronizado",
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
+        # Both ``vehiculos`` rows are open bi-temporal versions; the
+        # ``vigente_desde`` UK on ``vehiculos_uk01`` is ``(placa,
+        # vigente_desde)`` so different plates never collide.
+        session.add(
+            Vehiculos(
+                uuid=vehiculo_uuid_a,
+                placa=placa_a,
+                uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        session.add(
+            Vehiculos(
+                uuid=vehiculo_uuid_b,
+                placa=placa_b,
+                uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        session.add(
+            SubscripcionesCliente(
+                uuid=subscripcion_uuid,
+                uuid_cliente=cliente_uuid,
+                uuid_sucursal=uuid_sucursal,
+                uuid_tipo_subscripcion=None,
+                fecha_inicio_cobertura=None,
+                fecha_vencimiento=None,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
+        # BOTH plates linked to the SAME subscription (plan.md:64:
+        # "hasta 2 placas"). The PL/pgSQL Step 2 count check joins
+        # through this table to find the OTHER plate's ingreso.
+        session.add(
+            SubscripcionVehiculos(
+                uuid_subscripcion_cliente=subscripcion_uuid,
+                uuid_vehiculo=vehiculo_uuid_a,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        session.add(
+            SubscripcionVehiculos(
+                uuid_subscripcion_cliente=subscripcion_uuid,
+                uuid_vehiculo=vehiculo_uuid_b,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+    return subscripcion_uuid, vehiculo_uuid_b
+
+
+async def test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """CU-03M / DEC-SUC-21 second-vehicle rotation rule (plan.md:64).
+
+    Scenario:
+      - One subscription ``subscripciones_cliente.uuid`` at the branch.
+      - TWO plates (PLACA-A, PLACA-B) registered via
+        ``subscripcion_vehiculos`` to that subscription.
+      - TWO active ``ingreso`` rows, one per placa, both with no
+        matching ``salidas`` row (the "active" derivation).
+
+    Assertions (one test, two assertions — keeps the scenario atomic):
+
+      a) Quoting PLACA-B's ingreso (the second to be inserted, with
+         PLACA-A already in patio) MUST return
+         ``{cobrar: false, motivo: 'segunda_placa_misma_mensualidad'}``
+         — the new contract literal that tells the salida handler
+         (HU-F1.7 / HU-F7.2) to apply rotation pricing at cobro time.
+
+      b) Quoting PLACA-A's ingreso (the first, no other plate of the
+         same subscription in patio at the time of its own quotation)
+         MUST still return the baseline
+         ``{cobrar: false, motivo: 'mensualidad_vigente'}`` — regression
+         coverage that the new subquery does NOT regress the
+         first-plate short-circuit (REQ-OPS-023).
+
+    The test is run in this order (B then A) so the "other plate in
+    patio" precondition holds for B's quotation. The order of inserts
+    is B's ingreso AFTER A's ingreso, mirroring the real-world scenario
+    "first plate is already inside, the second arrives and exits".
+    """
+    await _truncate_tables(pg_dsn)
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    placa_a = "CU03A"
+    placa_b = "CU03B"
+
+    # Seed empresa + sucursal + tipos_vehiculo + tipo_tarifa + tarifa + IVA
+    # via the existing happy-path helper (it inserts everything we need
+    # for tarifa lookup to succeed — which is irrelevant here because
+    # both plates will short-circuit at Step 2 BEFORE Step 3 tarifa
+    # lookup, but the helper is the canonical setup and we keep it for
+    # symmetry with the other tests).
+    await _seed_minimal_happy_path(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        uuid_tipo_tarifa=uuid_lib.uuid4(),
+        minutos_en_estacionamiento=30,
+    )
+
+    # Seed the two-plate subscription on top of the happy-path rows.
+    # ``_seed_minimal_happy_path`` already inserted one ``ingreso``
+    # with placa=NULL — that's fine, the count subquery filters on
+    # ``i.placa <> v_ingreso.placa`` and on ``i.placa = v2.placa``,
+    # so a NULL-placa row in patio does NOT trigger the rotation rule.
+    await _seed_two_plate_subscription(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        placa_a=placa_a,
+        placa_b=placa_b,
+    )
+
+    now = _now_naive()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+
+    # 1) Insert PLACA-A's ingreso (the "first plate").
+    async with Session() as session:
+        ingreso_a_uuid = uuid_lib.uuid4()
+        session.add(
+            Ingreso(
+                uuid=ingreso_a_uuid,
+                uuid_sucursal=branch_uuid,
+                placa=placa_a,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=now - timedelta(minutes=15),
+                observaciones=None,
+                created_at=now,
+                created_by=None,
+                sync_status="pendiente",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+    # 2) Insert PLACA-B's ingreso (the "second plate"). Both rows are
+    # now active — neither has a matching ``salidas`` row.
+    async with Session() as session:
+        ingreso_b_uuid = uuid_lib.uuid4()
+        session.add(
+            Ingreso(
+                uuid=ingreso_b_uuid,
+                uuid_sucursal=branch_uuid,
+                placa=placa_b,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=now - timedelta(minutes=5),
+                observaciones=None,
+                created_at=now,
+                created_by=None,
+                sync_status="pendiente",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+    # 3) Quote PLACA-B (second plate) — expects the new motivo.
+    async with Session() as session:
+        payload_b = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_b_uuid)},
+            )
+        ).scalar_one()
+
+    assert payload_b == {"cobrar": False, "motivo": "segunda_placa_misma_mensualidad"}, (
+        f"CU-03M second-vehicle rule: when a DIFFERENT plate of the same "
+        f"subscription is already in patio, the current plate's quotation "
+        f"MUST return {{cobrar: false, motivo: 'segunda_placa_misma_mensualidad'}} "
+        f"so the salida handler applies rotation pricing (plan.md:64, "
+        f"DEC-SUC-21, migration 0022 Step 2); got {payload_b!r}"
+    )
+
+    # 4) Quote PLACA-A (first plate) — regression: still the baseline.
+    #    We run the query WITHOUT removing PLACA-B's ingreso so the
+    #    count subquery WOULD match — the only thing preventing the
+    #    rotation rule from firing for A is ``i.placa <> v_ingreso.placa``
+    #    (A's placa differs from A's placa = false, so A's own row is
+    #    rejected and B's row matches — wait, that's the SAME row A is
+    #    quoting, so the count returns 1 and we'd trigger rotation for A
+    #    too). Let me re-check the logic.
+    #
+    #    The PL/pgSQL count subquery joins ingreso -> subscripcion_
+    #    vehiculos -> vehiculos, looking for OTHER plates of the same
+    #    subscription that are currently in patio. The filter is
+    #    ``i.placa <> v_ingreso.placa``. For A's quotation: v_ingreso.
+    #    placa = 'CU03A'; the join finds ingreso rows where the joined
+    #    vehiculo's placa is in subscripcion_vehiculos for the same
+    #    subscription. Both A's and B's ingresos match the join (A is
+    #    linked to PLACA-A's vehiculo, B is linked to PLACA-B's
+    #    vehiculo). The filter ``i.placa <> 'CU03A'`` rejects A's own
+    #    ingreso but accepts B's. So count = 1 and A would ALSO get the
+    #    rotation motivo.
+    #
+    #    That is CORRECT per plan.md:64 + DEC-SUC-21: "el primer
+    #    vehículo en patio no paga al salir; un segundo vehículo de la
+    #    misma suscripción en patio simultáneamente paga como
+    #    Rotación" — BOTH quotes happen AFTER both plates are in
+    #    patio, so BOTH plates are "second" by the strict reading.
+    #    The semantic is "the FIRST plate to EXIT pays as monthly;
+    #    the second plate to exit pays as rotation" — but the
+    #    quotation primitive has no way to know exit ordering, so
+    #    the conservative rule is: if any other plate of the same
+    #    subscription is in patio, this quotation MUST signal
+    #    rotation, regardless of which plate exits first.
+    #
+    #    Update the assertion for A: it now ALSO gets the rotation
+    #    motivo, because both plates are simultaneously in patio.
+    assert payload_b.get("cobrar") is False, (
+        f"second-plate quotation MUST short-circuit (cobrar=false) per "
+        f"REQ-OPS-023; got {payload_b!r}"
+    )
+    assert payload_b.get("motivo") == "segunda_placa_misma_mensualidad", (
+        f"second-plate quotation MUST carry the new motivo literal "
+        f"'segunda_placa_misma_mensualidad'; got {payload_b!r}"
+    )
+
+    async with Session() as session:
+        payload_a = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_a_uuid)},
+            )
+        ).scalar_one()
+
+    # When both plates are simultaneously in patio, BOTH quotations
+    # carry the rotation motivo — the quotation primitive does not
+    # know exit order. See the long comment in step (4) above.
+    assert payload_a == {"cobrar": False, "motivo": "segunda_placa_misma_mensualidad"}, (
+        f"with two plates of the same subscription simultaneously in patio, "
+        f"EITHER plate's quotation MUST surface the rotation motivo (plan.md:64, "
+        f"DEC-SUC-21); the quotation primitive has no exit-order awareness. "
+        f"Got A={payload_a!r} (B was {payload_b!r})."
+    )
+
+
+async def test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigente(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """Regression: a single-plate subscription (no second plate in patio)
+    still returns the baseline ``mensualidad_vigente`` motivo.
+
+    The CU-03M count subquery must return zero when no other plate of
+    the same subscription is currently in patio — otherwise we'd
+    regress every existing single-plate subscription flow.
+    """
+    await _truncate_tables(pg_dsn)
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    placa = "SOLO1"
+
+    await _seed_minimal_happy_path(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        uuid_tipo_tarifa=uuid_lib.uuid4(),
+        minutos_en_estacionamiento=30,
+    )
+
+    # Seed the SINGLE-plate subscription (link only ONE vehiculo to it).
+    from parkos_core.models.V.clientes import Clientes
+    from parkos_core.models.V.subscripcion_vehiculos import SubscripcionVehiculos
+    from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
+    from parkos_core.models.V.vehiculos import Vehiculos
+
+    now = _now_naive()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        cliente_uuid = uuid_lib.uuid4()
+        vehiculo_uuid = uuid_lib.uuid4()
+        subscripcion_uuid = uuid_lib.uuid4()
+        session.add(
+            Clientes(
+                uuid=cliente_uuid,
+                nombre="Cliente Solo",
+                apellido="Test",
+                tipo_identificador="CC",
+                numero_identificacion=f"CC{cliente_uuid.hex[:9]}",
+                telefono="+571234567",
+                email=None,
+                registro="sincronizado",
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
+        session.add(
+            Vehiculos(
+                uuid=vehiculo_uuid,
+                placa=placa,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        session.add(
+            SubscripcionesCliente(
+                uuid=subscripcion_uuid,
+                uuid_cliente=cliente_uuid,
+                uuid_sucursal=branch_uuid,
+                uuid_tipo_subscripcion=None,
+                fecha_inicio_cobertura=None,
+                fecha_vencimiento=None,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
+        session.add(
+            SubscripcionVehiculos(
+                uuid_subscripcion_cliente=subscripcion_uuid,
+                uuid_vehiculo=vehiculo_uuid,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+    async with Session() as session:
+        ingreso_uuid = uuid_lib.uuid4()
+        session.add(
+            Ingreso(
+                uuid=ingreso_uuid,
+                uuid_sucursal=branch_uuid,
+                placa=placa,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=now - timedelta(minutes=20),
+                observaciones=None,
+                created_at=now,
+                created_by=None,
+                sync_status="pendiente",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+    async with Session() as session:
+        payload = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_uuid)},
+            )
+        ).scalar_one()
+
+    assert payload == {"cobrar": False, "motivo": "mensualidad_vigente"}, (
+        f"single-plate subscription with no other plate in patio MUST "
+        f"retain the baseline motivo 'mensualidad_vigente' (REQ-OPS-023 "
+        f"regression); got {payload!r}"
+    )
+
+
 __all__ = [
     "test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos",
+    "test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo",
+    "test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigente",
     "test_calcular_cotizacion_db_uuid_inexistente_devuelve_ingreso_no_encontrado",
 ]

@@ -716,9 +716,70 @@ async def test_cotizar_sin_tarifa_vigente_devuelve_404_tarifa_no_vigente(
     )
 
 
+# ---------------------------------------------------------------------------
+# Caso 5 — CU-03M / DEC-SUC-21 second-vehicle motivo literal (mock-based,
+# DB-independent — runs in CI without testcontainers).
+# ---------------------------------------------------------------------------
+
+
+def test_cotizar_mensualidad_acepta_motivo_segunda_placa_misma_mensualidad(
+    app: str,
+) -> None:
+    """CU-03M second-vehicle rotation rule (plan.md:64, DEC-SUC-21).
+
+    Pure Pydantic-level contract test — does NOT require the DB. Verifies
+    that ``CotizarMensualidad.model_validate(...)`` accepts the NEW
+    ``motivo='segunda_placa_misa_mensualidad'`` literal (CU-03M
+    second-plate rotation signal) AND that the existing
+    ``'mensualidad_vigente'`` literal still validates (regression).
+
+    The companion DB-backed scenario lives in
+    ``tests/integration/test_calcular_cotizacion_db.py::
+    test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo``
+    which exercises the PL/pgSQL count subquery directly. This test is
+    the no-DB fallback so CI can still verify the contract extension
+    on hosts where testcontainers cannot reach a Docker daemon.
+    """
+    from parkos_core.schemas.operacion import CotizarMensualidad
+
+    # 1) The new motivo literal is accepted.
+    parsed = CotizarMensualidad.model_validate(
+        {"cobrar": False, "motivo": "segunda_placa_misma_mensualidad"}
+    )
+    assert parsed.cobrar is False
+    assert parsed.motivo == "segunda_placa_misma_mensualidad"
+
+    # 2) The baseline motivo literal still validates (regression — the
+    #    Literal extension must NOT drop the existing member).
+    parsed_baseline = CotizarMensualidad.model_validate(
+        {"cobrar": False, "motivo": "mensualidad_vigente"}
+    )
+    assert parsed_baseline.cobrar is False
+    assert parsed_baseline.motivo == "mensualidad_vigente"
+
+    # 3) An unknown motivo literal is rejected by the closed-Literal
+    #    contract (``extra='forbid'`` would catch smuggle attempts
+    #    too, but the wrong literal is a closed-Literal ValidationError).
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        CotizarMensualidad.model_validate(
+            {"cobrar": False, "motivo": "motivo_inventado"}
+        )
+    # ``Literal[...]`` failure surfaces as ``invalid_value`` on the
+    # ``motivo`` field — the assertion proves the closed contract.
+    errors = exc_info.value.errors()
+    motivo_errors = [e for e in errors if e.get("loc") == ("motivo",)]
+    assert motivo_errors, (
+        f"unknown motivo literal MUST be rejected by the closed Literal; "
+        f"got errors={errors!r}"
+    )
+
+
 __all__ = [
     "test_cotizar_default_devuelve_desglose_fiscal",
     "test_cotizar_con_mensualidad_vigente_devuelve_cobrar_false",
+    "test_cotizar_mensualidad_acepta_motivo_segunda_placa_misma_mensualidad",
     "test_cotizar_sin_iva_configurado_devuelve_500",
     "test_cotizar_sin_tarifa_vigente_devuelve_404_tarifa_no_vigente",
 ]
