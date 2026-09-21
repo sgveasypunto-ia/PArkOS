@@ -128,7 +128,7 @@ export function CerrarTurnoForm({
         aria-labelledby="cerrar-turno-title"
         data-testid="cerrar-turno-form"
       >
-        <h1 id="cerrar-turno-title">{t('caja:cerrarTurno')}</h1>
+        <h1 id="cerrar-turno-title">{t('caja:cerrarTurno.titulo')}</h1>
 
         {/* Resumen del turno (placeholder F10.x completa con arqueo). */}
         <section data-testid="cerrar-turno-resumen" aria-label="Resumen del turno">

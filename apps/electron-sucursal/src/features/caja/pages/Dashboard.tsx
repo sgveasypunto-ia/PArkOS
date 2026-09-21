@@ -240,7 +240,7 @@ export function Dashboard(): JSX.Element | null {
             onClick={() => navigate('/caja/cerrar-turno')}
             className="shrink-0"
           >
-            {t('caja:cerrarTurno')}
+            {t('caja:cerrarTurnoLabel')}
           </Button>
         </header>
 
@@ -281,7 +281,7 @@ export function Dashboard(): JSX.Element | null {
               setMobileNavOpen(false);
             }}
           >
-            🧮 {t('caja:arqueo', { defaultValue: 'Arqueo' })}
+            🧮 {t('caja:arqueoLabel', { defaultValue: 'Arqueo' })}
           </Button>
           {/* HU-F10.2 (REQ-OPS-157) — sidebar anchor for the cierre
               de turno page. Mirrors the F10.1 arqueo anchor: routed
@@ -297,7 +297,7 @@ export function Dashboard(): JSX.Element | null {
               setMobileNavOpen(false);
             }}
           >
-            🔒 {t('caja:cerrarTurno', { defaultValue: 'Cerrar turno' })}
+            🔒 {t('caja:cerrarTurnoLabel', { defaultValue: 'Cerrar turno' })}
           </Button>
           <Button
             variant="outline"
