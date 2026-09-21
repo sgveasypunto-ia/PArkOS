@@ -179,18 +179,19 @@ def upgrade() -> None:
     #    CONCURRENTLY for no lock on reads/writes; IF NOT EXISTS for idempotency.
     #    The WHERE NOT EXISTS clause excludes anuladas: once a salida is
     #    anulada, a new salida for the same uuid_ingreso becomes possible.
-    op.execute(
-        """
-        CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS one_exit_per_ingreso
-            ON prod.salidas (uuid_ingreso)
-            WHERE NOT EXISTS (
-                SELECT 1 FROM prod.anulaciones a
-                WHERE a.uuid_salida = prod.salidas.uuid
-                  AND a.tipo_anulable = 'salida'
-                  AND a.estado = 'ejecutada'
-            )
-        """
-    )
+    with op.get_context().autocommit_block():
+        op.execute(
+            """
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS one_exit_per_ingreso
+                ON prod.salidas (uuid_ingreso)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM prod.anulaciones a
+                    WHERE a.uuid_salida = prod.salidas.uuid
+                      AND a.tipo_anulable = 'salida'
+                      AND a.estado = 'ejecutada'
+                )
+            """
+        )
 
 
 def downgrade() -> None:
@@ -208,7 +209,7 @@ def downgrade() -> None:
     op.execute(_LOCK_TIMEOUT_SQL)
 
     # Op 4 reverse: DROP INDEX.
-    op.execute("DROP INDEX IF EXISTS prod.one_exit_per_ingreso")
+    op.execute("DROP INDEX IF EXISTS one_exit_per_ingreso")
 
     # Op 3 reverse: DELETE 2 alert_types (superuser; bypasses inmutable trigger).
     op.execute(
