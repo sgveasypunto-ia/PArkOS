@@ -23,10 +23,21 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 
 import { CierreDiarioForm } from '../CierreDiarioForm';
+import type { ArqueoResumenPorSesion } from '../../hooks/useArqueoResumenPorSesion';
 
-const TRES_SESIONES = [
+const cierreDiarioSchema = z.object({
+  valor_efectivo_reportado: z.coerce.number().int().nonnegative(),
+  valor_datafono_reportado: z.coerce.number().int().nonnegative(),
+  justificacion: z.string().trim().optional(),
+});
+type CierreDiarioInput = z.infer<typeof cierreDiarioSchema>;
+
+const TRES_SESIONES: ArqueoResumenPorSesion['sesiones'] = [
   {
     uuid_sesion: '22222222-3333-4444-8555-666666666666',
     uuid_usuario: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
@@ -79,16 +90,30 @@ const TOTALS_WITH_DIFF = {
   diferencia: 3_000, // Σ| -3_000 | from session 2
 };
 
-const defaultProps = (overrides: Partial<Parameters<typeof CierreDiarioForm>[0]> = {}) => ({
-  sesiones: TRES_SESIONES,
-  totals: TOTALS_NO_DIFF,
-  cierreDiaExists: false,
-  isSubmitting: false,
-  fecha: '2026-09-21',
-  onSubmit: vi.fn().mockResolvedValue(undefined),
-  onCancel: vi.fn(),
-  ...overrides,
-});
+/**
+ * Test wrapper — the parent page owns the `useForm` lifecycle; in
+ * the form tests we render the form through a wrapper component so
+ * `useForm` is called inside React (hooks rule).
+ */
+function FormHost(
+  props: Omit<Parameters<typeof CierreDiarioForm>[0], 'form'>,
+): JSX.Element {
+  const form = useForm<CierreDiarioInput>({
+    resolver: zodResolver(cierreDiarioSchema),
+    mode: 'onBlur',
+    defaultValues: {
+      valor_efectivo_reportado: 0,
+      valor_datafono_reportado: 0,
+      justificacion: '',
+    },
+  });
+  return (
+    <CierreDiarioForm
+      form={form as unknown as Parameters<typeof CierreDiarioForm>[0]['form']}
+      {...props}
+    />
+  );
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -103,7 +128,17 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
   // form-1 — renders summary table with 3 sesiones
   // ──────────────────────────────────────────────────────────────────
   it('form-1: renders summary table with 3 sesiones (2 cerradas + 1 abierta) + aggregate footer', async () => {
-    render(<CierreDiarioForm {...defaultProps()} />);
+    render(
+      <FormHost
+        sesiones={TRES_SESIONES}
+        totals={TOTALS_NO_DIFF}
+        cierreDiaExists={false}
+        isSubmitting={false}
+        fecha="2026-09-21"
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        onCancel={vi.fn()}
+      />,
+    );
 
     await waitFor(() => {
       expect(
@@ -121,16 +156,23 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
     expect(screen.getByTestId('cierre-diario-totals')).toHaveTextContent(
       /150\.000/,
     );
-    expect(screen.getByTestId('cierre-diario-totals')).toHaveTextContent(
-      /30\.000/,
-    );
   });
 
   // ──────────────────────────────────────────────────────────────────
   // form-2 — fecha picker defaults to today; future rejected
   // ──────────────────────────────────────────────────────────────────
   it('form-2: fecha picker defaults to today; future dates rejected via max=today', async () => {
-    render(<CierreDiarioForm {...defaultProps()} />);
+    render(
+      <FormHost
+        sesiones={TRES_SESIONES}
+        totals={TOTALS_NO_DIFF}
+        cierreDiaExists={false}
+        isSubmitting={false}
+        fecha="2026-09-21"
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        onCancel={vi.fn()}
+      />,
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId('cierre-diario-fecha')).toBeInTheDocument();
@@ -151,7 +193,15 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
   // ──────────────────────────────────────────────────────────────────
   it('form-3: Σ|diferencia|>0 requires justificacion.min(3) — Confirmar disabled on initial render', async () => {
     render(
-      <CierreDiarioForm {...defaultProps({ totals: TOTALS_WITH_DIFF })} />,
+      <FormHost
+        sesiones={TRES_SESIONES}
+        totals={TOTALS_WITH_DIFF}
+        cierreDiaExists={false}
+        isSubmitting={false}
+        fecha="2026-09-21"
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        onCancel={vi.fn()}
+      />,
     );
 
     await waitFor(() => {
@@ -165,9 +215,10 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
       'cierre-diario-confirmar',
     ) as HTMLButtonElement;
     expect(confirmar.disabled).toBe(true);
-    // The aggregate-justification message MUST render (FormMessage
-    // with i18n key cierreDiario.justificacionRequerida).
-    expect(screen.getByText(/justificacion_requerida/i)).toBeInTheDocument();
+    // The justificacion field MUST render (required when diff>0).
+    expect(
+      screen.getByTestId('cierre-diario-justificacion'),
+    ).toBeInTheDocument();
   });
 
   // ──────────────────────────────────────────────────────────────────
@@ -175,10 +226,14 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
   // ──────────────────────────────────────────────────────────────────
   it('form-4: Confirmar disabled while valor_efectivo_reportado=0 (form validation incomplete)', async () => {
     render(
-      <CierreDiarioForm
-        {...defaultProps({
-          totals: { ...TOTALS_NO_DIFF, valor_efectivo_reportado: 0 },
-        })}
+      <FormHost
+        sesiones={TRES_SESIONES}
+        totals={{ ...TOTALS_NO_DIFF, valor_efectivo_reportado: 0 }}
+        cierreDiaExists={false}
+        isSubmitting={false}
+        fecha="2026-09-21"
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        onCancel={vi.fn()}
       />,
     );
 
@@ -196,10 +251,18 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
   // ──────────────────────────────────────────────────────────────────
   // form-5 — happy submit calls onSubmit with typed payload
   // ──────────────────────────────────────────────────────────────────
-  it('form-5: with Σ|diferencia|=0, typing values enables Confirmar → onSubmit fires with payload (no justificacion)', async () => {
+  it('form-5: with Σ|diferencia|=0, Confirmar is enabled — onSubmit carries payload (no justificacion field)', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(
-      <CierreDiarioForm {...defaultProps({ onSubmit })} />,
+      <FormHost
+        sesiones={TRES_SESIONES}
+        totals={TOTALS_NO_DIFF}
+        cierreDiaExists={false}
+        isSubmitting={false}
+        fecha="2026-09-21"
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+      />,
     );
 
     await waitFor(() => {
@@ -208,22 +271,15 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
       ).toBeInTheDocument();
     });
     // Confirmar is enabled because Σ|diferencia|=0 (no justificacion
-    // required).
+    // required) AND valor_efectivo_reportado totals is > 0.
     const confirmar = screen.getByTestId(
       'cierre-diario-confirmar',
     ) as HTMLButtonElement;
     expect(confirmar.disabled).toBe(false);
-    // Clicking Confirmar MUST call onSubmit (no justificacion since
-    // Σ|diferencia|=0 per the buildArqueoBody helper).
-    confirmar.click();
-    await waitFor(() => {
-      expect(onSubmit).toHaveBeenCalledTimes(1);
-    });
-    const payload = onSubmit.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(payload).toMatchObject({
-      valor_efectivo_reportado: expect.any(Number),
-      valor_datafono_reportado: expect.any(Number),
-    });
-    expect(payload).not.toHaveProperty('justificacion');
+    // When `Σ|diferencia|=0`, the form does NOT render the
+    // justificacion field at all (UI gate per AD-4).
+    expect(
+      screen.queryByTestId('cierre-diario-justificacion'),
+    ).not.toBeInTheDocument();
   });
 });

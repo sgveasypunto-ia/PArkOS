@@ -31,6 +31,7 @@
  * store for the 401-clear path.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderHook, waitFor } from '@testing-library/react';
 
 // Mock `@parkos/ui-kit/fetch` first so the hook captures the mocked
 // parkosFetch reference on import. The dynamic import pattern
@@ -50,16 +51,22 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
 }));
 
 // Mock the auth store so the 401-clear path can be asserted without
-// a real persist middleware.
+// a real persist middleware. The selector must EVALUATE the
+// selector against the fake state so `useAuthStore((s) =>
+// s.accessToken)` returns the accessToken — otherwise the hook's
+// SWR key-gate returns null and the fetch never fires.
 const mockClear = vi.fn();
 const dispatchEventSpy = vi
   .spyOn(window, 'dispatchEvent')
   .mockImplementation(() => true);
 
+const FAKE_AUTH_STATE = { accessToken: 'tok', refreshToken: null, expiresAt: null };
+
 vi.mock('@parkos/ui-kit/store', () => ({
   useAuthStore: Object.assign(
-    (_selector: (s: unknown) => unknown) => ({}),
-    { getState: () => ({ clear: mockClear, accessToken: 'tok' }) },
+    (selector: (s: typeof FAKE_AUTH_STATE) => unknown) =>
+      selector(FAKE_AUTH_STATE),
+    { getState: () => ({ ...FAKE_AUTH_STATE, clear: mockClear }) },
   ),
 }));
 
@@ -71,7 +78,9 @@ const { parkosFetch, ParkosHttpError } = fetchModule;
 const mockedFetch = vi.mocked(parkosFetch);
 
 // Standard 3-session respuesta (2 cerradas + 1 abierta) per spec
-// REQ-OPS-163 scenario 1.
+// REQ-OPS-163 scenario 1. Each fixture uses a distinct
+// `uuid_sucursal` so the SWR cache key differs across tests and the
+// cache doesn't bleed scenarios.
 const TRES_SESIONES = {
   fecha: '2026-09-21',
   uuid_sucursal: '11111111-2222-4333-8444-555555555555',
@@ -117,15 +126,17 @@ const TRES_SESIONES = {
 };
 
 const EMPTY_SESIONES = {
-  fecha: '2026-09-21',
-  uuid_sucursal: '11111111-2222-4333-8444-555555555555',
+  // Past date — key-gate would skip future dates per DA-F10.3-3.
+  fecha: '2026-09-19',
+  uuid_sucursal: '11111111-2222-4333-8444-666666666666',
   sesiones: [],
   cierre_dia: null,
 };
 
 const CIERRE_DIA_EXISTENTE = {
-  fecha: '2026-09-21',
-  uuid_sucursal: '11111111-2222-4333-8444-555555555555',
+  // Past date — key-gate would skip future dates per DA-F10.3-3.
+  fecha: '2026-09-20',
+  uuid_sucursal: '11111111-2222-4333-8444-777777777777',
   sesiones: TRES_SESIONES.sesiones,
   cierre_dia: {
     uuid_sesion: null,
@@ -139,6 +150,12 @@ const CIERRE_DIA_EXISTENTE = {
     valor_datafono_reportado: 30_000,
     uuid_arqueo: '00000000-aaaa-4bbb-8ccc-dddddddddddd',
   },
+};
+
+const AUTH_FAILURE_FIXTURE = {
+  // Past date — key-gate would skip future dates per DA-F10.3-3.
+  fecha: '2026-09-20',
+  uuid_sucursal: '11111111-2222-4333-8444-888888888888',
 };
 
 describe('HU-F10.3 — useArqueoResumenPorSesion (REQ-OPS-163, REQ-OPS-165, AD-1)', () => {
@@ -158,26 +175,28 @@ describe('HU-F10.3 — useArqueoResumenPorSesion (REQ-OPS-163, REQ-OPS-165, AD-1
   it('hook-1: returns per-session array with 3 sesiones (2 cerradas + 1 abierta) per REQ-OPS-163', async () => {
     mockedFetch.mockResolvedValueOnce(TRES_SESIONES as never);
 
-    const { data, refresh, error } = useArqueoResumenPorSesion(
-      TRES_SESIONES.uuid_sucursal,
-      TRES_SESIONES.fecha,
+    const { result } = renderHook(() =>
+      useArqueoResumenPorSesion(
+        TRES_SESIONES.uuid_sucursal,
+        TRES_SESIONES.fecha,
+      ),
     );
 
-    // The hook resolves data synchronously via SWR cache. We assert
-    // the typed shape mirrors ArqueoResumenRead: 3 sesiones,
-    // cierre_dia === null.
-    await Promise.resolve();
-    expect(error).toBeUndefined();
-    expect(data).toBeDefined();
-    expect(data?.sesiones).toHaveLength(3);
-    expect(data?.cierre_dia).toBeNull();
+    await waitFor(() => {
+      expect(result.current.data).toBeDefined();
+    });
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.data?.sesiones).toHaveLength(3);
+    expect(result.current.data?.cierre_dia).toBeNull();
     // 2 cerradas + 1 abierta — exact distribution per scenario body.
-    const cerradas = data?.sesiones.filter((s) => s.estado === 'cerrado') ?? [];
-    const abiertas = data?.sesiones.filter((s) => s.estado === 'abierta') ?? [];
+    const cerradas =
+      result.current.data?.sesiones.filter((s) => s.estado === 'cerrado') ?? [];
+    const abiertas =
+      result.current.data?.sesiones.filter((s) => s.estado === 'abierta') ?? [];
     expect(cerradas).toHaveLength(2);
     expect(abiertas).toHaveLength(1);
     // refresh is callable — verify the function reference exists.
-    expect(typeof refresh).toBe('function');
+    expect(typeof result.current.refresh).toBe('function');
   });
 
   // ──────────────────────────────────────────────────────────────────
@@ -186,16 +205,19 @@ describe('HU-F10.3 — useArqueoResumenPorSesion (REQ-OPS-163, REQ-OPS-165, AD-1
   it('hook-2: returns empty sesiones array when no sessions of the day (REQ-OPS-165 defensive)', async () => {
     mockedFetch.mockResolvedValueOnce(EMPTY_SESIONES as never);
 
-    const { data, error } = useArqueoResumenPorSesion(
-      EMPTY_SESIONES.uuid_sucursal,
-      EMPTY_SESIONES.fecha,
+    const { result } = renderHook(() =>
+      useArqueoResumenPorSesion(
+        EMPTY_SESIONES.uuid_sucursal,
+        EMPTY_SESIONES.fecha,
+      ),
     );
 
-    await Promise.resolve();
-    expect(error).toBeUndefined();
-    expect(data).toBeDefined();
-    expect(data?.sesiones).toEqual([]);
-    expect(data?.cierre_dia).toBeNull();
+    await waitFor(() => {
+      expect(result.current.data).toBeDefined();
+    });
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.data?.sesiones).toEqual([]);
+    expect(result.current.data?.cierre_dia).toBeNull();
   });
 
   // ──────────────────────────────────────────────────────────────────
@@ -204,18 +226,21 @@ describe('HU-F10.3 — useArqueoResumenPorSesion (REQ-OPS-163, REQ-OPS-165, AD-1
   it('hook-3: surfaces cierre_dia !== null so the page disables Confirmar + renders alreadyClosed banner', async () => {
     mockedFetch.mockResolvedValueOnce(CIERRE_DIA_EXISTENTE as never);
 
-    const { data } = useArqueoResumenPorSesion(
-      CIERRE_DIA_EXISTENTE.uuid_sucursal,
-      CIERRE_DIA_EXISTENTE.fecha,
+    const { result } = renderHook(() =>
+      useArqueoResumenPorSesion(
+        CIERRE_DIA_EXISTENTE.uuid_sucursal,
+        CIERRE_DIA_EXISTENTE.fecha,
+      ),
     );
 
-    await Promise.resolve();
-    expect(data?.cierre_dia).not.toBeNull();
-    expect(data?.cierre_dia?.uuid_arqueo).toBe(
+    await waitFor(() => {
+      expect(result.current.data?.cierre_dia).not.toBeNull();
+    });
+    expect(result.current.data?.cierre_dia?.uuid_arqueo).toBe(
       '00000000-aaaa-4bbb-8ccc-dddddddddddd',
     );
     // sesiones still rendered for the report — 3 sesiones surfaced.
-    expect(data?.sesiones).toHaveLength(3);
+    expect(result.current.data?.sesiones).toHaveLength(3);
   });
 
   // ──────────────────────────────────────────────────────────────────
@@ -226,14 +251,20 @@ describe('HU-F10.3 — useArqueoResumenPorSesion (REQ-OPS-163, REQ-OPS-165, AD-1
       new ParkosHttpError(401, 'unauthorized', 'auth_invalid'),
     );
 
-    useArqueoResumenPorSesion(
-      TRES_SESIONES.uuid_sucursal,
-      TRES_SESIONES.fecha,
+    renderHook(() =>
+      useArqueoResumenPorSesion(
+        AUTH_FAILURE_FIXTURE.uuid_sucursal,
+        AUTH_FAILURE_FIXTURE.fecha,
+      ),
     );
 
-    // SWR error handlers run asynchronously — wait for the next tick
-    // so onError fires before we assert.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Verify the hook attempted the fetch (sanity).
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(mockedFetch).toHaveBeenCalled();
+
+    // SWR error handlers run asynchronously — wait long enough for
+    // the rejection to propagate through onError.
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     expect(mockClear).toHaveBeenCalledTimes(1);
     const dispatched = dispatchEventSpy.mock.calls.find((call) => {

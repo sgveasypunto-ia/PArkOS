@@ -30,14 +30,9 @@ import { MemoryRouter } from 'react-router-dom';
 const mockNavigate = vi.fn();
 const mockRunCierreDiarioChain = vi.fn();
 const mockClear = vi.fn();
-const dispatchEventSpy = vi
-  .spyOn(window, 'dispatchEvent')
-  .mockImplementation(() => true);
 
 vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>(
-    'react-router-dom',
-  );
+  const actual = await vi.importActual('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
@@ -76,7 +71,6 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
 // SWR + the per-session hook.
 let mockResumenData: unknown = undefined;
 let mockResumenError: Error | undefined = undefined;
-let mockResumenIsLoading = true;
 vi.mock('../../hooks/useArqueoResumenPorSesion', () => ({
   useArqueoResumenPorSesion: () => ({
     data: mockResumenData,
@@ -155,7 +149,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockResumenData = undefined;
   mockResumenError = undefined;
-  mockResumenIsLoading = true;
 });
 
 afterEach(() => {
@@ -213,16 +206,21 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
     renderPage();
     await waitFor(() => {
       expect(
-        screen.getByTestId('cierre-diario-sesiones'),
+        screen.getByTestId('cierre-diario-confirmar'),
       ).toBeInTheDocument();
     });
-    // The success path must navigate to `/` (Dashboard) — NOT
-    // `/login?closed=true` per AD-3 + REQ-OPS-164 supervisor flow.
+    // Click Confirmar to trigger the form submission.
+    const confirmar = screen.getByTestId(
+      'cierre-diario-confirmar',
+    ) as HTMLButtonElement;
+    expect(confirmar.disabled).toBe(false);
+    confirmar.click();
+    // The chain helper was awaited exactly once.
     await waitFor(() => {
       expect(mockRunCierreDiarioChain).toHaveBeenCalled();
     });
     // NO useAuthStore.clear() on success — supervisor preserves own
-    // session.
+    // session per AD-3 + REQ-OPS-164.
     expect(mockClear).not.toHaveBeenCalled();
   });
 
@@ -258,8 +256,15 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
     });
     renderPage();
     await waitFor(() => {
-      expect(mockRunCierreDiarioChain).toHaveBeenCalled();
+      expect(
+        screen.getByTestId('cierre-diario-confirmar'),
+      ).toBeInTheDocument();
     });
+    // Click Confirmar to trigger the form submission.
+    const confirmar = screen.getByTestId(
+      'cierre-diario-confirmar',
+    ) as HTMLButtonElement;
+    confirmar.click();
     // Page navigates to `/` with success banner; mockNavigate is
     // called with `/`.
     await waitFor(() => {
