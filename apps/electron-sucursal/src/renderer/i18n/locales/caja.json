@@ -62,5 +62,32 @@
     "sync": "Sincronización",
     "alertas": "Alertas",
     "placeholderDesc": "Sección pendiente."
+  },
+  "cierreDiario": {
+    "titulo": "Cierre diario",
+    "subtitulo": "Cierre de todas las sesiones abiertas del día — supervisor / multi-sucursal.",
+    "fecha": "Fecha",
+    "fechaDesc": "Solo se permite el cierre del día actual.",
+    "fechaFuturoRechazado": "La fecha seleccionada está en el futuro — no se permite cierre diario para fechas futuras.",
+    "alreadyClosed": "Ya existe un cierre diario para hoy — consulta el reporte.",
+    "confirmar": "Confirmar cierre diario",
+    "cancelar": "Cancelar",
+    "supervisorOnly": "Funcionalidad solo para supervisores — seleccione una sucursal para continuar.",
+    "multiBranchOperatorPending": "Sucursal pendiente de selección — seleccioná una sucursal para continuar.",
+    "errorCierreFallido": "No se pudo registrar el cierre diario — reintente; si persiste contacte al supervisor.",
+    "errorRedArqueo": "Sin conexión — verifique la red.",
+    "errorCierreDiaNoAceptaSesion": "Cierre diario ya registrado para hoy — consulte el reporte.",
+    "errorPermisoInsuficiente": "No tiene permiso para cerrar esta sucursal — contacte al administrador del sistema.",
+    "retry": "Reintentar",
+    "tabla": {
+      "caption": "Sesiones del día",
+      "cajero": "Cajero",
+      "base": "Base",
+      "esperado": "Esperado",
+      "reportado": "Reportado",
+      "diferencia": "Diferencia",
+      "justificado": "Justificado",
+      "estado": "Estado"
+    }
   }
 }

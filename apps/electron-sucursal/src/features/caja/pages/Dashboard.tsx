@@ -303,11 +303,18 @@ export function Dashboard(): JSX.Element | null {
             data-testid="sidebar-cierre-diario"
             className="justify-start text-sm"
             onClick={() => {
-              openDrawer('cierre-diario', 'sidebar-cierre-diario');
+              // HU-F10.3 (REQ-OPS-164 + AD-2) — sidebar anchor
+              // navigates to the routed page (mirrors the F10.1/F10.2
+              // sidebar anchors). The F8.x `CierreDiarioDialog` drawer
+              // (per-session quick close) remains accessible via the
+              // DrawerHost but the canonical entry-point for the
+              // multi-session daily reconciliation is this routed
+              // page.
+              navigate('/caja/cierre-diario');
               setMobileNavOpen(false);
             }}
           >
-            📋 {t('caja:dashboard.cierreDiario', { defaultValue: 'Cierre diario' })}
+            📋 {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
             <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F6</kbd>
           </Button>
           <Button

@@ -97,11 +97,29 @@ export function useArqueoResumen(
   };
 }
 
+// Module-level once-per-page-load guard (REQ-OPS-168 scenario 1).
+// Production builds dead-code-eliminate the warn guard via
+// `import.meta.env.DEV` (Vite + Rollup tree-shake).
+let hasWarnedCierreDiario = false;
+
 /**
  * `useCierreDiario` — full-day cierre helper. Chains arqueo per
  * session + resumen fetch.
+ *
+ * @deprecated use the `useArqueo().submit({ uuid_sesion: null,
+ * tipo_arqueo: 'cierre_dia', ... })` path via `runCierreDiarioChain`
+ * from `pages/cierreDiarioChain.ts` (REQ-OPS-166) for the F10.3
+ * routed page; the F8.x `CierreDiarioDialog` consumer remains on
+ * the deprecated helper until a follow-up housekeeping PR migrates
+ * it. Removal target: F11.x or later Fase 11 housekeeping.
  */
 export function useCierreDiario() {
+  if (import.meta.env.DEV && !hasWarnedCierreDiario) {
+    console.warn(
+      'useCierreDiario is deprecated — migrate to cierreDiarioChain (REQ-OPS-166). Removal in next major.',
+    );
+    hasWarnedCierreDiario = true;
+  }
   const { submit } = useArqueo();
   return {
     async ejecutar(payload: {
@@ -117,3 +135,10 @@ export function useCierreDiario() {
     },
   };
 }
+
+/**
+ * Re-export the F10.3 sibling SWR hook for tree-shaking convenience.
+ * F10.1 callers continue using the legacy `useArqueoResumen` aggregate
+ * hook unchanged (NEW-DA-F10.3-9 regression guard).
+ */
+export { useArqueoResumenPorSesion } from './useArqueoResumenPorSesion';
