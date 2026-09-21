@@ -8,8 +8,8 @@
 | Phase | sdd-apply (Phase 6 of SDD cycle) |
 | Branch | `feature/hu-f11-2-alertas-panel` |
 | Base | `dev @ 14d607d` (post-F11.1 archive housekeeping) |
-| Final SHA | `ab828d2` (head of feature branch) |
-| Per-commit SHAs | C1 `e323af1` · C2 `cd8e184` · C3 `b605af6` · C4 `9753d74` · C5 `a0bedf6` · C6 `a2adbd8` · C7 `ab828d2` |
+| Final SHA | `f5dac18` (head of feature branch) |
+| Per-commit SHAs | C1 `e323af1` · C2 `cd8e184` · C3 `b605af6` · C4 `9753d74` · C5 `a0bedf6` · C6 `a2adbd8` · C7 `ab828d2` · C8 (SHA-population) `f5dac18` |
 | Status | READY for sdd-verify |
 | Preflight | pace=auto, artifact=hybrid, delivery=ask-on-risk, budget=2000 LOC, strict_tdd=true, test=vitest+playwright, author=`Parkos Dev <dev@parkos.local>` |
 | Strict-TDD mode | active (RED → GREEN → REFACTOR per work unit) |
