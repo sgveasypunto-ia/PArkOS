@@ -24,7 +24,19 @@
   "turnoActivo": "Turno activo",
   "turnoVigenteLabel": "Turno vigente",
   "arqueoParcial": "Arqueo parcial",
+  "arqueoParcial.diferencia_critica": "Diferencia crítica detectada — el supervisor será notificado.",
+  "arqueoParcial.diferencia_informativa_pct": "Descuadre informativo: {{pct}}%",
+  "arqueoParcial.titulo": "Arqueo parcial (sin cierre de turno)",
+  "arqueoParcial.subtitulo": "Contá la caja cuando quieras durante el turno.",
+  "arqueoParcial.sin_diferencia": "Sin diferencia entre lo contado y lo esperado.",
+  "arqueoParcial.justificacion_requerida": "Ingresá una justificación de al menos 3 caracteres cuando hay diferencia.",
+  "arqueoParcial.warning_titulo": "Diferencia fuera de tolerancia",
   "cierreDiario": "Cierre diario",
+  "arqueo": {
+    "fallback": {
+      "noSession": "Necesitás abrir un turno antes de poder hacer un arqueo parcial."
+    }
+  },
   "dashboard": {
     "turnoActivo": "Resumen del turno",
     "operar": "Ingreso",

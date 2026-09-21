@@ -110,12 +110,21 @@ export function Dashboard(): JSX.Element | null {
     : null;
 
   // F1-F6 hotkey listener → openDrawer + Esc closes.
+  // F4 (arqueo) is the ONLY hotkey that navigates instead of opening
+  // the drawer directly — REQ-OPS-152 (F10.1 / DA-2): the routed page
+  // wraps the drawer so the F4 hotkey + sidebar anchor share the same
+  // URL flow. The routed page itself opens the drawer via the store.
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       if (e.key === 'Escape') {
         if (openDrawerKind !== null) {
           closeDrawer();
         }
+        return;
+      }
+      if (e.key === 'F4') {
+        e.preventDefault();
+        navigate('/caja/arqueo-parcial');
         return;
       }
       const target = DRAWER_BY_HOTKEY[e.key];
@@ -128,7 +137,7 @@ export function Dashboard(): JSX.Element | null {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [openDrawerKind, openDrawer, closeDrawer]);
+  }, [openDrawerKind, openDrawer, closeDrawer, navigate]);
 
   useEffect(() => {
     if (isAuthLoading) return;
@@ -206,7 +215,15 @@ export function Dashboard(): JSX.Element | null {
                 data-testid={`hotkey-${kind}`}
                 id={`hotkey-chip-${kind}`}
                 className="inline-flex h-6 cursor-pointer items-center rounded border border-border bg-background px-2 text-xs hover:bg-accent"
-                onClick={() => openDrawer(kind, `hotkey-chip-${kind}`)}
+                onClick={() => {
+                  // F4 (arqueo) navigates to the routed page instead
+                  // of opening the drawer directly — REQ-OPS-152 / DA-2.
+                  if (kind === 'arqueo') {
+                    navigate('/caja/arqueo-parcial');
+                    return;
+                  }
+                  openDrawer(kind, `hotkey-chip-${kind}`);
+                }}
               >
                 {key}
               </kbd>
@@ -256,7 +273,10 @@ export function Dashboard(): JSX.Element | null {
             data-testid="sidebar-arqueo"
             className="justify-start text-sm"
             onClick={() => {
-              openDrawer('arqueo', 'sidebar-arqueo');
+              // REQ-OPS-152 / DA-2 — sidebar anchor navigates to the
+              // routed page. The page itself opens the drawer via the
+              // store, preserving focus-restore via lastAnchorId.
+              navigate('/caja/arqueo-parcial');
               setMobileNavOpen(false);
             }}
           >

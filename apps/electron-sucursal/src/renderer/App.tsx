@@ -7,6 +7,7 @@ import { Login } from '../features/auth/pages/Login';
 import { Dashboard } from '../features/caja/pages/Dashboard';
 import { AbrirTurno } from '../features/caja/pages/AbrirTurno';
 import { CerrarTurno } from '../features/caja/pages/CerrarTurno';
+import { ArqueoParcial } from '../features/caja/pages/ArqueoParcial';
 import { FacturaDetalle } from '../features/facturacion/pages/FacturaDetalle';
 import { ReimprimirTiquete } from '../features/facturacion/pages/ReimprimirTiquete';
 import { Venta } from '../features/suscripciones/pages/Venta';
@@ -62,6 +63,14 @@ export default function App(): JSX.Element {
             element={
               <ProtectedRoute>
                 <CerrarTurno />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/caja/arqueo-parcial"
+            element={
+              <ProtectedRoute>
+                <ArqueoParcial />
               </ProtectedRoute>
             }
           />
