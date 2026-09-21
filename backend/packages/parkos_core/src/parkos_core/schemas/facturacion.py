@@ -686,7 +686,7 @@ class EnvioDianRead(_Base):
     uuid_factura_electronica: uuid_lib.UUID
     estado: Literal["pendiente", "enviado", "aceptado", "rechazado"]
     timestamp_evento: datetime | None
-    uuid_envio_padre: uuid_lib.UUID | None
+    uuid_envio_padre: uuid_lib.UUID | None = None
     cufe: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
     motivo_rechazo: Annotated[str, StringConstraints(max_length=500)] | None = None
 
