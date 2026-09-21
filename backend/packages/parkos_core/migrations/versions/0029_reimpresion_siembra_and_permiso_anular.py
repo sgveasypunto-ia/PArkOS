@@ -33,34 +33,79 @@ Create Date: 2026-09-15
      (mirror of F1.7 ``anular_ingreso_salida`` seed pattern):
      ``IF NOT EXISTS`` guard makes the seed idempotent on re-apply.
 
-  4. **Op 3 — grant ``'anular_reimpresion'`` to ``operador`` and
-     ``admin`` roles via ``prod.permisos_usuario``**: idempotent via
-     ``NOT EXISTS`` subquery + JOIN on ``prod.roles WHERE nombre IN
-     ('operador', 'admin')``. One INSERT per (user, permission) pair.
+  4. **Op 3 — REMOVED (formerly: grant ``'anular_reimpresion'`` to
+     ``operador`` + ``admin`` roles via ``prod.permisos_usuario``)**.
+
+     The original Op 3 JOINed ``prod.usuarios`` against ``prod.roles``
+     filtered by ``nombre IN ('operador', 'admin')``. Two real defects
+     were identified during end-to-end verification:
+
+       (a) ``prod.roles`` does NOT exist. Roles are PG-level only:
+           ``rol_app`` and ``rol_admin_auditor`` were created via
+           ``CREATE ROLE`` in migration 0021
+           (``least_privilege_and_immutability_contract``); there is
+           no per-role table.
+       (b) ``prod.usuarios.uuid_rol`` does NOT exist either. The
+           canonical schema in ``0001_initial_schema.py:153-169`` has
+           ``usuarios.rol`` (String, e.g. ``'operador'`` /
+           ``'admin'``), not ``uuid_rol`` (UUID).
+
+     Both defects would surface as ``UndefinedTable`` /
+     ``UndefinedColumn`` at apply time. Mirroring the preflight fix
+     (commit ``592a588``: query ``pg_catalog.pg_roles`` for role
+     existence) would still leave defect (b) intact AND force the
+     migration to invent a UUID representation for PG-level roles
+     (which have only ``oid``, no UUID column) — a far more invasive
+     change than the constraint warrants.
+
+     **Decision (KD-MIN-PRIVILEGE): remove the per-role DB pre-grant
+     entirely.** Role gating for the ``anular_reimpresion`` action is
+     enforced at the HTTP handler via
+     ``_anular_reimpresion_issuer_dep``
+     (``requires_issuer("operador-", "admin-")``,
+     ``backend/packages/parkos_core/src/parkos_core/api/v1/
+     workflows_reimpresion.py:76``). This is the authoritative
+     mechanism, locked by
+     ``test_anular_handler_uses_anular_reimpresion_issuer_dep``
+     (``backend/tests/integration/test_workflows_router_wiring.py:
+     276``). The DB-side per-user grant was dead code that would
+     have been silently overwritten by the handler anyway, and is
+     removed as redundant. No regression: handler-level gating is
+     strictly tighter (it inspects the JWT ``iss`` claim, not the
+     user table). Op 3 is now a no-op ``RAISE NOTICE`` for log
+     continuity.
 
 **Idempotency.**
   - Op 0 ``DO $$`` is read-only.
   - Op 1 ``IF siembra_count = 0`` + ``ON CONFLICT`` is the standard
     pattern; re-apply is a no-op.
   - Op 2 ``IF NOT EXISTS`` is the same pattern as F1.7.
-  - Op 3 ``NOT EXISTS`` subquery in the SELECT skips already-granted
-    rows; re-apply is a no-op.
+  - Op 3 is a read-only ``RAISE NOTICE`` (the DB pre-grant block was
+    removed; see KD-MIN-PRIVILEGE note above).
 
 **Downgrade.** Reverse order:
-  1. DELETE FROM ``prod.permisos_usuario`` WHERE uuid_permiso IN
-     (SELECT uuid FROM prod.permisos WHERE permiso='anular_reimpresion').
-  2. DELETE FROM ``prod.permisos`` WHERE permiso='anular_reimpresion'.
+  1. DELETE FROM ``prod.permisos_usuario`` rows whose ``uuid_permiso``
+     resolves to ``permiso='anular_reimpresion'`` (defensive: this
+     migration does NOT insert any such rows, but the DELETE is
+     preserved so a downgrade still cleans up if a future migration
+     re-introduces the grant or a manual fix seeded one out-of-band).
+  2. DELETE FROM ``prod.permisos`` WHERE permiso='anular_reimpresion'
+     (reverse Op 2).
   3. DELETE FROM ``prod.costos_servicios`` WHERE
      concepto='reimpresion' AND vigente_desde >= NOW() - INTERVAL '1
      hour' AND vigente_hasta IS NULL AND estado='activo' (known R8
      limitation: deletes any siembra inserted within the last hour
-     — assumes the migration is recent).
+     — assumes the migration is recent; reverse Op 1).
 
 **Cross-references.**
   - F1.7 MIGRATION 0026 — IVA + alert_types seed pattern mirrored for
     the siembra (Op 1) and the permission seed (Op 2).
-  - F1.7 ``anular_ingreso_salida`` permission + role grants — Op 2 +
-    Op 3 mirror the same pattern verbatim.
+  - F1.7 ``anular_ingreso_salida`` permission seed — Op 2 mirrors that
+    pattern. The role-grant half (formerly Op 3) is REMOVED in this
+    migration; F1.7 still keeps its own DB-level grant because F1.7's
+    ``anular_ingreso_salida`` handler relies on a different enforcement
+    surface (see F1.7 design + its handler tests for the contrasting
+    contract).
   - F1.10 MIGRATION 0028 — pre-flight DO $$ block pattern (KD-7).
 """
 from __future__ import annotations
@@ -81,7 +126,7 @@ _LOCK_TIMEOUT_SQL = "SET lock_timeout = '5s'"
 
 
 def upgrade() -> None:
-    """Apply the F1.11 siembra + permission seed + role grants."""
+    """Apply the F1.11 siembra + permission seed (Op 3 grants removed)."""
     op.execute(_LOCK_TIMEOUT_SQL)
 
     # ----------------------------------------------------------------
@@ -217,41 +262,56 @@ def upgrade() -> None:
     )
 
     # ----------------------------------------------------------------
-    # Op 3: grant 'anular_reimpresion' to operador + admin roles
+    # Op 3: REMOVED — DB-side per-role pre-grant is redundant.
     # ----------------------------------------------------------------
-    # Idempotent via NOT EXISTS subquery + JOIN on roles. The SELECT
-    # cross-product (``usuarios`` x ``permisos``) filtered by
-    # ``uuid_rol IN ('operador', 'admin')`` materializes one row per
-    # (user, permission) pair, each row inserted only if no current
-    # grant exists for that pair.
+    # The original Op 3 INSERTed one row per (operador|admin user,
+    # anular_reimpresion) pair into ``prod.permisos_usuario`` via a
+    # JOIN on ``prod.roles WHERE nombre IN ('operador', 'admin')``.
+    # Two real defects made that block unrunnable:
+    #
+    #   (a) ``prod.roles`` does NOT exist — application roles are
+    #       PG-level only (``rol_app``, ``rol_admin_auditor`` created
+    #       by ``CREATE ROLE`` in migration 0021
+    #       ``least_privilege_and_immutability_contract``).
+    #   (b) ``prod.usuarios.uuid_rol`` does NOT exist — the canonical
+    #       column is ``prod.usuarios.rol`` (String, e.g.
+    #       ``'operador'`` / ``'admin'``), per
+    #       ``0001_initial_schema.py:153-169``.
+    #
+    # Mirroring the preflight fix (commit 592a588: query
+    # ``pg_catalog.pg_roles`` for role existence) would still leave
+    # defect (b) intact AND force the migration to invent a UUID
+    # representation for PG-level roles (which have only ``oid``, no
+    # UUID column) — far more invasive than the constraint warrants.
+    #
+    # KD-MIN-PRIVILEGE: role gating is enforced at the HTTP handler
+    # via ``_anular_reimpresion_issuer_dep``
+    # (``requires_issuer("operador-", "admin-")`` in
+    # ``backend/packages/parkos_core/src/parkos_core/api/v1/
+    # workflows_reimpresion.py:76``), locked by
+    # ``test_anular_handler_uses_anular_reimpresion_issuer_dep``
+    # (``backend/tests/integration/test_workflows_router_wiring.py:
+    # 276``). The DB-side per-user pre-grant was dead code — the
+    # handler inspects the JWT ``iss`` claim directly and would
+    # reject the request before any application code ever queried
+    # ``prod.permisos_usuario``. Removed as redundant.
+    #
+    # No regression: the handler-level gate is strictly tighter than
+    # the DB-level pre-grant (it scopes by JWT issuer, not by a
+    # row that may or may not exist in ``prod.permisos_usuario``).
+    #
+    # The DO block below is preserved as a no-op ``RAISE NOTICE`` for
+    # log continuity — operators grepping for ``0029_op3:`` in
+    # alembic output still see the expected marker, and any future
+    # hook that needs to run post-permission-seed has an obvious
+    # anchor here.
     op.execute(
         """
         DO $$
         BEGIN
-            IF EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema='prod' AND table_name='permisos_usuario'
-            ) THEN
-                INSERT INTO prod.permisos_usuario (
-                    uuid, uuid_usuario, uuid_permiso,
-                    vigente_desde, vigente_hasta, estado, created_at
-                )
-                SELECT
-                    gen_random_uuid(), u.uuid, p.uuid,
-                    NOW(), NULL, 'activo', NOW()
-                FROM prod.usuarios u, prod.permisos p
-                WHERE p.permiso = 'anular_reimpresion'
-                  AND u.uuid_rol IN (
-                      SELECT uuid FROM prod.roles WHERE nombre IN ('operador', 'admin')
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM prod.permisos_usuario pu
-                      WHERE pu.uuid_usuario = u.uuid
-                        AND pu.uuid_permiso = p.uuid
-                        AND pu.vigente_hasta IS NULL
-                  );
-                RAISE NOTICE '0029_op3: grants inserted (operador+admin)';
-            END IF;
+            RAISE NOTICE '0029_op3: grants removed (KD-MIN-PRIVILEGE; '
+                         'handler enforces role via '
+                         '_anular_reimpresion_issuer_dep)';
         END $$;
         """
     )
@@ -259,7 +319,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Reverse the 4 ops (R8 known limitation: Op 1 1-hour time window)."""
-    # Reverse Op 3 (role grants).
+    # Reverse Op 3 — no-op (DB-side per-role pre-grant was REMOVED in
+    # this migration; see upgrade Op 3 comment + KD-MIN-PRIVILEGE).
+    # Preserved as a defensive DELETE for symmetry with prior revision
+    # history: if a row referencing uuid_permiso='anular_reimpresion'
+    # happens to exist (e.g. inserted by a future migration that
+    # re-introduces this grant), this downgrade will still clean it up.
     op.execute(
         """
         DELETE FROM prod.permisos_usuario
