@@ -48,6 +48,7 @@ from ...api.deps import get_tenant_ctx, requires_issuer
 from ...auth.tenancy import TenantContext
 from ...db.engine import get_session
 from ...models.L_E.ingreso import Ingreso
+from ...models.L_S.sesion import Sesion
 from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.vehiculos import Vehiculos
@@ -84,6 +85,7 @@ from ...schemas.operacion import (
     IngresoCreateForzado,
     IngresoRead,
     IngresoReadForzado,
+    MiTurnoRead,
     OcupacionItem,
     OcupacionResponse,
     SalidaCreateForzado,
@@ -908,9 +910,115 @@ async def get_ocupacion(
     )
 
 
+# ---------------------------------------------------------------------------
+# HU-F12.1 (REQ-OPS-184..187) -- GET /operacion/mi-turno
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/mi-turno",
+    response_model=MiTurnoRead,
+    response_model_by_alias=False,
+    summary=(
+        "HU-F12.1 / REQ-OPS-184: per-turn KPI aggregate (read-only). "
+        "Returns 7-field MiTurnoRead over a Sesion open-window temporal "
+        "JOIN, tenant-pinned to ctx.sucursal_uuid. Cache-Control: no-store."
+    ),
+    responses={
+        403: {"description": "sesion_cross_branch_forbidden (REQ-OPS-185)"},
+        404: {"description": "sesion_not_found (REQ-OPS-185)"},
+    },
+)
+async def get_mi_turno(
+    response: Response,
+    uuid_sesion: uuid_lib.UUID = Query(  # noqa: B008
+        ...,
+        description="uuid_sesion of the operator's active turno.",
+    ),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+) -> MiTurnoRead:
+    """REQ-OPS-184..187: read-only per-turn KPI aggregate.
+
+    Pipeline (locked at ``tests/integration/test_mi_turno_endpoint.py``):
+
+      1. Look up ``prod.sesion.uuid = uuid_sesion`` server-side.
+         Unknown -> 404 ``sesion_not_found``.
+      2. Compare the resolved ``Sesion.uuid_sucursal`` against
+         ``ctx.sucursal_uuid`` (issuer-pinned). Mismatch -> 403
+         ``sesion_cross_branch_forbidden`` (REQ-OPS-185, DA-F12.1-2).
+      3. Delegate to :func:`repo.mi_turno.calcular_resumen_mi_turno`
+         which runs the open-window temporal JOIN + the two
+         ``SUM(factura_pagos)`` aggregates via the canonical F1.13
+         helper (AD-3, R-F12.1-2).
+      4. Attach ``Cache-Control: no-store`` to the response (R-A6).
+
+    The handler does NOT write to any ``[A]`` or ``[V]`` table; the
+    endpoint is purely a read aggregator.
+    """
+    from ...repo.mi_turno import SesionNotFoundError, calcular_resumen_mi_turno
+    from ...repo.session_cycle import _now_naive
+
+    no_store = no_store_headers()
+
+    # Step 1 + 2: resolve the sesion AND enforce tenant pin BEFORE the
+    # aggregator runs. The resolved ``uuid_sucursal`` is the SINGLE source
+    # of branch scope; we never trust any ``uuid_sucursal`` from the wire.
+    sesion_row = (
+        await session.execute(select(Sesion).where(Sesion.uuid == uuid_sesion))
+    ).scalar_one_or_none()
+    if sesion_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sesion_not_found", "uuid_sesion": str(uuid_sesion)},
+            headers=no_store,
+        )
+    if sesion_row.uuid_sucursal is None:
+        # Sesion without branch scope is a data-integrity bug — surface
+        # as 404 (the row is functionally incomplete).
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sesion_not_found", "uuid_sesion": str(uuid_sesion)},
+            headers=no_store,
+        )
+    if (
+        ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or sesion_row.uuid_sucursal != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "sesion_cross_branch_forbidden",
+                "uuid_sesion": str(uuid_sesion),
+            },
+            headers=no_store,
+        )
+
+    # Step 3: aggregator.
+    try:
+        resumen = await calcular_resumen_mi_turno(
+            session,
+            uuid_sesion=uuid_sesion,
+            timestamp_calculo=_now_naive(),
+        )
+    except SesionNotFoundError as exc:
+        # Race: sesion deleted between our SELECT and the aggregator.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sesion_not_found", "uuid_sesion": str(exc.uuid_sesion)},
+            headers=no_store,
+        ) from exc
+
+    # Step 4: no-store header.
+    apply_no_store_header(response)
+    return resumen
+
+
 __all__ = [
     "SubscriptionLookupResult",
     "cotizar_ingreso_handler",
+    "get_mi_turno",
     "get_ocupacion",
     "resolve_active_subscription_for_exit",
     "router",

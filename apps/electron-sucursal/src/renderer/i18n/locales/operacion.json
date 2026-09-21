@@ -91,5 +91,19 @@
     "candidatos_titulo": "Múltiples candidatos",
     "expira": "Cotización expira en",
     "expirada": "Cotización expirada"
+  },
+  "miTurno": {
+    "titulo": "Mi turno",
+    "kpis": {
+      "ingresos": "Ingresos",
+      "salidas": "Salidas",
+      "totalCobrado": "Total cobrado",
+      "efectivo": "Efectivo",
+      "datafono": "Datáfono"
+    },
+    "cerrarTurno": "Cerrar turno",
+    "unidades": {
+      "cop": "COP"
+    }
   }
 }
