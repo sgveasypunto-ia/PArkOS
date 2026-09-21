@@ -166,10 +166,19 @@ def upgrade() -> None:
     # Op 2 -- siembra prod.alert_types.tipo_alerta='descuadre_critico', severity='critical'.
     # Idempotent via ON CONFLICT DO NOTHING (respects alert_types_inmutable trigger,
     # migration 0013:21-22). F1.14's planned seed becomes a no-op.
+    #
+    # Note on ``created_by``: prod.alert_types.created_by is typed ``UUID``
+    # (models/A/alert_types.py:50-53, mapped as PG_UUID(as_uuid=True)),
+    # so the literal string "migrations/0031" is REJECTED at INSERT time
+    # with ``invalid input syntax for type uuid`` (psycopg2 DataError).
+    # We pass ``NULL`` instead -- the canonical "system-seeded, no human
+    # user" marker, matching the precedent in migration 0025
+    # (0025_add_alerta_datos_nuevos_and_alert_type.py) and migration 0032
+    # (0032_seed_alert_types_operativos.py:54-64 explicitly calls this out).
     op.execute(
         """
         INSERT INTO prod.alert_types (tipo_alerta, severity, created_at, created_by)
-        VALUES ('descuadre_critico', 'critical', NOW(), 'migrations/0031')
+        VALUES ('descuadre_critico', 'critical', NOW(), NULL)
         ON CONFLICT (tipo_alerta) DO NOTHING;
         """
     )
