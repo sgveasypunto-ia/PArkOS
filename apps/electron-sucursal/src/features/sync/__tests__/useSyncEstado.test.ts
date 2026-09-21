@@ -49,16 +49,14 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
 // `refreshInterval`, `shouldRetryOnError`, and `onError`.
 let swrOptions: Record<string, unknown> | undefined;
 let swrKey: string | null | undefined;
-let swrFetcher: (() => Promise<unknown>) | undefined;
 
 vi.mock('swr', () => ({
   default: (
     key: string | null | undefined,
-    fetcher: () => Promise<unknown>,
+    _fetcher: () => Promise<unknown>,
     options: Record<string, unknown>,
   ) => {
     swrKey = key;
-    swrFetcher = fetcher;
     swrOptions = options;
     return { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() };
   },
@@ -73,7 +71,6 @@ const VALID_UUID = '00000000-0000-0000-0000-000000000001';
 beforeEach(() => {
   swrOptions = undefined;
   swrKey = undefined;
-  swrFetcher = undefined;
   useAuthStoreSelectorMock.mockReset();
   getStateClearMock.mockReset();
   dispatchEventSpy.mockClear();
@@ -142,10 +139,10 @@ describe('useSyncEstado — REQ-OPS-170 + DA-F11.1-7 schema alignment', () => {
     expect(retry).toBeDefined();
     if (!retry) throw new Error('shouldRetryOnError missing');
 
-    const err401 = new ParkosHttpError(401, 'Unauthorized');
-    const err403 = new ParkosHttpError(403, 'Forbidden');
-    const err404 = new ParkosHttpError(404, 'Not Found');
-    const err500 = new ParkosHttpError(500, 'Server Error');
+    const err401 = new ParkosHttpError(401, 'Unauthorized', '/sync/estado');
+    const err403 = new ParkosHttpError(403, 'Forbidden', '/sync/estado');
+    const err404 = new ParkosHttpError(404, 'Not Found', '/sync/estado');
+    const err500 = new ParkosHttpError(500, 'Server Error', '/sync/estado');
     expect(retry(err401)).toBe(false);
     expect(retry(err403)).toBe(false);
     expect(retry(err404)).toBe(false);
