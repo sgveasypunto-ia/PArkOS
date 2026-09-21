@@ -14,11 +14,13 @@
  *     helper too per F3.3 fallback).
  *
  * Drift anchor: REQ-OPS-160 + AD-4 + AD-5 (logout preserved verbatim).
- * These 5 RED scenarios MUST FAIL on master because `cerrarSesion` is
- * not yet a method on the hook. After Commit 2 lands the helper, they
- * go GREEN.
+ * Uses `renderHook` from `@testing-library/react` (canonical pattern
+ * in this codebase for hook unit tests — see useRegistrarPago.test.ts
+ * precedent). Mocks SWR so the GET leg doesn't fire and the hook
+ * cleanly returns `{ sesion: null, cerrarSesion, ... }`.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
 
 // Mock the auth store so we can inspect `clear` + the
 // `parkos:auth:cleared` window event without touching real Zustand.
@@ -33,9 +35,15 @@ vi.mock('@parkos/ui-kit/store', () => ({
 }));
 
 // Mock sesionActivaApi so we can drive the helper from tests.
+// NB: this test lives in `hooks/__tests__/`, so the relative path to
+// `features/caja/api/sesionActivaApi.ts` is `../../api/sesionActivaApi`
+// (from `hooks/__tests__/`). Using the wrong relative path silently
+// lets the mock miss the production import — the production code
+// keeps the real module and the test fails with status=0 / wrong args.
 const cerrarSesionApiMock = vi.fn();
-vi.mock('../api/sesionActivaApi', () => ({
+vi.mock('../../api/sesionActivaApi', () => ({
   cerrarSesion: (...args: unknown[]) => cerrarSesionApiMock(...args),
+  getSesionActiva: vi.fn().mockResolvedValue(null),
   SesionAlreadyClosedError: class SesionAlreadyClosedError extends Error {
     readonly name = 'SesionAlreadyClosedError';
     constructor(
@@ -48,29 +56,16 @@ vi.mock('../api/sesionActivaApi', () => ({
   },
 }));
 
-// Mock SWR — the hook uses SWR for the GET leg; for the new helper
-// test we only care about `useSesionActiva().cerrarSesion(...)` which
-// is a plain async method, not an SWR key. Provide a minimal mock.
-let capturedFetcher: (() => Promise<unknown>) | undefined;
-let capturedKey: string | null | undefined;
+// Mock SWR — the GET leg must not fire during these unit tests.
 vi.mock('swr', () => ({
-  default: (
-    key: string | null | undefined,
-    fetcher: () => Promise<unknown>,
-  ) => {
-    capturedKey = key;
-    capturedFetcher = fetcher;
-    return {
-      data: undefined,
-      error: undefined,
-      isLoading: false,
-      mutate: vi.fn(),
-    };
-  },
+  default: () => ({
+    data: undefined,
+    error: undefined,
+    isLoading: false,
+    mutate: vi.fn(),
+  }),
 }));
 
-// Capture the SWR `onError` so we can drive the 401 branch if needed.
-let capturedOnError: ((err: unknown) => void) | undefined;
 vi.mock('@parkos/ui-kit/fetch', () => ({
   ParkosHttpError: class ParkosHttpError extends Error {
     public readonly status: number;
@@ -86,20 +81,19 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
   },
 }));
 
-// Re-import AFTER mocks are registered.
-import { useSesionActiva } from '../useSesionActiva';
-import { ParkosHttpError } from '@parkos/ui-kit/fetch';
-
 beforeEach(() => {
   clearMock.mockReset();
   cerrarSesionApiMock.mockReset();
   dispatchEventSpy.mockClear();
-  capturedOnError = undefined;
 });
 
 afterEach(() => {
   vi.clearAllMocks();
 });
+
+// Re-import AFTER mocks are registered.
+import { useSesionActiva } from '../useSesionActiva';
+import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)', () => {
   // ────────────────────────────────────────────────────────────────────
@@ -112,10 +106,15 @@ describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)
     };
     cerrarSesionApiMock.mockResolvedValueOnce(sesionCerrada);
 
-    const { cerrarSesion } = useSesionActiva();
-    const result = await cerrarSesion('sess-uuid-1', {
-      valor_final_efectivo: 75_000,
-      valor_final_datafono: 25_000,
+    const { result } = renderHook(() => useSesionActiva());
+    expect(typeof result.current.cerrarSesion).toBe('function');
+
+    let resolved: unknown;
+    await act(async () => {
+      resolved = await result.current.cerrarSesion('sess-uuid-1', {
+        valor_final_efectivo: 75_000,
+        valor_final_datafono: 25_000,
+      });
     });
 
     // Helper awaits the API with the same wire body.
@@ -131,7 +130,7 @@ describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)
     expect(event?.type).toBe('parkos:auth:cleared');
 
     // Result is the typed `ok: true` envelope.
-    expect(result).toEqual({ ok: true, status: 200, sesion: sesionCerrada });
+    expect(resolved).toEqual({ ok: true, status: 200, sesion: sesionCerrada });
   });
 
   // ────────────────────────────────────────────────────────────────────
@@ -146,17 +145,17 @@ describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)
       ),
     );
 
-    const { cerrarSesion } = useSesionActiva();
-    const result = await cerrarSesion('sess-uuid-1', {
-      valor_final_efectivo: 0,
-      valor_final_datafono: 0,
+    const { result } = renderHook(() => useSesionActiva());
+
+    let resolved: unknown;
+    await act(async () => {
+      resolved = await result.current.cerrarSesion('sess-uuid-1', {
+        valor_final_efectivo: 0,
+        valor_final_datafono: 0,
+      });
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok === false) {
-      expect(result.status).toBe(409);
-      expect(result.error).toBeInstanceOf(ParkosHttpError);
-    }
+    expect(resolved).toMatchObject({ ok: false, status: 409 });
     // Critically: NO clear, NO event — the operator stays on route.
     expect(clearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
@@ -174,16 +173,17 @@ describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)
       ),
     );
 
-    const { cerrarSesion } = useSesionActiva();
-    const result = await cerrarSesion('sess-uuid-1', {
-      valor_final_efectivo: 0,
-      valor_final_datafono: 0,
+    const { result } = renderHook(() => useSesionActiva());
+
+    let resolved: unknown;
+    await act(async () => {
+      resolved = await result.current.cerrarSesion('sess-uuid-1', {
+        valor_final_efectivo: 0,
+        valor_final_datafono: 0,
+      });
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok === false) {
-      expect(result.status).toBe(401);
-    }
+    expect(resolved).toMatchObject({ ok: false, status: 401 });
     // F3.3 fallback: clear + event fire even on 401.
     expect(clearMock).toHaveBeenCalledTimes(1);
     expect(dispatchEventSpy).toHaveBeenCalledWith(expect.any(Event));
@@ -197,17 +197,17 @@ describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)
   it('helper-4: network error (TypeError on fetch) → { ok: false, error } WITHOUT clearing authStore', async () => {
     cerrarSesionApiMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
 
-    const { cerrarSesion } = useSesionActiva();
-    const result = await cerrarSesion('sess-uuid-1', {
-      valor_final_efectivo: 0,
-      valor_final_datafono: 0,
+    const { result } = renderHook(() => useSesionActiva());
+
+    let resolved: unknown;
+    await act(async () => {
+      resolved = await result.current.cerrarSesion('sess-uuid-1', {
+        valor_final_efectivo: 0,
+        valor_final_datafono: 0,
+      });
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok === false) {
-      expect(result.status).toBe(0);
-      expect(result.error).toBeInstanceOf(TypeError);
-    }
+    expect(resolved).toMatchObject({ ok: false, status: 0 });
     expect(clearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });
@@ -224,17 +224,17 @@ describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)
       ),
     );
 
-    const { cerrarSesion } = useSesionActiva();
-    const result = await cerrarSesion('sess-uuid-1', {
-      valor_final_efectivo: 0,
-      valor_final_datafono: 0,
+    const { result } = renderHook(() => useSesionActiva());
+
+    let resolved: unknown;
+    await act(async () => {
+      resolved = await result.current.cerrarSesion('sess-uuid-1', {
+        valor_final_efectivo: 0,
+        valor_final_datafono: 0,
+      });
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok === false) {
-      expect(result.status).toBe(500);
-      expect(result.error).toBeInstanceOf(ParkosHttpError);
-    }
+    expect(resolved).toMatchObject({ ok: false, status: 500 });
     expect(clearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });

@@ -123,7 +123,8 @@ describe('HU-F10.2 — <ArqueoSheet requiredMode> prop (REQ-OPS-158, AD-1)', () 
     });
 
     // Type a justificacion >= 3 chars → button re-enables.
-    const input = screen.getByTestId('arqueo-justificacion');
+    // In strict-mode the input's data-testid is `arqueo-required-justificacion`.
+    const input = screen.getByTestId('arqueo-required-justificacion');
     input.focus();
     // jsdom-friendly setter so react-hook-form picks up the value.
     const nativeSetter = Object.getOwnPropertyDescriptor(

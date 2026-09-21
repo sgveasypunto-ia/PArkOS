@@ -53,13 +53,26 @@ export const abrirTurnoSchema = z.object({
 export type AbrirTurnoInput = z.infer<typeof abrirTurnoSchema>;
 
 /**
- * Form input schema para CerrarTurno (REQ-OPS-122).
+ * Form input schema para CerrarTurno (REQ-OPS-122, REQ-OPS-157, AD-2).
  *
  * El uuid NO vive en el form (viene del path param via `useSesionActiva()`).
  * Campos:
- *   - valor_final_efectivo: number ≥ 0.
- *   - valor_final_datafono: number ≥ 0.
- *   - observaciones_cierre: string opcional.
+ *   - valor_final_efectivo: number ≥ 0 (F3.3 — cuerpo del PUT).
+ *   - valor_final_datafono: number ≥ 0 (F3.3 — cuerpo del PUT).
+ *   - observaciones_cierre: string opcional (F3.3 — cuerpo del PUT).
+ *
+ * F10.2 HU delta (REQ-OPS-157, REQ-OPS-158): agrega los campos del
+ * `POST /caja/arqueo` (HU-F1.13):
+ *   - valor_efectivo_reportado: number ≥ 0 (cuerpo del POST arqueo).
+ *   - valor_datafono_reportado: number ≥ 0 (cuerpo del POST arqueo).
+ *   - justificacion: string opcional (F10.1 lenient; F10.2 strict-mode
+ *     cuando `requiredMode='cierre_turno'` lo promueve a top-level
+ *     `min(3)` en el presentational component).
+ *
+ * La validación strict-mode (top-level `min(3)` cuando `requiredMode`
+ * es `'cierre_turno'` / `'cierre_dia'`) vive en el schema LOCAL del
+ * componente que consume este input — el shared schema acepta
+ * `justificacion.optional()` para mantener el F3.3 contrato.
  */
 export const cerrarTurnoSchema = z.object({
   valor_final_efectivo: z
@@ -69,6 +82,13 @@ export const cerrarTurnoSchema = z.object({
     .number({ invalid_type_error: 'validation.number.required' })
     .min(0, { message: 'validation.number.minZero' }),
   observaciones_cierre: z.string().optional(),
+  valor_efectivo_reportado: z
+    .number({ invalid_type_error: 'validation.number.required' })
+    .min(0, { message: 'validation.number.minZero' }),
+  valor_datafono_reportado: z
+    .number({ invalid_type_error: 'validation.number.required' })
+    .min(0, { message: 'validation.number.minZero' }),
+  justificacion: z.string().optional(),
 });
 
 export type CerrarTurnoInput = z.infer<typeof cerrarTurnoSchema>;

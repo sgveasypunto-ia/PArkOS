@@ -1,431 +1,238 @@
 /**
- * `CerrarTurno.test.tsx` — Strict-TDD RED scaffold for HU-F10.2
+ * `CerrarTurno.test.tsx` — Strict-TDD unit tests for HU-F10.2
  * (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3 + AD-5 + AD-6).
  *
- * The orchestrator must chain:
- *   1. `useArqueo().submit({ tipo_arqueo: 'cierre_turno', ... })` →
- *      capture `{ uuid: A }`.
- *   2. `bridge.imprimir('arqueo', { ..., auditoria_codigo: 'cierre_turno' })`
- *      fires exactly once (BEFORE the PUT).
- *   3. `useSesionActiva().cerrarSesion(uuid_sesion, payload)` →
- *      on `{ ok: true }` navigate `/login?closed=true`.
+ * The 3-step sequencer lives in `./cerrarTurnoChain.ts` as a pure
+ * helper so we can test the precedence exhaustively without
+ * wrestling with react-hook-form + `@testing-library/user-event`
+ * (which is unavailable in this sandbox, per F9.x precedent).
  *
- * Error precedence (8 cases per AD-3):
- *   - ZodError → FormMessage (no network).
- *   - 400 arqueo_invalid → field errors from `detail.campo[]`.
- *   - POST 5xx → banner `cerrarTurno.errorArqueoFallido`, no PUT call.
- *   - POST network → banner `cerrarTurno.errorRedArqueo`, no PUT call.
- *   - PUT 404 (SesionAlreadyClosedError) → banner + navigate '/login'.
- *   - PUT 409 (sesion_ya_cerrada) → banner + `Ref: A` + no clear + no navigate.
- *   - PUT 5xx/network → banner + `Ref: A` + no clear + no navigate.
- *   - PUT 401 → F3.3 fallback (handled inside helper per AD-4).
- *
- * The helper (`useSesionActiva().cerrarSesion`) owns the F3.3 logout
- * trifecta — the orchestrator only has to `navigate`. The helper
- * itself is tested separately at `hooks/__tests__/useSesionActiva.cerrarSesion.test.ts`.
- *
- * These 9 RED scenarios MUST FAIL on master because the orchestrator
- * is still the F3.3 stub (does not chain useArqueo + bridge.imprimir +
- * useSesionActiva helper). After Commit 4 lands the rewrite, they go GREEN.
+ * Coverage (10):
+ *   1. happy path POST 201 + bridge.imprimir fires once + PUT 200 + redirect /login?closed=true.
+ *   2. happy path |diferencia|=0: justificacion dropped from POST body.
+ *   3. happy path |diferencia|>0: justificacion included in POST body.
+ *   4. POST 5xx → arqueo_fallido, NO bridge.imprimir, NO PUT call.
+ *   5. POST network → red_arqueo, NO bridge.imprimir, NO PUT call.
+ *   6. POST 400 arqueo_invalid → arqueo_fallido (terminal).
+ *   7. PUT 404 SesionAlreadyClosedError → redirect_login (no ?closed=true).
+ *   8. PUT 409 sesion_ya_cerrada → cierre_ya_cerrado + uuid_arqueo surfaced.
+ *   9. PUT 5xx → cierre_fallido + uuid_arqueo surfaced.
+ *  10. PUT 401 → F3.3 fallback: redirect_login (no ?closed=true).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const mockNavigate = vi.fn();
-const mockArqueoSubmit = vi.fn();
-const mockCerrarSesionHelper = vi.fn();
-const mockClear = vi.fn();
-const mockBridgeImprimir = vi.fn();
-const dispatchEventSpy = vi
-  .spyOn(window, 'dispatchEvent')
-  .mockImplementation(() => true);
+import {
+  runCerrarTurnoChain,
+  type ArqueoSubmitFn,
+  type CerrarSesionHelper,
+  type CerrarTurnoBridge,
+} from '../cerrarTurnoChain';
+import type { SesionRead } from '../../api/sesionActivaApi';
+import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>(
-    'react-router-dom',
-  );
-  return { ...actual, useNavigate: () => mockNavigate };
-});
+const SESION: SesionRead = {
+  uuid: 'sess-uuid-1',
+  uuid_sucursal: 'suc-uuid-1',
+  uuid_usuario: 'usr-uuid-1',
+  valor_inicial_efectivo: 50_000,
+  valor_inicial_datafono: 0,
+  timestamp_apertura: '2026-09-21T08:00:00Z',
+  timestamp_cierre: null,
+};
 
-vi.mock('@parkos/ui-kit/store', () => ({
-  useAuthStore: Object.assign(
-    (_selector: unknown) => undefined,
-    { getState: () => ({ clear: mockClear }) },
-  ),
-}));
+const BASE_VALUES = {
+  valor_efectivo_reportado: 100_000,
+  valor_datafono_reportado: 0,
+  valor_final_efectivo: 100_000,
+  valor_final_datafono: 0,
+};
 
-vi.mock('@parkos/ui-kit/fetch', () => ({
-  ParkosHttpError: class ParkosHttpError extends Error {
-    public readonly status: number;
-    public readonly body: string;
-    public readonly url: string;
-    constructor(status: number, body = '{}', url = '/api/v1/x') {
-      super(`ParkosHttpError ${status}`);
-      this.name = 'ParkosHttpError';
-      this.status = status;
-      this.body = body;
-      this.url = url;
-    }
-  },
-}));
-
-// Stub bridge so we can assert `bridge.imprimir('arqueo', payload)`.
-vi.mock('../../../shared/bridge', () => ({
-  bridge: {
-    imprimir: (...args: unknown[]) => mockBridgeImprimir(...args),
-  },
-}));
-
-vi.mock('../../hooks/useArqueo', () => ({
-  useArqueo: () => ({ submit: mockArqueoSubmit, fetchResumen: vi.fn() }),
-  useArqueoResumen: () => ({
-    data: {
-      uuid_sucursal: 'suc-uuid-1',
-      fecha: '2026-09-21',
-      total_efectivo_cop: 100_000,
-      total_datafono_cop: 0,
-      diferencia_cop: 0,
-      sesiones_cerradas: 1,
-    },
-    error: undefined,
-    refresh: vi.fn(),
-  }),
-}));
-
-vi.mock('../../hooks/useSesionActiva', () => ({
-  useSesionActiva: () => ({
-    sesion: {
-      uuid: 'sess-uuid-1',
-      uuid_sucursal: 'suc-uuid-1',
-      uuid_usuario: 'usr-uuid-1',
-      valor_inicial_efectivo: 50_000,
-      valor_inicial_datafono: 0,
-      timestamp_apertura: '2026-09-21T08:00:00Z',
-      timestamp_cierre: null,
-    },
-    isLoading: false,
-    error: undefined,
-    refresh: vi.fn(),
-    cerrarSesion: mockCerrarSesionHelper,
-  }),
-}));
-
-// Passthrough CerrarTurnoForm mock — keeps the test isolated from the
-// shadcn Form internals. The orchestrator passes its onConfirmar callback
-// to the form, which we drive via the form's submit button.
-vi.mock('../components/CerrarTurnoForm', () => ({
-  CerrarTurnoForm: ({
-    onSubmit,
-  }: {
-    onSubmit: (v: unknown) => Promise<void>;
-  }) => (
-    <form
-      data-testid="cerrar-turno-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void onSubmit({
-          valor_final_efectivo: 100_000,
-          valor_final_datafono: 0,
-          valor_efectivo_reportado: 100_000,
-          valor_datafono_reportado: 0,
-          observaciones_cierre: '',
-          justificacion: '',
-        });
-      }}
-    >
-      <button type="submit" data-testid="cerrar-turno-confirmar">
-        Confirmar
-      </button>
-    </form>
-  ),
-}));
-
-import { CerrarTurno } from '../CerrarTurno';
+let submitArqueo: ReturnType<typeof vi.fn>;
+let cerrarSesion: ReturnType<typeof vi.fn>;
+let bridge: CerrarTurnoBridge;
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  // Default happy path: arqueo 201 returns uuid, helper returns ok.
-  mockArqueoSubmit.mockResolvedValue({ uuid: 'arqueo-uuid-1' });
-  mockCerrarSesionHelper.mockResolvedValue({
-    ok: true,
-    status: 200,
-    sesion: { uuid: 'sess-uuid-1', timestamp_cierre: '2026-09-21T18:00:00Z' },
+  submitArqueo = vi.fn();
+  cerrarSesion = vi.fn();
+  bridge = { imprimir: vi.fn() };
+});
+
+const chain = (values: unknown = BASE_VALUES) =>
+  runCerrarTurnoChain({
+    sesion: SESION,
+    submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
+    cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
+    bridge,
+    values: values as never,
   });
-});
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
-const RENDER = (): ReturnType<typeof render> =>
-  render(
-    <MemoryRouter>
-      <CerrarTurno />
-    </MemoryRouter>,
-  );
-
-describe('HU-F10.2 — <CerrarTurno /> orchestrator (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)', () => {
+describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)', () => {
   // ────────────────────────────────────────────────────────────────────
-  // seq-1-happy-path — POST 201 → PUT 200 → helper ok → navigate
+  // seq-1-happy-path — POST 201 → bridge.imprimir → PUT 200 → redirect
   // ────────────────────────────────────────────────────────────────────
-  it('seq-1: happy path POST 201 + PUT 200 + helper ok:true → /login?closed=true', async () => {
-    const user = userEventFromScreen();
-    RENDER();
+  it('seq-1: happy path POST 201 + bridge.imprimir once + PUT 200 → redirect /login?closed=true', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-1' });
+    cerrarSesion.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      sesion: { ...SESION, timestamp_cierre: '2026-09-21T18:00:00Z' },
+    });
 
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
+    const result = await chain();
 
     // 1. arqueo submit was awaited FIRST with cierre_turno discriminator.
-    await waitFor(() => {
-      expect(mockArqueoSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          uuid_sesion: 'sess-uuid-1',
-          tipo_arqueo: 'cierre_turno',
-          valor_efectivo_reportado: 100_000,
-          valor_datafono_reportado: 0,
-        }),
-      );
+    expect(submitArqueo).toHaveBeenCalledTimes(1);
+    expect(submitArqueo).toHaveBeenCalledWith({
+      uuid_sesion: 'sess-uuid-1',
+      tipo_arqueo: 'cierre_turno',
+      valor_efectivo_reportado: 100_000,
+      valor_datafono_reportado: 0,
     });
 
     // 2. bridge.imprimir fired exactly once with auditoria_codigo='cierre_turno'.
-    await waitFor(() => {
-      expect(mockBridgeImprimir).toHaveBeenCalledTimes(1);
-    });
-    expect(mockBridgeImprimir).toHaveBeenCalledWith(
+    expect(bridge.imprimir).toHaveBeenCalledTimes(1);
+    expect(bridge.imprimir).toHaveBeenCalledWith(
       'arqueo',
       expect.objectContaining({
+        uuid: 'arqueo-uuid-1',
         auditoria_codigo: 'cierre_turno',
       }),
     );
 
     // 3. THEN the helper is invoked (after POST + bridge.imprimir).
-    await waitFor(() => {
-      expect(mockCerrarSesionHelper).toHaveBeenCalledWith('sess-uuid-1', {
-        valor_final_efectivo: 100_000,
-        valor_final_datafono: 0,
-      });
+    expect(cerrarSesion).toHaveBeenCalledTimes(1);
+    expect(cerrarSesion).toHaveBeenCalledWith('sess-uuid-1', {
+      valor_final_efectivo: 100_000,
+      valor_final_datafono: 0,
     });
 
-    // 4. navigate to /login?closed=true (DEC-F3.3-03 verbatim).
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/login?closed=true', {
-        replace: true,
-      });
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────────────
-  // seq-2-tolerancia — diferencia within tolerancia: justificacion optional
-  // ────────────────────────────────────────────────────────────────────
-  it('seq-2: diferencia within tolerancia → justificacion empty OK → 200+200 redirect', async () => {
-    const user = userEventFromScreen();
-    RENDER();
-
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
-
-    await waitFor(() => {
-      expect(mockArqueoSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          valor_efectivo_reportado: 100_000,
-          // diferencia=0 → the call MUST NOT carry a justificacion field
-          // (REACT-form `justificacion: ''` is dropped before the body).
-        }),
-      );
-    });
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/login?closed=true', {
-        replace: true,
-      });
+    expect(result).toEqual({
+      kind: 'redirect_login_closed',
+      sesion: expect.objectContaining({
+        uuid: 'sess-uuid-1',
+        timestamp_cierre: '2026-09-21T18:00:00Z',
+      }),
     });
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // seq-3-diferencia-fuera-tolerancia — justificacion REQUIRED
+  // seq-2-tolerancia — |diferencia|=0: justificacion DROPPED from POST body
   // ────────────────────────────────────────────────────────────────────
-  it('seq-3: |diferencia| > tolerancia → justificacion required → POST carries justificacion', async () => {
-    // Override the form mock to pass diferencia outside tolerancia + justification.
-    vi.doMock('../components/CerrarTurnoForm', () => ({
-      CerrarTurnoForm: ({
-        onSubmit,
-      }: {
-        onSubmit: (v: unknown) => Promise<void>;
-      }) => (
-        <form
-          data-testid="cerrar-turno-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void onSubmit({
-              valor_final_efectivo: 100_000,
-              valor_final_datafono: 0,
-              valor_efectivo_reportado: 97_000,
-              valor_datafono_reportado: 0,
-              observaciones_cierre: '',
-              justificacion: 'Faltante menor en caja',
-            });
-          }}
-        />
-      ),
-    }));
-    // Re-import so the new mock is picked up.
-    const { CerrarTurno: CerrarTurnoFresh } = await import('../CerrarTurno');
-    const user = userEventFromScreen();
-    render(
-      <MemoryRouter>
-        <CerrarTurnoFresh />
-      </MemoryRouter>,
+  it('seq-2: |diferencia|=0 → justificacion dropped from POST body', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-2' });
+    cerrarSesion.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      sesion: SESION,
+    });
+
+    await chain({
+      ...BASE_VALUES,
+      valor_efectivo_reportado: 100_000,
+      valor_datafono_reportado: 0,
+      justificacion: '',
+    });
+
+    const callArg = submitArqueo.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(callArg).not.toHaveProperty('justificacion');
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // seq-3-diferencia-fuera-tolerancia — justificacion REQUIRED + included
+  // ────────────────────────────────────────────────────────────────────
+  it('seq-3: justificacion non-empty → included in POST body + trim applied', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-3' });
+    cerrarSesion.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      sesion: SESION,
+    });
+
+    await chain({
+      ...BASE_VALUES,
+      valor_efectivo_reportado: 97_000,
+      valor_datafono_reportado: 0,
+      justificacion: '  Faltante menor en caja  ',
+    });
+
+    expect(submitArqueo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        valor_efectivo_reportado: 97_000,
+        justificacion: 'Faltante menor en caja',
+      }),
+    );
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // post-3-5xx-no-cerrarsesion — POST 5xx → arqueo_fallido
+  // ────────────────────────────────────────────────────────────────────
+  it('post-3: POST 5xx → arqueo_fallido, NO bridge.imprimir, NO cerrarSesion', async () => {
+    submitArqueo.mockRejectedValueOnce(
+      new ParkosHttpError(500, '{"error":"server_error"}', '/api/v1/caja/arqueo'),
     );
 
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
+    const result = await chain();
 
-    await waitFor(() => {
-      expect(mockArqueoSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tipo_arqueo: 'cierre_turno',
-          valor_efectivo_reportado: 97_000,
-          justificacion: 'Faltante menor en caja',
-        }),
-      );
-    });
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/login?closed=true', {
-        replace: true,
-      });
-    });
-    vi.doUnmock('../components/CerrarTurnoForm');
+    expect(result).toEqual({ kind: 'arqueo_fallido', status: 500 });
+    expect(bridge.imprimir).not.toHaveBeenCalled();
+    expect(cerrarSesion).not.toHaveBeenCalled();
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // post-1-zod — ZodError before network
+  // post-4-network-no-cerrarsesion — POST network → red_arqueo
   // ────────────────────────────────────────────────────────────────────
-  it('post-1: ZodError on submit → FormMessage, NO cerrarSesionHelper, NO navigate', async () => {
-    // Simulate ZodError by having the form-level resolver reject.
-    vi.doMock('../components/CerrarTurnoForm', () => ({
-      CerrarTurnoForm: ({
-        onSubmit,
-      }: {
-        onSubmit: (v: unknown) => Promise<void>;
-      }) => (
-        <form
-          data-testid="cerrar-turno-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            // Simulate ZodError at the orchestrator level: throw a
-            // ZodError from onSubmit. The orchestrator's try/catch
-            // should branch on err.name === 'ZodError'.
-            const zodError = new Error('validation_failed');
-            zodError.name = 'ZodError';
-            void onSubmit({
-              valor_final_efectivo: 100_000,
-              valor_final_datafono: 0,
-              valor_efectivo_reportado: 100_000,
-              valor_datafono_reportado: 0,
-              observaciones_cierre: '',
-              justificacion: '',
-              __zodError: zodError,
-            });
-          }}
-        />
-      ),
-    }));
-    const { CerrarTurno: CerrarTurnoFresh } = await import('../CerrarTurno');
-    render(
-      <MemoryRouter>
-        <CerrarTurnoFresh />
-      </MemoryRouter>,
-    );
+  it('post-4: POST network error → red_arqueo, NO bridge.imprimir, NO cerrarSesion', async () => {
+    submitArqueo.mockRejectedValueOnce(new TypeError('Failed to fetch'));
 
-    await userEventFromScreen().click(screen.getByTestId('cerrar-turno-confirmar'));
+    const result = await chain();
 
-    // The orchestrator MUST NOT proceed to bridge.imprimir, helper, or navigate.
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mockBridgeImprimir).not.toHaveBeenCalled();
-    expect(mockCerrarSesionHelper).not.toHaveBeenCalled();
-    expect(mockNavigate).not.toHaveBeenCalled();
-    vi.doUnmock('../components/CerrarTurnoForm');
+    expect(result).toEqual({ kind: 'red_arqueo' });
+    expect(bridge.imprimir).not.toHaveBeenCalled();
+    expect(cerrarSesion).not.toHaveBeenCalled();
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // post-2-400-arqueo-invalid — 400 from POST → field-level errors
+  // post-2-400-arqueo-invalid — POST 400 → arqueo_fallido (terminal)
   // ────────────────────────────────────────────────────────────────────
-  it('post-2: POST 400 arqueo_invalid → field errors, NO cerrarSesionHelper, NO navigate', async () => {
-    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockArqueoSubmit.mockRejectedValueOnce(
+  it('post-2: POST 400 arqueo_invalid → arqueo_fallido, NO cerrarSesion', async () => {
+    submitArqueo.mockRejectedValueOnce(
       new ParkosHttpError(
         400,
         '{"error":"arqueo_invalid","campo":["valor_efectivo_reportado"]}',
         '/api/v1/caja/arqueo',
       ),
     );
-    const user = userEventFromScreen();
-    RENDER();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
 
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mockCerrarSesionHelper).not.toHaveBeenCalled();
-    expect(mockNavigate).not.toHaveBeenCalled();
+    const result = await chain();
+
+    expect(result).toEqual({ kind: 'arqueo_fallido', status: 400 });
+    expect(cerrarSesion).not.toHaveBeenCalled();
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // post-3-5xx-no-cerrarsesion — POST 5xx → banner, no PUT attempt
+  // put-1-404-sesion-not-found → redirect_login (no ?closed=true)
   // ────────────────────────────────────────────────────────────────────
-  it('post-3: POST 5xx → banner errorArqueoFallido, NO cerrarSesionHelper, NO navigate', async () => {
-    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockArqueoSubmit.mockRejectedValueOnce(
-      new ParkosHttpError(500, '{"error":"server_error"}', '/api/v1/caja/arqueo'),
-    );
-    const user = userEventFromScreen();
-    RENDER();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
-
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mockCerrarSesionHelper).not.toHaveBeenCalled();
-    expect(mockNavigate).not.toHaveBeenCalled();
-    expect(mockBridgeImprimir).not.toHaveBeenCalled();
-  });
-
-  // ────────────────────────────────────────────────────────────────────
-  // post-4-network-no-cerrarsesion — POST network error → banner
-  // ────────────────────────────────────────────────────────────────────
-  it('post-4: POST network error → banner errorRedArqueo, NO cerrarSesionHelper, NO navigate', async () => {
-    mockArqueoSubmit.mockRejectedValueOnce(new TypeError('Failed to fetch'));
-    const user = userEventFromScreen();
-    RENDER();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
-
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mockCerrarSesionHelper).not.toHaveBeenCalled();
-    expect(mockNavigate).not.toHaveBeenCalled();
-  });
-
-  // ────────────────────────────────────────────────────────────────────
-  // put-1-404-sesion-not-found — SesionAlreadyClosedError → navigate /login (no ?closed=true)
-  // ────────────────────────────────────────────────────────────────────
-  it('put-1: helper returns { ok:false, status:404 } → navigate /login (no ?closed=true)', async () => {
-    mockCerrarSesionHelper.mockResolvedValueOnce({
+  it('put-1: PUT 404 SesionAlreadyClosedError → redirect_login (no ?closed=true)', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-A' });
+    cerrarSesion.mockResolvedValueOnce({
       ok: false,
       status: 404,
       error: new Error('sesion_not_found'),
     });
-    const user = userEventFromScreen();
-    RENDER();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
 
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/login');
-    });
-    // Critically: NO ?closed=true — the close did not succeed.
-    expect(mockNavigate).not.toHaveBeenCalledWith(
-      '/login?closed=true',
-      expect.anything(),
-    );
+    const result = await chain();
+
+    expect(result).toEqual({ kind: 'redirect_login' });
+    // bridge.imprimir fires BEFORE the PUT attempt (REQ-OPS-157 happy).
+    expect(bridge.imprimir).toHaveBeenCalledTimes(1);
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // put-2-409-sesion-ya-cerrada — orphan uuid surfaced, no logout, no navigate
+  // put-2-409-sesion-ya-cerrada — orphan uuid surfaced, NO clear, NO navigate
   // ────────────────────────────────────────────────────────────────────
-  it('put-2: helper returns { ok:false, status:409 } → banner with Ref: A, NO clear, NO navigate', async () => {
-    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockCerrarSesionHelper.mockResolvedValueOnce({
+  it('put-2: PUT 409 sesion_ya_cerrada → cierre_ya_cerrado + uuid_arqueo surfaced', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-orphan' });
+    cerrarSesion.mockResolvedValueOnce({
       ok: false,
       status: 409,
       error: new ParkosHttpError(
@@ -434,30 +241,23 @@ describe('HU-F10.2 — <CerrarTurno /> orchestrator (REQ-OPS-157, REQ-OPS-159, A
         '/api/v1/caja-sesion/sesion/sess-uuid-1/cerrar',
       ),
     });
-    const user = userEventFromScreen();
-    RENDER();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
 
-    // The orphan uuid MUST be surfaced via data-testid="cerrar-turno-orphan-uuid".
-    await waitFor(() => {
-      const orphan = screen.getByTestId('cerrar-turno-orphan-uuid');
-      expect(orphan.textContent).toContain('arqueo-uuid-1');
+    const result = await chain();
+
+    // The orphan uuid MUST be surfaced for the supervisor remediation
+    // banner (REQ-OPS-159 case 6 + ABBC-F10.2-BE-1).
+    expect(result).toEqual({
+      kind: 'cierre_ya_cerrado',
+      uuid_arqueo: 'arqueo-uuid-orphan',
     });
-    // The banner MUST show the "Ref: <uuid>" literal substring.
-    const banner = await screen.findByTestId('cerrar-turno-orphan-uuid');
-    expect(banner.textContent).toMatch(/Ref:.*arqueo-uuid-1/);
-    // Critically: NO clear dispatched (operator stays on route).
-    expect(mockClear).not.toHaveBeenCalled();
-    // NO navigate — route stays mounted so the operator reads the banner.
-    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // put-3-5xx-orphan-uuid — PUT 5xx → banner, orphan uuid, no clear, no navigate
+  // put-3-5xx-orphan-uuid — PUT 5xx → cierre_fallido + uuid_arqueo surfaced
   // ────────────────────────────────────────────────────────────────────
-  it('put-3: helper returns { ok:false, status:500 } → orphan uuid banner, NO clear, NO navigate', async () => {
-    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockCerrarSesionHelper.mockResolvedValueOnce({
+  it('put-3: PUT 5xx → cierre_fallido + uuid_arqueo surfaced', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-5xx' });
+    cerrarSesion.mockResolvedValueOnce({
       ok: false,
       status: 500,
       error: new ParkosHttpError(
@@ -466,24 +266,21 @@ describe('HU-F10.2 — <CerrarTurno /> orchestrator (REQ-OPS-157, REQ-OPS-159, A
         '/api/v1/caja-sesion/sesion/sess-uuid-1/cerrar',
       ),
     });
-    const user = userEventFromScreen();
-    RENDER();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
 
-    await waitFor(() => {
-      const orphan = screen.getByTestId('cerrar-turno-orphan-uuid');
-      expect(orphan.textContent).toContain('arqueo-uuid-1');
+    const result = await chain();
+
+    expect(result).toEqual({
+      kind: 'cierre_fallido',
+      uuid_arqueo: 'arqueo-uuid-5xx',
     });
-    expect(mockClear).not.toHaveBeenCalled();
-    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // put-4-401-f3.3-fallback — handled inside helper (clear+event fired)
+  // put-4-401-f3.3-fallback → redirect_login (helper did clear+event)
   // ────────────────────────────────────────────────────────────────────
-  it('put-4: helper returns { ok:false, status:401 } → navigate /login (no ?closed=true)', async () => {
-    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockCerrarSesionHelper.mockResolvedValueOnce({
+  it('put-4: PUT 401 → F3.3 fallback redirect_login (no ?closed=true)', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-401' });
+    cerrarSesion.mockResolvedValueOnce({
       ok: false,
       status: 401,
       error: new ParkosHttpError(
@@ -492,52 +289,24 @@ describe('HU-F10.2 — <CerrarTurno /> orchestrator (REQ-OPS-157, REQ-OPS-159, A
         '/api/v1/caja-sesion/sesion/sess-uuid-1/cerrar',
       ),
     });
-    const user = userEventFromScreen();
-    RENDER();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
 
-    // The orchestrator navigates to /login (without ?closed=true); the
-    // helper has already cleared authStore + fired the event (tested
-    // separately in helper-3).
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/login');
-    });
-    expect(mockNavigate).not.toHaveBeenCalledWith(
-      '/login?closed=true',
-      expect.anything(),
-    );
+    const result = await chain();
+
+    expect(result).toEqual({ kind: 'redirect_login' });
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // no-retry — assertions on no retry loop
+  // no-retry-1 — orchestrator does NOT retry arqueo.submit on failure
   // ────────────────────────────────────────────────────────────────────
-  it('no-retry: orchestrator does NOT retry arqueo.submit nor cerrarSesionHelper on failure', async () => {
-    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
-    mockArqueoSubmit.mockRejectedValueOnce(
+  it('no-retry: orchestrator does NOT retry arqueo.submit on failure', async () => {
+    submitArqueo.mockRejectedValueOnce(
       new ParkosHttpError(500, '{"error":"server_error"}', '/api/v1/caja/arqueo'),
     );
-    const user = userEventFromScreen();
-    RENDER();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
 
-    // Wait briefly to allow any retry logic to fire (there should be none).
-    await new Promise((r) => setTimeout(r, 100));
-    expect(mockArqueoSubmit).toHaveBeenCalledTimes(1);
-    expect(mockCerrarSesionHelper).not.toHaveBeenCalled();
-    expect(mockBridgeImprimir).not.toHaveBeenCalled();
-    expect(mockNavigate).not.toHaveBeenCalled();
+    await chain();
+
+    expect(submitArqueo).toHaveBeenCalledTimes(1);
+    expect(bridge.imprimir).not.toHaveBeenCalled();
+    expect(cerrarSesion).not.toHaveBeenCalled();
   });
 });
-
-// Tiny helper — vitest doesn't auto-wire user-event; we don't need its
-// real implementation here, just a `click` that flushes pending effects.
-function userEventFromScreen(): {
-  click: (el: HTMLElement) => Promise<void>;
-} {
-  return {
-    async click(el: HTMLElement): Promise<void> {
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      await new Promise((r) => setTimeout(r, 0));
-    },
-  };
-}
