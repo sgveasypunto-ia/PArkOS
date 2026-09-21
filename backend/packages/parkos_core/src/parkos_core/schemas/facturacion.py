@@ -137,10 +137,11 @@ class FacturaElectronicaRead(_Base):
     descuento: Decimal | None
 
 
-class FacturaElectronicaCreate(_Base):
-    """REQ-34 + REQ-35. Server assigns ``prefijo`` and ``consecutivo``.
+class CloudFacturaElectronicaCreate(_Base):
+    """REQ-34 + REQ-35 — cloud-only admin POST payload (CU-05 / fix branch).
 
-    The cloud-only ``dian/cloud_router.py`` (T-PR6-09) atomically:
+    Server assigns ``prefijo`` and ``consecutivo``. The cloud-only
+    ``dian/cloud_router.py`` (T-PR6-09) atomically:
 
     1. ``SELECT FOR UPDATE`` on ``prod.resolucion_facturacion`` row
     2. ``UPDATE`` the row's ``consecutivo`` counter (``next_consecutivo``,
@@ -156,6 +157,29 @@ class FacturaElectronicaCreate(_Base):
     (from :class:`_Base`) blocks client smuggling. That is the
     T-PR4-08-style fast-fail assertion: any ``prefijo`` / ``consecutivo``
     in the request body returns ``ValidationError`` (``HTTP 422``).
+
+    **Naming — why a separate class from ``FacturaElectronicaCreate``
+    (CU-05 fix).** This file historically declared two Pydantic classes
+    under the same name ``FacturaElectronicaCreate``:
+
+      - this one (legacy cloud-only, with ``uuid_sucursal`` /
+        ``uuid_factura`` / ``uuid_cliente`` /
+        ``uuid_resolucion_facturacion`` / ``descuento``); and
+      - the HU-F1.10 branch-facing one (declared later in this module,
+        only ``uuid_factura``).
+
+    Python silently shadowed the legacy class on import — the SECOND
+    definition won, so ``from parkos_core.schemas.facturacion import
+    FacturaElectronicaCreate`` actually returned the branch-facing schema.
+    ``dian/cloud_router.py`` (T-PR6-09) imported the same name and then
+    read the legacy fields (``payload.uuid_sucursal``, ``.uuid_cliente``,
+    ...) on the branch-facing instance — the request body itself raised
+    ``AttributeError`` on the cloud-router's own read of those attributes
+    (or, with a client that sends the legacy keys, ``ValidationError``
+    ``HTTP 422`` because ``extra='forbid'`` rejects them). The CU-05 fix
+    renames the legacy class to :class:`CloudFacturaElectronicaCreate`
+    so the two schemas can coexist without shadowing, and the
+    cloud-router imports the renamed class explicitly.
     """
 
     uuid_sucursal: uuid_lib.UUID
@@ -795,6 +819,7 @@ class NumeracionDuplicadaError(_Base):
 
 __all__ = [
     "ClienteNoEncontradoErrorSchema",
+    "CloudFacturaElectronicaCreate",
     "DetalleInvalidoErrorSchema",
     "EnvioDianAlreadyPendingError",
     "EnvioDianRead",
