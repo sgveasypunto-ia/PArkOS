@@ -173,21 +173,34 @@ class CotizarFacturacion(_Base):
 
 
 class CotizarMensualidad(_Base):
-    """``cobrar=false`` variant -- short-circuit for an active monthly subscription.
+    """``cobrar=false`` variant -- short-circuit for a monthly-subscription scenario.
 
     Returned when the ingreso's plate has an open subscription at the
     branch (REQ-OPS-023, design.md §3 step 2). The PL/pgSQL function
     short-circuits the pricing pipeline; no fiscal data is computed.
 
-    ``motivo`` is a literal string so the contract is closed -- adding
-    a new motivo requires a new ``CotizarMensualidad`` variant, not
+    Two ``motivo`` literals cover the CU-03M / DEC-SUC-21 second-vehicle
+    rule (plan.md:64, ``prod.calcular_cotizacion`` Step 2):
+
+      - ``'mensualidad_vigente'`` -- first plate of the subscription in
+        patio; exits free (REQ-OPS-023 baseline).
+      - ``'segunda_placa_misa_mensualidad'`` -- a different plate of the
+        same ``subscripciones_cliente.uuid`` is already inside the patio;
+        the salida handler (HU-F1.7 / HU-F7.2) MUST apply rotation
+        pricing at cobro time (DEC-SUC-21 "detección de otra placa de
+        la misma mensualidad ya en el patio"). The derivation lives in
+        the quotation response only; nothing is persisted on
+        ``prod.ingreso``.
+
+    ``motivo`` is a closed literal so the contract is exhaustive --
+    adding a new motivo requires a new ``Literal`` member, not
     free-form string injection.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     cobrar: Literal[False]
-    motivo: Literal["mensualidad_vigente"]
+    motivo: Literal["mensualidad_vigente", "segunda_placa_misma_mensualidad"]
 
 
 # Discriminated union: Pydantic v2 picks the variant by the value of

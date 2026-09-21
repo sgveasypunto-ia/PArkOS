@@ -90,6 +90,7 @@ def upgrade() -> None:
             v_unidad_minutos int;
             v_valor_plena numeric;
             v_vigente_hasta timestamptz;
+            v_count_other_plate int := 0;
         BEGIN
             ----------------------------------------------------------------------
             -- Step 1: ingreso existe y sigue abierto (sin salidas)
@@ -145,6 +146,52 @@ def upgrade() -> None:
              ORDER BY sc.vigente_desde DESC
              LIMIT 1;
             IF FOUND THEN
+                ------------------------------------------------------------------
+                -- CU-03M second-vehicle rotation rule (plan.md:64, DEC-SUC-21):
+                -- a monthly subscription covers up to 2 plates. When the first
+                -- plate is in the patio, this plate exits free
+                -- (``motivo='mensualidad_vigente'``). When a SECOND plate of
+                -- the same subscription is already inside the patio, the
+                -- current plate must be treated as ROTATION pricing (DEC-SUC-21
+                -- "detección de otra placa de la misma mensualidad ya en el
+                -- patio") — the quotation primitive surfaces the new motivo
+                -- so the salida handler (HU-F1.7 / HU-F7.2) applies the
+                -- rotation pricing at cobro time.
+                --
+                -- The check is bi-temporal on ``subscripcion_vehiculos`` and
+                -- ``vehiculos`` (both [V]; vigentes + activos) and on
+                -- ``ingreso`` ([L-E] insert-only — "active" = no matching
+                -- ``salidas`` row, mirroring the open-state derivation in
+                -- Step 1). The plate filter ``i.placa = v2.placa`` AND
+                -- ``i.placa <> v_ingreso.placa`` rejects the current row
+                -- itself and any non-registered plate (a vehicle in patio
+                -- whose placa is NOT in the subscription's ``subscripcion_
+                -- vehiculos`` link table).
+                ------------------------------------------------------------------
+                SELECT COUNT(*)
+                  INTO v_count_other_plate
+                  FROM prod.ingreso i
+                  JOIN prod.subscripcion_vehiculos sv2
+                    ON sv2.uuid_subscripcion_cliente = v_subscripcion.uuid
+                   AND sv2.vigente_hasta IS NULL
+                   AND sv2.estado = 'activo'
+                  JOIN prod.vehiculos v2
+                    ON v2.uuid = sv2.uuid_vehiculo
+                   AND v2.vigente_hasta IS NULL
+                   AND v2.estado = 'activo'
+                 WHERE i.uuid_sucursal = v_ingreso.uuid_sucursal
+                   AND i.placa = v2.placa
+                   AND i.placa <> v_ingreso.placa
+                   AND NOT EXISTS (
+                       SELECT 1 FROM prod.salidas s
+                        WHERE s.uuid_ingreso = i.uuid
+                   );
+                IF v_count_other_plate > 0 THEN
+                    RETURN jsonb_build_object(
+                        'cobrar', false,
+                        'motivo', 'segunda_placa_misma_mensualidad'
+                    );
+                END IF;
                 RETURN jsonb_build_object(
                     'cobrar', false,
                     'motivo', 'mensualidad_vigente'
