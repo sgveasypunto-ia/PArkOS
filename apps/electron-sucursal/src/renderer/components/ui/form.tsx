@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useTranslation } from 'react-i18next';
 import * as LabelPrimitive from '@radix-ui/react-label';
 import { Slot } from '@radix-ui/react-slot';
 import {
@@ -162,7 +163,20 @@ const FormMessage = React.forwardRef<
   React.HTMLAttributes<HTMLParagraphElement>
 >(({ className, children, ...props }, ref) => {
   const { error, formMessageId } = useFormField();
-  const body = error ? String(error?.message) : children;
+  // Convention: Zod schemas emit i18n KEYS as their `message`
+  // (see turnoSchema.ts header). Any error message starting with
+  // `validation.` is translated via t() against the `errors`
+  // namespace, where the generic validation.* strings live
+  // (errors.json). Anything else (literal JSX `children`, custom
+  // server error strings, etc.) is rendered as-is.
+  const { t } = useTranslation('errors');
+  let body: React.ReactNode = null;
+  if (error) {
+    const msg = String(error?.message ?? '');
+    body = msg.startsWith('validation.') ? t(msg) : msg;
+  } else {
+    body = children;
+  }
 
   if (!body) {
     return null;
