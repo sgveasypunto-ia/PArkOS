@@ -14,11 +14,15 @@
  *   - `'ingreso'`        → `<IngresoSheet />` (F6.1 — wires the
  *                          dashboard's PlacaInputHero to the ingreso flow)
  *   - `'salida'`         → `<SalidaSheet />` (F7.1 — same for salida)
+ *   - `'suscripciones'`  → `<SuscripcionesSheet />` (F9.2 — list +
+ *                          "Nueva venta" CTA into the existing
+ *                          4-step `<Venta />` wizard at
+ *                          /suscripciones/venta)
  *
- * Kinds still future: `'suscripciones'` (F3 — drawer TBD), `'inventario'`
- * (F5 — drawer TBD), `'fe-retry'` (PR-4 — drawer TBD). The
- * single-drawer invariant holds because the store guarantees only ONE
- * kind is active at a time and the un-wired branches return `null`.
+ * Kinds still future: `'inventario'` (F5 — drawer TBD), `'fe-retry'`
+ * (PR-4 — drawer TBD). The single-drawer invariant holds because
+ * the store guarantees only ONE kind is active at a time and the
+ * un-wired branches return `null`.
  */
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
@@ -27,6 +31,7 @@ import { ArqueoSheet } from '../../caja/components/ArqueoSheet';
 import { CierreDiarioDialog } from '../../caja/components/CierreDiarioDialog';
 import { IngresoSheet } from '../../operacion/components/IngresoSheet';
 import { SalidaSheet } from '../../operacion/components/SalidaSheet';
+import { SuscripcionesSheet } from '../../suscripciones/components/SuscripcionesSheet';
 
 export function DrawerHost(): JSX.Element | null {
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
@@ -73,8 +78,13 @@ export function DrawerHost(): JSX.Element | null {
   if (openDrawer === 'salida') {
     return <SalidaSheet />;
   }
+  if (openDrawer === 'suscripciones') {
+    // HU-F9.2 sheet — list + "Nueva venta" CTA. CTA closes the
+    // drawer and routes to /suscripciones/venta (the F9.1 wizard).
+    return <SuscripcionesSheet />;
+  }
 
-  // For kinds not yet wired (suscripciones / inventario / fe-retry),
-  // render nothing — single-drawer invariant preserved.
+  // For kinds not yet wired (inventario, fe-retry), render nothing
+  // — single-drawer invariant preserved.
   return null;
 }
