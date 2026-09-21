@@ -101,3 +101,36 @@ export const VentaSuscripcionReadSchema = z
 export type VentaSuscripcionRead = z.infer<typeof VentaSuscripcionReadSchema>;
 
 export const POST_VENTA_SUSCRIPCION_PATH = '/api/v1/clientes/venta-suscripcion';
+
+/**
+ * `TipoSubscripcionSchema` — read shape for
+ * `GET /api/v1/tipos-subscripciones?uuid_sucursal=X` (F1.12 archive,
+ * `[V]` per plan.md §3.2). Mirrors the backend `TipoSubscripcionesRead`
+ * Pydantic schema. The wizard step 3 surfaces this list as a
+ * selectable grid (plan name, value, duration) so the operator
+ * doesn't have to memorize / paste a UUID.
+ */
+export const TipoSubscripcionSchema = z
+  .object({
+    uuid: z.string().uuid(),
+    tipo: z.string().min(1),
+    valor: z.coerce.number().nonnegative(),
+    duracion_dias: z.coerce.number().int().positive(),
+    cantidad_maxima_vehiculos: z.coerce.number().int().positive(),
+    mismo_tipo_vehiculo: z.boolean(),
+    tipo_cliente_permitido: z
+      .string()
+      .nullable()
+      .optional()
+      .or(z.literal('')),
+  })
+  .strict();
+export type TipoSubscripcion = z.infer<typeof TipoSubscripcionSchema>;
+
+export const TipoSubscripcionArraySchema = z.array(TipoSubscripcionSchema);
+
+/**
+ * `GET /api/v1/tipos-subscripciones?uuid_sucursal=X` -- server-side
+ * filtered by the active branch. `null` when no branch context.
+ */
+export const GET_TIPOS_SUBSCRIPCION_PATH = '/api/v1/tipos-subscripciones';

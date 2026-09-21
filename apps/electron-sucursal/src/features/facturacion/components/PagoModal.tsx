@@ -109,6 +109,22 @@ export interface PagoModalProps {
    * + the post-pago print trigger pipeline.
    */
   onSubmit: (values: PagoFormValues) => Promise<void>;
+  /**
+   * F11.3 follow-up (Suscribirse Venta wizard) -- optional pre-fill
+   * for the FE cliente fields. When supplied, the wizard already
+   * collected nit/nombre/email at step 1 and we want them pre-populated
+   * in the PagoModal instead of the consumidor final fallback.
+   * Pass `fe: true` to flip the "Generar FE" toggle ON at step 4 entry
+   * (operator can untick if they want a no-FE sale). Defaults preserved
+   * for the existing `<PagoSheet />` caller -- it passes nothing and
+   * gets the consumidor final NIT / nombre.
+   */
+  clientePrefill?: {
+    nit?: string;
+    nombre?: string;
+    email?: string;
+    fe?: boolean;
+  };
 }
 
 /**
@@ -121,9 +137,16 @@ export function PagoModal({
   uuid_ingreso,
   total_cop,
   onSubmit,
+  clientePrefill,
 }: PagoModalProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
   const formId = useId();
+
+  // Snapshot the prefill ONCE on mount so the wizard's step-1 cliente
+  // data drives the initial PagoModal values. Subsequent re-renders
+  // (e.g. `total_cop` change) preserve the user's typed corrections
+  // by re-using `form.reset(...)` below with the same prefill snapshot.
+  const initialPrefill = clientePrefill;
 
   const form = useForm<PagoFormValues>({
     resolver: zodResolver(pagoFormSchema),
@@ -131,28 +154,30 @@ export function PagoModal({
       medio_pago: 'efectivo',
       monto_recibido_cop: total_cop,
       voucher: '',
-      fe: false,
-      nit: NIT_CONSUMIDOR_FINAL,
+      fe: initialPrefill?.fe ?? false,
+      nit: initialPrefill?.nit ?? NIT_CONSUMIDOR_FINAL,
       dv: '',
-      nombre_cliente: 'Consumidor final',
-      email_cliente: '',
+      nombre_cliente: initialPrefill?.nombre ?? 'Consumidor final',
+      email_cliente: initialPrefill?.email ?? '',
     },
     mode: 'onSubmit',
   });
 
   // Reset defaults when total changes (e.g. operator re-cotiza).
+  // Preserves the prefill values when provided (existing page
+  // route passes nothing and keeps the consumidor final fallback).
   useEffect(() => {
     form.reset({
       medio_pago: 'efectivo',
       monto_recibido_cop: total_cop,
       voucher: '',
-      fe: false,
-      nit: NIT_CONSUMIDOR_FINAL,
+      fe: initialPrefill?.fe ?? false,
+      nit: initialPrefill?.nit ?? NIT_CONSUMIDOR_FINAL,
       dv: '',
-      nombre_cliente: 'Consumidor final',
-      email_cliente: '',
+      nombre_cliente: initialPrefill?.nombre ?? 'Consumidor final',
+      email_cliente: initialPrefill?.email ?? '',
     });
-  }, [total_cop, form]);
+  }, [total_cop, form, initialPrefill]);
 
   const medioPago = useWatch({ control: form.control, name: 'medio_pago' });
   const feActive = useWatch({ control: form.control, name: 'fe' });
