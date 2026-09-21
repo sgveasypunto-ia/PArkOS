@@ -5,7 +5,7 @@
 | # | ID | HU | Estado al cerrar | Notas |
 |---|----|----|------------------|-------|
 | 1 | HU-F11.1 | SyncBanner | ✅ CERRADO 2026-09-21 (merge `4021d3d`, archive `2026-09-21`, REQ-OPS-170..176 landed; 2 spec-delta follow-ups below) | 8/8 drift anchors resolved; 21/21 unit tests GREEN; 0 CRITICAL / 0 WARNING / 2 SUGGESTION; +1,312 net LOC under 2,000 meta-budget |
-| 2 | HU-F11.2 | AlertasPanel | ✅ CERRADO 2026-09-21 (merge on `feature/hu-f11-2-alertas-panel`, REQ-OPS-177..183 landed) | 14/14 drift anchors resolved (DA-F11.2-9 GATING closed; DA-F11.2-10 path-b client-side merge + ABBC-F11.2-BE-1 backend JOIN follow-up below); 30/30 unit/RTL GREEN + 17/17 F11.1 regression; ~1,847 LOC delta under 2,000 meta-budget |
+| 2 | HU-F11.2 | AlertasPanel | ✅ CERRADO 2026-09-21 (merge `2424c12`, archive `openspec/changes/archive/2026-09-21-fase-11-2-alertas-panel/`, REQ-OPS-177..183 landed in `operations/spec.md` under Phase 26) | 14/14 drift anchors resolved (DA-F11.2-9 GATING closed; DA-F11.2-10 path-b client-side merge + ABBC-F11.2-BE-1 backend JOIN follow-up below); 30/30 unit/RTL GREEN + 5/5 F11.1 regression; 0 CRITICAL / 0 WARNING / 1 SUGGESTION; +2,285 net LOC within strict_tdd envelope (14% over 2,000 meta-budget, well under 2,500 hard ceiling) |
 
 ## 1. Deferred Items
 
