@@ -482,8 +482,332 @@ async def test_iva_no_sembrado_retorna_500(
     await _reseed_iva(pg_engine)
 
 
+# ---------------------------------------------------------------------------
+# T4: CU-03M / DEC-SUC-21 second-vehicle rotation pricing -- the 2nd plate
+#     of the same subscription must exit as ROTACION with full fiscal
+#     breakdown + informational motivo, NOT as a free MENSUALIDAD exit.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_two_plate_subscription(
+    pg_engine,
+    *,
+    branch_uuid: uuid_lib.UUID,
+    tipo_auto: uuid_lib.UUID,
+    placa_a: str,
+    placa_b: str,
+) -> uuid_lib.UUID:
+    """Seed one ``clientes`` + one ``subscripciones_cliente`` + two
+    ``vehiculos`` + two ``subscripcion_vehiculos`` rows linking both
+    plates to the same subscription.
+
+    Returns the ``subscripcion_uuid`` so the caller can refer to it
+    from elsewhere if needed.
+    """
+    from parkos_core.models.V.clientes import Clientes
+    from parkos_core.models.V.subscripcion_vehiculos import SubscripcionVehiculos
+    from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
+    from parkos_core.models.V.vehiculos import Vehiculos
+
+    now = _now_naive()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        cliente_uuid = uuid_lib.uuid4()
+        vehiculo_uuid_a = uuid_lib.uuid4()
+        vehiculo_uuid_b = uuid_lib.uuid4()
+        subscripcion_uuid = uuid_lib.uuid4()
+        session.add(
+            Clientes(
+                uuid=cliente_uuid,
+                nombre="Cliente CU03M Test",
+                apellido="Handler",
+                tipo_identificador="CC",
+                numero_identificacion=f"CC{cliente_uuid.hex[:9]}",
+                telefono="+571234567",
+                email=None,
+                registro="sincronizado",
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
+        session.add(
+            Vehiculos(
+                uuid=vehiculo_uuid_a,
+                placa=placa_a,
+                uuid_tipo_vehiculo=tipo_auto,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        session.add(
+            Vehiculos(
+                uuid=vehiculo_uuid_b,
+                placa=placa_b,
+                uuid_tipo_vehiculo=tipo_auto,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        session.add(
+            SubscripcionesCliente(
+                uuid=subscripcion_uuid,
+                uuid_cliente=cliente_uuid,
+                uuid_sucursal=branch_uuid,
+                uuid_tipo_subscripcion=None,
+                fecha_inicio_cobertura=None,
+                fecha_vencimiento=None,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
+        # BOTH plates linked to the SAME subscription (plan.md:64:
+        # "hasta 2 placas"). The PL/pgSQL Step 2 count check joins
+        # through this table to find the OTHER plate's ingreso.
+        session.add(
+            SubscripcionVehiculos(
+                uuid_subscripcion_cliente=subscripcion_uuid,
+                uuid_vehiculo=vehiculo_uuid_a,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        session.add(
+            SubscripcionVehiculos(
+                uuid_subscripcion_cliente=subscripcion_uuid,
+                uuid_vehiculo=vehiculo_uuid_b,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+    return subscripcion_uuid
+
+
+async def test_salida_segunda_placa_misma_mensualidad_aplica_rotacion(
+    pg_engine, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """CU-03M / DEC-SUC-21 second-vehicle rotation rule (plan.md:64,
+    plan.md:436) — handler-level end-to-end after migration 0038.
+
+    Scenario: TWO plates of the same subscription are simultaneously
+    inside the patio. The SECOND plate exits via ``POST
+    /operacion/salidas``. After migration
+    ``0038_calcular_cotizacion_2nd_plate_rotation`` the PL/pgSQL
+    function returns ``cobrar=true`` + full fiscal breakdown +
+    ``motivo='segunda_placa_misma_mensualidad'``. The handler then:
+
+      - derives ``tipo_salida='ROTACION'`` (NOT ``'MENSUALIDAD'`` --
+        the bug this fix closes);
+      - populates ``cotizacion_snapshot=CotizarFacturacion(...)`` with
+        the rotation fiscal fields;
+      - INSERTs the salida row;
+      - commits atomically (KD-S7 lock continuity preserved).
+
+    The test verifies all four assertions. The first plate (still in
+    patio) is the precondition: its presence triggers the
+    ``v_count_other_plate > 0`` branch in the PL/pgSQL function.
+    """
+    await _truncate(pg_dsn)
+    await _reseed_iva(pg_engine)
+
+    branch = uuid_lib.uuid4()
+    actor = uuid_lib.uuid4()
+    tipo_auto = uuid_lib.uuid4()
+    placa_a = "CU03A"
+    placa_b = "CU03B"
+
+    await _seed_branch(pg_engine, uuid_sucursal=branch)
+    await _seed_tarifa_vigente(
+        pg_engine, uuid_sucursal=branch, uuid_tipo_auto=tipo_auto
+    )
+    await _seed_two_plate_subscription(
+        pg_engine,
+        branch_uuid=branch,
+        tipo_auto=tipo_auto,
+        placa_a=placa_a,
+        placa_b=placa_b,
+    )
+
+    # BOTH plates in patio simultaneously (active, no salidas rows).
+    ingreso_a_uuid = await _seed_ingreso(
+        pg_engine,
+        placa=placa_a,
+        uuid_sucursal=branch,
+        uuid_tipo_auto=tipo_auto,
+    )
+    ingreso_b_uuid = await _seed_ingreso(
+        pg_engine,
+        placa=placa_b,
+        uuid_sucursal=branch,
+        uuid_tipo_auto=tipo_auto,
+    )
+
+    token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=branch)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch),
+    }
+
+    # POST /operacion/salidas for PLACA-B (the 2nd plate).
+    resp = await client.post(
+        "/api/v1/operacion/salidas",
+        json={"uuid_ingreso": str(ingreso_b_uuid), "placa": placa_b},
+        headers=headers,
+    )
+    assert resp.status_code == 201, (
+        f"salida for the 2nd plate must succeed with 201; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+
+    body = resp.json()
+
+    # Assertion 1: tipo_salida = 'ROTACION' (the bug fix). Before
+    # migration 0038 the handler derived 'MENSUALIDAD' and the
+    # snapshot was None -- the 2nd plate exited FREE.
+    assert body["tipo_salida"] == "ROTACION", (
+        f"2nd plate salida MUST derive tipo_salida='ROTACION' "
+        f"(CU-03M / DEC-SUC-21, plan.md:64); got {body.get('tipo_salida')!r}. "
+        f"Full body: {body!r}"
+    )
+
+    # Assertion 2: cotizacion_snapshot is populated with full fiscal
+    # breakdown. The FE chain (HU-F7.2 / FacturaElectronica) consumes
+    # this snapshot downstream.
+    snapshot = body.get("cotizacion_snapshot")
+    assert snapshot is not None, (
+        f"2nd plate salida MUST carry cotizacion_snapshot (ROTACION "
+        f"fiscal breakdown) for the FE chain; got None. Body: {body!r}"
+    )
+    assert snapshot["cobrar"] is True
+    assert snapshot["motivo"] == "segunda_placa_misma_mensualidad", (
+        f"cotizacion_snapshot.motivo MUST carry the 2nd-plate "
+        f"informational literal for audit; got "
+        f"{snapshot.get('motivo')!r}"
+    )
+    # Fiscal fields populated (the FE chain reads these).
+    assert snapshot["subtotal"], "cotizacion_snapshot.subtotal required"
+    assert snapshot["iva"], "cotizacion_snapshot.iva required"
+    assert snapshot["total"], "cotizacion_snapshot.total required"
+    assert snapshot["tarifa_uuid"], "cotizacion_snapshot.tarifa_uuid required"
+    assert snapshot["vigente_hasta"], (
+        "cotizacion_snapshot.vigente_hasta required"
+    )
+
+    # Assertion 3: NO forzado bypass used (this is a normal rotation
+    # exit, not a forzado override). The handler MUST NOT emit a
+    # tarifa_vigente_forzado / subscripcion_vencida_forzado alerta.
+    assert body["forzado_en_creacion"] is False, (
+        f"2nd plate rotation exit MUST NOT be a forzado bypass; "
+        f"got forzado_en_creacion={body.get('forzado_en_creacion')!r}"
+    )
+    assert body["motivo_forzado"] is None, (
+        f"motivo_forzado MUST be None on a normal rotation exit; "
+        f"got {body.get('motivo_forzado')!r}"
+    )
+
+    # Assertion 4: the salida row was INSERTed and the 1st plate's
+    # ingreso is still open (no collateral damage from the rotation).
+    import psycopg
+
+    dsn = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM prod.salidas WHERE uuid_ingreso = %s",
+            (str(ingreso_b_uuid),),
+        )
+        salida_b_count = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(*) FROM prod.salidas WHERE uuid_ingreso = %s",
+            (str(ingreso_a_uuid),),
+        )
+        salida_a_count = cur.fetchone()[0]
+        cur.execute(
+            "SELECT tipo_alerta FROM prod.alerta WHERE uuid_sucursal = %s "
+            "AND tipo_alerta LIKE '%%_forzado'",
+            (str(branch),),
+        )
+        alerta_rows = cur.fetchall()
+
+    assert salida_b_count == 1, (
+        f"salida for PLACA-B MUST be INSERTed (201 path); got "
+        f"{salida_b_count} rows"
+    )
+    assert salida_a_count == 0, (
+        f"PLACA-A's salida MUST NOT be created as collateral; got "
+        f"{salida_a_count} rows for ingreso_a"
+    )
+    assert alerta_rows == [], (
+        f"rotation exit MUST NOT emit a forzado alerta "
+        f"(no V2/V5 bypass happened); got {alerta_rows!r}"
+    )
+
+    # Sanity: the 1st plate's subsequent exit also yields ROTACION
+    # (both plates are still simultaneously in patio until each one
+    # gets its own salida; per plan.md:64 the rule is "if any other
+    # plate of the same subscription is in patio, this plate pays as
+    # rotation"). This is the conservative exit-order-agnostic rule.
+    resp_a = await client.post(
+        "/api/v1/operacion/salidas",
+        json={"uuid_ingreso": str(ingreso_a_uuid), "placa": placa_a},
+        headers=headers,
+    )
+    assert resp_a.status_code == 201, (
+        f"PLACA-A's subsequent salida must also succeed with 201; "
+        f"got {resp_a.status_code}: {resp_a.text}"
+    )
+    body_a = resp_a.json()
+    assert body_a["tipo_salida"] == "ROTACION", (
+        f"the second plate's exit (PLACA-A) MUST also derive "
+        f"tipo_salida='ROTACION' because the rotation rule is "
+        f"exit-order-agnostic (plan.md:64 conservative rule); "
+        f"got {body_a.get('tipo_salida')!r}"
+    )
+    assert body_a["cotizacion_snapshot"]["motivo"] == (
+        "segunda_placa_misma_mensualidad"
+    )
+
+
 __all__ = [
     "test_insert_salida_con_alerta_forzado_atomico",
     "test_partial_unique_index_emite_409",
     "test_iva_no_sembrado_retorna_500",
+    "test_salida_segunda_placa_misma_mensualidad_aplica_rotacion",
 ]
