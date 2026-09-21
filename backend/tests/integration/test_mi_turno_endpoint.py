@@ -40,7 +40,6 @@ if str(_PARKOS_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_PARKOS_CORE_SRC))
 
 import pytest  # noqa: E402
-
 from parkos_core.schemas.operacion import MiTurnoRead  # noqa: E402
 
 
@@ -66,22 +65,30 @@ async def test_mi_turno_happy_path_returns_seven_fields_with_no_store(
 ) -> None:
     """S1 (REQ-OPS-184): happy path -> 200 + Cache-Control: no-store."""
     from parkos_core.api.v1 import operacion as handler_mod
+    from parkos_core.repo import arqueo
 
     ctx = _make_ctx(sucursal_uuid=sesion_with_ingresos_y_pagos["uuid_sucursal"])
     response = _new_response()
     sesion = sesion_with_ingresos_y_pagos["sesion"]
     session = MagicMock()
 
-    # Mock the SQL execution returning the count aggregate.
-    sql_result = MagicMock()
-    sql_result.first.return_value = (
-        2,  # ingresos_count
-        1,  # salidas_count
-    )
-    session.execute = AsyncMock(return_value=sql_result)
+    # Sesion lookup returns our fixture row; the SQL execute (counts)
+    # returns (2, 1). The pipeline runs THREE execute() calls total:
+    # (1) sesion lookup in handler, (2) sesion lookup in repo helper,
+    # (3) COUNT aggregate in repo helper. We use ``return_value`` so
+    # each call returns the right mock by call-site.
+    sesion_select = MagicMock()
+    sesion_select.scalar_one_or_none.return_value = sesion
+
+    count_select = MagicMock()
+    count_select.first.return_value = (2, 1)
+
+    # Default: anything not explicitly listed returns sesion_select
+    # (cheap; matches the sesion lookup pattern).
+    session.execute = AsyncMock(side_effect=[sesion_select, sesion_select, count_select])
 
     with patch.object(
-        handler_mod,
+        arqueo,
         "_sum_factura_pagos_by_medio_pago",
         new=AsyncMock(side_effect=[Decimal("50000"), Decimal("30000")]),
     ):
@@ -110,19 +117,24 @@ async def test_mi_turno_zero_state_returns_zero_defaults(
 ) -> None:
     """S2 (REQ-OPS-184): zero events -> 200 with zeros (NOT 404)."""
     from parkos_core.api.v1 import operacion as handler_mod
+    from parkos_core.repo import arqueo
 
     ctx = _make_ctx(sucursal_uuid=sesion_with_ingresos_y_pagos["uuid_sucursal"])
     response = _new_response()
     sesion = sesion_with_ingresos_y_pagos["sesion"]
     session = MagicMock()
 
+    sesion_select = MagicMock()
+    sesion_select.scalar_one_or_none.return_value = sesion
+
     # SQL aggregate returns 0/0.
-    sql_result = MagicMock()
-    sql_result.first.return_value = (0, 0)
-    session.execute = AsyncMock(return_value=sql_result)
+    count_select = MagicMock()
+    count_select.first.return_value = (0, 0)
+
+    session.execute = AsyncMock(side_effect=[sesion_select, sesion_select, count_select])
 
     with patch.object(
-        handler_mod,
+        arqueo,
         "_sum_factura_pagos_by_medio_pago",
         new=AsyncMock(side_effect=[Decimal("0"), Decimal("0")]),
     ):
@@ -148,7 +160,6 @@ async def test_mi_turno_cross_branch_returns_403(
     """S3 (REQ-OPS-185, DA-F12.1-2): operator pinned to branch A,
     request sesion in branch B -> 403 sesion_cross_branch_forbidden."""
     from fastapi import HTTPException
-
     from parkos_core.api.v1 import operacion as handler_mod
 
     # Operator JWT is pinned to a DIFFERENT branch than the sesion.
@@ -161,6 +172,10 @@ async def test_mi_turno_cross_branch_returns_403(
 
     # Sesion lookup returns a row whose uuid_sucursal is BRANCH B;
     # the handler MUST reject with 403 sesion_cross_branch_forbidden.
+    sesion_select = MagicMock()
+    sesion_select.scalar_one_or_none.return_value = sesion
+    session.execute = AsyncMock(return_value=sesion_select)
+
     with pytest.raises(HTTPException) as exc_info:
         await handler_mod.get_mi_turno(
             response=response,
@@ -181,6 +196,7 @@ async def test_mi_turno_closed_session_excludes_post_turn_events(
 ) -> None:
     """S4 (REQ-OPS-186): sesion closed at t1; ingresos after t1 excluded."""
     from parkos_core.api.v1 import operacion as handler_mod
+    from parkos_core.repo import arqueo
 
     ctx = _make_ctx(sucursal_uuid=sesion_with_ingresos_y_pagos["uuid_sucursal"])
     response = _new_response()
@@ -192,12 +208,16 @@ async def test_mi_turno_closed_session_excludes_post_turn_events(
     # 5 ingresos total: 3 inside window (between timestamp_apertura and
     # timestamp_cierre), 2 post-turn. The handler's SQL FILTER uses the
     # upper bound; ``session.execute`` returns the aggregate.
-    sql_result = MagicMock()
-    sql_result.first.return_value = (3, 1)  # only 3 counted (post-turn excluded)
-    session.execute = AsyncMock(return_value=sql_result)
+    sesion_select = MagicMock()
+    sesion_select.scalar_one_or_none.return_value = sesion
+
+    count_select = MagicMock()
+    count_select.first.return_value = (3, 1)  # only 3 counted (post-turn excluded)
+
+    session.execute = AsyncMock(side_effect=[sesion_select, sesion_select, count_select])
 
     with patch.object(
-        handler_mod,
+        arqueo,
         "_sum_factura_pagos_by_medio_pago",
         new=AsyncMock(side_effect=[Decimal("0"), Decimal("0")]),
     ):
@@ -219,7 +239,6 @@ async def test_mi_turno_closed_session_excludes_post_turn_events(
 async def test_mi_turno_unknown_uuid_sesion_returns_404() -> None:
     """S5 (REQ-OPS-185): unknown uuid_sesion -> 404 sesion_not_found."""
     from fastapi import HTTPException
-
     from parkos_core.api.v1 import operacion as handler_mod
 
     ctx = _make_ctx()
@@ -227,6 +246,10 @@ async def test_mi_turno_unknown_uuid_sesion_returns_404() -> None:
     session = MagicMock()
 
     # Sesion lookup returns None -> 404.
+    sesion_select = MagicMock()
+    sesion_select.scalar_one_or_none.return_value = None
+    session.execute = AsyncMock(return_value=sesion_select)
+
     with pytest.raises(HTTPException) as exc_info:
         await handler_mod.get_mi_turno(
             response=response,
@@ -242,9 +265,9 @@ async def test_mi_turno_unknown_uuid_sesion_returns_404() -> None:
 
 
 __all__ = [
-    "test_mi_turno_happy_path_returns_seven_fields_with_no_store",
-    "test_mi_turno_zero_state_returns_zero_defaults",
-    "test_mi_turno_cross_branch_returns_403",
     "test_mi_turno_closed_session_excludes_post_turn_events",
+    "test_mi_turno_cross_branch_returns_403",
+    "test_mi_turno_happy_path_returns_seven_fields_with_no_store",
     "test_mi_turno_unknown_uuid_sesion_returns_404",
+    "test_mi_turno_zero_state_returns_zero_defaults",
 ]

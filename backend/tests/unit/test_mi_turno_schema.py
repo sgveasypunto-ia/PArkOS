@@ -99,19 +99,17 @@ def test_mi_turno_read_parses_full_payload_preserving_values() -> None:
 
 def test_mi_turno_read_rejects_extra_field_drift() -> None:
     """S2 (DA-F12.1-9): ``extra='forbid'`` rejects hypothetical 8th field."""
+    import pytest
+    from parkos_core.schemas.operacion import MiTurnoRead
     from pydantic import ValidationError
 
-    from parkos_core.schemas.operacion import MiTurnoRead
-
     payload = {**_make_minimal_payload(), "phantom_field": "drift from a future BE"}
-    try:
+    with pytest.raises(ValidationError) as exc_info:
         MiTurnoRead.model_validate(payload)
-    except ValidationError as exc:
-        # The error message MUST mention the smuggled field — that's how
-        # downstream monitors will spot drift.
-        assert "phantom_field" in str(exc) or "extra" in str(exc).lower()
-    else:  # pragma: no cover — test fails if no exception raised
-        raise AssertionError("MiTurnoRead must reject extra fields per extra='forbid'")
+    # The error message MUST mention the smuggled field — that's how
+    # downstream monitors will spot drift.
+    msg = str(exc_info.value)
+    assert "phantom_field" in msg or "extra" in msg.lower()
 
 
 def test_mi_turno_read_field_set_matches_fe_zod_contract() -> None:
@@ -135,15 +133,12 @@ def test_mi_turno_read_field_set_matches_fe_zod_contract() -> None:
 
 def test_mi_turno_read_requires_uuid_sesion() -> None:
     """S4 (REQ-OPS-184): uuid_sesion is REQUIRED."""
-    from pydantic import ValidationError
-
+    import pytest
     from parkos_core.schemas.operacion import MiTurnoRead
+    from pydantic import ValidationError
 
     payload = _make_minimal_payload()
     payload.pop("uuid_sesion")
-    try:
+    with pytest.raises(ValidationError) as exc_info:
         MiTurnoRead.model_validate(payload)
-    except ValidationError as exc:
-        assert "uuid_sesion" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("uuid_sesion is REQUIRED per REQ-OPS-184")
+    assert "uuid_sesion" in str(exc_info.value)

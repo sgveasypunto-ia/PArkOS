@@ -452,6 +452,42 @@ class TarifaVigenteNoEncontradaSalidaError(_Base):
     error: Literal["tarifa_vigente_no_encontrada"]
 
 
+# ---------------------------------------------------------------------------
+# HU-F12.1 -- MiTurnoRead (REQ-OPS-184)
+# ---------------------------------------------------------------------------
+
+
+class MiTurnoRead(_Base):
+    """Per-turn aggregate response for ``GET /operacion/mi-turno``.
+
+    Seven-field wire shape (REQ-OPS-184):
+
+        uuid_sesion                   UUID
+        uuid_sucursal                 UUID
+        timestamp_calculo             datetime
+        ingresos_count                int      (default 0)
+        salidas_count                 int      (default 0)
+        total_cobrado_efectivo_cop    Decimal  (default 0)
+        total_cobrado_datafono_cop    Decimal  (default 0)
+
+    All count/decimal fields default to ``0`` so a zero-state session
+    parses into a well-formed response (REQ-OPS-184 S2 — backend always
+    returns 200 with zeros, NEVER 404). ``extra='forbid'`` (inherited
+    from :class:`_Base`) rejects hypothetical 8th-field drift — see
+    :class:`test_mi_turno_schema.py` for the static key-set lock that
+    mirrors the FE Zod schema (``apps/electron-sucursal/src/lib/api/
+    schemas/mi-turno.ts``, DA-F12.1-1 / DA-F12.1-9 GATING).
+    """
+
+    uuid_sesion: uuid_lib.UUID
+    uuid_sucursal: uuid_lib.UUID
+    timestamp_calculo: datetime
+    ingresos_count: int = 0
+    salidas_count: int = 0
+    total_cobrado_efectivo_cop: Decimal = Decimal(0)
+    total_cobrado_datafono_cop: Decimal = Decimal(0)
+
+
 __all__ = [
     "CotizarFacturacion",
     "CotizarMensualidad",
@@ -465,6 +501,7 @@ __all__ = [
     "IngresoRead",
     "IngresoReadForzado",
     "IngresoReadList",
+    "MiTurnoRead",
     "MotivoForzadoRequeridoError",
     "OcupacionItem",
     "OcupacionResponse",

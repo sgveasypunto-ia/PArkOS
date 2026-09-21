@@ -45,6 +45,9 @@ def _build_sesion_mock(
     sesion.uuid = uuid_sesion or uuid_lib.uuid4()
     sesion.uuid_sucursal = uuid_sucursal or uuid_lib.uuid4()
     sesion.timestamp_apertura = timestamp_apertura or _now_naive()
+    # ``MagicMock`` auto-creates child attributes as MagicMocks — which
+    # breaks the SQL builder's ``is None`` check. Pin both timestamps
+    # to real datetimes / None explicitly.
     sesion.timestamp_cierre = timestamp_cierre
     sesion.uuid_usuario = uuid_lib.uuid4()
     return sesion
