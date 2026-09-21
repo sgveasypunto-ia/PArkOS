@@ -25,6 +25,11 @@ export type SyncState = 'never_synced' | 'online' | 'lagging' | 'offline';
 export function deriveSyncState(d: SyncEstado): SyncState {
   if (d.lag_seg === null) return 'never_synced';
   if (d.lag_seg > 3600 || d.pendientes > 100) return 'offline';
+  // pendientes > 5 lifts the state to lagging EVEN when the lag clock
+  // is fresh — operators see the warning before the 60s lag window
+  // crosses. The hard ceiling (pendientes > 100 → offline) is checked
+  // above so a stuck queue never masquerades as healthy.
+  if (d.pendientes > 5) return 'lagging';
   if (d.lag_seg <= 60) return 'online';
   return 'lagging';
 }

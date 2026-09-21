@@ -59,10 +59,12 @@ function makeEstado(overrides: Partial<SyncEstado> = {}): SyncEstado {
 
 beforeEach(() => {
   useSyncEstadoMock.mockReset();
+  vi.useFakeTimers();
 });
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -146,8 +148,7 @@ describe('<SyncBanner /> — REQ-OPS-171 (HU-F11.1)', () => {
     const { rerender } = render(<SyncBanner uuid_sucursal={BRANCH_UUID} />);
     const banner = screen.getByTestId('sync-banner');
     expect(banner.getAttribute('data-state')).toBe('online');
-    const firstText = banner.textContent;
-    expect(firstText).toBeDefined();
+    expect(banner.getAttribute('data-announced-state')).toBe('online');
 
     // Same state (online → online with different numbers): no announce.
     useSyncEstadoMock.mockReturnValue({
@@ -156,11 +157,14 @@ describe('<SyncBanner /> — REQ-OPS-171 (HU-F11.1)', () => {
     });
     rerender(<SyncBanner uuid_sucursal={BRANCH_UUID} />);
     expect(banner.getAttribute('data-state')).toBe('online');
-    // The announced text MUST NOT change on identical state (no re-announce spam).
-    // We assert via data-testid that the live region remains stable.
+    // The announced state MUST NOT change on identical state (no re-announce spam).
     expect(banner.getAttribute('data-announced-state')).toBe('online');
 
-    // Different state: online → lagging. The announced state MUST advance.
+    // Advance past the 2 s debounce gate. The next transition
+    // (online → lagging) MUST be announced.
+    act(() => {
+      vi.advanceTimersByTime(2_500);
+    });
     useSyncEstadoMock.mockReturnValue({
       data: makeEstado({ lag_seg: 600, pendientes: 0 }),
       error: undefined,
@@ -170,9 +174,6 @@ describe('<SyncBanner /> — REQ-OPS-171 (HU-F11.1)', () => {
     expect(banner.getAttribute('data-announced-state')).toBe('lagging');
 
     // Within 2 s debounce: another transition MUST be deferred.
-    act(() => {
-      vi.advanceTimersByTime(0); // well under 2_000 ms debounce
-    });
     useSyncEstadoMock.mockReturnValue({
       data: makeEstado({ lag_seg: 7200, pendientes: 0 }),
       error: undefined,
