@@ -24,7 +24,7 @@
 import { describe, it, expect } from 'vitest';
 
 import * as SyncStatusStripModule from '../components/SyncStatusStrip';
-import * as SyncBannerModule from '../../components/SyncBanner';
+import * as SyncBannerModule from '../../../components/SyncBanner';
 
 describe('SyncStatusStrip — deprecation shim (HU-F11.1)', () => {
   it('S1: SyncStatusStrip is a re-export of SyncBanner (preserves Dashboard import path)', () => {
