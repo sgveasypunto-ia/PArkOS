@@ -1,14 +1,12 @@
 """HU-F1.12 / REQ-OPS-083..090 + REQ-OPS-XR5 -- POST /clientes/venta-suscripcion.
 
-10-step atomic handler on a NEW dedicated ``APIRouter`` (DEC-VENTA-05 +
+9-step atomic handler on a NEW dedicated ``APIRouter`` (DEC-VENTA-05 +
 KD-VENTA-01 mirror of F1.11 KD-TKT-01):
 
   1. KD-3 issuer chain via ``requires_issuer("operador-", "admin-")``
      with permission gate ``gestionar_clientes``.
   2. V2 plan lock: ``buscar_tipo_subscripcion_vigente_por_uuid``
      (SELECT ... FOR UPDATE exclusive, KD-VENTA-02 + DEC-VENTA-04).
-  2a. Tenant scope post-V1 (KD-S2 F1.7 mirror): operador cross-branch
-     rejected with 403 ``tenant_scope_violation``.
   3. V1 cliente lookup-or-create (DEC-VENTA-07 drops ``dv``).
   4. V3 per-placa lookup-or-create (F1.7 ``detectar_tipo_vehiculo``).
   5. V5 ``mismo_tipo_vehiculo`` in-process check.
@@ -19,13 +17,26 @@ KD-VENTA-01 mirror of F1.11 KD-TKT-01):
   8a. Optional V8 F1.9 cobro sub-chain (when ``cobrar_ahora=true``).
   8b. Optional V8b F1.10 FE sub-chain (when
       ``emitir_factura_electronica=true``).
-  9. V9 INSERT subscription + junction (pg_advisory_xact_lock).
- 10. SINGLE COMMIT + response shape + ``Cache-Control: no-store``.
+  9. V9 INSERT subscription + junction (pg_advisory_xact_lock) + SINGLE
+     COMMIT + response shape + ``Cache-Control: no-store``.
 
 Defense in depth (REQ-OPS-XR5 cross-cutting):
 
   * Layer 1: KD-3 issuer chain + ``gestionar_clientes`` permission gate.
-  * Layer 2: tenant scope post-V1 (KD-S2 F1.7 analog).
+  * Layer 2: tenant scope -- enforced by the auth layer
+    ``auth/tenancy.py::get_tenant_ctx`` (REQ-OPS-XR5 + REQ-OPS-089
+    Scenario 3 footnote "cross-branch check NOT enforced in F1.12,
+    deferred to a future cross-branch consistency HU"). For
+    ``operador-`` tokens the dependency pins the request to the JWT
+    ``claims["sucursal"]`` and rejects any ``X-Sucursal-Context`` header
+    pointing at a DIFFERENT branch with 403
+    ``unauthorized_sucursal_context`` (``auth/tenancy.py:127-133``). The
+    handler MUST NOT re-check this invariant -- the request payload does
+    not carry a target entity with its own ``uuid_sucursal`` (the
+    subscription is being CREATED here), so a handler-level comparison
+    would either be a no-op or a tautology. The handler body assumes
+    ``ctx.sucursal_uuid`` is the authoritative branch for every write
+    below.
   * Layer 3: KD-VENTA-02 ``SELECT ... FOR UPDATE`` exclusive row lock
     on the plan.
   * Layer 4: Pydantic ``extra='forbid'`` + ``placas`` 1-2 range +
@@ -84,7 +95,6 @@ _venta_suscripcion_issuer_dep = requires_issuer("operador-", "admin-")
     status_code=201,
     responses={
         400: {"description": "missing_sucursal_context"},
-        403: {"description": "tenant_scope_violation"},
         404: {"description": "tipo_subscripcion_no_encontrado / cliente_no_encontrado"},
         409: {"description": "tipo_subscripcion_no_vigente"},
         422: {"description": "pydantic validation / vendedor chain discriminators"},
@@ -97,11 +107,15 @@ async def venta_suscripcion(
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_venta_suscripcion_issuer_dep),
 ) -> VentaSuscripcionResponse:
-    """POST /clientes/venta-suscripcion -- 10-step atomic handler.
+    """POST /clientes/venta-suscripcion -- 9-step atomic handler.
 
     See module docstring for the full step chain + defense in depth.
     KD-VENTA-01 single-commit invariant: this handler owns the ONLY
-    ``await session.commit()`` in the chain.
+    ``await session.commit()`` in the chain. Cross-branch operator
+    rejection is enforced at the auth layer (``get_tenant_ctx``,
+    ``auth/tenancy.py:127-133``); this handler body MUST NOT re-check
+    the tenant scope invariant (REQ-OPS-XR5 Layer 2 + REQ-OPS-089
+    Scenario 3 footnote).
     """
     no_store = _helpers.no_store_headers()
 
@@ -116,22 +130,6 @@ async def venta_suscripcion(
             detail={
                 "error": "tipo_subscripcion_no_encontrado",
                 "uuid_tipo_subscripcion": str(payload.uuid_tipo_subscripcion),
-            },
-            headers=no_store,
-        )
-
-    # --- Step 2a: Layer 2 tenant scope post-V1 (KD-S2 F1.7 analog). ----
-    target_sucursal = ctx.sucursal_uuid
-    if (
-        ctx.issuer_prefix == "operador-"
-        and target_sucursal is not None
-        and target_sucursal != ctx.sucursal_uuid
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "tenant_scope_violation",
-                "uuid_sucursal_context": str(target_sucursal),
             },
             headers=no_store,
         )
@@ -203,7 +201,7 @@ async def venta_suscripcion(
             await repo_venta.validar_placa_duplicada_subscripcion(
                 session,
                 placa=placa,
-                uuid_sucursal=target_sucursal or ctx.sucursal_uuid,
+                uuid_sucursal=ctx.sucursal_uuid,
                 fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
             )
         except repo_venta.SubscripcionDuplicadaPlacaError as exc:
@@ -236,7 +234,7 @@ async def venta_suscripcion(
         session,
         actor_uuid=ctx.actor_uuid,
         uuid_cliente=cliente.uuid,
-        uuid_sucursal=target_sucursal or ctx.sucursal_uuid,
+        uuid_sucursal=ctx.sucursal_uuid,
         uuid_tipo_subscripcion=plan.uuid,
         fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
         fecha_vencimiento=fecha_vencimiento,
@@ -305,7 +303,7 @@ async def venta_suscripcion(
                 session,
                 actor_uuid=ctx.actor_uuid,
                 new_attrs={
-                    "uuid_sucursal": target_sucursal or ctx.sucursal_uuid,
+                    "uuid_sucursal": ctx.sucursal_uuid,
                     "subtotal": monto_a_cobrar,
                     "descuento": Decimal(0),
                     "total": total_con_iva,
@@ -363,7 +361,7 @@ async def venta_suscripcion(
     uuid_fe: uuid_lib.UUID | None = None
     uuid_envio: uuid_lib.UUID | None = None
     if payload.emitir_factura_electronica and uuid_factura is not None:
-        target_sucursal_fe = target_sucursal or ctx.sucursal_uuid
+        target_sucursal_fe = ctx.sucursal_uuid
         if target_sucursal_fe is None:
             raise HTTPException(
                 status_code=400,
@@ -450,7 +448,7 @@ async def venta_suscripcion(
         uuid_cliente=cliente.uuid,
         uuid_subscripcion=subscripcion.uuid,
         uuid_vehiculos=[v.uuid for v in vehiculos],
-        uuid_sucursal=target_sucursal or ctx.sucursal_uuid,
+        uuid_sucursal=ctx.sucursal_uuid,
         fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
         fecha_vencimiento=fecha_vencimiento,
         valor_total_plan=plan.valor,
