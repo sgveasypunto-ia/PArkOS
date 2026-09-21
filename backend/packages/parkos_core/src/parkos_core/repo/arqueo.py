@@ -494,7 +494,7 @@ async def insertar_alerta_descuadre_critico(
     """V10 (REQ-OPS-095 + KD-ARQUEO-05 + DEC-ARQUEO-05): conditional alerta INSERT.
 
     Goes through ``repo.workflow.append_transition`` with
-    ``tipo_alerta='descuadre_critico'`` + ``estado='activa'`` (the
+    ``tipo_alerta='descuadre_critico'`` + ``estado='abierta'`` (the
     initial state per ``STATE_MACHINES['alerta']`` in ``repo/workflow.py``).
     MIGRATION 0031 Op 2 seeded the ``alert_types`` registry row
     idempotently.
@@ -509,7 +509,7 @@ async def insertar_alerta_descuadre_critico(
         "valor_diferencia_datafono": diferencia_datafono,
         "datos_nuevos": payload_json,
         "timestamp_evento": _now_naive(),
-        "estado": "activa",
+        "estado": "abierta",
     }
     row = await workflow.append_transition(
         session,

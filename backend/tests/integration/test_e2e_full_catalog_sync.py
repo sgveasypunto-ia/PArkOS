@@ -1081,7 +1081,7 @@ async def test_full_catalog_sync_46_entries_e2e(
                 "tipo_alerta": "anomalia_caja",
                 "valor_diferencia_efectivo": 100,
                 "valor_diferencia_datafono": 0,
-                "estado": "activa",
+                "estado": "abierta",
                 "timestamp_evento": now_naive(),
             },
         )

@@ -15,7 +15,7 @@
   (:class:`ReclamosCreate`); the DB-existence check via
   :func:`repo.workflow.polymorphic_row_exists` runs from a future
   custom endpoint (PR7).
-- ``alerta`` — ``[L-W]`` cash-count anomaly. Admin-only ``descartada``
+- ``alerta`` — ``[L-W]`` cash-count anomaly. Admin-only ``en_revision``
   (REQ-26-W-ALERTA-DESCARTADA) enforced at the endpoint layer; Pydantic
   layer only enforces shape.
 
