@@ -181,6 +181,19 @@ def upgrade() -> None:
     # Op 2: seed prod.permisos for 'anular_reimpresion' (mirror F1.7)
     # ----------------------------------------------------------------
     # The IF NOT EXISTS guard makes this idempotent on re-apply.
+    #
+    # NOTE: ``descripcion`` column is NOT present on ``prod.permisos``
+    # (canonical schema in MIGRATION 0001 lines 125-135 + ER canon
+    # ``modelo_datos_er.mmd``). The original draft of this INSERT
+    # referenced ``descripcion='Anular una reimpresion de tiquete
+    # autorizada/ejecutada (HU-F1.11)'`` — that string is human-readable
+    # documentation and is preserved here as a code comment instead of
+    # being persisted. The canonical column list mirrors 0002_seed_permisos_canonicos
+    # (``uuid, permiso, vigente_desde, vigente_hasta, estado, created_at``);
+    # ``created_by``, ``sync_status``, and ``sync_attempts`` are nullable
+    # per ``_audit_columns()`` / ``_sync_columns()`` helpers in 0001 and
+    # are intentionally omitted (the migration keeps a minimal payload —
+    # the canonical seed in 0002 uses the same 6-column shape).
     op.execute(
         """
         DO $$
@@ -189,11 +202,10 @@ def upgrade() -> None:
                 SELECT 1 FROM prod.permisos WHERE permiso = 'anular_reimpresion'
             ) THEN
                 INSERT INTO prod.permisos (
-                    uuid, permiso, descripcion,
+                    uuid, permiso,
                     vigente_desde, vigente_hasta, estado, created_at
                 ) VALUES (
                     gen_random_uuid(), 'anular_reimpresion',
-                    'Anular una reimpresion de tiquete autorizada/ejecutada (HU-F1.11)',
                     NOW(), NULL, 'activo', NOW()
                 );
                 RAISE NOTICE '0029_op2: permission seeded (permiso=anular_reimpresion)';
