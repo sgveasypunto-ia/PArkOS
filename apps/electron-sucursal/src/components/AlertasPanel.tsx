@@ -35,7 +35,7 @@ export interface AlertasPanelProps {
   uuid_sucursal: string | null;
 }
 
-export function AlertasPanel({ uuid_sucursal }: AlertasPanelProps): JSX.Element {
+export function AlertasPanel({ uuid_sucursal }: AlertasPanelProps): JSX.Element | null {
   const { t } = useTranslation();
   const { mergedAlertas, openAlertsCount, error } = useAlertas(uuid_sucursal);
 
@@ -72,6 +72,14 @@ export function AlertasPanel({ uuid_sucursal }: AlertasPanelProps): JSX.Element 
       return next;
     });
   };
+
+  // F11.2 (REQ-OPS-178) — render gate: do not paint the panel before the
+  // operator has a branch context. The SWR inside `useAlertas` already
+  // null-keys on `!uuid_sucursal` so no fetch fires on /login — but the
+  // section markup (header, filter chips, empty state) must also stay out
+  // of the pre-auth surface, otherwise the auditor sees operational state
+  // they should not see yet. Sits AFTER all hooks (React rules of hooks).
+  if (!uuid_sucursal) return null;
 
   return (
     <section
