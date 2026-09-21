@@ -31,66 +31,39 @@ import { z } from 'zod';
 
 // Mock the @parkos/ui-kit/fetch module so the hook never touches the
 // real network. The mock is reset between tests so payload assertions
-// don't leak across cases.
-vi.mock('@parkos/ui-kit/fetch', async () => {
-  const actual = await vi.importActual<typeof import('@parkos/ui-kit/fetch')>(
-    '@parkos/ui-kit/fetch',
-  );
-  return {
-    ...actual,
-    parkosFetch: vi.fn(),
-    ParkosHttpError: class ParkosHttpError extends Error {
-      readonly status: number;
-      readonly code: string;
-      constructor(status: number, message: string, code = 'http_error') {
-        super(message);
-        this.status = status;
-        this.code = code;
-        this.name = 'ParkosHttpError';
-      }
-    },
-  };
-});
+// don't leak across cases. We provide the minimum surface the hook
+// imports (parkosFetch + ParkosHttpError) without spreading the real
+// module — keeps the mock isolated and ESLint-clean.
+vi.mock('@parkos/ui-kit/fetch', () => ({
+  parkosFetch: vi.fn(),
+  ParkosHttpError: class ParkosHttpError extends Error {
+    readonly status: number;
+    readonly code: string;
+    constructor(status: number, message: string, code = 'http_error') {
+      super(message);
+      this.status = status;
+      this.code = code;
+      this.name = 'ParkosHttpError';
+    }
+  },
+}));
 
 // Re-import AFTER the mock is registered so the hook captures the mocked
-// `parkosFetch` reference.
-const { useArqueo, ArqueoResumenSchema, useArqueoResumen } = await import(
-  '../useArqueo'
-);
-const { parkosFetch } = await import('@parkos/ui-kit/fetch');
+// `parkosFetch` reference. The dynamic import is required because the
+// mock module must be installed before the hook reads `parkosFetch`.
+const useArqueoModule = await import('../useArqueo');
+const { useArqueo, ArqueoResumenSchema, useArqueoResumen } = useArqueoModule;
+const fetchModule = await import('@parkos/ui-kit/fetch');
+const { parkosFetch } = fetchModule;
 const mockedFetch = vi.mocked(parkosFetch);
 
-// `arqueoSchema` lives inside ArqueoSheet.tsx but we want to test it
-// in isolation — re-declare the canonical shape here as the contract
-// that BOTH the hook AND the form must conform to. The GREEN commit
-// (C2) wires the SAME schema into ArqueoSheet.tsx, so this file is the
-// canonical source of truth for the wire-level shape.
-//
-// The expected shape mirrors REQ-OPS-091 backend `POST /caja/arqueo`:
-//   { uuid_sesion, tipo_arqueo, valor_efectivo_reportado,
-//     valor_datafono_reportado, justificacion? }
-const arqueoSchema = z
-  .object({
-    uuid_sesion: z.string().uuid(),
-    tipo_arqueo: z.enum(['auditoria', 'cierre_turno', 'cierre_dia']),
-    valor_efectivo_reportado: z.coerce.number().int().nonnegative(),
-    valor_datafono_reportado: z.coerce.number().int().nonnegative(),
-    justificacion: z.string().trim().optional(),
-  })
-  .superRefine((data, ctx) => {
-    // The schema in the production module derives diferencia from the
-    // resumen fetch — here we approximate via the reported-vs-expected
-    // split the form would inject. The contract is: when the form has
-    // an external "expected" source and `|diferencia| > 0`,
-    // `justificacion` MUST be ≥3 chars (trim). Otherwise optional.
-    const expectedKey = ctx.addIssue;
-    void expectedKey;
-    // The actual refinement in production consumes an injected
-    // diferencia; for the schema-only test we let any value through
-    // unless the caller signals diferencia > 0 via a context sentinel.
-    // The production refinement logic is exercised by ArqueoSheet.test.tsx
-    // (separate test layer).
-  });
+// The wire-level shape of `useArqueo.submit` is pinned by the
+// `rename-keys-1` test (full body assertion on the fetch mock) and
+// the `rename-keys-3` test (justificacion absent on diferencia=0).
+// The refinement contract is pinned by `refinement-1` below using a
+// standalone Zod schema that mirrors the production refinement in
+// ArqueoSheet.tsx — same shape, same superRefine logic, isolated from
+// form state for unit-test clarity.
 
 describe('HU-F10.1 — useArqueo rename + Zod refinement (REQ-OPS-153 + REQ-OPS-154)', () => {
   beforeEach(() => {
