@@ -371,7 +371,7 @@ class TestStateMachines:
             "reimpresion_ticket": {"ejecutada", "rechazada"},
             "anulaciones": {"ejecutada", "rechazada"},
             "reclamos": {"resuelto", "rechazado"},
-            "alerta": {"descartada", "resuelta"},
+            "alerta": {"resuelta"},
             "envio_dian": {"ack", "error"},
             "validacion_evento": {"validado", "rechazado"},
         }

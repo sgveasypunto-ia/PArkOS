@@ -83,9 +83,9 @@ STATE_MACHINES: dict[str, dict[str, list[str]]] = {
         "rechazado": [],  # terminal
     },
     "alerta": {
-        "activa": ["descartada", "resuelta"],
-        # ``descartada`` is admin-only (T-PR6-08 enforces via JWT role).
-        "descartada": [],  # terminal
+        "abierta": ["en_revision", "resuelta"],
+        # ``en_revision`` is admin-only (T-PR6-08 enforces via JWT role).
+        "en_revision": ["resuelta"],
         "resuelta": [],  # terminal (operator path)
     },
     "envio_dian": {

@@ -7,7 +7,7 @@ Covers 4 branch-originated ``[L-W]`` workflow tables + 2 cloud-only
 - :class:`Anulaciones` — branch annulment of ingreso/salida (polymorphic FK)
 - :class:`Reclamos` — branch claim against ingreso/salida/factura
   (polymorphic FK, REQ-23-W-POLYMORPHIC-FK, REQ-OP-08)
-- :class:`Alerta` — branch cash-count anomaly (admin-only ``descartada``,
+- :class:`Alerta` — branch cash-count anomaly (admin-only ``en_revision``,
   REQ-26-W-ALERTA-DESCARTADA)
 - :class:`EnvioDian` — cloud DIAN send/ack chain (CLOUD-ONLY,
   REQ-25-W-CLOUD-ONLY)
@@ -23,8 +23,8 @@ Special validators (defense in depth):
   (T-PR6-04) and is invoked from ``api/v1/workflows.py`` (T-PR6-10).
   This validator is the **fast-fail** layer (returns ``422`` before
   any DB hit for unknown discriminator values).
-- ``AlertaCreate`` accepts any ``estado`` (defaults to ``"activa"``);
-  the **admin-only reject** rule on ``estado='descartada'`` is enforced
+- ``AlertaCreate`` accepts any ``estado`` (defaults to ``"abierta"``);
+  the **admin-only reject** rule on ``estado='en_revision'`` is enforced
   at the endpoint layer (``api/v1/workflows.py``) where the actor's
   ``uuid`` is available from the JWT context. This Pydantic layer only
   enforces shape.
@@ -321,15 +321,15 @@ class ReclamosReadList(ReadListBase[ReclamosRead]):
 
 
 # ---------------------------------------------------------------------------
-# Alerta ([L-W] — branch-originated, REQ-26 admin-only descartada)
+# Alerta ([L-W] — branch-originated, REQ-26 admin-only en_revision)
 # ---------------------------------------------------------------------------
 
 
 class AlertaRead(_Base):
     """Read-back for ``prod.alerta`` (composite PK; monthly partitioned).
 
-    ``estado`` values: ``activa`` | ``descartada`` | ``resuelta``.
-    Transitioning to ``descartada`` requires an admin actor (REQ-26)
+    ``estado`` values: ``abierta`` | ``en_revision`` | ``resuelta``.
+    Transitioning to ``en_revision`` requires an admin actor (REQ-26)
     — enforced at the endpoint layer.
     """
 
@@ -356,10 +356,10 @@ class AlertaRead(_Base):
 class AlertaCreate(_Base):
     """REQ-26-W-ALERTA-DESCARTADA.
 
-    When ``estado='descartada'``, the alert's *user*
+    When ``estado='en_revision'``, the alert's *user*
     (``uuid_usuario``) MUST NOT be the writer. Enforced at the endpoint
     layer — the endpoint checks
-    ``ctx.actor_uuid != payload.uuid_usuario`` when ``estado='descartada'``
+    ``ctx.actor_uuid != payload.uuid_usuario`` when ``estado='en_revision'``
     and raises ``HTTPException(403)``.
 
     This validator only enforces shape; the policy lives at the API edge
@@ -374,13 +374,13 @@ class AlertaCreate(_Base):
     valor_diferencia_datafono: Decimal | None = None
     uuid_alerta_padre: uuid_lib.UUID | None = None
     timestamp_evento: datetime | None = None
-    estado: Literal["activa", "descartada", "resuelta"] = "activa"
+    estado: Literal["abierta", "en_revision", "resuelta"] = "abierta"
 
 
 class AlertaUpdate(_Base):
     """[L-W] UPDATE payload — close+insert via ``append_transition``.
 
-    Endpoint layer enforces the admin-only ``descartada`` rule on Update
+    Endpoint layer enforces the admin-only ``en_revision`` rule on Update
     paths too (REQ-26).
     """
 
@@ -392,7 +392,7 @@ class AlertaUpdate(_Base):
     valor_diferencia_datafono: Decimal | None = None
     uuid_alerta_padre: uuid_lib.UUID | None = None
     timestamp_evento: datetime | None = None
-    estado: Literal["activa", "descartada", "resuelta"] | None = None
+    estado: Literal["abierta", "en_revision", "resuelta"] | None = None
 
 
 class AlertaFilter(FilterBase):

@@ -7,7 +7,7 @@ retention, pg_partman parent). Composite PK on
 ``(uuid, fecha_retencion_hasta)``.
 
 REJECTED state machine: only an admin user may transition
-``alerta.estado`` to ``descartada`` \u2014 enforced by the Pydantic layer
+``alerta.estado`` to ``en_revision`` \u2014 enforced by the Pydantic layer
 (REQ-26-W-ALERTA-DESCARTADA). The ORM carries no special marker for
 that \u2014 the state machine + actor check live in the API surface.
 """

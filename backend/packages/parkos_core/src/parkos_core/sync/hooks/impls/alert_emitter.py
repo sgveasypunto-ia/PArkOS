@@ -23,7 +23,7 @@ kwargs), not ``Callable[[HookContext], HookResult]``.
 ``jobs/sync_cloud.py::_handle_chain_break`` already established for
 ``alerta`` chain-root rows — ``repo.workflow.append_transition`` (the
 ``[L-W]`` canonical write path; ``STATE_MACHINES["alerta"]`` requires
-``estado='activa'`` for the root transition, no ``parent_uuid``). This is
+``estado='abierta'`` for the root transition, no ``parent_uuid``). This is
 NOT the same path ``dian/cloud/dispatcher.py::_write_alerta`` uses (a bare
 ``repo.append_only.append_event`` call, bypassing the state machine) — that
 pre-existing inconsistency predates ``prod.alert_types`` and is a
@@ -74,7 +74,7 @@ async def alert_emitter(
         new_attrs={
             "uuid_sucursal": uuid_sucursal,
             "tipo_alerta": tipo_alerta,
-            "estado": "activa",
+            "estado": "abierta",
             "timestamp_evento": datetime.now(UTC).replace(tzinfo=None),
         },
         log_tx=False,

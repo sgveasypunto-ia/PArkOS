@@ -194,10 +194,10 @@ class TestHashChainVerifierCatchesBreak:
         # First positional arg after session: model_cls = Alerta.
         alerta_model_cls = append_transition_mock.await_args.args[1]
         assert alerta_model_cls.__name__ == "Alerta"
-        # new_attrs (kw) carries tipo_alerta='hash_chain_anomaly' + estado='activa'.
+        # new_attrs (kw) carries tipo_alerta='hash_chain_anomaly' + estado='abierta'.
         new_attrs = append_transition_mock.await_args.kwargs["new_attrs"]
         assert new_attrs["tipo_alerta"] == "hash_chain_anomaly"
-        assert new_attrs["estado"] == "activa"
+        assert new_attrs["estado"] == "abierta"
         assert new_attrs["uuid_sucursal"] == tenant_uuid
 
         append_event_mock.assert_awaited_once()

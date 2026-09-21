@@ -777,7 +777,7 @@ class SyncCloudWorker(WorkerRunner):
         ``alerta`` is an [L-W] workflow table — it goes through
         :func:`parkos_core.repo.workflow.append_transition` (the
         canonical workflow write path; the state machine requires
-        ``estado='activa'`` for the root transition).
+        ``estado='abierta'`` for the root transition).
 
         ``sync_conflict`` is an [A] table — it goes through
         :func:`parkos_core.repo.append_only.append_event`. The DB
@@ -807,7 +807,7 @@ class SyncCloudWorker(WorkerRunner):
             new_attrs={
                 "uuid_sucursal": uuid_sucursal,
                 "tipo_alerta": "hash_chain_anomaly",
-                "estado": "activa",
+                "estado": "abierta",
                 "timestamp_evento": dt.datetime.now(dt.UTC).replace(tzinfo=None),
             },
             log_tx=False,
