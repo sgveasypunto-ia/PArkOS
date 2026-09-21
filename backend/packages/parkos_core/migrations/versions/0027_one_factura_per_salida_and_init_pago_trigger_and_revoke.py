@@ -166,14 +166,15 @@ def upgrade() -> None:
     # `prod.facturas` is NOT partitioned (verified pre-apply) so a
     # partial unique index IS feasible. Closes TOCTOU race on
     # ``SELECT EXISTS(...) → INSERT`` between V1 and Step 9.
-    op.execute(
-        """
-        CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS
-        one_factura_per_salida
-        ON prod.facturas (uuid_salida)
-        WHERE uuid_salida IS NOT NULL;
-        """
-    )
+    with op.get_context().autocommit_block():
+        op.execute(
+            """
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS
+            one_factura_per_salida
+            ON prod.facturas (uuid_salida)
+            WHERE uuid_salida IS NOT NULL;
+            """
+        )
 
     # ---------------------------------------------------------------
     # Op 3: BEFORE INSERT trigger `fn_factura_pagos_init_pago_uniqueness`
@@ -318,4 +319,4 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS prod.fn_factura_pagos_init_pago_uniqueness();")
 
     # Reverse Op 2 (CONCURRENTLY index).
-    op.execute("DROP INDEX IF EXISTS prod.one_factura_per_salida;")
+    op.execute("DROP INDEX IF EXISTS one_factura_per_salida;")

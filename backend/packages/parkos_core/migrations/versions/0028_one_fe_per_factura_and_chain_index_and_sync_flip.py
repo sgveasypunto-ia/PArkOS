@@ -137,27 +137,29 @@ def upgrade() -> None:
     # Defense in depth against the V2 SELECT-before-INSERT TOCTOU
     # race; complements the existing UK01 (resolucion, consecutivo).
     # ---------------------------------------------------------------
-    op.execute(
-        """
-        CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS
-        one_fe_per_factura
-        ON prod.factura_electronica (uuid_factura)
-        WHERE uuid_factura IS NOT NULL;
-        """
-    )
+    with op.get_context().autocommit_block():
+        op.execute(
+            """
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS
+            one_fe_per_factura
+            ON prod.factura_electronica (uuid_factura)
+            WHERE uuid_factura IS NOT NULL;
+            """
+        )
 
     # ---------------------------------------------------------------
     # Op 3: covering index `idx_envio_dian_chain_tip` (REQ-OPS-068).
     # Speeds up the GET JOIN to prod.v_factura_electronica_acuse.
     # ---------------------------------------------------------------
-    op.execute(
-        """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS
-        idx_envio_dian_chain_tip
-        ON prod.envio_dian (uuid_factura_electronica, timestamp_evento DESC)
-        WHERE uuid_factura_electronica IS NOT NULL;
-        """
-    )
+    with op.get_context().autocommit_block():
+        op.execute(
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS
+            idx_envio_dian_chain_tip
+            ON prod.envio_dian (uuid_factura_electronica, timestamp_evento DESC)
+            WHERE uuid_factura_electronica IS NOT NULL;
+            """
+        )
 
     # ---------------------------------------------------------------
     # Op 4: defensive GRANT re-assertion for the 3 tables touched by
@@ -176,10 +178,12 @@ def downgrade() -> None:
     op.execute("REVOKE SELECT, INSERT ON prod.resolucion_facturacion FROM rol_app;")
 
     # Reverse Op 3 (CONCURRENTLY index).
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS prod.idx_envio_dian_chain_tip;")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_envio_dian_chain_tip;")
 
     # Reverse Op 2 (CONCURRENTLY index).
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS prod.one_fe_per_factura;")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS one_fe_per_factura;")
 
 
 __all__ = ["downgrade", "upgrade"]

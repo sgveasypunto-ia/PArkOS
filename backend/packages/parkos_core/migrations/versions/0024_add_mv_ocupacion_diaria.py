@@ -113,13 +113,14 @@ def upgrade() -> None:
     #    (KD-2). CONCURRENTLY cannot run inside a transaction; Alembic's
     #    op.execute uses autocommit per statement, satisfying the rule.
     #    IF NOT EXISTS makes this migration idempotent against retries.
-    op.execute(
-        """
-        CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS
-            prod.uq_mv_ocupacion_diaria_sucursal_tipo
-        ON prod.mv_ocupacion_diaria (uuid_sucursal, uuid_tipo_vehiculo);
-        """
-    )
+    with op.get_context().autocommit_block():
+        op.execute(
+            """
+            CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS
+                uq_mv_ocupacion_diaria_sucursal_tipo
+            ON prod.mv_ocupacion_diaria (uuid_sucursal, uuid_tipo_vehiculo);
+            """
+        )
 
     # 4) Grant SELECT to the application role. The ``parkos_app`` role
     #    already has SELECT on prod.ingreso / salidas / anulaciones /

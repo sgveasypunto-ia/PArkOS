@@ -69,7 +69,7 @@ def test_migration_0033_upgrade_and_downgrade_are_callable() -> None:
 
     MIGRATION 0033 is a REAL DDL composite index (DEC-LOGIN-06):
     Op 0 pre-flight DO $$ asserting 2 tables (login, usuarios) +
-    Op 1 ``CREATE INDEX CONCURRENTLY prod.idx_login_uuid_usuario_evento
+    Op 1 ``CREATE INDEX CONCURRENTLY idx_login_uuid_usuario_evento
     ON prod.login (uuid_usuario, timestamp_evento DESC)`` wrapped in
     ``op.get_context().autocommit_block()``. ``downgrade()`` reverses
     via ``DROP INDEX CONCURRENTLY`` (also wrapped in autocommit_block).
@@ -89,7 +89,7 @@ def test_migration_0033_creates_composite_index_on_login() -> None:
 
     DEC-LOGIN-06 + design.md Appendix A verbatim:
     ``CREATE INDEX CONCURRENTLY IF NOT EXISTS
-    prod.idx_login_uuid_usuario_evento
+    idx_login_uuid_usuario_evento
     ON prod.login (uuid_usuario, timestamp_evento DESC)``
     wrapped in ``op.get_context().autocommit_block()`` (CONCURRENTLY
     cannot run inside a transaction).
@@ -116,8 +116,8 @@ def test_migration_0033_creates_composite_index_on_login() -> None:
         f"upgrade() must emit exactly one CREATE INDEX CONCURRENTLY; got {len(create_idx_sqls)}"
     )
     sql = create_idx_sqls[0]
-    assert "prod.idx_login_uuid_usuario_evento" in sql, (
-        f"upgrade() missing canonical index name prod.idx_login_uuid_usuario_evento; got {sql!r}"
+    assert "idx_login_uuid_usuario_evento" in sql, (
+        f"upgrade() missing canonical index name idx_login_uuid_usuario_evento; got {sql!r}"
     )
     assert "ON prod.login" in sql, f"upgrade() must target prod.login table; got {sql!r}"
     assert "(uuid_usuario, timestamp_evento DESC)" in sql, (
@@ -134,7 +134,7 @@ def test_migration_0033_downgrade_drops_composite_index() -> None:
     """T1.1 GREEN: ``downgrade()`` emits the canonical DROP INDEX DDL.
 
     DEC-LOGIN-06 invariant: downgrade reverses Op 1 cleanly via
-    ``DROP INDEX CONCURRENTLY IF EXISTS prod.idx_login_uuid_usuario_evento``
+    ``DROP INDEX CONCURRENTLY IF EXISTS idx_login_uuid_usuario_evento``
     wrapped in ``op.get_context().autocommit_block()``.
     """
     from unittest.mock import MagicMock, patch
@@ -159,7 +159,7 @@ def test_migration_0033_downgrade_drops_composite_index() -> None:
         f"downgrade() must emit exactly one DROP INDEX CONCURRENTLY; got {len(drop_idx_sqls)}"
     )
     sql = drop_idx_sqls[0]
-    assert "prod.idx_login_uuid_usuario_evento" in sql, (
+    assert "idx_login_uuid_usuario_evento" in sql, (
         f"downgrade() must drop the canonical index name; got {sql!r}"
     )
     assert "IF EXISTS" in sql, (
@@ -299,7 +299,7 @@ def test_downgrade_clean() -> None:
             f"(index-only migration)"
         )
     # The single DROP INDEX target is the F1.15 index name.
-    assert "prod.idx_login_uuid_usuario_evento" in down_body
+    assert "idx_login_uuid_usuario_evento" in down_body
     # autocommit_block wrapping (CONCURRENTLY cannot run in tx).
     assert "autocommit_block()" in down_body, (
         "DEC-LOGIN-06 violated: downgrade() must wrap DROP INDEX CONCURRENTLY in autocommit_block()"

@@ -74,7 +74,7 @@ def upgrade() -> None:
         op.execute(
             """
             CREATE INDEX CONCURRENTLY IF NOT EXISTS
-                prod.idx_login_uuid_usuario_evento
+                idx_login_uuid_usuario_evento
             ON prod.login (uuid_usuario, timestamp_evento DESC);
             """
         )
@@ -90,6 +90,6 @@ def downgrade() -> None:
         op.execute(
             """
             DROP INDEX CONCURRENTLY IF EXISTS
-                prod.idx_login_uuid_usuario_evento;
+                idx_login_uuid_usuario_evento;
             """
         )
