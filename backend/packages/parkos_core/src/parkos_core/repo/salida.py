@@ -28,11 +28,18 @@ from ..models.L_W.alerta import Alerta
 
 
 class SalidaDuplicada(Exception):
-    """409 -- partial unique index ``one_exit_per_ingreso`` violated.
+    """409 -- ``fn_salidas_one_exit_per_ingreso`` trigger fired.
 
-    Raised when ``prod.salidas`` rejects an INSERT due to the
-    ``one_exit_per_ingreso`` partial unique index (migration 0026).
-    Mapped to HTTP 409 by the handler.
+    Raised when ``prod.salidas`` rejects an INSERT via the
+    ``fn_salidas_one_exit_per_ingreso`` BEFORE INSERT trigger
+    (migration 0026). The trigger enforces EXACTLY the same
+    semantics as the original partial unique index (one active
+    salida per uuid_ingreso, excluding anuladas) — PG rejects
+    subqueries in CREATE INDEX predicates so the constraint is
+    enforced at INSERT time instead. The substring
+    ``one_exit_per_ingreso`` appears in the trigger's
+    RAISE EXCEPTION prefix and is what the matcher in
+    ``crear_salida_evento`` keys on. Mapped to HTTP 409 by the handler.
     """
 
 
@@ -103,13 +110,17 @@ async def crear_salida_evento(
     """Step 8: INSERT ``prod.salidas`` [A] (append-only).
 
     Defense in depth: REVOKE UPDATE, DELETE (migration 0001 linea 2923)
-    + ``fn_salidas_inmutable`` trigger (lineas 1990-2003) + partial unique
-    index ``one_exit_per_ingreso`` (migration 0026).
+    + ``fn_salidas_inmutable`` BEFORE UPDATE OR DELETE trigger (lineas
+    1990-2003) + ``fn_salidas_one_exit_per_ingreso`` BEFORE INSERT
+    trigger (migration 0026). The one-per-ingreso uniqueness replaces
+    a partial unique index (PG rejects subqueries in CREATE INDEX
+    predicates) — the trigger raises ERRCODE='unique_violation', which
+    asyncpg surfaces as IntegrityError code 23505.
 
     Raises:
-        SalidaDuplicada: ``IntegrityError`` with code 23505 on the
-                        ``one_exit_per_ingreso`` partial unique index.
-                        Mapped to HTTP 409 by the handler.
+        SalidaDuplicada: ``IntegrityError`` with code 23505 fired by
+                        the ``fn_salidas_one_exit_per_ingreso``
+                        trigger. Mapped to HTTP 409 by the handler.
     """
     now = datetime.now(UTC).replace(tzinfo=None)
     new_row = Salidas(

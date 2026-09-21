@@ -8,9 +8,20 @@ Create Date: 2026-09-15
 
   1. **Pre-flight (KD-7 F1.6 / F1.7 / F1.9 / F1.10 pattern)**:
      ``DO $$`` block aborts with a typed ``0029_preflight_abort`` exception
-     if any of the 4 expected tables is missing (``costos_servicios``,
-     ``permisos``, ``permisos_usuario``, ``roles``). The DO block emits
-     ``RAISE NOTICE`` with the table-presence summary on success.
+     if any of the 3 expected tables is missing (``costos_servicios``,
+     ``permisos``, ``permisos_usuario``) OR the 2 required PG-level
+     roles are missing (``rol_app`` and ``rol_admin_auditor`` created
+     by migration 0021 ``least_privilege_and_immutability_contract``).
+     The DO block emits ``RAISE NOTICE`` with the presence summary on
+     success.
+
+     **Why pg_catalog.pg_roles and not ``to_regclass('prod.roles')``**:
+     the original check queried ``pg_catalog.pg_class`` for
+     ``relname='roles'``, but there is NO ``prod.roles`` table — the
+     application roles live in ``pg_catalog.pg_roles`` and were created
+     via ``CREATE ROLE`` in migration 0021 (and earlier). The check is
+     fixed to query ``pg_roles`` for ``rolname IN ('rol_app',
+     'rol_admin_auditor')``.
 
   2. **Op 1 — DEC-TKT-05 conditional siembra
      ``prod.costos_servicios.concepto='reimpresion'``**: idempotent via
@@ -83,7 +94,7 @@ def upgrade() -> None:
             _n_costos_servicios bigint;
             _n_permisos bigint;
             _n_permisos_usuario bigint;
-            _n_roles bigint;
+            _n_pg_roles bigint;
         BEGIN
             SELECT count(*) INTO _n_costos_servicios
                 FROM pg_catalog.pg_class
@@ -94,9 +105,12 @@ def upgrade() -> None:
             SELECT count(*) INTO _n_permisos_usuario
                 FROM pg_catalog.pg_class
                 WHERE relname='permisos_usuario' AND relnamespace='prod'::regnamespace;
-            SELECT count(*) INTO _n_roles
-                FROM pg_catalog.pg_class
-                WHERE relname='roles' AND relnamespace='prod'::regnamespace;
+            -- Roles are PG-level (CREATE ROLE), NOT a prod.roles table.
+            -- ``rol_app`` + ``rol_admin_auditor`` were created by
+            -- migration 0021 (least_privilege_and_immutability_contract).
+            SELECT count(*) INTO _n_pg_roles
+                FROM pg_catalog.pg_roles
+                WHERE rolname IN ('rol_app', 'rol_admin_auditor');
 
             IF _n_costos_servicios IS NULL OR _n_costos_servicios = 0 THEN
                 RAISE EXCEPTION '0029_preflight_abort: tabla prod.costos_servicios no existe. '
@@ -110,13 +124,15 @@ def upgrade() -> None:
                 RAISE EXCEPTION '0029_preflight_abort: tabla prod.permisos_usuario no existe. '
                                 'Aplique MIGRATION 0021 antes.';
             END IF;
-            IF _n_roles IS NULL OR _n_roles = 0 THEN
-                RAISE EXCEPTION '0029_preflight_abort: tabla prod.roles no existe. '
-                                'Aplique MIGRATION 0001 antes.';
+            IF _n_pg_roles IS NULL OR _n_pg_roles < 2 THEN
+                RAISE EXCEPTION '0029_preflight_abort: faltan roles PG. '
+                                'Aplique MIGRATION 0021 (least_privilege_and_immutability_contract) '
+                                'para crear rol_app y rol_admin_auditor.';
             END IF;
 
-            RAISE NOTICE '0029_preflight: 4/4 tablas OK '
-                         '(costos_servicios, permisos, permisos_usuario, roles)';
+            RAISE NOTICE '0029_preflight: 3/3 tablas + 2/2 roles PG OK '
+                         '(costos_servicios, permisos, permisos_usuario, '
+                         'rol_app, rol_admin_auditor)';
         END;
         $$;
         """

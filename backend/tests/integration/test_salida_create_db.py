@@ -2,13 +2,16 @@
 
 Runs against a real Postgres (testcontainers via ``PARKOS_DOCKER_TEST=1``,
 ``pg_engine`` fixture) + ``alembic upgrade head`` session fixture (must
-include migration 0026 with the IVA seed + 2 alert_types + partial unique
-index ``one_exit_per_ingreso``).
+include migration 0026 with the IVA seed + 2 alert_types + BEFORE INSERT
+trigger ``fn_salidas_one_exit_per_ingreso``).
 
 Verifies:
   - R5: salida + alerta INSERT commit atomico (single ``session.commit()``)
-  - R4: partial unique index ``one_exit_per_ingreso`` rejects the second
-        concurrent insert with ``IntegrityError`` mapped to 409
+  - R4: BEFORE INSERT trigger ``fn_salidas_one_exit_per_ingreso`` rejects
+        the second concurrent insert with ``IntegrityError`` mapped to 409.
+        (Originally a partial unique index; PG rejects subqueries in
+        CREATE INDEX predicates so the constraint is enforced at INSERT
+        time instead — semantics are IDENTICAL.)
   - KD-IVA: when ``prod.impuestos`` has no IVA row, salida returns 500
             (``iva_no_configurado``); post-migration-0026 the IVA row is
             seeded inline, so the happy path uses the same fixture
@@ -318,22 +321,27 @@ async def test_insert_salida_con_alerta_forzado_atomico(
 
 
 # ---------------------------------------------------------------------------
-# T2: partial unique index ``one_exit_per_ingreso`` race-closes TOCTOU (R4)
+# T2: BEFORE INSERT trigger ``fn_salidas_one_exit_per_ingreso`` race-closes
+#     TOCTOU (R4) -- replaces the original partial unique index (PG rejects
+#     subqueries in CREATE INDEX predicates).
 # ---------------------------------------------------------------------------
 
 
-async def test_partial_unique_index_emite_409(
+async def test_trigger_one_exit_per_ingreso_emite_409(
     pg_engine, mint_operador_jwt, client, pg_dsn
 ) -> None:
-    """R4: the partial unique index ``one_exit_per_ingreso`` (migration
-    0026 Op 4) closes the TOCTOU race on V1 EXISTS. After a successful
-    salida, a SECOND ``POST /operacion/salidas`` for the same
+    """R4: the BEFORE INSERT trigger ``fn_salidas_one_exit_per_ingreso``
+    (migration 0026 Op 4) closes the TOCTOU race on V1 EXISTS. After a
+    successful salida, a SECOND ``POST /operacion/salidas`` for the same
     ``uuid_ingreso`` MUST return 409 ``salida_duplicada`` (mapped from
-    ``IntegrityError``).
+    the trigger's ``RAISE EXCEPTION ... ERRCODE='unique_violation'``).
 
-    Note: the partial index excludes anuladas (``WHERE NOT EXISTS ...``)
-    so re-creation post-anulacion is preserved; that branch is owned by
-    Fase 7 (anulación workflow) and is out of scope here.
+    The trigger preserves EXACTLY the semantics of the original partial
+    unique index: ``WHERE NOT EXISTS (... anulaciones WHERE tipo_anulable=
+    'salida' AND estado='ejecutada ...)``. Re-creation post-anulacion is
+    preserved because annulled salidas are excluded from the trigger's
+    EXISTS check; that branch is owned by Fase 7 (anulación workflow)
+    and is out of scope here.
     """
     await _truncate(pg_dsn)
     await _reseed_iva(pg_engine)
@@ -807,7 +815,7 @@ async def test_salida_segunda_placa_misma_mensualidad_aplica_rotacion(
 
 __all__ = [
     "test_insert_salida_con_alerta_forzado_atomico",
-    "test_partial_unique_index_emite_409",
+    "test_trigger_one_exit_per_ingreso_emite_409",
     "test_iva_no_sembrado_retorna_500",
     "test_salida_segunda_placa_misma_mensualidad_aplica_rotacion",
 ]

@@ -1,7 +1,7 @@
 """HU-F1.7 / migration 0026 -- idempotency proof + IVA row presence.
 
 Verifies:
-  - T1: ``alembic upgrade head`` reaches head ``0026_seed_impuestos_iva_...
+  - T1: ``alembic upgrade head`` reaches head ``0026_seed_impuestos_iva...
     _one_exit_per_ingreso`` (chain tail).
   - T2: post-upgrade, ``prod.impuestos`` contains exactly ONE row with
         ``codigo='IVA'``, ``porcentaje=0.19``, ``estado='activo'``,
@@ -9,8 +9,14 @@ Verifies:
   - T3: post-upgrade, ``prod.alert_types`` contains the 2 F1.7 alert
         types seeded by Op 3: ``subscripcion_vencida_forzado`` and
         ``tarifa_vigente_forzado``, both with ``severity='warning'``.
-  - T4: post-upgrade, the partial unique index ``one_exit_per_ingreso``
-        exists on ``prod.salidas (uuid_ingreso) WHERE NOT EXISTS (...)``.
+  - T4: post-upgrade, the BEFORE INSERT trigger
+        ``fn_salidas_one_exit_per_ingreso`` (function +
+        ``salidas_one_exit_per_ingreso`` trigger bound on
+        ``prod.salidas``) exists. PG rejects subqueries in CREATE INDEX
+        predicates (``cannot use subquery in index predicate``), so
+        migration 0026 enforces "at most one active salida per
+        uuid_ingreso" via a BEFORE INSERT trigger instead of the
+        original partial unique index.
 
 Mirrors F1.6 ``test_migration_0025_datos_nuevos.py`` pattern: pre-flight
 + post-upgrade assertions, no destructive downgrade inside the test
@@ -128,46 +134,60 @@ async def test_alert_types_f17_insertados(pg_engine) -> None:
 
 
 # ---------------------------------------------------------------------------
-# T4: partial unique index one_exit_per_ingreso exists
+# T4: BEFORE INSERT trigger fn_salidas_one_exit_per_ingreso exists
+#     (replaces the original partial unique index — PG rejects
+#     subqueries in CREATE INDEX predicates).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_partial_unique_index_one_exit_per_ingreso(pg_engine) -> None:
-    """T4: post-upgrade, the partial unique index ``one_exit_per_ingreso``
-    MUST exist on ``prod.salidas (uuid_ingreso)`` with a ``WHERE`` clause
-    excluding anuladas.
+async def test_trigger_one_exit_per_ingreso(pg_engine) -> None:
+    """T4: post-upgrade, the BEFORE INSERT trigger
+    ``fn_salidas_one_exit_per_ingreso`` MUST exist on
+    ``prod.salidas``.
 
-    The index is the TOCTOU-closer for V1 EXISTS (R4). Verified by
-    inspecting ``pg_indexes`` rather than attempting to query
-    ``pg_index``'s ``indexprs`` (the WHERE clause is a planner-only
-    predicate; ``pg_indexes`` carries ``indexdef`` we can pattern-match).
+    The trigger is the TOCTOU-closer for V1 EXISTS (R4, KD-S16). PG
+    rejects subqueries in CREATE INDEX predicates (``cannot use
+    subquery in index predicate``); the trigger enforces EXACTLY the
+    same predicate semantics as the original partial unique index
+    (``WHERE NOT EXISTS (... anulaciones ...)``).
+
+    Verified by inspecting ``pg_proc`` (function exists in ``prod``
+    schema) AND ``pg_trigger`` (the BEFORE INSERT trigger is bound on
+    ``prod.salidas``).
     """
     async with AsyncSession(pg_engine) as session:
-        result = await session.execute(
-            text(
-                "SELECT indexdef FROM pg_indexes "
-                "WHERE schemaname='prod' AND tablename='salidas' "
-                "AND indexname='one_exit_per_ingreso'"
+        fn_row = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM pg_proc p "
+                    "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                    "WHERE p.proname = 'fn_salidas_one_exit_per_ingreso' "
+                    "  AND n.nspname = 'prod'"
+                )
             )
-        )
-        row = result.first()
-    assert row is not None, (
-        "partial unique index one_exit_per_ingreso MUST exist on "
-        "prod.salidas after migration 0026 Op 4"
+        ).first()
+        tr_row = (
+            await session.execute(
+                text(
+                    "SELECT t.tgname FROM pg_trigger t "
+                    "JOIN pg_class c ON c.oid = t.tgrelid "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE t.tgname = 'salidas_one_exit_per_ingreso' "
+                    "  AND c.relname = 'salidas' "
+                    "  AND n.nspname = 'prod' "
+                    "  AND NOT t.tgisinternal"
+                )
+            )
+        ).first()
+    assert fn_row is not None, (
+        "function prod.fn_salidas_one_exit_per_ingreso MUST exist "
+        "after migration 0026 Op 4 (replaces the partial UK; PG "
+        "rejects subqueries in CREATE INDEX predicates)"
     )
-    indexdef = row[0]
-    assert "UNIQUE INDEX" in indexdef.upper(), (
-        f"index must be UNIQUE; got indexdef={indexdef!r}"
-    )
-    assert "uuid_ingreso" in indexdef, (
-        f"index must be on uuid_ingreso; got indexdef={indexdef!r}"
-    )
-    # The WHERE clause excludes anuladas (per KD-S16); spot-check the
-    # presence of ``anulaciones`` in the predicate (exact WHERE shape
-    # is verified at migration file source, not here).
-    assert "WHERE" in indexdef.upper(), (
-        f"index must be PARTIAL (have a WHERE clause); got indexdef={indexdef!r}"
+    assert tr_row is not None, (
+        "trigger salidas_one_exit_per_ingreso MUST be bound on "
+        "prod.salidas (BEFORE INSERT) after migration 0026 Op 4"
     )
 
 
@@ -180,14 +200,15 @@ async def test_partial_unique_index_one_exit_per_ingreso(pg_engine) -> None:
 async def test_0026_re_aplica_sin_error(pg_engine) -> None:
     """T5: migration 0026 can be applied twice consecutively without
     error. Idempotency proof for the 4 ops (Op 2 ``ON CONFLICT DO
-    NOTHING``, Op 3 ``ON CONFLICT DO NOTHING``, Op 4 ``IF NOT EXISTS``).
+    NOTHING``, Op 3 ``ON CONFLICT DO NOTHING``, Op 4 ``CREATE OR REPLACE
+    FUNCTION`` + ``DROP TRIGGER IF EXISTS`` + ``CREATE TRIGGER``).
 
     Implementation: invoke the migration ``upgrade()`` function via
     ``alembic``'s programmatic API. The upgrade is a no-op the second
     time around because every statement is guarded by either a unique
-    constraint conflict (Op 2 + Op 3) or ``IF NOT EXISTS`` (Op 4). The
-    pre-flight Op 1 ``DO $$`` block is read-only (no DDL) so it also
-    runs clean on re-apply.
+    constraint conflict (Op 2 + Op 3) or idempotent trigger install
+    (Op 4). The pre-flight Op 1 ``DO $$`` block is read-only (no DDL)
+    so it also runs clean on re-apply.
     """
     import importlib
 
@@ -211,6 +232,6 @@ __all__ = [
     "test_alembic_head_includes_0026",
     "test_iva_row_presente_post_migration",
     "test_alert_types_f17_insertados",
-    "test_partial_unique_index_one_exit_per_ingreso",
+    "test_trigger_one_exit_per_ingreso",
     "test_0026_re_aplica_sin_error",
 ]
