@@ -48,6 +48,24 @@ import {
 } from '../hooks/useVentaSuscripcion';
 import { calcularMontoProporcional } from '../lib/prorrateo';
 
+/**
+ * Optional escape hatches for non-page consumers (e.g., embedded in
+ * a drawer / sheet). Defaults preserve the page-route behavior
+ * (navigate to /suscripciones on success) so existing callers (page
+ * Venta + Venta.test.tsx) are unaffected.
+ *
+ * - `onSuccess()` fires AFTER the POST returns 2xx. Used by the sheet
+ *   to close the drawer + refresh the subscription list.
+ * - `onCancel()` fires when the operator presses "Volver" rendered
+ *   at the top of the wizard when this callback is supplied. Lets the
+ *   sheet return to the list view while keeping the wizard state for
+ *   re-entry.
+ */
+export interface VentaProps {
+  onSuccess?: () => void;
+  onCancel?: () => void;
+}
+
 export interface VentaStepState {
   paso: 1 | 2 | 3 | 4;
   cliente?: { nit: string; nombre: string; email: string | null };
@@ -102,7 +120,7 @@ const PLAN_PREVIEW_DURACION_DIAS = 30;
 
 const DEFAULT_FECHA_INICIO = '2026-09-19'; // day=19 → prorrateo visible
 
-export function Venta(): JSX.Element {
+export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   const { t } = useTranslation(['suscripciones', 'common']);
   const navigate = useNavigate();
   const [state, setState] = useState<VentaStepState>({ paso: 1 });
@@ -194,6 +212,14 @@ export function Venta(): JSX.Element {
   const handlePagoSubmit = async (values: PagoFormValues): Promise<void> => {
     try {
       await trigger(buildVentaPayload(values));
+      if (onSuccess) {
+        // Embedded consumer (F11.3 SuscripcionesSheet) -- let the
+        // parent decide what happens next (close drawer, refresh
+        // list, etc.). Default page-Venta consumer has no
+        // `onSuccess`, so `useNavigate` runs below.
+        onSuccess();
+        return;
+      }
       navigate('/suscripciones');
     } catch (err) {
       if (
@@ -225,6 +251,23 @@ export function Venta(): JSX.Element {
 
   return (
     <div className="space-y-4 p-4" data-testid="venta-page">
+      {/*
+        Embedded-wizard "Volver" button (visible only when `onCancel`
+        is supplied). Clicking returns the parent to its list view
+        without unmounting Venta's state (the parent uses conditional
+        render). For page-Venta (no onCancel), no back affordance --
+        the operator navigates back via the browser or sidebar.
+      */}
+      {onCancel && (
+        <button
+          type="button"
+          onClick={onCancel}
+          data-testid="venta-volver"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          ← {t('suscripciones:sheet.volver', { defaultValue: 'Volver' })}
+        </button>
+      )}
       <header>
         <h1 className="text-xl font-semibold">
           {t('suscripciones:venta.titulo', { defaultValue: 'Venta de suscripción' })}
