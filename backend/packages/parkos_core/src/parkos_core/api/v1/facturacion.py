@@ -197,6 +197,12 @@ _facturacion_issuer_dep = requires_issuer("operador-", "admin-")
         "await session.commit() (KD-FACT-01)."
     ),
     responses={
+        400: {
+            "description": (
+                "voucher_requerido (V7 -- medio_pago='datafono' sin "
+                "referencia)"
+            )
+        },
         403: {"description": "tenant_scope_violation (cajero)"},
         404: {
             "description": (
@@ -227,13 +233,15 @@ async def create_factura(
         get_tenant_ctx          -> TenantContext { actor_uuid, sucursal_uuid, ... }
         get_session             -> AsyncSession (request-scoped)
 
-    Sequence (D-HU-F1.9-11 12-step chain, locked by AST walk):
+    Sequence (D-HU-F1.9-11 13-step chain, locked by AST walk):
         1. KD-3 issuer claims + no_store headers
         2. V1 salida existe y es facturable (404 if None)
         3. tenant scope post-V1 (403 if cajero cross-branch)
         4. V2 cliente existe cuando fe_con_datos=true (404 if None)
         5. V3 IVA configurado (500 iva_no_configurado if False)
         6. V4 detalle items coherentes (422 detalle_invalido if empty)
+        6.5 V7 voucher_requerido if medio_pago='datafono' AND referencia
+            empty/whitespace (400 voucher_requerido, CU-04 BR6 backfill)
         7. KD-FACT-02 lock FOR SHARE per-row on tarifas_sucursal
         8. V6 server-side recompute total (±0.01 COP)
         9. INSERT prod.facturas [L-E] (DEC-FACT-01: NO UPDATE anywhere)
@@ -322,6 +330,30 @@ async def create_factura(
         raise HTTPException(
             status_code=422,
             detail={"error": "detalle_invalido", "min_items": 1},
+            headers=no_store,
+        )
+
+    # --- Step 6.5: V7 voucher_requerido (datafono sin referencia). ----
+    # Backfill V7 in the primary create_factura endpoint (CU-04 BR6,
+    # plan.md line 899). Mirrors the inline guard at create_factura_pago
+    # :449-457 and the F1.12 V8 mirror at clientes_venta.py:265-273. The
+    # Pydantic schema (FacturaCreate.referencia = StringConstraints(
+    # min_length=1) | None) blocks empty strings at the schema gate but
+    # lets ``None`` and whitespace-only strings through, so the handler
+    # MUST enforce ``datafono + (None | '' | whitespace)`` here. The
+    # typed exception :class:`VoucherRequeridoError` (declared in
+    # repo/factura.py:68-69) documents V7 but is intentionally dead
+    # code across the codebase -- the HTTP boundary uses HTTPException
+    # directly, matching every other V1..V7 step in this handler.
+    if payload.medio_pago == "datafono" and (
+        not payload.referencia or payload.referencia.strip() == ""
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "voucher_requerido",
+                "medio_pago": "datafono",
+            },
             headers=no_store,
         )
 
