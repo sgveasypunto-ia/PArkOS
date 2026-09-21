@@ -61,7 +61,7 @@ from ..repo.append_only import append_event
 from ..repo.event import record_event
 from ..repo.workflow import append_transition
 from ..schemas.dian import EnvioDianCreate, ValidacionEventoCreate
-from ..schemas.facturacion import FacturaElectronicaCreate
+from ..schemas.facturacion import CloudFacturaElectronicaCreate
 from .cloud.atomic_next_consecutivo import (
     PrefijoMissingError,
     ResolucionNotFoundError,
@@ -132,7 +132,7 @@ class RevocacionFacturaWebhookPayload(BaseModel):
     summary="Atomic SELECT FOR UPDATE on resolucion + consecutivo++ + INSERT (REQ-34, REQ-35)",
 )
 async def create_factura_electronica(
-    payload: FacturaElectronicaCreate,
+    payload: CloudFacturaElectronicaCreate,
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_cloud_issuer_dep),

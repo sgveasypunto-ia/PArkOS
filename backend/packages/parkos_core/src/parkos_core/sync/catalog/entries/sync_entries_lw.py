@@ -18,6 +18,7 @@ from ....models.L_W.envio_dian import EnvioDian
 from ....models.L_W.reclamos import Reclamos
 from ....models.L_W.reimpresion_ticket import ReimpresionTicket
 from ....models.L_W.validacion_evento import ValidacionEvento
+from ...hooks.impls.dian_dispatch_on_sync import envio_dian_resume_hook
 from ..schema import SyncCatalogEntry
 
 # ---------------------------------------------------------------------------
@@ -145,6 +146,15 @@ _ENVIO_DIAN = SyncCatalogEntry(
     seq_strategy="seq_via_datos",
     self_chain=True,
     parent_fk_column="uuid_envio_padre",
+    # CU-05 critical fix #2 — branch-originated envio_dian rows in the
+    # ``pendiente`` state arrive at the cloud via sync; without this
+    # hook they sat in the cloud DB forever without being forwarded to
+    # Factus. The hook inspects ``payload["estado"]`` and dispatches
+    # via the linked FE / revocacion only for ``pendiente`` rows.
+    # See ``sync/hooks/impls/dian_dispatch_on_sync.py``'s module
+    # docstring for the known duplication hazard when both this hook
+    # AND the FE / revocacion hook fire on related rows.
+    hook_post_insert=envio_dian_resume_hook,
 )
 
 _VALIDACION_EVENTO = SyncCatalogEntry(
