@@ -19,7 +19,14 @@ const SheetOverlay = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Overlay
     className={cn(
-      'fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+      // F11.3 follow-up: replaced `bg-black/80` (80% opaque black --
+      // masked the dashboard) with `bg-black/20 backdrop-blur-md`
+      // (20% opaque + 12px backdrop blur) for a frosted-glass feel.
+      // Same focus indication, but the underlying page stays
+      // readable. Affects every Sheet consumer (PagoSheet,
+      // ArqueoSheet, SuscripcionesSheet, etc.) via the shared
+      // primitive, so the visual standard is uniform.
+      'fixed inset-0 z-50 bg-black/20 backdrop-blur-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
       className,
     )}
     {...props}
