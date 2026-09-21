@@ -14,7 +14,8 @@
 | 3 | `9669673` | `feat(print): add 'arqueo' ESC/POS dispatcher + byte fixture (HU-F10.1)` | feat | RED+GREEN | ✅ |
 | 4 | `3d00c5b` | `feat(caja): ArqueoParcial routed page + Dashboard anchor + i18n (HU-F10.1)` | feat | RED+GREEN | ✅ |
 | 5 | `c1932f6` | `test(caja): e2e/arqueo 3 scenarios + a11y axe-core (HU-F10.1)` | test | RED+GREEN (stub) | ✅ |
-| 6 | TBD (this commit) | `docs(sdd): F10.1 apply-progress final SHA + drift anchor rollback log (HU-F10.1)` | docs | mechanical | ✅ |
+| 6 | `262a238` | `docs(sdd): F10.1 apply-progress final SHA + drift anchor rollback log (HU-F10.1)` | docs | mechanical | ✅ |
+| 7 | `b5264b5` | `test(caja): useArqueo.test.ts ESLint cleanup (HU-F10.1 follow-up)` | test | mechanical | ✅ |
 
 ## Test results
 
