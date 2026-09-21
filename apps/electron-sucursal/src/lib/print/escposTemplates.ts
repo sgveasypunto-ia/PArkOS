@@ -165,13 +165,19 @@ const placaSchema = z
  * — PagoModal) adds `recibo_pago` — the post-pago print emitted AFTER
  * the CU-15S tiquete de salida per DEC-SUC-27 verbatim ("CU-15S print
  * fires AFTER pago, then recibo de pago").
+ *
+ * F10.1 (HU-F10.1 — Arqueo Parcial / REQ-OPS-155 / DA-5) adds the 6th
+ * literal `'arqueo'`. The F8.3 REQ-OPS-175 drift anchor precedent
+ * forbids alternate spellings — only `'arqueo'` is allowed; NOT
+ * `'arqueo_parcial'`, NOT `'ticket_arqueo'`.
  */
 export type TiqueteTipo =
   | 'entrada'
   | 'salida'
   | 'salida-mensualidad'
   | 'reimpresion'
-  | 'recibo_pago';
+  | 'recibo_pago'
+  | 'arqueo';
 
 export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
   'entrada',
@@ -179,6 +185,7 @@ export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
   'salida-mensualidad',
   'reimpresion',
   'recibo_pago',
+  'arqueo',
 ] as const;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -594,6 +601,58 @@ export const reciboPagoPayloadSchema = salidaPayloadSchema.extend({
 export type ReciboPagoPayload = z.infer<typeof reciboPagoPayloadSchema>;
 
 // ──────────────────────────────────────────────────────────────────────────
+// Arqueo payload (CU-10 arqueo parcial / F10.1) — REQ-OPS-155
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * F10.1 (HU-F10.1 — Arqueo Parcial / REQ-OPS-155) — `'arqueo'`
+ * dispatcher payload. The body emits 12 conceptual lines (see
+ * `escposBuilder.buildArqueoBody`). The schema is the wire-shape
+ * contract for `bridge.imprimir('arqueo', payload)`.
+ *
+ * Field semantics:
+ *   - `sucursal.encabezado` — dynamic branch header (DEC-SUC-28).
+ *   - `uuid_sesion` — full UUID; `uuid_sesion_short` is the
+ *     caller-computed last-8-chars shorthand for the printable
+ *     buffer (the backend `arqueo` row captures the full UUID in
+ *     `log_transaccional` for the audit chain).
+ *   - `base_efectivo_cop` — initial cash float per
+ *     `sesion.valor_inicial_efectivo` at the moment of the GET
+ *     resumen (REQ-OPS-097 §3919 formula).
+ *   - `valor_esperado_*` — server-computed expected = base + Σ
+ *     `factura_pagos.valor` per medio de pago.
+ *   - `diferencia_*` — REPORTADO − ESPERADO, signed.
+ *   - `tolerancia_*` — `configuracion_tolerancias.tolerancia_efectivo`
+ *     (absolute, never percentage — drift anchor from session
+ *     preflight).
+ *   - `justificacion` — optional; emitted ONLY when length > 0
+ *     (silent omission per spec scenario 3).
+ *   - `auditoria_codigo` — server-assigned `^AUD-\d{8}-\d{6}$` (the
+ *     codigo line is the canonical audit anchor).
+ *   - `fecha` — ISO 8601 datetime; the builder formats it via
+ *     `formatFechaCorta` (es-CO short per F6.2).
+ */
+export const arqueoPayloadSchema = z.object({
+  sucursal: sucursalSchema,
+  uuid_sesion: z.string().uuid(),
+  base_efectivo_cop: z.number().int().nonnegative(),
+  valor_esperado_efectivo: z.number().int().nonnegative(),
+  valor_esperado_datafono: z.number().int().nonnegative(),
+  valor_reportado_efectivo: z.number().int().nonnegative(),
+  valor_reportado_datafono: z.number().int().nonnegative(),
+  diferencia_efectivo: z.number().int(),
+  diferencia_datafono: z.number().int(),
+  tolerancia_efectivo: z.number().int().nonnegative(),
+  tolerancia_datafono: z.number().int().nonnegative(),
+  justificacion: z.string().optional(),
+  auditoria_codigo: z.string().regex(/^AUD-\d{8}-\d{6}$/, 'auditoria_codigo_formato'),
+  fecha: z.string().datetime({ offset: true }),
+  uuid_sesion_short: z.string().min(1),
+});
+
+export type ArqueoPayload = z.infer<typeof arqueoPayloadSchema>;
+
+// ──────────────────────────────────────────────────────────────────────────
 // Per-tipo schema map (consumed by escposBuilder.validatePayload)
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -605,4 +664,5 @@ export const payloadSchemaByTipo: {
   'salida-mensualidad': salidaMensualidadPayloadSchema,
   reimpresion: reimpresionPayloadSchema,
   recibo_pago: reciboPagoPayloadSchema,
+  arqueo: arqueoPayloadSchema,
 };
