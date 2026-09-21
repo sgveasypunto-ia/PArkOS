@@ -50,8 +50,10 @@ rules:
     - For backend module layout, partition models/ by audit level (models/[V]/, models/[L]/, models/[A]/).
   tasks:
     - Group by phase, use hierarchical numbering (1.1, 1.2, 2.1, ...).
-    - Keep tasks completable in one session (review budget: 400 lines per change).
+    - Keep tasks completable in one session (review budget: 2000 lines per change for strict_tdd HUs; 800 lines per change for non-strict_tdd HUs; per-session preflight may override).
     - Mark migration tasks with a pre-flight `alembic upgrade --sql` check.
+    - Historical context: budget was 400 (pre-2026-09-19) → 800 (Fase 7-10 ratified via per-session preflight) → 2000 (2026-09-21 user ratification; covers strict_tdd HUs as standard pattern, removes per-HU size:exception friction for Fase 11+).
+    - 4 prior size:exceptions ratified in repo: F9.1 (940), F10.1 (1566), F10.2 (2037), F10.3 (1240 forecast). See Engram sessions #1894, #1904.
   apply:
     guidelines:
       - Follow existing code patterns once established.
