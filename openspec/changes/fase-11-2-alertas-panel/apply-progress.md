@@ -8,7 +8,8 @@
 | Phase | sdd-apply (Phase 6 of SDD cycle) |
 | Branch | `feature/hu-f11-2-alertas-panel` |
 | Base | `dev @ 14d607d` (post-F11.1 archive housekeeping) |
-| Final SHA | populated by `sdd-apply` at session close |
+| Final SHA | `ab828d2` (head of feature branch) |
+| Per-commit SHAs | C1 `e323af1` · C2 `cd8e184` · C3 `b605af6` · C4 `9753d74` · C5 `a0bedf6` · C6 `a2adbd8` · C7 `ab828d2` |
 | Status | READY for sdd-verify |
 | Preflight | pace=auto, artifact=hybrid, delivery=ask-on-risk, budget=2000 LOC, strict_tdd=true, test=vitest+playwright, author=`Parkos Dev <dev@parkos.local>` |
 | Strict-TDD mode | active (RED → GREEN → REFACTOR per work unit) |
@@ -33,15 +34,15 @@ As a branch operator, view the active alerts for my branch, understand what each
 
 | Commit | SHA | Files Δ | Tests | Notes |
 |---|---|---|---|---|
-| C1 | (populated) | +547 / -0 | 3 RED files, 0 tests | Strict-TDD scaffold |
-| C2 | (populated) | +686 / -12 | 18 GREEN, 4 files | Schemas + hooks + constants |
-| C3 | (populated) | +970 / -0 | 30 GREEN, 7 files | Panel + components + router |
-| C4 | (populated) | +47 / -2 | 47 GREEN (F11.1 + F11.2) | Mount + i18n keys |
-| C5 | (populated) | +338 / -0 | e2e blocked by F.6 sandbox | e2e + apply-progress |
-| C6 | (populated) | -57 / -0 | regression GREEN | Delete F11.1 stub |
-| C7 | (populated) | +12 / -0 | n/a | pending-fase-11.md forward ref |
+| C1 | `e323af1` | +547 / -0 | 3 RED files, 0 tests | Strict-TDD scaffold |
+| C2 | `cd8e184` | +686 / -12 | 18 GREEN, 4 files | Schemas + hooks + constants |
+| C3 | `b605af6` | +970 / -0 | 30 GREEN, 7 files | Panel + components + router |
+| C4 | `9753d74` | +47 / -2 | 47 GREEN (F11.1 + F11.2) | Mount + i18n keys |
+| C5 | `a0bedf6` | +476 / -0 | e2e blocked by F.6 sandbox | e2e + apply-progress |
+| C6 | `a2adbd8` | +10 / -130 | regression GREEN | Delete F11.1 stub |
+| C7 | `ab828d2` | +34 / -15 | n/a | pending-fase-11.md forward ref |
 
-Final SHA: populated at session close by `sdd-apply` (the orchestrator-driven merge --no-ff + push + delete-branch cycle runs AFTER all 7 commits land).
+Final SHA: `ab828d2` (head of `feature/hu-f11-2-alertas-panel`). Pushed to `origin/feature/hu-f11-2-alertas-panel`. The orchestrator-driven merge `--no-ff` + push + delete-branch cycle runs AFTER all 7 commits land.
 
 ## Drift-Anchor Closure
 
