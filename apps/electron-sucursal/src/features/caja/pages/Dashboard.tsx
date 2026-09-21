@@ -44,6 +44,7 @@ import { ParkosHttpError, parkosFetch } from '@parkos/ui-kit/fetch';
 import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
+import { MiTurnoPanel } from '../../operacion/components/MiTurnoPanel';
 import { OcupacionPanel } from '../components/OcupacionPanel';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
 import { SuscripcionesPanel } from '../../suscripciones/components/SuscripcionesPanel';
@@ -450,6 +451,16 @@ export function Dashboard(): JSX.Element | null {
           aria-label={t('caja:dashboard.rightLabel', { defaultValue: 'Estado en vivo' })}
           className="col-span-1 mt-3 grid gap-2 px-3 pb-4 lg:row-start-2 lg:col-start-3 lg:mt-0 lg:border-l lg:bg-card lg:px-2 lg:pb-0"
         >
+          {/*
+            HU-F12.1 (REQ-OPS-187) — per-turn KPI panel mounted ABOVE
+            <OcupacionPanel /> (the Inventario card below). The panel
+            polls `/operacion/mi-turno?uuid_sesion=X` every 15s via SWR
+            and renders 5 KPI cells + a "Cerrar turno" navigation
+            button. Zero-state (no sesion / loading) renders all-zero
+            KPIs without skeleton / error UI.
+          */}
+          <MiTurnoPanel uuid_sesion={sesion?.uuid ?? null} />
+
           {/* Inventario: per-tipo occupancy (admin-configured cupos only). */}
           <Card data-testid="inventario-card">
             <CardHeader className="pb-2">
