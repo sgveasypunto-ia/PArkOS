@@ -48,7 +48,7 @@ vi.mock('@parkos/ui-kit/store', () => ({
 vi.mock('@parkos/ui-kit/fetch', () => ({
   ParkosHttpError: class extends Error {
     public readonly status: number;
-    constructor(status: number) {
+    constructor(status: number, _message?: string, _url?: string) {
       super(`ParkosHttpError ${status}`);
       this.name = 'ParkosHttpError';
       this.status = status;
@@ -188,12 +188,19 @@ describe('useMiTurno — onError policy', () => {
 });
 
 describe('useMiTurno — zero-state (DA-F12.1-4)', () => {
-  it('U9: data undefined -> hook returns { data: undefined, error: undefined } (no skeleton, no error UI)', () => {
+  it('U9: data undefined + uuid_sesion present -> hook returns all-zero fallback so the panel renders zeros without skeleton/error UI', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     currentData = undefined;
     currentError = undefined;
     const result = useMiTurno('00000000-0000-0000-0000-000000000099');
-    expect(result.data).toBeUndefined();
+    // The hook returns the all-zero fallback object so the panel can
+    // render unconditionally — no skeleton, no error UI on cold boot.
+    expect(result.data).not.toBeNull();
+    expect(result.data).not.toBeUndefined();
+    expect(result.data?.ingresos_count).toBe(0);
+    expect(result.data?.salidas_count).toBe(0);
+    expect(result.data?.total_cobrado_efectivo_cop).toBe(0);
+    expect(result.data?.total_cobrado_datafono_cop).toBe(0);
     expect(result.error).toBeUndefined();
   });
 });
