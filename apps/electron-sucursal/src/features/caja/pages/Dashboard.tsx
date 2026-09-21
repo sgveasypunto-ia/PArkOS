@@ -48,7 +48,7 @@ import { OcupacionPanel } from '../components/OcupacionPanel';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
 import { SuscripcionesPanel } from '../../suscripciones/components/SuscripcionesPanel';
 import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
-import { AlertasPanel } from '../../sync/components/AlertasPanel';
+import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
 import { useSuscripcionesProximasVencer } from '../../suscripciones/hooks/useSuscripcionesProximasVencer';
 import {

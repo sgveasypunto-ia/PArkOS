@@ -74,7 +74,7 @@ vi.mock('../../../suscripciones/components/SuscripcionesPanel', () => ({
 vi.mock('../../../sync/components/SyncStatusStrip', () => ({
   SyncStatusStrip: () => <div data-testid="sync-strip-stub" />,
 }));
-vi.mock('../../../sync/components/AlertasPanel', () => ({
+vi.mock('../../../../components/AlertasPanel', () => ({
   AlertasPanel: () => <div data-testid="alertas-panel-stub" />,
 }));
 vi.mock('../../../facturacion/components/FacturaElectronicaRetryPanel', () => ({
@@ -146,8 +146,14 @@ describe('<Dashboard /> cold-mount network spy — REQ-OPS-137/139', () => {
     // paths are gated by their own UUIDs which Dashboard passes as
     // null by default (REQ-OPS-137 §composable-section contract).
     // The panels that DO fetch on a warm branch (OcupacionPanel /
-    // SyncStatusStrip / AlertasPanel / SuscripcionesPanel) are stubbed
-    // here, so we still observe ZERO calls on the parkosFetch spy.
+    // SyncStatusStrip / SuscripcionesPanel) are stubbed here, so we
+    // still observe ZERO calls on the parkosFetch spy.
+    // Note (F11.2): the F11.1 `AlertasPanel` sr-only stub was deleted
+    // in C6 (R-F11.1-CARRY-2 authorised). The new orchestrator lives
+    // at `src/components/AlertasPanel.tsx` and is gated on
+    // `branchUuid !== null` — under this test `sucursal = { uuid: 'X' }`,
+    // so its SWR key would be non-null. To preserve the ZERO-fetch
+    // invariant of THIS cold-mount contract, we mock it here.
     expect(mockFetch).not.toHaveBeenCalled();
   });
 });
