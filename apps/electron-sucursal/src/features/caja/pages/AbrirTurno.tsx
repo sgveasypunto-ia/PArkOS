@@ -21,6 +21,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useNavigate } from 'react-router-dom';
+import { mutate } from 'swr';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
 
@@ -33,6 +34,7 @@ import {
   abrirTurnoSchema,
   type AbrirTurnoInput,
 } from '../api/schemas/turnoSchema';
+import { SESION_KEY } from '../hooks/useSesionActiva';
 import {
   AbrirTurnoForm,
   type AbrirTurnoErrorState,
@@ -85,13 +87,34 @@ export function AbrirTurno(): JSX.Element {
           : {}),
       });
       void sesion; // SWR re-fetch on next render via `useSesionActiva` key change.
+      // F3.3 follow-up (auto-redirect): push the new session into
+      // SWR cache BEFORE navigating so Dashboard's first render
+      // sees `data: sesion` instead of the cached `undefined` from
+      // the pre-submit state. Without this, the Dashboard's
+      // `useEffect` -- `if (!sesion && !isLoading && !error)
+      // navigate('/caja/abrir-turno')` -- fires before SWR's first
+      // fetch lands and bounces the operator back. With
+      // `revalidate: false` we skip the redundant re-fetch (we
+      // already have the canonical value from the POST body); a
+      // later refresh cycle replaces it with whatever the server
+      // canonicalizes.
+      void mutate(SESION_KEY, sesion, { revalidate: false });
       navigate('/');
     } catch (err) {
       if (err instanceof SesionAlreadyActiveError) {
-        setErrorState({ kind: 'sesion_already_active' });
-      } else {
-        setErrorState({ kind: 'network' });
+        // 409: the operator already has an active session (from a
+        // previous attempt, an abandoned tab, etc). Their
+        // expectation after pressing "Abrir turno" is "take me to
+        // the dashboard", not "show me a 409 alert + force me to
+        // click another button". Bust the SWR cache so
+        // Dashboard's `useSesionActiva` re-fetches fresh data, then
+        // send the operator to / automatically. The error state is
+        // suppressed because the redirect itself is the recovery.
+        void mutate(SESION_KEY);
+        navigate('/');
+        return;
       }
+      setErrorState({ kind: 'network' });
     }
   });
 

@@ -39,7 +39,7 @@ import {
   type SesionRead,
 } from '../api/sesionActivaApi';
 
-const SESION_KEY = '/caja-sesion/sesion/me';
+export const SESION_KEY = '/caja-sesion/sesion/me';
 const DEDUPING_INTERVAL_MS = 10 * 1000;
 
 export interface UseSesionActivaReturn {
