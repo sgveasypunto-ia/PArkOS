@@ -88,7 +88,9 @@ export function Login(): JSX.Element {
     <>
       {/* F3.3 — REQ-OPS-124: feedback post-cierre turno (DEC-F3.3-09).
           role=status + aria-live=polite WCAG 2.1 AA compliant (mismo
-          pattern F3.2 REQ-OPS-118 countdown). NO interrumpe screen reader. */}
+          pattern F3.2 REQ-OPS-118 countdown). NO interrumpe screen reader.
+          Renderizado FUERA del wrapper de centrado — queda como banner
+          top-of-page antes del card, no afecta la estética del login. */}
       {showClosedNotice && (
         <p
           role="status"
@@ -98,13 +100,33 @@ export function Login(): JSX.Element {
           {t('caja:turnoCerradoExito')}
         </p>
       )}
-      <LoginForm
-        form={form}
-        onSubmit={onSubmit}
-        isSubmitting={form.formState.isSubmitting}
-        error={errorState}
-        onLockoutExpired={handleLockoutExpired}
-      />
+
+      {/* F3.1 (DEC-F3.1-02): el layout del /login vive acá (container) y
+          NO en <LoginForm>. Las clases quedan SCOPED a este wrapper --
+          cualquier cambio acá no se filtra a /caja/abrir-turno, /dashboard
+          ni a ninguna otra ruta protegida. Features:
+            - `grid place-items-center` centra vertical y horizontalmente
+              sin posicionar absoluto (responsive + sin media queries).
+            - `min-h-[calc(100vh-2rem)]` iguala la altura del <main> de
+              App.tsx (descontando el StatusBar de ~2rem arriba).
+            - `max-w-md` (28rem) impide que la tarjeta se estire en
+              pantallas anchas (kioskos pueden ser 1024px+).
+            - `py-8` da espacio vertical respirable; el padding horizontal
+              del <main> padre (px-4) sigue sumando para pantallas chicas. */}
+      <div
+        className="grid min-h-[calc(100vh-2rem)] w-full place-items-center px-4 py-8"
+        data-testid="login-page-wrapper"
+      >
+        <div className="w-full max-w-md">
+          <LoginForm
+            form={form}
+            onSubmit={onSubmit}
+            isSubmitting={form.formState.isSubmitting}
+            error={errorState}
+            onLockoutExpired={handleLockoutExpired}
+          />
+        </div>
+      </div>
     </>
   );
 }
