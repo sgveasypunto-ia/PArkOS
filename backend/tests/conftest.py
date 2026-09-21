@@ -404,12 +404,18 @@ async def _bootstrap_global_hash_chain_genesis(request) -> None:
 
     # Lazily resolve pg_engine so a cascade-skip in its dep chain does
     # NOT abort this autouse fixture (F1.11 fix).
-    # NOTE: pytest.skip() raises ``Skipped`` which inherits from
-    # ``OutcomeException(BaseException)`` — NOT ``Exception`` — so we MUST
-    # catch ``Skipped`` explicitly. ``Skipped`` indicates "upstream fixture
-    # cascade" which we silently no-op past so that pure-Pydantic and
-    # AST-walk tests (no DB dependency) are not cascade-skipped.
-    from _pytest.outcomes import Skipped
+    # NOTE: pytest.skip() / pytest.fail() raise ``Skipped`` / ``Failed``
+    # which inherit from ``OutcomeException(BaseException)`` — NOT
+    # ``Exception`` — so we MUST catch them explicitly. ``Skipped``
+    # indicates "upstream fixture cascade" which we silently no-op past
+    # so that pure-Pydantic and AST-walk tests (no DB dependency) are
+    # not cascade-skipped; ``Failed`` indicates a real upstream fixture
+    # failure that we re-raise so the caller sees the underlying error
+    # instead of a misleading silent no-op.
+    # ``pytest.Failed`` was removed from the public pytest namespace in
+    # pytest 8; ``_pytest.outcomes.Failed`` is the canonical internal
+    # home (verified on pytest 9.x — still exported, identical MRO).
+    from _pytest.outcomes import Failed, Skipped
 
     try:
         pg_engine = request.getfixturevalue("pg_engine")
@@ -417,7 +423,7 @@ async def _bootstrap_global_hash_chain_genesis(request) -> None:
         # Upstream fixture chain skipped (Docker unreachable, etc.) —
         # silent no-op per F1.11 / F1.10 baseline.
         return
-    except pytest.Failed:
+    except Failed:
         raise
     except Exception:
         # DB unreachable or other transient — silent no-op per
