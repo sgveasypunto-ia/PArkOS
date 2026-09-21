@@ -24,13 +24,20 @@
  *   - Defense in depth XR6 layer 4 contract: este hook + Zod local + backend
  *     Pydantic + partial unique index 0023 (F1.3).
  */
+import { useCallback } from 'react';
 import useSWR from 'swr';
 
 import { REFRESH_INTERVAL_MS } from '@parkos/ui-kit/hooks';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { getSesionActiva, type SesionRead } from '../api/sesionActivaApi';
+import {
+  cerrarSesion as sesionActivaCerrarSesion,
+  getSesionActiva,
+  SesionAlreadyClosedError,
+  type SesionCerrarRequest,
+  type SesionRead,
+} from '../api/sesionActivaApi';
 
 const SESION_KEY = '/caja-sesion/sesion/me';
 const DEDUPING_INTERVAL_MS = 10 * 1000;
@@ -40,7 +47,30 @@ export interface UseSesionActivaReturn {
   isLoading: boolean;
   error: Error | undefined;
   refresh: () => Promise<SesionRead | undefined>;
+  /**
+   * HU-F10.2 (REQ-OPS-160, AD-4) — encapsulates the F3.3 logout-on-success
+   * trifecta (`useAuthStore.clear()` + `parkos:auth:cleared` event) so
+   * callers (`<CerrarTurno>` now, F11.x worker UI later) don't re-derive
+   * the contract. On 200: clears authStore + fires the event. On 401
+   * (F3.3 fallback): also clears + fires. On any other non-2xx or
+   * network error: returns `{ ok: false, status, error }` without
+   * touching authStore.
+   */
+  cerrarSesion: (
+    uuid: string,
+    payload: SesionCerrarRequest,
+  ) => Promise<CerrarSesionResult>;
 }
+
+/**
+ * Discriminated union returned by `useSesionActiva().cerrarSesion(...)`.
+ * Mirrors the F3.3 contract with the typed-error envelope; the helper
+ * `cerrarSesion` does the F3.3 logout-on-success trifecta so callers
+ * only have to `navigate` on `ok: true`.
+ */
+export type CerrarSesionResult =
+  | { ok: true; status: 200; sesion: SesionRead }
+  | { ok: false; status: number; error: SesionAlreadyClosedError | ParkosHttpError | unknown };
 
 /**
  * Hook SWR para consultar sesión de caja activa del operador autenticado.
@@ -80,10 +110,55 @@ export function useSesionActiva(): UseSesionActivaReturn {
       ? undefined
       : error;
 
+  // HU-F10.2 (REQ-OPS-160, AD-4) — the F3.3 logout-on-success
+  // trifecta (`clear()` + `parkos:auth:cleared` event) is encapsulated
+  // inside the helper so callers (orchestrators) do not re-derive the
+  // contract. F3.30 e2e scenarios E3 + A1 in `e2e/caja/turno.spec.ts`
+  // assert the contract verbatim; F10.2 keeps it bit-identical.
+  const cerrarSesionHelper = useCallback(
+    async (
+      uuid: string,
+      payload: SesionCerrarRequest,
+    ): Promise<CerrarSesionResult> => {
+      const doLogout = (): void => {
+        useAuthStore.getState().clear();
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('parkos:auth:cleared'));
+        }
+      };
+      try {
+        const sesion = await sesionActivaCerrarSesion(uuid, payload);
+        doLogout();
+        return { ok: true, status: 200, sesion };
+      } catch (err) {
+        // F3.3 DEC-F3.3-03 fallback: 401 mid-flow (refresh failed)
+        // behaves like success for consistency with the historical
+        // logout-on-success flow.
+        if (err instanceof ParkosHttpError && err.status === 401) {
+          doLogout();
+          return { ok: false, status: 401, error: err };
+        }
+        // 5xx / 4xx / network / SesionAlreadyClosedError: the helper
+        // does NOT clear — the caller decides. The status of a network
+        // failure is 0 (the helper reports `0` so the caller can branch
+        // on `result.status === 0` if needed).
+        const status =
+          err instanceof ParkosHttpError
+            ? err.status
+            : err instanceof SesionAlreadyClosedError
+              ? err.status
+              : 0;
+        return { ok: false, status, error: err };
+      }
+    },
+    [],
+  );
+
   return {
     sesion: data ?? null,
     isLoading,
     error: normalizedError,
     refresh: mutate,
+    cerrarSesion: cerrarSesionHelper,
   };
 }
