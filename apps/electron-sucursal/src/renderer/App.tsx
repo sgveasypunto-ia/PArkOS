@@ -13,6 +13,9 @@ import { FacturaDetalle } from '../features/facturacion/pages/FacturaDetalle';
 import { ReimprimirTiquete } from '../features/facturacion/pages/ReimprimirTiquete';
 import { Venta } from '../features/suscripciones/pages/Venta';
 import { Listado } from '../features/suscripciones/pages/Listado';
+import { SyncBanner } from '../components/SyncBanner';
+import { LocalApiDownBanner } from '../components/LocalApiDownBanner';
+import { useAuth } from '@parkos/ui-kit/hooks';
 
 /**
  * App — F2.1 router + F2.3 StatusBar mount + F3.1 Login + F3.3 caja
@@ -21,6 +24,15 @@ import { Listado } from '../features/suscripciones/pages/Listado';
  * occupancy panel now lives ONLY inside `<Dashboard />` so it does
  * not poll the API on `/caja/abrir-turno` and `/caja/cerrar-turno`
  * (F4.3 "TEMPORAL" comment honoured).
+ *
+ * F11.1 mount order (AD-5 + REQ-OPS-174):
+ *   1. `<StatusBar />` — F2.3 API health chip (kept).
+ *   2. `<LocalApiDownBanner />` — sticky hard-fault banner, mounts
+ *      only when selectApiStatusDown(state) === true.
+ *   3. `<SyncBanner />` — top-of-page sync-to-cloud health banner,
+ *      gated on `useAuth().sucursal?.uuid != null` so the
+ *      /sync/estado SWR poll fires only when the operator has a
+ *      branch context (REQ-OPS-139 lazy-mount precedent).
  *
  * Layout: full-bleed (no centered max-width) so the 6-section dashboard
  * uses the whole viewport without scroll at 1080p.
@@ -33,10 +45,14 @@ import { Listado } from '../features/suscripciones/pages/Listado';
  */
 export default function App(): JSX.Element {
   const { t } = useTranslation('common');
+  const { sucursal } = useAuth();
+  const branchUuid = sucursal?.uuid ?? null;
 
   return (
     <>
       <StatusBar />
+      <LocalApiDownBanner />
+      <SyncBanner uuid_sucursal={branchUuid} />
       <main
         lang="es-CO"
         className="block min-h-[calc(100vh-2rem)] w-full bg-muted/40 px-4 py-3"

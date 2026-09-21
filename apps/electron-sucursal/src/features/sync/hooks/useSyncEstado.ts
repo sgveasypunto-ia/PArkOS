@@ -7,6 +7,13 @@
  *
  * REQ-OPS-132 fetcher-closure — fetcher receives bare `uuid_sucursal`.
  * SWR key gate: `null` when `uuid_sucursal` is empty.
+ *
+ * REQ-OPS-170 (HU-F11.1, AD-1) — Zod schema MUST match backend
+ * `SyncEstadoRead` (`backend/packages/parkos_core/src/parkos_core/schemas/sync_infra.py:399`)
+ * exactly: `uuid_sucursal`, `ultima_sync_at`, `lag_seg`, `pendientes`.
+ * `estado` is derived on the frontend from `(lag_seg, pendientes,
+ * ultima_sync_at)` per REQ-OPS-171 — never received from the backend.
+ * Drift anchor DA-F11.1-7 (GATING) closed by this realignment.
  */
 import useSWR from 'swr';
 import { z } from 'zod';
@@ -16,13 +23,13 @@ import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 export const SyncEstadoSchema = z.object({
   uuid_sucursal: z.string().uuid(),
-  lag_seg: z.number().int().nonnegative(),
-  /** Pendientes en la sync_queue local. */
+  /** ISO 8601 timestamp of the last successful sync, or null when the
+   *  branch has never synced (REQ-OPS-171 never_synced badge). */
+  ultima_sync_at: z.string().nullable(),
+  /** Seconds since the last successful sync, or null when never synced. */
+  lag_seg: z.number().int().nonnegative().nullable(),
+  /** Length of the local sync_queue waiting to drain upstream. */
   pendientes: z.number().int().nonnegative(),
-  ultimo_error: z.string().nullable(),
-  /** 'online' | 'lagging' | 'offline' derivado server-side. */
-  estado: z.enum(['online', 'lagging', 'offline']),
-  ultima_sync: z.string().nullable(),
 });
 export type SyncEstado = z.infer<typeof SyncEstadoSchema>;
 

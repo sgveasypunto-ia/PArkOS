@@ -8,5 +8,18 @@
   "conflict": "Conflicto",
   "forceResync": "Forzar resincronización",
   "queueLength": "Cola",
-  "lastError": "Último error"
+  "lastError": "Último error",
+  "syncBanner": {
+    "online": "Sincronización al día",
+    "lagging": "Sincronización con retraso",
+    "offline": "Sin sincronización con la nube",
+    "neverSynced": "Sin sincronizaciones aún",
+    "lastSynced": "Última sincronización",
+    "lagSeconds": "{{count}} s",
+    "pendientes": "pendientes"
+  },
+  "localApiDown": {
+    "copy": "Sin conexión con API local — los datos guardados se enviarán al reconectarse",
+    "cta": "Reintentando automáticamente"
+  }
 }
