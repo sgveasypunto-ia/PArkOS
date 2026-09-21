@@ -15,6 +15,13 @@
     "uuid": {
       "invalid": "Identificador inválido."
     },
+    "email": {
+      "invalid": "Correo electrónico inválido."
+    },
+    "password": {
+      "required": "La contraseña es obligatoria.",
+      "minLength": "La contraseña debe tener al menos 8 caracteres."
+    },
     "number": {
       "required": "Debe ser un número.",
       "format": "Solo dígitos, y opcionalmente un punto con hasta 2 decimales.",
