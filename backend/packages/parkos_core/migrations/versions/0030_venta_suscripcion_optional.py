@@ -45,7 +45,12 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "0030_venta_suscripcion_optional"
-down_revision = "0029_reimpresion_siembra_and_permiso_anular"
+# 0029b_seed_sync_catalog (2026-09-21) inserted between 0029 and 0030 to
+# create + seed the ``prod.sync_catalog`` projection table the pre-flight
+# below queries. Was ``0029_reimpresion_siembra_and_permiso_anular``
+# before the fix; the chain now reads
+# 0029 → 0029b → 0030 → 0031 → ... → 0038 (single head).
+down_revision = "0029b_seed_sync_catalog"
 branch_labels = None
 depends_on = None
 
