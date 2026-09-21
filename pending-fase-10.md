@@ -11,7 +11,7 @@
 
 | # | ID | Titulo | Tamano est. | Bloqueador | Notas |
 |---|---|---|---|---|---|
-| 1 | HU-F10.1 | Arqueo parcial (auditoría, sin cierre) | ~385 LOC prod + ~1192 LOC tests = +1566/+1790 con size:exception | depende F1.13 backend `/caja/arqueo` | ✅ **CERRADO 2026-09-21** — 8 atomic commits (`3525544..dc16578`) archivados en `openspec/changes/fase-10-1-arqueo-parcial/`. 7 drift anchors resueltos (DA-1..DA-7). Vitest 27/27 + 206/206 print suite verde. e2e 3/3 skipped per F9.x sandbox F.6 precedent. tsc/lint clean en mis archivos. **size:exception RATIFIED** (+1566 vs 800 budget, F9.1 precedente; producción bajo presupuesto, excedente tests por strict_tdd). |
+| 1 | HU-F10.1 | Arqueo parcial (auditoría, sin cierre) | ~385 LOC prod + ~1192 LOC tests = +1566/+1790 con size:exception | depende F1.13 backend `/caja/arqueo` | ✅ **CERRADO 2026-09-21** — archived to `openspec/changes/archive/2026-09-21-fase-10-1-arqueo-parcial/`. spec synced to `openspec/specs/operations/spec.md` REQ-OPS-152..156 (next free gap after REQ-OPS-151). verify-report PASS-WITH-3-WARNINGs (all 3 documented carry-overs, no F10.1 regressions). Merge SHA `033f654`. 8 atomic commits (`3525544..dc16578`) + doc commit `fac0063`. 7 drift anchors resueltos (DA-1..DA-7). Vitest 27/27 + 206/206 print suite verde. e2e 3/3 skipped per F9.x sandbox F.6 precedent. tsc/lint clean en mis archivos. **size:exception RATIFIED** (+1566 vs 800 budget, F9.1 precedente; producción bajo presupuesto, excedente tests por strict_tdd). |
 | 2 | HU-F10.2 | Cierre de turno (con arqueo obligatorio) | ~160 LOC | depende F10.1 page + ArqueoParcial logic | pendiente |
 | 3 | HU-F10.3 | Cierre diario (cierra todas las sesiones del día) | ~200 LOC | depende F10.2 (cierre_turno pattern) | pendiente |
 
