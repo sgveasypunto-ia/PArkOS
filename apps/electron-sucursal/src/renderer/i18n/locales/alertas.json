@@ -1,5 +1,41 @@
 {
   "titulo": "Alertas",
   "vacio": "Sin alertas abiertas.",
-  "error": "Error al cargar alertas"
+  "error": "Error al cargar alertas",
+  "dashboard": {
+    "title": "Alertas de la sucursal",
+    "drillDown": "Ver detalle",
+    "markResolved": "Marcar revisada",
+    "error": "No se pudieron cargar las alertas",
+    "empty": "Sin alertas activas para los filtros seleccionados.",
+    "filters": {
+      "label": "Filtros de alertas"
+    }
+  },
+  "severidad": {
+    "alta": "Alta",
+    "media": "Media",
+    "baja": "Baja"
+  },
+  "actions": {
+    "marcarRevisada": "Marcar revisada",
+    "cancelar": "Cancelar",
+    "filtro": "Filtro"
+  },
+  "empty": {
+    "noAlerts": "No hay alertas activas"
+  },
+  "desc": {
+    "descuadre_critico": "El arqueo cerró con descuadre mayor al umbral autorizado.",
+    "fe_error_toppoint": "TopPoint rechazó el comprobante; revisar el motivo en la factura.",
+    "numeracion_toppoint_agotada": "La resolución de facturación está por agotarse; solicitar una nueva.",
+    "cache_desactualizado": "El caché local quedó desactualizado; reintentar la sincronización.",
+    "capacidad_agotada_forzado": "Se forzó el ingreso pese a capacidad agotada; revisar la operación.",
+    "arqueo_sin_cerrar": "Hay un arqueo parcial abierto que debe cerrarse.",
+    "caja_sin_apertura": "La caja no registra apertura de turno en la jornada actual.",
+    "suscripcion_proxima_vencer": "Una suscripción está próxima a vencer; contactar al cliente.",
+    "reimpresion_excesiva": "Se reimprimieron tiquetes por encima del umbral del día.",
+    "fallo_conexion_local": "El servicio local no responde; verificar la red de la sucursal.",
+    "diferencia_datafono": "El datafono reportó una diferencia que requiere conciliación."
+  }
 }
