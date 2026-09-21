@@ -56,8 +56,14 @@ export function AbrirTurno(): JSX.Element {
       // non-UUID string, surfacing as a silent 422 with no inline
       // ``<FormMessage>``).
       uuid_usuario: user?.uuid ?? '',
-      valor_inicial_efectivo: 0,
-      valor_inicial_datafono: 0,
+      // F3.3 numeric inputs: defaults VACÍOS. Antes había '0' aquí y
+      // eso generaba el bug "0 queda fijo cuando quiero escribir el
+      // número" (no se podía borrar el cero). El schema acepta "" y
+      // lo trata como 0 (transform) — comportamiento esperado: el
+      // operador escribe el monto desde cero, sin pre-relleno.
+      // El placeholder provee la pista visual.
+      valor_inicial_efectivo: '',
+      valor_inicial_datafono: '',
       observaciones: '',
     },
   });
@@ -90,12 +96,19 @@ export function AbrirTurno(): JSX.Element {
   });
 
   return (
-    <AbrirTurnoForm
-      form={form}
-      onSubmit={onSubmit}
-      isSubmitting={form.formState.isSubmitting}
-      error={errorState}
-      onIrAlTurno={onIrAlTurno}
-    />
+    <div
+      className="grid min-h-[calc(100vh-2rem)] w-full place-items-center px-4 py-8"
+      data-testid="abrir-turno-page-wrapper"
+    >
+      <div className="w-full max-w-md">
+        <AbrirTurnoForm
+          form={form}
+          onSubmit={onSubmit}
+          isSubmitting={form.formState.isSubmitting}
+          error={errorState}
+          onIrAlTurno={onIrAlTurno}
+        />
+      </div>
+    </div>
   );
 }

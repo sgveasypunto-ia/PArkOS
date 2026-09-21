@@ -1,14 +1,14 @@
 /**
  * `turnoSchema.ts` — Zod schemas compartidos para AbrirTurno + CerrarTurno (F3.3 — T2/T3).
  *
- * Plan.md:1338 verbatim:
- *   `z.object({ valor_inicial_efectivo: z.number().min(0),
- *              valor_inicial_datafono: z.number().min(0),
- *              observaciones: z.string().optional() })`
- *
  * DEC-F3.3-01 + DEC-F3.3-02 + DEC-F3.3-08:
- *   - Container/Presentational split (F3.1 DEC-F3.1-02 verbatim).
- *   - inputMode="decimal" + type="number" + step="0.01" en `<Input>` (UI).
+ *   - Container/Presentational split (F1.3 verbatim).
+ *   - UI: `<Input type="text" inputMode="decimal">` con filtro regex
+ *     numérico en onChange. El schema acepta STRING (lo que produce el
+ *     input filtrado) y aplica `.transform()` a number ANTES de la
+ *     validación final, así el backend recibe number pero el form
+ *     nunca se rompe por el `type="number"` quirks (defaultValue=0
+ *     pegado, no se puede borrar, scroll-wheels molestos en Electron).
  *   - 409 UX mapping via SesionAlreadyActiveError typed error.
  *
  * Defense in depth XR6 layer 4 contract:
@@ -25,13 +25,39 @@
 import { z } from 'zod';
 
 /**
+ * Regex que el input numérico enforced cada keystroke.
+ *
+ * Matchea:
+ *   - ""        (vacío)                  -> tratado como 0 por el onChange
+ *   - "0", "12" (entero)                -> Number(x)
+ *   - "12.", "12.3", "12.34" (decimales) -> Number(x)
+ *   - ".5", ".99" (sin 0 a la izquierda) -> Number(x)
+ *
+ * NO matchea (silent drop):
+ *   - "." solo ("0" sin parte entera)
+ *   - letras, símbolos (`+`, `-`, `e`, whitespace)
+ *   - más de 2 dígitos decimales ("12.345")
+ *
+ * Cubre todos los flujos del kiosko (céntimos = 2 decimales), no
+ * acepta exponentes porque los valores son magnitudes físicas, no
+ * cantidades científicas.
+ */
+export const NUMERIC_INPUT_REGEX =
+  /^(?:\d+(?:\.\d{0,2})?|\.\d{1,2})$/;
+
+/**
  * Form input schema para AbrirTurno (REQ-OPS-119).
  *
  * Campos:
  *   - uuid_sucursal: string UUID (F1.3 backend Pydantic requiere UUID).
  *   - uuid_usuario:  string UUID (F1.3).
- *   - valor_inicial_efectivo: number ≥ 0 (decimales, kiosko limita a 2).
- *   - valor_inicial_datafono: number ≥ 0 (decimales, kiosko limita a 2).
+ *   - valor_inicial_efectivo: STRING en form / NUMBER a la API.
+ *     El input es `type="text"` para evitar los quirks de
+ *     `<input type="number">` (defaultValue=0 pegado, sin clear,
+ *     scroll-wheel en Electron). Validamos con `NUMERIC_INPUT_REGEX`
+ *     en cada keystroke Y en blur. `.transform(Number)` convierte
+ *     el string aceptado al número que espera la API.
+ *   - valor_inicial_datafono: mismo shape que efectivo.
  *   - observaciones: string opcional (libre, RHF "" = omitido en POST).
  */
 export const abrirTurnoSchema = z.object({
@@ -42,11 +68,25 @@ export const abrirTurnoSchema = z.object({
     .string({ required_error: 'validation.required' })
     .uuid({ message: 'validation.uuid.invalid' }),
   valor_inicial_efectivo: z
-    .number({ invalid_type_error: 'validation.number.required' })
-    .min(0, { message: 'validation.number.minZero' }),
+    .string({ required_error: 'validation.required' })
+    .max(20, { message: 'validation.number.tooLong' })
+    .regex(NUMERIC_INPUT_REGEX, { message: 'validation.number.format' })
+    .transform((s) => (s === '' ? 0 : Number(s)))
+    .pipe(
+      z
+        .number({ invalid_type_error: 'validation.number.required' })
+        .min(0, { message: 'validation.number.minZero' }),
+    ),
   valor_inicial_datafono: z
-    .number({ invalid_type_error: 'validation.number.required' })
-    .min(0, { message: 'validation.number.minZero' }),
+    .string({ required_error: 'validation.required' })
+    .max(20, { message: 'validation.number.tooLong' })
+    .regex(NUMERIC_INPUT_REGEX, { message: 'validation.number.format' })
+    .transform((s) => (s === '' ? 0 : Number(s)))
+    .pipe(
+      z
+        .number({ invalid_type_error: 'validation.number.required' })
+        .min(0, { message: 'validation.number.minZero' }),
+    ),
   observaciones: z.string().optional(),
 });
 

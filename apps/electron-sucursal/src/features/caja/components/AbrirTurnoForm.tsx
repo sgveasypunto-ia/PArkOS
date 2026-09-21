@@ -38,7 +38,10 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 
-import type { AbrirTurnoInput } from '../api/schemas/turnoSchema';
+import {
+  NUMERIC_INPUT_REGEX,
+  type AbrirTurnoInput,
+} from '../api/schemas/turnoSchema';
 
 /**
  * Estado de error que `<AbrirTurno>` pasa a `<AbrirTurnoForm />` para render.
@@ -92,18 +95,35 @@ export function AbrirTurnoForm({
             <FormItem>
               <FormLabel>{t('caja:valorInicialEfectivo')}</FormLabel>
               <FormControl>
+                {/* type="text" + regex filter (NUMERIC_INPUT_REGEX del
+                   schema) -- los inputs numéricos `type="number"`
+                   tienen quirks en Electron/Chromium que el operador
+                   sufria: defaultValue=0 que no se podia borrar,
+                   scroll-wheels que cambiaban el valor, etc. Con
+                   text + filtro el operador puede borrar, tipear
+                   libremente, pegar, y los keystrokes invalidos se
+                   caen silenciosamente sin tocar el field. Schema
+                   valida la misma regex en blur/submit; ver
+                   api/schemas/turnoSchema.ts. */}
                 <Input
                   {...field}
-                  type="number"
+                  type="text"
                   inputMode="decimal"
-                  step="0.01"
-                  min="0"
+                  autoComplete="off"
                   data-testid="abrir-turno-valor-efectivo"
                   value={field.value ?? ''}
                   onChange={(e) => {
                     const raw = e.target.value;
-                    field.onChange(raw === '' ? 0 : Number(raw));
+                    if (raw === '' || NUMERIC_INPUT_REGEX.test(raw)) {
+                      // Mantenemos el field como string en form state
+                      // (coherente con el schema). El transform del
+                      // schema lo convierte a number en submit.
+                      field.onChange(raw);
+                    }
                   }}
+                  placeholder={t('caja:valorInicialEfectivoPlaceholder', {
+                    defaultValue: 'Ingrese aquí el valor…',
+                  })}
                 />
               </FormControl>
               <FormMessage />
@@ -120,16 +140,20 @@ export function AbrirTurnoForm({
               <FormControl>
                 <Input
                   {...field}
-                  type="number"
+                  type="text"
                   inputMode="decimal"
-                  step="0.01"
-                  min="0"
+                  autoComplete="off"
                   data-testid="abrir-turno-valor-datafono"
                   value={field.value ?? ''}
                   onChange={(e) => {
                     const raw = e.target.value;
-                    field.onChange(raw === '' ? 0 : Number(raw));
+                    if (raw === '' || NUMERIC_INPUT_REGEX.test(raw)) {
+                      field.onChange(raw);
+                    }
                   }}
+                  placeholder={t('caja:valorInicialDatafonoPlaceholder', {
+                    defaultValue: 'Ingrese aquí el valor…',
+                  })}
                 />
               </FormControl>
               <FormMessage />
