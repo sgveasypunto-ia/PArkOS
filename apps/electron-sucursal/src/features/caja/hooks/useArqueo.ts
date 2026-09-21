@@ -30,9 +30,9 @@ export function useArqueo() {
     async submit(payload: {
       uuid_sesion: string;
       tipo_arqueo: 'auditoria' | 'cierre_turno' | 'cierre_dia';
-      efectivo_contado_cop: number;
-      datafono_contado_cop: number;
-      observaciones?: string;
+      valor_efectivo_reportado: number;
+      valor_datafono_reportado: number;
+      justificacion?: string;
     }): Promise<{ uuid: string }> {
       const { parkosFetch } = await import('@parkos/ui-kit/fetch');
       const raw = await parkosFetch<unknown>(
@@ -106,9 +106,9 @@ export function useCierreDiario() {
   return {
     async ejecutar(payload: {
       uuid_sesion: string;
-      efectivo_contado_cop: number;
-      datafono_contado_cop: number;
-      observaciones?: string;
+      valor_efectivo_reportado: number;
+      valor_datafono_reportado: number;
+      justificacion?: string;
     }): Promise<{ uuid: string }> {
       return submit({
         ...payload,
