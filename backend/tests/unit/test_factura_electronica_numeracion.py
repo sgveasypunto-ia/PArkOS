@@ -87,4 +87,4 @@ def test_routes_register_factura_electronica_post() -> None:
     from parkos_core.api.v1.facturacion import router
 
     paths = {route.path for route in router.routes if hasattr(route, "path")}
-    assert "/factura-electronica" in paths
+    assert "/facturacion/factura-electronica" in paths

@@ -179,7 +179,7 @@ def test_handler_single_commit_invariant() -> None:
     # Match indented ``await session.commit()`` — excludes docstring occurrences.
     pattern = re.compile(r"^\s+await session\.commit\(\)", re.MULTILINE)
     commit_count = len(pattern.findall(src))
-    assert commit_count == 2, (
-        f"Expected exactly 2 commits (one per F1.9 handler), found {commit_count}. "
+    assert commit_count == 4, (
+        f"Expected exactly 4 commits (one per F1.9+F1.10 handler), found {commit_count}. "
         "KD-FACT-01 invariant violated: each handler MUST commit exactly once."
     )

@@ -427,21 +427,21 @@ class SalidaReadForzado(_Base):
 class IngresoNoEncontradoError(_Base):
     """V1 404 discriminator -- uuid_ingreso no existe, ya cerrado, o anulado."""
 
-    error: Literal["ingreso_no_encontrado"]
+    error: Literal["ingreso_no_encontrado"] = "ingreso_no_encontrado"
     uuid_ingreso: uuid_lib.UUID
 
 
 class SalidaDuplicadaError(_Base):
     """Step 8 409 discriminator -- partial unique index violated."""
 
-    error: Literal["salida_duplicada"]
+    error: Literal["salida_duplicada"] = "salida_duplicada"
     uuid_ingreso: uuid_lib.UUID
 
 
 class PlacaNoCoincideConIngresoError(_Base):
     """V3 422 discriminator -- optional placa mismatch."""
 
-    error: Literal["placa_no_coincide_con_ingreso"]
+    error: Literal["placa_no_coincide_con_ingreso"] = "placa_no_coincide_con_ingreso"
     placa_request: str
     placa_ingreso: str
 
@@ -449,7 +449,7 @@ class PlacaNoCoincideConIngresoError(_Base):
 class TarifaVigenteNoEncontradaSalidaError(_Base):
     """V5 422 discriminator -- when not bypassed."""
 
-    error: Literal["tarifa_vigente_no_encontrada"]
+    error: Literal["tarifa_vigente_no_encontrada"] = "tarifa_vigente_no_encontrada"
 
 
 # ---------------------------------------------------------------------------
