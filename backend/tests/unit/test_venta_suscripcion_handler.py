@@ -9,7 +9,12 @@ end-to-end with ``unittest.mock.AsyncMock`` for the SQLAlchemy session
   * KD-VENTA-01: exactly ONE ``session.commit()`` call.
   * DEC-VENTA-06: ``Cache-Control: no-store`` on the 201 response.
   * 404 ``tipo_subscripcion_no_encontrado`` when V2 returns None.
-  * 403 ``tenant_scope_violation`` on operador cross-branch (Step 2a).
+  * Cross-branch operator rejection is enforced at the auth layer
+    (``get_tenant_ctx``), NOT inside this handler body -- see
+    ``test_cross_branch_operador_rejected_at_auth_layer`` for the pin.
+    The handler-level guard that used to live at Step 2a was dead code
+    (compared a value to itself) and was removed per REQ-OPS-XR5 +
+    REQ-OPS-089 Scenario 3 footnote.
 """
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ if str(_PARKOS_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_PARKOS_CORE_SRC))
 
 import pytest  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
+from fastapi import HTTPException, Request  # noqa: E402
 
 
 def _make_ctx(
@@ -196,12 +201,14 @@ async def test_venta_suscripcion_returns_404_when_plan_not_found() -> None:
 
 @pytest.mark.asyncio
 async def test_venta_suscripcion_same_branch_operador_succeeds() -> None:
-    """Step 2a: same-branch operador request is allowed end-to-end.
+    """Same-branch operador request is allowed end-to-end (regression guard).
 
-    The current handler shape binds ``target_sucursal = ctx.sucursal_uuid``
-    so the cross-branch condition collapses to a no-op when ctx.sucursal_uuid
-    is set (operador- token always pins one branch). This test guards
-    against regression: a same-branch operador must reach commit.
+    The cross-branch rejection invariant lives at the auth layer
+    (``get_tenant_ctx`` -> ``auth/tenancy.py:127-133``); once a
+    ``TenantContext`` reaches this handler body, ``ctx.sucursal_uuid``
+    is already pinned to the operador's branch. This test guards against
+    the handler-level guard being re-introduced and short-circuiting a
+    same-branch happy path: a same-branch operador must reach commit.
     """
     from parkos_core.api.v1 import clientes_venta as handler_mod
 
@@ -491,3 +498,101 @@ async def test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_aho
     # DEC-VENTA-03: response.monto_prorrateado set when cobrar_ahora=True
     assert result.monto_prorrateado == Decimal("10000.00")
     assert result.uuid_factura == factura_row.uuid
+
+
+# ---------------------------------------------------------------------------
+# T5.5 (CU-06 fix-pin) -- Auth-layer guard for cross-branch operator.
+#
+# Prior to the dead-code removal, ``clientes_venta.py`` carried a "Step 2a"
+# block that bound ``target_sucursal = ctx.sucursal_uuid`` and then compared
+# the value to itself (``target_sucursal != ctx.sucursal_uuid``). That check
+# was unreachable (a tautology) -- the request payload for F1.12 does not
+# carry a target entity with its own ``uuid_sucursal`` because the
+# subscription is being CREATED here, not validated against an existing
+# row. REQ-OPS-089 Scenario 3 footnote explicitly defers the cross-branch
+# check to a future HU.
+#
+# The real Layer-2 guard lives at ``parkos_core.auth.tenancy.get_tenant_ctx``
+# (REQ-OPS-XR5 Layer 2). For ``operador-`` tokens, the dependency pins the
+# request to ``claims["sucursal"]`` and rejects any ``X-Sucursal-Context``
+# header pointing at a DIFFERENT branch with 403
+# ``unauthorized_sucursal_context`` (``auth/tenancy.py:127-133``). This test
+# pins that contract directly so any regression that re-introduces the dead
+# handler-level guard OR weakens the auth-layer guard is caught here.
+# ---------------------------------------------------------------------------
+
+
+def _build_request_for_operador(token: str) -> Request:
+    """Build a minimal FastAPI ``Request`` carrying an operador bearer token.
+
+    Mirrors ``tests/unit/test_tenancy_operador.py::_build_request`` so the
+    auth-layer guard can be invoked without standing up the full FastAPI
+    app. ``X-Sucursal-Context`` is intentionally NOT injected here -- it
+    is passed explicitly as a kwarg, matching how FastAPI resolves the
+    ``Header(None, alias="X-Sucursal-Context")`` descriptor at runtime.
+    """
+    return Request(
+        scope={
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/clientes/venta-suscripcion",
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_cross_branch_operador_rejected_at_auth_layer() -> None:
+    """Cross-branch operador is rejected at ``get_tenant_ctx`` -- never reaches the handler.
+
+    Pins the REQ-OPS-XR5 Layer-2 contract: an ``operador-`` token whose
+    JWT ``claims["sucursal"]`` is branch X is rejected with 403
+    ``unauthorized_sucursal_context`` when the request carries an
+    ``X-Sucursal-Context`` header pointing at branch Y. The rejection
+    happens at the auth dependency (``get_tenant_ctx``) BEFORE the
+    handler body runs, which is why the F1.12 handler MUST NOT re-check
+    this invariant -- any handler-level check is either a no-op (when
+    the local variable shadows ``ctx.sucursal_uuid``) or a duplicate of
+    the auth-layer guard (which is the wrong place to enforce it).
+
+    NOTE on the discriminator: this test asserts the ACTUAL auth-layer
+    error code ``unauthorized_sucursal_context`` emitted by
+    ``UnauthorizedSucursalContextError`` (``auth/tenancy.py:67``). The
+    spec text at REQ-OPS-XR5 Scenario 2 (line 3679) describes the
+    rejection as ``tenant_scope_violation``; that is the canonical
+    spec-honest contract for handler-level Layer-2 checks like
+    ``operacion.py:174`` and ``facturacion.py:279`` which DO have a
+    target entity with its own ``uuid_sucursal`` to compare against.
+    For F1.12, no such target entity exists (see REQ-OPS-089 Scenario 3),
+    and the auth layer emits the stricter
+    ``unauthorized_sucursal_context`` discriminator.
+    """
+    from parkos_core.auth.tenancy import get_tenant_ctx
+    from parkos_core.auth.tokens import issue_token
+
+    branch_x = uuid_lib.uuid4()  # the operador's pinned branch
+    branch_y = uuid_lib.uuid4()  # the header is pointing at a DIFFERENT branch
+    assert branch_x != branch_y
+
+    token = issue_token(
+        subject_uuid=uuid_lib.uuid4(),
+        issuer="operador-test",
+        claims={"rol": "operador", "sucursal": str(branch_x)},
+        expires_in=3600,
+    )
+    request = _build_request_for_operador(token)
+
+    # Auth-layer dependency MUST reject the cross-branch attempt with 403
+    # ``unauthorized_sucursal_context`` -- NOT 200, NOT 403
+    # ``tenant_scope_violation`` (that discriminator is for handler-level
+    # checks against a target entity, see operacion.py:174).
+    with pytest.raises(HTTPException) as exc:
+        await get_tenant_ctx(
+            request=request,
+            x_sucursal_context=str(branch_y),
+        )
+    assert exc.value.status_code == 403
+    assert exc.value.detail["error"] == "unauthorized_sucursal_context"
+    # No ``Cache-Control`` header at the auth layer (that is the
+    # handler-level Layer-5 invariant from DEC-VENTA-06). The auth layer
+    # emits a bare 403; downstream proxies add no-store if needed.
