@@ -282,6 +282,22 @@ export function Dashboard(): JSX.Element | null {
           >
             🧮 {t('caja:arqueo', { defaultValue: 'Arqueo' })}
           </Button>
+          {/* HU-F10.2 (REQ-OPS-157) — sidebar anchor for the cierre
+              de turno page. Mirrors the F10.1 arqueo anchor: routed
+              page (no drawer). The header chip + button is the
+              primary surface; this sidebar link is the secondary
+              entry-point for kiosk / desktop. */}
+          <Button
+            variant="outline"
+            data-testid="sidebar-cerrar-turno"
+            className="justify-start text-sm"
+            onClick={() => {
+              navigate('/caja/cerrar-turno');
+              setMobileNavOpen(false);
+            }}
+          >
+            🔒 {t('caja:cerrarTurno', { defaultValue: 'Cerrar turno' })}
+          </Button>
           <Button
             variant="outline"
             data-testid="sidebar-cierre-diario"
