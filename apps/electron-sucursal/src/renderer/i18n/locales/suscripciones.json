@@ -10,7 +10,10 @@
     "titulo": "Suscripciones",
     "descripcion": "Lista activa de suscripciones en esta sede.",
     "listaVacia": "Sin suscripciones activas en esta sede.",
-    "nuevaVenta": "Nueva venta de suscripción"
+    "nuevaVenta": "Nueva venta de suscripción",
+    "tituloVenta": "Nueva venta de suscripción",
+    "descripcionVenta": "Venta de suscripción en 4 pasos. Al pagar, regresa a esta pestaña.",
+    "volver": "Volver"
   },
   "listado": {
     "titulo": "Suscripciones",
