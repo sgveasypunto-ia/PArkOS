@@ -33,6 +33,8 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 
+import { useAuth } from '@parkos/ui-kit/hooks';
+
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
@@ -46,6 +48,7 @@ import {
   VentaSuscripcionCantidadMaximaError,
   type VentaSuscripcionCreate,
 } from '../hooks/useVentaSuscripcion';
+import { useTiposSubscripciones } from '../hooks/useTiposSubscripciones';
 import { calcularMontoProporcional } from '../lib/prorrateo';
 
 /**
@@ -109,11 +112,11 @@ const planSchema = z.object({
 
 /**
  * Default plan valor / duracion_dias used for the prorrateo
- * display. In a full integration the wizard would resolve this from
- * the plan catalog (`useTiposSubscripcion`); for F9.1 the wizard
- * reads the plan from the step 3 select and uses a 30/30 baseline
- * for the badge preview. The authoritative amount is computed
- * server-side at the POST.
+ * display when the operator hasn't selected a plan yet (early
+ * render of step 4). When a plan IS selected, its `valor` and
+ * `duracion_dias` drive the prorrateo computation. The authoritative
+ * amount is still computed server-side at the POST (defense in
+ * depth -- the wizard's preview is informational).
  */
 const PLAN_PREVIEW_VALOR = 30000;
 const PLAN_PREVIEW_DURACION_DIAS = 30;
@@ -123,6 +126,8 @@ const DEFAULT_FECHA_INICIO = '2026-09-19'; // day=19 → prorrateo visible
 export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   const { t } = useTranslation(['suscripciones', 'common']);
   const navigate = useNavigate();
+  const { sucursal } = useAuth();
+  const uuid_sucursal = sucursal?.uuid ?? null;
   const [state, setState] = useState<VentaStepState>({ paso: 1 });
   const [placaError, setPlacaError] = useState<string | null>(null);
   const [clienteError, setClienteError] = useState<string | null>(null);
@@ -131,14 +136,33 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   const [placaInput, setPlacaInput] = useState('');
   const [planInput, setPlanInput] = useState('');
   const { trigger, isMutating } = useVentaSuscripcion();
+  const {
+    data: planes,
+    error: planesError,
+    isLoading: planesLoading,
+  } = useTiposSubscripciones(uuid_sucursal);
+
+  // Look up the selected plan's pricing once the operator commits to
+  // a uuid_tipo_subscripcion at step 3. Used by step 4 to render the
+  // prorrateo badge against the canonical plan numbers instead of
+  // the F9.1-era 30000/30 preview baseline.
+  const selectedPlan = useMemo(() => {
+    if (!planes || !state.uuid_tipo_subscripcion) return null;
+    return (
+      planes.find((p) => p.uuid === state.uuid_tipo_subscripcion) ?? null
+    );
+  }, [planes, state.uuid_tipo_subscripcion]);
 
   const montoProporcional = useMemo<number | null>(() => {
     if (state.paso !== 4 || !state.fecha_inicio_cobertura) return null;
-    return calcularMontoProporcional(
-      { valor: PLAN_PREVIEW_VALOR, duracion_dias: PLAN_PREVIEW_DURACION_DIAS },
-      new Date(state.fecha_inicio_cobertura),
-    );
-  }, [state.paso, state.fecha_inicio_cobertura]);
+    const planArgs = selectedPlan
+      ? {
+          valor: selectedPlan.valor,
+          duracion_dias: selectedPlan.duracion_dias,
+        }
+      : { valor: PLAN_PREVIEW_VALOR, duracion_dias: PLAN_PREVIEW_DURACION_DIAS };
+    return calcularMontoProporcional(planArgs, new Date(state.fecha_inicio_cobertura));
+  }, [state.paso, state.fecha_inicio_cobertura, selectedPlan]);
 
   const handlePaso1Siguiente = (): void => {
     const parsed = clienteSchema.safeParse({
@@ -194,6 +218,12 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
       uuid_tipo_subscripcion:
         state.uuid_tipo_subscripcion ?? '',
       fecha_inicio_cobertura,
+      // Genera FE con los datos del cliente del paso 1 -- el toggle
+      // `fe` de PagoModal lo controla en tiempo real. Plan.md §6.2
+      // (F11.3 follow-up) requiere que el `cliente` payload viaje
+      // completo para que el backend pueda emitir la FE sin re-
+      // preguntarle al operador.
+      emitir_factura_electronica: values.fe,
     };
     if (values.medio_pago === 'efectivo') {
       return {
@@ -356,16 +386,102 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
           <h2 className="text-lg">
             {t('suscripciones:venta.paso3.titulo', { defaultValue: 'Plan' })}
           </h2>
-          <Input
-            data-testid="venta-plan-select"
-            placeholder="UUID plan"
-            value={planInput}
-            onChange={(e) => setPlanInput(e.target.value)}
-          />
+
+          {/*
+            Plan catalog from `GET /api/v1/tipos-subscripciones`. The
+            operator picks the plan they want to subscribe to --
+            no more typing the plan's UUID by hand. The selected
+            plan's `uuid` flows into `state.uuid_tipo_subscripcion`
+            and from there into the POST body via buildVentaPayload.
+          */}
+          {planesLoading && (
+            <p
+              className="text-sm text-muted-foreground"
+              data-testid="venta-paso-3-loading"
+            >
+              {t('suscripciones:venta.paso3.loading', {
+                defaultValue: 'Cargando planes…',
+              })}
+            </p>
+          )}
+          {planesError && (
+            <p
+              role="alert"
+              className="text-sm text-destructive"
+              data-testid="venta-paso-3-error"
+            >
+              {t('suscripciones:venta.paso3.error', {
+                defaultValue:
+                  'No se pudieron cargar los planes para esta sede.',
+              })}
+            </p>
+          )}
+          {planes && planes.length === 0 && !planesLoading && (
+            <p
+              className="text-sm text-muted-foreground"
+              data-testid="venta-paso-3-empty"
+            >
+              {t('suscripciones:venta.paso3.empty', {
+                defaultValue: 'No hay planes configurados para esta sede.',
+              })}
+            </p>
+          )}
+          {planes && planes.length > 0 && (
+            <ul
+              className="space-y-2"
+              data-testid="venta-paso-3-planes"
+            >
+              {planes.map((p) => {
+                const selected = planInput === p.uuid;
+                return (
+                  <li
+                    key={p.uuid}
+                    data-testid={`venta-plan-${p.uuid}`}
+                    onClick={() => setPlanInput(p.uuid)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setPlanInput(p.uuid);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={selected}
+                    className={
+                      'cursor-pointer rounded border p-3 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-ring ' +
+                      (selected
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border hover:bg-muted/50')
+                    }
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1">
+                        <div className="font-medium">{p.tipo}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {t('suscripciones:venta.paso3.duracion', {
+                            dias: p.duracion_dias,
+                            vehiculos: p.cantidad_maxima_vehiculos,
+                            defaultValue: `{{dias}} días · máx {{vehiculos}} vehículo(s)`,
+                          })}
+                        </div>
+                      </div>
+                      <div
+                        className="font-medium tabular-nums"
+                        data-testid={`venta-plan-${p.uuid}-valor`}
+                      >
+                        {formatCOP(p.valor)}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
           <Button
             type="button"
             data-testid="venta-paso-3-siguiente"
             onClick={handlePaso3Siguiente}
+            disabled={!planInput}
           >
             Siguiente
           </Button>
@@ -388,9 +504,37 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
               : {formatCOP(montoProporcional)}
             </p>
           )}
+          {/*
+            PagoModal composition (REQ-OPS-180, OD-2 ratified):
+            step 4 reuses F8.1 `<PagoModal />` from
+            `../../facturacion/components/PagoModal`. PagoModal owns
+            vueltos live + FE con datos + NIT módulo 11 validation.
+            `clientePrefill` carries step-1 NIT/nombre/email into the
+            PagoModal form (instead of the consumidor final fallback
+            the page route uses by default). `fe: true` flips the
+            "Generar factura electrónica" toggle ON as soon as the
+            wizard reaches step 4 -- the operator can still untick
+            it if they explicitly want a no-FE sale. `total_cop =
+            monto_proporcional ?? plan.valor` so vueltos live
+            reflects the actual charge (informational; the
+            authoritative amount is `factura_detalle.valor_unitario`).
+            On pago 201, `handlePagoSubmit` calls `trigger` with the
+            `emitir_factura_electronica` from `values.fe` and either
+            navigates to /suscripciones (page route) or fires the
+            parent's `onSuccess` (embedded drawer).
+          */}
           <PagoModal
             uuid_ingreso={null}
-            total_cop={montoProporcional ?? PLAN_PREVIEW_VALOR}
+            total_cop={
+              montoProporcional ??
+              (selectedPlan?.valor ?? PLAN_PREVIEW_VALOR)
+            }
+            clientePrefill={{
+              nit: state.cliente?.nit ?? '',
+              nombre: state.cliente?.nombre ?? '',
+              email: state.cliente?.email ?? '',
+              fe: true,
+            }}
             onSubmit={handlePagoSubmit}
           />
           {isMutating && <span data-testid="venta-mutating">Procesando…</span>}

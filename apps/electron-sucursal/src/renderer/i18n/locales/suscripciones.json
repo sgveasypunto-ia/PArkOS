@@ -45,7 +45,11 @@
     },
     "paso3": {
       "titulo": "Plan",
-      "siguiente": "Siguiente"
+      "siguiente": "Siguiente",
+      "loading": "Cargando planes…",
+      "error": "No se pudieron cargar los planes para esta sede.",
+      "empty": "No hay planes configurados para esta sede.",
+      "duracion": "{{dias}} días · máx {{vehiculos}} vehículo(s)"
     },
     "paso4": {
       "titulo": "Pago"
