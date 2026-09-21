@@ -24,6 +24,9 @@ from ....dian.backoff import DIAN_BACKOFF_SCHEDULE, DIAN_MAX_RETRIES
 from ....models.L_E.factura_electronica import FacturaElectronica
 from ....models.L_E.facturas import Facturas
 from ....models.L_E.ingreso import Ingreso
+from ...hooks.impls.dian_dispatch_on_sync import (
+    dian_factura_electronica_dispatch_hook,
+)
 from ..schema import SyncCatalogEntry
 
 _INGRESO = SyncCatalogEntry(
@@ -81,6 +84,14 @@ _FACTURA_ELECTRONICA = SyncCatalogEntry(
     backoff_schedule=DIAN_BACKOFF_SCHEDULE,
     max_retries=DIAN_MAX_RETRIES,
     on_exhaustion="fe_provider_error",
+    # CU-05 critical fix #2 — the cloud-side sync apply path
+    # (``jobs/sync_cloud.py::_apply_pending_batch_once``) was writing
+    # branch-replicated ``factura_electronica`` rows to the cloud DB
+    # without ever forwarding them to the DIAN provider. This hook
+    # delegates to ``dispatch_factura_electronica_with_backoff`` so the
+    # post-apply HTTP call fires automatically; see
+    # ``sync/hooks/impls/dian_dispatch_on_sync.py``'s module docstring.
+    hook_post_insert=dian_factura_electronica_dispatch_hook,
 )
 
 SYNC_ENTRIES_LE: tuple[SyncCatalogEntry, ...] = (

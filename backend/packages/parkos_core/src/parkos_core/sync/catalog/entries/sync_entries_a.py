@@ -23,6 +23,9 @@ from ....models.A.log_transaccional import LogTransaccional
 from ....models.A.revocacion_factura import RevocacionFactura
 from ....models.A.salidas import Salidas
 from ...hooks.impls.bi_temporal_compensation import bi_temporal_compensation
+from ...hooks.impls.dian_dispatch_on_sync import (
+    dian_revocacion_factura_dispatch_hook,
+)
 from ...hooks.impls.log_transaccional_chain import log_transaccional_chain
 from ...hooks.impls.revocacion_factura_chain import revocacion_factura_chain
 from ..schema import SyncCatalogEntry
@@ -197,6 +200,12 @@ _REVOCACION_FACTURA = SyncCatalogEntry(
     backoff_schedule=DIAN_BACKOFF_SCHEDULE,
     max_retries=DIAN_MAX_RETRIES,
     on_exhaustion="fe_provider_error",
+    # CU-05 critical fix #2 — same wire-up as the FE entry: after the
+    # cloud-side apply writes the new ``revocacion_factura`` row the
+    # DIAN dispatcher fires to forward the revocation to the provider.
+    # On ``aceptado`` the dispatcher's own chain-extension write lands
+    # via ``hook_chain_extend`` above (motive='dian_confirmada').
+    hook_post_insert=dian_revocacion_factura_dispatch_hook,
 )
 
 SYNC_ENTRIES_A: tuple[SyncCatalogEntry, ...] = (
