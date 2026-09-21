@@ -1,7 +1,7 @@
 """test_caja_sesion_unique_constraint_db.py — HU-F1.3 / REQ-OPS-026.
 
 TDD RED-then-GREEN for the partial unique index
-``prod.uq_prod_sesion_one_active_per_user`` (migration 0023). Two
+``uq_prod_sesion_one_active_per_user`` (migration 0023). Two
 DB-backed scenarios:
 
   - T1 — INSERT two active ``prod.sesion`` rows for the same

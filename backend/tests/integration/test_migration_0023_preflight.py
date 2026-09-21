@@ -1,7 +1,9 @@
 """test_migration_0023_preflight.py — HU-F1.3 / REQ-OPS-026 pre-flight.
 
 TDD RED-then-GREEN coverage for the pre-flight block of migration
-``0023_unique_active_sesion_per_user.py``. One scenario:
+``0023_unique_active_sesion_per_user.py`` (partial unique index
+``uq_prod_sesion_one_active_per_user`` on ``prod.sesion(uuid_usuario)
+WHERE timestamp_cierre IS NULL``). One scenario:
 
   - T1 — ``prod.sesion`` already contains TWO active sesiones
     (``timestamp_cierre IS NULL``) for the same ``uuid_usuario``.
@@ -88,11 +90,17 @@ async def _truncate_sesion(pg_dsn: str) -> None:
 
 
 async def _drop_index_if_exists(pg_dsn: str) -> None:
-    """Best-effort DROP INDEX before re-running the migration."""
+    """Best-effort DROP INDEX before re-running the migration.
+
+    Index name is bare (no schema qualifier): ``CREATE INDEX CONCURRENTLY``
+    with a schema-qualified identifier fails on PostgreSQL 16 with
+    ``syntax error at or near "."`` — schema comes from ``search_path``.
+    Match the migration's upgrade/downgrade verbatim.
+    """
     import psycopg
 
     with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute("DROP INDEX IF EXISTS prod.uq_prod_sesion_one_active_per_user")
+        cur.execute("DROP INDEX IF EXISTS uq_prod_sesion_one_active_per_user")
         conn.commit()
 
 
