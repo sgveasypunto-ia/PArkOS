@@ -7,6 +7,13 @@
  *   - 🟡 API lento       (ok:true, latency_ms >  1000)
  *   - 🔴 Sin API         (ok:false)
  *
+ * F11.1 (HU-F11.1, AD-4, DA-F11.1-2 single source of truth): the poll
+ * path now also drives `apiStatusStore.incrementFailure()` on every
+ * rejection and `apiStatusStore.reset()` on every resolve. The
+ * `<LocalApiDownBanner />` reads `selectApiStatusDown` from this same
+ * store — no component decides the "API is down" signal
+ * independently. Visual output (chip text + colors) is unchanged.
+ *
  * Accessibility:
  *   - `role="status"` + `aria-live="polite"` + `aria-atomic="true"`
  *     so screen readers announce transitions without interrupting
@@ -16,6 +23,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 
+import { useApiStatusStore } from '../../state/apiStatusStore';
 import type { ApiStatus } from '../../../electron/bridge';
 
 export type StatusBarDisplay = 'ok' | 'slow' | 'offline';
@@ -82,7 +90,15 @@ export function StatusBar(): JSX.Element | null {
     cancelledRef.current = false;
 
     const tick = async (): Promise<void> => {
-      const apiStatus = (await window.bridge.apiStatus.get()) as ApiStatus;
+      // F11.1 (HU-F11.1): route the bridge read through apiStatusStore
+      // so the LocalApiDownBanner threshold is a single source of truth.
+      let apiStatus: ApiStatus | null = null;
+      try {
+        apiStatus = (await window.bridge.apiStatus.get()) as ApiStatus;
+        useApiStatusStore.getState().reset();
+      } catch {
+        useApiStatusStore.getState().incrementFailure();
+      }
       if (cancelledRef.current) return;
       const display = deriveDisplay(apiStatus);
       const now = Date.now();
