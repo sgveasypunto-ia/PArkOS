@@ -6,6 +6,12 @@
   "error": "Error al cargar suscripciones.",
   "vencePronto": "Vence pronto",
   "proximaAVencer": "Suscripción próxima a vencer",
+  "sheet": {
+    "titulo": "Suscripciones",
+    "descripcion": "Lista activa de suscripciones en esta sede.",
+    "listaVacia": "Sin suscripciones activas en esta sede.",
+    "nuevaVenta": "Nueva venta de suscripción"
+  },
   "listado": {
     "titulo": "Suscripciones",
     "searchPlaceholder": "Buscar por placa o cliente",
