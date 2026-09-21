@@ -8,5 +8,18 @@
   "timeout": "Tiempo agotado",
   "unknown": "Error desconocido",
   "reportar": "Reportar error",
-  "codigo": "Código"
+  "codigo": "Código",
+  "_comment_validation": "Mensajes de validación Zod traducidos al español (es-CO). Convención: cualquier error.* message que arranque con `validation.` se traduce vía t() en <FormMessage> (form.tsx). Mantener sincronizado con las keys que emiten los schemas (turnoSchema.ts et al.).",
+  "validation": {
+    "required": "Este campo es obligatorio.",
+    "uuid": {
+      "invalid": "Identificador inválido."
+    },
+    "number": {
+      "required": "Debe ser un número.",
+      "format": "Solo dígitos, y opcionalmente un punto con hasta 2 decimales.",
+      "minZero": "Debe ser mayor o igual a 0.",
+      "tooLong": "Número demasiado largo."
+    }
+  }
 }
