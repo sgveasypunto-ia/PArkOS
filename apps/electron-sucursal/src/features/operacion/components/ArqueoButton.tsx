@@ -1,21 +1,24 @@
 /**
- * `<ArqueoButton />` — right-side drawer trigger for HU-F10.1 partial
+ * `<ArqueoButton />` — per-turn contextual trigger for HU-F10.1 partial
  * arqueo (auditoría del turno actual, sin cierre).
  *
- * Lives inside `<MiTurnoPanel />` in the dashboard's RIGHT sidebar
- * as the per-turn caja action. The "Cerrar turno" entry-point is the
- * dashboard header button (single source of truth); MiTurnoPanel does
- * NOT duplicate it. The arqueo screen itself is a drawer-embedded page
- * mounted by `<DrawerHost />` when the `useDashboardDrawerStore` state
- * is `openDrawer === 'arqueo'` (REQ-OPS-138 single-drawer invariant).
+ * El arqueo tiene dos superficies de trigger en el dashboard:
+ *   1. Sidebar izquierdo (`data-testid="sidebar-arqueo"` en
+ *      `Dashboard.tsx`) — nav primaria, accesible siempre que el
+ *      sidebar esté montado (desktop ≥ lg, o mobile con hamburger).
+ *      Cablea `openDrawer('arqueo', 'sidebar-arqueo')`.
+ *   2. Este botón dentro de `<MiTurnoPanel />` (sidebar derecho) —
+ *      atajo contextual del turno activo. El header del dashboard
+ *      tiene un único "Cerrar turno" como single source of truth del
+ *      turn-closing; MiTurnoPanel NO lo duplica.
  *
- * F11.3 UX direction: the operator's per-turn action surface is
- * the RIGHT sidebar (MiTurnoPanel). The arqueo flow was previously
- * surfaced as a left-sidebar nav button + a separate routed page
- * (`/caja/arqueo-parcial`); both were removed. The drawer-from-right
- * pattern is shared with Suscripciones (Venta wizard inside
- * SuscripcionesSheet) and with Ingreso/Salida (IngresoSheet /
- * SalidaSheet wrapping IngresoPanel / SalidaPanel).
+ * Cualquiera de los dos triggers desemboca en el mismo
+ * `<ArqueoSheet />` montado por `<DrawerHost />` cuando
+ * `useDashboardDrawerStore.openDrawer === 'arqueo'` (REQ-OPS-138
+ * single-drawer invariant). El drawer-from-right pattern es
+ * compartido con Suscripciones (Venta wizard dentro de
+ * SuscripcionesSheet) y con Ingreso/Salida (IngresoSheet /
+ * SalidaSheet envolviendo IngresoPanel / SalidaPanel).
  *
  * The button is disabled when no active sesion exists — opening the
  * arqueo drawer without a sesion would render the no-session fallback

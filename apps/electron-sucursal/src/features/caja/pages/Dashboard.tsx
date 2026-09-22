@@ -295,13 +295,27 @@ export function Dashboard(): JSX.Element | null {
           >
             💳 {t('suscripciones:menu', { defaultValue: 'Suscripción' })}
           </Button>
-          {/* F11.3 — Arqueo lives in the right-sidebar MiTurnoPanel
-              as the canonical per-turn caja action. The left-sidebar
-              nav anchor is removed here so the operator's
-              right-side MiTurnoPanel is the single source of truth
-              for the per-turn action surface (mirrors how the F3.3
-              dashboard consolidates per-turn KPIs + actions in the
-              right column). */}
+          {/* HU-F10.1 — Arqueo (EP-13) en el sidebar izquierdo.
+              F11.3 había movido esto al right-sidebar MiTurnoPanel
+              como "single source of truth" del per-turn action
+              surface. Revierto esa decisión por directiva del
+              operador: el botón de hacer arqueo debe estar en el
+              menú izquierdo, accesible con el atajo F4 (igual que
+              el resto del sidebar). El anchor del right-sidebar
+              (ArqueoButton dentro de MiTurnoPanel) sigue
+              existiendo como atajo contextual del turno abierto. */}
+          <Button
+            variant="outline"
+            data-testid="sidebar-arqueo"
+            className="justify-start text-sm"
+            onClick={() => {
+              openDrawer('arqueo', 'sidebar-arqueo');
+              setMobileNavOpen(false);
+            }}
+          >
+            💰 {t('caja:arqueoLabel', { defaultValue: 'Arqueo' })}
+            <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F4</kbd>
+          </Button>
           {/* "Cerrar turno" is intentionally NOT in the left sidebar.
               The header button (data-testid="dashboard-cerrar-turno")
               is the canonical single-source-of-truth for the
