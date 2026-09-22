@@ -265,7 +265,13 @@ async def validar_sesion_abierta_para_arqueo(
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise SesionNoEncontradaError(uuid_sesion=uuid_sesion)
-    if row.timestamp_cierre is not None or row.estado == "cerrada":
+    # F11.3 follow-up -- Sesion has NO ``estado`` column (state is
+    # encoded via ``timestamp_cierre IS NULL`` -- bi-temporal close).
+    # The previous check ``row.estado == "cerrada"`` raised
+    # AttributeError on every arqueo POST. State discrimination:
+    #   timestamp_cierre IS NULL  -> open
+    #   timestamp_cierre NOT NULL -> closed
+    if row.timestamp_cierre is not None:
         raise SesionYaCerradaError(uuid_sesion=uuid_sesion)
     return row
 
@@ -473,6 +479,17 @@ async def insertar_arqueo(
         attrs,
         actor_uuid=actor_uuid,
     )
+    # F11.3 follow-up -- ``append_event`` calls ``session.add(new_row)``
+    # but does NOT flush, so the server-side ``gen_random_uuid()``
+    # default on the primary key is still None until commit. The
+    # handler reads ``.uuid`` IMMEDIATELY (line 273) to pass to the
+    # alerta INSERT chain and the response shape; without an
+    # explicit flush here both downstream operations crash on
+    # ``UUID input should be a string, bytes or UUID object``.
+    # Single-commit invariant (KD-ARQUEO-01) is preserved -- the
+    # explicit flush only emits the INSERT statement, the COMMIT
+    # still happens once at handler Step 12.
+    await session.flush()
     return row
 
 
@@ -648,12 +665,20 @@ async def construir_resumen_sesion(
     )
     arqueo_row = (await session.execute(stmt_arq)).scalar_one_or_none()
 
+    # F11.3 follow-up -- Sesion has NO ``estado`` column. State is
+    # derived from ``timestamp_cierre`` (bi-temporal close):
+    #   timestamp_cierre IS NULL  -> 'abierta'
+    #   timestamp_cierre NOT NULL -> 'cerrada'
+    # The downstream F10.3 ``useArqueoResumenPorSesion`` schema expects
+    # ``estado: z.string().nullable()`` so the FE can render the
+    # session row status badge.
+    estado_derivado = "cerrada" if sesion.timestamp_cierre is not None else "abierta"
     return {
         "uuid_sesion": sesion.uuid,
         "uuid_usuario": sesion.uuid_usuario,
         "timestamp_apertura": sesion.timestamp_apertura,
         "timestamp_cierre": sesion.timestamp_cierre,
-        "estado": sesion.estado,
+        "estado": estado_derivado,
         "valor_efectivo_esperado": esperado_efectivo,
         "valor_datafono_esperado": esperado_datafono,
         "valor_efectivo_reportado": _to_decimal(arqueo_row.valor_efectivo_reportado) if arqueo_row else None,
