@@ -98,10 +98,16 @@ export function ArqueoParcial(): JSX.Element {
   const [submitted, setSubmitted] = useState(false);
 
   // Reset submit-related state every time the drawer mounts fresh (the
-  // parent DrawerHost unmounts us when openDrawer changes).
+  // parent ArqueoSheet unmounts us when openDrawer changes). Also
+  // reset the reported values + justificacion so a stale fill from a
+  // prior open doesn't trip `validacionError` on the next open
+  // (REQs-OPS-138 single-drawer invariant + F11.3 UX note).
   useEffect(() => {
     setSubmitError(null);
     setSubmitted(false);
+    setReportEfectivo(0);
+    setReportDatafono(0);
+    setJustificacion('');
   }, []);
 
   // BR1 literal: "no necesariamente sesion.valor_inicial_efectivo fijo".
@@ -201,19 +207,13 @@ export function ArqueoParcial(): JSX.Element {
 
   return (
     <div className="space-y-4 p-4" data-testid="arqueo-parcial-page">
-      <header>
-        <h1 className="text-xl font-semibold">
-          {t('caja:arqueoParcial.titulo', {
-            defaultValue: 'Arqueo parcial (auditoría)',
-          })}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {t('caja:arqueoParcial.descripcion', {
-            defaultValue:
-              'Contá la caja sin cerrar el turno. La diferencia es solo advertencia si es chica.',
-          })}
-        </p>
-      </header>
+      {/* F11.3 follow-up -- the title + description are rendered by
+          the parent <ArqueoSheet /> via SheetHeader/SheetTitle/
+          SheetDescription. The page body no longer duplicates them
+          (was previously both Sheet + <h1>+<p> rendered -- two
+          headings, two descriptions). The page body now owns ONLY
+          the form: sesion card + inputs + diferencia + justificacion
+          + confirmar button. */}
 
       <Card>
         <CardHeader>
