@@ -26,6 +26,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
+import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { detectarTipoVehiculo } from '../../../lib/validation/placa';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
@@ -48,6 +49,8 @@ import { buildEntradaPayloadFromResponse } from '../../../lib/print/printBuilder
 import { buildEntradaBuffer } from '../../../lib/print/escposBuilder';
 import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
+import { useInvalidateConteosOperacion } from '../hooks/useInvalidateConteosOperacion';
+import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
 import {
   type PostIngresoPayload,
   type PostIngresoResponse,
@@ -187,6 +190,23 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   const { latestIngreso, refresh: refreshIngresoActivo } = useIngresoActivo(placa);
   const tiposVehiculoIsFallback = tiposVehiculo.isFromFallback;
 
+  /**
+   * REGRESSION fix (2026-09-22): invalidate the live-count SWR caches
+   * after a successful ingreso so <MiTurnoPanel />, <OcupacionPanel />
+   * (Inventario) and <VehiculosDentroList /> re-fetch immediately
+   * instead of waiting for their 10–15s polling tick. Without this,
+   * the operator sees stale counts (still showing the pre-mutation
+   * number) for up to 15s after a successful ingreso, which makes the
+   * panels look "hardcoded" — directiva del operador.
+   */
+  const invalidarConteos = useInvalidateConteosOperacion();
+  // Branch + sesion UUIDs feed the SWR key matcher. `useAuth()` is the
+  // single source of truth for the branch UUID (same hook the dashboard
+  // uses to render the header chip); `useSesionActiva()` is the single
+  // source for the operator's active turno.
+  const { sucursal } = useAuth();
+  const { sesion } = useSesionActiva();
+
   // REGRESSION fix (REQ-OPS-200): removed the per-placa-change
 // ``useEffect`` that previously detected the tipo via regex. The
 // per-keystroke ``handlePlacaLiveChange`` callback (set up by the
@@ -226,6 +246,23 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         tipo_vehiculo_nombre: tipoVehiculoNombre,
       });
       setToggleKey((k) => k + 1);
+      // REGRESSION fix (2026-09-22): invalidate the live-count SWR
+      // caches so <MiTurnoPanel />, <OcupacionPanel /> (Inventario)
+      // and <VehiculosDentroList /> re-fetch immediately instead of
+      // waiting for their 10–15s polling tick. Without this, the
+      // operator sees stale counts (still showing the pre-mutation
+      // number) for up to 15s after a successful ingreso, which makes
+      // the panels look "hardcoded" — directiva del operador.
+      //
+      // The BE also calls ``prod.refresh_mv_ocupacion_diaria()``
+      // after the INSERT (separate fix in the BE), so the ocupacion
+      // endpoint returns fresh ``activos`` immediately. The SWR cache
+      // invalidation here is the FE-side counterpart that ensures the
+      // panel does not serve the cached stale value during the gap.
+      void invalidarConteos({
+        uuid_sucursal: sucursal?.uuid ?? null,
+        uuid_sesion: sesion?.uuid ?? null,
+      });
       try {
         const payload = buildPrintPayload(response, currentPlaca);
         await window.bridge.imprimir(payload);
@@ -233,7 +270,8 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         // Best-effort print — DEC-SUC-27; F5.1 retry queue handles reconnects.
       }
     },
-    [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [invalidarConteos, sucursal?.uuid, sesion?.uuid],
   );
 
   /**

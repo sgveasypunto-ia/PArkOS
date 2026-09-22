@@ -44,6 +44,26 @@ vi.mock('../hooks/useRegistrarSalida', () => ({
   },
 }));
 
+// REGRESSION fix (2026-09-22): the panel invalidates the live-count
+// SWR caches after a successful salida. Capture the calls so we can
+// assert the post-trigger invalidation fires.
+const mockInvalidateConteos = vi.fn();
+vi.mock('../hooks/useInvalidateConteosOperacion', () => ({
+  useInvalidateConteosOperacion: () => mockInvalidateConteos,
+}));
+
+vi.mock('@parkos/ui-kit/hooks', () => ({
+  useAuth: () => ({
+    sucursal: { uuid: '00000000-0000-0000-0000-00000000br01' },
+  }),
+}));
+
+vi.mock('../../caja/hooks/useSesionActiva', () => ({
+  useSesionActiva: () => ({
+    sesion: { uuid: '00000000-0000-0000-0000-00000000se01' },
+  }),
+}));
+
 const mockedUseRegistrarSalida = vi.mocked(useRegistrarSalida);
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -104,6 +124,7 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
   beforeEach(() => {
     originalBridge = (globalThis as unknown as { window?: unknown }).window;
     mockTriggerImpl.mockReset();
+    mockInvalidateConteos.mockReset();
   });
 
   afterEach(() => {
@@ -198,5 +219,55 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
 
     // sanity — the hook was called
     expect(mockedUseRegistrarSalida).toHaveBeenCalledTimes(1);
+  });
+
+  it('REGRESSION (2026-09-22): invalidates the live-count SWR caches after a successful MENSUALIDAD salida', async () => {
+    installBridgeMock();
+
+    mockTriggerImpl.mockResolvedValueOnce({
+      uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      tipo_salida: 'MENSUALIDAD' as const,
+      estado: 'MENSUALIDAD_PAGO' as const,
+    });
+
+    render(<SalidaMensualidad uuidIngreso="ingreso-uuid-004" />);
+
+    await act(async () => {
+      screen.getByTestId('confirmar').click();
+    });
+    await flushMicrotasks();
+
+    // Without this invalidation, the dashboard panels keep showing
+    // the pre-mutation counts until the next SWR poll tick (10–15s),
+    // which the operator perceived as "hardcoded" data.
+    expect(mockInvalidateConteos).toHaveBeenCalledWith({
+      uuid_sucursal: '00000000-0000-0000-0000-00000000br01',
+      uuid_sesion: '00000000-0000-0000-0000-00000000se01',
+    });
+  });
+
+  it('REGRESSION (2026-09-22): invalidates the live-count SWR caches after a successful ROTACION salida as well', async () => {
+    installBridgeMock();
+
+    mockTriggerImpl.mockResolvedValueOnce({
+      uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      tipo_salida: 'ROTACION' as const,
+      estado: 'PENDIENTE_PAGO' as const,
+    });
+
+    render(<SalidaMensualidad uuidIngreso="ingreso-uuid-005" />);
+
+    await act(async () => {
+      screen.getByTestId('confirmar').click();
+    });
+    await flushMicrotasks();
+
+    // The invalidation fires regardless of `tipo_salida` — the
+    // ingreso is closed either way, so the active counts (cupos
+    // libres / vehiculos dentro) must refresh immediately.
+    expect(mockInvalidateConteos).toHaveBeenCalledWith({
+      uuid_sucursal: '00000000-0000-0000-0000-00000000br01',
+      uuid_sesion: '00000000-0000-0000-0000-00000000se01',
+    });
   });
 });

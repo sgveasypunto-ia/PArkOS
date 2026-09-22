@@ -37,6 +37,9 @@ import {
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useRegistrarPago } from '../hooks/useRegistrarPago';
 import { PagoModal, type PagoFormValues } from './PagoModal';
+import { useInvalidateConteosOperacion } from '../../operacion/hooks/useInvalidateConteosOperacion';
+import { useAuth } from '@parkos/ui-kit/hooks';
+import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
 
 export interface PagoSheetProps {
   /**
@@ -100,6 +103,16 @@ export function PagoSheet({
   const lastAnchorId = useDashboardDrawerStore((s) => s.lastAnchorId);
   const close = useDashboardDrawerStore((s) => s.close);
   const { trigger } = useRegistrarPago();
+  // REGRESSION fix (2026-09-22, directiva del operador): after a
+  // successful pago, the ingreso is fully closed — the live-count
+  // SWR caches (cupos libres / vehiculos dentro / mi turno) must
+  // re-fetch immediately so the operator sees the post-pago state
+  // in the same frame. Without this, the right-sidebar panels keep
+  // showing the pre-pago count for up to 15s, which makes them look
+  // "hardcoded".
+  const invalidarConteos = useInvalidateConteosOperacion();
+  const { sucursal } = useAuth();
+  const { sesion } = useSesionActiva();
 
   const open = openDrawer === 'pago';
 
@@ -139,6 +152,16 @@ export function PagoSheet({
             },
           };
       const result = await trigger(post);
+      // REGRESSION fix (2026-09-22): invalidate the live-count SWR
+      // caches so the dashboard panels (Mi Turno / Inventario /
+      // Vehículos dentro) re-fetch immediately after the pago. The
+      // ingreso is fully closed at this point (factura + salida
+      // persisted), so the cupos-libres + vehiculos-dentro panels
+      // MUST reflect the new state in the same frame as the recibo.
+      void invalidarConteos({
+        uuid_sucursal: sucursal?.uuid ?? null,
+        uuid_sesion: sesion?.uuid ?? null,
+      });
       // HU-F8.2 (REQ-OPS-169/170) — navigate to the FE detail page if
       // the pago created an electronic invoice. The `as` cast is
       // defensive — `FacturaReadSchema.factura_electronica: z.unknown()`
@@ -158,7 +181,7 @@ export function PagoSheet({
       });
       close();
     },
-    [uuid_ingreso, total_cop, trigger, firePrintEnvelope, close, navigate],
+    [uuid_ingreso, total_cop, trigger, firePrintEnvelope, close, navigate, invalidarConteos, sucursal?.uuid, sesion?.uuid],
   );
 
   return (

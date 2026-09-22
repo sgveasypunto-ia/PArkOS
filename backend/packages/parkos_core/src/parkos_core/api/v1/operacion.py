@@ -34,9 +34,10 @@ the invocation order.
 """
 from __future__ import annotations
 
+import logging
 import uuid as uuid_lib
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
@@ -96,6 +97,8 @@ from ...schemas.operacion import (
 from ._helpers import apply_no_store_header, no_store_headers
 
 router = APIRouter(prefix="/operacion", tags=["operacion"])
+
+logger = logging.getLogger(__name__)
 
 _ingreso_issuer_dep = requires_issuer("operador-", "admin-")
 
@@ -356,6 +359,47 @@ async def create_ingreso(
         )
     await session.commit()
 
+    # REGRESSION fix (2026-09-22, directiva del operador): refresh the
+    # ``prod.mv_ocupacion_diaria`` MV immediately after the ingreso
+    # INSERT so the GET /operacion/ocupacion endpoint returns the
+    # new ``activos`` count in the same HTTP response cycle. Without
+    # this, the dashboard <OcupacionPanel /> (Inventario card)
+    # would keep showing the pre-mutation count for up to 10s (the
+    # ``RefreshMvOcupacionWorker`` cadence) and combined with the
+    # FE SWR 10–15s polling tick the operator perceived the panels
+    # as "hardcoded".
+    #
+    # The helper is a SECURITY DEFINER function (migration 0045) that
+    # runs ``REFRESH MATERIALIZED VIEW CONCURRENTLY`` as the ``parkos``
+    # owner. ``parkos_app`` (the role the BE connects as) has EXECUTE
+    # but does NOT hold the underlying REFRESH privilege on the MV
+    # (least-privilege posture, migration 0021 + 0024). The
+    # IF-EXISTS guard inside the function makes it safe to call even
+    # before the first worker cycle populated the MV.
+    #
+    # We do NOT commit the REFRESH — it runs in the same TX as the
+    # underlying SELECT against the MV, so the read-modify cycle is
+    # atomic. The REFRESH itself opens a brief AccessExclusiveLock;
+    # CONCURRENTLY keeps GET /operacion/ocupacion readers unblocked.
+    try:
+        await session.execute(
+            text("SELECT prod.refresh_mv_ocupacion_diaria()")
+        )
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        # The MV refresh is observability / FE-liveness — NEVER fail
+        # the operator's ingreso because the MV worker would have
+        # caught up within 10s anyway. KD-5: log + continue.
+        await session.rollback()
+        logger.warning(
+            "ingreso_post_commit_refresh_failed",
+            extra={
+                "event": "ingreso_post_commit_refresh_failed",
+                "uuid_ingreso": str(new_row.uuid),
+                "exception_class": type(exc).__name__,
+            },
+        )
+
     # --- Step 10: V9 derivation (DEC-SUC-21). --------------------------
     tipo_entrada: str = "MENSUALIDAD" if payload.uuid_subscripcion_cliente else "ROTACION"
 
@@ -442,8 +486,6 @@ async def create_salida(
     The Idempotency-Key header is checked by the FastAPI middleware
     (PR2 IdempotencyKeyMiddleware).
     """
-    from dateutil.relativedelta import relativedelta
-
     no_store = no_store_headers()
 
     # --- Step 1: KD-3 (issuer claims + no_store). ----------------------
@@ -544,11 +586,22 @@ async def create_salida(
     )
 
     # --- Step 8: INSERT salida [A] append-only (DEC-SAL-01). ----------
+    # REGRESSION fix (2026-09-22, directiva del operador): the
+    # ``dateutil.relativedelta(years=2)`` was replaced with a stdlib
+    # ``timedelta(days=730)`` (DIAN 5-year retention requires only the
+    # "today + N days" granularity for the 2-year `fecha_retencion_hasta`
+    # we stamp on ``prod.salidas``). The ``dateutil`` dep was never in
+    # backend/pyproject.toml (see repo/ingreso_consecutivo.py:156 for
+    # the team's documented rationale), so the endpoint raised
+    # ``ModuleNotFoundError: No module named 'dateutil'`` on every POST
+    # — the operator's "salida doesn't update panels" complaint traced
+    # to this pre-existing bug. 730 days = 2 years (no leap-day
+    # sensitive — fine for retention).
     new_attrs = {
         "uuid_sucursal": target_sucursal,
         "uuid_ingreso": payload.uuid_ingreso,
         "fecha_salida": datetime.now(UTC).replace(tzinfo=None),
-        "fecha_retencion_hasta": date.today() + relativedelta(years=2),
+        "fecha_retencion_hasta": date.today() + timedelta(days=730),
     }
     try:
         new_row = await crear_salida_evento(
@@ -586,6 +639,34 @@ async def create_salida(
             tipo_alerta="tarifa_vigente_forzado",
         )
     await session.commit()  # UN solo commit (KD-S7 lock release)
+
+    # REGRESSION fix (2026-09-22, directiva del operador): refresh the
+    # ``prod.mv_ocupacion_diaria`` MV immediately after the salida
+    # INSERT. Same rationale as ``create_ingreso`` above — without
+    # this, the dashboard <OcupacionPanel /> keeps showing the
+    # pre-mutation ``activos`` count for up to 10s (worker cadence)
+    # and the operator perceived the Inventario panel as "hardcoded".
+    #
+    # The refresh is fire-and-forget relative to the operator's UX —
+    # we log a warning and continue on failure (KD-5 + RIESCO-SUC-02).
+    # The MV is the observability layer; the INSERT itself is already
+    # committed at this point so the operator's flujo is not at risk.
+    try:
+        await session.execute(
+            text("SELECT prod.refresh_mv_ocupacion_diaria()")
+        )
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        await session.rollback()
+        logger.warning(
+            "salida_post_commit_refresh_failed",
+            extra={
+                "event": "salida_post_commit_refresh_failed",
+                "uuid_ingreso": str(payload.uuid_ingreso),
+                "uuid_salida": str(new_row.uuid),
+                "exception_class": type(exc).__name__,
+            },
+        )
 
     # --- Step 10: derivar tipo_salida (DEC-SUC-21-NEW). ----------------
     # Already derived in Step 7. Documented here for AST walk literal.
