@@ -13,6 +13,22 @@
  * DEC-F3.1-07: useEffect redirect espera `user` resuelto post-`/auth/me`
  *               (hidratación transaccional, sin flash).
  * DEC-F3.1-08: anti-enumeración — 401 colapsa a `t('invalidCredentials')` único.
+ *
+ * F11.4 attempt counter (UX feedback):
+ *   - `attemptCount` se incrementa en cada `InvalidCredentialsError` (401).
+ *   - Se resetea a 0 en login exitoso (path feliz).
+ *   - Se IGNORA en `AccountLockedError` (429) porque el BE ya bloqueó la
+ *     cuenta — el contador cliente-side deja de importar (el countdown
+ *     del lockout toma el control visual).
+ *   - El contador es CLIENTE-SIDE — el BE tiene su propio contador
+ *     autoritativo (prod.login estado='fallido' en los últimos N min);
+ *     si el operador abre 2 pestañas y falla en una, el contador
+ *     cliente-side de la otra pestaña queda desincronizado con el BE.
+ *     El BE es quien decide el lockout real; el contador FE es solo
+ *     feedback visual.
+ *   - `MAX_ATTEMPTS = 5` coincide con `DEFAULT_MAX_INTENTOS` en
+ *     backend/.../auth.py:80. El override por sucursal via
+ *     `configuracion_seguridad.max_intentos_login` queda como follow-up.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -31,6 +47,9 @@ import {
   InvalidCredentialsError,
 } from '../api/loginApi';
 
+/** Coincide con `DEFAULT_MAX_INTENTOS` en backend/.../auth.py:80. */
+const MAX_ATTEMPTS = 5;
+
 export function Login(): JSX.Element {
   const navigate = useNavigate();
   // F3.3 — DEC-F3.3-09 + REQ-OPS-124: detecta ?closed=true para feedback
@@ -41,6 +60,11 @@ export function Login(): JSX.Element {
   const setTokens = useAuthStore((s) => s.setTokens);
   const { t } = useTranslation(['auth', 'caja']);
   const [errorState, setErrorState] = useState<LoginErrorState>(null);
+  // F11.4 — contador de intentos cliente-side. Se resetea a 0 cuando
+  // el operador logra entrar (setTokens) o cuando el BE bloqueó la
+  // cuenta (AccountLockedError — el countdown del lockout es el feedback
+  // visual prioritario; el contador deja de importar).
+  const [attemptCount, setAttemptCount] = useState(0);
 
   const form = useForm<LoginInput>({
     resolver: zodResolver(loginSchema),
@@ -71,13 +95,25 @@ export function Login(): JSX.Element {
       const pair = await postLogin(values.email, values.password);
       // DEC-F3.1-03 + authStore invariant: setTokens es atómico (access +
       // refresh + expiresAt simultáneamente). El redirect lo dispara el
-      // useEffect cuando SWR resuelve `user` post-/auth/me.
+      // useEffect cuando SWR resuelve `user` post-/auth/me. Reset del
+      // attempt counter (F11.4) — el operador logró entrar.
       setTokens(pair.access_token, pair.refresh_token, pair.expires_in);
+      setAttemptCount(0);
     } catch (err) {
       if (err instanceof InvalidCredentialsError) {
         setErrorState({ kind: 'invalid_credentials' });
+        // F11.4 — increment cliente-side. El BE tiene su propio contador
+        // autoritativo (prod.login estado='fallido'); este contador es
+        // SOLO feedback visual (UX — el operador sabe cuántos intentos
+        // lleva antes del bloqueo automático).
+        setAttemptCount((n) => n + 1);
       } else if (err instanceof AccountLockedError) {
         setErrorState({ kind: 'lockout', retryAfterSeconds: err.retryAfterSeconds });
+        // F11.4 — el BE bloqueó la cuenta. El countdown del lockout es
+        // el feedback visual prioritario; el attempt counter deja de
+        // importar (lo dejamos en su valor actual — al desbloquearse
+        // vía `handleLockoutExpired` el operador empieza de nuevo desde
+        // un estado limpio porque ya pasó el bloqueo).
       } else {
         setErrorState({ kind: 'network' });
       }
@@ -124,6 +160,8 @@ export function Login(): JSX.Element {
             isSubmitting={form.formState.isSubmitting}
             error={errorState}
             onLockoutExpired={handleLockoutExpired}
+            attemptCount={attemptCount}
+            maxAttempts={MAX_ATTEMPTS}
           />
         </div>
       </div>
