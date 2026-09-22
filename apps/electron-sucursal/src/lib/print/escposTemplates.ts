@@ -209,10 +209,20 @@ export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
  * F5.2 "PARKINGOS" header constant is replaced by the dynamic branch
  * header.
  *
+ * HU-INGRESO-SIN-PLACA (REQ-OPS-197) — discriminated union on
+ * `variant: 'con-placa' | 'con-consecutivo'`. The no-placa variant
+ * (`con-consecutivo`) requires `placa: null` and `consecutivo: string`
+ * (format `<TIPO>-NNNNNN-<uuid8>`). The legacy `con-placa` variant
+ * keeps the F6.2 strict 17-key shape. The discriminated union ensures
+ * the printer pipeline NEVER receives a partial payload missing both
+ * `placa` and `consecutivo`.
+ *
  * The QR rasterizer is the caller's responsibility (F5.2 R4 purity).
  * The builder accepts the resulting `data:image/png;base64,...`
  * string verbatim. ABIERTO-01 default content:
- * `parkos://ingreso/<ingreso.uuid>?placa=<ingreso.placa>`.
+ * `parkos://ingreso/<ingreso.uuid>?placa=<ingreso.placa>` (legacy) or
+ * `parkos://ingreso/<ingreso.uuid>?consecutivo=<consecutivo>` (no-placa
+ * — DEC-SUC-26 follow-up).
  *
  * `esMensualidad` is an OPTIONAL control flag surfaced by
  * `buildEntradaPayload()` when `ingreso.uuid_subscripcion_cliente
@@ -221,7 +231,8 @@ export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
  * the sello without exposing a third party column on the conceptual
  * 17-key shape (DEC-SUC-21 — `tipo_entrada` MUST NOT be persisted).
  */
-export const entradaPayloadSchema = z.object({
+const entradaConPlacaSchema = z.object({
+  variant: z.literal('con-placa'),
   placa: placaSchema,
   fechaEntrada: z.string().datetime({ offset: true }),
   qrDataUrl: z.string(),
@@ -238,7 +249,39 @@ export const entradaPayloadSchema = z.object({
   sucursal: sucursalSchema,
 });
 
+/**
+ * No-placa variant (HU-INGRESO-SIN-PLACA, REQ-OPS-197). The
+ * `consecutivo` regex is the canonical format enforcer — backend emits
+ * `<TIPO>-NNNNNN-<uuid8>`, frontend validates verbatim.
+ */
+const entradaConConsecutivoSchema = z.object({
+  variant: z.literal('con-consecutivo'),
+  placa: z.null(),
+  consecutivo: z.string().regex(/^[A-Z]{3,12}-[0-9]{6}-[0-9a-f]{8}$/),
+  fechaEntrada: z.string().datetime({ offset: true }),
+  qrDataUrl: z.string(),
+  logoDataUrl: z.string(),
+  empresa: empresaSchema,
+  operario: z.string().min(1),
+  tarifaAplicada: z.number().nonnegative(),
+  horarioAtencion: z.string().min(1),
+  polizaRC: z.string().optional(),
+  folio: z.string().uuid(),
+  observaciones: z.string().optional(),
+  // No mensualidad for bici/patineta (no subscripcion path), but kept
+  // optional for future flexibility.
+  esMensualidad: z.boolean().optional(),
+  sucursal: sucursalSchema,
+});
+
+export const entradaPayloadSchema = z.discriminatedUnion('variant', [
+  entradaConPlacaSchema,
+  entradaConConsecutivoSchema,
+]);
+
 export type EntradaPayload = z.infer<typeof entradaPayloadSchema>;
+/** Variant discriminator — exported for builder / tests branching. */
+export type EntradaVariant = 'con-placa' | 'con-consecutivo';
 
 // ──────────────────────────────────────────────────────────────────────────
 // F6.2 — TiqueteEntradaCampos (17-key exhaustive shape)
@@ -322,10 +365,16 @@ export type TiqueteEntradaPayload = {
  * Minimal view of `prod.ingreso` row needed by `buildEntradaPayload()`.
  * Caller (F6.1) hydrates this from the backend response. The factory
  * does NOT touch the ER.
+ *
+ * HU-INGRESO-SIN-PLACA: `placa` is now `string | null` (no-placa
+ * ingresos have `placa = null` + `consecutivo = '<TIPO>-NNNNNN-<uuid8>'`).
+ * `consecutivo` is the discriminator for the payload variant.
  */
 export interface IngresoForPayload {
   readonly uuid: string;
-  readonly placa: string;
+  readonly placa: string | null;
+  /** REQ-OPS-197: parking-lot identifier for no-placa ingresos. */
+  readonly consecutivo: string | null;
   readonly fecha_ingreso: string;
   /** DEC-SUC-21 — `tipo_entrada` is DERIVED, NOT persisted. */
   readonly uuid_subscripcion_cliente: string | null;
@@ -388,6 +437,9 @@ export interface BuildEntradaPayloadInputs {
  *      the builder formats it to es-CO short via
  *      `Intl.DateTimeFormat('es-CO', {dateStyle: 'short', timeStyle:
  *      'short'})` per F5.2 R4 — no implicit `new Date()`).
+ *   5. HU-INGRESO-SIN-PLACA: dispatches to `con-placa` or
+ *      `con-consecutivo` variant based on `ingreso.placa`. If `placa`
+ *      is null and `consecutivo` is set → no-placa variant.
  *
  * Purity: the factory is referentially transparent. Same inputs →
  * same payload. No I/O, no `Date.now()`, no `Math.random()`.
@@ -414,9 +466,36 @@ export function buildEntradaPayload(
 
   const logoDoc = documentos.find((d) => d.tipo === 'logo');
   const certDoc = documentos.find((d) => d.tipo === 'certificado');
+  const esMensualidad = ingreso.uuid_subscripcion_cliente !== null
+    && ingreso.uuid_subscripcion_cliente !== undefined;
 
+  if (ingreso.placa === null && ingreso.consecutivo !== null) {
+    // HU-INGRESO-SIN-PLACA — no-placa variant.
+    return {
+      variant: 'con-consecutivo',
+      placa: null,
+      consecutivo: ingreso.consecutivo,
+      fechaEntrada: fechaHora,
+      qrDataUrl: `data:image/png;base64,${generateQrSentinel(ingreso)}`,
+      logoDataUrl: logoDoc?.documento_b64 ?? '',
+      empresa,
+      operario,
+      tarifaAplicada: tarifa.valor_hora_cents,
+      horarioAtencion: sucursal.horario_atencion,
+      polizaRC: certDoc?.documento_b64,
+      folio: ingreso.uuid,
+      observaciones: undefined,
+      esMensualidad,
+      // F7.3 (DEC-SUC-28) — branch header replaces F5.2 "PARKINGOS" constant
+      sucursal: { encabezado: sucursal.encabezado },
+    };
+  }
+
+  // Legacy F6.2 con-placa variant. `ingreso.placa` is non-null in
+  // this branch — coerce to string (caller contract).
   return {
-    placa: ingreso.placa,
+    variant: 'con-placa',
+    placa: ingreso.placa ?? '',
     fechaEntrada: fechaHora,
     qrDataUrl: `data:image/png;base64,${generateQrSentinel(ingreso)}`,
     logoDataUrl: logoDoc?.documento_b64 ?? '',
@@ -427,8 +506,7 @@ export function buildEntradaPayload(
     polizaRC: certDoc?.documento_b64,
     folio: ingreso.uuid,
     observaciones: undefined,
-    esMensualidad: ingreso.uuid_subscripcion_cliente !== null
-      && ingreso.uuid_subscripcion_cliente !== undefined,
+    esMensualidad,
     // F7.3 (DEC-SUC-28) — branch header replaces F5.2 "PARKINGOS" constant
     sucursal: { encabezado: sucursal.encabezado },
   };
@@ -436,10 +514,11 @@ export function buildEntradaPayload(
 
 /**
  * Generate the ABIERTO-01 default QR content sentinel
- * (`parkos://ingreso/<uuid>?placa=<placa>`). The actual rasterization
- * is the CALLER's responsibility (F5.2 R4 purity). This helper
- * produces the deterministic string content the rasterizer would
- * encode; the builder embeds the data URL verbatim.
+ * (`parkos://ingreso/<uuid>?placa=<placa>` for legacy, or
+ * `parkos://ingreso/<uuid>?consecutivo=<consecutivo>` for no-placa).
+ * The actual rasterization is the CALLER's responsibility (F5.2 R4
+ * purity). This helper produces the deterministic string content the
+ * rasterizer would encode; the builder embeds the data URL verbatim.
  *
  * The data URL prefix `data:image/png;base64,` is what callers
  * conventionally produce via `qrcode.toDataURL()`; the suffix after
@@ -448,7 +527,14 @@ export function buildEntradaPayload(
  * overwrite this with the real rasterizer output.
  */
 function generateQrSentinel(ingreso: IngresoForPayload): string {
-  const content = `parkos://ingreso/${ingreso.uuid}?placa=${ingreso.placa}`;
+  // HU-INGRESO-SIN-PLACA — the QR sentinel switches to consecutivo
+  // for no-placa ingresos so the QR encodes the same identifier the
+  // tiquete prints.
+  const identifierParam =
+    ingreso.placa !== null
+      ? `placa=${ingreso.placa}`
+      : `consecutivo=${ingreso.consecutivo ?? ''}`;
+  const content = `parkos://ingreso/${ingreso.uuid}?${identifierParam}`;
   // Lightweight deterministic stub so byte-level tests can locate
   // the content via `Buffer.indexOf(content)` without importing a
   // QR library. The actual rasterization is out of F6.2 scope
@@ -463,19 +549,20 @@ function generateQrSentinel(ingreso: IngresoForPayload): string {
 /**
  * F7.3 (DEC-SUC-28) tightens the F5.2 `salidaPayloadSchema` to require
  * `sucursal.encabezado` (dynamic branch header — replaces the
- * "PARKINGOS" constant). The other 19-field requirements were
- * inherited from `entradaPayloadSchema` (F6.2 — `tarifaAplicada`,
+ * "PARKINGOS" constant). The other 19-field requirements mirror
+ * `entradaPayloadSchema`'s `con-placa` variant (F6.2 — `tarifaAplicada`,
  * `horarioAtencion`, `observaciones`, `qrDataUrl`, `logoDataUrl`,
- * `polizaRC`).
+ * `polizaRC`). The salida payload always carries `placa` (the
+ * parent ingreso has a placa for salida flows — see design.md §17
+ * Out of Scope, "Salida tiquete for bici/patineta — JOIN reads
+ * consecutivo; UX update deferred to F13.x").
  *
- * Why the spread and not a re-declare: the CU-15S payload is a strict
- * superset of the CU-15E payload — `.extend()` keeps the
- * `TiqueteEntradaCampos` (17-key) shape convergent across both
- * builders and makes the field drift visible at review time
- * (rename a key on `entradaPayloadSchema` and the same key on
- * `salidaPayloadSchema` follows automatically).
+ * We extend the con-placa variant of `entradaPayloadSchema` to keep
+ * the field drift visible at review time (renaming a key on the
+ * con-placa schema propagates automatically). HU-INGRESO-SIN-PLACA
+ * does NOT affect this payload — salida still uses the legacy shape.
  */
-export const salidaPayloadSchema = entradaPayloadSchema.extend({
+export const salidaPayloadSchema = entradaConPlacaSchema.extend({
   sucursal: sucursalSchema,
   fechaSalida: z.string().datetime({ offset: true }),
   tiempoTotal: z.string().min(1),

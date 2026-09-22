@@ -4,7 +4,9 @@
  * Inlined from `pages/Principal.tsx` so the operator registers ingresos
  * without leaving the persistent `/` hub. Composes:
  *
- *   - `<PlacaInput />` (F6.1, RHF + Zod + F4.1 regex).
+ *   - `<TipoIngresoToggle>` (HU-INGRESO-SIN-PLACA, REQ-OPS-195) wrapping
+ *     `<PlacaInput />` (F6.1, RHF + Zod + F4.1 regex) + `<IngresoSinPlacaPanel />`
+ *     (REQ-OPS-196).
  *   - `<ForzarIngresoModal />` on 422 `motivo_forzado_requerido`.
  *   - `<TiqueteModal />` on 201 + always-on Imprimir (E3 exemption).
  *   - `useIngresoActivo()` (Path 1 client-side filter for doble-ingreso).
@@ -29,7 +31,9 @@ import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { detectarTipoVehiculo } from '../../../lib/validation/placa';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { ForzarIngresoModal } from './ForzarIngresoModal';
+import { IngresoSinPlacaPanel } from './IngresoSinPlacaPanel';
 import { PlacaInput } from './PlacaInput';
+import { TipoIngresoToggle } from './TipoIngresoToggle';
 import { TiqueteModal } from './TiqueteModal';
 import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
@@ -48,6 +52,8 @@ const SALIDA_FLOW_STUB = '/operacion/salida';
 interface SuccessState {
   uuid_ingreso: string;
   tipo_entrada: 'MENSUALIDAD' | 'ROTACION';
+  /** REQ-OPS-197: parking-lot identifier for no-placa ingresos. */
+  consecutivo: string | null;
 }
 
 export interface IngresoPanelProps {
@@ -75,6 +81,13 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   const [forzarOpen, setForzarOpen] = useState(false);
   const [forzarPayload, setForzarPayload] = useState<PostIngresoPayload | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * Increment on each successful submit so the `<TipoIngresoToggle>`
+   * remounts with a fresh `key` — resets its internal state to
+   * `'con-placa'` (default). Cheap reset mechanism that avoids
+   * lifting state up.
+   */
+  const [toggleKey, setToggleKey] = useState(0);
 
   const { latestIngreso, refresh: refreshIngresoActivo } = useIngresoActivo(placa);
   const tiposVehiculoIsFallback = tiposVehiculo.isFromFallback;
@@ -89,7 +102,12 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
 
   const openSuccessWithAutoPrint = useCallback(
     async (response: PostIngresoResponse) => {
-      setSuccess(response);
+      setSuccess({
+        uuid_ingreso: response.uuid_ingreso,
+        tipo_entrada: response.tipo_entrada,
+        consecutivo: response.consecutivo,
+      });
+      setToggleKey((k) => k + 1);
       try {
         const payload = buildPrintPayload(response);
         await window.bridge.imprimir(payload);
@@ -98,6 +116,19 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       }
     },
     [],
+  );
+
+  /**
+   * `handleIngresoSinPlacaSuccess` — the `<IngresoSinPlacaPanel>`
+   * success callback. The panel already POSTed with the discriminated
+   * no-placa variant; we only need to open the tiquete modal with
+   * the response (which carries `consecutivo`).
+   */
+  const handleIngresoSinPlacaSuccess = useCallback(
+    async (response: PostIngresoResponse) => {
+      await openSuccessWithAutoPrint(response);
+    },
+    [openSuccessWithAutoPrint],
   );
 
   const handlePostError = useCallback(
@@ -222,7 +253,6 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         setForzarPayload(null);
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [forzarPayload, openSuccessWithAutoPrint, handlePostError],
   );
 
@@ -240,12 +270,23 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       className="space-y-4"
       data-testid="ingreso-panel"
     >
-      <PlacaInput
-        onValidSubmit={handlePlacaSubmit}
-        disabled={submitting}
-        initialValue={initialPlaca}
-        hideSubmitButton
-        formId="ingreso-placa-form"
+      <TipoIngresoToggle
+        key={`toggle-${toggleKey}`}
+        renderConPlaca={() => (
+          <PlacaInput
+            onValidSubmit={handlePlacaSubmit}
+            disabled={submitting}
+            initialValue={initialPlaca}
+            hideSubmitButton
+            formId="ingreso-placa-form"
+          />
+        )}
+        renderSinPlaca={() => (
+          <IngresoSinPlacaPanel
+            onSuccess={handleIngresoSinPlacaSuccess}
+            disabled={submitting}
+          />
+        )}
       />
 
       <div className="space-y-1">
@@ -326,11 +367,13 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           open
           uuid_ingreso={success.uuid_ingreso}
           tipo_entrada={success.tipo_entrada}
+          consecutivo={success.consecutivo}
           buildPrintPayload={(uuid) =>
             buildPrintPayload({
               uuid_ingreso: uuid,
               tipo_entrada: success.tipo_entrada,
               uuid_subscripcion_cliente: null,
+              consecutivo: success.consecutivo,
             })
           }
           onSiguiente={handleSiguiente}

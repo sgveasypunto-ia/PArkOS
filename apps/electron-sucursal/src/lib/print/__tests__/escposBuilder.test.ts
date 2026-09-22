@@ -149,6 +149,7 @@ describe('escposBuilder purity', () => {
 
 export function validEntradaPayload() {
   return {
+    variant: 'con-placa' as const,
     placa: 'ABC123',
     fechaEntrada: '2026-09-16T08:30:00Z',
     qrDataUrl: 'data:image/png;base64,AAA',

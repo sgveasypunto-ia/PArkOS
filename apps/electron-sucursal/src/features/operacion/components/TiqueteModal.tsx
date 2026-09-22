@@ -1,10 +1,14 @@
 /**
  * `TiqueteModal.tsx` — success dialog after a successful 201 from
- * `POST /operacion/ingresos` (HU-F6.1, CU-01, T7).
+ * `POST /operacion/ingresos` (HU-F6.1, CU-01, T7; HU-INGRESO-SIN-PLACA
+ * REQ-OPS-197 — render `Identificación:` for no-placa ingresos).
  *
  * The dialog:
  *   - Shows the freshly-issued `uuid_ingreso` + the operator-visible
  *     banner (Mensualidad vs Rotación per DEC-SUC-21).
+ *   - For no-placa ingresos (consecutivo present), renders an
+ *     `Identificación: {consecutivo}` line INSTEAD of the legacy
+ *     placa display (operator-facing label per DEC-SUC-26 + Q3).
  *   - Exposes an always-on "Imprimir" button (E3 exemption, distinct
  *     from Fase 8 `reimpresion_ticket` workflow). The button calls
  *     `bridge.imprimir({ buffer, ticketId })` using the typed bridge
@@ -17,6 +21,7 @@
  *   - `tiquete_entrada_siguiente` — Siguiente button
  *   - `tiquete_entrada_titulo` (reused from F6.2)
  *   - `ingreso_registrado_exitoso` (reused from F6.2)
+ *   - `tiquete_identificacion_label` — "Identificación" (HU-INGRESO-SIN-PLACA)
  */
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +41,13 @@ export interface TiqueteModalProps {
   uuid_ingreso: string;
   tipo_entrada: 'MENSUALIDAD' | 'ROTACION';
   /**
+   * REQ-OPS-197: parking-lot identifier for no-placa ingresos.
+   * When non-null, the modal renders `Identificación: {consecutivo}`
+   * instead of any placa display. Null for legacy carro/moto rows
+   * (REQ-OPS-192 backward compat).
+   */
+  consecutivo?: string | null;
+  /**
    * Closure that produces a fresh `bridge.imprimir` payload for the
    * given `uuid_ingreso`. Centralised so the page can swap the
    * builder between F5.2 / F6.2 / browser-fallback without coupling
@@ -54,6 +66,7 @@ export function TiqueteModal({
   open,
   uuid_ingreso,
   tipo_entrada,
+  consecutivo,
   buildPrintPayload,
   onSiguiente,
 }: TiqueteModalProps) {
@@ -108,6 +121,22 @@ export function TiqueteModal({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2 text-sm">
+          {/* REQ-OPS-197 — `Identificación:` replaces the placa display
+              for no-placa ingresos. Null for legacy carro/moto. */}
+          {consecutivo !== null && consecutivo !== undefined && (
+            <p data-testid="tiquete-identificacion">
+              <span className="font-medium">
+                {t('tiquete_identificacion_label', {
+                  defaultValue: 'Identificación',
+                })}
+                :
+              </span>{' '}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">
+                {consecutivo}
+              </code>
+            </p>
+          )}
+          {/* Folio always rendered for QR + audit (DEC-SUC-26). */}
           <p>
             <span className="font-medium">
               {t('tiquete_entrada_folio', { defaultValue: 'Folio' })}:

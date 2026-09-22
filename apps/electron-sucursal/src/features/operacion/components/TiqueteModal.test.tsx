@@ -125,4 +125,46 @@ describe('TiqueteModal', () => {
       ).toHaveTextContent(/no se pudo imprimir/i),
     );
   });
+
+  // HU-INGRESO-SIN-PLACA (REQ-OPS-197) — `Identificación:` line.
+
+  it('test_renders_con_placa_default_no_consecutivo (legacy carro/moto row, consecutivo undefined)', () => {
+    render(
+      <TiqueteModal
+        open
+        uuid_ingreso="11111111-1111-1111-1111-111111111111"
+        tipo_entrada="ROTACION"
+        buildPrintPayload={() => ({
+          buffer: 'AA==',
+          ticketId: 'ticket-1',
+        })}
+        onSiguiente={vi.fn()}
+      />,
+    );
+    // No `Identificación:` line when consecutivo is undefined.
+    expect(screen.queryByTestId('tiquete-identificacion')).not.toBeInTheDocument();
+    // Folio still rendered.
+    expect(screen.getByText(/11111111-1111-1111-1111-111111111111/)).toBeInTheDocument();
+  });
+
+  it('test_renders_identificacion_with_consecutivo (REQ-OPS-197)', () => {
+    render(
+      <TiqueteModal
+        open
+        uuid_ingreso="11111111-1111-1111-1111-111111111111"
+        tipo_entrada="ROTACION"
+        consecutivo="BICI-000001-3f8a1b2c"
+        buildPrintPayload={() => ({
+          buffer: 'AA==',
+          ticketId: 'ticket-1',
+        })}
+        onSiguiente={vi.fn()}
+      />,
+    );
+    const idLine = screen.getByTestId('tiquete-identificacion');
+    expect(idLine).toHaveTextContent(/Identificación/);
+    expect(idLine).toHaveTextContent(/BICI-000001-3f8a1b2c/);
+    // Folio also rendered (always).
+    expect(screen.getByText(/11111111-1111-1111-1111-111111111111/)).toBeInTheDocument();
+  });
 });
