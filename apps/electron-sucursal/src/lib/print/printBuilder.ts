@@ -52,17 +52,10 @@ export interface PrintContext {
 
 /**
  * Optional cliente metadata fetched when ``uuid_subscripcion_cliente
- * IS NOT NULL``. When provided, the tiquete shows
- * ``Cliente: <nombre> <apellido>`` + ``CC: <numero_identificacion>``
- * + a ``*** PAGO CON MENSUALIDAD ***`` sello (driven by the response's
- * presence of ``uuid_subscripcion_cliente``).
+ * IS NOT NULL``. Re-exported from ``clienteApi.ts`` (canonical SWR
+ * shape) so callers keep a single import surface.
  */
-export interface ClienteContext {
-  readonly nombre: string;
-  readonly apellido: string;
-  readonly tipoIdentificador: 'CC' | 'CE' | 'NIT' | 'PAS' | string;
-  readonly numeroIdentificacion: string;
-}
+export type { ClienteContext } from '@/features/operacion/api/clienteApi';
 
 /**
  * Minimal default Empresa — until a ``GET /empresa/{uuid}`` endpoint
