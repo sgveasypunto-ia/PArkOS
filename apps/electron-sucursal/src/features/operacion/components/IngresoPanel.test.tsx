@@ -68,6 +68,31 @@ vi.mock('../hooks/useIngresoActivo', () => ({
   useIngresoActivo: () => mockUseIngresoActivo(),
 }));
 
+// Mock `useInvalidateConteosOperacion` (HU-F6.x REGRESSION fix
+// 2026-09-22) — captures the call so I2 below can assert the
+// post-201 SWR cache invalidation fires.
+const mockInvalidateConteos = vi.fn();
+vi.mock('../hooks/useInvalidateConteosOperacion', () => ({
+  useInvalidateConteosOperacion: () => mockInvalidateConteos,
+}));
+
+// `useAuth()` provides the branch UUID for the invalidator matcher.
+// The test stubs a fixed branch so the matcher closure can assert
+// the captured argument.
+vi.mock('@parkos/ui-kit/hooks', () => ({
+  useAuth: () => ({
+    sucursal: { uuid: '00000000-0000-0000-0000-00000000br01' },
+  }),
+}));
+
+// `useSesionActiva()` provides the sesion UUID for the per-turn
+// invalidator matcher.
+vi.mock('../../caja/hooks/useSesionActiva', () => ({
+  useSesionActiva: () => ({
+    sesion: { uuid: '00000000-0000-0000-0000-00000000se01' },
+  }),
+}));
+
 const mockPostIngreso = vi.fn();
 vi.mock('../lib/ingresoApi', () => ({
   postIngreso: (...args: unknown[]) => mockPostIngreso(...args),
@@ -214,5 +239,45 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
     );
     const stub = screen.getByTestId('placa-input-stub');
     expect(stub.getAttribute('data-initial-value')).toBe('ABC12D');
+  });
+
+  it('I7: REGRESSION (2026-09-22) — successful ingreso invalidates the live-count SWR caches so <MiTurnoPanel /> + <OcupacionPanel /> + <VehiculosDentroList /> re-fetch immediately (no waiting for the 10–15s poll)', async () => {
+    // REGRESSION (2026-09-22): without this invalidation, the
+    // dashboard panels keep showing the pre-mutation counts until the
+    // next SWR tick (10s for ocupacion/ingresos, 15s for mi-turno),
+    // which the operator perceived as "hardcoded" / stale data.
+    mockPostIngreso.mockResolvedValue({
+      uuid: '00000000-0000-0000-0000-000000000888',
+      tipo_entrada: 'ROTACION',
+      uuid_subscripcion_cliente: null,
+      consecutivo: null,
+    });
+
+    render(
+      <MemoryRouter>
+        <IngresoPanel />
+      </MemoryRouter>,
+    );
+
+    // Step 1: validate the placa.
+    await act(async () => {
+      screen.getByTestId('placa-input-stub').click();
+    });
+
+    // Step 2: confirmar — POST fires.
+    await act(async () => {
+      const registrarBtn = screen.getByTestId('ingreso-registrar') as HTMLButtonElement;
+      registrarBtn.click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockInvalidateConteos).toHaveBeenCalledWith({
+      uuid_sucursal: '00000000-0000-0000-0000-00000000br01',
+      uuid_sesion: '00000000-0000-0000-0000-00000000se01',
+    });
   });
 });

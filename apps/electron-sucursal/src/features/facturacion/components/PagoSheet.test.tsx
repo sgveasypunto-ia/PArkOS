@@ -34,6 +34,25 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
+// REGRESSION fix (2026-09-22): stub the live-count SWR cache
+// invalidator so the test can assert it fires after a successful pago.
+const mockInvalidateConteos = vi.fn();
+vi.mock('../../operacion/hooks/useInvalidateConteosOperacion', () => ({
+  useInvalidateConteosOperacion: () => mockInvalidateConteos,
+}));
+
+vi.mock('@parkos/ui-kit/hooks', () => ({
+  useAuth: () => ({
+    sucursal: { uuid: '00000000-0000-0000-0000-00000000br01' },
+  }),
+}));
+
+vi.mock('../../caja/hooks/useSesionActiva', () => ({
+  useSesionActiva: () => ({
+    sesion: { uuid: '00000000-0000-0000-0000-00000000se01' },
+  }),
+}));
+
 import {
   useDashboardDrawerStore,
 } from '@/store/dashboardDrawerStore';

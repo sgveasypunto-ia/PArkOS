@@ -14,8 +14,16 @@
  *
  * Reuses F7.1 invariant: REQ-OPS-138 single-drawer — F7.2 NEVER owns
  * drawer state; it calls `useDashboardDrawerStore.open('pago', ...)`.
+ *
+ * REGRESSION fix (2026-09-22, directiva del operador): after a
+ * successful salida we invalidate the live-count SWR caches so
+ * <MiTurnoPanel />, <OcupacionPanel /> (Inventario) and
+ * <VehiculosDentroList /> re-fetch immediately instead of waiting
+ * for their 10–15s polling tick. Without this, the operator sees
+ * the same activo count for up to 15s after confirming the salida
+ * — the panels look "hardcoded".
  */
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 
@@ -24,6 +32,9 @@ import type { SalidaReadForzado } from '../api/salidaApi';
 import { CotizacionPanel } from './CotizacionPanel';
 import type { CotizarFacturacion } from '../hooks/useCotizacion';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
+import { useInvalidateConteosOperacion } from '../hooks/useInvalidateConteosOperacion';
+import { useAuth } from '@parkos/ui-kit/hooks';
+import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
 
 export interface SalidaFlowProps {
   /** Active ingreso UUID (parent owns the lookup). */
@@ -63,12 +74,28 @@ export function SalidaFlow({
 }: SalidaFlowProps): JSX.Element {
   const { trigger } = useRegistrarSalida();
   const openDrawer = useDashboardDrawerStore((s) => s.open);
+  const invalidarConteos = useInvalidateConteosOperacion();
+  // Branch + sesion UUIDs feed the SWR key matcher — same sources
+  // the dashboard uses so the values agree at all times.
+  const { sucursal } = useAuth();
+  const { sesion } = useSesionActiva();
   const [registrarError, setRegistrarError] = useState<Error | null>(null);
 
-  const handleConfirmar = async (): Promise<void> => {
+  const handleConfirmar = useCallback(async (): Promise<void> => {
     setRegistrarError(null);
     try {
       const result: SalidaReadForzado = await trigger({ uuid_ingreso: uuidIngreso });
+      // REGRESSION fix (2026-09-22): invalidate the live-count SWR
+      // caches immediately after a successful salida so the right-
+      // sidebar <MiTurnoPanel />, the Inventario <OcupacionPanel />
+      // and the main <VehiculosDentroList /> re-fetch without waiting
+      // for their 10–15s polling tick. Without this, the operator
+      // sees the same `activos` count for up to 15s after confirming
+      // the salida — looks "hardcoded".
+      void invalidarConteos({
+        uuid_sucursal: sucursal?.uuid ?? null,
+        uuid_sesion: sesion?.uuid ?? null,
+      });
       if (result.tipo_salida === 'ROTACION') {
         if (onPagoOpen) {
           onPagoOpen(pagoAnchorId);
@@ -86,7 +113,8 @@ export function SalidaFlow({
         setRegistrarError(err as Error);
       }
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trigger, uuidIngreso, invalidarConteos, sucursal?.uuid, sesion?.uuid, pagoAnchorId, onPagoOpen, openDrawer]);
 
   return (
     <div data-testid="salida-flow" data-anchor-for="pago" id={pagoAnchorId}>

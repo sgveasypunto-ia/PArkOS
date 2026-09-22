@@ -31,6 +31,9 @@ import type { SalidaReadForzado } from '../api/salidaApi';
 import { CotizacionPanel } from './CotizacionPanel';
 import type { CotizarMensualidad } from '../hooks/useCotizacion';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
+import { useInvalidateConteosOperacion } from '../hooks/useInvalidateConteosOperacion';
+import { useAuth } from '@parkos/ui-kit/hooks';
+import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
 
 export interface SalidaMensualidadProps {
   uuidIngreso: string;
@@ -86,12 +89,24 @@ export function SalidaMensualidad({
   firePrintEnvelope,
 }: SalidaMensualidadProps): JSX.Element {
   const { trigger } = useRegistrarSalida();
+  // REGRESSION fix (2026-09-22): invalidate the live-count SWR
+  // caches immediately after a successful salida (ROTACION or
+  // MENSUALIDAD) so <MiTurnoPanel />, <OcupacionPanel /> (Inventario)
+  // and <VehiculosDentroList /> re-fetch without waiting for their
+  // 10–15s polling tick — same fix as in <SalidaFlow />.
+  const invalidarConteos = useInvalidateConteosOperacion();
+  const { sucursal } = useAuth();
+  const { sesion } = useSesionActiva();
   const [error, setError] = useState<Error | null>(null);
 
   const handleConfirmar = async (): Promise<void> => {
     setError(null);
     try {
       const result: SalidaReadForzado = await trigger({ uuid_ingreso: uuidIngreso });
+      void invalidarConteos({
+        uuid_sucursal: sucursal?.uuid ?? null,
+        uuid_sesion: sesion?.uuid ?? null,
+      });
       if (result.tipo_salida === 'MENSUALIDAD') {
         // F7.3 (DEC-SUC-27 + DEC-SUC-08) — CU-15SM prints IMMEDIATELY at
         // salida mensualidad. The bridge call is deferred to the next
