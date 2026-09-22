@@ -1,5 +1,6 @@
 /**
- * `ingresoApi.ts` — POST mutation for `ingreso` rows (HU-F6.1, T3).
+ * `ingresoApi.ts` — POST mutation for `ingreso` rows (HU-F6.1, T3;
+ * REQ-OPS-191/192/194/197 — ingreso sin placa + consecutivo).
  *
  * The Idempotency-Key header is derived per DEC-SUC-04 from a SHA-256
  * digest of `method | path | canonicalJSON(body)`. We compute the
@@ -19,6 +20,18 @@
  *   - We forward it via `init.headers` to make the contract explicit
  *     at the call site — easier to reason about and easier to test.
  *
+ * HU-INGRESO-SIN-PLACA (REQ-OPS-194):
+ *   The payload is a discriminated union keyed on `placa_presente: boolean`
+ *   to make the no-placa path first-class at the call site. `placa_presente:
+ *   true` is the legacy F6.1 shape (`placa: <regex>`), `placa_presente:
+ *   false` is the no-placa shape (`placa: null, uuid_tipo_vehiculo: <uuid>`).
+ *   Mixed payloads (e.g. `placa_presente: true` + `placa: null`) are
+ *   rejected by Zod at the client boundary so no round-trip is wasted.
+ *
+ * The response carries `consecutivo: str | None` (REQ-OPS-197) — null
+ * for legacy carro/moto rows, formatted `<TIPO>-NNNNNN-<uuid8>` for
+ * no-placa ingresos.
+ *
  * The spec requires 3 scenarios:
  *   - Operator double-press (500ms apart): same Idempotency-Key.
  *   - Body mutation (operator edits `observaciones`): different key.
@@ -30,13 +43,37 @@ import { z } from 'zod';
 
 import { canonicalJSON } from './canonicalJson';
 
-/** Mutation payload accepted by `POST /api/v1/operacion/ingresos`. */
-export const PostIngresoPayloadSchema = z.object({
-  placa: z.string().regex(/^[A-Z]{3}[0-9]{3}$|^[A-Z]{3}[0-9]{2}[A-Z]$/),
+/**
+ * Discriminated union payload accepted by `POST /api/v1/operacion/ingresos`
+ * (REQ-OPS-194). The discriminator is `placa_presente: boolean` literal;
+ * Zod's `discriminatedUnion` rejects mixed payloads (e.g.
+ * `placa_presente: true` + `placa: null`) at parse time.
+ */
+const placaConPlacaSchema = z.object({
+  placa_presente: z.literal(true),
+  placa: z
+    .string()
+    .regex(/^[A-Z]{3}[0-9]{3}$|^[A-Z]{3}[0-9]{2}[A-Z]$/),
+  uuid_tipo_vehiculo: z.string().uuid().optional(),
+  observaciones: z.string().max(500).optional(),
+  forzado: z.boolean().optional(),
+});
+
+const placaSinPlacaSchema = z.object({
+  placa_presente: z.literal(false),
+  // Explicit null (Zod literal semantics); the discriminator already
+  // guarantees the variant — keeping it null here documents the wire
+  // shape and blocks accidental `placa: 'ABC123'` on the no-placa path.
+  placa: z.null(),
   uuid_tipo_vehiculo: z.string().uuid(),
   observaciones: z.string().max(500).optional(),
   forzado: z.boolean().optional(),
 });
+
+export const PostIngresoPayloadSchema = z.discriminatedUnion(
+  'placa_presente',
+  [placaConPlacaSchema, placaSinPlacaSchema],
+);
 export type PostIngresoPayload = z.infer<typeof PostIngresoPayloadSchema>;
 
 /** Server response shape — `tipo_entrada` is derived server-side (DEC-SUC-21). */
@@ -45,6 +82,12 @@ export const PostIngresoResponseSchema = z.object({
   tipo_entrada: z.enum(['MENSUALIDAD', 'ROTACION']),
   /** DEC-SUC-21: nullable for rotación, non-null for mensualidad. */
   uuid_subscripcion_cliente: z.string().uuid().nullable(),
+  /**
+   * REQ-OPS-197 — parking-lot identifier for ingresos sin placa.
+   * `null` for legacy carro/moto rows (F6.1 wire compat); formatted
+   * `<TIPO>-NNNNNN-<uuid8>` for no-placa ingresos.
+   */
+  consecutivo: z.string().nullable(),
 });
 export type PostIngresoResponse = z.infer<typeof PostIngresoResponseSchema>;
 
