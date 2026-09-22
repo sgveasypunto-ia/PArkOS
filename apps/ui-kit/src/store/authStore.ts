@@ -31,24 +31,51 @@ import {
 } from 'zustand/middleware';
 
 // ─── electron-store adapter (via preload IPC bridge) ────────────────
-// Production: real `window.bridge.authStore.{get,set,delete}` from T3.
-// Tests: stub the global before importing this module (see authStore.test.ts).
+// Production (Electron): real `window.bridge.authStore.{get,set,delete}` from T3.
+// Dev (Vite) + tests: fall back to `window.localStorage` so the auth
+// session survives a page reload during development. Without this
+// fallback the dev server has no preload IPC, the adapter silently
+// returns null on every get/set/delete, Zustand's persist middleware
+// never rehydrates, and the operator is forced to re-login after
+// every browser refresh even though the JWT refresh token is still
+// valid for 8 hours (REQ-OPS-158 / REQ-OPS-187).
+//
+// Tests stub the global before importing this module
+// (see authStore.test.ts) -- the localStorage fallback path covers
+// both real dev-server usage and the unit-test stubGlobal path.
 const electronStore: StateStorage = {
   getItem: async (key: string): Promise<string | null> => {
     const bridge = (globalThis as { window?: { bridge?: { authStore?: { get: (k: string) => Promise<string | null> } } } }).window?.bridge;
-    if (!bridge?.authStore) return null;
-    const value = await bridge.authStore.get(key);
-    return value ?? null;
+    if (bridge?.authStore) {
+      const value = await bridge.authStore.get(key);
+      return value ?? null;
+    }
+    // Dev / tests fallback: window.localStorage. Always available in
+    // the browser runtime (jsdom + Vite dev server).
+    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
+      return globalThis.localStorage.getItem(key);
+    }
+    return null;
   },
   setItem: async (key: string, value: string): Promise<void> => {
     const bridge = (globalThis as { window?: { bridge?: { authStore?: { set: (k: string, v: string) => Promise<void> } } } }).window?.bridge;
-    if (!bridge?.authStore) return;
-    await bridge.authStore.set(key, value);
+    if (bridge?.authStore) {
+      await bridge.authStore.set(key, value);
+      return;
+    }
+    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
+      globalThis.localStorage.setItem(key, value);
+    }
   },
   removeItem: async (key: string): Promise<void> => {
     const bridge = (globalThis as { window?: { bridge?: { authStore?: { delete: (k: string) => Promise<void> } } } }).window?.bridge;
-    if (!bridge?.authStore) return;
-    await bridge.authStore.delete(key);
+    if (bridge?.authStore) {
+      await bridge.authStore.delete(key);
+      return;
+    }
+    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
+      globalThis.localStorage.removeItem(key);
+    }
   },
 };
 
