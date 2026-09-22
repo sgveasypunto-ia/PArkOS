@@ -30,6 +30,10 @@ import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { detectarTipoVehiculo } from '../../../lib/validation/placa';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
+// NOTE: this panel mounts inside the dashboard drawer (no route change).
+// `useNavigate` was removed in the 2026-09-22 refactor — the "Ir a salida"
+// CTA hands off to the salida drawer via the dashboard store instead of
+// navigating to a stub URL. See `onIrASalida` below.
 import { ForzarIngresoModal } from './ForzarIngresoModal';
 import { IngresoSinPlacaPanel } from './IngresoSinPlacaPanel';
 import { PlacaInput } from './PlacaInput';
@@ -53,7 +57,11 @@ import {
   type Ingreso,
 } from '../api/ingresoActivoApi';
 
-const SALIDA_FLOW_STUB = '/operacion/salida';
+// REGRESSION fix (2026-09-22): `SALIDA_FLOW_STUB` was removed when the panel
+// stopped navigating to /operacion/salida. The "Ir a salida" CTA now hands
+// off to the salida drawer via `openDrawer('salida', ...)` (same pattern
+// the 409-active-ingreso CTA already uses) so the dashboard stays at `/`
+// per REQ-OPS-138 single-drawer invariant.
 
 interface SuccessState {
   uuid_ingreso: string;
@@ -266,7 +274,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       }
       setSubmitError('network_error');
     },
-    [latestIngreso, navigate],
+    [latestIngreso, openDrawer],
   );
 
   const handlePlacaSubmit = useCallback(
@@ -318,7 +326,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       tiposVehiculo.tipos,
       tiposVehiculoIsFallback,
       observaciones,
-      navigate,
+      openDrawer,
       openSuccessWithAutoPrint,
       handlePostError,
     ],
@@ -576,13 +584,16 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           }
           onSiguiente={handleSiguiente}
           onIrASalida={() => {
-            // FEATURE D: navigate to the salida workflow with this
-            // ingreso's uuid. We close the tiquete modal via
-            // handleSiguiente first to clear local state.
+            // FEATURE D: hand off to the salida drawer with the ingreso's
+            // plate (con-placa) or null (sin-placa). The SalidaPanel reads
+            // `initialPlaca` from the store and resolves the active ingreso
+            // on its own. We close the tiquete modal via handleSiguiente
+            // first to clear local state. REGRESSION fix 2026-09-22:
+            // previous code called `navigate()` which crashed because the
+            // refactor removed the `useNavigate` import; the drawer-based
+            // handoff also preserves REQ-OPS-138 single-drawer invariant.
             handleSiguiente();
-            navigate(
-              `${SALIDA_FLOW_STUB}?uuid_ingreso=${encodeURIComponent(success.uuid_ingreso)}`,
-            );
+            openDrawer('salida', 'tiquete-modal-ir-a-salida', success.placa);
           }}
         />
       )}
