@@ -28,6 +28,7 @@ import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
 import { ReimprimirTiqueteSheet } from '../../reimpresion/components/ReimprimirTiqueteSheet';
 import { ArqueoSheet } from '../components/ArqueoSheet';
+import { CerrarTurnoSheet } from '../components/CerrarTurnoSheet';
 import { CierreDiarioDialog } from '../../caja/components/CierreDiarioDialog';
 import { IngresoSheet } from '../../operacion/components/IngresoSheet';
 import { SalidaSheet } from '../../operacion/components/SalidaSheet';
@@ -79,6 +80,17 @@ export function DrawerHost(): JSX.Element | null {
     // form body itself (pages/ArqueoParcial.tsx) owns the sesion
     // fetch + live diferencia + POST /caja/arqueo submit logic.
     return <ArqueoSheet />;
+  }
+  if (openDrawer === 'cerrar-turno') {
+    // HU-F3.3 + HU-F10.2 -- F11.3 follow-up: turn-closing flow lives
+    // in the dashboard's right-side drawer (same pattern as Arqueo).
+    // The legacy routed page `/caja/cerrar-turno` is retired; the
+    // F10.2 `<CerrarTurno />` page is mounted by CerrarTurnoSheet
+    // inside <SheetContent side="right">. The page handles the
+    // F3.3 logout-on-success trifecta (useAuthStore.clear() +
+    // parkos:auth:cleared event + navigate('/login?closed=true'))
+    // which implicitly unmounts the drawer via the route change.
+    return <CerrarTurnoSheet />;
   }
   if (openDrawer === 'cierre-diario') {
     return <CierreDiarioDialog uuid_sucursal={null} uuid_sesion={null} />;

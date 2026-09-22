@@ -52,14 +52,6 @@ function renderAt(path: string): ReturnType<typeof render> {
           }
         />
         <Route
-          path="/caja/cerrar-turno"
-          element={
-            <ProtectedRoute>
-              <div data-testid="cerrar-turno-page">CerrarTurno</div>
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="/dashboard-test"
           element={
             <ProtectedRoute>
@@ -172,7 +164,12 @@ describe('<ProtectedRoute /> — auth + sesion guard (REQ-OPS-136)', () => {
     expect(screen.getByTestId('dashboard-page')).toBeInTheDocument();
   });
 
-  it('R8: isAuthenticated + sesion=active + ruta=/caja/cerrar-turno → render children', () => {
+  it('R8: isAuthenticated + sesion=active + any path → render children', () => {
+    // F11.3 follow-up -- the legacy /caja/cerrar-turno route was
+    // retired (the close flow now lives in a right-side drawer via
+    // <CerrarTurnoSheet />). This test now uses a generic path to
+    // verify the basic "authenticated + active sesion = render
+    // children" invariant for any route the operator lands on.
     const sesion = { uuid: 'sess-uuid-123', uuid_usuario: 'usr-1', uuid_sucursal: 'suc-1' };
     mockUseAuth.mockReturnValue({ isAuthenticated: true, isLoading: false });
     mockUseSesionActiva.mockReturnValue({
@@ -181,7 +178,7 @@ describe('<ProtectedRoute /> — auth + sesion guard (REQ-OPS-136)', () => {
       error: undefined,
       refresh: vi.fn(),
     });
-    renderAt('/caja/cerrar-turno');
-    expect(screen.getByTestId('cerrar-turno-page')).toBeInTheDocument();
+    renderAt('/dashboard-test');
+    expect(screen.getByTestId('dashboard-page')).toBeInTheDocument();
   });
 });

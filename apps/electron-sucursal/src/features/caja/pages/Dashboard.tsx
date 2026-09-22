@@ -233,7 +233,7 @@ export function Dashboard(): JSX.Element | null {
             variant="outline"
             size="sm"
             data-testid="dashboard-cerrar-turno"
-            onClick={() => navigate('/caja/cerrar-turno')}
+            onClick={() => openDrawer('cerrar-turno', 'dashboard-cerrar-turno')}
             className="shrink-0"
           >
             {t('caja:cerrarTurnoLabel')}
@@ -282,7 +282,11 @@ export function Dashboard(): JSX.Element | null {
             data-testid="sidebar-cerrar-turno"
             className="justify-start text-sm"
             onClick={() => {
-              navigate('/caja/cerrar-turno');
+              // F11.3 follow-up — turn-closing flow lives in the right
+              // sidebar drawer (CerrarTurnoSheet), no separate route.
+              // The drawer overlay slides in from the right and the
+              // dashboard grid layout is untouched.
+              openDrawer('cerrar-turno', 'sidebar-cerrar-turno');
               setMobileNavOpen(false);
             }}
           >

@@ -10,18 +10,24 @@
  *       (auth cleanup happens in the hook's onError).
  *   T4: 5xx -> panel renders fallback (zeros + a soft stale marker),
  *       no crash.
- *   T5: Cerrar-turno button -> navigate('/caja/cerrar-turno') ONLY,
- *       no useSesionActiva().cerrarSesion call (F10.2 owns close logic).
+ *   T5: Cerrar-turno button -> openDrawer('cerrar-turno', anchorId)
+ *       ONLY, no navigate call (F11.3 — the close flow lives in a
+ *       right-side drawer via `<CerrarTurnoSheet />`, not the legacy
+ *       `/caja/cerrar-turno` route).
  *
  * Mocking strategy:
- *   - vi.mock('../../hooks/useMiTurno') -> swap the hook for a stub.
- *   - vi.mock('react-router-dom')       -> capture navigate calls.
- *   - vi.mock('react-i18next')          -> stub t().
+ *   - vi.mock('../../hooks/useMiTurno')     -> swap the hook for a stub.
+ *   - vi.mock('@/store/dashboardDrawerStore') -> capture openDrawer calls.
+ *   - vi.mock('react-router-dom')           -> navigate calls should be
+ *                                              ZERO on Cerrar-turno click.
+ *   - vi.mock('react-i18next')              -> stub t().
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 
 const navigateMock = vi.fn();
+const openDrawerMock = vi.fn();
+const closeMock = vi.fn();
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => navigateMock,
@@ -34,6 +40,12 @@ vi.mock('react-i18next', () => ({
 const useMiTurnoMock = vi.fn();
 vi.mock('../hooks/useMiTurno', () => ({
   useMiTurno: (uuid_sesion: string | null) => useMiTurnoMock(uuid_sesion),
+}));
+
+vi.mock('@/store/dashboardDrawerStore', () => ({
+  useDashboardDrawerStore: (
+    selector: (s: { open: typeof openDrawerMock; close: typeof closeMock }) => unknown,
+  ) => selector({ open: openDrawerMock, close: closeMock }),
 }));
 
 import { MiTurnoPanel } from './MiTurnoPanel';
@@ -130,15 +142,18 @@ describe('<MiTurnoPanel /> — REQ-OPS-187 (HU-F12.1)', () => {
     expect(screen.getByTestId('mi-turno-kpi-ingresos').textContent).toMatch(/0/);
   });
 
-  it('T5: Cerrar-turno button -> navigate("/caja/cerrar-turno") ONLY', () => {
+  it('T5: Cerrar-turno button -> openDrawer("cerrar-turno", anchorId) ONLY', () => {
     useMiTurnoMock.mockReturnValue(SAMPLE_OK);
     render(<MiTurnoPanel uuid_sesion={UUID_SESION} />);
     fireEvent.click(screen.getByTestId('mi-turno-cerrar-button'));
-    expect(navigateMock).toHaveBeenCalledTimes(1);
-    expect(navigateMock).toHaveBeenCalledWith('/caja/cerrar-turno');
-    // The button MUST NOT call useSesionActiva().cerrarSesion — that's
-    // F10.2's responsibility. We assert by ensuring useMiTurnoMock was
-    // called but no other mock (cerrarSesion) was registered.
-    expect(navigateMock.mock.calls[0]?.[0]).toBe('/caja/cerrar-turno');
+    // F11.3 UX: the close flow lives in the right-side drawer via
+    // <CerrarTurnoSheet />, NOT the legacy /caja/cerrar-turno route.
+    expect(openDrawerMock).toHaveBeenCalledTimes(1);
+    expect(openDrawerMock).toHaveBeenCalledWith(
+      'cerrar-turno',
+      'mi-turno-cerrar-button',
+    );
+    // Defensive: navigate MUST NOT fire for the drawer-trigger flow.
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 });

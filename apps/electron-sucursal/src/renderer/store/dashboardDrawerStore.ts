@@ -46,6 +46,7 @@ export type DrawerKind =
   | 'fe-retry'
   | 'reimpresion'
   | 'arqueo'
+  | 'cerrar-turno'
   | 'cierre-diario'
   | 'ingreso'
   | 'salida'
