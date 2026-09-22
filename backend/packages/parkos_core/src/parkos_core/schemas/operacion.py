@@ -70,6 +70,10 @@ class IngresoRead(_Base):
     uuid_subscripcion_cliente: uuid_lib.UUID | None
     fecha_ingreso: datetime | None
     observaciones: str | None
+    # REQ-OPS-192 / REQ-OPS-197: parking-lot identifier for ingresos sin
+    # placa (bicicleta, patineta). Format ``<TIPO>-NNNNNN-<uuid8>`` -- NULL
+    # for legacy carro/moto rows (backward compat, REQ-OPS-192 scenario 1).
+    consecutivo: str | None = None
 
 
 class IngresoCreate(_Base):
@@ -310,7 +314,7 @@ class IngresoReadForzado(_Base):
     - ``motivo_forzado``: stripped motivo, or None
     """
 
-    # Inherited from IngresoRead (6 base + 6 business columns):
+    # Inherited from IngresoRead (6 base + 7 business columns):
     uuid: uuid_lib.UUID
     created_at: datetime
     created_by: uuid_lib.UUID | None
@@ -323,7 +327,8 @@ class IngresoReadForzado(_Base):
     uuid_subscripcion_cliente: uuid_lib.UUID | None
     fecha_ingreso: datetime | None
     observaciones: str | None
-    # NEW:
+    consecutivo: str | None = None  # REQ-OPS-192 / REQ-OPS-197
+    # NEW (F1.6):
     tipo_entrada: Literal["MENSUALIDAD", "ROTACION"]
     forzado_en_creacion: bool = False
     motivo_forzado: str | None = None
@@ -377,6 +382,19 @@ class TipoVehiculoInvalidoError(_Base):
     """V4 422 discriminator."""
 
     error: Literal["tipo_vehiculo_invalido"]
+
+
+class TipoVehiculoRequeridoSinPlacaError(_Base):
+    """REQ-OPS-194 422 discriminator.
+
+    Raised at the revised Step 2 of the ``create_ingreso`` chain when the
+    operator POSTs ``placa=None`` AND ``uuid_tipo_vehiculo=None`` -- the
+    "Sin placa" UI flow requires the operator to pick a tipo (bici /
+    patineta) before submitting. Empty ``uuid_tipo_vehiculo`` in the
+    no-placa path is a UI bug, not a server validation gap.
+    """
+
+    error: Literal["tipo_vehiculo_requerido_sin_placa"]
 
 
 # ---------------------------------------------------------------------------
@@ -550,4 +568,5 @@ __all__ = [
     "TarifaVigenteNoEncontradaError",
     "TarifaVigenteNoEncontradaSalidaError",
     "TipoVehiculoInvalidoError",
+    "TipoVehiculoRequeridoSinPlacaError",
 ]

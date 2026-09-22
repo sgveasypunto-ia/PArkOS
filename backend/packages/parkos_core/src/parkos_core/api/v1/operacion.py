@@ -60,6 +60,7 @@ from ...repo.cotizacion import (
     cotizar_ingreso,
 )
 from ...repo.ingreso import (
+    assign_ingreso_consecutivo,
     crear_ingreso_evento,
     existe_ingreso_activo,
     insertar_alerta_forzado,
@@ -183,8 +184,21 @@ async def create_ingreso(
     # moto plate whose tipo was chosen by a dropdown, not the regex).
     # The explicit UUID short-circuits the regex; ``placa`` is still
     # validated separately by the V8/V1/V2 chain below.
+    #
+    # REQ-OPS-194 (HU-INGRESO-SIN-PLACA): when ``placa is None``, the
+    # operator MUST have picked a tipo via the discriminated-union UI
+    # (bici / patineta). ``detectar_tipo_vehiculo`` cannot derive a tipo
+    # from an empty placa, so we short-circuit with a typed 422 if both
+    # are absent (UI bug -- the operator clicked "Sin placa" without
+    # selecting a tipo in the dropdown).
     uuid_tipo_vehiculo = payload.uuid_tipo_vehiculo
     if uuid_tipo_vehiculo is None:
+        if payload.placa is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "tipo_vehiculo_requerido_sin_placa"},
+                headers=no_store,
+            )
         uuid_tipo_vehiculo = await detectar_tipo_vehiculo(session, payload.placa)
         if uuid_tipo_vehiculo is None:
             raise HTTPException(
@@ -269,23 +283,57 @@ async def create_ingreso(
             )
 
     # --- Step 8: V8 (no duplicate active ingreso, NO lock pesimista). --
-    uuid_activo = await existe_ingreso_activo(
-        session, uuid_sucursal=target, placa=payload.placa or ""
-    )
-    if uuid_activo is not None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "ingreso_activo_existente",
-                "uuid_ingreso_existente": str(uuid_activo),
-            },
-            headers=no_store,
+    # REQ-OPS-040 modified (HU-INGRESO-SIN-PLACA): SKIP V8 for no-placa
+    # ingresos. For ``placa is None``, ``existe_ingreso_activo(placa='')``
+    # is meaningless (no placa to match on). Duplicate detection for
+    # no-placa is delegated to the partial UK ``uq_ingreso_consecutivo_
+    # partial`` on ``prod.ingreso.consecutivo`` (REQ-OPS-192, defense in
+    # depth) -- if a race ever mints the same consecutivo twice, the DB
+    # rejects with 23505.
+    if payload.placa is not None:
+        uuid_activo = await existe_ingreso_activo(
+            session, uuid_sucursal=target, placa=payload.placa
+        )
+        if uuid_activo is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "ingreso_activo_existente",
+                    "uuid_ingreso_existente": str(uuid_activo),
+                },
+                headers=no_store,
+            )
+
+    # --- Step 8.5 (NEW, REQ-OPS-191): assign ``consecutivo`` for no-placa.
+    # Pre-generate the ``Ingreso.uuid`` BEFORE calling the helper so the
+    # ``<uuid8>`` suffix in the formatted string is deterministic across
+    # retries (the helper's idempotency anchor is ``last_event_uuid ==
+    # source_event_uuid``). The handler then INSERTs ``ingreso.uuid =
+    # new_uuid`` in Step 9 below -- byte-identical persisted PK.
+    consecutivo: str | None = None
+    new_uuid: uuid_lib.UUID | None = None
+    if payload.placa is None:
+        new_uuid = uuid_lib.uuid4()
+        consecutivo = await assign_ingreso_consecutivo(
+            session,
+            uuid_sucursal=target,
+            uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+            source_event_uuid=new_uuid,
         )
 
     # --- Step 9: INSERT + alerta (same TX, R5). ------------------------
     new_attrs = payload.model_dump(exclude_none=True, exclude={"forzado"})
     new_attrs["uuid_tipo_vehiculo"] = uuid_tipo_vehiculo
     new_attrs["uuid_sucursal"] = target
+    if consecutivo is not None and new_uuid is not None:
+        # No-placa path: stamp the helper-minted consecutivo and the
+        # pre-generated PK so the row's ``uuid.hex[:8]`` matches the
+        # ``<uuid8>`` suffix the helper emitted. The ``[L-E]`` AST lock
+        # is preserved -- this is still INSERT (consecutivo is in
+        # new_attrs, never UPDATEd; the AST walk in
+        # tests/static/test_no_write_after_insert.py continues to pass).
+        new_attrs["consecutivo"] = consecutivo
+        new_attrs["uuid"] = new_uuid
     new_row = await crear_ingreso_evento(
         session,
         actor_uuid=ctx.actor_uuid,
@@ -308,11 +356,18 @@ async def create_ingreso(
     apply_no_store_header(response)
     await session.refresh(new_row)
     base = IngresoRead.model_validate(new_row).model_dump()
+    # REQ-OPS-197: ``IngresoReadForzado.consecutivo`` is populated from
+    # the helper-minted string for no-placa ingresos, OR from the
+    # persisted row (which is ``None`` for legacy carro/moto rows since
+    # ``consecutivo`` is nullable + the partial UK is NOT NULL-filtered).
+    # The Pydantic model_dump above already includes ``consecutivo``
+    # (added to IngresoRead in commit A.2); we surface it verbatim.
     return IngresoReadForzado(
         **base,
         tipo_entrada=tipo_entrada,  # type: ignore[arg-type]
         forzado_en_creacion=bypass_reason is not None,
         motivo_forzado=motivo if bypass_reason else None,
+        consecutivo=consecutivo if consecutivo is not None else base.get("consecutivo"),
     )
 
 

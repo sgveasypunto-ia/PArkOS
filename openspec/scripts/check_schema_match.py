@@ -104,8 +104,17 @@ class Table:
 # apis` PR7/PR8 added these as `LocalOnlyCatalog` entries
 # (`catalog/local_only_catalog.py`), never replicated, never ER-modeled.
 # Physical total = 51 ER + 3 non-ER = 54.
+# `ingreso_consecutivo_contador` is the 4th non-ER table, added in
+# `ingreso-multi-tipo-consecutivo` PR-A (migration 0042, 2026-09-22): a
+# local-only per-branch counter for ingresos sin placa. Not replicated to
+# the cloud; never ER-modeled (same convention as the other 3).
 EXPECTED_NON_ER_TABLES: frozenset[str] = frozenset(
-    {"idempotency_keys", "pairing_tokens", "revoked_sync_jwts"}
+    {
+        "idempotency_keys",
+        "pairing_tokens",
+        "revoked_sync_jwts",
+        "ingreso_consecutivo_contador",
+    }
 )
 
 # ADR-002/003: `[A]` tables with a documented, DELETE-only REVOKE carve-out

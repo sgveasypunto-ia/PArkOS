@@ -22,6 +22,11 @@ from ..models.L_E.ingreso import Ingreso
 from ..models.V.tipos_vehiculo import TiposVehiculo
 from .alerta import insertar_alerta_forzado
 from .event import record_event
+from .ingreso_consecutivo import (
+    ConsecutivoExhaustedError,
+    TipoVehiculoNotFoundError,
+    assign_ingreso_consecutivo,
+)
 from .ocupacion import validar_cupo_disponible
 from .subscripcion_activa import validar_subscripcion_vigente
 from .tarifas_vigencia import validar_tarifa_vigente
@@ -197,6 +202,9 @@ async def crear_ingreso_evento(
 __all__ = [
     "FORZADO_MIN_MOTIVO_CHARS",
     "FORZADO_PREFIX",
+    "ConsecutivoExhaustedError",
+    "TipoVehiculoNotFoundError",
+    "assign_ingreso_consecutivo",
     "crear_ingreso_evento",
     "existe_ingreso_activo",
     "insertar_alerta_forzado",
