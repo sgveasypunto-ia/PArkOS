@@ -3,28 +3,26 @@
  * (HU-F6.1, CU-01 + CU-15E, T8).
  *
  * Responsibilities:
- *   1. Render `<PlacaInput>` (T5) auto-focused on mount.
- *   2. On valid submit, drive `useIngresoActivo` (T4) to short-circuit
- *      the doble-ingreso case (Path 1 client-side filter).
- *   3. On `201` from `POST /operacion/ingresos`, auto-print the
- *      tiquete via `bridge.imprimir({ buffer, ticketId })` (F5.1 IPC +
- *      F5.2 builder — T0a extended the bridge contract to include the
- *      `buffer` field that F5.2's escposBuilder produces) and open
- *      `<TiqueteModal>`.
- *   4. On `422 motivo_forzado_requerido`, open `<ForzarIngresoModal>`
- *      (T6) with the previously-typed placa; on confirm, retry POST
+ *   1. Render `<TipoIngresoToggle>` (HU-INGRESO-SIN-PLACA, REQ-OPS-195)
+ *      with two side-by-side buttons: `Con placa` (default, visually
+ *      dominant) + `Sin placa` (outline variant).
+ *   2. On valid submit from `<PlacaInput>`, drive `useIngresoActivo`
+ *      (T4) to short-circuit the doble-ingreso case (Path 1 filter).
+ *   3. On valid submit from `<IngresoSinPlacaPanel>`, post a no-placa
+ *      ingreso (`placa_presente: false`) — the discriminated union
+ *      variant (REQ-OPS-194).
+ *   4. On `201`, auto-print the tiquete via `bridge.imprimir(...)` and
+ *      open `<TiqueteModal>` with `consecutivo` for no-placa flows
+ *      (REQ-OPS-197).
+ *   5. On `422 motivo_forzado_requerido`, open `<ForzarIngresoModal>`
+ *      with the previously-typed payload; on confirm, retry POST
  *      with `observaciones: '[FORZADO: ...]'` + `forzado: true`.
- *   5. On `409 ingreso_activo_existente` (the server-authoritative
+ *   6. On `409 ingreso_activo_existente` (the server-authoritative
  *      duplicate path), transparently redirect to the SalidaFlow stub
- *      URL (`/operacion/salida?uuid_ingreso=...`) — NO error toast per
- *      plan.md line 1530.
- *
- * The F4.3 `useOcupacion` hook is REUSED for the lightweight inline
- * cupo display per design.md §Decision "Reuse existing useOcupacion
- * for inline cupo display". When F4.3 lands on this branch (it does
- * not yet on F5.1's lineage), the import path resolves directly.
- * Until then, the cup display is rendered inline via a placeholder
- * notice — see the inline comment.
+ *      URL — NO error toast per plan.md line 1530.
+ *   7. After each successful submit, the toggle is reset to
+ *      `'con-placa'` via a `key="fresh"` remount — the simplest reset
+ *      mechanism (avoids lifting toggle state up to the page).
  *
  * DEC-SUC-22 (strict detector, no override), DEC-SUC-21 (server-derived
  * tipo_entrada, never persisted client-side), DEC-SUC-27 (auto-print
@@ -41,7 +39,9 @@ import { detectarTipoVehiculo } from '../../../lib/validation/placa';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 
 import { ForzarIngresoModal } from '../components/ForzarIngresoModal';
+import { IngresoSinPlacaPanel } from '../components/IngresoSinPlacaPanel';
 import { PlacaInput } from '../components/PlacaInput';
+import { TipoIngresoToggle } from '../components/TipoIngresoToggle';
 import { TiqueteModal } from '../components/TiqueteModal';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import {
@@ -57,6 +57,8 @@ const SALIDA_FLOW_STUB = '/operacion/salida';
 interface SuccessState {
   uuid_ingreso: string;
   tipo_entrada: 'MENSUALIDAD' | 'ROTACION';
+  /** REQ-OPS-197: parking-lot identifier for no-placa ingresos. */
+  consecutivo: string | null;
 }
 
 export default function Principal() {
@@ -76,6 +78,13 @@ export default function Principal() {
     null,
   );
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * Increment on each successful submit so the `<TipoIngresoToggle>`
+   * remounts with a fresh `key` — resets its internal state to
+   * `'con-placa'` (default). Cheap reset mechanism that avoids
+   * lifting state up.
+   */
+  const [toggleKey, setToggleKey] = useState(0);
 
   // Path 1: client-side most-recent filter on the GET /ingresos response.
   // Per design.md §Open Questions this may report a false-negative when
@@ -173,7 +182,14 @@ export default function Principal() {
 
   const openSuccessWithAutoPrint = useCallback(
     async (response: PostIngresoResponse) => {
-      setSuccess(response);
+      setSuccess({
+        uuid_ingreso: response.uuid_ingreso,
+        tipo_entrada: response.tipo_entrada,
+        consecutivo: response.consecutivo,
+      });
+      // Reset the toggle to the default `'con-placa'` variant by
+      // bumping `toggleKey` so the wrapper remounts.
+      setToggleKey((k) => k + 1);
       // Auto-print on 201 per DEC-SUC-27 — does NOT block the UI; the
       // IPC call resolves independently. If `bridge.imprimir` rejects
       // (printer offline), the F5.1 retry queue handles it; the
@@ -188,6 +204,19 @@ export default function Principal() {
       }
     },
     [],
+  );
+
+  /**
+   * `handleIngresoSinPlacaSuccess` — the `<IngresoSinPlacaPanel>`
+   * success callback. The panel already POSTed with the discriminated
+   * no-placa variant; we only need to open the tiquete modal with
+   * the response (which carries `consecutivo`).
+   */
+  const handleIngresoSinPlacaSuccess = useCallback(
+    async (response: PostIngresoResponse) => {
+      await openSuccessWithAutoPrint(response);
+    },
+    [openSuccessWithAutoPrint],
   );
 
   const handlePostError = useCallback(
@@ -265,9 +294,20 @@ export default function Principal() {
         </p>
       </header>
 
-      <PlacaInput
-        onValidSubmit={handlePlacaSubmit}
-        disabled={submitting}
+      <TipoIngresoToggle
+        key={`toggle-${toggleKey}`}
+        renderConPlaca={() => (
+          <PlacaInput
+            onValidSubmit={handlePlacaSubmit}
+            disabled={submitting}
+          />
+        )}
+        renderSinPlaca={() => (
+          <IngresoSinPlacaPanel
+            onSuccess={handleIngresoSinPlacaSuccess}
+            disabled={submitting}
+          />
+        )}
       />
 
       <div className="space-y-1">
@@ -333,7 +373,15 @@ export default function Principal() {
           open
           uuid_ingreso={success.uuid_ingreso}
           tipo_entrada={success.tipo_entrada}
-          buildPrintPayload={(uuid) => buildPrintPayload({ uuid_ingreso: uuid, tipo_entrada: success.tipo_entrada, uuid_subscripcion_cliente: null })}
+          consecutivo={success.consecutivo}
+          buildPrintPayload={(uuid) =>
+            buildPrintPayload({
+              uuid_ingreso: uuid,
+              tipo_entrada: success.tipo_entrada,
+              uuid_subscripcion_cliente: null,
+              consecutivo: success.consecutivo,
+            })
+          }
           onSiguiente={handleSiguiente}
         />
       )}

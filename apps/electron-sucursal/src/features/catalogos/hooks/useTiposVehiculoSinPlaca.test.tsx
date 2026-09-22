@@ -14,10 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TipoVehiculo } from '../api/tiposVehiculoApi';
 
-const useSWRMock = vi.fn();
+// NB: prefixed with `swrMock` (not `use*`) so ESLint's rules-of-hooks
+// rule does not flag this as a React Hook.
+const swrMockFn = vi.fn();
 
 vi.mock('swr', () => ({
-  default: (...args: unknown[]) => useSWRMock(...args),
+  default: (...args: unknown[]) => swrMockFn(...args),
 }));
 
 vi.mock('@parkos/ui-kit/store', () => ({
@@ -53,7 +55,7 @@ function makeTipo(overrides: Partial<TipoVehiculo>): TipoVehiculo {
 
 describe('useTiposVehiculoSinPlaca (REQ-OPS-196)', () => {
   beforeEach(() => {
-    useSWRMock.mockReset();
+    swrMockFn.mockReset();
   });
 
   afterEach(() => {
@@ -61,7 +63,7 @@ describe('useTiposVehiculoSinPlaca (REQ-OPS-196)', () => {
   });
 
   it('test_filter_excludes_carro_moto', () => {
-    useSWRMock.mockReturnValue({
+    swrMockFn.mockReturnValue({
       data: [
         makeTipo({ uuid: '00000000-0000-0000-0000-000000000001', tipo: 'carro' }),
         makeTipo({ uuid: '00000000-0000-0000-0000-000000000002', tipo: 'moto' }),
@@ -78,7 +80,7 @@ describe('useTiposVehiculoSinPlaca (REQ-OPS-196)', () => {
   });
 
   it('test_filter_includes_bicicleta_patineta', () => {
-    useSWRMock.mockReturnValue({
+    swrMockFn.mockReturnValue({
       data: [
         makeTipo({ uuid: '00000000-0000-0000-0000-000000000001', tipo: 'carro' }),
         makeTipo({ uuid: '00000000-0000-0000-0000-000000000002', tipo: 'moto' }),
@@ -102,7 +104,7 @@ describe('useTiposVehiculoSinPlaca (REQ-OPS-196)', () => {
     // When the API is down, `useTiposVehiculo()` returns the F4.1
     // HARDCODED_CATALOG `{carro, moto}` sentinel. The filter result is
     // empty → `<IngresoSinPlacaPanel>` renders the degraded-UX message.
-    useSWRMock.mockReturnValue({
+    swrMockFn.mockReturnValue({
       data: [
         makeTipo({ uuid: '00000000-0000-0000-0000-000000000001', tipo: 'carro' }),
         makeTipo({ uuid: '00000000-0000-0000-0000-000000000002', tipo: 'moto' }),

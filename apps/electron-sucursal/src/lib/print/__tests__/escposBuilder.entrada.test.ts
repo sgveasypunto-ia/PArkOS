@@ -204,6 +204,34 @@ describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
     expect(buf.indexOf(Buffer.from('OK'))).toBeGreaterThanOrEqual(0);
   });
 
+  // HU-INGRESO-SIN-PLACA (REQ-OPS-197) — no-placa variant byte fixture.
+  // The 12th conceptual field (doceavo) renders
+  // `Identificación: BICI-000001-3f8a1b2c\n` instead of
+  // `Placa: ABC123\n`.
+  it('con-consecutivo — buffer contains "Identificación: BICI-000001-3f8a1b2c" (REQ-OPS-197 byte-fixture)', () => {
+    const payload = buildEntradaPayload({
+      ingreso: makeIngreso({
+        placa: null,
+        consecutivo: 'BICI-000001-3f8a1b2c',
+      }),
+      sucursal: makeSucursal(),
+      empresa: makeEmpresa(),
+      operario: 'op-bici-001',
+      tipoVehiculo: 'auto',
+      tarifa: makeTarifa(),
+      documentos: makeDocumentos(),
+      fechaHora: '2026-09-16T08:30:00Z',
+    });
+    expect(payload.variant).toBe('con-consecutivo');
+    const buf = build('entrada', payload);
+    // Byte-fixture pin: exact sequence at the 12th conceptual field.
+    expect(
+      buf.indexOf(Buffer.from('Identificación: BICI-000001-3f8a1b2c\n')),
+    ).toBeGreaterThanOrEqual(0);
+    // Legacy `Placa:` line MUST NOT appear (discriminator enforced).
+    expect(buf.indexOf(Buffer.from('Placa: ABC123\n'))).toBe(-1);
+  });
+
   // Mensualidad tag conditional — separate scenario, NOT in the 17-key
   // counter (per spec — TiqueteEntradaCampos has 17 keys, none of which
   // is esMensualidad). Mensualidad is derived from ingreso.

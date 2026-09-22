@@ -175,6 +175,11 @@ function buildEntradaBody(payload: EntradaPayload): Buffer {
   //
   // F7.3 (DEC-SUC-28) — the header is `payload.sucursal.encabezado`
   // (dynamic branch header). NOT the F5.2 "PARKINGOS" constant.
+  //
+  // HU-INGRESO-SIN-PLACA (REQ-OPS-197) — the 12th conceptual field
+  // (doceavo) branches on `payload.variant`:
+  //   - `con-placa`       → `Placa: <placa>` (legacy F6.1).
+  //   - `con-consecutivo` → `Identificación: <consecutivo>` (no-placa).
   const lines: Buffer[] = [
     escCenter(),
     escBoldOn(),
@@ -202,7 +207,13 @@ function buildEntradaBody(payload: EntradaPayload): Buffer {
   lines.push(utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`)); // noveno
   lines.push(utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`)); // decimo
   lines.push(utf8(`Hora: ${formatHora(payload.fechaEntrada)}\n`));    // onceavo
-  lines.push(utf8(`Placa: ${payload.placa}\n`));        // doceavo
+  // REQ-OPS-197 — doceavo (12th conceptual field) branches on variant.
+  if (payload.variant === 'con-placa') {
+    lines.push(utf8(`Placa: ${payload.placa}\n`));      // doceavo (legacy)
+  } else {
+    // payload.variant === 'con-consecutivo' — TypeScript narrows.
+    lines.push(utf8(`Identificación: ${payload.consecutivo}\n`)); // doceavo (no-placa)
+  }
   lines.push(utf8(`Horario: ${payload.horarioAtencion}\n`)); // treceavo
   if (payload.polizaRC) {
     lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`)); // catorceavo

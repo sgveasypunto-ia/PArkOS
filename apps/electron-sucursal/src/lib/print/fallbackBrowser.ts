@@ -157,6 +157,13 @@ export function renderEntradaTiqueteHtml(payload: EntradaPayload): string {
   const fechaParts = fechaCorta(payload.fechaEntrada).split(' ');
   const fechaStr = fechaParts[0] ?? '';
   const horaStr = fechaParts[1] ?? '';
+  // REQ-OPS-197 — doceavo (12th conceptual field) branches on variant.
+  // TypeScript narrows `payload.placa` / `payload.consecutivo` per
+  // the discriminated union; the runtime check is the discriminator
+  // value.
+  const identificacionLine = payload.variant === 'con-placa'
+    ? `<p>Placa: ${escapeHtml(payload.placa)}</p>`
+    : `<p>Identificación: ${escapeHtml(payload.consecutivo)}</p>`;
   return `
     <h1>${escapeHtml(payload.sucursal.encabezado)}</h1>
     ${logoHtml}
@@ -171,7 +178,7 @@ export function renderEntradaTiqueteHtml(payload: EntradaPayload): string {
     <p>Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora</p>
     <p>Fecha: ${fechaStr}</p>
     <p>Hora: ${horaStr}</p>
-    <p>Placa: ${escapeHtml(payload.placa)}</p>
+    ${identificacionLine}
     <p>Horario: ${escapeHtml(payload.horarioAtencion)}</p>
     ${poliza}
     ${observaciones}
