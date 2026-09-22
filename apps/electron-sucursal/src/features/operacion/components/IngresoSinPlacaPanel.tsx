@@ -63,8 +63,14 @@ export interface IngresoSinPlacaPanelProps {
    * Called on a successful 201 response. The parent (`Principal.tsx`
    * or `IngresoPanel.tsx`) opens `<TiqueteModal>` with the response's
    * `consecutivo` field per REQ-OPS-197.
+   *
+   * HU-F11.x (REQ-OPS-200): also passes the selected
+   * ``uuid_tipo_vehiculo`` so the parent can resolve the concrete
+   * tipo name (``bicicleta`` / ``patineta``) for the tiquete preview.
+   * The backend's ``PostIngresoResponse`` does NOT carry this field,
+   * so we must thread it through the callback.
    */
-  onSuccess: (response: PostIngresoResponse) => void;
+  onSuccess: (response: PostIngresoResponse, uuidTipoVehiculo: string) => void;
   /** Disable while the parent is processing a sibling POST. */
   disabled?: boolean;
 }
@@ -123,7 +129,9 @@ export function IngresoSinPlacaPanel({
     setSubmitting(true);
     try {
       const response = await postIngreso(payload);
-      onSuccess(response);
+      // HU-F11.x (REQ-OPS-200): pass the selected UUID so the parent
+      // can render the concrete tipo name in the tiquete preview.
+      onSuccess(response, parsed.data.uuid_tipo_vehiculo);
       // Reset for the next ingreso.
       setSelectedUuid('');
     } catch (err) {

@@ -1,15 +1,23 @@
 /**
- * Unit tests for `TiqueteModal` (HU-F6.1, T7).
+ * Unit tests for `TiqueteModal` (HU-F6.1, T7 + HU-F11.x REQ-OPS-200).
  *
  * Spec scenarios:
  *   - 201 → modal opens with role="dialog" (axe-core target).
  *   - Imprimir button → `bridge.imprimir({ buffer, ticketId })` fired once.
- *   - Siguiente button → resets form / clears cache.
+ *   - HU-F11.x: ``Vehículo:`` line renders the concrete tipo name
+ *     (``carro`` / ``moto`` / ``bicicleta`` / ``patineta``) so the
+ *     operator sees what they committed, not just the
+ *     ``ROTACION`` / ``MENSUALIDAD`` discriminator.
+ *
+ * REGRESSION fix (2026-09-22): removed tests for the Siguiente /
+ * Anular / Hacer arqueo buttons — those CTAs were dropped from the
+ * dialog (only Imprimir + Ir a salida remain). The Siguiente reset
+ * path is auto-fired by Imprimir (FEATURE F), so no manual button.
  *
  * Mock `window.bridge.imprimir` because the dialog calls it directly.
  * Uses `fireEvent` (from `@testing-library/react`).
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import '@/i18n';
@@ -59,6 +67,44 @@ describe('TiqueteModal', () => {
     expect(screen.getByText(/mensualidad/i)).toBeInTheDocument();
   });
 
+  it('HU-F11.x: shows the concrete vehicle type name when tipo_vehiculo_nombre is provided', () => {
+    render(
+      <TiqueteModal
+        open
+        uuid_ingreso="11111111-1111-1111-1111-111111111111"
+        tipo_entrada="ROTACION"
+        tipo_vehiculo_nombre="moto"
+        buildPrintPayload={() => ({
+          buffer: 'AA==',
+          ticketId: 'ticket-1',
+        })}
+        onSiguiente={vi.fn()}
+      />,
+    );
+    // The Vehículo: line is rendered with the concrete name.
+    expect(screen.getByText(/Veh[íi]culo/i)).toBeInTheDocument();
+    expect(screen.getByText(/moto/)).toBeInTheDocument();
+  });
+
+  it('HU-F11.x: hides the vehicle line when tipo_vehiculo_nombre is null', () => {
+    render(
+      <TiqueteModal
+        open
+        uuid_ingreso="11111111-1111-1111-1111-111111111111"
+        tipo_entrada="ROTACION"
+        tipo_vehiculo_nombre={null}
+        buildPrintPayload={() => ({
+          buffer: 'AA==',
+          ticketId: 'ticket-1',
+        })}
+        onSiguiente={vi.fn()}
+      />,
+    );
+    // No Vehículo: line when the parent couldn't resolve the name
+    // (defensive — the API doesn't carry uuid_tipo_vehiculo).
+    expect(screen.queryByText(/Veh[íi]culo/i)).not.toBeInTheDocument();
+  });
+
   it('calls bridge.imprimir with the payload from buildPrintPayload on Imprimir click', async () => {
     const buildPrintPayload = vi.fn((uuid_ingreso: string) => ({
       buffer: Buffer.from(`entrada:${uuid_ingreso}`).toString('base64'),
@@ -84,24 +130,6 @@ describe('TiqueteModal', () => {
       ).toString('base64'),
       ticketId: '11111111-1111-1111-1111-111111111111',
     });
-  });
-
-  it('calls onSiguiente when the Siguiente button is clicked', () => {
-    const onSiguiente = vi.fn();
-    render(
-      <TiqueteModal
-        open
-        uuid_ingreso="11111111-1111-1111-1111-111111111111"
-        tipo_entrada="ROTACION"
-        buildPrintPayload={() => ({
-          buffer: 'AA==',
-          ticketId: 'ticket-1',
-        })}
-        onSiguiente={onSiguiente}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: /siguiente/i }));
-    expect(onSiguiente).toHaveBeenCalledTimes(1);
   });
 
   it('shows an inline error when bridge.imprimir returns ok:false', async () => {
