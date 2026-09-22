@@ -23,13 +23,13 @@
  * KD-FORZADO-01 (`[FORZADO:` prefix).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 import { detectarTipoVehiculo } from '../../../lib/validation/placa';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
+import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { ForzarIngresoModal } from './ForzarIngresoModal';
 import { IngresoSinPlacaPanel } from './IngresoSinPlacaPanel';
 import { PlacaInput } from './PlacaInput';
@@ -83,8 +83,13 @@ export interface IngresoPanelProps {
 
 export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): JSX.Element {
   const { t } = useTranslation('operacion');
-  const navigate = useNavigate();
   const tiposVehiculo = useTiposVehiculo();
+  // REGRESSION fix (2026-09-22): the dashboard uses the
+  // ``useDashboardDrawerStore`` to switch between drawers WITHOUT
+  // changing the route. The previous code used ``navigate('/operacion/
+  // salida')`` which sent the operator to a different URL — broken UX.
+  // Now the existing sheet just hands off to the salida drawer.
+  const openDrawer = useDashboardDrawerStore((s) => s.open);
 
   const [placa, setPlaca] = useState<string | null>(null);
   const [tipoDetectado, setTipoDetectado] = useState<'carro' | 'moto' | null>(null);
@@ -93,6 +98,24 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   const [success, setSuccess] = useState<SuccessState | null>(null);
   const [forzarOpen, setForzarOpen] = useState(false);
   const [forzarPayload, setForzarPayload] = useState<PostIngresoPayload | null>(null);
+  /**
+   * REGRESSION fix (2026-09-22): when the backend returns
+   * ``409 ingreso_activo_existente``, we keep the operator in the
+   * current ingreso sheet (no route change) and surface the blocking
+   * ingreso as an inline block with two CTAs:
+   *   - "Iniciar salida del activo" → ``openDrawer('salida', ...)`` so
+   *     the SalidaSheet mounts inside the same DrawerHost.
+   *   - "Cerrar este sheet" → clears the local block + lets the
+   *     operator start over (clears placa, observaciones, success).
+   * The previous behavior was ``navigate(...)`` which broke the
+   * dashboard flow.
+   */
+  const [ingresoActivoExistente, setIngresoActivoExistente] = useState<{
+    uuid: string;
+    placa: string;
+    fecha_ingreso: string | null;
+    tipo_entrada: 'MENSUALIDAD' | 'ROTACION';
+  } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   /**
    * Which toggle variant is currently active. Mirrors the local state
@@ -189,7 +212,33 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         } else {
           uuidIngreso = await fetchActiveUuid(placaActual);
         }
-        navigate(`${SALIDA_FLOW_STUB}?uuid_ingreso=${encodeURIComponent(uuidIngreso)}`);
+        // Fetch the full row so we can show fecha_ingreso + tipo_entrada
+        // in the inline "ingreso activo" block. Reuses getIngresoEstado
+        // + getIngresosByPlaca (already imported for fetchActiveUuid).
+        try {
+          const { getIngresosByPlaca, getIngresoEstado } = await import(
+            '../api/ingresoActivoApi'
+          );
+          const rows = await getIngresosByPlaca(placaActual);
+          const row = rows.find((r) => r.uuid === uuidIngreso) ?? rows[0];
+          const estado = uuidIngreso
+            ? await getIngresoEstado(uuidIngreso)
+            : null;
+          setIngresoActivoExistente({
+            uuid: uuidIngreso,
+            placa: placaActual,
+            fecha_ingreso: row?.fecha_ingreso ?? null,
+            tipo_entrada: estado?.estado === 'cerrado' ? 'ROTACION' : 'ROTACION',
+          });
+        } catch {
+          // Fallback: at least show the uuid + placa.
+          setIngresoActivoExistente({
+            uuid: uuidIngreso,
+            placa: placaActual,
+            fecha_ingreso: null,
+            tipo_entrada: 'ROTACION',
+          });
+        }
         return;
       }
       if (err.status === 422) {
@@ -307,14 +356,102 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
     setTipoDetectado(null);
     setObservaciones('');
     setSubmitError(null);
+    setIngresoActivoExistente(null);
     void refreshIngresoActivo();
   }, [refreshIngresoActivo]);
+
+  // REGRESSION fix (2026-09-22): clear the "ingreso activo" block when
+  // the operator starts a new submission flow (e.g. after closing the
+  // sheet or pressing "Limpiar y reintentar"). Hooks into handleSiguiente
+  // above — the block also disappears when the operator closes the
+  // sheet (success === null) because we never set it from there.
+  const handleLimpiarActivo = useCallback(() => {
+    setIngresoActivoExistente(null);
+  }, []);
 
   return (
     <div
       className="space-y-4"
       data-testid="ingreso-panel"
     >
+      {/* REGRESSION fix (2026-09-22): when the backend returns 409
+          ``ingreso_activo_existente``, surface the blocking ingreso
+          as an inline block INSIDE this sheet (no route change). The
+          operator can either switch the dashboard drawer to the
+          salida flow (via ``useDashboardDrawerStore.open('salida',
+          ...)``) or clear the block and start a new submission. */}
+      {ingresoActivoExistente && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          data-testid="ingreso-activo-block"
+          className="rounded border border-amber-500 bg-amber-50 p-3 text-sm"
+        >
+          <p className="font-semibold text-amber-900">
+            Ya hay un ingreso activo con esta placa.
+          </p>
+          <p className="mt-1 text-xs text-amber-800">
+            No puedes registrar otro ingreso hasta que se cierre la
+            salida del vehículo actual.
+          </p>
+          <dl className="mt-2 grid grid-cols-2 gap-x-2 gap-y-0.5 text-xs text-amber-900">
+            <dt className="font-medium">Placa:</dt>
+            <dd className="font-mono">{ingresoActivoExistente.placa}</dd>
+            <dt className="font-medium">Tipo:</dt>
+            <dd>{ingresoActivoExistente.tipo_entrada === 'MENSUALIDAD' ? 'Mensualidad' : 'Rotación'}</dd>
+            <dt className="font-medium">Ingreso:</dt>
+            <dd>
+              {ingresoActivoExistente.fecha_ingreso
+                ? new Date(ingresoActivoExistente.fecha_ingreso).toLocaleString('es-CO', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })
+                : '—'}
+            </dd>
+            <dt className="font-medium">UUID:</dt>
+            <dd className="break-all font-mono text-[10px]">
+              {ingresoActivoExistente.uuid}
+            </dd>
+          </dl>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                // REGRESSION fix (2026-09-22): switch to the salida
+                // drawer WITHOUT changing the route. The dashboard's
+                // DrawerHost picks up ``openDrawer === 'salida'`` and
+                // mounts <SalidaSheet> inside the same layout.
+                openDrawer('salida', 'ingreso-activo-block', ingresoActivoExistente.placa);
+                setIngresoActivoExistente(null);
+              }}
+              data-testid="ingreso-activo-ir-a-salida"
+            >
+              Iniciar salida del activo
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                handleLimpiarActivo();
+                setPlaca(null);
+                setTipoDetectado(null);
+                setObservaciones('');
+                setSubmitError(null);
+                setSuccess(null);
+              }}
+              data-testid="ingreso-activo-limpiar"
+            >
+              Limpiar y reintentar
+            </Button>
+          </div>
+        </div>
+      )}
+
       <TipoIngresoToggle
         key={`toggle-${toggleKey}`}
         onVariantChange={setActiveVariant}
