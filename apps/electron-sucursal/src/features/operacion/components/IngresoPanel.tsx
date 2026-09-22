@@ -76,6 +76,15 @@ interface SuccessState {
   /** FK to subscripcion_cliente when tipo_entrada === 'MENSUALIDAD';
       triggers the cliente SWR fetch in the modal. */
   uuid_subscripcion_cliente: string | null;
+  /**
+   * HU-F11.x (REQ-OPS-200): resolved concrete vehicle type name
+   * (``carro`` / ``moto`` / ``bicicleta`` / ``patineta``). The
+   * tiquete preview uses this so the operator sees the actual tipo
+   * they committed (auto-detected OR override-selected), distinct
+   * from ``tipo_entrada`` which is just the
+   * ``ROTACION`` / ``MENSUALIDAD`` discriminator.
+   */
+  tipo_vehiculo_nombre: string | null;
 }
 
 export interface IngresoPanelProps {
@@ -194,13 +203,27 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   );
 
   const openSuccessWithAutoPrint = useCallback(
-    async (response: PostIngresoResponse, currentPlaca: string | null) => {
+    async (
+      response: PostIngresoResponse,
+      currentPlaca: string | null,
+      tipoVehiculoNombre: string | null,
+    ) => {
+      // HU-F11.x (REQ-OPS-200): the backend's ``PostIngresoResponse``
+      // does NOT carry ``uuid_tipo_vehiculo`` — only the
+      // ``tipo_entrada`` discriminator (``ROTACION`` /
+      // ``MENSUALIDAD``). The concrete vehicle type name
+      // (``carro`` / ``moto`` / ``bicicleta`` / ``patineta``) is
+      // resolved on the FRONTEND side by the caller at submit time
+      // (from the override UUID or the regex-detected tipo). We pass
+      // it through here so the tiquete preview can show the actual
+      // tipo the operator committed.
       setSuccess({
         uuid_ingreso: response.uuid,
         tipo_entrada: response.tipo_entrada,
         consecutivo: response.consecutivo,
         placa: response.consecutivo ? null : currentPlaca,
         uuid_subscripcion_cliente: response.uuid_subscripcion_cliente,
+        tipo_vehiculo_nombre: tipoVehiculoNombre,
       });
       setToggleKey((k) => k + 1);
       try {
@@ -220,11 +243,22 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
    * the response (which carries `consecutivo`).
    */
   const handleIngresoSinPlacaSuccess = useCallback(
-    async (response: PostIngresoResponse) => {
+    async (
+      response: PostIngresoResponse,
+      uuidTipoVehiculo: string,
+    ) => {
       // No-placa flow: pass null placa; the modal uses ``consecutivo``.
-      await openSuccessWithAutoPrint(response, null);
+      // HU-F11.x (REQ-OPS-200): resolve the concrete tipo name
+      // (``bicicleta`` / ``patineta``) via the selected UUID threaded
+      // from IngresoSinPlacaPanel. Try the sin-placa subset first
+      // (canonical for this flow), then the full catalog as
+      // defense-in-depth.
+      const tipoVehiculoNombre =
+        tiposVehiculo.tipos.find((tv) => tv.uuid === uuidTipoVehiculo)
+          ?.tipo ?? null;
+      await openSuccessWithAutoPrint(response, null, tipoVehiculoNombre);
     },
-    [openSuccessWithAutoPrint],
+    [openSuccessWithAutoPrint, tiposVehiculo.tipos],
   );
 
   const handlePostError = useCallback(
@@ -382,10 +416,26 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         observaciones.trim() === '' ? undefined : observaciones.trim(),
     };
 
+    // HU-F11.x (REQ-OPS-200): resolve the concrete tipo name
+    // (``carro`` / ``moto``) at submit time so the tiquete preview can
+    // show what the operator actually committed (auto-detected OR
+    // override-selected). Lookup order: override-subset first (the
+    // source of truth for override), then the full catalog.
+    const uuidParaResolver = uuid_tipo_vehiculo ?? tipoOverrideUuid;
+    const tipoVehiculoNombre =
+      (uuidParaResolver &&
+        (tiposVehiculoConSubscripcion.tipos.find(
+          (tv) => tv.uuid === uuidParaResolver,
+        )?.tipo ??
+          tiposVehiculo.tipos.find(
+            (tv) => tv.uuid === uuidParaResolver,
+          )?.tipo)) ||
+      null;
+
     setSubmitting(true);
     try {
       const response = await postIngreso(payload);
-      await openSuccessWithAutoPrint(response, placa);
+      await openSuccessWithAutoPrint(response, placa, tipoVehiculoNombre);
     } catch (err) {
       await handlePostError(err, placa, payload);
     } finally {
@@ -396,6 +446,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
     placa,
     tipoOverrideUuid,
     tiposVehiculo.tipos,
+    tiposVehiculoConSubscripcion.tipos,
     tiposVehiculoIsFallback,
     observaciones,
     openDrawer,
@@ -414,7 +465,18 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           forzado: true,
           observaciones: forced.observaciones,
         });
-        await openSuccessWithAutoPrint(response, forced.placa);
+        // HU-F11.x (REQ-OPS-200): resolve the concrete tipo name from
+        // the original payload's UUID (sin-placa or con-placa).
+        const uuidTipoVehiculo = forzarPayload.uuid_tipo_vehiculo ?? null;
+        const tipoVehiculoNombre = uuidTipoVehiculo
+          ? tiposVehiculo.tipos.find((tv) => tv.uuid === uuidTipoVehiculo)
+              ?.tipo ?? null
+          : null;
+        await openSuccessWithAutoPrint(
+          response,
+          forced.placa,
+          tipoVehiculoNombre,
+        );
       } catch (err) {
         await handlePostError(err, forced.placa, {
           ...forzarPayload,
@@ -562,64 +624,6 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           has its OWN submit button (inside ``IngresoSinPlacaPanel``)
           so showing both side-by-side would expose two submit CTAs
           with overlapping intent — confusing for the operator. */}
-      {activeVariant === 'con-placa' && (
-        <>
-          <div className="space-y-1">
-            <div className="flex items-baseline justify-between">
-              <label
-                htmlFor="ingreso-observaciones"
-                className="text-sm font-medium"
-              >
-                {t('ingreso_observaciones_label', { defaultValue: 'Observaciones' })}
-              </label>
-              <span
-                className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-                data-testid="ingreso-observaciones-badge"
-              >
-                {t('common:opcional', { defaultValue: 'Opcional' })}
-              </span>
-            </div>
-            <textarea
-              id="ingreso-observaciones"
-              data-testid="ingreso-observaciones"
-              value={observaciones}
-              onChange={(e) => setObservaciones(e.target.value.slice(0, 500))}
-              placeholder={t('ingreso_observaciones_placeholder', {
-                defaultValue: 'Estado del vehículo, objetos visibles, notas del operador',
-              })}
-              disabled={submitting}
-              maxLength={500}
-              rows={2}
-              aria-describedby="ingreso-observaciones-help"
-              className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
-            />
-            <p
-              id="ingreso-observaciones-help"
-              className="text-xs text-muted-foreground"
-            >
-              {observaciones.length}/500
-            </p>
-          </div>
-
-          <Button
-            type="button"
-            onClick={() => {
-              // HU-F11.x (REQ-OPS-200): confirma el POST usando el
-              // state actual (placa + tipoOverrideUuid + observaciones).
-              // Solo habilitado cuando tipoDetectado !== null — el
-              // operador debe tipear + validar la placa primero.
-              void handleConfirmarIngreso();
-            }}
-            disabled={submitting || !tipoDetectado}
-            size="lg"
-            className="w-full"
-            data-testid="ingreso-registrar"
-          >
-            {t('ingreso_registrar_boton', { defaultValue: 'Registrar ingreso' })}
-          </Button>
-        </>
-      )}
-
       {tipoDetectado && (
         // HU-F11.x (REQ-OPS-200): dropdown de override de tipo. Las
         // opciones vienen de ``useTiposVehiculoConSubscripcion()``
@@ -627,6 +631,15 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         // ``tipo_subscripciones`` vigente. Si no hay subscripciones
         // configuradas, el subset es ``[]`` y caemos al texto
         // estático (no hay a qué overridear).
+        //
+        // REGRESSION fix (UX): el dropdown se renderiza ANTES de la
+        // sección de observaciones + botón "Registrar ingreso" para
+        // mantener el orden natural de un formulario de captura —
+        // el operador tipea la placa, ve el tipo detectado, overridea
+        // si hace falta, escribe observaciones opcionales, y solo
+        // entonces confirma. Poner el override después del CTA obliga
+        // al operador a scroll-ear hacia abajo para corregir el tipo,
+        // lo cual es UX hostil.
         tiposVehiculoConSubscripcion.tipos.length > 0 ? (
           <div
             className="space-y-1"
@@ -717,6 +730,64 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         )
       )}
 
+      {activeVariant === 'con-placa' && (
+        <>
+          <div className="space-y-1">
+            <div className="flex items-baseline justify-between">
+              <label
+                htmlFor="ingreso-observaciones"
+                className="text-sm font-medium"
+              >
+                {t('ingreso_observaciones_label', { defaultValue: 'Observaciones' })}
+              </label>
+              <span
+                className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                data-testid="ingreso-observaciones-badge"
+              >
+                {t('common:opcional', { defaultValue: 'Opcional' })}
+              </span>
+            </div>
+            <textarea
+              id="ingreso-observaciones"
+              data-testid="ingreso-observaciones"
+              value={observaciones}
+              onChange={(e) => setObservaciones(e.target.value.slice(0, 500))}
+              placeholder={t('ingreso_observaciones_placeholder', {
+                defaultValue: 'Estado del vehículo, objetos visibles, notas del operador',
+              })}
+              disabled={submitting}
+              maxLength={500}
+              rows={2}
+              aria-describedby="ingreso-observaciones-help"
+              className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
+            />
+            <p
+              id="ingreso-observaciones-help"
+              className="text-xs text-muted-foreground"
+            >
+              {observaciones.length}/500
+            </p>
+          </div>
+
+          <Button
+            type="button"
+            onClick={() => {
+              // HU-F11.x (REQ-OPS-200): confirma el POST usando el
+              // state actual (placa + tipoOverrideUuid + observaciones).
+              // Solo habilitado cuando tipoDetectado !== null — el
+              // operador debe tipear + validar la placa primero.
+              void handleConfirmarIngreso();
+            }}
+            disabled={submitting || !tipoDetectado}
+            size="lg"
+            className="w-full"
+            data-testid="ingreso-registrar"
+          >
+            {t('ingreso_registrar_boton', { defaultValue: 'Registrar ingreso' })}
+          </Button>
+        </>
+      )}
+
       {latestIngreso && (
         <p
           className="text-sm text-muted-foreground"
@@ -740,6 +811,11 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           open
           uuid_ingreso={success.uuid_ingreso}
           tipo_entrada={success.tipo_entrada}
+          // HU-F11.x (REQ-OPS-200): show the concrete vehicle type
+          // name (``carro`` / ``moto`` / etc.), not just the
+          // ``ROTACION`` / ``MENSUALIDAD`` discriminator. Resolved in
+          // ``openSuccessWithAutoPrint`` via the catalogs above.
+          tipo_vehiculo_nombre={success.tipo_vehiculo_nombre}
           consecutivo={success.consecutivo}
           placa={success.placa}
           cliente={
@@ -749,6 +825,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           buildPrintPayload={(uuid) =>
             buildPrintPayload({
               uuid_ingreso: uuid,
+              tipo_vehiculo_nombre: success.tipo_vehiculo_nombre,
               tipo_entrada: success.tipo_entrada,
               uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
               consecutivo: success.consecutivo,

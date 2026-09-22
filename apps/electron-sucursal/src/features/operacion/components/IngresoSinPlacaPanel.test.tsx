@@ -177,10 +177,14 @@ describe('<IngresoSinPlacaPanel>', () => {
       uuid_tipo_vehiculo: BICI_UUID,
     });
     await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
+    // HU-F11.x (REQ-OPS-200): the callback now receives the selected
+    // UUID as the second arg so the parent can resolve the concrete
+    // tipo name (``bicicleta`` / ``patineta``) for the tiquete preview.
     expect(onSuccess).toHaveBeenCalledWith(
       expect.objectContaining({
         consecutivo: 'BICI-000001-3f8a1b2c',
       }),
+      BICI_UUID,
     );
   });
 

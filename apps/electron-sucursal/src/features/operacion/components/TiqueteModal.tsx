@@ -112,6 +112,16 @@ export interface TiqueteModalProps {
   uuid_ingreso: string;
   tipo_entrada: 'MENSUALIDAD' | 'ROTACION';
   /**
+   * HU-F11.x (REQ-OPS-200): concrete vehicle type name
+   * (``carro`` / ``moto`` / ``bicicleta`` / ``patineta``) resolved by
+   * the parent. Distinct from ``tipo_entrada`` which is just the
+   * ``ROTACION`` / ``MENSUALIDAD`` discriminator. Rendered in the
+   * preview so the operator sees the actual tipo they committed
+   * (auto-detected OR override-selected) — useful when the regex
+   * detected one thing and the operator chose another.
+   */
+  tipo_vehiculo_nombre?: string | null;
+  /**
    * REQ-OPS-197: parking-lot identifier for no-placa ingresos.
    * When non-null, the modal renders `Identificación: {consecutivo}`
    * instead of any placa display. Null for legacy carro/moto rows
@@ -164,6 +174,7 @@ export function TiqueteModal({
   open,
   uuid_ingreso,
   tipo_entrada,
+  tipo_vehiculo_nombre = null,
   consecutivo,
   placa = null,
   cliente = null,
@@ -317,6 +328,26 @@ export function TiqueteModal({
                   })
                 : t('ingreso_rotacion_label', { defaultValue: 'Rotación' })}
             </div>
+            {/*
+              HU-F11.x (REQ-OPS-200): concrete vehicle type name the
+              operator actually committed (resolved at submit time
+              from the override UUID or the regex-detected tipo).
+              Renders ABOVE the ``Tipo:`` discriminator line so the
+              operator can verify both at a glance (the ``Tipo:``
+              line is the commercial modality; the ``Vehículo:`` line
+              is the physical class). Hidden if the parent could not
+              resolve the name (defensive — the API doesn't carry it).
+            */}
+            {tipo_vehiculo_nombre !== null && tipo_vehiculo_nombre !== undefined && (
+              <div>
+                <span className="font-semibold">
+                  {t('tiquete_entrada_preview_vehiculo', {
+                    defaultValue: 'Vehículo:',
+                  })}
+                </span>{' '}
+                {tipo_vehiculo_nombre}
+              </div>
+            )}
             {placa !== null && placa !== undefined && (
               <div>
                 <span className="font-semibold">
@@ -506,17 +537,13 @@ export function TiqueteModal({
           )}
         </div>
         <DialogFooter className="flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
-          {/* FEATURE D: workflow post-success buttons. */}
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onSiguiente}
-            aria-label={t('tiquete_entrada_siguiente', {
-              defaultValue: 'Siguiente',
-            })}
-          >
-            {t('tiquete_entrada_siguiente', { defaultValue: 'Siguiente' })}
-          </Button>
+          {/* REGRESSION fix (2026-09-22): only Imprimir + Ir a salida
+              remain. Previously the footer had Siguiente + Anular +
+              Hacer arqueo (the last three were stubs that only logged
+              to console) — they cluttered the operator's success view
+              without providing any real workflow hook. The Siguiente
+              path is auto-fired by Imprimir (FEATURE F) so the operator
+              no longer needs to click it manually. */}
           {onIrASalida && (
             <Button
               type="button"
@@ -529,42 +556,6 @@ export function TiqueteModal({
               })}
             </Button>
           )}
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              // TODO: wire to the FASE 8 anulaciones workflow modal when
-              // the corresponding HU ships. Today this just logs to
-              // console — the operator should NOT rely on this button
-              // until the workflow lands.
-              // eslint-disable-next-line no-console
-              console.warn(
-                '[TiqueteModal] Anular ingreso: workflow not yet wired',
-              );
-            }}
-            data-testid="tiquete-anular"
-          >
-            {t('tiquete_entrada_anular', {
-              defaultValue: 'Anular',
-            })}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              // TODO: wire to the F11.x arqueo workflow when the
-              // corresponding HU ships. Today this just logs to console.
-              // eslint-disable-next-line no-console
-              console.warn(
-                '[TiqueteModal] Hacer arqueo: workflow not yet wired',
-              );
-            }}
-            data-testid="tiquete-arquear"
-          >
-            {t('tiquete_entrada_arqueo', {
-              defaultValue: 'Hacer arqueo',
-            })}
-          </Button>
           {/* FEATURE F: Imprimir — disabled when subscription is expired
               (FEATURE B gate). On success the dialog auto-closes via
               onSiguiente() so the operator doesn't need to click
