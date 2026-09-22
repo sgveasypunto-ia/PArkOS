@@ -38,6 +38,9 @@ import {
   type TipoIngresoVariant,
 } from './TipoIngresoToggle';
 import { TiqueteModal } from './TiqueteModal';
+import { useClienteBySubscripcion } from '../api/clienteApi';
+import { buildEntradaPayloadFromResponse } from '../../../lib/print/printBuilder';
+import { buildEntradaBuffer } from '../../../lib/print/escposBuilder';
 import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import {
@@ -57,6 +60,13 @@ interface SuccessState {
   tipo_entrada: 'MENSUALIDAD' | 'ROTACION';
   /** REQ-OPS-197: parking-lot identifier for no-placa ingresos. */
   consecutivo: string | null;
+  /** REGRESSION fix (2026-09-22): legacy F6.2 placa for con-placa
+      ingresos so the tiquete preview can show the right line. Null
+      for no-placa ingresos. */
+  placa: string | null;
+  /** FK to subscripcion_cliente when tipo_entrada === 'MENSUALIDAD';
+      triggers the cliente SWR fetch in the modal. */
+  uuid_subscripcion_cliente: string | null;
 }
 
 export interface IngresoPanelProps {
@@ -112,16 +122,25 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
     setTipoDetectado(detectarTipoVehiculo(placa));
   }, [placa]);
 
+  // SWR-fetched cliente metadata for Mensualidad ingresos (REGRESSION
+  // fix 2026-09-22). Key is the FK returned by the POST response; SWR
+  // dedupes across re-renders.
+  const { data: clienteData } = useClienteBySubscripcion(
+    success?.uuid_subscripcion_cliente,
+  );
+
   const openSuccessWithAutoPrint = useCallback(
-    async (response: PostIngresoResponse) => {
+    async (response: PostIngresoResponse, currentPlaca: string | null) => {
       setSuccess({
         uuid_ingreso: response.uuid,
         tipo_entrada: response.tipo_entrada,
         consecutivo: response.consecutivo,
+        placa: response.consecutivo ? null : currentPlaca,
+        uuid_subscripcion_cliente: response.uuid_subscripcion_cliente,
       });
       setToggleKey((k) => k + 1);
       try {
-        const payload = buildPrintPayload(response);
+        const payload = buildPrintPayload(response, currentPlaca);
         await window.bridge.imprimir(payload);
       } catch {
         // Best-effort print — DEC-SUC-27; F5.1 retry queue handles reconnects.
@@ -138,7 +157,8 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
    */
   const handleIngresoSinPlacaSuccess = useCallback(
     async (response: PostIngresoResponse) => {
-      await openSuccessWithAutoPrint(response);
+      // No-placa flow: pass null placa; the modal uses ``consecutivo``.
+      await openSuccessWithAutoPrint(response, null);
     },
     [openSuccessWithAutoPrint],
   );
@@ -224,7 +244,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       setSubmitting(true);
       try {
         const response = await postIngreso(payload);
-        await openSuccessWithAutoPrint(response);
+        await openSuccessWithAutoPrint(response, nextPlaca);
       } catch (err) {
         await handlePostError(err, nextPlaca, payload);
       } finally {
@@ -253,7 +273,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           forzado: true,
           observaciones: forced.observaciones,
         });
-        await openSuccessWithAutoPrint(response);
+        await openSuccessWithAutoPrint(response, forced.placa);
       } catch (err) {
         await handlePostError(err, forced.placa, {
           ...forzarPayload,
@@ -391,11 +411,15 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           uuid_ingreso={success.uuid_ingreso}
           tipo_entrada={success.tipo_entrada}
           consecutivo={success.consecutivo}
+          placa={success.placa}
+          cliente={
+            success.uuid_subscripcion_cliente ? clienteData ?? null : null
+          }
           buildPrintPayload={(uuid) =>
             buildPrintPayload({
               uuid_ingreso: uuid,
               tipo_entrada: success.tipo_entrada,
-              uuid_subscripcion_cliente: null,
+              uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
               consecutivo: success.consecutivo,
             })
           }
@@ -420,17 +444,37 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
 
 /**
  * `buildPrintPayload(response)` — produce the F5.1 IPC payload that
- * wraps the F5.2 escposBuilder's `entrada` build into a base64 buffer
- * + the ingreso UUID as ticketId. F5.2 owns the actual byte
- * composition; this panel only wires the result to the bridge.
+ * wraps the F5.2 ``escposBuilder.buildEntradaBuffer`` result into a
+ * base64 buffer + the ingreso UUID as ticketId. F5.2 owns the actual
+ * byte composition; this panel only wires the result to the bridge.
+ *
+ * REGRESSION fix (2026-09-22): the prior implementation emitted a
+ * sentinel Buffer (``Buffer.from("tiquete:entrada:...")``) that
+ * ``bridge.imprimir`` rejected — every click on "Imprimir" failed
+ * with the generic "No se pudo imprimir el tiquete" error. Now we
+ * actually call the F5.2 builder via ``printBuilder.ts`` which
+ * assembles a structurally valid ``EntradaPayload`` (discriminated
+ * union ``con-placa`` | ``con-consecutivo``) before serializing.
+ *
+ * Note: ``cliente`` is NOT threaded into this payload yet — the
+ * tiquete's cliente block is currently rendered only in the preview.
+ * Wiring the cliente name into the ESC/POS payload is a follow-up
+ * (requires a ``clienteSchema`` to be added to ``escposTemplates.ts``
+ * and a 17th/18th key in ``TiqueteEntradaCampos``).
  */
 function buildPrintPayload(
   response: PostIngresoResponse,
+  currentPlaca: string | null,
 ): { buffer: string; ticketId: string; cut: boolean } {
-  const buffer = Buffer.from(
-    `tiquete:entrada:${response.uuid}`,
-    'utf8',
+  const entradaPayload = buildEntradaPayloadFromResponse(
+    response,
+    response.consecutivo ? null : currentPlaca,
+    // TODO: hydrate from a future GET /print-context endpoint (or
+    // individual fetches of empresa + sucursal + tarifa + documentos).
+    {},
+    null, // cliente metadata not threaded into ESC/POS payload yet
   );
+  const buffer = buildEntradaBuffer(entradaPayload);
   return {
     buffer: buffer.toString('base64'),
     ticketId: response.uuid,

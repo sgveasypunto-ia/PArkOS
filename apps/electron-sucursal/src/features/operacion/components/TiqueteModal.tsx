@@ -17,10 +17,15 @@
  *   - For no-placa ingresos (consecutivo present), renders an
  *     `Identificación: {consecutivo}` line INSTEAD of the legacy
  *     placa display (operator-facing label per DEC-SUC-26 + Q3).
+ *   - For con-placa ingresos, renders the placa line in the preview.
+ *   - When the ingreso has ``uuid_subscripcion_cliente``, the preview
+ *     surfaces the cliente block (nombre + apellido + identificador)
+ *     + a ``*** PAGO CON MENSUALIDAD ***`` sello (DEC-SUC-21).
  *   - Exposes an always-on "Imprimir" button (E3 exemption, distinct
  *     from Fase 8 `reimpresion_ticket` workflow). The button calls
- *     `bridge.imprimir({ buffer, ticketId })` using the typed bridge
- *     surface from F5.1 (T0a extended `PrintPayload` with `buffer`).
+ *     ``bridge.imprimir({ buffer, ticketId })`` using the typed
+ *     ``PrintPayload`` from F5.1 (T0a extended ``PrintPayload`` with
+ *     ``buffer``).
  *   - Exposes a "Siguiente" button to dismiss the modal and reset the
  *     form for the next vehicle.
  *
@@ -30,12 +35,14 @@
  *   - `tiquete_entrada_titulo` (reused from F6.2)
  *   - `ingreso_registrado_exitoso` (reused from F6.2)
  *   - `tiquete_identificacion_label` — "Identificación" (HU-INGRESO-SIN-PLACA)
- *   - `tiquete_entrada_preview_header` — "Tiquete de entrada" (the
- *     preview's centered header line, distinct from the modal title)
- *   - `tiquete_entrada_preview_fecha` — "Fecha:" (preview field label)
- *   - `tiquete_entrada_preview_tipo` — "Tipo:" (preview field label)
- *   - `tiquete_entrada_preview_id` — "Identificación:" (preview field label)
- *   - `tiquete_entrada_preview_folio` — "Folio:" (preview field label)
+ *   - `tiquete_entrada_preview_header` — "Tiquete de entrada"
+ *   - `tiquete_entrada_preview_fecha` — "Fecha:"
+ *   - `tiquete_entrada_preview_tipo` — "Tipo:"
+ *   - `tiquete_entrada_preview_placa` — "Placa:" (REGRESSION fix 2026-09-22)
+ *   - `tiquete_entrada_preview_id` — "Identificación:"
+ *   - `tiquete_entrada_preview_folio` — "Folio:"
+ *   - `tiquete_entrada_preview_cliente` — "Cliente:" (REGRESSION fix 2026-09-22)
+ *   - `tiquete_entrada_preview_mensualidad_sello` — "*** PAGO CON MENSUALIDAD ***"
  */
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -49,6 +56,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import type { ClienteContext } from '@/lib/print/printBuilder';
 
 export interface TiqueteModalProps {
   open: boolean;
@@ -61,6 +69,21 @@ export interface TiqueteModalProps {
    * (REQ-OPS-192 backward compat).
    */
   consecutivo?: string | null;
+  /**
+   * REGRESSION fix (2026-09-22): the placa for legacy carro/moto
+   * ingresos (F6.2 path). Null for no-placa ingresos. Rendered in the
+   * preview when present so the operator can verify the placa before
+   * printing.
+   */
+  placa?: string | null;
+  /**
+   * Cliente metadata for ingresos with ``uuid_subscripcion_cliente``
+   * (i.e. tipo_entrada === 'MENSUALIDAD'). When provided, the preview
+   * adds a ``Cliente: <nombre> <apellido>`` line + a
+   * ``*** PAGO CON MENSUALIDAD ***`` sello (DEC-SUC-21). Hydrated by
+   * the parent via ``useClienteBySubscripcion``.
+   */
+  cliente?: ClienteContext | null;
   /**
    * Closure that produces a fresh `bridge.imprimir` payload for the
    * given `uuid_ingreso`. Centralised so the page can swap the
@@ -81,6 +104,8 @@ export function TiqueteModal({
   uuid_ingreso,
   tipo_entrada,
   consecutivo,
+  placa = null,
+  cliente = null,
   buildPrintPayload,
   onSiguiente,
 }: TiqueteModalProps) {
@@ -180,6 +205,20 @@ export function TiqueteModal({
                   })
                 : t('ingreso_rotacion_label', { defaultValue: 'Rotación' })}
             </div>
+            {/* REGRESSION fix (2026-09-22): render the placa for legacy
+                con-placa ingresos (REGRESSION fix for missing placa
+                prop). For no-placa ingresos (consecutivo present) this
+                line is omitted to avoid showing both placa + ident. */}
+            {placa !== null && placa !== undefined && (
+              <div>
+                <span className="font-semibold">
+                  {t('tiquete_entrada_preview_placa', {
+                    defaultValue: 'Placa:',
+                  })}
+                </span>{' '}
+                {placa}
+              </div>
+            )}
             <div>
               <span className="font-semibold">
                 {t('tiquete_entrada_preview_id', {
@@ -192,6 +231,31 @@ export function TiqueteModal({
                 <span className="text-neutral-500">—</span>
               )}
             </div>
+            {/* REGRESSION fix (2026-09-22): render the cliente block when
+                the ingreso has a vigente subscripcion. Hydrated by the
+                parent via ``useClienteBySubscripcion`` (chained read of
+                subscripcion → cliente). Hidden entirely when no
+                cliente metadata is available so the preview matches
+                the operator's mental model: a Rotación ingreso has no
+                cliente block. */}
+            {cliente !== null && (
+              <>
+                <div>
+                  <span className="font-semibold">
+                    {t('tiquete_entrada_preview_cliente', {
+                      defaultValue: 'Cliente:',
+                    })}
+                  </span>{' '}
+                  {cliente.nombre} {cliente.apellido}
+                </div>
+                <div>
+                  <span className="font-semibold">
+                    {cliente.tipoIdentificador}:
+                  </span>{' '}
+                  {cliente.numeroIdentificacion}
+                </div>
+              </>
+            )}
             <div>
               <span className="font-semibold">
                 {t('tiquete_entrada_preview_folio', { defaultValue: 'Folio:' })}
@@ -199,6 +263,17 @@ export function TiqueteModal({
               <span className="break-all">{uuid_ingreso}</span>
             </div>
           </div>
+          {/* DEC-SUC-21 sello: surfaced only when the ingreso carries a
+              subscripcion (cliente present). Printed as a centered,
+              bordered banner inside the dashed preview frame so the
+              operator notices it BEFORE pressing "Imprimir". */}
+          {cliente !== null && (
+            <div className="mt-2 border-t border-dashed border-neutral-400 pt-2 text-center font-bold uppercase">
+              {t('tiquete_entrada_preview_mensualidad_sello', {
+                defaultValue: '*** Pago con mensualidad ***',
+              })}
+            </div>
+          )}
         </div>
 
         <div className="space-y-2 text-sm">
