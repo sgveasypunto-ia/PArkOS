@@ -175,7 +175,20 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       }
       const body = err.body;
       if (err.status === 409 && body.includes('ingreso_activo_existente')) {
-        const uuidIngreso = latestIngreso?.uuid ?? (await fetchActiveUuid(placaActual));
+        // REGRESSION fix (2026-09-22): prefer the UUID returned in the
+        // 409 response body (authoritative server-side identifier of
+        // the blocking ingreso). Fall back to the local SWR cache
+        // (may be stale across re-renders) and finally to a server
+        // round-trip via fetchActiveUuid.
+        let uuidIngreso: string = '';
+        const detail = (err as ParkosHttpError & { detail?: { uuid_ingreso_existente?: string } }).detail;
+        if (detail && typeof detail === 'object' && detail.uuid_ingreso_existente) {
+          uuidIngreso = detail.uuid_ingreso_existente;
+        } else if (latestIngreso?.uuid) {
+          uuidIngreso = latestIngreso.uuid;
+        } else {
+          uuidIngreso = await fetchActiveUuid(placaActual);
+        }
         navigate(`${SALIDA_FLOW_STUB}?uuid_ingreso=${encodeURIComponent(uuidIngreso)}`);
         return;
       }
