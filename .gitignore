@@ -29,6 +29,16 @@ infra/deploy/.env.*
 .coverage
 .coverage.*
 
+# TypeScript incremental build cache + per-task verify configs
+# (apps/electron-sucursal/tsconfig.f4-3-verify.json, etc.)
+*.tsbuildinfo
+tsconfig.*-verify.json
+
+# Playwright / Vitest runtime artifacts
+test-results/
+playwright-report/
+playwright/.cache/
+
 # IDE
 .vscode/
 .idea/
