@@ -55,7 +55,17 @@ from . import _helpers
 # factory because F1.13's write is cross-table atomic
 # (1 [A] Arqueo + N [L-S] sesion + 1 [L-W] alerta + N+1 [A] log),
 # which the read-only factory cannot model.
-router = APIRouter(prefix="/caja", tags=["caja"])
+#
+# Prefix-less on purpose: the parent ``caja.router`` ALREADY has
+# ``prefix="/caja"`` (api/v1/caja.py:25). Carrying the same prefix
+# here AND including without ``prefix=""`` caused the F11.3 path
+# doubling -- ``POST /api/v1/caja/arqueo`` and ``GET /api/v1/caja/arqueo/
+# resumen`` registered at the doubled ``/api/v1/caja/caja/arqueo``
+# (openapi.json confirmed pre-fix). The FE was hitting 405 because
+# the canonical path ``/api/v1/caja/arqueo`` only had GET registered
+# (factory mount). Removing the prefix lets the parent's prefix carry
+# the canonical path.
+router = APIRouter(tags=["caja"])
 
 # KD-3 issuer chain + ``realizar_arqueo`` permission gate (DEC-ARQUEO-05).
 _caja_arqueo_issuer_dep = requires_issuer("operador-", "admin-")
