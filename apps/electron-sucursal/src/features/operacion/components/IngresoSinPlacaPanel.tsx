@@ -161,14 +161,14 @@ export function IngresoSinPlacaPanel({
               })}
             />
           </SelectTrigger>
-          {/* ``position="item-aligned"`` aligns the dropdown with the
-              selected/first item rather than the trigger — more
-              predictable inside Radix Sheet's stacking context. Combined
-              with the ``!fixed z-[10000]`` in ``SelectContent`` (see
-              ``select.tsx``), this restores the expected overlay
-              behavior that was trapped inside ``SheetContent``'s
-              ``overflow-y-auto`` container. */}
-          <SelectContent position="item-aligned">
+          {/* Use default ``popper`` positioning (anchored to the trigger)
+              + ``!fixed z-[10000]`` in ``SelectContent`` (see
+              ``select.tsx``) so the dropdown spans the full trigger
+              width and floats below it. ``position="item-aligned"`` was
+              tried earlier but placed the dropdown at the first item's
+              coords — anchored to top-left in this narrow dialog,
+              looking orphaned from the trigger. */}
+          <SelectContent>
             {tipos.map((tipo) => (
               <SelectItem key={tipo.uuid} value={tipo.uuid}>
                 {tipo.tipo === 'bicicleta'
