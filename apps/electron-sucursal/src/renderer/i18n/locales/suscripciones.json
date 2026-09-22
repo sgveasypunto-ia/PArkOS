@@ -12,7 +12,7 @@
     "listaVacia": "Sin suscripciones activas en esta sede.",
     "nuevaVenta": "Nueva venta de suscripción",
     "tituloVenta": "Nueva venta de suscripción",
-    "descripcionVenta": "Venta de suscripción en 4 pasos. Al pagar, regresa a esta pestaña.",
+    "descripcionVenta": "Venta de suscripción en 5 pasos. Al pagar, regresa a esta pestaña.",
     "volver": "Volver"
   },
   "listado": {
@@ -40,10 +40,6 @@
       "siguiente": "Siguiente"
     },
     "paso2": {
-      "titulo": "Vehículos",
-      "siguiente": "Siguiente"
-    },
-    "paso3": {
       "titulo": "Plan",
       "siguiente": "Siguiente",
       "loading": "Cargando planes…",
@@ -51,7 +47,17 @@
       "empty": "No hay planes configurados para esta sede.",
       "duracion": "{{dias}} días · máx {{vehiculos}} vehículo(s)"
     },
+    "paso3": {
+      "titulo": "Cantidad de vehículos",
+      "siguiente": "Siguiente",
+      "descripcion": "Este plan permite hasta {{max}} vehículo(s). ¿Cuántos vas a registrar?"
+    },
     "paso4": {
+      "titulo": "Placas",
+      "siguiente": "Siguiente",
+      "vehiculoLabel": "Vehículo {{n}}"
+    },
+    "paso5": {
       "titulo": "Pago"
     },
     "errors": {

@@ -2,17 +2,17 @@
  * Tests for `<Venta />` wizard page (HU-F9.1, REQ-OPS-176).
  *
  * Coverage (7 component tests):
- *   T1: mount → shows step 1 (cliente form).
- *   T2: step 1 submit with valid cliente → advances to step 2.
- *   T3: step 1 submit with NIT corto → inline Zod error.
- *   T4: step 2 submit with placa duplicada (trigger 422) → typed
- *       error rendered inline.
- *   T5: step 3 submit with valid plan → advances to step 4.
- *   T6: step 4 shows prorrateo badge when applicable (day>15).
- *   T7: confirm → useVentaSuscripcion.trigger called with full payload.
+ *   T1: mount -> shows step 1 (cliente form).
+ *   T2: step 1 submit with valid cliente -> advances to step 2 (Plan).
+ *   T3: step 1 submit with NIT corto -> inline Zod error.
+ *   T4: pago submit -> 422 typed error -> revert to step 4 (Placas) with
+ *       inline placa group error.
+ *   T5: cliente + plan + cantidad + placas -> advances to step 5 (Pago).
+ *   T6: step 5 shows prorrateo badge when applicable (day>15).
+ *   T7: confirm -> useVentaSuscripcion.trigger called with full payload.
  *
  * The PagoModal composition is stubbed via a real `<PagoModal />`
- * mock that just exposes its `onSubmit` prop — no full F8.1 PagoModal
+ * mock that just exposes its `onSubmit` prop -- no full F8.1 PagoModal
  * test re-run inside this file (PagoModal's own tests cover that).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -37,6 +37,28 @@ vi.mock('../hooks/useVentaSuscripcion', async (importOriginal) => {
     }),
   };
 });
+
+// Stub the catalog endpoint so useTiposSubscripciones returns 1 plan with
+// max=1 -- matches the rest of the test's assumption that the operator
+// will type exactly one plate.
+vi.mock('../hooks/useTiposSubscripciones', () => ({
+  useTiposSubscripciones: () => ({
+    data: [
+      {
+        uuid: '00000000-0000-0000-0000-0000000000a1',
+        tipo: 'MENSUAL_TEST',
+        valor: 30000,
+        duracion_dias: 30,
+        cantidad_maxima_vehiculos: 1,
+        mismo_tipo_vehiculo: true,
+        tipo_cliente_permitido: 'natural',
+      },
+    ],
+    error: undefined,
+    refresh: async () => undefined,
+    isLoading: false,
+  }),
+}));
 
 vi.mock('../../facturacion/components/PagoModal', () => ({
   PagoModal: ({
@@ -93,14 +115,14 @@ beforeEach(() => {
   });
 });
 
-describe('<Venta /> — REQ-OPS-176 (wizard 4 pasos)', () => {
-  it('T1: mount → shows step 1 (cliente form)', () => {
+describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad -> placas -> pago)', () => {
+  it('T1: mount -> shows step 1 (cliente form)', () => {
     renderVenta();
     expect(screen.getByTestId('venta-paso-1')).toBeDefined();
     expect(screen.getByTestId('venta-cliente-nit')).toBeDefined();
   });
 
-  it('T2: step 1 submit with valid cliente → advances to step 2', async () => {
+  it('T2: step 1 submit with valid cliente -> advances to step 2 (Plan)', async () => {
     renderVenta();
     const nit = screen.getByTestId('venta-cliente-nit');
     const nombre = screen.getByTestId('venta-cliente-nombre');
@@ -115,7 +137,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 4 pasos)', () => {
     expect(screen.getByTestId('venta-paso-2')).toBeDefined();
   });
 
-  it('T3: step 1 submit with NIT corto → inline Zod error', async () => {
+  it('T3: step 1 submit with NIT corto -> inline Zod error', async () => {
     renderVenta();
     const nit = screen.getByTestId('venta-cliente-nit');
     await act(async () => {
@@ -131,7 +153,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 4 pasos)', () => {
     );
   });
 
-  it('T4: pago submit → 422 typed error → revert to paso 2 with inline error', async () => {
+  it('T4: pago submit -> 422 typed error -> revert to step 4 (Placas) with inline placa group error', async () => {
     // Import real classes via the mocked-with-importOriginal hook.
     const mod = await import('../hooks/useVentaSuscripcion');
     mockTrigger.mockRejectedValueOnce(
@@ -149,32 +171,38 @@ describe('<Venta /> — REQ-OPS-176 (wizard 4 pasos)', () => {
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2
+    // step 2 (Plan)
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input'), {
-        target: { value: 'ABC123' },
-      });
+      const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
+      fireEvent.click(plan);
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3
+    // step 3 (Cantidad)
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-plan-select'), {
-        target: { value: '00000000-0000-0000-0000-0000000000a1' },
+      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
+        target: { value: '1' },
       });
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 PagoModal stub: click confirmar → trigger throws typed error
+    // step 4 (Placas)
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
+        target: { value: 'ABC123' },
+      });
+      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
+    });
+    // step 5 PagoModal stub: click confirmar -> trigger throws typed error
     await act(async () => {
       fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
     });
-    // The wizard reverts to paso 2 with the inline message.
-    expect(screen.getByTestId('venta-paso-2')).toBeDefined();
-    expect(screen.getByTestId('venta-placa-error').textContent).toMatch(
+    // The wizard reverts to paso 4 (Placas) with the inline group error.
+    expect(screen.getByTestId('venta-paso-4')).toBeDefined();
+    expect(screen.getByTestId('venta-placas-error').textContent).toMatch(
       /duplicada|placa/i,
     );
   });
 
-  it('T5: step 3 submit with valid plan → advances to step 4', async () => {
+  it('T5: cliente + plan + cantidad + placas -> advances to step 5 (Pago)', async () => {
     renderVenta();
     // step 1
     await act(async () => {
@@ -186,26 +214,31 @@ describe('<Venta /> — REQ-OPS-176 (wizard 4 pasos)', () => {
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2
+    // step 2 (Plan)
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input'), {
-        target: { value: 'ABC123' },
-      });
+      const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
+      fireEvent.click(plan);
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 plan
-    const plan = screen.getByTestId('venta-plan-select');
+    // step 3 (Cantidad)
     await act(async () => {
-      fireEvent.change(plan, {
-        target: { value: '00000000-0000-0000-0000-0000000000a1' },
+      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
+        target: { value: '1' },
       });
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    expect(screen.getByTestId('venta-paso-4')).toBeDefined();
+    // step 4 (Placas)
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
+        target: { value: 'ABC123' },
+      });
+      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
+    });
+    expect(screen.getByTestId('venta-paso-5')).toBeDefined();
   });
 
-  it('T6: step 4 shows prorrateo badge when applicable (day>15)', async () => {
-    // date=2026-09-19 (day=19) → prorrateo visible
+  it('T6: step 5 shows prorrateo badge when applicable (day>15)', async () => {
+    // date=2026-09-19 (day=19) -> prorrateo visible
     renderVenta();
     // step 1
     await act(async () => {
@@ -217,30 +250,32 @@ describe('<Venta /> — REQ-OPS-176 (wizard 4 pasos)', () => {
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2
+    // step 2 (Plan)
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input'), {
-        target: { value: 'ABC123' },
-      });
+      const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
+      fireEvent.click(plan);
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3
+    // step 3 (Cantidad)
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-plan-select'), {
-        target: { value: '00000000-0000-0000-0000-0000000000a1' },
+      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
+        target: { value: '1' },
       });
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4: prorrateo badge should be visible (total > 0)
+    // step 4 (Placas)
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
+        target: { value: 'ABC123' },
+      });
+      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
+    });
+    // step 5: prorrateo badge should be visible (total > 0)
     expect(screen.getByTestId('pago-modal')).toBeDefined();
-    // The PagoModal mock receives total_cop as `monto_proporcional ?? plan.valor`.
-    // When day>15 the badge is shown; when day<=15 the badge is omitted
-    // (the underlying PagoModal still mounts but with `plan.valor` instead).
-    // We assert the PagoModal mounted (composition contract).
     expect(screen.getByTestId('pago-total').textContent).toBeTruthy();
   });
 
-  it('T7: confirm → useVentaSuscripcion.trigger called with full payload', async () => {
+  it('T7: confirm -> useVentaSuscripcion.trigger called with full payload', async () => {
     renderVenta();
     // step 1
     await act(async () => {
@@ -252,21 +287,27 @@ describe('<Venta /> — REQ-OPS-176 (wizard 4 pasos)', () => {
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2
+    // step 2 (Plan)
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input'), {
-        target: { value: 'ABC123' },
-      });
+      const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
+      fireEvent.click(plan);
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3
+    // step 3 (Cantidad)
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-plan-select'), {
-        target: { value: '00000000-0000-0000-0000-0000000000a1' },
+      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
+        target: { value: '1' },
       });
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 PagoModal stub: click confirmar
+    // step 4 (Placas)
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
+        target: { value: 'ABC123' },
+      });
+      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
+    });
+    // step 5 PagoModal stub: click confirmar
     await act(async () => {
       fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
     });
