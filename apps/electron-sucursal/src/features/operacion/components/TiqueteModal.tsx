@@ -97,8 +97,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Textarea } from '@/components/ui/textarea';
 import type { ClienteContext } from '@/features/operacion/api/clienteApi';
+
+// shadcn/ui doesn't ship a Textarea primitive in this codebase —
+// use the native HTML element with shadcn-friendly Tailwind classes
+// (same pattern as the existing `id="principal-observaciones"`
+// textarea in `pages/Principal.tsx`).
+const TextareaNative = (
+  props: React.TextareaHTMLAttributes<HTMLTextAreaElement>,
+) => <textarea {...props} />;
 
 export interface TiqueteModalProps {
   open: boolean;
@@ -402,7 +409,7 @@ export function TiqueteModal({
               defaultValue: 'Observaciones:',
             })}
           </label>
-          <Textarea
+          <TextareaNative
             id="tiquete-observaciones"
             data-testid="tiquete-observaciones"
             value={observaciones}
