@@ -129,7 +129,14 @@ async def existe_ingreso_activo(
             id_stmt, {"uuid_sucursal": str(uuid_sucursal), "placa": placa}
         )
     ).first()
-    return uuid_lib.UUID(id_row.uuid) if id_row is not None else None
+    # REGRESSION fix (2026-09-22): ``id_row.uuid`` is an
+    # ``asyncpg.pgproto.UUID`` instance, NOT a string. Python 3.13's
+    # ``uuid.UUID.__init__`` calls ``.replace('urn:', '')`` on its argument,
+    # which raises ``AttributeError`` for the asyncpg type. Coerce to
+    # ``str(...)`` first so the stdlib UUID constructor receives a hex
+    # string it knows how to parse. See traceback at the legacy
+    # con-placa POST path — bug surfaced during the workflow smoke.
+    return uuid_lib.UUID(str(id_row.uuid)) if id_row is not None else None
 
 
 def validar_kd_forzado(observaciones: str | None, forzado: bool) -> str | None:
