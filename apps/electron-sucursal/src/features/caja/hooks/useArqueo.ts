@@ -4,6 +4,13 @@
  * Mutation-only — arqueo is a write action (`POST /caja/arqueo`).
  * The hook exposes a `submit` function and a `resumen` getter
  * (`GET /caja/arqueo/resumen`) for the cierre-diario panel.
+ *
+ * F11.3 follow-up: the FE used to send ``tipo_arqueo: 'auditoria'``
+ * (a string codigo) which the BE V2 schema rejects via
+ * ``extra='forbid'``. The handler at api/v1/caja_arqueo.py:77 expects
+ * ``uuid_tipo_arqueo`` (UUID). Callers (ArqueoParcial, CerrarTurnoForm)
+ * now resolve the codigo via ``useTipoArqueoPorCodigo`` and pass the
+ * UUID directly. This hook accepts the UUID shape only.
  */
 import { z } from 'zod';
 
@@ -29,7 +36,7 @@ export function useArqueo() {
   return {
     async submit(payload: {
       uuid_sesion: string;
-      tipo_arqueo: 'auditoria' | 'cierre_turno' | 'cierre_dia';
+      uuid_tipo_arqueo: string;  // F11.3: UUID, not codigo string
       valor_efectivo_reportado: number;
       valor_datafono_reportado: number;
       justificacion?: string;
