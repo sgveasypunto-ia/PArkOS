@@ -254,6 +254,36 @@ export function Dashboard(): JSX.Element | null {
               : 'hidden lg:flex')
           }
         >
+          {/* Ingreso + Salida — acciones CORE del kiosko. Los drawers
+              `ingreso`/`salida` ya están cableados en DrawerHost
+              (F6.1/F7.1) y los hotkeys F1/F2 los abren desde header;
+              este anchor del sidebar los expone como botón trigger
+              para kioskos sin teclado o cuando el header está
+              colapsado en mobile. */}
+          <Button
+            variant="outline"
+            data-testid="sidebar-ingreso"
+            className="justify-start text-sm"
+            onClick={() => {
+              openDrawer('ingreso', 'sidebar-ingreso');
+              setMobileNavOpen(false);
+            }}
+          >
+            🚗 {t('operacion:ingreso', { defaultValue: 'Ingreso' })}
+            <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F1</kbd>
+          </Button>
+          <Button
+            variant="outline"
+            data-testid="sidebar-salida"
+            className="justify-start text-sm"
+            onClick={() => {
+              openDrawer('salida', 'sidebar-salida');
+              setMobileNavOpen(false);
+            }}
+          >
+            🏁 {t('operacion:salida', { defaultValue: 'Salida' })}
+            <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F2</kbd>
+          </Button>
           <Button
             variant="outline"
             data-testid="sidebar-suscripciones"
