@@ -13,7 +13,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { act, render, screen, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('react-i18next', () => ({
@@ -112,7 +112,7 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
     expect(screen.getByTestId('placa-input-stub')).toBeInTheDocument();
   });
 
-  it('I2: PlacaInput submit triggers postIngreso + auto-print on 201', async () => {
+  it('I2: two-step flujo (validate + confirmar) triggers postIngreso + auto-print on 201', async () => {
     mockPostIngreso.mockResolvedValue({
       uuid_ingreso: '00000000-0000-0000-0000-000000000777',
       tipo_entrada: 'ROTACION',
@@ -125,11 +125,23 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
       </MemoryRouter>,
     );
 
-    screen.getByTestId('placa-input-stub').click();
+    // Step 1: operator submits the placa — should ONLY validate (no POST).
+    await act(async () => {
+      screen.getByTestId('placa-input-stub').click();
+    });
+    expect(mockPostIngreso).not.toHaveBeenCalled();
+    expect(window.bridge.imprimir).not.toHaveBeenCalled();
 
-    // Yield once for the microtask chain (postIngreso + auto-print).
-    await Promise.resolve();
-    await Promise.resolve();
+    // Step 2: operator clicks "Registrar ingreso" — POST fires.
+    await act(async () => {
+      const registrarBtn = screen.getByTestId('ingreso-registrar') as HTMLButtonElement;
+      registrarBtn.click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     expect(mockPostIngreso).toHaveBeenCalledWith({
       placa: 'ABC123',
@@ -148,7 +160,7 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
     expect(window.bridge.imprimir).not.toHaveBeenCalled();
   });
 
-  it('I4: 422 motivo_forzado_requerido opens ForzarIngresoModal (lazy)', async () => {
+  it('I4: 422 motivo_forzado_requerido opens ForzarIngresoModal (lazy) on confirmar', async () => {
     const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
     mockPostIngreso.mockRejectedValue(
       new ParkosHttpError(422, 'motivo_forzado_requerido'),
@@ -159,11 +171,23 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
         <IngresoPanel />
       </MemoryRouter>,
     );
-    screen.getByTestId('placa-input-stub').click();
+    // Step 1: validate placa (no POST).
+    await act(async () => {
+      screen.getByTestId('placa-input-stub').click();
+    });
 
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // Step 2: confirmar — POST fires, server returns 422 → Forzar modal.
+    await act(async () => {
+      const registrarBtn = screen.getByTestId('ingreso-registrar') as HTMLButtonElement;
+      registrarBtn.click();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     // Forzar modal is mounted lazily once the 422 path triggers.
     expect(screen.getByTestId('forzar-modal-stub')).toBeInTheDocument();

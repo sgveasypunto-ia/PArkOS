@@ -26,8 +26,10 @@ NO DELETE endpoint at any layer — defense in depth (design §3, AGENTS.md §3)
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...db.engine import get_session
 from ...models.V.costos_servicios import CostosServicios
 from ...models.V.impuestos import Impuestos
 from ...models.V.otros_cobros import OtrosCobros
@@ -37,6 +39,7 @@ from ...models.V.tipo_subscripciones import TipoSubscripciones
 from ...models.V.tipo_sucursal import TipoSucursal
 from ...models.V.tipo_tarifa import TipoTarifa
 from ...models.V.tipos_vehiculo import TiposVehiculo
+from ...repo.tipos_vehiculo_subscripcion import get_tipos_vehiculo_con_subscripcion
 from ...schemas.costos_servicios import (
     CostosServiciosCreate,
     CostosServiciosRead,
@@ -201,6 +204,40 @@ _mount_catalog(
     create_schema=CostosServiciosCreate,
     update_schema=CostosServiciosUpdate,
 )
+
+
+# ---------------------------------------------------------------------------
+# HU-F11.x (REQ-OPS-200) — tipos_vehiculo subset para ingreso con override
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/tipos-vehiculo-con-subscripcion",
+    response_model=list[TiposVehiculoRead],
+    response_model_by_alias=False,
+    summary=(
+        "HU-F11.x: vigentes ``prod.tipos_vehiculo`` cuyo ``tipo`` aparece "
+        "como sufijo de al menos un ``prod.tipo_subscripciones`` vigente. "
+        "Usado por ``<IngresoPanel />`` para el dropdown de override del "
+        "tipo detectado por regex. Caching 5min (DEC-F4.1-04)."
+    ),
+    responses={
+        200: {"description": "Lista de ``TiposVehiculoRead`` filtrada por subscripcion."},
+    },
+)
+async def list_tipos_vehiculo_con_subscripcion(
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> list[TiposVehiculoRead]:
+    """Tipos de vehículo cubiertos por al menos un plan de subscripción
+    vigente. La selección se hace por convención del string
+    ``tipo_subscripciones.tipo`` (último segmento después de ``_``).
+
+    Operador-issuer: el dropdown es parte del flujo de ingreso. Mismas
+    reglas de caché que ``GET /catalogos/tipos-vehiculo`` (catalog reference
+    data, no realtime).
+    """
+    rows = await get_tipos_vehiculo_con_subscripcion(session)
+    return [TiposVehiculoRead.model_validate(r) for r in rows]
 
 
 __all__ = ["router"]

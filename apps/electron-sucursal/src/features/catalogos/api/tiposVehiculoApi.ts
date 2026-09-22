@@ -39,6 +39,20 @@ import { ParkosHttpError, parkosFetch } from '@parkos/ui-kit/fetch';
 const TIPOS_VEHICULO_PATH = '/api/v1/catalogos/tipos-vehiculo';
 
 /**
+ * Path GET catálogo de tipos de vehículo cubiertos por al menos un
+ * ``prod.tipo_subscripciones`` vigente (HU-F11.x / REQ-OPS-200). El
+ * backend filtra ``prod.tipos_vehiculo`` por el sufijo del string
+ * ``tipo_subscripciones.tipo`` (convención AUTO→carro / MOTO→moto).
+ *
+ * Consumido por el dropdown de override de tipo en
+ * ``<IngresoPanel />``. El catálogo completo (``getTiposVehiculo``)
+ * sigue siendo la fuente para ``<IngresoSinPlacaPanel />`` y el
+ * look-up del UUID al submit.
+ */
+const TIPOS_VEHICULO_CON_SUBSCRIPCION_PATH =
+  '/api/v1/catalogos/tipos-vehiculo-con-subscripcion';
+
+/**
  * Shape de un tipo de vehículo — matchea backend `TiposVehiculoRead`
  * (`schemas/tipos_vehiculo.py:13-23`). `tipo` es nullable en backend;
  * el filtro defensivo en `getTiposVehiculo()` descarta filas con
@@ -84,6 +98,27 @@ export async function getTiposVehiculo(): Promise<TipoVehiculo[]> {
       ? raw
       : (raw.items ?? []);
     return items.filter((t) => t.tipo !== null);
+  } catch (err) {
+    if (err instanceof ParkosHttpError && err.status === 404) {
+      return [];
+    }
+    throw err;
+  }
+}
+
+/**
+ * GET /api/v1/catalogos/tipos-vehiculo-con-subscripcion.
+ *
+ * Devuelve ``TipoVehiculo[]`` filtrado por subscripciones vigentes
+ * (ver HU-F11.x / REQ-OPS-200). 200 OK → ``TipoVehiculo[]`` (NO
+ * paginado por ahora, set chico). 404 → ``[]`` (sin subscripciones
+ * configuradas — fallback defensivo para no romper el dropdown).
+ * 401/5xx → propaga ``ParkosHttpError``.
+ */
+export async function getTiposVehiculoConSubscripcion(): Promise<TipoVehiculo[]> {
+  try {
+    const raw = await parkosFetch<TipoVehiculo[]>(TIPOS_VEHICULO_CON_SUBSCRIPCION_PATH);
+    return raw.filter((t) => t.tipo !== null);
   } catch (err) {
     if (err instanceof ParkosHttpError && err.status === 404) {
       return [];
