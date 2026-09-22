@@ -73,20 +73,31 @@ const SelectContent = React.forwardRef<
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        'relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+        // REGRESSION fix (2026-09-22): ``z-50`` was insufficient when the
+        // Select was mounted inside a Radix ``SheetContent`` with
+        // ``overflow-y-auto`` (which creates a stacking context that
+        // confines the dropdown portal). Bumping to ``z-[10000]`` and
+        // forcing ``position: fixed`` (so Radix's per-trigger transform
+        // positioning doesn't get trapped in the Sheet's stacking
+        // context) restores the expected overlay behavior. The
+        // ``!fixed`` Tailwind important-modifier breaks out of any
+        // ancestor stacking context the same way Radix's own
+        // ``--radix-popper-transform-origin`` does.
+        '!fixed z-[10000] max-h-96 min-w-[8rem] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
         position === 'popper' &&
-          'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1',
+          'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1 w-[var(--radix-select-trigger-width)] min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-trigger-width)]',
         className,
       )}
       position={position}
+      sideOffset={4}
+      collisionPadding={8}
       {...props}
     >
       <SelectScrollUpButton />
       <SelectPrimitive.Viewport
         className={cn(
           'p-1',
-          position === 'popper' &&
-            'h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]',
+          position === 'popper' && 'h-[var(--radix-select-trigger-height)] w-full',
         )}
       >
         {children}

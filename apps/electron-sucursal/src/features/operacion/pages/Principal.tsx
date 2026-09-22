@@ -41,7 +41,7 @@ import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { ForzarIngresoModal } from '../components/ForzarIngresoModal';
 import { IngresoSinPlacaPanel } from '../components/IngresoSinPlacaPanel';
 import { PlacaInput } from '../components/PlacaInput';
-import { TipoIngresoToggle } from '../components/TipoIngresoToggle';
+import { TipoIngresoToggle, type TipoIngresoVariant } from '../components/TipoIngresoToggle';
 import { TiqueteModal } from '../components/TiqueteModal';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import {
@@ -78,6 +78,14 @@ export default function Principal() {
     null,
   );
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * Which toggle variant is currently active. Mirrors the local state
+   * inside ``<TipoIngresoToggle>`` (REGRESSION fix 2026-09-22). The
+   * parent uses this to hide the global "Registrar ingreso" button +
+   * observaciones textarea when the operator switches to "Sin placa"
+   * — otherwise both submit CTAs render side-by-side.
+   */
+  const [activeVariant, setActiveVariant] = useState<TipoIngresoVariant>('con-placa');
   /**
    * Increment on each successful submit so the `<TipoIngresoToggle>`
    * remounts with a fresh `key` — resets its internal state to
@@ -296,6 +304,7 @@ export default function Principal() {
 
       <TipoIngresoToggle
         key={`toggle-${toggleKey}`}
+        onVariantChange={setActiveVariant}
         renderConPlaca={() => (
           <PlacaInput
             onValidSubmit={handlePlacaSubmit}
@@ -310,11 +319,17 @@ export default function Principal() {
         )}
       />
 
-      <div className="space-y-1">
-        <label
-          htmlFor="principal-observaciones"
-          className="text-sm font-medium"
-        >
+      {/* REGRESSION fix (2026-09-22): only render the global
+          observaciones textarea + submit button when con-placa variant
+          is active. The sin-placa panel has its OWN submit button
+          (inside ``IngresoSinPlacaPanel``). */}
+      {activeVariant === 'con-placa' && (
+        <>
+          <div className="space-y-1">
+            <label
+              htmlFor="principal-observaciones"
+              className="text-sm font-medium"
+            >
           {t('ingreso_observaciones_label', { defaultValue: 'Observaciones (opcional)' })}
         </label>
         <textarea
@@ -338,6 +353,8 @@ export default function Principal() {
           {observaciones.length}/500
         </p>
       </div>
+        </>
+      )}
 
       {tipoDetectado && (
         <p className="text-sm text-muted-foreground" role="status">

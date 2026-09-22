@@ -45,6 +45,19 @@ export default {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        /* REGRESSION fix (2026-09-22): ``popover`` was missing from the
+           Tailwind theme.extend.colors map. Without it, Tailwind does
+           not emit ``.bg-popover`` / ``.text-popover-foreground`` utility
+           classes — shadcn's ``SelectContent`` (and ``Dialog``,
+           ``DropdownMenu``, ``HoverCard``, ``Tooltip``, ``Popover``)
+           silently fall back to ``transparent``, making every
+           popover-based component invisible. Pair with the new
+           ``--popover`` / ``--popover-foreground`` CSS variables in
+           ``renderer/index.css``. */
+        popover: {
+          DEFAULT: 'hsl(var(--popover))',
+          foreground: 'hsl(var(--popover-foreground))',
+        },
       },
       borderRadius: {
         lg: 'var(--radius)',

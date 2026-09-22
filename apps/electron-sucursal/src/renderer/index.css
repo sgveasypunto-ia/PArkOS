@@ -8,6 +8,16 @@
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
+    /* REGRESSION fix (2026-09-22): --popover and --popover-foreground were
+       missing from the theme. Without them, Tailwind's ``bg-popover`` /
+       ``text-popover-foreground`` utilities resolve to ``hsl()`` (empty
+       var) which the browser falls back to ``transparent`` — rendering
+       the Select dropdown (and any other Popover-based component: Dialog,
+       Tooltip, DropdownMenu, HoverCard) invisible / transparent. Fix:
+       align with the canonical shadcn/ui default-theme tokens (same as
+       ``--card``) so popovers are visually consistent with cards. */
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
     --primary: 222.2 47.4% 11.2%;
     --primary-foreground: 210 40% 98%;
     --secondary: 210 40% 96.1%;
@@ -29,6 +39,8 @@
     --foreground: 210 40% 98%;
     --card: 222.2 84% 4.9%;
     --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
     --primary: 210 40% 98%;
     --primary-foreground: 222.2 47.4% 11.2%;
     --secondary: 217.2 32.6% 17.5%;

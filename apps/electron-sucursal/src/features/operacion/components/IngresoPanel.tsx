@@ -33,7 +33,10 @@ import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { ForzarIngresoModal } from './ForzarIngresoModal';
 import { IngresoSinPlacaPanel } from './IngresoSinPlacaPanel';
 import { PlacaInput } from './PlacaInput';
-import { TipoIngresoToggle } from './TipoIngresoToggle';
+import {
+  TipoIngresoToggle,
+  type TipoIngresoVariant,
+} from './TipoIngresoToggle';
 import { TiqueteModal } from './TiqueteModal';
 import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
@@ -81,6 +84,15 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   const [forzarOpen, setForzarOpen] = useState(false);
   const [forzarPayload, setForzarPayload] = useState<PostIngresoPayload | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * Which toggle variant is currently active. Mirrors the local state
+   * inside `<TipoIngresoToggle>` (REGRESSION fix 2026-09-22: the parent
+   * needs this to hide the global "Registrar ingreso" button + the
+   * observaciones textarea when the operator switches to "Sin placa" —
+   * otherwise both submit CTAs render side-by-side and the operator
+   * sees two submit buttons with overlapping intent).
+   */
+  const [activeVariant, setActiveVariant] = useState<TipoIngresoVariant>('con-placa');
   /**
    * Increment on each successful submit so the `<TipoIngresoToggle>`
    * remounts with a fresh `key` — resets its internal state to
@@ -272,6 +284,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
     >
       <TipoIngresoToggle
         key={`toggle-${toggleKey}`}
+        onVariantChange={setActiveVariant}
         renderConPlaca={() => (
           <PlacaInput
             onValidSubmit={handlePlacaSubmit}
@@ -289,53 +302,63 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         )}
       />
 
-      <div className="space-y-1">
-        <div className="flex items-baseline justify-between">
-          <label
-            htmlFor="ingreso-observaciones"
-            className="text-sm font-medium"
-          >
-            {t('ingreso_observaciones_label', { defaultValue: 'Observaciones' })}
-          </label>
-          <span
-            className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            data-testid="ingreso-observaciones-badge"
-          >
-            {t('common:opcional', { defaultValue: 'Opcional' })}
-          </span>
-        </div>
-        <textarea
-          id="ingreso-observaciones"
-          data-testid="ingreso-observaciones"
-          value={observaciones}
-          onChange={(e) => setObservaciones(e.target.value.slice(0, 500))}
-          placeholder={t('ingreso_observaciones_placeholder', {
-            defaultValue: 'Estado del vehículo, objetos visibles, notas del operador',
-          })}
-          disabled={submitting}
-          maxLength={500}
-          rows={2}
-          aria-describedby="ingreso-observaciones-help"
-          className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
-        />
-        <p
-          id="ingreso-observaciones-help"
-          className="text-xs text-muted-foreground"
-        >
-          {observaciones.length}/500
-        </p>
-      </div>
+      {/* REGRESSION fix (2026-09-22): only render the global
+          "Observaciones" textarea + "Registrar ingreso" submit button
+          when the con-placa variant is active. The sin-placa panel
+          has its OWN submit button (inside ``IngresoSinPlacaPanel``)
+          so showing both side-by-side would expose two submit CTAs
+          with overlapping intent — confusing for the operator. */}
+      {activeVariant === 'con-placa' && (
+        <>
+          <div className="space-y-1">
+            <div className="flex items-baseline justify-between">
+              <label
+                htmlFor="ingreso-observaciones"
+                className="text-sm font-medium"
+              >
+                {t('ingreso_observaciones_label', { defaultValue: 'Observaciones' })}
+              </label>
+              <span
+                className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                data-testid="ingreso-observaciones-badge"
+              >
+                {t('common:opcional', { defaultValue: 'Opcional' })}
+              </span>
+            </div>
+            <textarea
+              id="ingreso-observaciones"
+              data-testid="ingreso-observaciones"
+              value={observaciones}
+              onChange={(e) => setObservaciones(e.target.value.slice(0, 500))}
+              placeholder={t('ingreso_observaciones_placeholder', {
+                defaultValue: 'Estado del vehículo, objetos visibles, notas del operador',
+              })}
+              disabled={submitting}
+              maxLength={500}
+              rows={2}
+              aria-describedby="ingreso-observaciones-help"
+              className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
+            />
+            <p
+              id="ingreso-observaciones-help"
+              className="text-xs text-muted-foreground"
+            >
+              {observaciones.length}/500
+            </p>
+          </div>
 
-      <Button
-        type="submit"
-        form="ingreso-placa-form"
-        disabled={submitting}
-        size="lg"
-        className="w-full"
-        data-testid="ingreso-registrar"
-      >
-        {t('ingreso_registrar_boton', { defaultValue: 'Registrar ingreso' })}
-      </Button>
+          <Button
+            type="submit"
+            form="ingreso-placa-form"
+            disabled={submitting}
+            size="lg"
+            className="w-full"
+            data-testid="ingreso-registrar"
+          >
+            {t('ingreso_registrar_boton', { defaultValue: 'Registrar ingreso' })}
+          </Button>
+        </>
+      )}
 
       {tipoDetectado && (
         <p className="text-sm text-muted-foreground" role="status">
