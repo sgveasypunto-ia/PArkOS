@@ -111,21 +111,19 @@ export function Dashboard(): JSX.Element | null {
     : null;
 
   // F1-F6 hotkey listener → openDrawer + Esc closes.
-  // F4 (arqueo) is the ONLY hotkey that navigates instead of opening
-  // the drawer directly — REQ-OPS-152 (F10.1 / DA-2): the routed page
-  // wraps the drawer so the F4 hotkey + sidebar anchor share the same
-  // URL flow. The routed page itself opens the drawer via the store.
+  // Every drawer mounts via <DrawerHost /> on the dashboard — none of
+  // the F-keys navigate to a route. F4 (arqueo) shares the pattern:
+  // global hotkey opens the right-side arqueo drawer, the dashboard
+  // route stays at `/`. F11.3 (the old REQ-OPS-152 routed-page path
+  // for arqueo was removed: the F10.1 experience is drawer-only per
+  // the user's UX direction so F4 hotkey + sidebar anchor + hotkey
+  // chip all share the same code path).
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       if (e.key === 'Escape') {
         if (openDrawerKind !== null) {
           closeDrawer();
         }
-        return;
-      }
-      if (e.key === 'F4') {
-        e.preventDefault();
-        navigate('/caja/arqueo-parcial');
         return;
       }
       const target = DRAWER_BY_HOTKEY[e.key];
@@ -138,7 +136,7 @@ export function Dashboard(): JSX.Element | null {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [openDrawerKind, openDrawer, closeDrawer, navigate]);
+  }, [openDrawerKind, openDrawer, closeDrawer]);
 
   useEffect(() => {
     if (isAuthLoading) return;
@@ -217,12 +215,10 @@ export function Dashboard(): JSX.Element | null {
                 id={`hotkey-chip-${kind}`}
                 className="inline-flex h-6 cursor-pointer items-center rounded border border-border bg-background px-2 text-xs hover:bg-accent"
                 onClick={() => {
-                  // F4 (arqueo) navigates to the routed page instead
-                  // of opening the drawer directly — REQ-OPS-152 / DA-2.
-                  if (kind === 'arqueo') {
-                    navigate('/caja/arqueo-parcial');
-                    return;
-                  }
+                  // Every F-key chip opens the matching drawer; the
+                  // dashboard route stays at `/`. F4 (arqueo) shares
+                  // the same pattern as F1/F2/F3 (the F10.1 routed
+                  // page was retired in F11.3 per UX direction).
                   openDrawer(kind, `hotkey-chip-${kind}`);
                 }}
               >
@@ -269,20 +265,13 @@ export function Dashboard(): JSX.Element | null {
           >
             💳 {t('suscripciones:menu', { defaultValue: 'Suscripción' })}
           </Button>
-          <Button
-            variant="outline"
-            data-testid="sidebar-arqueo"
-            className="justify-start text-sm"
-            onClick={() => {
-              // REQ-OPS-152 / DA-2 — sidebar anchor navigates to the
-              // routed page. The page itself opens the drawer via the
-              // store, preserving focus-restore via lastAnchorId.
-              navigate('/caja/arqueo-parcial');
-              setMobileNavOpen(false);
-            }}
-          >
-            🧮 {t('caja:arqueoLabel', { defaultValue: 'Arqueo' })}
-          </Button>
+          {/* F11.3 — Arqueo lives in the right-sidebar MiTurnoPanel
+              alongside <CerrarTurnoButton> as the canonical per-turn
+              caja action. The left-sidebar nav anchor is removed
+              here so the operator's right-side MiTurnoPanel is the
+              single source of truth for the per-turn action surface
+              (mirrors how the F3.3 dashboard consolidates per-turn
+              KPIs + actions in the right column). */}
           {/* HU-F10.2 (REQ-OPS-157) — sidebar anchor for the cierre
               de turno page. Mirrors the F10.1 arqueo anchor: routed
               page (no drawer). The header chip + button is the
