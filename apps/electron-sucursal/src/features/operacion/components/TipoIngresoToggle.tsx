@@ -45,6 +45,15 @@ export interface TipoIngresoToggleProps {
    * the dominant choice on mount.
    */
   defaultVariant?: TipoIngresoVariant;
+  /**
+   * REGRESSION fix (2026-09-22): the parent needs to know which
+   * variant is active so it can hide the observaciones textarea + the
+   * global "Registrar ingreso" button when the operator has switched
+   * to "Sin placa" (otherwise both buttons render side-by-side and the
+   * operator sees two submit CTAs with overlapping intent). Optional
+   * for backward compat with consumers that don't care.
+   */
+  onVariantChange?: (variant: TipoIngresoVariant) => void;
 }
 
 /**
@@ -56,9 +65,15 @@ export function TipoIngresoToggle({
   renderConPlaca,
   renderSinPlaca,
   defaultVariant = 'con-placa',
+  onVariantChange,
 }: TipoIngresoToggleProps) {
   const { t } = useTranslation('operacion');
   const [variant, setVariant] = useState<TipoIngresoVariant>(defaultVariant);
+
+  const selectVariant = (next: TipoIngresoVariant) => {
+    setVariant(next);
+    onVariantChange?.(next);
+  };
 
   return (
     <div className="space-y-4" data-testid="tipo-ingreso-toggle">
@@ -71,7 +86,7 @@ export function TipoIngresoToggle({
           type="button"
           variant={variant === 'con-placa' ? 'default' : 'outline'}
           aria-pressed={variant === 'con-placa'}
-          onClick={() => setVariant('con-placa')}
+          onClick={() => selectVariant('con-placa')}
           data-testid="tipo-ingreso-con-placa"
         >
           {t('tipo_ingreso_con_placa', { defaultValue: 'Con placa' })}
@@ -80,7 +95,7 @@ export function TipoIngresoToggle({
           type="button"
           variant={variant === 'sin-placa' ? 'default' : 'outline'}
           aria-pressed={variant === 'sin-placa'}
-          onClick={() => setVariant('sin-placa')}
+          onClick={() => selectVariant('sin-placa')}
           data-testid="tipo-ingreso-sin-placa"
         >
           {t('ingreso_sin_placa_cta', { defaultValue: 'Sin placa' })}
