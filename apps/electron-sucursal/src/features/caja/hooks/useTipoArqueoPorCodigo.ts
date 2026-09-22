@@ -29,8 +29,18 @@ export const TipoArqueoPorCodigoSchema = z
     codigo: z.string().nullable(),
     nombre: z.string().nullable(),
     descripcion: z.string().nullable(),
+    vigente_desde: z.string().optional(),
+    vigente_hasta: z.string().nullable().optional(),
+    estado: z.string().optional(),
+    created_at: z.string().optional(),
+    created_by: z.string().nullable().optional(),
+    sync_status: z.string().nullable().optional(),
   })
-  .strict();
+  // NOT .strict() -- the catalogo GET returns the full audit + bi-temporal
+  // columns; we only need uuid+codigo for the arqueo submit. The
+  // V2 BE rejects unknown fields on the WRITE side (ArqueoCreateV2),
+  // not on the read side.
+  ;
 export type TipoArqueoPorCodigo = z.infer<typeof TipoArqueoPorCodigoSchema>;
 
 const TipoArqueoListSchema = z.object({
