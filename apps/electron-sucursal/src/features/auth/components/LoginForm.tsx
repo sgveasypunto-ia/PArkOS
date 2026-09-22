@@ -105,6 +105,62 @@ function formatTime(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+/**
+ * `<LockoutBlock>` — subcomponente dedicado para el estado de cuenta
+ * bloqueada (F11.4 follow-up).
+ *
+ * El bug que arregla: cuando el operador dispara el 429 + Retry-After,
+ * el parent `<LoginForm>` ya estaba montado con `useCountdown(0)` —
+ * `secondsLeft=0` + `isExpired=true` como state initializer. Cuando
+ * `errorState` cambia a `{kind:'lockout', retryAfterSeconds:900}`,
+ * el `<LoginForm>` re-renderiza, pero `useCountdown` SOLO corre su
+ * initializer function en mount. El state stale (`secondsLeft=0`,
+ * `isExpired=true`) persiste, lo que oculta el countdown
+ * (`isLockout && !isExpired` = `true && false` = `false`).
+ *
+ * Solución: extraer el countdown a un subcomponente que SOLO se
+ * monta cuando hay lockout. Así `useCountdown(900)` corre su
+ * initializer con el valor correcto desde el primer render — el
+ * `secondsLeft` arranca en 900, el countdown se ve inmediatamente,
+ * y el `useCountdown` decrementa desde el primer tick.
+ *
+ * Mantiene el contract:
+ *   - data-testid="login-lockout-block" (wrapper, mismo que el original)
+ *   - data-testid="login-error-lockout" (mensaje)
+ *   - data-testid="login-countdown" (countdown)
+ *   - role="alert" en el mensaje + role="status" aria-live="polite" en el countdown
+ */
+function LockoutBlock({
+  retryAfterSeconds,
+  onExpired,
+}: {
+  retryAfterSeconds: number;
+  onExpired: () => void;
+}): JSX.Element {
+  const { t } = useTranslation('auth');
+  const { secondsLeft, isExpired } = useCountdown(retryAfterSeconds, {
+    onComplete: onExpired,
+  });
+
+  return (
+    <div data-testid="login-lockout-block">
+      <p role="alert" data-testid="login-error-lockout">
+        {t('lockout')}
+      </p>
+      {!isExpired && (
+        <p
+          role="status"
+          aria-live="polite"
+          aria-label={t('lockoutLabel', { time: formatTime(secondsLeft) })}
+          data-testid="login-countdown"
+        >
+          {t('lockoutCountdown', { time: formatTime(secondsLeft) })}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function LoginForm({
   form,
   onSubmit,
@@ -116,12 +172,15 @@ export function LoginForm({
 }: LoginFormProps): JSX.Element {
   const { t } = useTranslation('auth');
   const isLockout = error?.kind === 'lockout';
-  const { secondsLeft, isExpired } = useCountdown(
-    isLockout ? error.retryAfterSeconds : 0,
-    { onComplete: onLockoutExpired },
-  );
+  // El countdown vive en <LockoutBlock> (subcomponente). Solo se monta
+  // cuando hay lockout → `useCountdown(retryAfterSeconds)` corre su
+  // initializer con el valor correcto desde el primer render.
+  // El parent NO llama useCountdown (lo evitamos para no exponer el
+  // bug del state stale del primer render — ver comment de LockoutBlock).
 
-  const isFormDisabled = isSubmitting || (isLockout && !isExpired);
+  // NOTA: `isLockout` se usa SOLO para gating del block + form disable.
+  // El countdown real vive en LockoutBlock.
+  const isFormDisabled = isSubmitting || isLockout;
   const showAttemptCounter = attemptCount > 0;
 
   return (
@@ -200,20 +259,11 @@ export function LoginForm({
           )}
         />
 
-        {isLockout && !isExpired && (
-          <div data-testid="login-lockout-block">
-            <p role="alert" data-testid="login-error-lockout">
-              {t('lockout')}
-            </p>
-            <p
-              role="status"
-              aria-live="polite"
-              aria-label={t('lockoutLabel', { time: formatTime(secondsLeft) })}
-              data-testid="login-countdown"
-            >
-              {t('lockoutCountdown', { time: formatTime(secondsLeft) })}
-            </p>
-          </div>
+        {isLockout && error?.kind === 'lockout' && (
+          <LockoutBlock
+            retryAfterSeconds={error.retryAfterSeconds}
+            onExpired={onLockoutExpired ?? ((): void => undefined)}
+          />
         )}
 
         {/* F11.4 — mensaje de "contraseña errónea" + counter badge.
