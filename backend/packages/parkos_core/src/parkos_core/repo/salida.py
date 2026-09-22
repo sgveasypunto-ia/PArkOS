@@ -46,14 +46,22 @@ class SalidaDuplicada(Exception):
 async def buscar_ingreso_activo_por_uuid(
     session: AsyncSession, *, uuid_ingreso: uuid_lib.UUID
 ) -> Ingreso | None:
-    """V1: SELECT ingreso WHERE uuid=:p AND vigente_hasta IS NULL
-    AND NOT EXISTS salidas (no anulada).
+    """V1: SELECT ingreso WHERE uuid=:p AND NOT EXISTS salidas (no anulada).
 
     Returns the ORM ``Ingreso`` row if found, None otherwise.
+
+    Note: ``Ingreso`` is an [L-E] lifecycle event (REQ-30) — it does NOT
+    have a ``vigente_hasta`` column (events are append-only, never
+    closed; the row's "open/closed" state is derived via the
+    ``V_INGRESO_ESTADO`` view at read time). The earlier code attempted
+    ``ingreso_row.vigente_hasta is not None`` which raised
+    ``AttributeError`` on every POST /operacion/salidas — the operator's
+    "panels don't update after salida" complaint traced to this
+    pre-existing bug (2026-09-22 REGRESSION fix).
     """
-    # Fast path: direct PK lookup + bi-temporal predicate.
+    # Fast path: direct PK lookup.
     ingreso_row = await session.get(Ingreso, uuid_ingreso)
-    if ingreso_row is None or ingreso_row.vigente_hasta is not None:
+    if ingreso_row is None:
         return None
 
     # Existence check: NOT EXISTS salidas not anulada.
