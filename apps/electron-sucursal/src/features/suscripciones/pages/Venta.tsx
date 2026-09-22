@@ -70,10 +70,16 @@ export interface VentaProps {
 }
 
 export interface VentaStepState {
-  paso: 1 | 2 | 3 | 4;
+  paso: 1 | 2 | 3 | 4 | 5;
   cliente?: { nit: string; nombre: string; email: string | null };
-  placas?: string[];
   uuid_tipo_subscripcion?: string;
+  /**
+   * Number of vehicles the operator is going to associate with this
+   * suscripcion (selected at step 3 "Cantidad"). Used to size the
+   * placa inputs at step 4. Validated 1..plan.cantidad_maxima_vehiculos.
+   */
+  cantidad_vehiculos?: number;
+  placas?: string[];
   fecha_inicio_cobertura?: string;
   monto_proporcional?: number | null;
 }
@@ -89,26 +95,48 @@ const clienteSchema = z.object({
     .optional(),
 });
 
-const placasSchema = z.object({
-  placas: z
-    .array(
-      z
-        .string()
-        .regex(
-          /^[A-Z]{3}[0-9]{3}$|^[A-Z]{3}[0-9]{2}[A-Z]$/,
-          'placa_formato_invalido',
-        ),
-    )
-    .min(1, 'placas_min_1')
-    .max(2, 'placas_max_2'),
-});
-
 const planSchema = z.object({
   uuid_tipo_subscripcion: z
     .string()
     .uuid('uuid_tipo_subscripcion_invalido'),
-  fecha_inicio_cobertura: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
+
+/**
+ * `buildCantidadSchema(max)` -- F11.3 follow-up: operator picks how
+ * many vehicles the suscripcion will cover at step 3. The upper bound
+ * is the selected plan's `cantidad_maxima_vehiculos`. Per-plan
+ * enforcement means we don't validate against a hardcoded global max
+ * (MENSUAL_AUTO / MENSUAL_MOTO / BIMESTRAL_AUTO / TRIMESTRAL_AUTO
+ * cap at 1; only MENSUAL_EMPRESA goes higher).
+ */
+const buildCantidadSchema = (max: number) =>
+  z.object({
+    cantidad_vehiculos: z.coerce
+      .number({ invalid_type_error: 'validation.number.required' })
+      .int()
+      .min(1, 'validation.cantidad.min_1')
+      .max(max, 'validation.cantidad.max_excedida'),
+  });
+
+/**
+ * `buildPlacasSchema(count)` -- step 4 enforces that exactly `count`
+ * plates are entered (no max(2) clamp anymore -- the count comes
+ * from the operator's choice at step 3, validated against the plan
+ * limit at step 2). Each plate must match the auto/moto regex.
+ */
+const buildPlacasSchema = (count: number) =>
+  z.object({
+    placas: z
+      .array(
+        z
+          .string()
+          .regex(
+            /^[A-Z]{3}[0-9]{3}$|^[A-Z]{3}[0-9]{2}[A-Z]$/,
+            'placa_formato_invalido',
+          ),
+      )
+      .length(count),
+  });
 
 /**
  * Default plan valor / duracion_dias used for the prorrateo
@@ -129,12 +157,23 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   const { sucursal } = useAuth();
   const uuid_sucursal = sucursal?.uuid ?? null;
   const [state, setState] = useState<VentaStepState>({ paso: 1 });
-  const [placaError, setPlacaError] = useState<string | null>(null);
   const [clienteError, setClienteError] = useState<string | null>(null);
   const [clienteNitInput, setClienteNitInput] = useState('');
   const [clienteNombreInput, setClienteNombreInput] = useState('');
-  const [placaInput, setPlacaInput] = useState('');
   const [planInput, setPlanInput] = useState('');
+  const [cantidadError, setCantidadError] = useState<string | null>(null);
+  const [cantidadInput, setCantidadInput] = useState('1');
+  const [placasError, setPlacasError] = useState<string | null>(null);
+  // Per-placa input draft state. Length matches state.placas when
+  // step 4 is mounted. Initialised empty when the operator advances
+  // from paso 3 with N cantidad.
+  const [placasInputs, setPlacasInputs] = useState<string[]>([]);
+  // Generic inline error for step 4 -- shared by both duplicate-plate
+  // 422 (server response) and invalid-format (local Zod). The error
+  // attribute is shown under the placa input group; the specific
+  // input that triggered the error is highlighted by the server's
+  // own discriminated error message (VentaSuscripcionDuplicatePlateError).
+  const [placaGroupError, setPlacaGroupError] = useState<string | null>(null);
   const { trigger, isMutating } = useVentaSuscripcion();
   const {
     data: planes,
@@ -154,7 +193,7 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   }, [planes, state.uuid_tipo_subscripcion]);
 
   const montoProporcional = useMemo<number | null>(() => {
-    if (state.paso !== 4 || !state.fecha_inicio_cobertura) return null;
+    if (state.paso !== 5 || !state.fecha_inicio_cobertura) return null;
     const planArgs = selectedPlan
       ? {
           valor: selectedPlan.valor,
@@ -180,32 +219,60 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   };
 
   const handlePaso2Siguiente = (): void => {
-    const parsed = placasSchema.safeParse({ placas: [placaInput] });
-    if (!parsed.success) {
-      setPlacaError('placa_formato_invalido');
-      return;
-    }
-    setPlacaError(null);
-    setState((s) => ({
-      ...s,
-      paso: 3,
-      placas: parsed.data.placas,
-      fecha_inicio_cobertura: DEFAULT_FECHA_INICIO,
-    }));
-  };
-
-  const handlePaso3Siguiente = (): void => {
+    // paso 2 = Plan -- validate UUID, advance to paso 3 (Cantidad).
     const parsed = planSchema.safeParse({
       uuid_tipo_subscripcion: planInput,
-      fecha_inicio_cobertura: DEFAULT_FECHA_INICIO,
     });
     if (!parsed.success) {
       return;
     }
     setState((s) => ({
       ...s,
-      paso: 4,
+      paso: 3,
       uuid_tipo_subscripcion: parsed.data.uuid_tipo_subscripcion,
+    }));
+  };
+
+  const handlePaso3Siguiente = (): void => {
+    // paso 3 = Cantidad -- validate 1..plan.cantidad_maxima_vehiculos,
+    // advance to paso 4 (Placas) with a pre-allocated array of N
+    // empty strings so the placa inputs are immediately mounted.
+    if (!selectedPlan) return;
+    const parsed = buildCantidadSchema(selectedPlan.cantidad_maxima_vehiculos)
+      .safeParse({ cantidad_vehiculos: cantidadInput });
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      setCantidadError(issue?.message ?? 'invalid');
+      return;
+    }
+    setCantidadError(null);
+    const n = parsed.data.cantidad_vehiculos;
+    setPlacasInputs(new Array(n).fill(''));
+    setPlacaGroupError(null);
+    setState((s) => ({
+      ...s,
+      paso: 4,
+      cantidad_vehiculos: n,
+      placas: new Array(n).fill(''),
+      fecha_inicio_cobertura: DEFAULT_FECHA_INICIO,
+    }));
+  };
+
+  const handlePaso4Siguiente = (): void => {
+    // paso 4 = Placas -- validate exactly N placas (N from step 3),
+    // each matching the auto/moto regex. Advance to paso 5 (Pago).
+    const n = state.cantidad_vehiculos ?? 1;
+    const parsed = buildPlacasSchema(n).safeParse({ placas: placasInputs });
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      setPlacasError(issue?.message ?? 'invalid');
+      return;
+    }
+    setPlacasError(null);
+    setState((s) => ({
+      ...s,
+      paso: 5,
+      placas: parsed.data.placas,
     }));
   };
 
@@ -257,7 +324,11 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
         err instanceof VentaSuscripcionTipoIncompatibleError ||
         err instanceof VentaSuscripcionCantidadMaximaError
       ) {
-        // Map to step 2 inline error and revert to paso 2.
+        // F11.3 follow-up: revert to paso 4 (Placas) so the operator
+        // sees which input was rejected without losing the rest of
+        // the wizard state. For DuplicatePlateError we also highlight
+        // the offending plate position when the server includes it
+        // (today the error is generic; ABBC-F11.3-1 future work).
         const msg =
           err instanceof VentaSuscripcionDuplicatePlateError
             ? t('suscripciones:venta.errors.suscripcion_duplicada_placa', {
@@ -271,8 +342,8 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
               : t('suscripciones:venta.errors.cantidad_maxima_excedida', {
                   defaultValue: 'Cantidad máxima de vehículos excedida',
                 });
-        setPlacaError(msg);
-        setState((s) => ({ ...s, paso: 2 }));
+        setPlacaGroupError(msg);
+        setState((s) => ({ ...s, paso: 4 }));
       } else {
         throw err;
       }
@@ -354,52 +425,24 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
       {state.paso === 2 && (
         <section className="space-y-3" data-testid="venta-paso-2">
           <h2 className="text-lg">
-            {t('suscripciones:venta.paso2.titulo', { defaultValue: 'Vehículos' })}
-          </h2>
-          <Input
-            data-testid="venta-placa-input"
-            placeholder="Placa"
-            value={placaInput}
-            onChange={(e) => setPlacaInput(e.target.value)}
-          />
-          {placaError && (
-            <p
-              data-testid="venta-placa-error"
-              className="text-sm text-destructive"
-              role="alert"
-            >
-              {placaError}
-            </p>
-          )}
-          <Button
-            type="button"
-            data-testid="venta-paso-2-siguiente"
-            onClick={handlePaso2Siguiente}
-          >
-            Siguiente
-          </Button>
-        </section>
-      )}
-
-      {state.paso === 3 && (
-        <section className="space-y-3" data-testid="venta-paso-3">
-          <h2 className="text-lg">
-            {t('suscripciones:venta.paso3.titulo', { defaultValue: 'Plan' })}
+            {t('suscripciones:venta.paso2.titulo', { defaultValue: 'Plan' })}
           </h2>
 
           {/*
-            Plan catalog from `GET /api/v1/tipos-subscripciones`. The
-            operator picks the plan they want to subscribe to --
-            no more typing the plan's UUID by hand. The selected
-            plan's `uuid` flows into `state.uuid_tipo_subscripcion`
-            and from there into the POST body via buildVentaPayload.
+            Plan catalog from `GET /api/v1/catalogos/tipo-subscripciones`.
+            Operator picks the plan they want to subscribe to -- the
+            selected plan's `uuid` flows into
+            `state.uuid_tipo_subscripcion` and its
+            `cantidad_maxima_vehiculos` caps the next step's quantity
+            input. The full valor + duracion_dias drive the prorrateo
+            badge in step 5.
           */}
           {planesLoading && (
             <p
               className="text-sm text-muted-foreground"
-              data-testid="venta-paso-3-loading"
+              data-testid="venta-paso-2-loading"
             >
-              {t('suscripciones:venta.paso3.loading', {
+              {t('suscripciones:venta.paso2.loading', {
                 defaultValue: 'Cargando planes…',
               })}
             </p>
@@ -408,9 +451,9 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
             <p
               role="alert"
               className="text-sm text-destructive"
-              data-testid="venta-paso-3-error"
+              data-testid="venta-paso-2-error"
             >
-              {t('suscripciones:venta.paso3.error', {
+              {t('suscripciones:venta.paso2.error', {
                 defaultValue:
                   'No se pudieron cargar los planes para esta sede.',
               })}
@@ -419,9 +462,9 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
           {planes && planes.length === 0 && !planesLoading && (
             <p
               className="text-sm text-muted-foreground"
-              data-testid="venta-paso-3-empty"
+              data-testid="venta-paso-2-empty"
             >
-              {t('suscripciones:venta.paso3.empty', {
+              {t('suscripciones:venta.paso2.empty', {
                 defaultValue: 'No hay planes configurados para esta sede.',
               })}
             </p>
@@ -429,7 +472,7 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
           {planes && planes.length > 0 && (
             <ul
               className="space-y-2"
-              data-testid="venta-paso-3-planes"
+              data-testid="venta-paso-2-planes"
             >
               {planes.map((p) => {
                 const selected = planInput === p.uuid;
@@ -458,7 +501,7 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
                       <div className="flex-1">
                         <div className="font-medium">{p.tipo}</div>
                         <div className="text-xs text-muted-foreground">
-                          {t('suscripciones:venta.paso3.duracion', {
+                          {t('suscripciones:venta.paso2.duracion', {
                             dias: p.duracion_dias,
                             vehiculos: p.cantidad_maxima_vehiculos,
                             defaultValue: `{{dias}} días · máx {{vehiculos}} vehículo(s)`,
@@ -479,9 +522,59 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
           )}
           <Button
             type="button"
+            data-testid="venta-paso-2-siguiente"
+            onClick={handlePaso2Siguiente}
+            disabled={!planInput}
+          >
+            Siguiente
+          </Button>
+        </section>
+      )}
+
+      {state.paso === 3 && (
+        <section className="space-y-3" data-testid="venta-paso-3">
+          <h2 className="text-lg">
+            {t('suscripciones:venta.paso3.titulo', {
+              defaultValue: 'Cantidad de vehículos',
+            })}
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {selectedPlan
+              ? t('suscripciones:venta.paso3.descripcion', {
+                  max: selectedPlan.cantidad_maxima_vehiculos,
+                  defaultValue: `Este plan permite hasta ${selectedPlan.cantidad_maxima_vehiculos} vehículo(s). ¿Cuántos vas a registrar?`,
+                })
+              : null}
+          </p>
+          <Input
+            type="text"
+            inputMode="decimal"
+            data-testid="venta-cantidad-input"
+            value={cantidadInput}
+            onChange={(e) => {
+              const raw = e.target.value;
+              // Numeric input regex: empty or 1..max digits.
+              if (raw === '' || /^\d+$/.test(raw)) {
+                setCantidadInput(raw);
+                setCantidadError(null);
+              }
+            }}
+            placeholder="1"
+          />
+          {cantidadError && (
+            <span
+              data-testid="venta-cantidad-error"
+              className="text-sm text-destructive"
+              role="alert"
+            >
+              {cantidadError}
+            </span>
+          )}
+          <Button
+            type="button"
             data-testid="venta-paso-3-siguiente"
             onClick={handlePaso3Siguiente}
-            disabled={!planInput}
+            disabled={cantidadInput === ''}
           >
             Siguiente
           </Button>
@@ -491,7 +584,79 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
       {state.paso === 4 && (
         <section className="space-y-3" data-testid="venta-paso-4">
           <h2 className="text-lg">
-            {t('suscripciones:venta.paso4.titulo', { defaultValue: 'Pago' })}
+            {t('suscripciones:venta.paso4.titulo', { defaultValue: 'Placas' })}
+          </h2>
+          {placaGroupError && (
+            <p
+              data-testid="venta-placas-error"
+              className="text-sm text-destructive"
+              role="alert"
+            >
+              {placaGroupError}
+            </p>
+          )}
+          <div className="space-y-2" data-testid="venta-placas-list">
+            {placasInputs.map((placa, i) => (
+              <div key={i} className="space-y-1">
+                <label
+                  className="text-xs text-muted-foreground"
+                  htmlFor={`venta-placa-input-${i}`}
+                >
+                  {t('suscripciones:venta.paso4.vehiculoLabel', {
+                    n: i + 1,
+                    defaultValue: `Vehículo ${i + 1}`,
+                  })}
+                </label>
+                <Input
+                  id={`venta-placa-input-${i}`}
+                  type="text"
+                  data-testid={`venta-placa-input-${i}`}
+                  value={placa}
+                  maxLength={6}
+                  autoCapitalize="characters"
+                  onChange={(e) => {
+                    const raw = e.target.value.toUpperCase();
+                    // Mirror the turnoSchema regex: keep only valid
+                    // placa chars so the field never enters a state
+                    // the schema would reject.
+                    if (raw === '' || /^[A-Z0-9]{0,6}$/.test(raw)) {
+                      setPlacasInputs((arr) => {
+                        const next = arr.slice();
+                        next[i] = raw;
+                        return next;
+                      });
+                      setPlacasError(null);
+                    }
+                  }}
+                  placeholder="ABC123"
+                />
+              </div>
+            ))}
+          </div>
+          {placasError && (
+            <span
+              data-testid="venta-placas-format-error"
+              className="text-sm text-destructive"
+              role="alert"
+            >
+              {placasError}
+            </span>
+          )}
+          <Button
+            type="button"
+            data-testid="venta-paso-4-siguiente"
+            onClick={handlePaso4Siguiente}
+            disabled={placasInputs.some((p) => p === '')}
+          >
+            Siguiente
+          </Button>
+        </section>
+      )}
+
+      {state.paso === 5 && (
+        <section className="space-y-3" data-testid="venta-paso-5">
+          <h2 className="text-lg">
+            {t('suscripciones:venta.paso5.titulo', { defaultValue: 'Pago' })}
           </h2>
           {montoProporcional !== null && (
             <p
@@ -506,20 +671,18 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
           )}
           {/*
             PagoModal composition (REQ-OPS-180, OD-2 ratified):
-            step 4 reuses F8.1 `<PagoModal />` from
+            step 5 reuses F8.1 `<PagoModal />` from
             `../../facturacion/components/PagoModal`. PagoModal owns
             vueltos live + FE con datos + NIT módulo 11 validation.
             `clientePrefill` carries step-1 NIT/nombre/email into the
-            PagoModal form (instead of the consumidor final fallback
-            the page route uses by default). `fe: true` flips the
-            "Generar factura electrónica" toggle ON as soon as the
-            wizard reaches step 4 -- the operator can still untick
-            it if they explicitly want a no-FE sale. `total_cop =
+            PagoModal form. `fe: true` flips the "Generar factura
+            electrónica" toggle ON at step 5 entry -- operator can
+            still untick for a no-FE sale. `total_cop =
             monto_proporcional ?? plan.valor` so vueltos live
-            reflects the actual charge (informational; the
-            authoritative amount is `factura_detalle.valor_unitario`).
-            On pago 201, `handlePagoSubmit` calls `trigger` with the
-            `emitir_factura_electronica` from `values.fe` and either
+            reflects the actual charge (informational; authoritative
+            amount is `factura_detalle.valor_unitario`). On pago 201,
+            `handlePagoSubmit` calls `trigger` with
+            `emitir_factura_electronica: values.fe` and either
             navigates to /suscripciones (page route) or fires the
             parent's `onSuccess` (embedded drawer).
           */}
