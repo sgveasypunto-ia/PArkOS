@@ -288,9 +288,18 @@ class IngresoCreateForzado(_Base):
     Server-side validation enforces the prefix contract (D-HU-F1.6-5);
     ``forzado`` is NOT persisted in ``prod.ingreso``.
 
-    ``extra='forbid'`` (inherited from ``_Base``) rejects extra fields
-    including ``tipo_entrada`` (an attempted injection of a non-existent
-    column).
+    Adds ``placa_presente: bool = False`` for HU-INGRESO-SIN-PLACA (REQ-OPS-194):
+    the cliente Zod discriminated-union uses this boolean as the discriminator
+    (``{placa_presente: true, placa: <regex>, ...} | {placa_presente: false,
+    placa: null, uuid_tipo_vehiculo: <uuid>, ...}``). The server reads
+    ``placa`` directly and IGNORES ``placa_presente`` — the discriminator is
+    purely client-side for type-safety. Kept as a tolerated field so the
+    frontend's strict Zod schema serializes without 422
+    ``extra_forbidden`` (would otherwise reject the discriminator key).
+
+    ``extra='forbid'`` (inherited from ``_Base``) still rejects truly
+    unknown fields (e.g. ``tipo_entrada`` — an attempted injection of a
+    non-existent column).
     """
 
     # uuid_sucursal defaults to ctx.sucursal_uuid in the handler
@@ -303,6 +312,9 @@ class IngresoCreateForzado(_Base):
     fecha_ingreso: datetime | None = None
     observaciones: str | None = None
     forzado: bool = False  # D-HU-F1.6-5; validated against prefix
+    # REQ-OPS-194 discriminated-union discriminator (client-side only,
+    # server reads `placa` and ignores this field).
+    placa_presente: bool = False  # noqa: F821 — intentionally tolerated
 
 
 class IngresoReadForzado(_Base):

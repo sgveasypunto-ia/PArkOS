@@ -6,7 +6,11 @@
  *   - `GET /api/v1/catalogos/tipos-vehiculo` (catalogos.py:140-147,
  *     `_mount_catalog(resource="tipos-vehiculo", ...)`).
  *   - Permission `config_catalogo` per `_CATALOG_DEFAULTS:101`.
- *   - Response shape `TiposVehiculoRead` (`schemas/tipos_vehiculo.py:13-23`):
+ *   - Response shape `TiposVehiculoReadList` (`schemas/catalogos.py`):
+ *     `{ items: TipoVehiculo[], next_cursor: string | null }` (paginated,
+ *     cursor-based per `ReadListBase<T>`). The previous flat-array contract
+ *     was a pre-existing bug — see PR-B smoke test findings.
+ *   - Each item: `TiposVehiculoRead` (`schemas/tipos_vehiculo.py:13-23`):
  *     `{ uuid, tipo, vigente_desde, vigente_hasta, estado, ... }`.
  *
  * DEC-F4.1-09 (cliente): el campo `tipo` es `string | null` porque el
@@ -49,6 +53,14 @@ export interface TipoVehiculo {
 }
 
 /**
+ * Paginated list shape (`schemas/common.py::ReadListBase`) — backend
+ * returns `{items: TipoVehiculo[], next_cursor: string | null}`. We
+ * unwrap defensively: if the backend ever returns a flat array (legacy
+ * or in tests), we fall back to the array directly.
+ */
+type PaginatedTipoVehiculoList = { items: TipoVehiculo[]; next_cursor?: string | null };
+
+/**
  * GET /api/v1/catalogos/tipos-vehiculo.
  *
  * Mapeo de errores:
@@ -60,7 +72,17 @@ export interface TipoVehiculo {
  */
 export async function getTiposVehiculo(): Promise<TipoVehiculo[]> {
   try {
-    const items = await parkosFetch<TipoVehiculo[]>(TIPOS_VEHICULO_PATH);
+    const raw = await parkosFetch<PaginatedTipoVehiculoList | TipoVehiculo[]>(
+      TIPOS_VEHICULO_PATH,
+    );
+    // Backend returns paginated `{items, next_cursor}`; defensively unwrap
+    // either shape. Previously this assumed a flat array, which made
+    // useTiposVehiculo return [] and broke HU-INGRESO-SIN-PLACA's
+    // <IngresoSinPlacaPanel /> (showed empty-state even when bici/patineta
+    // were seeded).
+    const items: TipoVehiculo[] = Array.isArray(raw)
+      ? raw
+      : (raw.items ?? []);
     return items.filter((t) => t.tipo !== null);
   } catch (err) {
     if (err instanceof ParkosHttpError && err.status === 404) {
