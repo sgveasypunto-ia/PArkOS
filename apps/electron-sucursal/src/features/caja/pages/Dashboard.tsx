@@ -412,6 +412,25 @@ export function Dashboard(): JSX.Element | null {
             </CardContent>
           </Card>
 
+          {/*
+            Vehículos dentro — directiva del operador: debe vivir debajo
+            del panel central de placa del vehículo (no en el right-sidebar).
+            Mismo data-testid y mismo render para no romper tests / SWR /
+            anchor de axe-core que ya apuntan a `vehiculos-list-card` y
+            `vehiculos-list`. (F11.x direct layout — sin cambio de data
+            ni de polling cadence; sigue siendo 10s vía useIngresosActivos.)
+          */}
+          <Card data-testid="vehiculos-list-card" className="overflow-hidden">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
+                {t('caja:dashboard.vehiculosDentro', { defaultValue: 'Vehículos dentro' })}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-2 text-sm">
+              <VehiculosDentroList uuid_sucursal={uuid_sucursal} />
+            </CardContent>
+          </Card>
+
           <Card data-testid="welcome-card">
             <CardHeader className="pb-2">
               <CardTitle>{t('caja:dashboard.welcome', { defaultValue: 'Bienvenido' })}</CardTitle>
@@ -503,17 +522,6 @@ export function Dashboard(): JSX.Element | null {
           </Card>
 
           <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-1">
-            <Card data-testid="vehiculos-list-card" className="overflow-hidden">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
-                  {t('caja:dashboard.vehiculosDentro', { defaultValue: 'Vehículos dentro' })}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-1 overflow-y-auto p-2 text-sm">
-                <VehiculosDentroList uuid_sucursal={uuid_sucursal} />
-              </CardContent>
-            </Card>
-
             <Card data-testid="cobros-list-card" className="overflow-hidden">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
@@ -723,6 +731,14 @@ interface IngresoActivo {
   uuid_sucursal: string;
 }
 
+/**
+ * Opciones de tamaño de página para el listado de vehículos dentro.
+ * El operador pidió cap de 5 o 10 registros por vista para que el card
+ * no exceda el viewport del kiosko (REQ-UX-F11.PAGINACION).
+ */
+const PAGE_SIZE_OPTIONS = [5, 10] as const;
+type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
+
 function VehiculosDentroList({
   uuid_sucursal,
 }: {
@@ -733,6 +749,20 @@ function VehiculosDentroList({
   // items is IngresoActivo[] | null. null = loading; [] = empty; >0 = lista.
   // Defensive: if the hook ever returned undefined, treat as loading.
   const safe = items ?? null;
+
+  const [pageSize, setPageSize] = useState<PageSize>(10);
+  const [currentPage, setCurrentPage] = useState(0);
+
+  // Si cambia el pageSize o los items y la página actual queda fuera de
+  // rango, reset a la primera página. Evita que el operador quede en una
+  // página vacía después de un cambio de filtro o un corte de ingresos.
+  useEffect(() => {
+    const total = safe?.length ?? 0;
+    const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+    if (currentPage > maxPage) {
+      setCurrentPage(0);
+    }
+  }, [safe, pageSize, currentPage]);
 
   if (safe === null) {
     return (
@@ -748,36 +778,142 @@ function VehiculosDentroList({
       </p>
     );
   }
+
+  const totalPages = Math.max(1, Math.ceil(safe.length / pageSize));
+  const start = currentPage * pageSize;
+  const visible = safe.slice(start, start + pageSize);
+  const firstShown = start + 1;
+  const lastShown = Math.min(start + pageSize, safe.length);
+
   return (
-    <ul className="space-y-1" data-testid="vehiculos-list">
-      {safe.map((it) => {
-        // Identificador visible: placa si existe, sino el consecutivo
-        // (REQ-OPS-197, mismo string que se imprime en el tiquete), y
-        // como último recurso los primeros 8 chars del uuid.
-        const idVisible =
-          it.placa ?? it.consecutivo ?? it.uuid.slice(0, 8);
-        // Hora del ingreso: canon backend `fecha_ingreso`, con fallback a
-        // `created_at` para filas viejas donde la columna quedó null.
-        const horaIso = it.fecha_ingreso ?? it.created_at;
-        return (
-          <li
-            key={it.uuid}
-            className="flex items-center justify-between rounded border border-border bg-background px-2 py-1"
-            data-testid={`vehiculos-item-${it.uuid}`}
+    <div className="flex flex-col" data-testid="vehiculos-list-paginated">
+      {/*
+        Contenedor con altura limitada: el card NUNCA excede el viewport
+        del kiosko. `-14rem` reserva el header + panel de placa + chrome
+        del card. En viewports chicos el overflow-y-auto absorbe el caso
+        límite donde pageSize=10 entra justo pero el alto disponible
+        es menor; en viewports normales (>=768px) no aparece scroll.
+      */}
+      <ul
+        className="max-h-[calc(100vh-14rem)] flex-1 space-y-1 overflow-y-auto pr-1"
+        data-testid="vehiculos-list"
+      >
+        {visible.map((it) => {
+          // Identificador visible: placa si existe, sino el consecutivo
+          // (REQ-OPS-197, mismo string que se imprime en el tiquete), y
+          // como último recurso los primeros 8 chars del uuid.
+          const idVisible =
+            it.placa ?? it.consecutivo ?? it.uuid.slice(0, 8);
+          // Hora del ingreso: canon backend `fecha_ingreso`, con fallback a
+          // `created_at` para filas viejas donde la columna quedó null.
+          const horaIso = it.fecha_ingreso ?? it.created_at;
+          return (
+            <li
+              key={it.uuid}
+              className="flex items-center justify-between rounded border border-border bg-background px-2 py-1"
+              data-testid={`vehiculos-item-${it.uuid}`}
+            >
+              <span className="font-mono uppercase" title={it.uuid}>
+                {idVisible}
+              </span>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {new Date(horaIso).toLocaleTimeString('es-CO', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+
+      {/*
+        Footer de paginación. Siempre visible cuando hay items — el
+        operador puede necesitar cambiar pageSize aunque haya una sola
+        página. Mantiene el control cerca de la lista (no en el header)
+        para no inflar el CardHeader.
+      */}
+      <div
+        className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-xs text-muted-foreground"
+        data-testid="vehiculos-pagination"
+      >
+        <span className="tabular-nums" data-testid="vehiculos-pagination-range">
+          {firstShown}-{lastShown} de {safe.length}
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={currentPage === 0}
+            onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
+            aria-label={t('caja:dashboard.paginaAnterior', {
+              defaultValue: 'Página anterior',
+            })}
+            data-testid="vehiculos-pagination-prev"
           >
-            <span className="font-mono uppercase" title={it.uuid}>
-              {idVisible}
-            </span>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {new Date(horaIso).toLocaleTimeString('es-CO', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
+            ‹
+          </Button>
+          <span
+            className="tabular-nums"
+            data-testid="vehiculos-pagination-page"
+            aria-label={t('caja:dashboard.paginaActual', {
+              defaultValue: `Página ${currentPage + 1} de ${totalPages}`,
+              current: currentPage + 1,
+              total: totalPages,
+            })}
+          >
+            {currentPage + 1} / {totalPages}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={currentPage >= totalPages - 1}
+            onClick={() =>
+              setCurrentPage((p) => Math.min(totalPages - 1, p + 1))
+            }
+            aria-label={t('caja:dashboard.paginaSiguiente', {
+              defaultValue: 'Página siguiente',
+            })}
+            data-testid="vehiculos-pagination-next"
+          >
+            ›
+          </Button>
+          <span className="ml-2 hidden sm:inline">
+            {t('caja:dashboard.porPagina', { defaultValue: 'Por página' })}:
+          </span>
+          <div
+            role="group"
+            aria-label={t('caja:dashboard.porPagina', {
+              defaultValue: 'Por página',
+            })}
+            className="inline-flex overflow-hidden rounded border border-border"
+          >
+            {PAGE_SIZE_OPTIONS.map((opt) => {
+              const active = pageSize === opt;
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => setPageSize(opt)}
+                  aria-pressed={active}
+                  className={
+                    'px-2 py-0.5 text-xs font-medium ' +
+                    (active
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-background hover:bg-accent')
+                  }
+                  data-testid={`vehiculos-pagination-size-${opt}`}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
