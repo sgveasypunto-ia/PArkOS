@@ -50,6 +50,7 @@ import {
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { useArqueo } from '../hooks/useArqueo';
 import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
+import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { formatCOP } from '../lib/format';
 
 /**
@@ -88,6 +89,12 @@ export function ArqueoParcial(): JSX.Element {
   // once-per-session at most.
   const { uuid: uuidTipoAuditoria, error: tipoArqueoError } =
     useTipoArqueoPorCodigo('auditoria');
+  // F11.3 follow-up -- on successful submit we close the right-side
+  // drawer so the operator returns to the dashboard route (`/`).
+  // The store clears ``openDrawer`` which unmounts the page body
+  // via DrawerHost, restoring focus to the trigger anchor via the
+  // ``lastAnchorId`` set by the ``open('arqueo', anchorId)`` call.
+  const closeDrawer = useDashboardDrawerStore((s) => s.close);
 
   // Reported values: 0 by default, integer non-negative per the BE schema.
   const [reportEfectivo, setReportEfectivo] = useState(0);
@@ -95,16 +102,16 @@ export function ArqueoParcial(): JSX.Element {
   const [justificacion, setJustificacion] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [submitted, setSubmitted] = useState(false);
 
-  // Reset submit-related state every time the drawer mounts fresh (the
-  // parent ArqueoSheet unmounts us when openDrawer changes). Also
-  // reset the reported values + justificacion so a stale fill from a
-  // prior open doesn't trip `validacionError` on the next open
-  // (REQs-OPS-138 single-drawer invariant + F11.3 UX note).
+  // Reset state every time the drawer mounts fresh (the parent
+  // ArqueoSheet unmounts us when openDrawer changes). Also reset the
+  // reported values + justificacion so a stale fill from a prior
+  // open doesn't trip `validacionError` on the next open (REQ-OPS-138
+  // single-drawer invariant + F11.3 UX note). The successful
+  // submit path now closes the drawer so the operator returns to
+  // the dashboard route; this effect handles the next-open reset.
   useEffect(() => {
     setSubmitError(null);
-    setSubmitted(false);
     setReportEfectivo(0);
     setReportDatafono(0);
     setJustificacion('');
@@ -147,7 +154,6 @@ export function ArqueoParcial(): JSX.Element {
     !!sesion &&
     !submitting &&
     !validacionError &&
-    !submitted &&
     !!uuidTipoAuditoria;
 
   const handleSubmit = async (): Promise<void> => {
@@ -169,13 +175,15 @@ export function ArqueoParcial(): JSX.Element {
         valor_datafono_reportado: reportadoDatafonoNum,
         justificacion: difTotal > 0 ? justificacion.trim() : undefined,
       });
-      // POST 200 -> close drawer, refresh sesion state. Parent
-      // (DrawerHost / SuscripcionesSheet) handles close() on success
-      // via the embedded pattern; here we just refresh the local
-      // state so the next open of the drawer shows the up-to-date
-      // sesion.
+      // POST 201 -> refresh sesion state THEN close the drawer so
+      // the operator returns to the dashboard route (/). Closing
+      // BEFORE the refresh would leave a stale sesion snapshot in
+      // the SWR cache for the next drawer open. DrawerHost unmounts
+      // the page body when openDrawer is cleared, so the reset
+      // effect on next mount handles the inputs/justificacion
+      // reset for free.
       await refreshSesion();
-      setSubmitted(true);
+      closeDrawer();
     } catch (e) {
       setSubmitError(
         e instanceof Error ? e.message : 'Error desconocido al registrar el arqueo.',
