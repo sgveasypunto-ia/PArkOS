@@ -35,6 +35,10 @@ class Ingreso(LifecycleEventBase):
         nullable=True,
     )
     placa: Mapped[str | None] = mapped_column(String, nullable=True)
+    # REQ-OPS-191 format ``<TIPO>-NNNNNN-<uuid8>`` fits up to 25 chars
+    # (``bicicleta-000001-3f8a1b2c``). 30 chars leaves headroom for
+    # future longer tipo names (see migration 0044).
+    consecutivo: Mapped[str | None] = mapped_column(String(30), nullable=True)
     uuid_tipo_vehiculo: Mapped[uuid_lib.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         nullable=True,

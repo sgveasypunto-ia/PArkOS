@@ -126,12 +126,16 @@ async def calcular_resumen_mi_turno(
         t_close=t_close.isoformat() if t_close is not None else None,
     )
 
+    # When t_close is None, the SQL emits literal `TRUE` for the upper
+    # bound — we MUST NOT bind :t_close or asyncpg will still try to
+    # type a NULL parameter even though the placeholder is unused.
     bind_params: dict[str, object] = {
         "uuid_sesion": str(uuid_sesion),
         "S_s": str(s_sucursal),
         "t_open": t_open,
-        "t_close": t_close,
     }
+    if t_close is not None:
+        bind_params["t_close"] = t_close
 
     row = (await session.execute(text(sql), bind_params)).first()
     if row is None:

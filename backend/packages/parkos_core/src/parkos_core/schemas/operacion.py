@@ -102,6 +102,10 @@ class IngresoCreate(_Base):
 
     # OPTIONAL — 5 business columns
     placa: str | None = None
+    # REQ-OPS-192/197: server-side computed (no client input); max 30
+    # chars matches ``prod.ingreso.consecutivo`` column width (migration
+    # 0044). Format ``<TIPO>-NNNNNN-<uuid8>``.
+    consecutivo: str | None = Field(default=None, max_length=30)
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
     uuid_subscripcion_cliente: uuid_lib.UUID | None = None
     fecha_ingreso: datetime | None = None
@@ -339,7 +343,10 @@ class IngresoReadForzado(_Base):
     uuid_subscripcion_cliente: uuid_lib.UUID | None
     fecha_ingreso: datetime | None
     observaciones: str | None
-    consecutivo: str | None = None  # REQ-OPS-192 / REQ-OPS-197
+    # REQ-OPS-192/197: format ``<TIPO>-NNNNNN-<uuid8>`` (max 30 chars,
+    # matches ``prod.ingreso.consecutivo`` column width per migration
+    # 0044).
+    consecutivo: str | None = Field(default=None, max_length=30)
     # NEW (F1.6):
     tipo_entrada: Literal["MENSUALIDAD", "ROTACION"]
     forzado_en_creacion: bool = False

@@ -7,13 +7,15 @@ those tables, per ER.mmd 4FN canon, R-F12.1-1):
     COUNT(*) FILTER (
       WHERE i.uuid_sucursal = :S_s
         AND i.fecha_ingreso >= :t_open
-        AND (:t_close IS NULL OR i.fecha_ingreso <= :t_close)
+        AND i.fecha_ingreso <= :t_close     -- when t_close IS NOT NULL
+        -- otherwise literal TRUE (open session)
     ) AS ingresos_count,
 
     COUNT(*) FILTER (
       WHERE s.uuid_sucursal = :S_s
         AND s.fecha_salida >= :t_open
-        AND (:t_close IS NULL OR s.fecha_salida <= :t_close)
+        AND s.fecha_salida <= :t_close       -- when t_close IS NOT NULL
+        -- otherwise literal TRUE (open session)
     ) AS salidas_count
 
 The builder MUST be a pure function: same input -> same SQL string. No
@@ -22,7 +24,11 @@ future refactor of ``repo/mi_turno.py`` cannot silently drop the
 open-window predicate (which would break the closed-session scenario
 in REQ-OPS-186).
 
-S1: open session (t_close IS NULL) -> the predicate uses a NULL guard.
+S1: open session (t_close IS None) -> the upper bound is the literal
+    ``TRUE`` (no parameter is bound). The previous ``(:t_close IS NULL
+    OR ...)`` form was retired on 2026-09-22 because asyncpg cannot
+    type a NULL parameter inside a boolean expression and the query
+    raised IndeterminateDatatypeError.
 S2: closed session (t_close IS NOT NULL) -> the predicate adds the
     ``fecha_ingreso <= :t_close`` upper bound (REQ-OPS-186).
 S3: branch scope ``S_s`` is interpolated into the COUNT FILTER, NOT
@@ -44,6 +50,7 @@ if str(_PARKOS_CORE_SRC) not in sys.path:
 
 def _build_open_session_sql(uuid_sesion: uuid_lib.UUID, s_sucursal: uuid_lib.UUID) -> str:
     """Pure SQL builder entry point under test (mirrors ``app/sql/mi_turno_query.py``)."""
+
     from parkos_core.app.sql.mi_turno_query import build_mi_turno_counts_sql
 
     return build_mi_turno_counts_sql(
@@ -54,18 +61,28 @@ def _build_open_session_sql(uuid_sesion: uuid_lib.UUID, s_sucursal: uuid_lib.UUI
     )
 
 
-def test_open_session_sql_uses_null_guard_for_t_close() -> None:
-    """S1 (REQ-OPS-186): open session -> SQL uses ``:t_close IS NULL`` predicate."""
+def test_open_session_sql_uses_literal_true_for_upper_bound() -> None:
+    """S1 (REQ-OPS-186 + REGRESSION 2026-09-22): open session -> upper bound is literal TRUE."""
     uuid_sesion = uuid_lib.UUID("00000000-0000-0000-0000-000000000001")
     s_sucursal = uuid_lib.UUID("00000000-0000-0000-0000-000000000002")
     sql = _build_open_session_sql(uuid_sesion, s_sucursal)
 
     # Both ingresos_count and salidas_count FILTER predicates MUST
-    # reference the open-window bound (req: t_open >= AND IS NULL guard).
+    # reference the open-window lower bound.
     assert "ingresos_count" in sql
     assert "salidas_count" in sql
     assert ":t_open" in sql
-    assert ":t_close IS NULL" in sql
+    # The upper bound must be the literal TRUE (vacuous for open
+    # session) — NOT a NULL parameter check (asyncpg IndeterminateData
+    # typeError on the previous `:t_close IS NULL` form).
+    assert "TRUE" in sql
+    # The previous NULL-guard form is retired.
+    assert ":t_close IS NULL" not in sql
+    # :t_close placeholder MUST NOT appear at all when t_close is None
+    # (defensive — the repo helper omits the bind in this case, but a
+    # stray :t_close placeholder would still trigger asyncpg's typing
+    # error even if unused).
+    assert ":t_close" not in sql
     # The branch scope MUST appear inside the FILTER (not just as a join
     # clause) — defends against a regression that drops the per-branch
     # tenant guard.
@@ -89,11 +106,11 @@ def test_closed_session_sql_adds_upper_bound_predicate() -> None:
     )
 
     # Closed-session path: the upper bound is now a real timestamp,
-    # not the NULL guard. Both ingresos and salidas carry the predicate.
+    # not the literal TRUE. Both ingresos and salidas carry the predicate.
     assert "i.fecha_ingreso <= :t_close" in sql
     assert "s.fecha_salida <= :t_close" in sql
-    # Open-window guard is dropped for the closed path.
-    assert ":t_close IS NULL" not in sql
+    # The closed-session SQL DOES reference :t_close (it's a real bound).
+    assert ":t_close" in sql
 
 
 def test_branch_scope_is_interpolated_not_optional() -> None:

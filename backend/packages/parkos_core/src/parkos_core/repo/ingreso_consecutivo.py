@@ -31,7 +31,7 @@ sync_attempts)`` columns -- exactly what this helper mutates.
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -128,7 +128,7 @@ async def assign_ingreso_consecutivo(
                 IngresoConsecutivoContador.uuid_sucursal == uuid_sucursal,
                 IngresoConsecutivoContador.uuid_tipo_vehiculo == uuid_tipo_vehiculo,
                 IngresoConsecutivoContador.last_event_uuid == source_event_uuid,
-                IngresoConsecutivoContador.vigente_hasta.is_(None),  # type: ignore[attr-defined]
+                IngresoConsecutivoContador.vigente_hasta.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -144,7 +144,7 @@ async def assign_ingreso_consecutivo(
             .where(
                 IngresoConsecutivoContador.uuid_sucursal == uuid_sucursal,
                 IngresoConsecutivoContador.uuid_tipo_vehiculo == uuid_tipo_vehiculo,
-                IngresoConsecutivoContador.vigente_hasta.is_(None),  # type: ignore[attr-defined]
+                IngresoConsecutivoContador.vigente_hasta.is_(None),
             )
             .with_for_update()
         )
@@ -152,18 +152,18 @@ async def assign_ingreso_consecutivo(
 
     if counter is None:
         # 3a. FIRST INGRESO for this namespace -- INSERT counter row 1.
-        # Lazy import mirrors api/v1/operacion.py:384 -- dateutil may not
-        # be available at module-load time in some test environments.
-        from dateutil.relativedelta import relativedelta  # type: ignore[import-untyped]
-
+        # DIAN retention: 5 years from creation (AGENTS.md §1). Using
+        # ``timedelta(days=365*5)`` instead of ``dateutil.relativedelta``
+        # to avoid an external dependency (python-dateutil isn't in the
+        # runtime image's ``pyproject.toml`` -- the lazy import in the
+        # previous version raised ModuleNotFoundError at runtime).
         new_counter = IngresoConsecutivoContador(
             uuid_sucursal=uuid_sucursal,
             uuid_tipo_vehiculo=uuid_tipo_vehiculo,
             ultimo_consecutivo=1,
             last_event_uuid=source_event_uuid,
             vigente_desde=datetime.now(UTC).replace(tzinfo=None),
-            # DIAN retention: 5 years from creation (AGENTS.md §1).
-            fecha_retencion_hasta=datetime.now(UTC).date() + relativedelta(years=5),
+            fecha_retencion_hasta=date.today() + timedelta(days=365 * 5),
         )
         session.add(new_counter)
         await session.flush()

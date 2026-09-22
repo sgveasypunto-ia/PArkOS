@@ -26,8 +26,9 @@ NOT partitioned: counters are bounded at ``O(branches x tipos) ~ 100s``.
 from __future__ import annotations
 
 import uuid as uuid_lib
+from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Integer
+from sqlalchemy import CheckConstraint, DateTime, Integer
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -58,17 +59,31 @@ class IngresoConsecutivoContador(AppendOnlyBase):
         nullable=True,
     )
 
+    # --- Bi-temporal versioning (declared as mapped_column so the
+    # repo helper can reference ``IngresoConsecutivoContador.vigente_hasta``
+    # as a class-level descriptor — the previous version declared these
+    # only implicitly via the ``AppendOnlyBase`` mixin, which caused
+    # ``AttributeError: type object 'IngresoConsecutivoContador' has no
+    # attribute 'vigente_hasta'`` at query build time).
+    #
+    # The bi-temporal UK ``UNIQUE (uuid_sucursal, uuid_tipo_vehiculo,
+    # vigente_desde)`` lives at the DB layer (migration 0042) — declared
+    # there, not here, because declarative ``UniqueConstraint`` referring
+    # to the ``vigente_desde`` mixin column triggers an "unknown column"
+    # error during mapper configuration (mixin columns are visible only
+    # AFTER the declarative machinery has finished assembling the table).
+    # Same precedent is followed by other [A] subclasses like
+    # ``idempotency_keys``: UKs are migration-side.
+    vigente_desde: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False),
+        nullable=True,
+    )
+    vigente_hasta: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False),
+        nullable=True,
+    )
+
     __table_args__ = (
-        # CHECK constraint is declared here so SQLAlchemy-aware tools
-        # (e.g. ``alembic check``) can introspect it. The bi-temporal UK
-        # ``UNIQUE (uuid_sucursal, uuid_tipo_vehiculo, vigente_desde)``
-        # lives at the DB layer (migration 0042) -- declared there, not
-        # here, because declarative ``UniqueConstraint`` referring to the
-        # ``vigente_desde`` mixin column triggers an "unknown column"
-        # error during mapper configuration (mixin columns are visible
-        # only AFTER the declarative machinery has finished assembling the
-        # table). The same precedent is followed by other [A] subclasses
-        # like ``idempotency_keys``: UKs are migration-side.
         CheckConstraint(
             "ultimo_consecutivo >= 0 AND ultimo_consecutivo < 1000000",
             name="ck_ingreso_consecutivo_contador_range",
