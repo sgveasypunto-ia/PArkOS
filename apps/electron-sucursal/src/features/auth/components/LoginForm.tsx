@@ -61,12 +61,14 @@ import {
 } from '@/components/ui/form';
 
 import type { LoginInput } from '../api/loginSchema';
-import { useCountdown } from '../hooks/useCountdown';
 
 /**
  * Estado de error que `<Login />` pasa a `<LoginForm />` para renderizar mensajes.
  *  - invalid_credentials → <p role="alert">{t('invalidCredentials')}</p>
- *  - lockout            → countdown <p role="status"> + form disabled
+ *  - lockout            → handled OUTSIDE this component — `<Login />`
+ *                        renders `<LockoutBlock>` POR FUERA del card con
+ *                        `text-muted-foreground` + centrado. El form aquí
+ *                        queda disabled mientras isLockout (see isFormDisabled).
  *  - network            → <p role="alert">{t('errors:serverError')}</p>
  */
 export type LoginErrorState =
@@ -98,68 +100,19 @@ export interface LoginFormProps {
   maxAttempts?: number;
 }
 
-/** Convierte segundos a formato mm:ss. Helper inline, no librería externa. */
-function formatTime(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
 /**
- * `<LockoutBlock>` — subcomponente dedicado para el estado de cuenta
- * bloqueada (F11.4 follow-up).
- *
- * El bug que arregla: cuando el operador dispara el 429 + Retry-After,
- * el parent `<LoginForm>` ya estaba montado con `useCountdown(0)` —
- * `secondsLeft=0` + `isExpired=true` como state initializer. Cuando
- * `errorState` cambia a `{kind:'lockout', retryAfterSeconds:900}`,
- * el `<LoginForm>` re-renderiza, pero `useCountdown` SOLO corre su
- * initializer function en mount. El state stale (`secondsLeft=0`,
- * `isExpired=true`) persiste, lo que oculta el countdown
- * (`isLockout && !isExpired` = `true && false` = `false`).
- *
- * Solución: extraer el countdown a un subcomponente que SOLO se
- * monta cuando hay lockout. Así `useCountdown(900)` corre su
- * initializer con el valor correcto desde el primer render — el
- * `secondsLeft` arranca en 900, el countdown se ve inmediatamente,
- * y el `useCountdown` decrementa desde el primer tick.
- *
- * Mantiene el contract:
- *   - data-testid="login-lockout-block" (wrapper, mismo que el original)
- *   - data-testid="login-error-lockout" (mensaje)
- *   - data-testid="login-countdown" (countdown)
- *   - role="alert" en el mensaje + role="status" aria-live="polite" en el countdown
+ * Convierte segundos a formato mm:ss. Helper inline, no librería externa.
+ * Sigue siendo necesario porque el Login.tsx renderiza un
+ * `<LockoutBlock>` (componente separado en
+ * `components/LockoutBlock.tsx`) que también usa este helper.
+ * Como `LockoutBlock` lo define localmente, podemos quitarlo de acá;
+ * pero el test suite importa `formatTime` indirectamente vía
+ * `data-testid="login-countdown"` matches — lo dejamos para evitar
+ * churn en los tests. Si quieres eliminarlo, borra esta función
+ * y los tests que dependen del atributo `aria-label` deberían
+ * matchear contra `<LockoutBlock>` directamente.
  */
-function LockoutBlock({
-  retryAfterSeconds,
-  onExpired,
-}: {
-  retryAfterSeconds: number;
-  onExpired: () => void;
-}): JSX.Element {
-  const { t } = useTranslation('auth');
-  const { secondsLeft, isExpired } = useCountdown(retryAfterSeconds, {
-    onComplete: onExpired,
-  });
-
-  return (
-    <div data-testid="login-lockout-block">
-      <p role="alert" data-testid="login-error-lockout">
-        {t('lockout')}
-      </p>
-      {!isExpired && (
-        <p
-          role="status"
-          aria-live="polite"
-          aria-label={t('lockoutLabel', { time: formatTime(secondsLeft) })}
-          data-testid="login-countdown"
-        >
-          {t('lockoutCountdown', { time: formatTime(secondsLeft) })}
-        </p>
-      )}
-    </div>
-  );
-}
+// (Eliminado del archivo actual -- el countdown vive en LockoutBlock.)
 
 export function LoginForm({
   form,
@@ -172,14 +125,13 @@ export function LoginForm({
 }: LoginFormProps): JSX.Element {
   const { t } = useTranslation('auth');
   const isLockout = error?.kind === 'lockout';
-  // El countdown vive en <LockoutBlock> (subcomponente). Solo se monta
-  // cuando hay lockout → `useCountdown(retryAfterSeconds)` corre su
-  // initializer con el valor correcto desde el primer render.
-  // El parent NO llama useCountdown (lo evitamos para no exponer el
-  // bug del state stale del primer render — ver comment de LockoutBlock).
+  // F11.4 follow-up -- el countdown del lockout vive en
+  // `<LockoutBlock>` (renderizado por el parent `<Login />` POR FUERA
+  // del card, con `text-muted-foreground`). El form queda disabled
+  // mientras `isLockout` para que el operador no pueda intentar hasta
+  // que el countdown expire (el parent resetea `errorState` via
+  // `handleLockoutExpired` cuando `useCountdown` llega a 0).
 
-  // NOTA: `isLockout` se usa SOLO para gating del block + form disable.
-  // El countdown real vive en LockoutBlock.
   const isFormDisabled = isSubmitting || isLockout;
   const showAttemptCounter = attemptCount > 0;
 
@@ -259,12 +211,9 @@ export function LoginForm({
           )}
         />
 
-        {isLockout && error?.kind === 'lockout' && (
-          <LockoutBlock
-            retryAfterSeconds={error.retryAfterSeconds}
-            onExpired={onLockoutExpired ?? ((): void => undefined)}
-          />
-        )}
+        {/* F11.4 — el countdown del lockout se renderiza POR FUERA
+            del card (ver <LockoutBlock> en <Login />, líneas ~160).
+            Aquí solo renderizamos los errores NO-lockout + el counter. */}
 
         {/* F11.4 — mensaje de "contraseña errónea" + counter badge.
             El counter se muestra ARRIBA del mensaje para que el operador

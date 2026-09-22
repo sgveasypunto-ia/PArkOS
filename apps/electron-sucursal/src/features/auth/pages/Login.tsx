@@ -40,6 +40,7 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
 import { LoginForm, type LoginErrorState } from '../components/LoginForm';
+import { LockoutBlock } from '../components/LockoutBlock';
 import { loginSchema, type LoginInput } from '../api/loginSchema';
 import {
   postLogin,
@@ -120,6 +121,14 @@ export function Login(): JSX.Element {
     }
   });
 
+  // F11.4 — el lockout block se renderiza POR FUERA del card (mismo patrón
+  // que `turno-cerrado-exito` arriba) con `text-muted-foreground` + centrado.
+  // El operador reportó que el texto "Cuenta bloqueada temporalmente."
+  // estaba dentro del card con `text-destructive` (demasiado protagonista);
+  // ahora vive como texto de apoyo al lado del card, no compite con el title.
+  const lockoutKind =
+    errorState?.kind === 'lockout' ? errorState : null;
+
   return (
     <>
       {/* F3.3 — REQ-OPS-124: feedback post-cierre turno (DEC-F3.3-09).
@@ -153,6 +162,20 @@ export function Login(): JSX.Element {
         className="grid min-h-[calc(100vh-2rem)] w-full place-items-center px-4 py-8"
         data-testid="login-page-wrapper"
       >
+        {/* F11.4 — F3.2 countdown live, POR FUERA del card, en gris
+            menos protagonista (text-muted-foreground), centrado.
+            Mismo estilo que `turno-cerrado-exito` (líneas 130-138) y
+            el help text del welcome card ("Digita la placa arriba...").
+            El form abajo permanece disabled durante el lockout porque
+            `error.kind === 'lockout'` → `isFormDisabled = true` (pasamos
+            `isLockout` derivado al LoginForm). */}
+        {lockoutKind && (
+          <LockoutBlock
+            retryAfterSeconds={lockoutKind.retryAfterSeconds}
+            onExpired={handleLockoutExpired}
+          />
+        )}
+
         <div className="w-full max-w-md">
           <LoginForm
             form={form}
