@@ -61,6 +61,15 @@ export type PlacaFormValues = z.infer<typeof placaFormSchema>;
 export interface PlacaInputProps {
   /** Called when the operator submits a valid plate (Enter or button). */
   onValidSubmit: (placa: string) => void;
+  /**
+   * REQ-OPS-200 (HU-F11.x): fires on every keystroke with the
+   * normalized value (trim + uppercase + whitespace-stripped). The
+   * parent uses this to show the tipo detectado + override dropdown
+   * LIVE as the operator types, BEFORE they hit Enter. Without this
+   * the dropdown only appears after submit — broken UX (the operator
+   * has to commit the wrong tipo first to see the override).
+   */
+  onChange?: (placa: string) => void;
   /** Disable while the parent is processing (e.g. confirming). */
   disabled?: boolean;
   /**
@@ -93,6 +102,7 @@ export interface PlacaInputProps {
  */
 export function PlacaInput({
   onValidSubmit,
+  onChange,
   disabled,
   initialValue,
   hideSubmitButton = false,
@@ -122,6 +132,13 @@ export function PlacaInput({
     if (!initialValue) return;
     if (!REGEX_AUTO.test(initialValue) && !REGEX_MOTO.test(initialValue)) return;
     form.setValue('placa', initialValue, { shouldValidate: false });
+    // REQ-OPS-200 (HU-F11.x): also notify the parent on pre-fill so
+    // the tipo detectado + override dropdown render immediately when
+    // the drawer opens with a smart-routed placa (the dashboard's
+    // PlacaInputHero passes the typed placa via openDrawer's
+    // initialPlaca arg). Without this the dropdown stays hidden
+    // until the operator re-types.
+    onChange?.(initialValue);
     // Re-focus the input so the operator can immediately press Enter.
     inputRef.current?.focus();
     // form is stable; only re-run if the initialValue changes between
@@ -163,6 +180,12 @@ export function PlacaInput({
                       .toUpperCase()
                       .replace(/\s+/g, '');
                     field.onChange(normalized);
+                    // REQ-OPS-200 (HU-F11.x): also notify the parent
+                    // on every keystroke so the tipo detectado +
+                    // override dropdown can render LIVE (not just
+                    // after submit). When the input is cleared the
+                    // parent resets its detection + override state.
+                    onChange?.(normalized);
                   }}
                   placeholder="ABC123"
                   autoComplete="off"
