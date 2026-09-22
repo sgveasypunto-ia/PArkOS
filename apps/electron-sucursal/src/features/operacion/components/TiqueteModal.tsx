@@ -4,6 +4,14 @@
  * REQ-OPS-197 — render `Identificación:` for no-placa ingresos).
  *
  * The dialog:
+ *   - Shows a PRINT PREVIEW thumbnail (the layout the printer will
+ *     emit, rendered as an HTML block) so the operator can verify
+ *     what they're about to print before pressing "Imprimir" — REGRESSION
+ *     fix (2026-09-22): previously the modal only echoed the metadata
+ *     fields and went straight to ``bridge.imprimir`` on click, which
+ *     left the operator blind to layout problems (e.g. truncation,
+ *     missing fields). The preview is intentionally monospace + bordered
+ *     to mirror the 58 mm thermal-printer aesthetic (see DEC-SUC-26).
  *   - Shows the freshly-issued `uuid_ingreso` + the operator-visible
  *     banner (Mensualidad vs Rotación per DEC-SUC-21).
  *   - For no-placa ingresos (consecutivo present), renders an
@@ -22,6 +30,12 @@
  *   - `tiquete_entrada_titulo` (reused from F6.2)
  *   - `ingreso_registrado_exitoso` (reused from F6.2)
  *   - `tiquete_identificacion_label` — "Identificación" (HU-INGRESO-SIN-PLACA)
+ *   - `tiquete_entrada_preview_header` — "Tiquete de entrada" (the
+ *     preview's centered header line, distinct from the modal title)
+ *   - `tiquete_entrada_preview_fecha` — "Fecha:" (preview field label)
+ *   - `tiquete_entrada_preview_tipo` — "Tipo:" (preview field label)
+ *   - `tiquete_entrada_preview_id` — "Identificación:" (preview field label)
+ *   - `tiquete_entrada_preview_folio` — "Folio:" (preview field label)
  */
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -120,6 +134,73 @@ export function TiqueteModal({
             })}
           </DialogDescription>
         </DialogHeader>
+
+        {/* REGRESSION fix (2026-09-22): render a print-preview thumbnail so
+            the operator sees the layout that will be emitted to the
+            58 mm thermal printer before pressing "Imprimir". The
+            preview mirrors the escposBuilder template (F5.2):
+            monospace + 58 mm-ish width + dashed border + centered
+            header. The same ``consecutivo`` / ``uuid_ingreso`` /
+            ``tipo_entrada`` fields shown in the metadata block below
+            are also drawn in the preview so the operator can spot
+            layout problems (truncation, missing fields) BEFORE the
+            print job goes to the printer. */}
+        <div
+          data-testid="tiquete-preview"
+          aria-label={t('tiquete_entrada_preview_header', {
+            defaultValue: 'Tiquete de entrada',
+          })}
+          className="mx-auto w-full max-w-sm rounded border border-dashed border-muted-foreground/40 bg-white p-3 font-mono text-xs leading-relaxed text-neutral-900 shadow-inner"
+        >
+          <div className="mb-2 text-center font-bold uppercase tracking-wide">
+            {t('tiquete_entrada_preview_header', {
+              defaultValue: 'Tiquete de entrada',
+            })}
+          </div>
+          <div className="border-t border-dashed border-neutral-400 pt-1">
+            <div>
+              <span className="font-semibold">
+                {t('tiquete_entrada_preview_fecha', { defaultValue: 'Fecha:' })}
+              </span>{' '}
+              {new Date().toLocaleString('es-CO', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </div>
+            <div>
+              <span className="font-semibold">
+                {t('tiquete_entrada_preview_tipo', { defaultValue: 'Tipo:' })}
+              </span>{' '}
+              {tipo_entrada === 'MENSUALIDAD'
+                ? t('ingreso_mensualidad_activa', {
+                    defaultValue: 'Mensualidad',
+                  })
+                : t('ingreso_rotacion_label', { defaultValue: 'Rotación' })}
+            </div>
+            <div>
+              <span className="font-semibold">
+                {t('tiquete_entrada_preview_id', {
+                  defaultValue: 'Identificación:',
+                })}
+              </span>{' '}
+              {consecutivo !== null && consecutivo !== undefined ? (
+                consecutivo
+              ) : (
+                <span className="text-neutral-500">—</span>
+              )}
+            </div>
+            <div>
+              <span className="font-semibold">
+                {t('tiquete_entrada_preview_folio', { defaultValue: 'Folio:' })}
+              </span>{' '}
+              <span className="break-all">{uuid_ingreso}</span>
+            </div>
+          </div>
+        </div>
+
         <div className="space-y-2 text-sm">
           {/* REQ-OPS-197 — `Identificación:` replaces the placa display
               for no-placa ingresos. Null for legacy carro/moto. */}
