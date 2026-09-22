@@ -202,9 +202,9 @@ async def crear_ingreso_evento(
 __all__ = [
     "FORZADO_MIN_MOTIVO_CHARS",
     "FORZADO_PREFIX",
-    "assign_ingreso_consecutivo",
     "ConsecutivoExhaustedError",
     "TipoVehiculoNotFoundError",
+    "assign_ingreso_consecutivo",
     "crear_ingreso_evento",
     "existe_ingreso_activo",
     "insertar_alerta_forzado",

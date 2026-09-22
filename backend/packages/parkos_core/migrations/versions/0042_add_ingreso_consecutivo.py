@@ -47,7 +47,6 @@ Refs: REQ-OPS-191, REQ-OPS-192, REQ-OPS-193
 """
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 

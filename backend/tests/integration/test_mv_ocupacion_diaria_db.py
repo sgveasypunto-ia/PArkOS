@@ -1,7 +1,7 @@
 """test_mv_ocupacion_diaria_db.py -- HU-F1.5 / REQ-OPS-030 DB integration.
 
 TDD RED-then-GREEN coverage for the materialized view
-``prod.mv_ocupacion_diaria`` semantics. Two scenarios:
+``prod.mv_ocupacion_diaria`` semantics. Three scenarios:
 
   T1 -- insert_ingreso_then_refresh: insert an ingreso with
        ``uuid_sucursal=X, uuid_tipo_vehiculo=T``; refresh the MV;
@@ -13,6 +13,12 @@ TDD RED-then-GREEN coverage for the materialized view
        matching ``salidas`` row; refresh; the MV no longer reports
        the ingreso as active -- the breakdown for ``(X, T)`` is
        empty.
+
+  T3 -- insert_no_placa_ingreso_counts (REQ-OPS-198 / HU-INGRESO-SIN-PLACA):
+       an ingreso with ``placa=NULL`` + ``consecutivo`` set is still
+       counted as active in the MV -- the MV's filter is on
+       ``uuid_tipo_vehiculo IS NOT NULL`` (not on placa). Regression
+       test for the no-placa path.
 
 Pattern mirrors ``tests/integration/test_calcular_cotizacion_db.py``
 (F1.8 precedent) and ``tests/integration/test_caja_sesion_unique
@@ -376,5 +382,112 @@ async def test_insert_salida_then_refresh_view_decrements_activos(
 
 __all__ = [
     "test_insert_ingreso_then_refresh_view_includes_row",
+    "test_insert_no_placa_ingreso_counts_in_mv",
     "test_insert_salida_then_refresh_view_decrements_activos",
 ]
+
+
+# ---------------------------------------------------------------------------
+# T3 -- insert_no_placa_ingreso_counts_in_mv (HU-INGRESO-SIN-PLACA / REQ-OPS-198)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_ingreso_sin_placa(
+    pg_engine,
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    uuid_tipo_vehiculo: uuid_lib.UUID,
+    consecutivo: str,
+) -> uuid_lib.UUID:
+    """Insert one ``prod.ingreso`` row with ``placa=NULL`` + a non-null
+    ``consecutivo``. Mirrors what the F1.6 handler emits for the
+    no-placa path (REQ-OPS-191). Returns the ingreso UUID.
+    """
+    from parkos_core.models.L_E.ingreso import Ingreso
+
+    now = _now_naive()
+    ingreso_uuid = uuid_lib.uuid4()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            Ingreso(
+                uuid=ingreso_uuid,
+                uuid_sucursal=uuid_sucursal,
+                uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+                placa=None,
+                consecutivo=consecutivo,
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=now,
+                observaciones=None,
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+    return ingreso_uuid
+
+
+async def test_insert_no_placa_ingreso_counts_in_mv(
+    pg_engine, pg_dsn: str
+) -> None:
+    """T3 (REQ-OPS-198): no-placa ingreso (bicicleta) counts in the MV.
+
+    The MV's filter is on ``uuid_tipo_vehiculo IS NOT NULL`` -- it does
+    NOT filter on ``placa IS NULL`` vs ``placa IS NOT NULL``. So a
+    no-placa ingreso (consecutivo='BICI-000001-3f8a1b2c', placa=NULL)
+    increments ``activos`` for the (sucursal, tipo) row just like a
+    carro/moto ingreso would.
+
+    Regression test for the no-placa path added in PR-A
+    (HU-INGRESO-SIN-PLACA). If a future migration accidentally
+    tightens the MV filter to require ``placa IS NOT NULL``, this
+    test fails and the bug is caught at CI.
+    """
+    await _drop_mv(pg_dsn)
+    await _truncate_sources(pg_dsn)
+    await _setup_view(pg_dsn)
+
+    uuid_sucursal = uuid_lib.uuid4()
+    uuid_tipo = uuid_lib.uuid4()
+
+    await _seed_empresa_sucursal(pg_engine, uuid_sucursal=uuid_sucursal)
+    await _seed_tipo_vehiculo(pg_engine, uuid_tipo=uuid_tipo, tipo="bicicleta")
+    await _seed_ingreso_sin_placa(
+        pg_engine,
+        uuid_sucursal=uuid_sucursal,
+        uuid_tipo_vehiculo=uuid_tipo,
+        consecutivo="BICI-000001-3f8a1b2c",
+    )
+
+    # Refresh the MV.
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        await session.execute(
+            text("REFRESH MATERIALIZED VIEW prod.mv_ocupacion_diaria")
+        )
+        await session.commit()
+
+    # Verify the MV reports the no-placa ingreso as active.
+    from parkos_core.repo.ocupacion import get_ocupacion_puros_activos
+
+    async with Session() as session:
+        rows = await get_ocupacion_puros_activos(
+            session, uuid_sucursal=uuid_sucursal
+        )
+
+    assert len(rows) == 1, (
+        f"breakdown MUST contain exactly one row for the no-placa "
+        f"ingreso; got {rows!r}"
+    )
+    row = rows[0]
+    assert row.uuid_tipo_vehiculo == uuid_tipo
+    assert row.activos == 1, (
+        f"no-placa ingreso MUST count in MV; expected activos=1, "
+        f"got {row.activos}"
+    )
+
+    await _drop_mv(pg_dsn)
+    await _truncate_sources(pg_dsn)

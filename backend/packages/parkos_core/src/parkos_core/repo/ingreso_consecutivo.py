@@ -31,7 +31,7 @@ sync_attempts)`` columns -- exactly what this helper mutates.
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -128,7 +128,7 @@ async def assign_ingreso_consecutivo(
                 IngresoConsecutivoContador.uuid_sucursal == uuid_sucursal,
                 IngresoConsecutivoContador.uuid_tipo_vehiculo == uuid_tipo_vehiculo,
                 IngresoConsecutivoContador.last_event_uuid == source_event_uuid,
-                IngresoConsecutivoContador.vigente_hasta.is_(None),
+                IngresoConsecutivoContador.vigente_hasta.is_(None),  # type: ignore[attr-defined]
             )
         )
     ).scalar_one_or_none()
@@ -144,7 +144,7 @@ async def assign_ingreso_consecutivo(
             .where(
                 IngresoConsecutivoContador.uuid_sucursal == uuid_sucursal,
                 IngresoConsecutivoContador.uuid_tipo_vehiculo == uuid_tipo_vehiculo,
-                IngresoConsecutivoContador.vigente_hasta.is_(None),
+                IngresoConsecutivoContador.vigente_hasta.is_(None),  # type: ignore[attr-defined]
             )
             .with_for_update()
         )
@@ -154,16 +154,8 @@ async def assign_ingreso_consecutivo(
         # 3a. FIRST INGRESO for this namespace -- INSERT counter row 1.
         # Lazy import mirrors api/v1/operacion.py:384 -- dateutil may not
         # be available at module-load time in some test environments.
-        from dateutil.relativedelta import relativedelta
+        from dateutil.relativedelta import relativedelta  # type: ignore[import-untyped]
 
-        if 1 >= 1000000:
-            # Defensive: never reach here at counter==0, but CHECK would
-            # catch it on commit anyway.
-            raise ConsecutivoExhaustedError(
-                f"counter overflow at namespace (sucursal={uuid_sucursal}, "
-                f"tipo={uuid_tipo_vehiculo}): starting at 1 already exceeds "
-                f"the 6-digit format"
-            )
         new_counter = IngresoConsecutivoContador(
             uuid_sucursal=uuid_sucursal,
             uuid_tipo_vehiculo=uuid_tipo_vehiculo,
@@ -171,7 +163,7 @@ async def assign_ingreso_consecutivo(
             last_event_uuid=source_event_uuid,
             vigente_desde=datetime.now(UTC).replace(tzinfo=None),
             # DIAN retention: 5 years from creation (AGENTS.md §1).
-            fecha_retencion_hasta=date.today() + relativedelta(years=5),
+            fecha_retencion_hasta=datetime.now(UTC).date() + relativedelta(years=5),
         )
         session.add(new_counter)
         await session.flush()
