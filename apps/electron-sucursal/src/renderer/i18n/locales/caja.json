@@ -62,6 +62,23 @@
     "alertas": "Alertas",
     "placeholderDesc": "Sección pendiente."
   },
+  "arqueoParcial": {
+    "titulo": "Arqueo parcial (auditoría)",
+    "descripcion": "Contá la caja sin cerrar el turno. La diferencia es solo advertencia si es chica.",
+    "noSession": "No hay sesión activa. Abrí turno antes de hacer arqueo.",
+    "sesionLabel": "Sesión activa",
+    "baseEfectivoLabel": "Efectivo esperado",
+    "baseDatafonoLabel": "Datáfono esperado",
+    "reportedEfectivoLabel": "Efectivo contado",
+    "reportedDatafonoLabel": "Datáfono contado",
+    "difEfectivo": "Dif. efectivo",
+    "difDatafono": "Dif. datáfono",
+    "difTotal": "Dif. total",
+    "difPct": "Descuadre",
+    "advertencia": "Hay diferencia. La auditoría queda registrada; solo se advierte (no bloquea).",
+    "justificacionLabel": "Justificación (mín. 3 caracteres)",
+    "confirmar": "Confirmar auditoría"
+  },
   "cierreDiario": {
     "titulo": "Cierre diario",
     "subtitulo": "Cierre de todas las sesiones abiertas del día — supervisor / multi-sucursal.",

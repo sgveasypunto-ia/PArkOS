@@ -27,7 +27,7 @@
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
 import { ReimprimirTiqueteSheet } from '../../reimpresion/components/ReimprimirTiqueteSheet';
-import { ArqueoSheet } from '../../caja/components/ArqueoSheet';
+import { ArqueoParcial } from '../pages/ArqueoParcial';
 import { CierreDiarioDialog } from '../../caja/components/CierreDiarioDialog';
 import { IngresoSheet } from '../../operacion/components/IngresoSheet';
 import { SalidaSheet } from '../../operacion/components/SalidaSheet';
@@ -67,7 +67,17 @@ export function DrawerHost(): JSX.Element | null {
     return <ReimprimirTiqueteSheet />;
   }
   if (openDrawer === 'arqueo') {
-    return <ArqueoSheet uuid_sesion={null} />;
+    // HU-F10.1 (REQ-OPS-153, AD-1 / AD-4) -- F11.3 follow-up:
+    // moved the arqueo flow into the same drawer-embedded pattern
+    // as the suscripciones Venta wizard. The legacy ArqueoSheet
+    // stub mounted with uuid_sesion={null} silently no-op'd the
+    // submit guard; replaced by ArqueoParcial (page) which fetches
+    // the current sesion itself, computes live diferencia, and posts
+    // to POST /caja/arqueo on submit. Side: right (matches the
+    // other Sheet drawers). See components/ArqueoSheet.tsx for the
+    // legacy schema constants kept for the CerrarTurno strict-mode
+    // branch.
+    return <ArqueoParcial />;
   }
   if (openDrawer === 'cierre-diario') {
     return <CierreDiarioDialog uuid_sucursal={null} uuid_sesion={null} />;
