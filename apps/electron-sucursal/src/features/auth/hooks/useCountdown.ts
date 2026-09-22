@@ -28,6 +28,22 @@ export interface UseCountdownOptions {
    * Útil para reset external state (e.g., `errorState` en `<Login />`).
    */
   onComplete?: () => void;
+  /**
+   * Optional pre-computed end-time (ms epoch). When provided, used
+   * verbatim as the countdown target instead of computing
+   * `Date.now() + retryAfterSeconds * 1000`. Enables persistence
+   * across re-mounts (React StrictMode dev, parent re-renders,
+   * browser refresh): the initializer function only runs on mount,
+   * and when re-mounted it picks up the persisted value from
+   * `localStorage` (handled by the consumer — e.g.,
+   * `<LockoutBlock />` via `lib/lockoutStorage`).
+   *
+   * Without `initialEndTime`, the hook computes `endTime` from
+   * `Date.now()` on every mount — fine for one-shot countdowns
+   * (logout retries, sync UIs), but wrong for state-bound ones
+   * that must persist across re-renders.
+   */
+  initialEndTime?: number;
 }
 
 export interface UseCountdownReturn {
@@ -43,7 +59,12 @@ export function useCountdown(
   retryAfterSeconds: number,
   options?: UseCountdownOptions,
 ): UseCountdownReturn {
-  const endTime = Date.now() + retryAfterSeconds * TICK_INTERVAL_MS;
+  // El `endTime` se calcula UNA VEZ en mount. Si `options.initialEndTime`
+  // está provisto (path del lockout con persistencia en localStorage),
+  // se usa verbatim. Si no, se calcula desde `Date.now()` (path
+  // one-shot: cotizaciones 15min, sync UI, etc.).
+  const endTime =
+    options?.initialEndTime ?? Date.now() + retryAfterSeconds * TICK_INTERVAL_MS;
   const [secondsLeft, setSecondsLeft] = useState(() =>
     Math.max(0, Math.ceil((endTime - Date.now()) / TICK_INTERVAL_MS)),
   );
