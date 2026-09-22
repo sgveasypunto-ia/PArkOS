@@ -155,7 +155,7 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
     await waitFor(() => {
       const alert = screen.getByTestId('login-error-invalid');
       expect(alert).toHaveAttribute('role', 'alert');
-      expect(alert).toHaveTextContent('Credenciales inválidas');
+      expect(alert).toHaveTextContent('Correo o contraseña incorrectos');
     });
   });
 
@@ -222,6 +222,154 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
     });
 
     vi.useRealTimers();
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // F11.4 — attempt counter cliente-side (UX feedback)
+  // ──────────────────────────────────────────────────────────────────────
+
+  it('U16: estado inicial → counter invisible (attemptCount === 0)', () => {
+    // Sin submit previo, el counter no se renderiza (estado cero = invisible
+    // para no contaminar la UI limpia del primer intento).
+    renderLogin();
+    expect(screen.queryByTestId('login-attempt-counter')).not.toBeInTheDocument();
+  });
+
+  it('U17: 401 → counter incrementa y muestra "Intento 1 de 5"', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      mockFetchOnce({ error: 'invalid_credentials' }, 401),
+    );
+
+    const user = renderLogin();
+    await user.type(screen.getByTestId('login-email'), 'op@test.co');
+    await user.type(screen.getByTestId('login-password'), 'wrong-pass-1234');
+    await user.click(screen.getByTestId('login-submit'));
+
+    await waitFor(() => {
+      const counter = screen.getByTestId('login-attempt-counter');
+      expect(counter).toHaveAttribute('role', 'status');
+      expect(counter).toHaveAttribute('aria-live', 'polite');
+      expect(counter).toHaveAttribute('data-attempt-current', '1');
+      expect(counter).toHaveAttribute('data-attempt-max', '5');
+      expect(counter).toHaveTextContent('Intento 1 de 5');
+    });
+  });
+
+  it('U18: 3× 401 → counter acumula "Intento 3 de 5"', async () => {
+    // 3 failed attempts in a row — counter accumulates client-side.
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      mockFetchOnce({ error: 'invalid_credentials' }, 401),
+    );
+
+    const user = renderLogin();
+    for (let i = 0; i < 3; i += 1) {
+      await user.type(screen.getByTestId('login-email'), 'op@test.co');
+      await user.type(screen.getByTestId('login-password'), `wrong-${i}`);
+      await user.click(screen.getByTestId('login-submit'));
+      // Wait for the error to surface + counter to update.
+      await waitFor(() => {
+        expect(screen.getByTestId('login-error-invalid')).toBeInTheDocument();
+      });
+    }
+
+    const counter = screen.getByTestId('login-attempt-counter');
+    expect(counter).toHaveAttribute('data-attempt-current', '3');
+    expect(counter).toHaveAttribute('data-attempt-max', '5');
+    expect(counter).toHaveTextContent('Intento 3 de 5');
+  });
+
+  it('U19: login OK después de N× 401 → counter resetea a invisible', async () => {
+    // Sequence: 2× 401 → counter shows "Intento 2 de 5" → 200 OK → counter
+    // resets to 0 (invisible). Verifies the path-feliz reset.
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    fetchSpy.mockResolvedValueOnce(
+      mockFetchOnce({ error: 'invalid_credentials' }, 401),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      mockFetchOnce({ error: 'invalid_credentials' }, 401),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      mockFetchOnce(
+        {
+          access_token: 'a-1',
+          refresh_token: 'r-1',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        },
+        200,
+        { 'Content-Type': 'application/json' },
+      ),
+    );
+
+    const user = renderLogin();
+    for (let i = 0; i < 2; i += 1) {
+      await user.type(screen.getByTestId('login-email'), 'op@test.co');
+      await user.type(screen.getByTestId('login-password'), `wrong-${i}`);
+      await user.click(screen.getByTestId('login-submit'));
+      await waitFor(() => {
+        expect(screen.getByTestId('login-error-invalid')).toBeInTheDocument();
+      });
+    }
+    expect(screen.getByTestId('login-attempt-counter')).toHaveTextContent(
+      'Intento 2 de 5',
+    );
+
+    // Now succeed
+    await user.clear(screen.getByTestId('login-password'));
+    await user.type(screen.getByTestId('login-password'), 'password1234');
+    await user.click(screen.getByTestId('login-submit'));
+    await waitFor(() => {
+      expect(mockSetTokens).toHaveBeenCalledWith('a-1', 'r-1', 3600);
+    });
+
+    // Counter MUST reset to invisible (attemptCount === 0)
+    expect(screen.queryByTestId('login-attempt-counter')).not.toBeInTheDocument();
+  });
+
+  it('U20: 429 → counter NO incrementa (el BE bloqueó, el countdown toma el control)', async () => {
+    // 4× 401 → counter at "Intento 4 de 5" → 429 (account locked) →
+    // counter stays at 4 (lockout takes visual priority via countdown).
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    for (let i = 0; i < 4; i += 1) {
+      fetchSpy.mockResolvedValueOnce(
+        mockFetchOnce({ error: 'invalid_credentials' }, 401),
+      );
+    }
+    fetchSpy.mockResolvedValueOnce(
+      mockFetchOnce(
+        { error: 'account_locked' },
+        429,
+        { 'Retry-After': '600' },
+      ),
+    );
+
+    const user = renderLogin();
+    for (let i = 0; i < 4; i += 1) {
+      await user.type(screen.getByTestId('login-email'), 'op@test.co');
+      await user.type(screen.getByTestId('login-password'), `wrong-${i}`);
+      await user.click(screen.getByTestId('login-submit'));
+      await waitFor(() => {
+        expect(screen.getByTestId('login-error-invalid')).toBeInTheDocument();
+      });
+    }
+    expect(screen.getByTestId('login-attempt-counter')).toHaveTextContent(
+      'Intento 4 de 5',
+    );
+
+    // Now trigger the 429
+    await user.click(screen.getByTestId('login-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('login-error-lockout')).toBeInTheDocument();
+    });
+
+    // Counter MUST stay at 4 (no increment on 429 — lockout takes
+    // visual priority via countdown).
+    const counter = screen.queryByTestId('login-attempt-counter');
+    // The counter may still be visible from the previous 401 attempt;
+    // verify its value stayed at 4, not 5.
+    if (counter) {
+      expect(counter).toHaveAttribute('data-attempt-current', '4');
+    }
   });
 });
 

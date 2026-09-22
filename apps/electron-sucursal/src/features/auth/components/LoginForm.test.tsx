@@ -97,7 +97,7 @@ describe('<LoginForm />', () => {
     render(<Harness />);
     const alert = screen.getByTestId('login-error-invalid');
     expect(alert).toHaveAttribute('role', 'alert');
-    expect(alert).toHaveTextContent('Credenciales inválidas');
+    expect(alert).toHaveTextContent('Correo o contraseña incorrectos');
   });
 
   it('U7b: error lockout → <p role="alert"> muestra t("lockout")', () => {
@@ -219,6 +219,85 @@ describe('<LoginForm />', () => {
     expect(countdown).toHaveAttribute('role', 'status');
     expect(countdown).toHaveAttribute('aria-live', 'polite');
     expect(countdown.textContent ?? '').toMatch(/\d{2}:\d{2}/);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // F11.4 — attempt counter (UX feedback) rendering tests
+  // ──────────────────────────────────────────────────────────────────────
+
+  it('U10a: attemptCount=0 (default) → counter invisible (estado cero no contamina la UI)', () => {
+    function Harness(): JSX.Element {
+      const form = useForm<LoginInput>({
+        resolver: zodResolver(loginSchema),
+        mode: 'onBlur',
+        defaultValues: { email: '', password: '' },
+      });
+      return (
+        <I18nextProvider i18n={i18n}>
+          <LoginForm form={form} onSubmit={vi.fn()} isSubmitting={false} error={null} />
+        </I18nextProvider>
+      );
+    }
+    render(<Harness />);
+    expect(screen.queryByTestId('login-attempt-counter')).not.toBeInTheDocument();
+  });
+
+  it('U10b: attemptCount=3, maxAttempts=5 → counter muestra "Intento 3 de 5"', () => {
+    function Harness(): JSX.Element {
+      const form = useForm<LoginInput>({
+        resolver: zodResolver(loginSchema),
+        mode: 'onBlur',
+        defaultValues: { email: '', password: '' },
+      });
+      return (
+        <I18nextProvider i18n={i18n}>
+          <LoginForm
+            form={form}
+            onSubmit={vi.fn()}
+            isSubmitting={false}
+            error={null}
+            attemptCount={3}
+            maxAttempts={5}
+          />
+        </I18nextProvider>
+      );
+    }
+    render(<Harness />);
+    const counter = screen.getByTestId('login-attempt-counter');
+    expect(counter).toBeInTheDocument();
+    expect(counter).toHaveAttribute('role', 'status');
+    expect(counter).toHaveAttribute('aria-live', 'polite');
+    expect(counter).toHaveAttribute('data-attempt-current', '3');
+    expect(counter).toHaveAttribute('data-attempt-max', '5');
+    expect(counter).toHaveTextContent('Intento 3 de 5');
+  });
+
+  it('U10c: attemptCount=1 (default maxAttempts=5) → counter muestra "Intento 1 de 5"', () => {
+    // Default maxAttempts=5 when prop omitted — backward compat with
+    // existing Login tests that don't pass the prop.
+    function Harness(): JSX.Element {
+      const form = useForm<LoginInput>({
+        resolver: zodResolver(loginSchema),
+        mode: 'onBlur',
+        defaultValues: { email: '', password: '' },
+      });
+      return (
+        <I18nextProvider i18n={i18n}>
+          <LoginForm
+            form={form}
+            onSubmit={vi.fn()}
+            isSubmitting={false}
+            error={null}
+            attemptCount={1}
+          />
+        </I18nextProvider>
+      );
+    }
+    render(<Harness />);
+    const counter = screen.getByTestId('login-attempt-counter');
+    expect(counter).toHaveAttribute('data-attempt-current', '1');
+    expect(counter).toHaveAttribute('data-attempt-max', '5');
+    expect(counter).toHaveTextContent('Intento 1 de 5');
   });
 
   // Reference unused import to satisfy linter
