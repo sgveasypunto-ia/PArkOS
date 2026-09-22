@@ -48,6 +48,13 @@ class Ingreso(LifecycleEventBase):
         nullable=True,
     )
     observaciones: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # REQ-OPS-192: nullable parking-lot identifier for ingresos sin placa
+    # (bicicleta, patineta). Format ``<TIPO>-NNNNNN-<uuid8>`` -- assigned
+    # by ``repo.ingreso_consecutivo.assign_ingreso_consecutivo``. NULL for
+    # legacy carro/moto rows (backward compat). Defense in depth: partial UK
+    # ``uq_ingreso_consecutivo_partial`` on (sucursal, tipo, consecutivo)
+    # WHERE consecutivo IS NOT NULL.
+    consecutivo: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     __table_args__ = (
         {
