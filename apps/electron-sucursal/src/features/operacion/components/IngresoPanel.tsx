@@ -29,6 +29,7 @@ import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 import { detectarTipoVehiculo } from '../../../lib/validation/placa';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
+import { useTiposVehiculoConSubscripcion } from '../../catalogos/hooks/useTiposVehiculoConSubscripcion';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 // NOTE: this panel mounts inside the dashboard drawer (no route change).
 // `useNavigate` was removed in the 2026-09-22 refactor — the "Ir a salida"
@@ -92,6 +93,14 @@ export interface IngresoPanelProps {
 export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): JSX.Element {
   const { t } = useTranslation('operacion');
   const tiposVehiculo = useTiposVehiculo();
+  // HU-F11.x (REQ-OPS-200): subset de tipos cubiertos por al menos un
+  // ``tipo_subscripciones`` vigente. Se usa para el override del tipo
+  // detectado por regex (ej. placa CARRO que el operador sabe que es
+  // MOTO, o un branch con plan MOTO donde la regex CARRO es
+  // overrideable a MOTO). Si el catálogo no tiene subscripciones
+  // configuradas, el subset queda ``[]`` y el dropdown solo muestra
+  // el tipo detectado (sin override).
+  const tiposVehiculoConSubscripcion = useTiposVehiculoConSubscripcion();
   // REGRESSION fix (2026-09-22): the dashboard uses the
   // ``useDashboardDrawerStore`` to switch between drawers WITHOUT
   // changing the route. The previous code used ``navigate('/operacion/
@@ -101,6 +110,13 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
 
   const [placa, setPlaca] = useState<string | null>(null);
   const [tipoDetectado, setTipoDetectado] = useState<'carro' | 'moto' | null>(null);
+  /**
+   * HU-F11.x (REQ-OPS-200): UUID del tipo seleccionado en el dropdown
+   * de override. ``null`` = "usar el detectado por regex". Cuando el
+   * operador elige otro tipo del subset, este state toma el UUID del
+   * catálogo correspondiente y el submit usa ESE valor (no el regex).
+   */
+  const [tipoOverrideUuid, setTipoOverrideUuid] = useState<string | null>(null);
   const [observaciones, setObservaciones] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState<SuccessState | null>(null);
@@ -151,6 +167,11 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       return;
     }
     setTipoDetectado(detectarTipoVehiculo(placa));
+    // REGRESSION fix (REQ-OPS-200): cuando cambia la placa, resetear el
+    // override — el operador debe re-confirmar (o re-elegir) el tipo
+    // cada vez que tipea una nueva placa. Esto evita que un UUID
+    // overrideado quede "pegado" al estado al cambiar de vehículo.
+    setTipoOverrideUuid(null);
   }, [placa]);
 
   // SWR-fetched cliente metadata for Mensualidad ingresos (REGRESSION
@@ -277,60 +298,103 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
     [latestIngreso, openDrawer],
   );
 
-  const handlePlacaSubmit = useCallback(
-    async (nextPlaca: string) => {
+  /**
+   * HU-F11.x (REQ-OPS-200): handler de validación de placa — NO postea.
+   * Se llama cuando el operador confirma la placa en PlacaInput
+   * (Enter o botón interno). Solo setea state local para que el
+   * dropdown de override aparezca y el operador pueda corregir el
+   * tipo detectado antes del POST. El POST ocurre después, en
+   * ``handleConfirmarIngreso``, cuando el operador clickea el botón
+   * "Registrar ingreso" global.
+   *
+   * Esto reemplaza el handler monolítico anterior que hacía validate +
+   * POST en un solo paso (sin oportunidad de override visible).
+   */
+  const handlePlacaValidate = useCallback(
+    (nextPlaca: string) => {
       setSubmitError(null);
+      // setPlaca() dispara el useEffect que setea tipoDetectado via
+      // detectarTipoVehiculo(). El dropdown aparece en el siguiente
+      // render cuando tipoDetectado !== null.
       setPlaca(nextPlaca);
+    },
+    [],
+  );
 
-      const tipoNombre = detectarTipoVehiculo(nextPlaca);
-      if (tipoNombre === null) {
-        setSubmitError('placa_formato_invalido');
+  /**
+   * HU-F11.x (REQ-OPS-200): confirma el POST usando el state actual
+   * (placa + tipoOverrideUuid + observaciones). Se llama cuando el
+   * operador hace click en el botón "Registrar ingreso" después de
+   * (opcionalmente) overridear el tipo en el dropdown.
+   */
+  const handleConfirmarIngreso = useCallback(async () => {
+    if (!placa) {
+      // Defensive: button solo renderiza cuando tipoDetectado != null,
+      // y tipoDetectado requiere placa. Pero el closure puede dispararse
+      // si el state se limpia entre el click y el handler.
+      return;
+    }
+    const tipoNombre = detectarTipoVehiculo(placa);
+    if (tipoNombre === null) {
+      setSubmitError('placa_formato_invalido');
+      return;
+    }
+
+    // Sentinel UUID guard (fix tipo_vehiculo_invalido).
+    // `tiposVehiculo.tipos` puede venir del HARDCODED_CATALOG fallback
+    // (DEC-F4.1-05), cuyos UUIDs sentinels no existen en
+    // prod.tipos_vehiculo y dispararían V4 en operacion.py:198-205.
+    // Si el catálogo está degradado, omitimos el UUID y dejamos al
+    // backend derivarlo desde la regex de la placa vía la capa V5
+    // (operacion.py:184-195).
+    //
+    // HU-F11.x (REQ-OPS-200): ``tipoOverrideUuid`` gana sobre la
+    // detección regex cuando está seteado — el override manual del
+    // operador se impone sobre la auto-detección. El UUID del override
+    // viene SIEMPRE de ``useTiposVehiculoConSubscripcion()`` (subset
+    // garantizado vigente y cubierto por subscripciones), así que no
+    // puede ser un sentinel UUID inválido.
+    let uuid_tipo_vehiculo: string | undefined;
+    if (tipoOverrideUuid !== null) {
+      uuid_tipo_vehiculo = tipoOverrideUuid;
+    } else if (!tiposVehiculoIsFallback) {
+      const tipoEntry = tiposVehiculo.tipos.find(
+        (tv) => tv.tipo === tipoNombre,
+      );
+      if (!tipoEntry) {
+        setSubmitError('cupo_no_configurado');
         return;
       }
+      uuid_tipo_vehiculo = tipoEntry.uuid;
+    }
 
-      // Sentinel UUID guard (fix tipo_vehiculo_invalido).
-      // `tiposVehiculo.tipos` may come from the HARDCODED_CATALOG fallback
-      // (DEC-F4.1-05), whose UUIDs (00000000-0000-...0001/0002) do NOT
-      // exist in prod.tipos_vehiculo. Sending them triggers V4 in
-      // operacion.py:198-205. When the catalog is degraded, omit the
-      // UUID and let the backend derive it from the placa regex via the
-      // V5 layer (operacion.py:184-195).
-      let uuid_tipo_vehiculo: string | undefined;
-      if (!tiposVehiculoIsFallback) {
-        const tipoEntry = tiposVehiculo.tipos.find((tv) => tv.tipo === tipoNombre);
-        if (!tipoEntry) {
-          setSubmitError('cupo_no_configurado');
-          return;
-        }
-        uuid_tipo_vehiculo = tipoEntry.uuid;
-      }
+    const payload: PostIngresoPayload = {
+      placa,
+      uuid_tipo_vehiculo,
+      observaciones:
+        observaciones.trim() === '' ? undefined : observaciones.trim(),
+    };
 
-      const payload: PostIngresoPayload = {
-        placa: nextPlaca,
-        uuid_tipo_vehiculo,
-        observaciones: observaciones.trim() === '' ? undefined : observaciones.trim(),
-      };
-
-      setSubmitting(true);
-      try {
-        const response = await postIngreso(payload);
-        await openSuccessWithAutoPrint(response, nextPlaca);
-      } catch (err) {
-        await handlePostError(err, nextPlaca, payload);
-      } finally {
-        setSubmitting(false);
-      }
-    },
+    setSubmitting(true);
+    try {
+      const response = await postIngreso(payload);
+      await openSuccessWithAutoPrint(response, placa);
+    } catch (err) {
+      await handlePostError(err, placa, payload);
+    } finally {
+      setSubmitting(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      tiposVehiculo.tipos,
-      tiposVehiculoIsFallback,
-      observaciones,
-      openDrawer,
-      openSuccessWithAutoPrint,
-      handlePostError,
-    ],
-  );
+  }, [
+    placa,
+    tipoOverrideUuid,
+    tiposVehiculo.tipos,
+    tiposVehiculoIsFallback,
+    observaciones,
+    openDrawer,
+    openSuccessWithAutoPrint,
+    handlePostError,
+  ]);
 
   const handleForzarConfirm = useCallback(
     async (forced: { placa: string; motivo: string; observaciones: string }) => {
@@ -465,9 +529,14 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         onVariantChange={setActiveVariant}
         renderConPlaca={() => (
           <PlacaInput
-            onValidSubmit={handlePlacaSubmit}
+            onValidSubmit={handlePlacaValidate}
             disabled={submitting}
             initialValue={initialPlaca}
+            // Hide PlacaInput's internal submit — the parent renders the
+            // single canonical "Registrar ingreso" button below. The
+            // placa form is still Enter-submittable (RHF) but only as
+            // a validate step (handlePlacaValidate); the actual POST
+            // is fired by the parent button (handleConfirmarIngreso).
             hideSubmitButton
             formId="ingreso-placa-form"
           />
@@ -526,9 +595,15 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           </div>
 
           <Button
-            type="submit"
-            form="ingreso-placa-form"
-            disabled={submitting}
+            type="button"
+            onClick={() => {
+              // HU-F11.x (REQ-OPS-200): confirma el POST usando el
+              // state actual (placa + tipoOverrideUuid + observaciones).
+              // Solo habilitado cuando tipoDetectado !== null — el
+              // operador debe tipear + validar la placa primero.
+              void handleConfirmarIngreso();
+            }}
+            disabled={submitting || !tipoDetectado}
             size="lg"
             className="w-full"
             data-testid="ingreso-registrar"
@@ -539,10 +614,100 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       )}
 
       {tipoDetectado && (
-        <p className="text-sm text-muted-foreground" role="status">
-          {t('ingreso_tipo_detectado', { defaultValue: 'Tipo detectado' })}:{' '}
-          <strong className="ml-1">{tipoDetectado}</strong>
-        </p>
+        // HU-F11.x (REQ-OPS-200): dropdown de override de tipo. Las
+        // opciones vienen de ``useTiposVehiculoConSubscripcion()``
+        // — solo tipos cubiertos por al menos un
+        // ``tipo_subscripciones`` vigente. Si no hay subscripciones
+        // configuradas, el subset es ``[]`` y caemos al texto
+        // estático (no hay a qué overridear).
+        tiposVehiculoConSubscripcion.tipos.length > 0 ? (
+          <div
+            className="space-y-1"
+            role="group"
+            aria-labelledby="ingreso-tipo-override-label"
+          >
+            <label
+              id="ingreso-tipo-override-label"
+              htmlFor="ingreso-tipo-override"
+              className="text-sm font-medium"
+            >
+              {t('ingreso_tipo_detectado', { defaultValue: 'Tipo detectado' })}:{' '}
+              <span className="font-mono text-sm font-semibold">{tipoDetectado}</span>
+            </label>
+            <select
+              id="ingreso-tipo-override"
+              data-testid="ingreso-tipo-override"
+              className="block w-full rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring focus:ring-2"
+              value={
+                tipoOverrideUuid
+                  ? tipoOverrideUuid
+                  : tiposVehiculoConSubscripcion.tipos.find(
+                      (tv) => tv.tipo === tipoDetectado,
+                    )?.uuid ?? ''
+              }
+              onChange={(e) => {
+                const next = e.target.value;
+                setTipoOverrideUuid(next === '' ? null : next);
+              }}
+              disabled={submitting}
+              aria-describedby="ingreso-tipo-override-help"
+            >
+              {/*
+                Opción "automático": valor '' (sin override). Solo se
+                muestra si el tipo detectado está en el subset — si el
+                regex matchea un tipo que NO está cubierto por
+                subscripciones (raro, ej. bicicleta para un cliente
+                que solo tiene plan MOTO), no aparece la opción auto y
+                el operador está forzado a elegir uno del subset.
+              */}
+              {(() => {
+                const detectedEntry = tiposVehiculoConSubscripcion.tipos.find(
+                  (tv) => tv.tipo === tipoDetectado,
+                );
+                return detectedEntry ? (
+                  <option value="">
+                    {t('ingreso_tipo_override_auto', {
+                      defaultValue: 'Automático',
+                    })}
+                    {' ('}
+                    {tipoDetectado}
+                    {')'}
+                  </option>
+                ) : null;
+              })()}
+              {tiposVehiculoConSubscripcion.tipos
+                .filter((tv) => tv.uuid && tv.tipo !== null)
+                .map((tv) => {
+                  const isDetected =
+                    tv.tipo === tipoDetectado && tipoOverrideUuid === null;
+                  return (
+                    <option key={tv.uuid} value={tv.uuid}>
+                      {tv.tipo}
+                      {isDetected
+                        ? t('ingreso_tipo_override_sugerido', {
+                            defaultValue: ' (detectado)',
+                          })
+                        : ''}
+                    </option>
+                  );
+                })}
+            </select>
+            <p
+              id="ingreso-tipo-override-help"
+              className="text-xs text-muted-foreground"
+            >
+              {t('ingreso_tipo_override_help', {
+                defaultValue:
+                  'Solo se muestran tipos cubiertos por planes de suscripción vigentes. El servidor rechaza con 422 si el tipo no tiene cupo.',
+              })}
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground" role="status">
+            {t('ingreso_tipo_detectado', { defaultValue: 'Tipo detectado' })}:{' '}
+            <strong className="ml-1">{tipoDetectado}</strong>
+          </p>
+        )
       )}
 
       {latestIngreso && (
