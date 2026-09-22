@@ -1,36 +1,42 @@
 /**
- * `<CerrarTurnoButton />` — navigation-only entry-point to the
- * `/caja/cerrar-turno` page (HU-F12.1, REQ-OPS-187, DA-F12.1-5).
+ * `<CerrarTurnoButton />` — right-side drawer trigger for HU-F3.3 +
+ * HU-F10.2 turn-closing flow (F11.3 follow-up).
  *
  * The button does NOT call `useSesionActiva().cerrarSesion` — that
- * belongs to F10.2 (`<CerrarTurno>` page). F12.1 owns the *navigation
- * trigger* only; the close logic is the F10.2 routed page's job.
+ * belongs to F10.2 (`<CerrarTurno>` page mounted inside
+ * `<CerrarTurnoSheet />`). The button only opens the right-side
+ * drawer; the close logic is the F10.2 page's job.
  *
  * Renders as a shadcn `<Button variant="outline">` with the operator's
  * i18n key `miTurno.cerrarTurno`. When `uuid_sesion` is `null` (no
- * active turno) the button is disabled — clicking would be a no-op
- * (the routed page would 404 sesion_not_found anyway).
+ * active turno) the button is disabled — opening the drawer without
+ * a sesion would render the F10.2 page's "no active sesion" branch
+ * (the page returns null without a sesion), which is confusing UX.
+ *
+ * Anchor id `mi-turno-cerrar-button` lets `<CerrarTurnoSheet />`
+ * restore focus on Esc close (REQ-OPS-138 §Esc).
  */
-import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 
+import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
+
 export interface CerrarTurnoButtonProps {
   /**
    * Active operator turno UUID. When `null`, the button is disabled
-   * because navigating to `/caja/cerrar-turno` without an active
-   * sesion would 404 sesion_not_found on the BE side.
+   * because opening the drawer without an active sesion would render
+   * the F10.2 page's "no active sesion" branch.
    */
   uuid_sesion: string | null;
 }
 
 export function CerrarTurnoButton({ uuid_sesion }: CerrarTurnoButtonProps): JSX.Element {
-  const navigate = useNavigate();
   const { t } = useTranslation('operacion');
+  const openDrawer = useDashboardDrawerStore((s) => s.open);
 
   function handleClick(): void {
-    navigate('/caja/cerrar-turno');
+    openDrawer('cerrar-turno', 'mi-turno-cerrar-button');
   }
 
   return (
