@@ -91,7 +91,20 @@ export function Login(): JSX.Element {
   }, []);
 
   const onSubmit = form.handleSubmit(async (values) => {
-    setErrorState(null);
+    // F11.4 follow-up -- el operador reportó que si falla un submit
+    // mientras YA está bloqueado, el countdown se reinicia desde
+    // cero en cada click (porque `setErrorState(null)` al inicio del
+    // submit desmonta el `<LockoutBlock />` que ya está corriendo).
+    //
+    // Fix: usar el setter funcional para preservar el lockout state.
+    // Si `prev.kind === 'lockout'`, mantenerlo (el countdown sigue
+    // corriendo en el `<LockoutBlock />`). Si no hay lockout previo,
+    // limpiar cualquier error transient (invalid_credentials o network)
+    // para que el próximo error mapping se renderice limpio.
+    setErrorState((prev) => {
+      if (prev?.kind === 'lockout') return prev;
+      return null;
+    });
     try {
       const pair = await postLogin(values.email, values.password);
       // DEC-F3.1-03 + authStore invariant: setTokens es atómico (access +
@@ -102,21 +115,34 @@ export function Login(): JSX.Element {
       setAttemptCount(0);
     } catch (err) {
       if (err instanceof InvalidCredentialsError) {
-        setErrorState({ kind: 'invalid_credentials' });
+        // Mismo setter funcional -- preserva el lockout previo si lo
+        // hubiera (improbable: un 401 solo ocurre ANTES del lockout,
+        // pero defensivo).
+        setErrorState((prev) => {
+          if (prev?.kind === 'lockout') return prev;
+          return { kind: 'invalid_credentials' };
+        });
         // F11.4 — increment cliente-side. El BE tiene su propio contador
         // autoritativo (prod.login estado='fallido'); este contador es
         // SOLO feedback visual (UX — el operador sabe cuántos intentos
         // lleva antes del bloqueo automático).
         setAttemptCount((n) => n + 1);
       } else if (err instanceof AccountLockedError) {
-        setErrorState({ kind: 'lockout', retryAfterSeconds: err.retryAfterSeconds });
-        // F11.4 — el BE bloqueó la cuenta. El countdown del lockout es
-        // el feedback visual prioritario; el attempt counter deja de
-        // importar (lo dejamos en su valor actual — al desbloquearse
-        // vía `handleLockoutExpired` el operador empieza de nuevo desde
-        // un estado limpio porque ya pasó el bloqueo).
+        // F11.4 follow-up -- si ya hay un lockout activo, IGNORAR el
+        // nuevo 429: el countdown del cliente ya está corriendo y el
+        // operador NO debe perder el progreso al hacer click submit
+        // múltiples veces durante el lockout. Si NO hay lockout
+        // previo (caso normal: el operador hace 5× 401 y luego el
+        // 429), montar el countdown por primera vez.
+        setErrorState((prev) => {
+          if (prev?.kind === 'lockout') return prev;
+          return { kind: 'lockout', retryAfterSeconds: err.retryAfterSeconds };
+        });
       } else {
-        setErrorState({ kind: 'network' });
+        setErrorState((prev) => {
+          if (prev?.kind === 'lockout') return prev;
+          return { kind: 'network' };
+        });
       }
     }
   });
