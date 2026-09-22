@@ -704,7 +704,21 @@ function useIngresosActivos(
 interface IngresoActivo {
   uuid: string;
   placa: string | null;
-  fecha_ingreso: string;
+  /**
+   * Hora del ingreso. El backend puede devolver `null` para filas creadas
+   * antes de que el handler populase la columna (seeds / ingresos de
+   * pruebas viejos). En ese caso caemos a `created_at`, que SÍ trae
+   * timestamp real del INSERT.
+   */
+  fecha_ingreso: string | null;
+  /**
+   * Identificador legible para ingresos sin placa (REQ-OPS-197).
+   * Formato `<TIPO>-NNNNNN-<uuid8>` (ej. `PATINETA-000003-34a24bae`).
+   * `null` para ingresos con placa — esos muestran la placa.
+   */
+  consecutivo: string | null;
+  /** Timestamp del INSERT — fallback cuando `fecha_ingreso` viene null. */
+  created_at: string;
   uuid_tipo_vehiculo: string;
   uuid_sucursal: string;
 }
@@ -736,23 +750,33 @@ function VehiculosDentroList({
   }
   return (
     <ul className="space-y-1" data-testid="vehiculos-list">
-      {safe.map((it) => (
-        <li
-          key={it.uuid}
-          className="flex items-center justify-between rounded border border-border bg-background px-2 py-1"
-          data-testid={`vehiculos-item-${it.uuid}`}
-        >
-          <span className="font-mono uppercase">
-            {it.placa ?? <span className="italic text-muted-foreground">—sin placa—</span>}
-          </span>
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {new Date(it.fecha_ingreso).toLocaleTimeString('es-CO', {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </span>
-        </li>
-      ))}
+      {safe.map((it) => {
+        // Identificador visible: placa si existe, sino el consecutivo
+        // (REQ-OPS-197, mismo string que se imprime en el tiquete), y
+        // como último recurso los primeros 8 chars del uuid.
+        const idVisible =
+          it.placa ?? it.consecutivo ?? it.uuid.slice(0, 8);
+        // Hora del ingreso: canon backend `fecha_ingreso`, con fallback a
+        // `created_at` para filas viejas donde la columna quedó null.
+        const horaIso = it.fecha_ingreso ?? it.created_at;
+        return (
+          <li
+            key={it.uuid}
+            className="flex items-center justify-between rounded border border-border bg-background px-2 py-1"
+            data-testid={`vehiculos-item-${it.uuid}`}
+          >
+            <span className="font-mono uppercase" title={it.uuid}>
+              {idVisible}
+            </span>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {new Date(horaIso).toLocaleTimeString('es-CO', {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }
