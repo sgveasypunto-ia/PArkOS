@@ -102,16 +102,21 @@ export function AbrirTurno(): JSX.Element {
       navigate('/');
     } catch (err) {
       if (err instanceof SesionAlreadyActiveError) {
-        // 409: the operator already has an active session (from a
-        // previous attempt, an abandoned tab, etc). Their
-        // expectation after pressing "Abrir turno" is "take me to
-        // the dashboard", not "show me a 409 alert + force me to
-        // click another button". Bust the SWR cache so
-        // Dashboard's `useSesionActiva` re-fetches fresh data, then
-        // send the operator to / automatically. The error state is
-        // suppressed because the redirect itself is the recovery.
+        // F11.4 follow-up -- the operator reported that on 409 the
+        // UI silently redirected to / without any feedback, leaving
+        // them confused about why "Abrir turno" did nothing. The
+        // plan (plan.md:1340, F3.3 Manejo de errores) is explicit:
+        //   "409 sesion_ya_abierta → mensaje 'ya tenés un turno abierto'"
+        //
+        // The fix: SET the error state instead of auto-navigating.
+        // The <AbrirTurnoForm /> then renders a `<FormMessage role="alert">`
+        // with the message AND an explicit "Ir al turno" button
+        // (`onIrAlTurno` callback that calls `navigate('/')`). The
+        // operator sees the message AND takes the action — no silent
+        // jump. We still bust the SWR cache so the dashboard reads
+        // fresh data when the operator hits "Ir al turno".
         void mutate(SESION_KEY);
-        navigate('/');
+        setErrorState({ kind: 'sesion_already_active' });
         return;
       }
       setErrorState({ kind: 'network' });
