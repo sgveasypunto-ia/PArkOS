@@ -48,6 +48,29 @@ describe('MiTurnoSchema — REQ-OPS-184 + REQ-OPS-189 (HU-F12.1)', () => {
     expect(Object.keys(parsed)).toHaveLength(7);
   });
 
+  it('S1b: wire-format Decimal strings coerce to numbers (REGRESSION 2026-09-22)', () => {
+    // Pydantic v2 serializes Decimal as JSON string by default
+    // (e.g. "total_cobrado_efectivo_cop": "0"). The schema MUST
+    // coerce these to numbers so the panel renders the per-turn
+    // counts instead of falling back to the all-zero emptyMiTurno.
+    // Discovered live in testing: operator with 25 ingresos in turn
+    // saw 0 because Zod rejected the entire payload on the strict
+    // number() check against the Decimal strings.
+    const wireString = {
+      ...BASE_OK,
+      total_cobrado_efectivo_cop: '50000',
+      total_cobrado_datafono_cop: '30000',
+    };
+    const parsed = MiTurnoSchema.parse(wireString);
+    expect(parsed.total_cobrado_efectivo_cop).toBe(50000);
+    expect(typeof parsed.total_cobrado_datafono_cop).toBe('number');
+    expect(parsed.total_cobrado_datafono_cop).toBe(30000);
+    // Non-negative Decimal strings still get rejected.
+    expect(() =>
+      MiTurnoSchema.parse({ ...wireString, total_cobrado_efectivo_cop: '-5' }),
+    ).toThrow();
+  });
+
   it('S2: strict() rejects a hypothetical 8th field (DA-F12.1-1)', () => {
     const drifted = { ...BASE_OK, phantom_field: 'drift from a future BE' };
     expect(() => MiTurnoSchema.parse(drifted)).toThrow();

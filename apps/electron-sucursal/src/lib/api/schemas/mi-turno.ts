@@ -12,6 +12,18 @@
  * The schema is consumed by ``features/operacion/hooks/useMiTurno.ts``
  * (after `parkosFetch` returns the raw payload) and by the API stub
  * ``features/operacion/api/miTurnoApi.ts``.
+ *
+ * REGRESSION fix (2026-09-22): the two ``total_cobrado_*`` fields are
+ * ``Decimal`` on the BE side. Pydantic v2 serializes Decimal as a JSON
+ * STRING by default (e.g. ``"total_cobrado_efectivo_cop":"0"``); the
+ * ``MiTurnoSchema`` previously declared ``z.number()`` and Zod threw
+ * on the wire, which collapsed the whole payload to the all-zero
+ * ``emptyMiTurno`` fallback in the panel — the operator saw 0 ingresos
+ * even when 25 existed in the turn. We use ``z.coerce.number()`` on
+ * the two Decimal fields so a wire-format string number parses to a
+ * real number and then passes ``nonnegative()``. Test S1b locks this
+ * contract. The two integer count fields stay strict ``z.number().int()``
+ * because the BE sends them as JSON numbers already (no coercion needed).
  */
 import { z } from 'zod';
 
@@ -22,8 +34,8 @@ export const MiTurnoSchema = z
     timestamp_calculo: z.string(),
     ingresos_count: z.number().int().nonnegative(),
     salidas_count: z.number().int().nonnegative(),
-    total_cobrado_efectivo_cop: z.number().nonnegative(),
-    total_cobrado_datafono_cop: z.number().nonnegative(),
+    total_cobrado_efectivo_cop: z.coerce.number().nonnegative(),
+    total_cobrado_datafono_cop: z.coerce.number().nonnegative(),
   })
   .strict();
 

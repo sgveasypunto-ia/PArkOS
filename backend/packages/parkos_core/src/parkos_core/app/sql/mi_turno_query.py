@@ -16,12 +16,12 @@ parameters and executes the SQL.
 Design choice (AD-3 verbatim):
     SELECT
       COUNT(*) FILTER (WHERE i.uuid_sucursal = :S_s
-                       AND i.fecha_ingreso >= :t_open
-                       AND i.fecha_ingreso <= :t_close)
+                       AND COALESCE(i.fecha_ingreso, i.created_at) >= :t_open
+                       AND COALESCE(i.fecha_ingreso, i.created_at) <= :t_close)
         AS ingresos_count,
       COUNT(*) FILTER (WHERE s.uuid_sucursal = :S_s
-                       AND s.fecha_salida >= :t_open
-                       AND s.fecha_salida <= :t_close)
+                       AND COALESCE(s.fecha_salida, s.created_at) >= :t_open
+                       AND COALESCE(s.fecha_salida, s.created_at) <= :t_close)
         AS salidas_count
     FROM prod.sesion
     LEFT JOIN prod.ingreso i ON TRUE
@@ -31,7 +31,7 @@ Design choice (AD-3 verbatim):
 The ``LEFT JOIN ... ON TRUE`` pattern keeps the sesion row in the
 result set even when no events exist (zero-state, REQ-OPS-184 S2).
 
-REGRESSION fix (2026-09-22): the previous SQL emitted
+REGRESSION fix (2026-09-22, #1): the previous SQL emitted
 ``(:t_close IS NULL OR ...)`` when ``t_close is None`` to guard against
 post-turn event leaks. With asyncpg, a NULL-bound parameter inside a
 boolean expression triggers ``IndeterminateDatatypeError: could not
@@ -41,6 +41,20 @@ substitute the literal ``TRUE`` when ``t_close is None`` (the upper
 bound is vacuous for an open session by construction — no
 post-turn events can leak before the session is closed). This keeps the
 defensive intent without the parameter-typing pitfall.
+
+REGRESSION fix (2026-09-22, #2): the columns ``prod.ingreso.fecha_ingreso``
+and ``prod.salidas.fecha_salida`` are NULL-able without DB default and
+the INSERT path (out of scope for this module) does not always populate
+them (the same rows carry a populated ``created_at`` from the audit
+trigger). A pure ``fecha_ingreso >= :t_open`` predicate silently
+excludes those rows because tri-valued SQL semantics make ``NULL >=
+anything`` evaluate to ``NULL`` (filtered out by ``COUNT(*) FILTER``).
+The COALESCE wrapper falls back to ``created_at`` (DB-side audit
+column, always populated) so the open-window predicate still resolves
+correctly for legacy rows. When the upstream INSERT path is fixed to
+populate ``fecha_ingreso`` directly, the COALESCE degrades to the
+preferred column and stays as a defensive belt-and-braces fallback
+(R-F12.1-2 — production reality vs ideal schema).
 """
 from __future__ import annotations
 
@@ -69,8 +83,9 @@ def build_mi_turno_counts_sql(
             is vacuous and the SQL emits literal ``TRUE`` (no parameter
             is bound — this avoids the asyncpg IndeterminateDatatypeError
             that triggered on the previous ``(:t_close IS NULL OR ...)``
-            form). When set, the SQL emits ``i.fecha_ingreso <= :t_close``
-            / ``s.fecha_salida <= :t_close``.
+            form). When set, the SQL emits
+            ``COALESCE(i.fecha_ingreso, i.created_at) <= :t_close`` /
+            ``COALESCE(s.fecha_salida, s.created_at) <= :t_close``.
 
     Returns:
         The SQL string with named bind parameters ``:uuid_sesion``,
@@ -89,19 +104,19 @@ def build_mi_turno_counts_sql(
         upper_predicate_ingreso = "TRUE"
         upper_predicate_salida = "TRUE"
     else:
-        upper_predicate_ingreso = "i.fecha_ingreso <= :t_close"
-        upper_predicate_salida = "s.fecha_salida <= :t_close"
+        upper_predicate_ingreso = "COALESCE(i.fecha_ingreso, i.created_at) <= :t_close"
+        upper_predicate_salida = "COALESCE(s.fecha_salida, s.created_at) <= :t_close"
 
     return (
         "SELECT "
         "COUNT(*) FILTER ("
         "WHERE i.uuid_sucursal = :S_s "
-        "AND i.fecha_ingreso >= :t_open "
+        "AND COALESCE(i.fecha_ingreso, i.created_at) >= :t_open "
         f"AND {upper_predicate_ingreso}"
         ") AS ingresos_count, "
         "COUNT(*) FILTER ("
         "WHERE s.uuid_sucursal = :S_s "
-        "AND s.fecha_salida >= :t_open "
+        "AND COALESCE(s.fecha_salida, s.created_at) >= :t_open "
         f"AND {upper_predicate_salida}"
         ") AS salidas_count "
         "FROM prod.sesion "

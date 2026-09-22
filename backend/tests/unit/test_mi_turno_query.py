@@ -6,15 +6,15 @@ those tables, per ER.mmd 4FN canon, R-F12.1-1):
 
     COUNT(*) FILTER (
       WHERE i.uuid_sucursal = :S_s
-        AND i.fecha_ingreso >= :t_open
-        AND i.fecha_ingreso <= :t_close     -- when t_close IS NOT NULL
+        AND COALESCE(i.fecha_ingreso, i.created_at) >= :t_open
+        AND COALESCE(i.fecha_ingreso, i.created_at) <= :t_close   -- when t_close IS NOT NULL
         -- otherwise literal TRUE (open session)
     ) AS ingresos_count,
 
     COUNT(*) FILTER (
       WHERE s.uuid_sucursal = :S_s
-        AND s.fecha_salida >= :t_open
-        AND s.fecha_salida <= :t_close       -- when t_close IS NOT NULL
+        AND COALESCE(s.fecha_salida, s.created_at) >= :t_open
+        AND COALESCE(s.fecha_salida, s.created_at) <= :t_close    -- when t_close IS NOT NULL
         -- otherwise literal TRUE (open session)
     ) AS salidas_count
 
@@ -30,11 +30,20 @@ S1: open session (t_close IS None) -> the upper bound is the literal
     type a NULL parameter inside a boolean expression and the query
     raised IndeterminateDatatypeError.
 S2: closed session (t_close IS NOT NULL) -> the predicate adds the
-    ``fecha_ingreso <= :t_close`` upper bound (REQ-OPS-186).
+    ``COALESCE(..., created_at) <= :t_close`` upper bound (REQ-OPS-186).
 S3: branch scope ``S_s`` is interpolated into the COUNT FILTER, NOT
     as a separate WHERE — defends against a copy-paste regression
     where the branch scope is dropped and the SUM double-counts
     cross-branch events.
+S4 (REGRESSION 2026-09-22, #2): the lower bound uses
+    ``COALESCE(i.fecha_ingreso, i.created_at)`` (and the salidas twin)
+    so legacy rows with NULL ``fecha_ingreso`` / ``fecha_salida`` still
+    resolve against the audit ``created_at``. Without the COALESCE,
+    tri-valued SQL semantics make ``NULL >= anything`` evaluate to
+    ``NULL`` and ``COUNT(*) FILTER`` drops the row silently — the bug
+    we hit in testing (operador con 25 ingresos en su turno, panel
+    mostraba 0). The COALESCE degrades to the preferred column once
+    the upstream INSERT path is fixed (R-F12.1-2).
 """
 from __future__ import annotations
 
@@ -62,7 +71,7 @@ def _build_open_session_sql(uuid_sesion: uuid_lib.UUID, s_sucursal: uuid_lib.UUI
 
 
 def test_open_session_sql_uses_literal_true_for_upper_bound() -> None:
-    """S1 (REQ-OPS-186 + REGRESSION 2026-09-22): open session -> upper bound is literal TRUE."""
+    """S1 (REQ-OPS-186 + REGRESSION 2026-09-22 #1): open session -> upper bound is literal TRUE."""
     uuid_sesion = uuid_lib.UUID("00000000-0000-0000-0000-000000000001")
     s_sucursal = uuid_lib.UUID("00000000-0000-0000-0000-000000000002")
     sql = _build_open_session_sql(uuid_sesion, s_sucursal)
@@ -106,9 +115,11 @@ def test_closed_session_sql_adds_upper_bound_predicate() -> None:
     )
 
     # Closed-session path: the upper bound is now a real timestamp,
-    # not the literal TRUE. Both ingresos and salidas carry the predicate.
-    assert "i.fecha_ingreso <= :t_close" in sql
-    assert "s.fecha_salida <= :t_close" in sql
+    # not the literal TRUE. Both ingresos and salidas carry the predicate
+    # wrapped in COALESCE so legacy NULL fecha_ingreso/fecha_salida
+    # rows still resolve via created_at (S4, REGRESSION 2026-09-22 #2).
+    assert "COALESCE(i.fecha_ingreso, i.created_at) <= :t_close" in sql
+    assert "COALESCE(s.fecha_salida, s.created_at) <= :t_close" in sql
     # The closed-session SQL DOES reference :t_close (it's a real bound).
     assert ":t_close" in sql
 
@@ -122,3 +133,22 @@ def test_branch_scope_is_interpolated_not_optional() -> None:
     # Two distinct occurrences (ingresos_filter + salidas_filter).
     assert sql.count("i.uuid_sucursal = :S_s") >= 1
     assert sql.count("s.uuid_sucursal = :S_s") >= 1
+
+
+def test_coalesce_wrapper_present_on_lower_bound() -> None:
+    """S4 (REGRESSION 2026-09-22 #2): COALESCE on the lower bound too.
+
+    Without the COALESCE on the lower bound, the open-window predicate
+    drops rows with NULL ``fecha_ingreso`` / ``fecha_salida`` via
+    tri-valued SQL semantics (``NULL >= anything`` is NULL, filtered
+    by ``COUNT(*) FILTER``). The operator reported this in testing
+    (panel showed 0 ingresos when 25 existed in the turn). Both lower
+    AND upper bounds MUST be wrapped so the predicate resolves against
+    ``created_at`` as a defensive fallback.
+    """
+    uuid_sesion = uuid_lib.uuid4()
+    s_sucursal = uuid_lib.uuid4()
+    sql = _build_open_session_sql(uuid_sesion, s_sucursal)
+
+    assert "COALESCE(i.fecha_ingreso, i.created_at) >= :t_open" in sql
+    assert "COALESCE(s.fecha_salida, s.created_at) >= :t_open" in sql
