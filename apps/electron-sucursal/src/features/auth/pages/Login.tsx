@@ -162,20 +162,6 @@ export function Login(): JSX.Element {
         className="grid min-h-[calc(100vh-2rem)] w-full place-items-center px-4 py-8"
         data-testid="login-page-wrapper"
       >
-        {/* F11.4 — F3.2 countdown live, POR FUERA del card, en gris
-            menos protagonista (text-muted-foreground), centrado.
-            Mismo estilo que `turno-cerrado-exito` (líneas 130-138) y
-            el help text del welcome card ("Digita la placa arriba...").
-            El form abajo permanece disabled durante el lockout porque
-            `error.kind === 'lockout'` → `isFormDisabled = true` (pasamos
-            `isLockout` derivado al LoginForm). */}
-        {lockoutKind && (
-          <LockoutBlock
-            retryAfterSeconds={lockoutKind.retryAfterSeconds}
-            onExpired={handleLockoutExpired}
-          />
-        )}
-
         <div className="w-full max-w-md">
           <LoginForm
             form={form}
@@ -187,6 +173,21 @@ export function Login(): JSX.Element {
             maxAttempts={MAX_ATTEMPTS}
           />
         </div>
+
+        {/* F11.4 — F3.2 countdown live, POR FUERA del card (DEBAJO del
+            mismo, no arriba — el operador reportó que arriba se ve raro
+            y poco usable, abajo es el patrón estándar para "support text
+            después del action surface"). En gris menos protagonista
+            (text-muted-foreground) + centrado. Mismo estilo que el
+            `turno-cerrado-exito` banner y el help text del welcome card.
+            El form arriba permanece disabled durante el lockout porque
+            `error.kind === 'lockout'` → `isFormDisabled = true`. */}
+        {lockoutKind && (
+          <LockoutBlock
+            retryAfterSeconds={lockoutKind.retryAfterSeconds}
+            onExpired={handleLockoutExpired}
+          />
+        )}
       </div>
     </>
   );
