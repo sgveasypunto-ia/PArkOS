@@ -322,7 +322,14 @@ async def create_ingreso(
         )
 
     # --- Step 9: INSERT + alerta (same TX, R5). ------------------------
-    new_attrs = payload.model_dump(exclude_none=True, exclude={"forzado"})
+    # REQ-OPS-194: ``placa_presente`` is a client-side Zod discriminator
+    # that the server reads (as a side effect of ``placa`` being None) but
+    # MUST NOT land in the persisted row -- it's not a business column.
+    # ``forzado`` is also excluded (it gates the alerta flow, never
+    # persisted per D-HU-F1.6-5).
+    new_attrs = payload.model_dump(
+        exclude_none=True, exclude={"forzado", "placa_presente"}
+    )
     new_attrs["uuid_tipo_vehiculo"] = uuid_tipo_vehiculo
     new_attrs["uuid_sucursal"] = target
     if consecutivo is not None and new_uuid is not None:
@@ -356,18 +363,17 @@ async def create_ingreso(
     apply_no_store_header(response)
     await session.refresh(new_row)
     base = IngresoRead.model_validate(new_row).model_dump()
-    # REQ-OPS-197: ``IngresoReadForzado.consecutivo`` is populated from
-    # the helper-minted string for no-placa ingresos, OR from the
-    # persisted row (which is ``None`` for legacy carro/moto rows since
-    # ``consecutivo`` is nullable + the partial UK is NOT NULL-filtered).
-    # The Pydantic model_dump above already includes ``consecutivo``
-    # (added to IngresoRead in commit A.2); we surface it verbatim.
+    # REQ-OPS-197: ``consecutivo`` is already in ``base`` (added to
+    # ``IngresoRead`` in commit A.2; the new row was just INSERTed with
+    # the helper-minted string in Step 9, so ``new_row.consecutivo``
+    # holds the value). The model_dump above surfaces it verbatim —
+    # DO NOT pass ``consecutivo`` again as an explicit kwarg or
+    # Pydantic raises ``multiple values for keyword argument``.
     return IngresoReadForzado(
         **base,
         tipo_entrada=tipo_entrada,  # type: ignore[arg-type]
         forzado_en_creacion=bypass_reason is not None,
         motivo_forzado=motivo if bypass_reason else None,
-        consecutivo=consecutivo if consecutivo is not None else base.get("consecutivo"),
     )
 
 

@@ -183,7 +183,7 @@ export default function Principal() {
   const openSuccessWithAutoPrint = useCallback(
     async (response: PostIngresoResponse) => {
       setSuccess({
-        uuid_ingreso: response.uuid_ingreso,
+        uuid_ingreso: response.uuid,
         tipo_entrada: response.tipo_entrada,
         consecutivo: response.consecutivo,
       });
@@ -422,12 +422,12 @@ function buildPrintPayload(
   // For now we emit a deterministic sentinel Buffer so the IPC call
   // path is exercised end-to-end in dev/staging.
   const buffer = Buffer.from(
-    `tiquete:entrada:${response.uuid_ingreso}`,
+    `tiquete:entrada:${response.uuid}`,
     'utf8',
   );
   return {
     buffer: buffer.toString('base64'),
-    ticketId: response.uuid_ingreso,
+    ticketId: response.uuid,
     cut: true,
   };
 }

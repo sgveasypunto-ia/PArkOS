@@ -17,11 +17,11 @@ Design choice (AD-3 verbatim):
     SELECT
       COUNT(*) FILTER (WHERE i.uuid_sucursal = :S_s
                        AND i.fecha_ingreso >= :t_open
-                       AND (:t_close IS NULL OR i.fecha_ingreso <= :t_close))
+                       AND i.fecha_ingreso <= :t_close)
         AS ingresos_count,
       COUNT(*) FILTER (WHERE s.uuid_sucursal = :S_s
                        AND s.fecha_salida >= :t_open
-                       AND (:t_close IS NULL OR s.fecha_salida <= :t_close))
+                       AND s.fecha_salida <= :t_close)
         AS salidas_count
     FROM prod.sesion
     LEFT JOIN prod.ingreso i ON TRUE
@@ -30,6 +30,17 @@ Design choice (AD-3 verbatim):
 
 The ``LEFT JOIN ... ON TRUE`` pattern keeps the sesion row in the
 result set even when no events exist (zero-state, REQ-OPS-184 S2).
+
+REGRESSION fix (2026-09-22): the previous SQL emitted
+``(:t_close IS NULL OR ...)`` when ``t_close is None`` to guard against
+post-turn event leaks. With asyncpg, a NULL-bound parameter inside a
+boolean expression triggers ``IndeterminateDatatypeError: could not
+determine data type of parameter $3`` (the parameter carries no type
+hint). The guard was the only purpose of the NULL-OR clause; we now
+substitute the literal ``TRUE`` when ``t_close is None`` (the upper
+bound is vacuous for an open session by construction — no
+post-turn events can leak before the session is closed). This keeps the
+defensive intent without the parameter-typing pitfall.
 """
 from __future__ import annotations
 
@@ -54,26 +65,29 @@ def build_mi_turno_counts_sql(
             builder always emits the parameter so the repo can supply
             the actual value).
         t_close: ``prod.sesion.timestamp_cierre`` ISO-string, or
-            ``None`` for an open session. When ``None``, the SQL adds
-            the ``:t_close IS NULL`` guard so post-turn events
-            (impossible by construction) are still counted correctly
-            if a future bug ever inserts rows out of order.
+            ``None`` for an open session. When ``None``, the upper bound
+            is vacuous and the SQL emits literal ``TRUE`` (no parameter
+            is bound — this avoids the asyncpg IndeterminateDatatypeError
+            that triggered on the previous ``(:t_close IS NULL OR ...)``
+            form). When set, the SQL emits ``i.fecha_ingreso <= :t_close``
+            / ``s.fecha_salida <= :t_close``.
 
     Returns:
         The SQL string with named bind parameters ``:uuid_sesion``,
         ``:S_s``, ``:t_open``, ``:t_close``. The caller binds them via
-        SQLAlchemy text/exec.
+        SQLAlchemy text/exec. When ``t_close`` is ``None``, the
+        ``:t_close`` parameter is unused — the repo must NOT bind it.
     """
     del s_sucursal  # parameters are referenced via :S_s in the SQL string.
     del t_open  # same.
 
-    # When t_close is None the SQL emits the NULL-guard predicate so a
-    # future bug that lets events leak post-turn is still bounded by
-    # the closed-session window. When t_close is set, the bound IS
-    # NOT NULL check is replaced with the actual upper bound.
+    # When t_close is None the upper bound is vacuous (no post-turn
+    # events can leak before the session is closed). Emit literal TRUE
+    # so asyncpg never has to type a NULL parameter. When t_close is
+    # set, the bound upper bound replaces the guard.
     if t_close is None:
-        upper_predicate_ingreso = ":t_close IS NULL"
-        upper_predicate_salida = ":t_close IS NULL"
+        upper_predicate_ingreso = "TRUE"
+        upper_predicate_salida = "TRUE"
     else:
         upper_predicate_ingreso = "i.fecha_ingreso <= :t_close"
         upper_predicate_salida = "s.fecha_salida <= :t_close"
@@ -83,12 +97,12 @@ def build_mi_turno_counts_sql(
         "COUNT(*) FILTER ("
         "WHERE i.uuid_sucursal = :S_s "
         "AND i.fecha_ingreso >= :t_open "
-        f"AND ({upper_predicate_ingreso})"
+        f"AND {upper_predicate_ingreso}"
         ") AS ingresos_count, "
         "COUNT(*) FILTER ("
         "WHERE s.uuid_sucursal = :S_s "
         "AND s.fecha_salida >= :t_open "
-        f"AND ({upper_predicate_salida})"
+        f"AND {upper_predicate_salida}"
         ") AS salidas_count "
         "FROM prod.sesion "
         "LEFT JOIN prod.ingreso i ON TRUE "

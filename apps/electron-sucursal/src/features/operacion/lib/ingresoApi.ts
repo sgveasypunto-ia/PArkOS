@@ -78,7 +78,10 @@ export type PostIngresoPayload = z.infer<typeof PostIngresoPayloadSchema>;
 
 /** Server response shape — `tipo_entrada` is derived server-side (DEC-SUC-21). */
 export const PostIngresoResponseSchema = z.object({
-  uuid_ingreso: z.string().uuid(),
+  // REQ-OPS-197: the backend returns ``uuid`` (from ``IngresoRead``) —
+  // the frontend's earlier discriminator used ``uuid_ingreso`` but the
+  // actual wire field is ``uuid``. Align with the backend contract.
+  uuid: z.string().uuid(),
   tipo_entrada: z.enum(['MENSUALIDAD', 'ROTACION']),
   /** DEC-SUC-21: nullable for rotación, non-null for mensualidad. */
   uuid_subscripcion_cliente: z.string().uuid().nullable(),

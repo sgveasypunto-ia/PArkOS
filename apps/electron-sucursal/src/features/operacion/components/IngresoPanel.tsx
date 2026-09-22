@@ -103,7 +103,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   const openSuccessWithAutoPrint = useCallback(
     async (response: PostIngresoResponse) => {
       setSuccess({
-        uuid_ingreso: response.uuid_ingreso,
+        uuid_ingreso: response.uuid,
         tipo_entrada: response.tipo_entrada,
         consecutivo: response.consecutivo,
       });
@@ -405,12 +405,12 @@ function buildPrintPayload(
   response: PostIngresoResponse,
 ): { buffer: string; ticketId: string; cut: boolean } {
   const buffer = Buffer.from(
-    `tiquete:entrada:${response.uuid_ingreso}`,
+    `tiquete:entrada:${response.uuid}`,
     'utf8',
   );
   return {
     buffer: buffer.toString('base64'),
-    ticketId: response.uuid_ingreso,
+    ticketId: response.uuid,
     cut: true,
   };
 }
