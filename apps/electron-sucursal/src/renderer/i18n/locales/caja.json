@@ -60,7 +60,18 @@
     "suscripciones": "Suscripciones",
     "sync": "Sincronización",
     "alertas": "Alertas",
-    "placeholderDesc": "Sección pendiente."
+    "placeholderDesc": "Sección pendiente.",
+    "placaHint": "Digita la placa y presioná Enter. El sistema abre automáticamente el panel correspondiente (pago si tiene cobro pendiente, salida si ya está dentro, ingreso si es nueva).",
+    "help": {
+      "ingreso": "Abrir el panel de ingreso (tecla F1).",
+      "salida": "Abrir el panel de salida (tecla F2).",
+      "suscripciones": "Abrir suscripciones (módulo futuro).",
+      "arqueo": "Hacer un arqueo parcial sin cerrar el turno (tecla F4).",
+      "inventario": "Ver los vehículos dentro del parqueadero (tecla F5).",
+      "cierre": "Ir al cierre diario multi-sesión (tecla F6).",
+      "facturas": "Reimprimir un tiquete o consultar facturas.",
+      "esc": "Volver a esta pantalla desde cualquier drawer."
+    }
   },
   "arqueoParcial": {
     "titulo": "Arqueo parcial (auditoría)",

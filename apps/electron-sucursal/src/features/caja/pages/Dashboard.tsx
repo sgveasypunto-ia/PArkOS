@@ -9,11 +9,12 @@
  *   │ Sidebar  │ Center:                           │ Sidebar:         │
  *   │ 200px    │  PLACA DEL VEHICULO               │  300px           │
  *   │          │  [giant ABC123 input]              │                  │
- *   │ 5 action │                                   │  AUTOS 5         │
- *   │ buttons  │  Bienvenido + keyboard help       │  MOTOS 4         │
- *   │ → drawers│                                   │                  │
- *   │          │                                   │  VEHICULOS LIST  │
- *   │          │                                   │  COBROS PEND.    │
+ *   │ 7 action │    placa hint (contextual)         │  AUTOS 5         │
+ *   │ buttons  │                                   │  MOTOS 4         │
+ *   │ → drawers│  Vehículos dentro                 │                  │
+ *   │ + tooltips                                   │  VEHICULOS LIST  │
+ *   │ (help +   │                                   │  COBROS PEND.    │
+ *   │  hotkey)  │                                   │                  │
  *   └──────────┴───────────────────────────────────┴──────────────────┘
  *
  * Hotkeys (F1-F6) open the matching side-panel drawer via the
@@ -62,6 +63,12 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { TurnoActivoToggle } from '../components/TurnoActivoToggle';
 
 import { DrawerHost } from './DrawerHost';
@@ -241,129 +248,187 @@ export function Dashboard(): JSX.Element | null {
         </header>
 
         {/* ── Left sidebar nav ──────────────────────────────────────────── */}
-        <nav
-          id="dashboard-sidebar-nav"
-          aria-label={t('caja:dashboard.navLabel', { defaultValue: 'Acciones rápidas' })}
-          className={
-            // Mobile: drawer-style overlay (when hamburger open) OR hidden.
-            // lg+: static sidebar in the grid (col-start-1 row-start-2).
-            'flex flex-col gap-2 overflow-y-auto border-border bg-card p-2 ' +
-            'lg:row-start-2 lg:col-start-1 lg:border-r ' +
-            (mobileNavOpen
-              ? 'fixed inset-y-0 left-0 z-40 w-64 border-r shadow-xl'
-              : 'hidden lg:flex')
-          }
-        >
-          {/* Ingreso + Salida — acciones CORE del kiosko. Los drawers
-              `ingreso`/`salida` ya están cableados en DrawerHost
-              (F6.1/F7.1) y los hotkeys F1/F2 los abren desde header;
-              este anchor del sidebar los expone como botón trigger
-              para kioskos sin teclado o cuando el header está
-              colapsado en mobile. */}
-          <Button
-            variant="outline"
-            data-testid="sidebar-ingreso"
-            className="justify-start text-sm"
-            onClick={() => {
-              openDrawer('ingreso', 'sidebar-ingreso');
-              setMobileNavOpen(false);
-            }}
+        {/* TooltipProvider lives at the sidebar root so each action button
+            shows its own contextual help (purpose + hotkey) at the moment
+            the operator is about to click it. Replaces the legacy
+            `welcome-card` list which was read-once-then-forgotten.
+            Radix Tooltip shows on hover AND focus, so touch + keyboard +
+            kiosko (mouse-less) are all covered. `side="right"` keeps the
+            popover inside the viewport regardless of sidebar position. */}
+        <TooltipProvider delayDuration={150}>
+          <nav
+            id="dashboard-sidebar-nav"
+            aria-label={t('caja:dashboard.navLabel', { defaultValue: 'Acciones rápidas' })}
+            className={
+              // Mobile: drawer-style overlay (when hamburger open) OR hidden.
+              // lg+: static sidebar in the grid (col-start-1 row-start-2).
+              'flex flex-col gap-2 overflow-y-auto border-border bg-card p-2 ' +
+              'lg:row-start-2 lg:col-start-1 lg:border-r ' +
+              (mobileNavOpen
+                ? 'fixed inset-y-0 left-0 z-40 w-64 border-r shadow-xl'
+                : 'hidden lg:flex')
+            }
           >
-            🚗 {t('operacion:ingreso', { defaultValue: 'Ingreso' })}
-            <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F1</kbd>
-          </Button>
-          <Button
-            variant="outline"
-            data-testid="sidebar-salida"
-            className="justify-start text-sm"
-            onClick={() => {
-              openDrawer('salida', 'sidebar-salida');
-              setMobileNavOpen(false);
-            }}
-          >
-            🏁 {t('operacion:salida', { defaultValue: 'Salida' })}
-            <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F2</kbd>
-          </Button>
-          <Button
-            variant="outline"
-            data-testid="sidebar-suscripciones"
-            className="justify-start text-sm"
-            onClick={() => {
-              openDrawer('suscripciones', 'sidebar-suscripciones');
-              setMobileNavOpen(false);
-            }}
-          >
-            💳 {t('suscripciones:menu', { defaultValue: 'Suscripción' })}
-          </Button>
-          {/* HU-F10.1 — Arqueo (EP-13) en el sidebar izquierdo.
-              F11.3 había movido esto al right-sidebar MiTurnoPanel
-              como "single source of truth" del per-turn action
-              surface. Revierto esa decisión por directiva del
-              operador: el botón de hacer arqueo debe estar en el
-              menú izquierdo, accesible con el atajo F4 (igual que
-              el resto del sidebar). El anchor del right-sidebar
-              (ArqueoButton dentro de MiTurnoPanel) sigue
-              existiendo como atajo contextual del turno abierto. */}
-          <Button
-            variant="outline"
-            data-testid="sidebar-arqueo"
-            className="justify-start text-sm"
-            onClick={() => {
-              openDrawer('arqueo', 'sidebar-arqueo');
-              setMobileNavOpen(false);
-            }}
-          >
-            💰 {t('caja:arqueoLabel', { defaultValue: 'Arqueo' })}
-            <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F4</kbd>
-          </Button>
-          {/* "Cerrar turno" is intentionally NOT in the left sidebar.
-              The header button (data-testid="dashboard-cerrar-turno")
-              is the canonical single-source-of-truth for the
-              turn-closing entry-point — duplicating it in the sidebar
-              made the kiosk surface ambiguous. */}
-          <Button
-            variant="outline"
-            data-testid="sidebar-cierre-diario"
-            className="justify-start text-sm"
-            onClick={() => {
-              // HU-F10.3 (REQ-OPS-164 + AD-2) — sidebar anchor
-              // navigates to the routed page (mirrors the F10.1/F10.2
-              // sidebar anchors). The F8.x `CierreDiarioDialog` drawer
-              // (per-session quick close) remains accessible via the
-              // DrawerHost but the canonical entry-point for the
-              // multi-session daily reconciliation is this routed
-              // page.
-              navigate('/caja/cierre-diario');
-              setMobileNavOpen(false);
-            }}
-          >
-            📋 {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
-            <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F6</kbd>
-          </Button>
-          <Button
-            variant="outline"
-            data-testid="sidebar-inventario"
-            className="justify-start text-sm"
-            onClick={() => {
-              openDrawer('inventario', 'sidebar-inventario');
-              setMobileNavOpen(false);
-            }}
-          >
-            📦 {t('caja:dashboard.inventario', { defaultValue: 'Inventario' })}
-            <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F5</kbd>
-          </Button>
-          <Button
-            variant="outline"
-            data-testid="sidebar-facturas"
-            className="justify-start text-sm"
-            onClick={() => {
-              openDrawer('reimpresion', 'sidebar-facturas');
-              setMobileNavOpen(false);
-            }}
-          >
-            🧾 {t('caja:dashboard.facturas', { defaultValue: 'Facturas' })}
-          </Button>
-        </nav>
+            {/* Ingreso + Salida — acciones CORE del kiosko. Los drawers
+                `ingreso`/`salida` ya están cableados en DrawerHost
+                (F6.1/F7.1) y los hotkeys F1/F2 los abren desde header;
+                este anchor del sidebar los expone como botón trigger
+                para kioskos sin teclado o cuando el header está
+                colapsado en mobile. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  data-testid="sidebar-ingreso"
+                  className="justify-start text-sm"
+                  onClick={() => {
+                    openDrawer('ingreso', 'sidebar-ingreso');
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  🚗 {t('operacion:ingreso', { defaultValue: 'Ingreso' })}
+                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F1</kbd>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {t('caja:dashboard.help.ingreso')}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  data-testid="sidebar-salida"
+                  className="justify-start text-sm"
+                  onClick={() => {
+                    openDrawer('salida', 'sidebar-salida');
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  🏁 {t('operacion:salida', { defaultValue: 'Salida' })}
+                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F2</kbd>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {t('caja:dashboard.help.salida')}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  data-testid="sidebar-suscripciones"
+                  className="justify-start text-sm"
+                  onClick={() => {
+                    openDrawer('suscripciones', 'sidebar-suscripciones');
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  💳 {t('suscripciones:menu', { defaultValue: 'Suscripción' })}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {t('caja:dashboard.help.suscripciones')}
+              </TooltipContent>
+            </Tooltip>
+            {/* HU-F10.1 — Arqueo (EP-13) en el sidebar izquierdo.
+                F11.3 había movido esto al right-sidebar MiTurnoPanel
+                como "single source of truth" del per-turn action
+                surface. Revierto esa decisión por directiva del
+                operador: el botón de hacer arqueo debe estar en el
+                menú izquierdo, accesible con el atajo F4 (igual que
+                el resto del sidebar). El anchor del right-sidebar
+                (ArqueoButton dentro de MiTurnoPanel) sigue
+                existiendo como atajo contextual del turno abierto. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  data-testid="sidebar-arqueo"
+                  className="justify-start text-sm"
+                  onClick={() => {
+                    openDrawer('arqueo', 'sidebar-arqueo');
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  💰 {t('caja:arqueoLabel', { defaultValue: 'Arqueo' })}
+                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F4</kbd>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {t('caja:dashboard.help.arqueo')}
+              </TooltipContent>
+            </Tooltip>
+            {/* "Cerrar turno" is intentionally NOT in the left sidebar.
+                The header button (data-testid="dashboard-cerrar-turno")
+                is the canonical single-source-of-truth for the
+                turn-closing entry-point — duplicating it in the sidebar
+                made the kiosk surface ambiguous. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  data-testid="sidebar-cierre-diario"
+                  className="justify-start text-sm"
+                  onClick={() => {
+                    // HU-F10.3 (REQ-OPS-164 + AD-2) — sidebar anchor
+                    // navigates to the routed page (mirrors the F10.1/F10.2
+                    // sidebar anchors). The F8.x `CierreDiarioDialog` drawer
+                    // (per-session quick close) remains accessible via the
+                    // DrawerHost but the canonical entry-point for the
+                    // multi-session daily reconciliation is this routed
+                    // page.
+                    navigate('/caja/cierre-diario');
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  📋 {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
+                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F6</kbd>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {t('caja:dashboard.help.cierre')}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  data-testid="sidebar-inventario"
+                  className="justify-start text-sm"
+                  onClick={() => {
+                    openDrawer('inventario', 'sidebar-inventario');
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  📦 {t('caja:dashboard.inventario', { defaultValue: 'Inventario' })}
+                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F5</kbd>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {t('caja:dashboard.help.inventario')}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  data-testid="sidebar-facturas"
+                  className="justify-start text-sm"
+                  onClick={() => {
+                    openDrawer('reimpresion', 'sidebar-facturas');
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  🧾 {t('caja:dashboard.facturas', { defaultValue: 'Facturas' })}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {t('caja:dashboard.help.facturas')}
+              </TooltipContent>
+            </Tooltip>
+          </nav>
+        </TooltipProvider>
 
         {/* Backdrop overlay for mobile sidebar. Click to close. */}
         {mobileNavOpen && (
@@ -409,6 +474,21 @@ export function Dashboard(): JSX.Element | null {
             <CardContent>
               {/* The placa input hero — autofocus on mount, ABC123 placeholder. */}
               <PlacaInputHero uuid_sucursal={uuid_sucursal} />
+              {/*
+                Hint contextual debajo del input — antes vivía en la
+                `welcome-card` (read-once-then-forgotten). Acá vive al
+                lado del objeto que describe: el operador ve la ayuda
+                mientras tipea, no en otra zona de la pantalla.
+              */}
+              <p
+                className="mt-2 text-center text-xs text-muted-foreground"
+                data-testid="placa-card-hint"
+              >
+                {t('caja:dashboard.placaHint', {
+                  defaultValue:
+                    'Digita la placa y presioná Enter. El sistema abre automáticamente el panel correspondiente.',
+                })}
+              </p>
             </CardContent>
           </Card>
 
@@ -428,29 +508,6 @@ export function Dashboard(): JSX.Element | null {
             </CardHeader>
             <CardContent className="p-2 text-sm">
               <VehiculosDentroList uuid_sucursal={uuid_sucursal} />
-            </CardContent>
-          </Card>
-
-          <Card data-testid="welcome-card">
-            <CardHeader className="pb-2">
-              <CardTitle>{t('caja:dashboard.welcome', { defaultValue: 'Bienvenido' })}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1 text-sm">
-              <p className="text-muted-foreground">
-                {t('caja:dashboard.welcomeHelp', {
-                  defaultValue:
-                    'Digita la placa arriba. El sistema abre automáticamente el panel correspondiente (pago si tiene cobro pendiente, salida si ya está dentro, ingreso si es nueva).',
-                })}
-              </p>
-              <ul className="hidden space-y-0.5 pt-1 md:block">
-                <li><kbd className="kbd-key">F1</kbd> {t('caja:dashboard.help.ingreso', { defaultValue: 'Abrir panel de ingreso (Atajo de teclado).' })}</li>
-                <li><kbd className="kbd-key">F2</kbd> {t('caja:dashboard.help.salida', { defaultValue: 'Abrir panel de salida (Atajo de teclado).' })}</li>
-                <li><kbd className="kbd-key">F3</kbd> {t('caja:dashboard.help.suscripciones', { defaultValue: 'Suscripción — modulo futuro.' })}</li>
-                <li><kbd className="kbd-key">F4</kbd> {t('caja:dashboard.help.arqueo', { defaultValue: 'Arqueo — arqueo parcial (EP-13).' })}</li>
-                <li><kbd className="kbd-key">F5</kbd> {t('caja:dashboard.help.inventario', { defaultValue: 'Inventario — vehiculos dentro del parqueadero (EP-09).' })}</li>
-                <li><kbd className="kbd-key">F6</kbd> {t('caja:dashboard.help.cierre', { defaultValue: 'Cierre — cierre diario (EP-14).' })}</li>
-                <li><kbd className="kbd-key">Esc</kbd> {t('caja:dashboard.help.esc', { defaultValue: 'Volver a esta pantalla.' })}</li>
-              </ul>
             </CardContent>
           </Card>
 
