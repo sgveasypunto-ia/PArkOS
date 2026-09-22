@@ -10,7 +10,7 @@
  * metadata via two chained reads:
  *
  *   1. ``GET /api/v1/clientes/subscripciones-cliente/{uuid}`` → FK
- *      ``uuid_cliente`` (and optionally plan metadata).
+ *      ``uuid_cliente`` + ``fecha_vencimiento`` + ``uuid_tipo_subscripcion``.
  *   2. ``GET /api/v1/clientes/clientes/{uuid_cliente}`` → ``nombre``,
  *      ``apellido``, ``tipo_identificador``, ``numero_identificacion``.
  *
@@ -18,12 +18,18 @@
  * helper + a SWR-backed ``useClienteBySubscripcion`` hook so the
  * TiqueteModal preview can render the cliente block without the parent
  * having to thread props through manually.
+ *
+ * FEATURE EXTENSION (2026-09-22 — A+B+C workflow): the response now
+ * carries ``fechaVencimiento`` + ``uuidTipoSubscripcion`` so the
+ * tiquete preview can warn the operator when the subscription is
+ * expired (``fechaVencimiento < today``) and gate the "Imprimir"
+ * button accordingly (DEC-SUC-21 — no tiquete with an invalid
+ * subscription). Plan name resolution is a follow-up (requires a
+ * ``GET /clientes/tipo-subscripciones/{uuid}`` chain).
  */
 import useSWR from 'swr';
 
 import { parkosFetch } from '@parkos/ui-kit/fetch';
-
-import type { ClienteContext } from '@/lib/print/printBuilder';
 
 const SUBSCRIPCIONES_PATH = '/api/v1/clientes/subscripciones-cliente';
 const CLIENTES_PATH = '/api/v1/clientes/clientes';
@@ -31,8 +37,14 @@ const CLIENTES_PATH = '/api/v1/clientes/clientes';
 interface SubscripcionRow {
   uuid: string;
   uuid_cliente: string | null;
-  /** F1.12 plan metadata — surface in tiquete later if needed. */
-  uuid_plan: string | null;
+  uuid_tipo_subscripcion: string | null;
+  /** Subscription coverage window — surface warning in preview if
+      expired (operator-side gate per DEC-SUC-21). */
+  fecha_inicio_cobertura: string | null;
+  fecha_vencimiento: string | null;
+  vigente_desde: string;
+  vigente_hasta: string | null;
+  estado: string;
 }
 
 interface ClienteRow {
@@ -41,6 +53,28 @@ interface ClienteRow {
   numero_identificacion: string | null;
   nombre: string | null;
   apellido: string | null;
+}
+
+/**
+ * Expanded cliente context — the original (HU-INGRESO-SIN-PLACA
+ * preview) fields plus subscription coverage + plan FK for the
+ * A+B+C workflow features. Fields default to ``null`` when the
+ * backend response doesn't include them — never throws.
+ */
+export interface ClienteContext {
+  nombre: string;
+  apellido: string;
+  tipoIdentificador: 'CC' | 'CE' | 'NIT' | 'PAS' | string;
+  numeroIdentificacion: string;
+  /** ISO date string — ``null`` when the subscription has no
+      ``fecha_vencimiento``. */
+  fechaVencimiento: string | null;
+  /** FK to ``prod.tipo_subscripciones`` — resolved plan name is a
+      follow-up (needs an extra GET to ``/clientes/tipo-subscripciones/{uuid}``). */
+  uuidTipoSubscripcion: string | null;
+  /** ``true`` when the subscription is active (``vigente_hasta IS NULL``
+      AND ``fecha_vencimiento >= today`` AND ``estado === 'activo'``). */
+  suscripcionVigente: boolean;
 }
 
 /**
@@ -72,11 +106,23 @@ export async function getClienteBySubscripcion(
   const cli = cliList[0];
   if (!cli) return null;
 
+  // DEC-SUC-21 validity check: subscription must be open
+  // (``vigente_hasta IS NULL``) AND not expired (``fecha_vencimiento
+  // IS NULL OR fecha_vencimiento >= today``) AND ``estado === 'activo'``.
+  const today = new Date().toISOString().slice(0, 10);
+  const notExpired =
+    sub.fecha_vencimiento === null || sub.fecha_vencimiento >= today;
+  const isOpen = sub.vigente_hasta === null;
+  const suscripcionVigente = isOpen && notExpired && sub.estado === 'activo';
+
   return {
     nombre: cli.nombre ?? '',
     apellido: cli.apellido ?? '',
     tipoIdentificador: cli.tipo_identificador ?? 'CC',
     numeroIdentificacion: cli.numero_identificacion ?? '',
+    fechaVencimiento: sub.fecha_vencimiento,
+    uuidTipoSubscripcion: sub.uuid_tipo_subscripcion,
+    suscripcionVigente,
   };
 }
 

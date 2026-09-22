@@ -407,6 +407,7 @@ export default function Principal() {
           cliente={
             success.uuid_subscripcion_cliente ? clienteData ?? null : null
           }
+          initialObservaciones={observaciones}
           buildPrintPayload={(uuid) =>
             buildPrintPayload({
               uuid_ingreso: uuid,
@@ -416,6 +417,12 @@ export default function Principal() {
             })
           }
           onSiguiente={handleSiguiente}
+          onIrASalida={() => {
+            handleSiguiente();
+            navigate(
+              `${SALIDA_FLOW_STUB}?uuid_ingreso=${encodeURIComponent(success.uuid_ingreso)}`,
+            );
+          }}
         />
       )}
 

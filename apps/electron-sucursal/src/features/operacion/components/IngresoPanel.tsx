@@ -415,6 +415,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           cliente={
             success.uuid_subscripcion_cliente ? clienteData ?? null : null
           }
+          initialObservaciones={observaciones}
           buildPrintPayload={(uuid) =>
             buildPrintPayload({
               uuid_ingreso: uuid,
@@ -424,6 +425,15 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
             })
           }
           onSiguiente={handleSiguiente}
+          onIrASalida={() => {
+            // FEATURE D: navigate to the salida workflow with this
+            // ingreso's uuid. We close the tiquete modal via
+            // handleSiguiente first to clear local state.
+            handleSiguiente();
+            navigate(
+              `${SALIDA_FLOW_STUB}?uuid_ingreso=${encodeURIComponent(success.uuid_ingreso)}`,
+            );
+          }}
         />
       )}
 
