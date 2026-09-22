@@ -49,6 +49,7 @@ import {
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { useArqueo } from '../hooks/useArqueo';
+import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
 import { formatCOP } from '../lib/format';
 
 /**
@@ -79,6 +80,14 @@ export function ArqueoParcial(): JSX.Element {
   const { sesion, isLoading: sesionLoading, error: sesionError, refresh: refreshSesion } =
     useSesionActiva();
   const { submit } = useArqueo();
+  // F11.3 -- resolve 'auditoria' -> UUID via the catalog SWR hook.
+  // The BE V2 schema (api/v1/caja.py:ArqueoCreateV2) requires
+  // ``uuid_tipo_arqueo`` (UUID); the previous FE sending
+  // ``tipo_arqueo: 'auditoria'`` was rejected by extra='forbid'.
+  // The hook SWR-dedupes the catalog GET (60s) so the round-trip is
+  // once-per-session at most.
+  const { uuid: uuidTipoAuditoria, error: tipoArqueoError } =
+    useTipoArqueoPorCodigo('auditoria');
 
   // Reported values: 0 by default, integer non-negative per the BE schema.
   const [reportEfectivo, setReportEfectivo] = useState(0);
@@ -128,16 +137,28 @@ export function ArqueoParcial(): JSX.Element {
     [reportadoEfectivoNum, reportadoDatafonoNum, esperadoEfectivo, esperadoDatafono, justificacion],
   );
 
-  const canSubmit = !!sesion && !submitting && !validacionError && !submitted;
+  const canSubmit =
+    !!sesion &&
+    !submitting &&
+    !validacionError &&
+    !submitted &&
+    !!uuidTipoAuditoria;
 
   const handleSubmit = async (): Promise<void> => {
     if (!sesion) return;
+    if (!uuidTipoAuditoria) {
+      setSubmitError(
+        tipoArqueoError?.message ??
+          'No se pudo resolver el tipo de arqueo. Reintentá en unos segundos.',
+      );
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
     try {
       await submit({
         uuid_sesion: sesion.uuid,
-        tipo_arqueo: 'auditoria',
+        uuid_tipo_arqueo: uuidTipoAuditoria,
         valor_efectivo_reportado: reportadoEfectivoNum,
         valor_datafono_reportado: reportadoDatafonoNum,
         justificacion: difTotal > 0 ? justificacion.trim() : undefined,
