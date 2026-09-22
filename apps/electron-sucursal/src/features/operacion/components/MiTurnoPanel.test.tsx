@@ -1,24 +1,34 @@
 /**
  * Unit tests for `<MiTurnoPanel />` (HU-F12.1 — REQ-OPS-187).
  *
- * Coverage (verbatim tasks.md §2.5):
- *   T1: zero-state (uuid_sesion=null OR data=undefined) renders 4 KPIs
- *       as `0` and NO skeleton / NO error UI (DA-F12.1-4).
- *   T2: non-zero rendering — 5 KPI cells (ingresos / salidas /
- *       totalCobrado / efectivo / datafono) populated from the hook.
- *   T3: 401 mid-polling -> panel renders fallback (zeros), no crash
- *       (auth cleanup happens in the hook's onError).
- *   T4: 5xx -> panel renders fallback (zeros + a soft stale marker),
+ * Coverage (directiva 2026-09-22: panel = lista vertical con 3 filas
+ * — ingresos en mi turno, salidas en mi turno, cupos libres en la
+ * sucursal; SIN dinero):
+ *   T1: zero-state (uuid_sesion=null OR data=undefined) renderiza las
+ *       3 filas con valores `0` / `—` (cupos_libres sin branch =
+ *       load-state emdash) y NO skeleton / NO error UI (DA-F12.1-4).
+ *   T2: non-zero rendering — 3 filas pobladas desde los hooks
+ *       (`useMiTurno` + `useOcupacion`). Ingresos y salidas vienen del
+ *       MiTurnoRead; cupos_libres = sum de OcupacionItem.disponible.
+ *   T2b: zero-state con uuid_sesion válido renderiza `0`s
+ *       (DA-F12.1-4).
+ *   T3: 401 mid-polling → panel renderiza fallback (zeros), no crash
+ *       (auth cleanup ocurre en el onError del hook).
+ *   T4: 5xx → panel renderiza fallback (zeros + data-stale="true"),
  *       no crash.
- *   T5: panel exposes the Arqueo action; the "Cerrar turno" entry
- *       point lives in the dashboard header (single source of truth).
+ *   T5: panel expone el Arqueo action; "Cerrar turno" NO se duplica
+ *       (single source of truth en el header del dashboard).
+ *   T6 (nuevo): NO se renderiza ningún KPI de dinero — el contrato BE
+ *       sigue trayendo `total_cobrado_*` en el wire, pero el panel no
+ *       los muestra. Esto bloquea regresiones si alguien vuelve a
+ *       meter `<MiTurnoKpiCard>` con las keys dinero.
  *
  * Mocking strategy:
- *   - vi.mock('../../hooks/useMiTurno')     -> swap the hook for a stub.
- *   - vi.mock('@/store/dashboardDrawerStore') -> capture openDrawer calls.
- *   - vi.mock('react-router-dom')           -> navigate calls should be
- *                                              ZERO from MiTurnoPanel.
- *   - vi.mock('react-i18next')              -> stub t().
+ *   - vi.mock('../../hooks/useMiTurno')       → stub del hook.
+ *   - vi.mock('../../hooks/useOcupacion')     → stub del hook nuevo.
+ *   - vi.mock('@/store/dashboardDrawerStore') → captura openDrawer calls.
+ *   - vi.mock('react-router-dom')             → navigate debe ser ZERO.
+ *   - vi.mock('react-i18next')                → stub t().
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
@@ -40,6 +50,11 @@ vi.mock('../hooks/useMiTurno', () => ({
   useMiTurno: (uuid_sesion: string | null) => useMiTurnoMock(uuid_sesion),
 }));
 
+const useOcupacionMock = vi.fn();
+vi.mock('../hooks/useOcupacion', () => ({
+  useOcupacion: (uuid_sucursal: string | null) => useOcupacionMock(uuid_sucursal),
+}));
+
 vi.mock('@/store/dashboardDrawerStore', () => ({
   useDashboardDrawerStore: (
     selector: (s: { open: typeof openDrawerMock; close: typeof closeMock }) => unknown,
@@ -54,16 +69,33 @@ afterEach(() => {
 });
 
 const UUID_SESION = '00000000-0000-0000-0000-000000000099';
+const UUID_SUCURSAL = '00000000-0000-0000-0000-000000000098';
 
 const SAMPLE_OK = {
   data: {
     uuid_sesion: UUID_SESION,
-    uuid_sucursal: '00000000-0000-0000-0000-000000000098',
+    uuid_sucursal: UUID_SUCURSAL,
     timestamp_calculo: '2026-09-21T08:00:00Z',
     ingresos_count: 3,
     salidas_count: 2,
+    // Campos dinero siguen en el wire por el contrato BE locked
+    // (DA-F12.1-1 GATING); el panel simplemente no los renderiza.
     total_cobrado_efectivo_cop: 50000,
     total_cobrado_datafono_cop: 30000,
+  },
+  error: undefined,
+};
+
+const SAMPLE_OK_OCUPACION = {
+  data: {
+    uuid_sucursal: UUID_SUCURSAL,
+    generado_en: '2026-09-21T08:00:00Z',
+    items: [
+      { uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001', tipo: 'carro', cupo_maximo: 10, activos: 4, disponible: 6 },
+      { uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002', tipo: 'moto',  cupo_maximo: 5,  activos: 3, disponible: 2 },
+      // cupo_maximo = 0 → excluido del sum (no es un cupo real).
+      { uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000003', tipo: 'bici',  cupo_maximo: 0,  activos: 0, disponible: 0 },
+    ],
   },
   error: undefined,
 };
@@ -71,7 +103,7 @@ const SAMPLE_OK = {
 const SAMPLE_ZERO = {
   data: {
     uuid_sesion: UUID_SESION,
-    uuid_sucursal: '00000000-0000-0000-0000-000000000098',
+    uuid_sucursal: UUID_SUCURSAL,
     timestamp_calculo: '2026-09-21T08:00:00Z',
     ingresos_count: 0,
     salidas_count: 0,
@@ -81,84 +113,153 @@ const SAMPLE_ZERO = {
   error: undefined,
 };
 
+const SAMPLE_ZERO_OCUPACION = {
+  data: {
+    uuid_sucursal: UUID_SUCURSAL,
+    generado_en: '2026-09-21T08:00:00Z',
+    items: [],
+  },
+  error: undefined,
+};
+
 describe('<MiTurnoPanel /> — REQ-OPS-187 (HU-F12.1)', () => {
-  it('T1: zero-state (uuid_sesion=null) renders all-zero KPIs, no skeleton, no error', () => {
+  it('T1: zero-state (uuid_sesion=null) renderiza filas en 0/—, no skeleton, no error', () => {
     useMiTurnoMock.mockReturnValue({ data: undefined, error: undefined });
-    render(<MiTurnoPanel uuid_sesion={null} />);
-    // Five KPI cells, all zeros.
-    const ingresosCell = screen.getByTestId('mi-turno-kpi-ingresos');
-    expect(ingresosCell).toBeInTheDocument();
-    expect(ingresosCell.textContent).toMatch(/0/);
-    // The Arqueo action renders in zero state (so the operator can
-    // arqueo even with no sesion — the button itself is disabled in
-    // that case via uuid_sesion=null).
+    useOcupacionMock.mockReturnValue({ data: undefined, error: undefined });
+    render(<MiTurnoPanel uuid_sesion={null} uuid_sucursal={null} />);
+    // 3 filas visibles, sin importar si hay branch/sesion.
+    expect(screen.getByTestId('mi-turno-list')).toBeInTheDocument();
+    expect(screen.getByTestId('mi-turno-row-ingresos').textContent).toMatch(/0/);
+    expect(screen.getByTestId('mi-turno-row-salidas').textContent).toMatch(/0/);
+    // Sin uuid_sucursal el panel no conoce cupos_libres → emdash (load-state).
+    expect(screen.getByTestId('mi-turno-cupos-libres-value').textContent).toMatch(/—/);
+    // Arqueo action presente; uuid_sesion=null lo deja disabled.
     expect(screen.getByTestId('mi-turno-arqueo-button')).toBeInTheDocument();
-    // The "Cerrar turno" button lives ONLY in the dashboard header
-    // (data-testid="dashboard-cerrar-turno"); MiTurnoPanel does NOT
-    // duplicate it.
+    // "Cerrar turno" sigue siendo header-only.
     expect(screen.queryByTestId('mi-turno-cerrar-button')).not.toBeInTheDocument();
   });
 
-  it('T2: non-zero rendering — 5 KPI cells populated from the hook', () => {
+  it('T2: non-zero rendering — 3 filas pobladas desde los hooks', () => {
     useMiTurnoMock.mockReturnValue(SAMPLE_OK);
-    render(<MiTurnoPanel uuid_sesion={UUID_SESION} />);
-    expect(screen.getByTestId('mi-turno-kpi-ingresos').textContent).toMatch(/3/);
-    expect(screen.getByTestId('mi-turno-kpi-salidas').textContent).toMatch(/2/);
-    expect(screen.getByTestId('mi-turno-kpi-total-cobrado').textContent).toMatch(
-      /80\.000|80000/,
-    );
-    expect(screen.getByTestId('mi-turno-kpi-efectivo').textContent).toMatch(/50\.000|50000/);
-    expect(screen.getByTestId('mi-turno-kpi-datafono').textContent).toMatch(/30\.000|30000/);
+    useOcupacionMock.mockReturnValue(SAMPLE_OK_OCUPACION);
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    // ingresos=3, salidas=2, cupos_libres = 6 (carro) + 2 (moto) = 8
+    // (el tipo bici con cupo_maximo=0 se excluye del sum).
+    expect(screen.getByTestId('mi-turno-row-ingresos').textContent).toMatch(/3/);
+    expect(screen.getByTestId('mi-turno-row-salidas').textContent).toMatch(/2/);
+    expect(screen.getByTestId('mi-turno-cupos-libres-value').textContent).toMatch(/8/);
   });
 
-  it('T2b: zero-state with valid uuid_sesion renders 0s (DA-F12.1-4)', () => {
+  it('T2b: zero-state con uuid_sesion válido renderiza 0s (DA-F12.1-4)', () => {
     useMiTurnoMock.mockReturnValue(SAMPLE_ZERO);
-    render(<MiTurnoPanel uuid_sesion={UUID_SESION} />);
-    expect(screen.getByTestId('mi-turno-kpi-ingresos').textContent).toMatch(/0/);
-    expect(screen.getByTestId('mi-turno-kpi-salidas').textContent).toMatch(/0/);
-    expect(screen.getByTestId('mi-turno-kpi-efectivo').textContent).toMatch(/0/);
-    expect(screen.getByTestId('mi-turno-kpi-datafono').textContent).toMatch(/0/);
+    useOcupacionMock.mockReturnValue(SAMPLE_ZERO_OCUPACION);
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    expect(screen.getByTestId('mi-turno-row-ingresos').textContent).toMatch(/0/);
+    expect(screen.getByTestId('mi-turno-row-salidas').textContent).toMatch(/0/);
+    // items=[] → cupos_libres=0 (no emdash: branch existe, simplemente
+    // no hay tipos configurados todavía).
+    expect(screen.getByTestId('mi-turno-cupos-libres-value').textContent).toMatch(/0/);
   });
 
-  it('T3: 401 mid-polling -> panel renders zeros + stale marker, no crash', () => {
-    // The hook's onError handles the auth cleanup; the panel only needs
-    // to render without crashing. SWR keeps `data` populated across errors
-    // so we still show the LAST good value (here: zeros).
+  it('T3: 401 mid-polling → panel renderiza fallback (zeros), no crash', () => {
+    // El onError del hook maneja el auth cleanup; el panel sólo necesita
+    // renderizar sin crashear. SWR mantiene `data` poblado entre
+    // errores → vemos el último payload bueno (zeros).
     useMiTurnoMock.mockReturnValue({
       data: SAMPLE_ZERO.data,
       error: new Error('parkos:auth:cleared'),
     });
-    render(<MiTurnoPanel uuid_sesion={UUID_SESION} />);
+    useOcupacionMock.mockReturnValue({
+      data: SAMPLE_ZERO_OCUPACION.data,
+      error: new Error('parkos:auth:cleared'),
+    });
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
     expect(screen.getByTestId('mi-turno-panel')).toBeInTheDocument();
-    // No crash; the panel shows zeros (last good payload).
-    expect(screen.getByTestId('mi-turno-kpi-ingresos').textContent).toMatch(/0/);
+    expect(screen.getByTestId('mi-turno-row-ingresos').textContent).toMatch(/0/);
   });
 
-  it('T4: 5xx -> panel renders zeros + soft stale marker, no crash', () => {
+  it('T4: 5xx con data previo → panel renderiza último bueno + data-stale="true", no crash', () => {
+    // SWR mantiene `data` poblado entre errores → `isStale = data && error`.
+    // Sin data previa (caso primer poll falla), `isStale=false` y el
+    // panel renderiza 0/— (zero-state). Con data previa + error nuevo,
+    // `isStale=true` y la lista muestra el último payload bueno con el
+    // atributo data-stale="true" para que el operador sepa que el dato
+    // está refrescándose.
+    //
+    // Importante: el hook expone `isStale` como parte de su return —
+    // mockeamos `useMiTurno` y debemos setear el campo, sino el panel
+    // destructura `undefined` y `data-stale="false"` aunque el hook real
+    // hubiera computado `true`.
+    useMiTurnoMock.mockReturnValue({
+      data: SAMPLE_ZERO.data,
+      error: new Error('server error'),
+      isStale: true,
+      refresh: vi.fn(),
+    });
+    useOcupacionMock.mockReturnValue({
+      data: SAMPLE_ZERO_OCUPACION.data,
+      error: new Error('server error'),
+    });
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    expect(screen.getByTestId('mi-turno-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('mi-turno-panel').getAttribute('data-stale')).toBe('true');
+    // Último payload bueno: ingresos=0, salidas=0, cupos_libres=0
+    // (items=[] en SAMPLE_ZERO_OCUPACION).
+    expect(screen.getByTestId('mi-turno-row-ingresos').textContent).toMatch(/0/);
+    expect(screen.getByTestId('mi-turno-cupos-libres-value').textContent).toMatch(/0/);
+  });
+
+  it('T4b: 5xx sin data previa → zero-state (zeros + emdash), data-stale="false"', () => {
+    // Primer poll falla (no hay data previo). El panel cae al zero-
+    // state del hook (counts=0) y al emdash para cupos_libres
+    // (useOcupacion sin data). `data-stale="false"` porque `isStale`
+    // requiere `data !== undefined`.
     useMiTurnoMock.mockReturnValue({
       data: undefined,
       error: new Error('server error'),
     });
-    render(<MiTurnoPanel uuid_sesion={UUID_SESION} />);
+    useOcupacionMock.mockReturnValue({
+      data: undefined,
+      error: new Error('server error'),
+    });
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
     expect(screen.getByTestId('mi-turno-panel')).toBeInTheDocument();
-    // Even with no data, the panel renders zeros (zero-state UI).
-    expect(screen.getByTestId('mi-turno-kpi-ingresos').textContent).toMatch(/0/);
+    expect(screen.getByTestId('mi-turno-panel').getAttribute('data-stale')).toBe('false');
+    expect(screen.getByTestId('mi-turno-row-ingresos').textContent).toMatch(/0/);
+    expect(screen.getByTestId('mi-turno-cupos-libres-value').textContent).toMatch(/—/);
   });
 
-  it('T5: MiTurnoPanel exposes Arqueo; "Cerrar turno" is header-only (single source of truth)', () => {
+  it('T5: MiTurnoPanel expone Arqueo; "Cerrar turno" es header-only', () => {
     useMiTurnoMock.mockReturnValue(SAMPLE_OK);
-    render(<MiTurnoPanel uuid_sesion={UUID_SESION} />);
-    // Arqueo action remains in this panel — its drawer trigger is the
-    // operator's per-turn caja action that stays inside MiTurnoPanel.
+    useOcupacionMock.mockReturnValue(SAMPLE_OK_OCUPACION);
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    // Arqueo action permanece acá — su drawer trigger es la acción
+    // per-turn de caja que se queda dentro de MiTurnoPanel.
     expect(screen.getByTestId('mi-turno-arqueo-button')).toBeInTheDocument();
-    // "Cerrar turno" button is NOT exposed here anymore — the dashboard
-    // header (data-testid="dashboard-cerrar-turno") is the single
-    // canonical entry-point. MiTurnoPanel must not duplicate it.
+    // "Cerrar turno" NO está acá — header es single source of truth.
     expect(screen.queryByTestId('mi-turno-cerrar-button')).not.toBeInTheDocument();
-    // MiTurnoPanel must not trigger any drawer on its own (it only
-    // hosts the ArqueoButton which dispatches on click — not on mount).
+    // MiTurnoPanel no dispara ningún drawer por sí solo (sólo hostea
+    // ArqueoButton que dispatch on click — no on mount).
     expect(openDrawerMock).not.toHaveBeenCalled();
-    // And it must not navigate either.
+    // Y tampoco navega.
     expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it('T6: NO se renderiza ningún KPI de dinero (regresión 2026-09-22)', () => {
+    useMiTurnoMock.mockReturnValue(SAMPLE_OK);
+    useOcupacionMock.mockReturnValue(SAMPLE_OK_OCUPACION);
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    // El wire sigue trayendo total_cobrado_efectivo_cop / datafono_cop
+    // pero el panel los ignora. Bloquea cualquier intento de volver a
+    // meter `<MiTurnoKpiCard unitKey="miTurno.unidades.cop">` o un
+    // grid de 5 KPIs.
+    expect(screen.queryByTestId('mi-turno-kpi-total-cobrado')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mi-turno-kpi-efectivo')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mi-turno-kpi-datafono')).not.toBeInTheDocument();
+    // Ningún textContent contiene "COP" ni el sufijo moneda.
+    expect(screen.getByTestId('mi-turno-panel').textContent).not.toMatch(/COP/);
+    expect(screen.getByTestId('mi-turno-panel').textContent).not.toMatch(/Total cobrado/);
+    expect(screen.getByTestId('mi-turno-panel').textContent).not.toMatch(/Efectivo/);
+    expect(screen.getByTestId('mi-turno-panel').textContent).not.toMatch(/Datáfono/);
   });
 });

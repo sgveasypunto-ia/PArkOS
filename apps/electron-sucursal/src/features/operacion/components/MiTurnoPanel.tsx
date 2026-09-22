@@ -1,60 +1,84 @@
 /**
- * `<MiTurnoPanel />` — operator-facing per-turn KPI aggregate widget
- * (HU-F12.1, REQ-OPS-187).
+ * `<MiTurnoPanel />` — operator-facing per-turn widget (HU-F12.1).
  *
- * Mounted in `apps/electron-sucursal/src/features/caja/pages/Dashboard.tsx`
- * right sidebar ABOVE `<OcupacionPanel />`. The panel renders a shadcn
- * `<Card>` strip with 5 KPI cells (ingresos / salidas / totalCobrado /
- * efectivo / datafono) and a footer action row with one per-turn
- * button:
- *   - `<ArqueoButton />` opens the right-side ArqueoParcial drawer
- *     (HU-F10.1 auditoría del turno — sin cierre). Mounted by
- *     <DrawerHost /> in the dashboard so no route navigation.
+ * Directiva del operador (2026-09-22 — feedback de testing en kiosk):
+ * la sección debe mostrar exclusivamente métricas operativas del turno
+ * más cupos libres de la sucursal. NO incluye dinero (totalCobrado /
+ * efectivo / datafono) — esos campos siguen llegando en el wire
+ * `MiTurnoRead` por el contrato BE locked (DA-F12.1-1 GATING:
+ * `backend/tests/unit/test_mi_turno_schema.py` y `apps/electron-
+ * sucursal/src/lib/api/schemas/__tests__/mi-turno.test.ts` leen el
+ * key-set del wire; tocar la Zod schema requiere tocar ambos). El
+ * panel simplemente deja de renderizarlos.
  *
- * The "Cerrar turno" surface is the dashboard header button (the only
- * canonical one — single-source-of-truth UX). It is NOT duplicated here.
+ * Diseño tipo LISTA vertical (no KPI cards en grid) consistente con
+ * `<OcupacionPanel />` que está justo debajo en el sidebar derecho.
  *
- * Zero-state contract (REQ-OPS-187, DA-F12.1-4): when `uuid_sesion` is
- * `null` OR the SWR data has not populated, the panel renders
- * all-zero KPIs without skeleton / error UI. The hook's `emptyMiTurno`
- * fallback enforces this at the data layer. The Arqueo action button
- * is disabled while `uuid_sesion === null` (no actionable state).
+ * Filas renderizadas:
+ *   1. Ingresos en mi turno    (count, MiTurnoRead.ingresos_count)
+ *   2. Salidas en mi turno     (count, MiTurnoRead.salidas_count)
+ *   3. Cupos libres en sucursal (sum de OcupacionItem.disponible,
+ *      computado client-side; sólo tipos con cupo_maximo > 0)
+ *
+ * El ArqueoButton contextual sigue acá (per-turn action surface;
+ * shortcut contextual del turno activo). "Cerrar turno" NO se duplica:
+ * vive sólo en el header del dashboard
+ * (`data-testid="dashboard-cerrar-turno"`).
+ *
+ * Zero-state contract (REQ-OPS-187, DA-F12.1-4): cuando `uuid_sesion`
+ * es `null` o el SWR no pobló, el panel renderiza ceros sin skeleton /
+ * error UI. `useMiTurno` lo garantiza vía `emptyMiTurno`. Cupos libres
+ * en load-state (`useOcupacion` aún sin datos) renderiza `—` para
+ * distinguir "no sé" de "0".
  */
 import { useTranslation } from 'react-i18next';
 
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
 
-import { totalCobradoFromMiTurno } from '../types';
 import { useMiTurno } from '../hooks/useMiTurno';
+import { useOcupacion } from '../hooks/useOcupacion';
 import { ArqueoButton } from './ArqueoButton';
-import { MiTurnoKpiCard } from './MiTurnoKpiCard';
 
 export interface MiTurnoPanelProps {
   /**
-   * Active operator turno UUID. When `null` (no `useSesionActiva()`
-   * resolution yet), the hook returns the all-zero fallback and the
-   * panel renders zeros without skeleton / error UI.
+   * Active operator turno UUID. `null` → zero-state (el hook retorna
+   * `MiTurnoRead` con todos los counts en 0; el panel renderiza 0s
+   * sin skeleton / error UI — DA-F12.1-4).
    */
   uuid_sesion: string | null;
+  /**
+   * Branch UUID — drives `useOcupacion` para cupos libres per-branch.
+   * `null` → cupos libres renderiza `—` (load-state, no se inventa 0).
+   */
+  uuid_sucursal: string | null;
 }
 
-export function MiTurnoPanel({ uuid_sesion }: MiTurnoPanelProps): JSX.Element {
+export function MiTurnoPanel({
+  uuid_sesion,
+  uuid_sucursal,
+}: MiTurnoPanelProps): JSX.Element {
   const { t } = useTranslation('operacion');
   const { data, isStale } = useMiTurno(uuid_sesion);
+  const { data: ocupacionData } = useOcupacion(uuid_sucursal);
 
-  // The hook guarantees `data` is always non-null (zero-state fallback).
   // Defensive `?? 0` keeps the type narrow in case the SWR shape drifts.
   const ingresos = data?.ingresos_count ?? 0;
   const salidas = data?.salidas_count ?? 0;
-  const totalCobrado = data ? totalCobradoFromMiTurno(data) : 0;
-  const efectivo = data?.total_cobrado_efectivo_cop ?? 0;
-  const datafono = data?.total_cobrado_datafono_cop ?? 0;
+
+  // Cupos libres = sum de `disponible` a través de los tipos
+  // admin-configured (cupo_maximo > 0). Unconfigured tipos
+  // (cupo_maximo = 0) se excluyen — no son "cupos" reales a contar.
+  // `disponible` viene computado server-side (DEC-SUC-11); el cliente
+  // NUNCA lo re-deriva.
+  const cuposLibres =
+    ocupacionData?.items
+      .filter((it) => it.cupo_maximo > 0)
+      .reduce((acc, it) => acc + it.disponible, 0) ?? null;
 
   return (
     <Card
@@ -66,43 +90,54 @@ export function MiTurnoPanel({ uuid_sesion }: MiTurnoPanelProps): JSX.Element {
         <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
           {t('miTurno.titulo')}
         </CardTitle>
-        <CardDescription className="sr-only">
-          {t('miTurno.kpis.totalCobrado')} + {t('miTurno.kpis.efectivo')} +{' '}
-          {t('miTurno.kpis.datafono')}
-        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 p-2">
-        <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-3">
-          <MiTurnoKpiCard
-            labelKey="miTurno.kpis.ingresos"
-            value={ingresos}
-            testIdSlug="ingresos"
-          />
-          <MiTurnoKpiCard
-            labelKey="miTurno.kpis.salidas"
-            value={salidas}
-            testIdSlug="salidas"
-          />
-          <MiTurnoKpiCard
-            labelKey="miTurno.kpis.totalCobrado"
-            value={totalCobrado}
-            testIdSlug="total-cobrado"
-            unitKey="miTurno.unidades.cop"
-          />
-          <MiTurnoKpiCard
-            labelKey="miTurno.kpis.efectivo"
-            value={efectivo}
-            testIdSlug="efectivo"
-            unitKey="miTurno.unidades.cop"
-          />
-          <MiTurnoKpiCard
-            labelKey="miTurno.kpis.datafono"
-            value={datafono}
-            testIdSlug="datafono"
-            unitKey="miTurno.unidades.cop"
-          />
-        </div>
-        <div className="flex gap-2">
+        {/*
+          Lista vertical con divisor entre filas; las label a la izquierda
+          (text-muted-foreground, peso regular) y el número a la derecha
+          con `font-mono tabular-nums` para que no jitter cuando cambian
+          los dígitos. Cada fila tiene `data-testid="mi-turno-row-..."`
+          para el suite vitest.
+        */}
+        <ul
+          role="list"
+          data-testid="mi-turno-list"
+          className="divide-y divide-border text-sm"
+        >
+          <li
+            data-testid="mi-turno-row-ingresos"
+            className="flex items-center justify-between py-1.5"
+          >
+            <span className="text-muted-foreground">
+              {t('miTurno.kpis.ingresos')}
+            </span>
+            <span className="font-mono text-lg tabular-nums">{ingresos}</span>
+          </li>
+          <li
+            data-testid="mi-turno-row-salidas"
+            className="flex items-center justify-between py-1.5"
+          >
+            <span className="text-muted-foreground">
+              {t('miTurno.kpis.salidas')}
+            </span>
+            <span className="font-mono text-lg tabular-nums">{salidas}</span>
+          </li>
+          <li
+            data-testid="mi-turno-row-cupos-libres"
+            className="flex items-center justify-between py-1.5"
+          >
+            <span className="text-muted-foreground">
+              {t('miTurno.kpis.cuposLibres')}
+            </span>
+            <span
+              className="font-mono text-lg tabular-nums"
+              data-testid="mi-turno-cupos-libres-value"
+            >
+              {cuposLibres ?? '—'}
+            </span>
+          </li>
+        </ul>
+        <div className="flex gap-2 pt-1">
           <ArqueoButton uuid_sesion={uuid_sesion} />
         </div>
       </CardContent>

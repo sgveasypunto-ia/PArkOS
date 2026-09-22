@@ -474,14 +474,21 @@ export function Dashboard(): JSX.Element | null {
           className="col-span-1 mt-3 grid gap-2 px-3 pb-4 lg:row-start-2 lg:col-start-3 lg:mt-0 lg:border-l lg:bg-card lg:px-2 lg:pb-0"
         >
           {/*
-            HU-F12.1 (REQ-OPS-187) — per-turn KPI panel mounted ABOVE
+            HU-F12.1 (REQ-OPS-187) — per-turn widget mounted ABOVE
             <OcupacionPanel /> (the Inventario card below). The panel
             polls `/operacion/mi-turno?uuid_sesion=X` every 15s via SWR
-            and renders 5 KPI cells + a "Cerrar turno" navigation
-            button. Zero-state (no sesion / loading) renders all-zero
-            KPIs without skeleton / error UI.
+            and renders a vertical LIST with 3 rows (ingresos en mi
+            turno / salidas en mi turno / cupos libres en la sucursal)
+            — directiva 2026-09-22: NO dinero (totalCobrado/efectivo/
+            datafono), diseño tipo lista, no KPI cards en grid.
+            `uuid_sucursal` se pasa para que el panel agregue los
+            cupos libres via `useOcupacion` (sum de `disponible`).
+            Zero-state (no sesion / loading) renderiza 0s sin skeleton.
           */}
-          <MiTurnoPanel uuid_sesion={sesion?.uuid ?? null} />
+          <MiTurnoPanel
+            uuid_sesion={sesion?.uuid ?? null}
+            uuid_sucursal={uuid_sucursal}
+          />
 
           {/* Inventario: per-tipo occupancy (admin-configured cupos only). */}
           <Card data-testid="inventario-card">
