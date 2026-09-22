@@ -124,16 +124,11 @@
   "miTurno": {
     "titulo": "Mi turno",
     "kpis": {
-      "ingresos": "Ingresos",
-      "salidas": "Salidas",
-      "totalCobrado": "Total cobrado",
-      "efectivo": "Efectivo",
-      "datafono": "Datáfono"
+      "ingresos": "Ingresos en mi turno",
+      "salidas": "Salidas en mi turno",
+      "cuposLibres": "Cupos libres en la sucursal"
     },
     "cerrarTurno": "Cerrar turno",
-    "hacerArqueo": "Hacer arqueo",
-    "unidades": {
-      "cop": "COP"
-    }
+    "hacerArqueo": "Hacer arqueo"
   }
 }
