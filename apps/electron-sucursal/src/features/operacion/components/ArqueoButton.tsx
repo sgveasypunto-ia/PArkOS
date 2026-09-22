@@ -2,11 +2,12 @@
  * `<ArqueoButton />` — right-side drawer trigger for HU-F10.1 partial
  * arqueo (auditoría del turno actual, sin cierre).
  *
- * Lives inside `<MiTurnoPanel />` in the dashboard's RIGHT sidebar,
- * next to `<CerrarTurnoButton />`. The arqueo screen itself is a
- * drawer-embedded page mounted by `<DrawerHost />` when the
- * `useDashboardDrawerStore` state is `openDrawer === 'arqueo'`
- * (REQ-OPS-138 single-drawer invariant).
+ * Lives inside `<MiTurnoPanel />` in the dashboard's RIGHT sidebar
+ * as the per-turn caja action. The "Cerrar turno" entry-point is the
+ * dashboard header button (single source of truth); MiTurnoPanel does
+ * NOT duplicate it. The arqueo screen itself is a drawer-embedded page
+ * mounted by `<DrawerHost />` when the `useDashboardDrawerStore` state
+ * is `openDrawer === 'arqueo'` (REQ-OPS-138 single-drawer invariant).
  *
  * F11.3 UX direction: the operator's per-turn action surface is
  * the RIGHT sidebar (MiTurnoPanel). The arqueo flow was previously
