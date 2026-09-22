@@ -537,6 +537,16 @@ async def insertar_alerta_descuadre_critico(
         parent_fk_column=None,
         log_tx=True,
     )
+    # F11.3 follow-up -- ``append_transition`` calls ``session.add(new_row)``
+    # but does NOT flush, so the server-side ``gen_random_uuid()`` default
+    # on the Alerta primary key is still ``None`` until the handler's
+    # Step 12 commit. The handler reads ``.uuid`` IMMEDIATELY to surface
+    # it in the response (alerta_uuid field). Without an explicit flush
+    # the response always returns ``alerta_uuid: null`` even though the
+    # row IS created (verified by GET /workflows/alerta showing 13+
+    # descuadre_critico rows accumulating per arqueo POST). Same fix
+    # pattern as insertar_arqueo -- single-commit invariant preserved.
+    await session.flush()
     return row
 
 
