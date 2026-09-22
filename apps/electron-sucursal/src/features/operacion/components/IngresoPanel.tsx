@@ -118,6 +118,23 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
    */
   const [tipoOverrideUuid, setTipoOverrideUuid] = useState<string | null>(null);
   const [observaciones, setObservaciones] = useState<string>('');
+  /**
+   * HU-F11.x (REQ-OPS-200): handler que se dispara en cada keystroke
+   * del PlacaInput (no solo en submit). Mantiene ``placa`` +
+   * ``tipoDetectado`` sincronizados con el valor tipado en tiempo real
+   * — el dropdown de override aparece mientras el operador tipea, sin
+   * tener que commitear primero la placa.
+   */
+  const handlePlacaLiveChange = useCallback((nextPlaca: string) => {
+    setPlaca(nextPlaca || null);
+    // ``detectarTipoVehiculo`` accepts the raw string and normalizes
+    // internally (trim + uppercase + strip whitespace), so we pass
+    // the live typed value directly. Empty string → null.
+    setTipoDetectado(nextPlaca ? detectarTipoVehiculo(nextPlaca) : null);
+    // Reset override on every placa change (operador debe re-confirmar
+    // el override por cada vehículo nuevo).
+    setTipoOverrideUuid(null);
+  }, []);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState<SuccessState | null>(null);
   const [forzarOpen, setForzarOpen] = useState(false);
@@ -161,18 +178,13 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   const { latestIngreso, refresh: refreshIngresoActivo } = useIngresoActivo(placa);
   const tiposVehiculoIsFallback = tiposVehiculo.isFromFallback;
 
-  useEffect(() => {
-    if (!placa) {
-      setTipoDetectado(null);
-      return;
-    }
-    setTipoDetectado(detectarTipoVehiculo(placa));
-    // REGRESSION fix (REQ-OPS-200): cuando cambia la placa, resetear el
-    // override — el operador debe re-confirmar (o re-elegir) el tipo
-    // cada vez que tipea una nueva placa. Esto evita que un UUID
-    // overrideado quede "pegado" al estado al cambiar de vehículo.
-    setTipoOverrideUuid(null);
-  }, [placa]);
+  // REGRESSION fix (REQ-OPS-200): removed the per-placa-change
+// ``useEffect`` that previously detected the tipo via regex. The
+// per-keystroke ``handlePlacaLiveChange`` callback (set up by the
+// PlacaInput ``onChange`` prop) now keeps ``placa`` + ``tipoDetectado`` +
+// ``tipoOverrideUuid`` in sync as the operator types. No useEffect
+// needed — the React render cycle already re-derives the dropdown
+// state from the live placa string.
 
   // SWR-fetched cliente metadata for Mensualidad ingresos (REGRESSION
   // fix 2026-09-22). Key is the FK returned by the POST response; SWR
@@ -299,26 +311,21 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   );
 
   /**
-   * HU-F11.x (REQ-OPS-200): handler de validación de placa — NO postea.
-   * Se llama cuando el operador confirma la placa en PlacaInput
-   * (Enter o botón interno). Solo setea state local para que el
-   * dropdown de override aparezca y el operador pueda corregir el
-   * tipo detectado antes del POST. El POST ocurre después, en
-   * ``handleConfirmarIngreso``, cuando el operador clickea el botón
-   * "Registrar ingreso" global.
-   *
-   * Esto reemplaza el handler monolítico anterior que hacía validate +
-   * POST en un solo paso (sin oportunidad de override visible).
+   * HU-F11.x (REQ-OPS-200): handler que se llama cuando el operador
+   * presiona Enter dentro de PlacaInput o clickea el submit interno
+   * (si está habilitado). Ahora mismo es un thin wrapper sobre
+   * ``handlePlacaLiveChange`` — el dropdown + placa state ya están
+   * sincronizados vía keystroke. Lo dejamos porque RHF siempre
+   * invoca onValidSubmit al confirmar y queremos resetear errores
+   * de submit previos (ej. ``placa_formato_invalido`` de un intento
+   * anterior con placa mala).
    */
   const handlePlacaValidate = useCallback(
     (nextPlaca: string) => {
       setSubmitError(null);
-      // setPlaca() dispara el useEffect que setea tipoDetectado via
-      // detectarTipoVehiculo(). El dropdown aparece en el siguiente
-      // render cuando tipoDetectado !== null.
-      setPlaca(nextPlaca);
+      handlePlacaLiveChange(nextPlaca);
     },
-    [],
+    [handlePlacaLiveChange],
   );
 
   /**
@@ -530,13 +537,13 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         renderConPlaca={() => (
           <PlacaInput
             onValidSubmit={handlePlacaValidate}
+            onChange={handlePlacaLiveChange}
             disabled={submitting}
             initialValue={initialPlaca}
             // Hide PlacaInput's internal submit — the parent renders the
             // single canonical "Registrar ingreso" button below. The
-            // placa form is still Enter-submittable (RHF) but only as
-            // a validate step (handlePlacaValidate); the actual POST
-            // is fired by the parent button (handleConfirmarIngreso).
+            // placa form is still Enter-submittable (RHF) so the
+            // operator can fire-and-forget when they trust the regex.
             hideSubmitButton
             formId="ingreso-placa-form"
           />
