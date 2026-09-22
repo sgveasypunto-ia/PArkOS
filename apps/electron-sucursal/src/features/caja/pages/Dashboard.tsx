@@ -266,32 +266,17 @@ export function Dashboard(): JSX.Element | null {
             💳 {t('suscripciones:menu', { defaultValue: 'Suscripción' })}
           </Button>
           {/* F11.3 — Arqueo lives in the right-sidebar MiTurnoPanel
-              alongside <CerrarTurnoButton> as the canonical per-turn
-              caja action. The left-sidebar nav anchor is removed
-              here so the operator's right-side MiTurnoPanel is the
-              single source of truth for the per-turn action surface
-              (mirrors how the F3.3 dashboard consolidates per-turn
-              KPIs + actions in the right column). */}
-          {/* HU-F10.2 (REQ-OPS-157) — sidebar anchor for the cierre
-              de turno page. Mirrors the F10.1 arqueo anchor: routed
-              page (no drawer). The header chip + button is the
-              primary surface; this sidebar link is the secondary
-              entry-point for kiosk / desktop. */}
-          <Button
-            variant="outline"
-            data-testid="sidebar-cerrar-turno"
-            className="justify-start text-sm"
-            onClick={() => {
-              // F11.3 follow-up — turn-closing flow lives in the right
-              // sidebar drawer (CerrarTurnoSheet), no separate route.
-              // The drawer overlay slides in from the right and the
-              // dashboard grid layout is untouched.
-              openDrawer('cerrar-turno', 'sidebar-cerrar-turno');
-              setMobileNavOpen(false);
-            }}
-          >
-            🔒 {t('caja:cerrarTurnoLabel', { defaultValue: 'Cerrar turno' })}
-          </Button>
+              as the canonical per-turn caja action. The left-sidebar
+              nav anchor is removed here so the operator's
+              right-side MiTurnoPanel is the single source of truth
+              for the per-turn action surface (mirrors how the F3.3
+              dashboard consolidates per-turn KPIs + actions in the
+              right column). */}
+          {/* "Cerrar turno" is intentionally NOT in the left sidebar.
+              The header button (data-testid="dashboard-cerrar-turno")
+              is the canonical single-source-of-truth for the
+              turn-closing entry-point — duplicating it in the sidebar
+              made the kiosk surface ambiguous. */}
           <Button
             variant="outline"
             data-testid="sidebar-cierre-diario"

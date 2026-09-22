@@ -5,26 +5,20 @@
  * Mounted in `apps/electron-sucursal/src/features/caja/pages/Dashboard.tsx`
  * right sidebar ABOVE `<OcupacionPanel />`. The panel renders a shadcn
  * `<Card>` strip with 5 KPI cells (ingresos / salidas / totalCobrado /
- * efectivo / datafono) and a footer action row with two per-turn
- * buttons (F11.3):
+ * efectivo / datafono) and a footer action row with one per-turn
+ * button:
  *   - `<ArqueoButton />` opens the right-side ArqueoParcial drawer
  *     (HU-F10.1 auditoría del turno — sin cierre). Mounted by
  *     <DrawerHost /> in the dashboard so no route navigation.
- *   - `<CerrarTurnoButton />` navigates to `/caja/cerrar-turno` for the
- *     F10.2 close flow (no business logic here — close flow is F10.2's
- *     responsibility).
  *
- * The two buttons sit side-by-side because they are the two per-turn
- * caja actions the operator owns while a sesion is active. The
- * left-sidebar nav button for Arqueo (F10.1 routed-page remnant) was
- * removed in F11.3: the right-side MiTurnoPanel is the canonical
- * per-turn action surface.
+ * The "Cerrar turno" surface is the dashboard header button (the only
+ * canonical one — single-source-of-truth UX). It is NOT duplicated here.
  *
  * Zero-state contract (REQ-OPS-187, DA-F12.1-4): when `uuid_sesion` is
  * `null` OR the SWR data has not populated, the panel renders
  * all-zero KPIs without skeleton / error UI. The hook's `emptyMiTurno`
- * fallback enforces this at the data layer. The two action buttons are
- * disabled while `uuid_sesion === null` (no actionable state).
+ * fallback enforces this at the data layer. The Arqueo action button
+ * is disabled while `uuid_sesion === null` (no actionable state).
  */
 import { useTranslation } from 'react-i18next';
 
@@ -39,7 +33,6 @@ import {
 import { totalCobradoFromMiTurno } from '../types';
 import { useMiTurno } from '../hooks/useMiTurno';
 import { ArqueoButton } from './ArqueoButton';
-import { CerrarTurnoButton } from './CerrarTurnoButton';
 import { MiTurnoKpiCard } from './MiTurnoKpiCard';
 
 export interface MiTurnoPanelProps {
@@ -111,7 +104,6 @@ export function MiTurnoPanel({ uuid_sesion }: MiTurnoPanelProps): JSX.Element {
         </div>
         <div className="flex gap-2">
           <ArqueoButton uuid_sesion={uuid_sesion} />
-          <CerrarTurnoButton uuid_sesion={uuid_sesion} />
         </div>
       </CardContent>
     </Card>

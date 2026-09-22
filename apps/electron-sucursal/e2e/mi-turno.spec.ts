@@ -14,7 +14,9 @@
  *       stubs the endpoint to verify revalidation cadence.
  *   DA-F12.1-4 — zero-state: panel renders 5 KPIs as `0` when
  *       `uuid_sesion` is null.
- *   DA-F12.1-5 — Cerrar-turno navigation: click -> /caja/cerrar-turno.
+ *   DA-F12.1-5 — Cerrar-turno entry-point: click on the header button
+ *       opens the right-side `cerrar-turno-sheet` drawer. The close
+ *       flow lives in a drawer (F11.3), NOT in a routed page.
  *   DA-F12.1-6 — BE/FE drift: panel renders 5 KPI cells with the BE
  *       contract names (no camelCase drift).
  *
@@ -22,8 +24,9 @@
  *   S1 (skip per F.6): 5 KPI cells visible after login with seeded
  *       backend payload + `Cache-Control: no-store` respected by the
  *       SWR cache. WCAG 2.1 AA gate.
- *   S2 (skip per F.6): Cerrar-turno button -> `navigate("/caja/cerrar-turno")`.
- *       No `cerrarSesion` PUT fires from this component.
+ *   S2 (skip per F.6): header "Cerrar turno" click opens the
+ *       `cerrar-turno-sheet` drawer (no navigate). No `cerrarSesion`
+ *       PUT fires from this component.
  */
 import { test, expect, type Page } from '@playwright/test';
 
@@ -132,11 +135,12 @@ test.describe('HU-F12.1 — Mi turno (e2e)', () => {
     await expect(page.getByTestId('mi-turno-kpi-efectivo').getByText(/50\.000|50000/)).toBeVisible();
     await expect(page.getByTestId('mi-turno-kpi-datafono').getByText(/30\.000|30000/)).toBeVisible();
 
-    // Cerrar-turno button MUST be visible and enabled (uuid_sesion is
-    // present in the seeded sesion payload).
-    const cerrarBtn = page.getByTestId('mi-turno-cerrar-button');
-    await expect(cerrarBtn).toBeVisible();
-    await expect(cerrarBtn).toBeEnabled();
+    // "Cerrar turno" entry-point lives ONLY in the dashboard header
+    // (single source of truth); MiTurnoPanel must NOT expose it.
+    const headerCerrarBtn = page.getByTestId('dashboard-cerrar-turno');
+    await expect(headerCerrarBtn).toBeVisible();
+    await expect(headerCerrarBtn).toBeEnabled();
+    await expect(page.getByTestId('mi-turno-panel').getByTestId('mi-turno-cerrar-button')).toHaveCount(0);
 
     // 15s polling cadence: the SWR hook revalidates every 15_000 ms.
     // We assert at least 1 revalidation within the 16s window.
@@ -186,8 +190,8 @@ test.describe('HU-F12.1 — Mi turno (e2e)', () => {
       return route.continue();
     });
 
-    await page.getByTestId('mi-turno-cerrar-button').click();
-    await page.waitForURL('**/caja/cerrar-turno');
+    await page.getByTestId('dashboard-cerrar-turno').click();
+    await page.waitForSelector('[data-testid="cerrar-turno-sheet"]');
 
     // The MiTurnoPanel must NOT have fired cerrarSesion — that's F10.2's job.
     expect(cerrarPutBody).toBeNull();

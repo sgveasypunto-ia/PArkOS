@@ -10,20 +10,18 @@
  *       (auth cleanup happens in the hook's onError).
  *   T4: 5xx -> panel renders fallback (zeros + a soft stale marker),
  *       no crash.
- *   T5: Cerrar-turno button -> openDrawer('cerrar-turno', anchorId)
- *       ONLY, no navigate call (F11.3 — the close flow lives in a
- *       right-side drawer via `<CerrarTurnoSheet />`, not the legacy
- *       `/caja/cerrar-turno` route).
+ *   T5: panel exposes the Arqueo action; the "Cerrar turno" entry
+ *       point lives in the dashboard header (single source of truth).
  *
  * Mocking strategy:
  *   - vi.mock('../../hooks/useMiTurno')     -> swap the hook for a stub.
  *   - vi.mock('@/store/dashboardDrawerStore') -> capture openDrawer calls.
  *   - vi.mock('react-router-dom')           -> navigate calls should be
- *                                              ZERO on Cerrar-turno click.
+ *                                              ZERO from MiTurnoPanel.
  *   - vi.mock('react-i18next')              -> stub t().
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 
 const navigateMock = vi.fn();
 const openDrawerMock = vi.fn();
@@ -91,9 +89,14 @@ describe('<MiTurnoPanel /> — REQ-OPS-187 (HU-F12.1)', () => {
     const ingresosCell = screen.getByTestId('mi-turno-kpi-ingresos');
     expect(ingresosCell).toBeInTheDocument();
     expect(ingresosCell.textContent).toMatch(/0/);
-    // The Cerrar-turno button MUST render even in zero state (so the
-    // operator can close an empty turno).
-    expect(screen.getByTestId('mi-turno-cerrar-button')).toBeInTheDocument();
+    // The Arqueo action renders in zero state (so the operator can
+    // arqueo even with no sesion — the button itself is disabled in
+    // that case via uuid_sesion=null).
+    expect(screen.getByTestId('mi-turno-arqueo-button')).toBeInTheDocument();
+    // The "Cerrar turno" button lives ONLY in the dashboard header
+    // (data-testid="dashboard-cerrar-turno"); MiTurnoPanel does NOT
+    // duplicate it.
+    expect(screen.queryByTestId('mi-turno-cerrar-button')).not.toBeInTheDocument();
   });
 
   it('T2: non-zero rendering — 5 KPI cells populated from the hook', () => {
@@ -142,18 +145,20 @@ describe('<MiTurnoPanel /> — REQ-OPS-187 (HU-F12.1)', () => {
     expect(screen.getByTestId('mi-turno-kpi-ingresos').textContent).toMatch(/0/);
   });
 
-  it('T5: Cerrar-turno button -> openDrawer("cerrar-turno", anchorId) ONLY', () => {
+  it('T5: MiTurnoPanel exposes Arqueo; "Cerrar turno" is header-only (single source of truth)', () => {
     useMiTurnoMock.mockReturnValue(SAMPLE_OK);
     render(<MiTurnoPanel uuid_sesion={UUID_SESION} />);
-    fireEvent.click(screen.getByTestId('mi-turno-cerrar-button'));
-    // F11.3 UX: the close flow lives in the right-side drawer via
-    // <CerrarTurnoSheet />, NOT the legacy /caja/cerrar-turno route.
-    expect(openDrawerMock).toHaveBeenCalledTimes(1);
-    expect(openDrawerMock).toHaveBeenCalledWith(
-      'cerrar-turno',
-      'mi-turno-cerrar-button',
-    );
-    // Defensive: navigate MUST NOT fire for the drawer-trigger flow.
+    // Arqueo action remains in this panel — its drawer trigger is the
+    // operator's per-turn caja action that stays inside MiTurnoPanel.
+    expect(screen.getByTestId('mi-turno-arqueo-button')).toBeInTheDocument();
+    // "Cerrar turno" button is NOT exposed here anymore — the dashboard
+    // header (data-testid="dashboard-cerrar-turno") is the single
+    // canonical entry-point. MiTurnoPanel must not duplicate it.
+    expect(screen.queryByTestId('mi-turno-cerrar-button')).not.toBeInTheDocument();
+    // MiTurnoPanel must not trigger any drawer on its own (it only
+    // hosts the ArqueoButton which dispatches on click — not on mount).
+    expect(openDrawerMock).not.toHaveBeenCalled();
+    // And it must not navigate either.
     expect(navigateMock).not.toHaveBeenCalled();
   });
 });

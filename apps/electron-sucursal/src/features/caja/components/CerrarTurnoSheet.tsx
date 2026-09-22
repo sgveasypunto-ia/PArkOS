@@ -39,11 +39,12 @@ export function CerrarTurnoSheet(): JSX.Element {
   const open = openDrawer === 'cerrar-turno';
 
   // Focus restore per REQ-OPS-138 §Esc. The anchor id was set by the
-  // triggering call to `open('cerrar-turno', anchorId)` -- either the
-  // header "Cerrar turno" button (anchorId='dashboard-cerrar-turno'),
-  // the MiTurnoPanel "Cerrar turno" button (anchorId='mi-turno-cerrar-button'),
-  // or the left-sidebar nav button (F11.3 retired; the right-sidebar
-  // is the canonical surface).
+  // triggering call to `open('cerrar-turno', anchorId)` — the canonical
+  // header "Cerrar turno" button (anchorId='dashboard-cerrar-turno').
+  // The legacy left-sidebar nav button (F11.3 retired) and the
+  // MiTurnoPanel duplicate (removed — the header is the single
+  // source of truth for the turn-closing entry-point) are gone; the
+  // drawer is now opened only from the header.
   useEffect(() => {
     if (!open && lastAnchorId) {
       const anchor = document.getElementById(lastAnchorId);
