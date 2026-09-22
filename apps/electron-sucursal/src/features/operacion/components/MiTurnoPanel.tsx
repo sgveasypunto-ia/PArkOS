@@ -20,10 +20,11 @@
  *   3. Cupos libres en sucursal (sum de OcupacionItem.disponible,
  *      computado client-side; sólo tipos con cupo_maximo > 0)
  *
- * El ArqueoButton contextual sigue acá (per-turn action surface;
- * shortcut contextual del turno activo). "Cerrar turno" NO se duplica:
- * vive sólo en el header del dashboard
- * (`data-testid="dashboard-cerrar-turno"`).
+ * El ArqueoButton se sacó del panel (2026-09-22 — directiva del
+ * operador) — ahora vive solo en el sidebar izquierdo (`data-testid=
+ * "sidebar-arqueo"`) + atajo F4. El panel Mi Turno queda como vista
+ * informativa de sólo-lectura: rows de números, sin CTAs. "Cerrar
+ * turno" sigue en el header del dashboard (single source of truth).
  *
  * Zero-state contract (REQ-OPS-187, DA-F12.1-4): cuando `uuid_sesion`
  * es `null` o el SWR no pobló, el panel renderiza ceros sin skeleton /
@@ -42,7 +43,6 @@ import {
 
 import { useMiTurno } from '../hooks/useMiTurno';
 import { useOcupacion } from '../hooks/useOcupacion';
-import { ArqueoButton } from './ArqueoButton';
 
 export interface MiTurnoPanelProps {
   /**
@@ -97,7 +97,8 @@ export function MiTurnoPanel({
           (text-muted-foreground, peso regular) y el número a la derecha
           con `font-mono tabular-nums` para que no jitter cuando cambian
           los dígitos. Cada fila tiene `data-testid="mi-turno-row-..."`
-          para el suite vitest.
+          para el suite vitest. Sin CTA al pie — el Arqueo vive en el
+          sidebar izquierdo (directiva 2026-09-22).
         */}
         <ul
           role="list"
@@ -137,9 +138,6 @@ export function MiTurnoPanel({
             </span>
           </li>
         </ul>
-        <div className="flex gap-2 pt-1">
-          <ArqueoButton uuid_sesion={uuid_sesion} />
-        </div>
       </CardContent>
     </Card>
   );

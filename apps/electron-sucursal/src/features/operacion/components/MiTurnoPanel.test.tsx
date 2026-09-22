@@ -16,8 +16,9 @@
  *       (auth cleanup ocurre en el onError del hook).
  *   T4: 5xx → panel renderiza fallback (zeros + data-stale="true"),
  *       no crash.
- *   T5: panel expone el Arqueo action; "Cerrar turno" NO se duplica
- *       (single source of truth en el header del dashboard).
+ *   T5: el panel NO expone ningún CTA (2026-09-22: Arqueo button
+ *       removido — vive sólo en el sidebar izquierdo). "Cerrar turno"
+ *       tampoco se duplica aquí (single source of truth en el header).
  *   T6 (nuevo): NO se renderiza ningún KPI de dinero — el contrato BE
  *       sigue trayendo `total_cobrado_*` en el wire, pero el panel no
  *       los muestra. Esto bloquea regresiones si alguien vuelve a
@@ -133,8 +134,9 @@ describe('<MiTurnoPanel /> — REQ-OPS-187 (HU-F12.1)', () => {
     expect(screen.getByTestId('mi-turno-row-salidas').textContent).toMatch(/0/);
     // Sin uuid_sucursal el panel no conoce cupos_libres → emdash (load-state).
     expect(screen.getByTestId('mi-turno-cupos-libres-value').textContent).toMatch(/—/);
-    // Arqueo action presente; uuid_sesion=null lo deja disabled.
-    expect(screen.getByTestId('mi-turno-arqueo-button')).toBeInTheDocument();
+    // 2026-09-22: el Arqueo button se sacó del panel (vive en el sidebar
+    // izquierdo). El panel es vista informativa de sólo-lectura.
+    expect(screen.queryByTestId('mi-turno-arqueo-button')).not.toBeInTheDocument();
     // "Cerrar turno" sigue siendo header-only.
     expect(screen.queryByTestId('mi-turno-cerrar-button')).not.toBeInTheDocument();
   });
@@ -229,17 +231,18 @@ describe('<MiTurnoPanel /> — REQ-OPS-187 (HU-F12.1)', () => {
     expect(screen.getByTestId('mi-turno-cupos-libres-value').textContent).toMatch(/—/);
   });
 
-  it('T5: MiTurnoPanel expone Arqueo; "Cerrar turno" es header-only', () => {
+  it('T5: MiTurnoPanel NO expone CTAs; Arqueo vive en el sidebar (2026-09-22)', () => {
     useMiTurnoMock.mockReturnValue(SAMPLE_OK);
     useOcupacionMock.mockReturnValue(SAMPLE_OK_OCUPACION);
     render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
-    // Arqueo action permanece acá — su drawer trigger es la acción
-    // per-turn de caja que se queda dentro de MiTurnoPanel.
-    expect(screen.getByTestId('mi-turno-arqueo-button')).toBeInTheDocument();
+    // 2026-09-22 (directiva del operador): el Arqueo button se sacó
+    // de MiTurnoPanel — vive sólo en el sidebar izquierdo (`data-testid=
+    // "sidebar-arqueo"` en Dashboard.tsx) + atajo F4. El panel es vista
+    // informativa de sólo-lectura.
+    expect(screen.queryByTestId('mi-turno-arqueo-button')).not.toBeInTheDocument();
     // "Cerrar turno" NO está acá — header es single source of truth.
     expect(screen.queryByTestId('mi-turno-cerrar-button')).not.toBeInTheDocument();
-    // MiTurnoPanel no dispara ningún drawer por sí solo (sólo hostea
-    // ArqueoButton que dispatch on click — no on mount).
+    // MiTurnoPanel no dispara ningún drawer por sí solo (es sólo-lectura).
     expect(openDrawerMock).not.toHaveBeenCalled();
     // Y tampoco navega.
     expect(navigateMock).not.toHaveBeenCalled();
