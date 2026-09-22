@@ -123,14 +123,33 @@ export const TipoSubscripcionSchema = z
       .nullable()
       .optional()
       .or(z.literal('')),
-  })
-  .strict();
+  });
+// READ schema (no .strict()): BE is authoritative for bi-temporal +
+// audit columns (vigente_desde / vigente_hasta / estado / created_at
+// / created_by / sync_status) which the catalog endpoints include on
+// every row. Rejecting them at the Zod parse boundary would break the
+// FE every time the BE adds a new column -- `.passthrough`-equivalent
+// behavior is the correct default for a read mirror.
 export type TipoSubscripcion = z.infer<typeof TipoSubscripcionSchema>;
 
-export const TipoSubscripcionArraySchema = z.array(TipoSubscripcionSchema);
+/**
+ * List-envelope schema for the catalog GET endpoints. All Parkos
+ * catalogs (catalogos.py) serialize as
+ *   `{ items: TipoSubscripcion[], next_cursor: string | null }`
+ * per the F1.12 cursor-pagination contract. The renderer-side Zod
+ * mirror enforces the envelope so the catalog UI does not have to
+ * handle `undefined` / array-vs-object drift.
+ */
+export const TipoSubscripcionListSchema = z.object({
+  items: z.array(TipoSubscripcionSchema),
+  next_cursor: z.string().nullable(),
+});
 
 /**
- * `GET /api/v1/tipos-subscripciones?uuid_sucursal=X` -- server-side
- * filtered by the active branch. `null` when no branch context.
+ * `GET /api/v1/catalogos/tipo-subscripciones?uuid_sucursal=X` --
+ * server-side filtered by the active branch. Mounted in
+ * `catalogos.py:148` under the `catalogos` prefix; F11.3 follow-up
+ * after the previous path of `/api/v1/tipos-subscripciones` 404'd --
+ * the BE puts every catalog under `/catalogos/{resource}`.
  */
-export const GET_TIPOS_SUBSCRIPCION_PATH = '/api/v1/tipos-subscripciones';
+export const GET_TIPOS_SUBSCRIPCION_PATH = '/api/v1/catalogos/tipo-subscripciones';

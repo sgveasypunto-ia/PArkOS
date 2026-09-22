@@ -22,7 +22,7 @@ import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import {
   GET_TIPOS_SUBSCRIPCION_PATH,
   TipoSubscripcion,
-  TipoSubscripcionArraySchema,
+  TipoSubscripcionListSchema,
 } from '../api/ventaSuscripcionApi';
 
 async function fetchTiposSubscripciones(
@@ -32,7 +32,10 @@ async function fetchTiposSubscripciones(
   const raw = await parkosFetch<unknown>(
     `${GET_TIPOS_SUBSCRIPCION_PATH}?uuid_sucursal=${encodeURIComponent(uuid_sucursal)}`,
   );
-  return TipoSubscripcionArraySchema.parse(raw);
+  // Catalog endpoints wrap the rows in `{ items, next_cursor }` per
+  // the F1.12 cursor-pagination contract. Unwrap to the bare array
+  // for SWR consumers + downstream callers.
+  return TipoSubscripcionListSchema.parse(raw).items;
 }
 
 export interface UseTiposSubscripcionesResult {
