@@ -61,3 +61,40 @@ export function formatTiempoTranscurrido(fecha: string | Date): string {
   const dias = Math.floor(horas / 24);
   return `hace ${dias} ${dias === 1 ? 'día' : 'días'}`;
 }
+
+/**
+ * `formatFechaHoraCorta(iso)` — DD/MM/AA HH:mm en zona horaria local
+ * del kiosko (es-CO). El formato ISO 8601 completo que llega del backend
+ * (`2026-09-23T02:46:50.322102Z`) es demasiado verbose para el
+ * operador del kiosko; este formato compacto es legible sin perder
+ * precisión (minutos, no milisegundos, no TZ offset).
+ *
+ * Ejemplos:
+ *   `formatFechaHoraCorta('2026-09-23T02:46:50.322102Z')` → `"23/09/26 02:46"`
+ *   `formatFechaHoraCorta(null)` → `"—"`
+ *   `formatFechaHoraCorta('invalid')` → `"—"`
+ *
+ * Directiva del operador 2026-09-22: el formato ISO completo no es
+ * diciente para nadie — normalizar TODA fecha visible del kiosko a
+ * este formato corto. Usado en:
+ *   - `<CotizacionPanel />` (vigente_desde, vigente_hasta de la
+ *     tarifa aplicada + vigente_hasta de la cotizacion).
+ *   - `<IngresoPanel />` (fecha_ingreso del "ingreso activo" inline).
+ *   - `<TiqueteModal />` (timestamp de impresión).
+ *
+ * Forward extensibility (F4.x+): si el proyecto adopta `date-fns`,
+ * este wrapper puede reemplazarse por `format(fecha, 'dd/MM/yy HH:mm')`
+ * sin cambiar el call site.
+ */
+export function formatFechaHoraCorta(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  // Zona horaria local del kiosko (es-CO via Intl).
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}/${mm}/${yy} ${hh}:${min}`;
+}

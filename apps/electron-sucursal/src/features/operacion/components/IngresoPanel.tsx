@@ -51,6 +51,7 @@ import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import { useInvalidateConteosOperacion } from '../hooks/useInvalidateConteosOperacion';
 import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
+import { formatFechaHoraCorta } from '../../caja/lib/format';
 import {
   type PostIngresoPayload,
   type PostIngresoResponse,
@@ -580,15 +581,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
             <dd>{ingresoActivoExistente.tipo_entrada === 'MENSUALIDAD' ? 'Mensualidad' : 'Rotación'}</dd>
             <dt className="font-medium">Ingreso:</dt>
             <dd>
-              {ingresoActivoExistente.fecha_ingreso
-                ? new Date(ingresoActivoExistente.fecha_ingreso).toLocaleString('es-CO', {
-                    year: 'numeric',
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })
-                : '—'}
+              {formatFechaHoraCorta(ingresoActivoExistente.fecha_ingreso)}
             </dd>
             <dt className="font-medium">UUID:</dt>
             <dd className="break-all font-mono text-[10px]">
