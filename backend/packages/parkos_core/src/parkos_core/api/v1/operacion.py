@@ -335,6 +335,18 @@ async def create_ingreso(
     )
     new_attrs["uuid_tipo_vehiculo"] = uuid_tipo_vehiculo
     new_attrs["uuid_sucursal"] = target
+    # REGRESSION fix (2026-09-22, directiva del operador): el INSERT
+    # path NO estaba poblando ``fecha_ingreso`` en ``prod.ingreso`` — la
+    # columna es nullable sin DEFAULT (verificar ``information_schema``
+    # confirma ``is_nullable=YES`` / ``column_default=NULL``). El bug
+    # cascadea al PL/pgSQL ``prod.calcular_cotizacion`` que retorna
+    # NULL en subtotal/iva/total/tiempo_minutos para salidas de
+    # rotación → Pydantic ValidationError 500 al operador. Bug abierto
+    # #2009 (memoria Engram). Root cause fix: stamp explícito al
+    # momento del INSERT. Migration 0046 (``0046_fix_cotizar_fecha_
+    # ingreso_coalesce``) agrega defense in depth via COALESCE para
+    # registros históricos NULL.
+    new_attrs["fecha_ingreso"] = datetime.now(UTC).replace(tzinfo=None)
     if consecutivo is not None and new_uuid is not None:
         # No-placa path: stamp the helper-minted consecutivo and the
         # pre-generated PK so the row's ``uuid.hex[:8]`` matches the

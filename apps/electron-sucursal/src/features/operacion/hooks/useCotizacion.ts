@@ -52,19 +52,58 @@ import {
  */
 export const CotizarFacturacionSchema = z.object({
   cobrar: z.literal(true),
-  subtotal: z.number(),
-  iva: z.number(),
-  total: z.number(),
+  /**
+   * REGRESSION fix (2026-09-22, directiva del operador): los campos
+   * monetarios (``subtotal``, ``iva``, ``total``) llegan como
+   * **string** desde el backend, no number. La razón: el PL/pgSQL
+   * ``prod.calcular_cotizacion`` los calcula con tipo
+   * ``numeric(18,4)`` y al serializar a jsonb Python los emite
+   * como string para preservar precisión (evita el rounding a float
+   * de doble precisión, que es lo que rompería los cobros en
+   * valores grandes). El schema original exigía ``z.number()`` y
+   * rompía el parseo → ``useCotizacion`` quedaba en polling failed
+   * con ZodError. Aceptamos ``number | string`` y normalizamos a
+   * number via ``Number()`` para el render (el redondeo de centavos
+   * ya está hecho en el PL/pgSQL).
+   *
+   * Nota: este bug existía LATENTE antes del fix de migration 0046
+   * (COALESCE fecha_ingreso) — el flujo de salida siempre había
+   * retornado 500 con NULL en los campos, así que el FE nunca veía
+   * un payload estructurado y el bug del schema no se manifestaba.
+   * El COALESCE reveló el problema; este PR lo corrige.
+   */
+  subtotal: z.union([z.number(), z.string()]).transform((v) =>
+    typeof v === 'number' ? v : Number(v),
+  ),
+  iva: z.union([z.number(), z.string()]).transform((v) =>
+    typeof v === 'number' ? v : Number(v),
+  ),
+  total: z.union([z.number(), z.string()]).transform((v) =>
+    typeof v === 'number' ? v : Number(v),
+  ),
   /**
    * Apply-time deviation T-HU-F1.8-7: NOT `z.number().int()`. The
    * PL/pgSQL function returns float from `EXTRACT(EPOCH FROM
    * fecha_ingreso - NOW()) / 60.0` (sub-second precision, e.g.
-   * `89.0025`).
+   * `89.0025`). Also accept string for parity with the monetary
+   * fields (defense in depth — el backend puede serializar este
+   * float como string en algunas versiones del driver).
    */
-  tiempo_minutos: z.number(),
+  tiempo_minutos: z.union([z.number(), z.string()]).transform((v) =>
+    typeof v === 'number' ? v : Number(v),
+  ),
   tarifa_uuid: z.string().uuid(),
   /** ISO 8601 string from JSON; the renderer uses this for the countdown. */
   vigente_hasta: z.string(),
+  /**
+   * REGRESSION fix (2026-09-22): el backend incluye ``motivo: null``
+   * en el payload de rotación (no es un sub-extension concept — solo
+   * que el PL/pgSQL lo emite siempre). El schema estricto lo
+   * rechaza. Aceptar como nullable optional para mantener
+   * compatibilidad con la rotation path (``motivo=null``) y la
+   * segunda‑placa path (``motivo='segunda_placa_misma_mensualidad'``).
+   */
+  motivo: z.string().nullable().optional(),
 });
 
 /**

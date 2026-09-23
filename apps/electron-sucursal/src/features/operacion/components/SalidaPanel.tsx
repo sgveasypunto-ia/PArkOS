@@ -73,7 +73,7 @@ export interface SalidaPanelProps {
 }
 
 export function SalidaPanel({
-  uuid_ingreso,
+  uuid_ingreso: uuid_ingresoProp,
   initialPlaca = null,
 }: SalidaPanelProps): JSX.Element {
   const { t } = useTranslation(['operacion', 'facturacion']);
@@ -83,6 +83,23 @@ export function SalidaPanel({
 
   const [placa, setPlaca] = useState<string | null>(null);
   const [tolerante, setTolerante] = useState<ToleranteResultado | null>(null);
+  /**
+   * REGRESSION fix (2026-09-22, directiva del operador): el
+   * ``<SalidaSheet />`` padre pasa ``uuid_ingreso={null}`` siempre
+   * (no tiene contexto del uuid del candidato encontrado vía búsqueda
+   * tolerante). Sin este state local, ``useCotizacion(uuid_ingreso)``
+   * recibe ``null`` y nunca dispara el fetch de
+   * ``GET /api/v1/operacion/cotizar`` — el panel queda
+   * eternamente en ``Cotizando…`` y nunca muestra tiempo + valor.
+   *
+   * El state ``resolvedUuid`` se llena cuando
+   * ``buscarIngresoTolerante`` retorna ``kind: 'found'`` con un único
+   * candidato. La prop ``uuid_ingresoProp`` gana sobre el state
+   * local si está populada (defense-in-depth: si en el futuro el
+   * padre quiere pasar el uuid directamente, no lo pisamos).
+   */
+  const [resolvedUuid, setResolvedUuid] = useState<string | null>(null);
+  const uuid_ingreso = uuid_ingresoProp ?? resolvedUuid;
 
   const form = useForm<PlacaValues>({
     resolver: zodResolver(placaSchema),
@@ -100,14 +117,57 @@ export function SalidaPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPlaca]);
 
+  // REGRESSION fix (2026-09-22, directiva del operador): cuando el
+  // SalidaPanel monta con ``initialPlaca !== null`` (vino del smart
+  // routing del PlacaInputHero), auto-disparamos el cotizacion para que
+  // el operador vea tiempo + valor SIN un segundo Enter. Sin este
+  // auto-submit, el flujo queda como: tipear placa → Enter → abre
+  // SalidaSheet → ver form con placa prefilled → Enter de nuevo → ver
+  // tiempo + valor. Dos Enters para llegar al dato que el operador
+  // quiere ver (es la razón de este PR — "valor de parqueo" debe ser
+  // visible inmediatamente).
+  //
+  // We use ``form.handleSubmit`` (RHF) so Zod validation runs against
+  // the placa schema (``min(5, 'placa_formato_invalido')``). The
+  // ``handlePlacaSubmit`` resolves to ``buscarIngresoTolerante`` →
+  // ``setTolerante`` → ``useCotizacion`` reactivo → render del
+  // ``<CotizacionPanel />`` con subtotal / iva / total / tiempo_minutos.
+  //
+  // Safety: the parent ``SalidaSheet`` only opens the drawer after
+  // the smart-routing fetch confirmed ``rows.length > 0``, so the
+  // plate WILL resolve to an active ingreso on the first attempt. If
+  // Zod rejects (e.g. typo brings the placa below 5 chars), the
+  // operator sees the inline ``FormMessage`` and can correct.
+  useEffect(() => {
+    if (!initialPlaca) return;
+    // Wait one microtask so the form value set above propagates
+    // through React before we call handleSubmit — otherwise RHF reads
+    // the stale empty default and Zod rejects with
+    // ``placa_formato_invalido``.
+    const timer = setTimeout(() => {
+      void handlePlacaSubmit();
+    }, 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPlaca]);
+
   const { data: cotizacion, error: cotError, refresh } = useCotizacion(uuid_ingreso);
 
   const handlePlacaSubmit = form.handleSubmit(async (values) => {
     setPlaca(values.placa);
     setTolerante(null);
+    setResolvedUuid(null);
     try {
       const resultado = await buscarIngresoTolerante(values.placa, getIngresosByPlaca);
       setTolerante(resultado);
+      // REGRESSION fix (2026-09-22): cuando el candidato es único,
+      // resolvemos el uuid en el state local para que
+      // ``useCotizacion`` pueda fetchar. El componente padre
+      // (``<SalidaSheet />``) pasa ``uuid_ingreso={null}`` siempre, así
+      // que este state es la única fuente de verdad para la cotizacion.
+      if (resultado.kind === 'found') {
+        setResolvedUuid(resultado.uuid_ingreso);
+      }
     } catch {
       setTolerante({ kind: 'none', placaProbada: values.placa });
     }

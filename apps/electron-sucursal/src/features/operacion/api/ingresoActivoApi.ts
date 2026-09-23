@@ -36,8 +36,26 @@ import { parkosFetch } from '@parkos/ui-kit/fetch';
 export const IngresoSchema = z.object({
   uuid: z.string().uuid(),
   uuid_sucursal: z.string().uuid(),
-  placa: z.string(),
-  fecha_ingreso: z.string(),
+  /**
+   * REGRESSION fix (2026-09-22, directiva del operador): ``placa`` can be
+   * ``null`` for no-placa ingresos (HU-INGRESO-SIN-PLACA, REQ-OPS-194) —
+   * the no-placa flow INSERTs a ``consecutivo`` but no ``placa``. The
+   * original schema required ``z.string()`` which broke the parse for
+   * no-placa rows; relaxed to ``.nullable()``.
+   */
+  placa: z.string().nullable(),
+  /**
+   * REGRESSION fix (2026-09-22, directiva del operador): ``fecha_ingreso``
+   * can be ``null`` for historical ingresos that were INSERTed before the
+   * handler fix landed (PR companion of migration 0046 — bug abierto
+   * #2009, Engram). The migration adds defense in depth via
+   * ``COALESCE(fecha_ingreso, created_at)`` in the PL/pgSQL cotizacion,
+   * but the wire shape itself can still surface ``null`` to clients that
+   * list historical rows. The handler fix (PR companion, ``operacion.py::
+   * create_ingreso``) now stamps ``fecha_ingreso`` on INSERT so new rows
+   * are populated — the nullability here is backward compatibility only.
+   */
+  fecha_ingreso: z.string().nullable(),
   /** DEC-SUC-21: `tipo_entrada` is DERIVED from this nullable FK on the server. */
   uuid_subscripcion_cliente: z.string().uuid().nullable(),
 });
