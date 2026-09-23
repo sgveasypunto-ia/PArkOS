@@ -78,11 +78,11 @@ export function TurnoActivoToggle({
         data-testid="turno-activo-toggle"
         onClick={() => setExpanded((v) => !v)}
         title={`${sesion.uuid} — click para ver detalles`}
-        className="inline-flex h-7 items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 font-mono text-[11px] text-emerald-900 outline-none transition hover:bg-emerald-100 focus-visible:ring-2 focus-visible:ring-emerald-500"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200/60 bg-emerald-50/80 px-3 py-1 font-mono text-xs font-medium tracking-tight text-emerald-900 outline-none transition-all hover:bg-emerald-100/80 shadow-apple-sm focus-ring-apple"
       >
         <span
           aria-hidden
-          className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"
+          className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 ring-2 ring-emerald-100"
         />
         <span data-testid="turno-activo-toggle-uuid">{uuidCorto}…</span>
         <span aria-hidden className="opacity-40">·</span>
@@ -102,7 +102,7 @@ export function TurnoActivoToggle({
             defaultValue: 'Detalles del turno',
           })}
           data-testid="turno-activo-toggle-details"
-          className="absolute right-0 top-full z-30 mt-2 w-72 rounded-md border border-border bg-card p-3 text-xs shadow-lg"
+          className="absolute right-0 top-full z-30 mt-2 w-72 rounded-2xl border border-border/40 bg-popover p-4 text-sm shadow-apple-md"
         >
           <SesionDetails sesion={sesion} />
         </div>
@@ -114,11 +114,11 @@ export function TurnoActivoToggle({
 function SesionDetails({ sesion }: { sesion: SesionRead }): JSX.Element {
   const { t } = useTranslation('caja');
   return (
-    <dl className="space-y-1">
+    <dl className="space-y-1.5">
       <div className="flex justify-between gap-2">
-        <dt className="text-muted-foreground">UUID</dt>
+        <dt className="text-sm text-muted-foreground">UUID</dt>
         <dd
-          className="truncate font-mono"
+          className="truncate font-mono text-sm"
           title={sesion.uuid}
           data-testid="turno-activo-details-uuid"
         >
@@ -126,30 +126,30 @@ function SesionDetails({ sesion }: { sesion: SesionRead }): JSX.Element {
         </dd>
       </div>
       <div className="flex justify-between gap-2">
-        <dt className="text-muted-foreground">
+        <dt className="text-sm text-muted-foreground">
           {t('caja:valorInicialEfectivo', { defaultValue: 'Valor inicial efectivo' })}
         </dt>
         <dd
-          className="font-mono"
+          className="font-mono text-sm"
           data-testid="turno-activo-details-valor-efectivo"
         >
           {formatCOP(sesion.valor_inicial_efectivo)}
         </dd>
       </div>
       <div className="flex justify-between gap-2">
-        <dt className="text-muted-foreground">
+        <dt className="text-sm text-muted-foreground">
           {t('caja:valorInicialDatafono', { defaultValue: 'Valor inicial datáfono' })}
         </dt>
         <dd
-          className="font-mono"
+          className="font-mono text-sm"
           data-testid="turno-activo-details-valor-datafono"
         >
           {formatCOP(sesion.valor_inicial_datafono)}
         </dd>
       </div>
       <div className="flex justify-between gap-2">
-        <dt className="text-muted-foreground">Apertura</dt>
-        <dd className="font-mono" data-testid="turno-activo-details-apertura">
+        <dt className="text-sm text-muted-foreground">Apertura</dt>
+        <dd className="font-mono text-sm" data-testid="turno-activo-details-apertura">
           {formatTiempoTranscurrido(sesion.timestamp_apertura)}
         </dd>
       </div>
@@ -157,11 +157,11 @@ function SesionDetails({ sesion }: { sesion: SesionRead }): JSX.Element {
         sesion.observaciones !== undefined &&
         sesion.observaciones !== '' && (
           <div className="flex justify-between gap-2">
-            <dt className="text-muted-foreground">
+            <dt className="text-sm text-muted-foreground">
               {t('caja:observaciones', { defaultValue: 'Observaciones' })}
             </dt>
             <dd
-              className="max-w-[12rem] truncate text-right"
+              className="max-w-[12rem] truncate text-right text-sm"
               data-testid="turno-activo-details-observaciones"
             >
               {sesion.observaciones}

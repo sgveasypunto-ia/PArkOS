@@ -84,14 +84,14 @@ export function MiTurnoPanel({
     <Card
       data-testid="mi-turno-panel"
       data-stale={isStale ? 'true' : 'false'}
-      className="overflow-hidden"
+      className="overflow-hidden border-border/60"
     >
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
+      <CardHeader className="px-5 pt-4 pb-3">
+        <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
           {t('miTurno.titulo')}
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2 p-2">
+      <CardContent className="space-y-1 px-3 pb-4">
         {/*
           Lista vertical con divisor entre filas; las label a la izquierda
           (text-muted-foreground, peso regular) y el número a la derecha
@@ -103,35 +103,35 @@ export function MiTurnoPanel({
         <ul
           role="list"
           data-testid="mi-turno-list"
-          className="divide-y divide-border text-sm"
+          className="divide-y divide-border/40 text-sm"
         >
           <li
             data-testid="mi-turno-row-ingresos"
-            className="flex items-center justify-between py-1.5"
+            className="flex items-center justify-between py-2.5"
           >
-            <span className="text-muted-foreground">
+            <span className="text-muted-foreground/90 text-sm">
               {t('miTurno.kpis.ingresos')}
             </span>
-            <span className="font-mono text-lg tabular-nums">{ingresos}</span>
+            <span className="font-mono text-2xl font-semibold tabular-nums tracking-tight">{ingresos}</span>
           </li>
           <li
             data-testid="mi-turno-row-salidas"
-            className="flex items-center justify-between py-1.5"
+            className="flex items-center justify-between py-2.5"
           >
-            <span className="text-muted-foreground">
+            <span className="text-muted-foreground/90 text-sm">
               {t('miTurno.kpis.salidas')}
             </span>
-            <span className="font-mono text-lg tabular-nums">{salidas}</span>
+            <span className="font-mono text-2xl font-semibold tabular-nums tracking-tight">{salidas}</span>
           </li>
           <li
             data-testid="mi-turno-row-cupos-libres"
-            className="flex items-center justify-between py-1.5"
+            className="flex items-center justify-between py-2.5"
           >
-            <span className="text-muted-foreground">
+            <span className="text-muted-foreground/90 text-sm">
               {t('miTurno.kpis.cuposLibres')}
             </span>
             <span
-              className="font-mono text-lg tabular-nums"
+              className="font-mono text-2xl font-semibold tabular-nums tracking-tight"
               data-testid="mi-turno-cupos-libres-value"
             >
               {cuposLibres ?? '—'}

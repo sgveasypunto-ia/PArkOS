@@ -40,6 +40,15 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import {
+  Car,
+  Flag,
+  CreditCard,
+  Wallet,
+  ClipboardList,
+  Package,
+  Receipt,
+} from 'lucide-react';
 
 import { ParkosHttpError, parkosFetch } from '@parkos/ui-kit/fetch';
 import { useAuth } from '@parkos/ui-kit/hooks';
@@ -184,7 +193,7 @@ export function Dashboard(): JSX.Element | null {
         data-testid="dashboard-hub"
       >
         {/* ── Top header bar (mobile-first: minimum on mobile, full on lg+) ── */}
-        <header className="col-span-1 lg:col-span-3 flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2 md:gap-3 md:px-4">
+        <header className="col-span-1 lg:col-span-3 flex flex-wrap items-center gap-2 border-b border-border/40 bg-card/80 px-4 py-2.5 backdrop-blur-md shadow-apple-sm md:gap-3 md:px-5">
           {/* Hamburger — only on small screens (below lg). */}
           <button
             type="button"
@@ -209,7 +218,7 @@ export function Dashboard(): JSX.Element | null {
           {/* Online status — only on lg+ (avoid clutter on mobile). */}
           <span
             data-testid="dashboard-online"
-            className="ml-auto hidden items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 lg:inline-flex"
+            className="ml-auto hidden items-center gap-1.5 rounded-full border border-emerald-200/60 bg-emerald-50/80 px-3 py-1 text-xs font-medium text-emerald-700 shadow-apple-sm lg:inline-flex"
           >
             <span aria-hidden className="h-2 w-2 rounded-full bg-emerald-500" />
             {t('common:online', { defaultValue: 'Online' })}
@@ -222,7 +231,7 @@ export function Dashboard(): JSX.Element | null {
                 key={key}
                 data-testid={`hotkey-${kind}`}
                 id={`hotkey-chip-${kind}`}
-                className="inline-flex h-6 cursor-pointer items-center rounded border border-border bg-background px-2 text-xs hover:bg-accent"
+                className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border/60 bg-background/80 px-2 font-mono text-[11px] font-semibold text-muted-foreground backdrop-blur-sm hover:bg-accent/60 hover:text-foreground"
                 onClick={() => {
                   // Every F-key chip opens the matching drawer; the
                   // dashboard route stays at `/`. F4 (arqueo) shares
@@ -239,7 +248,7 @@ export function Dashboard(): JSX.Element | null {
           {/* Turno chip + Cerrar turno — always visible (mobile + desktop). */}
           <TurnoActivoToggle sesion={sesion} />
           <Button
-            variant="outline"
+            variant="default"
             size="sm"
             data-testid="dashboard-cerrar-turno"
             onClick={() => openDrawer('cerrar-turno', 'dashboard-cerrar-turno')}
@@ -264,10 +273,10 @@ export function Dashboard(): JSX.Element | null {
             className={
               // Mobile: drawer-style overlay (when hamburger open) OR hidden.
               // lg+: static sidebar in the grid (col-start-1 row-start-2).
-              'flex flex-col gap-2 overflow-y-auto border-border bg-card p-2 ' +
-              'lg:row-start-2 lg:col-start-1 lg:border-r ' +
+              'flex flex-col gap-1 overflow-y-auto border-r border-border/40 bg-card/40 p-2 ' +
+              'lg:row-start-2 lg:col-start-1 ' +
               (mobileNavOpen
-                ? 'fixed inset-y-0 left-0 z-40 w-64 border-r shadow-xl'
+                ? 'fixed inset-y-0 left-0 z-40 w-64 border-r shadow-apple-lg'
                 : 'hidden lg:flex')
             }
           >
@@ -280,16 +289,17 @@ export function Dashboard(): JSX.Element | null {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   data-testid="sidebar-ingreso"
-                  className="justify-start text-sm"
+                  className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
                   onClick={() => {
                     openDrawer('ingreso', 'sidebar-ingreso');
                     setMobileNavOpen(false);
                   }}
                 >
-                  🚗 {t('operacion:ingreso', { defaultValue: 'Ingreso' })}
-                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F1</kbd>
+                  <Car className="h-4 w-4 shrink-0" />
+                  <span>{t('operacion:ingreso', { defaultValue: 'Ingreso' })}</span>
+                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">F1</kbd>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -299,16 +309,17 @@ export function Dashboard(): JSX.Element | null {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   data-testid="sidebar-salida"
-                  className="justify-start text-sm"
+                  className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
                   onClick={() => {
                     openDrawer('salida', 'sidebar-salida');
                     setMobileNavOpen(false);
                   }}
                 >
-                  🏁 {t('operacion:salida', { defaultValue: 'Salida' })}
-                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F2</kbd>
+                  <Flag className="h-4 w-4 shrink-0" />
+                  <span>{t('operacion:salida', { defaultValue: 'Salida' })}</span>
+                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">F2</kbd>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -318,15 +329,16 @@ export function Dashboard(): JSX.Element | null {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   data-testid="sidebar-suscripciones"
-                  className="justify-start text-sm"
+                  className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
                   onClick={() => {
                     openDrawer('suscripciones', 'sidebar-suscripciones');
                     setMobileNavOpen(false);
                   }}
                 >
-                  💳 {t('suscripciones:menu', { defaultValue: 'Suscripción' })}
+                  <CreditCard className="h-4 w-4 shrink-0" />
+                  <span>{t('suscripciones:menu', { defaultValue: 'Suscripción' })}</span>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -345,16 +357,17 @@ export function Dashboard(): JSX.Element | null {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   data-testid="sidebar-arqueo"
-                  className="justify-start text-sm"
+                  className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
                   onClick={() => {
                     openDrawer('arqueo', 'sidebar-arqueo');
                     setMobileNavOpen(false);
                   }}
                 >
-                  💰 {t('caja:arqueoLabel', { defaultValue: 'Arqueo' })}
-                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F4</kbd>
+                  <Wallet className="h-4 w-4 shrink-0" />
+                  <span>{t('caja:arqueoLabel', { defaultValue: 'Arqueo' })}</span>
+                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">F4</kbd>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -369,9 +382,9 @@ export function Dashboard(): JSX.Element | null {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   data-testid="sidebar-cierre-diario"
-                  className="justify-start text-sm"
+                  className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
                   onClick={() => {
                     // HU-F10.3 (REQ-OPS-164 + AD-2) — sidebar anchor
                     // navigates to the routed page (mirrors the F10.1/F10.2
@@ -384,8 +397,9 @@ export function Dashboard(): JSX.Element | null {
                     setMobileNavOpen(false);
                   }}
                 >
-                  📋 {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
-                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F6</kbd>
+                  <ClipboardList className="h-4 w-4 shrink-0" />
+                  <span>{t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}</span>
+                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">F6</kbd>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -395,16 +409,17 @@ export function Dashboard(): JSX.Element | null {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   data-testid="sidebar-inventario"
-                  className="justify-start text-sm"
+                  className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
                   onClick={() => {
                     openDrawer('inventario', 'sidebar-inventario');
                     setMobileNavOpen(false);
                   }}
                 >
-                  📦 {t('caja:dashboard.inventario', { defaultValue: 'Inventario' })}
-                  <kbd className="ml-auto rounded bg-muted px-1 text-[10px]">F5</kbd>
+                  <Package className="h-4 w-4 shrink-0" />
+                  <span>{t('caja:dashboard.inventario', { defaultValue: 'Inventario' })}</span>
+                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">F5</kbd>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -414,15 +429,16 @@ export function Dashboard(): JSX.Element | null {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   data-testid="sidebar-facturas"
-                  className="justify-start text-sm"
+                  className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
                   onClick={() => {
                     openDrawer('reimpresion', 'sidebar-facturas');
                     setMobileNavOpen(false);
                   }}
                 >
-                  🧾 {t('caja:dashboard.facturas', { defaultValue: 'Facturas' })}
+                  <Receipt className="h-4 w-4 shrink-0" />
+                  <span>{t('caja:dashboard.facturas', { defaultValue: 'Facturas' })}</span>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -458,7 +474,7 @@ export function Dashboard(): JSX.Element | null {
             <div
               data-testid="dashboard-vencimiento-banner"
               role="alert"
-              className="rounded border border-yellow-300 bg-yellow-50 px-3 py-2 text-sm text-yellow-900"
+              className="rounded-2xl border border-amber-200/60 bg-amber-50/80 px-4 py-2.5 text-sm text-amber-900 shadow-apple-sm"
             >
               <span aria-hidden className="mr-2 font-semibold">
                 ⚠
@@ -468,8 +484,8 @@ export function Dashboard(): JSX.Element | null {
           )}
 
           <Card data-testid="placa-card">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
+            <CardHeader className="px-5 pt-5 pb-3">
+              <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
                 {t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
               </CardTitle>
             </CardHeader>
@@ -483,7 +499,7 @@ export function Dashboard(): JSX.Element | null {
                 mientras tipea, no en otra zona de la pantalla.
               */}
               <p
-                className="mt-2 text-center text-xs text-muted-foreground"
+                className="mt-3 text-center text-sm text-muted-foreground/80 leading-relaxed"
                 data-testid="placa-card-hint"
               >
                 {t('caja:dashboard.placaHint', {
@@ -503,12 +519,12 @@ export function Dashboard(): JSX.Element | null {
             ni de polling cadence; sigue siendo 10s vía useIngresosActivos.)
           */}
           <Card data-testid="vehiculos-list-card" className="overflow-hidden">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
+            <CardHeader className="px-5 pt-5 pb-3">
+              <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
                 {t('caja:dashboard.vehiculosDentro', { defaultValue: 'Vehículos dentro' })}
               </CardTitle>
             </CardHeader>
-            <CardContent className="p-2 text-sm">
+            <CardContent className="px-3 pb-3 text-sm">
               <VehiculosDentroList uuid_sucursal={uuid_sucursal} />
             </CardContent>
           </Card>
@@ -549,7 +565,7 @@ export function Dashboard(): JSX.Element | null {
         */}
         <aside
           aria-label={t('caja:dashboard.rightLabel', { defaultValue: 'Estado en vivo' })}
-          className="col-span-1 mt-3 grid gap-2 px-3 pb-4 lg:row-start-2 lg:col-start-3 lg:mt-0 lg:border-l lg:bg-card lg:px-2 lg:pb-0"
+          className="col-span-1 mt-3 grid gap-3 px-3 pb-4 lg:row-start-2 lg:col-start-3 lg:mt-0 lg:border-l lg:border-border/40 lg:bg-card/30 lg:px-4 lg:pb-4"
         >
           {/*
             HU-F12.1 (REQ-OPS-187) — per-turn widget mounted ABOVE
@@ -570,25 +586,25 @@ export function Dashboard(): JSX.Element | null {
 
           {/* Inventario: per-tipo occupancy (admin-configured cupos only). */}
           <Card data-testid="inventario-card">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
+            <CardHeader className="px-5 pt-4 pb-3">
+              <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
                 {t('caja:dashboard.inventario', { defaultValue: 'Inventario' })}
               </CardTitle>
             </CardHeader>
-            <CardContent className="p-2">
+            <CardContent className="space-y-1 px-3 pb-4">
               <OcupacionPanel uuid_sucursal={uuid_sucursal} />
             </CardContent>
           </Card>
 
           <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-1">
             <Card data-testid="cobros-list-card" className="overflow-hidden">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
+              <CardHeader className="px-5 pt-4 pb-3">
+                <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
                   {t('caja:dashboard.cobrosPendientes', { defaultValue: 'Cobros pendientes' })}
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-1 overflow-y-auto p-2 text-sm">
-                <p className="text-muted-foreground" data-testid="cobros-empty">
+              <CardContent className="space-y-1 overflow-y-auto px-3 pb-4 text-sm">
+                <p className="text-muted-foreground/70 text-sm" data-testid="cobros-empty">
                   {t('caja:dashboard.sinCobros', { defaultValue: 'Sin cobros pendientes.' })}
                 </p>
               </CardContent>
@@ -602,8 +618,8 @@ export function Dashboard(): JSX.Element | null {
             el hook `useSuscripcionesProximasVencer`.
           */}
           <Card data-testid="dashboard-vencimiento-panel" className="overflow-hidden">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm uppercase tracking-wider text-muted-foreground">
+            <CardHeader className="px-5 pt-4 pb-3">
+              <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
                 {t('suscripciones:dashboard.panelVencimiento.titulo', {
                   defaultValue: 'Suscripciones por vencer',
                 })}{' '}
@@ -612,9 +628,9 @@ export function Dashboard(): JSX.Element | null {
                 </span>
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-1 overflow-y-auto p-2 text-sm">
+            <CardContent className="space-y-1 overflow-y-auto px-3 pb-4 text-sm">
               {topVencer.length === 0 && (
-                <p className="text-muted-foreground" data-testid="dashboard-vencimiento-panel-empty">
+                <p className="text-muted-foreground/70 text-sm" data-testid="dashboard-vencimiento-panel-empty">
                   {t('caja:dashboard.sinCobros', { defaultValue: 'Sin suscripciones por vencer.' })}
                 </p>
               )}
@@ -622,10 +638,10 @@ export function Dashboard(): JSX.Element | null {
                 {topVencer.map((it) => (
                   <li
                     key={it.uuid}
-                    className="flex items-center justify-between rounded border border-border bg-background px-2 py-1"
+                    className="flex items-center justify-between rounded-xl px-3 py-2 hover:bg-accent/40 transition-colors"
                     data-testid={`dashboard-vencimiento-item-${it.placa}`}
                   >
-                    <span className="font-mono uppercase">{it.placa}</span>
+                    <span className="font-mono text-sm font-medium uppercase tracking-wide">{it.placa}</span>
                     <span className="text-xs text-muted-foreground tabular-nums">
                       {t('suscripciones:dashboard.panelVencimiento.diasRestantesMuchos', {
                         dias: it.dias_para_vencer,
@@ -738,7 +754,7 @@ function PlacaInputHero({
         onChange={handleChange}
         maxLength={6}
         disabled={submitting}
-        className="block w-full rounded border border-input bg-background px-4 py-3 text-center font-mono text-5xl uppercase tracking-[0.4em] outline-none ring-ring placeholder:text-muted-foreground focus:ring-2 disabled:opacity-60"
+        className="block w-full rounded-2xl border-0 bg-muted/50 px-4 py-6 text-center font-mono text-6xl uppercase tracking-[0.4em] outline-none placeholder:text-muted-foreground/40 focus-ring-apple focus-visible:bg-background focus-visible:shadow-apple transition-all disabled:opacity-60"
         onKeyDown={onKeyDown}
         aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
         // uuid_sucursal is consumed by IngresoPanel inside the drawer; this
@@ -914,7 +930,7 @@ function VehiculosDentroList({
         es menor; en viewports normales (>=768px) no aparece scroll.
       */}
       <ul
-        className="max-h-[calc(100vh-14rem)] flex-1 space-y-1 overflow-y-auto pr-1"
+        className="max-h-[calc(100vh-14rem)] flex-1 divide-y divide-border/40 overflow-y-auto"
         data-testid="vehiculos-list"
       >
         {visible.map((it) => {
@@ -929,10 +945,10 @@ function VehiculosDentroList({
           return (
             <li
               key={it.uuid}
-              className="flex items-center justify-between rounded border border-border bg-background px-2 py-1"
+              className="group flex items-center justify-between rounded-xl px-3 py-2 hover:bg-accent/40 transition-colors"
               data-testid={`vehiculos-item-${it.uuid}`}
             >
-              <span className="font-mono uppercase" title={it.uuid}>
+              <span className="font-mono text-sm font-medium uppercase tracking-wide" title={it.uuid}>
                 {idVisible}
               </span>
               <span className="text-xs text-muted-foreground tabular-nums">
@@ -950,7 +966,7 @@ function VehiculosDentroList({
         para no inflar el CardHeader.
       */}
       <div
-        className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 text-xs text-muted-foreground"
+        className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-3 text-xs text-muted-foreground"
         data-testid="vehiculos-pagination"
       >
         <span className="tabular-nums" data-testid="vehiculos-pagination-range">
@@ -959,7 +975,7 @@ function VehiculosDentroList({
         <div className="flex items-center gap-1">
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="sm"
             disabled={currentPage === 0}
             onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
@@ -967,6 +983,7 @@ function VehiculosDentroList({
               defaultValue: 'Página anterior',
             })}
             data-testid="vehiculos-pagination-prev"
+            className="h-7 w-7 p-0 rounded-lg"
           >
             ‹
           </Button>
@@ -983,7 +1000,7 @@ function VehiculosDentroList({
           </span>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="sm"
             disabled={currentPage >= totalPages - 1}
             onClick={() =>
@@ -993,6 +1010,7 @@ function VehiculosDentroList({
               defaultValue: 'Página siguiente',
             })}
             data-testid="vehiculos-pagination-next"
+            className="h-7 w-7 p-0 rounded-lg"
           >
             ›
           </Button>
@@ -1004,7 +1022,7 @@ function VehiculosDentroList({
             aria-label={t('caja:dashboard.porPagina', {
               defaultValue: 'Por página',
             })}
-            className="inline-flex overflow-hidden rounded border border-border"
+            className="inline-flex overflow-hidden rounded-lg border border-border/60"
           >
             {PAGE_SIZE_OPTIONS.map((opt) => {
               const active = pageSize === opt;
@@ -1015,10 +1033,10 @@ function VehiculosDentroList({
                   onClick={() => setPageSize(opt)}
                   aria-pressed={active}
                   className={
-                    'px-2 py-0.5 text-xs font-medium ' +
+                    'px-2.5 py-1 text-xs font-semibold ' +
                     (active
                       ? 'bg-primary text-primary-foreground'
-                      : 'bg-background hover:bg-accent')
+                      : 'bg-background hover:bg-accent/60')
                   }
                   data-testid={`vehiculos-pagination-size-${opt}`}
                 >
@@ -1040,7 +1058,7 @@ function CobrosPendientesList({
 }): JSX.Element {
   const { t } = useTranslation('caja');
   return (
-    <p className="text-muted-foreground" data-testid="cobros-empty">
+    <p className="text-muted-foreground/70 text-sm" data-testid="cobros-empty">
       {t('caja:dashboard.sinCobros', { defaultValue: 'Sin cobros pendientes.' })}
     </p>
   );

@@ -94,7 +94,7 @@ export function OcupacionPanel({ uuid_sucursal }: OcupacionPanelProps): JSX.Elem
         role="status"
         data-testid="ocupacion-panel"
         data-stale={isStale ? 'true' : 'false'}
-        className="flex flex-col gap-1.5 text-sm"
+        className="flex flex-col gap-2 text-sm px-1"
       >
         {isStale ? (
           <Tooltip>
@@ -131,20 +131,20 @@ export function OcupacionPanel({ uuid_sucursal }: OcupacionPanelProps): JSX.Elem
                     data-color={color}
                     aria-live="polite"
                     aria-atomic="false"
-                    className="flex items-center gap-2"
+                    className="flex items-center gap-3 py-0.5"
                   >
                     {/* status dot */}
                     <span
                       aria-hidden
-                      className={`inline-block h-2 w-2 shrink-0 rounded-full ${DOT_BG[color]}`}
+                      className={`inline-block h-2 w-2 shrink-0 rounded-full ring-2 ring-background ${DOT_BG[color]}`}
                     />
                     {/* tipo label, fixed width via uppercase tracking */}
-                    <span className="w-16 shrink-0 truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    <span className="w-16 shrink-0 truncate text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground/80">
                       {item.tipo}
                     </span>
                     {/* X / Y count */}
                     <span
-                      className={`w-14 shrink-0 text-right text-xs font-mono tabular-nums ${TEXT_MUTED[color]}`}
+                      className={`w-14 shrink-0 text-right text-sm font-mono font-medium tabular-nums ${TEXT_MUTED[color]}`}
                     >
                       {item.activos}
                       <span className="mx-0.5 text-muted-foreground">/</span>
@@ -154,17 +154,17 @@ export function OcupacionPanel({ uuid_sucursal }: OcupacionPanelProps): JSX.Elem
                     {item.cupo_maximo > 0 ? (
                       <span
                         aria-hidden
-                        className="relative inline-block h-1.5 flex-1 overflow-hidden rounded-full bg-muted"
+                        className="relative inline-block h-1 flex-1 overflow-hidden rounded-full bg-muted/60"
                       >
                         <span
-                          className={`absolute left-0 top-0 h-full rounded-full transition-all ${PROGRESS_BG[color]}`}
+                          className={`absolute left-0 top-0 h-full rounded-full transition-[width] duration-500 ease-out ${PROGRESS_BG[color]}`}
                           style={{ width: `${pct}%` }}
                         />
                       </span>
                     ) : (
                       <span
                         aria-hidden
-                        className="h-1.5 flex-1 rounded-full bg-muted/50"
+                        className="h-1 flex-1 rounded-full bg-muted/40"
                       />
                     )}
                   </li>
