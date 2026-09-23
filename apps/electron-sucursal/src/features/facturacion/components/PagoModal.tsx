@@ -211,8 +211,24 @@ export function PagoModal({
     return `DV inválido (esperado ${result.dvEsperado})`;
   }, [feActive, nitValue, dvValue]);
 
+  // HU-F8.1 — bloquea el submit en cliente si el efectivo recibido es
+  // menor al total (código de error `monto_insuficiente`). El backend
+  // también rechazaría con 4xx, pero el bloqueo cliente evita el
+  // round-trip y muestra el FormMessage inline antes de tocar la red.
   const handleSubmit = form.handleSubmit(async (values) => {
     if (!uuid_ingreso) return;
+    if (
+      values.medio_pago === 'efectivo' &&
+      values.monto_recibido_cop < total_cop
+    ) {
+      form.setError('monto_recibido_cop', {
+        type: 'manual',
+        message: t('facturacion:pago.monto_insuficiente', {
+          defaultValue: `Monto recibido es menor al total (${formatCOP(total_cop)})`,
+        }),
+      });
+      return;
+    }
     await onSubmit(values);
   });
 
@@ -307,7 +323,10 @@ export function PagoModal({
                 />
               </FormControl>
               <FormLabel className="!mt-0">
-                {t('facturacion:pago.fe_toggle', { defaultValue: 'Generar factura electrónica' })}
+                {t('facturacion:pago.fe_toggle', {
+                  defaultValue:
+                    'Factura a nombre del cliente (opcional); por defecto, factura a consumidor final',
+                })}
               </FormLabel>
             </FormItem>
           )}
