@@ -54,6 +54,7 @@ import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
 import { getIngresosByPlaca } from '../../operacion/api/ingresoActivoApi';
 import { useSuscripcionesProximasVencer } from '../../suscripciones/hooks/useSuscripcionesProximasVencer';
+import { formatHoraCorta } from '../lib/format';
 import {
   Card,
   CardContent,
@@ -935,10 +936,7 @@ function VehiculosDentroList({
                 {idVisible}
               </span>
               <span className="text-xs text-muted-foreground tabular-nums">
-                {new Date(horaIso).toLocaleTimeString('es-CO', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
+                {formatHoraCorta(horaIso)}
               </span>
             </li>
           );
