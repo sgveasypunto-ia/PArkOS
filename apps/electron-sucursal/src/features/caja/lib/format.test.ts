@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-import { formatCOP, formatFechaHoraCorta, formatTiempoTranscurrido } from './format';
+import { formatCOP, formatFechaHoraCorta, formatHoraCorta, formatTiempoTranscurrido } from './format';
 
 describe('formatCOP', () => {
   it('U1: formatea 50000 como "$ 50.000" (es-CO, 0 decimales)', () => {
@@ -91,54 +91,110 @@ describe('formatTiempoTranscurrido', () => {
 void vi;
 
 describe('formatFechaHoraCorta', () => {
-  it('F1: ISO con milisegundos + Z → DD/MM/AA HH:mm', () => {
-    // 2026-09-23T02:46:50.322102Z. La hora exacta depende de la TZ del
-    // kiosko; el formateador usa `getDate/getHours` locales, así que
-    // verificamos el shape DD/MM/AA HH:mm y NO la hora exacta.
+  it('F1: ISO con milisegundos + Z → DD/MM/AA HH:mm en TZ Bogotá', () => {
+    // 2026-09-23T02:46:50.322102Z → UTC 02:46 → Bogotá (UTC-5) → 21:46
+    // del día anterior (22/sep). Si la TZ se respeta bien, debe
+    // dar exactamente "22/09/26 21:46" — este es el test del
+    // off-by-5h que el operador reportó.
     const result = formatFechaHoraCorta('2026-09-23T02:46:50.322102Z');
-    expect(result).toMatch(/^\d{2}\/\d{2}\/\d{2} \d{2}:\d{2}$/);
-    // El día (DD) debe ser 23 porque el formateador usa la TZ local;
-    // el kiosko está en es-CO (UTC-5, sin DST) → sigue siendo 22/sep local.
-    expect(result.slice(0, 2)).toMatch(/2[12]/);
+    expect(result).toBe('22/09/26 21:46');
   });
 
-  it('F2: ISO simple → formato corto', () => {
-    const result = formatFechaHoraCorta('2026-09-23T15:30:00Z');
-    expect(result).toMatch(/^\d{2}\/\d{2}\/\d{2} \d{2}:\d{2}$/);
+  it('F2: ISO naive (sin Z) → trata como UTC, mismo resultado que F1', () => {
+    // El backend retorna naive timestamps por el `replace(tzinfo=None)`
+    // de Pydantic. El parser interno debe añadir Z para que JS lo
+    // parsee como UTC (consistente con F1).
+    const result = formatFechaHoraCorta('2026-09-23T02:46:50.322102');
+    expect(result).toBe('22/09/26 21:46');
   });
 
-  it('F3: null → "—" (placeholder)', () => {
+  it('F3: ISO con offset positivo (ej. +05:00) → respeta el offset', () => {
+    // 2026-09-23T02:46:50+05:00 → 02:46 en TZ +05 → UTC 21:46 (día
+    // anterior) → Bogotá 16:46 del 22/sep.
+    const result = formatFechaHoraCorta('2026-09-23T02:46:50+05:00');
+    expect(result).toBe('22/09/26 16:46');
+  });
+
+  it('F4: ISO con offset negativo (ej. -03:00 Chile) → respeta el offset', () => {
+    // 2026-09-23T02:46:50-03:00 → 02:46 en TZ -03 → UTC 05:46 → Bogotá
+    // 00:46 del mismo día (23/sep).
+    const result = formatFechaHoraCorta('2026-09-23T02:46:50-03:00');
+    expect(result).toBe('23/09/26 00:46');
+  });
+
+  it('F5: null → "—" (placeholder)', () => {
     expect(formatFechaHoraCorta(null)).toBe('—');
   });
 
-  it('F4: undefined → "—"', () => {
+  it('F6: undefined → "—"', () => {
     expect(formatFechaHoraCorta(undefined)).toBe('—');
   });
 
-  it('F5: string vacío → "—"', () => {
+  it('F7: string vacío → "—"', () => {
     expect(formatFechaHoraCorta('')).toBe('—');
   });
 
-  it('F6: string inválido → "—" (no crashea)', () => {
+  it('F8: string inválido → "—" (no crashea)', () => {
     expect(formatFechaHoraCorta('not-a-date')).toBe('—');
     expect(formatFechaHoraCorta('2026-13-99T99:99:99Z')).toBe('—');
   });
 
-  it('F7: año se trunca a 2 dígitos (DD/MM/AA no DD/MM/AAAA)', () => {
+  it('F9: año se trunca a 2 dígitos (DD/MM/AA no DD/MM/AAAA)', () => {
     const result = formatFechaHoraCorta('2026-09-23T15:30:00Z');
-    // El año 2026 → "26" (últimos 2 dígitos). El formato es
-    // estrictamente DD/MM/AA HH:mm, no DD/MM/YYYY HH:mm.
     const parts = result.split(' ')[0]!.split('/');
     expect(parts).toHaveLength(3);
-    // El componente "año" debe tener exactamente 2 dígitos.
     expect(parts[2]).toHaveLength(2);
     expect(parts[2]).toMatch(/^\d{2}$/);
   });
 
-  it('F8: día y mes con padding a 2 dígitos (zero-pad)', () => {
-    // Día 5, mes 1 → "05/01/AA" no "5/1/AA".
+  it('F10: día y mes con padding a 2 dígitos (zero-pad)', () => {
+    // 2026-01-05T08:00:00Z → Bogotá 03:00 del mismo día.
     const result = formatFechaHoraCorta('2026-01-05T08:00:00Z');
-    // La hora puede ser 07 o 08 según TZ local; verificamos el shape.
+    expect(result).toBe('05/01/26 03:00');
+    // Shape: day/month son exactamente 2 dígitos.
     expect(result).toMatch(/^0\d\/0\d\/\d{2} \d{2}:\d{2}$/);
+  });
+
+  it('F11: cruza medianoche en Bogotá correctamente (UTC 04:00 → Bogotá 23/sep 23:00)', () => {
+    // 2026-09-24T04:00:00Z → UTC 04:00 → Bogotá (UTC-5) → 23:00 del 23/sep.
+    const result = formatFechaHoraCorta('2026-09-24T04:00:00Z');
+    expect(result).toBe('23/09/26 23:00');
+  });
+
+  it('F12: cruza medianoche al revés (UTC 02:00 → Bogotá 22/sep 21:00 del día anterior)', () => {
+    // 2026-09-23T02:00:00Z → UTC 02:00 → Bogotá (UTC-5) → 21:00 del 22/sep.
+    const result = formatFechaHoraCorta('2026-09-23T02:00:00Z');
+    expect(result).toBe('22/09/26 21:00');
+  });
+});
+
+describe('formatHoraCorta', () => {
+  it('H1: ISO con Z → HH:mm en TZ Bogotá (UTC-5)', () => {
+    // 2026-09-23T02:46:50Z → Bogotá 21:46 del 22/sep.
+    const result = formatHoraCorta('2026-09-23T02:46:50Z');
+    expect(result).toBe('21:46');
+  });
+
+  it('H2: ISO naive → trata como UTC', () => {
+    const result = formatHoraCorta('2026-09-23T02:46:50');
+    expect(result).toBe('21:46');
+  });
+
+  it('H3: cruza medianoche correctamente', () => {
+    // 2026-09-24T04:30:00Z → Bogotá 23:30 del 23/sep.
+    const result = formatHoraCorta('2026-09-24T04:30:00Z');
+    expect(result).toBe('23:30');
+  });
+
+  it('H4: null → "—"', () => {
+    expect(formatHoraCorta(null)).toBe('—');
+  });
+
+  it('H5: undefined → "—"', () => {
+    expect(formatHoraCorta(undefined)).toBe('—');
+  });
+
+  it('H6: string inválido → "—"', () => {
+    expect(formatHoraCorta('not-a-date')).toBe('—');
   });
 });

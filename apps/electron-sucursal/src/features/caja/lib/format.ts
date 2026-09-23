@@ -63,38 +63,109 @@ export function formatTiempoTranscurrido(fecha: string | Date): string {
 }
 
 /**
- * `formatFechaHoraCorta(iso)` — DD/MM/AA HH:mm en zona horaria local
- * del kiosko (es-CO). El formato ISO 8601 completo que llega del backend
+ * Zona horaria de toda la operación de kiosko: America/Bogota
+ * (Colombia, UTC-5, sin DST). El backend genera con
+ * ``datetime.now(UTC).replace(tzinfo=None)`` que produce timestamps
+ * naive (sin ``Z`` ni offset), que JS parsea como LOCAL TZ del
+ * navegador — si el kiosko corre en cloud UTC, hay off-by-5h. Forzando
+ * la TZ a Bogotá en el formateador, garantizamos que el operador del
+ * mostrador ve SIEMPRE la hora colombiana, independientemente de la TZ
+ * del proceso del navegador.
+ *
+ * DIAN spec (HU-F14): la factura electrónica se emite con timestamp
+ * en hora colombiana. Esta constante es la single source of truth
+ * para esa TZ en todo el FE del kiosko (HU-F1.x timestamps,
+ * HU-F7.x cotizacion, HU-F8.x pago, HU-F11.x arqueo, etc.).
+ */
+const BOGOTA_TZ = 'America/Bogota';
+
+/**
+ * Helper interno: parsea un timestamp ISO del backend como UTC.
+ *
+ * El backend retorna timestamps naive (sin ``Z`` ni offset) por el
+ * patrón ``datetime.now(UTC).replace(tzinfo=None)`` que Pydantic v2
+ * serializa como ``'2026-09-23T02:46:50.322102'``. ECMAScript interpreta
+ * ese formato como LOCAL TZ del navegador — un kiosko en UTC vería
+ * la hora "cruda" pero un kiosko en otra TZ vería la hora con offset
+ * incorrecto. Para garantizar consistencia, si el string no tiene
+ * sufijo ``Z`` ni offset ``+HH:MM``, le añadimos ``Z`` para que JS lo
+ * parsee como UTC.
+ */
+function parseBackendTimestampAsUtc(iso: string): string {
+  if (iso.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(iso)) {
+    return iso;
+  }
+  return `${iso}Z`;
+}
+
+/**
+ * `formatFechaHoraCorta(iso)` — DD/MM/AA HH:mm en zona horaria
+ * **Bogotá (America/Bogota, UTC-5)**.
+ *
+ * El formato ISO 8601 completo que llega del backend
  * (`2026-09-23T02:46:50.322102Z`) es demasiado verbose para el
  * operador del kiosko; este formato compacto es legible sin perder
- * precisión (minutos, no milisegundos, no TZ offset).
+ * precisión (minutos, no milisegundos, no TZ offset). Además, la TZ
+ * se fuerza a Bogotá para evitar el off-by-5h cuando el kiosko corre
+ * en otra TZ (cloud UTC, dev UTC, etc.).
  *
  * Ejemplos:
- *   `formatFechaHoraCorta('2026-09-23T02:46:50.322102Z')` → `"23/09/26 02:46"`
+ *   `formatFechaHoraCorta('2026-09-23T02:46:50.322102Z')` → `"22/09/26 21:46"`
+ *     (UTC-5 desde el input UTC 02:46)
+ *   `formatFechaHoraCorta('2026-09-23T02:46:50.322102')` → `"22/09/26 21:46"`
+ *     (mismo: el sufijo ES aplicado por el parser interno)
  *   `formatFechaHoraCorta(null)` → `"—"`
  *   `formatFechaHoraCorta('invalid')` → `"—"`
  *
  * Directiva del operador 2026-09-22: el formato ISO completo no es
  * diciente para nadie — normalizar TODA fecha visible del kiosko a
- * este formato corto. Usado en:
- *   - `<CotizacionPanel />` (vigente_desde, vigente_hasta de la
- *     tarifa aplicada + vigente_hasta de la cotizacion).
- *   - `<IngresoPanel />` (fecha_ingreso del "ingreso activo" inline).
- *   - `<TiqueteModal />` (timestamp de impresión).
- *
- * Forward extensibility (F4.x+): si el proyecto adopta `date-fns`,
- * este wrapper puede reemplazarse por `format(fecha, 'dd/MM/yy HH:mm')`
- * sin cambiar el call site.
+ * este formato corto, en TZ Colombia.
  */
+const fechaHoraBogotaFormatter = new Intl.DateTimeFormat('es-CO', {
+  timeZone: BOGOTA_TZ,
+  day: '2-digit',
+  month: '2-digit',
+  year: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
 export function formatFechaHoraCorta(iso: string | null | undefined): string {
   if (!iso) return '—';
-  const d = new Date(iso);
+  const d = new Date(parseBackendTimestampAsUtc(iso));
   if (isNaN(d.getTime())) return '—';
-  // Zona horaria local del kiosko (es-CO via Intl).
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mm}/${yy} ${hh}:${min}`;
+  const parts = fechaHoraBogotaFormatter.formatToParts(d);
+  const get = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((p) => p.type === type)?.value ?? '';
+  const yy = get('year').slice(-2);
+  return `${get('day')}/${get('month')}/${yy} ${get('hour')}:${get('minute')}`;
+}
+
+/**
+ * `formatHoraCorta(iso)` — HH:mm en zona horaria **Bogotá**, para
+ * lugares que solo muestran la hora (sin fecha) — ej. la lista de
+ * vehículos dentro del dashboard (HH:MM del ingreso). Mismo
+ * tratamiento del backend timestamp naive → UTC que
+ * ``formatFechaHoraCorta``.
+ *
+ * Ejemplos:
+ *   `formatHoraCorta('2026-09-23T02:46:50.322102Z')` → `"21:46"` (UTC-5)
+ *   `formatHoraCorta(null)` → `"—"`
+ */
+const horaBogotaFormatter = new Intl.DateTimeFormat('es-CO', {
+  timeZone: BOGOTA_TZ,
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+export function formatHoraCorta(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(parseBackendTimestampAsUtc(iso));
+  if (isNaN(d.getTime())) return '—';
+  const parts = horaBogotaFormatter.formatToParts(d);
+  const get = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((p) => p.type === type)?.value ?? '';
+  return `${get('hour')}:${get('minute')}`;
 }
