@@ -1083,11 +1083,103 @@ async def test_calcular_cotizacion_db_unidad_minutos_siempre_uno(
     )
 
 
+# ---------------------------------------------------------------------------
+# Caso 7 — REGRESSION (2026-09-22, CU-02 spec canónica): el cálculo del
+# tiempo respeta el DÍA Colombia (BR4 verbatim). Un ingreso de hace
+# varios días debe mostrar ``tiempo_minutos`` proporcional al día
+# Colombia actual, NO acumulado desde la fecha de ingreso.
+#
+# Antes del fix (0047): un ingreso del 2026-09-20 (3 días atrás)
+# mostraba ~4320 minutos. Eso es incorrecto para una tarifa plena
+# "por día" — el operador pagaba 3x la plena.
+# Después del fix (0048): el mismo ingreso muestra aprox 22h
+# (= tiempo desde 00:00 hora Colombia del día actual hasta NOW).
+#
+# Test determinístico: insertar un ingreso con ``fecha_ingreso`` de
+# 4 días ANTES de now. El ``tiempo_minutos`` retornado debe estar
+# en el rango (0, 24*60] (= 1440 minutos) — porque el GREATEST
+# trunca al inicio del día Colombia actual, no acumula los 4 días.
+# ---------------------------------------------------------------------------
+
+
+async def test_calcular_cotizacion_db_trunca_tiempo_a_dia_bogota_actual(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """REGRESSION (CU-02 BR4, 2026-09-22): el cálculo respeta el día
+    Colombia actual, no acumula desde la fecha de ingreso original.
+
+    Escenario: ingreso creado hace 4 días (``fecha_ingreso`` =
+    NOW() - INTERVAL '4 days'). Antes del fix 0048, ``tiempo_minutos``
+    sería ~5760 (= 4 días × 24h × 60min). Después del fix, debe
+    estar en (0, 1440] (= hasta 24h del día Colombia actual),
+    porque ``GREATEST(fecha_ingreso, inicio_dia_bogota)`` trunca al
+    inicio del día Colombia actual.
+
+    Edge case cubierto: el contrato del fix es "el techo plena se
+    aplica por día Colombia, no por tiempo absoluto". Si el
+    vehículo entró hace una semana, el cálculo del tiempo es 22h
+    (o lo que sea), no 168h.
+    """
+    await _truncate_tables(pg_dsn)
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    tipo_tarifa_uuid = uuid_lib.uuid4()
+
+    ingreso_uuid = await _seed_minimal_happy_path(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        uuid_tipo_tarifa=tipo_tarifa_uuid,
+        minutos_en_estacionamiento=89,
+    )
+
+    # Override fecha_ingreso a hace 4 días (BR4 — el caso del bug).
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        ingreso = await session.get(Ingreso, ingreso_uuid)
+        assert ingreso is not None
+        ingreso.fecha_ingreso = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=4)
+        await session.commit()
+
+    async with Session() as session:
+        payload = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_uuid)},
+            )
+        ).scalar_one()
+
+    assert isinstance(payload, dict)
+    assert payload["cobrar"] is True
+    tiempo = float(payload["tiempo_minutos"])
+
+    # REGRESSION (BR4): el tiempo DEBE estar truncado al día Colombia
+    # actual. Sin el fix 0048, este test retornaría ~5760 (= 4 días
+    # × 24h × 60min). Con el fix, retorna algo entre 0 y 1440
+    # (proporcional al día actual).
+    assert 0 < tiempo <= 24 * 60, (
+        f"REGRESSION (CU-02 BR4): tiempo_minutos debe estar en "
+        f"(0, 1440] para un ingreso de hace 4 días (truncado al "
+        f"día Colombia actual); got {tiempo}. Si retorna ~5760, "
+        f"el GREATEST(fecha_ingreso, inicio_dia_bogota) no se "
+        f"aplica — el bug pre-0048 está activo."
+    )
+    # Lower bound razonable: el ingreso es de hace 4 días, así que el
+    # tiempo desde el inicio del día Colombia actual hasta NOW() es
+    # al menos algunas horas (no 0). Permitimos 0 también para edge
+    # case donde NOW() está justo en 00:00 hora Bogotá.
+    assert tiempo >= 0, (
+        f"tiempo_minutos must be non-negative; got {tiempo}"
+    )
+
+
 __all__ = [
     "test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos",
     "test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo",
     "test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at",
     "test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigente",
+    "test_calcular_cotizacion_db_trunca_tiempo_a_dia_bogota_actual",
     "test_calcular_cotizacion_db_unidad_minutos_siempre_uno",
     "test_calcular_cotizacion_db_uuid_inexistente_devuelve_ingreso_no_encontrado",
 ]
