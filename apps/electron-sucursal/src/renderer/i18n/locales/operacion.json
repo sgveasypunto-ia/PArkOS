@@ -107,6 +107,7 @@
     },
     "errors": {
       "ingreso_no_encontrado": "No hay ingreso activo para esta placa en esta sucursal",
+      "ingreso_cerrado": "El ingreso de esta placa ya tiene una salida registrada.",
       "tarifa_no_vigente": "No hay tarifa vigente configurada. Contacte al administrador.",
       "iva_no_configurado": "IVA no configurado en el sistema. Contacte al administrador.",
       "cotizacion_expirada": "El cálculo expiró, recalculando…",
@@ -121,6 +122,9 @@
     "expira": "Cotización expira en",
     "expirada": "Cotización expirada"
   },
+  "cotizar_boton": "Cotizar",
+  "ingreso_cerrado_titulo": "Este ingreso ya tiene salida",
+  "ingreso_cerrado_descripcion": "La placa que tipeaste corresponde a un ingreso que ya registró salida. Si necesitas reimprimir el tiquete, usa la opción Reimprimir del menú.",
   "miTurno": {
     "titulo": "Mi turno",
     "kpis": {

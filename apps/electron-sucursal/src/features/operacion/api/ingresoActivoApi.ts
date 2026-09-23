@@ -65,9 +65,27 @@ export const IngresoArraySchema = z.array(IngresoSchema);
 
 /** Derived state returned by `GET /operacion/ingresos/{uuid}/estado` (F1.6). */
 export const IngresoEstadoSchema = z.object({
-  uuid: z.string().uuid(),
+  /**
+   * REGRESSION fix (2026-09-22, directiva del operador): el backend
+   * retorna el campo como ``uuid_ingreso`` (matches the canonical BE
+   * response field name in ``IngresoEstadoResponse``, see
+   * ``backend/.../schemas/operacion.py:106-119``). El schema FE exigía
+   * ``uuid`` y rompía el parseo — el operador veía "No se pudo
+   * obtener la cotización" al tipear una placa con ingreso ya
+   * cerrado (caso típico: TST999). El bug se manifestaba porque
+   * ``SalidaPanel`` tenía un try/catch alrededor de ``getIngresoEstado``
+   * que silenciaba el ZodError y caía al flujo normal (que también
+   * falla porque el ingreso está cerrado → /cotizar 404).
+   *
+   * ``fecha_ingreso`` y ``uuid_sucursal`` son opcionales porque el FE
+   * no los consume; ``.passthrough()`` permite que el BE agregue
+   * campos en el futuro sin romper el cliente.
+   */
+  uuid_ingreso: z.string().uuid(),
   estado: z.enum(['abierto', 'cerrado', 'anulada']),
-});
+  fecha_ingreso: z.string().nullable().optional(),
+  uuid_sucursal: z.string().uuid().nullable().optional(),
+}).passthrough();
 export type IngresoEstado = z.infer<typeof IngresoEstadoSchema>;
 
 /** Path base — same contract as the rest of the operacion feature (F4.3). */
