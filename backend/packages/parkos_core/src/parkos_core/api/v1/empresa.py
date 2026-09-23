@@ -26,9 +26,11 @@ AND estado = 'activo'``. The factory (HU-F1.1) remains untouched.
 """
 from __future__ import annotations
 
+import uuid as uuid_lib
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.tenancy import TenantContext
@@ -211,6 +213,64 @@ async def list_tarifas_sucursal_vigente_en(
     )
     items = [TarifasSucursalRead.model_validate(r) for r in rows]
     return TarifasSucursalReadList(items=items, next_cursor=nxt)
+
+
+@_tarifas_dedicated_router.get(
+    "/{uuid}",
+    response_model=TarifasSucursalRead,
+    responses={404: {"description": "tarifa_no_encontrada"}},
+)
+async def get_tarifa_sucursal_by_uuid(
+    uuid: uuid_lib.UUID = Path(  # noqa: B008
+        ...,
+        description="UUIDv4 de la fila de prod.tarifas_sucursal a leer.",
+    ),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tarifas_issuer_dep),
+) -> TarifasSucursalRead:
+    """HU-F1.4 / CU-02 (operador, 2026-09-22): detalle de una tarifa específica.
+
+    El handler de listado (``list_tarifas_sucursal_vigente_en`` arriba)
+    devuelve un ``TarifasSucursalReadList`` paginado para alimentar el
+    hook FE ``useTarifasVigentes``. El cotizador de salida
+    (``GET /operacion/cotizar``) retorna ``tarifa_uuid`` (el UUID de la
+    fila aplicada) sin el detalle — el UI solo podía mostrar el UUID
+    crudo. Este endpoint complementa: el FE hace un lookup
+    ``getTarifaSucursalByUuid(uuid)`` para mostrar ``valor``,
+    ``valor_plena``, ``vigente_desde/hasta`` y ``estado`` en el panel
+    de cotizacion.
+
+    Read-only por contrato (KD-4): sin UPDATE/DELETE, sin commit. La
+    fila es ``[V]`` bi-temporal; el factory router conserva la cadena
+    versionada (close+insert en escritura). El query directo via
+    ``session.execute`` es read-only y consistente con la invariante
+    del feature.
+
+    Tenant scope: el handler valida via ``_tarifas_dedicated_router_
+    issuer_dep`` (``admin-,operador-``) + KD-3 ``get_tenant_ctx``. El
+    operador- está pinned a su sucursal, pero este endpoint NO filtra
+    por ``uuid_sucursal`` porque la tarifa aplicada al cobro ya fue
+    validada upstream por ``prod.calcular_cotizacion`` (FOR SHARE
+    sobre la fila correcta) — el uuid que viene del cotizar es
+    autoritativo. Permitir lectura cross-branch sería un leak; el cotizar
+    con KD-3 ya previene eso (operador no puede cobrar en otra
+    sucursal).
+
+    404 si la fila no existe (uuid mal tipeado o fila cerrada). El FE
+    muestra el UUID como fallback si 404.
+    """
+    row = (
+        await session.execute(
+            select(TarifasSucursal).where(TarifasSucursal.uuid == uuid)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "tarifa_no_encontrada", "uuid": str(uuid)},
+        )
+    return TarifasSucursalRead.model_validate(row)
 
 
 router.include_router(_tarifas_dedicated_router)

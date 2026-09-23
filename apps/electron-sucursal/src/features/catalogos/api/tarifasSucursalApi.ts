@@ -104,3 +104,26 @@ export async function listTarifasSucursal(
     throw err;
   }
 }
+
+/**
+ * GET /api/v1/empresa/tarifas-sucursal/{uuid} — detalle de una tarifa
+ * específica (HU-F1.4 / CU-02, directiva del operador 2026-09-22).
+ *
+ * El endpoint de listado devuelve ``tarifa_uuid`` en el payload de
+ * ``/operacion/cotizar`` pero NO el detalle (valor, valor_plena,
+ * vigente_desde/hasta, estado). El hook ``useTarifaByUuid`` usa este
+ * fetcher para que el panel de cotizacion muestre el desglose legible
+ * ("Tarifa aplicada: $100/min · Plena: $200 · Vigente desde ..."), no
+ * solo el UUID crudo.
+ *
+ * Read-only. Response shape `TarifaSucursalRead` (mismo que el
+ * `items[]` del listado). 404 si la fila no existe — el hook debe
+ * mostrar el UUID como fallback.
+ */
+export async function getTarifaSucursalByUuid(
+  uuid: string,
+): Promise<TarifaSucursalRead> {
+  return await parkosFetch<TarifaSucursalRead>(
+    `${TARIFAS_PATH}/${encodeURIComponent(uuid)}`,
+  );
+}
