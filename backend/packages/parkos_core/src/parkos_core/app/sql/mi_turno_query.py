@@ -107,21 +107,36 @@ def build_mi_turno_counts_sql(
         upper_predicate_ingreso = "COALESCE(i.fecha_ingreso, i.created_at) <= :t_close"
         upper_predicate_salida = "COALESCE(s.fecha_salida, s.created_at) <= :t_close"
 
+    # REGRESSION fix (2026-09-22, REQ-OPS-184): the previous shape used
+    # ``LEFT JOIN prod.ingreso i ON TRUE LEFT JOIN prod.salidas s ON TRUE``
+    # — which is a full cross product between the sesion row, ALL
+    # ``prod.ingreso`` rows, and ALL ``prod.salidas`` rows. ``COUNT(*)``
+    # FILTER then matched each cross-product row against its own
+    # predicate. With N ingresos and M salidas, ``salidas_count`` was
+    # effectively ``N × M`` instead of ``M`` — multiplying spurious
+    # salidas as the operator's turno accumulated eventos (the bug
+    # was masked at M=0 because 0 × N = 0).
+    #
+    # The fix uses scalar subqueries so the two COUNTs are independent
+    # and immune to the cross product. Each subquery is a clean
+    # point-in-time aggregate against its own event table — no
+    # join, no Cartesian explosion. The sesion anchor still appears in
+    # the outer SELECT (as ``WHERE prod.sesion.uuid = :uuid_sesion``)
+    # so the no-events zero-state degrades to a single-row
+    # zero-zero-zero-zero-zero row.
     return (
         "SELECT "
-        "COUNT(*) FILTER ("
+        "(SELECT COUNT(*) FROM prod.ingreso i "
         "WHERE i.uuid_sucursal = :S_s "
-        "AND COALESCE(i.fecha_ingreso, i.created_at) >= :t_open "
+        f"AND COALESCE(i.fecha_ingreso, i.created_at) >= :t_open "
         f"AND {upper_predicate_ingreso}"
         ") AS ingresos_count, "
-        "COUNT(*) FILTER ("
+        "(SELECT COUNT(*) FROM prod.salidas s "
         "WHERE s.uuid_sucursal = :S_s "
-        "AND COALESCE(s.fecha_salida, s.created_at) >= :t_open "
+        f"AND COALESCE(s.fecha_salida, s.created_at) >= :t_open "
         f"AND {upper_predicate_salida}"
         ") AS salidas_count "
         "FROM prod.sesion "
-        "LEFT JOIN prod.ingreso i ON TRUE "
-        "LEFT JOIN prod.salidas s ON TRUE "
         "WHERE prod.sesion.uuid = :uuid_sesion"
     )
 
