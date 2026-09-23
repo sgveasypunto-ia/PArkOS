@@ -18,6 +18,13 @@
  * REQ-OPS-147: `formatCOP` is the ONLY monetary formatter. No raw
  * `.toLocaleString('es-CO') + '$'` concatenation.
  *
+ * CU-02 detail (operador, 2026-09-22): la fila "Tarifa aplicada" del
+ * desglose hace un lookup contra el backend para traer el detalle
+ * completo (``valor``, ``valor_plena``, ``vigente_desde``,
+ * ``vigente_hasta``, ``estado``). Antes de este cambio el panel
+ * mostraba solo el UUID crudo. Hook ``useTarifaByUuid`` con SWR keyed
+ * por uuid (5min deduping, 404 → fallback al UUID).
+ *
  * R4 risk mitigation (R4 = countdown 60×/min re-render): wrapped in
  * `React.memo` so SalidaPanel doesn't re-render on every second tick.
  */
@@ -30,6 +37,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 import { formatCOP } from '../../caja/lib/format';
 import type { Cotizacion } from '../hooks/useCotizacion';
+import { useTarifaByUuid } from '../../catalogos/hooks/useTarifaByUuid';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 export interface CotizacionPanelProps {
@@ -74,6 +82,17 @@ function CotizacionPanelImpl({
 }: CotizacionPanelProps): JSX.Element {
   const isExpiring = secondsLeft < 120;
   const isExpired = secondsLeft === 0;
+
+  // CU-02 detail (operador, 2026-09-22): la fila "Tarifa aplicada"
+  // hace un lookup contra el backend para traer el detalle completo
+  // (``valor``, ``valor_plena``, ``vigente_desde``, ``vigente_hasta``,
+  // ``estado``). Hook SWR keyed por uuid; 5min deduping; 404 → null
+  // (el panel hace fallback al UUID). El SWR key es `null` cuando no
+  // hay cotizacion de rotación (error branch o mensualidad branch) —
+  // SWR skip en ese caso.
+  const tarifaUuid: string | null =
+    data && data.cobrar === true ? data.tarifa_uuid : null;
+  const { tarifa } = useTarifaByUuid(tarifaUuid);
 
   // Error branch — non-blocking banner (REQ-OPS-148). The operator
   // dashboard must remain usable; this is NEVER a thrown error.
@@ -182,7 +201,22 @@ function CotizacionPanelImpl({
             {formatCOP(data.total)}
           </dd>
           <dt>Tarifa aplicada</dt>
-          <dd>{data.tarifa_uuid}</dd>
+          <dd data-testid="cotizacion-tarifa-detalle">
+            {tarifa ? (
+              <span>
+                    {formatCOP(tarifa.valor)}/min · Plena: {formatCOP(tarifa.valor_plena)} ·{' '}
+                    {tarifa.estado === 'activo' ? 'Vigente' : `Estado: ${tarifa.estado}`} desde{' '}
+                    {tarifa.vigente_desde}
+                    {tarifa.vigente_hasta ? ` hasta ${tarifa.vigente_hasta}` : ''}
+                  </span>
+            ) : (
+              // Fallback: si el lookup falla (404, 5xx, o SWR sin
+              // data todavía), mostramos el UUID como antes. El SWR
+              // resuelve ~en el siguiente tick y el panel re-renderea
+              // con el detalle completo.
+              <span>{data.tarifa_uuid}</span>
+            )}
+          </dd>
           <dt>Cotización vigente hasta</dt>
           <dd>{data.vigente_hasta}</dd>
         </dl>

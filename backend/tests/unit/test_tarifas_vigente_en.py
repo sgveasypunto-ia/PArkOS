@@ -493,7 +493,135 @@ async def test_list_con_fecha_fuera_de_toda_ventana_devuelve_lista_vacia(
     assert body["next_cursor"] is None
 
 
+# ---------------------------------------------------------------------------
+# Caso 5 — CU-02 (operador, 2026-09-22): ``GET /{uuid}`` devuelve el
+# detalle completo de UNA tarifa. El handler lista por vigente_en;
+# este endpoint dedicado complementa el flujo de cotizacion: el
+# payload de ``/operacion/cotizar`` retorna ``tarifa_uuid`` (sin
+# detalle) y el FE hace un lookup here para mostrar
+# ``valor``/``valor_plena``/``vigente_desde``/``vigente_hasta`` en
+# el panel de cotizacion.
+# ---------------------------------------------------------------------------
+
+
+async def test_get_by_uuid_devuelve_detalle_completo(
+    pg_engine, alembic_upgrade, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """``GET /api/v1/empresa/tarifas-sucursal/{uuid}`` retorna la fila
+    completa (``TarifasSucursalRead``) — el FE la usa para mostrar el
+    breakdown legible de la tarifa aplicada (no solo el UUID).
+
+    Verifica que el shape es correcto: ``uuid`` matchea, ``valor`` y
+    ``valor_plena`` se exponen como string (NUMERIC serializa a string
+    JSON para preservar precision), ``vigente_desde`` es ISO-8601,
+    ``estado`` es 'activo', ``vigente_hasta`` puede ser ``null`` (la
+    fila es vigente sin fecha de cierre).
+    """
+    await _truncate_tarifas(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _seed_usuario(pg_engine, actor_uuid)
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    token = mint_operador_jwt(actor_uuid=actor_uuid, sucursal_uuid=branch_uuid)
+
+    base = _now_naive()
+    await _seed_three_versions(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        base=base,
+    )
+
+    # El seeder crea 3 versiones; la del medio (current_uuid) es la
+    # que tiene ``vigente_desde`` reciente + ``vigente_hasta`` NULL
+    # (vigente abierta). Buscamos esa para verificar el detalle
+    # completo sin solapamiento.
+    list_resp = await client.get(
+        "/api/v1/empresa/tarifas-sucursal",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Sucursal-Context": str(branch_uuid),
+        },
+    )
+    assert list_resp.status_code == 200
+    # Tomar la fila con vigente_hasta NULL (la "open" version del
+    # seeder).
+    current = next(
+        it for it in list_resp.json()["items"] if it["vigente_hasta"] is None
+    )
+    uuid_target = current["uuid"]
+
+    resp = await client.get(
+        f"/api/v1/empresa/tarifas-sucursal/{uuid_target}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Sucursal-Context": str(branch_uuid),
+        },
+    )
+
+    assert resp.status_code == 200, (
+        f"GET by uuid must return 200 with detalle completo; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert body["uuid"] == uuid_target, (
+        f"uuid in response must match the path param; got {body['uuid']!r}"
+    )
+    assert body["uuid_sucursal"] == str(branch_uuid)
+    assert body["estado"] == "activo"
+    assert body["vigente_hasta"] is None, (
+        f"open version (current_uuid) must have vigente_hasta=NULL; "
+        f"got {body['vigente_hasta']!r}"
+    )
+    assert isinstance(body["vigente_desde"], str) and body["vigente_desde"]
+    # valor + valor_plena son NUMERIC(18,4) → serializan como string
+    # JSON para preservar precision (decisión de producto, ver PR-9).
+    assert "valor" in body and isinstance(body["valor"], str)
+    assert "valor_plena" in body and isinstance(body["valor_plena"], str)
+    assert "created_at" in body
+
+
+async def test_get_by_uuid_uuid_inexistente_devuelve_404(
+    pg_engine, alembic_upgrade, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """``GET /api/v1/empresa/tarifas-sucursal/{uuid}`` con uuid que no
+    existe en ``prod.tarifas_sucursal`` debe retornar 404 con el
+    detail ``{"error": "tarifa_no_encontrada", "uuid": "..."}``. El FE
+    usa ese 404 como trigger de fallback en ``useTarifaByUuid``.
+    """
+    await _truncate_tarifas(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _seed_usuario(pg_engine, actor_uuid)
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    token = mint_operador_jwt(actor_uuid=actor_uuid, sucursal_uuid=branch_uuid)
+
+    nonexistent_uuid = uuid_lib.uuid4()
+
+    resp = await client.get(
+        f"/api/v1/empresa/tarifas-sucursal/{nonexistent_uuid}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Sucursal-Context": str(branch_uuid),
+        },
+    )
+
+    assert resp.status_code == 404, (
+        f"GET by uuid with nonexistent row must return 404; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    detail = body.get("detail", {})
+    assert detail.get("error") == "tarifa_no_encontrada", (
+        f"detail.error must be 'tarifa_no_encontrada'; got {detail!r}"
+    )
+    assert detail.get("uuid") == str(nonexistent_uuid)
+
+
 __all__ = [
+    "test_get_by_uuid_devuelve_detalle_completo",
+    "test_get_by_uuid_uuid_inexistente_devuelve_404",
     "test_list_con_fecha_fuera_de_toda_ventana_devuelve_lista_vacia",
     "test_list_con_fecha_futura_sobre_tarifa_programada",
     "test_list_con_fecha_pasada_devuelve_tarifa_de_ese_momento",
