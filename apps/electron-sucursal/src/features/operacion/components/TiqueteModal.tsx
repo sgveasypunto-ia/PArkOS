@@ -89,6 +89,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { formatFechaHoraCorta } from '../../caja/lib/format';
 import {
   Dialog,
   DialogContent,
@@ -310,13 +311,7 @@ export function TiqueteModal({
               <span className="font-semibold">
                 {t('tiquete_entrada_preview_fecha', { defaultValue: 'Fecha:' })}
               </span>{' '}
-              {new Date().toLocaleString('es-CO', {
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
+              {formatFechaHoraCorta(new Date().toISOString())}
             </div>
             <div>
               <span className="font-semibold">

@@ -35,7 +35,7 @@ import { AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
-import { formatCOP } from '../../caja/lib/format';
+import { formatCOP, formatFechaHoraCorta } from '../../caja/lib/format';
 import type { Cotizacion } from '../hooks/useCotizacion';
 import { useTarifaByUuid } from '../../catalogos/hooks/useTarifaByUuid';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
@@ -206,8 +206,8 @@ function CotizacionPanelImpl({
               <span>
                     {formatCOP(tarifa.valor)}/min · Plena: {formatCOP(tarifa.valor_plena)} ·{' '}
                     {tarifa.estado === 'activo' ? 'Vigente' : `Estado: ${tarifa.estado}`} desde{' '}
-                    {tarifa.vigente_desde}
-                    {tarifa.vigente_hasta ? ` hasta ${tarifa.vigente_hasta}` : ''}
+                    {formatFechaHoraCorta(tarifa.vigente_desde)}
+                    {tarifa.vigente_hasta ? ` hasta ${formatFechaHoraCorta(tarifa.vigente_hasta)}` : ''}
                   </span>
             ) : (
               // Fallback: si el lookup falla (404, 5xx, o SWR sin
@@ -218,7 +218,7 @@ function CotizacionPanelImpl({
             )}
           </dd>
           <dt>Cotización vigente hasta</dt>
-          <dd>{data.vigente_hasta}</dd>
+          <dd>{formatFechaHoraCorta(data.vigente_hasta)}</dd>
         </dl>
 
         <div

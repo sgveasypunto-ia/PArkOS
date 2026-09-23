@@ -38,6 +38,7 @@ import {
 } from '@/components/ui/form';
 
 import type { ArqueoResumenPorSesion } from '../hooks/useArqueoResumenPorSesion';
+import { formatFechaHoraCorta } from '../lib/format';
 
 /**
  * Public shape that the `<CierreDiario />` page passes to the form.
@@ -203,7 +204,7 @@ export function CierreDiarioForm(props: {
                     </td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">
                       {s.timestamp_apertura
-                        ? new Date(s.timestamp_apertura).toLocaleString('es-CO')
+                        ? formatFechaHoraCorta(s.timestamp_apertura)
                         : '—'}
                     </td>
                     <td className="px-3 py-2 text-right">
