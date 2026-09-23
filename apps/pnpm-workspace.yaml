@@ -2,3 +2,6 @@ packages:
   - 'ui-kit'
   - 'web_admin'
   - 'electron-sucursal'
+allowBuilds:
+  electron: true
+  esbuild: true
