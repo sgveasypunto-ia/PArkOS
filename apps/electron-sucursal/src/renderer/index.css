@@ -4,56 +4,54 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    /* REGRESSION fix (2026-09-22): --popover and --popover-foreground were
-       missing from the theme. Without them, Tailwind's ``bg-popover`` /
-       ``text-popover-foreground`` utilities resolve to ``hsl()`` (empty
-       var) which the browser falls back to ``transparent`` — rendering
-       the Select dropdown (and any other Popover-based component: Dialog,
-       Tooltip, DropdownMenu, HoverCard) invisible / transparent. Fix:
-       align with the canonical shadcn/ui default-theme tokens (same as
-       ``--card``) so popovers are visually consistent with cards. */
+    /* Surfaces — Apple-like, gris muy sutil */
+    --background: 0 0% 98%;             /* era 0 0% 100% → fondo gris muy suave #fafafa */
+    --foreground: 220 14% 11%;          /* era 222 84% 5% → gris Apple #1d1d1f */
+    --card: 0 0% 100%;                  /* era 0 0% 100% — sigue blanco */
+    --card-foreground: 220 14% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 47.4% 11.2%;
-    --radius: 0.5rem;
+    --popover-foreground: 220 14% 11%;
+    /* Primary — azul Apple #0071e3 */
+    --primary: 211 100% 50%;           /* era 222 47% 11% (gris oscuro) → azul Apple */
+    --primary-foreground: 0 0% 100%;
+    /* Secondary / muted */
+    --secondary: 220 14% 96%;           /* gris muy claro */
+    --secondary-foreground: 220 14% 11%;
+    --muted: 220 14% 96%;               /* era 210 40% 96% */
+    --muted-foreground: 220 9% 46%;     /* gris medio #737378 */
+    --accent: 220 14% 96%;
+    --accent-foreground: 220 14% 11%;
+    /* Destructive */
+    --destructive: 0 72% 51%;           /* rojo Apple #ff3b30 */
+    --destructive-foreground: 0 0% 100%;
+    /* Borders — mucho más sutiles */
+    --border: 220 13% 91%;              /* era 214 32% 91% → #e5e5e7 */
+    --input: 220 13% 91%;
+    --ring: 211 100% 50%;               /* azul Apple para focus ring */
+    /* Radius — más generoso */
+    --radius: 0.875rem;                 /* era 0.5rem → 14px */
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --background: 220 14% 8%;           /* #141416 */
+    --foreground: 0 0% 98%;
+    --card: 220 14% 11%;                /* #1c1c1e Apple */
+    --card-foreground: 0 0% 98%;
+    --popover: 220 14% 11%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 211 100% 60%;            /* azul Apple dark mode */
+    --primary-foreground: 220 14% 8%;
+    --secondary: 220 14% 16%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 220 14% 16%;
+    --muted-foreground: 220 9% 64%;
+    --accent: 220 14% 16%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 13% 22%;              /* gris oscuro sutil */
+    --input: 220 13% 22%;
+    --ring: 211 100% 60%;
   }
 }
 
@@ -65,5 +63,26 @@
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
     font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer utilities {
+  /* Apple-like multi-layer shadows */
+  .shadow-apple-sm {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.06);
+  }
+  .shadow-apple {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.06);
+  }
+  .shadow-apple-md {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.08);
+  }
+  .shadow-apple-lg {
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.06), 0 16px 40px rgba(0, 0, 0, 0.1);
+  }
+  /* Focus ring Apple (azul con halo) */
+  .focus-ring-apple:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 4px hsl(211 100% 50% / 0.25);
   }
 }
