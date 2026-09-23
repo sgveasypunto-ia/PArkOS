@@ -1,21 +1,30 @@
 /**
  * `<Dashboard />` — kiosk workspace (F3.3 + REQ-OPS-136/137/138/139).
  *
- * Layout (single screen, no scroll at 1080p height):
+ * **Layout 2026-09-22 (operador, reorganización visual):**
  *
  *   ┌────────────────────────────────────────────────────────────────────┐
- *   │ Header: operador + "Dentro: N" + F1-F6 chips + Cerrar sesión   │
+ *   │ Header: operador + F1-F6 chips + TurnoActivoToggle + Cerrar turno  │
  *   ├──────────┬───────────────────────────────────┬──────────────────┤
  *   │ Sidebar  │ Center:                           │ Sidebar:         │
- *   │ 200px    │  PLACA DEL VEHICULO               │  300px           │
- *   │          │  [giant ABC123 input]              │                  │
- *   │ 7 action │    placa hint (contextual)         │  AUTOS 5         │
- *   │ buttons  │                                   │  MOTOS 4         │
- *   │ → drawers│  Vehículos dentro                 │                  │
- *   │ + tooltips                                   │  VEHICULOS LIST  │
- *   │ (help +   │                                   │  COBROS PEND.    │
+ *   │ 240px    │  PLACA DEL VEHICULO               │  280px           │
+ *   │ (+33% vs │  [giant ABC123 input]              │                  │
+ *   │  versión │    placa hint (contextual)         │  Suscripciones  │
+ *   │  previa) │                                   │  por vencer     │
+ *   │ 7 action │  Vehículos dentro                 │  (top 5)         │
+ *   │ buttons  │   (con cobros pendientes          │                  │
+ *   │ → drawers│    inline si > 0)                  │                  │
+ *   │ + tooltips                                   │                  │
+ *   │ (help +   │                                   │                  │
  *   │  hotkey)  │                                   │                  │
- *   └──────────┴───────────────────────────────────┴──────────────────┘
+ *   ├──────────┴───────────────────────────────────┴──────────────────┤
+ *   │ Footer full-width: inventario per-tipo  +  KPI "X cupos libres"  │
+ *   └───────────────────────────────────────────────────────────────────┘
+ *
+ * El popover del `<TurnoActivoToggle />` (navbar) muestra el resumen
+ * del turno abierto: "Ingresos en mi turno" / "Salidas en mi turno"
+ * / "Cupos libres en la sucursal". Esos datos vienen de `useMiTurno`
+ * + `useOcupacion` (cache compartida con `<CuposLibresStrip />`).
  *
  * Hotkeys (F1-F6) open the matching side-panel drawer via the
  * `useDashboardDrawerStore` Zustand singleton (REQ-OPS-138 single-drawer
@@ -30,12 +39,22 @@
  * Sections previously listed in 2-col grid (REQ-OPS-136 PR-1..PR-6) are
  * now collapsed into:
  *   - Top header bar (operador + status + cerrar)
- *   - Left sidebar (5 navigation actions)
+ *   - Left sidebar (7 navigation actions)
  *   - Placa input hero (the operator's only primary action during the turn)
- *   - Right sidebar (live counts + active vehicles + pending cobros)
+ *   - Right sidebar (suscripciones por vencer)
+ *   - Footer full-width (inventario per-tipo + cupos libres agregados)
  *   - DrawerHost (single-drawer mounted for: IngresoSheet, SalidaSheet,
  *     PagoSheet, ReimprimirTiqueteSheet, ArqueoSheet, CierreDiarioDialog —
  *     triggered by sidebar, hotkey, OR the PlacaInputHero)
+ *
+ * **Cobros pendientes:** se renderizan inline en cada fila de
+ * `<VehiculosDentroList />` como una tercera columna a la derecha del
+ * identificador del vehículo. La columna sólo aparece si el wire trae
+ * `cobros_pendientes > 0` para esa fila. Hoy el endpoint
+ * `GET /api/v1/operacion/ingresos` NO devuelve ese campo — la columna
+ * queda invisible por default, que matchea exactamente la directiva
+ * del operador ("si no hay no deben aparecer"). Cuando se wire-ee el
+ * endpoint, queda en follow-up (1 línea: agregar al response shape).
  */
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -54,8 +73,7 @@ import { ParkosHttpError, parkosFetch } from '@parkos/ui-kit/fetch';
 import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
-import { MiTurnoPanel } from '../../operacion/components/MiTurnoPanel';
-import { OcupacionPanel } from '../components/OcupacionPanel';
+import { CuposLibresStrip } from '../../operacion/components/CuposLibresStrip';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
 import { SuscripcionesPanel } from '../../suscripciones/components/SuscripcionesPanel';
 import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
@@ -63,7 +81,7 @@ import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
 import { getIngresosByPlaca } from '../../operacion/api/ingresoActivoApi';
 import { useSuscripcionesProximasVencer } from '../../suscripciones/hooks/useSuscripcionesProximasVencer';
-import { formatHoraCorta } from '../lib/format';
+import { formatCOP, formatHoraCorta } from '../lib/format';
 import {
   Card,
   CardContent,
@@ -189,7 +207,7 @@ export function Dashboard(): JSX.Element | null {
 
     return (
       <div
-        className="grid min-h-[calc(100vh-2.5rem)] w-full grid-rows-[auto_1fr] grid-cols-1 lg:grid-cols-[180px_1fr_280px]"
+        className="grid min-h-[calc(100vh-2.5rem)] w-full grid-rows-[auto_1fr_auto] grid-cols-1 lg:grid-cols-[240px_1fr_280px]"
         data-testid="dashboard-hub"
       >
         {/* ── Top header bar (mobile-first: minimum on mobile, full on lg+) ── */}
@@ -557,60 +575,19 @@ export function Dashboard(): JSX.Element | null {
           </div>
         </main>
 
-        {/* ── Right sidebar: counts + lists (responsive) ──────────────────── */}
-        {/*
-          - lg+ (>= 1024px): fixed right sidebar in the grid (col 3).
-          - < lg: stacked at the bottom of the page (below the main column).
-          - < md: each card spans full width; md+: 2-col grid for the lists.
+        {/* ── Right sidebar: solo suscripciones por vencer (operador 2026-09-22) ──
+            Reorganización visual: el `<MiTurnoPanel />` (ingresos / salidas /
+            cupos libres del turno) se mudó al popover del navbar toggle
+            (`<TurnoActivoToggle />`). El `<OcupacionPanel />` (inventario per-
+            tipo) y el badge de cupos libres agregados se mudaron al footer
+            full-width `<CuposLibresStrip />`. Los cobros pendientes se
+            renderizan inline en cada fila de `<VehiculosDentroList />`
+            cuando `cobros_pendientes > 0` (oculto si 0 / sin dato).
         */}
         <aside
           aria-label={t('caja:dashboard.rightLabel', { defaultValue: 'Estado en vivo' })}
           className="col-span-1 mt-3 grid gap-3 px-3 pb-4 lg:row-start-2 lg:col-start-3 lg:mt-0 lg:border-l lg:border-border/40 lg:bg-card/30 lg:px-4 lg:pb-4"
         >
-          {/*
-            HU-F12.1 (REQ-OPS-187) — per-turn widget mounted ABOVE
-            <OcupacionPanel /> (the Inventario card below). The panel
-            polls `/operacion/mi-turno?uuid_sesion=X` every 15s via SWR
-            and renders a vertical LIST with 3 rows (ingresos en mi
-            turno / salidas en mi turno / cupos libres en la sucursal)
-            — directiva 2026-09-22: NO dinero (totalCobrado/efectivo/
-            datafono), diseño tipo lista, no KPI cards en grid.
-            `uuid_sucursal` se pasa para que el panel agregue los
-            cupos libres via `useOcupacion` (sum de `disponible`).
-            Zero-state (no sesion / loading) renderiza 0s sin skeleton.
-          */}
-          <MiTurnoPanel
-            uuid_sesion={sesion?.uuid ?? null}
-            uuid_sucursal={uuid_sucursal}
-          />
-
-          {/* Inventario: per-tipo occupancy (admin-configured cupos only). */}
-          <Card data-testid="inventario-card">
-            <CardHeader className="px-5 pt-4 pb-3">
-              <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
-                {t('caja:dashboard.inventario', { defaultValue: 'Inventario' })}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1 px-3 pb-4">
-              <OcupacionPanel uuid_sucursal={uuid_sucursal} />
-            </CardContent>
-          </Card>
-
-          <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-1">
-            <Card data-testid="cobros-list-card" className="overflow-hidden">
-              <CardHeader className="px-5 pt-4 pb-3">
-                <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
-                  {t('caja:dashboard.cobrosPendientes', { defaultValue: 'Cobros pendientes' })}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-1 overflow-y-auto px-3 pb-4 text-sm">
-                <p className="text-muted-foreground/70 text-sm" data-testid="cobros-empty">
-                  {t('caja:dashboard.sinCobros', { defaultValue: 'Sin cobros pendientes.' })}
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-
           {/*
             HU-F9.2 panel "Suscripciones por vencer" (REQ-OPS-183).
             Muestra el TOTAL (`totalVencer`) y los primeros 5 items
@@ -654,6 +631,9 @@ export function Dashboard(): JSX.Element | null {
             </CardContent>
           </Card>
         </aside>
+
+        {/* ── Footer full-width (operador 2026-09-22): inventario per-tipo + cupos libres agregados ── */}
+        <CuposLibresStrip uuid_sucursal={uuid_sucursal} />
 
         {/* ── DrawerHost mounts the SINGLE active drawer (REQ-OPS-138) ─── */}
         <DrawerHost />
@@ -864,6 +844,25 @@ interface IngresoActivo {
   created_at: string;
   uuid_tipo_vehiculo: string;
   uuid_sucursal: string;
+  /**
+   * **Operador 2026-09-22, reorganización visual:** cobros pendientes
+   * del ingreso activo. Monto en COP que aún no fue pagado
+   * (servicios adicionales, lavada, saldo a favor, etc).
+   *
+   * Render contract (ver `<VehiculosDentroList />`):
+   *   - `null` (o ausente en el wire): la fila NO muestra la columna
+   *     de cobros pendientes. Coincide con la directiva del operador:
+   *     "si no hay no deben aparecer".
+   *   - `0`: tampoco se muestra (el operador pidió "cuando sean > 0").
+   *   - `> 0`: la columna aparece a la derecha con el monto formateado.
+   *
+   * Estado actual del endpoint `GET /api/v1/operacion/ingresos`:
+   * el campo NO se serializa todavía — la columna queda invisible por
+   * default. Follow-up (1 línea) cuando se wire-ee el endpoint: agregar
+   * `cobros_pendientes` al `IngresoRead` (probablemente via JOIN con
+   * `prod.factura` cuando exista la fila pendiente de pago).
+   */
+  cobros_pendientes?: number | null;
 }
 
 /**
@@ -942,6 +941,16 @@ function VehiculosDentroList({
           // Hora del ingreso: canon backend `fecha_ingreso`, con fallback a
           // `created_at` para filas viejas donde la columna quedó null.
           const horaIso = it.fecha_ingreso ?? it.created_at;
+          // Cobros pendientes: la columna inline a la derecha SOLO si
+          // el wire trae un valor > 0. Operador 2026-09-22: "los cobros
+          // pendientes solo apareceran en el lado derecho de la tabla de
+          // vehiculos dentro cuando sean > 0 si no hay no deben aparecer".
+          // `?? null` cubre tanto `undefined` (campo ausente) como `null`
+          // explícito del backend.
+          const cobrosPendientes =
+            typeof it.cobros_pendientes === 'number' && it.cobros_pendientes > 0
+              ? it.cobros_pendientes
+              : null;
           return (
             <li
               key={it.uuid}
@@ -951,9 +960,22 @@ function VehiculosDentroList({
               <span className="font-mono text-sm font-medium uppercase tracking-wide" title={it.uuid}>
                 {idVisible}
               </span>
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {formatHoraCorta(horaIso)}
-              </span>
+              <div className="flex items-baseline gap-3">
+                {cobrosPendientes !== null && (
+                  <span
+                    data-testid={`vehiculos-item-cobros-${it.uuid}`}
+                    className="text-xs font-medium text-amber-700 dark:text-amber-300 tabular-nums"
+                    title={t('caja:dashboard.cobrosPendientesTitle', {
+                      defaultValue: 'Cobros pendientes',
+                    })}
+                  >
+                    {formatCOP(cobrosPendientes)}
+                  </span>
+                )}
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {formatHoraCorta(horaIso)}
+                </span>
+              </div>
             </li>
           );
         })}
@@ -1048,18 +1070,5 @@ function VehiculosDentroList({
         </div>
       </div>
     </div>
-  );
-}
-
-function CobrosPendientesList({
-  uuid_sucursal: _uuid_sucursal,
-}: {
-  uuid_sucursal: string | null;
-}): JSX.Element {
-  const { t } = useTranslation('caja');
-  return (
-    <p className="text-muted-foreground/70 text-sm" data-testid="cobros-empty">
-      {t('caja:dashboard.sinCobros', { defaultValue: 'Sin cobros pendientes.' })}
-    </p>
   );
 }

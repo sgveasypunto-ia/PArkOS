@@ -65,6 +65,14 @@ vi.mock('../../components/TurnoActivoPanel', () => ({
 vi.mock('../../components/OcupacionPanel', () => ({
   OcupacionPanel: () => <div data-testid="ocupacion-panel-stub" />,
 }));
+vi.mock('../../../operacion/components/CuposLibresStrip', () => ({
+  // 2026-09-22: reorganización visual — el `<CuposLibresStrip />` (footer
+  // full-width con inventario per-tipo + cupos libres agregados) se mockea
+  // acá para preservar el contrato de ZERO-fetch del cold-mount. En
+  // producción SWR deduping (5s window) hace que el `useOcupacion` del
+  // strip comparta cache con el del `<OcupacionPanel />` mockeado arriba.
+  CuposLibresStrip: () => <div data-testid="cupos-libres-strip-stub" />,
+}));
 vi.mock('../../../operacion/components/IngresoPanel', () => ({
   IngresoPanel: () => <div data-testid="ingreso-panel-stub" />,
 }));
