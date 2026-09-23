@@ -8,12 +8,25 @@
  *   - When active, renders a compact chip + clickable toggle. Default state
  *     collapsed: shows `uuid corto + valores iniciales` + chevron.
  *   - On click, expands to show the FULL detail block previously held by
- *     `<TurnoActivoPanel />` (uuid, valores, apertura, observaciones).
+ *     `<TurnoActivoPanel />` (uuid, valores, apertura, observaciones)
+ *     PLUS el resumen del turno abierto (operador 2026-09-22,
+ *     reorganización visual del dashboard): 3 KPIs en línea —
+ *     "Ingresos en mi turno" / "Salidas en mi turno" / "Cupos libres
+ *     en la sucursal". Esos datos vienen de `useMiTurno(sesion.uuid)`
+ *     y `useOcupacion(sesion.uuid_sucursal)` con cache compartida
+ *     vía SWR deduping (mismo key que el `MiTurnoPanel` viejo
+ *     consumía).
  *
  * Replaces the deprecated `<TurnoActivoPanel />` big card that lived in the
  * center column. The user wants the close-turn button ONLY in the navbar
  * (`<Dashboard />` header) and a toggle for details. Per their feedback
  * on 2026-09-17.
+ *
+ * **Histórico 2026-09-22:** las 3 filas del resumen del turno antes
+ * vivían en el `<MiTurnoPanel />` del right-sidebar. Operador pidió
+ * reubicarlas en este popover (donde el operador ya mira cuando quiere
+ * ver detalles del turno). El componente sigue exportado y testeado
+ * aislado — solo cambia quién lo usa en el Dashboard.
  *
  * Accessibility:
  *   - `<button aria-expanded="false" aria-controls="...">` (Disclosure WAI-ARIA).
@@ -24,8 +37,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { Button } from '@/components/ui/button';
-
+import { useMiTurno } from '../../operacion/hooks/useMiTurno';
+import { useOcupacion } from '../../operacion/hooks/useOcupacion';
 import type { SesionRead } from '../api/sesionActivaApi';
 import { formatCOP, formatTiempoTranscurrido } from '../lib/format';
 
@@ -34,9 +47,28 @@ export function TurnoActivoToggle({
 }: {
   sesion: SesionRead | null;
 }): JSX.Element | null {
-  const { t } = useTranslation('caja');
+  const { t } = useTranslation(['caja', 'operacion']);
   const [expanded, setExpanded] = useState(false);
   const detailsRef = useRef<HTMLDivElement>(null);
+
+  // Resumen del turno (operador 2026-09-22, directiva de reorganización
+  // visual): antes vivía en `<MiTurnoPanel />` (right-sidebar). El
+  // operador pidió moverlo al popover del navbar. Mismas fuentes de
+  // datos (`useMiTurno` + `useOcupacion`), mismas reglas de zero-state
+  // (sin sesion / sin branch → emdash, nunca inventar 0). SWR
+  // deduping (5s) hace que el consumo aquí NO genere requests extra
+  // si el `<MiTurnoPanel />` sigue montado en otra ruta.
+  const uuidSesion = sesion?.uuid ?? null;
+  const uuidSucursal = sesion?.uuid_sucursal ?? null;
+  const { data: miTurnoData } = useMiTurno(uuidSesion);
+  const { data: ocupacionData } = useOcupacion(uuidSucursal);
+
+  const ingresosTurno = miTurnoData.ingresos_count;
+  const salidasTurno = miTurnoData.salidas_count;
+  const cuposLibres =
+    ocupacionData?.items
+      .filter((it) => it.cupo_maximo > 0)
+      .reduce((acc, it) => acc + it.disponible, 0) ?? null;
 
   // Collapse on Esc
   useEffect(() => {
@@ -102,11 +134,103 @@ export function TurnoActivoToggle({
             defaultValue: 'Detalles del turno',
           })}
           data-testid="turno-activo-toggle-details"
-          className="absolute right-0 top-full z-30 mt-2 w-72 rounded-2xl border border-border/40 bg-popover p-4 text-sm shadow-apple-md"
+          className="absolute right-0 top-full z-30 mt-2 w-80 rounded-2xl border border-border/40 bg-popover p-4 text-sm shadow-apple-md"
         >
           <SesionDetails sesion={sesion} />
+          <ResumenTurno
+            ingresosTurno={ingresosTurno}
+            salidasTurno={salidasTurno}
+            cuposLibres={cuposLibres}
+          />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * `<ResumenTurno />` — bloque interno del popover del navbar
+ * (directiva operador 2026-09-22, reorganización visual del dashboard).
+ *
+ * Renderiza 3 KPIs en línea:
+ *   1. Ingresos en mi turno (count, del MiTurnoRead)
+ *   2. Salidas en mi turno (count, del MiTurnoRead)
+ *   3. Cupos libres en la sucursal (sum de OcupacionItem.disponible,
+ *      sólo items con cupo_maximo > 0)
+ *
+ * Cero-state: cuando el hook no popula, `useMiTurno` ya retorna
+ * zero-payload (DA-F12.1-4) → los counts son `0`. `cuposLibres` puede
+ * ser `null` (load-state) → emdash. Esto matchea exactamente la UX
+ * del `<MiTurnoPanel />` que vivía antes en el right-sidebar.
+ */
+function ResumenTurno({
+  ingresosTurno,
+  salidasTurno,
+  cuposLibres,
+}: {
+  ingresosTurno: number;
+  salidasTurno: number;
+  cuposLibres: number | null;
+}): JSX.Element {
+  const { t } = useTranslation(['caja', 'operacion']);
+  return (
+    <div
+      data-testid="turno-activo-resumen"
+      className="mt-3 border-t border-border/40 pt-3"
+    >
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+        {t('caja:dashboard.turnoActivoResumenTitulo', {
+          defaultValue: 'Resumen del turno',
+        })}
+      </p>
+      <ul
+        role="list"
+        className="divide-y divide-border/40 text-sm"
+        data-testid="turno-activo-resumen-list"
+      >
+        <li
+          data-testid="turno-activo-resumen-row-ingresos"
+          className="flex items-center justify-between py-1.5"
+        >
+          <span className="text-muted-foreground/90 text-sm">
+            {t('operacion:miTurno.kpis.ingresos', {
+              defaultValue: 'Ingresos en mi turno',
+            })}
+          </span>
+          <span className="font-mono text-base font-semibold tabular-nums tracking-tight">
+            {ingresosTurno}
+          </span>
+        </li>
+        <li
+          data-testid="turno-activo-resumen-row-salidas"
+          className="flex items-center justify-between py-1.5"
+        >
+          <span className="text-muted-foreground/90 text-sm">
+            {t('operacion:miTurno.kpis.salidas', {
+              defaultValue: 'Salidas en mi turno',
+            })}
+          </span>
+          <span className="font-mono text-base font-semibold tabular-nums tracking-tight">
+            {salidasTurno}
+          </span>
+        </li>
+        <li
+          data-testid="turno-activo-resumen-row-cupos-libres"
+          className="flex items-center justify-between py-1.5"
+        >
+          <span className="text-muted-foreground/90 text-sm">
+            {t('operacion:miTurno.kpis.cuposLibres', {
+              defaultValue: 'Cupos libres en la sucursal',
+            })}
+          </span>
+          <span
+            data-testid="turno-activo-resumen-cupos-libres-value"
+            className="font-mono text-base font-semibold tabular-nums tracking-tight"
+          >
+            {cuposLibres ?? '—'}
+          </span>
+        </li>
+      </ul>
     </div>
   );
 }
