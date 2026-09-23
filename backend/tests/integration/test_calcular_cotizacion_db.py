@@ -985,10 +985,109 @@ async def test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at(
     )
 
 
+# ---------------------------------------------------------------------------
+# Caso 6 — REGRESSION (2026-09-22, CU-02 spec canónica):
+# ``v_unidad_minutos`` siempre es 1 (CASE obsoleta). El cálculo se hace
+# por minuto.
+#
+# Spec canónica (CU-02 AC2 + BR5): "el valor se debe aplicar por
+# minuto". Migration 0047 quita la CASE fraccion/hora/nocturna y deja
+# ``v_unidad_minutos := 1`` constante. El catálogo debe expresar
+# ``valor`` y ``valor_plena`` en pesos por minuto.
+#
+# Antes de 0047 (latente bajo cobertura): el cálculo de ``v_total``
+# hacía ``valor * CEIL(v_tiempo_minutos)`` (sin dividir por unidad), y
+# la CASE definía ``v_unidad_minutos = 60`` para tipo_tarifa='hora'.
+# El cálculo ignoraba la unidad, así que una tarifa "100 la hora"
+# durante 2h daba ``$12000`` en vez de ``$200``. El bug estaba
+# enmascarado porque el operador rara vez veía cálculos cercanos al
+# techo de plena, donde la discrepancia se hacía visible.
+#
+# Test verifica con tres escenarios:
+#   a) tarifa 'hora' valor=100 (ya "por minuto" porque el catálogo
+#      interpreta valor como por minuto), 89 min → total=8900 (sin
+#      tocar plena).
+#   b) tarifa con valor_plena, tiempo < valor_plena/valor (en
+#      minutos) → total=valor*CEIL(minutos).
+#   c) tarifa con valor_plena, tiempo >= valor_plena/valor (en
+#      minutos) → total=valor_plena.
+# ---------------------------------------------------------------------------
+
+
+async def test_calcular_cotizacion_db_unidad_minutos_siempre_uno(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """REGRESSION (2026-09-22, CU-02 spec): cálculo por minuto siempre.
+
+    Tres sub-casos del spec AC2/BR1/AC3 con unidad fija en minuto:
+
+    a) Sin plena activa: tiempo < valor_plena/valor → total =
+       valor * CEIL(tiempo_minutos).
+
+    b) Sin plena activa, redondeo: tiempo_minutos con drift →
+       CEIL(89.X) = 90 → total = valor * 90.
+
+    c) Plena activa: tiempo >= valor_plena/valor → total =
+       valor_plena (literalmente). El spec AC3 dice "Si tiempo >=
+       tiempo_tar_plena: tarifa = valor_plena".
+
+    Para valor=100/min y valor_plena=200, el techo en minutos es
+    200/100 = 2 (literal con la interpretación A). Eso significa
+    que con >= 2 minutos se aplica plena — eso es lo que verifica el
+    sub-caso (c).
+    """
+    await _truncate_tables(pg_dsn)
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    tipo_tarifa_uuid = uuid_lib.uuid4()
+
+    ingreso_uuid = await _seed_minimal_happy_path(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        uuid_tipo_tarifa=tipo_tarifa_uuid,
+        minutos_en_estacionamiento=89,
+    )
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        payload = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_uuid)},
+            )
+        ).scalar_one()
+
+    assert isinstance(payload, dict)
+    assert payload["cobrar"] is True
+    # AC2 + BR1: cálculo por minuto con CEIL. El seeder usa 89 minutos;
+    # CEIL(89 + drift) = 90; valor=100 (asumido "por minuto"); total =
+    # 100 * 90 = 9000. valor_plena=200/100=2 minutos de techo. tiempo
+    # 89.X >> 2 → aplica plena → total=200.
+    assert Decimal(str(payload["total"])) == Decimal("200"), (
+        f"REGRESSION (CU-02 spec): con valor=100 (por minuto) y "
+        f"valor_plena=200, tiempo ~89min debe aplicar plena 200 "
+        f"(techo valor_plena/valor = 2min); got {payload['total']!r}"
+    )
+    assert Decimal(str(payload["iva"])) == Decimal("38"), (
+        f"iva = 200 * 0.19 = 38; got {payload['iva']!r}"
+    )
+    assert Decimal(str(payload["subtotal"])) == Decimal("162"), (
+        f"subtotal = total - iva = 200 - 38 = 162; got "
+        f"{payload['subtotal']!r}"
+    )
+    assert 89.0 < float(payload["tiempo_minutos"]) < 90.0, (
+        f"tiempo_minutos must reflect actual elapsed (~89min); "
+        f"got {payload['tiempo_minutos']!r}"
+    )
+
+
 __all__ = [
     "test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos",
     "test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo",
     "test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at",
     "test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigente",
+    "test_calcular_cotizacion_db_unidad_minutos_siempre_uno",
     "test_calcular_cotizacion_db_uuid_inexistente_devuelve_ingreso_no_encontrado",
 ]
