@@ -47,14 +47,28 @@ export interface SalidaFlowProps {
   error: Error | null | undefined;
   /** Parent wires to SWR `mutate()` for manual re-fetch. */
   onRecalcular: () => void;
-  /** Anchor ID used by `useDashboardDrawerStore.open('pago', anchorId)`. */
+  /**
+   * Anchor ID used by `useDashboardDrawerStore.open('pago', anchorId)`.
+   * Only consulted by the default fallback path (when `onPagoOpen` is
+   * not provided). When `onPagoOpen` IS provided, the callback owns
+   * the full drawer-open contract — including the typed `pagoContext`
+   * payload — so the parent can pass the live `uuid_ingreso` and
+   * `total_cop` from its cotizacion snapshot.
+   */
   pagoAnchorId: string;
   /**
-   * Optional override for the post-201 path. Defaults to
-   * `useDashboardDrawerStore.open('pago', pagoAnchorId)`. SalidaPanel
-   * passes nothing; tests use this to spy on the routing call.
+   * Optional override for the post-201 ROTACION path. The callback
+   * owns the full drawer-open contract (including `pagoContext`
+   * payload) so the parent can pass a typed `uuid_ingreso` +
+   * `total_cop` from its cotizacion snapshot. Defaults to
+   * `useDashboardDrawerStore.open('pago', pagoAnchorId)` with NO
+   * `pagoContext` — that fallback is only safe for tests that spy
+   * on the routing call, NOT for production: opening the `pago`
+   * drawer without `pagoContext` leaves `<PagoSheet>` with
+   * `uuid_ingreso=null` (button disabled) and `total_cop=0`
+   * (vueltos computation broken). HU-F8.1 regression.
    */
-  onPagoOpen?: (pagoAnchorId: string) => void;
+  onPagoOpen?: () => void;
 }
 
 /**
@@ -97,8 +111,15 @@ export function SalidaFlow({
         uuid_sesion: sesion?.uuid ?? null,
       });
       if (result.tipo_salida === 'ROTACION') {
+        // HU-F8.1 regression fix: when the parent provides
+        // `onPagoOpen`, defer the drawer-open contract to it so the
+        // caller can pass the typed `pagoContext` (uuid_ingreso +
+        // total_cop). The fallback path opens the drawer with NO
+        // context — kept only for backwards compatibility with tests
+        // that spy on the open call; production wiring MUST pass
+        // `onPagoOpen` to keep `<PagoSheet>` functional.
         if (onPagoOpen) {
-          onPagoOpen(pagoAnchorId);
+          onPagoOpen();
         } else {
           openDrawer('pago', pagoAnchorId);
         }

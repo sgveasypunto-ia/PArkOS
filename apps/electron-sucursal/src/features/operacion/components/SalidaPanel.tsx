@@ -321,6 +321,16 @@ export function SalidaPanel({
               secondsLeft={secondsLeft}
               error={cotError}
               pagoAnchorId={pagoAnchorId}
+              // HU-F8.1 regression fix: SalidaPanel owns the typed
+              // `pagoContext` (uuid_ingreso + total_cop from the
+              // cotizacion snapshot the operator just approved) and
+              // hands it to the drawer store via `handleOpenPago`.
+              // Without this, SalidaFlow falls back to opening the
+              // `pago` drawer with NO context, which leaves
+              // `<PagoSheet>` with `uuid_ingreso=null` (Confirm button
+              // disabled) and `total_cop=0` (vueltos computation
+              // broken). Production wiring MUST pass `onPagoOpen`.
+              onPagoOpen={handleOpenPago}
               onRecalcular={() => {
                 void refresh();
               }}

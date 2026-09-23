@@ -27,7 +27,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: { defaultValue?: string }) =>
+      options?.defaultValue ?? key,
+  }),
 }));
 
 import { PagoModal, type PagoModalProps } from './PagoModal';
@@ -136,5 +139,42 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
       expect(arg.monto_recibido_cop).toBe(41000);
     }
     expect(arg.nombre_cliente).toBeDefined();
+  });
+
+  it('M6 (fix HU-F8.1-monto-insuficiente): efectivo + monto_recibido < total → submit blocked, onSubmit NOT called, vueltos "—"', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} total_cop={41000} />);
+
+    // Type a monto_recibido inferior al total.
+    const montoInput = screen.getByTestId('pago-monto-recibido');
+    act(() => {
+      fireEvent.change(montoInput, { target: { value: '5000' } });
+    });
+
+    // Submit click — debe estar bloqueado por el handler de HU-F8.1.
+    const submitBtn = screen.getByTestId('pago-confirmar');
+    await act(async () => {
+      fireEvent.click(submitBtn);
+    });
+
+    // El onSubmit NO debe haberse llamado: el cliente bloquea el submit
+    // antes de tocar la red cuando monto_recibido_cop < total_cop.
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    // El vueltos debe mostrar "—" porque 5000 < 41000.
+    const vueltosEl = screen.getByTestId('pago-vueltos');
+    expect(vueltosEl.textContent).toBe('—');
+  });
+
+  it('M7 (fix HU-F8.1-copy): el label del toggle FE usa el copy obligatorio de la spec ("a nombre del cliente ... consumidor final")', () => {
+    render(<PagoModal {...DEFAULT_PROPS} />);
+    const feToggle = screen.getByTestId('pago-fe-toggle');
+    // El FormLabel padre (sibling del checkbox) debe contener el copy
+    // obligatorio de HU-F8.1 — "Factura a nombre del cliente (opcional);
+    // por defecto, factura a consumidor final" (nunca "FE opcional" a secas).
+    const label = feToggle.parentElement?.querySelector('label');
+    expect(label?.textContent).toMatch(/a nombre del cliente/i);
+    expect(label?.textContent).toMatch(/consumidor final/i);
+    expect(label?.textContent).toMatch(/opcional/i);
   });
 });
