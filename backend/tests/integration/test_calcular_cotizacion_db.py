@@ -854,9 +854,141 @@ async def test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigent
     )
 
 
+# ---------------------------------------------------------------------------
+# Caso 5 — REGRESSION (2026-09-22, directiva del operador):
+# ``fecha_ingreso IS NULL`` → COALESCE a ``created_at`` (migration 0046).
+#
+# Bug abierto #2009 (memoria Engram) documentaba que el INSERT path de
+# ``prod.ingreso`` no populaba ``fecha_ingreso`` — la columna es nullable
+# sin DEFAULT. El PL/pgSQL ``prod.calcular_cotizacion`` cascadeaba todos
+# los campos fiscales a NULL → Pydantic ValidationError 500 al operador
+# cuando intentaba cotizar la salida. Esta migration agrega defense in
+# depth con ``COALESCE(fecha_ingreso, created_at)`` para preservar el
+# cálculo con los registros históricos NULL; el PR companion arregla el
+# root cause en el INSERT path.
+#
+# El test reproduce el escenario bugueado creando un Ingreso con
+# ``fecha_ingreso=None`` y verifica que el payload jsonb sale con los 7
+# campos numéricos poblados (no None) y ``tiempo_minutos`` positivo.
+# ---------------------------------------------------------------------------
+
+
+async def test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """REGRESSION (2026-09-22): ``fecha_ingreso IS NULL`` must NOT cascade.
+
+    Antes de la migration 0046 el PL/pgSQL ``prod.calcular_cotizacion``
+    hacía ``NOW() - v_ingreso.fecha_ingreso`` directamente; cuando la
+    columna era NULL, ``EXTRACT(EPOCH FROM (NOW() - NULL))`` retornaba
+    NULL → todos los campos del jsonb salían NULL → Pydantic
+    ``ValidationError`` 500 al operador. El COALESCE con ``created_at``
+    preserva el cálculo semánticamente correcto (la diferencia entre
+    ambos timestamps en producción es de milisegundos — INSERT y row
+    creation ocurren en la misma transacción).
+
+    Contrato del fix:
+      - ``cobrar=True``
+      - ``subtotal``, ``iva``, ``total`` son ``Decimal`` numéricos no-NULL
+      - ``tiempo_minutos`` es float > 0 (refleja ``NOW() - created_at``)
+      - ``tarifa_uuid`` y ``vigente_hasta`` presentes
+
+    Si este test falla con un 500 / ValidationError, el COALESCE se
+    perdió en una migración posterior o el downgrade rompió la cascada.
+    """
+    await _truncate_tables(pg_dsn)
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    tipo_tarifa_uuid = uuid_lib.uuid4()
+
+    # Seed full happy path pero overrideamos el Ingreso para que
+    # ``fecha_ingreso=None`` (simula un INSERT bugueado pre-PR).
+    ingreso_uuid = await _seed_minimal_happy_path(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        uuid_tipo_tarifa=tipo_tarifa_uuid,
+        minutos_en_estacionamiento=89,
+    )
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        ingreso = await session.get(Ingreso, ingreso_uuid)
+        assert ingreso is not None
+        ingreso.fecha_ingreso = None  # simulate the historical bug
+        await session.commit()
+
+    async with Session() as session:
+        payload = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_uuid)},
+            )
+        ).scalar_one()
+
+    assert isinstance(payload, dict), (
+        f"calcular_cotizacion MUST return a jsonb dict; got {type(payload).__name__}"
+    )
+    assert payload["cobrar"] is True, (
+        f"rotation path with fecha_ingreso NULL MUST still cobrar=True "
+        f"(mensualidad short-circuit does not apply here); got "
+        f"{payload!r}"
+    )
+    expected_keys = {
+        "cobrar",
+        "subtotal",
+        "iva",
+        "total",
+        "tiempo_minutos",
+        "tarifa_uuid",
+        "vigente_hasta",
+    }
+    assert set(payload.keys()) == expected_keys, (
+        f"jsonb payload must carry exactly the 7 GAP-BE-09 fields even when "
+        f"fecha_ingreso was NULL pre-migration; got {sorted(payload.keys())}"
+    )
+    # All numeric fields must be non-NULL — this is the central regression:
+    # if any of these come back as None, the COALESCE fallback is broken.
+    assert payload["subtotal"] is not None, (
+        f"subtotal MUST be non-NULL (COALESCE fallback to created_at); "
+        f"got {payload['subtotal']!r}"
+    )
+    assert payload["iva"] is not None, (
+        f"iva MUST be non-NULL; got {payload['iva']!r}"
+    )
+    assert payload["total"] is not None, (
+        f"total MUST be non-NULL; got {payload['total']!r}"
+    )
+    assert payload["tiempo_minutos"] is not None, (
+        f"tiempo_minutos MUST be non-NULL (this was the trigger of the "
+        f"Pydantic ValidationError 500 — COALESCE fallback to created_at "
+        f"is broken); got {payload['tiempo_minutos']!r}"
+    )
+    # tiempo_minutos reflects ``NOW() - created_at`` (which was set ~89
+    # minutes ago by the happy-path seeder). Upper bound is loose: the
+    # seeder + commit overhead pushes it past 89; the COALESCE only
+    # protects against NULL, not against numeric magnitude drift.
+    assert float(payload["tiempo_minutos"]) > 89.0, (
+        f"tiempo_minutos must reflect NOW() - created_at > 89 minutes "
+        f"(seeder baseline); got {payload['tiempo_minutos']!r}"
+    )
+    # 4FN invariant: total = subtotal + iva. Asserted via Decimal math
+    # to avoid float drift noise (the Pydantic schema accepts int | float
+    # for tiempo_minutos but the monetary fields come as Decimal-coerced).
+    assert Decimal(str(payload["total"])) == (
+        Decimal(str(payload["subtotal"])) + Decimal(str(payload["iva"]))
+    ), (
+        f"4FN fiscal invariant: total = subtotal + iva; got total="
+        f"{payload['total']!r}, subtotal={payload['subtotal']!r}, "
+        f"iva={payload['iva']!r}"
+    )
+
+
 __all__ = [
     "test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos",
     "test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo",
+    "test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at",
     "test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigente",
     "test_calcular_cotizacion_db_uuid_inexistente_devuelve_ingreso_no_encontrado",
 ]
