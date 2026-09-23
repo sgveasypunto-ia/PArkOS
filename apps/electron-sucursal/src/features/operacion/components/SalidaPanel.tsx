@@ -45,7 +45,7 @@ import {
   buscarIngresoTolerante,
   type ToleranteResultado,
 } from '../../../lib/validation/placaTolerante';
-import { getIngresosByPlaca } from '../api/ingresoActivoApi';
+import { getIngresosByPlaca, getIngresoEstado } from '../api/ingresoActivoApi';
 import { SalidaFlow } from './SalidaFlow';
 import { SalidaMensualidad } from './SalidaMensualidad';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
@@ -83,6 +83,17 @@ export function SalidaPanel({
 
   const [placa, setPlaca] = useState<string | null>(null);
   const [tolerante, setTolerante] = useState<ToleranteResultado | null>(null);
+  /**
+   * REGRESSION fix (2026-09-22, directiva del operador): cuando el
+   * operador tipea una placa cuyo ingreso YA TIENE SALIDA registrada
+   * (TST999, etc), ``buscarIngresoTolerante`` matchea la fila cerrada
+   * y ``useCotizacion`` falla con 404 ``ingreso_no_encontrado``. Sin
+   * este state, el operador ve "No se pudo obtener la cotización" sin
+   * entender por qué. El nuevo state guarda el mensaje específico
+   * ("ya tiene salida") y NO setea ``resolvedUuid`` para que no se
+   * dispare el fetch fallido.
+   */
+  const [ingresoCerradoPlaca, setIngresoCerradoPlaca] = useState<string | null>(null);
   /**
    * REGRESSION fix (2026-09-22, directiva del operador): el
    * ``<SalidaSheet />`` padre pasa ``uuid_ingreso={null}`` siempre
@@ -157,6 +168,7 @@ export function SalidaPanel({
     setPlaca(values.placa);
     setTolerante(null);
     setResolvedUuid(null);
+    setIngresoCerradoPlaca(null);
     try {
       const resultado = await buscarIngresoTolerante(values.placa, getIngresosByPlaca);
       setTolerante(resultado);
@@ -166,6 +178,29 @@ export function SalidaPanel({
       // (``<SalidaSheet />``) pasa ``uuid_ingreso={null}`` siempre, así
       // que este state es la única fuente de verdad para la cotizacion.
       if (resultado.kind === 'found') {
+        // Defense in depth: si la placa matchea un ingreso que YA
+        // TIENE SALIDA registrada (caso típico: el operador tipea una
+        // placa que salió hace poco, o que se cerró en un test
+        // anterior), ``useCotizacion`` va a fallar con 404
+        // ``ingreso_no_encontrado`` y el operador verá "No se pudo
+        // obtener la cotización" sin entender por qué. Validamos el
+        // estado del ingreso ANTES de setear ``resolvedUuid``: si
+        // está cerrado, mostramos el mensaje específico y no
+        // disparamos el fetch. La validación es una llamada extra
+        // (``GET /ingresos/{uuid}/estado``) pero es barata (<50ms) y
+        // evita un round-trip fallido a ``/cotizar``.
+        try {
+          const estado = await getIngresoEstado(resultado.uuid_ingreso);
+          if (estado.estado === 'cerrado' || estado.estado === 'anulada') {
+            setIngresoCerradoPlaca(resultado.placaReal);
+            return;
+          }
+        } catch {
+          // Si el lookup de estado falla (4xx/5xx), seguimos con el
+          // flujo normal — el operador verá el error de
+          // ``/cotizar`` si el ingreso realmente no se puede cotizar.
+          // Mejor intentar que bloquear el flujo.
+        }
         setResolvedUuid(resultado.uuid_ingreso);
       }
     } catch {
@@ -220,10 +255,33 @@ export function SalidaPanel({
             )}
           />
           <Button type="submit" variant="outline" data-testid="salida-cotizar">
-            {t('operacion:cotizar', { defaultValue: 'Cotizar' })}
+            {t('operacion:cotizar_boton', { defaultValue: 'Cotizar' })}
           </Button>
         </form>
       </Form>
+
+      {ingresoCerradoPlaca && (
+        <Card data-testid="salida-ingreso-cerrado">
+          <CardHeader>
+            <CardTitle>
+              {t('operacion:ingreso_cerrado_titulo', {
+                defaultValue: 'Este ingreso ya tiene salida',
+              })}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              {t('operacion:ingreso_cerrado_descripcion', {
+                defaultValue:
+                  'La placa que tipeaste corresponde a un ingreso que ya registró salida. Si necesitas reimprimir el tiquete, usa la opción Reimprimir del menú.',
+              })}
+            </p>
+            <p className="mt-2 text-xs font-mono text-muted-foreground">
+              {ingresoCerradoPlaca}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {tolerante?.kind === 'multiple' && (
         <Card>
