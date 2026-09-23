@@ -52,6 +52,7 @@ import { SuscripcionesPanel } from '../../suscripciones/components/Suscripciones
 import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
 import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
+import { getIngresosByPlaca } from '../../operacion/api/ingresoActivoApi';
 import { useSuscripcionesProximasVencer } from '../../suscripciones/hooks/useSuscripcionesProximasVencer';
 import {
   Card,
@@ -659,6 +660,7 @@ function PlacaInputHero({
   // Controlled input so the typed plate can drive `useIngresoActivo`
   // and be passed to the drawer (REQ-OPS-136 smart routing).
   const [value, setValue] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const normalized = value.trim().toUpperCase().replace(/\s+/g, '');
   // Only probe for an active ingreso once the typed plate is at least
   // 5 chars and shaped like a vehicle plate — avoids spamming SWR for
@@ -671,40 +673,99 @@ function PlacaInputHero({
     setValue(e.target.value.toUpperCase().replace(/\s+/g, '').slice(0, 6));
   }
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
+  // REGRESSION fix (2026-09-22, directiva del operador): el smart
+  // routing dependía SOLO del SWR cache (`useIngresoActivo` →
+  // `latestIngreso`). El fetch SWR tarda ~50-200ms; cuando el operador
+  // tipea una placa existente y presiona Enter rápidamente, el fetch
+  // todavía no terminó → `latestIngreso` es `null` → abre
+  // incorrectamente el IngresoSheet para una placa que YA está dentro
+  // (debería abrir SalidaSheet). El bug bloquea el flujo de salida con
+  // cálculo de tiempo/valor que el operador pidió garantizar.
+  //
+  // Fix: en el handler de Enter, hacer un await directo contra
+  // ``getIngresosByPlaca(placa)`` — esa función es el mismo endpoint
+  // (``GET /api/v1/operacion/ingresos?placa=X``) que el SWR consume,
+  // pero awaited en línea. La decisión es ahora síncrona respecto al
+  // resultado del fetch, no respecto al estado del cache SWR. El
+  // SWR cache (``useIngresoActivo``) sigue alimentando el hint visual
+  // inline mientras el operador tipea (live, best-effort), pero NO
+  // es la fuente de verdad para la decisión.
+  async function onKeyDown(
+    e: React.KeyboardEvent<HTMLInputElement>,
+  ): Promise<void> {
     if (e.key !== 'Enter') return;
     const placa = value.trim();
     if (placa === '') return;
     e.preventDefault();
-    // Smart routing per plan.md §CU-02: if the plate already has an
-    // active ingreso in this branch → open the salida drawer;
-    // otherwise → open the ingreso drawer. Both sheets pre-fill the
-    // plate so the operator only has to press Enter / click once more.
-    if (latestIngreso) {
-      openDrawer('salida', 'placa-hero-input', placa);
-    } else {
-      openDrawer('ingreso', 'placa-hero-input', placa);
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      // Fetch directo bloqueante para que la decisión sea autoritativa
+      // (no race contra el SWR cache). Reutiliza el mismo endpoint que
+      // ``useIngresoActivo`` — solo cambia el modo (await inline vs
+      // SWR background poll).
+      const rows = await getIngresosByPlaca(placa);
+      if (rows.length > 0) {
+        // Smart routing per plan.md §CU-02: plate already has an active
+        // ingreso → open the salida drawer. ``SalidaSheet`` will mount
+        // inside the DrawerHost and ``SalidaPanel`` will fetch the
+        // cotizacion (tiempo + valor) via ``useCotizacion`` —
+        // guaranteed to work thanks to the migration 0046 COALESCE fix
+        // on the backend.
+        openDrawer('salida', 'placa-hero-input', placa);
+      } else {
+        // Smart routing per plan.md §CU-02: plate has NO active ingreso
+        // → open the ingreso drawer. ``IngresoSheet`` pre-fills the
+        // placa so the operator only has to click "Registrar".
+        openDrawer('ingreso', 'placa-hero-input', placa);
+      }
+      setValue('');
+    } finally {
+      setSubmitting(false);
     }
-    setValue('');
   }
 
   return (
-    <input
-      type="text"
-      autoFocus
-      data-testid="placa-hero-input"
-      id="placa-hero-input"
-      placeholder="ABC123"
-      value={value}
-      onChange={handleChange}
-      maxLength={6}
-      className="block w-full rounded border border-input bg-background px-4 py-3 text-center font-mono text-5xl uppercase tracking-[0.4em] outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
-      onKeyDown={onKeyDown}
-      aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
-      // uuid_sucursal is consumed by IngresoPanel inside the drawer; this
-      // hero input is the entry-point keyboard handler.
-      data-uuid-sucursal={_uuid_sucursal ?? ''}
-    />
+    <div className="space-y-1">
+      <input
+        type="text"
+        autoFocus
+        data-testid="placa-hero-input"
+        id="placa-hero-input"
+        placeholder="ABC123"
+        value={value}
+        onChange={handleChange}
+        maxLength={6}
+        disabled={submitting}
+        className="block w-full rounded border border-input bg-background px-4 py-3 text-center font-mono text-5xl uppercase tracking-[0.4em] outline-none ring-ring placeholder:text-muted-foreground focus:ring-2 disabled:opacity-60"
+        onKeyDown={onKeyDown}
+        aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
+        // uuid_sucursal is consumed by IngresoPanel inside the drawer; this
+        // hero input is the entry-point keyboard handler.
+        data-uuid-sucursal={_uuid_sucursal ?? ''}
+      />
+      {/* REGRESSION fix (2026-09-22): inline visual hint when the typed
+          plate already has an active ingreso. The SWR-fed
+          ``latestIngreso`` is best-effort (it can lag the operator's
+          keystrokes) — the actual decision on Enter uses a direct
+          fetch — but the hint helps the operator confirm "yes, this
+          plate is already inside" before pressing Enter. Without this
+          hint the operator might press Enter expecting "ingreso" and
+          be surprised when SalidaSheet opens instead. The hint is
+          intentionally subtle (text-muted-foreground) — primary
+          feedback comes from the drawer mount itself. */}
+      {latestIngreso && (
+        <p
+          data-testid="placa-hero-active-hint"
+          className="text-center text-xs text-muted-foreground"
+          role="status"
+        >
+          {t('caja:dashboard.placaActiveHint', {
+            defaultValue: 'Esta placa ya está dentro — presioná Enter para cobrar la salida.',
+          })}
+        </p>
+      )}
+    </div>
   );
 }
 
