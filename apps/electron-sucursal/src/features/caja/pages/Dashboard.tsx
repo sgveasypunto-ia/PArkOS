@@ -5,21 +5,29 @@
  *
  *   ┌────────────────────────────────────────────────────────────────────┐
  *   │ Header: operador + F1-F6 chips + TurnoActivoToggle + Cerrar turno  │
- *   ├──────────┬───────────────────────────────────┬──────────────────┤
- *   │ Sidebar  │ Center:                           │ Sidebar:         │
- *   │ 240px    │  PLACA DEL VEHICULO               │  280px           │
- *   │ (+33% vs │  [giant ABC123 input]              │                  │
- *   │  versión │    placa hint (contextual)         │  Suscripciones  │
- *   │  previa) │                                   │  por vencer     │
- *   │ 7 action │  Vehículos dentro                 │  (top 5)         │
- *   │ buttons  │   (con cobros pendientes          │                  │
- *   │ → drawers│    inline si > 0)                  │                  │
- *   │ + tooltips                                   │                  │
- *   │ (help +   │                                   │                  │
- *   │  hotkey)  │                                   │                  │
- *   ├──────────┴───────────────────────────────────┴──────────────────┤
- *   │ Footer full-width: inventario per-tipo  +  KPI "X cupos libres"  │
+ *   ├──────────┬─────────────────────────────────────────────────────────┤
+ *   │ Sidebar  │ Center:                                                 │
+ *   │ 240px    │  PLACA DEL VEHÍCULO                                     │
+ *   │ (+33% vs │  [giant ABC123 input]                                    │
+ *   │  versión │    placa hint (contextual)                               │
+ *   │  previa) │                                                         │
+ *   │ 7 action │  Vehículos dentro                                       │
+ *   │ buttons  │   (con cobros pendientes                                │
+ *   │ → drawers│    inline si > 0)                                        │
+ *   │ + tooltips                                                         │
+ *   │ (help +   │                                                         │
+ *   │  hotkey)  │                                                         │
+ *   ├──────────┴─────────────────────────────────────────────────────────┤
+ *   │ Footer full-width: inventario per-tipo  +  KPI "X cupos libres"    │
+ *   │ (sticky bottom-0, max 80px)                                        │
  *   └───────────────────────────────────────────────────────────────────┘
+ *
+ * **Operador 2026-09-22 (segunda iteración):** el right-sidebar de
+ * "suscripciones por vencer" se removió del kiosko — el operador lo
+ * va a montar en otra parte (drawer propio, otra ruta, o ruta admin).
+ * El grid pasa de 3 columnas a 2: `lg:grid-cols-[240px_1fr]`. El
+ * main gana el ancho del right-sidebar (≈ 280px → +35% ancho del
+ * panel central para la lista de vehículos).
  *
  * El popover del `<TurnoActivoToggle />` (navbar) muestra el resumen
  * del turno abierto: "Ingresos en mi turno" / "Salidas en mi turno"
@@ -41,8 +49,7 @@
  *   - Top header bar (operador + status + cerrar)
  *   - Left sidebar (7 navigation actions)
  *   - Placa input hero (the operator's only primary action during the turn)
- *   - Right sidebar (suscripciones por vencer)
- *   - Footer full-width (inventario per-tipo + cupos libres agregados)
+ *   - Footer full-width sticky (inventario per-tipo + cupos libres agregados)
  *   - DrawerHost (single-drawer mounted for: IngresoSheet, SalidaSheet,
  *     PagoSheet, ReimprimirTiqueteSheet, ArqueoSheet, CierreDiarioDialog —
  *     triggered by sidebar, hotkey, OR the PlacaInputHero)
@@ -75,12 +82,10 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { CuposLibresStrip } from '../../operacion/components/CuposLibresStrip';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
-import { SuscripcionesPanel } from '../../suscripciones/components/SuscripcionesPanel';
 import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
 import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
 import { getIngresosByPlaca } from '../../operacion/api/ingresoActivoApi';
-import { useSuscripcionesProximasVencer } from '../../suscripciones/hooks/useSuscripcionesProximasVencer';
 import { formatCOP, formatHoraCorta } from '../lib/format';
 import {
   Card,
@@ -122,29 +127,6 @@ export function Dashboard(): JSX.Element | null {
   const closeDrawer = useDashboardDrawerStore((s) => s.close);
   const openDrawerKind = useDashboardDrawerStore((s) => s.openDrawer);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-
-  // HU-F9.2 (REQ-OPS-183) — banner + top-5 panel de suscripciones
-  // próximas a vencer en la sede. El hook aplica el filtro
-  // `dias >= 0` (excluye vencidas) y ordena por `fecha_vencimiento`
-  // ASC, así que `data[0]` es la suscripción MÁS próxima a vencer
-  // y `data.slice(0, 5)` es el top 5 de la pantalla. El
-  // ABIRTO-05/REQ-OPS-184 (override per-suscripción) NO está
-  // implementado en este PR — default global `7 días` via
-  // `DEFAULT_DIAS_ALERTA_PRE_VENCIMIENTO` en `lib/constants.ts`.
-  const { data: suscripcionesPorVencer } =
-    useSuscripcionesProximasVencer(uuid_sucursal);
-  const topVencer = suscripcionesPorVencer?.slice(0, 5) ?? [];
-  const totalVencer = suscripcionesPorVencer?.length ?? 0;
-  const firstVencer = suscripcionesPorVencer?.[0];
-
-  const bannerText = firstVencer
-    ? t('suscripciones:dashboard.bannerVencimiento', {
-        dias: firstVencer.dias_para_vencer,
-        fecha: firstVencer.fecha_vencimiento,
-        defaultValue:
-          'Suscripción de esta placa vence en X días (fecha). Considere renovación.',
-      })
-    : null;
 
   // F1-F6 hotkey listener → openDrawer + Esc closes.
   // Every drawer mounts via <DrawerHost /> on the dashboard — none of
@@ -207,7 +189,7 @@ export function Dashboard(): JSX.Element | null {
 
     return (
       <div
-        className="grid min-h-[calc(100vh-2.5rem)] w-full grid-rows-[auto_1fr_auto] grid-cols-1 lg:grid-cols-[240px_1fr_280px]"
+        className="grid min-h-[calc(100vh-2.5rem)] w-full grid-rows-[auto_1fr_auto] grid-cols-1 lg:grid-cols-[240px_1fr]"
         data-testid="dashboard-hub"
       >
         {/* ── Top header bar (mobile-first: minimum on mobile, full on lg+) ── */}
@@ -481,26 +463,6 @@ export function Dashboard(): JSX.Element | null {
           lang="es-CO"
           className="row-start-2 col-start-1 flex flex-col gap-3 overflow-y-auto p-3 lg:col-start-2 lg:p-3"
         >
-          {/*
-            HU-F9.2 banner literal (REQ-OPS-183) — inline amarillo
-            renderiza SOLO cuando hay al menos una suscripción por
-            vencer. El texto es literal canónico de plan.md:2100;
-            `dias` y `fecha` se interpolan del PRIMER item del array
-            (que el hook ya ordena por `fecha_vencimiento` ASC).
-          */}
-          {bannerText !== null && (
-            <div
-              data-testid="dashboard-vencimiento-banner"
-              role="alert"
-              className="rounded-2xl border border-amber-200/60 bg-amber-50/80 px-4 py-2.5 text-sm text-amber-900 shadow-apple-sm"
-            >
-              <span aria-hidden className="mr-2 font-semibold">
-                ⚠
-              </span>
-              {bannerText}
-            </div>
-          )}
-
           <Card data-testid="placa-card">
             <CardHeader className="px-5 pt-5 pb-3">
               <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
@@ -554,11 +516,6 @@ export function Dashboard(): JSX.Element | null {
               panels stay because they are referenced by tests via
               `data-testid="dashboard-section-..."`. */}
           <div aria-hidden className="sr-only">
-            <section data-testid="dashboard-section-suscripciones">
-              <SuscripcionesPanel uuid_sucursal={uuid_sucursal} />
-            </section>
-          </div>
-          <div aria-hidden className="sr-only">
             <section data-testid="dashboard-section-sync">
               <SyncStatusStrip uuid_sucursal={uuid_sucursal} />
             </section>
@@ -574,63 +531,6 @@ export function Dashboard(): JSX.Element | null {
             </section>
           </div>
         </main>
-
-        {/* ── Right sidebar: solo suscripciones por vencer (operador 2026-09-22) ──
-            Reorganización visual: el `<MiTurnoPanel />` (ingresos / salidas /
-            cupos libres del turno) se mudó al popover del navbar toggle
-            (`<TurnoActivoToggle />`). El `<OcupacionPanel />` (inventario per-
-            tipo) y el badge de cupos libres agregados se mudaron al footer
-            full-width `<CuposLibresStrip />`. Los cobros pendientes se
-            renderizan inline en cada fila de `<VehiculosDentroList />`
-            cuando `cobros_pendientes > 0` (oculto si 0 / sin dato).
-        */}
-        <aside
-          aria-label={t('caja:dashboard.rightLabel', { defaultValue: 'Estado en vivo' })}
-          className="col-span-1 mt-3 grid gap-3 px-3 pb-4 lg:row-start-2 lg:col-start-3 lg:mt-0 lg:border-l lg:border-border/40 lg:bg-card/30 lg:px-4 lg:pb-4"
-        >
-          {/*
-            HU-F9.2 panel "Suscripciones por vencer" (REQ-OPS-183).
-            Muestra el TOTAL (`totalVencer`) y los primeros 5 items
-            del array ordenado por `fecha_vencimiento` ASC que devuelve
-            el hook `useSuscripcionesProximasVencer`.
-          */}
-          <Card data-testid="dashboard-vencimiento-panel" className="overflow-hidden">
-            <CardHeader className="px-5 pt-4 pb-3">
-              <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
-                {t('suscripciones:dashboard.panelVencimiento.titulo', {
-                  defaultValue: 'Suscripciones por vencer',
-                })}{' '}
-                <span data-testid="dashboard-vencimiento-panel-count">
-                  ({totalVencer})
-                </span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1 overflow-y-auto px-3 pb-4 text-sm">
-              {topVencer.length === 0 && (
-                <p className="text-muted-foreground/70 text-sm" data-testid="dashboard-vencimiento-panel-empty">
-                  {t('caja:dashboard.sinCobros', { defaultValue: 'Sin suscripciones por vencer.' })}
-                </p>
-              )}
-              <ul className="space-y-1" data-testid="dashboard-vencimiento-panel-list">
-                {topVencer.map((it) => (
-                  <li
-                    key={it.uuid}
-                    className="flex items-center justify-between rounded-xl px-3 py-2 hover:bg-accent/40 transition-colors"
-                    data-testid={`dashboard-vencimiento-item-${it.placa}`}
-                  >
-                    <span className="font-mono text-sm font-medium uppercase tracking-wide">{it.placa}</span>
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {t('suscripciones:dashboard.panelVencimiento.diasRestantesMuchos', {
-                        dias: it.dias_para_vencer,
-                        defaultValue: `vence en ${it.dias_para_vencer} días`,
-                      })}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        </aside>
 
         {/* ── Footer full-width (operador 2026-09-22): inventario per-tipo + cupos libres agregados ── */}
         <CuposLibresStrip uuid_sucursal={uuid_sucursal} />

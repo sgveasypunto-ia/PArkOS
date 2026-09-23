@@ -163,11 +163,14 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     // Legacy sections retained as sr-only anchors for tests/audit.
     // Ingreso + salida wrappers were removed in fix/dashboard-f6-wire
     // because those panels now live inside DrawerHost.
-    expect(screen.getByTestId('dashboard-section-suscripciones')).toBeInTheDocument();
+    // SuscripcionesPanel sr-only anchor was removed in
+    // feat/ux-remover-suscripciones-vencer (2026-09-22) — el panel
+    // de vencimientos se mudó a otra ruta, fuera del kiosko.
     expect(screen.getByTestId('dashboard-section-sync')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-section-alertas')).toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-section-ingreso')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-section-salida')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dashboard-section-suscripciones')).not.toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalledWith('/caja/abrir-turno', expect.anything());
   });
 
