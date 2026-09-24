@@ -412,6 +412,45 @@ class AlertaReadList(ReadListBase[AlertaRead]):
 
 
 # ---------------------------------------------------------------------------
+# AlertType ([A] — out-of-catalog registry, GET /workflows/alert-types)
+#
+# Fix 2026-09-24: the FE (``useAlertas.ts`` / ``AlertTypeSchema``, shipped
+# HU-F11.2) has always expected this exact 4-field shape — ``codigo``,
+# ``severidad`` (alta|media|baja), ``descripcion``, ``mensaje`` — for its
+# client-side merge with ``/workflows/alerta`` (DA-F11.2-10 path b). The
+# endpoint itself was never mounted on the backend (404 in production),
+# and the underlying ``prod.alert_types`` table uses different names
+# (``tipo_alerta``, ``severity`` info|warning|critical) and has no
+# ``mensaje`` column at all. This schema is the translation layer:
+#
+#   codigo     = AlertTypes.tipo_alerta
+#   severidad  = AlertTypes.severity mapped critical->alta, warning->media,
+#                info->baja (repo/alert_types.py::to_severidad)
+#   descripcion = AlertTypes.descripcion
+#   mensaje    = AlertTypes.descripcion (operator decision 2026-09-24: no
+#                separate "mensaje" text exists anywhere in plan.md or the
+#                .mmd for the 19 seeded alert types; reusing descripcion
+#                unblocks the panel today without inventing a new DB
+#                column. A future PR can add a real ``mensaje`` column if
+#                product wants distinct text.)
+# ---------------------------------------------------------------------------
+
+
+class AlertTypeRead(_Base):
+    """Read-back for ``GET /workflows/alert-types`` (FE contract, HU-F11.2).
+
+    NOT a 1:1 mirror of ``prod.alert_types`` — see module note above for
+    the field translation. ``strict()`` on the FE Zod schema means this
+    MUST carry exactly these 4 fields, nothing more.
+    """
+
+    codigo: str
+    severidad: Literal["alta", "media", "baja"]
+    descripcion: str
+    mensaje: str
+
+
+# ---------------------------------------------------------------------------
 # EnvioDian ([L-W] — CLOUD-ONLY, REQ-25-W-CLOUD-ONLY)
 # ---------------------------------------------------------------------------
 
@@ -665,6 +704,7 @@ class FacturaNoEncontradaReimpresionError(_Base):
 
 
 __all__ = [
+    "AlertTypeRead",
     "AlertaCreate",
     "AlertaFilter",
     "AlertaRead",
