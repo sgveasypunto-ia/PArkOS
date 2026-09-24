@@ -97,6 +97,7 @@ from parkos_core.sync.transport import (
     HelloResponse,
     PushResponse,
     SyncHttpClient,
+    SyncJwtMissingError,
 )
 
 # Default cycle cadence if the env does not set PARKOS_SYNC_POLL_INTERVAL_S.
@@ -293,6 +294,11 @@ class SyncSucursalWorker(WorkerRunner):
 
         try:
             response = await self._http_client.push(payload)
+        except SyncJwtMissingError as exc:
+            # Pre-pairing — same contract as the catalog push path (Bug 6):
+            # log, skip, never schedule a retry for a missing JWT.
+            self.log.warning("sync_sucursal.push_skipped_jwt_missing", error=str(exc))
+            return
         except (TimeoutError, httpx.HTTPError, OSError) as exc:
             # Transport / DNS / timeout failure — treat as transient
             # (5xx-equivalent) so mark_failed schedules a retry via
@@ -546,6 +552,13 @@ class SyncSucursalWorker(WorkerRunner):
 
         try:
             response: EventsPushResponse = await self._http_client.push_events(events)
+        except SyncJwtMissingError as exc:
+            # Pre-pairing state — the cycle docstring promises the loop
+            # tolerates a missing JWT and retries next cycle (it is NOT a
+            # dispatch failure: don't touch intentos/next_retry_at). Log and
+            # let cycle() move on to step 4 (pull) + commit.
+            self.log.warning("sync_sucursal.push_skipped_jwt_missing", error=str(exc))
+            return
         except (TimeoutError, httpx.HTTPError, OSError) as exc:
             self.log.error("sync_sucursal.push_events_transport_error", error=str(exc))
             await self._mark_failed_batch(resolved_rows, error=f"transport: {exc}")
@@ -553,6 +566,31 @@ class SyncSucursalWorker(WorkerRunner):
 
         if response.status not in (200, 207):
             self.log.warning("sync_sucursal.push_events_non_ok", status=response.status)
+            # 401 — JWT lifecycle event (Bug 1): mirror the legacy
+            # ``_handle_push_response`` 401 branch so an expired sync-agent
+            # JWT is rotated instead of being treated as a plain transport
+            # failure. ``on_401_response`` may raise SystemExit on the
+            # revoked case; let it propagate (orchestrator restart-loop).
+            if response.status == 401:
+                assert self._jwt_manager is not None
+                action = await self._jwt_manager.on_401_response(
+                    _fake_httpx_response(response)
+                )
+                if action == JwtAction.RETRY_NEW_JWT:
+                    self.log.info("sync_sucursal.rotating_jwt_after_401_catalog")
+                    await self._jwt_manager.rotate()
+                    # Don't retry the SAME push in this cycle — the next
+                    # cycle picks it up cleanly (mark_failed for now so we
+                    # see the gap in metrics).
+                    await self._mark_failed_batch(
+                        resolved_rows,
+                        error="401_sync_jwt_rotated_will_retry_next_cycle",
+                    )
+                else:
+                    # HALT_REVOKED / HALT_EXPIRED — defensive. mark failed so
+                    # the metrics reflect what happened.
+                    await self._mark_failed_batch(resolved_rows, error=f"401_{action}")
+                return
             await self._mark_failed_batch(resolved_rows, error=f"http_{response.status}")
             return
 
@@ -589,6 +627,11 @@ class SyncSucursalWorker(WorkerRunner):
         assert self._http_client is not None
         try:
             pulled = await self._http_client.pull(since_seq=0)
+        except SyncJwtMissingError as exc:
+            # Pre-pairing — same contract as the push path (Bug 6): the
+            # cycle keeps committing, JWT rotation not involved.
+            self.log.warning("sync_sucursal.pull_skipped_jwt_missing", error=str(exc))
+            return
         except (TimeoutError, httpx.HTTPError, OSError) as exc:
             self.log.error("sync_sucursal.pull_transport_error", error=str(exc))
             return
@@ -650,6 +693,11 @@ class SyncSucursalWorker(WorkerRunner):
         assert self._http_client is not None
         try:
             pulled = await self._http_client.pull(since_seq=0)
+        except SyncJwtMissingError as exc:
+            # Pre-pairing — same contract as the push path (Bug 6): the
+            # cycle keeps committing, JWT rotation not involved.
+            self.log.warning("sync_sucursal.pull_skipped_jwt_missing", error=str(exc))
+            return
         except (TimeoutError, httpx.HTTPError, OSError) as exc:
             self.log.error("sync_sucursal.pull_transport_error", error=str(exc))
             return
@@ -766,12 +814,23 @@ def _wire_shape(row: Any) -> dict[str, Any]:
     """
     return {
         "tabla": getattr(row, "tabla", None),
-        "uuid_registro": str(getattr(row, "uuid_registro", "")) or None,
-        "uuid_sucursal": str(getattr(row, "uuid_sucursal", "")) or None,
+        # Bug 9 fix: ``str(None)`` is the literal ``'None'`` — the legacy
+        # receiver parses these columns as UUIDs and a string ``'None'``
+        # would crash it. Coerce a missing uuid to real JSON null.
+        "uuid_registro": _str_or_none(getattr(row, "uuid_registro", None)),
+        "uuid_sucursal": _str_or_none(getattr(row, "uuid_sucursal", None)),
         "operacion": getattr(row, "operacion", None),
         "prioridad": getattr(row, "prioridad", None),
         "datos": getattr(row, "datos", None) or {},
     }
+
+
+def _str_or_none(value: Any) -> str | None:
+    """Return ``str(value)`` unless value is missing, then ``None``."""
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
 
 
 def _extract_success_uuids(body: dict[str, Any]) -> set[uuid_lib.UUID]:
@@ -786,13 +845,15 @@ def _extract_success_uuids(body: dict[str, Any]) -> set[uuid_lib.UUID]:
     return out
 
 
-def _fake_httpx_response(response: PushResponse) -> Any:
+def _fake_httpx_response(response: PushResponse | EventsPushResponse) -> Any:
     """Build a minimal ``httpx.Response``-shaped object for ``JwtManager``.
 
     :class:`parkos_core.sync.jwt_manager.JwtManager.on_401_response`
     expects an object with ``.status_code`` + ``.json()``. We don't
     import httpx at module level to keep this worker dependency-light
     (the actual transport is owned by ``SyncHttpClient``).
+    ``EventsPushResponse`` carries ``results`` instead of ``body`` — the
+    JWT lifecycle handler only reads ``.json()``, so either shape works.
     """
 
     class _Mini:
@@ -803,7 +864,7 @@ def _fake_httpx_response(response: PushResponse) -> Any:
         def json(self) -> dict[str, Any]:
             return self._body
 
-    return _Mini(response.status, response.body)
+    return _Mini(response.status, getattr(response, "body", None) or {})
 
 
 def _now_iso() -> str:

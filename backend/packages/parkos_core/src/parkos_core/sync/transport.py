@@ -94,6 +94,18 @@ class EventsPushResponse:
     results: list[dict[str, Any]]
 
 
+class SyncJwtMissingError(RuntimeError):
+    """Raised by ``_read_jwt`` when the branch has no JWT file provisioned.
+
+    Semantically distinct from a transport/HTTP error: this is the
+    ``pre-pairing`` state the sync worker promises to tolerate on every
+    cycle (``sync_sucursal.cycle`` logs the missing JWT, skips the push +
+    pull steps, and still commits), so callers must be able to catch it
+    WITHOUT also turning it into a queued retry. Subclasses
+    ``RuntimeError`` so pre-existing generic handlers keep working.
+    """
+
+
 DEFAULT_TIMEOUT_S = 30.0
 
 
@@ -120,7 +132,7 @@ class SyncHttpClient:
 
     def _read_jwt(self) -> str:
         if not self.jwt_path.exists():
-            raise RuntimeError(
+            raise SyncJwtMissingError(
                 f"PARKOS_SYNC_JWT_PATH={self.jwt_path} missing — branch must pair first"
             )
         return self.jwt_path.read_text().strip()
@@ -259,4 +271,5 @@ __all__ = [
     "PullResponse",
     "PushResponse",
     "SyncHttpClient",
+    "SyncJwtMissingError",
 ]
