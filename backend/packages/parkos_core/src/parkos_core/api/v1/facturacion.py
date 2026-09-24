@@ -64,7 +64,6 @@ from ...schemas.facturacion import (
     FacturaImpuestosRead,
     FacturaImpuestosReadList,
     FacturaImpuestosUpdate,
-    FacturaItemRead,
     FacturaOtrosCobrosCreate,
     FacturaOtrosCobrosRead,
     FacturaOtrosCobrosReadList,
@@ -84,6 +83,7 @@ from ...schemas.facturacion import (
 from ..deps import requires_issuer
 from ..router_factory import make_router
 from ._helpers import apply_no_store_header, no_store_headers
+from ._factura_display import build_display_factura
 
 router = APIRouter(prefix="/facturacion", tags=["facturacion"])
 
@@ -414,28 +414,27 @@ async def create_factura(
     # --- Step 12: response shape. -------------------------------------
     apply_no_store_header(response)
     await session.refresh(new_factura)
-    return FacturaRead(
-        uuid=new_factura.uuid,
-        created_at=new_factura.created_at,
-        uuid_sucursal=new_factura.uuid_sucursal,
-        uuid_ingreso=new_factura.uuid_ingreso,
-        uuid_salida=new_factura.uuid_salida,
-        subtotal=new_factura.subtotal,
-        descuento=new_factura.descuento,
-        total=new_factura.total,
-        uuid_cliente=cliente_uuid,  # DEC-FACT-06 derivado, no persistido
-        items=[
-            FacturaItemRead(
-                uuid=item.uuid,
-                tipo=item.tipo,
-                concepto=item.concepto,
-                cantidad=item.cantidad,
-                valor_unitario=item.valor_unitario,
-                subtotal=item.subtotal,
-            )
-            for item in detalles_creados
-        ],
-        estado="emitida",  # derived (always "emitida" at create time)
+    # HU-F8.4: enrichment for `<FacturaDisplayModal />` (apps/electron-
+    # sucursal) lives in ``_factura_display.build_display_factura`` so
+    # the handler stays focused on the 12-step chain. The helper reads
+    # the joined rows the handler just committed and assembles the
+    # enriched ``FacturaRead``. Notable fixes the helper carries:
+    # - ``item.tipo`` AttributeError (pre-existing): ``FacturaDetalle``
+    #   has no ``tipo`` column in the DB; the helper hard-codes
+    #   ``"servicio"`` per the parking-lot assumption (every line is
+    #   a service). See _factura_display.py docstring.
+    # - Numeric columns map SQLAlchemy float → Pydantic Decimal; the
+    #   helper does the conversion once, centrally.
+    # - numero_recibo is derived server-side per plan.md:473
+    #   (sucursal-YYYYMMDD-NNNNNN, O(N) per emission; column promotion
+    #   deferred post-MVP).
+    return await build_display_factura(
+        session,
+        new_factura=new_factura,
+        detalles_creados=detalles_creados,
+        payload=payload,
+        total_server=total_server,
+        cliente_uuid=cliente_uuid,
     )
 
 

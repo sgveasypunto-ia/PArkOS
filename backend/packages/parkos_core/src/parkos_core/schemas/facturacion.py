@@ -603,15 +603,132 @@ class FacturaItemRead(_Base):
     subtotal: Decimal
 
 
-class FacturaRead(_Base):
-    """HU-F1.9: POST ``/api/v1/facturacion/factura`` response.
+# ---------------------------------------------------------------------------
+# Display projection sub-schemas (HU-F8.4 — enriched Post-Pago response)
+#
+# These power the `<FacturaDisplayModal />` (apps/electron-sucursal) which
+# shows the full breakdown after a successful pago: minutes parked,
+# segregation of values (subtotal + impuestos + total), and datos
+# sucursal/cliente/vehiculo. All read-only, derived server-side in
+# `api/v1/facturacion.py::_build_display_factura`.
+# ---------------------------------------------------------------------------
 
-    ``uuid_cliente`` is **server-derived** (DEC-FACT-06). NOT persisted on
-    ``prod.facturas``. ``estado`` is derived from the ``V_FACTURA_ESTADO``
-    view (PR6 schema work, referenced in
-    ``models/L_E/facturas.py`` lines 12-14 docstring).
+
+class FacturaDisplaySucursal(_Base):
+    """Display-only projection of ``prod.sucursal`` + ``prod.empresa``.
+
+    BI-temporal version fields and audit columns are stripped. NIT comes
+    from ``prod.empresa.nit`` (regulatory identity of the operator before
+    DIAN, per ER.mmd:299). No `vigente_desde`/`vigente_hasta` because
+    the read is on the current row of the bi-temporal table.
     """
 
+    razon_social: str | None
+    nit: str | None
+    direccion: str | None
+    ciudad: str | None
+    telefono: str | None
+    horario: str | None
+    regimen: str | None
+
+
+class FacturaDisplayVehiculo(_Base):
+    """Display-only projection of the vehiculo linked by ``facturas.uuid_salida``.
+
+    ``tiempo_minutos`` is computed server-side as
+    ``(fecha_salida - fecha_ingreso).total_seconds() / 60`` from the
+    joined rows of ``prod.salidas`` + ``prod.ingreso`` — no
+    ``cotizacion_snapshot`` column exists on ``prod.salidas`` so we
+    derive the duration from the timestamps, not from the tarifa
+    structure. Acceptable per DEC-SUC-24 (display mirrors the time that
+    was billed, which equals wall-clock time for rotación at standard
+    tarifa).
+    """
+
+    placa: str | None
+    uuid_tipo_vehiculo: uuid_lib.UUID | None
+    fecha_ingreso: datetime | None
+    fecha_salida: datetime | None
+    minutos: int | None  # server-computed wall-clock minutes
+
+
+class FacturaDisplayCliente(_Base):
+    """Display-only projection of ``prod.clientes`` for the FE consumidor."""
+
+    nit: str | None
+    dv: str | None
+    nombre: str | None
+    apellido: str | None
+    email: str | None
+    telefono: str | None
+
+
+class FacturaDisplayImpuesto(_Base):
+    """Display-only projection of ``prod.factura_impuestos`` JOIN ``prod.impuestos``.
+
+    Includes the snapshot percentage (the historical rate at emission)
+    AND the impuesto catalog ``nombre`` so the display can show
+    "IVA 19% = $1.140 COP" without the FE making a second round-trip.
+    """
+
+    uuid: uuid_lib.UUID
+    uuid_impuesto: uuid_lib.UUID | None
+    nombre_impuesto: str | None  # from prod.impuestos.nombre (snapshot-aware)
+    codigo_impuesto: str | None
+    base_calculo: Decimal | None
+    porcentaje_aplicado: Decimal | None  # historical snapshot
+    valor: Decimal | None
+
+
+class FacturaDisplayPago(_Base):
+    """Display-only projection of the init ``prod.factura_pagos`` row.
+
+    Only the init ``pago`` is included (no reversos) — the init pago is
+    the one the operator just confirmed. Reversos are part of the
+    audit trail but do not appear on the customer-facing factura
+    display. Branch-local.
+    """
+
+    uuid: uuid_lib.UUID
+    medio_pago: str | None
+    valor: Decimal | None
+    referencia: str | None  # voucher for datafono, NULL for efectivo
+
+
+class FacturaDisplayFE(_Base):
+    """Display-only projection of ``prod.factura_electronica`` (if exists).
+
+    Estado DIAN is derived from the join with ``prod.envio_dian``
+    (terminal state `aceptado|rechazado`) or `pendiente` when no
+    envio_dian row exists. CUFE is shown only when ``aceptado`` per
+    HU-F8.2 R2.
+    """
+
+    uuid: uuid_lib.UUID
+    prefijo: str | None
+    consecutivo: int | None
+    estado_dian: Literal["pendiente", "enviado", "aceptado", "rechazado"]
+    cufe: str | None  # only populated when estado_dian == "aceptado"
+
+
+class FacturaRead(_Base):
+    """HU-F1.9 + HU-F8.4: POST ``/api/v1/facturacion/factura`` response.
+
+    Base fields (HU-F1.9) carry the line-item breakdown. Display
+    fields (HU-F8.4) carry the enriched view the FE displays in
+    `<FacturaDisplayModal />` after a successful pago. ``uuid_cliente``
+    is **server-derived** (DEC-FACT-06). NOT persisted on
+    ``prod.facturas``. ``estado`` is derived from the
+    ``V_FACTURA_ESTADO`` view (PR6 schema work, referenced in
+    ``models/L_E/facturas.py`` lines 12-14 docstring).
+
+    Display fields are populated by ``_build_display_factura`` in
+    ``api/v1/facturacion.py`` (HU-F8.4): the handler does NOT call
+    ``asyncio.run_session` or block — the display reads happen in
+    parallel after the KD-FACT-01 single-commit atomic write.
+    """
+
+    # --- Base (HU-F1.9) ---
     uuid: uuid_lib.UUID
     created_at: datetime
     uuid_sucursal: uuid_lib.UUID
@@ -623,6 +740,29 @@ class FacturaRead(_Base):
     uuid_cliente: uuid_lib.UUID | None  # DEC-FACT-06 derivado, no persistido
     items: list[FacturaItemRead]
     estado: Literal["emitida", "pagada", "anulada"]
+
+    # --- HU-F8.4 display enrichment (all server-derived, no new columns) ---
+    # ``medio_pago`` discriminates between efectivo (vueltos) and
+    # datafono (voucher). The BE reads it from the init
+    # ``factura_pagos`` row (inserted in the same KD-FACT-01 commit).
+    medio_pago: Literal["efectivo", "tarjeta", "transferencia", "datafono", "mixto"]
+    monto_recibido_cents: int | None  # efectivo only (NULL for datafono)
+    vuelto_cents: int | None  # efectivo only (NULL for datafono)
+    voucher: str | None  # datafono only (NULL for efectivo)
+    # ``numero_recibo`` is the local receipt number per plan.md:473
+    # (format ``sucursal-YYYYMMDD-NNNNNN``). Derived server-side as
+    # ``COUNT(facturas WHERE uuid_sucursal=X AND DATE(created_at)=DATE(Y)) + 1``.
+    # No new table/column needed; derivation is O(N) per factura at
+    # emission time. Considered for migration to a column if
+    # throughput becomes an issue (post-MVP optimization).
+    numero_recibo: str
+    # Datos display-only projections
+    cliente: FacturaDisplayCliente | None  # consumidor final when None
+    datos_sucursal: FacturaDisplaySucursal
+    datos_vehiculo: FacturaDisplayVehiculo | None
+    impuestos: list[FacturaDisplayImpuesto]
+    pagos: list[FacturaDisplayPago]  # typically 1 element (init pago)
+    factura_electronica: FacturaDisplayFE | None  # NULL until cloud numbers it
 
 
 class FacturaPagoAdicionalCreate(_Base):
@@ -830,6 +970,12 @@ __all__ = [
     "FacturaDetalleRead",
     "FacturaDetalleReadList",
     "FacturaDetalleUpdate",
+    "FacturaDisplayCliente",
+    "FacturaDisplayFE",
+    "FacturaDisplayImpuesto",
+    "FacturaDisplayPago",
+    "FacturaDisplaySucursal",
+    "FacturaDisplayVehiculo",
     "FacturaElectronicaCreate",
     "FacturaElectronicaFilter",
     "FacturaElectronicaNoEncontradaError",
