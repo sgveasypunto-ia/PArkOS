@@ -766,14 +766,26 @@ class FacturaPagoAdicionalCreate(_Base):
 
 
 class FacturaPagoRead(_Base):
-    """HU-F1.9: POST ``/api/v1/facturacion/factura-pagos`` response."""
+    """HU-F1.9: POST ``/api/v1/facturacion/factura-pagos`` response.
+
+    NOTE (zero-bug-policy, 2026-09-23): the previous typing declared
+    ``uuid_factura``, ``medio_pago``, ``valor``, ``timestamp_evento`` as
+    REQUIRED non-nullable, but the ORM
+    (``models/A/factura_pagos.py``) declares all of them as
+    ``Mapped[... | None]``. The handler at
+    ``api/v1/facturacion.py:524-528`` returned
+    ``FacturaPagoRead(uuid=new_pago.uuid, ...)`` directly from the ORM
+    row, so any nullable column would trigger the LSP errors reported
+    in this sweep. The fix mirrors the ORM: nullable fields are
+    declared nullable in the schema too.
+    """
 
     uuid: uuid_lib.UUID
-    uuid_factura: uuid_lib.UUID
-    medio_pago: str
-    valor: Decimal
+    uuid_factura: uuid_lib.UUID | None
+    medio_pago: str | None
+    valor: Decimal | None
     referencia: str | None
-    timestamp_evento: datetime
+    timestamp_evento: datetime | None
 
 
 # --- Typed error schemas (D-HU-F1.9-19) -------------------------------------
