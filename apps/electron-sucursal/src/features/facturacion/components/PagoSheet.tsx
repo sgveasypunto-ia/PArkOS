@@ -32,7 +32,7 @@
  *     disconnected MUST NOT block the operator (the pago is already
  *     persisted in `prod.factura`).
  */
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
@@ -53,6 +53,8 @@ import { PagoModal, type PagoFormValues } from './PagoModal';
 import { useInvalidateConteosOperacion } from '../../operacion/hooks/useInvalidateConteosOperacion';
 import { useAuth } from '@parkos/ui-kit/hooks';
 import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
+import type { FacturaRead } from '../api/facturaApi';
+import { FacturaDisplayModal } from './FacturaDisplayModal';
 
 export interface PagoSheetProps {
   /**
@@ -145,6 +147,13 @@ export function PagoSheet({
 
   const open = openDrawer === 'pago';
 
+  // HU-F8.4: hold the FacturaRead from the post-pago POST so we can
+  // mount `<FacturaDisplayModal />` over the PagoSheet with the full
+  // breakdown (minutos, segregación de valores, impuestos, datos
+  // sucursal/cliente/vehículo). Set inside `handleSubmit` AFTER the
+  // trigger resolves. Cleared when the operator dismisses the modal.
+  const [facturaDisplay, setFacturaDisplay] = useState<FacturaRead | null>(null);
+
   // F8.1-b (2026-09-23): `pagadoRef` is the source of truth for "did
   // the operator actually confirm the pago?". We use a ref (not
   // state) so the value is captured by the `onOpenChange` closure
@@ -209,13 +218,27 @@ export function PagoSheet({
 
   const handleSubmit = useCallback(
     async (values: PagoFormValues): Promise<void> => {
-      if (!uuid_ingreso) return;
+      // HU-F8.4 (BE↔FE fix, 2026-09-23): the BE's FacturaCreate
+      // requires ``uuid_salida`` (the salida created by
+      // ``POST /operacion/salidas`` before the pago). The previous
+      // FE sent ``uuid_ingreso`` and the BE rejected with 422
+      // (silent pago). ``uuid_salida`` is now in pagoContext per
+      // ``fix/hu-f8-1-anular-salida-no-pagada`` (commit ``c7c19d2``).
+      if (!uuid_salida) {
+        // Defensive: PagoSheet shouldn't be reachable without a
+        // salida, but if it is, surface a clear error instead of
+        // sending a malformed POST.
+        console.error('[PagoSheet] uuid_salida missing — cannot POST /facturacion/factura');
+        return;
+      }
       // Build the discriminated POST payload from the form values.
+      // Per HU-F8.4 contract, the BE derives ``items[]`` server-side
+      // from the tarifa structure (DEC-FACT-03) — the FE does NOT
+      // send items; only the monetary totals + medio_pago + cliente.
       const post = values.medio_pago === 'efectivo'
         ? {
-            uuid_ingreso,
+            uuid_salida,
             medio_pago: 'efectivo' as const,
-            monto_recibido_cents: values.monto_recibido_cop,
             total_cents: total_cop,
             cliente: {
               nit: values.fe ? values.nit ?? '' : '222222222222222',
@@ -224,7 +247,7 @@ export function PagoSheet({
             },
           }
         : {
-            uuid_ingreso,
+            uuid_salida,
             medio_pago: 'datafono' as const,
             total_cents: total_cop,
             voucher: values.voucher,
@@ -252,15 +275,19 @@ export function PagoSheet({
         uuid_sucursal: sucursal?.uuid ?? null,
         uuid_sesion: sesion?.uuid ?? null,
       });
+      // HU-F8.4 — open the post-pago display modal with the full
+      // breakdown (minutos + segregación de valores + impuestos +
+      // datos sucursal/cliente/vehículo). The modal is the
+      // operator-facing confirmation; the thermal print fires in
+      // parallel per DEC-SUC-27.
+      setFacturaDisplay(result);
       // HU-F8.2 (REQ-OPS-169/170) — navigate to the FE detail page if
-      // the pago created an electronic invoice. The `as` cast is
-      // defensive — `FacturaReadSchema.factura_electronica: z.unknown()`
-      // (ABIERTO-F8.2-01 follow-up tightens this). Narrow via
-      // `typeof` so a missing/null/unknown FE just falls through to
-      // the normal close + print sequence.
-      const fe = result.factura_electronica as { uuid?: unknown } | null | undefined;
-      if (fe && typeof fe === 'object' && typeof fe.uuid === 'string') {
-        navigate(`/factura-electronica/${fe.uuid}`);
+      // the pago created an electronic invoice. The discriminated
+      // FacturaReadSchema enforces ``factura_electronica.estado_dian``
+      // so a missing/null FE just falls through to the normal close
+      // + print sequence.
+      if (result.factura_electronica && result.factura_electronica.uuid) {
+        navigate(`/factura-electronica/${result.factura_electronica.uuid}`);
       }
       // DEC-SUC-27 — CU-15S print fires AFTER pago, then recibo de pago.
       const emit = firePrintEnvelope ?? defaultFirePrintEnvelope;
@@ -269,9 +296,11 @@ export function PagoSheet({
         uuid_factura: result.uuid,
         numero_recibo: result.numero_recibo,
       });
-      close();
+      // NOTE: close() happens when the operator dismisses the
+      // FacturaDisplayModal, not here. The drawer stays open with
+      // the modal mounted until the operator closes it.
     },
-    [uuid_ingreso, total_cop, trigger, firePrintEnvelope, close, navigate, invalidarConteos, sucursal?.uuid, sesion?.uuid],
+    [uuid_salida, total_cop, trigger, firePrintEnvelope, navigate, invalidarConteos, sucursal?.uuid, sesion?.uuid],
   );
 
   return (
@@ -307,6 +336,20 @@ export function PagoSheet({
             {t('common:cancel', { defaultValue: 'Cancelar' })}
           </Button>
         </SheetFooter>
+
+        {/* HU-F8.4 — post-pago display modal mounted over the sheet.
+            Renders the full FacturaRead breakdown (minutos, items,
+            impuestos, sucursal, vehiculo, cliente). The modal's
+            close handler clears the state AND closes the sheet so
+            the operator returns to the dashboard with the cupos
+            already invalidated. */}
+        <FacturaDisplayModal
+          factura={facturaDisplay}
+          onClose={() => {
+            setFacturaDisplay(null);
+            close();
+          }}
+        />
       </SheetContent>
     </Sheet>
   );

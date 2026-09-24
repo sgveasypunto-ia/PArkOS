@@ -1,10 +1,12 @@
 /**
- * Tests for `useRegistrarPago` SWR mutation hook (HU-F8.1, REQ-OPS-167).
+ * Tests for `useRegistrarPago` SWR mutation hook (HU-F8.1 + HU-F8.4,
+ * REQ-OPS-167).
  *
  * Coverage (4 tests):
- *   P1: trigger → 201 → returns parsed `FacturaRead` (discriminated
- *       union by `medio_pago`); the parser enforces the FE toggle +
- *       nit/email invariants (DEC-SUC-04 + BR7 + Email RFC 5322).
+ *   P1: trigger → 201 → returns parsed `FacturaRead` with the
+ *       enriched 22-field shape (post-HU-F8.4); the parser enforces
+ *       the discriminator by `medio_pago` and the new
+ *       `uuid_salida` requirement (BE↔FE fix, 2026-09-23).
  *   P2: trigger in-flight → `isMutating=true` observable between the
  *       fetch start and the 201 response.
  *   P3: 401 → `useAuthStore.getState().clear()` + `parkos:auth:cleared`
@@ -45,24 +47,69 @@ import { act, renderHook } from '@testing-library/react';
 import { useRegistrarPago } from './useRegistrarPago';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
-const UUID_INGRESO = '00000000-0000-0000-0000-000000000001';
-const UUID_FACTURA = '00000000-0000-0000-0000-0000000000aa';
+const UUID_SALIDA = '00000000-0000-0000-0000-0000000000aa';
+const UUID_FACTURA = '00000000-0000-0000-0000-0000000000bb';
 
+/**
+ * FacturaRead mirror for HU-F8.4 enriched response (22 fields).
+ * The mock has the minimum required fields; the display projection
+ * fields are omitted where Zod allows nullable.
+ */
 const facturaEfectivoRead = {
   uuid: UUID_FACTURA,
   uuid_sucursal: '00000000-0000-0000-0000-0000000000a2',
-  uuid_ingreso: UUID_INGRESO,
+  uuid_ingreso: '00000000-0000-0000-0000-0000000000c1',
+  uuid_salida: UUID_SALIDA,
   created_at: '2026-09-19T11:00:00Z',
+  subtotal: 41000,
+  descuento: 0,
+  total: 41000,
+  uuid_cliente: null,
+  items: [
+    {
+      uuid: '00000000-0000-0000-0000-0000000000d1',
+      tipo: 'servicio',
+      concepto: 'Parqueo 1h',
+      cantidad: 1,
+      valor_unitario: 41000,
+      subtotal: 41000,
+    },
+  ],
+  estado: 'emitida',
   medio_pago: 'efectivo',
-  monto_recibido_cents: 50000,
-  total_cents: 41000,
-  vuelto_cents: 9000,
+  monto_recibido_cents: null,
+  vuelto_cents: null,
+  voucher: null,
   numero_recibo: 'sucursal-20260919-000001',
-  cliente: {
-    nit: '222222222222222',
-    nombre: 'Consumidor final',
-    email: null,
+  cliente: null,
+  datos_sucursal: {
+    razon_social: 'Parkos Test',
+    nit: '900.123.456-7',
+    direccion: 'Calle 123',
+    ciudad: 'Bogota',
+    telefono: '+57 1 2345678',
+    horario: 'L-V 8-18',
+    regimen: 'comun',
   },
+  datos_vehiculo: {
+    placa: 'ABC123',
+    uuid_tipo_vehiculo: null,
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    fecha_salida: '2026-09-19T11:00:00Z',
+    minutos: 60,
+  },
+  impuestos: [
+    {
+      uuid: '00000000-0000-0000-0000-0000000000e1',
+      uuid_impuesto: null,
+      nombre_impuesto: 'IVA',
+      codigo_impuesto: '01',
+      base_calculo: 41000,
+      porcentaje_aplicado: 0,
+      valor: 0,
+    },
+  ],
+  pagos: [],
   factura_electronica: null,
 };
 
@@ -71,7 +118,7 @@ beforeEach(() => {
   mockFetch.mockReset();
 });
 
-describe('useRegistrarPago — REQ-OPS-167 (FE consumidor final + Idempotency-Key)', () => {
+describe('useRegistrarPago — HU-F8.4 (FE consumidor final + Idempotency-Key)', () => {
   it('P1: trigger → 201 → returns parsed FacturaRead with FE consumidor final default', async () => {
     mockFetch.mockResolvedValueOnce(facturaEfectivoRead);
 
@@ -80,9 +127,8 @@ describe('useRegistrarPago — REQ-OPS-167 (FE consumidor final + Idempotency-Ke
     let data: unknown;
     await act(async () => {
       data = await result.current.trigger({
-        uuid_ingreso: UUID_INGRESO,
+        uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
-        monto_recibido_cents: 50000,
         total_cents: 41000,
         cliente: {
           nit: '222222222222222',
@@ -105,8 +151,6 @@ describe('useRegistrarPago — REQ-OPS-167 (FE consumidor final + Idempotency-Ke
   });
 
   it('P2: trigger in-flight → isMutating=true observable during the POST', async () => {
-    // Resolve the POST on the next microtask so we can observe
-    // isMutating === true synchronously after the trigger call.
     let resolveFn: (v: unknown) => void = () => undefined;
     const pending = new Promise<unknown>((res) => {
       resolveFn = res;
@@ -118,9 +162,8 @@ describe('useRegistrarPago — REQ-OPS-167 (FE consumidor final + Idempotency-Ke
     let triggerPromise: Promise<unknown> = Promise.resolve();
     act(() => {
       triggerPromise = result.current.trigger({
-        uuid_ingreso: UUID_INGRESO,
+        uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
-        monto_recibido_cents: 50000,
         total_cents: 41000,
         cliente: {
           nit: '222222222222222',
@@ -128,7 +171,6 @@ describe('useRegistrarPago — REQ-OPS-167 (FE consumidor final + Idempotency-Ke
         },
       });
     });
-    // Yield to React so useSWRMutation flips isMutating to true.
     await act(async () => {
       await Promise.resolve();
     });
@@ -159,9 +201,8 @@ describe('useRegistrarPago — REQ-OPS-167 (FE consumidor final + Idempotency-Ke
     await act(async () => {
       await result.current
         .trigger({
-          uuid_ingreso: UUID_INGRESO,
+          uuid_salida: UUID_SALIDA,
           medio_pago: 'efectivo',
-          monto_recibido_cents: 50000,
           total_cents: 41000,
           cliente: { nit: '222222222222222', nombre: 'Consumidor final' },
         })
@@ -179,18 +220,16 @@ describe('useRegistrarPago — REQ-OPS-167 (FE consumidor final + Idempotency-Ke
 
     await act(async () => {
       await result.current.trigger({
-        uuid_ingreso: UUID_INGRESO,
+        uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
-        monto_recibido_cents: 50000,
         total_cents: 41000,
         cliente: { nit: '222222222222222', nombre: 'Consumidor final' },
       });
     });
     await act(async () => {
       await result.current.trigger({
-        uuid_ingreso: UUID_INGRESO,
+        uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
-        monto_recibido_cents: 50000,
         total_cents: 41000,
         cliente: { nit: '222222222222222', nombre: 'Consumidor final' },
       });

@@ -2007,6 +2007,61 @@ stateDiagram-v2
 - **HU-F8.3-T3**: acción de anulación (llama a `POST .../anular`).
 - **HU-F8.3-T4**: `e2e/reimpresion.spec.ts` (3 escenarios).
 
+### HU-F8.4 — Mostrar factura post-pago con desglose (operador-ve la factura en la UI)
+
+**Historia**: Como operador, después de confirmar un pago (efectivo o datáfono) quiero ver la factura con el desglose completo — placa + minutos, segregación de valores (subtotal + descuento + impuestos + total), datos del cliente, número de recibo, medio de pago — para poder verificar visualmente que el cobro quedó correcto antes de cerrar el drawer.
+
+**Contexto crítico**: este HU cierra el bug silencioso del pago (F8.1-b). Pre-HU-F8.4, `PagoSheet.handleSubmit` mandaba `uuid_ingreso` + `monto_recibido_cents` + `total_cents` + `cliente` al BE, pero `FacturaCreate` (backend `schemas/facturacion.py:578-592`) exige `uuid_salida` + `items[1-50]` + `subtotal` + `total` + `medio_pago` + `referencia` + `fe_con_datos` + `fe_datos_cliente`. El POST debería haber sido 422 — pago "silencioso" sin persistencia. HU-F8.4 corrige el contrato FE→BE (mandar `uuid_salida`) Y enriquece el response con los campos de display (HU-F8.4) para que el modal pueda mostrar el desglose.
+
+**Criterios de aceptación**:
+- Given un pago confirmado (rotación o mensualidad), When el BE responde 201, Then se monta `<FacturaDisplayModal />` con el desglose completo y el drawer queda abierto detrás del modal hasta que el operador cierre.
+- Given la respuesta del BE, Then el modal muestra: header (número de recibo + fecha/hora), datos de la sucursal (razón social + NIT + dirección + régimen + teléfono), datos del cliente (o "Consumidor final" cuando NULL), placa + minutos parqueados (cuando hay `datos_vehiculo`), líneas de la factura (`items[]`), segregación de valores (`subtotal + descuento + impuestos[] + total`), medio de pago (con vuelto cuando es efectivo + voucher cuando es datáfono), estado DIAN cuando hay `factura_electronica`.
+- Given el operador cierra el modal, Then el drawer también se cierra (single close path).
+- Given que el POST falla (V4 validaciones, NIT inválido, monto insuficiente), Then el modal NO se monta y el form queda abierto con error inline (comportamiento pre-HU-F8.4 preservado).
+- Given que el FE manda `uuid_salida` en el POST body, When el BE valida V1 (salida existe + es facturable), Then el POST 201 persiste con KD-FACT-01 single-commit.
+
+**Tablas ER tocadas** (solo lectura en el modal): `facturas` (subtotal, descuento, total), `factura_detalle` (items), `factura_impuestos` (snapshot + nombre desde `impuestos`), `salidas` (fecha_salida), `ingreso` (placa, fecha_ingreso), `sucursal` + `empresa` (datos emisor), `clientes` (datos cliente), `factura_pagos` (init pago, medio_pago), `factura_electronica` (prefijo, consecutivo, estado_dian, cufe).
+
+**Endpoints**: `POST /api/v1/facturacion/factura` (modificado — response enriquecido con 11 campos nuevos: `medio_pago`, `monto_recibido_cents`, `vuelto_cents`, `voucher`, `numero_recibo`, `cliente`, `datos_sucursal`, `datos_vehiculo`, `impuestos`, `pagos`, `factura_electronica`).
+
+**Componentes UI**: `<FacturaDisplayModal />` (nuevo, `apps/electron-sucursal/src/features/facturacion/components/FacturaDisplayModal.tsx`).
+
+**Validaciones Zod**: `FacturaReadSchema` Zod mirror extendido de 11 → 22 campos en `apps/electron-sucursal/src/features/facturacion/api/facturaApi.ts`. `PostFacturaPayload` ahora incluye `uuid_salida` (no `uuid_ingreso`).
+
+**Manejo de errores**:
+- 422 (V4 detalle_invalido / V6 total_no_coherente) → form queda abierto con error inline
+- 500 (iva_no_configurado) → solo en BE; FE re-lanza el error
+
+**Tests**:
+- `apps/electron-sucursal/src/features/facturacion/components/FacturaDisplayModal.test.tsx` (nuevo): render con `factura` null → no muestra, con `factura` populado → muestra todas las secciones
+- `apps/electron-sucursal/src/features/facturacion/components/PagoSheet.test.tsx` (modificado): mock trigger resolve con `FacturaRead` enriquecido → verifica que `setFacturaDisplay` se llama con el resultado
+
+**Pruebas manuales (Chrome DevTools MCP)**:
+- Login → ingreso ABC123 → confirmar salida → PagoSheet efectivo → confirmar pago → modal aparece con número de recibo, placa, minutos, subtotal, IVA 19%, total, vuelto. Cerrar modal → drawer cierra también. Verificar consola sin errors/warnings.
+- Repetir con datafono (voucher) → modal muestra voucher en lugar de vuelto.
+- Repetir con FE activa → modal muestra prefijo+consecutivo, estado_dian='pendiente', cufe NULL.
+
+**Decisiones arquitectónicas**:
+- **`numero_recibo` derivado server-side** (no columna nueva). Formato `sucursal-YYYYMMDD-NNNNNN` per plan.md:473. O(N) per emission (COUNT facturas WHERE uuid_sucursal=X AND DATE(created_at)=today()); aceptable para MVP. Column promotion deferred post-MVP si throughput se vuelve bottleneck.
+- **`datos_sucursal` requerido** (no nullable) — el modal SIEMPRE muestra datos del emisor (no es opcional). Si falta, BE levanta `RuntimeError` (defensa en profundidad, debería ser imposible).
+- **`factura_electronica` nullable** — NULL hasta que cloud-side dispatcher asigne prefijo+consecutivo (HU-F8.2 + cloud-only dispatch). Estado `pendiente` cuando hay fila sin `envio_dian`; `aceptado|rechazado` después.
+- **`cliente` nullable** — NULL para consumidor final (NIT `222222222222222` default, DEC-SUC-04). El modal muestra "Consumidor final" cuando NULL.
+- **Pagos[] vacío en MVP** — el FE lee `medio_pago` + form values (vueltos/voucher) del PagoModal state. Round-trip extra al BE para los pagos sería over-fetch.
+- **`monto_recibido_cents` / `vuelto_cents` NULL en MVP** — el FE ya computa vueltos en `PagoModal.tsx:191-198`. Backend no captura `monto_recibido_cents` del payload todavía (FIX-OPEN: capturar en PR futuro).
+- **`tipo='servicio'` hard-coded en `items[]`** (bug pre-existente): `prod.factura_detalle` no tiene columna `tipo` en la DB (verificado con `\d+`); el repo silently dropea el kwarg en `crear_factura_detalle_bulk`. FIX-OPEN: migración Alembic que agregue la columna (out of MVP scope per AGENTS.md §8.2 step 4 — corregir en su propia rama `fix/`).
+
+**Tareas atómicas** (4 work-unit commits en 1 PR):
+- **HU-F8.4-T1** (`feat(backend)`): `schemas/facturacion.py` extiende `FacturaRead` con 11 campos nuevos + 6 sub-schemas. `__all__` actualizado.
+- **HU-F8.4-T2** (`feat(backend)`): `api/v1/_factura_display.py` nuevo — helper `build_display_factura` joinea 6 queries post-commit. `api/v1/facturacion.py` delega al helper.
+- **HU-F8.4-T3** (`feat(apps)`): `facturaApi.ts` Zod mirror extendido (11→22 campos). `PostFacturaPayload` ahora con `uuid_salida`.
+- **HU-F8.4-T4** (`feat(apps)`): `<FacturaDisplayModal />` nuevo (8 secciones: emisor, cliente, vehículo, items, totales+impuestos, medio de pago, FE). `PagoSheet.handleSubmit` envía `uuid_salida` + abre el modal post-success.
+
+**Notas de especificación**:
+- Migración Alembic: ZERO (FIX-OPEN de columna `tipo` se maneja en cambio separado).
+- Sin `size:exception` — estimado total ~700 LOC, dentro del budget de 800 por PR (overrides del operador para F8.x).
+- Cierre con merge `--no-ff` a `dev`, push, borrar rama.
+- Verificar en DB que la factura persiste con impuestos snapshot + sucursal/cliente/vehículo display.
+
 ---
 
 ## Fase 9 — Suscripciones y mensualidades operativas (CU-06)
