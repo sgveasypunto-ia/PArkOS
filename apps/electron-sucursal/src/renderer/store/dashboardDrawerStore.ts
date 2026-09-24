@@ -15,23 +15,29 @@
  *     hero input that triggered the drawer (entry point for the
  *     "smart routing" flow in F6/F7). Read by `<IngresoSheet />` and
  *     `<SalidaSheet />` to pre-fill their respective forms on mount.
+ *   - `initialUuidIngreso` — HU-F7.1 (búsqueda sin placa). Same shape
+ *     as `initialPlaca` but for a directly-resolved `uuid_ingreso`
+ *     (the operator picked a NO-placa/consecutivo suggestion). Read by
+ *     `<SalidaSheet />` and forwarded to
+ *     `<SalidaPanel initialUuidIngreso={...}>`.
  *   - `pagoContext` — F8.1 (HU-F8.1 — PagoModal). The
  *     `{uuid_ingreso, total_cop}` pair that `<SalidaPanel>` pushes
  *     when opening the `pago` drawer. Read by `<DrawerHost />` and
  *     forwarded to `<PagoSheet />` so the form can build the
  *     `POST /facturacion/factura` body without re-fetching the
  *     cotizacion.
- *   - `open(kind, anchorId, placa?, pagoContext?)` — sets
- *     `openDrawer = kind`, remembers the anchor, optionally records
- *     the triggering placa, and optionally pushes the pago context.
- *     The placa and pagoContext args are optional and default to
- *     `null` so existing callers (sidebar buttons, hotkeys) stay
+ *   - `open(kind, anchorId, placa?, pagoContext?, initialUuidIngreso?)`
+ *     — sets `openDrawer = kind`, remembers the anchor, optionally
+ *     records the triggering placa, optionally pushes the pago
+ *     context, and optionally records a directly-resolved uuid_ingreso.
+ *     All four trailing args are optional and default to `null` so
+ *     existing callers (sidebar buttons, hotkeys) stay
  *     backward-compatible. Calling `open(...)` while a drawer is
  *     already open is a clean swap: only the latest drawer becomes
  *     visible.
  *   - `close()` — clears `openDrawer`, `lastAnchorId`, `initialPlaca`,
- *     and `pagoContext`. The component owning the active drawer is
- *     responsible for invoking
+ *     `initialUuidIngreso`, and `pagoContext`. The component owning
+ *     the active drawer is responsible for invoking
  *     `document.getElementById(lastAnchorId)?.focus()` in its
  *     close-effect (REQ-OPS-138 §Esc).
  *
@@ -94,6 +100,19 @@ export interface DashboardDrawerState {
    */
   initialPlaca: string | null;
   /**
+   * HU-F7.1 (búsqueda sin placa) — `uuid_ingreso` resolved directly,
+   * bypassing the placa text search. Set when the operator selects a
+   * NO-placa suggestion (identified only by `consecutivo`) from the
+   * `PlacaInputHero` autocomplete. Same lifecycle as `initialPlaca`:
+   * set by `open(...)`, cleared by `close()`. `<SalidaSheet />` reads
+   * it and forwards it to `<SalidaPanel initialUuidIngreso={...}>`,
+   * which re-runs the SAME estado-guard (`getIngresoEstado`) used for
+   * `initialPlaca` before trusting the uuid — an ingreso can appear
+   * "activo" in a stale 10s-polling snapshot but already have a
+   * registered salida.
+   */
+  initialUuidIngreso: string | null;
+  /**
    * F8.1 — pago drawer context. `null` when a non-pago drawer is
    * active (or when no drawer is open). Set by `<SalidaPanel>::handleOpenPago`
    * before `open('pago', ...)`, read by `<DrawerHost>` to forward
@@ -113,6 +132,7 @@ export interface DashboardDrawerState {
     anchorId: string,
     placa?: string | null,
     pagoContext?: PagoContext | null,
+    initialUuidIngreso?: string | null,
   ): void;
   close(): void;
 }
@@ -121,13 +141,15 @@ export const useDashboardDrawerStore = create<DashboardDrawerState>((set) => ({
   openDrawer: null,
   lastAnchorId: null,
   initialPlaca: null,
+  initialUuidIngreso: null,
   pagoContext: null,
-  open: (kind, anchorId, placa = null, pagoContext = null) =>
+  open: (kind, anchorId, placa = null, pagoContext = null, initialUuidIngreso = null) =>
     set({
       openDrawer: kind,
       lastAnchorId: anchorId,
       initialPlaca: placa,
       pagoContext: pagoContext,
+      initialUuidIngreso,
     }),
   close: () =>
     set({
@@ -135,6 +157,7 @@ export const useDashboardDrawerStore = create<DashboardDrawerState>((set) => ({
       lastAnchorId: null,
       initialPlaca: null,
       pagoContext: null,
+      initialUuidIngreso: null,
     }),
 }));
 

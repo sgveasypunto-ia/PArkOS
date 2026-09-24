@@ -9,6 +9,11 @@
  *        openDrawer + initialPlaca.
  *   SS4: open with placa → <SalidaPanel /> receives that placa as
  *        the `initialPlaca` prop so it can pre-fill the form.
+ *   SS6: open with initialUuidIngreso (HU-F7.1 consecutivo suggestion
+ *        path) → <SalidaPanel /> receives it as the `initialUuidIngreso`
+ *        prop.
+ *   SS7: close() clears initialUuidIngreso → next open without it
+ *        forwards `null`.
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -24,6 +29,7 @@ vi.mock('./SalidaPanel', () => ({
   SalidaPanel: (props: {
     uuid_ingreso: string | null;
     initialPlaca?: string | null;
+    initialUuidIngreso?: string | null;
   }) => {
     mockSalidaPanel(props);
     return <div data-testid="salida-panel-stub" />;
@@ -93,6 +99,28 @@ describe('<SalidaSheet /> — REQ-OPS-138 + F7.1 wiring', () => {
     render(<SalidaSheet />);
     expect(mockSalidaPanel).toHaveBeenCalledWith(
       expect.objectContaining({ initialPlaca: null }),
+    );
+  });
+
+  it('SS6: open with initialUuidIngreso → SalidaPanel receives it as a prop', () => {
+    useDashboardDrawerStore
+      .getState()
+      .open('salida', 'placa-hero-input', null, null, 'uuid-ingreso-consecutivo');
+    render(<SalidaSheet />);
+    expect(mockSalidaPanel).toHaveBeenCalledWith(
+      expect.objectContaining({ initialUuidIngreso: 'uuid-ingreso-consecutivo' }),
+    );
+  });
+
+  it('SS7: close() clears initialUuidIngreso — next open without it forwards null', () => {
+    useDashboardDrawerStore
+      .getState()
+      .open('salida', 'placa-hero-input', null, null, 'uuid-ingreso-consecutivo');
+    useDashboardDrawerStore.getState().close();
+    useDashboardDrawerStore.getState().open('salida', 'hotkey-chip');
+    render(<SalidaSheet />);
+    expect(mockSalidaPanel).toHaveBeenCalledWith(
+      expect.objectContaining({ initialUuidIngreso: null }),
     );
   });
 });
