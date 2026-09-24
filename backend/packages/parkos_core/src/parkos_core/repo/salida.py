@@ -172,7 +172,7 @@ async def crear_salida_evento(
 async def insertar_alerta_salida_forzado(
     session: AsyncSession,
     *,
-    uuid_sucursal: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID | None,
     uuid_salida: uuid_lib.UUID,
     actor_uuid: uuid_lib.UUID,
     motivo: str,
@@ -184,7 +184,18 @@ async def insertar_alerta_salida_forzado(
     FK commit ordering -- alerta only commits if salida OK.
 
     ``datos_nuevos`` jsonb (column added by MIGRATION 0025 in F1.6)
-    carries ``{"motivo": motivo, "uuid_salida": str(uuid_salida)}``.
+    carries ``{"motivo": motivo, "uuid_salida": str(uuid_salida),
+    "uuid_sucursal": str(uuid_sucursal) if uuid_sucursal else None}``.
+
+    NOTE (zero-bug-policy, 2026-09-23): ``uuid_sucursal`` is now nullable
+    to match the underlying :class:`Alerta` ORM column
+    (``Mapped[uuid_lib.UUID | None]``, see
+    ``models/L_W/alerta.py:45``). The previous typing
+    ``uuid_sucursal: uuid_lib.UUID`` was a typing-time lie: the ORM
+    accepted None but the function signature rejected it, causing LSP
+    errors at the call sites (``api/v1/operacion.py:660, 669``) where
+    ``target_sucursal = ingreso.uuid_sucursal`` is legitimately nullable
+    (the ingreso might not have a sucursal in pathological data).
     """
     alerta = Alerta(
         uuid_sucursal=uuid_sucursal,
@@ -196,6 +207,7 @@ async def insertar_alerta_salida_forzado(
         datos_nuevos={
             "motivo": motivo,
             "uuid_salida": str(uuid_salida),
+            "uuid_sucursal": str(uuid_sucursal) if uuid_sucursal else None,
         },
     )
     session.add(alerta)
