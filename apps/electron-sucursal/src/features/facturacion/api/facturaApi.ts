@@ -164,14 +164,16 @@ const POST_PATH = '/api/v1/facturacion/factura';
 export interface PostFacturaEfectivo {
   uuid_salida: string;
   medio_pago: 'efectivo';
-  total_cents: number;
+  subtotal: number;
+  total: number;
   cliente: { nit: string; nombre: string; email?: string | null };
 }
 
 export interface PostFacturaDatafono {
   uuid_salida: string;
   medio_pago: 'datafono';
-  total_cents: number;
+  subtotal: number;
+  total: number;
   voucher: string;
   cliente: { nit: string; nombre: string; email?: string | null };
 }
@@ -182,13 +184,15 @@ export const PostFacturaSchema = z.discriminatedUnion('medio_pago', [
   z.object({
     uuid_salida: z.string().uuid(),
     medio_pago: z.literal('efectivo'),
-    total_cents: z.number().int().nonnegative(),
+    subtotal: z.number(),
+    total: z.number().nonnegative(),
     cliente: clienteSchema,
   }),
   z.object({
     uuid_salida: z.string().uuid(),
     medio_pago: z.literal('datafono'),
-    total_cents: z.number().int().nonnegative(),
+    subtotal: z.number(),
+    total: z.number().nonnegative(),
     voucher: z.string().min(1, 'voucher_requerido'),
     cliente: clienteSchema,
   }),
