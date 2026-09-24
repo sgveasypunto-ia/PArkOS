@@ -3,6 +3,7 @@
 .atl/
 .codegraph/
 .venv/
+.venv-py313/
 node_modules/
 dist/
 build/
