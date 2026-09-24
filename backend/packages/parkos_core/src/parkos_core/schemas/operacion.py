@@ -37,12 +37,13 @@ contract (state belongs to the workflow, not to the event).
 """
 from __future__ import annotations
 
+import math
 import uuid as uuid_lib
 from datetime import datetime
-from decimal import Decimal
-from typing import Annotated, Literal
+from decimal import Decimal, InvalidOperation
+from typing import Annotated, Any, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from .common import FilterBase, ReadListBase, _Base
 
@@ -177,15 +178,29 @@ class CotizarFacturacion(_Base):
     ``motivo`` is OPTIONAL (``None`` for paths (a) and (b); the literal
     ``'segunda_placa_misma_mensualidad'`` for path (c)).
 
-    **``tiempo_minutos`` shape (apply-time correction).** The PL/pgSQL
+    **``tiempo_minutos`` shape (apply-time fix, 2026-09-23).** The PL/pgSQL
     function computes ``EXTRACT(EPOCH FROM (NOW() - fecha_ingreso)) / 60.0``
-    which returns a sub-second-precision ``numeric`` (e.g. ``89.0025``
-    for a 89-minute-old row). Postgres serializes it as a Python ``float``
-    via the asyncpg jsonb bridge, so the schema accepts ``int | float``.
-    Clients SHOULD treat it as informational (the actual billing uses
-    ``CEIL(tiempo_minutos)`` minutes inside the function); the design's
-    original ``int`` typing was relaxed in the apply phase to accept the
-    real wire value.
+    which returns a sub-second-precision ``numeric`` (e.g. ``0.109581``
+    for a row ingested 6.5 seconds ago). Postgres serializes it as a
+    Python ``float`` via the asyncpg jsonb bridge.
+
+    **Before this fix (pre-2026-09-23):** the schema declared
+    ``tiempo_minutos: int | float`` and clients received sub-second
+    precision. The operator's directive (2026-09-23): "no salga decimales
+    si no que lo aproxime al siguiente numero" — no decimals, round UP to
+    the next integer (CEIL semantics). The apply phase now coerces
+    ``tiempo_minutos`` to ``int`` via ``field_validator(mode='before')``:
+    a 6.5-second estancia → ``1`` minute, a 89-minute → ``89``,
+    a 89.0025-minute → ``90`` (rounded UP — billing-wise the operator
+    is charging for the full minute they spent in the patio).
+
+    **Decimal coercion (2026-09-23).** The PL/pgSQL function emits
+    monetary values as strings (e.g. ``"81.0"`` for ``subtotal``,
+    ``"19.0"`` for ``iva``, ``"100.0"`` for ``total``). The schema
+    declared them as ``Decimal`` since the apply phase (pre-2026-09-23)
+    which caused a runtime ``ValidationError`` blocking
+    ``POST /facturacion/factura``. The ``model_validator(mode='before')``
+    coerces string → ``Decimal`` before field validation runs.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -194,10 +209,75 @@ class CotizarFacturacion(_Base):
     subtotal: Decimal
     iva: Decimal
     total: Decimal
-    tiempo_minutos: int | float
+    tiempo_minutos: int
     tarifa_uuid: uuid_lib.UUID
     vigente_hasta: datetime
     motivo: Literal["segunda_placa_misma_mensualidad"] | None = None
+
+    @field_validator("tiempo_minutos", mode="before")
+    @classmethod
+    def _ceil_tiempo_minutos(cls, v: Any) -> int:
+        """Coerce the float/string wire value to a CEIL'd integer.
+
+        PL/pgSQL emits sub-second precision (e.g. ``0.109581`` for 6.5 s).
+        Per operator directive (2026-09-23): "no salga decimales, que lo
+        aproxime al siguiente numero" → CEIL to the next integer.
+
+        Examples:
+        - 0.109581 → 1 (sub-minute → 1 minute)
+        - 89.0 → 89
+        - 89.0025 → 90 (operator was charged 89, pays 90)
+        - 1 → 1 (no change for whole minutes)
+
+        Negative values are not expected (CotizarFacturacion represents a
+        post-cotizar positive time delta). If a future PL/pgSQL change
+        emits a negative value, we clamp to 0 — no cobrar por tiempo
+        negativo.
+        """
+        try:
+            value_f = float(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"tiempo_minutos must be numeric, got {v!r}"
+            ) from exc
+        if value_f < 0:
+            return 0
+        return math.ceil(value_f)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_decimal_strings(cls, data: Any) -> Any:
+        """Coerce string numerics → Decimal before field validation.
+
+        The PL/pgSQL ``prod.calcular_cotizacion`` function emits
+        monetary fields as strings (Postgres jsonb serializes
+        ``NUMERIC`` types as strings per the jsonb encoding contract).
+        The schema declared them as ``Decimal`` since pre-2026-09-23
+        which caused ``ValidationError`` (5 validation errors for
+        CotizarFacturacion) blocking the entire
+        ``POST /facturacion/factura`` flow.
+
+        This validator is the bridge: it accepts the wire shape
+        (``"81.0"``) and coerces it to ``Decimal('81.0')`` BEFORE
+        field-level validation. Numerics already in correct type pass
+        through untouched.
+
+        Idempotent + total: a Decimal passes through, a numeric float
+        passes through (Decimal accepts), only string→Decimal needs
+        explicit coercion.
+        """
+        if not isinstance(data, dict):
+            return data
+        for field in ("subtotal", "iva", "total"):
+            raw = data.get(field)
+            if isinstance(raw, str):
+                try:
+                    data[field] = Decimal(raw)
+                except InvalidOperation as exc:
+                    raise ValueError(
+                        f"{field} must be a valid decimal string, got {raw!r}"
+                    ) from exc
+        return data
 
 
 class CotizarMensualidad(_Base):
