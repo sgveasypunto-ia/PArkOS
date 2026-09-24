@@ -402,8 +402,8 @@ async def _bootstrap_global_hash_chain_genesis(request) -> None:
     except Exception:  # noqa: BLE001
         pytest.skip("parkos_core models / repo not importable for genesis bootstrap")
 
-    # Lazily resolve pg_engine so a cascade-skip in its dep chain does
-    # NOT abort this autouse fixture (F1.11 fix).
+    # Lazily resolve the DB dependency chain so a cascade-skip does NOT
+    # abort this autouse fixture (F1.11 fix).
     # NOTE: pytest.skip() / pytest.fail() raise ``Skipped`` / ``Failed``
     # which inherit from ``OutcomeException(BaseException)`` — NOT
     # ``Exception`` — so we MUST catch them explicitly. ``Skipped``
@@ -417,8 +417,22 @@ async def _bootstrap_global_hash_chain_genesis(request) -> None:
     # home (verified on pytest 9.x — still exported, identical MRO).
     from _pytest.outcomes import Failed, Skipped
 
+    # F1.12 fix (2026-09-24): resolving the ``pg_engine`` fixture itself
+    # via ``request.getfixturevalue`` from inside THIS already-running
+    # async fixture makes pytest-asyncio spin up a second
+    # ``asyncio.Runner`` to execute ``pg_engine``'s async-generator setup
+    # — Python 3.13's ``asyncio.Runner.run()`` raises ``RuntimeError:
+    # Runner.run() cannot be called from a running event loop`` in that
+    # case. This only ever surfaced once a real pg_partman-enabled test
+    # image made ``alembic_upgrade`` actually succeed (previously it
+    # always skipped first, so the reentrant ``getfixturevalue`` call
+    # was never reached). ``pg_async_dsn`` and ``alembic_upgrade`` are
+    # plain SYNC fixtures, so resolving THOSE via ``getfixturevalue`` is
+    # safe; we build our own short-lived engine from the same DSN
+    # instead of reusing the (async-generator) ``pg_engine`` fixture.
     try:
-        pg_engine = request.getfixturevalue("pg_engine")
+        pg_async_dsn = request.getfixturevalue("pg_async_dsn")
+        request.getfixturevalue("alembic_upgrade")
     except Skipped:
         # Upstream fixture chain skipped (Docker unreachable, etc.) —
         # silent no-op per F1.11 / F1.10 baseline.
@@ -431,23 +445,26 @@ async def _bootstrap_global_hash_chain_genesis(request) -> None:
         # call ``seed_hash_chain_genesis_row_sync`` directly.
         return
 
-    if pg_engine is None:
-        return
+    from sqlalchemy.ext.asyncio import create_async_engine
 
-    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    engine = create_async_engine(pg_async_dsn, pool_pre_ping=True)
     try:
-        async with Session() as session:
-            await _ensure_genesis_row(session, LogTransaccional, None)
-            await session.commit()
-    except Exception:  # noqa: BLE001 - DB unreachable → silent no-op (F1.10 baseline)
-        # When the Docker daemon is unreachable the upstream
-        # ``postgres_container`` fixture already yielded a sentinel; the
-        # autouse bootstrap is best-effort and MUST NOT cascade to a
-        # session-level skip (which would also block pure-Pydantic and
-        # AST-walk tests that don't need the genesis row). Tests that
-        # actually need the genesis bootstrap on a reachable DB call
-        # ``seed_hash_chain_genesis_row_sync`` directly with their own DSN.
-        return
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with Session() as session:
+                await _ensure_genesis_row(session, LogTransaccional, None)
+                await session.commit()
+        except Exception:  # noqa: BLE001 - DB unreachable → silent no-op (F1.10 baseline)
+            # When the Docker daemon is unreachable the upstream
+            # ``postgres_container`` fixture already yielded a sentinel; the
+            # autouse bootstrap is best-effort and MUST NOT cascade to a
+            # session-level skip (which would also block pure-Pydantic and
+            # AST-walk tests that don't need the genesis row). Tests that
+            # actually need the genesis bootstrap on a reachable DB call
+            # ``seed_hash_chain_genesis_row_sync`` directly with their own DSN.
+            return
+    finally:
+        await engine.dispose()
 
 
 def seed_hash_chain_genesis_row_sync(

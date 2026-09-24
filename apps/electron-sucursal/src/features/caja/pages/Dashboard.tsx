@@ -698,7 +698,7 @@ function useIngresosActivos(
         // { items: ... } as many list endpoints do). Coerce defensively
         // in case the backend shape changes.
         const json = (await parkosFetch<unknown>(
-          `/api/v1/operacion/ingresos?uuid_sucursal=${uuid_sucursal}`,
+          `/api/v1/operacion/ingresos?uuid_sucursal=${uuid_sucursal}&activo=true`,
         )) as IngresoActivo[] | { items?: IngresoActivo[] };
         if (cancelled) return;
         const list = Array.isArray(json)
