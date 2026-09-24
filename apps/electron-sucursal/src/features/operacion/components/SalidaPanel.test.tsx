@@ -334,4 +334,45 @@ describe('<SalidaPanel /> — HU-F7.1 búsqueda sin placa (T5)', () => {
     expect(input).toHaveAttribute('aria-expanded', 'true');
     expect(input).toHaveAttribute('aria-controls', listbox.id);
   });
+
+  it('S11: Escape while suggestions are open stops propagation — must not reach a window-level Escape listener (regression: Dashboard.tsx global F1-F6/Esc hotkey handler was closing the whole Sheet)', async () => {
+    mockUseCotizacion.mockReturnValue({ data: undefined, error: undefined, refresh: vi.fn() });
+    mockUseIngresosActivos.mockReturnValue([
+      {
+        uuid: UUID_INGRESO_A,
+        placa: 'ABC123',
+        fecha_ingreso: '2026-09-19T10:00:00Z',
+        consecutivo: null,
+        created_at: '2026-09-19T10:00:00Z',
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+        uuid_sucursal: 'suc-uuid-1',
+      },
+    ]);
+
+    // Dashboard.tsx wires a global `window.addEventListener('keydown', ...)`
+    // that closes ANY open drawer on Escape — a real, pre-existing,
+    // app-wide hotkey convention that this test does NOT mock away, so
+    // it exercises the ACTUAL bubbling mechanism that caused the bug
+    // (found via live Chrome DevTools validation, not by the
+    // component-only tests above, which never render a window listener).
+    const windowEscapeSpy = vi.fn();
+    window.addEventListener('keydown', windowEscapeSpy);
+
+    render(<SalidaPanel uuid_ingreso={null} />);
+    const input = screen.getByTestId('salida-placa');
+    await userEvent.type(input, 'ABC');
+    await screen.findByRole('listbox');
+    // `userEvent.type` above already bubbled 3 (non-Escape) keydowns to
+    // `window` — that is legitimate (F1-F6 must always reach Dashboard).
+    // Reset the spy so the assertion below is scoped to the Escape
+    // keydown only.
+    windowEscapeSpy.mockClear();
+
+    fireEvent.keyDown(input, { key: 'Escape', code: 'Escape', bubbles: true });
+
+    expect(windowEscapeSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole('listbox')).toBeNull();
+
+    window.removeEventListener('keydown', windowEscapeSpy);
+  });
 });

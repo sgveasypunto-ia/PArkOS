@@ -99,12 +99,26 @@ export interface SalidaPanelProps {
    * already have a registered salida.
    */
   initialUuidIngreso?: string | null;
+  /**
+   * HU-F7.1 bugfix (found in live browser validation, not caught by
+   * component-only tests): reports whenever the `salida-placa`
+   * suggestion listbox opens/closes. `<SalidaSheet />` uses this to
+   * wire `<SheetContent onEscapeKeyDown>` — Radix's Dialog attaches
+   * its Escape-to-close listener on `document` with `capture: true`,
+   * which fires BEFORE this panel's own bubble-phase `onKeyDown` on
+   * the field ever runs. Without this callback, Escape-to-close-the-
+   * suggestions always also closes the WHOLE Sheet (losing whatever
+   * the operator typed), because the parent has no way to know a
+   * nested popup should absorb that Escape first.
+   */
+  onSuggestionsOpenChange?: (open: boolean) => void;
 }
 
 export function SalidaPanel({
   uuid_ingreso: uuid_ingresoProp,
   initialPlaca = null,
   initialUuidIngreso = null,
+  onSuggestionsOpenChange,
 }: SalidaPanelProps): JSX.Element {
   const { t } = useTranslation(['operacion', 'facturacion']);
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
@@ -176,6 +190,15 @@ export function SalidaPanel({
   const isSuggestionsOpen = !suggestionsClosed && candidates.length > 0;
   const activeOptionId =
     activeIndex >= 0 ? vehiculoSuggestionOptionId(listboxId, activeIndex) : undefined;
+
+  // HU-F7.1 bugfix — let the parent Sheet know whether the suggestion
+  // popup is open so it can absorb Escape at the SheetContent level
+  // (see `onSuggestionsOpenChange` doc above). `useEffect` (not inline
+  // during render) because calling a parent state setter during this
+  // component's own render is unsafe.
+  useEffect(() => {
+    onSuggestionsOpenChange?.(isSuggestionsOpen);
+  }, [isSuggestionsOpen, onSuggestionsOpenChange]);
 
   /**
    * Estado-guard factored out so it runs IDENTICALLY regardless of the
@@ -333,7 +356,20 @@ export function SalidaPanel({
     }
     if (e.key === 'Escape') {
       if (isSuggestionsOpen) {
+        // `stopPropagation` (not just `preventDefault`) is required:
+        // `Dashboard.tsx` wires a GLOBAL `window.addEventListener(
+        // 'keydown', ...)` that unconditionally closes any open drawer
+        // on Escape (`if (openDrawerKind !== null) closeDrawer()`) —
+        // it never checks `event.defaultPrevented`. Found via live
+        // Chrome DevTools validation: with only `preventDefault()`,
+        // selecting/dismissing a suggestion via Escape ALSO closed the
+        // whole `<SalidaSheet />`, discarding whatever the operator had
+        // typed. `SheetContent`'s `onEscapeKeyDown` (see
+        // `<SalidaSheet />`) separately stops Radix's OWN
+        // capture-phase Escape-to-dismiss, which runs before this
+        // handler and does not share an event object with it.
         e.preventDefault();
+        e.stopPropagation();
         setSuggestionsClosed(true);
         setActiveIndex(-1);
       }
