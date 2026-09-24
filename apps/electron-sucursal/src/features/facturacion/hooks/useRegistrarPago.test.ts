@@ -129,11 +129,9 @@ describe('useRegistrarPago — HU-F8.4 (FE consumidor final + Idempotency-Key)',
       data = await result.current.trigger({
         uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
-        total_cents: 41000,
-        cliente: {
-          nit: '222222222222222',
-          nombre: 'Consumidor final',
-        },
+        items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 41000 }],
+        subtotal: 34454,
+        total: 41000,
       });
     });
 
@@ -164,11 +162,9 @@ describe('useRegistrarPago — HU-F8.4 (FE consumidor final + Idempotency-Key)',
       triggerPromise = result.current.trigger({
         uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
-        total_cents: 41000,
-        cliente: {
-          nit: '222222222222222',
-          nombre: 'Consumidor final',
-        },
+        items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 41000 }],
+        subtotal: 34454,
+        total: 41000,
       });
     });
     await act(async () => {
@@ -203,8 +199,9 @@ describe('useRegistrarPago — HU-F8.4 (FE consumidor final + Idempotency-Key)',
         .trigger({
           uuid_salida: UUID_SALIDA,
           medio_pago: 'efectivo',
-          total_cents: 41000,
-          cliente: { nit: '222222222222222', nombre: 'Consumidor final' },
+          items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 41000 }],
+          subtotal: 34454,
+          total: 41000,
         })
         .catch(() => undefined);
     });
@@ -222,16 +219,18 @@ describe('useRegistrarPago — HU-F8.4 (FE consumidor final + Idempotency-Key)',
       await result.current.trigger({
         uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
-        total_cents: 41000,
-        cliente: { nit: '222222222222222', nombre: 'Consumidor final' },
+        items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 41000 }],
+        subtotal: 34454,
+        total: 41000,
       });
     });
     await act(async () => {
       await result.current.trigger({
         uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
-        total_cents: 41000,
-        cliente: { nit: '222222222222222', nombre: 'Consumidor final' },
+        items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 41000 }],
+        subtotal: 34454,
+        total: 41000,
       });
     });
 

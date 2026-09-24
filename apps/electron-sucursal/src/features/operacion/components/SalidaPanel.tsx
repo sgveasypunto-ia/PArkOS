@@ -226,14 +226,16 @@ export function SalidaPanel({
     // overlay click / Escape). Without it the ingreso would stay
     // `cerrado` and the cobro would be unrecoverable.
     //
-    // `total_cop` is the freshly-validated `cotizacion.total` that
-    // the operator just approved by clicking "Cobrar".
+    // `total_cop` / `subtotal_cop` are the freshly-validated
+    // `cotizacion.total` / `cotizacion.subtotal` that the operator
+    // just approved by clicking "Cobrar".
     if (!uuid_ingreso || !cotizacion || cotizacion.cobrar === false) {
       return;
     }
     open('pago', pagoAnchorId, null, {
       uuid_ingreso,
       uuid_salida,
+      subtotal_cop: cotizacion.subtotal,
       total_cop: cotizacion.total,
     });
   }, [open, pagoAnchorId, uuid_ingreso, cotizacion]);

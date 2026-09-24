@@ -55,6 +55,44 @@ vi.mock('../hooks/useAnularSalidaNoPagada', () => ({
   useAnularSalidaNoPagada: () => ({ trigger: mockAnularTrigger }),
 }));
 
+// Bug 22 (2026-09-23): stub `useRegistrarPago` so P8-P10 can assert the
+// EXACT POST payload `handleSubmit` builds, without hitting the BE. The
+// resolved value is a minimally-complete `FacturaRead` shape so
+// `<FacturaDisplayModal />` (mounted after a successful pago) renders
+// without crashing on missing nested fields.
+const FACTURA_MOCK = {
+  uuid: 'factura-1',
+  created_at: '2026-09-24T00:00:00',
+  uuid_sucursal: 'suc-1',
+  uuid_ingreso: 'uuid-1',
+  uuid_salida: 'salida-1',
+  subtotal: 4200,
+  descuento: 0,
+  total: 5000,
+  uuid_cliente: null,
+  items: [
+    { uuid: 'item-1', tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 5000, subtotal: 5000 },
+  ],
+  estado: 'pagada',
+  medio_pago: 'efectivo',
+  monto_recibido_cents: null,
+  vuelto_cents: null,
+  voucher: null,
+  numero_recibo: 'BOG-CEN-20260924-000001',
+  cliente: null,
+  datos_sucursal: {
+    razon_social: null, nit: null, direccion: null, ciudad: null, telefono: null, horario: null, regimen: null,
+  },
+  datos_vehiculo: null,
+  impuestos: [],
+  pagos: [],
+  factura_electronica: null,
+};
+const mockTrigger = vi.fn().mockResolvedValue(FACTURA_MOCK);
+vi.mock('../hooks/useRegistrarPago', () => ({
+  useRegistrarPago: () => ({ trigger: mockTrigger, isMutating: false, error: undefined, data: undefined }),
+}));
+
 vi.mock('@parkos/ui-kit/hooks', () => ({
   useAuth: () => ({
     sucursal: { uuid: '00000000-0000-0000-0000-00000000br01' },
@@ -77,16 +115,18 @@ beforeEach(() => {
   cleanup();
   mockAnularTrigger.mockClear();
   mockAnularTrigger.mockResolvedValue({ uuid: 'anul-uuid' });
+  mockTrigger.mockClear();
+  mockTrigger.mockResolvedValue(FACTURA_MOCK);
 });
 
 describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   it('P1: closed by default — fields do not render', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
     expect(screen.queryByTestId('pago-medio-pago')).toBeNull();
   });
 
   it('P2: open via store → fields render with FE consumidor-final default', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
     act(() => useDashboardDrawerStore.getState().open('pago', 'anchor-x'));
     // After open, the Sheet primitive mounts content.
     // We don't assert on testids directly here because Radix Sheet
@@ -95,11 +135,12 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   });
 
   it('P3: open + PagoModal "Confirmar pago" button is reachable', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
     act(() => {
       useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
         uuid_ingreso: 'uuid-1',
         uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
         total_cop: 5000,
       });
     });
@@ -112,7 +153,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   });
 
   it('P4: cancel button invokes close()', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
     act(() => useDashboardDrawerStore.getState().open('pago', 'anchor-x'));
     const cancelBtn = screen.queryByTestId('pago-cancelar');
     if (cancelBtn) {
@@ -124,7 +165,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   });
 
   it('P5: store swap from pago → arqueo enforces single-drawer invariant', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
     act(() => useDashboardDrawerStore.getState().open('pago', 'anchor-pago'));
     expect(useDashboardDrawerStore.getState().openDrawer).toBe('pago');
     act(() => useDashboardDrawerStore.getState().open('arqueo', 'anchor-arqueo'));
@@ -140,6 +181,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
       <PagoSheet
         uuid_ingreso="uuid-1"
         uuid_salida="salida-pending"
+        subtotal_cop={4200}
         total_cop={5000}
       />,
     );
@@ -147,6 +189,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
       useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
         uuid_ingreso: 'uuid-1',
         uuid_salida: 'salida-pending',
+        subtotal_cop: 4200,
         total_cop: 5000,
       }),
     );
@@ -169,11 +212,12 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   });
 
   it('P7 (F8.1-b): cancel button + uuid_salida=null (legacy) → NO annulment, just close', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} subtotal_cop={4200} total_cop={5000} />);
     act(() =>
       useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
         uuid_ingreso: 'uuid-1',
         uuid_salida: null,
+        subtotal_cop: 4200,
         total_cop: 5000,
       }),
     );
@@ -184,5 +228,84 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     fireEvent.click(cancelBtn);
     expect(mockAnularTrigger).not.toHaveBeenCalled();
     expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+  });
+
+  // -----------------------------------------------------------------
+  // Bug 22 (2026-09-23): FacturaCreate contract — items[] required,
+  // no `cliente` field, datafono voucher travels as `referencia`.
+  // Every payment was failing 422 before this fix.
+  // -----------------------------------------------------------------
+  it('P8 (Bug 22): submit efectivo consumidor final → payload has items[] + subtotal/total split, no cliente/fe keys', async () => {
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
+        total_cop: 5000,
+      }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    expect(mockTrigger).toHaveBeenCalledWith({
+      uuid_salida: 'salida-1',
+      medio_pago: 'efectivo',
+      items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 5000 }],
+      subtotal: 4200,
+      total: 5000,
+    });
+  });
+
+  it('P9 (Bug 22): submit with FE toggle on → payload carries fe_con_datos + fe_datos_cliente, no cliente key', async () => {
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
+        total_cop: 5000,
+      }),
+    );
+    fireEvent.click(screen.getByTestId('pago-fe-toggle'));
+    fireEvent.change(screen.getByTestId('pago-nit'), { target: { value: '900123456' } });
+    fireEvent.change(screen.getByTestId('pago-fe-dv'), { target: { value: '7' } });
+    fireEvent.change(screen.getByTestId('pago-fe-nombre'), { target: { value: 'Cliente Prueba' } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    const payload = mockTrigger.mock.calls[mockTrigger.mock.calls.length - 1][0];
+    expect(payload).toMatchObject({
+      fe_con_datos: true,
+      fe_datos_cliente: {
+        tipo_identificador: 'NIT',
+        numero_identificacion: '900123456',
+        dv: '7',
+        nombre: 'Cliente Prueba',
+      },
+    });
+    expect(payload.cliente).toBeUndefined();
+  });
+
+  it('P10 (Bug 22): submit datafono → payload carries referencia (not voucher)', async () => {
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
+        total_cop: 5000,
+      }),
+    );
+    fireEvent.change(screen.getByTestId('pago-medio-pago'), { target: { value: 'datafono' } });
+    fireEvent.change(screen.getByTestId('pago-voucher'), { target: { value: 'VOUCHER-123' } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    const payload = mockTrigger.mock.calls[mockTrigger.mock.calls.length - 1][0];
+    expect(payload.medio_pago).toBe('datafono');
+    expect(payload.referencia).toBe('VOUCHER-123');
+    expect(payload.voucher).toBeUndefined();
+    expect(payload.items).toEqual([{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 5000 }]);
   });
 });

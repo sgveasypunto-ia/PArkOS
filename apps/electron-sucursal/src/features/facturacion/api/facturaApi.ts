@@ -48,6 +48,24 @@ import { z } from 'zod';
  */
 const emailRfc5322Lite = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * Bug 23 (2026-09-24): Pydantic v2 serializes `Decimal` fields to a
+ * JSON STRING (e.g. `"81.0000"`), not a number — every money field on
+ * `FacturaRead` (`schemas/facturacion.py` — `subtotal`, `descuento`,
+ * `total`, `FacturaItemRead.valor_unitario/subtotal`,
+ * `FacturaDisplayImpuesto.*`, `FacturaDisplayPago.valor`) is
+ * `Decimal`-backed. Plain `z.number()` rejected every one of them,
+ * so `FacturaReadSchema.parse(raw)` threw on EVERY successful pago —
+ * `<FacturaDisplayModal />` and the post-pago print never ran, even
+ * though the BE had already persisted the factura. These helpers
+ * accept either shape and normalize to a JS number for display.
+ */
+const decimalNumber = z.union([z.number(), z.string()]).transform((v) => Number(v));
+const decimalNumberNullable = z
+  .union([z.number(), z.string()])
+  .nullable()
+  .transform((v) => (v === null ? null : Number(v)));
+
 const clienteSchema = z.object({
   nit: z.string().nullable(),
   dv: z.string().nullable().optional(),
@@ -80,15 +98,15 @@ const impuestoDisplaySchema = z.object({
   uuid_impuesto: z.string().uuid().nullable(),
   nombre_impuesto: z.string().nullable(),
   codigo_impuesto: z.string().nullable(),
-  base_calculo: z.number().nullable(),
-  porcentaje_aplicado: z.number().nullable(),
-  valor: z.number().nullable(),
+  base_calculo: decimalNumberNullable,
+  porcentaje_aplicado: decimalNumberNullable,
+  valor: decimalNumberNullable,
 });
 
 const pagoDisplaySchema = z.object({
   uuid: z.string().uuid(),
   medio_pago: z.string().nullable(),
-  valor: z.number().nullable(),
+  valor: decimalNumberNullable,
   referencia: z.string().nullable(),
 });
 
@@ -105,8 +123,8 @@ const itemSchema = z.object({
   tipo: z.string(),
   concepto: z.string(),
   cantidad: z.number().int(),
-  valor_unitario: z.number(),
-  subtotal: z.number(),
+  valor_unitario: decimalNumber,
+  subtotal: decimalNumber,
 });
 
 /**
@@ -124,9 +142,9 @@ export const FacturaReadSchema = z.object({
   uuid_sucursal: z.string().uuid(),
   uuid_ingreso: z.string().uuid().nullable(),
   uuid_salida: z.string().uuid().nullable(),
-  subtotal: z.number(),
-  descuento: z.number(),
-  total: z.number(),
+  subtotal: decimalNumber,
+  descuento: decimalNumber,
+  total: decimalNumber,
   uuid_cliente: z.string().uuid().nullable(),
   items: z.array(itemSchema),
   estado: z.enum(['emitida', 'pagada', 'anulada']),
@@ -149,52 +167,102 @@ export type FacturaRead = z.infer<typeof FacturaReadSchema>;
 const POST_PATH = '/api/v1/facturacion/factura';
 
 /**
- * BE↔FE fix (HU-F8.4, 2026-09-23): the BE's `FacturaCreate` requires
- * `uuid_salida` (the salida created by `POST /operacion/salidas`
- * before the pago) and `items[]` (server-side computed from the
- * tarifa structure). The FE previously sent `uuid_ingreso` only;
- * the BE would have rejected with 422 (silent pago). The new
- * payload carries `uuid_salida` so the BE matches its contract.
+ * BE↔FE fix (Bug 22, 2026-09-23): the BE's `FacturaCreate`
+ * (`schemas/facturacion.py:568`) requires `uuid_salida`, a non-empty
+ * `items[]` (server does NOT derive them — `extra='forbid'` also
+ * rejects any unknown field), `subtotal` (pre-IVA base, display-only
+ * — stored verbatim, never cross-checked), and `total` (validated
+ * server-side against `sum(item.cantidad * item.valor_unitario)`
+ * within ±0.01 COP — see `repo.factura.compute_total`). There is NO
+ * `cliente` field: consumidor final is the default (`fe_con_datos`
+ * omitted/false); a named invoice sets `fe_con_datos: true` +
+ * `fe_datos_cliente`. `datafono` voucher travels as `referencia`
+ * (shared with `medio_pago='datafono'` V7 `voucher_requerido`),
+ * NOT `voucher`.
  *
- * Items are NOT sent from the FE because the BE derives them from
- * the tarifa structure (DEC-FACT-03: server-side IVA recompute).
- * The FE only sends the discriminator + monetary totals + cliente.
- * The BE returns the per-item breakdown in `FacturaRead.items[]`.
+ * The single line item mirrors the cotización's tarifa snapshot:
+ * one `tipo: 'servicio'` line whose `valor_unitario` equals `total`
+ * (the PL/pgSQL `calcular_cotizacion` base — see `compute_total`
+ * docstring), cantidad 1.
  */
+export interface FacturaItemPost {
+  tipo: 'servicio' | 'producto';
+  concepto: string;
+  cantidad: number;
+  valor_unitario: number;
+  uuid_tarifa_sucursal?: string | null;
+}
+
+export interface FacturaClienteDatosPost {
+  tipo_identificador: 'NIT' | 'CC' | 'CE' | 'pasaporte';
+  numero_identificacion: string;
+  dv?: string | null;
+  nombre: string;
+  apellido?: string | null;
+  email?: string | null;
+  telefono?: string | null;
+}
+
 export interface PostFacturaEfectivo {
   uuid_salida: string;
   medio_pago: 'efectivo';
+  items: FacturaItemPost[];
   subtotal: number;
   total: number;
-  cliente: { nit: string; nombre: string; email?: string | null };
+  fe_con_datos?: boolean;
+  fe_datos_cliente?: FacturaClienteDatosPost;
 }
 
 export interface PostFacturaDatafono {
   uuid_salida: string;
   medio_pago: 'datafono';
+  items: FacturaItemPost[];
   subtotal: number;
   total: number;
-  voucher: string;
-  cliente: { nit: string; nombre: string; email?: string | null };
+  referencia: string;
+  fe_con_datos?: boolean;
+  fe_datos_cliente?: FacturaClienteDatosPost;
 }
 
 export type PostFacturaPayload = PostFacturaEfectivo | PostFacturaDatafono;
+
+const facturaItemPostSchema = z.object({
+  tipo: z.enum(['servicio', 'producto']),
+  concepto: z.string().min(1).max(255),
+  cantidad: z.number().int().positive(),
+  valor_unitario: z.number().nonnegative(),
+  uuid_tarifa_sucursal: z.string().uuid().nullable().optional(),
+});
+
+const facturaClienteDatosPostSchema = z.object({
+  tipo_identificador: z.enum(['NIT', 'CC', 'CE', 'pasaporte']),
+  numero_identificacion: z.string().min(5).max(20),
+  dv: z.string().min(1).max(2).nullable().optional(),
+  nombre: z.string().min(1).max(120),
+  apellido: z.string().min(1).max(120).nullable().optional(),
+  email: z.string().min(5).max(120).nullable().optional(),
+  telefono: z.string().min(7).max(20).nullable().optional(),
+});
 
 export const PostFacturaSchema = z.discriminatedUnion('medio_pago', [
   z.object({
     uuid_salida: z.string().uuid(),
     medio_pago: z.literal('efectivo'),
+    items: z.array(facturaItemPostSchema).min(1).max(50),
     subtotal: z.number(),
     total: z.number().nonnegative(),
-    cliente: clienteSchema,
+    fe_con_datos: z.boolean().optional(),
+    fe_datos_cliente: facturaClienteDatosPostSchema.optional(),
   }),
   z.object({
     uuid_salida: z.string().uuid(),
     medio_pago: z.literal('datafono'),
+    items: z.array(facturaItemPostSchema).min(1).max(50),
     subtotal: z.number(),
     total: z.number().nonnegative(),
-    voucher: z.string().min(1, 'voucher_requerido'),
-    cliente: clienteSchema,
+    referencia: z.string().min(1, 'voucher_requerido'),
+    fe_con_datos: z.boolean().optional(),
+    fe_datos_cliente: facturaClienteDatosPostSchema.optional(),
   }),
 ]);
 
