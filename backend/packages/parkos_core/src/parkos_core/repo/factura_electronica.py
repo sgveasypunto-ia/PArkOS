@@ -303,7 +303,7 @@ async def crear_envio_dian_reintento(
     session: AsyncSession,
     *,
     actor_uuid: uuid_lib.UUID,
-    uuid_sucursal: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID | None,
     uuid_factura_electronica: uuid_lib.UUID,
     uuid_resolucion_facturacion: uuid_lib.UUID,
     payload: dict[str, Any],
@@ -314,6 +314,14 @@ async def crear_envio_dian_reintento(
     Sets ``uuid_envio_padre=<tip.uuid>``, ``estado='pendiente'``, ``cufe=NULL``.
 
     The chain IS the audit trail. NEVER UPDATE on existing envio rows.
+
+    NOTE (zero-bug-policy, 2026-09-23): ``uuid_sucursal`` is nullable
+    to match the underlying :class:`EnvioDian` ORM column
+    (``Mapped[uuid_lib.UUID | None]``, see
+    ``models/L_W/envio_dian.py:31``). The previous typing was a lie —
+    callers passed ``fe_row.uuid_sucursal`` (nullable at the DB
+    level), causing the LSP error at the call site
+    ``api/v1/facturacion.py:1007``.
     """
     fecha_retencion_hasta = date.today() + timedelta(days=5 * 365)
     envio_row = EnvioDian(
