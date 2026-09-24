@@ -246,7 +246,7 @@ async def _seed_iva(
             Impuestos(
                 uuid=uuid_lib.uuid4(),
                 nombre=nombre,
-                codigo=f"COD-{nombre}-{uuid_lib.uuid4().hex[:6]}",
+                codigo="IVA",
                 porcentaje=porcentaje,
                 tipo_calculo="porcentaje",
                 base_calculo="subtotal",

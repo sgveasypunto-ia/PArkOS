@@ -215,7 +215,7 @@ async def _seed_minimal_happy_path(
             Impuestos(
                 uuid=uuid_lib.uuid4(),
                 nombre="IVA",
-                codigo=f"IVA-{uuid_lib.uuid4().hex[:6]}",
+                codigo="IVA",
                 porcentaje=Decimal("0.19"),
                 tipo_calculo="porcentaje",
                 base_calculo="subtotal",
@@ -1174,10 +1174,102 @@ async def test_calcular_cotizacion_db_trunca_tiempo_a_dia_bogota_actual(
     )
 
 
+# ---------------------------------------------------------------------------
+# Caso 8 — REGRESSION (2026-09-24, reporte de instalación en pruebas):
+# ``calcular_cotizacion`` debe resolver el IVA vigente por ``codigo``
+# (UK01 real del catálogo, `modelo_datos_er.mmd:192`), NO por ``nombre``
+# (columna sin restricción de unicidad, puramente cosmética).
+#
+# Bug reproducido en vivo: un operador reportó "error con el valor de IVA
+# que deriva en la tabla de salidas" al intentar generar una salida en una
+# instalación recién configurada ("desde pruebas"). Causa raíz: dos
+# fixtures de test (`test_calcular_cotizacion_db.py` y
+# `test_calcular_cotizacion.py`) sembraban `prod.impuestos.codigo` con un
+# sufijo aleatorio (`f"IVA-{uuid4().hex[:6]}"`) mientras dejaban
+# `nombre='IVA'` literal. Cuando esos tests corren con
+# `PARKOS_DOCKER_TEST=1` (el modo documentado para ejecutar la suite
+# dentro del contenedor desplegado, sin socket Docker-in-Docker), su
+# `TRUNCATE` + reseed sobrescribe el `prod.impuestos` REAL de la
+# instalación con ese dato corrupto. La función PL/pgSQL filtraba por
+# `nombre = 'IVA'` (aún vigente ahí) mientras que TODO el resto del
+# sistema — `repo/impuestos.py::obtener_iva_vigente`,
+# `repo/factura.py::crear_factura_impuesto_iva`, y el `natural_key`
+# de sync (`sync_entries_v.py::_IMPUESTOS`) — ya resolvía por `codigo`.
+# Cualquier divergencia entre ambas columnas rompe un lado sin romper
+# el otro (visto dos veces: ayer bug de factura, hoy bug de salida).
+#
+# Fix: migration 0049 cambia el Step 4 de `calcular_cotizacion` para
+# usar `codigo = 'IVA'`, unificando la fuente de verdad con el resto
+# del sistema. Este test seedea `codigo='IVA'` con `nombre=NULL`
+# (exactamente la divergencia real observada) y confirma que la
+# cotización sigue funcionando — antes del fix 0049 este test es RED
+# (retorna `iva_no_configurado` porque `nombre IS NULL <> 'IVA'`).
+# ---------------------------------------------------------------------------
+
+
+async def test_calcular_cotizacion_db_resuelve_iva_por_codigo_no_por_nombre(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """REGRESSION (2026-09-24): el IVA se resuelve por ``codigo``, no ``nombre``.
+
+    Simula la divergencia real: ``codigo='IVA'`` correcto (la clave de
+    negocio real, UK01 del catálogo) pero ``nombre`` roto/ausente. La
+    cotización DEBE seguir funcionando porque ``codigo`` es la fuente
+    de verdad — ``nombre`` es solo una etiqueta cosmética sin
+    restricción de unicidad.
+    """
+    await _truncate_tables(pg_dsn)
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    tipo_tarifa_uuid = uuid_lib.uuid4()
+
+    ingreso_uuid = await _seed_minimal_happy_path(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        uuid_tipo_tarifa=tipo_tarifa_uuid,
+        minutos_en_estacionamiento=89,
+    )
+
+    # Rompe ``nombre`` (deja ``codigo='IVA'`` intacto) — reproduce
+    # exactamente la divergencia real observada en la instalación.
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        await session.execute(
+            text(
+                "UPDATE prod.impuestos SET nombre = NULL "
+                "WHERE codigo = 'IVA' AND vigente_hasta IS NULL"
+            )
+        )
+        await session.commit()
+
+    async with Session() as session:
+        payload = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_uuid)},
+            )
+        ).scalar_one()
+
+    assert payload.get("cobrar") is True, (
+        f"REGRESSION: calcular_cotizacion debe resolver el IVA vigente "
+        f"por codigo='IVA' (UK01 real) incluso cuando nombre es NULL/"
+        f"distinto — nombre no tiene restricción de unicidad y no debe "
+        f"ser la clave de resolución fiscal; got {payload!r}"
+    )
+    assert payload.get("error") is None, (
+        f"NO debe retornar iva_no_configurado cuando codigo='IVA' existe "
+        f"vigente, sin importar el valor de nombre; got {payload!r}"
+    )
+    assert Decimal(str(payload["iva"])) > 0
+
+
 __all__ = [
     "test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos",
     "test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo",
     "test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at",
+    "test_calcular_cotizacion_db_resuelve_iva_por_codigo_no_por_nombre",
     "test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigente",
     "test_calcular_cotizacion_db_trunca_tiempo_a_dia_bogota_actual",
     "test_calcular_cotizacion_db_unidad_minutos_siempre_uno",
