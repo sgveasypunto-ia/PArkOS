@@ -49,9 +49,10 @@ from ...api.deps import get_tenant_ctx, requires_issuer
 from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext
 from ...db.engine import get_session
+from ...models.A.salidas import Salidas
 from ...models.L_E.ingreso import Ingreso
 from ...models.L_S.sesion import Sesion
-from ...models.A.salidas import Salidas
+from ...models.L_W.anulaciones import Anulaciones
 from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.vehiculos import Vehiculos
@@ -950,17 +951,40 @@ async def get_ingreso_estado(
 async def list_ingresos(
     uuid_sucursal: uuid_lib.UUID | None = None,
     placa: str | None = None,
+    activo: bool | None = None,
     limit: int = 50,
     session: AsyncSession = Depends(get_session),  # noqa: B008
     _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_ingreso_issuer_dep),
 ) -> list[IngresoRead]:
-    """List recent ingresos (filters: uuid_sucursal, placa). No cursor pagination (yet)."""
+    """List recent ingresos (filters: uuid_sucursal, placa, activo).
+
+    No cursor pagination (yet). ``activo=true`` (HU-F6.1, plan.md linea
+    1518/2454) restringe a ingresos sin salida vigente -- misma
+    semantica de exclusion que ``V_INGRESO_ESTADO`` /
+    ``repo/salida.py::buscar_ingreso_activo_por_uuid``: un ingreso con
+    una salida ``ejecutada``-anulada sigue contando como activo (el
+    vehiculo nunca salio realmente, HU-F8.1).
+    """
     stmt = select(Ingreso)
     if uuid_sucursal is not None:
         stmt = stmt.where(Ingreso.uuid_sucursal == uuid_sucursal)
     if placa is not None:
         stmt = stmt.where(Ingreso.placa == placa)
+    if activo:
+        salida_vigente = (
+            select(Salidas.uuid)
+            .where(Salidas.uuid_ingreso == Ingreso.uuid)
+            .where(
+                ~(
+                    select(Anulaciones.uuid)
+                    .where(Anulaciones.uuid_salida == Salidas.uuid)
+                    .where(Anulaciones.tipo_anulable == "salida")
+                    .where(Anulaciones.estado == "ejecutada")
+                ).exists()
+            )
+        )
+        stmt = stmt.where(~salida_vigente.exists())
     stmt = stmt.order_by(Ingreso.created_at.desc()).limit(min(limit, 200))
     result = await session.execute(stmt)
     return [IngresoRead.model_validate(r) for r in result.scalars().all()]
