@@ -75,8 +75,12 @@ const MAX_VARIANTES_TOTAL = 729;
 /**
  * Normaliza una placa digitada: trim + uppercase + strip whitespace.
  * Espejo verbatim de `placa.ts:79` (DEC-F4.1-02). NO incluye tolerancia.
+ *
+ * Exportada (HU-F7.1, búsqueda sin placa) para que `vehiculoMatch.ts`
+ * reuse la MISMA normalización al rankear sugerencias por prefijo de
+ * placa — evita reinventar la normalización en un tercer archivo.
  */
-function normalizarPlaca(placa: string): string {
+export function normalizarPlaca(placa: string): string {
   return placa.trim().toUpperCase().replace(/\s+/g, '');
 }
 

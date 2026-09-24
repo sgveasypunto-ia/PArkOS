@@ -63,7 +63,7 @@
  * del operador ("si no hay no deben aparecer"). Cuando se wire-ee el
  * endpoint, queda en follow-up (1 línea: agregar al response shape).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -76,7 +76,7 @@ import {
   Receipt,
 } from 'lucide-react';
 
-import { ParkosHttpError, parkosFetch } from '@parkos/ui-kit/fetch';
+import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
@@ -85,18 +85,24 @@ import { FacturaElectronicaRetryPanel } from '../../facturacion/components/Factu
 import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
 import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
+import { useIngresosActivos } from '../../operacion/hooks/useIngresosActivos';
 import { getIngresosByPlaca } from '../../operacion/api/ingresoActivoApi';
+import {
+  matchVehiculos,
+  vehiculoSuggestionOptionId,
+  getNextSuggestionIndex,
+  type VehiculoMatch,
+} from '../../operacion/lib/vehiculoMatch';
+import { VehiculoSuggestions } from '../../operacion/components/VehiculoSuggestions';
 import { formatCOP, formatHoraCorta } from '../lib/format';
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import {
   Tooltip,
   TooltipContent,
@@ -546,8 +552,21 @@ export function Dashboard(): JSX.Element | null {
 
 // ── Sub-components ───────────────────────────────────────────────────────
 
+/**
+ * Native input chars a typed plate can still contain WITHOUT losing the
+ * "pure placa" auto-uppercase/strip-whitespace formatting (HU-F7.1, T5).
+ * A consecutivo (`<TIPO>-NNNNNN-<uuid8>`, ej. `PATINETA-000003-34a24bae`)
+ * introduces a `-` and lowercase hex — once that shape shows up we STOP
+ * forcing the placa transform so the trailing uuid8 fragment survives
+ * as typed. Matching itself stays case-insensitive regardless
+ * (`matchVehiculos` normalizes both sides).
+ */
+const PLACA_SHAPE_REGEX = /^[A-Za-z0-9\s]*$/;
+/** Generous cap — long enough for a full consecutivo, short of unbounded. */
+const PLACA_HERO_MAX_LEN = 30;
+
 function PlacaInputHero({
-  uuid_sucursal: _uuid_sucursal,
+  uuid_sucursal,
 }: {
   uuid_sucursal: string | null;
 }): JSX.Element {
@@ -566,8 +585,50 @@ function PlacaInputHero({
   const probePlaca = normalized.length >= 5 ? normalized : null;
   const { latestIngreso } = useIngresoActivo(probePlaca);
 
+  // HU-F7.1 (búsqueda sin placa, T5) — live suggestions sourced from the
+  // SAME "vehículos dentro" snapshot `<VehiculosDentroList />` polls
+  // (extracted hook, no new endpoint). Placa suggestions always resolve
+  // to `salida` (every candidate here is, by construction, active);
+  // no-placa (consecutivo) suggestions hand off via `initialUuidIngreso`
+  // instead of `initialPlaca` (point 5 of the store contract).
+  const items = useIngresosActivos(uuid_sucursal);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [suggestionsClosed, setSuggestionsClosed] = useState(false);
+  const listboxId = useId();
+  const candidates = useMemo(() => matchVehiculos(items ?? [], value), [items, value]);
+  const isSuggestionsOpen = !suggestionsClosed && candidates.length > 0;
+  const activeOptionId =
+    activeIndex >= 0 ? vehiculoSuggestionOptionId(listboxId, activeIndex) : undefined;
+
   function handleChange(e: React.ChangeEvent<HTMLInputElement>): void {
-    setValue(e.target.value.toUpperCase().replace(/\s+/g, '').slice(0, 6));
+    const raw = e.target.value;
+    const looksLikePlaca = PLACA_SHAPE_REGEX.test(raw);
+    const next = looksLikePlaca
+      ? raw.toUpperCase().replace(/\s+/g, '').slice(0, PLACA_HERO_MAX_LEN)
+      : raw.slice(0, PLACA_HERO_MAX_LEN);
+    setValue(next);
+    setActiveIndex(-1);
+    setSuggestionsClosed(false);
+  }
+
+  /** Selecting a suggestion (click or Enter-on-highlighted) — shared by both paths. */
+  function selectCandidate(candidate: VehiculoMatch): void {
+    const { ingreso } = candidate;
+    setValue('');
+    setActiveIndex(-1);
+    setSuggestionsClosed(true);
+    if (ingreso.placa) {
+      // Every candidate here comes from the active-ingresos snapshot, so
+      // it is ALWAYS currently inside — same exact routing as the
+      // legacy placa-found fallback below.
+      openDrawer('salida', 'placa-hero-input', ingreso.placa);
+    } else {
+      // No placa (consecutivo-only, ej. bici/patineta) — hand off the
+      // resolved uuid_ingreso directly; there is no placa text to
+      // re-search. `<SalidaPanel>` re-runs the estado-guard before
+      // trusting it (point 5/7 of the DoD).
+      openDrawer('salida', 'placa-hero-input', null, null, ingreso.uuid);
+    }
   }
 
   // REGRESSION fix (2026-09-22, directiva del operador): el smart
@@ -587,10 +648,43 @@ function PlacaInputHero({
   // SWR cache (``useIngresoActivo``) sigue alimentando el hint visual
   // inline mientras el operador tipea (live, best-effort), pero NO
   // es la fuente de verdad para la decisión.
+  //
+  // HU-F7.1 (T5): arrow keys navigate the suggestion listbox and Enter
+  // on a highlighted suggestion takes priority over this fallback —
+  // see `selectCandidate` above. Enter with NOTHING highlighted keeps
+  // this exact fallback path unchanged.
   async function onKeyDown(
     e: React.KeyboardEvent<HTMLInputElement>,
   ): Promise<void> {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (candidates.length === 0) return;
+      e.preventDefault();
+      setSuggestionsClosed(false);
+      setActiveIndex((idx) =>
+        getNextSuggestionIndex(idx, e.key === 'ArrowDown' ? 'down' : 'up', candidates.length),
+      );
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (isSuggestionsOpen) {
+        e.preventDefault();
+        setSuggestionsClosed(true);
+        setActiveIndex(-1);
+      }
+      return;
+    }
     if (e.key !== 'Enter') return;
+
+    if (isSuggestionsOpen && activeIndex >= 0) {
+      const candidate = candidates[activeIndex];
+      if (candidate) {
+        e.preventDefault();
+        selectCandidate(candidate);
+        return;
+      }
+    }
+
+    // ── Fallback: legacy smart-routing path (verbatim, unchanged) ──
     const placa = value.trim();
     if (placa === '') return;
     e.preventDefault();
@@ -624,23 +718,40 @@ function PlacaInputHero({
 
   return (
     <div className="space-y-1">
-      <input
-        type="text"
-        autoFocus
-        data-testid="placa-hero-input"
-        id="placa-hero-input"
-        placeholder="ABC123"
-        value={value}
-        onChange={handleChange}
-        maxLength={6}
-        disabled={submitting}
-        className="block w-full rounded-2xl border-0 bg-muted/50 px-4 py-6 text-center font-mono text-6xl uppercase tracking-[0.4em] outline-none placeholder:text-muted-foreground/40 focus-ring-apple focus-visible:bg-background focus-visible:shadow-apple transition-all disabled:opacity-60"
-        onKeyDown={onKeyDown}
-        aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
-        // uuid_sucursal is consumed by IngresoPanel inside the drawer; this
-        // hero input is the entry-point keyboard handler.
-        data-uuid-sucursal={_uuid_sucursal ?? ''}
-      />
+      <div className="relative">
+        <input
+          type="text"
+          autoFocus
+          data-testid="placa-hero-input"
+          id="placa-hero-input"
+          placeholder="ABC123"
+          value={value}
+          onChange={handleChange}
+          maxLength={PLACA_HERO_MAX_LEN}
+          disabled={submitting}
+          className="block w-full rounded-2xl border-0 bg-muted/50 px-4 py-6 text-center font-mono text-6xl uppercase tracking-[0.4em] outline-none placeholder:text-muted-foreground/40 focus-ring-apple focus-visible:bg-background focus-visible:shadow-apple transition-all disabled:opacity-60"
+          onKeyDown={onKeyDown}
+          onBlur={() => setSuggestionsClosed(true)}
+          aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
+          role="combobox"
+          aria-expanded={isSuggestionsOpen}
+          aria-controls={listboxId}
+          aria-activedescendant={activeOptionId}
+          aria-autocomplete="list"
+          // uuid_sucursal is consumed by IngresoPanel inside the drawer; this
+          // hero input is the entry-point keyboard handler.
+          data-uuid-sucursal={uuid_sucursal ?? ''}
+        />
+        {/* HU-F7.1 (T5) — normal-size suggestion list; NEVER inherits the
+            hero's text-6xl sizing (VehiculoSuggestions owns its own,
+            legible body-text sizing). */}
+        <VehiculoSuggestions
+          listboxId={listboxId}
+          candidates={isSuggestionsOpen ? candidates : []}
+          activeIndex={activeIndex}
+          onSelect={selectCandidate}
+        />
+      </div>
       {/* REGRESSION fix (2026-09-22): inline visual hint when the typed
           plate already has an active ingreso. The SWR-fed
           ``latestIngreso`` is best-effort (it can lag the operator's
@@ -664,105 +775,6 @@ function PlacaInputHero({
       )}
     </div>
   );
-}
-
-// ── Inline SWR-style hook for active ingresos list (per placa) ───────
-//
-// `GET /api/v1/operacion/ingresos?uuid_sucursal=X` returns currently-active
-// ingresos (timestamp_salida IS NULL). The oficial hook `useIngresoActivo`
-// is for ONE placa; this one lists ALL currently-occupied plates.
-//
-// Refresh cadence: 10s (same as <OcupacionPanel />) so the two stay in sync.
-//
-// Robust to React StrictMode (effects run twice in dev): the return value
-// is always either `null` (loading/error) or an array (possibly empty).
-// Never returns `undefined` so the consumer's `items.length` is always safe.
-const INGRESOS_REFRESH_MS = 10_000;
-
-function useIngresosActivos(
-  uuid_sucursal: string | null,
-): IngresoActivo[] | null {
-  const [items, setItems] = useState<IngresoActivo[] | null>(null);
-
-  useEffect(() => {
-    if (uuid_sucursal === null) {
-      setItems([]);
-      return;
-    }
-    let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
-
-    async function pull(): Promise<void> {
-      try {
-        // Endpoint returns IngresoActivo[] DIRECTLY (not wrapped in
-        // { items: ... } as many list endpoints do). Coerce defensively
-        // in case the backend shape changes.
-        const json = (await parkosFetch<unknown>(
-          `/api/v1/operacion/ingresos?uuid_sucursal=${uuid_sucursal}&activo=true`,
-        )) as IngresoActivo[] | { items?: IngresoActivo[] };
-        if (cancelled) return;
-        const list = Array.isArray(json)
-          ? json
-          : Array.isArray(json?.items)
-            ? json.items
-            : [];
-        setItems(list);
-      } catch {
-        if (!cancelled) setItems([]);
-      }
-    }
-
-    void pull();
-    timer = setInterval(() => void pull(), INGRESOS_REFRESH_MS);
-
-    return () => {
-      cancelled = true;
-      if (timer !== null) clearInterval(timer);
-    };
-  }, [uuid_sucursal]);
-
-  return items;
-}
-
-interface IngresoActivo {
-  uuid: string;
-  placa: string | null;
-  /**
-   * Hora del ingreso. El backend puede devolver `null` para filas creadas
-   * antes de que el handler populase la columna (seeds / ingresos de
-   * pruebas viejos). En ese caso caemos a `created_at`, que SÍ trae
-   * timestamp real del INSERT.
-   */
-  fecha_ingreso: string | null;
-  /**
-   * Identificador legible para ingresos sin placa (REQ-OPS-197).
-   * Formato `<TIPO>-NNNNNN-<uuid8>` (ej. `PATINETA-000003-34a24bae`).
-   * `null` para ingresos con placa — esos muestran la placa.
-   */
-  consecutivo: string | null;
-  /** Timestamp del INSERT — fallback cuando `fecha_ingreso` viene null. */
-  created_at: string;
-  uuid_tipo_vehiculo: string;
-  uuid_sucursal: string;
-  /**
-   * **Operador 2026-09-22, reorganización visual:** cobros pendientes
-   * del ingreso activo. Monto en COP que aún no fue pagado
-   * (servicios adicionales, lavada, saldo a favor, etc).
-   *
-   * Render contract (ver `<VehiculosDentroList />`):
-   *   - `null` (o ausente en el wire): la fila NO muestra la columna
-   *     de cobros pendientes. Coincide con la directiva del operador:
-   *     "si no hay no deben aparecer".
-   *   - `0`: tampoco se muestra (el operador pidió "cuando sean > 0").
-   *   - `> 0`: la columna aparece a la derecha con el monto formateado.
-   *
-   * Estado actual del endpoint `GET /api/v1/operacion/ingresos`:
-   * el campo NO se serializa todavía — la columna queda invisible por
-   * default. Follow-up (1 línea) cuando se wire-ee el endpoint: agregar
-   * `cobros_pendientes` al `IngresoRead` (probablemente via JOIN con
-   * `prod.factura` cuando exista la fila pendiente de pago).
-   */
-  cobros_pendientes?: number | null;
 }
 
 /**

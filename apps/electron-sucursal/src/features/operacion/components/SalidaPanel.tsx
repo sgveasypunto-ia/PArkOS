@@ -21,9 +21,20 @@
  *
  * REQ-OPS-146 (countdown): `useCountdown(15 * 60)` from F3.2 feeds the
  * `<CotizacionPanel />` countdown; <120s flips to destructive UX.
+ *
+ * HU-F7.1 (búsqueda sin placa, T5): the `salida-placa` field ALSO
+ * autocompletes against the branch's live active-ingresos snapshot
+ * (`useIngresosActivos` + `matchVehiculos`) so the operator can find a
+ * no-placa vehicle (bici/patineta, identified only by `consecutivo`)
+ * without leaving this field. Selecting a suggestion with a placa
+ * reuses `handlePlacaSubmit` (the SAME tolerant-search + estado-guard
+ * path as a manual submit); selecting one without a placa runs the
+ * estado-guard directly against the candidate's `uuid_ingreso`.
  */
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -41,13 +52,21 @@ import { zodResolver } from '@hookform/resolvers/zod';
 
 import { useCountdown } from '../../auth/hooks/useCountdown';
 import { useCotizacion } from '../hooks/useCotizacion';
+import { useIngresosActivos } from '../hooks/useIngresosActivos';
 import {
   buscarIngresoTolerante,
   type ToleranteResultado,
 } from '../../../lib/validation/placaTolerante';
 import { getIngresosByPlaca, getIngresoEstado } from '../api/ingresoActivoApi';
+import {
+  matchVehiculos,
+  vehiculoSuggestionOptionId,
+  getNextSuggestionIndex,
+  type VehiculoMatch,
+} from '../lib/vehiculoMatch';
 import { SalidaFlow } from './SalidaFlow';
 import { SalidaMensualidad } from './SalidaMensualidad';
+import { VehiculoSuggestions } from './VehiculoSuggestions';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 
 const placaSchema = z.object({
@@ -70,16 +89,42 @@ export interface SalidaPanelProps {
    * operator only has to press Enter to cotizar. We DO NOT auto-submit.
    */
   initialPlaca?: string | null;
+  /**
+   * HU-F7.1 (búsqueda sin placa) — `uuid_ingreso` resolved directly by
+   * the dashboard's PlacaInputHero when the operator selects a NO-placa
+   * suggestion (identified only by `consecutivo`). When provided, the
+   * panel runs the SAME estado-guard (`getIngresoEstado`) already used
+   * for the tolerant placa search before trusting the uuid — an
+   * ingreso can appear "activo" in a stale 10s-polling snapshot but
+   * already have a registered salida.
+   */
+  initialUuidIngreso?: string | null;
+  /**
+   * HU-F7.1 bugfix (found in live browser validation, not caught by
+   * component-only tests): reports whenever the `salida-placa`
+   * suggestion listbox opens/closes. `<SalidaSheet />` uses this to
+   * wire `<SheetContent onEscapeKeyDown>` — Radix's Dialog attaches
+   * its Escape-to-close listener on `document` with `capture: true`,
+   * which fires BEFORE this panel's own bubble-phase `onKeyDown` on
+   * the field ever runs. Without this callback, Escape-to-close-the-
+   * suggestions always also closes the WHOLE Sheet (losing whatever
+   * the operator typed), because the parent has no way to know a
+   * nested popup should absorb that Escape first.
+   */
+  onSuggestionsOpenChange?: (open: boolean) => void;
 }
 
 export function SalidaPanel({
   uuid_ingreso: uuid_ingresoProp,
   initialPlaca = null,
+  initialUuidIngreso = null,
+  onSuggestionsOpenChange,
 }: SalidaPanelProps): JSX.Element {
   const { t } = useTranslation(['operacion', 'facturacion']);
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
   const open = useDashboardDrawerStore((s) => s.open);
   const pagoAnchorId = useId();
+  const listboxId = useId();
 
   const [placa, setPlaca] = useState<string | null>(null);
   const [tolerante, setTolerante] = useState<ToleranteResultado | null>(null);
@@ -92,8 +137,19 @@ export function SalidaPanel({
    * entender por qué. El nuevo state guarda el mensaje específico
    * ("ya tiene salida") y NO setea ``resolvedUuid`` para que no se
    * dispare el fetch fallido.
+   *
+   * HU-F7.1 (búsqueda sin placa): generalizado más allá de "placa" —
+   * guarda cualquier identificador visible (placa O consecutivo) del
+   * ingreso ya cerrado, porque `initialUuidIngreso` y las sugerencias
+   * sin placa reusan la MISMA guarda de estado.
    */
-  const [ingresoCerradoPlaca, setIngresoCerradoPlaca] = useState<string | null>(null);
+  const [ingresoCerradoIdentificador, setIngresoCerradoIdentificador] = useState<string | null>(
+    null,
+  );
+  /** HU-F7.1 — highlighted index in the `salida-placa` suggestion listbox. */
+  const [activeIndex, setActiveIndex] = useState(-1);
+  /** HU-F7.1 — Escape (or a submit) closes the suggestion listbox until the operator types again. */
+  const [suggestionsClosed, setSuggestionsClosed] = useState(false);
   /**
    * REGRESSION fix (2026-09-22, directiva del operador): el
    * ``<SalidaSheet />`` padre pasa ``uuid_ingreso={null}`` siempre
@@ -117,6 +173,62 @@ export function SalidaPanel({
     defaultValues: { placa: '' },
     mode: 'onSubmit',
   });
+
+  // HU-F7.1 (búsqueda sin placa) — autocomplete deps. `useAuth()` is the
+  // single source of truth for the branch UUID (same pattern
+  // `<IngresoPanel />` already uses); `useIngresosActivos` gives the
+  // panel its own live "vehículos dentro" snapshot so it can suggest
+  // matches WITHOUT the operator having typed anything in the dashboard
+  // hero first (F2 / botón lateral direct-open case).
+  const { sucursal } = useAuth();
+  const itemsActivos = useIngresosActivos(sucursal?.uuid ?? null);
+  const placaFieldValue = form.watch('placa');
+  const candidates = useMemo(
+    () => matchVehiculos(itemsActivos ?? [], placaFieldValue ?? ''),
+    [itemsActivos, placaFieldValue],
+  );
+  const isSuggestionsOpen = !suggestionsClosed && candidates.length > 0;
+  const activeOptionId =
+    activeIndex >= 0 ? vehiculoSuggestionOptionId(listboxId, activeIndex) : undefined;
+
+  // HU-F7.1 bugfix — let the parent Sheet know whether the suggestion
+  // popup is open so it can absorb Escape at the SheetContent level
+  // (see `onSuggestionsOpenChange` doc above). `useEffect` (not inline
+  // during render) because calling a parent state setter during this
+  // component's own render is unsafe.
+  useEffect(() => {
+    onSuggestionsOpenChange?.(isSuggestionsOpen);
+  }, [isSuggestionsOpen, onSuggestionsOpenChange]);
+
+  /**
+   * Estado-guard factored out so it runs IDENTICALLY regardless of the
+   * entry point: the tolerant placa search below (`handlePlacaSubmit`),
+   * the `initialUuidIngreso` mount-effect, and an in-field suggestion
+   * click all funnel through here instead of duplicating the
+   * try/catch. On `abierto`: sets `resolvedUuid`. On
+   * `cerrado`/`anulada`: sets `ingresoCerradoIdentificador` (reusing the
+   * SAME "ya tiene salida" card) and does NOT set `resolvedUuid`.
+   */
+  const resolveIngresoConGuarda = useCallback(
+    async (uuidIngreso: string, identificador: string): Promise<void> => {
+      setResolvedUuid(null);
+      setIngresoCerradoIdentificador(null);
+      try {
+        const estado = await getIngresoEstado(uuidIngreso);
+        if (estado.estado === 'cerrado' || estado.estado === 'anulada') {
+          setIngresoCerradoIdentificador(identificador);
+          return;
+        }
+      } catch {
+        // Si el lookup de estado falla (4xx/5xx), seguimos con el flujo
+        // normal — el operador verá el error de `/cotizar` si el
+        // ingreso realmente no se puede cotizar. Mejor intentar que
+        // bloquear el flujo (mismo criterio que el submit de placa).
+      }
+      setResolvedUuid(uuidIngreso);
+    },
+    [],
+  );
 
   // Pre-fill placa on mount so the operator only has to press Enter
   // to trigger the cotizacion flow. We do not auto-submit.
@@ -162,13 +274,24 @@ export function SalidaPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPlaca]);
 
+  // HU-F7.1 (búsqueda sin placa): when the dashboard hero resolves a
+  // NO-placa suggestion, it hands off the `uuid_ingreso` directly
+  // (bypassing the tolerant placa search entirely — there is no placa
+  // text to search for). Runs the SAME estado-guard as the placa path.
+  useEffect(() => {
+    if (!initialUuidIngreso) return;
+    void resolveIngresoConGuarda(initialUuidIngreso, initialUuidIngreso);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialUuidIngreso]);
+
   const { data: cotizacion, error: cotError, refresh } = useCotizacion(uuid_ingreso);
 
   const handlePlacaSubmit = form.handleSubmit(async (values) => {
     setPlaca(values.placa);
     setTolerante(null);
     setResolvedUuid(null);
-    setIngresoCerradoPlaca(null);
+    setIngresoCerradoIdentificador(null);
+    setSuggestionsClosed(true);
     try {
       const resultado = await buscarIngresoTolerante(values.placa, getIngresosByPlaca);
       setTolerante(resultado);
@@ -184,29 +307,85 @@ export function SalidaPanel({
         // anterior), ``useCotizacion`` va a fallar con 404
         // ``ingreso_no_encontrado`` y el operador verá "No se pudo
         // obtener la cotización" sin entender por qué. Validamos el
-        // estado del ingreso ANTES de setear ``resolvedUuid``: si
-        // está cerrado, mostramos el mensaje específico y no
-        // disparamos el fetch. La validación es una llamada extra
-        // (``GET /ingresos/{uuid}/estado``) pero es barata (<50ms) y
-        // evita un round-trip fallido a ``/cotizar``.
-        try {
-          const estado = await getIngresoEstado(resultado.uuid_ingreso);
-          if (estado.estado === 'cerrado' || estado.estado === 'anulada') {
-            setIngresoCerradoPlaca(resultado.placaReal);
-            return;
-          }
-        } catch {
-          // Si el lookup de estado falla (4xx/5xx), seguimos con el
-          // flujo normal — el operador verá el error de
-          // ``/cotizar`` si el ingreso realmente no se puede cotizar.
-          // Mejor intentar que bloquear el flujo.
-        }
-        setResolvedUuid(resultado.uuid_ingreso);
+        // estado del ingreso ANTES de setear ``resolvedUuid`` — ver
+        // `resolveIngresoConGuarda` (factorizada, HU-F7.1 T5).
+        await resolveIngresoConGuarda(resultado.uuid_ingreso, resultado.placaReal);
       }
     } catch {
       setTolerante({ kind: 'none', placaProbada: values.placa });
     }
   });
+
+  /**
+   * HU-F7.1 — in-field suggestion selection. A placa candidate reuses
+   * `handlePlacaSubmit` verbatim (tolerant search + estado-guard); a
+   * no-placa candidate skips straight to the estado-guard with its
+   * known `uuid_ingreso` (there is no placa to search for).
+   */
+  const selectSuggestionInField = useCallback(
+    (candidate: VehiculoMatch): void => {
+      setActiveIndex(-1);
+      setSuggestionsClosed(true);
+      const { ingreso } = candidate;
+      if (ingreso.placa) {
+        form.setValue('placa', ingreso.placa, { shouldValidate: false });
+        // Mirrors the `initialPlaca` mount-effect precedent above: wait
+        // one microtask so the form value propagates before
+        // handleSubmit reads it — otherwise RHF can read the stale
+        // (pre-selection) value.
+        setTimeout(() => {
+          void handlePlacaSubmit();
+        }, 0);
+      } else {
+        void resolveIngresoConGuarda(ingreso.uuid, ingreso.consecutivo ?? ingreso.uuid);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [form, resolveIngresoConGuarda],
+  );
+
+  function handleFieldKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (candidates.length === 0) return;
+      e.preventDefault();
+      setSuggestionsClosed(false);
+      setActiveIndex((idx) =>
+        getNextSuggestionIndex(idx, e.key === 'ArrowDown' ? 'down' : 'up', candidates.length),
+      );
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (isSuggestionsOpen) {
+        // `stopPropagation` (not just `preventDefault`) is required:
+        // `Dashboard.tsx` wires a GLOBAL `window.addEventListener(
+        // 'keydown', ...)` that unconditionally closes any open drawer
+        // on Escape (`if (openDrawerKind !== null) closeDrawer()`) —
+        // it never checks `event.defaultPrevented`. Found via live
+        // Chrome DevTools validation: with only `preventDefault()`,
+        // selecting/dismissing a suggestion via Escape ALSO closed the
+        // whole `<SalidaSheet />`, discarding whatever the operator had
+        // typed. `SheetContent`'s `onEscapeKeyDown` (see
+        // `<SalidaSheet />`) separately stops Radix's OWN
+        // capture-phase Escape-to-dismiss, which runs before this
+        // handler and does not share an event object with it.
+        e.preventDefault();
+        e.stopPropagation();
+        setSuggestionsClosed(true);
+        setActiveIndex(-1);
+      }
+      return;
+    }
+    if (e.key === 'Enter' && isSuggestionsOpen && activeIndex >= 0) {
+      const candidate = candidates[activeIndex];
+      if (candidate) {
+        e.preventDefault();
+        selectSuggestionInField(candidate);
+      }
+      return;
+    }
+    // Otherwise: fall through — native form submission handles Enter
+    // exactly as before (RHF's onSubmit={handlePlacaSubmit}).
+  }
 
   const handleOpenPago = useCallback((uuid_salida: string) => {
     // F8.1 (HU-F8.1 — PagoModal) — push the live cotizacion context
@@ -256,12 +435,37 @@ export function SalidaPanel({
                   {t('operacion:placa', { defaultValue: 'Placa' })}
                 </label>
                 <FormControl>
-                  <Input
-                    id="salida-placa"
-                    data-testid="salida-placa"
-                    placeholder="ABC123"
-                    {...field}
-                  />
+                  <div className="relative">
+                    <Input
+                      id="salida-placa"
+                      data-testid="salida-placa"
+                      placeholder="ABC123"
+                      autoComplete="off"
+                      role="combobox"
+                      aria-expanded={isSuggestionsOpen}
+                      aria-controls={listboxId}
+                      aria-activedescendant={activeOptionId}
+                      aria-autocomplete="list"
+                      {...field}
+                      onChange={(e) => {
+                        field.onChange(e);
+                        setActiveIndex(-1);
+                        setSuggestionsClosed(false);
+                      }}
+                      onKeyDown={handleFieldKeyDown}
+                      onBlur={() => {
+                        field.onBlur();
+                        setSuggestionsClosed(true);
+                      }}
+                    />
+                    <VehiculoSuggestions
+                      listboxId={listboxId}
+                      testIdPrefix="salida-placa-suggestions"
+                      candidates={isSuggestionsOpen ? candidates : []}
+                      activeIndex={activeIndex}
+                      onSelect={selectSuggestionInField}
+                    />
+                  </div>
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -273,7 +477,7 @@ export function SalidaPanel({
         </form>
       </Form>
 
-      {ingresoCerradoPlaca && (
+      {ingresoCerradoIdentificador && (
         <Card data-testid="salida-ingreso-cerrado">
           <CardHeader>
             <CardTitle>
@@ -290,7 +494,7 @@ export function SalidaPanel({
               })}
             </p>
             <p className="mt-2 text-xs font-mono text-muted-foreground">
-              {ingresoCerradoPlaca}
+              {ingresoCerradoIdentificador}
             </p>
           </CardContent>
         </Card>

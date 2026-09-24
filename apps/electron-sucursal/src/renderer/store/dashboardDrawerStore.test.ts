@@ -16,6 +16,11 @@
  *       default arg leaves it `null` (back-compat for callers that
  *       don't pass a placa).
  *   D9: `close()` clears `initialPlaca` after a placa-bearing open.
+ *   D10: `open(kind, anchorId, placa, pagoContext, initialUuidIngreso)`
+ *        records `initialUuidIngreso`; default arg leaves it `null`
+ *        (HU-F7.1 búsqueda sin placa — consecutivo suggestion path).
+ *   D11: `close()` clears `initialUuidIngreso` after an
+ *        initialUuidIngreso-bearing open.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 
@@ -36,6 +41,7 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
     expect(s.openDrawer).toBeNull();
     expect(s.lastAnchorId).toBeNull();
     expect(s.initialPlaca).toBeNull();
+    expect(s.initialUuidIngreso).toBeNull();
   });
 
   it('D2: open(kind, anchorId) sets openDrawer + lastAnchorId', () => {
@@ -139,5 +145,30 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
     expect(useDashboardDrawerStore.getState().initialPlaca).toBe('ABC12D');
     close();
     expect(useDashboardDrawerStore.getState().initialPlaca).toBeNull();
+  });
+
+  it('D10: open(..., initialUuidIngreso) records it; default arg is null', () => {
+    const { open } = useDashboardDrawerStore.getState();
+
+    // With initialUuidIngreso: recorded.
+    open('salida', 'anchor-consecutivo', null, null, 'uuid-ingreso-1');
+    const s1 = useDashboardDrawerStore.getState();
+    expect(s1.openDrawer).toBe('salida');
+    expect(s1.initialPlaca).toBeNull();
+    expect(s1.initialUuidIngreso).toBe('uuid-ingreso-1');
+
+    // Re-open without it (back-compat callers) → cleared.
+    open('salida', 'anchor-hotkey');
+    const s2 = useDashboardDrawerStore.getState();
+    expect(s2.openDrawer).toBe('salida');
+    expect(s2.initialUuidIngreso).toBeNull();
+  });
+
+  it('D11: close() clears initialUuidIngreso after an initialUuidIngreso-bearing open', () => {
+    const { open, close } = useDashboardDrawerStore.getState();
+    open('salida', 'anchor-consecutivo', null, null, 'uuid-ingreso-2');
+    expect(useDashboardDrawerStore.getState().initialUuidIngreso).toBe('uuid-ingreso-2');
+    close();
+    expect(useDashboardDrawerStore.getState().initialUuidIngreso).toBeNull();
   });
 });

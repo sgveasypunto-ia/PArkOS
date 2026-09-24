@@ -1667,6 +1667,8 @@ sequenceDiagram
 - Given que el vehículo tiene mensualidad vigente, Then la respuesta trae `{cobrar:false}` y el flujo salta directo a CU-03M (HU-F7.2) sin mostrar desglose de cobro.
 - Given múltiples candidatos por la búsqueda tolerante, Then se muestra una lista para que el operador elija.
 - Given que el cálculo pasa de 15 minutos sin confirmarse, Then se recalcula automáticamente antes de permitir "Confirmar salida".
+- Given un vehículo SIN placa (bici/patineta) con ingreso activo identificado solo por `consecutivo` (ej. `PATINETA-000003-34a24bae`), When el operador tipea un fragmento de placa o de consecutivo en el input gigante del dashboard o en el campo de búsqueda del propio panel de Salida (abierto directo con F2 / botón lateral), Then el sistema muestra en vivo hasta 6 sugerencias — match por prefijo en placa normalizada y por substring case-insensitive en consecutivo — en un dropdown accesible (WAI-ARIA "combobox con listbox de autocompletado": input con `role="combobox"`/`aria-expanded`/`aria-controls`/`aria-activedescendant`, listbox con ítems `role="option"`; flechas navegan, Enter/click selecciona, Escape cierra).
+- Given que el operador selecciona una sugerencia CON placa, Then el comportamiento es idéntico a tipear esa placa manualmente (abre/cotiza la salida). Given que selecciona una sugerencia SIN placa, Then el sistema resuelve el `uuid_ingreso` directamente y corre la MISMA guarda de estado (`abierto`/`cerrado`/`anulada`) antes de cotizar — sin que el operador tenga que tipear nada más.
 
 **Regla de negocio**: fórmula fiscal literal de CU-02 AC7 (DEC-SUC-24): `iva = total_a_pagar * porcentaje_impuesto`; `subtotal = total_a_pagar - iva` — se muestra tal cual, sin reinterpretar la base del cálculo.
 
@@ -1674,7 +1676,7 @@ sequenceDiagram
 
 **Endpoints**: `GET /operacion/cotizar?uuid_ingreso=X` (cerrado en HU-F1.8).
 
-**Componentes UI**: `CotizacionPanel` (presentacional, usa `<dl>` semántico para el desglose, countdown de 15 min visible); `useCotizacion` (hook, SWR con `refreshInterval: 1000` mientras el panel está abierto).
+**Componentes UI**: `CotizacionPanel` (presentacional, usa `<dl>` semántico para el desglose, countdown de 15 min visible); `useCotizacion` (hook, SWR con `refreshInterval: 1000` mientras el panel está abierto). Búsqueda sin placa (T5-T8): `useIngresosActivos` (hook compartido, polling 10s de ingresos activos por sucursal); `matchVehiculos` (función pura de ranking placa-prefijo/consecutivo-substring); `VehiculoSuggestions` (dropdown accesible compartido por el input del dashboard y por el campo `salida-placa`).
 
 **Manejo de errores**:
 
@@ -1686,15 +1688,19 @@ sequenceDiagram
 
 **Componentes UI — props clave**: `CotizacionPanel` — `data` (resultado de `useCotizacion`), `secondsLeft` (del countdown de 15 min), `onConfirmar`, `onRecalcular`.
 
-**Pruebas**: `src/features/operacion/hooks/__tests__/useCotizacion.test.ts` — 3 escenarios (rotación, mensualidad, tiempo ≥ tarifa plena).
+**Pruebas**: `src/features/operacion/hooks/__tests__/useCotizacion.test.ts` — 3 escenarios (rotación, mensualidad, tiempo ≥ tarifa plena). Búsqueda sin placa: `vehiculoMatch.test.ts` (ranking puro), `VehiculoSuggestions.test.tsx` (listbox/option ARIA + navegación), `dashboardDrawerStore.test.ts` (`initialUuidIngreso`), `SalidaSheet.test.tsx` y `SalidaPanel.test.tsx` (guarda de estado + autocompletar in-field), `Dashboard.test.tsx` (autocompletar del hero).
 
-**Tamaño estimado**: 260 LOC.
+**Tamaño estimado**: 260 LOC (T1-T4). Ampliado en T5-T8 para búsqueda sin placa — ver tareas atómicas.
 
 **Tareas atómicas**:
 - **HU-F7.1-T1**: `src/lib/validation/placaTolerante.ts` — `buscarIngresoTolerante(placa)`, función separada de la detección estricta de ingreso.
 - **HU-F7.1-T2**: `src/features/operacion/hooks/useCotizacion.ts` (SWR, `refreshInterval:1000`, timeout 5s).
 - **HU-F7.1-T3**: `CotizacionPanel.tsx` con `<dl>` semántico + countdown.
 - **HU-F7.1-T4**: los 3 tests de hook.
+- **HU-F7.1-T5** (búsqueda sin placa): `src/features/operacion/hooks/useIngresosActivos.ts` (extraído de `Dashboard.tsx`, reusado por `<VehiculosDentroList>` y `<SalidaPanel>`) + `src/features/operacion/lib/vehiculoMatch.ts` (`matchVehiculos`, función pura: prefijo en placa normalizada — reusa `normalizarPlaca` de `placaTolerante.ts` — y substring case-insensitive en consecutivo, cap 6 candidatos).
+- **HU-F7.1-T6** (búsqueda sin placa): `src/features/operacion/components/VehiculoSuggestions.tsx` — dropdown accesible compartido (WAI-ARIA combobox+listbox), consumido por AMBOS puntos de entrada.
+- **HU-F7.1-T7** (búsqueda sin placa): `dashboardDrawerStore.ts` (+`initialUuidIngreso`, mismo patrón que `initialPlaca`) y wiring del `PlacaInputHero` (`Dashboard.tsx`) + `SalidaSheet.tsx` para threadear la selección de una sugerencia sin placa.
+- **HU-F7.1-T8** (búsqueda sin placa): wiring del propio campo `salida-placa` en `SalidaPanel.tsx` — autocompletar in-field + guarda de estado (`getIngresoEstado`) factorizada en una sola función interna reusada por la búsqueda tolerante, `initialUuidIngreso`, y la selección de sugerencias.
 
 ---
 
