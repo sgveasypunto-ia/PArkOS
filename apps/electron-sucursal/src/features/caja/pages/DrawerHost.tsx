@@ -66,11 +66,13 @@ export function DrawerHost(): JSX.Element | null {
     // `<DrawerHost>` is a pure shell — no callback forwarding needed.
     const uuidIngreso = pagoContext?.uuid_ingreso ?? null;
     const uuidSalida = pagoContext?.uuid_salida ?? null;
+    const subtotalCop = pagoContext?.subtotal_cop ?? 0;
     const totalCop = pagoContext?.total_cop ?? 0;
     return (
       <PagoSheet
         uuid_ingreso={uuidIngreso}
         uuid_salida={uuidSalida}
+        subtotal_cop={subtotalCop}
         total_cop={totalCop}
       />
     );

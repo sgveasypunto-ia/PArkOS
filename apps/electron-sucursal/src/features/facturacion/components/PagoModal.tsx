@@ -68,7 +68,6 @@ const pagoEfectivoSchema = z.object({
 
 const pagoDatafonoSchema = z.object({
   medio_pago: z.literal('datafono'),
-  total_cop: z.coerce.number().int().nonnegative(),
   voucher: z.string().trim().min(1, 'voucher_requerido'),
   fe: z.boolean(),
   nit: z.string().trim().optional(),

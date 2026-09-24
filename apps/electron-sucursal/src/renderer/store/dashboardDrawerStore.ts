@@ -78,6 +78,8 @@ export type NonNullDrawerKind = Exclude<DrawerKind, null>;
 export interface PagoContext {
   uuid_ingreso: string;
   uuid_salida: string;
+  /** Pre-IVA base (`cotizacion.subtotal`) — stored on `prod.facturas.subtotal`. */
+  subtotal_cop: number;
   total_cop: number;
 }
 

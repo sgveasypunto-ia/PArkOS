@@ -71,6 +71,8 @@ export interface PagoSheetProps {
    * prior salida, see DrawerHost.tsx comments).
    */
   uuid_salida: string | null;
+  /** Pre-IVA base (`cotizacion.subtotal`) — sent as `FacturaCreate.subtotal`. */
+  subtotal_cop: number;
   total_cop: number;
   /**
    * Bridge print-envelope emitter for CU-15S (F7.3) + recibo_pago
@@ -120,6 +122,7 @@ function deferredSafePrint(
 export function PagoSheet({
   uuid_ingreso,
   uuid_salida,
+  subtotal_cop,
   total_cop,
   firePrintEnvelope,
 }: PagoSheetProps): JSX.Element {
@@ -232,37 +235,56 @@ export function PagoSheet({
         return;
       }
       // Build the discriminated POST payload from the form values.
-      // Per HU-F8.4 contract, the BE derives ``items[]`` server-side
-      // from the tarifa structure (DEC-FACT-03) — the FE does NOT
-      // send items; only the monetary totals + medio_pago + cliente.
-      // zero-bug-policy (2026-09-23, Bug 21): the contract requires
-      // ``subtotal`` and ``total`` (NOT ``total_cents`` — that field
-      // belongs to the old F8.1 contract before HU-F8.4 enriched the
-      // response). The BE rejects any payload missing ``subtotal`` /
-      // ``total`` with 422.
+      // Bug 22 (2026-09-23): the BE's `FacturaCreate` requires a
+      // non-empty `items[]` (does NOT derive them server-side) and
+      // has NO `cliente` field — consumidor final is the default
+      // (`fe_con_datos` omitted), a named invoice sets
+      // `fe_con_datos: true` + `fe_datos_cliente`. `total` is
+      // validated against `sum(item.valor_unitario * item.cantidad)`
+      // (see `repo.factura.compute_total`), so the single line item
+      // carries `valor_unitario: total_cop` (the PL/pgSQL cotización
+      // base), NOT `subtotal_cop`. `subtotal_cop` only feeds the
+      // display-only `subtotal` field. `datafono` voucher travels as
+      // `referencia`, not `voucher` (see facturaApi.ts contract note).
+      const items = [
+        {
+          tipo: 'servicio' as const,
+          concepto: 'Servicio de parqueo',
+          cantidad: 1,
+          valor_unitario: total_cop,
+        },
+      ];
+      const feDatos = values.fe
+        ? {
+            fe_con_datos: true as const,
+            fe_datos_cliente: {
+              tipo_identificador: 'NIT' as const,
+              numero_identificacion: values.nit ?? '',
+              dv: values.dv || null,
+              nombre: values.nombre_cliente ?? 'Consumidor final',
+              apellido: null,
+              email: values.email_cliente || null,
+              telefono: null,
+            },
+          }
+        : {};
       const post = values.medio_pago === 'efectivo'
         ? {
             uuid_salida,
             medio_pago: 'efectivo' as const,
-            subtotal: total_cop,
+            items,
+            subtotal: subtotal_cop,
             total: total_cop,
-            cliente: {
-              nit: values.fe ? values.nit ?? '' : '222222222222222',
-              nombre: values.fe ? values.nombre_cliente ?? 'Consumidor final' : 'Consumidor final',
-              email: values.fe ? values.email_cliente ?? null : null,
-            },
+            ...feDatos,
           }
         : {
             uuid_salida,
             medio_pago: 'datafono' as const,
-            subtotal: total_cop,
+            items,
+            subtotal: subtotal_cop,
             total: total_cop,
-            voucher: values.voucher,
-            cliente: {
-              nit: values.fe ? values.nit ?? '' : '222222222222222',
-              nombre: values.fe ? values.nombre_cliente ?? 'Consumidor final' : 'Consumidor final',
-              email: values.fe ? values.email_cliente ?? null : null,
-            },
+            referencia: values.voucher,
+            ...feDatos,
           };
       const result = await trigger(post);
       // F8.1-b: mark `pagadoRef = true` BEFORE close so the
@@ -307,7 +329,7 @@ export function PagoSheet({
       // FacturaDisplayModal, not here. The drawer stays open with
       // the modal mounted until the operator closes it.
     },
-    [uuid_salida, total_cop, trigger, firePrintEnvelope, navigate, invalidarConteos, sucursal?.uuid, sesion?.uuid],
+    [uuid_salida, subtotal_cop, total_cop, trigger, firePrintEnvelope, navigate, invalidarConteos, sucursal?.uuid, sesion?.uuid],
   );
 
   return (

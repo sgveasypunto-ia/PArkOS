@@ -19,6 +19,14 @@
  * dismissing the sheet. The thermal CU-15S print fires in parallel
  * (see PagoSheet.handleSubmit deferredSafePrint).
  *
+ * Visual format (2026-09-24, operator directive): mirrors `<TiqueteModal
+ * />`'s (HU-F6.2) print-preview grammar — a single monospaced, dashed-
+ * bordered "ticket" box — instead of a sectioned UI card. The operator
+ * sees the ingreso ticket and the pago receipt as the SAME kind of
+ * document (both previews of what the 58mm thermal printer emits), not
+ * two visually unrelated dialogs. Content/data-testids are unchanged
+ * from the prior sectioned layout — only the container grammar changed.
+ *
  * `aria-modal="true"` + `<h1>` + WCAG 2.1 AA: this is the operator's
  * last visual confirmation that the cobro persisted; the modal must
  * be readable by keyboard + screen reader. shadcn `<Dialog>` provides
@@ -64,6 +72,11 @@ function tiempoMinutos(minutos: number | null | undefined): string {
   return `${h} h ${m} min`;
 }
 
+/** Dashed separator between ticket line-groups (mirrors TiqueteModal's preview box). */
+function TicketDivider(): JSX.Element {
+  return <div className="mt-1 border-t border-dashed border-neutral-400 pt-1" />;
+}
+
 export function FacturaDisplayModal({
   factura,
   onClose,
@@ -101,209 +114,178 @@ export function FacturaDisplayModal({
               </DialogDescription>
             </DialogHeader>
 
-            {/* === Sección: Datos de la sucursal === */}
-            <section className="space-y-1" data-testid="factura-display-sucursal">
-              <h2 className="text-sm font-semibold text-muted-foreground">
-                {t('facturacion:display.sucursal', { defaultValue: 'Emisor' })}
-              </h2>
-              <p className="text-base font-medium">
-                {f.datos_sucursal.razon_social ?? '—'}
-              </p>
-              <p className="text-sm">
-                NIT {f.datos_sucursal.nit ?? '—'}
-                {f.datos_sucursal.regimen ? ` · ${f.datos_sucursal.regimen}` : ''}
-              </p>
-              {f.datos_sucursal.direccion && (
-                <p className="text-sm">{f.datos_sucursal.direccion}</p>
+            {/* Ticket-preview box — same visual grammar as `<TiqueteModal
+                />`'s print preview (mono font, dashed border, white
+                background) so the operator reads both post-operation
+                confirmations as the same kind of document. */}
+            <div
+              data-testid="factura-display-preview"
+              aria-label={t('facturacion:display.titulo', { defaultValue: 'Factura emitida' })}
+              className="mx-auto w-full max-w-sm rounded border border-dashed border-muted-foreground/40 bg-white p-3 font-mono text-xs leading-relaxed text-neutral-900 shadow-inner"
+            >
+              <div className="mb-1 text-center font-bold uppercase tracking-wide">
+                {t('facturacion:display.titulo', { defaultValue: 'Factura emitida' })}
+              </div>
+              <div className="mb-1 text-center text-[11px] text-neutral-500">
+                {f.numero_recibo}
+              </div>
+
+              {/* === Emisor === */}
+              <div data-testid="factura-display-sucursal">
+                <TicketDivider />
+                <div className="font-semibold">{f.datos_sucursal.razon_social ?? '—'}</div>
+                <div>
+                  NIT {f.datos_sucursal.nit ?? '—'}
+                  {f.datos_sucursal.regimen ? ` · ${f.datos_sucursal.regimen}` : ''}
+                </div>
+                {f.datos_sucursal.direccion && <div>{f.datos_sucursal.direccion}</div>}
+                {f.datos_sucursal.telefono && <div>{f.datos_sucursal.telefono}</div>}
+              </div>
+
+              {/* === Cliente === */}
+              <div data-testid="factura-display-cliente">
+                <TicketDivider />
+                {f.cliente ? (
+                  <>
+                    <div>
+                      <span className="font-semibold">
+                        {t('facturacion:display.cliente', { defaultValue: 'Cliente' })}:
+                      </span>{' '}
+                      {f.cliente.nombre ?? '—'}
+                      {f.cliente.apellido ? ` ${f.cliente.apellido}` : ''}
+                    </div>
+                    <div>
+                      {f.cliente.nit ?? '—'}
+                      {f.cliente.dv ? `-${f.cliente.dv}` : ''}
+                    </div>
+                    {f.cliente.email && <div>{f.cliente.email}</div>}
+                  </>
+                ) : (
+                  <div>
+                    <span className="font-semibold">
+                      {t('facturacion:display.cliente', { defaultValue: 'Cliente' })}:
+                    </span>{' '}
+                    {t('facturacion:display.consumidorFinal', { defaultValue: 'Consumidor final' })}
+                  </div>
+                )}
+              </div>
+
+              {/* === Vehículo + minutos === */}
+              {f.datos_vehiculo && (
+                <div data-testid="factura-display-vehiculo">
+                  <TicketDivider />
+                  <div className="text-sm font-bold tracking-wider">
+                    {f.datos_vehiculo.placa ?? '—'}
+                  </div>
+                  <div data-testid="factura-display-minutos">
+                    <span className="font-semibold">
+                      {t('facturacion:display.tiempo', { defaultValue: 'Tiempo' })}:
+                    </span>{' '}
+                    {tiempoMinutos(f.datos_vehiculo.minutos)}
+                  </div>
+                </div>
               )}
-              {f.datos_sucursal.telefono && (
-                <p className="text-sm">{f.datos_sucursal.telefono}</p>
-              )}
-            </section>
 
-            <hr className="border-border" />
-
-            {/* === Sección: Cliente === */}
-            <section className="space-y-1" data-testid="factura-display-cliente">
-              <h2 className="text-sm font-semibold text-muted-foreground">
-                {t('facturacion:display.cliente', { defaultValue: 'Cliente' })}
-              </h2>
-              {f.cliente ? (
-                <>
-                  <p className="text-base font-medium">
-                    {f.cliente.nombre ?? '—'}{' '}
-                    {f.cliente.apellido ? ` ${f.cliente.apellido}` : ''}
-                  </p>
-                  <p className="text-sm">
-                    {f.cliente.nit ?? '—'}
-                    {f.cliente.dv ? `-${f.cliente.dv}` : ''}
-                  </p>
-                  {f.cliente.email && (
-                    <p className="text-sm text-muted-foreground">{f.cliente.email}</p>
-                  )}
-                </>
-              ) : (
-                <p className="text-base font-medium">
-                  {t('facturacion:display.consumidorFinal', { defaultValue: 'Consumidor final' })}
-                </p>
-              )}
-            </section>
-
-            {/* === Sección: Vehículo + minutos === */}
-            {f.datos_vehiculo && (
-              <>
-                  <hr className="border-border" />
-                  <section className="space-y-1" data-testid="factura-display-vehiculo">
-                    <h2 className="text-sm font-semibold text-muted-foreground">
-                      {t('facturacion:display.vehiculo', { defaultValue: 'Vehículo' })}
-                    </h2>
-                    <p className="text-2xl font-bold tracking-wider font-mono">
-                      {f.datos_vehiculo.placa ?? '—'}
-                    </p>
-                    <p className="text-sm" data-testid="factura-display-minutos">
-                      {t('facturacion:display.tiempo', { defaultValue: 'Tiempo' })}:{' '}
-                      <span className="font-medium">
-                        {tiempoMinutos(f.datos_vehiculo.minutos)}
-                      </span>
-                    </p>
-                  </section>
-                </>
-            )}
-
-            <hr className="border-border" />
-
-            {/* === Sección: Líneas / items === */}
-            <section className="space-y-2" data-testid="factura-display-items">
-              <h2 className="text-sm font-semibold text-muted-foreground">
-                {t('facturacion:display.items', { defaultValue: 'Detalle' })}
-              </h2>
-              {f.items.length === 0 ? (
-                <p className="text-sm text-muted-foreground">—</p>
-              ) : (
-                <ul className="divide-y divide-border text-sm">
-                  {f.items.map((item) => (
-                    <li
+              {/* === Líneas / items === */}
+              <div data-testid="factura-display-items">
+                <TicketDivider />
+                {f.items.length === 0 ? (
+                  <div>—</div>
+                ) : (
+                  f.items.map((item) => (
+                    <div
                       key={item.uuid}
-                      className="flex justify-between gap-2 py-1"
+                      className="flex justify-between gap-2"
                       data-testid="factura-display-item"
                     >
                       <span className="flex-1">
-                        {item.concepto}{' '}
-                        <span className="text-muted-foreground">× {item.cantidad}</span>
+                        {item.concepto} × {item.cantidad}
                       </span>
-                      <span className="font-mono">{money(item.subtotal)}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+                      <span>{money(item.subtotal)}</span>
+                    </div>
+                  ))
+                )}
+              </div>
 
-            <hr className="border-border" />
-
-            {/* === Sección: Segregación de valores (impuestos + totales) === */}
-            <section className="space-y-2" data-testid="factura-display-totales">
-              <h2 className="text-sm font-semibold text-muted-foreground">
-                {t('facturacion:display.totales', { defaultValue: 'Totales' })}
-              </h2>
-              <dl className="space-y-1 text-sm">
+              {/* === Segregación de valores (impuestos + totales) === */}
+              <div data-testid="factura-display-totales">
+                <TicketDivider />
                 <div className="flex justify-between">
-                  <dt>{t('facturacion:display.subtotal', { defaultValue: 'Subtotal' })}</dt>
-                  <dd className="font-mono" data-testid="factura-display-subtotal">
-                    {money(f.subtotal)}
-                  </dd>
+                  <span>{t('facturacion:display.subtotal', { defaultValue: 'Subtotal' })}</span>
+                  <span data-testid="factura-display-subtotal">{money(f.subtotal)}</span>
                 </div>
-                {f.descuento && f.descuento > 0 && (
+                {(f.descuento ?? 0) > 0 && (
                   <div className="flex justify-between">
-                    <dt>{t('facturacion:display.descuento', { defaultValue: 'Descuento' })}</dt>
-                    <dd className="font-mono">− {money(f.descuento)}</dd>
+                    <span>{t('facturacion:display.descuento', { defaultValue: 'Descuento' })}</span>
+                    <span>− {money(f.descuento)}</span>
                   </div>
                 )}
-                {/* Impuestos aplicados — segregación (DEC-SUC-24) */}
                 {f.impuestos.map((imp) => (
                   <div
                     key={imp.uuid}
-                    className="flex justify-between text-muted-foreground"
+                    className="flex justify-between"
                     data-testid="factura-display-impuesto"
                   >
-                    <dt>
+                    <span>
                       {imp.nombre_impuesto ?? 'Impuesto'}{' '}
                       {imp.porcentaje_aplicado !== null &&
                         imp.porcentaje_aplicado !== undefined &&
                         `(${(imp.porcentaje_aplicado * 100).toFixed(2)}%)`}
-                    </dt>
-                    <dd className="font-mono">{money(imp.valor)}</dd>
+                    </span>
+                    <span>{money(imp.valor)}</span>
                   </div>
                 ))}
-                <div className="flex justify-between border-t border-border pt-1 text-base font-semibold">
-                  <dt>{t('facturacion:display.total', { defaultValue: 'TOTAL' })}</dt>
-                  <dd className="font-mono" data-testid="factura-display-total">
-                    {money(f.total)}
-                  </dd>
+                <div className="mt-1 flex justify-between border-t border-dashed border-neutral-400 pt-1 font-bold">
+                  <span>{t('facturacion:display.total', { defaultValue: 'TOTAL' })}</span>
+                  <span data-testid="factura-display-total">{money(f.total)}</span>
                 </div>
-              </dl>
-            </section>
+              </div>
 
-            <hr className="border-border" />
-
-            {/* === Sección: Medio de pago === */}
-            <section
-              className="space-y-1"
-              data-testid="factura-display-mediopago"
-            >
-              <h2 className="text-sm font-semibold text-muted-foreground">
-                {t('facturacion:display.medioPago', { defaultValue: 'Medio de pago' })}
-              </h2>
-              <p className="text-base font-medium capitalize">{f.medio_pago}</p>
-              {f.medio_pago === 'efectivo' && f.monto_recibido_cents !== null && f.monto_recibido_cents !== undefined && (
-                <div className="flex justify-between text-sm">
-                  <span>{t('facturacion:display.recibido', { defaultValue: 'Recibido' })}</span>
-                  <span className="font-mono">{money(f.monto_recibido_cents)}</span>
+              {/* === Medio de pago === */}
+              <div data-testid="factura-display-mediopago">
+                <TicketDivider />
+                <div>
+                  <span className="font-semibold">
+                    {t('facturacion:display.medioPago', { defaultValue: 'Medio de pago' })}:
+                  </span>{' '}
+                  <span className="capitalize">{f.medio_pago}</span>
                 </div>
-              )}
-              {f.medio_pago === 'efectivo' && f.vuelto_cents !== null && f.vuelto_cents !== undefined && f.vuelto_cents > 0 && (
-                <div className="flex justify-between text-sm">
-                  <span>{t('facturacion:display.vueltos', { defaultValue: 'Vueltos' })}</span>
-                  <span className="font-mono">{money(f.vuelto_cents)}</span>
-                </div>
-              )}
-              {f.medio_pago === 'datafono' && f.voucher && (
-                <p className="text-sm">
-                  Voucher: <span className="font-mono">{f.voucher}</span>
-                </p>
-              )}
-            </section>
+                {f.medio_pago === 'efectivo' && f.monto_recibido_cents !== null && f.monto_recibido_cents !== undefined && (
+                  <div className="flex justify-between">
+                    <span>{t('facturacion:display.recibido', { defaultValue: 'Recibido' })}</span>
+                    <span>{money(f.monto_recibido_cents)}</span>
+                  </div>
+                )}
+                {f.medio_pago === 'efectivo' && f.vuelto_cents !== null && f.vuelto_cents !== undefined && f.vuelto_cents > 0 && (
+                  <div className="flex justify-between">
+                    <span>{t('facturacion:display.vueltos', { defaultValue: 'Vueltos' })}</span>
+                    <span>{money(f.vuelto_cents)}</span>
+                  </div>
+                )}
+                {f.medio_pago === 'datafono' && f.voucher && (
+                  <div>Voucher: {f.voucher}</div>
+                )}
+              </div>
 
-            {/* === Sección: FE estado DIAN (when assigned) === */}
-            {f.factura_electronica && (
-              <>
-                <hr className="border-border" />
-                <section
-                  className="space-y-1"
-                  data-testid="factura-display-fe"
-                >
-                  <h2 className="text-sm font-semibold text-muted-foreground">
-                    {t('facturacion:display.facturaElectronica', {
-                      defaultValue: 'Factura electrónica',
-                    })}
-                  </h2>
-                  <p className="text-base font-medium">
+              {/* === FE estado DIAN (when assigned) === */}
+              {f.factura_electronica && (
+                <div data-testid="factura-display-fe">
+                  <TicketDivider />
+                  <div className="font-semibold">
                     {f.factura_electronica.prefijo ?? ''}
                     {f.factura_electronica.consecutivo ?? '—'}
-                  </p>
-                  <p
-                    className="text-sm capitalize"
-                    data-estado={f.factura_electronica.estado_dian}
-                  >
+                  </div>
+                  <div className="capitalize" data-estado={f.factura_electronica.estado_dian}>
                     {f.factura_electronica.estado_dian}
-                  </p>
+                  </div>
                   {f.factura_electronica.cufe && (
-                    <p className="text-xs font-mono break-all">
+                    <div className="break-all text-[10px]">
                       CUFE: {f.factura_electronica.cufe}
-                    </p>
+                    </div>
                   )}
-                </section>
-              </>
-            )}
+                </div>
+              )}
+            </div>
 
             <DialogFooter>
               <Button
