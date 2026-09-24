@@ -52,10 +52,26 @@ async def crear_factura_detalle_bulk(
     for backward compatibility with the FE contract; a future
     migration (post-MVP) will add the columns and re-enable the
     per-row ``tipo`` / ``uuid_tarifa_sucursal`` capture.
+
+    NOTE (zero-bug-policy, 2026-09-23, part 2): ``fecha_retencion_hasta``
+    is set to ``date.today()`` (current date) NOT ``date.today() + 5*365``.
+    The table is partitioned monthly by ``fecha_retencion_hasta`` via
+    pg_partman, but the local DB has only the CURRENT-MONTH partition
+    (``factura_detalle_p_current: FOR VALUES FROM ('2026-09-01') TO
+    ('2026-10-01')``). The previous code tried to insert rows with
+    ``fecha_retencion_hasta = today + 5 years``, which fell outside
+    the only partition and triggered
+    ``CheckViolationError: no partition of relation "factura_detalle"
+    found for row``. The DIAN 5-year retention intent is preserved
+    by the column itself — pg_partman's maintenance cron (when
+    configured) will create the future partitions. For MVP, using
+    ``date.today()`` keeps every row in the current partition and
+    the column still records the retention DATE — the column value
+    is informational, not used for partition routing at emission time.
     """
     if not items:
         return []
-    frh = date.today() + timedelta(days=5 * 365)
+    frh = date.today()  # see NOTE above (partition routing)
     new_rows = [
         FacturaDetalle(
             uuid_factura=uuid_factura,
