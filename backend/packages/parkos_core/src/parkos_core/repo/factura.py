@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.A.factura_detalle import FacturaDetalle
 from ..models.A.factura_impuestos import FacturaImpuestos
 from ..models.A.factura_pagos import FacturaPagos
+from ..models.A.salidas import Salidas
 from ..models.L_E.facturas import Facturas
 from ..schemas.facturacion import FacturaItemCreate
 
@@ -203,21 +204,42 @@ def compute_total(
     iva: Decimal,
     retencion: Decimal = Decimal(0),
 ) -> Decimal:
-    """V6: server-side recompute of ``total = subtotal_items + iva - retencion``.
+    """V6: server-side recompute of ``total`` matching PL/pgSQL ``calcular_cotizacion`` semantics.
 
-    ``subtotal_items = sum(item.cantidad * item.valor_unitario)``.
+    The PL/pgSQL function treats ``v_total`` as the BASE amount
+    (the operator's "pre-IVA total") — NOT the after-IVA total. The
+    formula in ``calcular_cotizacion``:
 
-    ``iva = subtotal_items * iva_rate`` (the Decimal from caller).
+    ::
+
+        v_iva        := ROUND(v_total * v_impuesto.porcentaje, 2);
+        v_subtotal   := ROUND(v_total - v_iva, 2);
+        v_total      := ROUND(v_total, 2);
+
+    The PL/pgSQL returns ``total = base`` (e.g. 100 for tarifa valor=100),
+    ``iva = ROUND(base * rate, 2)`` (e.g. 19 for rate=0.19), and
+    ``subtotal = base - iva`` (e.g. 81). The label ``subtotal`` is
+    the operator's "subtotal gravable" (pre-IVA base), and ``total``
+    is the post-IVA total the operator receives.
+
+    To stay aligned with PL/pgSQL and avoid the
+    ``total_no_coherente`` 422 errors, the handler recompute mirrors
+    the same formula: ``total = sum(items * qty)`` (the items sum
+    IS the base — items are the tarifa lines from the F1.8 cotizar
+    snapshot). The previous implementation incorrectly added
+    ``subtotal_items + iva_monto``, double-counting the IVA on top of
+    items that already include it (DEC-FACT-03).
 
     ``retencion = Decimal('0')`` in MVP (DEC-FACT-04, Fase 4 deferred).
     """
-    subtotal_items = sum(
+    base_items = sum(
         (item.cantidad * item.valor_unitario for item in items),
         Decimal(0),
     )
-    iva_monto = (subtotal_items * iva).quantize(Decimal("0.01"))
-    total = subtotal_items + iva_monto - retencion
-    return total.quantize(Decimal("0.01"))
+    # Items sum is already the BASE (post-IVA total the operator
+    # receives). Return as-is; IVA was computed by the PL/pgSQL when
+    # building the items snapshot (DEC-FACT-03 single source of truth).
+    return (base_items - retencion).quantize(Decimal("0.01"))
 
 
 # ---------------------------------------------------------------------------
