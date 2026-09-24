@@ -235,11 +235,17 @@ export function PagoSheet({
       // Per HU-F8.4 contract, the BE derives ``items[]`` server-side
       // from the tarifa structure (DEC-FACT-03) — the FE does NOT
       // send items; only the monetary totals + medio_pago + cliente.
+      // zero-bug-policy (2026-09-23, Bug 21): the contract requires
+      // ``subtotal`` and ``total`` (NOT ``total_cents`` — that field
+      // belongs to the old F8.1 contract before HU-F8.4 enriched the
+      // response). The BE rejects any payload missing ``subtotal`` /
+      // ``total`` with 422.
       const post = values.medio_pago === 'efectivo'
         ? {
             uuid_salida,
             medio_pago: 'efectivo' as const,
-            total_cents: total_cop,
+            subtotal: total_cop,
+            total: total_cop,
             cliente: {
               nit: values.fe ? values.nit ?? '' : '222222222222222',
               nombre: values.fe ? values.nombre_cliente ?? 'Consumidor final' : 'Consumidor final',
@@ -249,7 +255,8 @@ export function PagoSheet({
         : {
             uuid_salida,
             medio_pago: 'datafono' as const,
-            total_cents: total_cop,
+            subtotal: total_cop,
+            total: total_cop,
             voucher: values.voucher,
             cliente: {
               nit: values.fe ? values.nit ?? '' : '222222222222222',
