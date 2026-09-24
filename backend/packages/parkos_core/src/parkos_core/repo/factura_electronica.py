@@ -182,7 +182,7 @@ async def crear_factura_electronica_inicial(
     uuid_sucursal: uuid_lib.UUID,
     uuid_factura: uuid_lib.UUID,
     uuid_resolucion_facturacion: uuid_lib.UUID,
-    prefijo: str,
+    prefijo: str | None,
     consecutivo: int,
 ) -> FacturaElectronica:
     """Step 7 INSERT: single ``prod.factura_electronica`` row.
@@ -195,6 +195,13 @@ async def crear_factura_electronica_inicial(
 
     Catches ``IntegrityError`` on partial UK ``one_fe_per_factura`` (pgcode 23505)
     and raises :class:`FacturaElectronicaYaExisteError`.
+
+    NOTE (zero-bug-policy, 2026-09-23): ``prefijo`` is nullable to match
+    the ORM (``Mapped[str | None]``, see
+    ``models/V/resolucion_facturacion.py:39``). The previous typing was
+    a typing-time lie: callers passed ``resolucion.prefijo`` (which IS
+    nullable at the DB level), causing the LSP error at the call site
+    ``api/v1/facturacion.py:707``.
     """
     fecha_retencion_hasta = date.today() + timedelta(days=5 * 365)
     fe_row = FacturaElectronica(
