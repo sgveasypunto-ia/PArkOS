@@ -15,6 +15,13 @@
  *       M5 + `useRegistrarPago` P1 + the e2e S2 stub).
  *   P4: cancel button → close() invoked → store clears openDrawer.
  *   P5: store swap from pago → arqueo enforces single-drawer invariant.
+ *
+ * F8.1-b (2026-09-23) — auto-annul salida on close-without-pay:
+ *   P6: cancel button + uuid_salida set → `useAnularSalidaNoPagada`
+ *       fires with the right uuid; close() runs AFTER the trigger
+ *       resolves (fire-and-forget pattern).
+ *   P7: cancel button + uuid_salida=null (legacy / hotkey-driven
+ *       flow without a prior salida) → NO annulment, just close.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type * as ReactRouterDom from 'react-router-dom';
@@ -41,6 +48,13 @@ vi.mock('../../operacion/hooks/useInvalidateConteosOperacion', () => ({
   useInvalidateConteosOperacion: () => mockInvalidateConteos,
 }));
 
+// F8.1-b (2026-09-23): stub the annulment hook so the auto-annul
+// path can be observed (P6) without hitting the BE.
+const mockAnularTrigger = vi.fn().mockResolvedValue({ uuid: 'anul-uuid' });
+vi.mock('../hooks/useAnularSalidaNoPagada', () => ({
+  useAnularSalidaNoPagada: () => ({ trigger: mockAnularTrigger }),
+}));
+
 vi.mock('@parkos/ui-kit/hooks', () => ({
   useAuth: () => ({
     sucursal: { uuid: '00000000-0000-0000-0000-00000000br01' },
@@ -61,6 +75,8 @@ import { PagoSheet } from './PagoSheet';
 beforeEach(() => {
   useDashboardDrawerStore.getState().close();
   cleanup();
+  mockAnularTrigger.mockClear();
+  mockAnularTrigger.mockResolvedValue({ uuid: 'anul-uuid' });
 });
 
 describe('<PagoSheet /> — REQ-OPS-138/139', () => {
@@ -83,6 +99,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     act(() => {
       useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
         uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
         total_cop: 5000,
       });
     });
@@ -101,7 +118,9 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     if (cancelBtn) {
       fireEvent.click(cancelBtn);
     }
+    // No uuid_salida → legacy path, just close without annulment.
     expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+    expect(mockAnularTrigger).not.toHaveBeenCalled();
   });
 
   it('P5: store swap from pago → arqueo enforces single-drawer invariant', () => {
@@ -111,5 +130,59 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     act(() => useDashboardDrawerStore.getState().open('arqueo', 'anchor-arqueo'));
     expect(useDashboardDrawerStore.getState().openDrawer).toBe('arqueo');
     // Single-drawer invariant — only the latest is open.
+  });
+
+  // -----------------------------------------------------------------
+  // F8.1-b (2026-09-23): auto-annul salida on close-without-pay.
+  // -----------------------------------------------------------------
+  it('P6 (F8.1-b): cancel button + uuid_salida set → useAnularSalidaNoPagada.trigger fires with that uuid', async () => {
+    render(
+      <PagoSheet
+        uuid_ingreso="uuid-1"
+        uuid_salida="salida-pending"
+        total_cop={5000}
+      />,
+    );
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-pending',
+        total_cop: 5000,
+      }),
+    );
+    const cancelBtn = screen.queryByTestId('pago-cancelar');
+    if (!cancelBtn) {
+      throw new Error('cancel button not found');
+    }
+    await act(async () => {
+      fireEvent.click(cancelBtn);
+    });
+    // The annulment was triggered with the right uuid_salida.
+    expect(mockAnularTrigger).toHaveBeenCalledTimes(1);
+    expect(mockAnularTrigger).toHaveBeenCalledWith({ uuid_salida: 'salida-pending' });
+    // close() runs in the `.finally()` of the annulment promise —
+    // wait one microtask tick for it to flush.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+  });
+
+  it('P7 (F8.1-b): cancel button + uuid_salida=null (legacy) → NO annulment, just close', () => {
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: null,
+        total_cop: 5000,
+      }),
+    );
+    const cancelBtn = screen.queryByTestId('pago-cancelar');
+    if (!cancelBtn) {
+      throw new Error('cancel button not found');
+    }
+    fireEvent.click(cancelBtn);
+    expect(mockAnularTrigger).not.toHaveBeenCalled();
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
   });
 });

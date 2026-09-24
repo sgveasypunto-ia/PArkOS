@@ -493,6 +493,28 @@ class SalidaReadForzado(_Base):
     cotizacion_snapshot: CotizarFacturacion | None = None
 
 
+class AnularSalidaNoPagadaPayload(_Base):
+    """F8.1-b (HU-F8.1-anular-salida-no-pagada, 2026-09-23): request body
+    for ``POST /operacion/salidas/{uuid_salida}/anular-no-pagada``.
+
+    The handler inserts a ``prod.anulaciones`` row with
+    ``tipo_anulable='salida'`` so ``V_INGRESO_ESTADO`` recalculates
+    the ingreso back to ``abierto``. The ``motivo`` is mandatory
+    (≥10 chars, ≤500 chars — same validator as
+    ``AnulacionesCreate.motivo`` in `schemas/workflows.py`) and
+    doubles as the audit-trail entry in
+    ``prod.anulaciones.motivo`` so operators can grep
+    auto-annulments from manual ones.
+
+    No FK fields are accepted from the client — the handler reads
+    ``uuid_sucursal`` and ``uuid_ingreso`` from the existing
+    ``prod.salidas`` row (defense in depth: the operator cannot
+    annul a salida that belongs to another branch).
+    """
+
+    motivo: Annotated[str, Field(min_length=10, max_length=500)]
+
+
 # --- Typed error schemas (D-HU-F1.7-19) ----------------------------------
 
 

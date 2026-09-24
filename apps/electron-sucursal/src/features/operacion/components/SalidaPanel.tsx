@@ -208,14 +208,24 @@ export function SalidaPanel({
     }
   });
 
-  const handleOpenPago = useCallback(() => {
+  const handleOpenPago = useCallback((uuid_salida: string) => {
     // F8.1 (HU-F8.1 — PagoModal) — push the live cotizacion context
     // onto the drawer store BEFORE opening the `pago` drawer. The
     // `<DrawerHost>` reads `pagoContext` and forwards it to
     // `<PagoSheet>` so the form can build the
     // `POST /facturacion/factura` body without re-fetching the
-    // cotizacion. `uuid_ingreso` is the Path-1 result from the parent
-    // (typed via the `SalidaPanelProps.uuid_ingreso` prop); the
+    // cotizacion.
+    //
+    // `uuid_ingreso` is the Path-1 result from the parent (typed
+    // via the `SalidaPanelProps.uuid_ingreso` prop).
+    //
+    // `uuid_salida` is the just-created `prod.salidas.uuid` from
+    // `<SalidaFlow>`'s `useRegistrarSalida.trigger()` call —
+    // F8.1-b (2026-09-23): required so `<PagoSheet>` can auto-annul
+    // the salida on any close-without-pay path (Cancelar / X /
+    // overlay click / Escape). Without it the ingreso would stay
+    // `cerrado` and the cobro would be unrecoverable.
+    //
     // `total_cop` is the freshly-validated `cotizacion.total` that
     // the operator just approved by clicking "Cobrar".
     if (!uuid_ingreso || !cotizacion || cotizacion.cobrar === false) {
@@ -223,6 +233,7 @@ export function SalidaPanel({
     }
     open('pago', pagoAnchorId, null, {
       uuid_ingreso,
+      uuid_salida,
       total_cop: cotizacion.total,
     });
   }, [open, pagoAnchorId, uuid_ingreso, cotizacion]);

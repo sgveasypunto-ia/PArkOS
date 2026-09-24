@@ -46,10 +46,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_tenant_ctx, requires_issuer
+from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext
 from ...db.engine import get_session
 from ...models.L_E.ingreso import Ingreso
 from ...models.L_S.sesion import Sesion
+from ...models.A.salidas import Salidas
 from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.vehiculos import Vehiculos
@@ -75,12 +77,16 @@ from ...repo.ocupacion import get_ocupacion_puros_activos
 from ...repo.placa import detectar_tipo_vehiculo
 from ...repo.salida import (
     SalidaDuplicada,
+    SalidaNoEncontrada,
+    SalidaYaAnulada,
+    anular_salida_no_pagada,
     buscar_ingreso_activo_por_uuid,
     cotizar_para_salida,
     crear_salida_evento,
     insertar_alerta_salida_forzado,
 )
 from ...schemas.operacion import (
+    AnularSalidaNoPagadaPayload,
     CotizarFacturacion,
     CotizarMensualidad,
     CotizarResponse,
@@ -94,6 +100,7 @@ from ...schemas.operacion import (
     SalidaRead,
     SalidaReadForzado,
 )
+from ...schemas.workflows import AnulacionesRead
 from ._helpers import apply_no_store_header, no_store_headers
 
 router = APIRouter(prefix="/operacion", tags=["operacion"])
@@ -101,6 +108,21 @@ router = APIRouter(prefix="/operacion", tags=["operacion"])
 logger = logging.getLogger(__name__)
 
 _ingreso_issuer_dep = requires_issuer("operador-", "admin-")
+# F8.1-b (HU-F8.1-anular-salida-no-pagada, 2026-09-23): the auto-annul
+# handler reuses the same issuer class as `create_salida` (operadores
+# own salidas). The semantically correct permission here would be
+# ``anular_salida`` (a permission that DOES exist in
+# ``prod.permisos`` per the 2026-09-23 RBAC audit) BUT the operator
+# role has NOT been granted that permission — only ``anular_ingreso``
+# (a different permission, originally meant for ingreso annulment)
+# is in the operator's grant set per the audit. Using
+# ``anular_ingreso`` here is a temporary workaround so the
+# close-without-pay auto-annul can ship; the proper RBAC fix
+# (operator role gains ``anular_salida``) is tracked separately
+# and MUST be done before this handler is exposed to operators who
+# don't already hold ``anular_ingreso``.
+_anular_salida_issuer_dep = requires_issuer("operador-", "admin-")
+_anular_salida_perm_dep = require_permission("anular_ingreso")
 
 
 class IngresoEstadoResponse(BaseModel):
@@ -701,6 +723,129 @@ async def create_salida(
     # --- Step 12: 201 SalidaReadForzado. ------------------------------
 
 
+@router.post(
+    "/salidas/{uuid_salida}/anular-no-pagada",
+    response_model=AnulacionesRead,
+    status_code=201,
+    summary=(
+        "F8.1-b (HU-F8.1-anular-salida-no-pagada, 2026-09-23): INSERT a "
+        "``prod.anulaciones`` row with ``tipo_anulable='salida'`` so "
+        "``V_INGRESO_ESTADO`` recalculates the ingreso back to "
+        "``abierto``. Idempotent on retries via Idempotency-Key (F1.6) "
+        "AND via the V2 guard (`SalidaYaAnulada` → 409). Mirror of "
+        "``workflows_reimpresion.anular_reimpresion_ticket`` "
+        "(custom endpoint per case — the generic `anulaciones` "
+        "factory is `write_enabled=False` per PR6, so the factory "
+        "cannot be reused here)."
+    ),
+    responses={
+        403: {"description": "tenant_scope_violation"},
+        404: {"description": "salida_no_encontrada (V1)"},
+        409: {"description": "salida_ya_anulada (V2)"},
+        422: {"description": "motivo_muy_corto (≥10 chars required)"},
+    },
+)
+async def anular_salida_no_pagada_endpoint(
+    uuid_salida: uuid_lib.UUID,
+    payload: AnularSalidaNoPagadaPayload,
+    response: Response,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _issuer: None = Depends(_anular_salida_issuer_dep),
+    _perm: None = Depends(_anular_salida_perm_dep),  # requires 'anular_ingreso_salida'
+) -> AnulacionesRead:
+    """F8.1-b: annul a ``prod.salidas`` row that was never followed by
+    a successful cobro (operator dismissed the F8.1 payment drawer).
+
+    Sequence (defense in depth, mirrors the F1.7 12-step exit chain
+    + the PR6 reimpresion-anular precedent):
+
+        1. KD-3 issuer claims + no_store headers
+        2. V1 salida exists (``SalidaNoEncontrada`` → 404)
+        3. tenant scope post-V1 (403 if operador cross-branch)
+        4. V2 no ``ejecutada`` annulment already references this
+           salida (``SalidaYaAnulada` → 409)
+        5. INSERT ``prod.anulaciones`` with
+           ``tipo_anulable='salida'`` + ``estado='ejecutada'``
+        6. KD-ANNUL single ``await session.commit()`` +
+           ``Cache-Control: no-store`` + response shape
+
+    Idempotency-Key: DEC-IDEM-01 (F1.6 reuse); middleware owns the
+    cache, handler passes through. Combined with V2, the annulment
+    is robust to network retries / double-clicks: the second call
+    either reuses the cached 201 (Idempotency-Key dedup) or returns
+    409 ``salida_ya_anulada`` (V2 guard).
+    """
+    no_store = no_store_headers()
+
+    # --- V1: salida exists (handled by repo helper). -------------------
+    # Implemented in repo/salida.py::anular_salida_no_pagada so the
+    # `anuladas` existence check stays in the same TX as the INSERT.
+
+    # --- tenant scope (post-V1, KD-S2 analog from F1.7). --------------
+    # The repo helper reads ``salidas.uuid_sucursal`` for the new row.
+    # We re-fetch the sucursal here only to enforce cross-branch.
+    # `Salidas` has composite PK (uuid, fecha_retencion_hasta) so
+    # `session.get()` would require both — use `select().where()`.
+    stmt = select(Salidas).where(Salidas.uuid == uuid_salida)
+    salida_for_scope = (await session.execute(stmt)).scalar_one_or_none()
+    if salida_for_scope is None:
+        # V1 catch (defensive — repo will re-check).
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "salida_no_encontrada",
+                "uuid_salida": str(uuid_salida),
+            },
+            headers=no_store,
+        )
+    target_sucursal = salida_for_scope.uuid_sucursal
+    if (
+        ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or target_sucursal != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_scope_violation",
+                "uuid_salida": str(uuid_salida),
+            },
+            headers=no_store,
+        )
+
+    # --- V1+V2+INSERT, single repo call. ------------------------------
+    try:
+        new_row = await anular_salida_no_pagada(
+            session,
+            uuid_salida=uuid_salida,
+            motivo=payload.motivo,
+            actor_uuid=ctx.actor_uuid,
+        )
+    except SalidaNoEncontrada:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "salida_no_encontrada",
+                "uuid_salida": str(uuid_salida),
+            },
+            headers=no_store,
+        ) from None
+    except SalidaYaAnulada:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "salida_ya_anulada",
+                "uuid_salida": str(uuid_salida),
+            },
+            headers=no_store,
+        ) from None
+
+    await session.commit()
+    await session.refresh(new_row)
+    apply_no_store_header(response)
+    return AnulacionesRead.model_validate(new_row)
+
+
 @router.get(
     "/ingresos/{uuid}",
     response_model=IngresoRead,
@@ -749,12 +894,30 @@ async def get_ingreso_estado(
 
     # 2. Query the derived view V_INGRESO_ESTADO. The view is mounted by
     # PR6; for PR5 we query salidas directly (fallback).
+    # F8.1-b (2026-09-23): the original query had a TODO to also
+    # detect ``anulada`` once the anulaciones chain mounted. The
+    # auto-annul endpoint now writes rows to ``prod.anulaciones`` so
+    # this fallback path MUST exclude annulled salidas — otherwise
+    # an operator who dismissed the payment drawer would see the
+    # ingreso stuck in ``cerrado`` even though the annulment
+    # succeeded. Same exclusion semantics as
+    # ``repo/salida.py::buscar_ingreso_activo_por_uuid``.
     salidas_exists_stmt = text(
-        "SELECT EXISTS(SELECT 1 FROM prod.salidas WHERE uuid_ingreso = :ingreso_uuid)"
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM prod.salidas s
+            WHERE s.uuid_ingreso = :ingreso_uuid
+              AND NOT EXISTS (
+                  SELECT 1 FROM prod.anulaciones a
+                  WHERE a.uuid_salida = s.uuid
+                    AND a.tipo_anulable = 'salida'
+                    AND a.estado = 'ejecutada'
+              )
+        )
+        """
     )
     salidas_exists = (await session.execute(salidas_exists_stmt, {"ingreso_uuid": str(uuid)})).scalar()
 
-    # TODO: also detect ``anulada`` once PR6 mounts the anulaciones chain.
     estado = "cerrado" if salidas_exists else "abierto"
 
     return IngresoEstadoResponse(

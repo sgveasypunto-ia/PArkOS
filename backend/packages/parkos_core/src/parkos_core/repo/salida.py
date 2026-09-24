@@ -18,13 +18,14 @@ import uuid as uuid_lib
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.A.salidas import Salidas
 from ..models.L_E.ingreso import Ingreso
 from ..models.L_W.alerta import Alerta
+from ..models.L_W.anulaciones import Anulaciones
 
 
 class SalidaDuplicada(Exception):
@@ -40,6 +41,27 @@ class SalidaDuplicada(Exception):
     ``one_exit_per_ingreso`` appears in the trigger's
     RAISE EXCEPTION prefix and is what the matcher in
     ``crear_salida_evento`` keys on. Mapped to HTTP 409 by the handler.
+    """
+
+
+class SalidaYaAnulada(Exception):
+    """409 -- the salida already has an `ejecutada` annulment row.
+
+    Raised when the operator (or an upstream caller) tries to annul
+    a salida that has already been annulled. Maps to HTTP 409
+    ``salida_ya_anulada`` by the handler.
+
+    F8.1-b (HU-F8.1-anular-salida-no-pagada, 2026-09-23) — guards
+    against double-annulment on retries / network blips.
+    """
+
+
+class SalidaNoEncontrada(Exception):
+    """404 -- the salida UUID does not exist in ``prod.salidas``.
+
+    Raised by ``anular_salida_no_pagada`` when the operator supplies
+    a UUID that never made it into ``prod.salidas``. Maps to HTTP
+    404 ``salida_no_encontrada`` by the handler.
     """
 
 
@@ -181,8 +203,98 @@ async def insertar_alerta_salida_forzado(
     return alerta
 
 
+async def anular_salida_no_pagada(
+    session: AsyncSession,
+    *,
+    uuid_salida: uuid_lib.UUID,
+    motivo: str,
+    actor_uuid: uuid_lib.UUID,
+) -> Anulaciones:
+    """F8.1-b (HU-F8.1-anular-salida-no-pagada, 2026-09-23):
+    INSERT ``prod.anulaciones`` row with ``tipo_anulable='salida'`` so
+    ``V_INGRESO_ESTADO`` recalculates the ingreso back to ``abierto``.
+
+    Operator directive (2026-09-23): "hasta que no se cobre y se
+    genere factura no se debe cerrar el registro de parqueo, por
+    que que pasa si llegan hasta alla y no pagan ya queda cerrado".
+    When the operator dismisses the F8.1 payment drawer without
+    confirming the cobro (Cancelar / X / overlay click / Escape),
+    the ``<PagoSheet>`` calls ``POST /operacion/salidas/{uuid}/anular-no-pagada``
+    → this helper → the row in ``prod.anulaciones`` carries
+    ``tipo_anulable='salida'`` + ``uuid_salida``. The view joins
+    ``prod.salidas`` LEFT JOIN ``prod.anulaciones`` ON
+    ``anulaciones.uuid_salida = salidas.uuid AND anulaciones.estado =
+    'ejecutada'`` and marks the ingreso ``abierto`` whenever the
+    annulment exists.
+
+    Defense in depth (operador on cancel-of-cancel, retries, network
+    blips):
+      - V1: ``prod.salidas`` row must exist (``SalidaNoEncontrada``).
+      - V2: no ``ejecutada`` ``prod.anulaciones`` row already
+            references this salida (``SalidaYaAnulada``).
+
+    No REVOKE/TRIGGER guards needed — ``prod.anulaciones`` is
+    ``[L-W]`` (workflow), INSERT-only by design (AGENTS.md §3). The
+    polymorphic ``tipo_anulable`` discriminator selects which FK
+    arm is validated by the BE schema layer.
+
+    Caller commits (``session.commit()``) — single TX, KD-S7
+    invariant preserved from F1.7.
+    """
+    # V1: salida exists. Single-row SELECT by uuid. `Salidas` uses a
+    # composite PK (uuid, fecha_retencion_hasta) so `session.get()`
+    # would require both values — `select().where(uuid==...)` is the
+    # idiomatic one-column lookup.
+    stmt = select(Salidas).where(Salidas.uuid == uuid_salida)
+    salida_row = (await session.execute(stmt)).scalar_one_or_none()
+    if salida_row is None:
+        raise SalidaNoEncontrada(str(uuid_salida))
+
+    # V2: not already annulled. Match the F1.7 query used in
+    # ``buscar_ingreso_activo_por_uuid`` for the SAME exclusion
+    # semantics (the view derives ``anulada`` exactly this way).
+    stmt = text(
+        """
+        SELECT 1 FROM prod.anulaciones a
+        WHERE a.uuid_salida = :uuid_salida
+          AND a.tipo_anulable = 'salida'
+          AND a.estado = 'ejecutada'
+        LIMIT 1
+        """
+    )
+    already = (
+        await session.execute(stmt, {"uuid_salida": str(uuid_salida)})
+    ).first()
+    if already is not None:
+        raise SalidaYaAnulada(str(uuid_salida))
+
+    # INSERT the annulment row. ``estado='ejecutada'`` is the
+    # terminal state that the view's ``LEFT JOIN ... WHERE
+    # anulaciones.estado = 'ejecutada'`` filter recognizes; until
+    # then the annulment is a draft (not yet committed, not visible
+    # to ``V_INGRESO_ESTADO``).
+    new_row = Anulaciones(
+        uuid_sucursal=salida_row.uuid_sucursal,
+        tipo_anulable="salida",
+        uuid_ingreso=salida_row.uuid_ingreso,
+        uuid_salida=uuid_salida,
+        uuid_usuario=actor_uuid,
+        motivo=motivo,
+        timestamp_evento=datetime.now(UTC).replace(tzinfo=None),
+        vigente_desde=datetime.now(UTC).replace(tzinfo=None),
+        vigente_hasta=None,
+        estado="ejecutada",
+    )
+    session.add(new_row)
+    await session.flush()
+    return new_row
+
+
 __all__ = [
     "SalidaDuplicada",
+    "SalidaNoEncontrada",
+    "SalidaYaAnulada",
+    "anular_salida_no_pagada",
     "buscar_ingreso_activo_por_uuid",
     "cotizar_para_salida",
     "crear_salida_evento",

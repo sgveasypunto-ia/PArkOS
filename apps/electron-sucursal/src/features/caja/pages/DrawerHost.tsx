@@ -52,14 +52,25 @@ export function DrawerHost(): JSX.Element | null {
     // submit button is disabled when `uuid_ingreso` is null per
     // `<PagoModal>` `disabled={!uuid_ingreso || ...}`).
     //
+    // F8.1-b (2026-09-23): also forward `uuid_salida` so `<PagoSheet>`
+    // can auto-annul the salida on any close-without-pay path
+    // (Cancelar / X / overlay click / Escape). Without this, the
+    // ingreso would stay `cerrado` (the matching `prod.salidas`
+    // row is already inserted) and the operator could never recover
+    // the cobro — `prod.salidas` is `[A]` (append-only).
+    //
     // `<PagoSheet>` owns its own `onSubmit` (wired to
-    // `useRegistrarPago` + post-pago print triggers per DEC-SUC-27).
-    // `<DrawerHost>` is a pure shell — no onSubmit forwarding needed.
+    // `useRegistrarPago` + post-pago print triggers per DEC-SUC-27)
+    // and its own close-without-pay annulment via
+    // `useAnularSalidaNoPagada`.
+    // `<DrawerHost>` is a pure shell — no callback forwarding needed.
     const uuidIngreso = pagoContext?.uuid_ingreso ?? null;
+    const uuidSalida = pagoContext?.uuid_salida ?? null;
     const totalCop = pagoContext?.total_cop ?? 0;
     return (
       <PagoSheet
         uuid_ingreso={uuidIngreso}
+        uuid_salida={uuidSalida}
         total_cop={totalCop}
       />
     );

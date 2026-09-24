@@ -58,17 +58,28 @@ export interface SalidaFlowProps {
   pagoAnchorId: string;
   /**
    * Optional override for the post-201 ROTACION path. The callback
-   * owns the full drawer-open contract (including `pagoContext`
-   * payload) so the parent can pass a typed `uuid_ingreso` +
-   * `total_cop` from its cotizacion snapshot. Defaults to
-   * `useDashboardDrawerStore.open('pago', pagoAnchorId)` with NO
-   * `pagoContext` — that fallback is only safe for tests that spy
-   * on the routing call, NOT for production: opening the `pago`
-   * drawer without `pagoContext` leaves `<PagoSheet>` with
-   * `uuid_ingreso=null` (button disabled) and `total_cop=0`
-   * (vueltos computation broken). HU-F8.1 regression.
+   * owns the full drawer-open contract (including the typed
+   * `pagoContext` payload — `uuid_ingreso`, `uuid_salida`, and
+   * `total_cop`) so the parent can pass the live values from its
+   * cotizacion snapshot. The callback receives the just-created
+   * `uuid_salida` because `<SalidaFlow>` is the one that owns the
+   * `trigger()` call to `POST /operacion/salidas`; without
+   * forwarding it the parent can't build a complete `pagoContext`.
+   *
+   * F8.1-b (HU-F8.1-anular-salida-no-pagada, 2026-09-23): the
+   * `uuid_salida` is also required downstream so `<PagoSheet>`
+   * can auto-annul the salida on any close-without-pay path
+   * (Cancelar / X / overlay click / Escape). Without the annulment,
+   * the ingreso stays `cerrado` and the operator can never recover
+   * the cobro — `prod.salidas` is `[A]` (append-only) so the only
+   * recovery path is `prod.anulaciones` (`[L-W]` workflow row with
+   * `tipo_anulable='salida'`).
+   *
+   * Defaults to `useDashboardDrawerStore.open('pago', pagoAnchorId)`
+   * with NO `pagoContext` — that fallback is only safe for tests
+   * that spy on the routing call, NOT for production.
    */
-  onPagoOpen?: () => void;
+  onPagoOpen?: (uuid_salida: string) => void;
 }
 
 /**
@@ -114,12 +125,19 @@ export function SalidaFlow({
         // HU-F8.1 regression fix: when the parent provides
         // `onPagoOpen`, defer the drawer-open contract to it so the
         // caller can pass the typed `pagoContext` (uuid_ingreso +
-        // total_cop). The fallback path opens the drawer with NO
-        // context — kept only for backwards compatibility with tests
-        // that spy on the open call; production wiring MUST pass
-        // `onPagoOpen` to keep `<PagoSheet>` functional.
+        // uuid_salida + total_cop). The fallback path opens the
+        // drawer with NO context — kept only for backwards
+        // compatibility with tests that spy on the open call;
+        // production wiring MUST pass `onPagoOpen` to keep
+        // `<PagoSheet>` functional.
+        //
+        // F8.1-b (2026-09-23): forward `result.uuid` (the just-
+        // created `prod.salidas.uuid`) so the parent can include
+        // it in the `pagoContext` payload. `<PagoSheet>` uses it
+        // to auto-annul on close-without-pay (Cancelar / X /
+        // overlay / Escape).
         if (onPagoOpen) {
-          onPagoOpen();
+          onPagoOpen(result.uuid);
         } else {
           openDrawer('pago', pagoAnchorId);
         }
