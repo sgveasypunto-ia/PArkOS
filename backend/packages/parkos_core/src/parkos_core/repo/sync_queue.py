@@ -22,7 +22,7 @@ import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.A.sync_queue import SyncQueue
@@ -331,6 +331,14 @@ async def list_pending(
     stmt = (
         select(SyncQueue)
         .where(SyncQueue.estado == "pendiente")
+        # Bug 8 fix: the docstring's own contract — a row mid-backoff
+        # (next_retry_at in the future) must NOT be re-picked every cycle.
+        # Without this predicate mark_failed's backoff schedule was
+        # decorative and a 5xx push re-fired on every cycle.
+        .where(
+            (SyncQueue.next_retry_at.is_(None))
+            | (SyncQueue.next_retry_at <= func.now())
+        )
         .order_by(
             SyncQueue.prioridad.desc(),
             SyncQueue.intentos.asc(),
