@@ -99,6 +99,7 @@ from . import (
     facturacion,
     operacion,
     sucursal,
+    sync_estado,  # HU-F1.14 wire-in: GET /sync/estado (fix 2026-09-24: was nested under /caja, see caja.py note)
     sync_router,  # T-PR8-16 wire-in: /sync/* (REQ-OP-03, both deploys)
     usuarios_login,  # HU-F1.15: GET /usuarios/{uuid}/login (DEC-LOGIN-01.A)
     workflows,
@@ -151,6 +152,7 @@ def _build_router() -> APIRouter:
     r.include_router(caja.router)  # T-PR7-09
     r.include_router(caja_sesion.router)  # T-PR7-09
     r.include_router(sync_router.router)  # T-PR8-16: /sync/* (both deploys, REQ-OP-03)
+    r.include_router(sync_estado.router)  # HU-F1.14: GET /sync/estado (both deploys)
     r.include_router(usuarios_login.router)  # HU-F1.15: GET /usuarios/{uuid}/login (DEC-LOGIN-01.A)
 
     # Empresa resources — selectively mounted (DIAN boundary, REQ-X3).

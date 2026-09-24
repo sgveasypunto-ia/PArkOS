@@ -86,18 +86,15 @@ from .caja_arqueo import router as caja_arqueo_router  # noqa: E402
 router.include_router(caja_arqueo_router)
 
 
-# ---------------------------------------------------------------------------
-# HU-F1.14 / DEC-SYNC-02: dedicated router mount for the read-only
-# ``GET /api/v1/sync/estado`` endpoint. Mirrors the F1.13 mount
-# precedent above: the factory mount cannot model the typed response +
-# KD-3 issuer + ``audit_read`` permission gate, so we expose a
-# dedicated router and ``include_router`` it here. KD-SYNC-01 +
-# KD-SYNC-02: the handler is purely read-only -- NO UPDATE/DELETE on
-# ``prod.sync_log`` or ``prod.sync_queue``, NO ``await session.commit()``.
-# ---------------------------------------------------------------------------
-from .sync_estado import router as sync_estado_router  # noqa: E402
-
-router.include_router(sync_estado_router)
+# NOTE (fix 2026-09-24, bug reproducido en vivo): ``sync_estado`` NO se monta
+# aquí. Este router declara ``prefix="/caja"`` (línea 25); anidar
+# ``sync_estado.router`` (que declara su propio ``prefix="/sync"``) adentro
+# de este router concatenaba ambos prefijos y publicaba el endpoint en
+# ``/api/v1/caja/sync/estado`` en vez de ``/api/v1/sync/estado`` (el path
+# que documentan plan.md HU-F1.14, el frontend `useSyncEstado.ts`, y el
+# propio docstring de `sync_estado.py`). El montaje correcto vive en
+# ``api/v1/__init__.py::_build_router``, al mismo nivel que
+# ``sync_router.router`` (que sí es responsable de ``/api/v1/sync/*``).
 
 
 __all__ = ["router"]
