@@ -218,9 +218,14 @@ _QUEUE_METADATA_KEYS: frozenset[str] = frozenset(
     {"seq", "created_at", "created_by", "sync_status", "sync_timestamp", "sync_attempts"}
 )
 #: ``[V]``-only — ``repo.versioned.close_and_insert`` computes these itself
-#: for the new version; see the block comment above.
+#: for the new version; see the block comment above. ``uuid`` is NOT in the
+#: set: it is the row's BUSINESS IDENTITY and must survive the wire for the
+#: receiver to dedup/apply (Bug 2 fix — ``row_already_present`` at
+#: ``apply_row.row_already_present`` neutralizes the self-collision concern
+#: that justified stripping it: a row whose own uuid is already present is
+#: skipped, never re-inserted).
 _VERSIONED_ONLY_METADATA_KEYS: frozenset[str] = frozenset(
-    {"uuid", "vigente_desde", "vigente_hasta", "estado"}
+    {"vigente_desde", "vigente_hasta", "estado"}
 )
 
 

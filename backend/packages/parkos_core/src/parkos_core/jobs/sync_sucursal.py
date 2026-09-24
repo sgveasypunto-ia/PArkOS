@@ -84,10 +84,6 @@ from parkos_core.jobs.sync_cloud import _business_payload_for_apply, is_infra_ta
 from parkos_core.repo import sync_queue as sq_helpers
 from parkos_core.runtime import engine_flag
 from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME, resolve_catalog_name
-from parkos_core.sync.conflict_resolver import (
-    ApplyOutcome,
-    ConflictResolver,
-)
 from parkos_core.sync.cutover import dual_protocol
 from parkos_core.sync.jwt_manager import JwtAction, JwtManager
 from parkos_core.sync.motor import apply_guard
@@ -188,7 +184,6 @@ class SyncSucursalWorker(WorkerRunner):
         # boot).
         self._jwt_manager: JwtManager | None = None
         self._http_client: SyncHttpClient | None = None
-        self._conflict_resolver: ConflictResolver = ConflictResolver()
         # T-PR12-006 — the catalog-driven applier, built lazily with the
         # EXPLICIT catalog_branch engine mode (never engine_flag.get_engine()
         # — D11's whole point is that the branch decides from what /sync/
@@ -623,7 +618,27 @@ class SyncSucursalWorker(WorkerRunner):
     # ------------------------------------------------------------------
 
     async def _pull_and_apply(self) -> None:
-        """Pull cloud changes and apply each one through ConflictResolver."""
+        """Pull cloud changes and apply each one (Bug 4 fix).
+
+        The pre-PR7 ``ConflictResolver.apply_pushed_row`` used to APPLY the
+        row and return the outcome; PR7 (T-PR7-004) turned it into a pure
+        decision shim ("the caller is responsible for translating outcomes
+        into repo writes") but this legacy caller was never updated —
+        since PR7 it only COLLECTED the decision and never wrote a single
+        row. Two pulls of the same remote row landed ZERO local rows
+        (test C5 pinned ``count == 0`` under LEG), and the fresh-uuid
+        duplicate concern in the old comment described a path that never
+        even reached an INSERT.
+
+        Fix (Bug 4): dedup each delivery by ``uuid_registro`` via the
+        shared ``apply_guard.row_already_present`` guard (the same one
+        ``_pull_and_apply_catalog`` uses) and apply resolved rows through
+        ``SyncMotor.apply_batch`` — the same catalog pipeline, which
+        preserves the incoming ``uuid`` end to end
+        (``repo.versioned.close_and_insert`` carries ``payload["uuid"]``
+        into the new version via ``new_attrs``). A decision-only no-op is
+        not an applier.
+        """
         assert self._http_client is not None
         try:
             pulled = await self._http_client.pull(since_seq=0)
@@ -644,36 +659,63 @@ class SyncSucursalWorker(WorkerRunner):
             return
 
         # Echo-amplification fix (post-PR14 real-Docker closing exercise,
-        # real defect #3; migration 0016_add_sync_apply_guard). Every row
-        # ``pulled.rows`` applies below already arrived via sync — SET
-        # LOCAL the echo-suppression GUC ONCE for this whole cycle's
-        # ambient transaction (ended by ``cycle()``'s single
-        # ``session.commit()`` after both push and pull steps run, never
-        # per-row) before the very first ``apply_pushed_row`` call. The
-        # legacy applier writes to the SAME 48 trigger-attached tables the
-        # catalog applier does — the DB-level trigger does not care which
-        # Python code path performed the INSERT. See
-        # sync.motor.apply_guard's own docstring.
+        # real defect #3; migration 0016_add_sync_apply_guard). SET LOCAL
+        # the echo-suppression GUC ONCE, before the apply savepoint below,
+        # mirroring _pull_and_apply_catalog's own placement.
         await apply_guard.enable_echo_suppression(self._session)
 
-        applied = 0
-        conflicts = 0
-        errors = 0
+        resolved: list[tuple[Any, dict[str, Any]]] = []
+        unresolved = 0
+        already_applied = 0
         for row in pulled.rows:
-            outcome = await self._conflict_resolver.apply_pushed_row(self._session, row)
-            if outcome == ApplyOutcome.APPLIED:
-                applied += 1
-            elif outcome == ApplyOutcome.CONFLICT_V or outcome == ApplyOutcome.CONFLICT_LS:
-                conflicts += 1
-            else:
-                errors += 1
+            tabla = row.get("tabla")
+            spec = SYNC_CATALOG_BY_NAME.get(tabla)
+            if spec is None:
+                unresolved += 1
+                continue
+
+            raw_uuid_registro = row.get("uuid_registro")
+            try:
+                uuid_registro = (
+                    uuid_lib.UUID(str(raw_uuid_registro))
+                    if raw_uuid_registro is not None
+                    else None
+                )
+            except ValueError:
+                uuid_registro = None
+            if uuid_registro is not None and await apply_guard.row_already_present(
+                self._session, spec.model_cls, uuid_registro
+            ):
+                already_applied += 1
+                continue
+
+            resolved.append((spec, row.get("datos") or {}))
+
+        if unresolved:
+            self.log.warning("sync_sucursal.pull_unknown_tables", count=unresolved)
+        if already_applied:
+            self.log.debug("sync_sucursal.pull_skipped_already_applied", count=already_applied)
+        if not resolved:
+            return
+
+        if self._motor is None:
+            self._motor = SyncMotor(engine=engine_flag.EngineMode.CATALOG_BRANCH)
+        actor_uuid = uuid_lib.uuid4()
+
+        try:
+            async with self._session.begin_nested():
+                result = await self._motor.apply_batch(
+                    self._session, resolved, actor_uuid=actor_uuid
+                )
+        except Exception as exc:  # noqa: BLE001 — keep the cycle alive (mirrors sync_cloud.py)
+            self.log.warning("sync_sucursal.pull_apply_batch_failed", error=str(exc))
+            return
 
         self.log.info(
             "sync_sucursal.pull_applied",
             pulled=len(pulled.rows),
-            applied=applied,
-            conflicts=conflicts,
-            errors=errors,
+            applied=len(result.applied),
+            buffered=len(result.buffered),
             next_seq=pulled.next_seq,
         )
 

@@ -215,7 +215,14 @@ class TestBusinessPayloadForApply:
             "descripcion": "carro",
         }
         payload = _business_payload_for_apply(spec, raw)
-        assert payload == {"descripcion": "carro"}
+        # Bug 2 fix: uuid is the business identity and must survive the
+        # wire (close_and_insert preserves it via new_attrs; the queue
+        # metadata + versioning columns that the repo recomputes are still
+        # stripped).
+        assert payload == {
+            "uuid": "11111111-1111-1111-1111-111111111111",
+            "descripcion": "carro",
+        }
 
     def test_a_entry_keeps_uuid_and_versioned_lookalikes(self) -> None:
         from parkos_core.jobs.sync_cloud import _business_payload_for_apply

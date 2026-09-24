@@ -298,17 +298,6 @@ class TestFullCycleMechanics:
 
 
 class TestBug2SingleRowIdentityPreserved:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug 2 — jobs/sync_cloud.py::_business_payload_for_apply strips "
-            "'uuid' from every [V] payload; the pushed tipov lands on the "
-            "receiver with a FRESH uuid instead of preserving R. Fix: keep "
-            "uuid on branch→cloud [V] pushes and let the receiver's "
-            "row_already_present guard dedup. Assertion below IS the desired "
-            "contract."
-        ),
-    )
     async def test_pushed_v_row_keeps_its_uuid_on_the_cloud_side(
         self,
         pg_engine: AsyncEngine,
@@ -332,7 +321,7 @@ class TestBug2SingleRowIdentityPreserved:
                 "insert",
                 "tipos_vehiculo",
                 R,
-                {"uuid": str(R), "tipo": tipo, "estado": "activo", "vigente_desde": now_naive()},
+                {"uuid": str(R), "tipo": tipo, "estado": "activo", "vigente_desde": now_naive().isoformat()},
                 uuid_sucursal=None,
                 prioridad=10,
             )
@@ -343,8 +332,8 @@ class TestBug2SingleRowIdentityPreserved:
             await worker._push_and_handle_catalog(own_rows)
             await branch_session.commit()
 
-            # Desired identity-preservation contract: the SAME uuid lands at
-            # the receiver. Today it lands R' != R (uuid stripped on wire).
+            # Identity-preservation contract: the SAME uuid lands at the
+            # receiver (Bug 2 fixed — uuid is no longer stripped on wire).
             found = (
                 await branch_session.execute(
                     select(TiposVehiculo.uuid).where(TiposVehiculo.tipo == tipo).limit(1)
@@ -557,31 +546,19 @@ def _patch_sleep(sleep_mock: AsyncMock):
 
 
 class TestLegacyPullTwiceNoDuplicate:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug 4 (empirically confirmed wiring this file) — the legacy "
-            "_pull_and_apply path imports each remote row under a FRESH "
-            "uuid instead of preserving uuid_registro; two pulls of the "
-            "same row land TWO local rows and NEITHER carries the remote "
-            "uuid (count==0 under LEG). Desired: apply under the remote "
-            "uuid_registro, dedup the second delivery via uuid_registro. "
-            "Assertion below IS the desired contract."
-        ),
-    )
     async def test_legacy_pull_delivers_a_remote_row_exactly_once(
         self,
         pg_engine: AsyncEngine,
         alembic_upgrade: None,
         jwt_file: Path,
     ) -> None:
-        """Probe for Bug 4, deliberately WITHOUT a preset xfail: the legacy
-        ``_pull_and_apply`` path has resynced with ``since_seq=0`` every
-        cycle since inception; the ConflictResolver may dedup by uuid or may
-        not. This test pins the DESIRED contract (exactly one local row for
-        a remote row delivered twice) and is flipped to xfail ONLY from the
-        empirical run below, per the agreed bug-policy (Bugs 1/2/4/6 start
-        as xfail; 3/5/7 are documented-green)."""
+        """Bug 4 contract: the legacy ``_pull_and_apply`` path must deliver
+        a remote row exactly once under its own uuid. The pre-PR7-era
+        prober (that twice-delivered rows previously landed the SAME
+        remote row TWICE under fresh uuids, or — after PR7's pure-decision
+        shim — ZERO times) is now fixed: the legacy pull dedups by
+        ``uuid_registro`` and applies through ``SyncMotor.apply_batch``,
+        which preserves the incoming ``uuid``."""
         from parkos_core.jobs.sync_sucursal import SyncSucursalWorker
 
         Session = async_sessionmaker(pg_engine, expire_on_commit=False)
@@ -624,20 +601,6 @@ class TestLegacyPullTwiceNoDuplicate:
 
 
 class TestBug2ChildIdentityTracksLandedParent:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug 2 — _business_payload_for_apply strips uuid from [V]; a "
-            "clientes+subscripciones_cliente parent/child batch pushed "
-            "branch→cloud makes the parent land under a FRESH uuid while the "
-            "child payload still carries the ORIGINAL uuid_cliente. The hard "
-            "FK fk_subscripciones_cliente_uuid_cliente → prod.clientes(uuid) "
-            "(0001_initial_schema.py:1198) then fails the whole batch. "
-            "Desired: parent settles exitoso under P', child settles exitoso "
-            "AND child.uuid_cliente == P'. Fix: preserve uuid in branch→cloud "
-            "[V] payloads."
-        ),
-    )
     async def test_child_subscription_lands_pointing_at_the_landed_parent(
         self,
         pg_engine: AsyncEngine,
@@ -672,7 +635,7 @@ class TestBug2ChildIdentityTracksLandedParent:
                     "nombre": "Pepe",
                     "apellido": "Perez",
                     "estado": "activo",
-                    "vigente_desde": now_naive(),
+                    "vigente_desde": now_naive().isoformat(),
                 },
                 uuid_sucursal=None,
             )
@@ -689,7 +652,7 @@ class TestBug2ChildIdentityTracksLandedParent:
                     "fecha_inicio_cobertura": "2026-01-01",
                     "fecha_vencimiento": "2026-12-31",
                     "estado": "activo",
-                    "vigente_desde": now_naive(),
+                    "vigente_desde": now_naive().isoformat(),
                 },
                 uuid_sucursal=None,
             )
@@ -720,8 +683,8 @@ class TestBug2ChildIdentityTracksLandedParent:
                     )
                 ).scalar_one_or_none()
 
-            # Desired contract: the child settles AND points at the landed
-            # parent. Today both legs of the batch fail on the FK (Bug 2).
+            # Bug 2 fixed: the parent lands under its ORIGIN uuid, so the
+            # child's uuid_cliente FK matches and both legs settle exitoso.
             assert landed_parent is not None, "parent clientes never landed"
             assert child_estado == "exitoso", f"child settled {child_estado!r}"
             async with fresh() as session:
