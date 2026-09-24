@@ -13,17 +13,43 @@
  *        those panels now live inside DrawerHost via IngresoSheet /
  *        SalidaSheet, not as sr-only anchors here.
  *
+ * HU-F7.1 (búsqueda sin placa, T5) — PlacaInputHero autocomplete:
+ *   U20: typing a partial placa renders a matching suggestion.
+ *   U21: selecting a placa suggestion → opens the salida drawer with
+ *        that placa (`initialPlaca`), exactly like the legacy fallback.
+ *   U22: selecting a NO-placa (consecutivo) suggestion → opens the
+ *        salida drawer via `initialUuidIngreso` instead of `initialPlaca`.
+ *   U23: ArrowDown highlights the first suggestion (aria-activedescendant).
+ *   U24: Escape closes the suggestion listbox.
+ *   U25: Enter with NO suggestion highlighted preserves the legacy
+ *        fallback (`getIngresosByPlaca` smart-routing), unchanged.
+ *
  * Mocking strategy: vi.mock('../hooks/useSesionActiva') → return control.
  * `useAuth` se mockea para devolver `{ isAuthenticated: true }` por
- * default. `<TurnoActivoToggle>` y `<OcupacionPanel>` se mockean como
+ * default. `<TurnoActivoToggle>` y `<CuposLibresStrip>` se mockean como
  * passthrough con data-testid para evitar cargar primitives de Radix.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
+import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
+// Named type-only import so the `vi.mock` factory below can reference
+// `typeof IngresoActivoApiModule` instead of an inline `import()` type
+// query (`@typescript-eslint/consistent-type-imports` forbids the latter).
+import type * as IngresoActivoApiModule from '../../operacion/api/ingresoActivoApi';
+
 const mockNavigate = vi.fn();
-const mockUseSesionActiva = vi.fn();
+// Safe baseline (not a bare `vi.fn()`) so `Dashboard`'s unconditional
+// `useSesionActiva()` destructure never sees `undefined` if a render
+// slips in before a test configures its own return value.
+const mockUseSesionActiva = vi.fn(() => ({
+  sesion: null,
+  isLoading: true,
+  error: undefined,
+  refresh: vi.fn(),
+}));
 const mockRefresh = vi.fn();
 const mockUseAuth = vi.fn();
 
@@ -62,6 +88,23 @@ vi.mock('../../operacion/hooks/useIngresoActivo', () => ({
   }),
 }));
 
+// HU-F7.1 (T5) — PlacaInputHero autocomplete deps: the live active-ingresos
+// snapshot (controlled per-test) and the legacy fallback fetch used when
+// Enter is pressed with no suggestion highlighted.
+const mockUseIngresosActivos = vi.fn();
+vi.mock('../../operacion/hooks/useIngresosActivos', () => ({
+  useIngresosActivos: (...args: unknown[]) => mockUseIngresosActivos(...args),
+}));
+
+const mockGetIngresosByPlaca = vi.fn();
+vi.mock('../../operacion/api/ingresoActivoApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof IngresoActivoApiModule>();
+  return {
+    ...actual,
+    getIngresosByPlaca: (...args: unknown[]) => mockGetIngresosByPlaca(...args),
+  };
+});
+
 // Passthrough TurnoActivoToggle — expone data-testid para verificar render.
 vi.mock('../components/TurnoActivoToggle', () => ({
   TurnoActivoToggle: ({ sesion }: { sesion: { uuid: string } }) => (
@@ -71,9 +114,14 @@ vi.mock('../components/TurnoActivoToggle', () => ({
   ),
 }));
 
-// Passthrough OcupacionPanel — evita carga de Radix Tooltip.
-vi.mock('../components/OcupacionPanel', () => ({
-  OcupacionPanel: () => <div data-testid="ocupacion-panel-mock" />,
+// Passthrough CuposLibresStrip (footer, reemplazó a OcupacionPanel en el
+// dashboard el 2026-09-22 — ver Dashboard.tsx). Pre-existing bug found
+// while working on HU-F7.1: this mock/assertion still targeted the OLD
+// `OcupacionPanel` component, which the dashboard no longer renders —
+// U16 failed unconditionally (unrelated to this HU). Fixed by pointing
+// the stub at the component actually rendered today.
+vi.mock('../../operacion/components/CuposLibresStrip', () => ({
+  CuposLibresStrip: () => <div data-testid="cupos-libres-strip-mock" />,
 }));
 
 // Stub IngresoSheet + SalidaSheet — DrawerHost tests cover the
@@ -118,6 +166,9 @@ beforeEach(() => {
     isLoading: false,
     sucursal: { uuid: 'suc-uuid-1' },
   });
+  mockUseIngresosActivos.mockReturnValue([]);
+  mockGetIngresosByPlaca.mockResolvedValue([]);
+  useDashboardDrawerStore.getState().close();
 });
 
 afterEach(() => {
@@ -157,7 +208,7 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     expect(screen.getByTestId('dashboard-hub')).toBeInTheDocument();
     expect(screen.getByTestId('turno-activo-toggle-mock')).toBeInTheDocument();
     expect(screen.getByText(/UUID: sess-uuid-123/)).toBeInTheDocument();
-    expect(screen.getByTestId('ocupacion-panel-mock')).toBeInTheDocument();
+    expect(screen.getByTestId('cupos-libres-strip-mock')).toBeInTheDocument();
     // The placa hero (REQ-OPS-136 smart-routing entry point).
     expect(screen.getByTestId('placa-hero-input')).toBeInTheDocument();
     // Legacy sections retained as sr-only anchors for tests/audit.
@@ -244,5 +295,122 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/login', { replace: true });
     });
+  });
+});
+
+describe('<PlacaInputHero /> — HU-F7.1 búsqueda sin placa (T5) autocomplete', () => {
+  function renderDashboardConSesion(): void {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+  }
+
+  const ITEM_ABC123 = {
+    uuid: 'uuid-ingreso-abc123',
+    placa: 'ABC123',
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: null,
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+  const ITEM_PATINETA = {
+    uuid: 'uuid-ingreso-patineta',
+    placa: null,
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: 'PATINETA-000003-34a24bae',
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+
+  it('U20: typing a partial placa renders a matching suggestion', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_ABC123]);
+    renderDashboardConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), 'ABC');
+
+    expect(await screen.findByRole('option', { name: /ABC123/ })).toBeInTheDocument();
+  });
+
+  it('U21: selecting a placa suggestion → opens salida drawer with that placa', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_ABC123]);
+    renderDashboardConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), 'ABC');
+    const option = await screen.findByRole('option', { name: /ABC123/ });
+    await userEvent.click(option);
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+    });
+    expect(useDashboardDrawerStore.getState().initialPlaca).toBe('ABC123');
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+  });
+
+  it('U22: selecting a NO-placa (consecutivo) suggestion → opens salida drawer via initialUuidIngreso', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_PATINETA]);
+    renderDashboardConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), 'PATIN');
+    const option = await screen.findByRole('option', { name: /PATINETA-000003-34a24bae/ });
+    await userEvent.click(option);
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+    });
+    const state = useDashboardDrawerStore.getState();
+    expect(state.initialPlaca).toBeNull();
+    expect(state.initialUuidIngreso).toBe('uuid-ingreso-patineta');
+  });
+
+  it('U23: ArrowDown highlights the first suggestion (aria-activedescendant)', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_ABC123]);
+    renderDashboardConSesion();
+
+    const input = screen.getByTestId('placa-hero-input');
+    await userEvent.type(input, 'ABC');
+    const option = await screen.findByRole('option', { name: /ABC123/ });
+
+    expect(input).toHaveAttribute('aria-expanded', 'true');
+    await userEvent.keyboard('{ArrowDown}');
+    expect(input.getAttribute('aria-activedescendant')).toBe(option.id);
+  });
+
+  it('U24: Escape closes the suggestion listbox', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_ABC123]);
+    renderDashboardConSesion();
+
+    const input = screen.getByTestId('placa-hero-input');
+    await userEvent.type(input, 'ABC');
+    await screen.findByRole('listbox');
+
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(input).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('U25: Enter with no suggestion highlighted preserves the legacy fallback (getIngresosByPlaca smart-routing)', async () => {
+    mockUseIngresosActivos.mockReturnValue([]);
+    mockGetIngresosByPlaca.mockResolvedValue([]);
+    renderDashboardConSesion();
+
+    const input = screen.getByTestId('placa-hero-input');
+    await userEvent.type(input, 'ZZZ999');
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('ingreso');
+    });
+    expect(useDashboardDrawerStore.getState().initialPlaca).toBe('ZZZ999');
+    expect(mockGetIngresosByPlaca).toHaveBeenCalledWith('ZZZ999');
   });
 });
