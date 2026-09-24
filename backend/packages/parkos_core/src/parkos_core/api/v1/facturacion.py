@@ -291,8 +291,25 @@ async def create_factura(
         )
 
     # --- Step 4: V2 cliente existe cuando fe_con_datos=true. -----------
+    # Defense in depth (zero-bug-policy, 2026-09-23): the request body
+    # schema declares ``fe_datos_cliente: FacturaItemConDatosPropios |
+    # None = None``. A client can send ``{"fe_con_datos": true, ...}``
+    # WITHOUT ``fe_datos_cliente``, in which case the previous code crashed
+    # at line 298 with ``AttributeError: 'NoneType' object has no
+    # attribute 'numero_identificacion'``. We now reject that case
+    # explicitly with 422 cliente_invalido so the operator gets a clear
+    # error instead of a 500.
     cliente_uuid: uuid_lib.UUID | None = None
     if payload.fe_con_datos:
+        if payload.fe_datos_cliente is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "cliente_invalido",
+                    "reason": "fe_datos_cliente_requerido_cuando_fe_con_datos",
+                },
+                headers=no_store,
+            )
         cliente = await repo_factura.buscar_o_crear_cliente_por_nit(
             session,
             numero_identificacion=payload.fe_datos_cliente.numero_identificacion,
