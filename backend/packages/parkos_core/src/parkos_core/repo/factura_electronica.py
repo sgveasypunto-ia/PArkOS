@@ -182,7 +182,7 @@ async def crear_factura_electronica_inicial(
     uuid_sucursal: uuid_lib.UUID,
     uuid_factura: uuid_lib.UUID,
     uuid_resolucion_facturacion: uuid_lib.UUID,
-    prefijo: str,
+    prefijo: str | None,
     consecutivo: int,
 ) -> FacturaElectronica:
     """Step 7 INSERT: single ``prod.factura_electronica`` row.
@@ -195,8 +195,15 @@ async def crear_factura_electronica_inicial(
 
     Catches ``IntegrityError`` on partial UK ``one_fe_per_factura`` (pgcode 23505)
     and raises :class:`FacturaElectronicaYaExisteError`.
+
+    NOTE (zero-bug-policy, 2026-09-23): ``prefijo`` is nullable to match
+    the ORM (``Mapped[str | None]``, see
+    ``models/V/resolucion_facturacion.py:39``). The previous typing was
+    a typing-time lie: callers passed ``resolucion.prefijo`` (which IS
+    nullable at the DB level), causing the LSP error at the call site
+    ``api/v1/facturacion.py:707``.
     """
-    fecha_retencion_hasta = date.today() + timedelta(days=5 * 365)
+    fecha_retencion_hasta = date.today()  # see factura_detalle.py NOTE part 2
     fe_row = FacturaElectronica(
         uuid=uuid_lib.uuid4(),
         fecha_retencion_hasta=fecha_retencion_hasta,
@@ -296,7 +303,7 @@ async def crear_envio_dian_reintento(
     session: AsyncSession,
     *,
     actor_uuid: uuid_lib.UUID,
-    uuid_sucursal: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID | None,
     uuid_factura_electronica: uuid_lib.UUID,
     uuid_resolucion_facturacion: uuid_lib.UUID,
     payload: dict[str, Any],
@@ -307,8 +314,16 @@ async def crear_envio_dian_reintento(
     Sets ``uuid_envio_padre=<tip.uuid>``, ``estado='pendiente'``, ``cufe=NULL``.
 
     The chain IS the audit trail. NEVER UPDATE on existing envio rows.
+
+    NOTE (zero-bug-policy, 2026-09-23): ``uuid_sucursal`` is nullable
+    to match the underlying :class:`EnvioDian` ORM column
+    (``Mapped[uuid_lib.UUID | None]``, see
+    ``models/L_W/envio_dian.py:31``). The previous typing was a lie —
+    callers passed ``fe_row.uuid_sucursal`` (nullable at the DB
+    level), causing the LSP error at the call site
+    ``api/v1/facturacion.py:1007``.
     """
-    fecha_retencion_hasta = date.today() + timedelta(days=5 * 365)
+    fecha_retencion_hasta = date.today()  # see factura_detalle.py NOTE part 2
     envio_row = EnvioDian(
         uuid=uuid_lib.uuid4(),
         fecha_retencion_hasta=fecha_retencion_hasta,

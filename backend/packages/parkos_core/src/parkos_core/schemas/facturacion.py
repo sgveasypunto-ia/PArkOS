@@ -116,25 +116,19 @@ class FacturasReadList(ReadListBase[FacturasRead]):
 
 # ---------------------------------------------------------------------------
 # FacturaElectronica ([L-E] DIAN, CLOUD-ONLY — REQ-34, REQ-35)
+#
+# NOTE (zero-bug-policy, 2026-09-23): the previous version of this file
+# declared TWO classes with the name ``FacturaElectronicaRead`` (lines
+# 122 and 870). Python class shadowing made the second definition win
+# (the enriched ``envio_actual`` shape at line 870); the first was
+# unreachable AND unused (no import / reference). This caused the LSP
+# error "Class declaration FacturaElectronicaRead is obscured by a
+# declaration of the same name" reported by the zero-bug-policy sweep.
+#
+# Fix: remove the obsolete first definition. ``FacturaElectronicaReadList``
+# below is parameterized over the live name; with a single definition
+# the parameterization is unambiguous.
 # ---------------------------------------------------------------------------
-
-
-class FacturaElectronicaRead(_Base):
-    """Read-back for ``prod.factura_electronica`` (cloud-only)."""
-
-    uuid: uuid_lib.UUID
-    created_at: datetime
-    created_by: uuid_lib.UUID | None
-    sync_status: str | None
-    sync_timestamp: datetime | None
-    sync_attempts: int | None
-    uuid_sucursal: uuid_lib.UUID | None
-    uuid_factura: uuid_lib.UUID | None
-    uuid_cliente: uuid_lib.UUID | None
-    uuid_resolucion_facturacion: uuid_lib.UUID | None
-    prefijo: str | None  # server-assigned (REQ-34)
-    consecutivo: int | None  # server-assigned (REQ-34)
-    descuento: Decimal | None
 
 
 class CloudFacturaElectronicaCreate(_Base):
@@ -212,10 +206,6 @@ class FacturaElectronicaFilter(FilterBase):
     uuid_resolucion_facturacion: uuid_lib.UUID | None = None
     prefijo: str | None = None
     consecutivo: int | None = None
-
-
-class FacturaElectronicaReadList(ReadListBase[FacturaElectronicaRead]):
-    """Cursor-paginated list of :class:`FacturaElectronicaRead` items."""
 
 
 # ---------------------------------------------------------------------------
@@ -776,14 +766,26 @@ class FacturaPagoAdicionalCreate(_Base):
 
 
 class FacturaPagoRead(_Base):
-    """HU-F1.9: POST ``/api/v1/facturacion/factura-pagos`` response."""
+    """HU-F1.9: POST ``/api/v1/facturacion/factura-pagos`` response.
+
+    NOTE (zero-bug-policy, 2026-09-23): the previous typing declared
+    ``uuid_factura``, ``medio_pago``, ``valor``, ``timestamp_evento`` as
+    REQUIRED non-nullable, but the ORM
+    (``models/A/factura_pagos.py``) declares all of them as
+    ``Mapped[... | None]``. The handler at
+    ``api/v1/facturacion.py:524-528`` returned
+    ``FacturaPagoRead(uuid=new_pago.uuid, ...)`` directly from the ORM
+    row, so any nullable column would trigger the LSP errors reported
+    in this sweep. The fix mirrors the ORM: nullable fields are
+    declared nullable in the schema too.
+    """
 
     uuid: uuid_lib.UUID
-    uuid_factura: uuid_lib.UUID
-    medio_pago: str
-    valor: Decimal
+    uuid_factura: uuid_lib.UUID | None
+    medio_pago: str | None
+    valor: Decimal | None
     referencia: str | None
-    timestamp_evento: datetime
+    timestamp_evento: datetime | None
 
 
 # --- Typed error schemas (D-HU-F1.9-19) -------------------------------------
@@ -867,8 +869,25 @@ class FacturaElectronicaCreate(_Base):
     uuid_factura: uuid_lib.UUID
 
 
+# NOTE (zero-bug-policy, 2026-09-23): the historical version of this
+# file declared a SECOND ``class FacturaElectronicaRead`` further down
+# that shadowed this one. The second definition was the rich one with
+# ``envio_actual`` and was the one FastAPI route signatures imported
+# (``response_model=FacturaElectronicaRead`` at lines 547, 756). The
+# shadow pattern worked but caused the LSP error
+# "Class declaration FacturaElectronicaRead is obscured". The fix
+# restores the rich definition here (single class, no shadowing), with
+# the rich ``envio_actual`` shape and the strict
+# ``prefijo``/``consecutivo`` constraints.
 class FacturaElectronicaRead(_Base):
-    """POST/GET ``/factura-electronica`` response shape."""
+    """POST/GET ``/factura-electronica`` response shape.
+
+    ``prefijo`` is server-assigned (REQ-34) — required non-empty.
+    ``consecutivo`` is server-assigned (REQ-34) — required >= 0.
+    ``uuid_resolucion_facturacion`` is the resolution that authorized
+    the consecutive. ``envio_actual`` is the latest envio row from
+    ``prod.envio_dian`` (chain tip).
+    """
 
     uuid: uuid_lib.UUID
     prefijo: Annotated[str, StringConstraints(min_length=1, max_length=10)]
@@ -877,6 +896,10 @@ class FacturaElectronicaRead(_Base):
     uuid_resolucion_facturacion: uuid_lib.UUID
     created_at: datetime
     envio_actual: EnvioDianRead
+
+
+class FacturaElectronicaReadList(ReadListBase[FacturaElectronicaRead]):
+    """Cursor-paginated list of :class:`FacturaElectronicaRead` items."""
 
 
 class EnvioDianRetryRead(_Base):

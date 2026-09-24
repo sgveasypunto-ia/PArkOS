@@ -41,6 +41,7 @@ persistence operation. Tests live in
 """
 from __future__ import annotations
 
+import math
 import uuid as uuid_lib
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -228,7 +229,11 @@ async def build_display_factura(
         minutos: int | None = None
         if ingreso_row.fecha_ingreso is not None and salida_row.fecha_salida is not None:
             delta = salida_row.fecha_salida - ingreso_row.fecha_ingreso
-            minutos = int(delta.total_seconds() // 60)
+            # Per directive "no salga decimales si no que lo aproxime al
+            # siguiente numero" (operator 2026-09-23): CEIL the duration
+            # so the operator charges the FULL minute the vehiculo
+            # spent in the patio. Sub-second estancias → 1 minute.
+            minutos = math.ceil(delta.total_seconds() / 60)
         datos_vehiculo = FacturaDisplayVehiculo(
             placa=ingreso_row.placa,
             uuid_tipo_vehiculo=ingreso_row.uuid_tipo_vehiculo,

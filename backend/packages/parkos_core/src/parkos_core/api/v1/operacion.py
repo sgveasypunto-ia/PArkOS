@@ -709,16 +709,30 @@ async def create_salida(
     apply_no_store_header(response)
     await session.refresh(new_row)
     base = SalidaRead.model_validate(new_row).model_dump()
+    # Defense in depth (zero-bug-policy, 2026-09-23): when tarifa is
+    # NOT vigente and the operator uses the V5 bypass, ``cotizacion``
+    # is replaced with the placeholder dict ``{"cobrar": True}`` (line
+    # 608) which has NO ``subtotal`` / ``iva`` / ``total`` /
+    # ``tiempo_minutos`` fields. The previous code validated that
+    # placeholder against :class:`CotizarFacturacion` and crashed
+    # with ``ValidationError: subtotal input_value=None`` for every
+    # tarifa_no_vigente bypass — a 500 to the operator.
+    #
+    # Fix: if bypass_reason is set (tarifa_no_vigente or
+    # subscripcion_vencida), the cotizacion_snapshot is None. The
+    # operator already knows it's a forced exit (``motivo_forzado``
+    # carries the reason); the snapshot would be misleading anyway.
+    cotizacion_snapshot: CotizarFacturacion | None = (
+        CotizarFacturacion.model_validate(cotizacion)
+        if tipo_salida == "ROTACION" and not bypass_reason
+        else None
+    )
     return SalidaReadForzado(
         **base,
         tipo_salida=tipo_salida,  # type: ignore[arg-type]
         forzado_en_creacion=bypass_reason is not None,
         motivo_forzado=motivo if bypass_reason else None,
-        cotizacion_snapshot=(
-            CotizarFacturacion.model_validate(cotizacion)
-            if tipo_salida == "ROTACION"
-            else None
-        ),
+        cotizacion_snapshot=cotizacion_snapshot,
     )
     # --- Step 12: 201 SalidaReadForzado. ------------------------------
 

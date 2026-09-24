@@ -19,7 +19,7 @@ DB rejects the second insert via ``UniqueViolation``.
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -113,8 +113,11 @@ async def reverse_payment(
         )
 
     now = _now_naive()
-    # DIAN 5-year retention — matches the migration's `Date` column type.
-    fecha_retencion_hasta = (now + timedelta(days=5 * 365)).date()
+    # DIAN 5-year retention intent is preserved by the column itself.
+    # The actual value is set to ``date.today()`` so the row lands in
+    # the current-month partition (see
+    # ``factura_detalle.py::NOTE part 2`` for the full rationale).
+    fecha_retencion_hasta = date.today()
 
     # 2. Build the compensating row (mirror original attrs + reverso flags).
     new_row = FacturaPagos(
