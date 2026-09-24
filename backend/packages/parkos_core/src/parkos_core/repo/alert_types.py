@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,39 @@ from ..models.L_W.alerta import Alerta
 
 class UnknownAlertTypeError(Exception):
     """Raised when ``tipo_alerta`` is not a row in ``prod.alert_types``."""
+
+
+# Fix 2026-09-24 (GET /workflows/alert-types, HU-F11.2): the FE's
+# ``severidad`` vocabulary (alta|media|baja) predates and differs from
+# the DB's ``severity`` CHECK constraint (info|warning|critical,
+# ``models/A/alert_types.py``). Ordered mapping, most-to-least severe.
+_SEVERITY_TO_SEVERIDAD: dict[str, Literal["alta", "media", "baja"]] = {
+    "critical": "alta",
+    "warning": "media",
+    "info": "baja",
+}
+
+
+def severity_to_severidad(severity: str) -> Literal["alta", "media", "baja"]:
+    """Map the DB ``severity`` vocabulary to the FE ``severidad`` one.
+
+    Raises ``KeyError`` for any value outside the 3 CHECK-constrained
+    ``prod.alert_types.severity`` values — that would mean the DB
+    constraint itself drifted, not a normal runtime input.
+    """
+    return _SEVERITY_TO_SEVERIDAD[severity]
+
+
+async def list_alert_types(session: AsyncSession) -> list[AlertTypes]:
+    """Return every ``prod.alert_types`` row (out-of-catalog, no pagination).
+
+    Backs ``GET /workflows/alert-types`` (HU-F11.2 DA-F11.2-10 path b).
+    The table is deploy-seeded and small (19 rows total per plan.md
+    HU-F1.14/HU-F19.4) — no cursor pagination needed, unlike the
+    generic ``make_router`` factory's catalogs.
+    """
+    result = await session.execute(select(AlertTypes).order_by(AlertTypes.tipo_alerta))
+    return list(result.scalars().all())
 
 
 async def validate(session: AsyncSession, tipo_alerta: str) -> None:
@@ -97,5 +131,11 @@ class AlertaFactory:
         return alerta
 
 
-__all__ = ["AlertaFactory", "UnknownAlertTypeError", "validate"]
+__all__ = [
+    "AlertaFactory",
+    "UnknownAlertTypeError",
+    "list_alert_types",
+    "severity_to_severidad",
+    "validate",
+]
 
