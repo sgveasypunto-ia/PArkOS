@@ -26,18 +26,18 @@ Scope decision — shared DB (disclosed, deliberate):
 
 Observed while wiring this file (disclosed — NOT fixed here):
 
-1. ``repo.sync_queue.list_pending``'s WHERE clause evaluates ONLY
-   ``estado = 'pendiente'``. Its docstring promises
-   ``AND (next_retry_at IS NULL OR next_retry_at <= NOW())`` but the code
-   omits that predicate — a row re-queued by ``mark_failed`` with a future
-   ``next_retry_at`` is picked straight back up next cycle, making the
-   backoff schedule decorative. Covered by
-   ``TestBackoffRespectedByListPending`` (xfail, Bug 8).
+1. ``repo.sync_queue.list_pending``'s WHERE clause evaluated ONLY
+   ``estado = 'pendiente'`` (Bug 8, FIXED in
+   ``fix/sync-jwt-queue-wire``): a row re-queued by ``mark_failed`` with a
+   future ``next_retry_at`` was picked straight back up next cycle, making
+   the backoff schedule decorative. Covered by
+   ``TestBackoffRespectedByListPending``.
 2. ``_business_payload_for_apply`` (jobs/sync_cloud.py) strips ``uuid``
    from every ``[V]`` payload before it goes on the wire (Bug 2). On a real
    two-DB deployment that alone breaks identity; on this shared-DB file it
    means a ``[V]`` push never proves "same uuid arrived" — the two Bug 2
-   tests below pin the DESIRED contract as strict xfails.
+   tests below pin the DESIRED contract as strict xfails (fixed in
+   ``fix/sync-catalog-identity``).
 
 Session idiom: follows the DB integration files (e.g.
 ``test_apply_pending_no_self_duplicate.py``) — tests take ``pg_engine`` /
@@ -58,9 +58,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
-
 from parkos_core.models.V.clientes import Clientes
 from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
 from parkos_core.models.V.sucursal import Sucursal
@@ -69,6 +66,8 @@ from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
 from parkos_core.repo import sync_queue as sq_helpers
 from parkos_core.sync.motor import apply_guard
 from parkos_core.sync.transport import PullResponse
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 ACTOR_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000c0001")
 
@@ -171,7 +170,7 @@ def _build_branch_worker(session, cloud_app, *, jwt_path, mode) -> object:
     depends on the live handshake's version negotiation (the detect/TTL
     logic itself is covered at unit level); the preset mirrors the result a
     healthy handshake would have cached."""
-    from parkos_core.jobs.sync_sucursal import ApplierMode, SyncSucursalWorker
+    from parkos_core.jobs.sync_sucursal import SyncSucursalWorker
     from parkos_core.sync.transport import SyncHttpClient
 
     worker = SyncSucursalWorker(
@@ -419,24 +418,11 @@ class TestCatalogPullIdempotent:
 
 
 # ---------------------------------------------------------------------------
-# C3 — Bug 8: backoff must actually hold the row out of list_pending
+# C3 — Bug 8 (fixed): backoff must actually hold the row out of list_pending
 # ---------------------------------------------------------------------------
 
 
 class TestBackoffRespectedByListPending:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug 8 (discovered wiring this file) — repo/sync_queue.py::"
-            "list_pending's WHERE evaluates only estado='pendiente'; its own "
-            "docstring promises AND (next_retry_at IS NULL OR next_retry_at "
-            "<= NOW()) but the code omits that predicate. mark_failed "
-            "re-queues with a future next_retry_at (verified below), so the "
-            "worker re-pushes the row EVERY cycle and the backoff schedule "
-            "is decorative. Fix: add the next_retry_at predicate to "
-            "list_pending."
-        ),
-    )
     async def test_511_marked_row_stays_out_of_list_pending_until_retry_at(
         self,
         pg_engine: AsyncEngine,
@@ -490,33 +476,22 @@ class TestBackoffRespectedByListPending:
                     )
                 ).scalar_one()
 
-            # True today: mark_failed re-queues with a future retry window.
+            # mark_failed re-queues with a future retry window.
             assert row.estado == "pendiente"
-            assert row.next_retry_at is not None and row.next_retry_at > now_naive()
+            assert row.next_retry_at is not None
+            assert row.next_retry_at > now_naive()
 
-            # False today (Bug 8): the future window must gate list_pending.
+            # Bug 8 fix holds: the future window MUST gate list_pending.
             still_pending = await sq_helpers.list_pending(branch_session, limit=500)
             assert all(r.uuid != row.uuid for r in still_pending)
 
 
 # ---------------------------------------------------------------------------
-# C4 — Bug 6: missing JWT must not abort the cycle before pull+commit
+# C4 — Bug 6 (fixed): missing JWT must not abort the cycle before pull+commit
 # ---------------------------------------------------------------------------
 
 
 class TestMissingJwtKeepsCycleAlive:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug 6 — with no JWT file provisioned, SyncHttpClient._read_jwt "
-            "raises RuntimeError (transport.py:121), which escapes the "
-            "_push_and_handle_catalog except-tuple and aborts cycle() BEFORE "
-            "step 4 (pull) + commit run. Correct behavior: log the missing "
-            "JWT, skip the push, still pull + commit (the cycle docstring "
-            "promises 'the loop tolerates that' for pre-pairing). Assertion "
-            "below is the desired contract."
-        ),
-    )
     async def test_cycle_still_pulls_when_push_jwt_is_missing(
         self,
         pg_engine: AsyncEngine,
@@ -732,7 +707,9 @@ class TestBug2ChildIdentityTracksLandedParent:
             async with fresh() as session:
                 landed_parent = (
                     await session.execute(
-                        select(Clientes.uuid).where(Clientes.numero_identificacion == ident).limit(1)
+                        select(Clientes.uuid).where(
+                            Clientes.numero_identificacion == ident
+                        ).limit(1)
                     )
                 ).scalar_one_or_none()
                 child_estado = (

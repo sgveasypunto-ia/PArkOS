@@ -14,10 +14,9 @@ focused on the BATCH-SELECTION + payload-shaping + batch-failure layer of
   - A3 — ``_business_payload_for_apply`` strips exactly the queue/audit
     metadata, and for ``[V]`` additionally the versioned-only metadata,
     while preserving every business key.
-  - A4 — **BUG 1 (xfail)**: a 401 from ``/sync/events`` marks the batch
-    ``http_401`` without ever consulting ``JwtManager``, so the expired
-    sync-agent JWT never rotates. Correct behaviour is the SAME JWT
-    lifecycle handling the legacy ``_handle_push_response`` performs.
+  - A4 — **BUG 1 (fixed)**: a 401 from ``/sync/events`` consults
+    ``JwtManager`` (rotate on ``RETRY_NEW_JWT``), mirroring the legacy
+    ``_handle_push_response`` JWT lifecycle handling.
   - A5 — result-count mismatch fails the WHOLE batch loudly, never a
     silent partial drop.
   - A6 — an unrecognized per-row wire status settles as
@@ -35,6 +34,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from parkos_core.jobs.sync_sucursal import DEFAULT_BATCH_SIZE, SyncSucursalWorker
 from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+from parkos_core.sync.jwt_manager import JwtAction
 from parkos_core.sync.transport import EventsPushResponse
 
 
@@ -110,7 +110,10 @@ class TestMixedBatchRouting:
         ):
             push_events = _wire_up_push_events(
                 worker,
-                EventsPushResponse(status=207, results=[{"event_type": "caja", "status": "applied"}]),
+                EventsPushResponse(
+                    status=207,
+                    results=[{"event_type": "caja", "status": "applied"}],
+                ),
             )
             await worker._push_and_handle_catalog([infra, unknown, catalog])
 
@@ -139,7 +142,10 @@ class TestMixedBatchRouting:
         ) as mark_dispatched_mock:
             push_events = _wire_up_push_events(
                 worker,
-                EventsPushResponse(status=207, results=[{"event_type": "caja", "status": "applied"}]),
+                EventsPushResponse(
+                    status=207,
+                    results=[{"event_type": "caja", "status": "applied"}],
+                ),
             )
             await worker._push_and_handle_catalog([infra_partition])
 
@@ -169,7 +175,10 @@ class TestPartmanSuffixNormalization:
         ):
             push_events = _wire_up_push_events(
                 worker,
-                EventsPushResponse(status=207, results=[{"event_type": "caja", "status": "applied"}]),
+                EventsPushResponse(
+                    status=207,
+                    results=[{"event_type": "caja", "status": "applied"}],
+                ),
             )
             await worker._push_and_handle_catalog([row])
 
@@ -256,7 +265,10 @@ class TestBusinessPayloadForApply:
         ):
             push_events = _wire_up_push_events(
                 worker,
-                EventsPushResponse(status=207, results=[{"event_type": "caja", "status": "applied"}]),
+                EventsPushResponse(
+                    status=207,
+                    results=[{"event_type": "caja", "status": "applied"}],
+                ),
             )
             await worker._push_and_handle_catalog([row])
 
@@ -266,28 +278,17 @@ class TestBusinessPayloadForApply:
 
 
 # ---------------------------------------------------------------------------
-# A4 — BUG 1 (xfail): catalog push never rotates an expired sync-agent JWT
+# A4 — BUG 1 (fixed): catalog push rotates an expired sync-agent JWT
 # ---------------------------------------------------------------------------
 
 
 class TestCatalogPushJwtRotate:
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG 1: catalog push treats a 401 from /sync/events as a plain "
-            "transport failure (sync_sucursal.py:554 -> mark_failed http_401) "
-            "and never consults JwtManager — the expired sync-agent JWT is "
-            "never rotated. Fix: mirror the legacy _handle_push_response "
-            "(sync_sucursal.py:352-380) and dispatch through "
-            "JwtManager.on_401_response here."
-        ),
-    )
     async def test_401_rotates_jwt_like_legacy_path(self, worker: SyncSucursalWorker) -> None:
         pending = [_make_pending_row(tabla="caja")]
 
         manager = MagicMock()
-        manager.on_401_response = AsyncMock(return_value="RETRY_NEW_JWT")
+        manager.on_401_response = AsyncMock(return_value=JwtAction.RETRY_NEW_JWT)
         manager.rotate = AsyncMock(return_value="rotated-jwt")
         worker._jwt_manager = manager
 
@@ -330,7 +331,10 @@ class TestResultCountMismatch:
             _wire_up_push_events(
                 worker,
                 # 2 rows sent, 1 result returned — no safe correlation exists.
-                EventsPushResponse(status=207, results=[{"event_type": "caja", "status": "applied"}]),
+                EventsPushResponse(
+                    status=207,
+                    results=[{"event_type": "caja", "status": "applied"}],
+                ),
             )
             await worker._push_and_handle_catalog(rows)
 

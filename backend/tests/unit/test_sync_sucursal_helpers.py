@@ -27,7 +27,6 @@ import pytest
 from parkos_core.jobs.sync_cloud import is_infra_table
 from parkos_core.jobs.sync_sucursal import _parse_semver, _version_gte, _wire_shape
 
-
 # ---------------------------------------------------------------------------
 # B1 — semver parsing / comparison
 # ---------------------------------------------------------------------------
@@ -122,15 +121,6 @@ class TestWireShape:
         assert shape["prioridad"] is None
         assert shape["datos"] == {}
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug 9: _wire_shape stringifies a missing uuid — "
-            "str(getattr(row, 'uuid_registro', '')) turns None into the "
-            "literal 'None' instead of JSON null (sync_sucursal.py:769-770). "
-            "Fix: str(u or '') or None in _wire_shape."
-        ),
-    )
     def test_missing_uuids_coerce_to_none_not_string(self) -> None:
         """A row enqueued without a uuid must not send the string ``'None'``
         over the wire — the legacy receiver parses uuid_registro/uuid_sucursal
@@ -156,9 +146,9 @@ class TestIsInfraTable:
     def test_infra_names_recognized(self) -> None:
         from parkos_core.sync.catalog.out_of_catalog import OUT_OF_CATALOG
 
-        assert OUT_OF_CATALOG == frozenset(
+        assert frozenset(
             {"sync_queue", "sync_log", "sync_conflict", "sync_queue_lw_buffer", "alert_types"}
-        )
+        ) == OUT_OF_CATALOG
         for name in OUT_OF_CATALOG:
             assert is_infra_table(name) is True, f"{name} should be infra"
 

@@ -25,13 +25,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
-
 from parkos_core.models.V.clientes import Clientes
 from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
 from parkos_core.repo import sync_queue as sq_helpers
 from parkos_core.sync.transport import EventsPushResponse, PullResponse
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -134,6 +133,19 @@ class TestGoldenOutboxInvariant:
 
             # ===== Rounds: replay the real worker selection each time =====
             for _ in range(14):
+                # Bug 8's fix makes list_pending gate on next_retry_at, so a
+                # mark_failed row would stay OUT of the selection mid-backoff.
+                # To replay the playbook (each round re-settles whatever the
+                # REAL selection returns) we advance the clock explicitly:
+                # clear next_retry_at for our tracked rows so the backoff
+                # window counts as elapsed.
+                await branch_session.execute(
+                    update(sq_helpers.SyncQueue)
+                    .where(sq_helpers.SyncQueue.uuid_registro.in_(uuids))  # type: ignore[arg-type]
+                    .values(next_retry_at=None)
+                )
+                await branch_session.commit()
+
                 pending = await sq_helpers.list_pending(branch_session, limit=500)
                 own = [r for r in pending if r.uuid_registro in uuids]
                 if not own:
@@ -170,7 +182,8 @@ class TestGoldenOutboxInvariant:
                         )
                     )
                 ).scalars().all()
-            assert set(final) == {"exitoso"} and len(final) == 3
+            assert set(final) == {"exitoso"}
+            assert len(final) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +247,9 @@ class TestCatalogPullEchoSweep:
                 ).scalar_one()
                 cliente_count = (
                     await session.execute(
-                        select(func.count(Clientes.uuid)).where(Clientes.numero_identificacion == nid)
+                        select(func.count(Clientes.uuid)).where(
+                            Clientes.numero_identificacion == nid
+                        )
                     )
                 ).scalar_one()
                 echo = (
