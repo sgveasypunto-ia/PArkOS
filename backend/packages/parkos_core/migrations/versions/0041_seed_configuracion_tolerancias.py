@@ -102,12 +102,34 @@ def upgrade() -> None:
     )
 
     # Branch override for the dev branch.
+    #
+    # REGRESSION FIX (2026-09-24): this INSERT hardcodes the LOCAL DEV
+    # branch's uuid_sucursal and runs unconditionally on EVERY database
+    # (cloud, any new branch install, any isolated test DB). On any
+    # environment where that specific sucursal row does not exist
+    # (a genuinely fresh install, CI, testcontainers), the FK to
+    # prod.sucursal violated and ABORTED the entire migration chain from
+    # 0041 onward -- migrations 0042+ never applied either. Guard the
+    # INSERT with an existence check so this Op is a silent no-op
+    # everywhere except the one dev branch it targets.
     op.execute(
         f"""
         DO $$
         DECLARE
             siembra_count INTEGER;
+            sucursal_existe BOOLEAN;
         BEGIN
+            SELECT EXISTS(
+                SELECT 1 FROM prod.sucursal
+                WHERE uuid = '{_GLOBAL_DEFAULT_UUID_SUCURSAL}'
+            ) INTO sucursal_existe;
+
+            IF NOT sucursal_existe THEN
+                RAISE NOTICE '0041_op2: sucursal % no existe en este entorno, skip (no es el dev local BOG-CEN)',
+                              '{_GLOBAL_DEFAULT_UUID_SUCURSAL}';
+                RETURN;
+            END IF;
+
             SELECT COUNT(*) INTO siembra_count
             FROM prod.configuracion_tolerancias
             WHERE uuid_sucursal = '{_GLOBAL_DEFAULT_UUID_SUCURSAL}'
