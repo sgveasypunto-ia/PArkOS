@@ -203,7 +203,7 @@ async def crear_factura_electronica_inicial(
     nullable at the DB level), causing the LSP error at the call site
     ``api/v1/facturacion.py:707``.
     """
-    fecha_retencion_hasta = date.today() + timedelta(days=5 * 365)
+    fecha_retencion_hasta = date.today()  # see factura_detalle.py NOTE part 2
     fe_row = FacturaElectronica(
         uuid=uuid_lib.uuid4(),
         fecha_retencion_hasta=fecha_retencion_hasta,
@@ -323,7 +323,7 @@ async def crear_envio_dian_reintento(
     level), causing the LSP error at the call site
     ``api/v1/facturacion.py:1007``.
     """
-    fecha_retencion_hasta = date.today() + timedelta(days=5 * 365)
+    fecha_retencion_hasta = date.today()  # see factura_detalle.py NOTE part 2
     envio_row = EnvioDian(
         uuid=uuid_lib.uuid4(),
         fecha_retencion_hasta=fecha_retencion_hasta,

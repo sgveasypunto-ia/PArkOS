@@ -322,7 +322,7 @@ async def crear_factura_impuesto_iva(
         base_calculo=base,
         porcentaje_aplicado=iva,
         valor=iva_monto,
-        fecha_retencion_hasta=date.today() + timedelta(days=5 * 365),
+        fecha_retencion_hasta=date.today(),  # see factura_detalle.py NOTE part 2
     )
     session.add(new_row)
     await session.flush()
@@ -360,7 +360,7 @@ async def crear_factura_pago(
         referencia=referencia,
         uuid_sesion=uuid_sesion,
         tipo_movimiento="pago",
-        fecha_retencion_hasta=date.today() + timedelta(days=5 * 365),
+        fecha_retencion_hasta=date.today(),  # see factura_detalle.py NOTE part 2
         timestamp_evento=datetime.now(UTC).replace(tzinfo=None),
     )
     session.add(new_row)
