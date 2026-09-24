@@ -93,6 +93,33 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     }
   });
 
+  it('M3b (bug fix, 2026-09-23): select datáfono + voucher filled → submit succeeds', async () => {
+    // Regression: `pagoDatafonoSchema` declared an orphaned `total_cop`
+    // field with no matching form control, so Zod validation ALWAYS
+    // failed for datafono (even with a valid voucher) and `onSubmit`
+    // never fired. M3 (empty voucher) never caught it because its
+    // assertion — `onSubmit not called` — holds true either way.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} />);
+
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-medio-pago'), { target: { value: 'datafono' } });
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-voucher'), { target: { value: 'VOUCHER-123' } });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      medio_pago: 'datafono',
+      voucher: 'VOUCHER-123',
+    });
+  });
+
   it('M4: toggle FE + invalid NIT (DV mismatch) → inline error from validarNitModulo11', async () => {
     render(<PagoModal {...DEFAULT_PROPS} />);
 
