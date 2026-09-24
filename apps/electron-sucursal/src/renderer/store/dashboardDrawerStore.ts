@@ -64,9 +64,20 @@ export type NonNullDrawerKind = Exclude<DrawerKind, null>;
  * "Cobrar" — passing both via the drawer context avoids a redundant
  * fetch inside `<PagoSheet>` and guarantees the form starts with the
  * SAME values the operator just approved.
+ *
+ * F8.1-b (HU-F8.1-anular-salida-no-pagada, 2026-09-23) — also carries
+ * `uuid_salida` so `<PagoSheet>` can auto-annul the salida on any
+ * close-without-pay path (Cancelar button / X / overlay click /
+ * Escape). Without this, the ingreso would stay closed (the salida
+ * row already inserted by `POST /operacion/salidas` would lock
+ * `V_INGRESO_ESTADO` to `cerrado`) and the operator could never
+ * recover the cobro. The annulation is a workflow `[L-W]` row in
+ * `prod.anulaciones` (already supported by the BE — `tipo_anulable`
+ * polymorphic with `salida` arm).
  */
 export interface PagoContext {
   uuid_ingreso: string;
+  uuid_salida: string;
   total_cop: number;
 }
 
