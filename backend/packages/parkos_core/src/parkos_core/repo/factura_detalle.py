@@ -37,20 +37,21 @@ async def crear_factura_detalle_bulk(
     ``fecha_retencion_hasta`` = ``today() + 5 years`` (DIAN 5-year
     retention).
 
-    NOTE (zero-bug-policy, 2026-09-23): the ``tipo`` kwarg is
-    intentionally OMITTED from the ORM constructor call. The DB
-    column ``prod.factura_detalle`` does NOT have ``tipo`` (verified
-    via ``\\d+ prod.factura_detalle`` — 12 columns, no ``tipo``).
-    The previous code passed ``tipo=item.tipo``, which SQLAlchemy 2.x
-    rejects as ``TypeError: 'tipo' is an invalid keyword argument`` —
-    a fatal 500 in ``POST /facturacion/factura``. The pre-fix code
-    must have worked under SQLAlchemy 1.x's silent-kwarg-drop policy;
-    2.x is strict. The display-side :class:`FacturaItemRead` continues
-    to expose ``tipo`` (hard-coded ``'servicio'`` in
-    ``api/v1/_factura_display.py::build_display_factura``) for backward
-    compatibility with the FE contract; a future migration
-    (post-MVP) will add the column and re-enable the per-row
-    ``tipo`` capture.
+    NOTE (zero-bug-policy, 2026-09-23): the ``tipo`` and
+    ``uuid_tarifa_sucursal`` kwargs are intentionally OMITTED from
+    the ORM constructor call. The DB column ``prod.factura_detalle``
+    does NOT have either of these columns (verified via
+    ``\\d+ prod.factura_detalle`` — 12 columns, no ``tipo``, no
+    ``uuid_tarifa_sucursal``). The previous code passed both kwargs,
+    which SQLAlchemy 2.x rejects as ``TypeError: 'tipo' is an invalid
+    keyword argument`` — a fatal 500 in ``POST /facturacion/factura``.
+    The pre-fix code must have worked under SQLAlchemy 1.x's
+    silent-kwarg-drop policy; 2.x is strict. The display-side
+    :class:`FacturaItemRead` continues to expose ``tipo`` (hard-coded
+    ``'servicio'`` in ``api/v1/_factura_display.py::build_display_factura``)
+    for backward compatibility with the FE contract; a future
+    migration (post-MVP) will add the columns and re-enable the
+    per-row ``tipo`` / ``uuid_tarifa_sucursal`` capture.
     """
     if not items:
         return []
@@ -58,14 +59,14 @@ async def crear_factura_detalle_bulk(
     new_rows = [
         FacturaDetalle(
             uuid_factura=uuid_factura,
-            # tipo intentionally omitted (see NOTE above).
+            # tipo and uuid_tarifa_sucursal intentionally omitted
+            # (see NOTE above).
             concepto=item.concepto,
             cantidad=item.cantidad,
             valor_unitario=item.valor_unitario,
             subtotal=(item.cantidad * item.valor_unitario).quantize(
                 Decimal("0.01")
             ),
-            uuid_tarifa_sucursal=item.uuid_tarifa_sucursal,
             fecha_retencion_hasta=frh,
         )
         for item in items
