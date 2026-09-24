@@ -852,7 +852,7 @@ Desbloquea: Fase 7 (CU-02).
 - Given un `uuid_ingreso` con ingreso activo, When `GET /operacion/cotizar?uuid_ingreso=X`, Then responde `200` con `{uuid_ingreso, tiempo_minutos, total_a_pagar, iva, subtotal, vigente_hasta}` en ≤5 s (timeout de cliente).
 - Given `valor_plena>0` y `tiempo>=tiempo_tar_plena`, Then `total_a_pagar=valor_plena`; en cualquier otro caso, `total_a_pagar=valor*tiempo_redondeado` (`Math.ceil`).
 - Given una placa con mensualidad vigente, Then la respuesta trae `{cobrar:false, motivo:'mensualidad_vigente'}` sin desglose de IVA.
-- Given que no existe una fila de `impuestos` vigente con `nombre='IVA'`, Then `500 {"error":"iva_no_configurado"}` (error de configuración, nunca un cálculo silencioso sin IVA).
+- Given que no existe una fila de `impuestos` vigente con `codigo='IVA'`, Then `500 {"error":"iva_no_configurado"}` (error de configuración, nunca un cálculo silencioso sin IVA). *(Corrección 2026-09-24, migration 0049: el criterio original decía `nombre='IVA'`; `nombre` es una etiqueta cosmética sin restricción de unicidad — `codigo` es el UK01 real del catálogo, `modelo_datos_er.mmd:192`, y coincide con el `natural_key` de sync y con `repo/impuestos.py`/`repo/factura.py`, que ya resolvían por `codigo`. Bug real reproducido dos veces por esta fuente de verdad partida — ver docstring de la migración 0049.)*
 
 **Regla de negocio (DEC-SUC-24, literal de CU-02 AC7)**: `iva = total_a_pagar * porcentaje_impuesto`; `subtotal = total_a_pagar - iva` — se implementa tal cual, sin "corregir" la base del cálculo.
 
@@ -875,7 +875,7 @@ Ejemplo de contrato:
 | Código HTTP | `error` | Cuándo |
 |---|---|---|
 | 404 | `ingreso_no_encontrado` | El `uuid_ingreso` no existe o no está activo en la sucursal |
-| 500 | `iva_no_configurado` | No existe fila de `impuestos` vigente con `nombre='IVA'` — error de configuración, nunca se calcula sin IVA |
+| 500 | `iva_no_configurado` | No existe fila de `impuestos` vigente con `codigo='IVA'` — error de configuración, nunca se calcula sin IVA |
 
 **Pruebas**: `backend/tests/unit/test_calcular_cotizacion.py` — 3 escenarios (rotación, mensualidad, tiempo ≥ tiempo de tarifa plena).
 
