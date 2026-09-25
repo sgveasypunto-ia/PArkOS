@@ -556,9 +556,20 @@ class FacturaItemConDatosPropios(_Base):
 
 
 class FacturaItemCreate(_Base):
-    """INSERT payload for one ``prod.factura_detalle`` row."""
+    """INSERT payload for one ``prod.factura_detalle`` row.
 
-    tipo: Literal["servicio", "producto"]
+    ``tipo="descuento"`` (2026-09-24, salida-mensualidad factura with
+    full breakdown): ``valor_unitario``/``subtotal`` stay POSITIVE (the
+    ``ge=0`` constraint below is unchanged) -- ``repo.factura.
+    compute_total`` is what SUBTRACTS ``descuento`` lines instead of
+    adding them. ``tipo`` itself is never persisted to
+    ``prod.factura_detalle`` (the DB table has no ``tipo`` column, see
+    ``repo/factura_detalle.py``'s NOTE) -- it only drives the
+    request-time arithmetic and the ``facturas.descuento`` /
+    ``factura_electronica.descuento`` document-level totals.
+    """
+
+    tipo: Literal["servicio", "producto", "descuento"]
     concepto: Annotated[str, StringConstraints(min_length=1, max_length=255)]
     cantidad: int = Field(gt=0, le=999)
     valor_unitario: Decimal = Field(ge=Decimal(0), le=Decimal("999999999.9999"))
@@ -576,7 +587,9 @@ class FacturaCreate(_Base):
     items: list[FacturaItemCreate] = Field(min_length=1, max_length=50)
     subtotal: Decimal
     total: Decimal
-    medio_pago: Literal["efectivo", "tarjeta", "transferencia", "datafono", "mixto"]
+    medio_pago: Literal[
+        "efectivo", "tarjeta", "transferencia", "datafono", "mixto", "suscripcion"
+    ]
     referencia: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
     fe_con_datos: bool = False
     fe_datos_cliente: FacturaItemConDatosPropios | None = None
@@ -735,7 +748,9 @@ class FacturaRead(_Base):
     # ``medio_pago`` discriminates between efectivo (vueltos) and
     # datafono (voucher). The BE reads it from the init
     # ``factura_pagos`` row (inserted in the same KD-FACT-01 commit).
-    medio_pago: Literal["efectivo", "tarjeta", "transferencia", "datafono", "mixto"]
+    medio_pago: Literal[
+        "efectivo", "tarjeta", "transferencia", "datafono", "mixto", "suscripcion"
+    ]
     monto_recibido_cents: int | None  # efectivo only (NULL for datafono)
     vuelto_cents: int | None  # efectivo only (NULL for datafono)
     voucher: str | None  # datafono only (NULL for efectivo)

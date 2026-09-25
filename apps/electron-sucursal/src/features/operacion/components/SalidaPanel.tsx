@@ -530,7 +530,14 @@ export function SalidaPanel({
       {uuid_ingreso && (cotizacion || cotError) && (
         <div data-anchor-for="pago" id={pagoAnchorId}>
           {cotizacion?.cobrar === false ? (
-            <SalidaMensualidad uuidIngreso={uuid_ingreso} />
+            // MIGRATION 0050 (operator directive 2026-09-24): pass the
+            // live-polled cotizacion (full breakdown + descuento) down
+            // so <SalidaMensualidad /> can build the discount factura
+            // after the salida is confirmed — same pattern SalidaFlow
+            // already uses for rotacion (subtotal_cop/total_cop below
+            // come from this same `cotizacion` object, not a fresh
+            // recompute).
+            <SalidaMensualidad uuidIngreso={uuid_ingreso} cotizacion={cotizacion} />
           ) : cotizacion ? (
             <SalidaFlow
               uuidIngreso={uuid_ingreso}

@@ -37,6 +37,16 @@ const cotizacionRotacion: Cotizacion = {
 const cotizacionMensualidad: Cotizacion = {
   cobrar: false,
   motivo: 'mensualidad_vigente',
+  // MIGRATION 0050 (operator directive 2026-09-24): full fiscal
+  // breakdown + discount concept, now required even when cobrar=false.
+  subtotal: 8100,
+  iva: 1900,
+  total: 10000,
+  tiempo_minutos: 90,
+  tarifa_uuid: TARIFA_UUID,
+  vigente_hasta: '2026-09-19T11:00:00Z',
+  uuid_subscripcion_cliente: '00000000-0000-0000-0000-0000000000ab',
+  concepto_descuento: 'Plan Oro',
 };
 
 describe('<CotizacionPanel /> — pure presentational (REQ-OPS-143)', () => {

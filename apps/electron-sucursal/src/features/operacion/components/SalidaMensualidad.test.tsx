@@ -1,30 +1,43 @@
 /**
  * Unit tests for F7.3 — `<SalidaMensualidad />` print-envelope wiring.
  *
- * Covers REQ-OPS-160 (DEC-SUC-27 + DEC-SUC-08):
- *   - Successful 201 with `tipo_salida === 'MENSUALIDAD'` fires
- *     `bridge.imprimir('salida_mensualidad', payload)` via
- *     `queueMicrotask()` (deferred, NOT blocking the React render
- *     commit).
+ * MIGRATION 0050 (operator directive 2026-09-24): a subscribed exit
+ * now builds a discount factura (full breakdown + a discount line
+ * netting to $0) via `POST /facturacion/factura`
+ * (`medio_pago='suscripcion'`), opens `<FacturaDisplayModal />` with
+ * the result, and fires the CU-15SM print envelope only AFTER the
+ * operator dismisses that modal — NOT immediately after the salida
+ * POST resolves (the pre-migration-0050 behavior).
+ *
+ * Covers REQ-OPS-160 (DEC-SUC-27 + DEC-SUC-08) + the new discount-
+ * factura flow:
+ *   - Successful 201 with `tipo_salida === 'MENSUALIDAD'` builds the
+ *     servicio+descuento items from the `cotizacion` prop, POSTs the
+ *     $0 factura, and opens the modal.
+ *   - Dismissing the modal fires `bridge.imprimir('salida_mensualidad',
+ *     payload)` via `queueMicrotask()` (deferred, NOT blocking the
+ *     React render commit).
  *   - The print call is wrapped in `try/catch`. A thrown error from
  *     the bridge MUST be caught and logged to `console.warn` — the
  *     React render MUST NOT throw.
- *   - Non-MENSUALIDAD `tipo_salida` (e.g., `ROTACION`) does NOT
- *     trigger the print envelope.
+ *   - Non-MENSUALIDAD `tipo_salida` (e.g., `ROTACION`) does NOT touch
+ *     the factura/modal/print flow at all (F8.1 owns that path).
  *
- * Purity note: the test mocks `useRegistrarSalida` (the network
- * boundary). The remaining logic is pure — render-based assertions
- * on the `<CotizacionPanel />` and side-effect assertions on the
- * `bridge.imprimir` mock.
+ * Purity note: the test mocks `useRegistrarSalida` + `useRegistrarPago`
+ * (the network boundary) and `<FacturaDisplayModal />` (heavy
+ * dependencies). The remaining logic is pure — render-based
+ * assertions on the `<CotizacionPanel />` stub and side-effect
+ * assertions on the `bridge.imprimir` mock.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 
 import { SalidaMensualidad } from './SalidaMensualidad';
 import { useRegistrarSalida } from '../hooks/useRegistrarSalida';
+import type { CotizarMensualidad } from '../hooks/useCotizacion';
 
 // ──────────────────────────────────────────────────────────────────────────
-// vi.mock — replace the network hook with a controllable stub
+// vi.mock — replace the network hooks with controllable stubs
 // ──────────────────────────────────────────────────────────────────────────
 
 const mockTriggerImpl = vi.fn();
@@ -42,6 +55,16 @@ vi.mock('../hooks/useRegistrarSalida', () => ({
       this.name = 'SalidaDuplicadaError';
     }
   },
+}));
+
+const mockTriggerPagoImpl = vi.fn();
+vi.mock('../../facturacion/hooks/useRegistrarPago', () => ({
+  useRegistrarPago: vi.fn(() => ({
+    trigger: (...args: unknown[]) => mockTriggerPagoImpl(...args),
+    isMutating: false,
+    error: undefined,
+    data: undefined,
+  })),
 }));
 
 // REGRESSION fix (2026-09-22): the panel invalidates the live-count
@@ -76,6 +99,28 @@ vi.mock('./CotizacionPanel', () => ({
       Confirmar salida mensualidad
     </button>
   ),
+}));
+
+// ──────────────────────────────────────────────────────────────────────────
+// Stub FacturaDisplayModal — the real one has heavy dependencies
+// (shadcn Dialog, i18n, formatCOP). Renders a "cerrar" button that
+// calls onClose only when a factura is present, mirroring the real
+// component's `open = factura !== null` gate.
+// ──────────────────────────────────────────────────────────────────────────
+
+vi.mock('../../facturacion/components/FacturaDisplayModal', () => ({
+  FacturaDisplayModal: ({
+    factura,
+    onClose,
+  }: {
+    factura: unknown;
+    onClose: () => void;
+  }) =>
+    factura ? (
+      <button type="button" data-testid="factura-display-cerrar" onClick={onClose}>
+        Cerrar
+      </button>
+    ) : null,
 }));
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -114,16 +159,40 @@ async function flushMicrotasks(): Promise<void> {
   });
 }
 
+const UUID_SUBSCRIPCION = '00000000-0000-0000-0000-00000000sc01';
+const UUID_TARIFA = '00000000-0000-0000-0000-00000000ta01';
+
+const cotizacionMensualidad: CotizarMensualidad = {
+  cobrar: false,
+  motivo: 'mensualidad_vigente',
+  subtotal: 8100,
+  iva: 1900,
+  total: 10000,
+  tiempo_minutos: 90,
+  tarifa_uuid: UUID_TARIFA,
+  vigente_hasta: '2026-09-19T11:00:00Z',
+  uuid_subscripcion_cliente: UUID_SUBSCRIPCION,
+  concepto_descuento: 'Plan Oro',
+};
+
+const facturaMensualidadResponse = {
+  uuid: '00000000-0000-0000-0000-00000000fa01',
+  numero_recibo: 'D000001-20260919-000001',
+  total: 0,
+  descuento: 10000,
+};
+
 // ──────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────
 
-describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160)', () => {
+describe('<SalidaMensualidad /> — discount-factura + print envelope wiring (migration 0050 / REQ-OPS-160)', () => {
   let originalBridge: unknown;
 
   beforeEach(() => {
     originalBridge = (globalThis as unknown as { window?: unknown }).window;
     mockTriggerImpl.mockReset();
+    mockTriggerPagoImpl.mockReset();
     mockInvalidateConteos.mockReset();
   });
 
@@ -133,7 +202,66 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
     vi.restoreAllMocks();
   });
 
-  it('fires bridge.imprimir("salida_mensualidad", payload) via queueMicrotask on MENSUALIDAD success', async () => {
+  it('MENSUALIDAD success builds servicio+descuento items and POSTs the $0 factura', async () => {
+    installBridgeMock();
+
+    const uuidSalida = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    mockTriggerImpl.mockResolvedValueOnce({
+      uuid: uuidSalida,
+      tipo_salida: 'MENSUALIDAD' as const,
+      estado: 'MENSUALIDAD_PAGO' as const,
+    });
+    mockTriggerPagoImpl.mockResolvedValueOnce(facturaMensualidadResponse);
+
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-001" cotizacion={cotizacionMensualidad} />,
+    );
+
+    await act(async () => {
+      screen.getByTestId('confirmar').click();
+    });
+
+    expect(mockTriggerPagoImpl).toHaveBeenCalledTimes(1);
+    expect(mockTriggerPagoImpl).toHaveBeenCalledWith({
+      uuid_salida: uuidSalida,
+      medio_pago: 'suscripcion',
+      items: [
+        { tipo: 'servicio', concepto: 'Estadía', cantidad: 1, valor_unitario: 10000 },
+        {
+          tipo: 'descuento',
+          concepto: 'Descuento por mensualidad - Plan Oro',
+          cantidad: 1,
+          valor_unitario: 10000,
+        },
+      ],
+      subtotal: 8100,
+      total: 0,
+    });
+  });
+
+  it('opens <FacturaDisplayModal /> with the factura result, print does NOT fire yet', async () => {
+    const bridge = installBridgeMock();
+
+    mockTriggerImpl.mockResolvedValueOnce({
+      uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      tipo_salida: 'MENSUALIDAD' as const,
+      estado: 'MENSUALIDAD_PAGO' as const,
+    });
+    mockTriggerPagoImpl.mockResolvedValueOnce(facturaMensualidadResponse);
+
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-002" cotizacion={cotizacionMensualidad} />,
+    );
+
+    await act(async () => {
+      screen.getByTestId('confirmar').click();
+    });
+
+    expect(screen.getByTestId('factura-display-cerrar')).toBeInTheDocument();
+    expect(bridge.imprimir).not.toHaveBeenCalled();
+  });
+
+  it('fires bridge.imprimir("salida_mensualidad", payload) via queueMicrotask ONLY after the modal closes', async () => {
     const bridge = installBridgeMock();
 
     const uuidSalida = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -142,24 +270,30 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
       tipo_salida: 'MENSUALIDAD' as const,
       estado: 'MENSUALIDAD_PAGO' as const,
     });
+    mockTriggerPagoImpl.mockResolvedValueOnce(facturaMensualidadResponse);
 
-    render(<SalidaMensualidad uuidIngreso="ingreso-uuid-001" />);
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-003" cotizacion={cotizacionMensualidad} />,
+    );
 
-    // Click Confirmar
     await act(async () => {
       screen.getByTestId('confirmar').click();
     });
-    // Drain microtasks (queueMicrotask deferred to AFTER the React commit)
+    expect(bridge.imprimir).not.toHaveBeenCalled();
+
+    await act(async () => {
+      screen.getByTestId('factura-display-cerrar').click();
+    });
     await flushMicrotasks();
 
-    expect(mockTriggerImpl).toHaveBeenCalledTimes(1);
     expect(bridge.imprimir).toHaveBeenCalledTimes(1);
-    expect(bridge.imprimir).toHaveBeenCalledWith('salida_mensualidad', expect.objectContaining({
-      uuid_salida: uuidSalida,
-    }));
+    expect(bridge.imprimir).toHaveBeenCalledWith(
+      'salida_mensualidad',
+      expect.objectContaining({ uuid_salida: uuidSalida }),
+    );
   });
 
-  it('does NOT fire bridge.imprimir when tipo_salida is NOT MENSUALIDAD (rotación branch — F8.1 owns)', async () => {
+  it('does NOT touch the factura/modal/print flow when tipo_salida is NOT MENSUALIDAD (rotación branch — F8.1 owns)', async () => {
     const bridge = installBridgeMock();
 
     mockTriggerImpl.mockResolvedValueOnce({
@@ -168,7 +302,9 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
       estado: 'PENDIENTE_PAGO' as const,
     });
 
-    render(<SalidaMensualidad uuidIngreso="ingreso-uuid-002" />);
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-004" cotizacion={cotizacionMensualidad} />,
+    );
 
     await act(async () => {
       screen.getByTestId('confirmar').click();
@@ -176,6 +312,8 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
     await flushMicrotasks();
 
     expect(mockTriggerImpl).toHaveBeenCalledTimes(1);
+    expect(mockTriggerPagoImpl).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('factura-display-cerrar')).not.toBeInTheDocument();
     expect(bridge.imprimir).not.toHaveBeenCalled();
   });
 
@@ -186,21 +324,26 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
       throw printerOfflineError;
     });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // Suppress the React error boundary noise — the test asserts the
+    // throw DOES NOT propagate.
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     mockTriggerImpl.mockResolvedValueOnce({
       uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
       tipo_salida: 'MENSUALIDAD' as const,
       estado: 'MENSUALIDAD_PAGO' as const,
     });
+    mockTriggerPagoImpl.mockResolvedValueOnce(facturaMensualidadResponse);
 
-    // Suppress the React error boundary noise — the test asserts the
-    // throw DOES NOT propagate.
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-    render(<SalidaMensualidad uuidIngreso="ingreso-uuid-003" />);
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-005" cotizacion={cotizacionMensualidad} />,
+    );
 
     await act(async () => {
       screen.getByTestId('confirmar').click();
+    });
+    await act(async () => {
+      screen.getByTestId('factura-display-cerrar').click();
     });
     await flushMicrotasks();
 
@@ -212,13 +355,16 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
     expect(warnSpy.mock.calls[0]?.[0]).toMatch(/bridge\.imprimir|queueMicrotask|print/);
 
     // React's error boundary was NOT engaged (no console.error for an unhandled throw)
-    const errorBoundaryCalls = consoleErrorSpy.mock.calls.filter(
-      (call) => String(call[0] ?? '').includes('The above error boundary'),
+    const errorBoundaryCalls = consoleErrorSpy.mock.calls.filter((call) =>
+      String(call[0] ?? '').includes('The above error boundary'),
     );
     expect(errorBoundaryCalls.length).toBe(0);
 
-    // sanity — the hook was called
-    expect(mockedUseRegistrarSalida).toHaveBeenCalledTimes(1);
+    // sanity — the hook was called (>=1; the discount-factura flow's
+    // extra setState calls — pendingPrint, facturaDisplay — cause more
+    // re-renders than the pre-migration-0050 print-only flow, so an
+    // exact count is not the invariant worth asserting here).
+    expect(mockedUseRegistrarSalida).toHaveBeenCalled();
   });
 
   it('REGRESSION (2026-09-22): invalidates the live-count SWR caches after a successful MENSUALIDAD salida', async () => {
@@ -229,13 +375,15 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
       tipo_salida: 'MENSUALIDAD' as const,
       estado: 'MENSUALIDAD_PAGO' as const,
     });
+    mockTriggerPagoImpl.mockResolvedValueOnce(facturaMensualidadResponse);
 
-    render(<SalidaMensualidad uuidIngreso="ingreso-uuid-004" />);
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-006" cotizacion={cotizacionMensualidad} />,
+    );
 
     await act(async () => {
       screen.getByTestId('confirmar').click();
     });
-    await flushMicrotasks();
 
     // Without this invalidation, the dashboard panels keep showing
     // the pre-mutation counts until the next SWR poll tick (10–15s),
@@ -255,12 +403,13 @@ describe('<SalidaMensualidad /> — print envelope wiring (HU-F7.3 / REQ-OPS-160
       estado: 'PENDIENTE_PAGO' as const,
     });
 
-    render(<SalidaMensualidad uuidIngreso="ingreso-uuid-005" />);
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-007" cotizacion={cotizacionMensualidad} />,
+    );
 
     await act(async () => {
       screen.getByTestId('confirmar').click();
     });
-    await flushMicrotasks();
 
     // The invalidation fires regardless of `tipo_salida` — the
     // ingreso is closed either way, so the active counts (cupos

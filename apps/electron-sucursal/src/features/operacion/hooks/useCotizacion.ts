@@ -107,13 +107,39 @@ export const CotizarFacturacionSchema = z.object({
 });
 
 /**
- * `cobrar: false` variant — short-circuit for an active monthly
- * subscription (F1.8 archive, REQ-OPS-023). Mirrors backend
- * `CotizarMensualidad` at `backend/.../schemas/operacion.py:175-190`.
+ * `cobrar: false` variant — free exit for a subscribed plate (F1.8
+ * archive, REQ-OPS-023 + operator directive 2026-09-24). Mirrors
+ * backend `CotizarMensualidad` at `backend/.../schemas/operacion.py`.
+ *
+ * MIGRATION 0050 (operator directive 2026-09-24): the full fiscal
+ * breakdown + discount concept are now REQUIRED here too, even though
+ * `cobrar=false` — the salida-mensualidad flow builds a factura
+ * showing every normal value plus a discount line netting to $0
+ * (`<SalidaMensualidad />` reads these fields off
+ * `SalidaReadForzado.cotizacion_snapshot`, not off this polling hook,
+ * but the wire shape is identical so both Zod schemas must match).
+ * `motivo` now also accepts `'multiple_vehiculos_plan_empresa'`
+ * (fleet/enterprise plans, `cantidad_maxima_vehiculos > 2`).
  */
 export const CotizarMensualidadSchema = z.object({
   cobrar: z.literal(false),
-  motivo: z.literal('mensualidad_vigente'),
+  motivo: z.enum(['mensualidad_vigente', 'multiple_vehiculos_plan_empresa']),
+  subtotal: z.union([z.number(), z.string()]).transform((v) =>
+    typeof v === 'number' ? v : Number(v),
+  ),
+  iva: z.union([z.number(), z.string()]).transform((v) =>
+    typeof v === 'number' ? v : Number(v),
+  ),
+  total: z.union([z.number(), z.string()]).transform((v) =>
+    typeof v === 'number' ? v : Number(v),
+  ),
+  tiempo_minutos: z.union([z.number(), z.string()]).transform((v) =>
+    typeof v === 'number' ? v : Number(v),
+  ),
+  tarifa_uuid: z.string().uuid(),
+  vigente_hasta: z.string(),
+  uuid_subscripcion_cliente: z.string().uuid(),
+  concepto_descuento: z.string().min(1),
 });
 
 /**

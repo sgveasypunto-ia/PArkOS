@@ -723,11 +723,20 @@ async def create_salida(
     # subscripcion_vencida), the cotizacion_snapshot is None. The
     # operator already knows it's a forced exit (``motivo_forzado``
     # carries the reason); the snapshot would be misleading anyway.
-    cotizacion_snapshot: CotizarFacturacion | None = (
-        CotizarFacturacion.model_validate(cotizacion)
-        if tipo_salida == "ROTACION" and not bypass_reason
-        else None
-    )
+    #
+    # MENSUALIDAD branch (migration 0050, operator directive
+    # 2026-09-24): the snapshot is now populated for MENSUALIDAD too
+    # (as :class:`CotizarMensualidad`, not :class:`CotizarFacturacion`)
+    # -- the PL/pgSQL always computes the full fiscal breakdown now, and
+    # the frontend needs it to build the discount factura (subtotal/
+    # iva/total shown in full + a discount line netting to $0).
+    cotizacion_snapshot: CotizarFacturacion | CotizarMensualidad | None = None
+    if not bypass_reason:
+        cotizacion_snapshot = (
+            CotizarFacturacion.model_validate(cotizacion)
+            if tipo_salida == "ROTACION"
+            else CotizarMensualidad.model_validate(cotizacion)
+        )
     return SalidaReadForzado(
         **base,
         tipo_salida=tipo_salida,  # type: ignore[arg-type]

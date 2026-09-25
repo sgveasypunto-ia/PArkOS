@@ -97,8 +97,17 @@ def test_factura_datos_cliente_acepta_cc_sin_dv() -> None:
 
 
 def test_factura_create_acepta_medio_pago_literal_validos() -> None:
-    """FacturaCreate medio_pago accepts all 5 literal values (DEC-FACT-07)."""
-    for medio in ("efectivo", "tarjeta", "transferencia", "datafono", "mixto"):
+    """FacturaCreate medio_pago accepts all 6 literal values (DEC-FACT-07 +
+    ``"suscripcion"`` added 2026-09-24 for the salida-mensualidad $0
+    factura flow)."""
+    for medio in (
+        "efectivo",
+        "tarjeta",
+        "transferencia",
+        "datafono",
+        "mixto",
+        "suscripcion",
+    ):
         obj = FacturaCreate(
             uuid_salida=uuid_lib.uuid4(),
             items=[
@@ -118,6 +127,29 @@ def test_factura_create_acepta_medio_pago_literal_validos() -> None:
             fe_datos_cliente=None,
         )
         assert obj.medio_pago == medio
+
+
+def test_factura_item_create_acepta_tipo_descuento() -> None:
+    """``FacturaItemCreate.tipo="descuento"`` (2026-09-24, salida-
+    mensualidad factura): ``valor_unitario`` stays POSITIVE (ge=0
+    unchanged) -- ``repo.factura.compute_total`` is what subtracts it."""
+    obj = FacturaItemCreate(
+        tipo="descuento",
+        concepto="Descuento por mensualidad - Plan Oro",
+        cantidad=1,
+        valor_unitario=Decimal("10000.00"),
+        uuid_tarifa_sucursal=None,
+    )
+    assert obj.tipo == "descuento"
+    assert obj.valor_unitario == Decimal("10000.00")
+    with pytest.raises(ValidationError):
+        FacturaItemCreate(
+            tipo="descuento",
+            concepto="Descuento negativo invalido",
+            cantidad=1,
+            valor_unitario=Decimal("-10000.00"),
+            uuid_tarifa_sucursal=None,
+        )
 
 
 def test_factura_create_rechaza_items_vacio() -> None:

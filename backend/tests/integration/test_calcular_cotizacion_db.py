@@ -374,6 +374,48 @@ async def test_calcular_cotizacion_db_uuid_inexistente_devuelve_ingreso_no_encon
 # ---------------------------------------------------------------------------
 
 
+async def _seed_tipo_subscripcion(
+    pg_engine,
+    *,
+    uuid: uuid_lib.UUID,
+    tipo: str,
+    cantidad_maxima_vehiculos: int | None,
+) -> None:
+    """Insert one vigente ``prod.tipo_subscripciones`` row (catalog [V]).
+
+    Used to give a ``subscripciones_cliente.uuid_tipo_subscripcion`` FK
+    a real plan name (``concepto_descuento`` in the jsonb payload,
+    migration 0050) and a real ``cantidad_maxima_vehiculos`` so tests
+    can exercise both branches of the personal-vs-empresa rule
+    (operator directive 2026-09-24).
+    """
+    from parkos_core.models.V.tipo_subscripciones import TipoSubscripciones
+
+    now = _now_naive()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            TipoSubscripciones(
+                uuid=uuid,
+                tipo=tipo,
+                valor=Decimal("50000"),
+                duracion_dias=30,
+                cantidad_maxima_vehiculos=cantidad_maxima_vehiculos,
+                mismo_tipo_vehiculo=False,
+                tipo_cliente_permitido=None,
+                vigente_desde=now - timedelta(seconds=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+
 async def _seed_two_plate_subscription(
     pg_engine,
     *,
@@ -381,6 +423,7 @@ async def _seed_two_plate_subscription(
     uuid_tipo_vehiculo: uuid_lib.UUID,
     placa_a: str,
     placa_b: str,
+    uuid_tipo_subscripcion: uuid_lib.UUID | None = None,
 ) -> tuple[uuid_lib.UUID, uuid_lib.UUID]:
     """Seed ONE ``clientes`` + ONE ``subscripciones_cliente`` + TWO
     ``vehiculos`` (one per placa) + TWO ``subscripcion_vehiculos``
@@ -466,7 +509,7 @@ async def _seed_two_plate_subscription(
                 uuid=subscripcion_uuid,
                 uuid_cliente=cliente_uuid,
                 uuid_sucursal=uuid_sucursal,
-                uuid_tipo_subscripcion=None,
+                uuid_tipo_subscripcion=uuid_tipo_subscripcion,
                 fecha_inicio_cobertura=None,
                 fecha_vencimiento=None,
                 vigente_desde=now - timedelta(seconds=1),
@@ -847,11 +890,238 @@ async def test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigent
             )
         ).scalar_one()
 
-    assert payload == {"cobrar": False, "motivo": "mensualidad_vigente"}, (
-        f"single-plate subscription with no other plate in patio MUST "
-        f"retain the baseline motivo 'mensualidad_vigente' (REQ-OPS-023 "
-        f"regression); got {payload!r}"
+    # MIGRATION 0050 (operator directive 2026-09-24): the short-circuit
+    # now ALSO carries the full fiscal breakdown + discount concept, so
+    # the salida-mensualidad flow can build a factura showing all the
+    # normal values plus a discount netting to $0. ``uuid_tipo_
+    # subscripcion=None`` on this fixture (seeded above) means
+    # ``concepto_descuento`` falls back to the literal ``'Suscripcion'``.
+    assert payload["cobrar"] is False
+    assert payload["motivo"] == "mensualidad_vigente"
+    assert payload["uuid_subscripcion_cliente"] == str(subscripcion_uuid)
+    assert payload["concepto_descuento"] == "Suscripcion"
+    assert payload["subtotal"] is not None
+    assert payload["iva"] is not None
+    assert payload["total"] is not None
+    assert payload["tarifa_uuid"] is not None
+    assert payload["vigente_hasta"] is not None
+    assert 19.0 < float(payload["tiempo_minutos"]) < 21.0, (
+        f"tiempo_minutos must reflect elapsed time since ingreso (20 "
+        f"minutes ago at seed time); got {payload.get('tiempo_minutos')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Caso 4b/4c — regla personal vs. empresa (operator directive 2026-09-24)
+# ---------------------------------------------------------------------------
+
+
+async def test_calcular_cotizacion_db_segunda_placa_plan_personal_paga_rotacion(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """Plan PERSONAL explicito (``cantidad_maxima_vehiculos=2``) + 2da
+    placa simultanea en patio -> ``cobrar=true`` (rotacion), NO
+    ``multiple_vehiculos_plan_empresa``.
+
+    Mismo escenario que
+    ``test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_
+    placa_segundo_motivo`` pero con un ``tipo_subscripciones`` real
+    (``cantidad_maxima_vehiculos=2``) en vez de ``uuid_tipo_subscripcion
+    =None`` -- prueba explicitamente la rama "<=2" de la regla, no solo
+    el fallback NULL.
+    """
+    await _truncate_tables(pg_dsn)
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    tipo_subscripcion_uuid = uuid_lib.uuid4()
+    placa_a = "PER01A"
+    placa_b = "PER01B"
+
+    await _seed_minimal_happy_path(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        uuid_tipo_tarifa=uuid_lib.uuid4(),
+        minutos_en_estacionamiento=30,
+    )
+    await _seed_tipo_subscripcion(
+        pg_engine,
+        uuid=tipo_subscripcion_uuid,
+        tipo="Plan Personal",
+        cantidad_maxima_vehiculos=2,
+    )
+    await _seed_two_plate_subscription(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        placa_a=placa_a,
+        placa_b=placa_b,
+        uuid_tipo_subscripcion=tipo_subscripcion_uuid,
+    )
+
+    now = _now_naive()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        ingreso_a_uuid = uuid_lib.uuid4()
+        session.add(
+            Ingreso(
+                uuid=ingreso_a_uuid,
+                uuid_sucursal=branch_uuid,
+                placa=placa_a,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=now - timedelta(minutes=15),
+                observaciones=None,
+                created_at=now,
+                created_by=None,
+                sync_status="pendiente",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+    async with Session() as session:
+        ingreso_b_uuid = uuid_lib.uuid4()
+        session.add(
+            Ingreso(
+                uuid=ingreso_b_uuid,
+                uuid_sucursal=branch_uuid,
+                placa=placa_b,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=now - timedelta(minutes=5),
+                observaciones=None,
+                created_at=now,
+                created_by=None,
+                sync_status="pendiente",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+    async with Session() as session:
+        payload_b = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_b_uuid)},
+            )
+        ).scalar_one()
+
+    assert payload_b["cobrar"] is True, (
+        f"plan personal (cantidad_maxima_vehiculos=2): 2nd simultaneous "
+        f"plate MUST pay as rotacion; got {payload_b!r}"
+    )
+    assert payload_b["motivo"] == "segunda_placa_misma_mensualidad"
+    assert payload_b["subtotal"] is not None
+    assert payload_b["total"] is not None
+    assert "concepto_descuento" not in payload_b, (
+        "rotacion pricing does NOT carry a discount concept -- this "
+        "plate is billed in full, not exited free"
+    )
+
+
+async def test_calcular_cotizacion_db_multiples_vehiculos_plan_empresa_sin_cobro(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """Plan EMPRESA/FLOTA (``cantidad_maxima_vehiculos > 2``) + 2do
+    vehiculo simultaneo en patio -> ``cobrar=false`` (sin cobro, igual
+    que el primero), motivo ``'multiple_vehiculos_plan_empresa'``.
+
+    Operator directive (2026-09-24): la regla de "solo 1 vehiculo
+    simultaneo sale gratis" es EXCLUSIVA de planes personales; un plan
+    de flota con mas de 2 cupos espera varios vehiculos simultaneos en
+    patio como comportamiento normal.
+    """
+    await _truncate_tables(pg_dsn)
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    tipo_subscripcion_uuid = uuid_lib.uuid4()
+    placa_a = "EMP01A"
+    placa_b = "EMP01B"
+
+    await _seed_minimal_happy_path(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        uuid_tipo_tarifa=uuid_lib.uuid4(),
+        minutos_en_estacionamiento=30,
+    )
+    await _seed_tipo_subscripcion(
+        pg_engine,
+        uuid=tipo_subscripcion_uuid,
+        tipo="Plan Empresarial",
+        cantidad_maxima_vehiculos=5,
+    )
+    await _seed_two_plate_subscription(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+        placa_a=placa_a,
+        placa_b=placa_b,
+        uuid_tipo_subscripcion=tipo_subscripcion_uuid,
+    )
+
+    now = _now_naive()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        ingreso_a_uuid = uuid_lib.uuid4()
+        session.add(
+            Ingreso(
+                uuid=ingreso_a_uuid,
+                uuid_sucursal=branch_uuid,
+                placa=placa_a,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=now - timedelta(minutes=15),
+                observaciones=None,
+                created_at=now,
+                created_by=None,
+                sync_status="pendiente",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+    async with Session() as session:
+        ingreso_b_uuid = uuid_lib.uuid4()
+        session.add(
+            Ingreso(
+                uuid=ingreso_b_uuid,
+                uuid_sucursal=branch_uuid,
+                placa=placa_b,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=now - timedelta(minutes=5),
+                observaciones=None,
+                created_at=now,
+                created_by=None,
+                sync_status="pendiente",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+    async with Session() as session:
+        payload_b = (
+            await session.execute(
+                text("SELECT prod.calcular_cotizacion(:uuid) AS payload"),
+                {"uuid": str(ingreso_b_uuid)},
+            )
+        ).scalar_one()
+
+    assert payload_b["cobrar"] is False, (
+        f"plan empresa (cantidad_maxima_vehiculos=5): 2nd simultaneous "
+        f"plate MUST exit free, same as the 1st; got {payload_b!r}"
+    )
+    assert payload_b["motivo"] == "multiple_vehiculos_plan_empresa"
+    assert payload_b["uuid_subscripcion_cliente"] is not None
+    assert payload_b["concepto_descuento"] == "Plan Empresarial"
+    assert payload_b["subtotal"] is not None
+    assert payload_b["total"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1269,7 +1539,9 @@ __all__ = [
     "test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos",
     "test_calcular_cotizacion_db_dos_placas_misma_mensualidad_segunda_placa_segundo_motivo",
     "test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at",
+    "test_calcular_cotizacion_db_multiples_vehiculos_plan_empresa_sin_cobro",
     "test_calcular_cotizacion_db_resuelve_iva_por_codigo_no_por_nombre",
+    "test_calcular_cotizacion_db_segunda_placa_plan_personal_paga_rotacion",
     "test_calcular_cotizacion_db_solo_una_placa_devuelve_mensualidad_vigente",
     "test_calcular_cotizacion_db_trunca_tiempo_a_dia_bogota_actual",
     "test_calcular_cotizacion_db_unidad_minutos_siempre_uno",

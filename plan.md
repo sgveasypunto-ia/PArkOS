@@ -61,8 +61,9 @@ Un término, una definición. Donde las 3 partes (o el corpus original de casos 
 | **Turno / sesión** | Periodo de trabajo de un operador en una sucursal, tabla `sesion` (`[L-S]`). Estados reales: **`abierta` / `cerrada`** (verificado en `modelo_datos_er.mmd` línea 727 y en el backend real). *Nota de reconciliación:* el corpus original de casos de uso usaba `'ACTIVA'/'CERRADA'` — queda descartado; los estados reales están en minúsculas. |
 | **Arqueo** | Conteo físico de caja contra lo esperado, tabla `arqueo` (`[A]`, insert-only — una corrección nunca es `UPDATE`, es un arqueo nuevo que referencia al anterior). El catálogo real `tipo_arqueo` tiene 3 valores (`cierre_turno \| auditoria \| cierre_sesion`, `.mmd` línea 171). Parte I (Sucursal) **añade un 4º valor**, `cierre_dia` (Adaptación A-07), para el cierre de todas las sesiones abiertas del día — un concepto de negocio (CU-10) que el catálogo original no cubría. El valor real `cierre_sesion` **no tiene ningún flujo implementado** en ninguna de las 3 partes (`ABIERTO-04`, Anexo E) — posible duplicado de `cierre_turno` pendiente de decisión. |
 | **Cierre diario** | Un `arqueo` de tipo `cierre_dia` (adaptación de Parte I) que cierra todas las sesiones abiertas de la sucursal en el rango 00:00:00–23:59:59 hora local Colombia. Distinto de "cerrar un turno" (un solo `cierre_turno`, una sola sesión). |
-| **Mensualidad / suscripción individual** | Pago anticipado (`subscripciones_cliente` + `subscripcion_vehiculos`) asociado a un cliente, hasta 2 placas, una sucursal + tipo de vehículo y una vigencia. El primer vehículo en patio no paga al salir (CU-03M); un segundo vehículo de la misma suscripción en patio simultáneamente paga como Rotación. |
-| **Tiquete** | Documento térmico impreso: de entrada (CU-15E, con QR — contenido exacto en `ABIERTO-01`, Anexo E), de salida (CU-15S, con desglose de cobro, impreso **después** del pago — DEC-SUC-27) o de salida-mensualidad (CU-15SM, sin campos de cobro, impreso de inmediato). |
+| **Mensualidad / suscripción individual** | Pago anticipado (`subscripciones_cliente` + `subscripcion_vehiculos`) asociado a un cliente, hasta 2 placas, una sucursal + tipo de vehículo y una vigencia. El primer vehículo en patio no paga al salir (CU-03M); un segundo vehículo de la misma suscripción en patio simultáneamente paga como Rotación — **excepto en un plan empresa/flota** (`tipo_subscripciones.cantidad_maxima_vehiculos > 2`), donde varios vehículos simultáneos en patio es el comportamiento normal esperado y cada uno sale sin cobro (directiva del operador, 2026-09-24; migration `0050_cotizar_mensualidad_factura_descuento`). **Desde 2026-09-24**, toda salida sin cobro por mensualidad (1era placa de un plan personal, o cualquier placa de un plan empresa) genera de todas formas una factura completa — ver "Factura por mensualidad ($0)" abajo. |
+| **Factura por mensualidad ($0)** | Directiva del operador (2026-09-24): cuando la salida no cobra por mensualidad vigente, la factura emitida (interna + Factura Electrónica DIAN, mismo pipeline que CU-04/CU-05) muestra el desglose fiscal COMPLETO (subtotal/IVA/total, como si fuera rotación) más una línea de descuento por el mismo valor (`factura_detalle` con `concepto="Descuento por mensualidad - <nombre del plan>"`), dejando `facturas.total = 0`. `facturas.descuento`/`factura_electronica.descuento` quedan poblados con el valor real (antes hardcodeado en `Decimal(0)`). `medio_pago='suscripcion'` identifica el pago (sin voucher, sin interacción del operador). El tiquete CU-15SM **no cambia** — sigue siendo el formato de 15 campos sin desglose de cobro (ver HU-F7.3). |
+| **Tiquete** | Documento térmico impreso: de entrada (CU-15E, con QR — contenido exacto en `ABIERTO-01`, Anexo E), de salida (CU-15S, con desglose de cobro, impreso **después** del pago — DEC-SUC-27) o de salida-mensualidad (CU-15SM, sin campos de cobro, impreso de inmediato — el tiquete no lleva el desglose aunque desde 2026-09-24 sí exista una factura completa detrás, ver "Factura por mensualidad ($0)"). |
 | **Base de caja** | El valor real y autoritativo con el que se abre un turno vive en `sesion.valor_inicial_efectivo` / `valor_inicial_datafono` (Parte I, Adaptación A-10) — **nunca** en una tabla de configuración aparte. `configuracion_caja` (tabla nueva de Parte II, ver Parte IV §1.7 / GAP-BE-08) solo guarda un valor **sugerido** (`base_inicial_sugerida`) que la pantalla de apertura de turno debería precargar como default editable — no lo sustituye. El "umbral de alerta" de descuadre no vive en `configuracion_caja`: reutiliza `configuracion_tolerancias.tolerancia_efectivo`/`tolerancia_datafono`, ya real. |
 | **Factura (interna)** | `facturas` + `factura_detalle` + `factura_impuestos` + `factura_pagos` — documento de venta interno, hechos legales de la emisión (nunca recalculado después). |
 | **Factura Electrónica (FE)** | La versión DIAN de la factura interna (`factura_electronica`), numerada en la sucursal con su propia resolución (`resolucion_facturacion`) y enviada por el lado cloud a un **proveedor externo de facturación electrónica DIAN** (configurado vía variable de entorno, sin acoplar el plan a un proveedor específico por nombre). Estado real persistido en `envio_dian.estado` (`pendiente\|enviado\|aceptado\|rechazado`); `factura_electronica` no tiene columna de estado propia, siempre se deriva. Se emite **siempre** en cada pago de rotación (nunca hay camino "sin FE"). |
@@ -804,8 +805,8 @@ Desbloquea: Fase 7 (CU-02/03/03M).
 **Criterios de aceptación**:
 - Given un `uuid_ingreso` con cotización vigente (≤15 min) y sin salida no anulada previa, When `POST /operacion/salidas`, Then `201` con `uuid_salida`, `estado='PENDIENTE_PAGO'`, cupo devuelto.
 - Given un `uuid_ingreso` ya con salida no anulada, When se reintenta, Then `409 {"error":"salida_duplicada"}`.
-- Given una placa con mensualidad vigente, When `POST /operacion/salidas/mensualidad`, Then `201` con `estado='MENSUALIDAD_PAGO'`, sin ningún monto asociado.
-- Given una placa **sin** mensualidad vigente enviada a este segundo endpoint, When se llama, Then `400 {"error":"mensualidad_no_vigente"}` (el cliente debe derivar a `POST /operacion/salidas` normal).
+- Given una placa con mensualidad vigente, When `POST /operacion/salidas/mensualidad`, Then `201` con `estado='MENSUALIDAD_PAGO'`, sin ningún monto asociado a `salidas` (sigue sin columna de monto). *(Corrección 2026-09-24: el endpoint real es un único `POST /operacion/salidas` que deriva `tipo_salida='MENSUALIDAD'|'ROTACION'` server-side según `cobrar` — no existe un segundo endpoint `/salidas/mensualidad` en el código, DEC-MONO-01. Además, desde migration `0050_cotizar_mensualidad_factura_descuento`, "sin ningún monto asociado" aplica solo a `salidas`: el operador SÍ debe registrar una factura completa con descuento a $0 después — ver "Factura por mensualidad ($0)" en el glosario y HU-F7.2/HU-F7.3.)*
+- Given una placa **sin** mensualidad vigente enviada a este segundo endpoint, When se llama, Then `400 {"error":"mensualidad_no_vigente"}` (el cliente debe derivar a `POST /operacion/salidas` normal). *(Ver corrección anterior — en el código real esto es simplemente la derivación `tipo_salida='ROTACION'` del único endpoint, no un código de error distinto.)*
 
 **Regla de negocio**: ninguno de los dos endpoints modifica `ingreso` (insert-only); ninguno persiste un monto en `salidas` (esa tabla no tiene columna `valor`, DEC-SUC-23) — el monto viaja en memoria de UI hasta CU-04.
 
@@ -851,7 +852,7 @@ Desbloquea: Fase 7 (CU-02).
 **Criterios de aceptación**:
 - Given un `uuid_ingreso` con ingreso activo, When `GET /operacion/cotizar?uuid_ingreso=X`, Then responde `200` con `{uuid_ingreso, tiempo_minutos, total_a_pagar, iva, subtotal, vigente_hasta}` en ≤5 s (timeout de cliente).
 - Given `valor_plena>0` y `tiempo>=tiempo_tar_plena`, Then `total_a_pagar=valor_plena`; en cualquier otro caso, `total_a_pagar=valor*tiempo_redondeado` (`Math.ceil`).
-- Given una placa con mensualidad vigente, Then la respuesta trae `{cobrar:false, motivo:'mensualidad_vigente'}` sin desglose de IVA.
+- Given una placa con mensualidad vigente, Then la respuesta trae `{cobrar:false, motivo:'mensualidad_vigente', ...}`. *(Corrección 2026-09-24, migration 0050: desde esta migración la respuesta SÍ incluye el desglose fiscal completo — `subtotal`, `iva`, `total`, `tiempo_minutos`, `tarifa_uuid`, `vigente_hasta` — más `uuid_subscripcion_cliente` y `concepto_descuento` (nombre del plan). El criterio original ["sin desglose de IVA"] queda obsoleto: el desglose ahora se calcula SIEMPRE, incluso cuando `cobrar=false`, para que la salida-mensualidad pueda armar la factura con descuento — ver "Factura por mensualidad ($0)" en el glosario. También se agregó el motivo `'multiple_vehiculos_plan_empresa'` para planes de flota (`cantidad_maxima_vehiculos > 2`) con varios vehículos simultáneos en patio.)*
 - Given que no existe una fila de `impuestos` vigente con `codigo='IVA'`, Then `500 {"error":"iva_no_configurado"}` (error de configuración, nunca un cálculo silencioso sin IVA). *(Corrección 2026-09-24, migration 0049: el criterio original decía `nombre='IVA'`; `nombre` es una etiqueta cosmética sin restricción de unicidad — `codigo` es el UK01 real del catálogo, `modelo_datos_er.mmd:192`, y coincide con el `natural_key` de sync y con `repo/impuestos.py`/`repo/factura.py`, que ya resolvían por `codigo`. Bug real reproducido dos veces por esta fuente de verdad partida — ver docstring de la migración 0049.)*
 
 **Regla de negocio (DEC-SUC-24, literal de CU-02 AC7)**: `iva = total_a_pagar * porcentaje_impuesto`; `subtotal = total_a_pagar - iva` — se implementa tal cual, sin "corregir" la base del cálculo.
@@ -866,8 +867,11 @@ Ejemplo de contrato:
 // 200 OK — rotación normal
 { "uuid_ingreso": "…", "cobrar": true, "tiempo_minutos": 135, "tarifa_valor": 100,
   "subtotal": 11345, "iva": 2155, "total": 13500, "vigente_hasta": "2026-09-11T16:20:00Z" }
-// 200 OK — mensualidad vigente
-{ "uuid_ingreso": "…", "cobrar": false, "motivo": "mensualidad_vigente" }
+// 200 OK — mensualidad vigente (migration 0050: desglose completo + descuento, ver corrección arriba)
+{ "uuid_ingreso": "…", "cobrar": false, "motivo": "mensualidad_vigente",
+  "subtotal": 11345, "iva": 2155, "total": 13500, "tiempo_minutos": 135,
+  "tarifa_uuid": "…", "vigente_hasta": "2026-09-11T16:20:00Z",
+  "uuid_subscripcion_cliente": "…", "concepto_descuento": "Plan Oro" }
 ```
 
 **Manejo de errores**:
@@ -1710,7 +1714,9 @@ sequenceDiagram
 
 **Criterios de aceptación**:
 - Given un cálculo vigente, When se confirma la salida (rotación), Then `POST /operacion/salidas` → `201` con `uuid_salida`, `estado='PENDIENTE_PAGO'`; el cupo se libera inmediatamente.
-- Given una placa con mensualidad vigente, When se confirma, Then `POST /operacion/salidas/mensualidad` → `201` con `estado='MENSUALIDAD_PAGO'`, sin ningún monto asociado, y deriva directo al tiquete CU-15SM (sin pasar por cobro).
+- Given una placa con mensualidad vigente, When se confirma, Then `POST /operacion/salidas` (endpoint único, ver corrección de HU-F1.7) → `201` con `tipo_salida='MENSUALIDAD'`, sin ningún monto asociado a `salidas`. *(Corrección 2026-09-24, migration 0050: la salida ya no deriva "directo" al tiquete — primero se registra la factura completa con descuento a $0 (`POST /facturacion/factura`, `medio_pago='suscripcion'`, mismo pipeline DIAN que CU-04/CU-05), se muestra `<FacturaDisplayModal />` con el desglose, y SOLO al cerrar ese modal se imprime el tiquete CU-15SM — ver "Factura por mensualidad ($0)" en el glosario y HU-F7.3.)*
+- Given una placa que es la 2da placa simultánea de la misma suscripción en patio, When el plan es personal (`tipo_subscripciones.cantidad_maxima_vehiculos <= 2` o sin configurar), Then la salida cobra como ROTACIÓN normal (`cobrar=true`, motivo informativo `'segunda_placa_misma_mensualidad'`), sin descuento — bugfix 2026-09-24 (migration 0050): esta regla ya estaba en el corpus original (ver glosario) pero se había regresado silenciosamente en migraciones intermedias (0046-0049) al reescribir la función PL/pgSQL completa sin arrastrar el fix de la migration `0038_calcular_cotizacion_2nd_plate_rotation`.
+- Given una placa que es la 2da (o 3ra, etc.) placa simultánea de la misma suscripción en patio, When el plan es empresa/flota (`cantidad_maxima_vehiculos > 2`), Then la salida sigue sin cobro (`cobrar=false`, motivo `'multiple_vehiculos_plan_empresa'`), igual que la 1era placa — directiva del operador 2026-09-24, no estaba en el corpus original.
 - Given un doble clic en "Confirmar salida", Then la idempotencia por UUID evita duplicar la operación.
 - Given un ingreso que ya tiene una salida no anulada, When se reintenta, Then `409 salida_duplicada`.
 
@@ -1735,8 +1741,9 @@ sequenceDiagram
 **Pruebas**: `e2e/salida.spec.ts` — 3 escenarios:
 
 1. Salida rotación: cotización vigente, cupo liberado de inmediato, sin impresión aún (diferida a Fase 8).
-2. Salida mensualidad: sin cobro, tiquete CU-15SM impreso de inmediato.
+2. Salida mensualidad: sin cobro (`salidas` sin monto), pero SÍ registra una factura completa con descuento a $0 y muestra `<FacturaDisplayModal />`; el tiquete CU-15SM se imprime al cerrar ese modal (corrección 2026-09-24, migration 0050 — ver HU-F7.3).
 3. Doble clic en "Confirmar salida": idempotencia por UUID evita duplicar la operación; segunda salida sobre el mismo ingreso → `409 salida_duplicada`.
+4. *(Agregado 2026-09-24)* 2da placa simultánea de un plan personal → cobra rotación completa. 2da+ placa simultánea de un plan empresa (`cantidad_maxima_vehiculos>2`) → sigue sin cobro.
 
 **Tamaño estimado**: 320 LOC.
 
@@ -1764,11 +1771,15 @@ sequenceDiagram
         UI->>Op: elegir el correcto
     end
     UI->>API: GET /operacion/cotizar?uuid_ingreso=X
-    alt mensualidad vigente
-        API-->>UI: {cobrar:false, motivo:'mensualidad_vigente'}
-        UI->>API: POST /operacion/salidas/mensualidad
-        API-->>UI: 201 {estado:'MENSUALIDAD_PAGO'}
-        UI->>Op: imprime CU-15SM de inmediato (sin cobro)
+    alt mensualidad vigente (2026-09-24: desglose completo + concepto_descuento)
+        API-->>UI: {cobrar:false, motivo:'mensualidad_vigente', subtotal, iva, total, concepto_descuento, ...}
+        UI->>API: POST /operacion/salidas (endpoint único, tipo_salida='MENSUALIDAD')
+        API-->>UI: 201 {tipo_salida:'MENSUALIDAD'}
+        UI->>API: POST /facturacion/factura (medio_pago='suscripcion', servicio+descuento, total=0)
+        API-->>UI: 201 FacturaRead (factura DIAN completa, descuento poblado)
+        UI->>Op: <FacturaDisplayModal /> con el desglose
+        Op->>UI: cierra el modal
+        UI->>Op: imprime CU-15SM (sin cambios de formato)
     else rotación con cobro
         API-->>UI: {tiempo_minutos, total_a_pagar, iva, subtotal, vigente_hasta}
         UI->>Op: muestra desglose (countdown 15 min)
@@ -1790,7 +1801,7 @@ sequenceDiagram
 
 **Criterios de aceptación**:
 - Given un pago confirmado (Fase 8), Then se imprime el tiquete CU-15S con los **19 campos literales** (encabezado, empresa, dirección, NIT, régimen, operario, "TIQUETE DE SALIDA", folio, tarifa aplicada, fecha, hora de entrada, hora de salida, tiempo total, subtotal, IVA, total a pagar, medio de pago, placa, horario/póliza RC/resolución FE/observaciones) más QR y logo (misma extensión que CU-15E).
-- Given una salida con mensualidad confirmada, Then se imprime de inmediato el tiquete CU-15SM con los **15 campos literales** (mismo patrón que CU-15E, sin desglose de cobro), con el encabezado dinámico de la sucursal (**no** el texto fijo "PARQUEADERO PUBLICO" que trae el CU original — se trata como defecto de copia del corpus, corregido aquí en silencio) y un sello "*** PAGO CON MENSUALIDAD ***" (`0x1B 0x21 0x30`, texto 2x altura) que distingue visualmente el documento — el CU original no diferencia el texto de "TIPO DE DOCUMENTO" entre CU-15S y CU-15SM (ambos dicen literalmente "TIQUETE DE SALIDA"); el sello es la decisión de producto que sí introduce la distinción visual necesaria para que el cajero no confunda un tiquete sin cobro con uno cobrado.
+- Given una salida con mensualidad confirmada, Then se imprime el tiquete CU-15SM con los **15 campos literales** (mismo patrón que CU-15E, sin desglose de cobro), con el encabezado dinámico de la sucursal (**no** el texto fijo "PARQUEADERO PUBLICO" que trae el CU original — se trata como defecto de copia del corpus, corregido aquí en silencio) y un sello "*** PAGO CON MENSUALIDAD ***" (`0x1B 0x21 0x30`, texto 2x altura) que distingue visualmente el documento — el CU original no diferencia el texto de "TIPO DE DOCUMENTO" entre CU-15S y CU-15SM (ambos dicen literalmente "TIQUETE DE SALIDA"); el sello es la decisión de producto que sí introduce la distinción visual necesaria para que el cajero no confunda un tiquete sin cobro con uno cobrado. *(Corrección 2026-09-24, migration 0050: "se imprime de inmediato" ya no es exacto — el tiquete se imprime al cerrar `<FacturaDisplayModal />`, que se abre después de registrar la factura completa con descuento a $0. El FORMATO del tiquete NO cambia (sigue sin desglose de cobro, mismo sello) — lo que cambia es que ahora existe una factura completa detrás, visible en el modal antes de imprimir. Ver "Factura por mensualidad ($0)" en el glosario.)*
 
 **Los 21 campos exactos del tiquete de salida (19 literales de CU-15S + 2 añadidos)**:
 
@@ -2648,6 +2659,8 @@ Lista de verificación para que quien coordine la ejecución de esta parte pueda
 | CU-03 | BR1 (corregido) | El monto **no** se persiste en `salidas` (sin columna `valor`); viaja en memoria de UI hasta que CU-04 lo persiste en `facturas`/`factura_detalle`/`factura_impuestos` (DEC-SUC-23) |
 | CU-03 | BR2 | Si la salida se anula sin pagar, se reactiva el ingreso y se vuelve a descontar el cupo |
 | CU-03M | BR1 | Solo vehículos con mensualidad activa y vigente |
+| CU-03M | BR2 (2026-09-24) | 2da placa simultánea de la MISMA suscripción en patio: plan personal (`cantidad_maxima_vehiculos<=2` o sin configurar) → paga como ROTACIÓN completa (bugfix, restaura la intención de migration 0038, regresada silenciosamente por 0046-0049); plan empresa/flota (`cantidad_maxima_vehiculos>2`) → sigue sin cobro, igual que la 1era placa (directiva del operador, no estaba en el corpus original) |
+| CU-03M | BR3 (2026-09-24) | Toda salida sin cobro por mensualidad (BR1 o el brazo "empresa" de BR2) genera de todas formas una factura completa (interna + FE DIAN) mostrando el desglose fiscal íntegro + una línea de descuento por el mismo valor, netando `total=0` (`medio_pago='suscripcion'`) — directiva del operador, ver "Factura por mensualidad ($0)" en el glosario |
 | CU-04 | BR1 | SIEMPRE se genera FE; no existe camino "sin FE" |
 | CU-04 | BR2 | FE a consumidor final por defecto, NIT `222222222222222` |
 | CU-04 | BR3 | Email opcional a consumidor final, obligatorio con datos propios del cliente |
@@ -7501,10 +7514,15 @@ El valor de este catálogo no es solo consolidar: al cruzar las 3 partes ya term
 // 200 OK — rotación normal
 { "uuid_ingreso": "…", "cobrar": true, "tiempo_minutos": 135, "tarifa_valor": 100,
   "subtotal": 11345, "iva": 2155, "total": 13500, "vigente_hasta": "2026-09-11T16:20:00Z" }
-// 200 OK — mensualidad vigente (no genera cobro)
-{ "uuid_ingreso": "…", "cobrar": false, "motivo": "mensualidad_vigente" }
+// 200 OK — mensualidad vigente (no genera cobro, pero SÍ desglose completo desde migration 0050)
+{ "uuid_ingreso": "…", "cobrar": false, "motivo": "mensualidad_vigente",
+  "subtotal": 11345, "iva": 2155, "total": 13500, "tiempo_minutos": 135,
+  "tarifa_uuid": "…", "vigente_hasta": "2026-09-11T16:20:00Z",
+  "uuid_subscripcion_cliente": "…", "concepto_descuento": "Plan Oro" }
+// 200 OK — 2da placa simultánea, plan empresa (cantidad_maxima_vehiculos>2, 2026-09-24)
+{ "uuid_ingreso": "…", "cobrar": false, "motivo": "multiple_vehiculos_plan_empresa", "...": "mismos campos que mensualidad_vigente" }
 ```
-Fórmula (DEC-SUC-24, literal de CU-02 AC7, sin "corregir" la base fiscal): `iva = total_a_pagar * porcentaje_impuesto`; `subtotal = total_a_pagar - iva`. Errores: `404 ingreso_no_encontrado`, `500 iva_no_configurado`.
+Fórmula (DEC-SUC-24, literal de CU-02 AC7, sin "corregir" la base fiscal): `iva = total_a_pagar * porcentaje_impuesto`; `subtotal = total_a_pagar - iva`. Errores: `404 ingreso_no_encontrado`, `500 iva_no_configurado`. *(Corrección 2026-09-24, migration 0050: el desglose fiscal se calcula SIEMPRE ahora, incluso cuando `cobrar=false` — antes la mensualidad hacía short-circuit antes de calcular tarifa/IVA. Ver "Factura por mensualidad ($0)" en el glosario.)*
 
 **`POST /operacion/salidas`** (cierra HU-F1.7; consumido por HU-F7.2):
 ```jsonc
@@ -7515,7 +7533,7 @@ Fórmula (DEC-SUC-24, literal de CU-02 AC7, sin "corregir" la base fiscal): `iva
 ```
 Errores: `409 salida_duplicada`, `410 cotizacion_expirada` (la cotización de `GET /operacion/cotizar` vence a los 15 min). No persiste monto (`salidas` sin columna `valor` — DEC-SUC-23; el monto vive únicamente en `facturas`, generado en CU-04).
 
-**`POST /operacion/salidas/mensualidad`** (cierra HU-F1.7): mismo patrón, `estado='MENSUALIDAD_PAGO'`; error `400 mensualidad_no_vigente` si la placa no tiene mensualidad vigente (debe derivar a `POST /operacion/salidas` normal, no reintentar este mismo endpoint).
+**`POST /operacion/salidas/mensualidad`** *(Corrección 2026-09-24: no existe como endpoint separado — es el mismo `POST /operacion/salidas` derivando `tipo_salida='MENSUALIDAD'` server-side, DEC-MONO-01)*: mismo patrón, `estado='MENSUALIDAD_PAGO'` conceptual; error `400 mensualidad_no_vigente` si la placa no tiene mensualidad vigente. Desde migration 0050, el frontend encadena `POST /facturacion/factura` (`medio_pago='suscripcion'`, desglose completo + descuento a $0) inmediatamente después — ver "Factura por mensualidad ($0)" en el glosario.
 
 **`POST /facturacion/factura`** (cierra HU-F1.9, transaccional; consumido por HU-F8.1):
 ```jsonc
@@ -7710,7 +7728,7 @@ Nota sobre el duplicado: Parte 1 (Sucursal) lo describe como gap huérfano de so
 | CU-01 | Registrar ingreso vehicular | `ingreso`, `subscripcion_vehiculos`, `subscripciones_cliente`, `cantidad_vehiculos_sucursal`, `sucursal`, `tipos_vehiculo`, `sync_queue`, `login` |
 | CU-02 | Calcular tarifa en salida | `ingreso`, `salidas`, `anulaciones`, `impuestos`, `tarifas_sucursal`, `subscripciones_cliente` |
 | CU-03 | Registrar salida vehicular | `salidas`, `ingreso`, `anulaciones`, `sync_queue` |
-| CU-03M | Registrar salida con mensualidad | `salidas`, `subscripciones_cliente`, `subscripcion_vehiculos`, `ingreso`, `sync_queue` |
+| CU-03M | Registrar salida con mensualidad | `salidas`, `subscripciones_cliente`, `subscripcion_vehiculos`, `tipo_subscripciones`, `ingreso`, `sync_queue`, `facturas`, `factura_detalle`, `factura_impuestos`, `factura_pagos`, `factura_electronica`, `envio_dian` *(desde 2026-09-24, migration 0050: las últimas 6 tablas se agregaron porque la salida sin cobro ahora también emite una factura completa con descuento — antes CU-03M no tocaba facturación en absoluto)* |
 | CU-04 | Procesar pago | `factura_pagos`, `facturas`, `factura_detalle`, `factura_impuestos`, `factura_electronica`, `salidas`, `sesion`, `clientes`, `impuestos`, `sync_queue` |
 | CU-05 | Gestionar Factura Electrónica | `facturas`, `factura_electronica`, `envio_dian`, `resolucion_facturacion`, `sync_queue`, `clientes` |
 | CU-06 | Gestionar suscripciones / mensualidades | `subscripciones_cliente`, `subscripcion_vehiculos`, `vehiculos`, `clientes`, `tipo_subscripciones`, `sucursal`, `tipos_vehiculo`, `sync_queue` |

@@ -184,13 +184,20 @@ async def crear_factura_electronica_inicial(
     uuid_resolucion_facturacion: uuid_lib.UUID,
     prefijo: str | None,
     consecutivo: int,
+    descuento: Decimal = Decimal(0),
 ) -> FacturaElectronica:
     """Step 7 INSERT: single ``prod.factura_electronica`` row.
 
     The ``prefijo`` is snapshotted from the vigente
     ``prod.resolucion_facturacion`` row returned by V3 (REQ-OPS-074).
-    The ``consecutivo`` is from ``assign_consecutivo``. ``descuento=Decimal(0)``
-    (MVP). Sets ``fecha_retencion_hasta = date.today() + timedelta(days=5*365)``
+    The ``consecutivo`` is from ``assign_consecutivo``. ``descuento``
+    defaults to ``Decimal(0)`` (unchanged for every pre-existing
+    caller); the caller (``api/v1/facturacion.py``'s ``POST
+    /factura-electronica`` handler) passes the real
+    ``prod.facturas.descuento`` value it already fetched at V1 for a
+    salida-mensualidad factura (2026-09-24) -- the DIAN document must
+    reflect the SAME discount as the internal factura, not a silent
+    Decimal(0). Sets ``fecha_retencion_hasta = date.today() + timedelta(days=5*365)``
     (DIAN 5-year retention).
 
     Catches ``IntegrityError`` on partial UK ``one_fe_per_factura`` (pgcode 23505)
@@ -212,7 +219,7 @@ async def crear_factura_electronica_inicial(
         uuid_resolucion_facturacion=uuid_resolucion_facturacion,
         prefijo=prefijo,
         consecutivo=consecutivo,
-        descuento=Decimal(0),
+        descuento=descuento,
         created_by=actor_uuid,
     )
     session.add(fe_row)
