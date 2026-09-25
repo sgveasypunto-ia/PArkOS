@@ -6,9 +6,7 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { Login } from '../features/auth/pages/Login';
 import { Dashboard } from '../features/caja/pages/Dashboard';
 import { AbrirTurno } from '../features/caja/pages/AbrirTurno';
-import { CierreDiario } from '../features/caja/pages/CierreDiario';
 import { FacturaDetalle } from '../features/facturacion/pages/FacturaDetalle';
-import { ReimprimirTiquete } from '../features/facturacion/pages/ReimprimirTiquete';
 import { Venta } from '../features/suscripciones/pages/Venta';
 import { Listado } from '../features/suscripciones/pages/Listado';
 import { LocalApiDownBanner } from '../components/LocalApiDownBanner';
@@ -97,26 +95,10 @@ export default function App(): JSX.Element {
             }
           />
           <Route
-            path="/caja/cierre-diario"
-            element={
-              <ProtectedRoute>
-                <CierreDiario />
-              </ProtectedRoute>
-            }
-          />
-          <Route
             path="/factura-electronica/:uuid"
             element={
               <ProtectedRoute>
                 <FacturaDetalle />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/facturacion/reimprimir"
-            element={
-              <ProtectedRoute>
-                <ReimprimirTiquete />
               </ProtectedRoute>
             }
           />
