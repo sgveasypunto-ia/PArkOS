@@ -267,7 +267,11 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
       }),
     );
     fireEvent.click(screen.getByTestId('pago-fe-toggle'));
-    fireEvent.change(screen.getByTestId('pago-nit'), { target: { value: '900123456' } });
+    // 800.123.456-7 es la referencia canónica módulo-11 (BR7 /
+    // plan.md:1857-1871) — el submit ahora VALIDA el DV vía Zod
+    // (fix 2026-09-25, selector persona/empresa), así que el NIT+DV
+    // del fixture debe ser real, no arbitrario.
+    fireEvent.change(screen.getByTestId('pago-nit'), { target: { value: '800123456' } });
     fireEvent.change(screen.getByTestId('pago-fe-dv'), { target: { value: '7' } });
     fireEvent.change(screen.getByTestId('pago-fe-nombre'), { target: { value: 'Cliente Prueba' } });
     await act(async () => {
@@ -280,7 +284,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
       fe_con_datos: true,
       fe_datos_cliente: {
         tipo_identificador: 'NIT',
-        numero_identificacion: '900123456',
+        numero_identificacion: '800123456',
         dv: '7',
         nombre: 'Cliente Prueba',
       },

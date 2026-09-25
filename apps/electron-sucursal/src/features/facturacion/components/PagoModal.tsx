@@ -28,7 +28,6 @@ import { Input } from '@/components/ui/input';
 import {
   Form,
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -36,13 +35,24 @@ import {
 } from '@/components/ui/form';
 
 import { validarNitModulo11 } from '../../../lib/validation/nit';
+import { validarIdentificacion, type TipoIdentificador } from '../../../lib/validation/identificacion';
 import { formatCOP } from '../../../features/caja/lib/format';
 
 /**
- * FE always defaults to consumidor final per plan.md:1828-1922
- * (NIT `222222222222222`).
+ * Placeholder de ejemplo por tipo de documento — puramente cosmético.
+ * BUGFIX (2026-09-25, directiva del operador): antes el input `nit` se
+ * precargaba con el sentinel real de consumidor final
+ * (`222222222222222`) como VALOR de estado, no como placeholder — acá
+ * solo se muestra un ejemplo de formato; el sentinel de consumidor
+ * final vive exclusivamente en `PagoSheet`/`Venta`, que lo usan para
+ * armar el payload cuando `fe===false` (cliente genérico).
  */
-const NIT_CONSUMIDOR_FINAL = '222222222222222';
+const NUMERO_PLACEHOLDER: Record<TipoIdentificador, string> = {
+  NIT: '900123456-7',
+  CC: '1020304050',
+  CE: '1020304050',
+  pasaporte: 'AB1234567',
+};
 
 /**
  * Discriminated union: the payment payload shape differs between
@@ -50,14 +60,20 @@ const NIT_CONSUMIDOR_FINAL = '222222222222222';
  * is required, no vueltos). Zod's discriminated union enforces the
  * discriminator at the schema boundary.
  */
+const tipoPersonaSchema = z.enum(['persona', 'empresa']);
+const tipoIdentificadorSchema = z.enum(['NIT', 'CC', 'CE', 'pasaporte']);
+
 const pagoEfectivoSchema = z.object({
   medio_pago: z.literal('efectivo'),
   monto_recibido_cop: z.coerce.number().int().positive(),
   voucher: z.string().optional(),
   fe: z.boolean(),
+  tipo_persona: tipoPersonaSchema,
+  tipo_identificador: tipoIdentificadorSchema,
   nit: z.string().trim().optional(),
   dv: z.string().trim().optional(),
   nombre_cliente: z.string().trim().optional(),
+  apellido: z.string().trim().optional(),
   email_cliente: z
     .string()
     .trim()
@@ -70,9 +86,12 @@ const pagoDatafonoSchema = z.object({
   medio_pago: z.literal('datafono'),
   voucher: z.string().trim().min(1, 'voucher_requerido'),
   fe: z.boolean(),
+  tipo_persona: tipoPersonaSchema,
+  tipo_identificador: tipoIdentificadorSchema,
   nit: z.string().trim().optional(),
   dv: z.string().trim().optional(),
   nombre_cliente: z.string().trim().optional(),
+  apellido: z.string().trim().optional(),
   email_cliente: z
     .string()
     .trim()
@@ -81,13 +100,89 @@ const pagoDatafonoSchema = z.object({
     .or(z.literal('')),
 });
 
+/**
+ * Cross-field validation for the FE ("factura a nombre del cliente")
+ * block. Only runs when `fe===true` — unchecked stays "cliente
+ * genérico" (PagoSheet omits `fe_datos_cliente` entirely) and none of
+ * these fields matter. When checked, the operator MUST supply a real
+ * document (validated per `tipo_identificador` via
+ * `validarIdentificacion`) and a nombre; `apellido` is only required
+ * for persona natural (empresa uses `nombre` as razón social, no
+ * apellido — mirrors `.mmd` `clientes.apellido`: "vacío para persona
+ * jurídica").
+ */
+function validarBloqueFe(
+  values: {
+    fe: boolean;
+    tipo_persona: 'persona' | 'empresa';
+    tipo_identificador: TipoIdentificador;
+    nit?: string;
+    dv?: string;
+    nombre_cliente?: string;
+    apellido?: string;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (!values.fe) return;
+
+  const numero = values.nit?.trim() ?? '';
+  if (numero.length < 5) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['nit'],
+      message: 'numero_identificacion_requerido',
+    });
+  } else if (values.tipo_identificador !== 'NIT') {
+    const resultado = validarIdentificacion(values.tipo_identificador, numero);
+    if (!resultado.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nit'],
+        message: resultado.motivo ?? 'documento_formato_invalido',
+      });
+    }
+  }
+
+  if (!values.nombre_cliente?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['nombre_cliente'],
+      message: 'nombre_requerido',
+    });
+  }
+
+  if (values.tipo_persona === 'persona' && !values.apellido?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['apellido'],
+      message: 'apellido_requerido',
+    });
+  }
+
+  if (values.tipo_identificador === 'NIT') {
+    const dv = values.dv?.trim() ?? '';
+    if (dv.length !== 1 || !/^[0-9]$/.test(dv)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['dv'],
+        message: 'dv_requerido',
+      });
+    } else if (numero.length >= 5 && !validarNitModulo11(numero, dv).ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['dv'],
+        message: 'dv_invalido',
+      });
+    }
+  }
+}
+
 // Schema defined locally; only the type is exported for consumers
 // (PagoModal.test.tsx, PagoSheet.test.tsx). Constraining exports
 // to the type-only satisfies react-refresh/only-export-components.
-const pagoFormSchema = z.discriminatedUnion('medio_pago', [
-  pagoEfectivoSchema,
-  pagoDatafonoSchema,
-]);
+const pagoFormSchema = z
+  .discriminatedUnion('medio_pago', [pagoEfectivoSchema, pagoDatafonoSchema])
+  .superRefine(validarBloqueFe);
 export type PagoFormValues = z.infer<typeof pagoFormSchema>;
 
 export interface PagoModalProps {
@@ -135,6 +230,11 @@ export interface PagoModalProps {
     nombre?: string;
     email?: string;
     fe?: boolean;
+    /** Persona natural vs. empresa — default `'empresa'` (preserva el
+     * comportamiento histórico NIT-only cuando el caller no lo pasa). */
+    tipo_persona?: 'persona' | 'empresa';
+    tipo_identificador?: TipoIdentificador;
+    apellido?: string;
   };
 }
 
@@ -158,6 +258,13 @@ export function PagoModal({
   // by re-using `form.reset(...)` below with the same prefill snapshot.
   const initialPrefill = clientePrefill;
 
+  // BUGFIX (2026-09-25, directiva del operador): "si se selecciona [el
+  // checkbox FE] se debe tener placeholders no valores sobre el input".
+  // `nit`/`nombre_cliente` arrancan VACÍOS (o con lo que el wizard de
+  // suscripción haya recolectado en su paso 1) — nunca con el sentinel
+  // de consumidor final. Ese sentinel (`NIT_CONSUMIDOR_FINAL`) sigue
+  // viviendo SOLO en `PagoSheet`/`Venta`, para armar el payload cuando
+  // `fe===false` (cliente genérico); ya no contamina el estado del form.
   const form = useForm<PagoFormValues>({
     resolver: zodResolver(pagoFormSchema),
     defaultValues: {
@@ -165,9 +272,12 @@ export function PagoModal({
       monto_recibido_cop: total_cop,
       voucher: '',
       fe: initialPrefill?.fe ?? false,
-      nit: initialPrefill?.nit ?? NIT_CONSUMIDOR_FINAL,
+      tipo_persona: initialPrefill?.tipo_persona ?? 'empresa',
+      tipo_identificador: initialPrefill?.tipo_identificador ?? 'NIT',
+      nit: initialPrefill?.nit ?? '',
       dv: '',
-      nombre_cliente: initialPrefill?.nombre ?? 'Consumidor final',
+      nombre_cliente: initialPrefill?.nombre ?? '',
+      apellido: initialPrefill?.apellido ?? '',
       email_cliente: initialPrefill?.email ?? '',
     },
     mode: 'onSubmit',
@@ -175,22 +285,27 @@ export function PagoModal({
 
   // Reset defaults when total changes (e.g. operator re-cotiza).
   // Preserves the prefill values when provided (existing page
-  // route passes nothing and keeps the consumidor final fallback).
+  // route passes nothing and keeps the empty/genérico fallback).
   useEffect(() => {
     form.reset({
       medio_pago: 'efectivo',
       monto_recibido_cop: total_cop,
       voucher: '',
       fe: initialPrefill?.fe ?? false,
-      nit: initialPrefill?.nit ?? NIT_CONSUMIDOR_FINAL,
+      tipo_persona: initialPrefill?.tipo_persona ?? 'empresa',
+      tipo_identificador: initialPrefill?.tipo_identificador ?? 'NIT',
+      nit: initialPrefill?.nit ?? '',
       dv: '',
-      nombre_cliente: initialPrefill?.nombre ?? 'Consumidor final',
+      nombre_cliente: initialPrefill?.nombre ?? '',
+      apellido: initialPrefill?.apellido ?? '',
       email_cliente: initialPrefill?.email ?? '',
     });
   }, [total_cop, form, initialPrefill]);
 
   const medioPago = useWatch({ control: form.control, name: 'medio_pago' });
   const feActive = useWatch({ control: form.control, name: 'fe' });
+  const tipoPersona = useWatch({ control: form.control, name: 'tipo_persona' });
+  const tipoIdentificador = useWatch({ control: form.control, name: 'tipo_identificador' });
   const nitValue = useWatch({ control: form.control, name: 'nit' }) ?? '';
   const dvValue = useWatch({ control: form.control, name: 'dv' }) ?? '';
   const montoValue = useWatch({ control: form.control, name: 'monto_recibido_cop' });
@@ -207,10 +322,13 @@ export function PagoModal({
     return formatCOP(numericMonto - total_cop);
   }, [medioPago, montoValue, total_cop]);
 
-  // Inline DV error from validarNitModulo11 (BR7) — surfaced while
-  // the operator types so they get the corrective hint immediately.
+  // Inline DV error from validarNitModulo11 (BR7) — surfaced while the
+  // operator types so they get the corrective hint immediately. DV is
+  // an exclusively-NIT concept (CC/CE/pasaporte have no dígito de
+  // verificación in Colombia), so this only applies when the chosen
+  // tipo_identificador is NIT.
   const dvError = useMemo<string | null>(() => {
-    if (!feActive) return null;
+    if (!feActive || tipoIdentificador !== 'NIT') return null;
     const stripped = nitValue.replace(/\D+/g, '');
     if (stripped.length < 6) return null;
     if (dvValue.length !== 1 || !/^[0-9]$/.test(dvValue)) {
@@ -219,7 +337,7 @@ export function PagoModal({
     const result = validarNitModulo11(stripped, dvValue);
     if (result.ok) return null;
     return `DV inválido (esperado ${result.dvEsperado})`;
-  }, [feActive, nitValue, dvValue]);
+  }, [feActive, tipoIdentificador, nitValue, dvValue]);
 
   // HU-F8.1 — bloquea el submit en cliente si el efectivo recibido es
   // menor al total (código de error `monto_insuficiente`). El backend
@@ -352,54 +470,127 @@ export function PagoModal({
           <div className="space-y-2 border-l-2 border-muted pl-4">
             <FormField
               control={form.control}
-              name="nit"
+              name="tipo_persona"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('facturacion:pago.fe_nit', { defaultValue: 'NIT del cliente' })}</FormLabel>
+                  <FormLabel>{t('facturacion:pago.tipo_persona_label', { defaultValue: 'Tipo de cliente' })}</FormLabel>
                   <FormControl>
-                    <Input
-                      data-testid="pago-nit"
-                      placeholder={NIT_CONSUMIDOR_FINAL}
-                      {...field}
-                    />
+                    <select
+                      data-testid="pago-tipo-persona"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background transition-colors hover:border-ring/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      value={field.value}
+                      onChange={(event) => {
+                        const next = event.target.value as 'persona' | 'empresa';
+                        field.onChange(next);
+                        // Empresa siempre factura con NIT; persona natural
+                        // elige su documento (por defecto CC al cambiar
+                        // desde empresa, para no dejar el select en un
+                        // valor huérfano).
+                        if (next === 'empresa') {
+                          form.setValue('tipo_identificador', 'NIT');
+                        } else if (form.getValues('tipo_identificador') === 'NIT') {
+                          form.setValue('tipo_identificador', 'CC');
+                        }
+                      }}
+                      onBlur={field.onBlur}
+                    >
+                      <option value="empresa">{t('facturacion:pago.tipo_persona_empresa', { defaultValue: 'Empresa' })}</option>
+                      <option value="persona">{t('facturacion:pago.tipo_persona_natural', { defaultValue: 'Persona natural' })}</option>
+                    </select>
                   </FormControl>
-                  <FormDescription>
-                    {t('facturacion:pago.fe_consumidor_final', { defaultValue: 'Consumidor final = 222222222222222' })}
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
             />
+
+            {tipoPersona === 'persona' && (
+              <FormField
+                control={form.control}
+                name="tipo_identificador"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('facturacion:pago.tipo_documento_label', { defaultValue: 'Tipo de documento' })}</FormLabel>
+                    <FormControl>
+                      <select
+                        data-testid="pago-tipo-documento"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background transition-colors hover:border-ring/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        value={field.value}
+                        onChange={field.onChange}
+                        onBlur={field.onBlur}
+                      >
+                        <option value="CC">{t('facturacion:pago.tipo_documento_cc', { defaultValue: 'Cédula de ciudadanía' })}</option>
+                        <option value="CE">{t('facturacion:pago.tipo_documento_ce', { defaultValue: 'Cédula de extranjería' })}</option>
+                        <option value="pasaporte">{t('facturacion:pago.tipo_documento_pasaporte', { defaultValue: 'Pasaporte' })}</option>
+                      </select>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+
             <FormField
               control={form.control}
-              name="dv"
+              name="nit"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('facturacion:pago.fe_dv', { defaultValue: 'DV (módulo 11)' })}</FormLabel>
+                  <FormLabel>
+                    {tipoIdentificador === 'NIT'
+                      ? t('facturacion:pago.fe_nit', { defaultValue: 'NIT del cliente' })
+                      : t('facturacion:pago.fe_numero_identificacion', { defaultValue: 'Número de identificación' })}
+                  </FormLabel>
                   <FormControl>
                     <Input
-                      data-testid="pago-fe-dv"
-                      inputMode="numeric"
-                      maxLength={1}
-                      placeholder="0-9"
+                      data-testid="pago-nit"
+                      placeholder={NUMERO_PLACEHOLDER[tipoIdentificador]}
                       {...field}
                     />
                   </FormControl>
-                  <FormMessage data-testid="pago-fe-dv-error">
-                    {dvError ?? ''}
-                  </FormMessage>
+                  <FormMessage />
                 </FormItem>
               )}
             />
+            {tipoIdentificador === 'NIT' && (
+              <FormField
+                control={form.control}
+                name="dv"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('facturacion:pago.fe_dv', { defaultValue: 'DV (módulo 11)' })}</FormLabel>
+                    <FormControl>
+                      <Input
+                        data-testid="pago-fe-dv"
+                        inputMode="numeric"
+                        maxLength={1}
+                        placeholder="0-9"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage data-testid="pago-fe-dv-error">
+                      {dvError ?? ''}
+                    </FormMessage>
+                  </FormItem>
+                )}
+              />
+            )}
             <FormField
               control={form.control}
               name="nombre_cliente"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('facturacion:pago.fe_nombre', { defaultValue: 'Nombre del cliente' })}</FormLabel>
+                  <FormLabel>
+                    {tipoPersona === 'persona'
+                      ? t('facturacion:pago.fe_nombres', { defaultValue: 'Nombres' })
+                      : t('facturacion:pago.fe_razon_social', { defaultValue: 'Razón social' })}
+                  </FormLabel>
                   <FormControl>
                     <Input
                       data-testid="pago-fe-nombre"
+                      placeholder={
+                        tipoPersona === 'persona'
+                          ? t('facturacion:pago.fe_nombres_placeholder', { defaultValue: 'Ej: Juan Pérez' })
+                          : t('facturacion:pago.fe_razon_social_placeholder', { defaultValue: 'Ej: Comercializadora S.A.S.' })
+                      }
                       {...field}
                     />
                   </FormControl>
@@ -407,6 +598,25 @@ export function PagoModal({
                 </FormItem>
               )}
             />
+            {tipoPersona === 'persona' && (
+              <FormField
+                control={form.control}
+                name="apellido"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('facturacion:pago.fe_apellidos', { defaultValue: 'Apellidos' })}</FormLabel>
+                    <FormControl>
+                      <Input
+                        data-testid="pago-fe-apellido"
+                        placeholder={t('facturacion:pago.fe_apellidos_placeholder', { defaultValue: 'Ej: Gómez' })}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
             <FormField
               control={form.control}
               name="email_cliente"

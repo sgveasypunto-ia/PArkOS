@@ -69,7 +69,7 @@ def test_clientes_create_acepta_nit_dv_valido() -> None:
 
 def test_factura_datos_cliente_rechaza_nit_dv_invalido() -> None:
     """FacturaItemConDatosPropios rejects NIT with wrong DV."""
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as exc_info:
         FacturaItemConDatosPropios(
             tipo_identificador="NIT",
             numero_identificacion="800.123.456",
@@ -79,6 +79,34 @@ def test_factura_datos_cliente_rechaza_nit_dv_invalido() -> None:
             email="test@example.com",
             telefono="3001234567",
         )
+    assert any(
+        "DV inválido" in str(err.get("msg", "")) for err in exc_info.value.errors()
+    )
+
+
+def test_factura_datos_cliente_acepta_nit_dv_valido() -> None:
+    """BUGFIX (2026-09-25, hallado en validación en vivo Chrome DevTools):
+    ``@field_validator("numero_identificacion")`` leía ``info.data.get("dv")``,
+    pero ``dv`` se declara DESPUÉS de ``numero_identificacion`` — en
+    Pydantic v2 ``info.data`` solo trae los campos declarados ANTES del
+    campo bajo validación, así que ``dv`` era SIEMPRE ``None`` y todo NIT
+    con DV real (correcto) rechazaba con 422 "dv required". El test
+    anterior (`rechaza_nit_dv_invalido`) no lo detectó porque solo
+    afirmaba ``pytest.raises(ValidationError)`` genérico — pasaba "por
+    accidente" con el mensaje equivocado. Fix: `model_validator(mode="after")`
+    (mismo patrón que `ClientesCreate`).
+    """
+    obj = FacturaItemConDatosPropios(
+        tipo_identificador="NIT",
+        numero_identificacion="800.123.456",
+        dv="7",
+        nombre="Empresa ABC",
+        apellido=None,
+        email="test@example.com",
+        telefono="3001234567",
+    )
+    assert obj.tipo_identificador == "NIT"
+    assert obj.dv == "7"
 
 
 def test_factura_datos_cliente_acepta_cc_sin_dv() -> None:

@@ -113,6 +113,7 @@ import { useCostoServicioVigente } from '../hooks/useCostoServicioVigente';
 import { useIvaVigente } from '../hooks/useIvaVigente';
 import { useRegistrarPagoServicio } from '../hooks/useRegistrarPagoServicio';
 import { PagoModal, type PagoFormValues } from '../components/PagoModal';
+import { buildClienteFePayload } from '../lib/clienteFePayload';
 import { FacturaDisplayModal } from '../components/FacturaDisplayModal';
 import type { ReimpresionTicketRead } from '../api/reimpresionApi';
 import type { FacturaRead } from '../api/facturaApi';
@@ -296,20 +297,7 @@ export function ReimprimirTiquete(): JSX.Element {
           valor_unitario: costo,
         },
       ];
-      const feDatos = values.fe
-        ? {
-            fe_con_datos: true as const,
-            fe_datos_cliente: {
-              tipo_identificador: 'NIT' as const,
-              numero_identificacion: values.nit ?? '',
-              dv: values.dv || null,
-              nombre: values.nombre_cliente ?? 'Consumidor final',
-              apellido: null,
-              email: values.email_cliente || null,
-              telefono: null,
-            },
-          }
-        : {};
+      const feDatos = buildClienteFePayload(values);
       const post: PostFacturaServicioPayload =
         values.medio_pago === 'efectivo'
           ? {

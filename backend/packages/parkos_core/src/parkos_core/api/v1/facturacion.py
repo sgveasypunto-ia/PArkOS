@@ -314,6 +314,7 @@ async def create_factura(
             )
         cliente = await repo_factura.buscar_o_crear_cliente_por_nit(
             session,
+            tipo_identificador=payload.fe_datos_cliente.tipo_identificador,
             numero_identificacion=payload.fe_datos_cliente.numero_identificacion,
             datos=payload.fe_datos_cliente,
         )
@@ -668,6 +669,7 @@ async def create_factura_servicio(
             )
         cliente = await repo_factura.buscar_o_crear_cliente_por_nit(
             session,
+            tipo_identificador=payload.fe_datos_cliente.tipo_identificador,
             numero_identificacion=payload.fe_datos_cliente.numero_identificacion,
             datos=payload.fe_datos_cliente,
         )
