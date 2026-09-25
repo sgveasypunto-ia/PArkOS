@@ -280,8 +280,20 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   const buildVentaPayload = (values: PagoFormValues): VentaSuscripcionCreate => {
     const fecha_inicio_cobertura =
       state.fecha_inicio_cobertura ?? DEFAULT_FECHA_INICIO;
+    // BUGFIX (2026-09-25): el wire contract (`VentaSuscripcionCreate.
+    // cliente`, backend `ClientesCreate`) no tiene campo `nit` -- exige
+    // `tipo_identificador`/`numero_identificacion`. El estado interno
+    // del wizard sigue usando `nit` (es como lo tipea el operador en
+    // el paso 1); la traducción al shape real de la API pasa acá, en
+    // el único punto donde se arma el payload de red.
+    const clienteWizard = state.cliente ?? { nit: '', nombre: '', email: null };
     const base = {
-      cliente: state.cliente ?? { nit: '', nombre: '', email: null },
+      cliente: {
+        tipo_identificador: 'NIT' as const,
+        numero_identificacion: clienteWizard.nit,
+        nombre: clienteWizard.nombre,
+        email: clienteWizard.email,
+      },
       placas: state.placas ?? [],
       uuid_tipo_subscripcion:
         state.uuid_tipo_subscripcion ?? '',

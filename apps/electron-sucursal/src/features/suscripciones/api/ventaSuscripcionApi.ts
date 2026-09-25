@@ -17,14 +17,26 @@
 import { z } from 'zod';
 
 /**
- * Cliente payload — the operator types `nit`, `nombre`, `email`.
- * The Pydantic schema on the backend (`schemas/clientes.py`) accepts
- * the same shape for embedded-cliente (vs `uuid_cliente` reference
- * for existing-cliente); F9.1 always uses the embedded shape
- * (the wizard is operator-facing sale flow, not lookup-then-buy).
+ * Cliente payload — the operator types NIT/nombre/email at wizard
+ * step 1. The Pydantic schema on the backend (`schemas/clientes.py::
+ * VentaSuscripcionCreate.cliente`) is `ClientesCreate | None` verbatim
+ * — that class has NO `nit` field, only `tipo_identificador` +
+ * `numero_identificacion` (same shape `Clientes`/`ClientesB2B` use
+ * everywhere else in the app).
+ *
+ * BUGFIX (2026-09-25, encontrado por el operador probando la venta en
+ * vivo): este schema mandaba `{nit, nombre, email}` -- el backend
+ * respondía 422 `extra_forbidden` en `cliente.nit` SIEMPRE que se
+ * creaba un cliente nuevo (sin `uuid_cliente`), porque ni siquiera
+ * viajaban los campos requeridos `tipo_identificador`/
+ * `numero_identificacion`. La venta de suscripción a un cliente nuevo
+ * nunca pudo completarse por este contrato. `tipo_identificador` es
+ * literal `'NIT'` porque el wizard solo tiene un campo (sin selector
+ * de tipo de documento, ver step 1 de `Venta.tsx`).
  */
 const clienteSchema = z.object({
-  nit: z.string().min(6, 'nit_min_6'),
+  tipo_identificador: z.literal('NIT'),
+  numero_identificacion: z.string().min(6, 'nit_min_6'),
   nombre: z.string().min(1, 'nombre_requerido'),
   email: z
     .string()
