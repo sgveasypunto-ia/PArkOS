@@ -183,7 +183,7 @@ export function SuscripcionesSheet(): JSX.Element {
       <SheetContent
         side="right"
         data-testid="suscripciones-sheet"
-        className="flex h-full flex-col gap-4"
+        className="flex h-full w-full flex-col gap-4 sm:max-w-xl md:w-[36rem] lg:w-[42rem]"
       >
         <SheetHeader>
           <SheetTitle>
