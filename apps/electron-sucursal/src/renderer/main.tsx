@@ -13,10 +13,10 @@ import App from './App';
  * F2.1 ships a router placeholder; F2.2 wires `authStore` and the
  * `<SucursalProvider>` once the IPC seam is populated.
  */
-function Root() {
+export function Root() {
   return (
     <StrictMode>
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <App />
       </BrowserRouter>
     </StrictMode>
