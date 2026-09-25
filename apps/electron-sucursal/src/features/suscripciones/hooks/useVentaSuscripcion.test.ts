@@ -107,8 +107,7 @@ describe('useVentaSuscripcion — REQ-OPS-177 + REQ-OPS-179', () => {
       new ParkosHttpError(
         422,
         JSON.stringify({
-          error: 'suscripcion_duplicada_placa',
-          placa: 'ABC123',
+          detail: { error: 'suscripcion_duplicada_placa', placa: 'ABC123' },
         }),
         '/api/v1/clientes/venta-suscripcion',
       ),
@@ -136,8 +135,10 @@ describe('useVentaSuscripcion — REQ-OPS-177 + REQ-OPS-179', () => {
       new ParkosHttpError(
         422,
         JSON.stringify({
-          error: 'tipo_vehiculo_incompatible',
-          tipos_encontrados: ['uuid_tipo_auto', 'uuid_tipo_moto'],
+          detail: {
+            error: 'tipo_vehiculo_incompatible',
+            tipos_encontrados: ['uuid_tipo_auto', 'uuid_tipo_moto'],
+          },
         }),
         '/api/v1/clientes/venta-suscripcion',
       ),

@@ -171,24 +171,36 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2 (Plan)
+    // step 2 (Plan) — the plan click and the "Siguiente" click MUST be
+    // separate act() calls: React 18 batches state updates within one
+    // synchronous block, so a same-block "Siguiente" click would still
+    // read the PRE-selection `planInput` closure (empty string) and
+    // bail out of `handlePaso2Siguiente` before advancing the paso
+    // (real bug found live 2026-09-24 while validating HU-F9.2
+    // realineada — the wizard got stuck on paso 2 in every T4-T7 test).
     await act(async () => {
-      const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
-      fireEvent.click(plan);
+      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 (Cantidad)
+    // step 3 (Cantidad) — same batching hazard as step 2 above: split
+    // the change + the "Siguiente" click into separate act() calls.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
         target: { value: '1' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 (Placas)
+    // step 4 (Placas) — same batching hazard as steps 2/3 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
         target: { value: 'ABC123' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
     // step 5 PagoModal stub: click confirmar -> trigger throws typed error
@@ -214,24 +226,36 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2 (Plan)
+    // step 2 (Plan) — the plan click and the "Siguiente" click MUST be
+    // separate act() calls: React 18 batches state updates within one
+    // synchronous block, so a same-block "Siguiente" click would still
+    // read the PRE-selection `planInput` closure (empty string) and
+    // bail out of `handlePaso2Siguiente` before advancing the paso
+    // (real bug found live 2026-09-24 while validating HU-F9.2
+    // realineada — the wizard got stuck on paso 2 in every T4-T7 test).
     await act(async () => {
-      const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
-      fireEvent.click(plan);
+      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 (Cantidad)
+    // step 3 (Cantidad) — same batching hazard as step 2 above: split
+    // the change + the "Siguiente" click into separate act() calls.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
         target: { value: '1' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 (Placas)
+    // step 4 (Placas) — same batching hazard as steps 2/3 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
         target: { value: 'ABC123' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
     expect(screen.getByTestId('venta-paso-5')).toBeDefined();
@@ -250,24 +274,36 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2 (Plan)
+    // step 2 (Plan) — the plan click and the "Siguiente" click MUST be
+    // separate act() calls: React 18 batches state updates within one
+    // synchronous block, so a same-block "Siguiente" click would still
+    // read the PRE-selection `planInput` closure (empty string) and
+    // bail out of `handlePaso2Siguiente` before advancing the paso
+    // (real bug found live 2026-09-24 while validating HU-F9.2
+    // realineada — the wizard got stuck on paso 2 in every T4-T7 test).
     await act(async () => {
-      const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
-      fireEvent.click(plan);
+      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 (Cantidad)
+    // step 3 (Cantidad) — same batching hazard as step 2 above: split
+    // the change + the "Siguiente" click into separate act() calls.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
         target: { value: '1' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 (Placas)
+    // step 4 (Placas) — same batching hazard as steps 2/3 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
         target: { value: 'ABC123' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
     // step 5: prorrateo badge should be visible (total > 0)
@@ -287,24 +323,36 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2 (Plan)
+    // step 2 (Plan) — the plan click and the "Siguiente" click MUST be
+    // separate act() calls: React 18 batches state updates within one
+    // synchronous block, so a same-block "Siguiente" click would still
+    // read the PRE-selection `planInput` closure (empty string) and
+    // bail out of `handlePaso2Siguiente` before advancing the paso
+    // (real bug found live 2026-09-24 while validating HU-F9.2
+    // realineada — the wizard got stuck on paso 2 in every T4-T7 test).
     await act(async () => {
-      const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
-      fireEvent.click(plan);
+      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 (Cantidad)
+    // step 3 (Cantidad) — same batching hazard as step 2 above: split
+    // the change + the "Siguiente" click into separate act() calls.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
         target: { value: '1' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 (Placas)
+    // step 4 (Placas) — same batching hazard as steps 2/3 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
         target: { value: 'ABC123' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
     // step 5 PagoModal stub: click confirmar
