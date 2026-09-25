@@ -80,8 +80,19 @@
          estaba afinado a mano y pasa AA, así que en vez de
          descartarlo pasa a ser el token de "info".
      Ver la verificación de contraste completa al final de index.css. */
-  --green-700: 142 72% 29%; /* success, modo claro / fills con texto blanco */
-  --green-500: 142 71% 45%; /* success, variante clara para modo oscuro (texto plano u oscuro-sobre-verde) */
+  --green-700: 142 72% 29%; /* success — fill sólido, sin uso semántico activo desde 2026-09-25 (ver green-100/800/900) */
+  --green-500: 142 71% 45%; /* success — fill sólido, sin uso semántico activo desde 2026-09-25 (ver green-100/800/900) */
+  /* 2026-09-25: el fill sólido (green-700/500) resultó pesado/difícil de
+     leer para un badge informativo ("cupos libres" = estado, no acción) —
+     pedido explícito del operador viendo la app corriendo. Se reemplaza
+     por un chip suave (fondo tenue + texto oscuro/claro de la misma
+     familia), mismo patrón "tinted badge" que ya usa warning/danger en
+     shadcn. Valores = escala estándar Tailwind green (accesible, AA de
+     sobra por el salto de luminosidad). */
+  --green-100: 141 79% 93%; /* success, fondo suave modo claro */
+  --green-800: 143 64% 24%; /* success, texto modo claro (sobre green-100) */
+  --green-900: 144 61% 20%; /* success, fondo suave modo oscuro */
+  --green-300: 141 75% 73%; /* success, texto modo oscuro (sobre green-900) */
   --amber-500: 38 92% 50%; /* warning — misma tripleta en ambos modos */
   --blue-600: 211 100% 50%; /* info, modo claro (era --primary antes de la marca) */
   --blue-400: 211 100% 70%; /* info, variante clara para modo oscuro */

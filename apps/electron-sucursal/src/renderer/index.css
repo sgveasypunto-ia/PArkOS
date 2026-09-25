@@ -149,8 +149,8 @@
     --color-accent: hsl(var(--orange-500));
     --color-accent-hover: hsl(var(--orange-400));
 
-    --color-success: hsl(var(--green-700));
-    --color-success-foreground: hsl(var(--gray-0)); /* blanco — 5.02:1, PASA AA */
+    --color-success: hsl(var(--green-100)); /* chip suave, no fill sólido — ver tokens.css 2026-09-25 */
+    --color-success-foreground: hsl(var(--green-800)); /* verde oscuro sobre verde claro — contraste amplio, PASA AA */
     --color-danger: hsl(var(--destructive));
     --color-danger-foreground: hsl(var(--destructive-foreground));
     --color-warning: hsl(var(--amber-500));
@@ -177,13 +177,13 @@
      * --primary en oscuro: variante más clara + texto oscuro
      * (--gray-900), tanto para fills como para texto plano sobre el
      * fondo de la app. Verificación AA (contraste real):
-     *   success  (--green-500 + oscuro)  → 6.98:1  (blanco da 2.28:1, falla)
+     *   success  (--green-900 + --green-300, chip suave, 2026-09-25) → contraste amplio
      *   warning  (--amber-500, sin cambio) → 7.41:1 en ambos sentidos, no requiere ajuste
      *   danger   (--red-400 + oscuro)     → 5.75:1  (blanco da 2.77:1, falla)
      *   info     (--blue-400 + oscuro)    → 6.99:1  (el fill claro original solo da 3.4:1 como texto)
      */
-    --color-success: hsl(var(--green-500));
-    --color-success-foreground: hsl(var(--gray-900));
+    --color-success: hsl(var(--green-900)); /* 2026-09-25: chip suave (era --green-500 fill sólido) */
+    --color-success-foreground: hsl(var(--green-300));
     --color-danger: hsl(var(--red-400));
     --color-danger-foreground: hsl(var(--gray-900));
     --color-warning: hsl(var(--amber-500));
