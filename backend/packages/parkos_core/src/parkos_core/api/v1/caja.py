@@ -64,6 +64,35 @@ _mount_caja(
     create_schema=CajaCreate,
     update_schema=CajaUpdate,
 )
+
+
+# ---------------------------------------------------------------------------
+# HU-F1.13 / DEC-ARQUEO-05: dedicated router mount for the atomic
+# ``POST /api/v1/caja/arqueo`` + ``GET /api/v1/caja/arqueo/resumen`` pair.
+# The factory mount below stays read-only; the dedicated router carries
+# the cross-table atomic write (1 [A] Arqueo + N [L-S] sesion + 1 [L-W]
+# alerta + N+1 log_transaccional in a single commit -- KD-ARQUEO-01).
+#
+# BUGFIX (2026-09-25, reproducido en vivo con un fetch autenticado real):
+# este ``include_router`` DEBE quedar registrado ANTES que
+# ``_mount_caja(resource="arqueo", ...)`` de abajo. Starlette matchea
+# rutas en orden de registro; el mount factory genérico registra
+# ``GET /caja/arqueo/{uuid}`` (read-by-id, C+Q read-only), y con el
+# orden viejo (factory primero) ese ``{uuid}`` capturaba CUALQUIER
+# segundo segmento bajo ``/caja/arqueo/...`` -- incluida la ruta
+# literal ``/caja/arqueo/resumen`` de este router (T4, más abajo).
+# Pydantic rechazaba "resumen" como UUID inválido -> 422 permanente,
+# el endpoint de resumen de arqueo (consumido por `useArqueoResumen` /
+# `useArqueoResumenPorSesion` en el front, y por el propio cierre de
+# turno para calcular lo esperado) nunca fue alcanzable. Registrar
+# este router primero hace que la ruta literal ``/arqueo/resumen`` se
+# resuelva antes de que el ``{uuid}`` genérico tenga chance de
+# matchear.
+# ---------------------------------------------------------------------------
+from .caja_arqueo import router as caja_arqueo_router
+
+router.include_router(caja_arqueo_router)
+
 _mount_caja(
     resource="arqueo",
     model_cls=Arqueo,
@@ -72,18 +101,6 @@ _mount_caja(
     create_schema=ArqueoCreate,
     update_schema=ArqueoUpdate,
 )
-
-
-# ---------------------------------------------------------------------------
-# HU-F1.13 / DEC-ARQUEO-05: dedicated router mount for the atomic
-# ``POST /api/v1/caja/arqueo`` + ``GET /api/v1/caja/arqueo/resumen`` pair.
-# The factory mount above stays read-only; the dedicated router carries
-# the cross-table atomic write (1 [A] Arqueo + N [L-S] sesion + 1 [L-W]
-# alerta + N+1 log_transaccional in a single commit -- KD-ARQUEO-01).
-# ---------------------------------------------------------------------------
-from .caja_arqueo import router as caja_arqueo_router  # noqa: E402
-
-router.include_router(caja_arqueo_router)
 
 
 # NOTE (fix 2026-09-24, bug reproducido en vivo): ``sync_estado`` NO se monta
