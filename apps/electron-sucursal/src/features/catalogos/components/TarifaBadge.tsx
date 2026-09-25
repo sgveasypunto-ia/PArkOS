@@ -55,11 +55,32 @@ export function TarifaBadge({ tarifa, fetchedAt, isStale }: TarifaBadgeProps): J
 
   const ariaProps = isStale ? { 'aria-describedby': STALE_HELP_ID } : {};
 
+  // F31.3 rediseño — el componente NO tenía ninguna regla CSS asociada
+  // (grep confirma cero matches de `.tarifa-badge*` en todo el repo, el
+  // mismo patrón huérfano que StatusBar antes de su rediseño): se
+  // renderizaba como texto plano sin estilos. Se reemplaza por un chip
+  // con tokens — superficie `bg-card`/`border-border` en el estado
+  // normal, y el chip "warning" (mismo token semántico que el resto de
+  // la app, AA verificado en tokens.css) cuando `isStale` — refuerza
+  // visualmente la advertencia, no solo el texto.
   return (
-    <div className="tarifa-badge" {...ariaProps}>
-      <span className="tarifa-badge__value">{formatCOP(Number(tarifa.valor))}</span>
+    <div
+      data-testid="tarifa-badge"
+      className="inline-flex max-w-full flex-col items-start gap-1 rounded-xl border border-border/60 bg-card px-3 py-2 shadow-apple-sm"
+      {...ariaProps}
+    >
+      <span
+        data-testid="tarifa-badge-value"
+        className="text-sm font-semibold tabular-nums text-foreground"
+      >
+        {formatCOP(Number(tarifa.valor))}
+      </span>
       {isStale && (
-        <span className="tarifa-badge__stale-mark" role="status">
+        <span
+          data-testid="tarifa-badge-stale-mark"
+          role="status"
+          className="inline-flex max-w-full items-center rounded-full bg-warning px-2 py-0.5 text-[11px] font-medium leading-snug text-warning-foreground"
+        >
           Tarifa cacheada — verifica con el supervisor
         </span>
       )}

@@ -339,7 +339,12 @@ export function PagoSheet({
         if (!next) handleClose();
       }}
     >
-      <SheetContent side="right" data-testid="pago-sheet">
+      {/* F31.3 — el Sheet base es `w-full md:w-1/2`; en pantallas anchas
+          (2560/3840/ultrawide) la mitad del viewport estira un
+          formulario de una sola columna a un ancho absurdo. `sm:max-w-md`
+          topea el crecimiento SIN tocar `ui/sheet.tsx` (compartido con
+          otros dominios) — por debajo de `md` sigue siendo full-width. */}
+      <SheetContent side="right" data-testid="pago-sheet" className="overflow-y-auto sm:max-w-md">
         <SheetHeader>
           <SheetTitle>{t('facturacion:pago.titulo', { defaultValue: 'Cobrar' })}</SheetTitle>
           <SheetDescription>

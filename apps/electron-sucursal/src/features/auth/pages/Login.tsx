@@ -161,12 +161,17 @@ export function Login(): JSX.Element {
           role=status + aria-live=polite WCAG 2.1 AA compliant (mismo
           pattern F3.2 REQ-OPS-118 countdown). NO interrumpe screen reader.
           Renderizado FUERA del wrapper de centrado — queda como banner
-          top-of-page antes del card, no afecta la estética del login. */}
+          top-of-page antes del card, no afecta la estética del login.
+          F31.3 rediseño: el banner no tenía NINGUNA clase (texto plano
+          pegado al borde del viewport) — se agrega un chip "success"
+          (token --success/--success-foreground, mismo chip suave usado
+          en el resto de la app) centrado con padding responsive. */}
       {showClosedNotice && (
         <p
           role="status"
           aria-live="polite"
           data-testid="turno-cerrado-exito"
+          className="mx-auto mt-4 w-fit max-w-[calc(100%-2rem)] rounded-full bg-success px-4 py-1.5 text-center text-sm font-medium text-success-foreground"
         >
           {t('caja:turnoCerradoExito')}
         </p>

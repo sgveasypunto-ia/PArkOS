@@ -84,7 +84,10 @@ export function ReimprimirTiqueteSheet(): JSX.Element {
         if (!next) close();
       }}
     >
-      <SheetContent side="right" data-testid="reimprimir-sheet">
+      {/* F31.3 — mismo tope que PagoSheet: `sm:max-w-md` evita que el
+          sheet (base `md:w-1/2`) se estire absurdamente en pantallas
+          anchas (2560/3840/ultrawide) para un formulario de 2 campos. */}
+      <SheetContent side="right" data-testid="reimprimir-sheet" className="overflow-y-auto sm:max-w-md">
         <SheetHeader>
           <SheetTitle>
             {t('facturacion:reimprimir.titulo', { defaultValue: 'Reimprimir tiquete' })}
