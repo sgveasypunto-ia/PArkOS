@@ -153,4 +153,3 @@ describe('HU-F10.1 — <ArqueoParcial /> drawer-mounted page (REQ-OPS-154)', () 
     expect(screen.getByTestId('arqueo-confirmar')).toBeInTheDocument();
   });
 });
-});
