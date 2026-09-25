@@ -34,8 +34,10 @@
  *   - Keyboard: Enter/Space toggles, Escape collapses (matches native
  *     `<details>`/`<summary>` semantics).
  */
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 import { useMiTurno } from '../../operacion/hooks/useMiTurno';
 import { useOcupacion } from '../../operacion/hooks/useOcupacion';
@@ -49,7 +51,6 @@ export function TurnoActivoToggle({
 }): JSX.Element | null {
   const { t } = useTranslation(['caja', 'operacion']);
   const [expanded, setExpanded] = useState(false);
-  const detailsRef = useRef<HTMLDivElement>(null);
 
   // Resumen del turno (operador 2026-09-22, directiva de reorganización
   // visual): antes vivía en `<MiTurnoPanel />` (right-sidebar). El
@@ -70,21 +71,6 @@ export function TurnoActivoToggle({
       .filter((it) => it.cupo_maximo > 0)
       .reduce((acc, it) => acc + it.disponible, 0) ?? null;
 
-  // Collapse on Esc
-  useEffect(() => {
-    if (!expanded) return;
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
-        setExpanded(false);
-        buttonRef.current?.focus();
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [expanded]);
-
-  const buttonRef = useRef<HTMLButtonElement>(null);
-
   if (sesion === null) {
     return null;
   }
@@ -95,56 +81,58 @@ export function TurnoActivoToggle({
     ' / ' +
     formatCOP(sesion.valor_inicial_datafono);
 
-  const id = `turno-activo-toggle-${sesion.uuid}`;
-
+  // F11.x fix — el panel de detalles era un `<div absolute top-full>`
+  // hecho a mano, sin portal ni collision detection: quedaba flotando
+  // encima del `placa-card` de abajo en vez de desplazarse para no
+  // taparlo. `<Popover>` (Radix, ya usado en el resto del proyecto)
+  // portalea a `document.body` y su Popper calcula side/align con
+  // collision detection automático — soluciona la superposición sin
+  // gestionar manualmente Escape/foco (Radix ya implementa el patrón
+  // WAI-ARIA disclosure/dialog: Escape cierra y devuelve foco al
+  // trigger). Verificado en vivo con Chrome DevTools.
   return (
-    <div className="relative">
-      <button
-        ref={buttonRef}
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={id}
-        aria-label={t('caja:dashboard.turnoActivoAria', {
-          defaultValue: `Turno activo ${uuidCorto}, valores ${valores}. Click para ${expanded ? 'cerrar' : 'abrir'} detalles.`,
-        })}
-        data-testid="turno-activo-toggle"
-        onClick={() => setExpanded((v) => !v)}
-        title={`${sesion.uuid} — click para ver detalles`}
-        className="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200/60 bg-emerald-50/80 px-3 py-1 font-mono text-xs font-medium tracking-tight text-emerald-900 outline-none transition-all hover:bg-emerald-100/80 shadow-apple-sm focus-ring-apple"
-      >
-        <span
-          aria-hidden
-          className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 ring-2 ring-emerald-100"
-        />
-        <span data-testid="turno-activo-toggle-uuid">{uuidCorto}…</span>
-        <span aria-hidden className="opacity-40">·</span>
-        <span data-testid="turno-activo-toggle-valores" className="tabular-nums">
-          {valores}
-        </span>
-        <span aria-hidden className="ml-0.5 text-emerald-600">
-          {expanded ? '▾' : '▸'}
-        </span>
-      </button>
-        {expanded && (
-        <div
-          ref={detailsRef}
-          id={id}
-          role="region"
-          aria-label={t('caja:dashboard.turnoActivoDetalles', {
-            defaultValue: 'Detalles del turno',
+    <Popover open={expanded} onOpenChange={setExpanded}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={t('caja:dashboard.turnoActivoAria', {
+            defaultValue: `Turno activo ${uuidCorto}, valores ${valores}. Click para ${expanded ? 'cerrar' : 'abrir'} detalles.`,
           })}
-          data-testid="turno-activo-toggle-details"
-          className="absolute right-0 top-full z-30 mt-2 w-80 rounded-2xl border border-border/40 bg-popover p-4 text-sm shadow-apple-md"
+          data-testid="turno-activo-toggle"
+          title={`${sesion.uuid} — click para ver detalles`}
+          className="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200/60 bg-emerald-50/80 px-3 py-1 font-mono text-xs font-medium tracking-tight text-emerald-900 outline-none transition-all hover:bg-emerald-100/80 shadow-apple-sm focus-ring-apple"
         >
-          <SesionDetails sesion={sesion} />
-          <ResumenTurno
-            ingresosTurno={ingresosTurno}
-            salidasTurno={salidasTurno}
-            cuposLibres={cuposLibres}
+          <span
+            aria-hidden
+            className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 ring-2 ring-emerald-100"
           />
-        </div>
-      )}
-    </div>
+          <span data-testid="turno-activo-toggle-uuid">{uuidCorto}…</span>
+          <span aria-hidden className="opacity-40">·</span>
+          <span data-testid="turno-activo-toggle-valores" className="tabular-nums">
+            {valores}
+          </span>
+          <span aria-hidden className="ml-0.5 text-emerald-600">
+            {expanded ? '▾' : '▸'}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        role="region"
+        aria-label={t('caja:dashboard.turnoActivoDetalles', {
+          defaultValue: 'Detalles del turno',
+        })}
+        data-testid="turno-activo-toggle-details"
+        className="w-80 rounded-2xl border border-border/40 bg-popover p-4 text-sm shadow-apple-md"
+      >
+        <SesionDetails sesion={sesion} />
+        <ResumenTurno
+          ingresosTurno={ingresosTurno}
+          salidasTurno={salidasTurno}
+          cuposLibres={cuposLibres}
+        />
+      </PopoverContent>
+    </Popover>
   );
 }
 

@@ -57,3 +57,37 @@ if (typeof HTMLElement !== 'undefined' && !HTMLElement.prototype.scrollIntoView)
     // no-op
   };
 }
+
+/**
+ * `<TurnoActivoToggle />` fix (superposición navbar/placa-card) —
+ * `ResizeObserver` polyfill for jsdom.
+ *
+ * jsdom does NOT implement `ResizeObserver`. `@floating-ui/dom` (used
+ * internally by `@radix-ui/react-popper`, which `<Popover>`/`<DropdownMenu>`
+ * both build on) falls back to an endless `requestAnimationFrame` polling
+ * loop for its `autoUpdate` position tracking whenever `ResizeObserver` is
+ * undefined — that loop never stops on its own inside a test, so any test
+ * that opens a Radix Popover/DropdownMenu content hangs for ~25-30s real
+ * time before Vitest's watchdog can even fire (the endless rAF scheduling
+ * starves the event loop). The fix is the same one used by Radix's own
+ * testing recipe: stub `ResizeObserver` as a no-op so floating-ui takes its
+ * normal (non-polling) code path.
+ *
+ * Additive — no existing test references `ResizeObserver`, so the shim is a
+ * no-op for them.
+ */
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  class ResizeObserverStub {
+    observe(): void {
+      // no-op
+    }
+    unobserve(): void {
+      // no-op
+    }
+    disconnect(): void {
+      // no-op
+    }
+  }
+  (globalThis as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver =
+    ResizeObserverStub;
+}
