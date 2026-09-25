@@ -49,6 +49,7 @@ from .pairing_tokens import PairingToken
 from .revocacion_factura import RevocacionFactura
 from .revoked_sync_jwts import RevokedSyncJwt
 from .sync_conflict import SyncConflict
+from .sync_cursor import SyncCursor
 from .sync_log import SyncLog
 from .sync_queue import SyncQueue
 from .sync_queue_lw_buffer import SyncQueueLwBuffer
@@ -63,6 +64,7 @@ __all__ = [
     "RevocacionFactura",
     "RevokedSyncJwt",
     "SyncConflict",
+    "SyncCursor",
     "SyncLog",
     "SyncQueue",
     "SyncQueueLwBuffer",
