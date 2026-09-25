@@ -22,7 +22,6 @@
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import type { ReactNode } from 'react';
 
 // Mock auth + sesion hooks. Other consumers (Dashboard) mock these too;
 // we keep them isolated here to test ProtectedRoute's guard chain.
