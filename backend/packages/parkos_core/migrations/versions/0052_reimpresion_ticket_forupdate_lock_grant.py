@@ -1,4 +1,4 @@
-"""MIGRATION 0051 -- grant column-scoped UPDATE on prod.reimpresion_ticket
+"""MIGRATION 0052 -- grant column-scoped UPDATE on prod.reimpresion_ticket
 para permitir el lock ``SELECT ... FOR UPDATE`` de HU-F1.11.
 
 BUG REAL (encontrado 2026-09-25 al validar HU-F8.3 con Chrome DevTools
@@ -33,8 +33,8 @@ from __future__ import annotations
 from alembic import op
 
 
-revision = "0051_reimpresion_ticket_forupdate_lock_grant"
-down_revision = "0050_cotizar_mensualidad_factura_descuento"
+revision = "0052_reimpresion_ticket_forupdate_lock_grant"
+down_revision = "0051_add_sync_cursor"
 branch_labels = None
 depends_on = None
 
