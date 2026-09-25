@@ -248,6 +248,15 @@ class SyncSucursalWorker(WorkerRunner):
         else:
             await self._pull_and_apply()
 
+        # CU-07 BR3 (Track 3, sync-sucursal-sweep-exhausted): after the
+        # push + pull work, one extra SELECT per cycle hunts pending rows
+        # that exhausted the queue-lifetime SLA (24h since FIRST enqueue
+        # or intentos >= len(BACKOFF_SCHEDULE)) and converts them to
+        # ``fallido permanente`` + an ``evento_no_procesado`` alert. Runs
+        # INSIDE this cycle so mark_exhausted + the alerta row commit
+        # atomically with everything else below.
+        await self._sweep_exhausted()
+
         # Real bug found + fixed (Docker deployment closing exercise,
         # post-testcontainers): ``self._session`` is owned by ``main()``'s
         # ``_run()`` for the ENTIRE container lifetime and NOTHING in this
@@ -909,6 +918,60 @@ class SyncSucursalWorker(WorkerRunner):
             applied=len(result.applied),
             buffered=len(result.buffered),
             next_seq=pulled.next_seq,
+        )
+
+    # ------------------------------------------------------------------
+    # CU-07 BR3 — SLA-exhaustion sweep (Track 3, plan.md L6969/L6980)
+    # ------------------------------------------------------------------
+
+    async def _sweep_exhausted(self) -> None:
+        """Convert SLA-exhausted ``sync_queue`` rows + raise an alert (BR3).
+
+        One ``SELECT`` per cycle (runs inside :meth:`cycle`, right after
+        push+pull and before the commit, so the conversions and the alerta
+        row land atomically). Any ``pendiente`` row past the queue-lifetime
+        SLA — ``EXHAUSTION_MAX_AGE`` (24h from FIRST enqueue, BR3) or
+        ``intentos >= len(BACKOFF_SCHEDULE)`` — is converted to
+        ``fallido permanente`` via ``repo.sync_queue.mark_exhausted``
+        (NEVER ``mark_failed``, which would only re-queue it forever), and
+        a single ``evento_no_procesado`` alert is raised for the batch.
+
+        Dedup is structural: the DB row leaves ``estado='pendiente'`` on
+        conversion, so the next cycle's ``list_exhausted`` re-select cannot
+        match it again — the same event never raises a second alert.
+        """
+        exhausted = await sq_helpers.list_exhausted(
+            self._session,
+            limit=self.batch_size,
+            uuid_sucursal=self.uuid_sucursal,
+        )
+        if not exhausted:
+            return
+
+        for row in exhausted:
+            await sq_helpers.mark_exhausted(
+                self._session,
+                row.uuid,
+                (
+                    f"exhausted_sla tabla={row.tabla} intentos={row.intentos} "
+                    f"created_at={row.created_at} operacion={row.operacion}"
+                ),
+            )
+
+        # Lazy import — mirrors the other hooks/impls callers; keeps the
+        # worker's boot graph light (the hook self-registers on import).
+        from parkos_core.sync.hooks.impls.alert_emitter import alert_emitter
+
+        await alert_emitter(
+            self._session,
+            tipo_alerta="evento_no_procesado",
+            uuid_sucursal=self.uuid_sucursal,
+        )
+
+        self.log.warning(
+            "sync_sucursal.sweep_exhausted",
+            count=len(exhausted),
+            sq_uuids=[str(r.uuid) for r in exhausted],
         )
 
     # ------------------------------------------------------------------

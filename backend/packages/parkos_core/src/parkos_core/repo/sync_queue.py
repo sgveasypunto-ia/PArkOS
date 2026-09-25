@@ -57,6 +57,14 @@ BACKOFF_SCHEDULE: tuple[timedelta, ...] = (
     timedelta(hours=24),
 )
 
+# CU-07 BR3 (Track 3, sync-sucursal-sweep-exhausted): the absolute
+# lifetime a pending row may live in the queue before the worker converts
+# it to ``fallido permanente`` + raises an ``evento_no_procesado`` alert.
+# Per plan.md L6980 BR3 the clock starts at FIRST enqueue (``created_at``),
+# not at the last retry — an event can burn its 6 backoff steps in minutes;
+# the 24h cap is the queue-lifetime ceiling.
+EXHAUSTION_MAX_AGE: timedelta = timedelta(hours=24)
+
 
 class SyncQueueStateError(Exception):
     """Raised when an update attempt touches a non-whitelisted column.
@@ -304,6 +312,100 @@ async def mark_failed(
         raise SyncQueueNotFoundError(f"sync_queue row {sq_uuid} not found")
 
 
+async def mark_exhausted(
+    session: AsyncSession,
+    sq_uuid: uuid_lib.UUID,
+    error: str,
+) -> None:
+    """Mark the row as permanently failed (``estado='fallido'``, CU-07 BR3).
+
+    THE terminal state. Unlike :func:`mark_failed` — which re-queues
+    (``estado='pendiente'``) and schedules another retry via the backoff
+    curve — this helper ONLY transitions to ``fallido`` and clears
+    ``next_retry_at`` (``NULL`` means ``list_pending`` will never pick
+    the row up again). ``intentos`` is left untouched: exhaustion is
+    detected from the row's OWN counters/age by ``list_exhausted``, not
+    incremented here (each transition is a retry; this is not one).
+
+    The ``estado`` / ``next_retry_at`` / ``ultimo_error`` keys are all
+    inside :data:`ALLOWED_SYNC_QUEUE_UPDATE_COLUMNS`, so the R-D3
+    carve-out invariant holds: this module stays the ONLY place that
+    issues the UPDATE.
+
+    Args:
+        session: Active ``AsyncSession``.
+        sq_uuid: The ``sync_queue`` row to mark permanently failed.
+        error: Human-readable failure detail (stored in ``ultimo_error``).
+
+    Raises:
+        SyncQueueNotFoundError: No row with ``sq_uuid`` exists.
+    """
+    _validate_update_columns(
+        {
+            "estado": "fallido",
+            "next_retry_at": None,
+            "ultimo_error": error,
+        }
+    )
+    result = await session.execute(
+        update(SyncQueue)
+        .where(SyncQueue.uuid == sq_uuid)
+        .values(
+            estado="fallido",
+            next_retry_at=None,
+            ultimo_error=error,
+        )
+    )
+    if result.rowcount == 0:
+        raise SyncQueueNotFoundError(f"sync_queue row {sq_uuid} not found")
+
+
+async def list_exhausted(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+    uuid_sucursal: uuid_lib.UUID | None = None,
+) -> list[SyncQueue]:
+    """Return ``pendiente`` rows that exhausted the CU-07 BR3 SLA.
+
+    A pending row is eligible for conversion to ``fallido permanente``
+    when EITHER condition holds:
+
+    * ``intentos`` has reached the end of the general backoff curve —
+      ``len(BACKOFF_SCHEDULE)`` entries. After that many failures the
+      curve has been walked to its 24h cap; another ``mark_failed``
+      would only repeat the last step forever.
+    * the row has lived in the queue for more than
+      :data:`EXHAUSTION_MAX_AGE` (24h, BR3 — measured from
+      ``created_at``, the FIRST enqueue, not the last retry).
+
+    Rows already terminal (``estado != 'pendiente'``) are filtered out at
+    the DB, which is the sweep's dedup: a row converted by
+    :func:`mark_exhausted` stops matching on the next cycle, so the same
+    event never raises a second alert.
+    """
+    cutoff = _now() - EXHAUSTION_MAX_AGE
+    stmt = (
+        select(SyncQueue)
+        .where(SyncQueue.estado == "pendiente")
+        .where(
+            (SyncQueue.intentos >= len(BACKOFF_SCHEDULE))
+            | (SyncQueue.created_at <= cutoff)
+        )
+        .order_by(
+            SyncQueue.prioridad.desc(),
+            SyncQueue.intentos.asc(),
+            SyncQueue.created_at.asc(),
+        )
+        .limit(limit)
+    )
+    if uuid_sucursal is not None:
+        stmt = stmt.where(SyncQueue.uuid_sucursal == uuid_sucursal)
+
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def list_pending(
     session: AsyncSession,
     *,
@@ -356,12 +458,15 @@ async def list_pending(
 __all__ = [
     "ALLOWED_SYNC_QUEUE_UPDATE_COLUMNS",
     "BACKOFF_SCHEDULE",
+    "EXHAUSTION_MAX_AGE",
     "Operacion",
     "SyncQueueNotFoundError",
     "SyncQueueStateError",
     "enqueue",
+    "list_exhausted",
     "list_pending",
     "mark_dispatched",
+    "mark_exhausted",
     "mark_failed",
     "mark_in_progress",
     "next_retry_delay",
