@@ -39,10 +39,19 @@ const ArqueoResumenItemSchema = z
     timestamp_apertura: z.string().nullable(),
     timestamp_cierre: z.string().nullable(),
     estado: z.string().nullable(),
-    valor_efectivo_esperado: z.number().nullable(),
-    valor_datafono_esperado: z.number().nullable(),
-    valor_efectivo_reportado: z.number().nullable(),
-    valor_datafono_reportado: z.number().nullable(),
+    // BUGFIX (2026-09-25): el backend serializa estas columnas Decimal
+    // de Pydantic como STRING en el JSON (ej. "100000.0000"), no como
+    // number -- mismo patrón ya resuelto en useIvaVigente.ts
+    // (`porcentaje: z.coerce.number()`) y reimpresionApi.ts
+    // (`costo_aplicado: z.coerce.number()`). `z.number()` puro
+    // rechazaba TODA respuesta real del endpoint (recién alcanzable
+    // desde el fix de ruteo) con "Expected number, received string",
+    // reventando el render de <CierreDiario /> con el dump crudo del
+    // ZodError en vez de la tabla de sesiones.
+    valor_efectivo_esperado: z.coerce.number().nullable(),
+    valor_datafono_esperado: z.coerce.number().nullable(),
+    valor_efectivo_reportado: z.coerce.number().nullable(),
+    valor_datafono_reportado: z.coerce.number().nullable(),
     uuid_arqueo: z.string().uuid().nullable(),
   })
   .strict();
