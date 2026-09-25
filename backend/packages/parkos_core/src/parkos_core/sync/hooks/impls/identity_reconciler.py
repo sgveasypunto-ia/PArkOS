@@ -162,10 +162,23 @@ async def identity_reconciler(ctx: HookContext) -> HookResult:
         await _write_divergence_conflict(ctx, open_version)
 
     if is_forward:
+        # Carril B fix: preserve the origin's ``vigente_desde`` (valid time)
+        # instead of discarding it and letting ``close_and_insert`` re-stamp
+        # with the receiver's ``now()``. Re-stamping the open timestamp meant
+        # every SUBSEQUENT change of the same natural key compared against a
+        # receiver-local time that can be LATER than the origin timeline
+        # (backed-up queue), so the later origin version was wrongly
+        # classified ``historical`` and the OLD version stayed open — the
+        # inverted-state defect (obs #18: $3.500 shown instead of $50).
+        #
+        # ``vigente_hasta``/``estado`` are intentionally NOT carried: the new
+        # forward version is always open+active, and ``close_and_insert``
+        # computes the close boundary from ``vigente_desde`` itself (when the
+        # origin valid time is present in ``new_attrs``).
         override = {
             key: value
             for key, value in payload.items()
-            if key not in ("vigente_desde", "vigente_hasta", "estado", "current_uuid")
+            if key not in ("vigente_hasta", "estado", "current_uuid")
         }
         override["current_uuid"] = open_version.get("uuid")
         return HookResult(proceed=True, reconciliation="forward", payload_override=override)

@@ -125,9 +125,11 @@ Discovered — NOT fixed (documented, out of this exercise's scope)
    enqueued it fires unconditionally on every INSERT, including ones
    ``apply_row`` itself performs — see point 2). Recommend fixing when the
    real backfill/pull transport lands, by removing ``"uuid"`` from
-   ``_VERSIONED_ONLY_METADATA_KEYS`` (keep ``vigente_desde``/
-   ``vigente_hasta``/``estado`` stripped — those three genuinely must be
-   recomputed fresh at the destination; ``uuid`` must not be).
+   ``_VERSIONED_ONLY_METADATA_KEYS`` (keep ``vigente_hasta``/``estado``
+   stripped — those two genuinely must be recomputed fresh at the
+   destination; ``uuid`` must not be; ``vigente_desde`` already travels —
+   see note at ``_V_BITEMPORAL_KEYS`` below, which mirrors the post-Carril-B
+   production contract where the origin's valid time is preserved).
 2. ``fn_enqueue_sync()``/``fn_enqueue_sync_catalog()`` fire unconditionally
    on EVERY INSERT, including one performed BY the sync motor applying an
    incoming row (``append_event``/``close_and_insert``/etc. are ordinary

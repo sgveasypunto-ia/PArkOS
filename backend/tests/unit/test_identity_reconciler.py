@@ -158,6 +158,12 @@ async def test_forward_when_later_vigente_desde(
         ).scalar_one()
         assert new_row.vigente_hasta is None
         assert new_row.numero_identificacion == "10-20"
+        # Carril B fix: the origin's valid time is preserved — the new open
+        # version opens at the SAME vigente_desde the origin emitted, not at
+        # the receiver's now(); and the row being closed ends at that same
+        # boundary (no gap/overlap between the two versions).
+        assert new_row.vigente_desde == payload["vigente_desde"]
+        assert old_row.vigente_hasta == payload["vigente_desde"]
 
         # No divergence conflict — every material column matched.
         conflicts = (
@@ -168,6 +174,113 @@ async def test_forward_when_later_vigente_desde(
             )
         ).scalars().all()
         assert conflicts == []
+
+
+async def test_two_sequential_updates_follow_origin_valid_time(
+    pg_engine, alembic_upgrade, v_fixture_factory, make_spec
+) -> None:
+    """Carril B fix (obs #18): two sequential origin versions of the SAME
+    natural key, applied while the receiver's ``now()`` is LATER than both
+    origin timestamps (backed-up sync queue).
+
+    Re-stamping the first forward version with the receiver's ``now()`` made
+    the second (still-later origin, but earlier than that re-stamp) compare
+    ``arriving_desde < open_desde`` and classify ``historical`` — inserting
+    the second version already-closed, leaving the FIRST one open. That is
+    the inverted-state defect ($3.500 shown instead of $50). With the fix the
+    first version opens at its ORIGIN ``vigente_desde``, so the second is a
+    genuine forward and ends up the open row.
+    """
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        # Origin timeline: both updates valid-time-stamped strictly BEFORE this
+        # test's own wall-clock now() — simulating a backed-up wire. Base is
+        # derived from now() so the run is unique (test DB is shared and
+        # ``clientes_uk01`` includes ``vigente_desde``), yet safely in the
+        # past for the inverted-state scenario below.
+        base = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=10)
+        v2_desde = base + timedelta(days=1)
+        v3_desde = base + timedelta(days=2)
+        assert v2_desde < v3_desde
+
+        open_row = await _seed_open_clientes(session, v_fixture_factory, vigente_desde=base)
+        open_version = _row_dict(open_row)
+
+        spec = make_spec("clientes", hook_pre_insert=identity_reconciler)
+
+        # v2 — arrives already forwarded; must open at ORIGIN v2_desde.
+        uuid_v2 = uuid_lib.uuid4()
+        v2_payload = {
+            "uuid": uuid_v2,
+            "tipo_identificador": "CC",
+            "numero_identificacion": "10-20",
+            "nombre": "Ana",
+            "apellido": "Gomez",
+            "telefono": "3000000000",
+            "email": "ana@example.co",
+            "uuid_tipo_persona": open_row.uuid_tipo_persona,
+            "registro": None,
+            "vigente_desde": v2_desde,
+        }
+        result = await apply_row(
+            session,
+            spec,
+            v2_payload,
+            actor_uuid=ACTOR_UUID,
+            open_version=open_version,
+            log_tx=False,
+        )
+        await session.commit()
+        assert result.status == "APPLIED"
+        assert result.row_uuid == uuid_v2
+
+        assert (await session.execute(select(Clientes).where(Clientes.uuid == open_row.uuid))).scalar_one().vigente_hasta == v2_desde  # noqa: E501
+        v2_open = (
+            await session.execute(select(Clientes).where(Clientes.uuid == uuid_v2))
+        ).scalar_one()
+        assert v2_open.vigente_hasta is None
+        assert v2_open.vigente_desde == v2_desde
+
+        # v3 — later origin valid time; MUST classify forward and become the
+        # open row. Pre-fix this was historical (already-closed), leaving v2
+        # open with the stale rate.
+        uuid_v3 = uuid_lib.uuid4()
+        v3_payload = {
+            **v2_payload,
+            "uuid": uuid_v3,
+            "numero_identificacion": "10-20",
+            "nombre": "Ana",
+            "apellido": "Gomez",
+            "telefono": "3010000000",
+            "email": "ana@example.co",
+            "uuid_tipo_persona": open_row.uuid_tipo_persona,
+            "registro": None,
+            "vigente_desde": v3_desde,
+        }
+        # Same wiring the real motor uses: the currently-open local version
+        # for the natural key (here v2) is resolved BEFORE apply_row.
+        result = await apply_row(
+            session,
+            spec,
+            v3_payload,
+            actor_uuid=ACTOR_UUID,
+            open_version=_row_dict(v2_open),
+            log_tx=False,
+        )
+        await session.commit()
+        assert result.status == "APPLIED"
+
+        v2_after = (
+            await session.execute(select(Clientes).where(Clientes.uuid == uuid_v2))
+        ).scalar_one()
+        assert v2_after.vigente_hasta == v3_desde  # closed at the new boundary
+
+        v3_open = (
+            await session.execute(select(Clientes).where(Clientes.uuid == uuid_v3))
+        ).scalar_one()
+        assert v3_open.vigente_hasta is None  # the CURRENT version is v3
+        assert v3_open.vigente_desde == v3_desde
+        assert v3_open.telefono == "3010000000"
 
 
 async def test_historical_when_earlier_vigente_desde(

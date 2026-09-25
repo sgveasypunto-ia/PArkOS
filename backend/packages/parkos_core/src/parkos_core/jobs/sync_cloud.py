@@ -202,14 +202,15 @@ def is_infra_table(tabla: str) -> bool:
 # into ``sync_queue.datos``. That raw shape was NEVER a valid ``apply_row``
 # payload as-is: ``seq`` is not a mapped column on ANY catalog model (the
 # apply crashes with ``TypeError: 'seq' is an invalid keyword argument``),
-# and for a ``[V]`` entry, a raw ``uuid``/``vigente_desde``/``vigente_hasta``/
-# ``estado`` dump would collide with the still-live source row's own PK and
-# corrupt ``repo.versioned.close_and_insert``'s bi-temporal invariants (its
-# own ``{"vigente_desde": now, ..., **new_attrs}`` construction lets a
-# same-named key in ``new_attrs`` silently override the correct
-# server-computed value). This was never exercised end to end before
-# T-PR11-001 — nothing previously called ``SyncMotor.apply_batch`` against a
-# real ``list_pending()`` result.
+# and for a ``[V]`` entry, a raw ``uuid``/``vigente_hasta``/``estado`` dump
+# would collide with the still-live source row's own PK and corrupt
+# ``repo.versioned.close_and_insert``'s bi-temporal invariants. (``uuid`` is
+# handled today by the receiver's ``row_already_present`` dedup — Bug 2 fix;
+# ``vigente_desde`` is NOT stripped anymore: Carril B fix, it is the origin's
+# VALID TIME and the receiver opens the new version at it — see the
+# ``_VERSIONED_ONLY_METADATA_KEYS`` documented set below.) This was never
+# exercised end to end before T-PR11-001 — nothing previously called
+# ``SyncMotor.apply_batch`` against a real ``list_pending()`` result.
 # ---------------------------------------------------------------------------
 
 #: Universally-unsafe queue/audit metadata — never a legitimate business
@@ -217,15 +218,22 @@ def is_infra_table(tabla: str) -> bool:
 _QUEUE_METADATA_KEYS: frozenset[str] = frozenset(
     {"seq", "created_at", "created_by", "sync_status", "sync_timestamp", "sync_attempts"}
 )
-#: ``[V]``-only — ``repo.versioned.close_and_insert`` computes these itself
-#: for the new version; see the block comment above. ``uuid`` is NOT in the
-#: set: it is the row's BUSINESS IDENTITY and must survive the wire for the
-#: receiver to dedup/apply (Bug 2 fix — ``row_already_present`` at
-#: ``apply_row.row_already_present`` neutralizes the self-collision concern
-#: that justified stripping it: a row whose own uuid is already present is
-#: skipped, never re-inserted).
+#: ``[V]``-only — ``repo.versioned.close_and_insert`` computes the close
+#: boundary and ``estado`` for the new version. ``uuid`` and ``vigente_desde``
+#: are NOT in the set:
+#:   - ``uuid`` is the row's BUSINESS IDENTITY and must survive the wire for
+#:     the receiver to dedup/apply (Bug 2 fix — ``row_already_present`` at
+#:     ``apply_row.row_already_present`` neutralizes the self-collision
+#:     concern that justified stripping it: a row whose own uuid is already
+#:     present is skipped, never re-inserted).
+#:   - ``vigente_desde`` is the origin's VALID TIME (Carril B fix,
+#:     obs #18): the receiver must open the new version at the SAME valid
+#:     time the origin did, not its own ``now()``. Re-stamping it on the wire
+#:     made later origin versions compare against a receiver-local clock and
+#:     get wrongly classified ``historical`` (inverted state downstream).
+#:     ``close_and_insert`` now closes the prior row at that same boundary.
 _VERSIONED_ONLY_METADATA_KEYS: frozenset[str] = frozenset(
-    {"vigente_desde", "vigente_hasta", "estado"}
+    {"vigente_hasta", "estado"}
 )
 
 
