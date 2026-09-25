@@ -1,10 +1,16 @@
 /**
  * Tests for `useReimprimir` SWR mutation hook (HU-F8.3, REQ-OPS-173).
  *
+ * BUGFIX (2026-09-25, directiva del operador): reescrito — la versión
+ * anterior probaba una ruta (`.../{uuid}/reimprimir`) y un body
+ * (`{motivo, tipo}`) que el backend real NUNCA implementó. El contrato
+ * real (`workflows_reimpresion.py::create_reimpresion_ticket`) es
+ * `POST /api/v1/workflows/reimpresion-ticket` (ruta raíz) con body
+ * `{uuid_ingreso, motivo, uuid_factura?}` — `tipo` no viaja al backend.
+ *
  * Coverage (3 tests):
  *   T1: trigger → 201 → returns parsed `ReimpresionTicketRead`
- *       (discriminated union on `workflow_estado`; `uuid_factura`
- *       nullable per DEC-TKT-04).
+ *       (incluye `costo_aplicado`, el snapshot de `costos_servicios`).
  *   T2: motivo <10 chars → ZodError BEFORE the POST fires
  *       (defense in depth — never trust client validation, but
  *       pre-validate to avoid round-trips).
@@ -54,6 +60,7 @@ const reimpresionRead = {
   uuid_reimpresion_padre: null,
   uuid_ingreso: UUID_INGRESO,
   uuid_factura: null,
+  costo_aplicado: 5000,
   motivo: 'Cliente solicita reimpresion por deterioro del tiquete original',
   created_at: '2026-09-19T11:00:00Z',
 };
@@ -64,8 +71,8 @@ beforeEach(() => {
   (useAuthStore.getState().clear as ReturnType<typeof vi.fn>).mockClear();
 });
 
-describe('useReimprimir — REQ-OPS-173 (F1.11 reimpresion-ticket POST + Idempotency-Key)', () => {
-  it('T1: trigger → 201 → returns parsed ReimpresionTicketRead', async () => {
+describe('useReimprimir — REQ-OPS-173 (F1.11 reimpresion-ticket POST raíz + Idempotency-Key)', () => {
+  it('T1: trigger → 201 → returns parsed ReimpresionTicketRead con costo_aplicado', async () => {
     mockFetch.mockResolvedValueOnce(reimpresionRead);
 
     const { result } = renderHook(() => useReimprimir());
@@ -73,23 +80,28 @@ describe('useReimprimir — REQ-OPS-173 (F1.11 reimpresion-ticket POST + Idempot
     let data: unknown;
     await act(async () => {
       data = await result.current.trigger({
-        uuidIngreso: UUID_INGRESO,
+        uuid_ingreso: UUID_INGRESO,
         motivo: 'Cliente solicita reimpresion por deterioro del original',
-        tipo: 'entrada',
       });
     });
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch.mock.calls[0]?.[0]).toBe(
-      `/api/v1/workflows/reimpresion-ticket/${UUID_INGRESO}/reimprimir`,
-    );
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('/api/v1/workflows/reimpresion-ticket');
     expect(mockFetch.mock.calls[0]?.[1]).toMatchObject({
       method: 'POST',
       headers: { 'Idempotency-Key': expect.any(String) },
     });
+    const sentBody = JSON.parse(
+      (mockFetch.mock.calls[0]?.[1] as { body: string }).body,
+    ) as Record<string, unknown>;
+    expect(sentBody).toEqual({
+      uuid_ingreso: UUID_INGRESO,
+      motivo: 'Cliente solicita reimpresion por deterioro del original',
+    });
     expect((data as { uuid: string }).uuid).toBe(UUID_REIMPRESION);
     expect((data as { workflow_estado: string }).workflow_estado).toBe('autorizada');
     expect((data as { uuid_factura: string | null }).uuid_factura).toBeNull();
+    expect((data as { costo_aplicado: number | null }).costo_aplicado).toBe(5000);
   });
 
   it('T2: motivo <10 chars → ZodError before POST fires', async () => {
@@ -99,9 +111,8 @@ describe('useReimprimir — REQ-OPS-173 (F1.11 reimpresion-ticket POST + Idempot
     await act(async () => {
       try {
         await result.current.trigger({
-          uuidIngreso: UUID_INGRESO,
+          uuid_ingreso: UUID_INGRESO,
           motivo: 'corto', // 5 chars
-          tipo: 'entrada',
         });
       } catch (err) {
         captured = err;
@@ -130,9 +141,8 @@ describe('useReimprimir — REQ-OPS-173 (F1.11 reimpresion-ticket POST + Idempot
     await act(async () => {
       await result.current
         .trigger({
-          uuidIngreso: UUID_INGRESO,
+          uuid_ingreso: UUID_INGRESO,
           motivo: 'Cliente solicita reimpresion por error de operario',
-          tipo: 'salida',
         })
         .catch(() => undefined);
     });

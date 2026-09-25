@@ -71,7 +71,7 @@
       "suscripciones": "Abrir suscripciones (módulo futuro).",
       "arqueo": "Hacer un arqueo parcial sin cerrar el turno (tecla F4).",
       "cierre": "Ir al cierre diario multi-sesión (tecla F6).",
-      "facturas": "Reimprimir un tiquete o consultar facturas.",
+      "facturas": "Reimprimir un tiquete o consultar facturas (tecla F8).",
       "esc": "Volver a esta pantalla desde cualquier drawer."
     }
   },

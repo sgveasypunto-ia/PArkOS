@@ -1,7 +1,14 @@
 /**
  * `useReimprimir.ts` — SWR mutation hook for
- * `POST /api/v1/workflows/reimpresion-ticket/{uuid_ingreso}/reimprimir`
- * (HU-F8.3, REQ-OPS-173).
+ * `POST /api/v1/workflows/reimpresion-ticket` (raíz, HU-F8.3, REQ-OPS-173).
+ *
+ * BUGFIX (2026-09-25, directiva del operador): la versión anterior
+ * posteaba a `${POST_PATH_PREFIX}/${uuidIngreso}/reimprimir` — una ruta
+ * que NUNCA existió en el backend (solo hay `POST` raíz y
+ * `POST /{uuid}/anular`, ver `workflows_reimpresion.py`). El body real
+ * es `{uuid_ingreso, motivo, uuid_factura?}` — `uuid_ingreso` va en el
+ * BODY, no en la URL, y `tipo` no se envía al backend (es un detalle de
+ * impresión que resuelve la página, no el wire contract).
  *
  * Composition mirrors `useRegistrarPago.ts` (F8.1) and
  * `useReintentarFE.ts` (F8.2):
@@ -11,8 +18,8 @@
  *   - `ReimpresionTicketCreateSchema` (api/reimpresionApi.ts) for
  *     client-side pre-validation — `motivo.min(10)` is checked
  *     BEFORE the POST so the operator never sees a 400 round-trip.
- *   - `ReimpresionTicketReadSchema` for the discriminated response
- *     parse (workflow_estado + uuid_factura nullable per DEC-TKT-04).
+ *   - `ReimpresionTicketReadSchema` for the response parse
+ *     (`workflow_estado='autorizada'`, `costo_aplicado` snapshot).
  *   - `useAuthStore.getState().clear()` + `parkos:auth:cleared` event
  *     on 401 (preserved F3.1 invariant from REQ-OPS-107..110).
  */
@@ -29,12 +36,10 @@ import {
   type ReimpresionTicketRead,
 } from '../api/reimpresionApi';
 
-const POST_PATH_PREFIX = '/api/v1/workflows/reimpresion-ticket';
+const POST_PATH = '/api/v1/workflows/reimpresion-ticket';
 
 export interface UseReimprimirReturn {
-  trigger: (
-    input: ReimpresionTicketCreate & { uuidIngreso: string },
-  ) => Promise<ReimpresionTicketRead>;
+  trigger: (input: ReimpresionTicketCreate) => Promise<ReimpresionTicketRead>;
   isMutating: boolean;
   error: ParkosHttpError | undefined;
   data: ReimpresionTicketRead | undefined;
@@ -45,31 +50,27 @@ async function handle401(): Promise<never> {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event('parkos:auth:cleared'));
   }
-  throw new ParkosHttpError(401, '{"error":"unauthorized"}', POST_PATH_PREFIX);
+  throw new ParkosHttpError(401, '{"error":"unauthorized"}', POST_PATH);
 }
 
 async function mutateFn(
   _key: string,
-  init: {
-    arg: ReimpresionTicketCreate & { uuidIngreso: string };
-  },
+  init: { arg: ReimpresionTicketCreate },
 ): Promise<ReimpresionTicketRead> {
   // REQ-OPS-173 — Zod pre-validation. motivo.min(10) check happens
   // BEFORE the POST so a 400 round-trip is avoided. A ZodError thrown
   // here propagates through SWRMutation as `error`.
-  ReimpresionTicketCreateSchema.parse(init.arg);
+  const body = ReimpresionTicketCreateSchema.parse(init.arg);
 
-  const path = `${POST_PATH_PREFIX}/${init.arg.uuidIngreso}/reimprimir`;
-  const body = { motivo: init.arg.motivo, tipo: init.arg.tipo };
   const idempotencyKey = await buildIdempotencyKey({
     method: 'POST',
-    path,
+    path: POST_PATH,
     body,
   });
 
   try {
     const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-    const raw = await parkosFetch<unknown>(path, {
+    const raw = await parkosFetch<unknown>(POST_PATH, {
       method: 'POST',
       body: JSON.stringify(body),
       headers: { 'Idempotency-Key': idempotencyKey },
@@ -87,8 +88,8 @@ async function mutateFn(
  * `useReimprimir()` — SWR mutation hook returning
  * `{ trigger, isMutating, error, data }`.
  *
- * `trigger({uuidIngreso, motivo, tipo})` issues the canonical POST
- * and resolves with the parsed `ReimpresionTicketRead` payload.
+ * `trigger({uuid_ingreso, motivo, uuid_factura?})` issues the canonical
+ * POST and resolves with the parsed `ReimpresionTicketRead` payload.
  *
  * Errors:
  *   - Zod parse failure (motivo < 10 chars) → `error` is `ZodError`
@@ -106,8 +107,8 @@ export function useReimprimir(): UseReimprimirReturn {
     ReimpresionTicketRead,
     Error,
     string,
-    ReimpresionTicketCreate & { uuidIngreso: string }
-  > = useSWRMutation(POST_PATH_PREFIX, mutateFn);
+    ReimpresionTicketCreate
+  > = useSWRMutation(POST_PATH, mutateFn);
 
   return {
     trigger: swr.trigger as UseReimprimirReturn['trigger'],

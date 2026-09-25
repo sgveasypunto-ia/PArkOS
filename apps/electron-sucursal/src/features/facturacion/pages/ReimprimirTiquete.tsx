@@ -1,40 +1,84 @@
 /**
- * `<ReimprimirTiquete />` — routed page (HU-F8.3, REQ-OPS-171).
+ * `<ReimprimirTiquete />` — form/logic component (HU-F8.3, REQ-OPS-171).
  *
- * Lives at `/facturacion/reimprimir` and mounts inside
- * `<ProtectedRoute>` (App.tsx). The page implements the reimpresión
- * con costo flow on the renderer side, composing two hooks:
+ * NO es una ruta (directiva del operador 2026-09-25): todo el flujo de
+ * reimpresión con costo vive DENTRO de un drawer/sheet del dashboard —
+ * mounts inside `<ReimprimirTiqueteSheet />` (`components/`), el
+ * mismo patrón "thin shell wraps the form" que `<ArqueoSheet />` usa
+ * para `pages/ArqueoParcial.tsx`. Sin conocimiento del Sheet que lo
+ * envuelve (sin props, sin `useDashboardDrawerStore`) — el shell es
+ * quien resuelve open/close/focus-restore. Composes:
  *
- *   - `useReimprimir()` — POST `/api/v1/workflows/reimpresion-ticket
- *     /{uuid_ingreso}/reimprimir` with Idempotency-Key SHA-256 +
- *     motivo Zod pre-validation (`motivo.min(10)`) + 401 auth-clear.
- *   - `useAnularReimpresion()` — POST `/{uuid}/anular` with INSERT-only
- *     chain invariant (F1.11 DEC-TKT-03) + motivo_anulacion Zod.
+ *   - `resolverIngresoReimpresion(termino)` — resuelve placa O
+ *     cupo/consecutivo (vehículo sin placa) a un `Ingreso` concreto,
+ *     INCLUYENDO ingresos ya cerrados (el caso de uso típico es un
+ *     tiquete perdido días después de que el vehículo salió). Reusa
+ *     `matchVehiculos` + `<VehiculoSuggestions />` (mismo patrón que
+ *     `<SalidaPanel />`, HU-F7.1) para el autocompletar in-field.
+ *   - `useCostoServicioVigente('reimpresion')` — preview del costo
+ *     vigente ANTES de cobrar (mismo espíritu que la cotización previa
+ *     a `<PagoModal>` en salida).
+ *   - `<PagoModal />` (REUSADO tal cual, sin fork) — mismo componente
+ *     genérico que usa `<PagoSheet />` para el cobro de salida.
+ *   - `useRegistrarPagoServicio()` — POST
+ *     `/api/v1/facturacion/factura-servicio` (ajuste 2026-09-25,
+ *     directiva del operador: la reimpresión tiene que disparar el
+ *     MISMO flujo de cobro real que la salida — monto → método de
+ *     pago → factura → tiquete de factura — no solo un snapshot
+ *     interno). Endpoint NUEVO, no toca `create_factura` (esa ruta ya
+ *     está en producción con DIAN/FE encima).
+ *   - `useReimprimir()` — POST `/api/v1/workflows/reimpresion-ticket`
+ *     con el `uuid_factura` real de la factura recién creada.
+ *   - `<FacturaDisplayModal />` (REUSADO tal cual) — desglose completo
+ *     post-cobro, mismo patrón que `<PagoSheet />`.
+ *   - `useAnularReimpresion()` — POST `/{uuid}/anular` con INSERT-only
+ *     chain invariant (F1.11 DEC-TKT-03) + motivo_anulacion Zod. Deja
+ *     el registro de workflow como anulado pero NO reversa el pago/
+ *     factura (decisión de alcance explícita, no un bug — reversar un
+ *     cobro real es un flujo aparte de factura_pagos.reverse_payment,
+ *     fuera de esta HU).
+ *   - `escposBuilder.build('reimpresion', payload)` + `window.bridge
+ *     .imprimir(...)` — reimpresión real del tiquete de entrada
+ *     (best-effort, DEC-SUC-27, mismo patrón que `<IngresoPanel />`).
+ *
+ * El operador NUNCA tipea un UUID: la búsqueda resuelve `uuid_ingreso`
+ * automáticamente.
+ *
+ * Alcance (2026-09-25): solo tiquetes de ENTRADA. Reimprimir un
+ * tiquete de SALIDA necesita el desglose de cobro ORIGINAL
+ * (subtotal/iva/total de `prod.facturas`/`factura_detalle`) — ningún
+ * fetch del renderer lo expone hoy por `uuid_ingreso`, y recalcularlo
+ * con una cotización fresca mostraría un monto distinto al realmente
+ * cobrado (dato financiero incorrecto). Fuera de alcance aquí.
+ *
+ * Alcance de impresión (2026-09-25): el tiquete de entrada reimpreso
+ * SÍ se imprime (buffer real vía `escposBuilder`). El recibo térmico
+ * de la factura de servicio NO se imprime todavía — la plantilla
+ * `'recibo_pago'` existente (`ReciboPagoPayload`) extiende
+ * `SalidaPayload` (tarifa/tiempo parqueado/fecha de salida), campos
+ * que una factura de servicio suelto no tiene; fabricarlos mostraría
+ * datos incorrectos en el tiquete impreso. El desglose completo de la
+ * factura SÍ se muestra en pantalla vía `<FacturaDisplayModal />`
+ * (igual que `<PagoSheet />`). Una plantilla ESC/POS dedicada para
+ * "factura de servicio suelto" queda como follow-up explícito.
  *
  * Rendering rules (REQ-OPS-171):
- *   - `role="alertdialog"` on the cobro-consequence confirmation
- *     dialog (WCAG 2.1 AA — alertdialog is the canonical a11y
- *     role for actions with destructive or financial consequences).
  *   - `motivo: z.string().min(10)` RHF + Zod resolver — checked BEFORE
- *     the dialog opens so the operator never sees a 400 round-trip.
- *   - `tipo: 'entrada' | 'salida'` RadioGroup selector (single-page
- *     with tipo selector per proposal §3.1 OD-1 ratified).
- *   - Success card renders uuid_reimpresion + motivo + "Anular"
- *     action that opens a second alertdialog with motivo_anulacion.
- *
- * The page bypasses the existing `<ReimprimirTiqueteSheet />` drawer
- * (F7.x) on purpose — the drawer is a SHORTER flow for the
- * reimpresión gratuita inmediata path (Fase 7). The page is the
- * canonical entry point for the con-costo flow (Fase 8).
+ *     `<PagoModal />` se muestra, así el operador nunca ve un 400.
+ *   - Success card renders uuid_reimpresion + costo_aplicado + motivo
+ *     + "Anular" action que abre un alertdialog con motivo_anulacion.
  */
-import { useState } from 'react';
+import { useCallback, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
+import { useAuth } from '@parkos/ui-kit/hooks';
+
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -52,64 +96,273 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 
+import { useIngresosActivos } from '../../operacion/hooks/useIngresosActivos';
+import {
+  matchVehiculos,
+  vehiculoSuggestionOptionId,
+} from '../../operacion/lib/vehiculoMatch';
+import { VehiculoSuggestions } from '../../operacion/components/VehiculoSuggestions';
+import type { Ingreso } from '../../operacion/api/ingresoActivoApi';
+import { resolverIngresoReimpresion } from '../lib/resolverIngresoReimpresion';
+import { formatCOP } from '../../caja/lib/format';
+import { build as buildEscpos } from '../../../lib/print/escposBuilder';
+import { buildReimpresionEntradaPayload } from '../../../lib/print/printBuilder';
 import { useReimprimir } from '../hooks/useReimprimir';
 import { useAnularReimpresion } from '../hooks/useAnularReimpresion';
+import { useCostoServicioVigente } from '../hooks/useCostoServicioVigente';
+import { useIvaVigente } from '../hooks/useIvaVigente';
+import { useRegistrarPagoServicio } from '../hooks/useRegistrarPagoServicio';
+import { PagoModal, type PagoFormValues } from '../components/PagoModal';
+import { FacturaDisplayModal } from '../components/FacturaDisplayModal';
 import type { ReimpresionTicketRead } from '../api/reimpresionApi';
+import type { FacturaRead } from '../api/facturaApi';
+import type { PostFacturaServicioPayload } from '../api/facturaServicioApi';
 
-const reimprimirFormSchema = z.object({
-  uuidIngreso: z.string().uuid('uuid_ingreso_formato_invalido'),
-  tipo: z.enum(['entrada', 'salida']),
+const busquedaFormSchema = z.object({
+  termino: z.string().trim().min(1, 'termino_requerido'),
+});
+type BusquedaFormValues = z.infer<typeof busquedaFormSchema>;
+
+const motivoFormSchema = z.object({
   motivo: z.string().trim().min(10, 'motivo_muy_corto'),
 });
-type ReimprimirFormValues = z.infer<typeof reimprimirFormSchema>;
+type MotivoFormValues = z.infer<typeof motivoFormSchema>;
 
 const anularFormSchema = z.object({
   motivo_anulacion: z.string().trim().min(10, 'motivo_anulacion_muy_corto'),
 });
 type AnularFormValues = z.infer<typeof anularFormSchema>;
 
+function identificadorDe(ingreso: Ingreso): string {
+  return ingreso.placa ?? ingreso.consecutivo ?? ingreso.uuid;
+}
+
+async function imprimirReimpresionEntrada(
+  ingreso: Ingreso,
+  motivo: string,
+): Promise<void> {
+  const payload = buildReimpresionEntradaPayload(ingreso, motivo);
+  const buffer = buildEscpos('reimpresion', payload);
+  await window.bridge.imprimir({
+    buffer: buffer.toString('base64'),
+    ticketId: ingreso.uuid,
+    cut: true,
+  });
+}
+
 export function ReimprimirTiquete(): JSX.Element {
   const { t } = useTranslation('facturacion');
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const { sucursal } = useAuth();
+
+  const [busqueda, setBusqueda] = useState<
+    | { kind: 'idle' }
+    | { kind: 'multiple'; candidatos: Ingreso[] }
+    | { kind: 'none'; termino: string }
+  >({ kind: 'idle' });
+  const [ingresoEncontrado, setIngresoEncontrado] = useState<Ingreso | null>(null);
+  // HU-F8.3 (ajuste 2026-09-25): el motivo se confirma ANTES de mostrar
+  // `<PagoModal />` (el operador nunca ve un 400 por motivo corto). Una
+  // vez confirmado, este string es la fuente de verdad para el POST de
+  // reimpresión — el form de motivo desaparece y el de pago lo reemplaza.
+  const [motivoConfirmado, setMotivoConfirmado] = useState<string | null>(null);
   const [anularOpen, setAnularOpen] = useState(false);
   const [resultado, setResultado] = useState<ReimpresionTicketRead | null>(null);
+  const [facturaDisplay, setFacturaDisplay] = useState<FacturaRead | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [suggestionsClosed, setSuggestionsClosed] = useState(false);
 
   const reimprimir = useReimprimir();
+  const registrarPagoServicio = useRegistrarPagoServicio();
   const anular = useAnularReimpresion();
+  const listboxId = useId();
 
-  const form = useForm<ReimprimirFormValues>({
-    resolver: zodResolver(reimprimirFormSchema),
-    defaultValues: { uuidIngreso: '', tipo: 'entrada', motivo: '' },
+  // HU-F8.3 (ajuste 2026-09-25): preview del costo vigente para el
+  // concepto 'reimpresion' — se pide recién cuando hay un ingreso
+  // encontrado (evita un fetch innecesario en el paso de búsqueda).
+  const costoServicio = useCostoServicioVigente(
+    ingresoEncontrado ? 'reimpresion' : null,
+  );
+  // BUGFIX (2026-09-25, encontrado por el operador con la factura
+  // emitida real): `costos_servicios.costo` es el precio YA CON IVA
+  // incluido (lo que el cliente paga), no una base a la que hay que
+  // sumarle IVA encima. `subtotal`/`iva` mostrados en la factura deben
+  // salir de ese precio, no coincidir con `total`.
+  const ivaVigente = useIvaVigente(ingresoEncontrado !== null);
+
+  const buscarForm = useForm<BusquedaFormValues>({
+    resolver: zodResolver(busquedaFormSchema),
+    defaultValues: { termino: '' },
     mode: 'onSubmit',
   });
-
+  const motivoForm = useForm<MotivoFormValues>({
+    resolver: zodResolver(motivoFormSchema),
+    defaultValues: { motivo: '' },
+    mode: 'onSubmit',
+  });
   const anularForm = useForm<AnularFormValues>({
     resolver: zodResolver(anularFormSchema),
     defaultValues: { motivo_anulacion: '' },
     mode: 'onSubmit',
   });
 
-  const handleConfirmOpen = form.handleSubmit(() => {
-    setErrorMsg(null);
-    setConfirmOpen(true);
-  });
+  // Typeahead suggestions (HU-F7.1 pattern, mismo que <SalidaPanel />):
+  // solo ingresos ACTIVOS de la sucursal actual — la resolución final al
+  // enviar el formulario SÍ incluye histórico/cerrados vía
+  // `resolverIngresoReimpresion`.
+  const itemsActivos = useIngresosActivos(sucursal?.uuid ?? null);
+  const terminoValue = buscarForm.watch('termino');
+  const candidates = useMemo(
+    () => matchVehiculos(itemsActivos ?? [], terminoValue ?? ''),
+    [itemsActivos, terminoValue],
+  );
+  const isSuggestionsOpen = !suggestionsClosed && candidates.length > 0;
+  const activeOptionId =
+    activeIndex >= 0 ? vehiculoSuggestionOptionId(listboxId, activeIndex) : undefined;
 
-  const handleConfirm = async (): Promise<void> => {
-    const values = form.getValues();
+  const resetBusqueda = useCallback(() => {
+    setBusqueda({ kind: 'idle' });
+    setIngresoEncontrado(null);
+    setMotivoConfirmado(null);
     setErrorMsg(null);
+  }, []);
+
+  const resolverYSetear = useCallback(async (termino: string) => {
+    setErrorMsg(null);
+    setIngresoEncontrado(null);
     try {
-      const out = await reimprimir.trigger({
-        uuidIngreso: values.uuidIngreso,
-        motivo: values.motivo,
-        tipo: values.tipo,
-      });
-      setResultado(out);
-      setConfirmOpen(false);
+      const resolucion = await resolverIngresoReimpresion(termino);
+      if (resolucion.kind === 'found') {
+        setBusqueda({ kind: 'idle' });
+        setIngresoEncontrado(resolucion.ingreso);
+      } else if (resolucion.kind === 'multiple') {
+        setBusqueda({ kind: 'multiple', candidatos: resolucion.candidatos });
+      } else {
+        setBusqueda({ kind: 'none', termino: resolucion.termino });
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'error');
     }
-  };
+  }, []);
+
+  const handleBuscarSubmit = buscarForm.handleSubmit(async (values) => {
+    setSuggestionsClosed(true);
+    await resolverYSetear(values.termino);
+  });
+
+  // Selección desde la lista real de candidatos (`resolverIngresoReimpresion`,
+  // ya tipada `Ingreso[]`) — DISTINTO de la sugerencia in-field (ver
+  // `onSelect` de `<VehiculoSuggestions />` abajo), que solo trae un
+  // `IngresoActivo` parcial (sin `uuid_subscripcion_cliente`) y por eso
+  // re-dispara `resolverYSetear` en vez de usar el candidato directo.
+  const seleccionarCandidato = useCallback((ingreso: Ingreso) => {
+    setBusqueda({ kind: 'idle' });
+    setIngresoEncontrado(ingreso);
+  }, []);
+
+  const handleMotivoSubmit = motivoForm.handleSubmit((values) => {
+    setErrorMsg(null);
+    setMotivoConfirmado(values.motivo);
+  });
+
+  const handlePago = useCallback(
+    async (values: PagoFormValues): Promise<void> => {
+      if (
+        !ingresoEncontrado ||
+        !motivoConfirmado ||
+        costoServicio.costo === null ||
+        ivaVigente.porcentaje === null
+      ) {
+        return;
+      }
+      const costo = costoServicio.costo;
+      setErrorMsg(null);
+
+      // BUGFIX (2026-09-25): `costo` ya incluye IVA (precio final al
+      // cliente) — mismo criterio que `repo/factura.py::compute_total`
+      // + `crear_factura_impuesto_iva` (DEC-FACT-03, mirror de la
+      // PL/pgSQL `calcular_cotizacion`): `iva = round(total * tasa, 2)`,
+      // `subtotal = total - iva`. `total` (lo cobrado) y
+      // `items[0].valor_unitario` (lo que el backend recomputa y
+      // compara contra `total`, V5) se mantienen en `costo` sin tocar.
+      const ivaMonto = Math.round(costo * ivaVigente.porcentaje * 100) / 100;
+      const subtotal = Math.round((costo - ivaMonto) * 100) / 100;
+
+      const items = [
+        {
+          tipo: 'servicio' as const,
+          concepto: 'Reimpresión de tiquete',
+          cantidad: 1,
+          valor_unitario: costo,
+        },
+      ];
+      const feDatos = values.fe
+        ? {
+            fe_con_datos: true as const,
+            fe_datos_cliente: {
+              tipo_identificador: 'NIT' as const,
+              numero_identificacion: values.nit ?? '',
+              dv: values.dv || null,
+              nombre: values.nombre_cliente ?? 'Consumidor final',
+              apellido: null,
+              email: values.email_cliente || null,
+              telefono: null,
+            },
+          }
+        : {};
+      const post: PostFacturaServicioPayload =
+        values.medio_pago === 'efectivo'
+          ? {
+              uuid_ingreso: ingresoEncontrado.uuid,
+              medio_pago: 'efectivo',
+              items,
+              subtotal,
+              total: costo,
+              ...feDatos,
+            }
+          : {
+              uuid_ingreso: ingresoEncontrado.uuid,
+              medio_pago: 'datafono',
+              items,
+              subtotal,
+              total: costo,
+              referencia: values.voucher ?? '',
+              ...feDatos,
+            };
+
+      try {
+        // Paso 1: factura de servicio real (monto -> método de pago ->
+        // factura), mismo motor que salida (KD-FACT-01).
+        const factura = await registrarPagoServicio.trigger(post);
+        // Paso 2: reimpresión del workflow, ahora con el uuid_factura
+        // real (antes quedaba NULL — DEC-TKT-04 ya no aplica).
+        const out = await reimprimir.trigger({
+          uuid_ingreso: ingresoEncontrado.uuid,
+          motivo: motivoConfirmado,
+          uuid_factura: factura.uuid,
+        });
+        setResultado(out);
+        setFacturaDisplay(factura);
+        try {
+          await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
+        } catch {
+          // Best-effort print (DEC-SUC-27) — el cobro y la reimpresión
+          // ya quedaron registrados; un fallo de impresión no debe
+          // bloquear ni revertir el flujo.
+        }
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : 'error');
+      }
+    },
+    [
+      ingresoEncontrado,
+      motivoConfirmado,
+      costoServicio.costo,
+      ivaVigente.porcentaje,
+      registrarPagoServicio,
+      reimprimir,
+    ],
+  );
 
   const handleAnularConfirm = anularForm.handleSubmit(async (values) => {
     if (!resultado) return;
@@ -119,9 +372,11 @@ export function ReimprimirTiquete(): JSX.Element {
         motivo_anulacion: values.motivo_anulacion,
       });
       setAnularOpen(false);
-      // Reset the page to step 1 after a successful anulación
       setResultado(null);
-      form.reset();
+      setFacturaDisplay(null);
+      resetBusqueda();
+      buscarForm.reset();
+      motivoForm.reset();
       anularForm.reset();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'error');
@@ -133,12 +388,6 @@ export function ReimprimirTiquete(): JSX.Element {
       className="mx-auto max-w-2xl space-y-4 p-4"
       data-testid="reimprimir-tiquete-page"
     >
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold">
-          {t('reimprimir.titulo', { defaultValue: 'Reimprimir tiquete' })}
-        </h1>
-      </header>
-
       {errorMsg && (
         <div
           role="alert"
@@ -150,125 +399,246 @@ export function ReimprimirTiquete(): JSX.Element {
       )}
 
       {resultado === null ? (
-        <Form {...form}>
-          <form
-            onSubmit={handleConfirmOpen}
-            className="space-y-4"
-            data-testid="reimprimir-form"
-          >
-            <FormField
-              control={form.control}
-              name="uuidIngreso"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>
-                    {t('reimprimir.placa.label', { defaultValue: 'UUID ingreso' })}
-                  </FormLabel>
-                  <FormControl>
-                    <Input
-                      data-testid="reimprimir-uuid"
-                      placeholder="00000000-0000-0000-0000-000000000000"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+        <>
+          {ingresoEncontrado === null && (
+            <Form {...buscarForm}>
+              <form
+                onSubmit={handleBuscarSubmit}
+                className="space-y-4"
+                data-testid="reimprimir-buscar-form"
+              >
+                <FormField
+                  control={buscarForm.control}
+                  name="termino"
+                  render={({ field }) => (
+                    <FormItem>
+                      {/* BUGFIX (2026-09-25, encontrado al validar con Chrome
+                          DevTools): `FormLabel` setea `htmlFor={formItemId}`
+                          apuntando a este `<div>` -- `FormControl`/`Slot`
+                          inyecta ese id en su UNICO hijo directo, que aca es
+                          el wrapper `relative`, no el `<input>` real (DevTools
+                          reportaba "Incorrect use of <label for=FORM_ELEMENT>").
+                          Mismo bug y mismo fix que `SalidaPanel.tsx` (HU-F7.1):
+                          label manual + id explicito en el Input. */}
+                      <label htmlFor="reimprimir-termino" className="text-sm font-medium">
+                        {t('reimprimir.busqueda.label', {
+                          defaultValue: 'Placa o cupo (vehículo sin placa)',
+                        })}
+                      </label>
+                      <FormControl>
+                        <div className="relative">
+                          <Input
+                            id="reimprimir-termino"
+                            data-testid="reimprimir-termino"
+                            placeholder="ABC123"
+                            autoComplete="off"
+                            role="combobox"
+                            aria-expanded={isSuggestionsOpen}
+                            aria-controls={listboxId}
+                            aria-activedescendant={activeOptionId}
+                            aria-autocomplete="list"
+                            {...field}
+                            onChange={(e) => {
+                              field.onChange(e);
+                              setActiveIndex(-1);
+                              setSuggestionsClosed(false);
+                            }}
+                            onBlur={() => {
+                              field.onBlur();
+                              setSuggestionsClosed(true);
+                            }}
+                          />
+                          <VehiculoSuggestions
+                            listboxId={listboxId}
+                            testIdPrefix="reimprimir-termino-suggestions"
+                            candidates={isSuggestionsOpen ? candidates : []}
+                            activeIndex={activeIndex}
+                            onSelect={(candidate) => {
+                              setSuggestionsClosed(true);
+                              // `candidate.ingreso` es un `IngresoActivo`
+                              // parcial (autocompletar in-field, HU-F7.1) —
+                              // no alcanza para armar el tiquete (falta
+                              // `uuid_subscripcion_cliente`). Se re-resuelve
+                              // por el término para obtener el `Ingreso`
+                              // completo, igual que el submit del form.
+                              const termino =
+                                candidate.ingreso.placa ??
+                                candidate.ingreso.consecutivo ??
+                                '';
+                              buscarForm.setValue('termino', termino, {
+                                shouldValidate: false,
+                              });
+                              void resolverYSetear(termino);
+                            }}
+                          />
+                        </div>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <Button type="submit" data-testid="reimprimir-buscar-confirmar">
+                  {t('reimprimir.busqueda.buscar', { defaultValue: 'Buscar' })}
+                </Button>
+              </form>
+            </Form>
+          )}
 
-            <FormField
-              control={form.control}
-              name="tipo"
-              render={({ field }) => (
-                <FormItem>
-                  {/* F31.3 — bug de accesibilidad encontrado durante la
-                      validación (Chrome DevTools reportaba "Incorrect use
-                      of <label for=FORM_ELEMENT>"): `<FormLabel>` seteaba
-                      `for={formItemId}` apuntando al `<div>` de abajo, que
-                      NO es un form control válido como target de `for`
-                      (`FormControl`/`Slot` le inyecta ese id al div, no a
-                      ninguno de los dos radios reales). Se rompe la
-                      asociación inválida (`htmlFor={undefined}`) y se
-                      reemplaza por el patrón correcto para un grupo de
-                      radios: `role="radiogroup"` + `aria-labelledby`
-                      apuntando al label por `id` explícito. */}
-                  <FormLabel id="reimprimir-tipo-label" htmlFor={undefined}>
-                    {t('reimprimir.tipo.label', { defaultValue: 'Tipo de tiquete' })}
-                  </FormLabel>
-                  <FormControl>
-                    {/* F31.3 — radios nativos sin ninguna clase (tamaño de
-                        navegador, sin focus-ring de marca); se alinean al
-                        mismo tratamiento que el checkbox de PagoModal. */}
-                    <div
-                      role="radiogroup"
-                      aria-labelledby="reimprimir-tipo-label"
-                      className="flex flex-wrap gap-4"
-                      data-testid="reimprimir-tipo"
+          {busqueda.kind === 'none' && (
+            <p role="alert" className="text-sm text-destructive" data-testid="reimprimir-no-encontrado">
+              {t('reimprimir.busqueda.no_encontrado', {
+                defaultValue: 'No se encontró ningún ingreso para "{{termino}}"',
+                termino: busqueda.termino,
+              })}
+            </p>
+          )}
+
+          {busqueda.kind === 'multiple' && (
+            <Card data-testid="reimprimir-candidatos">
+              <CardHeader>
+                <CardTitle>
+                  {t('reimprimir.busqueda.candidatos_titulo', {
+                    defaultValue: 'Múltiples candidatos',
+                  })}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm">
+                  {busqueda.candidatos.map((c) => (
+                    <li key={c.uuid}>
+                      <button
+                        type="button"
+                        className="w-full rounded-md border p-2 text-left hover:bg-accent"
+                        data-testid={`reimprimir-candidato-${c.uuid}`}
+                        onClick={() => seleccionarCandidato(c)}
+                      >
+                        {identificadorDe(c)} — {c.fecha_ingreso ?? '—'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
+
+          {ingresoEncontrado !== null && motivoConfirmado === null && (
+            <Form {...motivoForm}>
+              <form
+                onSubmit={handleMotivoSubmit}
+                className="space-y-4"
+                data-testid="reimprimir-form"
+              >
+                <Card data-testid="reimprimir-ingreso-encontrado">
+                  <CardHeader>
+                    <CardTitle className="text-base">
+                      {identificadorDe(ingresoEncontrado)}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-1 text-sm text-muted-foreground">
+                    <p>
+                      {t('reimprimir.ingreso.fecha', { defaultValue: 'Ingreso' })}:{' '}
+                      {ingresoEncontrado.fecha_ingreso ?? '—'}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      data-testid="reimprimir-cambiar-busqueda"
+                      onClick={resetBusqueda}
                     >
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="radio"
-                          name="tipo"
-                          value="entrada"
-                          checked={field.value === 'entrada'}
-                          onChange={() => field.onChange('entrada')}
-                          data-testid="reimprimir-tipo-entrada"
-                          className="h-4 w-4 shrink-0 border border-input accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        />
-                        {t('reimprimir.tipo.entrada', { defaultValue: 'Entrada' })}
-                      </label>
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="radio"
-                          name="tipo"
-                          value="salida"
-                          checked={field.value === 'salida'}
-                          onChange={() => field.onChange('salida')}
-                          data-testid="reimprimir-tipo-salida"
-                          className="h-4 w-4 shrink-0 border border-input accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        />
-                        {t('reimprimir.tipo.salida', { defaultValue: 'Salida' })}
-                      </label>
-                    </div>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+                      {t('reimprimir.busqueda.cambiar', { defaultValue: 'Buscar otro' })}
+                    </Button>
+                  </CardContent>
+                </Card>
 
-            <FormField
-              control={form.control}
-              name="motivo"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>
-                    {t('reimprimir.motivoLabel', {
-                      defaultValue: 'Motivo (mín. 10 caracteres)',
+                <FormField
+                  control={motivoForm.control}
+                  name="motivo"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        {t('reimprimir.motivoLabel', {
+                          defaultValue: 'Motivo (mín. 10 caracteres)',
+                        })}
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          data-testid="reimprimir-motivo"
+                          placeholder={t('reimprimir.motivoPlaceholder', {
+                            defaultValue: 'Describe el motivo',
+                          })}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <Button type="submit" data-testid="reimprimir-continuar">
+                  {t('reimprimir.continuar', { defaultValue: 'Continuar al cobro' })}
+                </Button>
+              </form>
+            </Form>
+          )}
+
+          {ingresoEncontrado !== null && motivoConfirmado !== null && (
+            <Card data-testid="reimprimir-cobro">
+              <CardHeader>
+                <CardTitle className="text-base">
+                  {t('reimprimir.cobro.titulo', { defaultValue: 'Cobrar reimpresión' })}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {(costoServicio.isLoading || ivaVigente.isLoading) && (
+                  <p className="text-sm text-muted-foreground" data-testid="reimprimir-costo-cargando">
+                    {t('reimprimir.cobro.cargando', { defaultValue: 'Consultando costo vigente…' })}
+                  </p>
+                )}
+                {!costoServicio.isLoading && costoServicio.costo === null && (
+                  <p
+                    role="alert"
+                    className="text-sm text-destructive"
+                    data-testid="reimprimir-costo-no-configurado"
+                  >
+                    {t('reimprimir.cobro.no_configurado', {
+                      defaultValue:
+                        'No hay un costo configurado para la reimpresión. Configuralo en costos de servicios antes de continuar.',
                     })}
-                  </FormLabel>
-                  <FormControl>
-                    <Input
-                      data-testid="reimprimir-motivo"
-                      placeholder={t('reimprimir.motivoPlaceholder', {
-                        defaultValue: 'Describe el motivo',
-                      })}
-                      {...field}
+                  </p>
+                )}
+                {!costoServicio.isLoading &&
+                  !ivaVigente.isLoading &&
+                  costoServicio.costo !== null &&
+                  ivaVigente.porcentaje !== null && (
+                  <>
+                    <p className="mb-4 text-sm text-muted-foreground" data-testid="reimprimir-costo-vigente">
+                      {t('reimprimir.cobro.monto', { defaultValue: 'Monto a cobrar' })}:{' '}
+                      <span className="font-medium text-foreground">
+                        {formatCOP(costoServicio.costo)}
+                      </span>
+                    </p>
+                    <PagoModal
+                      uuid_ingreso={ingresoEncontrado.uuid}
+                      total_cop={costoServicio.costo}
+                      onSubmit={handlePago}
                     />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <Button
-              type="submit"
-              disabled={reimprimir.isMutating}
-              data-testid="reimprimir-confirmar"
-            >
-              {t('reimprimir.confirmar', { defaultValue: 'Reimprimir' })}
-            </Button>
-          </form>
-        </Form>
+                  </>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="mt-2"
+                  data-testid="reimprimir-cambiar-motivo"
+                  onClick={() => setMotivoConfirmado(null)}
+                >
+                  {t('reimprimir.cobro.volver', { defaultValue: 'Volver' })}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+        </>
       ) : (
         <section
           className="space-y-3 rounded-md border bg-card p-4"
@@ -280,9 +650,17 @@ export function ReimprimirTiquete(): JSX.Element {
           <dl className="space-y-1 text-sm">
             <div>
               <dt className="font-medium">UUID</dt>
-              {/* break-all: el UUID (36 chars) no debe desbordar el card
-                  en 320px — sin esto el texto se corta fuera del borde. */}
               <dd data-testid="reimprimir-success-uuid" className="break-all">{resultado.uuid}</dd>
+            </div>
+            <div>
+              <dt className="font-medium">
+                {t('reimprimir.success.costo', { defaultValue: 'Costo cobrado' })}
+              </dt>
+              <dd data-testid="reimprimir-success-costo">
+                {resultado.costo_aplicado !== null
+                  ? formatCOP(resultado.costo_aplicado)
+                  : '—'}
+              </dd>
             </div>
             <div>
               <dt className="font-medium">Motivo</dt>
@@ -298,54 +676,43 @@ export function ReimprimirTiquete(): JSX.Element {
             >
               {t('reimprimir.anular.titulo', { defaultValue: 'Anular reimpresión' })}
             </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                setResultado(null);
+                setFacturaDisplay(null);
+                resetBusqueda();
+                buscarForm.reset();
+                motivoForm.reset();
+              }}
+              data-testid="reimprimir-nuevo"
+            >
+              {t('reimprimir.nuevo', { defaultValue: 'Reimprimir otro' })}
+            </Button>
           </div>
         </section>
       )}
 
-      {/* REQ-OPS-171 — cobro consequence confirmation dialog */}
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent
-          role="alertdialog"
-          data-testid="reimprimir-confirm-dialog"
-          aria-labelledby="reimprimir-confirm-title"
-          aria-describedby="reimprimir-confirm-desc"
-        >
-          <DialogHeader>
-            <DialogTitle id="reimprimir-confirm-title">
-              {t('reimprimir.alertdialog.title', { defaultValue: 'Confirmar cobro de reimpresión' })}
-            </DialogTitle>
-            <DialogDescription id="reimprimir-confirm-desc">
-              {t('reimprimir.alertdialog.description', {
-                defaultValue:
-                  'Esta acción registra un cobro en la factura del ingreso. ¿Desea continuar?',
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setConfirmOpen(false)}
-              data-testid="reimprimir-cancelar"
-            >
-              {t('common:cancel', { defaultValue: 'Cancelar' })}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => {
-                void handleConfirm();
-              }}
-              disabled={reimprimir.isMutating}
-              data-testid="reimprimir-dialog-confirm"
-            >
-              {t('reimprimir.confirmar', { defaultValue: 'Reimprimir' })}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* HU-F8.3 (ajuste 2026-09-25) — desglose completo de la factura
+          de servicio recién cobrada, mismo componente reusado tal cual
+          que `<PagoSheet />` monta post-pago de salida. */}
+      <FacturaDisplayModal
+        factura={facturaDisplay}
+        onClose={() => setFacturaDisplay(null)}
+      />
 
-      {/* REQ-OPS-174 — anulación dialog with motivo_anulacion */}
-      <Dialog open={anularOpen} onOpenChange={setAnularOpen}>
+      {/* REQ-OPS-174 — anulación dialog with motivo_anulacion.
+          `modal={false}`: BUGFIX (2026-09-25, encontrado con Chrome
+          DevTools) -- este Dialog vive DENTRO de `<ReimprimirTiqueteSheet />`,
+          y `Sheet`/`Dialog` son AMBOS `DialogPrimitive.Root` de Radix
+          (mismo primitivo). Dos `Root` modales anidados compiten por
+          ocultar-todo-lo-demas via aria-hidden, y el navegador reportaba
+          "Blocked aria-hidden on an element because its descendant
+          retained focus" sobre el propio contenido del Sheet. El Sheet
+          ya actua como barrera modal por fuera; este dialogo interno no
+          necesita repetir el focus-trap/aria-hidden -- solo su propio
+          contenido. */}
+      <Dialog open={anularOpen} onOpenChange={setAnularOpen} modal={false}>
         <DialogContent
           role="alertdialog"
           data-testid="reimprimir-anular-dialog"

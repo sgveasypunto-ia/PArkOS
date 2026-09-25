@@ -12,7 +12,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parkosFetch } from '@parkos/ui-kit/fetch';
 
-import { getIngresoEstado, getIngresosByPlaca } from './ingresoActivoApi';
+import {
+  getIngresoEstado,
+  getIngresosByConsecutivo,
+  getIngresosByPlaca,
+} from './ingresoActivoApi';
 
 vi.mock('@parkos/ui-kit/fetch', () => ({
   parkosFetch: vi.fn(),
@@ -77,6 +81,33 @@ describe('getIngresosByPlaca', () => {
     expect(result[0]?.uuid_subscripcion_cliente).toBe(
       '33333333-3333-3333-3333-333333333333',
     );
+  });
+});
+
+describe('getIngresosByConsecutivo', () => {
+  it('returns parsed Ingreso[] for a valid 200 response (cupo sin placa)', async () => {
+    const wire = [
+      {
+        uuid: '11111111-1111-1111-1111-111111111111',
+        uuid_sucursal: '22222222-2222-2222-2222-222222222222',
+        placa: null,
+        fecha_ingreso: '2026-09-17T10:00:00Z',
+        uuid_subscripcion_cliente: null,
+        consecutivo: 'BICICLETA-000001-aaaaaaaa',
+      },
+    ];
+    mockFetch.mockResolvedValueOnce(wire);
+    const result = await getIngresosByConsecutivo('BICICLETA-000001-aaaaaaaa');
+    expect(result).toEqual(wire);
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/operacion/ingresos?consecutivo=BICICLETA-000001-aaaaaaaa',
+    );
+  });
+
+  it('returns [] for an empty list (valid 200 with [] body)', async () => {
+    mockFetch.mockResolvedValueOnce([]);
+    const result = await getIngresosByConsecutivo('SIN-COINCIDENCIA');
+    expect(result).toEqual([]);
   });
 });
 

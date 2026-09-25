@@ -58,6 +58,13 @@ export const IngresoSchema = z.object({
   fecha_ingreso: z.string().nullable(),
   /** DEC-SUC-21: `tipo_entrada` is DERIVED from this nullable FK on the server. */
   uuid_subscripcion_cliente: z.string().uuid().nullable(),
+  /**
+   * HU-F8.3 (reimpresión, directiva del operador 2026-09-25): necesario
+   * para reconstruir el tiquete de entrada al reimprimir un ingreso
+   * histórico (no viene de `PostIngresoResponse`, sino de esta búsqueda).
+   */
+  consecutivo: z.string().nullable().optional(),
+  uuid_tipo_vehiculo: z.string().uuid().nullable().optional(),
 });
 export type Ingreso = z.infer<typeof IngresoSchema>;
 
@@ -101,6 +108,19 @@ const INGRESOS_PATH = '/api/v1/operacion/ingresos';
  */
 export async function getIngresosByPlaca(placa: string): Promise<Ingreso[]> {
   const params = new URLSearchParams({ placa });
+  const raw = await parkosFetch<unknown>(`${INGRESOS_PATH}?${params.toString()}`);
+  return IngresoArraySchema.parse(raw);
+}
+
+/**
+ * `getIngresosByConsecutivo(consecutivo)` — historical lookup by cupo
+ * (HU-F8.3, directiva del operador 2026-09-25). Mirrors
+ * `getIngresosByPlaca`: exact match, includes closed ingresos, no
+ * `activo` filter — needed so reimpresión can find a no-placa vehicle
+ * whose ticket already registered salida días atrás.
+ */
+export async function getIngresosByConsecutivo(consecutivo: string): Promise<Ingreso[]> {
+  const params = new URLSearchParams({ consecutivo });
   const raw = await parkosFetch<unknown>(`${INGRESOS_PATH}?${params.toString()}`);
   return IngresoArraySchema.parse(raw);
 }
