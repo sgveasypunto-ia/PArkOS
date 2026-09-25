@@ -57,6 +57,12 @@ const fetchModule = await import('@parkos/ui-kit/fetch');
 const { parkosFetch } = fetchModule;
 const mockedFetch = vi.mocked(parkosFetch);
 
+// F11.3: `useArqueo().submit` requires `uuid_tipo_arqueo` (UUID FK to
+// `prod.tipo_arqueo`), not the legacy `tipo_arqueo` codigo string — see
+// useArqueo.ts's module docstring. A single shared UUID keeps every
+// test's payload + wire-body assertion in sync.
+const UUID_TIPO_ARQUEO_AUDITORIA = 'ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb';
+
 // The wire-level shape of `useArqueo.submit` is pinned by the
 // `rename-keys-1` test (full body assertion on the fetch mock) and
 // the `rename-keys-3` test (justificacion absent on diferencia=0).
@@ -87,7 +93,7 @@ describe('HU-F10.1 — useArqueo rename + Zod refinement (REQ-OPS-153 + REQ-OPS-
     const { submit } = useArqueo();
     const result = await submit({
       uuid_sesion: '11111111-2222-4333-8444-555555555555',
-      tipo_arqueo: 'auditoria',
+      uuid_tipo_arqueo: UUID_TIPO_ARQUEO_AUDITORIA,
       valor_efectivo_reportado: 100_000,
       valor_datafono_reportado: 0,
     });
@@ -107,7 +113,7 @@ describe('HU-F10.1 — useArqueo rename + Zod refinement (REQ-OPS-153 + REQ-OPS-
     const body = JSON.parse(callArgs[1].body) as Record<string, unknown>;
     expect(body).toEqual({
       uuid_sesion: '11111111-2222-4333-8444-555555555555',
-      tipo_arqueo: 'auditoria',
+      uuid_tipo_arqueo: UUID_TIPO_ARQUEO_AUDITORIA,
       valor_efectivo_reportado: 100_000,
       valor_datafono_reportado: 0,
     });
@@ -158,7 +164,7 @@ describe('HU-F10.1 — useArqueo rename + Zod refinement (REQ-OPS-153 + REQ-OPS-
     const { submit } = useArqueo();
     await submit({
       uuid_sesion: '22222222-3333-4444-8555-666666666666',
-      tipo_arqueo: 'auditoria',
+      uuid_tipo_arqueo: UUID_TIPO_ARQUEO_AUDITORIA,
       valor_efectivo_reportado: 50_000,
       valor_datafono_reportado: 0,
     });
@@ -269,7 +275,7 @@ describe('HU-F10.1 — useArqueo rename + Zod refinement (REQ-OPS-153 + REQ-OPS-
     const { submit } = useArqueo();
     await submit({
       uuid_sesion: '33333333-4444-4555-8666-777777777777',
-      tipo_arqueo: 'auditoria',
+      uuid_tipo_arqueo: UUID_TIPO_ARQUEO_AUDITORIA,
       valor_efectivo_reportado: 47_000,
       valor_datafono_reportado: 0,
       justificacion: 'Faltante en caja menor',
@@ -297,7 +303,7 @@ describe('HU-F10.1 — useArqueo rename + Zod refinement (REQ-OPS-153 + REQ-OPS-
     const { submit } = useArqueo();
     await submit({
       uuid_sesion: '44444444-5555-4666-8777-888888888888',
-      tipo_arqueo: 'auditoria',
+      uuid_tipo_arqueo: UUID_TIPO_ARQUEO_AUDITORIA,
       valor_efectivo_reportado: 0,
       valor_datafono_reportado: 0,
     });
@@ -362,7 +368,7 @@ describe('HU-F10.1 — useArqueo rename + Zod refinement (REQ-OPS-153 + REQ-OPS-
     await expect(
       submit({
         uuid_sesion: '66666666-7777-4888-8999-aaaaaaaaaaaa',
-        tipo_arqueo: 'auditoria',
+        uuid_tipo_arqueo: UUID_TIPO_ARQUEO_AUDITORIA,
         valor_efectivo_reportado: 0,
         valor_datafono_reportado: 0,
       }),

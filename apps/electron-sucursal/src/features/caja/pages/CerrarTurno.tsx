@@ -76,16 +76,44 @@ export function CerrarTurno(): JSX.Element | null {
     navigate('/');
   };
 
-  const onSubmit = form.handleSubmit(async (values) => {
+  // NOTE: `<CerrarTurnoForm>` wraps this handler with its own
+  // `form.handleSubmit(onSubmit)` internally (DEC-F3.3-06 verbatim —
+  // same pattern as `<AbrirTurnoForm>`'s sibling contract), so `onSubmit`
+  // here MUST stay the raw `(data: CerrarTurnoInput) => Promise<void>`
+  // handler. Wrapping it AGAIN with `form.handleSubmit(...)` on this side
+  // double-wraps it into a native `(e?: BaseSyntheticEvent) => Promise<void>`
+  // handler, which both breaks the `CerrarTurnoFormProps.onSubmit` contract
+  // and would mean the values are validated/parsed twice.
+  const onSubmit = async (values: CerrarTurnoInput): Promise<void> => {
     if (!sesion || !uuidTipoArqueo) return;
     setErrorState(null);
     setIsSubmitting(true);
 
     // Wire the bridge if available (jsdom + vitest may not have it).
+    //
+    // KNOWN GAP (found while fixing tsc errors post-rediseño,
+    // 2026-09-25): `CerrarTurnoBridge.imprimir(kind, payload)`
+    // (cerrarTurnoChain.ts) assumes a 2-arg bridge, but the REAL
+    // preload bridge (`electron/preload.ts` `buildImprimir()`) only
+    // accepts ONE arg (`payload`) — calling it with 2 args silently
+    // drops the payload object (JS binds only the declared param), the
+    // same latent bug already present for the identical 2-arg
+    // `bridge.imprimir(kind, payload)` convention used by
+    // `SalidaMensualidad.tsx` / `PagoSheet.tsx`. Fixing the real
+    // contract is out of scope here (owned by `cerrarTurnoChain.ts` /
+    // `electron/preload.ts` / `bridge.d.ts`); this cast only restores
+    // type-checking without changing the pre-existing runtime behavior.
     const bridge: CerrarTurnoBridge | null =
       typeof window !== 'undefined' &&
       typeof window.bridge?.imprimir === 'function'
-        ? { imprimir: window.bridge.imprimir.bind(window.bridge) }
+        ? {
+            // Deliberate double-cast, see the KNOWN GAP comment above:
+            // preserves pre-existing (broken) runtime behavior without
+            // fabricating a fix for the missing arqueo ticket buffer.
+            imprimir: window.bridge.imprimir.bind(
+              window.bridge,
+            ) as unknown as CerrarTurnoBridge['imprimir'],
+          }
         : null;
 
     const result = await runCerrarTurnoChain({
@@ -126,7 +154,7 @@ export function CerrarTurno(): JSX.Element | null {
         });
         return;
     }
-  });
+  };
 
   // Sin sesión activa → el Dashboard redirect (T4) lo manejará.
   // Render defensivo: si llegamos aquí sin sesion, retornamos null.

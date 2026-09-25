@@ -60,10 +60,12 @@ vi.mock('../hooks/useArqueo', () => ({
 }));
 
 // Passthrough presentational — evita carga shadcn Form radix deps.
-// `onSubmit` llega YA envuelto en `form.handleSubmit(...)` desde el
-// container — se pasa directo al `<form onSubmit>` nativo, y los
-// inputs se registran contra el `form` REAL para que RHF valide con
-// valores reales (no placeholders sueltos).
+// `onSubmit` llega como el handler CRUDO `(data) => Promise<void>`
+// (contrato real de `CerrarTurnoFormProps.onSubmit`, DEC-F3.3-06) — el
+// mock replica lo que `<CerrarTurnoForm>` real hace internamente
+// (`form.handleSubmit(onSubmit)`), en vez de bindear `onSubmit` directo
+// al evento nativo. Los inputs se registran contra el `form` REAL para
+// que RHF valide con valores reales (no placeholders sueltos).
 vi.mock('../components/CerrarTurnoForm', () => ({
   CerrarTurnoForm: ({
     form,
@@ -78,14 +80,17 @@ vi.mock('../components/CerrarTurnoForm', () => ({
         name: string,
         options?: { valueAsNumber?: boolean },
       ) => Record<string, unknown>;
+      handleSubmit: (
+        onValid: (data: Record<string, unknown>) => Promise<void>,
+      ) => (e: React.FormEvent) => void;
     };
-    onSubmit: (e: React.FormEvent) => void;
+    onSubmit: (data: Record<string, unknown>) => Promise<void>;
     isSubmitting: boolean;
     error: { kind: string } | null;
     sesion: { uuid: string };
     onCancel: () => void;
   }) => (
-    <form data-testid="cerrar-turno-form" onSubmit={onSubmit}>
+    <form data-testid="cerrar-turno-form" onSubmit={form.handleSubmit(onSubmit)}>
       <div data-testid="cerrar-turno-resumen">
         <p>UUID: {sesion.uuid}</p>
       </div>

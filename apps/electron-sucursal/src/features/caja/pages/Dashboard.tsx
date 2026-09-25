@@ -111,11 +111,19 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { TurnoActivoToggle } from '../components/TurnoActivoToggle';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 import { DrawerHost } from './DrawerHost';
-import { useDashboardDrawerStore, type DrawerKind } from '@/store/dashboardDrawerStore';
+import { useDashboardDrawerStore, type NonNullDrawerKind } from '@/store/dashboardDrawerStore';
 
-const DRAWER_BY_HOTKEY: Record<string, DrawerKind> = {
+// `DrawerKind` (the store's state type) includes `null` — "no drawer
+// open" — but every literal below is a real drawer, and `open(kind, ...)`
+// requires `NonNullDrawerKind`. Typing this map as `Record<string,
+// DrawerKind>` let a `null` slip into the inferred value type even
+// though no entry is ever `null`, which broke narrowing at both call
+// sites below (`target`/`kind` stayed `DrawerKind`, not
+// `NonNullDrawerKind`, after the `!== undefined` guard).
+const DRAWER_BY_HOTKEY: Record<string, NonNullDrawerKind> = {
   F1: 'ingreso',
   F2: 'salida',
   F3: 'suscripciones',
@@ -191,7 +199,13 @@ export function Dashboard(): JSX.Element | null {
   if (sesion) {
     const operadorLabel =
       user?.email.split('@')[0] ?? t('common:operador', { defaultValue: 'Operador' });
-    const sucursalLabel = sucursal?.prefijo_nombre ?? 'BOG-CEN';
+    // `SucursalItem` (ui-kit useAuth.ts) only exposes `{ uuid, nombre }`
+    // — `prefijo_nombre` never existed on the type (tsc caught this
+    // post-rediseño). `nombre` is the closest real field; it may read
+    // as a full branch name rather than the short "BOG-CEN"-style code
+    // the fallback implies — worth confirming with product/backend
+    // whether a short-code field belongs on the `/auth/me` contract.
+    const sucursalLabel = sucursal?.nombre ?? 'BOG-CEN';
 
     return (
       <div
@@ -252,6 +266,7 @@ export function Dashboard(): JSX.Element | null {
           </span>
 
           {/* Turno chip + Cerrar turno — always visible (mobile + desktop). */}
+          <ThemeToggle />
           <TurnoActivoToggle sesion={sesion} />
           <Button
             variant="default"

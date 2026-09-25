@@ -7,8 +7,9 @@
  * the resumen).
  *
  * Polls `useArqueoResumen` (REQ-OPS-132 fetcher-closure) for the
- * live resumen. On confirm, posts `tipo_arqueo: 'cierre_dia'` via
- * `useArqueo().submit(...)`.
+ * live resumen. On confirm, resolves the `'cierre_dia'` codigo to its
+ * UUID via `useTipoArqueoPorCodigo` (F11.3) and posts
+ * `uuid_tipo_arqueo` via `useArqueo().submit(...)`.
  */
 import { useEffect, useId } from 'react';
 import { useForm } from 'react-hook-form';
@@ -36,6 +37,7 @@ import {
 
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useArqueo, useArqueoResumen } from '../hooks/useArqueo';
+import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
 
 const cierreSchema = z.object({
   valor_efectivo_reportado: z.coerce.number().int().nonnegative(),
@@ -77,6 +79,10 @@ export function CierreDiarioDialog({
   const fecha = todayISO();
   const { data: resumen } = useArqueoResumen(uuid_sucursal, open ? fecha : null);
   const { submit } = useArqueo();
+  // F11.3: the BE arqueo POST requires `uuid_tipo_arqueo` (UUID), not
+  // the legacy `tipo_arqueo` codigo string — resolve it via the catalog
+  // SWR hook (mirrors `CerrarTurno.tsx` / `ArqueoParcial.tsx`, HU-F10.1).
+  const { uuid: uuidTipoArqueo } = useTipoArqueoPorCodigo(open ? 'cierre_dia' : null);
 
   useEffect(() => {
     if (!open && lastAnchorId) {
@@ -85,10 +91,10 @@ export function CierreDiarioDialog({
   }, [open, lastAnchorId]);
 
   const handleSubmit = form.handleSubmit(async (values) => {
-    if (!uuid_sesion) return;
+    if (!uuid_sesion || !uuidTipoArqueo) return;
     await submit({
       uuid_sesion,
-      tipo_arqueo: 'cierre_dia',
+      uuid_tipo_arqueo: uuidTipoArqueo,
       valor_efectivo_reportado: values.valor_efectivo_reportado,
       valor_datafono_reportado: values.valor_datafono_reportado,
       justificacion: values.justificacion,
@@ -184,7 +190,7 @@ export function CierreDiarioDialog({
           <Button
             type="submit"
             form={formId}
-            disabled={!uuid_sesion || form.formState.isSubmitting}
+            disabled={!uuid_sesion || !uuidTipoArqueo || form.formState.isSubmitting}
             data-testid="cierre-confirmar"
           >
             Confirmar

@@ -17,7 +17,8 @@
  * NOTA: el botón "Ir al turno" usa `<Button type="button" onClick={onIrAlTurno}>`
  * para que NO triggeree submit del form (type="submit" por default en F2.1 button.tsx).
  */
-import type { UseFormReturn } from 'react-hook-form';
+import type { FormEventHandler } from 'react';
+import type { Control, UseFormReturn } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -44,6 +45,21 @@ import {
 } from '../api/schemas/turnoSchema';
 
 /**
+ * Raw RHF form-state shape — BEFORE `abrirTurnoSchema`'s `.transform()`
+ * coerces the numeric fields to `number` on submit. The operator types
+ * into a `type="text"` input (see `NUMERIC_INPUT_REGEX` below) so the
+ * live form state MUST stay `string`; `AbrirTurnoInput` (turnoSchema.ts)
+ * is the POST-transform/output shape the submit handler receives.
+ */
+export type AbrirTurnoFormValues = Omit<
+  AbrirTurnoInput,
+  'valor_inicial_efectivo' | 'valor_inicial_datafono'
+> & {
+  valor_inicial_efectivo: string;
+  valor_inicial_datafono: string;
+};
+
+/**
  * Estado de error que `<AbrirTurno>` pasa a `<AbrirTurnoForm />` para render.
  *  - sesion_already_active → <FormMessage role="alert">{t('sesionYaAbierta')}</FormMessage>
  *                            + Button "Ir al turno".
@@ -55,8 +71,13 @@ export type AbrirTurnoErrorState =
   | null;
 
 export interface AbrirTurnoFormProps {
-  form: UseFormReturn<AbrirTurnoInput>;
-  onSubmit: (data: AbrirTurnoInput) => Promise<void>;
+  form: UseFormReturn<AbrirTurnoFormValues, unknown, AbrirTurnoInput>;
+  // The container already wraps its data handler with
+  // `form.handleSubmit(...)` (see `<AbrirTurno>`), so this prop is the
+  // native form event handler, not the raw `AbrirTurnoInput` data
+  // handler — it is bound directly to `<form onSubmit={onSubmit}>`
+  // below.
+  onSubmit: FormEventHandler<HTMLFormElement>;
   isSubmitting: boolean;
   error: AbrirTurnoErrorState;
   onIrAlTurno: () => void;
@@ -70,6 +91,15 @@ export function AbrirTurnoForm({
   onIrAlTurno,
 }: AbrirTurnoFormProps): JSX.Element {
   const { t } = useTranslation(['caja', 'common']);
+
+  // shadcn's <FormField>/<Controller> only read/write the pre-transform
+  // (Input) field shape — the Output type param (post zodResolver
+  // `.transform()`) is irrelevant to field wiring, but its 3-generic
+  // `Control<Input, Context, Output>` doesn't structurally match the
+  // 1-generic `Control<TFieldValues>` that <FormField> expects. Narrowing
+  // here (once) documents that this is a known, safe RHF+Zod-transform
+  // limitation, not a silenced type error.
+  const control = form.control as unknown as Control<AbrirTurnoFormValues>;
 
   return (
     <Form {...form}>
@@ -89,7 +119,7 @@ export function AbrirTurnoForm({
           <CardContent>
 
         <FormField
-          control={form.control}
+          control={control}
           name="valor_inicial_efectivo"
           render={({ field }) => (
             <FormItem>
@@ -132,7 +162,7 @@ export function AbrirTurnoForm({
         />
 
         <FormField
-          control={form.control}
+          control={control}
           name="valor_inicial_datafono"
           render={({ field }) => (
             <FormItem>
@@ -162,7 +192,7 @@ export function AbrirTurnoForm({
         />
 
         <FormField
-          control={form.control}
+          control={control}
           name="observaciones"
           render={({ field }) => (
             <FormItem>
