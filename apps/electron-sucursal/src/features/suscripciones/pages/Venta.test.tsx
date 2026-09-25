@@ -386,4 +386,113 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     );
     expect(arg.cobrar_ahora).toBe(true);
   });
+
+  it('T8: pago con cobro -> muestra <FacturaDisplayModal /> y solo completa/imprime al cerrarlo', async () => {
+    // HU-F9.1 bugfix (2026-09-25): previously the wizard navigated away
+    // immediately after `trigger()` resolved, even when the sale
+    // collected payment -- the operator never saw a ticket/factura
+    // confirmation. Now a `factura` in the response must mount
+    // `<FacturaDisplayModal />` and defer completion + the recibo print
+    // until the operator dismisses it (mirrors HU-F8.4 verbatim).
+    const facturaMock = {
+      uuid: 'f0000000-0000-0000-0000-000000000001',
+      created_at: '2026-09-25T10:00:00.000Z',
+      uuid_sucursal: '00000000-0000-0000-0000-0000000000f1',
+      uuid_ingreso: null,
+      uuid_salida: null,
+      numero_recibo: 'suc-20260925-000001',
+      subtotal: 30000,
+      descuento: 0,
+      total: 35700,
+      uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
+      items: [],
+      estado: 'emitida' as const,
+      medio_pago: 'efectivo' as const,
+      monto_recibido_cents: null,
+      vuelto_cents: null,
+      voucher: null,
+      cliente: null,
+      datos_sucursal: {
+        razon_social: 'Sede Test',
+        nit: null,
+        direccion: null,
+        ciudad: null,
+        telefono: null,
+        horario: null,
+        regimen: null,
+      },
+      datos_vehiculo: null,
+      impuestos: [],
+      pagos: [],
+      factura_electronica: null,
+    };
+    mockTrigger.mockResolvedValueOnce({
+      uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
+      uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
+      uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
+      uuid_factura: facturaMock.uuid,
+      monto_prorrateado: 11000,
+      factura: facturaMock,
+    });
+    const firePrintEnvelope = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <Venta firePrintEnvelope={firePrintEnvelope} />
+      </MemoryRouter>,
+    );
+    // step 1
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-cliente-nit'), {
+        target: { value: '900123456' },
+      });
+      fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
+        target: { value: 'ACME' },
+      });
+      fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
+        target: { value: '1' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
+        target: { value: 'ABC123' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
+    });
+    // step 5 PagoModal stub: click confirmar
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
+    });
+
+    // The modal is up; the wizard must NOT have completed yet.
+    expect(screen.getByTestId('factura-display-modal')).toBeDefined();
+    expect(screen.getByTestId('factura-display-total').textContent).toContain('35.700');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('factura-display-cerrar'));
+      await Promise.resolve();
+    });
+
+    expect(firePrintEnvelope).toHaveBeenCalledWith(
+      'recibo_pago',
+      expect.objectContaining({
+        uuid_factura: facturaMock.uuid,
+        numero_recibo: facturaMock.numero_recibo,
+      }),
+    );
+  });
 });

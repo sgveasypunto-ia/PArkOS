@@ -16,6 +16,8 @@
  */
 import { z } from 'zod';
 
+import { FacturaReadSchema } from '../../facturacion/api/facturaApi';
+
 /**
  * Cliente payload — the operator types NIT/nombre/email at wizard
  * step 1. The Pydantic schema on the backend (`schemas/clientes.py::
@@ -100,14 +102,46 @@ export type VentaSuscripcionCreate = z.infer<typeof VentaSuscripcionCreateSchema
  * `VentaSuscripcionResponse`. `uuid_factura` is `null` when
  * `cobrar_ahora=false` (deferred billing); `monto_prorrateado`
  * is `null` when `fecha_inicio_cobertura.day <= 15`.
+ *
+ * BUGFIX (2026-09-25): `.strict()` previously only recognised 5 of the
+ * 11 fields `VentaSuscripcionResponse` (backend `schemas/clientes.py`)
+ * actually returns -- `uuid_sucursal`, `fecha_inicio_cobertura`,
+ * `fecha_vencimiento`, `valor_total_plan`, `uuid_factura_electronica`
+ * and `uuid_envio_dian` were missing. `.strict()` rejects unknown
+ * keys, so EVERY successful sale (`cobrar_ahora` true or false) threw
+ * a `ZodError` in `mutateFn` instead of resolving -- the wizard never
+ * reached its post-pago step, which is why the operator never saw a
+ * ticket/factura confirmation. `factura` is the HU-F9.1 addition: the
+ * enriched `FacturaRead` projection (same shape `POST /facturacion/
+ * factura` returns) so the wizard can render `<FacturaDisplayModal />`
+ * + fire the recibo print envelope, `null` when `cobrar_ahora=false`.
+ *
+ * BUGFIX part 2 (found live via Chrome DevTools while validating the
+ * fix above): `monto_prorrateado` was `z.number().nullable()`, but
+ * FastAPI/Pydantic serializes `Decimal` fields as JSON STRINGS (e.g.
+ * `"22000.00"`), not numbers -- same convention `valor_total_plan`
+ * already accounts for via `z.coerce.number()`. A non-null
+ * `monto_prorrateado` (any sale after day 15, A-09 prorrateo) failed
+ * `z.number()` validation, throwing inside `mutateFn` and silently
+ * swallowing the whole successful response as an unhandled rejection.
+ * `z.coerce.number()` composed with `.nullable()` still passes literal
+ * JSON `null` through untouched (Zod short-circuits nullable BEFORE
+ * running the inner schema).
  */
 export const VentaSuscripcionReadSchema = z
   .object({
     uuid_subscripcion: z.string().uuid(),
     uuid_cliente: z.string().uuid(),
     uuid_vehiculos: z.array(z.string().uuid()),
+    uuid_sucursal: z.string().uuid(),
+    fecha_inicio_cobertura: z.string(),
+    fecha_vencimiento: z.string(),
+    valor_total_plan: z.coerce.number(),
+    monto_prorrateado: z.coerce.number().nullable(),
     uuid_factura: z.string().uuid().nullable(),
-    monto_prorrateado: z.number().nullable(),
+    uuid_factura_electronica: z.string().uuid().nullable(),
+    uuid_envio_dian: z.string().uuid().nullable(),
+    factura: FacturaReadSchema.nullable(),
   })
   .strict();
 export type VentaSuscripcionRead = z.infer<typeof VentaSuscripcionReadSchema>;

@@ -58,16 +58,41 @@ const UUID_SUBSCRIPCION = '00000000-0000-0000-0000-0000000000b1';
 const UUID_CLIENTE = '00000000-0000-0000-0000-0000000000c1';
 const UUID_FACTURA = '00000000-0000-0000-0000-0000000000d1';
 
+const UUID_SUCURSAL = '00000000-0000-0000-0000-0000000000f1';
+
+// BUGFIX (2026-09-25): `VentaSuscripcionReadSchema` is `.strict()` and
+// mirrors the FULL backend `VentaSuscripcionResponse` shape (11 fields,
+// not the 5 this fixture used to carry) -- a mock missing any of them
+// masked the real bug (every successful sale threw a `ZodError` because
+// the backend always sends `uuid_sucursal`/`fecha_vencimiento`/etc.).
 const happyResponse = {
   uuid_subscripcion: UUID_SUBSCRIPCION,
   uuid_cliente: UUID_CLIENTE,
   uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
-  uuid_factura: UUID_FACTURA,
+  uuid_sucursal: UUID_SUCURSAL,
+  fecha_inicio_cobertura: '2026-09-19',
+  fecha_vencimiento: '2026-10-19',
+  valor_total_plan: 30000,
   monto_prorrateado: 11000,
+  uuid_factura: UUID_FACTURA,
+  uuid_factura_electronica: null,
+  uuid_envio_dian: null,
+  factura: null,
 };
 
 const inputBase = {
-  cliente: { nit: '900123456', nombre: 'ACME', email: null },
+  // BUGFIX (2026-09-25): the wire contract (`VentaSuscripcionCreate.
+  // cliente`) has no `nit` field -- `tipo_identificador`/
+  // `numero_identificacion` (mirrors the same fix already applied to
+  // `Venta.tsx`'s `buildVentaPayload`). This fixture used the stale
+  // shape, which `tsc -b` flags as a TS2345 on every `trigger(inputBase)`
+  // call below.
+  cliente: {
+    tipo_identificador: 'NIT' as const,
+    numero_identificacion: '900123456',
+    nombre: 'ACME',
+    email: null,
+  },
   placas: ['ABC123'],
   uuid_tipo_subscripcion: UUID_PLAN,
   fecha_inicio_cobertura: '2026-09-19',

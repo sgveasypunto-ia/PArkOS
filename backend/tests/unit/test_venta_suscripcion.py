@@ -17,6 +17,13 @@ Coverage matrix (REQ-OPS-083..090 + REQ-OPS-XR5):
   T4 ``test_placa_duplicada_subscripcion_vigente_rechaza``
         -- 422 ``suscripcion_duplicada_placa`` + ``Cache-Control: no-store``.
 
+  T5 ``test_cobrar_ahora_genera_factura_con_display_enriquecido``
+        -- bugfix (2026-09-25): ``cobrar_ahora=True`` must run the full
+        cobro sub-chain AND assemble the enriched display projection
+        (``build_display_factura``) so the response carries ``factura``
+        for the wizard's post-pago ticket/modal -- not just the bare
+        ``uuid_factura`` the original T1-T4 matrix never exercised.
+
 Pattern: F1.10 + F1.11 mock-everything (no live DB). Drives the handler
 end-to-end with ``unittest.mock.AsyncMock`` for the SQLAlchemy session
 + every repo helper. Pure Python, no Docker daemon required.
@@ -25,7 +32,7 @@ from __future__ import annotations
 
 import sys
 import uuid as uuid_lib
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -470,3 +477,141 @@ async def test_placa_duplicada_subscripcion_vigente_rechaza() -> None:
     assert not p_v7.called
     assert p_v9a.await_count == 0
     assert p_v9b.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# T5 -- cobrar_ahora=True: cobro sub-chain + enriched display projection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cobrar_ahora_genera_factura_con_display_enriquecido() -> None:
+    """T5 (bugfix 2026-09-25): ``cobrar_ahora=True`` -> factura + display.
+
+    Asserts:
+      * ``result.uuid_factura`` populated from the just-created factura row.
+      * ``result.factura`` is the exact ``FacturaRead`` object
+        ``build_display_factura`` returns -- the wizard needs this to show
+        ``<FacturaDisplayModal />`` / fire the recibo print envelope right
+        after the sale, mirroring the ingreso/salida cobro flow (HU-F8.4).
+      * ``session.refresh`` awaited once with the just-created factura row
+        BEFORE the display projection is built (post-commit read, same
+        pattern as ``facturacion.py``).
+      * The full cobro sub-chain ran once: factura + detalle + impuesto + pago.
+    """
+    from parkos_core.api.v1 import clientes_venta as handler_mod
+    from parkos_core.schemas.facturacion import FacturaDisplaySucursal, FacturaRead
+
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload_nuevo_cliente(placas=["ABC123"], cobrar_ahora=True)
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    plan = _make_plan()
+    cliente_row = MagicMock()
+    cliente_row.uuid = uuid_lib.uuid4()
+    vehiculo_row = MagicMock()
+    vehiculo_row.uuid = uuid_lib.uuid4()
+    subscripcion_row = MagicMock()
+    subscripcion_row.uuid = uuid_lib.uuid4()
+    factura_row = MagicMock()
+    factura_row.uuid = uuid_lib.uuid4()
+    detalle_rows = [MagicMock()]
+    # A real (minimal) FacturaRead -- `build_display_factura` is mocked out
+    # below (its own projection logic is exercised by
+    # ``test_factura_display_projection.py``), but the handler's
+    # ``VentaSuscripcionResponse`` field is typed ``FacturaRead | None`` and
+    # ``_Base`` sets ``from_attributes=True``, so a bare ``MagicMock`` gets
+    # walked attribute-by-attribute and fails ~30 nested validators.
+    factura_display = FacturaRead(
+        uuid=factura_row.uuid,
+        created_at=datetime.now(),
+        uuid_sucursal=ctx.sucursal_uuid,
+        uuid_ingreso=None,
+        uuid_salida=None,
+        subtotal=Decimal("30000.00"),
+        descuento=Decimal("0"),
+        total=Decimal("35700.00"),
+        uuid_cliente=cliente_row.uuid,
+        items=[],
+        estado="emitida",
+        medio_pago="efectivo",
+        monto_recibido_cents=None,
+        vuelto_cents=None,
+        voucher=None,
+        numero_recibo="test-recibo",
+        cliente=None,
+        datos_sucursal=FacturaDisplaySucursal(
+            razon_social=None,
+            nit=None,
+            direccion=None,
+            ciudad=None,
+            telefono=None,
+            horario=None,
+            regimen=None,
+        ),
+        datos_vehiculo=None,
+        impuestos=[],
+        pagos=[],
+        factura_electronica=None,
+    )
+
+    _p_v2, _p_v1, _p_v3, _p_v4, _p_v7, _p_v9a, _p_v9b, patchers = _patch_happy_path(
+        handler_mod,
+        plan=plan,
+        cliente_row=cliente_row,
+        vehiculos=[vehiculo_row],
+        subscripcion_row=subscripcion_row,
+    )
+    m_iva = AsyncMock(return_value=Decimal("0.19"))
+    m_crear_factura = AsyncMock(return_value=factura_row)
+    m_crear_detalle = AsyncMock(return_value=detalle_rows)
+    m_crear_impuesto = AsyncMock()
+    m_crear_pago = AsyncMock()
+    m_build_display = AsyncMock(return_value=factura_display)
+    extra_patchers = [
+        patch.object(handler_mod.repo_impuestos, "obtener_iva_vigente", new=m_iva),
+        patch.object(handler_mod.repo_factura, "crear_factura_evento", new=m_crear_factura),
+        patch.object(
+            handler_mod.repo_factura_detalle,
+            "crear_factura_detalle_bulk",
+            new=m_crear_detalle,
+        ),
+        patch.object(handler_mod.repo_factura, "crear_factura_impuesto_iva", new=m_crear_impuesto),
+        patch.object(handler_mod.repo_factura, "crear_factura_pago", new=m_crear_pago),
+        patch.object(handler_mod, "build_display_factura", new=m_build_display),
+    ]
+    for p in extra_patchers:
+        p.start()
+    try:
+        result = await handler_mod.venta_suscripcion(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
+    finally:
+        for p in patchers + extra_patchers:
+            p.stop()
+
+    # KD-VENTA-01
+    assert session.commit.await_count == 1
+    # Bare UUID still populated (backwards-compatible field).
+    assert result.uuid_factura == factura_row.uuid
+    # HU-F9.1 bugfix: enriched projection reaches the response.
+    assert result.factura is factura_display
+    # Post-commit read (HU-F8.4 pattern) BEFORE the display helper runs.
+    session.refresh.assert_awaited_once_with(factura_row)
+    m_crear_factura.assert_awaited_once()
+    m_crear_detalle.assert_awaited_once()
+    m_crear_impuesto.assert_awaited_once()
+    m_crear_pago.assert_awaited_once()
+    m_build_display.assert_awaited_once()
+    build_kwargs = m_build_display.await_args.kwargs
+    assert build_kwargs["new_factura"] is factura_row
+    assert build_kwargs["detalles_creados"] is detalle_rows
+    assert build_kwargs["cliente_uuid"] == cliente_row.uuid
+    assert build_kwargs["payload"] is payload

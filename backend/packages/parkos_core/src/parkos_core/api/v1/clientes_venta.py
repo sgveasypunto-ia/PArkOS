@@ -59,6 +59,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
+from ...models.A.factura_detalle import FacturaDetalle
+from ...models.L_E.facturas import Facturas
 from ...repo import (
     factura as repo_factura,
 )
@@ -79,6 +81,7 @@ from ...schemas.clientes import VentaSuscripcionCreate, VentaSuscripcionResponse
 from ...schemas.facturacion import FacturaItemCreate
 from ..deps import requires_issuer
 from . import _helpers
+from ._factura_display import build_display_factura
 
 # Dedicated router -- mounted via ``router.include_router`` from
 # ``api/v1/clientes.py`` (DEC-VENTA-05). DEC-VENTA-06 layer 5 mirror of
@@ -273,6 +276,9 @@ async def venta_suscripcion(
     # presence inline (mirror F1.9 facturacion.py:449-457; the typed
     # VoucherRequeridoError exists but is dead code across the codebase).
     uuid_factura: uuid_lib.UUID | None = None
+    new_factura: Facturas | None = None
+    detalles_creados: list[FacturaDetalle] = []
+    total_con_iva: Decimal | None = None
     if payload.cobrar_ahora:
         # Voucher check (Q4 mirror, inline).
         if payload.medio_pago == "datafono" and not payload.referencia:
@@ -313,26 +319,25 @@ async def venta_suscripcion(
         total_con_iva = (monto_a_cobrar + iva_monto).quantize(Decimal("0.01"))
 
         # Step 9 (F1.9 equivalent): INSERT prod.facturas.
-        uuid_factura = (
-            await repo_factura.crear_factura_evento(
-                session,
-                actor_uuid=ctx.actor_uuid,
-                new_attrs={
-                    "uuid_sucursal": ctx.sucursal_uuid,
-                    "subtotal": monto_a_cobrar,
-                    "descuento": Decimal(0),
-                    "total": total_con_iva,
-                    # Q1-A: nullable FK to prod.subscripciones_cliente
-                    # populated by V8 (subscripcion already INSERTed at
-                    # Step 9 above). F1.8/F1.9 callers leave it None and
-                    # use uuid_ingreso / uuid_salida instead.
-                    "uuid_subscripcion_cliente": subscripcion.uuid,
-                },
-            )
-        ).uuid
+        new_factura = await repo_factura.crear_factura_evento(
+            session,
+            actor_uuid=ctx.actor_uuid,
+            new_attrs={
+                "uuid_sucursal": ctx.sucursal_uuid,
+                "subtotal": monto_a_cobrar,
+                "descuento": Decimal(0),
+                "total": total_con_iva,
+                # Q1-A: nullable FK to prod.subscripciones_cliente
+                # populated by V8 (subscripcion already INSERTed at
+                # Step 9 above). F1.8/F1.9 callers leave it None and
+                # use uuid_ingreso / uuid_salida instead.
+                "uuid_subscripcion_cliente": subscripcion.uuid,
+            },
+        )
+        uuid_factura = new_factura.uuid
 
         # Step 10a (F1.9 equivalent): INSERT prod.factura_detalle.
-        await repo_factura_detalle.crear_factura_detalle_bulk(
+        detalles_creados = await repo_factura_detalle.crear_factura_detalle_bulk(
             session,
             uuid_factura=uuid_factura,
             items=[
@@ -459,6 +464,26 @@ async def venta_suscripcion(
 
     # --- Step 11: DEC-VENTA-06 -- Cache-Control: no-store + response. ---
     _helpers.apply_no_store_header(response)
+
+    # HU-F9.1 bugfix (2026-09-25): when the sale collects payment
+    # (`cobrar_ahora=true`), assemble the same enriched display
+    # projection the ingreso/salida cobro flow returns (HU-F8.4) so the
+    # wizard can show `<FacturaDisplayModal />` + fire the recibo print
+    # envelope instead of silently navigating away with a paid,
+    # ticket-less factura. Mirrors `facturacion.py`'s post-commit
+    # `session.refresh` + `build_display_factura` call verbatim.
+    factura_display = None
+    if uuid_factura is not None and new_factura is not None:
+        await session.refresh(new_factura)
+        factura_display = await build_display_factura(
+            session,
+            new_factura=new_factura,
+            detalles_creados=detalles_creados,
+            payload=payload,
+            total_server=total_con_iva or Decimal(0),
+            cliente_uuid=cliente.uuid,
+        )
+
     return VentaSuscripcionResponse(
         uuid_cliente=cliente.uuid,
         uuid_subscripcion=subscripcion.uuid,
@@ -473,6 +498,7 @@ async def venta_suscripcion(
         uuid_factura=uuid_factura,
         uuid_factura_electronica=uuid_fe,
         uuid_envio_dian=uuid_envio,
+        factura=factura_display,
     )
 
 
