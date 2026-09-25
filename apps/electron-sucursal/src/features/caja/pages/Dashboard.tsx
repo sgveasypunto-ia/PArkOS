@@ -18,9 +18,9 @@
  *   │ (help +   │                                                         │
  *   │  hotkey)  │                                                         │
  *   ├──────────┴─────────────────────────────────────────────────────────┤
- *   │ Footer full-width: cupos por tipo (tarjetas) + KPI total libres    │
- *   │ (sticky bottom-0 — 2026-09-24: altura ya no topeada, crece         │
- *   │  a propósito para llamar la atención — ver CuposLibresStrip.tsx)   │
+ *   │ Footer full-width: chips compactos por tipo + KPI total libres     │
+ *   │ (sticky bottom-0, max-h-[80px] — 2026-09-25: corrección de escala  │
+ *   │  tras rechazo del rediseño grande, ver CuposLibresStrip.tsx)       │
  *   └───────────────────────────────────────────────────────────────────┘
  *
  * **Operador 2026-09-22 (segunda iteración):** el right-sidebar de
@@ -50,8 +50,8 @@
  *   - Top header bar (operador + status + cerrar)
  *   - Left sidebar (7 navigation actions)
  *   - Placa input hero (the operator's only primary action during the turn)
- *   - Footer full-width sticky (tarjetas de cupos por tipo + KPI total,
- *     2026-09-24: altura libre — ver CuposLibresStrip.tsx)
+ *   - Footer full-width sticky (chips compactos de cupos por tipo + KPI
+ *     total, 2026-09-25: escala compacta — ver CuposLibresStrip.tsx)
  *   - DrawerHost (single-drawer mounted for: IngresoSheet, SalidaSheet,
  *     PagoSheet, ReimprimirTiqueteSheet, ArqueoSheet, CierreDiarioDialog —
  *     triggered by sidebar, hotkey, OR the PlacaInputHero)
@@ -824,7 +824,7 @@ function VehiculosDentroList({
           más presencia visual, así que esta lista reserva más espacio
           para que el footer más alto no la tape. */}
       <ul
-        className="max-h-[calc(100vh-20rem)] flex-1 divide-y divide-border/40 overflow-y-auto"
+        className="max-h-[calc(100vh-14rem)] flex-1 divide-y divide-border/40 overflow-y-auto"
         data-testid="vehiculos-list"
       >
         {visible.map((it) => {
