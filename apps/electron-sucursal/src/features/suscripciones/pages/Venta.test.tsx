@@ -127,12 +127,12 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
   it('T1: mount -> shows step 1 (cliente form)', () => {
     renderVenta();
     expect(screen.getByTestId('venta-paso-1')).toBeDefined();
-    expect(screen.getByTestId('venta-cliente-nit')).toBeDefined();
+    expect(screen.getByTestId('venta-cliente-numero')).toBeDefined();
   });
 
   it('T2: step 1 submit with valid cliente -> advances to step 2 (Plan)', async () => {
     renderVenta();
-    const nit = screen.getByTestId('venta-cliente-nit');
+    const nit = screen.getByTestId('venta-cliente-numero');
     const nombre = screen.getByTestId('venta-cliente-nombre');
     await act(async () => {
       fireEvent.change(nit, { target: { value: '900123456' } });
@@ -147,7 +147,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
 
   it('T3: step 1 submit with NIT corto -> inline Zod error', async () => {
     renderVenta();
-    const nit = screen.getByTestId('venta-cliente-nit');
+    const nit = screen.getByTestId('venta-cliente-numero');
     await act(async () => {
       fireEvent.change(nit, { target: { value: '123' } });
     });
@@ -156,8 +156,8 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       fireEvent.click(submit);
     });
     expect(screen.queryByTestId('venta-paso-2')).toBeNull();
-    expect(screen.getByTestId('venta-cliente-nit-error').textContent).toMatch(
-      /nit/,
+    expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(
+      /documento/,
     );
   });
 
@@ -171,7 +171,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     renderVenta();
     // step 1
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-nit'), {
+      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
         target: { value: '900123456' },
       });
       fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
@@ -226,7 +226,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     renderVenta();
     // step 1
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-nit'), {
+      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
         target: { value: '900123456' },
       });
       fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
@@ -274,7 +274,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     renderVenta();
     // step 1
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-nit'), {
+      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
         target: { value: '900123456' },
       });
       fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
@@ -323,7 +323,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     renderVenta();
     // step 1
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-nit'), {
+      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
         target: { value: '900123456' },
       });
       fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
@@ -444,7 +444,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     );
     // step 1
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-nit'), {
+      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
         target: { value: '900123456' },
       });
       fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
@@ -553,7 +553,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       </MemoryRouter>,
     );
     await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-nit'), {
+      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
         target: { value: '900123456' },
       });
       fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {

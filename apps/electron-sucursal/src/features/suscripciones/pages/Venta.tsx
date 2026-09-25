@@ -3,7 +3,10 @@
  * counter (HU-F9.1, REQ-OPS-176).
  *
  * Layout (REQ-OPS-176 verbatim):
- *   paso 1 — cliente{nit, nombre, email}
+ *   paso 1 — cliente{tipo_persona, tipo_identificador, numero_identificacion,
+ *             dv?, nombre, apellido?} (Ajuste persona natural/empresa:
+ *             `<ClienteIdentificacionFields>`, mismo componente compartido
+ *             que `<PagoModal>` paso 5)
  *   paso 2 — placas[] (1..2, FORMATO_AUTO | FORMATATO_MOTO)
  *   paso 3 — uuid_tipo_subscripcion (UUID)
  *   paso 4 — `<PagoModal />` (F8.1 reuse) — F8.1 owns vueltos live
@@ -41,6 +44,10 @@ import { Input } from '@/components/ui/input';
 import { formatCOP } from '../../caja/lib/format';
 import { PagoModal, type PagoFormValues } from '../../facturacion/components/PagoModal';
 import { FacturaDisplayModal } from '../../facturacion/components/FacturaDisplayModal';
+import {
+  ClienteIdentificacionFields,
+  type ClienteIdentificacionValue,
+} from '../../facturacion/components/ClienteIdentificacionFields';
 import type { FacturaRead } from '../../facturacion/api/facturaApi';
 
 import {
@@ -52,6 +59,9 @@ import {
 } from '../hooks/useVentaSuscripcion';
 import { useTiposSubscripciones } from '../hooks/useTiposSubscripciones';
 import { calcularMontoProporcional } from '../lib/prorrateo';
+import { buildClienteVentaPayload } from '../lib/clienteVentaPayload';
+import { validarIdentificacion } from '../../../lib/validation/identificacion';
+import { validarNitModulo11 } from '../../../lib/validation/nit';
 
 /**
  * Optional escape hatches for non-page consumers (e.g., embedded in
@@ -147,7 +157,7 @@ function facturaElectronicaErrorMessage(
 
 export interface VentaStepState {
   paso: 1 | 2 | 3 | 4 | 5;
-  cliente?: { nit: string; nombre: string; email: string | null };
+  cliente?: ClienteIdentificacionValue;
   uuid_tipo_subscripcion?: string;
   /**
    * Number of vehicles the operator is going to associate with this
@@ -160,17 +170,60 @@ export interface VentaStepState {
   monto_proporcional?: number | null;
 }
 
-// Per-step Zod schemas — mirrors F8.1 PagoModal discriminated union.
-// `email` is `.nullable()` only (not `.optional()`): `handlePaso1Siguiente`
-// below always passes `email: null` explicitly (step 1's form has no email
-// field yet) -- `VentaStepState.cliente.email` is typed `string | null`
-// (no `undefined`), and `.optional()` widened Zod's inferred output to
-// `string | null | undefined`, which no caller here ever actually produces.
-const clienteSchema = z.object({
-  nit: z.string().min(6, 'nit_min_6'),
-  nombre: z.string().min(1, 'nombre_requerido'),
-  email: z.string().email('email_formato_invalido').nullable(),
-});
+/**
+ * Paso 1 — identificación de cliente (ajuste persona natural/empresa).
+ * Mirrors `PagoModal`'s `validarBloqueFe` cross-field rules but WITHOUT
+ * the `fe` gate (paso 1 siempre exige un cliente real, no hay opción de
+ * "cliente genérico" en una venta de suscripción). `dv` is OPTIONAL even
+ * for NIT — same contract as backend `ClientesCreate._validar_nit_dv`
+ * ("if dv is absent for a NIT, no-ops"): si el operador lo ingresa debe
+ * ser correcto, pero no bloquea el avance si lo deja vacío.
+ */
+const clienteSchema = z
+  .object({
+    tipo_persona: z.enum(['persona', 'empresa']),
+    tipo_identificador: z.enum(['NIT', 'CC', 'CE', 'pasaporte']),
+    numero_identificacion: z.string().min(5, 'documento_min_5'),
+    dv: z.string(),
+    nombre: z.string().min(1, 'nombre_requerido'),
+    apellido: z.string(),
+  })
+  .superRefine((values, ctx) => {
+    if (values.tipo_identificador !== 'NIT') {
+      const resultado = validarIdentificacion(
+        values.tipo_identificador,
+        values.numero_identificacion,
+      );
+      if (!resultado.ok) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['numero_identificacion'],
+          message: resultado.motivo ?? 'documento_formato_invalido',
+        });
+      }
+    } else {
+      const dv = values.dv.trim();
+      if (dv) {
+        if (
+          !/^[0-9]$/.test(dv) ||
+          !validarNitModulo11(values.numero_identificacion, dv).ok
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['dv'],
+            message: 'dv_invalido',
+          });
+        }
+      }
+    }
+    if (values.tipo_persona === 'persona' && !values.apellido.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['apellido'],
+        message: 'apellido_requerido',
+      });
+    }
+  });
 
 const planSchema = z.object({
   uuid_tipo_subscripcion: z
@@ -238,9 +291,17 @@ export function Venta({
   const { sucursal } = useAuth();
   const uuid_sucursal = sucursal?.uuid ?? null;
   const [state, setState] = useState<VentaStepState>({ paso: 1 });
-  const [clienteError, setClienteError] = useState<string | null>(null);
-  const [clienteNitInput, setClienteNitInput] = useState('');
-  const [clienteNombreInput, setClienteNombreInput] = useState('');
+  const [clienteIdent, setClienteIdent] = useState<ClienteIdentificacionValue>({
+    tipo_persona: 'empresa',
+    tipo_identificador: 'NIT',
+    numero_identificacion: '',
+    dv: '',
+    nombre: '',
+    apellido: '',
+  });
+  const [clienteErrors, setClienteErrors] = useState<
+    Partial<Record<'numero_identificacion' | 'dv' | 'nombre' | 'apellido', string>>
+  >({});
   const [planInput, setPlanInput] = useState('');
   const [cantidadError, setCantidadError] = useState<string | null>(null);
   const [cantidadInput, setCantidadInput] = useState('1');
@@ -301,17 +362,23 @@ export function Venta({
   }, [state.paso, state.fecha_inicio_cobertura, selectedPlan]);
 
   const handlePaso1Siguiente = (): void => {
-    const parsed = clienteSchema.safeParse({
-      nit: clienteNitInput,
-      nombre: clienteNombreInput,
-      email: null,
-    });
+    const parsed = clienteSchema.safeParse(clienteIdent);
     if (!parsed.success) {
-      const issue = parsed.error.issues[0];
-      setClienteError(issue?.message ?? 'invalid');
+      const fieldErrors: Partial<
+        Record<'numero_identificacion' | 'dv' | 'nombre' | 'apellido', string>
+      > = {};
+      for (const issue of parsed.error.issues) {
+        const key = issue.path[0] as
+          | 'numero_identificacion'
+          | 'dv'
+          | 'nombre'
+          | 'apellido';
+        if (!fieldErrors[key]) fieldErrors[key] = issue.message;
+      }
+      setClienteErrors(fieldErrors);
       return;
     }
-    setClienteError(null);
+    setClienteErrors({});
     setState((s) => ({ ...s, paso: 2, cliente: parsed.data }));
   };
 
@@ -376,20 +443,13 @@ export function Venta({
   const buildVentaPayload = (values: PagoFormValues): VentaSuscripcionCreate => {
     const fecha_inicio_cobertura =
       state.fecha_inicio_cobertura ?? DEFAULT_FECHA_INICIO;
-    // BUGFIX (2026-09-25): el wire contract (`VentaSuscripcionCreate.
-    // cliente`, backend `ClientesCreate`) no tiene campo `nit` -- exige
-    // `tipo_identificador`/`numero_identificacion`. El estado interno
-    // del wizard sigue usando `nit` (es como lo tipea el operador en
-    // el paso 1); la traducción al shape real de la API pasa acá, en
-    // el único punto donde se arma el payload de red.
-    const clienteWizard = state.cliente ?? { nit: '', nombre: '', email: null };
+    // Ajuste identificación persona natural/empresa: el armado del
+    // payload de cliente sale de `buildClienteVentaPayload` (función
+    // pura compartida, `../lib/clienteVentaPayload.ts`) — ya NO se
+    // hardcodea `tipo_identificador: 'NIT'` acá.
+    const clienteWizard = state.cliente ?? clienteIdent;
     const base = {
-      cliente: {
-        tipo_identificador: 'NIT' as const,
-        numero_identificacion: clienteWizard.nit,
-        nombre: clienteWizard.nombre,
-        email: clienteWizard.email,
-      },
+      cliente: buildClienteVentaPayload(clienteWizard),
       placas: state.placas ?? [],
       uuid_tipo_subscripcion:
         state.uuid_tipo_subscripcion ?? '',
@@ -538,26 +598,11 @@ export function Venta({
           <h2 className="text-lg">
             {t('suscripciones:venta.paso1.titulo', { defaultValue: 'Cliente' })}
           </h2>
-          <Input
-            data-testid="venta-cliente-nit"
-            placeholder="NIT"
-            value={clienteNitInput}
-            onChange={(e) => setClienteNitInput(e.target.value)}
-          />
-          {clienteError && (
-            <span
-              data-testid="venta-cliente-nit-error"
-              className="text-sm text-destructive"
-              role="alert"
-            >
-              {clienteError}
-            </span>
-          )}
-          <Input
-            data-testid="venta-cliente-nombre"
-            placeholder="Nombre"
-            value={clienteNombreInput}
-            onChange={(e) => setClienteNombreInput(e.target.value)}
+          <ClienteIdentificacionFields
+            testIdPrefix="venta-cliente"
+            value={clienteIdent}
+            onChange={(patch) => setClienteIdent((prev) => ({ ...prev, ...patch }))}
+            errors={clienteErrors}
           />
           <Button
             type="button"
@@ -821,8 +866,9 @@ export function Venta({
             step 5 reuses F8.1 `<PagoModal />` from
             `../../facturacion/components/PagoModal`. PagoModal owns
             vueltos live + FE con datos + NIT módulo 11 validation.
-            `clientePrefill` carries step-1 NIT/nombre/email into the
-            PagoModal form. `fe: true` flips the "Generar factura
+            `clientePrefill` carries step-1 tipo_persona/tipo_identificador/
+            numero/nombre/apellido into the PagoModal form. `fe: true`
+            flips the "Generar factura
             electrónica" toggle ON at step 5 entry -- operator can
             still untick for a no-FE sale. `total_cop =
             monto_proporcional ?? plan.valor` so vueltos live
@@ -840,10 +886,13 @@ export function Venta({
               (selectedPlan?.valor ?? PLAN_PREVIEW_VALOR)
             }
             clientePrefill={{
-              nit: state.cliente?.nit ?? '',
+              nit: state.cliente?.numero_identificacion ?? '',
               nombre: state.cliente?.nombre ?? '',
-              email: state.cliente?.email ?? '',
+              email: '',
               fe: true,
+              tipo_persona: state.cliente?.tipo_persona ?? 'empresa',
+              tipo_identificador: state.cliente?.tipo_identificador ?? 'NIT',
+              apellido: state.cliente?.apellido ?? '',
             }}
             onSubmit={handlePagoSubmit}
           />

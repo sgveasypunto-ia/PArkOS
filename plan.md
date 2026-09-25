@@ -2123,14 +2123,15 @@ stateDiagram-v2
 - Given una placa que ya tiene una suscripción vigente, Then `422 suscripcion_duplicada_placa`.
 - Given un plan con `mismo_tipo_vehiculo=true`, When las placas son de tipos distintos, Then `422 tipo_vehiculo_incompatible`.
 - Given una venta después del día 15 del mes, Then el monto cobrado se prorratea (`valor_dia = plan.valor/duracion_dias`; `monto_proporcional = valor_dia * dias_restantes_mes`), persistido en `factura_detalle` de la factura emitida (adaptación A-09) — no en la fila de suscripción, que no tiene columna para eso.
+- **(Ajuste 2026-09-25, identificación persona natural/empresa)** Given el paso 1 (Cliente), When el operador elige "Persona natural", Then se pide tipo de documento (CC/CE/Pasaporte) + número + nombres + apellidos; When elige "Empresa", Then se pide NIT (+DV opcional, validado por módulo 11 si se ingresa) + razón social — a diferencia del checkbox de FE de `PagoModal` (HU-F8.1), este paso NO tiene opción de "cliente genérico": una venta de suscripción siempre exige un cliente real identificado.
 
 **Tablas ER tocadas**: `clientes` (SELECT/INSERT), `vehiculos` (SELECT/INSERT condicional), `subscripciones_cliente` (INSERT), `subscripcion_vehiculos` (INSERT, hasta `cantidad_maxima_vehiculos` del plan), `tipo_subscripciones` (SELECT), `facturas`/`factura_detalle`/`factura_pagos`/`factura_electronica` (INSERT condicional si la venta cobra en el acto).
 
 **Endpoints**: `POST /clientes/venta-suscripcion` (cerrado en HU-F1.12).
 
-**Componentes UI**: `Venta` (page, wizard 4 pasos).
+**Componentes UI**: `Venta` (page, wizard 4 pasos); `ClienteIdentificacionFields` (Ajuste 2026-09-25, componente compartido con `PagoModal` — Flujo 1 de la directiva de identificación persona/empresa).
 
-**Validaciones Zod**: por paso — `z.object({cliente: {nit, nombre, email}})`, `z.object({placas: z.array(z.string()).min(1).max(2)})`, `z.object({uuid_tipo_subscripcion})`, `z.object({medio_pago})`.
+**Validaciones Zod**: por paso — `z.object({cliente: {tipo_persona, tipo_identificador, numero_identificacion, dv?, nombre, apellido?}})` (Ajuste 2026-09-25: reemplaza el `{nit, nombre, email}` original — `tipo_identificador` ya no es literal `'NIT'`), `z.object({placas: z.array(z.string()).min(1).max(2)})`, `z.object({uuid_tipo_subscripcion})`, `z.object({medio_pago})`.
 
 **Manejo de errores**:
 
@@ -2156,6 +2157,9 @@ stateDiagram-v2
 - **HU-F9.1-T2**: integración de `POST /clientes/venta-suscripcion` con `Idempotency-Key`.
 - **HU-F9.1-T3**: mostrar el monto prorrateado en el paso de pago cuando la fecha de venta sea posterior al día 15.
 - **HU-F9.1-T4**: `e2e/suscripcion-venta.spec.ts` (4 escenarios).
+- **HU-F9.1-T5** (Ajuste 2026-09-25, Flujo 2 de la directiva de identificación persona/empresa — depende de HU-F8.1-T6): paso 1 de `Venta.tsx` reemplaza el input NIT-only por `<ClienteIdentificacionFields>` (componente compartido con `PagoModal`, `src/features/facturacion/components/ClienteIdentificacionFields.tsx`); armado del payload centralizado en `src/features/suscripciones/lib/clienteVentaPayload.ts` (`buildClienteVentaPayload`, función pura — ya no hardcodea `tipo_identificador:'NIT'`); `ventaSuscripcionApi.ts` cambia `tipo_identificador: z.literal('NIT')` por el enum completo. Backend: `uuid_tipo_persona` se resuelve server-side desde `tipo_identificador` vía `repo/tipo_persona.py::resolve_uuid_tipo_persona` (NIT→jurídica, CC/CE/pasaporte→natural), invocado desde `repo/venta_suscripcion.py::buscar_cliente_por_uuid_o_crear_nuevo` — reutilizable por futuros call-sites (ej. cuando `factura.py` empiece a auto-crear clientes) sin duplicar el mapeo.
+  - **Bug preexistente encontrado, NO relacionado con este ajuste (no corregido acá, requiere su propia rama)**: `backend/tests/unit/test_venta_suscripcion_handler.py::test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_ahora` falla en `dev` limpio (confirmado con `git stash` antes de tocar código) porque el mock de `session` no expone `refresh`/las queries que consume `_factura_display.py::build_display_factura` (HU-F8.4) — el subchain de cobro V8 en `venta_suscripcion` llega hasta ese helper y el test nunca actualizó su mock cuando F8.4 se integró ahí. Requiere mockear las ~6 queries que `build_display_factura` ejecuta, no es un fix de una línea.
+  - **Hallazgo de diseño preexistente (NO introducido por este ajuste, requiere decisión del operador antes de corregir)**: validando en vivo (Chrome DevTools) se confirmó que `buildVentaPayload` (`Venta.tsx`) arma el campo `cliente` del `POST /clientes/venta-suscripcion` **exclusivamente** desde `state.cliente` (los datos del paso 1) — los campos NIT/DV/tipo de documento/nombre/apellido que `<PagoModal>` muestra en el paso 5 (vía `clientePrefill`) son **puramente decorativos** en este flujo: editarlos ahí no cambia el cliente creado ni los datos de la FE (`emitir_factura_electronica` solo viaja como booleano). Verificado reproduciendo con NIT distinto en paso 1 (`901234567`) vs. paso 5 (`800123456`+DV `7`): el cliente persistido en `prod.clientes` quedó con `901234567` (el del paso 1), no con el valor editado en paso 5. La validación de DV módulo 11 del paso 5 SÍ bloquea el submit (`dv debe ser 0-9` / `DV inválido`) sobre un valor que después se descarta — confunde al operador y puede bloquear una venta válida por un DV que no importa. Esto es preexistente (misma arquitectura desde que `<Venta>` empezó a reusar `<PagoModal>`, antes de este ajuste) y su corrección correcta depende de una decisión de producto: (a) ocultar/deshabilitar esos campos en el paso 5 cuando `<PagoModal>` se monta desde `<Venta>` (dejarlos solo de lectura, ya que el cliente real ya quedó fijado en el paso 1), o (b) hacer que `buildVentaPayload` use los valores editados en el paso 5 como fuente de verdad para la FE (requeriría separar "cliente de la suscripción" de "titular de la FE", que hoy el `.mmd`/backend no distinguen — `VentaSuscripcionCreate` solo acepta un `cliente`). Queda ABIERTO para que el operador decida antes de tocarlo.
 
 ---
 
@@ -2168,7 +2172,7 @@ sequenceDiagram
     participant API as api-sucursal
 
     Op->>UI: paso 1 — datos de cliente (nuevo o existente)
-    UI->>UI: valida Zod (nit/nombre/email) antes de avanzar
+    UI->>UI: valida Zod (persona/empresa + documento + nombre) antes de avanzar
     Op->>UI: paso 2 — 1 o 2 placas
     Op->>UI: paso 3 — elige plan (tipo_subscripciones vigente)
     Op->>UI: paso 4 — medio de pago

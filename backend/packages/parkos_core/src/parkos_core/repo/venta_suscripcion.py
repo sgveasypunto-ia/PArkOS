@@ -53,6 +53,7 @@ from ..models.V.tipo_subscripciones import TipoSubscripciones
 from ..models.V.vehiculos import Vehiculos
 from . import placa as repo_placa
 from . import versioned
+from .tipo_persona import resolve_uuid_tipo_persona
 
 __all__ = [
     "CantidadMaximaExcedidaError",
@@ -223,8 +224,19 @@ async def buscar_cliente_por_uuid_o_crear_nuevo(
     ``registro``) are persisted.
 
     Returns the new ORM row (caller commits at Step 10 of the handler).
+
+    Ajuste identificación persona natural/empresa: ``uuid_tipo_persona``
+    is resolved server-side from ``tipo_identificador`` via
+    :func:`repo.tipo_persona.resolve_uuid_tipo_persona` when the caller
+    didn't already supply one -- the frontend only ever sends a
+    document type (``NIT``/``CC``/``CE``/``pasaporte``), never a
+    catalog UUID.
     """
     new_attrs = {k: v for k, v in datos_cliente.items() if k != "dv"}
+    if new_attrs.get("uuid_tipo_persona") is None:
+        new_attrs["uuid_tipo_persona"] = await resolve_uuid_tipo_persona(
+            session, tipo_identificador=new_attrs.get("tipo_identificador")
+        )
     return await versioned.close_and_insert(
         session,
         Clientes,
