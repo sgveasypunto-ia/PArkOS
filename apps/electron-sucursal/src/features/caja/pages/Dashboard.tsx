@@ -245,21 +245,29 @@ export function Dashboard(): JSX.Element | null {
               fondo oscuro; el PNG (`--REQUIERE-VECTOR`, wordmark oscuro)
               es la única variante disponible para fondo claro — ver
               `src/assets/brand/inventory.json` y la decisión del operador
-              de usarlo tal cual sin vectorizar. Alto: h-20 (80px, "al menos
-              2cm") resultó demasiado grande en uso real — bajado a h-14
-              (56px, 2026-09-25, pedido operador tras verlo corriendo). Sin
-              achicar en mobile — sigue siendo un piso, no un techo
+              de usarlo tal cual sin vectorizar. Alto: h-20 (80px) → h-14
+              (56px) → h-9 (36px, 2026-09-25, pedido operador: "más
+              estético", mismo orden de magnitud que el logo del login).
+              Sin achicar en mobile — sigue siendo un piso, no un techo
               responsive. */}
           <img
             src={logoDark}
             alt="EasyPunto"
-            className="h-14 w-auto shrink-0 dark:hidden"
+            className="h-9 w-auto shrink-0 dark:hidden"
           />
           <img
             src={logoLight}
             alt="EasyPunto"
-            className="hidden h-14 w-auto shrink-0 dark:block"
+            className="hidden h-9 w-auto shrink-0 dark:block"
           />
+
+          {/* Divisor vertical entre el logo y el bloque operador/sucursal
+              — 2026-09-25 (pedido operador): 20px de aire a cada lado
+              (`mx-5` = 1.25rem = 20px). Solo visible junto con el bloque
+              que separa (`hidden md:block`, igual que `operador-sucursal`
+              de abajo — no tiene sentido en mobile donde ese bloque no
+              se muestra). */}
+          <div className="hidden h-8 w-px shrink-0 bg-border mx-5 md:block" />
 
           {/* Hamburger — only below md. 44×44 (antes 32×32) para cumplir
               tamaño mínimo de tap target en kiosko táctil. */}
