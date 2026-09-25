@@ -8,7 +8,7 @@
  *   - Mensualidad tag conditional — `<strong>MENSUALIDAD</strong>` under sello.
  *   - Logo placeholder — `▢` glyph when `logoDataUrl === ''`.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 
 import { print, PAGE_RULE, renderEntradaTiqueteHtml } from '../fallbackBrowser';
 import { validEntradaPayload } from './escposBuilder.test';
@@ -22,6 +22,10 @@ function makeIngreso(overrides?: { uuid_subscripcion_cliente?: string | null }) 
   return {
     uuid: '11111111-2222-4333-8444-555555555555',
     placa: 'ABC123',
+    // REQ-OPS-197: `consecutivo` is required (nullable) on `IngresoForPayload` —
+    // this fixture only exercises the legacy con-placa variant, so it is
+    // always `null` (the backend never omits the field).
+    consecutivo: null,
     fecha_ingreso: '2026-09-16T08:30:00Z',
     uuid_subscripcion_cliente: overrides?.uuid_subscripcion_cliente ?? null,
   };
@@ -148,7 +152,11 @@ describe('renderEntradaTiqueteHtml — 17-field HTML layout', () => {
 
 describe('print("entrada", payload) — F6.2 wiring', () => {
   let printSpy: ReturnType<typeof vi.spyOn>;
-  let appendSpy: ReturnType<typeof vi.spyOn>;
+  // `document.head.appendChild` overload is generic (`<T extends Node>(node: T) => T`);
+  // `ReturnType<typeof vi.spyOn>` resolves to the wrong overload and mismatches the
+  // actual `vi.spyOn(document.head, 'appendChild')` return type. Pin the spy's type to
+  // the real method signature instead.
+  let appendSpy: MockInstance<typeof document.head.appendChild>;
 
   beforeEach(() => {
     document.head.innerHTML = '';

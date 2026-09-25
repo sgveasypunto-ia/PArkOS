@@ -46,6 +46,12 @@ function makeIngreso(overrides?: Partial<IngresoForPayload>): IngresoForPayload 
   return {
     uuid: '11111111-2222-4333-8444-555555555555',
     placa: 'ABC123',
+    // REQ-OPS-197: `consecutivo` is required (nullable) on `IngresoForPayload` —
+    // legacy con-placa rows always carry `consecutivo: null` from the backend
+    // (`PostIngresoResponseSchema.consecutivo` is `z.string().nullable()`,
+    // never optional). Scenarios that exercise the no-placa variant override
+    // this default explicitly (see the con-consecutivo fixture below).
+    consecutivo: null,
     fecha_ingreso: '2026-09-16T08:30:00Z',
     uuid_subscripcion_cliente: null,
     ...overrides,
