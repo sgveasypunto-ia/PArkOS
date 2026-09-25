@@ -1,4 +1,29 @@
-import '@testing-library/jest-dom/vitest';
+// `@testing-library/jest-dom/vitest`'s bundled auto-extend does its own
+// internal `require('vitest')` from inside node_modules. Vitest externalizes
+// node_modules deps by default (native `require`, bypassing vite-node's
+// module graph), so that internal require resolves to whatever `vitest` /
+// `@vitest/expect` pnpm happens to hoist to the workspace root — a
+// DIFFERENT module instance than the one vitest actually injects as the
+// global `expect` in test files. Result: `expect.extend()` patches an
+// orphan instance and every jest-dom matcher fails with "Invalid Chai
+// property" in the real test run, even though the matchers ARE registered
+// somewhere. Importing `expect` here instead works because this file is a
+// `setupFiles` entry — part of THIS project's own Vite module graph, never
+// externalized — so it receives the exact same `expect` singleton the
+// running test process uses. Extend that one directly with the matcher
+// definitions (`@testing-library/jest-dom/matchers`, the subpath meant for
+// manual `expect.extend()` wiring) instead of the `/vitest` convenience
+// entry point.
+import { expect } from 'vitest';
+import * as matchers from '@testing-library/jest-dom/matchers';
+// Type-only: pulls in the `declare module 'vitest' { interface Assertion
+// extends TestingLibraryMatchers... }` ambient augmentation so `tsc` knows
+// about `toBeInTheDocument()` etc. `import type` is fully erased at compile
+// time — zero runtime emission, so it can't reintroduce the dual-instance
+// bug the runtime import above was rewritten to avoid.
+import type {} from '@testing-library/jest-dom/vitest';
+
+expect.extend(matchers);
 
 /**
  * F5.2 (HU-F5.2) — Buffer polyfill for vitest + jsdom.
