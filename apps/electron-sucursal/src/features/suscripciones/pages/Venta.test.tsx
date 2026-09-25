@@ -19,6 +19,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
+// Named type-only import so the `vi.mock` factory below can reference
+// `typeof UseVentaSuscripcionModule` instead of leaving `importOriginal()`
+// untyped (`unknown`) — pre-existing bug found while auditing tsc -b
+// (TS2698 "Spread types may only be created from object types" on
+// `...actual` below; mirrors the pattern already used by
+// `Dashboard.test.tsx`'s `react-router-dom` mock).
+import type * as UseVentaSuscripcionModule from '../hooks/useVentaSuscripcion';
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -26,7 +34,7 @@ vi.mock('react-i18next', () => ({
 const mockTrigger = vi.fn();
 const mockIsMutating = vi.fn(() => false);
 vi.mock('../hooks/useVentaSuscripcion', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof UseVentaSuscripcionModule>();
   return {
     ...actual,
     useVentaSuscripcion: () => ({
