@@ -116,9 +116,18 @@ export function CuposLibresStrip({
       aria-label={t('operacion:miTurno.kpis.cuposLibres', {
         defaultValue: 'Cupos libres',
       })}
-      className="sticky bottom-0 z-10 col-span-1 max-h-[80px] border-t border-border/40 bg-card/80 px-4 py-2 shadow-apple-sm backdrop-blur-md lg:col-span-3 lg:row-start-3"
+      // F31.3 rediseño: `lg:col-span-3` era un bug preexistente — el grid
+      // raíz de Dashboard.tsx solo tiene 2 columnas reales
+      // (`grid-cols-[240px_1fr]`), nunca 3. Se corrige a `md:col-span-2`,
+      // alineado además con el nuevo breakpoint del sidebar (md en vez de
+      // lg — ver Dashboard.tsx). `overflow-y-auto` es la red de
+      // seguridad: si algún día hay muchos tipos de vehículo (catálogo
+      // abierto) y los chips envuelven a más líneas de las que caben en
+      // `max-h-[80px]`, el footer scrollea internamente en vez de
+      // desbordarse visualmente sobre la tarjeta de arriba.
+      className="sticky bottom-0 z-10 col-span-1 max-h-[80px] overflow-y-auto border-t border-border/40 bg-card/80 px-4 py-2 shadow-apple-sm backdrop-blur-md md:col-span-2 md:row-start-3"
     >
-      <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+      <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
         <ul
           role="list"
           data-testid="cupos-libres-strip-list"

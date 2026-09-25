@@ -75,6 +75,7 @@ import {
   Wallet,
   ClipboardList,
   Receipt,
+  LogOut,
 } from 'lucide-react';
 
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
@@ -209,12 +210,22 @@ export function Dashboard(): JSX.Element | null {
 
     return (
       <div
-        className="grid min-h-[calc(100vh-2.5rem)] w-full grid-rows-[auto_1fr_auto] grid-cols-1 lg:grid-cols-[240px_1fr]"
+        className="grid min-h-[calc(100dvh-2.5rem)] w-full grid-rows-[auto_1fr_auto] grid-cols-1 md:grid-cols-[240px_1fr]"
         data-testid="dashboard-hub"
       >
-        {/* ── Top header bar (mobile-first: minimum on mobile, full on lg+) ── */}
-        <header className="col-span-1 lg:col-span-3 flex flex-wrap items-center gap-2 border-b border-border/40 bg-card/80 px-4 py-2.5 backdrop-blur-md shadow-apple-sm md:gap-3 md:px-5">
-          {/* Hamburger — only on small screens (below lg). */}
+        {/* ── Top header bar (mobile-first: minimum on mobile, full on md+).
+            REDISEÑO F31.3: el punto de quiebre del sidebar/hamburguesa baja
+            de lg (1024) a md (768) — a partir de "Tablet vertical" (ver
+            tabla de breakpoints del brief) ya sobra ancho para un sidebar
+            fijo de 240px sin apretujar el contenido (240px deja ≥528px
+            libres desde 768px en adelante). Antes el header usaba
+            `lg:col-span-3` sobre un grid que solo tiene 2 columnas reales
+            (`[240px_1fr]`) — bug preexistente inocuo (el navegador crea una
+            3ra columna implícita de 0px) que se corrige acá a
+            `md:col-span-2`. */}
+        <header className="col-span-1 min-w-0 flex flex-wrap items-center gap-2 border-b border-border/40 bg-card/80 px-4 py-2.5 backdrop-blur-md shadow-apple-sm md:col-span-2 md:gap-3 md:px-5 xl:px-6">
+          {/* Hamburger — only below md. 44×44 (antes 32×32) para cumplir
+              tamaño mínimo de tap target en kiosko táctil. */}
           <button
             type="button"
             data-testid="dashboard-hamburger"
@@ -222,29 +233,39 @@ export function Dashboard(): JSX.Element | null {
             aria-controls="dashboard-sidebar-nav"
             aria-label={t('common:menu', { defaultValue: 'Menu' })}
             onClick={() => setMobileNavOpen((v) => !v)}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-border bg-background text-sm hover:bg-accent lg:hidden"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded border border-border bg-background text-base hover:bg-accent md:hidden"
           >
             {mobileNavOpen ? '✕' : '☰'}
           </button>
 
-          {/* Operador + sucursal — only on md+ (avoid header bloat on mobile). */}
-          <div className="hidden items-baseline gap-2 md:flex">
-            <strong data-testid="operador-name">{operadorLabel}</strong>
-            <span className="text-xs text-muted-foreground" data-testid="operador-sucursal">
+          {/* Operador + sucursal — only on md+ (avoid header bloat on
+              mobile/phablet). `min-w-0` + `truncate` evitan que un nombre
+              de sucursal largo empuje overflow horizontal en el rango
+              768-1023 donde el header ya comparte espacio con hotkeys +
+              controles de turno. */}
+          <div className="hidden min-w-0 items-baseline gap-2 md:flex">
+            <strong className="shrink-0" data-testid="operador-name">{operadorLabel}</strong>
+            <span className="min-w-0 truncate text-xs text-muted-foreground" data-testid="operador-sucursal">
               {sucursalLabel} — {t('common:administrador', { defaultValue: 'Administrador' })}
             </span>
           </div>
 
-          {/* Online status — only on lg+ (avoid clutter on mobile). F11.1
-              realineado (REQ-OPS-171, AD-3/AD-4/AD-5, 2026-09-24): este
-              badge ya NO es un placeholder estático — es el indicador
-              real de sincronización hacia la nube (antes vivía en el
-              `<SyncBanner />` de arriba de la página, eliminado por
-              directiva del operador). El color del punto/fondo y el
-              tooltip reflejan `useSyncEstado` en tiempo real. */}
-          <SyncStatusBadge uuid_sucursal={uuid_sucursal} />
+          {/* Online status — `<SyncStatusBadge />` (fuera del alcance de
+              esta tarea) trae su propio `ml-auto lg:inline-flex` embebido
+              en el componente. Se envuelve en un `<div>` plano (fuera de
+              cualquier contexto flex) para neutralizar ese margen
+              automático — sin el wrapper, el badge empujaría todo lo que
+              viene después de sí mismo (hotkeys, tema, turno, cerrar) al
+              borde derecho en vez de vivir en el clúster central. Su
+              breakpoint interno (lg=1024) queda sin cambios — no es
+              editable desde acá. F11.1 realineado (REQ-OPS-171,
+              AD-3/AD-4/AD-5, 2026-09-24). */}
+          <div>
+            <SyncStatusBadge uuid_sucursal={uuid_sucursal} />
+          </div>
 
-          {/* F1-F6 hotkey chips — only on md+ (mobile users use on-screen buttons). */}
+          {/* F1-F6 hotkey chips — only on md+ (mobile/tablet chico usa los
+              botones del sidebar/drawer). */}
           <span className="hidden gap-1 md:inline-flex">
             {Object.entries(DRAWER_BY_HOTKEY).map(([key, kind]) => (
               <kbd
@@ -265,18 +286,29 @@ export function Dashboard(): JSX.Element | null {
             ))}
           </span>
 
-          {/* Turno chip + Cerrar turno — always visible (mobile + desktop). */}
-          <ThemeToggle />
-          <TurnoActivoToggle sesion={sesion} />
-          <Button
-            variant="default"
-            size="sm"
-            data-testid="dashboard-cerrar-turno"
-            onClick={() => openDrawer('cerrar-turno', 'dashboard-cerrar-turno')}
-            className="shrink-0"
-          >
-            {t('caja:cerrarTurnoLabel')}
-          </Button>
+          {/* Turno chip + Cerrar turno — always visible (mobile + desktop),
+              ahora ancladas al borde derecho del header (`ml-auto`) en vez
+              de flotar pegadas al clúster izquierdo: en pantallas anchas
+              (1920/2560/3840/ultrawide) evita que todo el header quede
+              apelmazado a la izquierda con un vacío enorme a la derecha.
+              `flex-wrap` interno + `justify-end` son la red de seguridad en
+              320px, donde el chip de turno (contenido dinámico, fuera de
+              alcance) puede no caber junto al botón de cerrar turno. */}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <ThemeToggle />
+            <TurnoActivoToggle sesion={sesion} />
+            <Button
+              variant="default"
+              size="sm"
+              data-testid="dashboard-cerrar-turno"
+              onClick={() => openDrawer('cerrar-turno', 'dashboard-cerrar-turno')}
+              aria-label={t('caja:cerrarTurnoLabel')}
+              className="h-11 shrink-0 gap-1.5 px-3 sm:px-4"
+            >
+              <LogOut className="h-4 w-4 sm:hidden" aria-hidden />
+              <span className="hidden sm:inline">{t('caja:cerrarTurnoLabel')}</span>
+            </Button>
+          </div>
         </header>
 
         {/* ── Left sidebar nav ──────────────────────────────────────────── */}
@@ -292,13 +324,16 @@ export function Dashboard(): JSX.Element | null {
             id="dashboard-sidebar-nav"
             aria-label={t('caja:dashboard.navLabel', { defaultValue: 'Acciones rápidas' })}
             className={
-              // Mobile: drawer-style overlay (when hamburger open) OR hidden.
-              // lg+: static sidebar in the grid (col-start-1 row-start-2).
+              // Mobile/tablet chico: drawer-style overlay (when hamburger
+              // open) OR hidden. md+: static sidebar in the grid
+              // (col-start-1 row-start-2) — ver nota del breakpoint en el
+              // <header /> de más arriba (mismo criterio: 768px alcanza
+              // para un sidebar de 240px fijo sin apretujar).
               'flex flex-col gap-1 overflow-y-auto border-r border-border/40 bg-card/40 p-2 ' +
-              'lg:row-start-2 lg:col-start-1 ' +
+              'md:row-start-2 md:col-start-1 ' +
               (mobileNavOpen
                 ? 'fixed inset-y-0 left-0 z-40 w-64 border-r shadow-apple-lg'
-                : 'hidden lg:flex')
+                : 'hidden md:flex')
             }
           >
             {/* Ingreso + Salida — acciones CORE del kiosko. Los drawers
@@ -456,16 +491,20 @@ export function Dashboard(): JSX.Element | null {
             type="button"
             aria-label={t('common:cerrar', { defaultValue: 'Cerrar menú' })}
             onClick={() => setMobileNavOpen(false)}
-            className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+            className="fixed inset-0 z-30 bg-black/40 md:hidden"
           />
         )}
 
         {/* ── Center: placa hero + welcome ─────────────────────────────── */}
         <main
           lang="es-CO"
-          className="row-start-2 col-start-1 flex flex-col gap-3 overflow-y-auto p-3 lg:col-start-2 lg:p-3"
+          className="row-start-2 col-start-1 min-w-0 flex flex-col gap-3 overflow-y-auto p-[clamp(0.75rem,1.5vw,1.5rem)] md:col-start-2"
         >
-          <Card data-testid="placa-card">
+          {/* `placa-card` se centra con un ancho máximo (48rem) para que
+              en 4K/ultrawide no se estire a un input gigantesco e
+              ilegible — `vehiculos-list-card` (abajo) NO tiene este cap:
+              es contenido de datos y puede usar el ancho extra. */}
+          <Card data-testid="placa-card" className="mx-auto w-full max-w-3xl">
             <CardHeader className="px-5 pt-5 pb-3">
               <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
                 {t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
@@ -723,7 +762,14 @@ function PlacaInputHero({
           onChange={handleChange}
           maxLength={PLACA_HERO_MAX_LEN}
           disabled={submitting}
-          className="block w-full rounded-2xl border-0 bg-muted/50 px-4 py-6 text-center font-mono text-6xl uppercase tracking-[0.4em] outline-none placeholder:text-muted-foreground/40 focus-ring-apple focus-visible:bg-background focus-visible:shadow-apple transition-all disabled:opacity-60"
+          // Tamaño por pasos (no clamp() puro): el ancho disponible NO
+          // escala linealmente con el viewport — a partir de md el layout
+          // pasa a sidebar+main (240px fijos de por medio), así que un
+          // clamp() basado en vw calcularía mal justo en ese quiebre. Los
+          // pasos están calculados para que "ABC123" (6 chars, tracking
+          // incluido) siempre quepa dentro del `placa-card` (max-w-3xl)
+          // sin recortarse, incluso en 320px.
+          className="block w-full rounded-2xl border-0 bg-muted/50 px-4 py-4 text-center font-mono text-[1.875rem] uppercase tracking-[0.12em] outline-none placeholder:text-muted-foreground/40 focus-ring-apple focus-visible:bg-background focus-visible:shadow-apple transition-all disabled:opacity-60 min-[375px]:text-[2.25rem] min-[480px]:py-5 min-[480px]:text-[2.75rem] min-[480px]:tracking-[0.2em] md:py-6 md:text-6xl md:tracking-[0.4em]"
           onKeyDown={onKeyDown}
           onBlur={() => setSuggestionsClosed(true)}
           aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
@@ -839,7 +885,7 @@ function VehiculosDentroList({
           más presencia visual, así que esta lista reserva más espacio
           para que el footer más alto no la tape. */}
       <ul
-        className="max-h-[calc(100vh-14rem)] flex-1 divide-y divide-border/40 overflow-y-auto"
+        className="max-h-[calc(100dvh-14rem)] flex-1 divide-y divide-border/40 overflow-y-auto"
         data-testid="vehiculos-list"
       >
         {visible.map((it) => {

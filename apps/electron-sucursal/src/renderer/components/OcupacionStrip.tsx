@@ -103,12 +103,12 @@ export function OcupacionStrip({ uuid_sucursal }: OcupacionStripProps): JSX.Elem
         role="status"
         data-testid="ocupacion-strip"
         data-stale={isStale ? 'true' : 'false'}
-        className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm"
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm"
       >
         <Tooltip>
           <TooltipTrigger asChild>
             <span
-              className="flex items-center gap-1 font-medium text-foreground"
+              className="flex shrink-0 items-center gap-1 font-medium text-foreground"
               data-testid="ocupacion-strip-title"
             >
               {t('ocupacion_titulo')}

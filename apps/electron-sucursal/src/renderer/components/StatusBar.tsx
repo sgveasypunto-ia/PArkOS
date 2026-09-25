@@ -149,7 +149,16 @@ export function StatusBar(): JSX.Element | null {
       aria-label={displayAriaLabel(state.display)}
       data-testid="status-bar"
       data-status={state.display}
-      className="status-bar"
+      // F31.3 rediseño: la clase `status-bar` nunca tuvo una regla CSS
+      // asociada (grep confirma cero matches en el proyecto) — el chip se
+      // renderizaba sin estilos, aunque `App.tsx`/`Dashboard.tsx` ya
+      // asumían ~2rem de alto para esta franja en sus cálculos de
+      // `min-h-[calc(100dvh-...)]`. `h-8` = 2rem exactos, así que el alto
+      // real ahora coincide con esa suposición en vez de contradecirla.
+      // Tokens de marca (--muted/--border/--foreground vía Tailwind) y la
+      // escala tipográfica fluida existente (`text-label`, tokens.css) —
+      // sin valores sueltos.
+      className="status-bar flex h-8 w-full items-center justify-center gap-1 truncate border-b border-border/40 bg-muted/60 px-3 text-center text-label font-medium text-muted-foreground"
     >
       {displayText(state.display)}
     </div>
