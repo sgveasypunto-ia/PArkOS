@@ -8,9 +8,19 @@
  *
  * Drawer kinds mounted:
  *   - `'pago'`           → `<PagoSheet />` (PR-3, F8.1)
- *   - `'reimpresion'`    → `<ReimprimirTiqueteSheet />`
+ *   - `'reimpresion'`    → `<ReimprimirTiqueteSheet />` (HU-F8.3 —
+ *                          thin shell around `pages/ReimprimirTiquete`,
+ *                          mismo patrón que `<ArqueoSheet />`)
  *   - `'arqueo'`         → `<ArqueoSheet />`
- *   - `'cierre-diario'`  → `<CierreDiarioDialog />`
+ *   - `'cierre-diario-multi'` → `<CierreDiarioSheet />` (HU-F10.3,
+ *                          ajuste 2026-09-25: reemplaza la ruta
+ *                          `/caja/cierre-diario`, mismo patrón que
+ *                          `<ArqueoSheet />`. Unifica también el hotkey
+ *                          F6 — el viejo kind `'cierre-diario'`
+ *                          per-session (`<CierreDiarioDialog />`) era
+ *                          código muerto confirmado — se montaba con
+ *                          uuid_sucursal/uuid_sesion=null siempre — y
+ *                          fue retirado.)
  *   - `'ingreso'`        → `<IngresoSheet />` (F6.1 — wires the
  *                          dashboard's PlacaInputHero to the ingreso flow)
  *   - `'salida'`         → `<SalidaSheet />` (F7.1 — same for salida)
@@ -26,10 +36,10 @@
  */
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { PagoSheet } from '../../facturacion/components/PagoSheet';
-import { ReimprimirTiqueteSheet } from '../../reimpresion/components/ReimprimirTiqueteSheet';
+import { ReimprimirTiqueteSheet } from '../../facturacion/components/ReimprimirTiqueteSheet';
 import { ArqueoSheet } from '../components/ArqueoSheet';
 import { CerrarTurnoSheet } from '../components/CerrarTurnoSheet';
-import { CierreDiarioDialog } from '../../caja/components/CierreDiarioDialog';
+import { CierreDiarioSheet } from '../pages/CierreDiarioSheet';
 import { IngresoSheet } from '../../operacion/components/IngresoSheet';
 import { SalidaSheet } from '../../operacion/components/SalidaSheet';
 import { SuscripcionesSheet } from '../../suscripciones/components/SuscripcionesSheet';
@@ -105,8 +115,13 @@ export function DrawerHost(): JSX.Element | null {
     // which implicitly unmounts the drawer via the route change.
     return <CerrarTurnoSheet />;
   }
-  if (openDrawer === 'cierre-diario') {
-    return <CierreDiarioDialog uuid_sucursal={null} uuid_sesion={null} />;
+  if (openDrawer === 'cierre-diario-multi') {
+    // Ajuste 2026-09-25 (directiva del operador): el cierre diario
+    // multi-sesión (antes ruta `/caja/cierre-diario`) ahora vive en
+    // este Sheet, mismo patrón que Arqueo/CerrarTurno/Reimprimir.
+    // Unifica también el hotkey F6 — ver DRAWER_BY_HOTKEY en
+    // `Dashboard.tsx`.
+    return <CierreDiarioSheet />;
   }
   if (openDrawer === 'ingreso') {
     return <IngresoSheet />;

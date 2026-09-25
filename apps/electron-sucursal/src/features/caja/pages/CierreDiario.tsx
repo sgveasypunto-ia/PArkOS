@@ -36,6 +36,7 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useArqueo } from '../hooks/useArqueo';
 import {
   useArqueoResumenPorSesion,
@@ -150,6 +151,13 @@ export function CierreDiario(): JSX.Element {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const onCancel = (): void => {
+    // Ajuste 2026-09-25: `<CierreDiario />` ahora vive DENTRO de
+    // `<CierreDiarioSheet />` (montada en `/`, la misma ruta a la que
+    // este `navigate('/')` apunta) — a diferencia de `<CerrarTurno />`
+    // (que navega a `/login`, una ruta distinta cuyo desmontaje cierra
+    // el drawer implícitamente), acá el `navigate` es un no-op de
+    // ruteo. Hay que cerrar el drawer explícitamente.
+    useDashboardDrawerStore.getState().close();
     navigate('/');
   };
 
@@ -186,6 +194,10 @@ export function CierreDiario(): JSX.Element {
         // (NOT `/login?closed=true`). On success, the success banner
         // is rendered below; the page does NOT clear auth or dispatch
         // the `parkos:auth:cleared` event.
+        // Ajuste 2026-09-25: cerrar el drawer explícitamente (ver
+        // comentario de `onCancel` — `navigate('/')` no desmonta nada
+        // acá porque el Sheet ya vive en `/`).
+        useDashboardDrawerStore.getState().close();
         navigate('/');
         return;
       case 'arqueo_fallido':
@@ -207,18 +219,7 @@ export function CierreDiario(): JSX.Element {
   // Multi-branch operador- → pending banner.
   if (isMultiBranchOperador) {
     return (
-      <main
-        data-testid="cierre-diario-page"
-        lang="es-CO"
-        className="mx-auto max-w-3xl p-4"
-      >
-        {/* F31.3 rediseño: `text-2xl` (24px fijo) → `text-h3` (clamp
-            24→30px, tokens.css), la escala tipográfica fluida del
-            proyecto — gana legibilidad en 1920/2560/3840/ultrawide sin
-            perder el tamaño base en viewports chicos. */}
-        <h1 className="mb-2 text-h3 font-bold">
-          {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
-        </h1>
+      <div data-testid="cierre-diario-page">
         <div
           data-testid="cierre-diario-multi-branch-pending"
           role="status"
@@ -246,25 +247,14 @@ export function CierreDiario(): JSX.Element {
         >
           {t('caja:cierreDiario.cancelar', { defaultValue: 'Cancelar' })}
         </Button>
-      </main>
+      </div>
     );
   }
 
   // No branch context at all → defensive banner.
   if (uuidSucursal === null) {
     return (
-      <main
-        data-testid="cierre-diario-page"
-        lang="es-CO"
-        className="mx-auto max-w-3xl p-4"
-      >
-        {/* F31.3 rediseño: `text-2xl` (24px fijo) → `text-h3` (clamp
-            24→30px, tokens.css), la escala tipográfica fluida del
-            proyecto — gana legibilidad en 1920/2560/3840/ultrawide sin
-            perder el tamaño base en viewports chicos. */}
-        <h1 className="mb-2 text-h3 font-bold">
-          {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
-        </h1>
+      <div data-testid="cierre-diario-page">
         <div
           data-testid="cierre-diario-supervisor-only"
           role="status"
@@ -292,49 +282,24 @@ export function CierreDiario(): JSX.Element {
         >
           {t('caja:cierreDiario.cancelar', { defaultValue: 'Cancelar' })}
         </Button>
-      </main>
+      </div>
     );
   }
 
   // Loading skeleton — hook still fetching.
   if (!data && !error) {
     return (
-      <main
-        data-testid="cierre-diario-page"
-        lang="es-CO"
-        className="mx-auto max-w-3xl p-4"
-      >
-        {/* F31.3 rediseño: `text-2xl` (24px fijo) → `text-h3` (clamp
-            24→30px, tokens.css), la escala tipográfica fluida del
-            proyecto — gana legibilidad en 1920/2560/3840/ultrawide sin
-            perder el tamaño base en viewports chicos. */}
-        <h1 className="mb-2 text-h3 font-bold">
-          {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
-        </h1>
+      <div data-testid="cierre-diario-page">
         <div
           data-testid="cierre-diario-skeleton"
           className="h-48 animate-pulse rounded bg-muted"
         />
-      </main>
+      </div>
     );
   }
 
   return (
-    <main
-      data-testid="cierre-diario-page"
-      lang="es-CO"
-      className="mx-auto max-w-3xl space-y-2 p-4"
-    >
-      <h1 className="text-h3 font-bold">
-        {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
-      </h1>
-      <p className="text-sm text-muted-foreground">
-        {t('caja:cierreDiario.subtitulo', {
-          defaultValue:
-            'Cierre de todas las sesiones abiertas del día — supervisor / multi-sucursal.',
-        })}
-      </p>
-
+    <div data-testid="cierre-diario-page" className="space-y-2">
       {error && (
         <div
           data-testid="cierre-diario-error-fetch"
@@ -451,6 +416,6 @@ export function CierreDiario(): JSX.Element {
         >[0]['onSubmit']}
         onCancel={onCancel}
       />
-    </main>
+    </div>
   );
 }
