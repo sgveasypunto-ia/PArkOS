@@ -1445,6 +1445,10 @@ Desbloquea: ninguna pantalla obligatoria de esta parte, pero cierra un hueco de 
 - **HU-F4.3-T2**: *polling* SWR `refreshInterval: 10_000` + `AbortController`.
 - **HU-F4.3-T3**: `e2e/ocupacion.spec.ts`.
 
+**Addendum — footer `<CuposLibresStrip />` del Dashboard (`apps/electron-sucursal`, mismo dato de `GET /operacion/ocupacion` + mismo umbral de color de esta HU, componente separado de `OcupacionStrip`):**
+- Directiva operador (2026-09-24): un tipo de vehículo con `cupo_maximo=0` (no habilitado en la sucursal) NUNCA se muestra en el footer — ni la tarjeta por tipo ni el agregado total lo cuentan.
+- Directiva operador (2026-09-24, rediseño — supersede la iteración minimalista anterior del 2026-09-22): el footer dejó de estar acotado a ~80px de alto; ahora usa tarjetas individuales por tipo (ícono + número de cupos libres en tipografía grande + color de fondo por umbral) y un bloque de total agregado con la mayor jerarquía visual de la franja, a propósito para llamar la atención. Sigue siendo `sticky bottom-0` dentro del mismo dashboard, nunca modal ni ruta aparte.
+
 ---
 
 ## Fase 5 — Impresión térmica

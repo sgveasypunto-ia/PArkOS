@@ -134,5 +134,9 @@
     },
     "cerrarTurno": "Cerrar turno",
     "hacerArqueo": "Hacer arqueo"
+  },
+  "cuposLibresStrip": {
+    "libres": "libres",
+    "ocupados": "ocupados"
   }
 }
