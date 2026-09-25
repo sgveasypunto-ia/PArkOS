@@ -93,9 +93,6 @@ vi.mock('../../../operacion/components/CuposLibresStrip', () => ({
 vi.mock('../../../operacion/components/IngresoPanel', () => ({
   IngresoPanel: () => <div data-testid="ingreso-panel-stub" />,
 }));
-vi.mock('../../../suscripciones/components/SuscripcionesPanel', () => ({
-  SuscripcionesPanel: () => <div data-testid="suscripciones-panel-stub" />,
-}));
 vi.mock('../../../sync/components/SyncStatusBadge', () => ({
   SyncStatusBadge: () => <div data-testid="sync-badge-stub" />,
 }));
@@ -171,8 +168,10 @@ describe('<Dashboard /> cold-mount network spy — REQ-OPS-137/139', () => {
     // paths are gated by their own UUIDs which Dashboard passes as
     // null by default (REQ-OPS-137 §composable-section contract).
     // The panels that DO fetch on a warm branch (OcupacionPanel /
-    // SyncStatusBadge / SuscripcionesPanel) are stubbed here, so we
-    // still observe ZERO calls on the parkosFetch spy.
+    // SyncStatusBadge) are stubbed here, so we still observe ZERO
+    // calls on the parkosFetch spy. `SuscripcionesPanel` (dead,
+    // unmounted since the F9.1 Sheet redesign) was deleted along with
+    // its stub in the HU-F9.2 realineada session (2026-09-24).
     // Note (F11.2): the F11.1 `AlertasPanel` sr-only stub was deleted
     // in C6 (R-F11.1-CARRY-2 authorised). The new orchestrator lives
     // at `src/components/AlertasPanel.tsx` and is gated on

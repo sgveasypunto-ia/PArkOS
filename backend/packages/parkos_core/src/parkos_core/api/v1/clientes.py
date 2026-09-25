@@ -127,9 +127,15 @@ _mount_cliente(
 
 # HU-F1.12 -- mount POST /clientes/venta-suscripcion dedicated router
 # (DEC-VENTA-05 + DEC-VENTA-06 layer 5 mirror of F1.11 reimpresion).
-from .clientes_venta import router as venta_suscripcion_router  # noqa: E402
+from .clientes_venta import router as venta_suscripcion_router
 
 router.include_router(venta_suscripcion_router)
+
+# HU-F9.2 realineada -- mount the cupos-management dedicated router
+# (listar activas / buscar por identificacion / agregar / quitar).
+from .clientes_cupos import router as cupos_router
+
+router.include_router(cupos_router)
 
 
 __all__ = ["router"]

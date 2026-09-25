@@ -19,9 +19,10 @@ import useSWR from 'swr';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
+import type {
+  TipoSubscripcion} from '../api/ventaSuscripcionApi';
 import {
   GET_TIPOS_SUBSCRIPCION_PATH,
-  TipoSubscripcion,
   TipoSubscripcionListSchema,
 } from '../api/ventaSuscripcionApi';
 

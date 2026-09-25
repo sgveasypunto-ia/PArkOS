@@ -2152,36 +2152,44 @@ sequenceDiagram
 
 ---
 
-### HU-F9.2 — Listado, consulta y alerta de vencimiento próximo
+### HU-F9.2 — Listado, búsqueda por identificación y gestión de cupos (Sheet de sucursal)
 
-**Historia**: Como operador, quiero ver las suscripciones vigentes de mi sede y recibir aviso cuando alguna está por vencer.
+**Historia**: Como operador, quiero ver de un vistazo las suscripciones activas de mi sede y, sobre una en particular, poder agregar o quitar vehículos inscritos sin salir del panel de suscripciones.
+
+**Realineado 2026-09-24** (directiva del operador): el diseño original de esta HU vivía en una página aparte (`/suscripciones`, `Listado.tsx` + DataTable) con búsqueda por placa/cliente, y no cubría gestión de cupos post-venta (esa gestión no estaba cubierta en ninguna HU de sucursal — HU-F20.2 en `web_admin` solo cubre validaciones al CREAR la suscripción y el campo `dias_alerta_pre_vencimiento`, no el alta/baja de vehículos de una suscripción ya vendida). Por directiva del operador, el listado + gestión ahora viven DENTRO de `<SuscripcionesSheet />` (ya usado para el flujo de venta, HU-F9.1) como pasos adicionales, y el buscador cambia de placa/cliente a **número de identificación del cliente** — el dato con el que el operador atiende en mostrador. El panel de "por vencer" (top-5 + banner inline) fue relocalizado fuera del kiosko en `feat/ux-remover-suscripciones-vencer` (2026-09-22) y queda fuera del alcance de esta HU.
 
 **Criterios de aceptación**:
-- Given `/suscripciones`, Then lista con búsqueda por placa/cliente, mostrando cliente, plan, fecha de vencimiento y días restantes.
-- Given una suscripción con `dias_para_vencer <= dias_alerta_pre_vencimiento` (default 7), Then aparece un banner amarillo inline en la pantalla principal con el texto literal: **"Suscripción de esta placa vence en X días (fecha). Considere renovación."**
-- Given más de una suscripción por vencer, Then el panel "Suscripciones por vencer" muestra el conteo total y una lista de las primeras 5 (top 5), ordenadas por fecha de vencimiento ascendente.
-- Given una suscripción ya vencida (`dias_para_vencer < 0`), Then no aparece en "por vencer" sino marcada como "vencida" en el listado general, sin generar la alerta de vencimiento próximo (esa alerta es solo para las que aún están vigentes).
-- Given la búsqueda por placa o cliente, When se escribe en el campo de búsqueda, Then la lista se filtra sin recargar la página completa.
+- Given el operador abre `<SuscripcionesSheet />` (botón "Suscripción" del Dashboard), Then el paso inicial (`mode='list'`) muestra el listado de suscripciones **activas** de la sucursal actual (`estado='activo' AND fecha_vencimiento >= hoy`), con cliente, plan y fecha de vencimiento.
+- Given un campo de búsqueda por número de identificación en ese mismo paso, When el operador escribe un número de identificación y confirma, Then el Sheet avanza a un paso de detalle (`mode='cupos'`) con la suscripción de ese cliente: plan contratado, cupo máximo (`tipo_subscripciones.cantidad_maxima_vehiculos`), vehículos inscritos actualmente y cupos libres.
+- Given cupos libres > 0, When el operador agrega una placa nueva, Then el vehículo queda inscrito (INSERT en `subscripcion_vehiculos`) respetando `mismo_tipo_vehiculo` si el plan lo exige — sin cupos libres, la acción se bloquea con 422 antes de tocar la base.
+- Given un vehículo ya inscrito, When el operador lo quita, Then se cierra su versión vigente e inserta una nueva con `estado='inactivo'` (bi-temporal, `close_and_insert` — nunca DELETE), liberando un cupo de inmediato en la misma pantalla.
+- Given ningún resultado para el número de identificación buscado, Then el Sheet muestra un estado vacío explícito, sin error de red.
+- Todo el flujo (listado → búsqueda → cupos) ocurre DENTRO del mismo `<SuscripcionesSheet />`, sin navegar a otra ruta.
 
 **ABIERTO relevante (no resuelto en esta fase, ver cierre de Parte I)**: CU-06 BR4 exige que `dias_alerta_pre_vencimiento` sea editable **por suscripción individual** al crearla; el ER no tiene columna para eso en `subscripciones_cliente` (solo `tipo_sucursal.caracteristicas` admite un default global vía JSON). Esta fase implementa el default global (adaptación A-06 bis / §0.4); el override por suscripción queda como ABIERTO-05.
 
-**Tablas ER tocadas** (solo lectura): `subscripciones_cliente`, `subscripcion_vehiculos`, `clientes`, `tipo_sucursal` (default de `dias_alerta_pre_vencimiento`).
+**Tablas ER tocadas**: `subscripciones_cliente` (R), `subscripcion_vehiculos` (R + INSERT para agregar + `close_and_insert` para quitar), `clientes` (R, búsqueda por `numero_identificacion`), `tipo_subscripciones` (R, `cantidad_maxima_vehiculos`/`mismo_tipo_vehiculo`).
 
-**Endpoints**: `GET /clientes/venta-suscripcion` no aplica aquí; listado vía el endpoint de lectura estándar de `subscripciones_cliente` (paginado por cursor).
+**Endpoints**:
+- `GET /clientes/subscripciones-activas` (nuevo, dedicado) — listado branch-scoped de suscripciones activas con plan + cliente + conteo de vehículos inscritos.
+- `GET /clientes/subscripciones-activas/buscar?numero_identificacion=X` (nuevo, dedicado — anidado bajo `subscripciones-activas` y no bajo `subscripciones-cliente` a propósito: esa última ya tiene el CRUD genérico montado con `GET /{uuid}`, y `/subscripciones-cliente/buscar` habría colisionado con ese patrón de un solo segmento) — detalle de la suscripción de un cliente con sus vehículos inscritos.
+- `POST /clientes/subscripcion-vehiculos/agregar` (nuevo, dedicado) — agrega un vehículo validando cupo y `mismo_tipo_vehiculo` (reutiliza `validar_cantidad_maxima_vehiculos`/`validar_placas_mismo_tipo_vehiculo`/`crear_subscripcion_vehiculos_bulk` de `repo/venta_suscripcion.py`).
+- `PUT /clientes/subscripcion-vehiculos/{uuid}/quitar` (nuevo, dedicado) — **no** se puede reutilizar el PUT genérico de `router_factory`: `SubscripcionVehiculosUpdate` (schemas/clientes.py) no expone `estado` como campo, así que nunca podría viajar `estado="inactivo"` en el payload. El endpoint dedicado llama `versioned.close_and_insert(session, SubscripcionVehiculos, current_uuid=uuid, new_attrs={"estado": "inactivo"}, actor_uuid=...)` directamente — `close_and_insert` carga el resto de columnas desde la fila vigente (confirmado en `repo/versioned.py`), así que solo `estado` cambia.
 
-**Componentes UI**: `Listado` (page, DataTable + búsqueda); `useSuscripcionesProximasVencer` (hook, cálculo `dias = (vencimiento - NOW()).days`).
+**Componentes UI**: `SuscripcionesSheet` (agrega `mode: 'buscar' | 'cupos'` a los existentes `'list' | 'venta'`), `useSuscripcionesActivas` (hook, reemplaza el roto `useSuscripcionesList` — pegaba a `/clientes/suscripciones`, endpoint inexistente), `useBuscarSuscripcionPorIdentificacion`, `useAgregarVehiculoSuscripcion`, `useQuitarVehiculoSuscripcion`.
 
-**Manejo de errores**: N/A (solo lectura).
+**Manejo de errores**: 422 `cantidad_maxima_excedida`; 422 `tipo_vehiculo_incompatible`; sin resultados de búsqueda → estado vacío explícito (no es error).
 
-**Pruebas**: `e2e/suscripciones-lista.spec.ts` — lista visible, banner aparece cuando corresponde.
+**Pruebas**: unit (vitest) por hook + componente nuevo/tocado; validación funcional con Chrome DevTools contra la API real (login operador, agregar/quitar vehículo, confirmar en Postgres). e2e Playwright queda fuera de esta iteración.
 
-**Tamaño estimado**: 220 LOC.
+**Tamaño estimado**: ~320 LOC (backend + frontend).
 
 **Tareas atómicas**:
-- **HU-F9.2-T1**: `src/features/suscripciones/pages/Listado.tsx` con DataTable + búsqueda.
-- **HU-F9.2-T2**: `useSuscripcionesProximasVencer()` con el cálculo exacto de días.
-- **HU-F9.2-T3**: banner amarillo (texto literal citado arriba) integrado en `Principal.tsx` (Fase 6) + panel "Suscripciones por vencer" (top 5).
-- **HU-F9.2-T4**: `e2e/suscripciones-lista.spec.ts` (2 escenarios).
+- **HU-F9.2-T1**: Backend — router dedicado `clientes_cupos.py` con los 4 endpoints nuevos (mirror de `clientes_venta.py`).
+- **HU-F9.2-T2**: Backend — tests de integración (pytest) para cupo excedido, tipo mixto, agregar y quitar.
+- **HU-F9.2-T3**: `useSuscripcionesActivas` (reemplaza `useSuscripcionesList`).
+- **HU-F9.2-T4**: `useBuscarSuscripcionPorIdentificacion`, `useAgregarVehiculoSuscripcion`, `useQuitarVehiculoSuscripcion`.
+- **HU-F9.2-T5**: `SuscripcionesSheet.tsx` — pasos `buscar`/`cupos`.
 
 ---
 

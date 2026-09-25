@@ -88,10 +88,24 @@ interface BackendErrorBody {
   cantidad_maxima_vehiculos?: number;
 }
 
+/**
+ * FastAPI's `HTTPException(status_code=422, detail={"error": ...})`
+ * serializes to `{"detail": {"error": ...}}` on the wire -- the typed
+ * fields live under `.detail`, never at the top level. Real bug found
+ * live 2026-09-24 while validating HU-F9.2 realineada (the very first
+ * time `POST /clientes/venta-suscripcion` was ever reachable over real
+ * HTTP -- a separate double-prefix routing bug made it 404 forever
+ * before that fix): reading `parsed.error` directly always returned
+ * `undefined`, so every 422 (suscripcion_duplicada_placa,
+ * tipo_vehiculo_incompatible, cantidad_maxima_excedida) silently fell
+ * through to the generic `ParkosHttpError` instead of its typed
+ * subclass, since HU-F1.12 shipped. Falls back to the top-level object
+ * for robustness in case a future endpoint ever returns an unwrapped body.
+ */
 function parseBackendErrorBody(body: string): BackendErrorBody | null {
   try {
-    const parsed = JSON.parse(body) as BackendErrorBody;
-    return parsed;
+    const parsed = JSON.parse(body) as { detail?: BackendErrorBody } & BackendErrorBody;
+    return parsed.detail ?? parsed;
   } catch {
     return null;
   }

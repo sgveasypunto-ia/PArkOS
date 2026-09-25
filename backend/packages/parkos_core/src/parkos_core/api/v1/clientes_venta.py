@@ -83,7 +83,22 @@ from . import _helpers
 # Dedicated router -- mounted via ``router.include_router`` from
 # ``api/v1/clientes.py`` (DEC-VENTA-05). DEC-VENTA-06 layer 5 mirror of
 # F1.11 reimpresion dedicated router pattern.
-router = APIRouter(prefix="/clientes", tags=["clientes"])
+#
+# Real bug found + fixed 2026-09-24 (HU-F9.2 realineada session): this
+# router MUST NOT carry its own "/clientes" prefix. ``api/v1/clientes.py``
+# includes this router into ITS OWN ``router`` (which already has
+# ``prefix="/clientes"``) via a bare ``router.include_router(...)`` (no
+# prefix arg) -- FastAPI's ``include_router`` bakes the PARENT's prefix
+# onto every route it absorbs, on top of whatever prefix the child router
+# already baked into its own route paths at decoration time. With
+# ``prefix="/clientes"`` here too, every route doubled to
+# ``/api/v1/clientes/clientes/venta-suscripcion`` (confirmed live via
+# ``GET /openapi.json`` on the running container) while the frontend
+# (``ventaSuscripcionApi.ts::POST_VENTA_SUSCRIPCION_PATH``) correctly
+# calls the single-``/clientes`` path -- every real venta-suscripcion
+# request 404'd. The existing e2e test never caught it because it calls
+# the handler function directly, never through HTTP routing.
+router = APIRouter(tags=["clientes"])
 
 # KD-3 issuer chain + ``gestionar_clientes`` permission gate (DEC-VENTA-05).
 _venta_suscripcion_issuer_dep = requires_issuer("operador-", "admin-")

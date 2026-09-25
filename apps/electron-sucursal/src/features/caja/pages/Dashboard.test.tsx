@@ -137,12 +137,6 @@ vi.mock('../../operacion/components/SalidaSheet', () => ({
   SalidaSheet: () => <div data-testid="salida-sheet-mock" />,
 }));
 
-// Stub SuscripcionesPanel — uses useSuscripcionesList which would
-// require parkosFetch + authStore mocks.
-vi.mock('../../suscripciones/components/SuscripcionesPanel', () => ({
-  SuscripcionesPanel: () => <div data-testid="suscripciones-panel-mock" />,
-}));
-
 // Stub FacturaElectronicaRetryPanel — uses useFacturaElectronica SWR
 // which would require parkosFetch + authStore mocks.
 vi.mock('../../facturacion/components/FacturaElectronicaRetryPanel', () => ({

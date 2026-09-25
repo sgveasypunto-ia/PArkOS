@@ -302,10 +302,18 @@ async def test_venta_suscripcion_handler_has_kd3_issuer_dep() -> None:
         "T5 violated: handler module must expose _venta_suscripcion_issuer_dep"
         " (DEC-VENTA-05 KD-3 issuer chain + gestionar_clientes permission gate)."
     )
-    # Verify the router endpoint is registered under /clientes prefix.
+    # Real bug found + fixed 2026-09-24 (HU-F9.2 realineada session): this
+    # router must NOT declare its own "/clientes" prefix -- api/v1/clientes.py
+    # mounts it into a router that ALREADY carries prefix="/clientes", and a
+    # second prefix here doubled every real HTTP path to
+    # /api/v1/clientes/clientes/venta-suscripcion (confirmed live via
+    # GET /openapi.json on the running container -- every venta-suscripcion
+    # request 404'd). The un-prefixed path below is what this standalone
+    # router now declares on its own; the "/clientes" prefix is applied once,
+    # by the parent, at mount time (see clientes.router.include_router call).
     paths = {r.path for r in handler_mod.router.routes}
-    assert "/clientes/venta-suscripcion" in paths, (
-        f"T5 violated: POST /clientes/venta-suscripcion not registered; got {paths}"
+    assert "/venta-suscripcion" in paths, (
+        f"T5 violated: POST /venta-suscripcion not registered; got {paths}"
     )
 
 
@@ -324,8 +332,13 @@ async def test_clientes_module_mounts_venta_suscripcion_router() -> None:
                 p = getattr(r, "path", None)
                 if p:
                     all_paths.add(p)
-    assert "/clientes/venta-suscripcion" in all_paths, (
-        f"T5.4 violated: POST /clientes/venta-suscripcion not mounted on the "
+    # See test_venta_suscripcion_handler_has_kd3_issuer_dep above for why this
+    # is "/venta-suscripcion" (un-prefixed) and not "/clientes/venta-suscripcion"
+    # -- the parent clientes.router applies the "/clientes" prefix exactly
+    # once, at mount time; verified end-to-end via GET /openapi.json on the
+    # live container (real path: /api/v1/clientes/venta-suscripcion).
+    assert "/venta-suscripcion" in all_paths, (
+        f"T5.4 violated: POST /venta-suscripcion not mounted on the "
         f"factory router; got {all_paths}"
     )
 
@@ -385,15 +398,14 @@ async def test_venta_suscripcion_voucher_requerido_datafono_sin_referencia() -> 
     ), patch.object(
         handler_mod.repo_venta, "crear_subscripcion_vehiculos_bulk",
         new=AsyncMock(return_value=[vehiculo_row]),
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            await handler_mod.venta_suscripcion(
-                response=response,
-                payload=payload,
-                session=session,
-                ctx=ctx,
-                _claims=None,
-            )
+    ), pytest.raises(HTTPException) as exc_info:
+        await handler_mod.venta_suscripcion(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["error"] == "voucher_requerido"
