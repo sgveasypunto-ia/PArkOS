@@ -88,7 +88,11 @@ export function useOcupacion(uuid_sucursal: string | null): UseOcupacionReturn {
   // identity) and the fetcher gets the actual payload argument.
   const { data, error, mutate } = useSWR<OcupacionResponse>(
     key,
-    () => getOcupacion(uuid_sucursal),
+    // `key` is `null` whenever `uuid_sucursal` is `null` (see `buildKey`
+    // above), so SWR never invokes this fetcher with a null UUID. The
+    // assertion mirrors the established precedent in
+    // `useMiTurno.ts:73` for the same key-gating shape.
+    () => getOcupacion(uuid_sucursal as string),
     {
       refreshInterval: OPERACION_REFRESH_INTERVAL_MS,
       dedupingInterval: OPERACION_DEDUPING_INTERVAL_MS,

@@ -46,7 +46,7 @@ vi.mock('@parkos/ui-kit/store', () => ({
 vi.mock('@parkos/ui-kit/fetch', () => ({
   ParkosHttpError: class extends Error {
     public readonly status: number;
-    constructor(status: number) {
+    constructor(status: number, _body?: string, _url?: string) {
       super(`ParkosHttpError ${status}`);
       this.name = 'ParkosHttpError';
       this.status = status;
@@ -166,10 +166,18 @@ describe('useOcupacion — SWR config', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useOcupacion('suc-uuid-1');
     const shouldRetry = swrOptions?.shouldRetryOnError as (err: unknown) => boolean;
-    expect(shouldRetry(new ParkosHttpError(401))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(403))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(404))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(500))).toBe(true);
+    expect(
+      shouldRetry(new ParkosHttpError(401, 'unauthorized', '/operacion/ocupacion')),
+    ).toBe(false);
+    expect(
+      shouldRetry(new ParkosHttpError(403, 'forbidden', '/operacion/ocupacion')),
+    ).toBe(false);
+    expect(
+      shouldRetry(new ParkosHttpError(404, 'not_found', '/operacion/ocupacion')),
+    ).toBe(false);
+    expect(
+      shouldRetry(new ParkosHttpError(500, 'server_error', '/operacion/ocupacion')),
+    ).toBe(true);
     expect(shouldRetry(new Error('network'))).toBe(true);
   });
 });
@@ -179,7 +187,7 @@ describe('useOcupacion — onError policy', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useOcupacion('suc-uuid-1');
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(401));
+    onError(new ParkosHttpError(401, 'unauthorized', '/operacion/ocupacion'));
     expect(getStateClearMock).toHaveBeenCalledOnce();
     expect(dispatchEventSpy).toHaveBeenCalledWith(expect.any(Event));
     const event = (dispatchEventSpy.mock.calls[0]?.[0] as Event) ?? null;
@@ -190,7 +198,7 @@ describe('useOcupacion — onError policy', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useOcupacion('suc-uuid-1');
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(500));
+    onError(new ParkosHttpError(500, 'server_error', '/operacion/ocupacion'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
     expect(consoleWarnSpy).toHaveBeenCalled();
@@ -200,7 +208,7 @@ describe('useOcupacion — onError policy', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useOcupacion('suc-uuid-1');
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(403));
+    onError(new ParkosHttpError(403, 'forbidden', '/operacion/ocupacion'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(consoleWarnSpy).toHaveBeenCalled();
   });
@@ -209,7 +217,7 @@ describe('useOcupacion — onError policy', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useOcupacion('suc-uuid-1');
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(404));
+    onError(new ParkosHttpError(404, 'not_found', '/operacion/ocupacion'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(consoleWarnSpy).toHaveBeenCalled();
   });
@@ -244,7 +252,7 @@ describe('useOcupacion — isStale flag', () => {
   it('U-O9c: isStale=true cuando hay data Y error (SWR conserva último valor)', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     currentData = SAMPLE_OK;
-    currentError = new ParkosHttpError(500);
+    currentError = new ParkosHttpError(500, 'server_error', '/operacion/ocupacion');
     const result = useOcupacion('suc-uuid-1');
     expect(result.isStale).toBe(true);
   });
