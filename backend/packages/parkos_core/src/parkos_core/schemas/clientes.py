@@ -34,6 +34,7 @@ from pydantic import Field, StringConstraints, model_validator
 
 from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
 from .common import FilterBase, ReadListBase, _Base
+from .facturacion import FacturaRead
 
 # ---------------------------------------------------------------------------
 # Clientes
@@ -472,6 +473,13 @@ class VentaSuscripcionResponse(_Base):
     uuid_factura: uuid_lib.UUID | None = None
     uuid_factura_electronica: uuid_lib.UUID | None = None
     uuid_envio_dian: uuid_lib.UUID | None = None
+    # HU-F9.1 bugfix (2026-09-25): the enriched display projection, same
+    # shape ``POST /facturacion/factura`` returns, so `<Venta />` can
+    # render `<FacturaDisplayModal />` + fire the recibo print envelope
+    # right after a subscription sale with `cobrar_ahora=true` — mirrors
+    # the ingreso/salida cobro flow (HU-F8.4) instead of leaving the
+    # operator without a ticket. ``None`` when `cobrar_ahora=false`.
+    factura: FacturaRead | None = None
 
 
 # ---------------------------------------------------------------------------

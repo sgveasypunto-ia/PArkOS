@@ -40,6 +40,8 @@ import { Input } from '@/components/ui/input';
 
 import { formatCOP } from '../../caja/lib/format';
 import { PagoModal, type PagoFormValues } from '../../facturacion/components/PagoModal';
+import { FacturaDisplayModal } from '../../facturacion/components/FacturaDisplayModal';
+import type { FacturaRead } from '../../facturacion/api/facturaApi';
 
 import {
   useVentaSuscripcion,
@@ -63,10 +65,49 @@ import { calcularMontoProporcional } from '../lib/prorrateo';
  *   at the top of the wizard when this callback is supplied. Lets the
  *   sheet return to the list view while keeping the wizard state for
  *   re-entry.
+ * - `firePrintEnvelope()` — optional override for the post-pago recibo
+ *   print (mirrors `PagoSheetProps.firePrintEnvelope` / F8.1). Defaults
+ *   to `window.bridge?.imprimir('recibo_pago', payload)` via the same
+ *   swallow-errors helper `<PagoSheet />` uses (DEC-SUC-08).
  */
 export interface VentaProps {
   onSuccess?: () => void;
   onCancel?: () => void;
+  firePrintEnvelope?: (tipo: 'recibo_pago', payload: unknown) => void;
+}
+
+function defaultFirePrintEnvelope(tipo: 'recibo_pago', payload: unknown): void {
+  const w = globalThis as unknown as {
+    window?: { bridge?: { imprimir?: (k: string, p: unknown) => void } };
+  };
+  const bridge = w.window?.bridge;
+  if (bridge?.imprimir) {
+    bridge.imprimir(tipo, payload);
+  }
+}
+
+/**
+ * F7.3 (DEC-SUC-08 + DEC-SUC-27) — defer the print envelope to the
+ * next microtask so it never blocks the modal-dismiss render commit,
+ * and swallow any bridge failure (printer offline / disconnected) so
+ * a hardware issue never blocks the operator from finishing the sale.
+ * Mirrors `<PagoSheet />`'s `deferredSafePrint` verbatim.
+ */
+function deferredSafePrint(
+  emit: (tipo: 'recibo_pago', payload: unknown) => void,
+  tipo: 'recibo_pago',
+  payload: unknown,
+): void {
+  queueMicrotask(() => {
+    try {
+      emit(tipo, payload);
+    } catch (err) {
+      console.warn(
+        `[Venta] bridge.imprimir(${tipo}) failed (printer_offline / disconnected):`,
+        err,
+      );
+    }
+  });
 }
 
 export interface VentaStepState {
@@ -152,7 +193,11 @@ const PLAN_PREVIEW_DURACION_DIAS = 30;
 
 const DEFAULT_FECHA_INICIO = '2026-09-19'; // day=19 → prorrateo visible
 
-export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
+export function Venta({
+  onSuccess,
+  onCancel,
+  firePrintEnvelope,
+}: VentaProps = {}): JSX.Element {
   const { t } = useTranslation(['suscripciones', 'common']);
   const navigate = useNavigate();
   const { sucursal } = useAuth();
@@ -175,6 +220,13 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   // input that triggered the error is highlighted by the server's
   // own discriminated error message (VentaSuscripcionDuplicatePlateError).
   const [placaGroupError, setPlacaGroupError] = useState<string | null>(null);
+  // HU-F9.1 bugfix (2026-09-25): hold the enriched `FacturaRead` the
+  // backend now returns when `cobrar_ahora=true` so we can mount
+  // `<FacturaDisplayModal />` with the full breakdown before completing
+  // the wizard -- mirrors HU-F8.4 (ingreso/salida cobro flow). Previously
+  // the wizard navigated away immediately after a paid sale with no
+  // ticket/factura confirmation shown to the operator.
+  const [facturaDisplay, setFacturaDisplay] = useState<FacturaRead | null>(null);
   const { trigger, isMutating } = useVentaSuscripcion();
   const {
     data: planes,
@@ -319,18 +371,46 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
     };
   };
 
+  const completeVenta = (): void => {
+    if (onSuccess) {
+      // Embedded consumer (F11.3 SuscripcionesSheet) -- let the
+      // parent decide what happens next (close drawer, refresh
+      // list, etc.). Default page-Venta consumer has no
+      // `onSuccess`, so `useNavigate` runs below.
+      onSuccess();
+      return;
+    }
+    navigate('/suscripciones');
+  };
+
+  const handleFacturaDisplayClose = (): void => {
+    // DEC-SUC-27 order: the recibo print fires AFTER the operator
+    // dismisses the confirmation modal, same as `<PagoSheet />` /
+    // `<SalidaMensualidad />`. A printer failure (offline/disconnected)
+    // never blocks completing the sale (DEC-SUC-08).
+    if (facturaDisplay) {
+      const emit = firePrintEnvelope ?? defaultFirePrintEnvelope;
+      deferredSafePrint(emit, 'recibo_pago', {
+        uuid_factura: facturaDisplay.uuid,
+        numero_recibo: facturaDisplay.numero_recibo,
+      });
+    }
+    setFacturaDisplay(null);
+    completeVenta();
+  };
+
   const handlePagoSubmit = async (values: PagoFormValues): Promise<void> => {
     try {
-      await trigger(buildVentaPayload(values));
-      if (onSuccess) {
-        // Embedded consumer (F11.3 SuscripcionesSheet) -- let the
-        // parent decide what happens next (close drawer, refresh
-        // list, etc.). Default page-Venta consumer has no
-        // `onSuccess`, so `useNavigate` runs below.
-        onSuccess();
+      const result = await trigger(buildVentaPayload(values));
+      if (result.factura) {
+        // HU-F9.1 bugfix: show the post-pago ticket/factura
+        // confirmation instead of silently navigating away --
+        // `completeVenta()` runs once the operator dismisses the
+        // modal (`handleFacturaDisplayClose`).
+        setFacturaDisplay(result.factura);
         return;
       }
-      navigate('/suscripciones');
+      completeVenta();
     } catch (err) {
       if (
         err instanceof VentaSuscripcionDuplicatePlateError ||
@@ -722,6 +802,17 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
           {isMutating && <span data-testid="venta-mutating">Procesando…</span>}
         </section>
       )}
+      {/*
+        HU-F9.1 bugfix (2026-09-25): post-pago confirmation -- shows the
+        full breakdown (mirrors HU-F8.4 `<FacturaDisplayModal />`) and
+        fires the recibo print envelope on dismiss. Mounted unconditionally
+        (like `<SalidaMensualidad />`'s copy) so the close animation plays;
+        it renders nothing while `facturaDisplay` is `null`.
+      */}
+      <FacturaDisplayModal
+        factura={facturaDisplay}
+        onClose={handleFacturaDisplayClose}
+      />
     </div>
   );
 }

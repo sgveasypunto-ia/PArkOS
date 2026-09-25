@@ -58,6 +58,7 @@ from ...models.V.clientes import Clientes
 from ...models.V.empresa import Empresa
 from ...models.V.impuestos import Impuestos
 from ...models.V.sucursal import Sucursal
+from ...schemas.clientes import VentaSuscripcionCreate
 from ...schemas.facturacion import (
     FacturaCreate,
     FacturaDisplayCliente,
@@ -88,7 +89,7 @@ async def build_display_factura(
     *,
     new_factura: Facturas,
     detalles_creados: list[FacturaDetalle],
-    payload: FacturaCreate | FacturaServicioCreate,
+    payload: FacturaCreate | FacturaServicioCreate | VentaSuscripcionCreate,
     total_server: Decimal,
     cliente_uuid: uuid_lib.UUID | None,
 ) -> FacturaRead:
