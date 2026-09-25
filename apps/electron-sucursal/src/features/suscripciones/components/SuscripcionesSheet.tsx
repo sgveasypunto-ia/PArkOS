@@ -183,9 +183,9 @@ export function SuscripcionesSheet(): JSX.Element {
       <SheetContent
         side="right"
         data-testid="suscripciones-sheet"
-        className="flex h-full w-full flex-col gap-6 sm:max-w-xl md:w-[36rem] lg:w-[42rem]"
+        className="flex h-full w-[70vw] max-w-[1100px] flex-col gap-6"
       >
-        <SheetHeader className="mb-2 space-y-3 pr-8">
+        <SheetHeader className="pr-8">
           <SheetTitle>
             {mode === 'venta' &&
               t('suscripciones:sheet.tituloVenta', {
@@ -221,7 +221,7 @@ export function SuscripcionesSheet(): JSX.Element {
           {mode === 'list' && (
             <div className="space-y-4">
               <form
-                className="flex gap-2"
+                className="mt-[10px] flex gap-2"
                 onSubmit={(e) => void handleBuscar(e)}
                 data-testid="suscripciones-buscar-form"
               >
