@@ -345,6 +345,7 @@ export function Dashboard(): JSX.Element | null {
                 >
                   <CreditCard className="h-4 w-4 shrink-0" />
                   <span>{t('suscripciones:menu', { defaultValue: 'Suscripción' })}</span>
+                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">F3</kbd>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">

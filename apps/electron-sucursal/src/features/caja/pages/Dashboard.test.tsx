@@ -32,7 +32,7 @@
  * passthrough con data-testid para evitar cargar primitives de Radix.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import type * as ReactRouterDom from 'react-router-dom';
@@ -225,6 +225,31 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     expect(screen.queryByTestId('dashboard-section-salida')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-section-suscripciones')).not.toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalledWith('/caja/abrir-turno', expect.anything());
+  });
+
+  it('U16b: cada botón de acción del sidebar muestra su badge <kbd> de atajo', () => {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+    const expectedBadges: Array<[string, string]> = [
+      ['sidebar-ingreso', 'F1'],
+      ['sidebar-salida', 'F2'],
+      ['sidebar-suscripciones', 'F3'],
+      ['sidebar-arqueo', 'F4'],
+    ];
+    for (const [testId, hotkey] of expectedBadges) {
+      const button = screen.getByTestId(testId);
+      const badge = within(button).getByText(hotkey);
+      expect(badge.tagName).toBe('KBD');
+    }
   });
 
   it('U17: error ParkosHttpError(500) → dashboard-error + retry button → click llama refresh', () => {
