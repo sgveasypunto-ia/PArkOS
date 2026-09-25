@@ -35,10 +35,12 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
   useAuth: () => mockUseAuth(),
 }));
 
+const mockSetTokens = vi.fn();
+
 vi.mock('@parkos/ui-kit/store', () => ({
   useAuthStore: Object.assign(
     (selector: (s: unknown) => unknown) => selector({}),
-    { getState: () => ({}) },
+    { getState: () => ({ setTokens: mockSetTokens }) },
   ),
 }));
 
@@ -172,6 +174,13 @@ describe('<AbrirTurno /> container — T2', () => {
       valor_inicial_datafono: 0,
       timestamp_apertura: '2026-09-15T08:00:00Z',
       timestamp_cierre: null,
+      // BUGFIX (2026-09-25): `abrirSesion` now returns `SesionOpenResponse`
+      // (SesionRead + reissued token pair carrying the `sesion` JWT
+      // claim) — the container calls `useAuthStore.setTokens(...)`
+      // with these before navigating.
+      access_token: 'mock-access-token',
+      refresh_token: 'mock-refresh-token',
+      expires_in: 3600,
     });
     const user = userEvent.setup();
     render(<AbrirTurno />);

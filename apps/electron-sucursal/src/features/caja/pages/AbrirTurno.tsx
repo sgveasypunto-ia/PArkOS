@@ -24,10 +24,12 @@ import { useNavigate } from 'react-router-dom';
 import { mutate } from 'swr';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
+import { useAuthStore } from '@parkos/ui-kit/store';
 
 import {
   abrirSesion,
   SesionAlreadyActiveError,
+  type SesionOpenResponse,
   type SesionRead,
 } from '../api/sesionActivaApi';
 import {
@@ -92,7 +94,7 @@ export function AbrirTurno(): JSX.Element {
   const onSubmit = form.handleSubmit(async (values) => {
     setErrorState(null);
     try {
-      const sesion: SesionRead = await abrirSesion({
+      const opened: SesionOpenResponse = await abrirSesion({
         uuid_sucursal: values.uuid_sucursal,
         uuid_usuario: values.uuid_usuario,
         valor_inicial_efectivo: values.valor_inicial_efectivo,
@@ -101,6 +103,19 @@ export function AbrirTurno(): JSX.Element {
           ? { observaciones: values.observaciones }
           : {}),
       });
+      // BUGFIX (2026-09-25): adopt the reissued token pair BEFORE
+      // navigating — it now carries the `sesion` claim the backend
+      // never set before, which every payment (reimpresión, venta de
+      // suscripción, pago de salida) needs so `factura_pagos.
+      // uuid_sesion` links to this turno for arqueo.
+      useAuthStore
+        .getState()
+        .setTokens(opened.access_token, opened.refresh_token, opened.expires_in);
+      // `opened` is a `SesionOpenResponse` (SesionRead + tokens) — the
+      // `sesion` name is kept for the SWR cache write below, which only
+      // cares about the `SesionRead` fields (structural typing accepts
+      // the wider object; the extra token fields are simply unused).
+      const sesion: SesionRead = opened;
       void sesion; // SWR re-fetch on next render via `useSesionActiva` key change.
       // F3.3 follow-up (auto-redirect): push the new session into
       // SWR cache BEFORE navigating so Dashboard's first render

@@ -45,6 +45,22 @@ export interface SesionRead {
   observaciones?: string | null;
 }
 
+/**
+ * Respuesta de `abrirSesion`/`cerrarSesion` (BUGFIX 2026-09-25):
+ * el backend ahora reemite el par de tokens con el claim `sesion`
+ * actualizado (seteado al abrir, ausente al cerrar) -- antes ningún
+ * endpoint lo hacía pese a que `TenantContext` (backend) documentaba
+ * que sí. Sin esto, `ctx.uuid_sesion` quedaba SIEMPRE `None` y el
+ * arqueo nunca contaba los cobros de reimpresión/suscripción del
+ * turno (`factura_pagos.uuid_sesion` quedaba NULL). El caller DEBE
+ * adoptar estos tokens vía `useAuthStore.getState().setTokens(...)`.
+ */
+export interface SesionOpenResponse extends SesionRead {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}
+
 /** Cuerpo POST /caja-sesion/sesiones (F1.3 backend Pydantic). */
 export interface SesionCreate {
   uuid_sucursal: string;
@@ -103,9 +119,9 @@ export async function getSesionActiva(): Promise<SesionRead | null> {
  * Backend mapea 23505 (unique violation) → 409 `sesion_already_active`.
  * Cualquier otro error (401, 5xx, network) propaga intacto.
  */
-export async function abrirSesion(payload: SesionCreate): Promise<SesionRead> {
+export async function abrirSesion(payload: SesionCreate): Promise<SesionOpenResponse> {
   try {
-    return await parkosFetch<SesionRead>(SESIONES_PATH, {
+    return await parkosFetch<SesionOpenResponse>(SESIONES_PATH, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
@@ -125,9 +141,9 @@ export async function abrirSesion(payload: SesionCreate): Promise<SesionRead> {
 export async function cerrarSesion(
   uuid: string,
   payload: SesionCerrarRequest,
-): Promise<SesionRead> {
+): Promise<SesionOpenResponse> {
   try {
-    return await parkosFetch<SesionRead>(sesionCerrarPath(uuid), {
+    return await parkosFetch<SesionOpenResponse>(sesionCerrarPath(uuid), {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
