@@ -46,7 +46,13 @@ export interface UseSesionActivaReturn {
   sesion: SesionRead | null;
   isLoading: boolean;
   error: Error | undefined;
-  refresh: () => Promise<SesionRead | undefined>;
+  // The SWR key/fetcher is `SesionRead | null` (a 404 GET resolves to
+  // `null` — "no active session" is a valid state, REQ-OPS-120 S3), so
+  // `mutate()`'s real resolved type includes `null`, not just
+  // `undefined` (revalidation-skipped/error). Omitting `| null` here
+  // does not match the actual `KeyedMutator<SesionRead | null>` this
+  // hook returns as `refresh` below.
+  refresh: () => Promise<SesionRead | null | undefined>;
   /**
    * HU-F10.2 (REQ-OPS-160, AD-4) — encapsulates the F3.3 logout-on-success
    * trifecta (`useAuthStore.clear()` + `parkos:auth:cleared` event) so

@@ -181,11 +181,30 @@ export function ReimprimirTiquete(): JSX.Element {
               name="tipo"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>
+                  {/* F31.3 — bug de accesibilidad encontrado durante la
+                      validación (Chrome DevTools reportaba "Incorrect use
+                      of <label for=FORM_ELEMENT>"): `<FormLabel>` seteaba
+                      `for={formItemId}` apuntando al `<div>` de abajo, que
+                      NO es un form control válido como target de `for`
+                      (`FormControl`/`Slot` le inyecta ese id al div, no a
+                      ninguno de los dos radios reales). Se rompe la
+                      asociación inválida (`htmlFor={undefined}`) y se
+                      reemplaza por el patrón correcto para un grupo de
+                      radios: `role="radiogroup"` + `aria-labelledby`
+                      apuntando al label por `id` explícito. */}
+                  <FormLabel id="reimprimir-tipo-label" htmlFor={undefined}>
                     {t('reimprimir.tipo.label', { defaultValue: 'Tipo de tiquete' })}
                   </FormLabel>
                   <FormControl>
-                    <div className="flex gap-4" data-testid="reimprimir-tipo">
+                    {/* F31.3 — radios nativos sin ninguna clase (tamaño de
+                        navegador, sin focus-ring de marca); se alinean al
+                        mismo tratamiento que el checkbox de PagoModal. */}
+                    <div
+                      role="radiogroup"
+                      aria-labelledby="reimprimir-tipo-label"
+                      className="flex flex-wrap gap-4"
+                      data-testid="reimprimir-tipo"
+                    >
                       <label className="flex items-center gap-2 text-sm">
                         <input
                           type="radio"
@@ -194,6 +213,7 @@ export function ReimprimirTiquete(): JSX.Element {
                           checked={field.value === 'entrada'}
                           onChange={() => field.onChange('entrada')}
                           data-testid="reimprimir-tipo-entrada"
+                          className="h-4 w-4 shrink-0 border border-input accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         />
                         {t('reimprimir.tipo.entrada', { defaultValue: 'Entrada' })}
                       </label>
@@ -205,6 +225,7 @@ export function ReimprimirTiquete(): JSX.Element {
                           checked={field.value === 'salida'}
                           onChange={() => field.onChange('salida')}
                           data-testid="reimprimir-tipo-salida"
+                          className="h-4 w-4 shrink-0 border border-input accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         />
                         {t('reimprimir.tipo.salida', { defaultValue: 'Salida' })}
                       </label>
@@ -259,11 +280,13 @@ export function ReimprimirTiquete(): JSX.Element {
           <dl className="space-y-1 text-sm">
             <div>
               <dt className="font-medium">UUID</dt>
-              <dd data-testid="reimprimir-success-uuid">{resultado.uuid}</dd>
+              {/* break-all: el UUID (36 chars) no debe desbordar el card
+                  en 320px — sin esto el texto se corta fuera del borde. */}
+              <dd data-testid="reimprimir-success-uuid" className="break-all">{resultado.uuid}</dd>
             </div>
             <div>
               <dt className="font-medium">Motivo</dt>
-              <dd>{resultado.motivo}</dd>
+              <dd className="break-words">{resultado.motivo}</dd>
             </div>
           </dl>
           <div className="flex gap-2">

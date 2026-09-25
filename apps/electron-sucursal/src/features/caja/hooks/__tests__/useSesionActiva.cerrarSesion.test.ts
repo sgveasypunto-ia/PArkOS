@@ -45,10 +45,10 @@ vi.mock('../../api/sesionActivaApi', () => ({
   cerrarSesion: (...args: unknown[]) => cerrarSesionApiMock(...args),
   getSesionActiva: vi.fn().mockResolvedValue(null),
   SesionAlreadyClosedError: class SesionAlreadyClosedError extends Error {
-    readonly name = 'SesionAlreadyClosedError';
+    override readonly name = 'SesionAlreadyClosedError';
     constructor(
       public readonly status: number,
-      public override readonly body: string,
+      public readonly body: string,
       public readonly url: string,
     ) {
       super('sesion_not_found');

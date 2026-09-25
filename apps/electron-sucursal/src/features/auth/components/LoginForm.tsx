@@ -62,6 +62,19 @@ import {
 
 import type { LoginInput } from '../api/loginSchema';
 
+// F31.3 rediseño — carta de presentación de marca. El login es la ÚNICA
+// pantalla sin el shell/sidebar del Dashboard, así que el logo vive acá
+// (LoginForm es la capa presentacional — DEC-F3.1-02). Dos variantes
+// swapeadas por tema, no una sola con filtro CSS: `logo-horizontal-dark`
+// (pin naranja + wordmark gris oscuro, ver inventory.json "Candidato
+// para modo claro") sobre el fondo claro/tarjeta clara, y
+// `logo-horizontal-light` (wordmark blanco, SVG real, "Candidato directo
+// para el modo oscuro") sobre el fondo oscuro. Toggle vía `dark:` — sin
+// JS, sin flash, consistente con el mecanismo de tema (theme.ts) que ya
+// aplica la clase `.dark` al <html> antes del primer paint.
+import logoLightOnDark from '../../../assets/brand/logos/logo-horizontal-light.svg';
+import logoDarkOnLight from '../../../assets/brand/logos/logo-horizontal-dark--REQUIERE-VECTOR.png';
+
 /**
  * Estado de error que `<Login />` pasa a `<LoginForm />` para renderizar mensajes.
  *  - invalid_credentials → <p role="alert">{t('invalidCredentials')}</p>
@@ -131,26 +144,49 @@ export function LoginForm({
   // mientras `isLockout` para que el operador no pueda intentar hasta
   // que el countdown expire (el parent resetea `errorState` via
   // `handleLockoutExpired` cuando `useCountdown` llega a 0).
+  // `onLockoutExpired` se mantiene en `LoginFormProps` por compat con
+  // `<Login />` (que lo sigue pasando), pero YA NO se invoca desde acá:
+  // el wiring real vive en `<LockoutBlock onExpired={handleLockoutExpired}>`
+  // (ver Login.tsx). Se referencia explícitamente para satisfacer
+  // `noUnusedParameters` sin remover el prop del contrato público.
+  void onLockoutExpired;
 
   const isFormDisabled = isSubmitting || isLockout;
   const showAttemptCounter = attemptCount > 0;
 
   return (
-    <Form {...form}>
-      <form
-        onSubmit={onSubmit}
-        noValidate
-        aria-labelledby="login-title"
-        data-testid="login-form"
-        className="space-y-4"
-      >
-        <Card>
-          <CardHeader>
-            <CardTitle id="login-title" asChild>
-              <h1>{t('loginTitle')}</h1>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+    <div className="w-full">
+      {/* F31.3 — logo de marca, único punto de la app sin shell/header
+          que lo aloje. `h-8` (320-479px) → `h-9` (480-767px) → `h-10`
+          (md+) escala con el resto de la jerarquía tipográfica fluida
+          del login sin volverse desproporcionado en kioskos anchos. */}
+      <div className="mb-6 flex justify-center sm:mb-8">
+        <img
+          src={logoDarkOnLight}
+          alt="EasyPunto"
+          className="h-8 w-auto dark:hidden min-[480px]:h-9 md:h-10"
+        />
+        <img
+          src={logoLightOnDark}
+          alt="EasyPunto"
+          className="hidden h-8 w-auto dark:block min-[480px]:h-9 md:h-10"
+        />
+      </div>
+      <Form {...form}>
+        <form
+          onSubmit={onSubmit}
+          noValidate
+          aria-labelledby="login-title"
+          data-testid="login-form"
+          className="space-y-4"
+        >
+          <Card>
+            <CardHeader className="px-4 sm:px-5">
+              <CardTitle id="login-title" asChild>
+                <h1>{t('loginTitle')}</h1>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 sm:px-5">
 
         <FormField
           control={form.control}
@@ -234,23 +270,24 @@ export function LoginForm({
           </div>
         )}
         {error?.kind === 'network' && (
-          <p role="alert" data-testid="login-error-network">
+          <p role="alert" data-testid="login-error-network" className="text-sm text-destructive">
             {t('errors:serverError')}
           </p>
         )}
 
-        <Button
-          type="submit"
-          disabled={isFormDisabled}
-          aria-disabled={isFormDisabled}
-          data-testid="login-submit"
-          className="w-full mt-4"
-        >
-          {isSubmitting ? t('common:loading') : t('submit')}
-        </Button>
+            <Button
+              type="submit"
+              disabled={isFormDisabled}
+              aria-disabled={isFormDisabled}
+              data-testid="login-submit"
+              className="w-full mt-4"
+            >
+              {isSubmitting ? t('common:loading') : t('submit')}
+            </Button>
           </CardContent>
         </Card>
-      </form>
-    </Form>
+        </form>
+      </Form>
+    </div>
   );
 }

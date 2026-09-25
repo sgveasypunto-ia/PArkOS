@@ -1,57 +1,199 @@
+@import '@fontsource/poppins/400.css';
+@import '@fontsource/poppins/500.css';
+@import '@fontsource/poppins/600.css';
+@import '@fontsource/poppins/700.css';
+@import './styles/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * Theme — Fase 2+3 (design tokens + modo claro/oscuro).
+ *
+ * Los primitivos (--orange-*, --gray-*, --green-*, --amber-*, --blue-*,
+ * --red-*, tipografía, espaciado, z-index, duración/easing) viven en
+ * `./styles/tokens.css`, importado arriba. Este archivo define:
+ *   1. Los tokens semánticos shadcn (--background, --primary, etc.) que
+ *      `tailwind.config.ts` envuelve como hsl(var(--x)) — NO renombrar,
+ *      son los que ya consumen los componentes existentes.
+ *   2. Una capa nueva --color-* (más abajo) con los nombres pedidos en
+ *      el brief de Fase 2+3 (--color-bg, --color-surface, ...), ya
+ *      resueltos (con hsl() aplicado) para usar en CSS plano.
+ *
+ * Reemplaza el tema placeholder "Apple blue" (pre-extracción de marca)
+ * por los valores reales de EasyPunto extraídos en la Fase 1. Esto SÍ
+ * cambia visualmente cualquier componente que ya consuma --primary,
+ * --background, etc. — es el efecto esperado de un sistema de tokens,
+ * no un rediseño de componentes (ningún .tsx se tocó).
+ */
 @layer base {
   :root {
-    /* Surfaces — Apple-like, gris muy sutil */
-    --background: 0 0% 98%;             /* era 0 0% 100% → fondo gris muy suave #fafafa */
-    --foreground: 220 14% 11%;          /* era 222 84% 5% → gris Apple #1d1d1f */
-    --card: 0 0% 100%;                  /* era 0 0% 100% — sigue blanco */
-    --card-foreground: 220 14% 11%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 220 14% 11%;
-    /* Primary — azul Apple #0071e3 */
-    --primary: 211 100% 50%;           /* era 222 47% 11% (gris oscuro) → azul Apple */
-    --primary-foreground: 0 0% 100%;
-    /* Secondary / muted */
-    --secondary: 220 14% 96%;           /* gris muy claro */
-    --secondary-foreground: 220 14% 11%;
-    --muted: 220 14% 96%;               /* era 210 40% 96% */
-    --muted-foreground: 220 9% 46%;     /* gris medio #737378 */
-    --accent: 220 14% 96%;
-    --accent-foreground: 220 14% 11%;
-    /* Destructive */
-    --destructive: 0 72% 51%;           /* rojo Apple #ff3b30 */
+    color-scheme: light;
+
+    /* Superficies */
+    --background: var(--gray-50); /* #F6F6F8 marca */
+    --foreground: var(--gray-800); /* #323133 marca */
+    --card: var(--gray-0); /* blanco — en claro la elevación es por sombra (.shadow-apple-*), no por color */
+    --card-foreground: var(--gray-800);
+    --popover: var(--gray-0);
+    --popover-foreground: var(--gray-800);
+
+    /* Marca — primario/acento */
+    --primary: var(--orange-500); /* #E85F24 marca, SIN ajustar */
+    /*
+     * --primary-foreground: #222222 (marca), no blanco.
+     * Verificación AA (contraste real, no solo % de HSL):
+     *   blanco sobre #E85F24   → 3.45:1  (FALLA AA texto normal, 4.5:1 requerido)
+     *   #222222 sobre #E85F24  → 4.62:1  (PASA AA)
+     * Ajuste documentado (brief punto 7): en vez de aclarar/oscurecer el
+     * naranja de marca (que se pidió no alterar), se resuelve el
+     * contraste eligiendo el neutro oscuro de marca como texto sobre él.
+     */
+    --primary-foreground: var(--gray-900);
+
+    /* Neutros de UI — sin cambio de rol respecto al placeholder previo,
+       solo recalculados sobre los primitivos de marca. shadcn usa
+       --accent para "superficie de hover sutil" (ej. item de menú),
+       NO es el color de marca — ver --color-accent más abajo para eso. */
+    --secondary: var(--gray-100);
+    --secondary-foreground: var(--gray-800);
+    --muted: var(--gray-100);
+    --muted-foreground: var(--gray-500); /* #636363 marca ("texto") — 5.57:1 sobre --background, PASA AA */
+    --accent: var(--gray-100);
+    --accent-foreground: var(--gray-800);
+
+    /* Destructivo — sin cambios, no es valor de marca. Ya pasaba AA
+       (4.80:1 con texto blanco), verificado en esta fase sin ajustes. */
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    /* Borders — mucho más sutiles */
-    --border: 220 13% 91%;              /* era 214 32% 91% → #e5e5e7 */
-    --input: 220 13% 91%;
-    --ring: 211 100% 50%;               /* azul Apple para focus ring */
-    /* Radius — más generoso */
-    --radius: 0.875rem;                 /* era 0.5rem → 14px */
+
+    --border: var(--gray-200);
+    --input: var(--gray-200);
+    --ring: var(--orange-500);
+
+    /* Radio base — sin cambios (decisión ya tomada en este proyecto:
+       14px, estilo "Apple sobrio"; NO es un valor de marca). Ver
+       tailwind.config.ts para la escala completa sm/md/lg/xl/pill. */
+    --radius: 0.875rem;
   }
 
   .dark {
-    --background: 220 14% 8%;           /* #141416 */
-    --foreground: 0 0% 98%;
-    --card: 220 14% 11%;                /* #1c1c1e Apple */
-    --card-foreground: 0 0% 98%;
-    --popover: 220 14% 11%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 211 100% 60%;            /* azul Apple dark mode */
-    --primary-foreground: 220 14% 8%;
-    --secondary: 220 14% 16%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 220 14% 16%;
-    --muted-foreground: 220 9% 64%;
-    --accent: 220 14% 16%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 72% 51%;
+    color-scheme: dark;
+
+    --background: var(--gray-900); /* #222222 marca */
+    --foreground: var(--gray-50); /* #F6F6F8 marca, reutilizado como texto claro */
+    --card: var(--gray-800); /* #323133 marca — más CLARO que --background: elevación por superficie */
+    --card-foreground: var(--gray-50);
+    --popover: var(--gray-700); /* interpolación propia, un paso más claro que --card: capa flotante más "elevada" que una tarjeta */
+    --popover-foreground: var(--gray-50);
+
+    /*
+     * --primary más claro que el naranja de marca (interpolación
+     * propia) para que, combinado con --primary-foreground oscuro
+     * (mismo criterio que en claro), siga pasando AA sobre fondo
+     * oscuro: #222222 sobre --orange-400 → 6.57:1 (PASA AA).
+     * El hover en oscuro revela el naranja de marca exacto
+     * (--orange-500, 4.62:1 con el mismo texto oscuro — también pasa).
+     */
+    --primary: var(--orange-400);
+    --primary-foreground: var(--gray-900);
+
+    --secondary: var(--gray-700);
+    --secondary-foreground: var(--gray-50);
+    --muted: var(--gray-700);
+    /*
+     * --muted-foreground: los grises de marca (#636363/#696969, ~39-41%
+     * L) dan <3:1 como texto secundario sobre este fondo oscuro — NO
+     * pasan AA. --gray-dark-secondary (65% L, interpolación propia)
+     * sí pasa: 6.52:1 sobre --background, 5.31:1 sobre --card.
+     */
+    --muted-foreground: var(--gray-dark-secondary);
+    --accent: var(--gray-700);
+    --accent-foreground: var(--gray-50);
+
+    /* Destructivo — sin cambios, ya existía para modo oscuro y pasa AA
+       (10.02:1 con texto blanco como fill). */
+    --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 0 0% 98%;
-    --border: 220 13% 22%;              /* gris oscuro sutil */
-    --input: 220 13% 22%;
-    --ring: 211 100% 60%;
+
+    --border: var(--gray-700);
+    --input: var(--gray-700);
+    --ring: var(--orange-400);
+  }
+}
+
+/**
+ * Tokens semánticos --color-* (Fase 2+3, nombres pedidos en el brief).
+ * Ya son valores CSS resueltos (con hsl() aplicado) — usables
+ * directamente fuera de Tailwind. Mapean 1:1 sobre los tokens shadcn de
+ * arriba para que no haya dos fuentes de verdad, salvo donde el brief
+ * pide un concepto que shadcn no tenía (success/warning/info,
+ * surface-elevated, surface-logo).
+ */
+@layer base {
+  :root {
+    --color-bg: hsl(var(--background));
+    --color-surface: hsl(var(--card));
+    /* En claro la elevación es por sombra (.shadow-apple-*), no por
+       color de superficie — --surface-elevated coincide con --surface. */
+    --color-surface-elevated: hsl(var(--card));
+    --color-text-primary: hsl(var(--foreground));
+    --color-text-secondary: hsl(var(--muted-foreground));
+    --color-border: hsl(var(--border));
+
+    /* Swatch de marca puro (#E85F24), NO varía por tema — para acentos
+       decorativos/logo/texto grande donde se quiere el naranja exacto.
+       El color interactivo real de botones/foco es --primary (arriba),
+       que sí varía por tema para mantener AA. */
+    --color-accent: hsl(var(--orange-500));
+    --color-accent-hover: hsl(var(--orange-400));
+
+    --color-success: hsl(var(--green-100)); /* chip suave, no fill sólido — ver tokens.css 2026-09-25 */
+    --color-success-foreground: hsl(var(--green-800)); /* verde oscuro sobre verde claro — contraste amplio, PASA AA */
+    --color-danger: hsl(var(--destructive));
+    --color-danger-foreground: hsl(var(--destructive-foreground));
+    --color-warning: hsl(var(--amber-500));
+    --color-warning-foreground: hsl(var(--gray-900)); /* oscuro — 7.41:1 (blanco fallaría: ~2.3:1) */
+    --color-info: hsl(var(--blue-600)); /* reutiliza el azul placeholder pre-marca */
+    --color-info-foreground: hsl(var(--gray-0)); /* blanco — 4.70:1, PASA AA */
+
+    /* Pendiente decidido por el operador: los logos reales de EasyPunto
+       solo existen en PNG bitmap sin variante de modo oscuro. En claro
+       el logo vive sobre una superficie clara normal (coincide con
+       --surface); el token existe para que la fase de header lo use
+       sin tener que redecidir esto. */
+    --color-surface-logo: hsl(var(--gray-0));
+  }
+
+  .dark {
+    /* En oscuro la elevación SÍ es por superficie más clara que
+       --surface (--card), no por sombra — ver .shadow-apple-* abajo. */
+    --color-surface-elevated: hsl(var(--gray-700));
+    --color-text-secondary: hsl(var(--gray-dark-secondary));
+
+    /*
+     * Los cuatro tokens de estado siguen el MISMO criterio que
+     * --primary en oscuro: variante más clara + texto oscuro
+     * (--gray-900), tanto para fills como para texto plano sobre el
+     * fondo de la app. Verificación AA (contraste real):
+     *   success  (--green-900 + --green-300, chip suave, 2026-09-25) → contraste amplio
+     *   warning  (--amber-500, sin cambio) → 7.41:1 en ambos sentidos, no requiere ajuste
+     *   danger   (--red-400 + oscuro)     → 5.75:1  (blanco da 2.77:1, falla)
+     *   info     (--blue-400 + oscuro)    → 6.99:1  (el fill claro original solo da 3.4:1 como texto)
+     */
+    --color-success: hsl(var(--green-900)); /* 2026-09-25: chip suave (era --green-500 fill sólido) */
+    --color-success-foreground: hsl(var(--green-300));
+    --color-danger: hsl(var(--red-400));
+    --color-danger-foreground: hsl(var(--gray-900));
+    --color-warning: hsl(var(--amber-500));
+    --color-warning-foreground: hsl(var(--gray-900));
+    --color-info: hsl(var(--blue-400));
+    --color-info-foreground: hsl(var(--gray-900));
+
+    /* Superficie clara fija para alojar el logo bitmap oscuro sobre
+       fondo oscuro (pendiente ya decidido por el operador). */
+    --color-surface-logo: hsl(var(--gray-50)); /* #F6F6F8 */
   }
 }
 
@@ -62,12 +204,17 @@
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
+    font-family: var(--font-family-sans);
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
 
 @layer utilities {
-  /* Apple-like multi-layer shadows */
+  /* Apple-like multi-layer shadows — escala de elevación de este
+     proyecto (4 niveles), sin cambios de valor en modo claro respecto
+     a como ya estaba (no se repintan componentes existentes). Ver
+     tokens.css para el ancla de marca (sombras del sitio EasyPunto)
+     y las variantes .dark más abajo. */
   .shadow-apple-sm {
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.06);
   }
@@ -80,9 +227,32 @@
   .shadow-apple-lg {
     box-shadow: 0 8px 16px rgba(0, 0, 0, 0.06), 0 16px 40px rgba(0, 0, 0, 0.1);
   }
-  /* Focus ring Apple (azul con halo) */
+  /* Focus ring — antes tenía el azul "Apple" hardcodeado; ahora sigue
+     al token --ring (naranja de marca), consistente en ambos modos. */
   .focus-ring-apple:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 4px hsl(211 100% 50% / 0.25);
+    box-shadow: 0 0 0 4px hsl(var(--ring) / 0.25);
+  }
+}
+
+/* Modo oscuro: la elevación se expresa con superficie más clara (ver
+   --card/--popover más claros que --background arriba), NO con sombra
+   fuerte — un box-shadow negro puro es casi invisible sobre fondo
+   oscuro. Estas clases no tenían variante .dark antes de esta fase;
+   acá se agrega una sombra sutil + un borde de 1px (vía box-shadow,
+   este proyecto no usa el plugin de nesting de Tailwind) para dar
+   definición sin depender de una sombra fuerte. */
+@layer utilities {
+  .dark .shadow-apple-sm {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px hsl(var(--border));
+  }
+  .dark .shadow-apple {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px hsl(var(--border));
+  }
+  .dark .shadow-apple-md {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5), 0 0 0 1px hsl(var(--border));
+  }
+  .dark .shadow-apple-lg {
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.55), 0 0 0 1px hsl(var(--border));
   }
 }

@@ -36,10 +36,14 @@ vi.mock('@parkos/ui-kit/store', () => ({
 vi.mock('@parkos/ui-kit/fetch', () => ({
   ParkosHttpError: class extends Error {
     public readonly status: number;
-    constructor(status: number) {
+    public readonly body: string;
+    public readonly url: string;
+    constructor(status: number, body = '{}', url = '/api/v1/x') {
       super(`ParkosHttpError ${status}`);
       this.name = 'ParkosHttpError';
       this.status = status;
+      this.body = body;
+      this.url = url;
     }
   },
 }));
@@ -128,9 +132,9 @@ describe('useSesionActiva — SWR config', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     renderHook(() => useSesionActiva());
     const shouldRetry = swrOptions?.shouldRetryOnError as (err: unknown) => boolean;
-    expect(shouldRetry(new ParkosHttpError(404))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(500))).toBe(true);
-    expect(shouldRetry(new ParkosHttpError(401))).toBe(true);
+    expect(shouldRetry(new ParkosHttpError(404, '{}', '/api/v1/x'))).toBe(false);
+    expect(shouldRetry(new ParkosHttpError(500, '{}', '/api/v1/x'))).toBe(true);
+    expect(shouldRetry(new ParkosHttpError(401, '{}', '/api/v1/x'))).toBe(true);
   });
 });
 
@@ -162,7 +166,7 @@ describe('useSesionActiva — onError 401 logout defensivo', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     renderHook(() => useSesionActiva());
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(401));
+    onError(new ParkosHttpError(401, '{}', '/api/v1/x'));
     expect(getStateClearMock).toHaveBeenCalledOnce();
     expect(dispatchEventSpy).toHaveBeenCalledWith(expect.any(Event));
     const event = (dispatchEventSpy.mock.calls[0]?.[0] as Event) ?? null;
@@ -173,7 +177,7 @@ describe('useSesionActiva — onError 401 logout defensivo', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     renderHook(() => useSesionActiva());
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(500));
+    onError(new ParkosHttpError(500, '{}', '/api/v1/x'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });
@@ -182,7 +186,7 @@ describe('useSesionActiva — onError 401 logout defensivo', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     renderHook(() => useSesionActiva());
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(404));
+    onError(new ParkosHttpError(404, '{}', '/api/v1/x'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });

@@ -32,20 +32,6 @@
  * + `node-usb-mock@0.4.1` runs the full suite.
  */
 import { test, expect } from '@playwright/test';
-import type { ElectronApplication, Page } from '@playwright/test';
-import { _electron as electron } from '@playwright/test';
-import path from 'node:path';
-
-const APP_ROOT = path.resolve(__dirname, '..');
-
-async function launchApp(): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await electron.launch({
-    args: [path.join(APP_ROOT, 'out', 'main.js')],
-    cwd: APP_ROOT,
-  });
-  const page = await app.firstWindow();
-  return { app, page };
-}
 
 test.describe('HU-F8.1 — PagoModal + post-pago print envelopes', () => {
   test('S1 (stub) — Cotización → "Cobrar" → PagoSheet opens with single-drawer invariant', async () => {

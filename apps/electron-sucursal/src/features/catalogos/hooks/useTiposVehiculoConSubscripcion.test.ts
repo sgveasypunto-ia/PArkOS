@@ -98,9 +98,15 @@ describe('useTiposVehiculoConSubscripcion (HU-F11.x / REQ-OPS-200)', () => {
     const shouldRetry = swrOptions?.shouldRetryOnError as (
       err: unknown,
     ) => boolean;
-    expect(shouldRetry(new ParkosHttpError(404))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(500))).toBe(true);
-    expect(shouldRetry(new ParkosHttpError(401))).toBe(true);
+    expect(
+      shouldRetry(new ParkosHttpError(404, 'not_found', '/catalogos/tipos-vehiculo-con-subscripcion')),
+    ).toBe(false);
+    expect(
+      shouldRetry(new ParkosHttpError(500, 'server_error', '/catalogos/tipos-vehiculo-con-subscripcion')),
+    ).toBe(true);
+    expect(
+      shouldRetry(new ParkosHttpError(401, 'unauthorized', '/catalogos/tipos-vehiculo-con-subscripcion')),
+    ).toBe(true);
   });
 
   it('T5: fallbackData es [] (subset vacío inicial antes del fetch)', () => {
@@ -114,7 +120,7 @@ describe('useTiposVehiculoConSubscripcion (HU-F11.x / REQ-OPS-200)', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useTiposVehiculoConSubscripcion();
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(401));
+    onError(new ParkosHttpError(401, 'unauthorized', '/catalogos/tipos-vehiculo-con-subscripcion'));
     expect(getStateClearMock).toHaveBeenCalledOnce();
     expect(dispatchEventSpy).toHaveBeenCalledWith(expect.any(Event));
     const event = (dispatchEventSpy.mock.calls[0]?.[0] as Event) ?? null;
@@ -125,7 +131,7 @@ describe('useTiposVehiculoConSubscripcion (HU-F11.x / REQ-OPS-200)', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useTiposVehiculoConSubscripcion();
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(404));
+    onError(new ParkosHttpError(404, 'not_found', '/catalogos/tipos-vehiculo-con-subscripcion'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });
@@ -134,7 +140,7 @@ describe('useTiposVehiculoConSubscripcion (HU-F11.x / REQ-OPS-200)', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useTiposVehiculoConSubscripcion();
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(500));
+    onError(new ParkosHttpError(500, 'server_error', '/catalogos/tipos-vehiculo-con-subscripcion'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });

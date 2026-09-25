@@ -152,7 +152,6 @@ export function SalidaFlow({
         setRegistrarError(err as Error);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trigger, uuidIngreso, invalidarConteos, sucursal?.uuid, sesion?.uuid, pagoAnchorId, onPagoOpen, openDrawer]);
 
   return (

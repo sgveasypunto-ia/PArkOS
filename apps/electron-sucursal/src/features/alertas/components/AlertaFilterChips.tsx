@@ -24,6 +24,21 @@ export interface AlertaFilterChipsProps {
 
 const SEVERIDADES: SeverityFilter[] = ['alta', 'media', 'baja'];
 
+// F31.3 rediseño: mismo mapeo severidad → token semántico que
+// `AlertaCard.SEVERITY_VARIANT` — el chip "activo" adopta el color de
+// la severidad que filtra (no `--primary` genérico), así el operador
+// asocia visualmente el filtro con las tarjetas que va a ver.
+const SEVERITY_PRESSED_CLASS: Record<SeverityFilter, string> = {
+  alta: 'border-destructive bg-destructive text-destructive-foreground',
+  media: 'border-warning bg-warning text-warning-foreground',
+  baja: 'border-info bg-info text-info-foreground',
+};
+
+// Foco visible consistente con el resto del design system (Button/Input
+// shadcn: `focus-visible:ring-2 focus-visible:ring-ring`).
+const CHIP_FOCUS_CLASS =
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
+
 export function AlertaFilterChips({
   alerts,
   activeSeveridad,
@@ -57,9 +72,9 @@ export function AlertaFilterChips({
             aria-label={`severidad-${sev}`}
             data-testid={`chip-severidad-${sev}`}
             onClick={() => onToggleSeveridad(sev)}
-            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${CHIP_FOCUS_CLASS} ${
               pressed
-                ? 'border-primary bg-primary text-primary-foreground'
+                ? SEVERITY_PRESSED_CLASS[sev]
                 : 'border-border bg-background text-foreground hover:bg-muted'
             }`}
           >
@@ -79,7 +94,7 @@ export function AlertaFilterChips({
             aria-label={`tipo-${tipo}`}
             data-testid={`chip-tipo-${tipo}`}
             onClick={() => onToggleTipoAlerta(tipo)}
-            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${CHIP_FOCUS_CLASS} ${
               pressed
                 ? 'border-secondary bg-secondary text-secondary-foreground'
                 : 'border-border bg-background text-foreground hover:bg-muted'

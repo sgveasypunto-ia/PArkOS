@@ -33,8 +33,13 @@ test.describe('electron-sucursal kiosko', () => {
     // The renderer invokes bridge.kiosk.unlock via a test-only hook
     // (F3.x replaces this with a proper modal UI). For F2.3 we
     // exercise the IPC channel directly.
-    const unlockResult = await app.evaluate(({ ipcMain }, pin: string) => {
+    const unlockResult = await app.evaluate((_ipcMain, pin: string) => {
       return new Promise((resolve) => {
+        // This arrow function is serialized and executed inside Electron's main
+        // process via Playwright's app.evaluate(); a nested function body cannot
+        // carry a static ES `import`, so a runtime `require()` is the only valid
+        // loading mechanism here.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { ipcRenderer } = require('electron');
         ipcRenderer.invoke('kiosk:unlock', pin).then(resolve);
       });
@@ -56,13 +61,15 @@ test.describe('electron-sucursal kiosko', () => {
     // Three wrong attempts increment the counter; the fourth call
     // must return {reason:'lockout', lockoutSecondsRemaining:300}.
     for (let i = 0; i < 3; i += 1) {
-      await app.evaluate(async ({ ipcMain }, pin: string) => {
+      await app.evaluate(async (_ipcMain, pin: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- see note above: required at runtime inside the Electron main-process evaluate() context.
         const { ipcRenderer } = require('electron');
         return ipcRenderer.invoke('kiosk:unlock', pin);
       }, '9999');
     }
 
-    const fourth = await app.evaluate(async ({ ipcMain }, pin: string) => {
+    const fourth = await app.evaluate(async (_ipcMain, pin: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- see note above: required at runtime inside the Electron main-process evaluate() context.
       const { ipcRenderer } = require('electron');
       return ipcRenderer.invoke('kiosk:unlock', pin);
     }, '9999');
@@ -82,15 +89,19 @@ test.describe('electron-sucursal kiosko', () => {
     });
     await app.firstWindow();
 
-    await app.evaluate(async ({ ipcMain }, pin: string) => {
+    await app.evaluate(async (_ipcMain, pin: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- see note above: required at runtime inside the Electron main-process evaluate() context.
       const { ipcRenderer } = require('electron');
       return ipcRenderer.invoke('kiosk:unlock', pin);
     }, '1234');
 
     // Read electron-log main.log via Node fs in the main process.
     const logs = await app.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- see note above: required at runtime inside the Electron main-process evaluate() context.
       const fs = require('node:fs');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- see note above: required at runtime inside the Electron main-process evaluate() context.
       const path = require('node:path');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- see note above: required at runtime inside the Electron main-process evaluate() context.
       const logPath = path.join(require('electron').app.getPath('userData'), 'logs', 'main.log');
       if (!fs.existsSync(logPath)) return '';
       return fs.readFileSync(logPath, 'utf8');

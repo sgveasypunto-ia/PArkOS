@@ -21,6 +21,19 @@ export interface FacturaElectronicaRetryPanelProps {
   uuid_fe: string | null;
 }
 
+/**
+ * F31.3 rediseño — el estado DIAN se anunciaba solo por texto plano
+ * (sin diferenciación visual entre aceptado/rechazado/pendiente). Se
+ * mapea a los tokens semánticos ya construidos (tokens.css/index.css,
+ * AA verificado en ambos temas) — mismo criterio que el resto de la
+ * app usa para estados (chip suave, no fill sólido).
+ */
+function estadoChipClass(estado: string): string {
+  if (estado === 'aceptado') return 'bg-success text-success-foreground';
+  if (estado === 'rechazado') return 'bg-destructive text-destructive-foreground';
+  return 'bg-warning text-warning-foreground';
+}
+
 export function FacturaElectronicaRetryPanel({
   uuid_fe,
 }: FacturaElectronicaRetryPanelProps): JSX.Element {
@@ -62,16 +75,20 @@ export function FacturaElectronicaRetryPanel({
           <CardHeader>
             <CardTitle>{t('fe.estado', { defaultValue: 'Estado DIAN' })}</CardTitle>
           </CardHeader>
-          <CardContent>
-            <p data-testid="fe-estado" data-estado={data.estado_dian}>
+          <CardContent className="space-y-3">
+            <p
+              data-testid="fe-estado"
+              data-estado={data.estado_dian}
+              className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${estadoChipClass(data.estado_dian)}`}
+            >
               {data.estado_dian === 'aceptado' && t('fe.aceptado', { defaultValue: 'Aceptado' })}
               {data.estado_dian === 'rechazado' && t('fe.rechazado', { defaultValue: 'Rechazado' })}
               {data.estado_dian === 'pendiente' && t('fe.pendiente', { defaultValue: 'Pendiente' })}
               {data.estado_dian === 'no_enviado' && t('fe.pendiente', { defaultValue: 'Pendiente' })}
             </p>
             {data.respuesta_proveedor?.cufe && (
-              <p className="text-sm" data-testid="fe-cufe">
-                {t('fe.cufe', { defaultValue: 'CUFE' })}: <code>{data.respuesta_proveedor.cufe}</code>
+              <p className="break-all text-sm" data-testid="fe-cufe">
+                {t('fe.cufe', { defaultValue: 'CUFE' })}: <code className="break-all">{data.respuesta_proveedor.cufe}</code>
               </p>
             )}
             {data.estado_dian === 'rechazado' && (

@@ -59,7 +59,17 @@ export function CerrarTurnoSheet(): JSX.Element {
         if (!next) close();
       }}
     >
-      <SheetContent side="right" data-testid="cerrar-turno-sheet">
+      <SheetContent
+        side="right"
+        // F31.3 rediseño: mismo tratamiento que `<ArqueoSheet />` — cap
+        // de ancho para 3840/ultrawide + padding fluido en 320px + chrome
+        // flex/overflow para que el form (resumen + 6 campos + banners)
+        // scrollee dentro del drawer en vez de desbordar el viewport en
+        // alturas chicas. Antes no tenía NINGÚN override, a diferencia
+        // de ArqueoSheet — inconsistencia corregida.
+        className="flex h-full w-full flex-col overflow-hidden p-4 sm:max-w-md sm:p-6 md:max-w-lg"
+        data-testid="cerrar-turno-sheet"
+      >
         <SheetHeader>
           <SheetTitle>Cerrar turno</SheetTitle>
           <SheetDescription>
@@ -68,7 +78,9 @@ export function CerrarTurnoSheet(): JSX.Element {
             vuelve al login.
           </SheetDescription>
         </SheetHeader>
-        <CerrarTurno />
+        <div className="flex flex-1 flex-col overflow-y-auto">
+          <CerrarTurno />
+        </div>
       </SheetContent>
     </Sheet>
   );

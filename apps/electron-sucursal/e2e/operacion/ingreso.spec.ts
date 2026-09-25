@@ -18,40 +18,40 @@
  * `test.skip` calls to `test` via an env-gated helper; the F4.3
  * precedent applies.
  */
-import { expect, test } from '@playwright/test';
+import { test } from '@playwright/test';
 
 const SANDBOX_NO_BROWSER = true;
 
 test.describe('HU-F6.1 — Vehicle entry flow', () => {
   test.skip(SANDBOX_NO_BROWSER, 'Sandbox F.6 — no Chromium; runs in CI', () => {});
 
-  test('E1 rotación happy path', async ({ page }) => {
+  test('E1 rotación happy path', async ({ page: _page }) => {
     // Stub: navigate to /operacion, type ABC123, press Enter, assert
     // TiqueteModal opens with auto-printed buffer in the IPC payload.
   });
 
-  test('E2 mensualidad banner', async ({ page }) => {
+  test('E2 mensualidad banner', async ({ page: _page }) => {
     // Stub: same setup with `uuid_subscripcion_cliente` non-null;
     // assert the Mensualidad label appears in the success modal.
   });
 
-  test('E3 transparent redirect on doble-ingreso → SalidaFlow stub', async ({ page }) => {
+  test('E3 transparent redirect on doble-ingreso → SalidaFlow stub', async ({ page: _page }) => {
     // Stub: POST returns 409 ingreso_activo_existente; assert
     // navigation to /operacion/salida?uuid_ingreso=... with NO toast.
   });
 
-  test('E4 forzado motivo ≥10 chars', async ({ page }) => {
+  test('E4 forzado motivo ≥10 chars', async ({ page: _page }) => {
     // Stub: POST returns 422 motivo_forzado_requerido; assert modal
     // opens, confirm button stays disabled until motivo.length ≥ 10.
   });
 
-  test('E5 printer offline → ingreso persists + banner visible', async ({ page }) => {
+  test('E5 printer offline → ingreso persists + banner visible', async ({ page: _page }) => {
     // Stub: bridge.imprimir rejects with printer_offline; assert the
     // ingreso row is persisted (visible via DB or GET) and the
     // F5.1 retry queue banner is shown.
   });
 
-  test('axe-core WCAG 2.1 AA snapshot', async ({ page }) => {
+  test('axe-core WCAG 2.1 AA snapshot', async ({ page: _page }) => {
     // Stub: import { AxeBuilder } from '@axe-core/playwright'; mount
     // Principal.tsx + the two modals; assert zero violations.
   });

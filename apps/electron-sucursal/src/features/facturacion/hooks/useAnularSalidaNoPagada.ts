@@ -100,7 +100,7 @@ async function handle401(uuid_salida: string): Promise<never> {
 }
 
 async function mutateFn(
-  key: string,
+  _key: string,
   init: { arg: AnularSalidaInput },
 ): Promise<unknown> {
   const uuid_salida = init.arg.uuid_salida;

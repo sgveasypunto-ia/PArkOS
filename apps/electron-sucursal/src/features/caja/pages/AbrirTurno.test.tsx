@@ -117,10 +117,10 @@ vi.mock('../components/AbrirTurnoForm', () => ({
 vi.mock('../api/sesionActivaApi', () => ({
   abrirSesion: (...args: unknown[]) => mockAbrirSesion(...args),
   SesionAlreadyActiveError: class extends Error {
-    readonly name = 'SesionAlreadyActiveError';
+    override readonly name = 'SesionAlreadyActiveError';
     constructor(
       public readonly status: number,
-      public override readonly body: string,
+      public readonly body: string,
       public readonly url: string,
     ) {
       super('sesion_already_active');

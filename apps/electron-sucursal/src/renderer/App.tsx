@@ -56,12 +56,27 @@ export default function App(): JSX.Element {
   const { t } = useTranslation('common');
 
   return (
-    <>
+    // 2026-09-25 (rediseño visual + pedido operador "evitar el scroll de
+    // página"): antes `<main>` usaba su propio `min-h-[calc(100vh-2rem)]`
+    // (una ADIVINANZA del alto de `<StatusBar/>`, desalineada — StatusBar
+    // es 2rem real, acá se restaba distinto) mientras `<Dashboard/>`
+    // (adentro) hacía SU PROPIA cuenta separada `min-h-[calc(100dvh-2.5rem)]`
+    // — dos `min-height` basados en viewport, anidados, sin relación real
+    // entre sí. Cualquier crecimiento de contenido (ej. el logo del header,
+    // ahora más grande) rompía la cuenta y hacía scrollear la PÁGINA
+    // entera en vez de solo el `<main>` interno de `<Dashboard/>` (que ya
+    // tiene su propio `overflow-y-auto` pensado para eso). Fix real: este
+    // wrapper fija el alto exacto del viewport (`h-dvh`) en un flex-column;
+    // `<main>` pasa a `flex-1 min-h-0` (alto real y acotado, no una
+    // adivinanza) — así `<Dashboard/>` puede simplemente `h-full` y su
+    // `grid-rows-[auto_1fr_auto]` + `overflow-y-auto` interno funcionan
+    // de verdad, sin que la página nunca necesite scroll propio.
+    <div className="flex h-dvh flex-col overflow-hidden">
       <StatusBar />
       <LocalApiDownBanner />
       <main
         lang="es-CO"
-        className="block min-h-[calc(100vh-2rem)] w-full bg-muted/40 px-4 py-3"
+        className="w-full flex-1 min-h-0 overflow-y-auto bg-muted/40 px-4 py-3"
       >
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -129,6 +144,6 @@ export default function App(): JSX.Element {
           />
         </Routes>
       </main>
-    </>
+    </div>
   );
 }

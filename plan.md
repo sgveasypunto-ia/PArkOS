@@ -2919,7 +2919,7 @@ Principios: **feature-first** (una carpeta por dominio, no por tipo de archivo s
 | **DEC-ADM-16** | El "reintento" de un envío DIAN rechazado o en error se hace con el endpoint que **ya existe**: `POST /api/v1/envio-dian` (`dian/cloud_router.py`), pasando `uuid_envio_padre` con el `uuid` del envío anterior — es una transición de workflow más, no un endpoint nuevo. | Reutilizar el mecanismo de cadena de transiciones (`uuid_envio_padre`) que el backend ya implementa, en vez de proponer `POST /cloud/envio-dian/:uuid/reintentar` (que no existe ni hace falta). |
 | **DEC-ADM-17** | i18n: un solo locale (`es-CO`), namespaces por feature dentro del mismo árbol de traducciones ya iniciado (`src/i18n/locales/es-CO/*.json`), sin librería de detección de idioma adicional (no hace falta: no hay multi-idioma en el alcance). | Extender lo ya configurado, no reintroducir `i18next-browser-languagedetector` para un caso de un solo locale. |
 | **DEC-ADM-18** | WCAG 2.1 AA verificado con `@axe-core/playwright` en cada spec e2e (ya es devDependency). | Ya está en el toolchain; solo falta usarlo sistemáticamente. |
-| **DEC-ADM-19** | Modo oscuro: **fuera de alcance v1** (no hay ningún CU que lo pida; se deja como decisión abierta, ver `ABIERTO-53`). | Evitar trabajo no solicitado por ningún caso de uso. |
+| **DEC-ADM-19** | ~~Modo oscuro: fuera de alcance v1~~ — **superada por `Fase 31`** (2026-09-25): el operador lo solicitó explícitamente como requisito no negociable del rediseño visual, cumpliendo la condición de reapertura que la propia decisión exigía. Ver `ABIERTO-53` y `HU-F31.1`. | Evitar trabajo no solicitado por ningún caso de uso — condición que dejó de aplicar al llegar el pedido explícito. |
 | **DEC-ADM-20** | Despliegue/serving de `web_admin`: **no existe** ningún `Dockerfile` ni configuración de servido para el cloud hoy (confirmado por búsqueda exhaustiva en `infra/`). Fase 13 decide y construye el mecanismo mínimo real (build estático de Vite servido por un contenedor Nginx, con las mismas variables de entorno de proxy `/api` que ya usa `vite.config.ts` en desarrollo). | Sin este trabajo, `web_admin` no tiene forma de desplegarse aunque todas las fases de negocio estén completas. |
 
 #### 0.4 Glosario (reconciliado con Sucursal)
@@ -4757,7 +4757,7 @@ Nota de lectura: varios códigos de `0001`/`0002` no tienen router que los verif
 | **ABIERTO-50** | ¿Existe un campo "Título del ticket" por sucursal? | El corpus de CU original lo menciona en el flujo de creación de sucursal (CU-11); ninguna tabla del ER lo tiene. | (a) Usar `empresa.mensaje_bienvenida` como título implícito; (b) agregar `documentos.tipo='titulo_ticket'` (texto plano, mismo patrón que "observaciones", HU-F15.4); (c) confirmar con negocio que no hace falta un título distinto del nombre de la sucursal. |
 | **ABIERTO-51** | ¿Se necesita un mecanismo de resolución manual de `sync_conflict` más allá de "last-write-wins" automático? | Ningún CU de esta Parte II lo pide explícitamente; el campo `resolucion` ya documenta qué se aplicó. | (a) Mantener solo lectura (esta Parte II); (b) agregar un endpoint de resolución manual si el negocio reporta casos reales de conflictos mal resueltos automáticamente. |
 | **ABIERTO-52** | ¿Hace falta un endpoint de "listar todos los pairing tokens" cuando el número de sucursales crezca? | Hoy el estado de pairing se deriva por sucursal (HU-F19.3 BR4); funciona bien con pocas decenas de sucursales. | (a) Mantener el patrón derivado; (b) construir el endpoint de lista dedicado cuando el volumen lo justifique. |
-| **ABIERTO-53** | ¿Modo oscuro en v1? | Ningún CU lo pide. | (a) Fuera de alcance v1 (recomendado, DEC-ADM-19); (b) construirlo si negocio lo prioriza. |
+| ~~**ABIERTO-53**~~ | ¿Modo oscuro en v1? | Ningún CU lo pide. | **Resuelto 2026-09-25**: (b) construirlo — el operador lo priorizó explícitamente. Ver `Fase 31`. |
 | **ABIERTO-54** | ¿Cuándo se aborda `clientes_b2b` (convenios corporativos)? | CU-06 BR5 lo declara explícitamente "fase 2". | (a) Esperar a que negocio priorice esa fase 2 con su propio CU; (b) adelantarla si aparece demanda real de clientes corporativos. |
 | **ABIERTO-55** | ¿Se construye un endpoint admin-iniciado para anular una FE antes del acuse DIAN? | Hoy solo existe el webhook DIAN-iniciado (`POST /revocacion-factura-webhook`); anular antes del acuse tiene implicaciones fiscales que exceden el alcance de planificación de este documento. | (a) No construirlo sin decisión de negocio/fiscal explícita; (b) construirlo si Legal/Contabilidad confirma que es una operación válida ante la DIAN. |
 | **ABIERTO-56** | ¿Se necesitan reglas de alerta configurables por el admin (más allá de los 19 tipos sembrados — 8 de infraestructura + 11 operacionales)? | Un plan previo proponía una tabla `alert_rules` sin respaldo de ningún CU. | (a) No construirla sin un CU que la pida (posición de esta Parte II); (b) construirla como tabla nueva declarada (mismo patrón de excepción que `configuracion_caja`) si negocio la solicita explícitamente. |
@@ -7930,7 +7930,7 @@ Los 29 `ABIERTO-*` de las 3 partes (`ABIERTO-01..08` Parte 1, `ABIERTO-50..60` P
 
 | ID | Tema | Recomendación |
 |---|---|---|
-| ABIERTO-53 | ¿Modo oscuro en v1? | No — ningún CU lo pide (DEC-ADM-19 ya lo descarta); reabrir solo ante pedido explícito de negocio. |
+| ~~ABIERTO-53~~ | ¿Modo oscuro en v1? | **Resuelto 2026-09-25**: sí — el operador lo pidió explícitamente (condición de reapertura de `DEC-ADM-19` cumplida). Ver `Fase 31`. |
 | ABIERTO-58 | ¿Cuándo se justifica una vista materializada para reportería? | Cuando el volumen de datos de una sucursal supere ~1 año sin degradación aceptable (RIESGO-ADM-05); no construirla preventivamente. |
 | ABIERTO-52 | ¿Hace falta un endpoint dedicado de "listar todos los pairing tokens" cuando crezca el número de sucursales? | Sí, cuando el número de sucursales supere ~20-30 (umbral operativo razonable); no es urgente hoy (RIESGO-ADM-17). |
 
@@ -7952,6 +7952,63 @@ Términos técnicos o de negocio que no forman parte del glosario único del fro
 - **Tolerancia de placa (O/0, I/1, B/8)** — corrección de ambigüedad de caracteres al **buscar** una placa en la salida (CU-02); nunca se aplica en el **registro** de un ingreso nuevo (CU-01), que usa siempre autodetección estricta por regex sin tolerancia (DEC-SUC-22) — son dos funciones distintas, no el mismo componente.
 - **`tipo_entrada` (Mensualidad / Rotación)** — nunca es una columna persistida; siempre se deriva en cada respuesta a partir de `ingreso.uuid_subscripcion_cliente IS NOT NULL` (DEC-SUC-21).
 - **Roles de negocio vs. permiso atómico** — un rol de negocio (Usuario/Cajero, Facturador, Supervisor, Administrador, Auditor, Desarrollo; "Owner" no es un rol formal, es un actor de KPIs) es un valor libre de `usuarios.rol`, sin `CHECK` en el ER; la autorización real y verificada en cada escritura vive en `permisos_usuario` (permiso atómico), nunca en el rol de negocio ni cacheada en el JWT.
+
+---
+
+## PARTE V — REDISEÑO VISUAL Y DE MARCA (web_sucursal)
+
+### Fase 31 — Rediseño visual integral e identidad de marca EasyPunto (`apps/electron-sucursal`)
+
+**Objetivo**: alinear la capa visual completa de `web_sucursal` con la identidad de marca real de EasyPunto (extraída de `https://easypunto.com/`, no inventada) y con estándares de accesibilidad, sin modificar la lógica de negocio ni el entry chain de `POST /operacion/ingresos` ni ninguna tabla del `.mmd`. Iniciativa solicitada explícitamente por el operador en sesión del 2026-09-25 vía un prompt maestro de rediseño; no deriva de ningún CU del corpus original.
+
+**Reversa de `DEC-ADM-19` / `ABIERTO-53` (modo oscuro)**: `DEC-ADM-19` marcaba el modo oscuro como fuera de alcance v1, reabrible solo "ante pedido explícito de negocio". Esta fase ES ese pedido explícito (objetivo no negociable del prompt maestro del operador). Se resuelve `ABIERTO-53` con la opción (b): se construye modo oscuro completo. Ambas entradas quedan tachadas y enlazadas a esta fase en sus tres apariciones del documento.
+
+**Alcance confirmado con el operador**: solo `apps/electron-sucursal` (no `web_admin`, no un sitio público separado). Sin proceso SDD formal — implementación directa/delegada.
+
+**Responsive**: aunque `web_sucursal` es hoy una app Electron de kiosko instalada vía MSI/NSSM en hardware fijo de sucursal (Parte III, Fases 21-27), el operador confirmó explícitamente (2026-09-25) mantener el rango completo de breakpoints del prompt maestro (320px a 4K/ultrawide/plegables) para sostener flexibilidad real ante distintos monitores por sucursal y una eventual versión tablet — no se acota a la resolución actual del kiosko.
+
+#### HU-F31.1 — Identidad de marca, design tokens y mecanismo de tema
+
+**Historia**: Como operador de EasyPunto, quiero que `electron-sucursal` refleje la identidad visual real de la marca (color, tipografía, formas) en vez de un tema genérico "Apple blue", y que soporte modo claro/oscuro completo con persistencia y sin flash, para que el producto se sienta consistente con la marca y sea usable en cualquier condición de iluminación del puesto de trabajo.
+
+**Estado**: hecho (esta sesión). Activos de marca en `src/assets/brand/` + `inventory.json`; tokens primitivos/semánticos en `src/renderer/styles/tokens.css` e `src/renderer/index.css`; mecanismo de tema (detección de sistema, persistencia, anti-flash) en `src/renderer/lib/theme.ts` + script inline en `index.html`. Sin botón de toggle visible todavía (ver HU-F31.3).
+
+**Criterios de aceptación**:
+- Colores de marca reales (`#E85F24` primario, `#323133` secundario, `#636363` texto, `#F6F6F8`/`#222222` superficies) reemplazan el placeholder azul previo, en ambos modos.
+- Tipografía Poppins (400/500/600/700) aplicada vía tokens tipográficos fluidos (`clamp()`).
+- Contraste AA (4.5:1 texto normal, 3:1 texto grande/UI) verificado para cada combinación texto/fondo semántica, en ambos modos.
+- Preferencia de tema persistida en `localStorage`, con `prefers-color-scheme` como fallback y aplicación pre-render (sin flash del tema incorrecto).
+- Logos reales de EasyPunto (bitmap, sin versión vectorial ni variante oscura provista por la marca — decisión del operador: usar el PNG tal cual, sobre contenedor de superficie clara en modo oscuro).
+
+**Pendiente marcado**: `[PENDIENTE_VALIDAR]` — no existe gradiente CSS propio verificable en el sitio fuente; no hay variante de logo para fondo oscuro ni versión vectorial (5 archivos bajo `--REQUIERE-VECTOR` en `inventory.json`).
+
+#### HU-F31.2 — Auditoría de bugs visuales heredados
+
+**Estado**: auditoría hecha (esta sesión), corrección pendiente (se aplica en HU-F31.3).
+
+Encontrado recorriendo dashboard, ingreso, suscripciones y arqueo: paneles laterales (Ingreso/Suscripciones/Arqueo) con un tercio inferior vacío; la barra inferior de cupos libres visualmente desconectada del resto (otro radio, otra paleta); cuatro paletas de color de "estado" ad hoc sin sistema semántico único; cero modo oscuro. Sin errores ni warnings de consola en ninguna de las vistas recorridas — no hay bugs funcionales nuevos, solo deuda visual.
+
+#### HU-F31.3 — Rediseño de componentes, toggle de tema y responsive real
+
+**Historia**: Como operador, quiero que cada vista y componente use el nuevo sistema de tokens, incluyendo un selector de tema visible (claro/oscuro/sistema), y que la corrección de los bugs de HU-F31.2 quede aplicada, para operar con una interfaz consistente y sin deuda visual heredada.
+
+**Alcance**: header/sidebar, paneles de Ingreso/Salida/Suscripciones/Arqueo, componente de toggle de tema, catálogo de estados de componente (hover/focus/active/disabled/loading/error) sobre los componentes reales del inventario de `apps/electron-sucursal`. Breakpoints: rango completo del prompt maestro (320px–4K/ultrawide), confirmado por el operador.
+
+**Estado**: hecho (esta sesión) — shell (header/sidebar/layout) + los ~78 componentes del inventario (agrupados por dominio: caja, operación, auth+facturación+catálogos+reimpresión, suscripciones+sync+alertas), toggle de tema visible, logo real integrado (header + login + favicons), y los bugs de HU-F31.2 corregidos. Breakpoints reales probados: 320 a 3840px + ultrawide, claro y oscuro, vía Chrome DevTools (`resize_page`/`emulate`). `tsc -b`/`eslint` limpios, 947/947 tests. Estados de componente (hover/focus/active/disabled/loading/error) cubiertos donde ya existía la lógica — no se agregó ningún estado de negocio nuevo.
+
+Bugs funcionales reales encontrados y corregidos en el camino (no solo visuales): `CierreDiarioDialog.tsx` mostraba texto roto por una key de i18n mal usada (`t('cierreDiario')` devolvía el objeto del namespace, no un string); `ResolverAlertaButton` tragaba errores 403/red en silencio; `ReimprimirTiquete.tsx` tenía un `<label for>` apuntando a un `<div>` (bug real de accesibilidad, confirmado por Chrome DevTools); varios estados de éxito/warning en modo oscuro eran ilegibles por colores Tailwind sueltos sin variante dark (`IngresoPanel.tsx`, `TiqueteModal.tsx`, `AlertaCard.tsx`, `OcupacionPanel.tsx`, `TurnoActivoToggle.tsx`). Un bug estructural de layout (doble cálculo de alto basado en viewport, `App.tsx` vs `Dashboard.tsx`, sin relación entre sí) causaba scroll de página — corregido con un modelo de alto real acotado (flex + `h-dvh`), no un ajuste de valores mágicos.
+
+Componentes confirmados huérfanos (sin ruta ni import activo hoy, auditados igual por estar en el inventario, no se pudieron validar en vivo): `Principal.tsx`, `MiTurnoPanel.tsx`, `OcupacionPanel.tsx`, `TurnoActivoPanel.tsx`, `TarifaBadge.tsx`. No se eliminaron (fuera del alcance de esta HU decidir si son código muerto a retirar).
+
+Pendiente real, no inventado, requiere decisión del operador: el tiquete de **arqueo** (cierre de turno) nunca imprime de verdad — el bridge de impresión solo manda `{uuid}`, nunca un buffer ESC/POS real, pese a que existe un builder ya armado y testeado (`escposBuilder.buildArqueoBuffer`) sin conectar. Documentado en detalle en memoria de sesión (Engram), no en este plan para no duplicar. Mismo patrón roto en `SalidaMensualidad.tsx`/`PagoSheet.tsx`.
+
+#### HU-F31.4 — Accesibilidad y performance sobre el rediseño
+
+**Historia**: Como operador, quiero que el rediseño no degrade la accesibilidad ni el rendimiento ya exigidos transversalmente por el resto del proyecto (Anexo F/G de Parte I: `axe-core` sin violaciones serias/críticas).
+
+**Alcance**: contraste AA final sobre componentes reales (no solo tokens aislados), navegación por teclado, foco visible en ambos modos, Core Web Vitals (LCP/CLS/INP) antes/después.
+
+**Estado**: no iniciado.
 
 ---
 

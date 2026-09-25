@@ -37,6 +37,19 @@ import {
   useReintentarFE,
 } from '../hooks/useReintentarFE';
 
+/**
+ * F31.3 rediseño — mismo criterio que `<FacturaElectronicaRetryPanel />`
+ * (tokens de estado AA verificados, chip suave). Duplicado localmente
+ * (2 archivos, ~4 líneas) en vez de extraer un helper compartido — no
+ * hay un módulo común entre `pages/` y `components/` para esto todavía
+ * y ambos archivos están en el mismo lote de esta tarea.
+ */
+function estadoChipClass(estado: string | null): string {
+  if (estado === 'aceptado') return 'bg-success text-success-foreground';
+  if (estado === 'rechazado') return 'bg-destructive text-destructive-foreground';
+  return 'bg-warning text-warning-foreground';
+}
+
 export function FacturaDetalle(): JSX.Element {
   const { uuid } = useParams<{ uuid: string }>();
   const { t } = useTranslation('facturacion');
@@ -83,13 +96,17 @@ export function FacturaDetalle(): JSX.Element {
         <p className="text-sm text-muted-foreground">
           {t('fe.estado', { defaultValue: 'Estado DIAN' })}
         </p>
-        <p className="text-lg font-medium" data-testid="fe-estado" data-estado={estado ?? ''}>
+        <p
+          data-testid="fe-estado"
+          data-estado={estado ?? ''}
+          className={`inline-flex items-center rounded-full px-2.5 py-1 text-sm font-medium ${estadoChipClass(estado)}`}
+        >
           {estadoLabel}
         </p>
 
         {cufe && estado === 'aceptado' && (
-          <p className="text-sm" data-testid="fe-cufe">
-            {t('fe.cufe', { defaultValue: 'CUFE' })}: <code>{cufe}</code>
+          <p className="break-all text-sm" data-testid="fe-cufe">
+            {t('fe.cufe', { defaultValue: 'CUFE' })}: <code className="break-all">{cufe}</code>
           </p>
         )}
       </section>
