@@ -131,6 +131,12 @@ export function LoginForm({
   // mientras `isLockout` para que el operador no pueda intentar hasta
   // que el countdown expire (el parent resetea `errorState` via
   // `handleLockoutExpired` cuando `useCountdown` llega a 0).
+  // `onLockoutExpired` se mantiene en `LoginFormProps` por compat con
+  // `<Login />` (que lo sigue pasando), pero YA NO se invoca desde acá:
+  // el wiring real vive en `<LockoutBlock onExpired={handleLockoutExpired}>`
+  // (ver Login.tsx). Se referencia explícitamente para satisfacer
+  // `noUnusedParameters` sin remover el prop del contrato público.
+  void onLockoutExpired;
 
   const isFormDisabled = isSubmitting || isLockout;
   const showAttemptCounter = attemptCount > 0;

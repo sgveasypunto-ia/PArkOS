@@ -36,7 +36,7 @@ export interface TokenPair {
  * a este único error. Frontend muestra `t('invalidCredentials')`.
  */
 export class InvalidCredentialsError extends Error {
-  readonly name = 'InvalidCredentialsError';
+  override readonly name = 'InvalidCredentialsError';
 }
 
 /**
@@ -45,7 +45,7 @@ export class InvalidCredentialsError extends Error {
  * `retryAfterSeconds` para countdown UI; F3.1 solo surfacea el error.
  */
 export class AccountLockedError extends Error {
-  readonly name = 'AccountLockedError';
+  override readonly name = 'AccountLockedError';
   constructor(public readonly retryAfterSeconds: number) {
     super(`Account locked. Retry after ${retryAfterSeconds} seconds.`);
   }

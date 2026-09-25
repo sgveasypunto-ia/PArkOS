@@ -45,8 +45,9 @@ export type TipoSinPlaca = (typeof TIPOS_SIN_PLACA)[number];
  */
 export function useTiposVehiculoSinPlaca(): UseTiposVehiculoReturn {
   const full = useTiposVehiculo();
-  const filtered = full.tipos.filter((t): t is typeof full.tipos[number] =>
-    (TIPOS_SIN_PLACA as readonly string[]).includes(t.tipo),
+  const filtered = full.tipos.filter(
+    (t): t is typeof full.tipos[number] =>
+      t.tipo !== null && (TIPOS_SIN_PLACA as readonly string[]).includes(t.tipo),
   );
   return {
     ...full,

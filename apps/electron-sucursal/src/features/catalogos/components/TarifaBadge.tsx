@@ -27,7 +27,7 @@
  * `formatCOP` es la ÚNICA función de formato; `Number(tarifa.valor)`
  * convierte NUMERIC(18,4) → number JS antes de delegar a Intl.
  */
-import { formatCOP } from '../../../caja/lib/format';
+import { formatCOP } from '../../caja/lib/format';
 import type { TarifaVigente } from '../hooks/useTarifasVigentes';
 
 const STALE_HELP_ID = 'tarifa-stale-help';
