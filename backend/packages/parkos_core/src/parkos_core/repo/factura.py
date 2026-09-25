@@ -22,7 +22,7 @@ Typed exceptions are exposed in :data:`__all__` for handler discrimination.
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -30,7 +30,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.A.factura_detalle import FacturaDetalle
 from ..models.A.factura_impuestos import FacturaImpuestos
 from ..models.A.factura_pagos import FacturaPagos
 from ..models.A.salidas import Salidas
@@ -375,7 +374,7 @@ async def crear_factura_impuesto_iva(
         base_calculo=base,
         porcentaje_aplicado=iva,
         valor=iva_monto,
-        fecha_retencion_hasta=date.today(),  # see factura_detalle.py NOTE part 2
+        fecha_retencion_hasta=datetime.now(UTC).date(),  # see factura_detalle.py NOTE part 2
     )
     session.add(new_row)
     await session.flush()
@@ -415,7 +414,7 @@ async def crear_factura_pago(
         referencia=referencia,
         uuid_sesion=uuid_sesion,
         tipo_movimiento="pago",
-        fecha_retencion_hasta=date.today(),  # see factura_detalle.py NOTE part 2
+        fecha_retencion_hasta=datetime.now(UTC).date(),  # see factura_detalle.py NOTE part 2
         timestamp_evento=datetime.now(UTC).replace(tzinfo=None),
     )
     session.add(new_row)

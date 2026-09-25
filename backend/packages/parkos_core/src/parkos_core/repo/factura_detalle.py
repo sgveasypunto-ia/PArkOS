@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,7 +71,7 @@ async def crear_factura_detalle_bulk(
     """
     if not items:
         return []
-    frh = date.today()  # see NOTE above (partition routing)
+    frh = datetime.now(UTC).date()  # see NOTE above (partition routing)
     new_rows = [
         FacturaDetalle(
             uuid_factura=uuid_factura,
