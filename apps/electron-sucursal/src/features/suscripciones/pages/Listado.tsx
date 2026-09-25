@@ -119,7 +119,12 @@ export function Listado(): JSX.Element {
   );
 
   return (
-    <div className="space-y-4 p-4" data-testid="listado-page">
+    // F31.3 rediseño: `max-w-5xl mx-auto` — sin tope, la tabla de 5
+    // columnas se estiraba ilegible en 4K/ultrawide (columnas con
+    // metros de espacio en blanco). `w-full` conserva 320-480px sin
+    // recorte (el `<Table>` de shadcn ya envuelve en `overflow-auto`
+    // propio para el caso de que 5 columnas no quepan).
+    <div className="mx-auto w-full max-w-5xl space-y-4 p-4" data-testid="listado-page">
       <header>
         <h1 className="text-xl font-semibold">
           {t('listado.titulo', { defaultValue: 'Suscripciones' })}
