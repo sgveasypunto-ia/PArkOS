@@ -16,6 +16,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+// `<TurnoActivoPanel>` calls `useTranslation()` for the CardTitle text
+// (U-T4). Without importing the real i18next bootstrap, react-i18next
+// has no registered instance and `t()` returns the raw key instead of
+// the translated string (mirrors the pattern in TiqueteModal.test.tsx).
+import '@/i18n';
+
 import { TurnoActivoPanel } from './TurnoActivoPanel';
 
 const baseSesion = {

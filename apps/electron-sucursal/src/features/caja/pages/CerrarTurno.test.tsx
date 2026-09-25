@@ -1,60 +1,62 @@
 /**
- * Unit tests for `<CerrarTurno />` container (F3.3 — T3).
+ * Unit tests for `<CerrarTurno />` container (F3.3 — T3; rewired for
+ * HU-F10.2's 3-step arqueo+cierre chain — REQ-OPS-157/159/160).
  *
  * Cobertura U12..U14 (cross-ref tasks.md §2):
- *   U12: submit OK → useAuthStore.getState().clear() + parkos:auth:cleared
- *         event + navigate('/login?closed=true', {replace:true}).
- *   U13: PUT 404 → SesionAlreadyClosedError → navigate('/login') sin
- *         ?closed=true.
- *   U14: Cancel button → navigate('/') sin invocar cerrarSesion.
+ *   U12: submit OK → useArqueo().submit() → useSesionActiva().cerrarSesion()
+ *         → navigate('/login?closed=true', {replace:true}).
+ *   U13: PUT 404 (sesión ya cerrada) → navigate('/login') sin ?closed=true,
+ *         sin banner (case 5 en `cerrarTurnoChain.ts` — redirect silencioso).
+ *   U14: Cancel button → navigate('/') sin invocar arqueo ni cierre.
  *
- * Sandbox F.6 caveat: mismo precedent F3.1 Login.test.tsx — test depende de
- * `@testing-library/user-event` que no se instala en este sandbox
- * (npm refuses workspace:*).
+ * REGRESSION (2026-09-21, Engram #1899): `<CerrarTurno>` ya NO llama
+ * `cerrarSesion` importado de `api/sesionActivaApi` directamente — ahora
+ * orquesta `runCerrarTurnoChain()` (`cerrarTurnoChain.ts`), que:
+ *   1. `useArqueo().submit(...)` (POST /caja/arqueo) PRIMERO.
+ *   2. `bridge.imprimir(...)` (best-effort, sin bridge en jsdom).
+ *   3. `useSesionActiva().cerrarSesion(uuid, payload)` — ahora vive EN el
+ *      hook (no en `sesionActivaApi` como función suelta) y devuelve un
+ *      envelope `{ok, status, ...}` en vez de lanzar excepciones típicas
+ *      (`SesionAlreadyClosedError`). El trifecta F3.3 (`useAuthStore.clear()`
+ *      + evento `parkos:auth:cleared`) vive AHORA dentro de ese helper
+ *      (mockeado acá) — se verifica por separado en
+ *      `useSesionActiva.cerrarSesion.test.ts`, no en este container test.
+ *
+ * `cerrarTurnoChain.ts` no tiene test dedicado todavía (gap de cobertura
+ * pre-existente, fuera de alcance de este fix) — este archivo cubre el
+ * container a nivel smoke (éxito / un remap silencioso / cancelar), no
+ * los 8 casos de precedencia del chain.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import type * as ReactRouterDom from 'react-router-dom';
 
 const mockNavigate = vi.fn();
 const mockCerrarSesion = vi.fn();
-const mockClear = vi.fn();
-const dispatchEventSpy = vi.spyOn(window, 'dispatchEvent').mockImplementation(() => true);
+const mockSubmitArqueo = vi.fn();
 
 const mockUseSesionActiva = vi.fn();
 
 vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  const actual = await vi.importActual<typeof ReactRouterDom>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
-
-vi.mock('@parkos/ui-kit/store', () => ({
-  useAuthStore: Object.assign(
-    (selector: (s: unknown) => unknown) => selector({}),
-    { getState: () => ({ clear: mockClear }) },
-  ),
-}));
 
 vi.mock('../hooks/useSesionActiva', () => ({
   useSesionActiva: () => mockUseSesionActiva(),
 }));
 
-vi.mock('../api/sesionActivaApi', () => ({
-  cerrarSesion: (...args: unknown[]) => mockCerrarSesion(...args),
-  SesionAlreadyClosedError: class extends Error {
-    readonly name = 'SesionAlreadyClosedError';
-    constructor(
-      public readonly status: number,
-      public override readonly body: string,
-      public readonly url: string,
-    ) {
-      super('sesion_not_found');
-    }
-  },
+vi.mock('../hooks/useArqueo', () => ({
+  useArqueo: () => ({ submit: mockSubmitArqueo }),
 }));
 
 // Passthrough presentational — evita carga shadcn Form radix deps.
+// `onSubmit` llega YA envuelto en `form.handleSubmit(...)` desde el
+// container — se pasa directo al `<form onSubmit>` nativo, y los
+// inputs se registran contra el `form` REAL para que RHF valide con
+// valores reales (no placeholders sueltos).
 vi.mock('../components/CerrarTurnoForm', () => ({
   CerrarTurnoForm: ({
     form,
@@ -64,30 +66,64 @@ vi.mock('../components/CerrarTurnoForm', () => ({
     sesion,
     onCancel,
   }: {
-    form: { handleSubmit: (cb: (v: unknown) => void) => () => void };
-    onSubmit: (v: unknown) => Promise<void>;
+    form: {
+      register: (
+        name: string,
+        options?: { valueAsNumber?: boolean },
+      ) => Record<string, unknown>;
+    };
+    onSubmit: (e: React.FormEvent) => void;
     isSubmitting: boolean;
     error: { kind: string } | null;
     sesion: { uuid: string };
     onCancel: () => void;
   }) => (
-    <form
-      data-testid="cerrar-turno-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void form.handleSubmit(onSubmit)({
-          valor_final_efectivo: 75000,
-          valor_final_datafono: 25000,
-          observaciones_cierre: 'Cierre turno tarde',
-        });
-      }}
-    >
+    <form data-testid="cerrar-turno-form" onSubmit={onSubmit}>
       <div data-testid="cerrar-turno-resumen">
         <p>UUID: {sesion.uuid}</p>
       </div>
-      {error?.kind === 'sesion_already_closed' && (
-        <div data-testid="cerrar-turno-error-sesion-ya-cerrada" role="alert">
+      {/* `cerrarTurnoSchema` types these 4 fields as `z.number()` (not
+          string+transform like `abrirTurnoSchema`) — `valueAsNumber`
+          makes RHF coerce the native input string to a number before
+          Zod validates it. */}
+      <input
+        data-testid="cerrar-turno-valor-efectivo-reportado"
+        type="text"
+        {...form.register('valor_efectivo_reportado', { valueAsNumber: true })}
+      />
+      <input
+        data-testid="cerrar-turno-valor-datafono-reportado"
+        type="text"
+        {...form.register('valor_datafono_reportado', { valueAsNumber: true })}
+      />
+      <input
+        data-testid="cerrar-turno-justificacion"
+        type="text"
+        {...form.register('justificacion')}
+      />
+      <input
+        data-testid="cerrar-turno-valor-efectivo"
+        type="text"
+        {...form.register('valor_final_efectivo', { valueAsNumber: true })}
+      />
+      <input
+        data-testid="cerrar-turno-valor-datafono"
+        type="text"
+        {...form.register('valor_final_datafono', { valueAsNumber: true })}
+      />
+      <input
+        data-testid="cerrar-turno-observaciones"
+        type="text"
+        {...form.register('observaciones_cierre')}
+      />
+      {error?.kind === 'cierre_ya_cerrado' && (
+        <div data-testid="cerrar-turno-error-cierre-ya-cerrado" role="alert">
           Esta sesión ya está cerrada
+        </div>
+      )}
+      {error?.kind === 'arqueo_fallido' && (
+        <div data-testid="cerrar-turno-error-arqueo-fallido" role="alert">
+          No se pudo registrar el arqueo
         </div>
       )}
       <button
@@ -109,7 +145,6 @@ vi.mock('../components/CerrarTurnoForm', () => ({
   ),
 }));
 
-import { SesionAlreadyClosedError } from '../api/sesionActivaApi';
 import { CerrarTurno } from './CerrarTurno';
 
 const baseSesion = {
@@ -123,9 +158,33 @@ const baseSesion = {
   observaciones: 'Apertura',
 };
 
+// `cerrarTurnoSchema` requires all 5 numeric/justificacion fields as
+// real values before `form.handleSubmit` reaches the real async
+// handler — fill them so the arqueo+cierre chain actually runs.
+function fillValidForm(): void {
+  fireEvent.change(screen.getByTestId('cerrar-turno-valor-efectivo-reportado'), {
+    target: { value: '75000' },
+  });
+  fireEvent.change(screen.getByTestId('cerrar-turno-valor-datafono-reportado'), {
+    target: { value: '25000' },
+  });
+  fireEvent.change(screen.getByTestId('cerrar-turno-valor-efectivo'), {
+    target: { value: '75000' },
+  });
+  fireEvent.change(screen.getByTestId('cerrar-turno-valor-datafono'), {
+    target: { value: '25000' },
+  });
+  fireEvent.change(screen.getByTestId('cerrar-turno-observaciones'), {
+    target: { value: 'Cierre turno tarde' },
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  mockUseSesionActiva.mockReturnValue({ sesion: baseSesion });
+  mockUseSesionActiva.mockReturnValue({
+    sesion: baseSesion,
+    cerrarSesion: mockCerrarSesion,
+  });
 });
 
 afterEach(() => {
@@ -133,10 +192,12 @@ afterEach(() => {
 });
 
 describe('<CerrarTurno /> container — T3', () => {
-  it('U12: submit OK → useAuthStore.clear() + dispatchEvent + navigate("/login?closed=true")', async () => {
+  it('U12: submit OK → arqueo + cerrarSesion → navigate("/login?closed=true")', async () => {
+    mockSubmitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-1' });
     mockCerrarSesion.mockResolvedValueOnce({
-      ...baseSesion,
-      timestamp_cierre: '2026-09-15T18:00:00Z',
+      ok: true,
+      status: 200,
+      sesion: { ...baseSesion, timestamp_cierre: '2026-09-15T18:00:00Z' },
     });
     const user = userEvent.setup();
     render(
@@ -144,8 +205,19 @@ describe('<CerrarTurno /> container — T3', () => {
         <CerrarTurno />
       </MemoryRouter>,
     );
+    fillValidForm();
     await user.click(screen.getByTestId('cerrar-turno-confirmar'));
 
+    await waitFor(() => {
+      expect(mockSubmitArqueo).toHaveBeenCalledWith(
+        expect.objectContaining({
+          uuid_sesion: 'sess-uuid-1',
+          tipo_arqueo: 'cierre_turno',
+          valor_efectivo_reportado: 75000,
+          valor_datafono_reportado: 25000,
+        }),
+      );
+    });
     await waitFor(() => {
       expect(mockCerrarSesion).toHaveBeenCalledWith('sess-uuid-1', {
         valor_final_efectivo: 75000,
@@ -154,48 +226,39 @@ describe('<CerrarTurno /> container — T3', () => {
       });
     });
     await waitFor(() => {
-      expect(mockClear).toHaveBeenCalledOnce();
-    });
-    await waitFor(() => {
-      expect(dispatchEventSpy).toHaveBeenCalledWith(expect.any(Event));
-      const event = dispatchEventSpy.mock.calls[0]?.[0] as Event;
-      expect(event?.type).toBe('parkos:auth:cleared');
-    });
-    await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/login?closed=true', { replace: true });
     });
   });
 
-  it('U13: PUT 404 → SesionAlreadyClosedError → navigate("/login") sin ?closed=true', async () => {
-    mockCerrarSesion.mockRejectedValueOnce(
-      new SesionAlreadyClosedError(
-        404,
-        '{"error":"sesion_not_found"}',
-        '/api/v1/caja-sesion/sesion/sess-uuid-1/cerrar',
-      ),
-    );
+  it('U13: PUT 404 (sesión ya cerrada) → navigate("/login") sin ?closed=true, sin banner', async () => {
+    // `cerrarTurnoChain.ts` case 5: a 404 from `cerrarSesion` is a
+    // SILENT redirect (DEC-F3.3-07) — no error banner, unlike 409
+    // ('cierre_ya_cerrado', which DOES render one).
+    mockSubmitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-1' });
+    mockCerrarSesion.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      error: { code: 'sesion_not_found' },
+    });
     const user = userEvent.setup();
     render(
       <MemoryRouter>
         <CerrarTurno />
       </MemoryRouter>,
     );
+    fillValidForm();
     await user.click(screen.getByTestId('cerrar-turno-confirmar'));
 
-    await waitFor(() => {
-      const alert = screen.getByTestId('cerrar-turno-error-sesion-ya-cerrada');
-      expect(alert).toHaveAttribute('role', 'alert');
-    });
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/login');
     });
     // Verify NO ?closed=true since this was not a successful cierre.
     expect(mockNavigate).not.toHaveBeenCalledWith('/login?closed=true', expect.anything());
-    // Verify NO clear dispatched (no logout, redirige directo).
-    expect(mockClear).not.toHaveBeenCalled();
+    // No banner for this case — the redirect is silent.
+    expect(screen.queryByTestId('cerrar-turno-error-cierre-ya-cerrado')).not.toBeInTheDocument();
   });
 
-  it('U14: Cancel button → navigate("/") sin invocar cerrarSesion', async () => {
+  it('U14: Cancel button → navigate("/") sin invocar arqueo ni cerrarSesion', async () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter>
@@ -207,12 +270,12 @@ describe('<CerrarTurno /> container — T3', () => {
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/');
     });
+    expect(mockSubmitArqueo).not.toHaveBeenCalled();
     expect(mockCerrarSesion).not.toHaveBeenCalled();
-    expect(mockClear).not.toHaveBeenCalled();
   });
 
   it('sin sesion activa (useSesionActiva retorna sesion: null) → retorna null', () => {
-    mockUseSesionActiva.mockReturnValue({ sesion: null });
+    mockUseSesionActiva.mockReturnValue({ sesion: null, cerrarSesion: mockCerrarSesion });
     const { container } = render(
       <MemoryRouter>
         <CerrarTurno />

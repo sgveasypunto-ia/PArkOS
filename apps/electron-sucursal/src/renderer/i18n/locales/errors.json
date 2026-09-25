@@ -15,6 +15,7 @@
     "uuid": {
       "invalid": "Identificador inválido."
     },
+    "placa_formato_invalido": "Placa no coincide con ningún formato conocido (Auto: ABC123, Moto: ABC12D)",
     "email": {
       "invalid": "Correo electrónico inválido."
     },

@@ -52,7 +52,12 @@ const placaFormSchema = z.object({
     .trim()
     .transform((s) => s.toUpperCase().replace(/\s+/g, ''))
     .refine((s) => REGEX_AUTO.test(s) || REGEX_MOTO.test(s), {
-      message: 'placa_formato_invalido',
+      // `<FormMessage>` (form.tsx) only auto-translates messages that
+      // start with `validation.` (against the `errors` namespace) —
+      // the bare `'placa_formato_invalido'` key used to render as
+      // literal untranslated text to the operator. See
+      // `errors.json`'s `validation.placa_formato_invalido`.
+      message: 'validation.placa_formato_invalido',
     }),
 });
 

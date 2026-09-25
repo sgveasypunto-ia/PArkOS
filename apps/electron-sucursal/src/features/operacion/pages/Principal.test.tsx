@@ -36,16 +36,24 @@ import { postIngreso } from '../lib/ingresoApi';
 
 const mockPost = postIngreso as ReturnType<typeof vi.fn>;
 
+// NOTE: `window` here is the real jsdom global — replacing it wholesale
+// (as this file used to do) strips `HTMLIFrameElement`, `MessageChannel`,
+// etc. and corrupts React's scheduler for every test that renders after
+// this one in the same worker. Only patch `window.bridge` and restore
+// the prior value in `afterEach` (mirrors `SalidaMensualidad.test.tsx`).
+let originalBridge: unknown;
+
 beforeEach(() => {
   mockPost.mockReset();
   imprimirMock.mockReset();
   imprimirMock.mockResolvedValue({ ok: true });
-  (globalThis as unknown as { window: unknown }).window = {
-    bridge: { imprimir: imprimirMock },
-  };
+  const w = globalThis as unknown as { window: { bridge?: unknown } };
+  originalBridge = w.window.bridge;
+  w.window.bridge = { imprimir: imprimirMock };
 });
 
 afterEach(() => {
+  (globalThis as unknown as { window: { bridge?: unknown } }).window.bridge = originalBridge;
   vi.restoreAllMocks();
 });
 
@@ -58,7 +66,10 @@ function renderPrincipal(initialEntries: string[] = ['/']): void {
 }
 
 function submitPlaca(value: string): void {
-  const input = screen.getByLabelText(/placa/i) as HTMLInputElement;
+  // HU-INGRESO-SIN-PLACA added a "Con placa / Sin placa" toggle group
+  // whose `aria-label="Sin placa"` also matches /placa/i via
+  // `getByLabelText` — scope to the textbox role to keep this unique.
+  const input = screen.getByRole('textbox', { name: /placa/i }) as HTMLInputElement;
   fireEvent.change(input, { target: { value } });
   const form = input.closest('form');
   fireEvent.submit(form as HTMLFormElement);
@@ -67,13 +78,16 @@ function submitPlaca(value: string): void {
 describe('Principal', () => {
   it('renders PlacaInput on mount', async () => {
     renderPrincipal();
-    const input = screen.getByLabelText(/placa/i) as HTMLInputElement;
+    const input = screen.getByRole('textbox', { name: /placa/i }) as HTMLInputElement;
     await waitFor(() => expect(document.activeElement).toBe(input));
   });
 
   it('fires postIngreso with the typed plate on submit', async () => {
     mockPost.mockResolvedValueOnce({
-      uuid_ingreso: '11111111-1111-1111-1111-111111111111',
+      // REQ-OPS-197: the backend field is `uuid` (see
+      // `PostIngresoResponseSchema` in `lib/ingresoApi.ts`), not the
+      // older `uuid_ingreso` discriminator this fixture used to mock.
+      uuid: '11111111-1111-1111-1111-111111111111',
       tipo_entrada: 'ROTACION',
       uuid_subscripcion_cliente: null,
     });
@@ -86,7 +100,10 @@ describe('Principal', () => {
 
   it('opens TiqueteModal on 201 success', async () => {
     mockPost.mockResolvedValueOnce({
-      uuid_ingreso: '11111111-1111-1111-1111-111111111111',
+      // REQ-OPS-197: the backend field is `uuid` (see
+      // `PostIngresoResponseSchema` in `lib/ingresoApi.ts`), not the
+      // older `uuid_ingreso` discriminator this fixture used to mock.
+      uuid: '11111111-1111-1111-1111-111111111111',
       tipo_entrada: 'ROTACION',
       uuid_subscripcion_cliente: null,
     });
@@ -96,8 +113,8 @@ describe('Principal', () => {
       expect(screen.getByRole('dialog')).toBeInTheDocument(),
     );
     expect(
-      screen.getByText('11111111-1111-1111-1111-111111111111'),
-    ).toBeInTheDocument();
+      screen.getAllByText('11111111-1111-1111-1111-111111111111').length,
+    ).toBeGreaterThan(0);
   });
 
   it('opens ForzarIngresoModal on 422 motivo_forzado_requerido', async () => {

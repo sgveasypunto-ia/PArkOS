@@ -151,8 +151,10 @@ describe('PostIngresoPayloadSchema (REQ-OPS-194 discriminated union)', () => {
 
 describe('PostIngresoResponseSchema (REQ-OPS-197 + consecutivo field)', () => {
   it('test_postIngreso_response_parses_consecutivo (mock with BICI-000001-3f8a1b2c)', () => {
+    // REQ-OPS-197: the backend field is `uuid` (see `PostIngresoResponseSchema`),
+    // not the older `uuid_ingreso` discriminator this fixture used to mock.
     const result = PostIngresoResponseSchema.safeParse({
-      uuid_ingreso: '11111111-2222-4333-8444-555555555555',
+      uuid: '11111111-2222-4333-8444-555555555555',
       tipo_entrada: 'ROTACION',
       uuid_subscripcion_cliente: null,
       consecutivo: 'BICI-000001-3f8a1b2c',
@@ -164,7 +166,7 @@ describe('PostIngresoResponseSchema (REQ-OPS-197 + consecutivo field)', () => {
     // Backward compat: legacy rows have `consecutivo = null` after
     // PR-A migration (REQ-OPS-192 scenario 1). The schema accepts null.
     const result = PostIngresoResponseSchema.safeParse({
-      uuid_ingreso: '11111111-2222-4333-8444-555555555555',
+      uuid: '11111111-2222-4333-8444-555555555555',
       tipo_entrada: 'ROTACION',
       uuid_subscripcion_cliente: null,
       consecutivo: null,
@@ -176,7 +178,7 @@ describe('PostIngresoResponseSchema (REQ-OPS-197 + consecutivo field)', () => {
     // The backend MUST always send `consecutivo` (even if null). A
     // response missing the key entirely is a wire-shape break.
     const result = PostIngresoResponseSchema.safeParse({
-      uuid_ingreso: '11111111-2222-4333-8444-555555555555',
+      uuid: '11111111-2222-4333-8444-555555555555',
       tipo_entrada: 'ROTACION',
       uuid_subscripcion_cliente: null,
     });

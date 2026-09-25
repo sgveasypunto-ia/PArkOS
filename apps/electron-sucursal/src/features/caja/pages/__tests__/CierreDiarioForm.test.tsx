@@ -183,8 +183,17 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
     // Default value MUST be today's date (REQ-OPS-164 + AD-6).
     expect(fechaInput.value).toBe('2026-09-21');
     // HTML5 max=today enforces future rejection at the browser layer
-    // (DA-F10.3-3 RESOLVED).
-    const today = new Date().toISOString().slice(0, 10);
+    // (DA-F10.3-3 RESOLVED). The component computes "today" from LOCAL
+    // date parts (`todayISO()` in CierreDiarioForm.tsx) — NOT
+    // `toISOString()`, which is UTC and drifts a day off local midnight
+    // (e.g. from ~19:00 onward in UTC-5). Mirror the same local-date
+    // logic here instead of comparing against a UTC string.
+    const now = new Date();
+    const today = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+    ].join('-');
     expect(fechaInput.getAttribute('max')).toBe(today);
   });
 

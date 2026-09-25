@@ -82,8 +82,11 @@ describe('getIngresosByPlaca', () => {
 
 describe('getIngresoEstado', () => {
   it('parses a valid abierto estado', async () => {
+    // REGRESSION fix (2026-09-22): the wire field is `uuid_ingreso`
+    // (see `IngresoEstadoSchema` in `ingresoActivoApi.ts`), not the
+    // older `uuid` discriminator this fixture used to mock.
     mockFetch.mockResolvedValueOnce({
-      uuid: '11111111-1111-1111-1111-111111111111',
+      uuid_ingreso: '11111111-1111-1111-1111-111111111111',
       estado: 'abierto',
     });
     const result = await getIngresoEstado('11111111-1111-1111-1111-111111111111');
@@ -92,7 +95,7 @@ describe('getIngresoEstado', () => {
 
   it('rejects an unknown estado string', async () => {
     mockFetch.mockResolvedValueOnce({
-      uuid: '11111111-1111-1111-1111-111111111111',
+      uuid_ingreso: '11111111-1111-1111-1111-111111111111',
       estado: 'unknown',
     });
     await expect(
