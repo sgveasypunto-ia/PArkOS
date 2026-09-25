@@ -211,6 +211,9 @@ depth.
   - `[L-W]` = append
   - `[A]` = append
   - `[L-S]` = manual
+- **Two clocks over the wire (unchanged by design — Carril B fix, obs #18)**:
+  - **Valid time** (`vigente_desde`/`vigente_hasta`/`estado` on `[V]` rows): set at the ORIGIN, travels intact, and the receiver applies it verbatim — `identity_reconciler.forward` preserves `vigente_desde`, `close_and_insert` closes the previous row at the SAME boundary the new version opens (no gap/overlap), and `sync_cloud._VERSIONED_ONLY_METADATA_KEYS = {vigente_hasta, estado}` so `vigente_desde` is never stripped on push. Re-stamping the open timestamp with the receiver's `now()` corrupted reconciliation under a backed-up queue (later origin versions wrongly classified `historical`, old version stayed open — inverted/duplicate state downstream).
+  - **Transaction time** (`created_at`/`created_by`): NEVER crosses the wire in either direction (stripped by `_QUEUE_METADATA_KEYS` on push and `_PULL_WIRE_METADATA_KEYS` on pull); each node stamps its own receipt time. Naive-UTC convention (`DateTime(timezone=False)`, both nodes), so an observed offset between nodes is queue residence + receiver re-stamp, not clock skew — intentional.
 - Hash-chain survival: cloud preserves branch chain verbatim, only extends with cloud-originated rows
 - HTTP polling only (MVP); WebSocket deferred to v2
 
