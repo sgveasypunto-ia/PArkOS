@@ -60,10 +60,18 @@ async def test_buscar_cliente_por_uuid_o_crear_nuevo_drops_dv() -> None:
     actor = uuid_lib.uuid4()
     new_row = MagicMock()
     new_row.uuid = uuid_lib.uuid4()
+    uuid_tipo_persona_natural = uuid_lib.uuid4()
 
-    with patch.object(
-        repo_venta.versioned, "close_and_insert", new=AsyncMock(return_value=new_row)
-    ) as mock_cai:
+    with (
+        patch.object(
+            repo_venta.versioned, "close_and_insert", new=AsyncMock(return_value=new_row)
+        ) as mock_cai,
+        patch.object(
+            repo_venta,
+            "resolve_uuid_tipo_persona",
+            new=AsyncMock(return_value=uuid_tipo_persona_natural),
+        ) as mock_resolve,
+    ):
         result = await repo_venta.buscar_cliente_por_uuid_o_crear_nuevo(
             session,
             datos_cliente={
@@ -88,6 +96,45 @@ async def test_buscar_cliente_por_uuid_o_crear_nuevo_drops_dv() -> None:
     assert kwargs["new_attrs"]["tipo_identificador"] == "CC"
     assert kwargs["new_attrs"]["numero_identificacion"] == "1234567890"
     assert kwargs["new_attrs"]["nombre"] == "Juan"
+    # Ajuste identificación persona natural/empresa: uuid_tipo_persona se
+    # resuelve server-side desde tipo_identificador cuando el caller no
+    # lo trae ya resuelto.
+    mock_resolve.assert_awaited_once_with(session, tipo_identificador="CC")
+    assert kwargs["new_attrs"]["uuid_tipo_persona"] == uuid_tipo_persona_natural
+
+
+@pytest.mark.asyncio
+async def test_buscar_cliente_por_uuid_o_crear_nuevo_preserves_uuid_tipo_persona() -> None:
+    """Ajuste identificación persona natural/empresa: si el caller YA manda
+    ``uuid_tipo_persona`` (ej. resuelto por el propio Pydantic payload),
+    el helper no lo pisa ni vuelve a consultar el catálogo."""
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    session = MagicMock()
+    actor = uuid_lib.uuid4()
+    new_row = MagicMock()
+    provided_uuid_tipo_persona = uuid_lib.uuid4()
+
+    with (
+        patch.object(
+            repo_venta.versioned, "close_and_insert", new=AsyncMock(return_value=new_row)
+        ),
+        patch.object(
+            repo_venta, "resolve_uuid_tipo_persona", new=AsyncMock()
+        ) as mock_resolve,
+    ):
+        await repo_venta.buscar_cliente_por_uuid_o_crear_nuevo(
+            session,
+            datos_cliente={
+                "tipo_identificador": "NIT",
+                "numero_identificacion": "900123456",
+                "nombre": "Acme S.A.",
+                "uuid_tipo_persona": provided_uuid_tipo_persona,
+            },
+            actor_uuid=actor,
+        )
+
+    mock_resolve.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +344,13 @@ async def test_buscar_cliente_por_uuid_o_crear_dispatches_to_nuevo() -> None:
     new_row = MagicMock()
     actor = uuid_lib.uuid4()
 
-    with patch.object(
-        repo_venta.versioned, "close_and_insert", new=AsyncMock(return_value=new_row)
+    with (
+        patch.object(
+            repo_venta.versioned, "close_and_insert", new=AsyncMock(return_value=new_row)
+        ),
+        patch.object(
+            repo_venta, "resolve_uuid_tipo_persona", new=AsyncMock(return_value=None)
+        ),
     ):
         result = await repo_venta.buscar_cliente_por_uuid_o_crear(
             session,

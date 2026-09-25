@@ -19,12 +19,20 @@ import { z } from 'zod';
 import { FacturaReadSchema } from '../../facturacion/api/facturaApi';
 
 /**
- * Cliente payload — the operator types NIT/nombre/email at wizard
- * step 1. The Pydantic schema on the backend (`schemas/clientes.py::
- * VentaSuscripcionCreate.cliente`) is `ClientesCreate | None` verbatim
- * — that class has NO `nit` field, only `tipo_identificador` +
- * `numero_identificacion` (same shape `Clientes`/`ClientesB2B` use
- * everywhere else in the app).
+ * Cliente payload — el operador elige persona natural (CC/CE/pasaporte)
+ * o empresa (NIT) en el paso 1 (`ClienteIdentificacionFields`, mismo
+ * componente compartido que `PagoModal`). El schema backend
+ * (`schemas/clientes.py::VentaSuscripcionCreate.cliente`) es
+ * `ClientesCreate | None` verbatim — sin campo `nit`, solo
+ * `tipo_identificador` + `numero_identificacion` (+ `dv` opcional,
+ * solo persistido como validación cuando `tipo_identificador==='NIT'`
+ * — DEC-VENTA-07 lo descarta antes del INSERT) + `apellido` (vacío
+ * para persona jurídica, `.mmd` `clientes.apellido`).
+ *
+ * Ajuste (identificación persona natural/empresa): `tipo_identificador`
+ * ya no es el literal `'NIT'` fijo — el paso 1 del wizard siempre pide
+ * un cliente real identificado (a diferencia de `PagoModal`, acá no
+ * hay checkbox ni "cliente genérico").
  *
  * BUGFIX (2026-09-25, encontrado por el operador probando la venta en
  * vivo): este schema mandaba `{nit, nombre, email}` -- el backend
@@ -32,14 +40,14 @@ import { FacturaReadSchema } from '../../facturacion/api/facturaApi';
  * creaba un cliente nuevo (sin `uuid_cliente`), porque ni siquiera
  * viajaban los campos requeridos `tipo_identificador`/
  * `numero_identificacion`. La venta de suscripción a un cliente nuevo
- * nunca pudo completarse por este contrato. `tipo_identificador` es
- * literal `'NIT'` porque el wizard solo tiene un campo (sin selector
- * de tipo de documento, ver step 1 de `Venta.tsx`).
+ * nunca pudo completarse por este contrato.
  */
 const clienteSchema = z.object({
-  tipo_identificador: z.literal('NIT'),
-  numero_identificacion: z.string().min(6, 'nit_min_6'),
+  tipo_identificador: z.enum(['NIT', 'CC', 'CE', 'pasaporte']),
+  numero_identificacion: z.string().min(5, 'documento_min_5'),
+  dv: z.string().optional(),
   nombre: z.string().min(1, 'nombre_requerido'),
+  apellido: z.string().optional(),
   email: z
     .string()
     .email('email_formato_invalido')
