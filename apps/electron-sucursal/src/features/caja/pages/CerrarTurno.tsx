@@ -34,6 +34,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { useArqueo } from '../hooks/useArqueo';
+import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
 import {
   cerrarTurnoSchema,
   type CerrarTurnoInput,
@@ -49,10 +50,14 @@ import {
   type ArqueoSubmitFn,
 } from './cerrarTurnoChain';
 
-export function CerrarTurno(): JSX.Element {
+export function CerrarTurno(): JSX.Element | null {
   const navigate = useNavigate();
   const { sesion, cerrarSesion: cerrarSesionHelper } = useSesionActiva();
   const { submit: submitArqueo } = useArqueo();
+  // F11.3: the BE arqueo POST requires `uuid_tipo_arqueo` (UUID), not
+  // the legacy codigo string — resolve it via the catalog SWR hook
+  // (mirrors `ArqueoParcial.tsx`, HU-F10.1).
+  const { uuid: uuidTipoArqueo } = useTipoArqueoPorCodigo('cierre_turno');
   const [errorState, setErrorState] = useState<CerrarTurnoErrorState>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -60,12 +65,10 @@ export function CerrarTurno(): JSX.Element {
     resolver: zodResolver(cerrarTurnoSchema),
     mode: 'onBlur',
     defaultValues: {
-      valor_final_efectivo: 0,
-      valor_final_datafono: 0,
-      observaciones_cierre: '',
       valor_efectivo_reportado: 0,
       valor_datafono_reportado: 0,
       justificacion: '',
+      observaciones_cierre: '',
     },
   });
 
@@ -74,7 +77,7 @@ export function CerrarTurno(): JSX.Element {
   };
 
   const onSubmit = form.handleSubmit(async (values) => {
-    if (!sesion) return;
+    if (!sesion || !uuidTipoArqueo) return;
     setErrorState(null);
     setIsSubmitting(true);
 
@@ -87,6 +90,7 @@ export function CerrarTurno(): JSX.Element {
 
     const result = await runCerrarTurnoChain({
       sesion,
+      uuidTipoArqueo,
       submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
       cerrarSesion: cerrarSesionHelper as unknown as CerrarSesionHelper,
       bridge,

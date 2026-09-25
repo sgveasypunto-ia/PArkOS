@@ -52,11 +52,16 @@ export interface CerrarSesionHelper {
 /**
  * Arqueo submit signature for `POST /caja/arqueo` (HU-F1.13). Defined
  * here as a structural type so the helper is testable.
+ *
+ * F11.3: the BE V2 schema requires `uuid_tipo_arqueo` (UUID FK to
+ * `prod.tipo_arqueo`) and rejects the legacy `tipo_arqueo` codigo
+ * string via `extra='forbid'`. The caller resolves `'cierre_turno'`
+ * to its UUID via `useTipoArqueoPorCodigo` (mirrors `ArqueoParcial.tsx`).
  */
 export interface ArqueoSubmitFn {
   (payload: {
     uuid_sesion: string;
-    tipo_arqueo: 'cierre_turno';
+    uuid_tipo_arqueo: string;
     valor_efectivo_reportado: number;
     valor_datafono_reportado: number;
     justificacion?: string;
@@ -69,7 +74,7 @@ export interface ArqueoSubmitFn {
  */
 export type CerrarTurnoChainResult =
   | { kind: 'success'; sesion: SesionRead }
-  | { kind: 'redirect_login_closed' }
+  | { kind: 'redirect_login_closed'; sesion: SesionRead }
   | { kind: 'redirect_login' }
   | { kind: 'arqueo_fallido'; status: number }
   | { kind: 'red_arqueo' }
@@ -83,13 +88,14 @@ export type CerrarTurnoChainResult =
  */
 function buildArqueoBody(args: {
   sesion: SesionRead;
+  uuid_tipo_arqueo: string;
   valor_efectivo_reportado: number;
   valor_datafono_reportado: number;
   justificacion?: string;
 }): Parameters<ArqueoSubmitFn>[0] {
   const body: Parameters<ArqueoSubmitFn>[0] = {
     uuid_sesion: args.sesion.uuid,
-    tipo_arqueo: 'cierre_turno',
+    uuid_tipo_arqueo: args.uuid_tipo_arqueo,
     valor_efectivo_reportado: args.valor_efectivo_reportado,
     valor_datafono_reportado: args.valor_datafono_reportado,
   };
@@ -135,6 +141,7 @@ function buildCerrarSesionBody(args: {
  */
 export async function runCerrarTurnoChain(args: {
   sesion: SesionRead;
+  uuidTipoArqueo: string;
   submitArqueo: ArqueoSubmitFn;
   cerrarSesion: CerrarSesionHelper;
   bridge: CerrarTurnoBridge | null;
@@ -142,8 +149,6 @@ export async function runCerrarTurnoChain(args: {
     valor_efectivo_reportado: number;
     valor_datafono_reportado: number;
     justificacion?: string;
-    valor_final_efectivo: number;
-    valor_final_datafono: number;
     observaciones_cierre?: string;
   };
 }): Promise<CerrarTurnoChainResult> {
@@ -154,6 +159,7 @@ export async function runCerrarTurnoChain(args: {
     const arqueoResult = await args.submitArqueo(
       buildArqueoBody({
         sesion: args.sesion,
+        uuid_tipo_arqueo: args.uuidTipoArqueo,
         valor_efectivo_reportado: args.values.valor_efectivo_reportado,
         valor_datafono_reportado: args.values.valor_datafono_reportado,
         justificacion: args.values.justificacion,
@@ -185,11 +191,16 @@ export async function runCerrarTurnoChain(args: {
   // (`useAuthStore.clear()` + `parkos:auth:cleared` event) per
   // REQ-OPS-160 + AD-4. The orchestrator only has to `navigate` on
   // `ok: true`.
+  //
+  // `valor_final_*` are DERIVED from the arqueo's `valor_*_reportado`
+  // (fix: the operator physically counts the cash/datáfono ONCE — the
+  // form no longer asks for the same count twice under a different
+  // field name, which had no consistency guarantee between the two).
   const result = await args.cerrarSesion(
     args.sesion.uuid,
     buildCerrarSesionBody({
-      valor_final_efectivo: args.values.valor_final_efectivo,
-      valor_final_datafono: args.values.valor_final_datafono,
+      valor_final_efectivo: args.values.valor_efectivo_reportado,
+      valor_final_datafono: args.values.valor_datafono_reportado,
       observaciones_cierre: args.values.observaciones_cierre,
     }),
   );

@@ -43,8 +43,6 @@ const SESION: SesionRead = {
 const BASE_VALUES = {
   valor_efectivo_reportado: 100_000,
   valor_datafono_reportado: 0,
-  valor_final_efectivo: 100_000,
-  valor_final_datafono: 0,
 };
 
 let submitArqueo: ReturnType<typeof vi.fn>;
@@ -57,9 +55,12 @@ beforeEach(() => {
   bridge = { imprimir: vi.fn() };
 });
 
+const UUID_TIPO_CIERRE_TURNO = 'tipo-arqueo-uuid-cierre-turno';
+
 const chain = (values: unknown = BASE_VALUES) =>
   runCerrarTurnoChain({
     sesion: SESION,
+    uuidTipoArqueo: UUID_TIPO_CIERRE_TURNO,
     submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
     cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
     bridge,
@@ -84,7 +85,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
     expect(submitArqueo).toHaveBeenCalledTimes(1);
     expect(submitArqueo).toHaveBeenCalledWith({
       uuid_sesion: 'sess-uuid-1',
-      tipo_arqueo: 'cierre_turno',
+      uuid_tipo_arqueo: UUID_TIPO_CIERRE_TURNO,
       valor_efectivo_reportado: 100_000,
       valor_datafono_reportado: 0,
     });
@@ -112,6 +113,30 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
         uuid: 'sess-uuid-1',
         timestamp_cierre: '2026-09-21T18:00:00Z',
       }),
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // seq-1b-no-duplicate-input — valor_final_* is DERIVED from the
+  // reportado fields, never asked as separate input (fix: cierre de
+  // turno ya no pide el mismo conteo físico dos veces).
+  // ────────────────────────────────────────────────────────────────────
+  it('seq-1b: valor_final_* is derived from valor_*_reportado (no duplicate input)', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-1b' });
+    cerrarSesion.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      sesion: SESION,
+    });
+
+    await chain({
+      valor_efectivo_reportado: 97_500,
+      valor_datafono_reportado: 3_200,
+    });
+
+    expect(cerrarSesion).toHaveBeenCalledWith('sess-uuid-1', {
+      valor_final_efectivo: 97_500,
+      valor_final_datafono: 3_200,
     });
   });
 
