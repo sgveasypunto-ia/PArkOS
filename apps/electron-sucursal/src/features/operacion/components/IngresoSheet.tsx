@@ -52,11 +52,19 @@ export function IngresoSheet(): JSX.Element | null {
         if (!next) close();
       }}
     >
-      <SheetContent side="right" className="overflow-y-auto" data-testid="ingreso-sheet">
+      <SheetContent
+        side="right"
+        className="flex h-full flex-col overflow-hidden"
+        data-testid="ingreso-sheet"
+      >
         <SheetHeader>
           <SheetTitle>{t('ingreso', { defaultValue: 'Ingreso' })}</SheetTitle>
         </SheetHeader>
-        <IngresoPanel initialPlaca={initialPlaca} />
+        <div className="flex flex-1 flex-col overflow-y-auto">
+          <div className="m-auto w-full">
+            <IngresoPanel initialPlaca={initialPlaca} />
+          </div>
+        </div>
       </SheetContent>
     </Sheet>
   );

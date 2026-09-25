@@ -323,7 +323,8 @@ export function ArqueoParcial(): JSX.Element {
           </span>
           <span
             className={
-              'tabular-nums ' + (difEfectivo === 0 ? '' : 'font-semibold')
+              'tabular-nums ' +
+              (difEfectivo === 0 ? '' : 'font-semibold text-destructive')
             }
             data-testid="arqueo-dif-efectivo"
           >
@@ -338,7 +339,8 @@ export function ArqueoParcial(): JSX.Element {
           </span>
           <span
             className={
-              'tabular-nums ' + (difDatafono === 0 ? '' : 'font-semibold')
+              'tabular-nums ' +
+              (difDatafono === 0 ? '' : 'font-semibold text-destructive')
             }
             data-testid="arqueo-dif-datafono"
           >
@@ -371,7 +373,7 @@ export function ArqueoParcial(): JSX.Element {
         {difTotal > 0 && (
           <p
             role="status"
-            className="text-xs text-yellow-700 dark:text-yellow-400 mt-2"
+            className="mt-2 inline-flex items-center rounded-md bg-warning px-2 py-1 text-xs font-medium text-warning-foreground"
             data-testid="arqueo-advertencia"
           >
             {t('caja:arqueoParcial.advertencia', {

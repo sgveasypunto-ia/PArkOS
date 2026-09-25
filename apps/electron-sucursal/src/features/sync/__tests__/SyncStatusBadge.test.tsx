@@ -86,7 +86,7 @@ describe('<SyncStatusBadge /> — REQ-OPS-171 (HU-F11.1, indicador en navbar)', 
 
     const badge = screen.getByTestId('dashboard-online');
     expect(badge.getAttribute('data-state')).toBe('online');
-    expect(badge.className).toContain('emerald');
+    expect(badge.className).toContain('bg-success');
   });
 
   it('S2: amarillo cuando 60 < lag_seg <= 3600', () => {
@@ -99,7 +99,7 @@ describe('<SyncStatusBadge /> — REQ-OPS-171 (HU-F11.1, indicador en navbar)', 
 
     const badge = screen.getByTestId('dashboard-online');
     expect(badge.getAttribute('data-state')).toBe('lagging');
-    expect(badge.className).toContain('amber');
+    expect(badge.className).toContain('bg-warning');
   });
 
   it('S2b: amarillo tambien con pendientes > 5 (lag_seg dentro de la ventana)', () => {
@@ -123,7 +123,7 @@ describe('<SyncStatusBadge /> — REQ-OPS-171 (HU-F11.1, indicador en navbar)', 
 
     const badge = screen.getByTestId('dashboard-online');
     expect(badge.getAttribute('data-state')).toBe('offline');
-    expect(badge.className).toContain('red');
+    expect(badge.className).toContain('bg-destructive');
   });
 
   it('S4: never_synced (lag_seg === null) es NEUTRAL, no rojo', () => {
@@ -136,8 +136,8 @@ describe('<SyncStatusBadge /> — REQ-OPS-171 (HU-F11.1, indicador en navbar)', 
 
     const badge = screen.getByTestId('dashboard-online');
     expect(badge.getAttribute('data-state')).toBe('never_synced');
-    expect(badge.className).not.toContain('red');
-    expect(badge.className).toMatch(/zinc/);
+    expect(badge.className).not.toContain('bg-destructive');
+    expect(badge.className).toMatch(/bg-muted\b/);
   });
 
   it('S5: el anunciador sr-only cambia SOLO en transicion de estado (debounce 2s)', () => {

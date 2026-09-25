@@ -215,11 +215,11 @@ export function SuscripcionesSheet(): JSX.Element {
 
         {/* Body scrolls independently of header + footer. */}
         <div
-          className="flex-1 overflow-y-auto px-4"
+          className="flex flex-1 flex-col overflow-y-auto px-4"
           data-testid="suscripciones-sheet-body"
         >
           {mode === 'list' && (
-            <div className="space-y-4">
+            <div className="m-auto w-full space-y-4">
               <form
                 className="mt-[10px] flex gap-2"
                 onSubmit={(e) => void handleBuscar(e)}
@@ -320,11 +320,13 @@ export function SuscripcionesSheet(): JSX.Element {
              * "← Volver" link rendered above the wizard header when
              * onCancel is supplied (Venta line 236).
              */
-            <Venta onSuccess={handleVentaSuccess} onCancel={handleVolver} />
+            <div className="m-auto w-full">
+              <Venta onSuccess={handleVentaSuccess} onCancel={handleVolver} />
+            </div>
           )}
 
           {mode === 'cupos' && detalle && (
-            <div className="space-y-4" data-testid="suscripciones-cupos-detalle">
+            <div className="m-auto w-full space-y-4" data-testid="suscripciones-cupos-detalle">
               <button
                 type="button"
                 onClick={handleVolver}

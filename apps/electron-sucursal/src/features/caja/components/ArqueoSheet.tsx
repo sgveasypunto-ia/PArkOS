@@ -59,7 +59,11 @@ export function ArqueoSheet(): JSX.Element {
         if (!next) close();
       }}
     >
-      <SheetContent side="right" data-testid="arqueo-sheet">
+      <SheetContent
+        side="right"
+        className="flex h-full flex-col overflow-hidden"
+        data-testid="arqueo-sheet"
+      >
         <SheetHeader>
           <SheetTitle>Arqueo parcial (auditoría)</SheetTitle>
           <SheetDescription>
@@ -67,7 +71,11 @@ export function ArqueoSheet(): JSX.Element {
             advertencia si es chica.
           </SheetDescription>
         </SheetHeader>
-        <ArqueoParcial />
+        <div className="flex flex-1 flex-col overflow-y-auto">
+          <div className="m-auto w-full">
+            <ArqueoParcial />
+          </div>
+        </div>
       </SheetContent>
     </Sheet>
   );
