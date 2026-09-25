@@ -210,11 +210,15 @@ export function Dashboard(): JSX.Element | null {
       nombreCompleto !== ''
         ? nombreCompleto
         : (user?.email.split('@')[0] ?? t('common:operador', { defaultValue: 'Operador' }));
-    // Idem: `prefijo_nombre` (código corto, ej. "BOG-CEN") ya lo manda el
-    // backend (`schemas/auth.py` SucursalItem) — se prefiere sobre el
-    // nombre completo de sucursal por ser más corto para el header.
+    // 2026-09-25 (pedido operador, tras confirmar con data real de la
+    // sucursal de prueba que ninguno de los dos campos solo alcanza):
+    // combina `prefijo_nombre` (código corto, ej. "BOG-CEN") + `nombre`
+    // completo cuando ambos existen — "BOG-CEN - Sucursal Bogotá Centro".
+    // Con datos de seed placeholder hoy se ve "D2049f2 - Suc 2049f2cd";
+    // en producción, con datos reales cargados, se ve como se espera.
     const sucursalLabel =
-      sucursal?.prefijo_nombre ?? sucursal?.nombre ?? t('common:sucursal', { defaultValue: 'Sucursal' });
+      [sucursal?.prefijo_nombre, sucursal?.nombre].filter(Boolean).join(' - ') ||
+      t('common:sucursal', { defaultValue: 'Sucursal' });
 
     // Alto: `h-full` (no un `min-h-[calc(100dvh-...)]` propio) — el padre
     // (`<main>` en App.tsx) ya es `flex-1 min-h-0`, un alto real y acotado
