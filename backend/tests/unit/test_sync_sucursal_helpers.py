@@ -160,6 +160,16 @@ class TestIsInfraTable:
         assert is_infra_table("sync_queue_p_default") is True
         assert is_infra_table("sync_conflict_p_current") is True
 
+    def test_bare_default_partition_of_infra_is_infra(self) -> None:
+        # `0001` premade the bare `{parent}_default` partition family (not
+        # partman's `_p_default`) on every one of the 8 partman parents —
+        # BUG (real finding 2026-09-25): the suffix regex only knew `_p_*`,
+        # so `sync_log_default` / `sync_queue_default` resolved to themselves
+        # and were treated as NON-infra (unknown_table death) instead of being
+        # settled as infra noise.
+        assert is_infra_table("sync_log_default") is True
+        assert is_infra_table("sync_queue_default") is True
+
     def test_catalog_table_and_its_partition_are_not_infra(self) -> None:
         from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
 
