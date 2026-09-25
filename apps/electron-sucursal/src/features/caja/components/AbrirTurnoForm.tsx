@@ -116,7 +116,12 @@ export function AbrirTurnoForm({
               <h1>{t('caja:abrirTurno')}</h1>
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          {/* F31.3 rediseño: `space-y-4` agregado — los 3 FormField +
+              banner de error + botón submit eran hijos directos de
+              CardContent sin ningún spacing entre sí (el `space-y-4`
+              de más arriba está en el `<form>`, cuyo único hijo es
+              `<Card>`, así que no llegaba a espaciar nada adentro). */}
+          <CardContent className="space-y-4">
 
         <FormField
           control={control}
@@ -237,7 +242,9 @@ export function AbrirTurnoForm({
           disabled={isSubmitting}
           aria-disabled={isSubmitting}
           data-testid="abrir-turno-submit"
-          className="w-full mt-4"
+          // `mt-4` removido — redundante ahora que CardContent tiene
+          // `space-y-4` (antes compensaba la falta de spacing general).
+          className="w-full"
         >
           {isSubmitting ? t('common:loading') : t('caja:abrirTurno')}
         </Button>

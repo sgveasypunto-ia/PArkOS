@@ -34,6 +34,8 @@ import { useTranslation } from 'react-i18next';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
 
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { useArqueo } from '../hooks/useArqueo';
 import {
   useArqueoResumenPorSesion,
@@ -210,27 +212,40 @@ export function CierreDiario(): JSX.Element {
         lang="es-CO"
         className="mx-auto max-w-3xl p-4"
       >
-        <h1 className="mb-2 text-2xl font-bold">
+        {/* F31.3 rediseño: `text-2xl` (24px fijo) → `text-h3` (clamp
+            24→30px, tokens.css), la escala tipográfica fluida del
+            proyecto — gana legibilidad en 1920/2560/3840/ultrawide sin
+            perder el tamaño base en viewports chicos. */}
+        <h1 className="mb-2 text-h3 font-bold">
           {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
         </h1>
         <div
           data-testid="cierre-diario-multi-branch-pending"
           role="status"
-          className="rounded border border-amber-300 bg-amber-50 p-4 text-amber-700"
+          // F31.3 rediseño: reemplaza amber-* hardcodeado por el token
+          // warning, mismo patrón que ya usan los banners `destructive`
+          // de este archivo (border-X + bg-X/10 + text-X, sin `-foreground`
+          // porque acá el fondo es un tinte diluido, no el chip sólido).
+          className="rounded border border-warning bg-warning/10 p-4 text-warning"
         >
           {t('caja:cierreDiario.multiBranchOperatorPending', {
             defaultValue:
               'Sucursal pendiente de selección — seleccioná una sucursal para continuar.',
           })}
         </div>
-        <button
+        {/* F31.3 rediseño: `<button>` nativo sin estilos (sin hover/focus-
+            visible propios) → `<Button variant="ghost">` shadcn, mismo
+            componente que ya usan los demás "Cancelar" del dominio
+            (CerrarTurnoForm, CierreDiarioForm). */}
+        <Button
           type="button"
+          variant="ghost"
           data-testid="cierre-diario-cancelar"
           className="mt-2"
           onClick={onCancel}
         >
           {t('caja:cierreDiario.cancelar', { defaultValue: 'Cancelar' })}
-        </button>
+        </Button>
       </main>
     );
   }
@@ -243,27 +258,40 @@ export function CierreDiario(): JSX.Element {
         lang="es-CO"
         className="mx-auto max-w-3xl p-4"
       >
-        <h1 className="mb-2 text-2xl font-bold">
+        {/* F31.3 rediseño: `text-2xl` (24px fijo) → `text-h3` (clamp
+            24→30px, tokens.css), la escala tipográfica fluida del
+            proyecto — gana legibilidad en 1920/2560/3840/ultrawide sin
+            perder el tamaño base en viewports chicos. */}
+        <h1 className="mb-2 text-h3 font-bold">
           {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
         </h1>
         <div
           data-testid="cierre-diario-supervisor-only"
           role="status"
-          className="rounded border border-amber-300 bg-amber-50 p-4 text-amber-700"
+          // F31.3 rediseño: reemplaza amber-* hardcodeado por el token
+          // warning, mismo patrón que ya usan los banners `destructive`
+          // de este archivo (border-X + bg-X/10 + text-X, sin `-foreground`
+          // porque acá el fondo es un tinte diluido, no el chip sólido).
+          className="rounded border border-warning bg-warning/10 p-4 text-warning"
         >
           {t('caja:cierreDiario.supervisorOnly', {
             defaultValue:
               'Funcionalidad solo para supervisores — seleccione una sucursal para continuar.',
           })}
         </div>
-        <button
+        {/* F31.3 rediseño: `<button>` nativo sin estilos (sin hover/focus-
+            visible propios) → `<Button variant="ghost">` shadcn, mismo
+            componente que ya usan los demás "Cancelar" del dominio
+            (CerrarTurnoForm, CierreDiarioForm). */}
+        <Button
           type="button"
+          variant="ghost"
           data-testid="cierre-diario-cancelar"
           className="mt-2"
           onClick={onCancel}
         >
           {t('caja:cierreDiario.cancelar', { defaultValue: 'Cancelar' })}
-        </button>
+        </Button>
       </main>
     );
   }
@@ -276,7 +304,11 @@ export function CierreDiario(): JSX.Element {
         lang="es-CO"
         className="mx-auto max-w-3xl p-4"
       >
-        <h1 className="mb-2 text-2xl font-bold">
+        {/* F31.3 rediseño: `text-2xl` (24px fijo) → `text-h3` (clamp
+            24→30px, tokens.css), la escala tipográfica fluida del
+            proyecto — gana legibilidad en 1920/2560/3840/ultrawide sin
+            perder el tamaño base en viewports chicos. */}
+        <h1 className="mb-2 text-h3 font-bold">
           {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
         </h1>
         <div
@@ -293,7 +325,7 @@ export function CierreDiario(): JSX.Element {
       lang="es-CO"
       className="mx-auto max-w-3xl space-y-2 p-4"
     >
-      <h1 className="text-2xl font-bold">
+      <h1 className="text-h3 font-bold">
         {t('caja:cierreDiario.titulo', { defaultValue: 'Cierre diario' })}
       </h1>
       <p className="text-sm text-muted-foreground">
@@ -325,7 +357,7 @@ export function CierreDiario(): JSX.Element {
         <div
           data-testid="cierre-diario-already-closed"
           role="status"
-          className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-700"
+          className="rounded border border-warning bg-warning/10 p-2 text-warning"
         >
           {t('caja:cierreDiario.alreadyClosed', {
             defaultValue:
@@ -373,7 +405,7 @@ export function CierreDiario(): JSX.Element {
         <div
           data-testid="cierre-diario-error-ya-cerrado"
           role="alert"
-          className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-700"
+          className="rounded border border-warning bg-warning/10 p-2 text-warning"
         >
           {t('caja:cierreDiario.errorCierreDiaNoAceptaSesion', {
             defaultValue:
@@ -382,19 +414,26 @@ export function CierreDiario(): JSX.Element {
         </div>
       )}
 
-      {/* Fecha picker (page-level — the form's input is read-only). */}
-      <div className="flex items-center gap-2">
+      {/* Fecha picker (page-level — the form's input is read-only).
+          F31.3 rediseño: `<input>` nativo → `<Input>` shadcn — mismo
+          componente que el resto de los campos del dominio, gana
+          `focus-visible:ring-2` + `disabled:opacity-50` gratis (el
+          `<input>` nativo no tenía ningún estado de foco propio más
+          allá del outline default del navegador). `w-auto` porque
+          `<Input>` es `w-full` por default y acá conviene un ancho
+          acotado al contenido (date picker), no todo el ancho del flex row. */}
+      <div className="flex flex-wrap items-center gap-2">
         <label htmlFor="cierre-diario-fecha-page" className="text-sm">
           {t('caja:cierreDiario.fecha', { defaultValue: 'Fecha' })}
         </label>
-        <input
+        <Input
           id="cierre-diario-fecha-page"
           data-testid="cierre-diario-fecha-page"
           type="date"
           value={fecha}
           max={todayISOLocal()}
           onChange={(e) => setFecha(e.target.value)}
-          className="rounded border border-border bg-background px-2 py-1 text-sm"
+          className="w-auto"
         />
       </div>
 

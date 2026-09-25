@@ -47,7 +47,9 @@ export function TurnoActivoPanel({
       <CardHeader>
         <CardTitle>{t('turnoActivo')}</CardTitle>
       </CardHeader>
-      <CardContent>
+      {/* F31.3 rediseño: `space-y-1` agregado — los 5 `<p>` eran hijos
+          directos de CardContent sin spacing, quedaban pegados. */}
+      <CardContent className="space-y-1">
         <p data-testid="turno-activo-uuid">
           <strong>UUID:</strong> {sesion.uuid}
         </p>

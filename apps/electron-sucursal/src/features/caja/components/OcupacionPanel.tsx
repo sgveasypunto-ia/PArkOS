@@ -39,21 +39,27 @@ export interface OcupacionPanelProps {
 
 type ColorLevel = ReturnType<typeof classForPorcentaje>;
 
-// Dot color (left of each row) — semantic by occupancy ratio.
+// Dot color (left of each row) — semantic by occupancy ratio. Usa los
+// tokens de estado del design system (tokens.css/index.css) en vez de
+// la paleta cruda de Tailwind (F31.3 rediseño): `success-foreground`/
+// `warning`/`destructive` son las mismas variantes ya adoptadas por
+// `<CuposLibresStrip />` y `<SyncStatusBadge />` para este mismo
+// semantic mapping verde/ámbar/rojo, y ya resuelven modo claro/oscuro
+// por sí solas (sin variantes `dark:` manuales).
 const DOT_BG: Record<ColorLevel, string> = {
-  green: 'bg-emerald-500',
-  yellow: 'bg-amber-500',
-  red: 'bg-red-500',
+  green: 'bg-success-foreground',
+  yellow: 'bg-warning',
+  red: 'bg-destructive',
 };
 const PROGRESS_BG: Record<ColorLevel, string> = {
-  green: 'bg-emerald-500',
-  yellow: 'bg-amber-500',
-  red: 'bg-red-500',
+  green: 'bg-success-foreground',
+  yellow: 'bg-warning',
+  red: 'bg-destructive',
 };
 const TEXT_MUTED: Record<ColorLevel, string> = {
-  green: 'text-emerald-700 dark:text-emerald-300',
-  yellow: 'text-amber-700 dark:text-amber-300',
-  red: 'text-red-700 dark:text-red-300',
+  green: 'text-success-foreground',
+  yellow: 'text-warning',
+  red: 'text-destructive',
 };
 
 function legendKeyFor(color: ColorLevel, cupoMaximo: number): string {
@@ -100,7 +106,7 @@ export function OcupacionPanel({ uuid_sucursal }: OcupacionPanelProps): JSX.Elem
           <Tooltip>
             <TooltipTrigger asChild>
               <AlertCircle
-                className="h-4 w-4 self-end text-amber-500"
+                className="h-4 w-4 self-end text-warning"
                 aria-hidden="true"
                 data-testid="ocupacion-panel-stale-icon"
               />

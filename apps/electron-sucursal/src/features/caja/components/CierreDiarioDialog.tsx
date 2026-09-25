@@ -109,22 +109,69 @@ export function CierreDiarioDialog({
         if (!next) close();
       }}
     >
-      <DialogContent data-testid="cierre-diario-dialog">
+      <DialogContent
+        // F31.3 rediseño: la primitiva ya cappea a `max-w-lg` (no se
+        // estira en 3840/ultrawide) — acá solo se ajusta el padding
+        // fijo `p-6` a fluido (`p-4 sm:p-6`, recupera ~16px útiles en
+        // 320px) y se agrega scroll interno vertical por si el resumen
+        // + 3 campos + footer exceden una ventana baja.
+        className="max-h-[85vh] overflow-y-auto p-4 sm:p-6"
+        data-testid="cierre-diario-dialog"
+      >
         <DialogHeader>
-          <DialogTitle>{t('cierreDiario', { defaultValue: 'Cierre diario' })}</DialogTitle>
-          <DialogDescription>{t('cierreDiario', { defaultValue: 'Cierre diario' })}</DialogDescription>
+          {/* F31.3 rediseño: bug preexistente — ambos llamaban a
+              `t('cierreDiario', ...)`, la clave RAÍZ del namespace
+              (un objeto anidado: `{ titulo, subtitulo, ... }`, ver
+              caja.json:95-97), no un string. i18next devolvía el
+              objeto y renderizaba el mensaje de error de la librería
+              ("key 'cierreDiario (es-CO)' returned an object instead
+              of string") en vez del título — visible en vivo al abrir
+              el diálogo. Se apunta a las claves hoja correctas,
+              mismas que ya usa `<CierreDiario />` (la página
+              routeada) para el mismo texto. */}
+          <DialogTitle>{t('cierreDiario.titulo', { defaultValue: 'Cierre diario' })}</DialogTitle>
+          <DialogDescription>
+            {t('cierreDiario.subtitulo', {
+              defaultValue:
+                'Cierre de todas las sesiones abiertas del día — supervisor / multi-sucursal.',
+            })}
+          </DialogDescription>
         </DialogHeader>
 
         {resumen && (
-          <dl className="grid grid-cols-2 gap-y-1 text-sm" data-testid="cierre-diario-resumen">
-            <dt>Sesiones cerradas</dt>
-            <dd>{resumen.sesiones_cerradas}</dd>
-            <dt>Total efectivo</dt>
-            <dd>${resumen.total_efectivo_cop.toLocaleString('es-CO')}</dd>
-            <dt>Total datáfono</dt>
-            <dd>${resumen.total_datafono_cop.toLocaleString('es-CO')}</dd>
-            <dt>Diferencia</dt>
-            <dd>${resumen.diferencia_cop.toLocaleString('es-CO')}</dd>
+          <dl
+            // Antes era un grid-cols-2 sin tokens (texto sin color
+            // semántico, sin contenedor). Se alinea al mismo lenguaje
+            // visual que el resumen de `<CerrarTurnoForm />` (tarjeta
+            // sutil + dt en muted-foreground + dd tabular-nums) y se
+            // mantiene en 2 columnas en todo el rango de breakpoints
+            // — "Sesiones cerradas" (el label más largo) entra cómodo
+            // incluso en 320px porque cada columna del grid tiene
+            // ancho flexible (1fr), no un valor fijo.
+            className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-xl border border-border/40 bg-muted/30 p-3 text-sm"
+            data-testid="cierre-diario-resumen"
+          >
+            <dt className="text-muted-foreground">Sesiones cerradas</dt>
+            <dd className="text-right font-mono font-semibold tabular-nums">
+              {resumen.sesiones_cerradas}
+            </dd>
+            <dt className="text-muted-foreground">Total efectivo</dt>
+            <dd className="text-right font-mono font-semibold tabular-nums">
+              ${resumen.total_efectivo_cop.toLocaleString('es-CO')}
+            </dd>
+            <dt className="text-muted-foreground">Total datáfono</dt>
+            <dd className="text-right font-mono font-semibold tabular-nums">
+              ${resumen.total_datafono_cop.toLocaleString('es-CO')}
+            </dd>
+            <dt className="text-muted-foreground">Diferencia</dt>
+            <dd
+              className={
+                'text-right font-mono font-semibold tabular-nums' +
+                (resumen.diferencia_cop !== 0 ? ' text-destructive' : '')
+              }
+            >
+              ${resumen.diferencia_cop.toLocaleString('es-CO')}
+            </dd>
           </dl>
         )}
 
