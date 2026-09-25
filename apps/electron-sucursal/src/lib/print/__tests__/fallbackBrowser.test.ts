@@ -7,14 +7,18 @@
  *   2. `window.print()` is called exactly once.
  *   3. The injected `<style>` is removed after the print call.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 
 import { print, PAGE_RULE } from '../fallbackBrowser';
 import { validEntradaPayload } from './escposBuilder.test';
 
 describe('fallbackBrowser.print("entrada", payload)', () => {
   let printSpy: ReturnType<typeof vi.spyOn>;
-  let appendSpy: ReturnType<typeof vi.spyOn>;
+  // `document.head.appendChild` overload is generic (`<T extends Node>(node: T) => T`);
+  // `ReturnType<typeof vi.spyOn>` resolves to the wrong overload and mismatches the
+  // actual `vi.spyOn(document.head, 'appendChild')` return type. Pin the spy's type to
+  // the real method signature instead.
+  let appendSpy: MockInstance<typeof document.head.appendChild>;
 
   beforeEach(() => {
     // Clean DOM between tests.

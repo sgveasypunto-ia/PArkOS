@@ -31,8 +31,8 @@
  *     preview so the operator notices before printing.
  */
 import type { EntradaPayload, Sucursal, Empresa } from './escposTemplates';
-import { buildEntradaPayload } from './escposTemplates';
-import type { PostIngresoResponse } from '@/features/operacion/lib/ingresoApi';
+import type { PostIngresoResponse } from '../../features/operacion/lib/ingresoApi';
+import type { ClienteContext } from '../../features/operacion/api/clienteApi';
 
 /**
  * Optional print-context metadata that the operator-facing renderer
@@ -55,7 +55,7 @@ export interface PrintContext {
  * IS NOT NULL``. Re-exported from ``clienteApi.ts`` (canonical SWR
  * shape) so callers keep a single import surface.
  */
-export type { ClienteContext } from '@/features/operacion/api/clienteApi';
+export type { ClienteContext };
 
 /**
  * Minimal default Empresa — until a ``GET /empresa/{uuid}`` endpoint
