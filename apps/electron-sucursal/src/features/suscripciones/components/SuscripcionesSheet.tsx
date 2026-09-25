@@ -183,9 +183,9 @@ export function SuscripcionesSheet(): JSX.Element {
       <SheetContent
         side="right"
         data-testid="suscripciones-sheet"
-        className="flex h-full w-full flex-col gap-4 sm:max-w-xl md:w-[36rem] lg:w-[42rem]"
+        className="flex h-full w-full flex-col gap-6 sm:max-w-xl md:w-[36rem] lg:w-[42rem]"
       >
-        <SheetHeader>
+        <SheetHeader className="mb-2 space-y-3 pr-8">
           <SheetTitle>
             {mode === 'venta' &&
               t('suscripciones:sheet.tituloVenta', {
