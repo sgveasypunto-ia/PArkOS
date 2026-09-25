@@ -111,7 +111,10 @@ export function CierreDiarioForm(props: {
   }) => Promise<void>;
   onCancel: () => void;
 }): JSX.Element {
-  const { t } = useTranslation(['caja']);
+  // 'common' agregado (antes solo 'caja') para poder usar
+  // `t('common:loading')` en el botón de submit — mismo namespace ya
+  // cargado por AbrirTurnoForm/CerrarTurnoForm para el mismo estado.
+  const { t } = useTranslation(['caja', 'common']);
   const formId = useId();
 
   // Aggregate-justification rule: when Σ|diferencia|>0, the
@@ -214,9 +217,12 @@ export function CierreDiarioForm(props: {
                       {formatCOP(s.valor_efectivo_reportado)}
                     </td>
                     <td
+                      // Consistente con la fila de totales (tfoot, abajo):
+                      // una diferencia != 0 se resalta en `text-destructive`,
+                      // no solo en negrita.
                       className={
                         diferencia !== null && diferencia !== 0
-                          ? 'px-3 py-2 text-right font-semibold'
+                          ? 'px-3 py-2 text-right font-semibold text-destructive'
                           : 'px-3 py-2 text-right'
                       }
                     >
@@ -224,10 +230,15 @@ export function CierreDiarioForm(props: {
                     </td>
                     <td className="px-3 py-2">
                       <span
+                        // F31.3 rediseño: reemplaza el emerald/amber
+                        // hardcodeado por los tokens success/warning +
+                        // sus -foreground (mismo par `bg-X text-X-foreground`
+                        // ya usado por `<SyncStatusBadge />`), sin variantes
+                        // `dark:` manuales — el token resuelve el tema.
                         className={
                           s.estado === 'cerrado'
-                            ? 'inline-flex items-center rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700'
-                            : 'inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-700'
+                            ? 'inline-flex items-center rounded bg-success px-2 py-0.5 text-xs text-success-foreground'
+                            : 'inline-flex items-center rounded bg-warning px-2 py-0.5 text-xs text-warning-foreground'
                         }
                       >
                         {s.estado ?? '—'}
@@ -416,9 +427,16 @@ export function CierreDiarioForm(props: {
             disabled={isDisabled}
             aria-disabled={isDisabled}
           >
-            {t('caja:cierreDiario.confirmar', {
-              defaultValue: 'Confirmar cierre diario',
-            })}
+            {/* Estado loading visual — `isSubmitting` ya existía en la
+                lógica (usado en `isDisabled`) pero el botón nunca
+                cambiaba de texto, a diferencia de AbrirTurnoForm /
+                CerrarTurnoForm / ArqueoParcial (mismo patrón "Cargando…"
+                durante el submit). */}
+            {props.isSubmitting
+              ? t('common:loading', { defaultValue: 'Cargando…' })
+              : t('caja:cierreDiario.confirmar', {
+                  defaultValue: 'Confirmar cierre diario',
+                })}
           </Button>
           <Button
             type="button"

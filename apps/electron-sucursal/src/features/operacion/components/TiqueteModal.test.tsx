@@ -55,6 +55,7 @@ describe('TiqueteModal', () => {
         buildPrintPayload={() => ({
           buffer: Buffer.from('hello').toString('base64'),
           ticketId: 'ticket-1',
+          cut: true,
         })}
         onSiguiente={vi.fn()}
       />,
@@ -71,6 +72,7 @@ describe('TiqueteModal', () => {
         buildPrintPayload={() => ({
           buffer: Buffer.from('hello').toString('base64'),
           ticketId: 'ticket-1',
+          cut: true,
         })}
         onSiguiente={vi.fn()}
       />,
@@ -91,6 +93,7 @@ describe('TiqueteModal', () => {
         buildPrintPayload={() => ({
           buffer: 'AA==',
           ticketId: 'ticket-1',
+          cut: true,
         })}
         onSiguiente={vi.fn()}
       />,
@@ -110,6 +113,7 @@ describe('TiqueteModal', () => {
         buildPrintPayload={() => ({
           buffer: 'AA==',
           ticketId: 'ticket-1',
+          cut: true,
         })}
         onSiguiente={vi.fn()}
       />,
@@ -123,6 +127,7 @@ describe('TiqueteModal', () => {
     const buildPrintPayload = vi.fn((uuid_ingreso: string) => ({
       buffer: Buffer.from(`entrada:${uuid_ingreso}`).toString('base64'),
       ticketId: uuid_ingreso,
+      cut: true,
     }));
     render(
       <TiqueteModal
@@ -143,6 +148,7 @@ describe('TiqueteModal', () => {
         'entrada:11111111-1111-1111-1111-111111111111',
       ).toString('base64'),
       ticketId: '11111111-1111-1111-1111-111111111111',
+      cut: true,
     });
   });
 
@@ -156,6 +162,7 @@ describe('TiqueteModal', () => {
         buildPrintPayload={() => ({
           buffer: 'AA==',
           ticketId: 'ticket-1',
+          cut: true,
         })}
         onSiguiente={vi.fn()}
       />,
@@ -179,6 +186,7 @@ describe('TiqueteModal', () => {
         buildPrintPayload={() => ({
           buffer: 'AA==',
           ticketId: 'ticket-1',
+          cut: true,
         })}
         onSiguiente={vi.fn()}
       />,
@@ -202,6 +210,7 @@ describe('TiqueteModal', () => {
         buildPrintPayload={() => ({
           buffer: 'AA==',
           ticketId: 'ticket-1',
+          cut: true,
         })}
         onSiguiente={vi.fn()}
       />,

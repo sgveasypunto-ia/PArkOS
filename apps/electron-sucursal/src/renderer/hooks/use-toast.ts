@@ -13,13 +13,6 @@ type ToasterToast = ToastProps & {
   action?: React.ReactNode;
 };
 
-const actionTypes = {
-  ADD_TOAST: 'ADD_TOAST',
-  UPDATE_TOAST: 'UPDATE_TOAST',
-  DISMISS_TOAST: 'DISMISS_TOAST',
-  REMOVE_TOAST: 'REMOVE_TOAST',
-} as const;
-
 let count = 0;
 
 function genId() {
@@ -27,7 +20,20 @@ function genId() {
   return count.toString();
 }
 
-type ActionType = typeof actionTypes;
+// Was `typeof actionTypes` derived from a runtime const object — but
+// nothing in this file ever read that object at runtime (every dispatch
+// below already uses the literal action-type strings directly), so the
+// object existed solely to be fed into `typeof`. That tripped
+// `@typescript-eslint/no-unused-vars` ("assigned a value but only used as
+// a type"), correctly: the value truly was dead code. Declare the same
+// literal-type shape directly instead of manufacturing an unused runtime
+// object to derive it from.
+type ActionType = {
+  ADD_TOAST: 'ADD_TOAST';
+  UPDATE_TOAST: 'UPDATE_TOAST';
+  DISMISS_TOAST: 'DISMISS_TOAST';
+  REMOVE_TOAST: 'REMOVE_TOAST';
+};
 
 type Action =
   | {

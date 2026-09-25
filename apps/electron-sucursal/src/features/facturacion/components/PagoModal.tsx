@@ -246,9 +246,13 @@ export function PagoModal({
             <FormItem>
               <FormLabel>{t('facturacion:pago.medioPago', { defaultValue: 'Medio de pago' })}</FormLabel>
               <FormControl>
+                {/* F31.3 — select nativo (shadcn no trae <Select> HTML
+                    nativo en este baseline); se alinea a las mismas
+                    clases/estados que <Input> (focus-visible, disabled,
+                    hover) en vez del `shadow-sm` suelto que tenía antes. */}
                 <select
                   data-testid="pago-medio-pago"
-                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background transition-colors hover:border-ring/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   value={field.value}
                   onChange={field.onChange}
                   onBlur={field.onBlur}
@@ -313,12 +317,15 @@ export function PagoModal({
           render={({ field }) => (
             <FormItem className="flex flex-row items-center gap-2 space-y-0">
               <FormControl>
+                {/* F31.3 — checkbox nativo sin ninguna clase (tamaño/color
+                    de navegador por defecto, sin focus-ring de marca). */}
                 <input
                   type="checkbox"
                   data-testid="pago-fe-toggle"
                   checked={field.value}
                   onChange={field.onChange}
                   onBlur={field.onBlur}
+                  className="h-4 w-4 shrink-0 rounded border border-input accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </FormControl>
               <FormLabel className="!mt-0">

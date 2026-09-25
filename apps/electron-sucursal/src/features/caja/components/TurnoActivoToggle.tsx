@@ -100,18 +100,24 @@ export function TurnoActivoToggle({
           })}
           data-testid="turno-activo-toggle"
           title={`${sesion.uuid} — click para ver detalles`}
-          className="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200/60 bg-emerald-50/80 px-3 py-1 font-mono text-xs font-medium tracking-tight text-emerald-900 outline-none transition-all hover:bg-emerald-100/80 shadow-apple-sm focus-ring-apple"
+          // F31.3 rediseño: reemplaza el emerald-* hardcodeado por los
+          // tokens semánticos --color-success/-foreground (mismo chip
+          // "suave" que ya usan `<CuposLibresStrip />` / `<SyncStatusBadge />`)
+          // — resuelve claro/oscuro solo, sin variantes `dark:` manuales,
+          // y hover queda cubierto vía `hover:brightness-95` (el token no
+          // define una variante "hover" propia).
+          className="inline-flex h-8 items-center gap-1.5 rounded-full border border-success/40 bg-success px-3 py-1 font-mono text-xs font-medium tracking-tight text-success-foreground outline-none transition-all hover:brightness-95 shadow-apple-sm focus-ring-apple"
         >
           <span
             aria-hidden
-            className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 ring-2 ring-emerald-100"
+            className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-success-foreground ring-2 ring-success/60"
           />
           <span data-testid="turno-activo-toggle-uuid">{uuidCorto}…</span>
           <span aria-hidden className="opacity-40">·</span>
           <span data-testid="turno-activo-toggle-valores" className="tabular-nums">
             {valores}
           </span>
-          <span aria-hidden className="ml-0.5 text-emerald-600">
+          <span aria-hidden className="ml-0.5 text-success-foreground/70">
             {expanded ? '▾' : '▸'}
           </span>
         </button>
@@ -123,7 +129,11 @@ export function TurnoActivoToggle({
           defaultValue: 'Detalles del turno',
         })}
         data-testid="turno-activo-toggle-details"
-        className="w-80 rounded-2xl border border-border/40 bg-popover p-4 text-sm shadow-apple-md"
+        // `max-w-[calc(100vw-1.5rem)]` — a 320px de viewport un ancho fijo
+        // w-80 (320px) desborda el borde derecho sin margen; el cap
+        // garantiza ≥1.5rem de aire en cualquier ancho, incluidos los
+        // extremos de la tabla de breakpoints (320px..3840px+).
+        className="w-80 max-w-[calc(100vw-1.5rem)] rounded-2xl border border-border/40 bg-popover p-4 text-sm shadow-apple-md"
       >
         <SesionDetails sesion={sesion} />
         <ResumenTurno

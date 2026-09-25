@@ -27,7 +27,7 @@ export function DrillDownButton({ alert }: DrillDownButtonProps): JSX.Element {
       data-testid="drilldown-button"
       data-tipo-alerta={alert.tipo_alerta ?? 'desconocido'}
       aria-label={`drilldown-${alert.tipo_alerta ?? 'desconocido'}`}
-      className="text-sm font-medium text-primary underline-offset-2 hover:underline"
+      className="rounded-sm text-sm font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
       {t('alertas:dashboard.drillDown', { defaultValue: 'Ver detalle' })}
     </a>

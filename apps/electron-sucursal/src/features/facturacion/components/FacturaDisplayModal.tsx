@@ -198,10 +198,14 @@ export function FacturaDisplayModal({
                       className="flex justify-between gap-2"
                       data-testid="factura-display-item"
                     >
-                      <span className="flex-1">
+                      {/* min-w-0 + truncate: un concepto largo no debe
+                          empujar el valor fuera del ticket en 320-480px
+                          (mismo patrón que Dashboard.tsx usa para filas
+                          flex con contenido variable). */}
+                      <span className="min-w-0 flex-1 truncate">
                         {item.concepto} × {item.cantidad}
                       </span>
-                      <span>{money(item.subtotal)}</span>
+                      <span className="shrink-0 tabular-nums">{money(item.subtotal)}</span>
                     </div>
                   ))
                 )}
@@ -210,34 +214,34 @@ export function FacturaDisplayModal({
               {/* === Segregación de valores (impuestos + totales) === */}
               <div data-testid="factura-display-totales">
                 <TicketDivider />
-                <div className="flex justify-between">
-                  <span>{t('facturacion:display.subtotal', { defaultValue: 'Subtotal' })}</span>
-                  <span data-testid="factura-display-subtotal">{money(f.subtotal)}</span>
+                <div className="flex justify-between gap-2">
+                  <span className="min-w-0 truncate">{t('facturacion:display.subtotal', { defaultValue: 'Subtotal' })}</span>
+                  <span data-testid="factura-display-subtotal" className="shrink-0 tabular-nums">{money(f.subtotal)}</span>
                 </div>
                 {(f.descuento ?? 0) > 0 && (
-                  <div className="flex justify-between">
-                    <span>{t('facturacion:display.descuento', { defaultValue: 'Descuento' })}</span>
-                    <span>− {money(f.descuento)}</span>
+                  <div className="flex justify-between gap-2">
+                    <span className="min-w-0 truncate">{t('facturacion:display.descuento', { defaultValue: 'Descuento' })}</span>
+                    <span className="shrink-0 tabular-nums">− {money(f.descuento)}</span>
                   </div>
                 )}
                 {f.impuestos.map((imp) => (
                   <div
                     key={imp.uuid}
-                    className="flex justify-between"
+                    className="flex justify-between gap-2"
                     data-testid="factura-display-impuesto"
                   >
-                    <span>
+                    <span className="min-w-0 truncate">
                       {imp.nombre_impuesto ?? 'Impuesto'}{' '}
                       {imp.porcentaje_aplicado !== null &&
                         imp.porcentaje_aplicado !== undefined &&
                         `(${(imp.porcentaje_aplicado * 100).toFixed(2)}%)`}
                     </span>
-                    <span>{money(imp.valor)}</span>
+                    <span className="shrink-0 tabular-nums">{money(imp.valor)}</span>
                   </div>
                 ))}
-                <div className="mt-1 flex justify-between border-t border-dashed border-neutral-400 pt-1 font-bold">
-                  <span>{t('facturacion:display.total', { defaultValue: 'TOTAL' })}</span>
-                  <span data-testid="factura-display-total">{money(f.total)}</span>
+                <div className="mt-1 flex justify-between gap-2 border-t border-dashed border-neutral-400 pt-1 font-bold">
+                  <span className="min-w-0 truncate">{t('facturacion:display.total', { defaultValue: 'TOTAL' })}</span>
+                  <span data-testid="factura-display-total" className="shrink-0 tabular-nums">{money(f.total)}</span>
                 </div>
               </div>
 
@@ -251,15 +255,15 @@ export function FacturaDisplayModal({
                   <span className="capitalize">{f.medio_pago}</span>
                 </div>
                 {f.medio_pago === 'efectivo' && f.monto_recibido_cents !== null && f.monto_recibido_cents !== undefined && (
-                  <div className="flex justify-between">
-                    <span>{t('facturacion:display.recibido', { defaultValue: 'Recibido' })}</span>
-                    <span>{money(f.monto_recibido_cents)}</span>
+                  <div className="flex justify-between gap-2">
+                    <span className="min-w-0 truncate">{t('facturacion:display.recibido', { defaultValue: 'Recibido' })}</span>
+                    <span className="shrink-0 tabular-nums">{money(f.monto_recibido_cents)}</span>
                   </div>
                 )}
                 {f.medio_pago === 'efectivo' && f.vuelto_cents !== null && f.vuelto_cents !== undefined && f.vuelto_cents > 0 && (
-                  <div className="flex justify-between">
-                    <span>{t('facturacion:display.vueltos', { defaultValue: 'Vueltos' })}</span>
-                    <span>{money(f.vuelto_cents)}</span>
+                  <div className="flex justify-between gap-2">
+                    <span className="min-w-0 truncate">{t('facturacion:display.vueltos', { defaultValue: 'Vueltos' })}</span>
+                    <span className="shrink-0 tabular-nums">{money(f.vuelto_cents)}</span>
                   </div>
                 )}
                 {f.medio_pago === 'datafono' && f.voucher && (

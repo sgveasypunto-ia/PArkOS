@@ -104,7 +104,6 @@ function deferredSafePrint(
     try {
       emit(payload);
     } catch (err) {
-      // eslint-disable-next-line no-console -- operator-facing: printer offline.
       console.warn(
         '[SalidaMensualidad] bridge.imprimir failed (printer_offline / disconnected — reprint is F8.x):',
         err,

@@ -18,9 +18,10 @@
 
 /// <reference types="../../electron/bridge.d.ts" />
 
+import type { Buffer as NodeBuffer } from 'buffer';
+
 declare global {
-  // eslint-disable-next-line no-var
-  var Buffer: typeof import('buffer').Buffer;
+  var Buffer: typeof NodeBuffer;
 }
 
 export {};

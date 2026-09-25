@@ -55,21 +55,19 @@ type ColorLevel = 'green' | 'yellow' | 'red';
 // Chip compacto por tipo: tinte sutil de fondo/borde por umbral — ya
 // NO una tarjeta grande, solo un matiz que distingue el estado.
 const CHIP_CLASS: Record<ColorLevel, string> = {
-  green:
-    'border-emerald-200/70 bg-emerald-50/70 dark:border-emerald-800/60 dark:bg-emerald-950/30',
-  yellow:
-    'border-amber-200/70 bg-amber-50/70 dark:border-amber-800/60 dark:bg-amber-950/30',
-  red: 'border-red-200/70 bg-red-50/70 dark:border-red-800/60 dark:bg-red-950/30',
+  green: 'bg-success',
+  yellow: 'bg-warning',
+  red: 'bg-destructive',
 };
 const NUMBER_TEXT: Record<ColorLevel, string> = {
-  green: 'text-emerald-700 dark:text-emerald-300',
-  yellow: 'text-amber-700 dark:text-amber-300',
-  red: 'text-red-700 dark:text-red-300',
+  green: 'text-success-foreground',
+  yellow: 'text-warning-foreground',
+  red: 'text-destructive-foreground',
 };
 const ICON_TEXT: Record<ColorLevel, string> = {
-  green: 'text-emerald-500 dark:text-emerald-400',
-  yellow: 'text-amber-500 dark:text-amber-400',
-  red: 'text-red-500 dark:text-red-400',
+  green: 'text-success-foreground/80',
+  yellow: 'text-warning-foreground/80',
+  red: 'text-destructive-foreground/80',
 };
 
 /**
@@ -118,9 +116,18 @@ export function CuposLibresStrip({
       aria-label={t('operacion:miTurno.kpis.cuposLibres', {
         defaultValue: 'Cupos libres',
       })}
-      className="sticky bottom-0 z-10 col-span-1 max-h-[80px] border-t border-border/40 bg-card/95 px-4 py-2 shadow-apple-sm backdrop-blur-md lg:col-span-3 lg:row-start-3"
+      // F31.3 rediseño: `lg:col-span-3` era un bug preexistente — el grid
+      // raíz de Dashboard.tsx solo tiene 2 columnas reales
+      // (`grid-cols-[240px_1fr]`), nunca 3. Se corrige a `md:col-span-2`,
+      // alineado además con el nuevo breakpoint del sidebar (md en vez de
+      // lg — ver Dashboard.tsx). `overflow-y-auto` es la red de
+      // seguridad: si algún día hay muchos tipos de vehículo (catálogo
+      // abierto) y los chips envuelven a más líneas de las que caben en
+      // `max-h-[80px]`, el footer scrollea internamente en vez de
+      // desbordarse visualmente sobre la tarjeta de arriba.
+      className="sticky bottom-0 z-10 col-span-1 max-h-[80px] overflow-y-auto border-t border-border/40 bg-card/80 px-4 py-2 shadow-apple-sm backdrop-blur-md md:col-span-2 md:row-start-3"
     >
-      <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
+      <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
         <ul
           role="list"
           data-testid="cupos-libres-strip-list"
@@ -147,18 +154,18 @@ export function CuposLibresStrip({
                   className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 ${CHIP_CLASS[color]}`}
                 >
                   <Icon aria-hidden className={`h-3.5 w-3.5 shrink-0 ${ICON_TEXT[color]}`} />
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-foreground/80">
+                  <span className={`text-[11px] font-semibold uppercase tracking-[0.04em] ${NUMBER_TEXT[color]}/80`}>
                     {it.tipo}
                   </span>
                   {/* Dato primario: cupos libres explícitos. */}
                   <span className={`font-mono text-sm font-semibold tabular-nums ${NUMBER_TEXT[color]}`}>
                     {it.disponible}
                   </span>
-                  <span className="text-[10px] font-medium normal-case text-muted-foreground/70">
+                  <span className={`text-[10px] font-medium normal-case ${NUMBER_TEXT[color]}/70`}>
                     {t('operacion:cuposLibresStrip.libres', { defaultValue: 'libres' })}
                   </span>
                   {/* Dato secundario: ocupados/total, como contexto chico. */}
-                  <span className="font-mono text-[10px] tabular-nums text-muted-foreground/50">
+                  <span className={`font-mono text-[10px] tabular-nums ${NUMBER_TEXT[color]}/60`}>
                     ({it.activos}/{it.cupo_maximo})
                   </span>
                 </li>

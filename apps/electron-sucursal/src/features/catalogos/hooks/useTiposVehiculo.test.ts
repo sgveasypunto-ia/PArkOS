@@ -128,9 +128,9 @@ describe('useTiposVehiculo — SWR config', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useTiposVehiculo();
     const shouldRetry = swrOptions?.shouldRetryOnError as (err: unknown) => boolean;
-    expect(shouldRetry(new ParkosHttpError(404))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(500))).toBe(true);
-    expect(shouldRetry(new ParkosHttpError(401))).toBe(true);
+    expect(shouldRetry(new ParkosHttpError(404, 'not_found', '/catalogos/tipos-vehiculo'))).toBe(false);
+    expect(shouldRetry(new ParkosHttpError(500, 'server_error', '/catalogos/tipos-vehiculo'))).toBe(true);
+    expect(shouldRetry(new ParkosHttpError(401, 'unauthorized', '/catalogos/tipos-vehiculo'))).toBe(true);
   });
 
   it('config: fallbackData es HARDCODED_CATALOG (referencia, NO deep-equal)', async () => {
@@ -162,7 +162,7 @@ describe('useTiposVehiculo — onError 401 logout defensivo', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useTiposVehiculo();
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(401));
+    onError(new ParkosHttpError(401, 'unauthorized', '/catalogos/tipos-vehiculo'));
     expect(getStateClearMock).toHaveBeenCalledOnce();
     expect(dispatchEventSpy).toHaveBeenCalledWith(expect.any(Event));
     const event = (dispatchEventSpy.mock.calls[0]?.[0] as Event) ?? null;
@@ -173,7 +173,7 @@ describe('useTiposVehiculo — onError 401 logout defensivo', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useTiposVehiculo();
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(500));
+    onError(new ParkosHttpError(500, 'server_error', '/catalogos/tipos-vehiculo'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });
@@ -182,7 +182,7 @@ describe('useTiposVehiculo — onError 401 logout defensivo', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useTiposVehiculo();
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(404));
+    onError(new ParkosHttpError(404, 'not_found', '/catalogos/tipos-vehiculo'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });

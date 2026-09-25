@@ -76,7 +76,12 @@ export function SalidaSheet(): JSX.Element | null {
     >
       <SheetContent
         side="right"
-        className="overflow-y-auto"
+        // F31.3 rediseño: mismo tratamiento que IngresoSheet — padding
+        // por pasos (p-4 en mobile/tablet chico, p-6 desde sm) y cap de
+        // ancho del contenido interno para ultra-wide (ver wrapper
+        // abajo). `twMerge` resuelve el conflicto con el p-6 default
+        // del primitivo compartido a favor de esta clase.
+        className="overflow-y-auto p-4 sm:p-6"
         data-testid="salida-sheet"
         onEscapeKeyDown={(e) => {
           if (suggestionsOpenRef.current) {
@@ -87,14 +92,21 @@ export function SalidaSheet(): JSX.Element | null {
         <SheetHeader>
           <SheetTitle>{t('salida', { defaultValue: 'Salida' })}</SheetTitle>
         </SheetHeader>
-        <SalidaPanel
-          uuid_ingreso={null}
-          initialPlaca={initialPlaca}
-          initialUuidIngreso={initialUuidIngreso}
-          onSuggestionsOpenChange={(next) => {
-            suggestionsOpenRef.current = next;
-          }}
-        />
+        {/* max-w-xl: el Sheet llega a `md:w-1/2` del viewport — en
+            1920/2560/3840/ultrawide eso sigue siendo muy ancho para el
+            flujo de cotización + pago. Se cappea el contenido sin tocar
+            el ancho del propio drawer (primitivo compartido, fuera de
+            este lote). */}
+        <div className="mx-auto w-full max-w-xl">
+          <SalidaPanel
+            uuid_ingreso={null}
+            initialPlaca={initialPlaca}
+            initialUuidIngreso={initialUuidIngreso}
+            onSuggestionsOpenChange={(next) => {
+              suggestionsOpenRef.current = next;
+            }}
+          />
+        </div>
       </SheetContent>
     </Sheet>
   );

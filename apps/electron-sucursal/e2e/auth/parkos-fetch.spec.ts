@@ -13,8 +13,6 @@
  */
 import { test, expect, _electron as electron, type Page } from '@playwright/test';
 
-const PRINT_TICKET_SELECTOR = '[data-testid="e2e-parkos-fetch-mount"]';
-
 async function bootAppWith(
   pageSetup: (page: Page) => Promise<void>,
 ): Promise<void> {

@@ -18,7 +18,7 @@
  * axe-core 0 violaciones verificado en vitest (REQ-OPS-124 S3).
  */
 import { useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useNavigate } from 'react-router-dom';
 import { mutate } from 'swr';
@@ -38,6 +38,7 @@ import { SESION_KEY } from '../hooks/useSesionActiva';
 import {
   AbrirTurnoForm,
   type AbrirTurnoErrorState,
+  type AbrirTurnoFormValues,
 } from '../components/AbrirTurnoForm';
 
 export function AbrirTurno(): JSX.Element {
@@ -45,8 +46,22 @@ export function AbrirTurno(): JSX.Element {
   const { user, sucursal } = useAuth();
   const [errorState, setErrorState] = useState<AbrirTurnoErrorState>(null);
 
-  const form = useForm<AbrirTurnoInput>({
-    resolver: zodResolver(abrirTurnoSchema),
+  const form = useForm<AbrirTurnoFormValues, unknown, AbrirTurnoInput>({
+    // KNOWN GAP: `abrirTurnoSchema.valor_inicial_*` uses `.transform()`
+    // (string → number), so the schema's INPUT shape (what RHF's form
+    // state holds while the operator types) differs from its OUTPUT
+    // shape (`AbrirTurnoInput`, what `onSubmit` below receives). The
+    // installed `@hookform/resolvers@3.10.0` `zodResolver` type doesn't
+    // encode that Input/Output distinction (its exported `Resolver` is
+    // a loosely-typed passthrough), so this cast restores the real,
+    // correct Input→Output relationship without weakening validation —
+    // `zodResolver` still runs the real schema (incl. `.transform()`)
+    // at runtime exactly as before.
+    resolver: zodResolver(abrirTurnoSchema) as Resolver<
+      AbrirTurnoFormValues,
+      unknown,
+      AbrirTurnoInput
+    >,
     mode: 'onBlur',
     defaultValues: {
       uuid_sucursal: sucursal?.uuid ?? '',

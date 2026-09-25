@@ -1,0 +1,216 @@
+/**
+ * Design tokens — primitivos + tokens semánticos nuevos (Fase 2+3).
+ *
+ * Capas de este sistema:
+ *   1. PRIMITIVOS (este archivo)      → valores crudos, sin significado de uso.
+ *   2. SEMÁNTICOS shadcn (index.css)  → --background/--foreground/--primary/...
+ *      Son los que Tailwind ya envuelve como hsl(var(--x)) en tailwind.config.ts
+ *      y los que consumen los componentes shadcn existentes (bg-primary,
+ *      text-muted-foreground, etc.). NO renombrar estos nombres: rompería
+ *      todo lo ya construido.
+ *   3. SEMÁNTICOS --color-* (index.css, bloque nuevo) → capa "de intención"
+ *      pedida en el brief de Fase 2+3 (--color-bg, --color-surface, ...).
+ *      Son valores YA resueltos (con hsl() aplicado), listos para usar en
+ *      CSS plano fuera de Tailwind. Mapean 1:1 sobre la capa 2 para que no
+ *      haya dos fuentes de verdad.
+ *
+ * Formato: los primitivos de color usan tripleta HSL sin el wrapper hsl()
+ * ("H S% L%"), igual que ya hacía este proyecto en index.css — así
+ * Tailwind los sigue pudiendo envolver como hsl(var(--token)).
+ *
+ * Ningún componente se tocó en esta fase. Cambiar estos valores SÍ cambia
+ * visualmente los componentes que ya consumen --primary, --background, etc.
+ * (ese es el punto de un sistema de tokens) — ver el reporte de la tarea
+ * para el detalle de qué cambia y por qué.
+ */
+
+:root {
+  /* ============================================================
+     COLOR — primitivos
+     ============================================================ */
+
+  /* Naranja de marca (EasyPunto). 500 y 300 son los ÚNICOS valores
+     extraídos tal cual de la marca confirmada (#E85F24 y #FFBC7D).
+     El resto de la rampa (50-200, 400, 600-900) es interpolación
+     propia sobre el mismo matiz, para tener una escala usable. */
+  --orange-50: 24 100% 96%;
+  --orange-100: 24 100% 91%;
+  --orange-200: 25 100% 83%;
+  --orange-300: 29 100% 75%; /* #FFBC7D — marca (color de transición/loading) */
+  --orange-400: 21 90% 64%; /* interpolación propia */
+  --orange-500: 18 81% 53%; /* #E85F24 — marca (primario/acento), SIN ajustar */
+  --orange-600: 17 78% 45%; /* interpolación propia */
+  --orange-700: 16 75% 37%; /* interpolación propia */
+  --orange-800: 15 72% 29%; /* interpolación propia */
+  --orange-900: 14 70% 22%; /* interpolación propia */
+
+  /* Neutros. 50, 400, 500, 800 y 900 son valores confirmados de
+     marca; el resto (0, 100, 200, 300, 600, 700) es interpolación
+     propia para completar la rampa. 800 y 900 quedan invertidos en
+     "oscuridad" a propósito: #222222 (900) es más oscuro que
+     #323133 (800), lo que permite usar 900 como fondo y 800 como
+     superficie de tarjeta en modo oscuro (superficie MÁS CLARA que
+     el fondo = principio de elevación en oscuro). */
+  --gray-0: 0 0% 100%;
+  --gray-50: 240 13% 97%; /* #F6F6F8 — marca (neutro claro) */
+  --gray-100: 220 14% 93%; /* interpolación propia */
+  --gray-200: 220 13% 91%; /* interpolación propia (ya era el border/input de este proyecto) */
+  --gray-300: 220 9% 80%; /* interpolación propia */
+  --gray-400: 0 0% 41%; /* #696969 — marca (gris adicional, uso: iconografía/dividers) */
+  --gray-500: 0 0% 39%; /* #636363 — marca (texto) */
+  --gray-600: 0 0% 33%; /* interpolación propia */
+  --gray-700: 0 0% 24%; /* interpolación propia */
+  --gray-800: 270 2% 20%; /* #323133 — marca (secundario/oscuro) */
+  --gray-900: 0 0% 13%; /* #222222 — marca (neutro oscuro adicional) */
+
+  /* Interpolación propia: gris claro reservado ÚNICAMENTE para
+     texto secundario legible en modo oscuro. Los grises de marca
+     (#636363/#696969, ~39-41% L) son ilegibles como texto secundario
+     sobre fondo oscuro (dan <3:1) — no forman parte de la rampa de
+     marca, es un valor calculado para pasar AA (ver verificación al
+     final de index.css). */
+  --gray-dark-secondary: 0 0% 65%;
+
+  /* Estados — NO son valores de marca (el brief no definió ninguno).
+     Decisión propia, elegida y verificada por contraste AA:
+       - success reutiliza un verde estándar accesible (Tailwind green-700).
+       - warning reutiliza un ámbar estándar accesible (Tailwind amber-500).
+       - info REUTILIZA el azul que ya vivía en este archivo como
+         "primary" placeholder antes de la extracción de marca: ya
+         estaba afinado a mano y pasa AA, así que en vez de
+         descartarlo pasa a ser el token de "info".
+     Ver la verificación de contraste completa al final de index.css. */
+  --green-700: 142 72% 29%; /* success — fill sólido, sin uso semántico activo desde 2026-09-25 (ver green-100/800/900) */
+  --green-500: 142 71% 45%; /* success — fill sólido, sin uso semántico activo desde 2026-09-25 (ver green-100/800/900) */
+  /* 2026-09-25: el fill sólido (green-700/500) resultó pesado/difícil de
+     leer para un badge informativo ("cupos libres" = estado, no acción) —
+     pedido explícito del operador viendo la app corriendo. Se reemplaza
+     por un chip suave (fondo tenue + texto oscuro/claro de la misma
+     familia), mismo patrón "tinted badge" que ya usa warning/danger en
+     shadcn. Valores = escala estándar Tailwind green (accesible, AA de
+     sobra por el salto de luminosidad). */
+  --green-100: 141 79% 93%; /* success, fondo suave modo claro */
+  --green-800: 143 64% 24%; /* success, texto modo claro (sobre green-100) */
+  --green-900: 144 61% 20%; /* success, fondo suave modo oscuro */
+  --green-300: 141 75% 73%; /* success, texto modo oscuro (sobre green-900) */
+  --amber-500: 38 92% 50%; /* warning — misma tripleta en ambos modos */
+  --blue-600: 211 100% 50%; /* info, modo claro (era --primary antes de la marca) */
+  --blue-400: 211 100% 70%; /* info, variante clara para modo oscuro */
+  --red-400: 0 91% 71%; /* danger, variante clara para modo oscuro (texto plano sobre fondo oscuro) */
+
+  /* ============================================================
+     TIPOGRAFÍA — escala modular fluida (clamp), Poppins
+     ============================================================ */
+
+  /* Poppins es la tipografía de marca (pesos 400/500/600/700,
+     instalada vía @fontsource/poppins). El resto de la escala
+     (tamaños concretos) es decisión propia: no hay tamaños de marca
+     confirmados, solo la tipografía en sí. Ratio ~1.1-1.2 entre
+     pasos, mínimos pensados para una app operativa densa (no un
+     sitio marketing) y máximos que escalan con el viewport entre
+     ~360px y ~1440px — razonable para una ventana de Electron
+     redimensionable. */
+  --font-family-sans: 'Poppins', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+
+  --font-size-label: clamp(0.75rem, 0.72rem + 0.1vw, 0.8125rem); /* 12→13px */
+  --font-size-small: clamp(0.8125rem, 0.78rem + 0.15vw, 0.875rem); /* 13→14px */
+  --font-size-body: clamp(0.9375rem, 0.9rem + 0.2vw, 1rem); /* 15→16px */
+  --font-size-h6: clamp(1rem, 0.95rem + 0.25vw, 1.125rem); /* 16→18px */
+  --font-size-h5: clamp(1.125rem, 1.05rem + 0.35vw, 1.25rem); /* 18→20px */
+  --font-size-h4: clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem); /* 20→24px */
+  --font-size-h3: clamp(1.5rem, 1.3rem + 0.8vw, 1.875rem); /* 24→30px */
+  --font-size-h2: clamp(1.875rem, 1.6rem + 1.2vw, 2.25rem); /* 30→36px */
+  --font-size-h1: clamp(2.25rem, 1.9rem + 1.6vw, 3rem); /* 36→48px */
+  --font-size-display: clamp(2.75rem, 2.2rem + 2.5vw, 4rem); /* 44→64px */
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.15;
+  --line-height-snug: 1.3;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.65;
+
+  /* ============================================================
+     ESPACIADO — grid de 4px
+     ============================================================ */
+
+  /* Coincide 1:1 con la escala default de Tailwind (space-1 =
+     0.25rem = 4px, etc.) — decisión: reutilizar, no reinventar.
+     Los componentes deben seguir usando utilidades de Tailwind
+     (p-4, gap-2...); estas variables existen para consumidores NO
+     Tailwind (estilos inline, HTML fuera de React). */
+  --space-0: 0px;
+  --space-1: 0.25rem; /* 4px */
+  --space-2: 0.5rem; /* 8px */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-5: 1.25rem; /* 20px */
+  --space-6: 1.5rem; /* 24px */
+  --space-8: 2rem; /* 32px */
+  --space-10: 2.5rem; /* 40px */
+  --space-12: 3rem; /* 48px */
+  --space-16: 4rem; /* 64px */
+
+  /* ============================================================
+     RADIOS — extremos que faltaban
+     ============================================================ */
+
+  /* sm/md/lg ya viven en index.css, derivados de --radius (decisión
+     ya tomada en este proyecto: 14px base, estilo "Apple sobrio" —
+     se mantiene sin cambios, es diseño propio, no de marca). Los
+     25-27px en píldora del sitio marketing NO se replican tal cual:
+     son específicos de ese sitio. Acá solo se agregan los extremos
+     que faltaban para tener sm/md/lg/xl/pill completos. */
+  --radius-xs: 0.25rem; /* 4px — decisión propia, chips pequeños */
+  --radius-pill: 9999px; /* decisión propia — full-round puntual, no el default de los botones */
+
+  /* ============================================================
+     ELEVACIÓN — ver .shadow-apple-* y .focus-ring-apple en index.css
+     ============================================================ */
+
+  /* Esas utilidades YA eran la escala de elevación de este proyecto
+     (4 niveles) antes de esta tarea — se mantienen sin cambios en
+     modo claro para no repintar componentes ya construidos. Las dos
+     sombras reales de marca (sitio EasyPunto) quedan documentadas
+     acá como ancla de referencia para cuando la fase de componentes
+     revise esa escala:
+       - Botones/tarjetas: 0 4px 30px rgba(0,0,0,.1)
+       - Header sticky:    0 10px 20px rgba(0,0,0,.12)
+     En modo oscuro se agregaron variantes .dark de esas mismas
+     clases (antes no existían) siguiendo el principio: elevación =
+     superficie más clara, no sombra más fuerte. */
+
+  /* ============================================================
+     Z-INDEX — decisión propia, escala de capas semánticas
+     ============================================================ */
+  --z-base: 0;
+  --z-dropdown: 1000;
+  --z-sticky: 1100;
+  --z-fixed: 1200;
+  --z-overlay: 1300;
+  --z-modal: 1400;
+  --z-popover: 1500;
+  --z-tooltip: 1600;
+  --z-toast: 1700;
+
+  /* ============================================================
+     DURACIÓN / EASING
+     ============================================================ */
+
+  /* --duration-hover y --ease-brand-hover son el ÚNICO valor real
+     de animación de marca (hover del sitio: transform: scale(1.1) +
+     transition: transform .3s ease). El resto es decisión propia
+     siguiendo guías estándar: micro-interacciones 150-250ms,
+     entradas 300-500ms, easing suave. */
+  --duration-instant: 100ms; /* decisión propia */
+  --duration-micro: 200ms; /* decisión propia */
+  --duration-hover: 300ms; /* marca — transición hover del sitio (.3s) */
+  --duration-enter: 400ms; /* decisión propia */
+  --ease-out: cubic-bezier(0, 0, 0.2, 1); /* decisión propia */
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1); /* decisión propia */
+  --ease-brand-hover: ease; /* marca — verbatim, easing del hover del sitio */
+}

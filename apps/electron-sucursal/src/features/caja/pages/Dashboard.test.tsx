@@ -42,15 +42,21 @@ import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 // `typeof IngresoActivoApiModule` instead of an inline `import()` type
 // query (`@typescript-eslint/consistent-type-imports` forbids the latter).
 import type * as IngresoActivoApiModule from '../../operacion/api/ingresoActivoApi';
+import type { SesionRead } from '../api/sesionActivaApi';
 
 const mockNavigate = vi.fn();
 // Safe baseline (not a bare `vi.fn()`) so `Dashboard`'s unconditional
 // `useSesionActiva()` destructure never sees `undefined` if a render
 // slips in before a test configures its own return value.
+// `sesion`/`error` are explicitly widened (not left to narrow to the
+// literal `null`/`undefined` of this baseline) so later
+// `mockUseSesionActiva.mockReturnValue({ sesion: baseSesion, ... })` /
+// `{ error: new ParkosHttpError(...), ... }` calls type-check against
+// the real `SesionRead | null` / `Error | undefined` shapes.
 const mockUseSesionActiva = vi.fn(() => ({
-  sesion: null,
+  sesion: null as SesionRead | null,
   isLoading: true,
-  error: undefined,
+  error: undefined as Error | undefined,
   refresh: vi.fn(),
 }));
 const mockRefresh = vi.fn();
@@ -72,10 +78,14 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
 vi.mock('@parkos/ui-kit/fetch', () => ({
   ParkosHttpError: class extends Error {
     public readonly status: number;
-    constructor(status: number) {
+    public readonly body: string;
+    public readonly url: string;
+    constructor(status: number, body = '{}', url = '/api/v1/x') {
       super(`ParkosHttpError ${status}`);
       this.name = 'ParkosHttpError';
       this.status = status;
+      this.body = body;
+      this.url = url;
     }
   },
 }));
@@ -256,7 +266,7 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     mockUseSesionActiva.mockReturnValue({
       sesion: null,
       isLoading: false,
-      error: new ParkosHttpError(500),
+      error: new ParkosHttpError(500, '{}', '/api/v1/x'),
       refresh: mockRefresh,
     });
     render(
@@ -275,7 +285,7 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     mockUseSesionActiva.mockReturnValue({
       sesion: null,
       isLoading: false,
-      error: new ParkosHttpError(404),
+      error: new ParkosHttpError(404, '{}', '/api/v1/x'),
       refresh: mockRefresh,
     });
     render(

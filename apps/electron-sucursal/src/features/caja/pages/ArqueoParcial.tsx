@@ -193,9 +193,16 @@ export function ArqueoParcial(): JSX.Element {
     }
   };
 
+  // F31.3 rediseño: `p-4` propio removido de los 3 `<div data-testid=
+  // "arqueo-parcial-page">` de abajo — este page SOLO se monta dentro
+  // de `<ArqueoSheet />` (confirmado, sin ruta directa), que ya aporta
+  // `p-4 sm:p-6` + `gap-4` en su propio chrome. El `p-4` duplicado acá
+  // sumaba hasta ~40px de padding horizontal extra por lado en
+  // viewports chicos (320px), justo el ancho que el cap de Sheet
+  // necesita recuperar.
   if (sesionLoading) {
     return (
-      <div className="space-y-4 p-4" data-testid="arqueo-parcial-page">
+      <div className="space-y-4" data-testid="arqueo-parcial-page">
         <p data-testid="arqueo-loading">{t('caja:common:loading', { defaultValue: 'Cargando…' })}</p>
       </div>
     );
@@ -203,7 +210,7 @@ export function ArqueoParcial(): JSX.Element {
 
   if (sesionError || !sesion) {
     return (
-      <div className="space-y-4 p-4" data-testid="arqueo-parcial-page">
+      <div className="space-y-4" data-testid="arqueo-parcial-page">
         <p className="text-sm text-destructive" data-testid="arqueo-no-session">
           {t('caja:arqueoParcial.noSession', {
             defaultValue: 'No hay sesión activa. Abrí turno antes de hacer arqueo.',
@@ -214,7 +221,7 @@ export function ArqueoParcial(): JSX.Element {
   }
 
   return (
-    <div className="space-y-4 p-4" data-testid="arqueo-parcial-page">
+    <div className="space-y-4" data-testid="arqueo-parcial-page">
       {/* F11.3 follow-up -- the title + description are rendered by
           the parent <ArqueoSheet /> via SheetHeader/SheetTitle/
           SheetDescription. The page body no longer duplicates them
@@ -323,7 +330,8 @@ export function ArqueoParcial(): JSX.Element {
           </span>
           <span
             className={
-              'tabular-nums ' + (difEfectivo === 0 ? '' : 'font-semibold')
+              'tabular-nums ' +
+              (difEfectivo === 0 ? '' : 'font-semibold text-destructive')
             }
             data-testid="arqueo-dif-efectivo"
           >
@@ -338,7 +346,8 @@ export function ArqueoParcial(): JSX.Element {
           </span>
           <span
             className={
-              'tabular-nums ' + (difDatafono === 0 ? '' : 'font-semibold')
+              'tabular-nums ' +
+              (difDatafono === 0 ? '' : 'font-semibold text-destructive')
             }
             data-testid="arqueo-dif-datafono"
           >
@@ -371,7 +380,7 @@ export function ArqueoParcial(): JSX.Element {
         {difTotal > 0 && (
           <p
             role="status"
-            className="text-xs text-yellow-700 dark:text-yellow-400 mt-2"
+            className="mt-2 inline-flex items-center rounded-md bg-warning px-2 py-1 text-xs font-medium text-warning-foreground"
             data-testid="arqueo-advertencia"
           >
             {t('caja:arqueoParcial.advertencia', {

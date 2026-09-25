@@ -25,7 +25,6 @@
  *   SS9: when suggestions are NOT open, Escape still closes the Sheet
  *        exactly as before (REQ-OPS-138 invariant, no regression).
  */
-import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 

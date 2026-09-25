@@ -55,14 +55,14 @@ import { deriveSyncState, type SyncState } from '../deriveSyncState';
 type BadgeState = SyncState | null;
 
 const syncBadgeVariants = cva(
-  'ml-auto hidden items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium shadow-apple-sm lg:inline-flex',
+  'ml-auto hidden items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium shadow-apple-sm lg:inline-flex',
   {
     variants: {
       state: {
-        online: 'border-emerald-200/60 bg-emerald-50/80 text-emerald-700',
-        lagging: 'border-amber-200/60 bg-amber-50/80 text-amber-700',
-        offline: 'border-red-200/60 bg-red-50/80 text-red-700',
-        never_synced: 'border-zinc-200/60 bg-zinc-50/80 text-zinc-700',
+        online: 'bg-success text-success-foreground',
+        lagging: 'bg-warning text-warning-foreground',
+        offline: 'bg-destructive text-destructive-foreground',
+        never_synced: 'bg-muted text-muted-foreground',
       } satisfies Record<SyncState, string>,
     },
   },
@@ -71,10 +71,10 @@ const syncBadgeVariants = cva(
 const syncDotVariants = cva('h-2 w-2 rounded-full', {
   variants: {
     state: {
-      online: 'bg-emerald-500',
-      lagging: 'bg-amber-500',
-      offline: 'bg-red-500',
-      never_synced: 'bg-zinc-400',
+      online: 'bg-success-foreground/80',
+      lagging: 'bg-warning-foreground/80',
+      offline: 'bg-destructive-foreground/80',
+      never_synced: 'bg-muted-foreground/60',
     } satisfies Record<SyncState, string>,
   },
 });

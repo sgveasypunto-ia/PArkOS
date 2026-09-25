@@ -256,9 +256,7 @@ test.describe('HU-F3.2 — Lockout visible y refresh transparente (e2e)', () => 
           'parkos.lastSelectedSucursal',
           'suc-uuid-1',
         );
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const _email = email;
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const _newBearer = newBearer;
       },
       {

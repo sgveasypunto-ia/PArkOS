@@ -40,6 +40,16 @@ import type { Cotizacion } from '../hooks/useCotizacion';
 import { useTarifaByUuid } from '../../catalogos/hooks/useTarifaByUuid';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
+/**
+ * `tarifasSucursalApi`'s `valor` / `valor_plena` are nullable columns
+ * (a tarifa row can exist without a configured value). `formatCOP`
+ * requires a `number`, so render `—` instead of calling it with `null`
+ * (same fallback convention as `FacturaDisplayModal.money`).
+ */
+function formatCOPNullable(value: number | null): string {
+  return value === null ? '—' : formatCOP(value);
+}
+
 export interface CotizacionPanelProps {
   /**
    * Canonical discriminated union (REQ-OPS-143). `cobrar === false`
@@ -187,7 +197,7 @@ function CotizacionPanelImpl({
       </CardHeader>
       <CardContent>
         <dl
-          className="grid grid-cols-2 gap-y-1 text-sm"
+          className="grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-2"
           data-testid="cotizacion-dl"
         >
           <dt>Tiempo</dt>
@@ -204,7 +214,7 @@ function CotizacionPanelImpl({
           <dd data-testid="cotizacion-tarifa-detalle">
             {tarifa ? (
               <span>
-                    {formatCOP(tarifa.valor)}/min · Plena: {formatCOP(tarifa.valor_plena)} ·{' '}
+                    {formatCOPNullable(tarifa.valor)}/min · Plena: {formatCOPNullable(tarifa.valor_plena)} ·{' '}
                     {tarifa.estado === 'activo' ? 'Vigente' : `Estado: ${tarifa.estado}`} desde{' '}
                     {formatFechaHoraCorta(tarifa.vigente_desde)}
                     {tarifa.vigente_hasta ? ` hasta ${formatFechaHoraCorta(tarifa.vigente_hasta)}` : ''}
@@ -241,7 +251,7 @@ function CotizacionPanelImpl({
           </span>
         </div>
 
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 flex flex-wrap gap-2">
           <Button
             type="button"
             data-testid="cotizacion-confirmar"

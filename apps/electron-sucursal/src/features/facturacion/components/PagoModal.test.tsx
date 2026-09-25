@@ -114,7 +114,9 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     });
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+    const call = onSubmit.mock.calls[0];
+    if (!call) throw new Error('onSubmit was not called');
+    expect(call[0]).toMatchObject({
       medio_pago: 'datafono',
       voucher: 'VOUCHER-123',
     });

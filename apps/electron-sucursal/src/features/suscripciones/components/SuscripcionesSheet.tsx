@@ -183,7 +183,12 @@ export function SuscripcionesSheet(): JSX.Element {
       <SheetContent
         side="right"
         data-testid="suscripciones-sheet"
-        className="flex h-full w-[70vw] max-w-[1100px] flex-col gap-6"
+        // F31.3 rediseño: `w-[70vw]` era fijo en TODOS los breakpoints —
+        // a 320-480px el drawer quedaba angosto (~220-330px), cortando
+        // formularios/tablas. Mobile-first: full-bleed hasta `sm`, se
+        // angosta progresivamente a partir de ahí; `max-w-[1100px]`
+        // (sin cambios) sigue acotando el ancho en 4K/ultrawide.
+        className="flex h-full w-full flex-col gap-6 sm:w-[85vw] md:w-[75vw] max-w-[1100px]"
       >
         <SheetHeader className="pr-8">
           <SheetTitle>
@@ -215,11 +220,11 @@ export function SuscripcionesSheet(): JSX.Element {
 
         {/* Body scrolls independently of header + footer. */}
         <div
-          className="flex-1 overflow-y-auto px-4"
+          className="flex flex-1 flex-col overflow-y-auto px-4"
           data-testid="suscripciones-sheet-body"
         >
           {mode === 'list' && (
-            <div className="space-y-4">
+            <div className="m-auto w-full space-y-4">
               <form
                 className="mt-[10px] flex gap-2"
                 onSubmit={(e) => void handleBuscar(e)}
@@ -287,17 +292,17 @@ export function SuscripcionesSheet(): JSX.Element {
                         type="button"
                         onClick={() => handleVerCupos(s)}
                         data-testid={`suscripciones-sheet-item-${s.uuid}`}
-                        className="w-full rounded border bg-card px-3 py-2 text-left text-sm transition-colors hover:bg-accent"
+                        className="w-full rounded border bg-card px-3 py-2 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">
+                        <div className="flex flex-wrap items-center justify-between gap-1">
+                          <span className="break-words font-medium">
                             {s.cliente.nombre} {s.cliente.apellido}
                           </span>
                           <span className="text-xs text-muted-foreground">
                             {s.plan.tipo}
                           </span>
                         </div>
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <div className="flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
                           <span>
                             {t('suscripciones:sheet.vence', { defaultValue: 'Vence' })}:{' '}
                             {s.fecha_vencimiento}
@@ -320,15 +325,17 @@ export function SuscripcionesSheet(): JSX.Element {
              * "← Volver" link rendered above the wizard header when
              * onCancel is supplied (Venta line 236).
              */
-            <Venta onSuccess={handleVentaSuccess} onCancel={handleVolver} />
+            <div className="m-auto w-full">
+              <Venta onSuccess={handleVentaSuccess} onCancel={handleVolver} />
+            </div>
           )}
 
           {mode === 'cupos' && detalle && (
-            <div className="space-y-4" data-testid="suscripciones-cupos-detalle">
+            <div className="m-auto w-full space-y-4" data-testid="suscripciones-cupos-detalle">
               <button
                 type="button"
                 onClick={handleVolver}
-                className="text-sm text-muted-foreground hover:underline"
+                className="rounded-sm text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 data-testid="suscripciones-cupos-volver"
               >
                 ← {t('suscripciones:sheet.volver', { defaultValue: 'Volver' })}
@@ -358,7 +365,7 @@ export function SuscripcionesSheet(): JSX.Element {
                 {detalle.vehiculos.map((v) => (
                   <li
                     key={v.uuid}
-                    className="flex items-center justify-between rounded border px-3 py-1.5 text-sm"
+                    className="flex flex-wrap items-center justify-between gap-1 rounded border px-3 py-1.5 text-sm"
                     data-testid={`suscripciones-cupos-vehiculo-${v.uuid}`}
                   >
                     <span className="font-mono uppercase">{v.placa}</span>

@@ -73,8 +73,17 @@ export function StatusBar(): JSX.Element | null {
   // window.bridge existe). En navegador (Vite standalone para dev/test) NO
   // se muestra — evita ruido visual tipo "🔴 Sin API" + "Fase 2 en construcción"
   // cuando la app corre fuera de Electron.
+  //
+  // React Hooks must run unconditionally, in the same order, on every
+  // render (rules-of-hooks). Bailing out with `return null` BEFORE the
+  // hook calls below meant `useState`/`useRef`/`useEffect` were skipped
+  // whenever `inElectron` was false, and would run whenever it was true —
+  // if the SAME mounted instance ever re-rendered with a different
+  // `inElectron` value (e.g. a parent toggling `window.bridge` without
+  // unmounting `<StatusBar />`), React would throw "Rendered fewer hooks
+  // than expected". Hooks now always run; the `inElectron` bail-out moved
+  // to the end, after every hook has been called.
   const inElectron = typeof window !== 'undefined' && typeof (window as { bridge?: unknown }).bridge !== 'undefined';
-  if (!inElectron) return null;
 
   const [state, setState] = useState<StatusBarState>({
     apiStatus: null,
@@ -87,6 +96,8 @@ export function StatusBar(): JSX.Element | null {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    if (!inElectron) return;
+
     cancelledRef.current = false;
 
     const tick = async (): Promise<void> => {
@@ -126,7 +137,9 @@ export function StatusBar(): JSX.Element | null {
       cancelledRef.current = true;
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
     };
-  }, []);
+  }, [inElectron]);
+
+  if (!inElectron) return null;
 
   return (
     <div
@@ -136,7 +149,16 @@ export function StatusBar(): JSX.Element | null {
       aria-label={displayAriaLabel(state.display)}
       data-testid="status-bar"
       data-status={state.display}
-      className="status-bar"
+      // F31.3 rediseño: la clase `status-bar` nunca tuvo una regla CSS
+      // asociada (grep confirma cero matches en el proyecto) — el chip se
+      // renderizaba sin estilos, aunque `App.tsx`/`Dashboard.tsx` ya
+      // asumían ~2rem de alto para esta franja en sus cálculos de
+      // `min-h-[calc(100dvh-...)]`. `h-8` = 2rem exactos, así que el alto
+      // real ahora coincide con esa suposición en vez de contradecirla.
+      // Tokens de marca (--muted/--border/--foreground vía Tailwind) y la
+      // escala tipográfica fluida existente (`text-label`, tokens.css) —
+      // sin valores sueltos.
+      className="status-bar flex h-8 w-full items-center justify-center gap-1 truncate border-b border-border/40 bg-muted/60 px-3 text-center text-label font-medium text-muted-foreground"
     >
       {displayText(state.display)}
     </div>

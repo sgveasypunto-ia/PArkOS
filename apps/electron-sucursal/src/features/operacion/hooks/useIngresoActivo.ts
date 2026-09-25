@@ -102,11 +102,28 @@ export function useIngresoActivo(placa: string | null): IngresoActivoState {
   };
 }
 
-function pickLatest(rows: Ingreso[] | undefined): Ingreso | null {
+/**
+ * Exported for direct unit testing (see `useIngresoActivo.test.ts`) —
+ * the SWR mock in that suite hardcodes `data: undefined`, so exercising
+ * the sort/null-handling logic through the hook itself isn't practical.
+ */
+export function pickLatest(rows: Ingreso[] | undefined): Ingreso | null {
   if (!rows || rows.length === 0) return null;
   // `[...rows].sort()` avoids mutating the SWR-cached array.
-  const sorted = [...rows].sort((a, b) =>
-    b.fecha_ingreso.localeCompare(a.fecha_ingreso),
-  );
+  //
+  // BUGFIX (found while fixing TS18047 here): `fecha_ingreso` is
+  // documented as nullable (backward compat for historical rows
+  // INSERTed before the handler fix — see the field's own JSDoc above).
+  // The previous comparator called `.localeCompare` unconditionally and
+  // would throw `TypeError: Cannot read properties of null` the first
+  // time a row with `fecha_ingreso: null` reached this sort. Treat
+  // `null` as "unknown / not latest" — it sorts after every dated row,
+  // so a row with a real timestamp always wins as `latestIngreso`.
+  const sorted = [...rows].sort((a, b) => {
+    if (a.fecha_ingreso === null && b.fecha_ingreso === null) return 0;
+    if (a.fecha_ingreso === null) return 1;
+    if (b.fecha_ingreso === null) return -1;
+    return b.fecha_ingreso.localeCompare(a.fecha_ingreso);
+  });
   return sorted[0] ?? null;
 }

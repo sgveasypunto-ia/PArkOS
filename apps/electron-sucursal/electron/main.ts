@@ -5,7 +5,7 @@ import path from 'node:path';
 import Store from 'electron-store';
 
 import { initUpdater } from './services/updater';
-import { initLogConfig } from './services/log-config';
+import { initLogConfig, type LogLike, type AppLike } from './services/log-config';
 import { initApiStatus, getApiStatus } from './services/api-status';
 import { applyKiosko, tryUnlockKiosko, type StoreLike } from './services/kiosko';
 import { PrintQueue } from './services/printQueue';
@@ -27,7 +27,91 @@ if (!app.requestSingleInstanceLock()) {
 
 // DEC-UPD-11: configure electron-log rotation BEFORE any other init so we
 // capture boot-time crashes (uncaughtException / unhandledRejection).
-initLogConfig(log, app);
+//
+// `initLogConfig` (electron/services/log-config.ts, out of scope for this
+// fix batch) types its two parameters against interfaces that don't
+// actually match the real APIs they wrap — this is NOT a stale `@types`
+// version mismatch, both gaps are confirmed against the installed
+// packages' own type declarations:
+//
+//   - `LogLike` declares a top-level `formats: { json: string }` +
+//     `format: string`, plus `transports.file.backups: number`. Real
+//     electron-log 5.4.4 (node_modules/electron-log/src/index.d.ts) has
+//     NEITHER a top-level `formats`/`format` (its only "format" knob is
+//     per-transport: `log.transports.file.format`, see the package
+//     README, "You can set transport options...") NOR a `backups`
+//     rotation-count option anywhere (exceeding `maxSize` keeps exactly
+//     one `<name>.old.log`, not a configurable count).
+//   - `AppLike.getPath: (name: string) => string` accepts ANY string,
+//     but Electron's real `app.getPath` only accepts a fixed literal
+//     union of path names and throws for anything else.
+//
+// Passing `log`/`app` straight through both fails to type-check AND
+// would throw at runtime the instant `initLogConfig` read
+// `logImpl.formats.json` (`Cannot read properties of undefined`) —
+// before either exception handler below is even registered, crashing
+// app boot outright. Adapt at this boundary instead of weakening the
+// types: forward real behavior for everything `initLogConfig` actually
+// uses (maxSize/resolvePathFn land on the real file transport; format
+// triggers the real per-transport JSON formatter; getPath forwards to
+// the real Electron API for every name Electron actually supports), and
+// fail loudly — not silently via `any`/a cast — for the one input shape
+// neither real API supports (`backups`, unsupported `getPath` names).
+type AppPathName = Parameters<typeof app.getPath>[0];
+const APP_PATH_NAMES: readonly AppPathName[] = [
+  'home', 'appData', 'userData', 'sessionData', 'temp', 'exe', 'module',
+  'desktop', 'documents', 'downloads', 'music', 'pictures', 'videos',
+  'recent', 'logs', 'crashDumps',
+];
+function isAppPathName(name: string): name is AppPathName {
+  return (APP_PATH_NAMES as readonly string[]).includes(name);
+}
+const appConfigAdapter: AppLike = {
+  getPath: (name: string): string => {
+    if (!isAppPathName(name)) {
+      throw new Error(`Unsupported Electron app.getPath name: "${name}"`);
+    }
+    return app.getPath(name);
+  },
+};
+
+const logConfigAdapter: LogLike = {
+  transports: {
+    file: {
+      get maxSize() {
+        return log.transports.file.maxSize;
+      },
+      set maxSize(value: number) {
+        log.transports.file.maxSize = value;
+      },
+      // electron-log has no `backups` (rotation-count) option — inert
+      // placeholder, see comment above.
+      backups: 0,
+      get resolvePathFn(): (() => string) | undefined {
+        return undefined;
+      },
+      set resolvePathFn(fn: (() => string) | undefined) {
+        if (fn) log.transports.file.resolvePathFn = fn;
+      },
+    },
+  },
+  formats: { json: 'json' },
+  get format(): string {
+    return 'json';
+  },
+  set format(_value: string) {
+    log.transports.file.format = (params) => [
+      JSON.stringify({
+        date: params.message.date.toISOString(),
+        level: params.level,
+        data: params.data,
+      }),
+    ];
+  },
+  info: (...args: unknown[]) => log.info(...args),
+  error: (...args: unknown[]) => log.error(...args),
+};
+initLogConfig(logConfigAdapter, appConfigAdapter);
 process.on('uncaughtException', (err) => log.error('uncaughtException', err));
 process.on('unhandledRejection', (reason) => log.error('unhandledRejection', reason));
 

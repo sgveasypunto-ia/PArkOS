@@ -302,7 +302,15 @@ export default function Principal() {
   );
 
   return (
-    <section className="w-full space-y-6 p-6" aria-labelledby="principal-titulo">
+    // F31.3 rediseño: page NO está ruteada actualmente (superseded por
+    // el flujo IngresoSheet del Dashboard) — se audita igual por estar
+    // en el lote. `max-w-2xl` evita que el formulario se estire
+    // ilegible en 1920+/ultrawide si esta página vuelve a montarse;
+    // `p-4 sm:p-6` da más aire útil en 320-480px.
+    <section
+      className="mx-auto w-full max-w-2xl space-y-6 p-4 sm:p-6"
+      aria-labelledby="principal-titulo"
+    >
       <header className="space-y-2">
         <h1 id="principal-titulo" className="text-2xl font-semibold">
           {t('ingreso', { defaultValue: 'Ingreso' })}
@@ -357,7 +365,7 @@ export default function Principal() {
           maxLength={500}
           rows={2}
           aria-describedby="principal-observaciones-help"
-          className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
+          className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
         />
         <p
           id="principal-observaciones-help"

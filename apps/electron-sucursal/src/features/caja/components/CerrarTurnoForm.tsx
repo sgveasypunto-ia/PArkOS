@@ -150,6 +150,13 @@ export function CerrarTurnoForm({
         onSubmit={form.handleSubmit(onSubmit)}
         noValidate
         data-testid="cerrar-turno-form"
+        // F31.3 rediseño: el form no tenía NINGÚN spacing entre el Card
+        // resumen, cada FormField, los banners de error y los botones —
+        // todos eran hijos directos sin `space-y`, quedaban pegados sin
+        // aire entre sí. `space-y-4` es el mismo ritmo vertical que ya
+        // usa el resto de los forms del dominio (CierreDiarioDialog,
+        // AbrirTurnoForm).
+        className="space-y-4"
       >
         {/* El título + descripción ya los provee `<SheetHeader>` en
             `CerrarTurnoSheet.tsx` (Radix Dialog los expone como
@@ -445,24 +452,30 @@ export function CerrarTurnoForm({
             </aside>
           )}
 
-        <Button
-          type="submit"
-          disabled={isSubmitting || strictModeButtonDisabled}
-          aria-disabled={isSubmitting || strictModeButtonDisabled}
-          data-testid="cerrar-turno-confirmar"
-        >
-          {isSubmitting ? t('common:loading') : t('caja:confirmarCierre')}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={onCancel}
-          disabled={isSubmitting}
-          aria-disabled={isSubmitting}
-          data-testid="cerrar-turno-cancelar"
-        >
-          {t('common:cancel')}
-        </Button>
+        {/* F31.3 rediseño: los 2 botones no tenían contenedor propio —
+            `<Button>` es `inline-flex` (button.tsx), así que quedaban
+            pegados sin gap y podían solaparse/cortarse en 320px. Mismo
+            patrón `flex flex-wrap gap-2` ya usado en CierreDiarioForm. */}
+        <div className="flex flex-wrap gap-2 pt-2">
+          <Button
+            type="submit"
+            disabled={isSubmitting || strictModeButtonDisabled}
+            aria-disabled={isSubmitting || strictModeButtonDisabled}
+            data-testid="cerrar-turno-confirmar"
+          >
+            {isSubmitting ? t('common:loading') : t('caja:confirmarCierre')}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            aria-disabled={isSubmitting}
+            data-testid="cerrar-turno-cancelar"
+          >
+            {t('common:cancel')}
+          </Button>
+        </div>
       </form>
     </Form>
   );

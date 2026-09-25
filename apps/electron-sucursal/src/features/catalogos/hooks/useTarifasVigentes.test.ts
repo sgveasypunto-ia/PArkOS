@@ -198,9 +198,9 @@ describe('useTarifasVigentes — SWR config', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     renderHook(() => useTarifasVigentes(UUID_AUTO));
     const shouldRetry = swrOptions?.shouldRetryOnError as (err: unknown) => boolean;
-    expect(shouldRetry(new ParkosHttpError(404))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(500))).toBe(true);
-    expect(shouldRetry(new ParkosHttpError(401))).toBe(true);
+    expect(shouldRetry(new ParkosHttpError(404, 'not_found', '/empresa/tarifas-sucursal'))).toBe(false);
+    expect(shouldRetry(new ParkosHttpError(500, 'server_error', '/empresa/tarifas-sucursal'))).toBe(true);
+    expect(shouldRetry(new ParkosHttpError(401, 'unauthorized', '/empresa/tarifas-sucursal'))).toBe(true);
   });
 });
 
@@ -311,7 +311,7 @@ describe('useTarifasVigentes — onError 401 logout defensivo', () => {
       expect(swrOptions?.onError).toBeDefined();
     });
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(401));
+    onError(new ParkosHttpError(401, 'unauthorized', '/empresa/tarifas-sucursal'));
     expect(getStateClearMock).toHaveBeenCalledOnce();
     expect(dispatchEventSpy).toHaveBeenCalledWith(expect.any(Event));
     const event = (dispatchEventSpy.mock.calls[0]?.[0] as Event) ?? null;
@@ -326,7 +326,7 @@ describe('useTarifasVigentes — onError 401 logout defensivo', () => {
       expect(swrOptions?.onError).toBeDefined();
     });
     const onError = swrOptions?.onError as (err: unknown) => void;
-    onError(new ParkosHttpError(500));
+    onError(new ParkosHttpError(500, 'server_error', '/empresa/tarifas-sucursal'));
     expect(getStateClearMock).not.toHaveBeenCalled();
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });

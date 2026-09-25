@@ -19,27 +19,27 @@
  * the file structure but does not attempt to launch Chromium —
  * mirrors F6.1 `e2e/operacion/ingreso.spec.ts` precedent.
  */
-import { expect, test } from '@playwright/test';
+import { test } from '@playwright/test';
 
 const SANDBOX_NO_BROWSER = true;
 
 test.describe('HU-F7.2 — Vehicle exit flow', () => {
   test.skip(SANDBOX_NO_BROWSER, 'Sandbox F.6 — no Chromium; runs in CI', () => {});
 
-  test('S1 rotación happy path → PagoSheet drawer opens (REQ-OPS-138)', async ({ page }) => {
+  test('S1 rotación happy path → PagoSheet drawer opens (REQ-OPS-138)', async ({ page: _page }) => {
     // Stub: navigate to /operacion, type ABC123, press Enter, wait for
     // cotización, click "Confirmar salida", assert the PagoSheet
     // drawer opens via the dashboardDrawerStore singleton.
   });
 
-  test('S2 mensualidad happy path → CU-15SM print envelope fires', async ({ page }) => {
+  test('S2 mensualidad happy path → CU-15SM print envelope fires', async ({ page: _page }) => {
     // Stub: navigate to /operacion, type placa with active
     // mensualidad, wait for `cobrar:false` banner, click "Confirmar
     // salida por mensualidad", assert `bridge.imprimir` spy receives
     // `{ kind: 'salida_mensualidad', payload: { uuid_salida } }`.
   });
 
-  test('S3 doble-clic idempotente → segundo click devuelve cached 201', async ({ page }) => {
+  test('S3 doble-clic idempotente → segundo click devuelve cached 201', async ({ page: _page }) => {
     // Stub: navigate to /operacion, cotiza, click Confirm twice
     // within <500ms, assert the network tab shows TWO requests with
     // the same `Idempotency-Key` header, and the backend's
@@ -47,7 +47,7 @@ test.describe('HU-F7.2 — Vehicle exit flow', () => {
     // second request (no duplicate INSERT into `prod.salidas`).
   });
 
-  test('AST drift guard: zero matches for salidas/mensualidad + mensualidad_no_vigente', async ({ page }) => {
+  test('AST drift guard: zero matches for salidas/mensualidad + mensualidad_no_vigente', async ({ page: _page }) => {
     // Drift guard mirrors REQ-OPS-155. The runtime check is at
     // apply-time; this E2E entry asserts the production bundle does
     // NOT bundle the forbidden URLs / error codes.

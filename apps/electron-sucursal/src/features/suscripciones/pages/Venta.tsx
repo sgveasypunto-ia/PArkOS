@@ -352,7 +352,13 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
   };
 
   return (
-    <div className="space-y-4 p-4" data-testid="venta-page">
+    // F31.3 rediseño: `max-w-2xl mx-auto` — el wizard de 4 pasos
+    // (inputs cortos, cards de plan) se estiraba a todo el ancho en
+    // 4K/ultrawide/21:9. Centrado + acotado se ve bien tanto standalone
+    // (ruta `/suscripciones/venta`) como embebido en `<SuscripcionesSheet>`
+    // (que ya acota su propio ancho — este max-w solo angosta más la
+    // columna del wizard dentro de ese panel, no compite con él).
+    <div className="mx-auto w-full max-w-2xl space-y-4 p-4" data-testid="venta-page">
       {/*
         Embedded-wizard "Volver" button (visible only when `onCancel`
         is supplied). Clicking returns the parent to its list view
@@ -365,7 +371,7 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
           type="button"
           onClick={onCancel}
           data-testid="venta-volver"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          className="inline-flex items-center gap-1 rounded-sm text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           ← {t('suscripciones:sheet.volver', { defaultValue: 'Volver' })}
         </button>
@@ -492,16 +498,16 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
                     tabIndex={0}
                     aria-pressed={selected}
                     className={
-                      'cursor-pointer rounded border p-3 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-ring ' +
+                      'cursor-pointer rounded border p-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ' +
                       (selected
                         ? 'border-primary bg-primary/5'
                         : 'border-border hover:bg-muted/50')
                     }
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex-1">
-                        <div className="font-medium">{p.tipo}</div>
-                        <div className="text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+                      <div className="min-w-0 flex-1">
+                        <div className="break-words font-medium">{p.tipo}</div>
+                        <div className="break-words text-xs text-muted-foreground">
                           {t('suscripciones:venta.paso2.duracion', {
                             dias: p.duracion_dias,
                             vehiculos: p.cantidad_maxima_vehiculos,
@@ -510,7 +516,7 @@ export function Venta({ onSuccess, onCancel }: VentaProps = {}): JSX.Element {
                         </div>
                       </div>
                       <div
-                        className="font-medium tabular-nums"
+                        className="shrink-0 font-medium tabular-nums"
                         data-testid={`venta-plan-${p.uuid}-valor`}
                       >
                         {formatCOP(p.valor)}
