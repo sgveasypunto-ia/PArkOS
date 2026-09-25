@@ -182,6 +182,17 @@ export async function buscarIngresoTolerante(
     const rows = await getIngresosByPlaca(variante);
     if (rows.length === 0) continue;
     for (const row of rows) {
+      // `row.placa` is `string | null` on the wire (HU-INGRESO-SIN-PLACA,
+      // REQ-OPS-194 -- no-placa ingresos persist `placa = NULL`). It can
+      // never be `null` HERE though: `getIngresosByPlaca` calls
+      // `GET /operacion/ingresos?placa=<variante>`, and the backend
+      // (`operacion.py::list_ingresos`) filters with `Ingreso.placa ==
+      // placa` -- a SQL equality against a non-empty `variante` (guarded
+      // by the `normalizada === ''` early-return above) never matches a
+      // NULL column. Guard defensively instead of asserting: if that
+      // backend invariant ever changes, skip the row rather than surface
+      // a bogus `placaReal: null` to the operator.
+      if (row.placa === null) continue;
       if (!candidatosMap.has(row.uuid)) {
         candidatosMap.set(row.uuid, {
           uuid_ingreso: row.uuid,
