@@ -281,26 +281,41 @@ class CotizarFacturacion(_Base):
 
 
 class CotizarMensualidad(_Base):
-    """``cobrar=false`` variant -- 1st-plate free-exit short-circuit.
+    """``cobrar=false`` variant -- free exit for a subscribed plate.
 
-    Returned ONLY when the ingreso's plate is the first plate of its
-    subscription currently inside the patio (REQ-OPS-023, design.md §3
-    step 2). The PL/pgSQL function short-circuits the pricing pipeline;
-    no fiscal data is computed; the salida handler (``api/v1/operacion.
-    py::create_salida``) derives ``tipo_salida='MENSUALIDAD'``.
+    Returned when the ingreso's plate has an active subscription and
+    EITHER (a) no other plate of the same subscription is currently in
+    patio (``motivo='mensualidad_vigente'``, REQ-OPS-023, baseline), OR
+    (b) another plate IS in patio but the plan is a fleet/enterprise
+    plan (``tipo_subscripciones.cantidad_maxima_vehiculos > 2``,
+    ``motivo='multiple_vehiculos_plan_empresa'`` -- operator directive
+    2026-09-24: multiple simultaneous vehicles is the EXPECTED shape
+    for a fleet plan, not the personal-plan 1-free-exit rule).
 
-    Single ``motivo`` literal: ``'mensualidad_vigente'``.
+    **Full fiscal breakdown, even though ``cobrar=false`` (migration
+    0050, operator directive 2026-09-24).** Before this migration the
+    PL/pgSQL function short-circuited BEFORE computing tarifa/tiempo/
+    subtotal/iva/total, so this variant carried only ``cobrar`` +
+    ``motivo``. The operator now requires the salida-mensualidad flow
+    to emit a full invoice (facturas + factura_detalle + factura_
+    impuestos + factura_electronica DIAN, same CU-04/CU-05 pipeline as
+    rotacion) showing ALL the normal values plus a discount line equal
+    to the subscription's value, netting to $0 -- which requires the
+    fiscal breakdown to exist in the first place. Every field below
+    (except ``cobrar``/``motivo``) is REQUIRED -- the PL/pgSQL always
+    computes them now, regardless of which subscription branch fires.
 
-    .. note::
-       The CU-03M / DEC-SUC-21 second-vehicle rotation rule (plan.md:64,
-       plan.md:436) is NO LONGER expressed via :class:`CotizarMensualidad`.
-       Migration ``0038_calcular_cotizacion_2nd_plate_rotation`` flipped
-       the 2nd-plate case from ``{cobrar: false, motivo: 'segunda_placa_
-       misma_mensualidad'}`` to ``{cobrar: true, <fiscal fields>, motivo:
-       'segunda_placa_misma_mensualidad'}`` -- the 2nd plate now parses
-       as :class:`CotizarFacturacion` with the informational ``motivo``
-       key. The handler then derives ``tipo_salida='ROTACION'`` and
-       applies rotation pricing at cobro time.
+    ``uuid_subscripcion_cliente`` / ``concepto_descuento`` feed the
+    discount line's concept text (``concepto_descuento`` is the plan's
+    commercial name, ``tipo_subscripciones.tipo``, with a
+    ``'Suscripcion'`` fallback when the subscription has no
+    ``uuid_tipo_subscripcion`` assigned -- a real, pre-existing data
+    shape covered by several test fixtures).
+
+    See :class:`CotizarFacturacion` for the ``tiempo_minutos`` CEIL
+    coercion and the string->Decimal coercion rationale -- both
+    validators are mirrored here verbatim (PL/pgSQL emits the same
+    wire shapes for both discriminated-union variants).
 
     ``motivo`` is a closed literal so the contract is exhaustive --
     adding a new motivo requires a new ``Literal`` member, not
@@ -310,7 +325,46 @@ class CotizarMensualidad(_Base):
     model_config = ConfigDict(extra="forbid")
 
     cobrar: Literal[False]
-    motivo: Literal["mensualidad_vigente"]
+    motivo: Literal["mensualidad_vigente", "multiple_vehiculos_plan_empresa"]
+    subtotal: Decimal
+    iva: Decimal
+    total: Decimal
+    tiempo_minutos: int
+    tarifa_uuid: uuid_lib.UUID
+    vigente_hasta: datetime
+    uuid_subscripcion_cliente: uuid_lib.UUID
+    concepto_descuento: str = Field(min_length=1, max_length=255)
+
+    @field_validator("tiempo_minutos", mode="before")
+    @classmethod
+    def _ceil_tiempo_minutos(cls, v: Any) -> int:
+        """CEIL to the next integer. See :meth:`CotizarFacturacion._ceil_tiempo_minutos`."""
+        try:
+            value_f = float(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"tiempo_minutos must be numeric, got {v!r}"
+            ) from exc
+        if value_f < 0:
+            return 0
+        return math.ceil(value_f)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_decimal_strings(cls, data: Any) -> Any:
+        """String->Decimal coercion. See :meth:`CotizarFacturacion._coerce_decimal_strings`."""
+        if not isinstance(data, dict):
+            return data
+        for field in ("subtotal", "iva", "total"):
+            raw = data.get(field)
+            if isinstance(raw, str):
+                try:
+                    data[field] = Decimal(raw)
+                except InvalidOperation as exc:
+                    raise ValueError(
+                        f"{field} must be a valid decimal string, got {raw!r}"
+                    ) from exc
+        return data
 
 
 # Discriminated union: Pydantic v2 picks the variant by the value of
@@ -548,7 +602,12 @@ class SalidaReadForzado(_Base):
     - ``tipo_salida``: Literal['MENSUALIDAD', 'ROTACION'] (DEC-SUC-21-NEW)
     - ``forzado_en_creacion``: True iff KD-FORZADO-01 bypass was used
     - ``motivo_forzado``: stripped motivo, or None
-    - ``cotizacion_snapshot``: CotizarFacturacion if ROTACION, None if MENSUALIDAD
+    - ``cotizacion_snapshot``: ``CotizarFacturacion`` when ROTACION,
+      ``CotizarMensualidad`` when MENSUALIDAD (migration 0050: the
+      mensualidad branch now also carries the full fiscal breakdown +
+      discount concept, needed by the frontend to build the discount
+      factura), ``None`` only on a V2/V5 bypass (``bypass_reason`` set
+      -- the snapshot would be misleading for a forced exit).
     """
 
     # Inherited from AppendOnlyBase (IdMixin + AuditMixin + SyncMixin) on
@@ -570,7 +629,7 @@ class SalidaReadForzado(_Base):
     tipo_salida: Literal["MENSUALIDAD", "ROTACION"]
     forzado_en_creacion: bool = False
     motivo_forzado: str | None = None
-    cotizacion_snapshot: CotizarFacturacion | None = None
+    cotizacion_snapshot: CotizarFacturacion | CotizarMensualidad | None = None
 
 
 class AnularSalidaNoPagadaPayload(_Base):

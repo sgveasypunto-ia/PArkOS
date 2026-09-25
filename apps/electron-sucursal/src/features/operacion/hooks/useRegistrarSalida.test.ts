@@ -6,9 +6,11 @@
  *   R1: rotación → 201 with `tipo_salida='ROTACION'`,
  *       `estado='PENDIENTE_PAGO'` (canonical F1.7 wire shape).
  *   R2: mensualidad → 201 with `tipo_salida='MENSUALIDAD'`,
- *       `estado='MENSUALIDAD_PAGO'`-equivalent payload (F1.7 omits
- *       the `estado` field on the read; we assert the `cotizacion_snapshot`
- *       is null for MENSUALIDAD per the F1.7 contract).
+ *       `estado='MENSUALIDAD_PAGO'`-equivalent payload. MIGRATION 0050
+ *       (operator directive 2026-09-24): `cotizacion_snapshot` is now
+ *       POPULATED (as `CotizarMensualidad`, full breakdown + discount
+ *       concept) instead of `null` — the salida-mensualidad flow needs
+ *       it to build the discount factura.
  *   R3: doble clic — same `Idempotency-Key` header sent on both
  *       calls; server-side cache dedup (F1.6 IdempotencyKeyMiddleware)
  *       returns the cached 201 on the second call. We assert the
@@ -81,7 +83,18 @@ const mensualidadResponse = {
   ...rotacionResponse,
   uuid: '00000000-0000-0000-0000-0000000000b1',
   tipo_salida: 'MENSUALIDAD',
-  cotizacion_snapshot: null,
+  cotizacion_snapshot: {
+    cobrar: false,
+    motivo: 'mensualidad_vigente',
+    subtotal: 8100,
+    iva: 1900,
+    total: 10000,
+    tiempo_minutos: 90,
+    tarifa_uuid: '00000000-0000-0000-0000-0000000000a5',
+    vigente_hasta: '2026-09-19T11:15:00Z',
+    uuid_subscripcion_cliente: '00000000-0000-0000-0000-0000000000b6',
+    concepto_descuento: 'Plan Oro',
+  },
 };
 
 beforeEach(() => {
@@ -111,7 +124,7 @@ describe('useRegistrarSalida — REQ-OPS-154 rotación | mensualidad', () => {
     expect(result.current.isMutating).toBe(false);
   });
 
-  it('R2: mensualidad POST 201 → tipo_salida=MENSUALIDAD con cotizacion_snapshot=null', async () => {
+  it('R2: mensualidad POST 201 → tipo_salida=MENSUALIDAD con cotizacion_snapshot completo (migration 0050)', async () => {
     mockFetch.mockResolvedValueOnce(mensualidadResponse);
 
     const { result } = renderHook(() => useRegistrarSalida());
@@ -122,7 +135,12 @@ describe('useRegistrarSalida — REQ-OPS-154 rotación | mensualidad', () => {
     });
 
     expect((data as { tipo_salida: string }).tipo_salida).toBe('MENSUALIDAD');
-    expect((data as { cotizacion_snapshot: unknown }).cotizacion_snapshot).toBeNull();
+    const snapshot = (data as { cotizacion_snapshot: Record<string, unknown> })
+      .cotizacion_snapshot;
+    expect(snapshot).not.toBeNull();
+    expect(snapshot.cobrar).toBe(false);
+    expect(snapshot.total).toBe(10000);
+    expect(snapshot.concepto_descuento).toBe('Plan Oro');
   });
 
   it('R3: doble clic → mismo Idempotency-Key header en ambas llamadas (server dedup)', async () => {

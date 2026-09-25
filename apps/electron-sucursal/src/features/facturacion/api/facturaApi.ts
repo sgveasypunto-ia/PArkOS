@@ -150,7 +150,9 @@ export const FacturaReadSchema = z.object({
   estado: z.enum(['emitida', 'pagada', 'anulada']),
 
   // --- HU-F8.4 display enrichment ---
-  medio_pago: z.enum(['efectivo', 'tarjeta', 'transferencia', 'datafono', 'mixto']),
+  // 'suscripcion' added 2026-09-24 (salida-mensualidad $0 factura,
+  // full breakdown + discount, operator directive).
+  medio_pago: z.enum(['efectivo', 'tarjeta', 'transferencia', 'datafono', 'mixto', 'suscripcion']),
   monto_recibido_cents: z.number().int().nullable(),
   vuelto_cents: z.number().int().nullable(),
   voucher: z.string().nullable(),
@@ -186,7 +188,12 @@ const POST_PATH = '/api/v1/facturacion/factura';
  * docstring), cantidad 1.
  */
 export interface FacturaItemPost {
-  tipo: 'servicio' | 'producto';
+  /**
+   * `'descuento'` (2026-09-24, salida-mensualidad factura): `valor_unitario`
+   * stays POSITIVE (backend `ge=0` unchanged) — the backend's
+   * `compute_total` is what SUBTRACTS it instead of adding it.
+   */
+  tipo: 'servicio' | 'producto' | 'descuento';
   concepto: string;
   cantidad: number;
   valor_unitario: number;
@@ -224,10 +231,31 @@ export interface PostFacturaDatafono {
   fe_datos_cliente?: FacturaClienteDatosPost;
 }
 
-export type PostFacturaPayload = PostFacturaEfectivo | PostFacturaDatafono;
+/**
+ * `medio_pago='suscripcion'` (2026-09-24, operator directive): the
+ * salida-mensualidad factura — `total=0` (net, after the discount
+ * line), no voucher, no operator interaction. Mirrors
+ * `PostFacturaEfectivo`'s shape (no `referencia` required, same as
+ * efectivo) but with its own discriminant so the backend can identify
+ * a $0-via-subscription payment distinctly from a $0 cash payment.
+ */
+export interface PostFacturaSuscripcion {
+  uuid_salida: string;
+  medio_pago: 'suscripcion';
+  items: FacturaItemPost[];
+  subtotal: number;
+  total: number;
+  fe_con_datos?: boolean;
+  fe_datos_cliente?: FacturaClienteDatosPost;
+}
+
+export type PostFacturaPayload =
+  | PostFacturaEfectivo
+  | PostFacturaDatafono
+  | PostFacturaSuscripcion;
 
 const facturaItemPostSchema = z.object({
-  tipo: z.enum(['servicio', 'producto']),
+  tipo: z.enum(['servicio', 'producto', 'descuento']),
   concepto: z.string().min(1).max(255),
   cantidad: z.number().int().positive(),
   valor_unitario: z.number().nonnegative(),
@@ -261,6 +289,15 @@ export const PostFacturaSchema = z.discriminatedUnion('medio_pago', [
     subtotal: z.number(),
     total: z.number().nonnegative(),
     referencia: z.string().min(1, 'voucher_requerido'),
+    fe_con_datos: z.boolean().optional(),
+    fe_datos_cliente: facturaClienteDatosPostSchema.optional(),
+  }),
+  z.object({
+    uuid_salida: z.string().uuid(),
+    medio_pago: z.literal('suscripcion'),
+    items: z.array(facturaItemPostSchema).min(1).max(50),
+    subtotal: z.number(),
+    total: z.number().nonnegative(),
     fe_con_datos: z.boolean().optional(),
     fe_datos_cliente: facturaClienteDatosPostSchema.optional(),
   }),

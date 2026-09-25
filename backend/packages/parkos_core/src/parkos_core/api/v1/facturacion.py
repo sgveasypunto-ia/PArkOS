@@ -396,6 +396,10 @@ async def create_factura(
         )
 
     # --- Step 9: INSERT prod.facturas [L-E]. ---------------------------
+    # ``descuento`` (2026-09-24, salida-mensualidad factura): real sum
+    # of the request's ``tipo="descuento"`` lines, not a hardcoded
+    # Decimal(0) -- see ``repo.factura.compute_descuento``.
+    descuento_server = repo_factura.compute_descuento(items_validados)
     new_factura = await repo_factura.crear_factura_evento(
         session,
         actor_uuid=ctx.actor_uuid,
@@ -404,7 +408,7 @@ async def create_factura(
             "uuid_ingreso": salida.uuid_ingreso,
             "uuid_salida": salida.uuid,
             "subtotal": payload.subtotal,
-            "descuento": Decimal(0),
+            "descuento": descuento_server,
             "total": payload.total,
         },
     )
@@ -706,6 +710,10 @@ async def create_factura_electronica(
         uuid_resolucion_facturacion=resolucion.uuid,
         prefijo=resolucion.prefijo,  # snapshot from V3 (REQ-OPS-074)
         consecutivo=consecutivo,
+        # 2026-09-24: mirror the internal factura's real descuento (0
+        # for every ordinary rotacion factura; the subscription value
+        # for a salida-mensualidad factura) onto the DIAN document.
+        descuento=factura.descuento or Decimal(0),
     )
 
     # --- Step 8: INSERT initial prod.envio_dian row. --------------------

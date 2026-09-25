@@ -47,6 +47,7 @@ import { useCotizacion } from './useCotizacion';
 const UUID_INGRESO = '00000000-0000-0000-0000-000000000003';
 const UUID_TARIFA = '00000000-0000-0000-0000-000000000004';
 const UUID_INGRESO_C5 = '00000000-0000-0000-0000-000000000006';
+const UUID_INGRESO_C5B = '00000000-0000-0000-0000-000000000007';
 const UUID_INGRESO_C6 = '00000000-0000-0000-0000-000000000007';
 
 beforeEach(() => {
@@ -155,10 +156,23 @@ describe('useCotizacion — canonical discriminated union (cobrar: true|false)',
     }
   });
 
-  it('C5: mensualidad — cobrar:false con motivo short-circuit', async () => {
+  it('C5: mensualidad — cobrar:false con desglose completo + descuento (migration 0050)', async () => {
+    // Operator directive 2026-09-24: even though cobrar=false, the
+    // backend now always includes the full fiscal breakdown +
+    // discount concept so the salida-mensualidad flow can build a
+    // factura showing every normal value plus a discount netting to
+    // $0. Before this fix the payload was just {cobrar, motivo}.
     mockFetch.mockResolvedValue({
       cobrar: false,
       motivo: 'mensualidad_vigente',
+      subtotal: 8100,
+      iva: 1900,
+      total: 10000,
+      tiempo_minutos: 90,
+      tarifa_uuid: UUID_TARIFA,
+      vigente_hasta: '2026-09-19T11:00:00Z',
+      uuid_subscripcion_cliente: '00000000-0000-0000-0000-0000000000c9',
+      concepto_descuento: 'Plan Oro',
     });
 
     const { result } = renderHook(() => useCotizacion(UUID_INGRESO_C5));
@@ -172,6 +186,37 @@ describe('useCotizacion — canonical discriminated union (cobrar: true|false)',
     expect(result.current.data?.cobrar).toBe(false);
     if (result.current.data?.cobrar === false) {
       expect(result.current.data.motivo).toBe('mensualidad_vigente');
+      expect(result.current.data.total).toBe(10000);
+      expect(result.current.data.concepto_descuento).toBe('Plan Oro');
+    }
+  });
+
+  it('C5b: mensualidad plan empresa — motivo multiple_vehiculos_plan_empresa', async () => {
+    mockFetch.mockResolvedValue({
+      cobrar: false,
+      motivo: 'multiple_vehiculos_plan_empresa',
+      subtotal: 8100,
+      iva: 1900,
+      total: 10000,
+      tiempo_minutos: 90,
+      tarifa_uuid: UUID_TARIFA,
+      vigente_hasta: '2026-09-19T11:00:00Z',
+      uuid_subscripcion_cliente: '00000000-0000-0000-0000-0000000000ca',
+      concepto_descuento: 'Plan Empresarial',
+    });
+
+    // Distinct SWR key from C5 -- reusing UUID_INGRESO_C5 would hit the
+    // module-level SWR cache and return C5's stale response instead of
+    // this test's own mock.
+    const { result } = renderHook(() => useCotizacion(UUID_INGRESO_C5B));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(result.current.error).toBeUndefined();
+    if (result.current.data?.cobrar === false) {
+      expect(result.current.data.motivo).toBe('multiple_vehiculos_plan_empresa');
     }
   });
 

@@ -15,7 +15,7 @@ import { z } from 'zod';
 
 import { parkosFetch } from '@parkos/ui-kit/fetch';
 
-import { CotizarFacturacionSchema } from '../hooks/useCotizacion';
+import { CotizarFacturacionSchema, CotizarMensualidadSchema } from '../hooks/useCotizacion';
 
 export const SalidaReadForzadoSchema = z.object({
   uuid: z.string().uuid(),
@@ -30,7 +30,13 @@ export const SalidaReadForzadoSchema = z.object({
   tipo_salida: z.enum(['ROTACION', 'MENSUALIDAD']),
   forzado_en_creacion: z.boolean(),
   motivo_forzado: z.string().nullable(),
-  cotizacion_snapshot: CotizarFacturacionSchema.nullable(),
+  // MIGRATION 0050 (operator directive 2026-09-24): populated for
+  // MENSUALIDAD too (as CotizarMensualidad, full breakdown + discount
+  // concept) — `<SalidaMensualidad />` needs it to build the discount
+  // factura. `null` only on a V2/V5 forced-exit bypass.
+  cotizacion_snapshot: z
+    .union([CotizarFacturacionSchema, CotizarMensualidadSchema])
+    .nullable(),
 });
 export type SalidaReadForzado = z.infer<typeof SalidaReadForzadoSchema>;
 

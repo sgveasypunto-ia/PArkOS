@@ -231,15 +231,44 @@ def compute_total(
     items that already include it (DEC-FACT-03).
 
     ``retencion = Decimal('0')`` in MVP (DEC-FACT-04, Fase 4 deferred).
+
+    **Descuento items (2026-09-24, salida-mensualidad factura).** Items
+    with ``tipo="descuento"`` are SUBTRACTED instead of added --
+    ``valor_unitario``/``subtotal`` on those lines stay POSITIVE (the
+    Pydantic ``ge=0`` constraint is unchanged), the sign flip happens
+    HERE. A mensualidad exit sends one ``servicio`` line (the full
+    tarifa value, as if it were rotacion) + one ``descuento`` line of
+    the SAME value, netting ``total=0`` -- the operator's directive:
+    "el valor a cobrar es = 0 mas sin embargo en factura se debe
+    mostrar todos los valores, + un descuento = al valor a facturar".
     """
-    base_items = sum(
-        (item.cantidad * item.valor_unitario for item in items),
+    base_cobrable = sum(
+        (
+            item.cantidad * item.valor_unitario
+            for item in items
+            if item.tipo != "descuento"
+        ),
         Decimal(0),
     )
+    descuento_total = compute_descuento(items)
     # Items sum is already the BASE (post-IVA total the operator
     # receives). Return as-is; IVA was computed by the PL/pgSQL when
     # building the items snapshot (DEC-FACT-03 single source of truth).
-    return (base_items - retencion).quantize(Decimal("0.01"))
+    return (base_cobrable - descuento_total - retencion).quantize(Decimal("0.01"))
+
+
+def compute_descuento(items: list[FacturaItemCreate]) -> Decimal:
+    """Sum of every ``tipo="descuento"`` line -- persisted verbatim on
+    ``facturas.descuento`` / ``factura_electronica.descuento`` (both
+    document-level fields per ``modelo_datos_er.mmd``; ``prod.
+    factura_detalle`` has no ``tipo`` column, see ``repo/
+    factura_detalle.py``'s NOTE -- the discount concept only survives
+    at the document level plus the line's ``concepto`` text).
+    """
+    return sum(
+        (item.cantidad * item.valor_unitario for item in items if item.tipo == "descuento"),
+        Decimal(0),
+    ).quantize(Decimal("0.01"))
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +367,9 @@ async def crear_factura_pago(
     session: AsyncSession,
     *,
     uuid_factura: uuid_lib.UUID,
-    medio_pago: Literal["efectivo", "tarjeta", "transferencia", "datafono", "mixto"],
+    medio_pago: Literal[
+        "efectivo", "tarjeta", "transferencia", "datafono", "mixto", "suscripcion"
+    ],
     valor: Decimal,
     referencia: str | None = None,
     uuid_sesion: uuid_lib.UUID | None = None,
@@ -386,6 +417,7 @@ __all__ = [
     "VoucherRequeridoError",
     "buscar_o_crear_cliente_por_nit",
     "buscar_salida_facturable",
+    "compute_descuento",
     "compute_total",
     "crear_factura_evento",
     "crear_factura_impuesto_iva",

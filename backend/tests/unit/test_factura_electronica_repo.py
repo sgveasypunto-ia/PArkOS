@@ -254,6 +254,37 @@ async def test_crear_factura_electronica_inicial_inserts_row(
     assert fe.prefijo == "SETP"
     assert fe.consecutivo == 42
     assert fe.uuid_factura == factura_uuid
+    assert fe.descuento == 0, "default descuento stays Decimal(0) for ordinary facturas"
+
+
+@pytest.mark.asyncio
+async def test_crear_factura_electronica_inicial_persiste_descuento_real(
+    pg_engine: AsyncEngine,
+    seeded_sucursal_uuid: uuid_lib.UUID,
+) -> None:
+    """2026-09-24 (salida-mensualidad factura): the DIAN document mirrors
+    the internal factura's real ``descuento`` -- NOT a silent Decimal(0).
+    The caller (``api/v1/facturacion.py``'s FE handler) passes ``factura.
+    descuento`` fetched at V1; this test pins the repo function's own
+    contract (accepts + persists the value verbatim)."""
+    from decimal import Decimal
+
+    factura_uuid = await _seed_factura(pg_engine, uuid_sucursal=seeded_sucursal_uuid)
+    resolucion_uuid = await _seed_resolucion(pg_engine, uuid_sucursal=seeded_sucursal_uuid)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        fe = await crear_factura_electronica_inicial(
+            session,
+            actor_uuid=uuid_lib.uuid4(),
+            uuid_sucursal=seeded_sucursal_uuid,
+            uuid_factura=factura_uuid,
+            uuid_resolucion_facturacion=resolucion_uuid,
+            prefijo="SETP",
+            consecutivo=43,
+            descuento=Decimal("10000.00"),
+        )
+        await session.commit()
+    assert fe.descuento == Decimal("10000.00")
 
 
 @pytest.mark.asyncio

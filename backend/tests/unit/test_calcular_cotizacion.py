@@ -509,14 +509,18 @@ async def test_cotizar_con_mensualidad_vigente_devuelve_cobrar_false(
     pg_engine, alembic_upgrade, mint_operador_jwt, client, pg_dsn
 ) -> None:
     """When the ingreso's plate has an active subscription at this
-    branch, the handler short-circuits the pricing pipeline and
-    returns ``{cobrar: false, motivo: 'mensualidad_vigente'}``
-    (REQ-OPS-023).
+    branch, the handler returns ``cobrar: false, motivo:
+    'mensualidad_vigente'`` (REQ-OPS-023) -- but, since migration 0050
+    (operator directive 2026-09-24), WITH the full fiscal breakdown
+    attached (subtotal/iva/total/tiempo_minutos/tarifa_uuid/
+    vigente_hasta/uuid_subscripcion_cliente/concepto_descuento), so the
+    salida-mensualidad flow can build a factura showing all the normal
+    values plus a discount netting to $0.
 
-    The tarifa row is also seeded to prove the short-circuit happens
-    BEFORE the tarifa lookup — if the function evaluated the tarifa
-    first, the test would still return 200 (tarifa exists) but with
-    the breakdown, not with ``cobrar:false``.
+    The tarifa row is seeded because it is NOW part of the contract
+    (before migration 0050 it proved the short-circuit happened BEFORE
+    the tarifa lookup; the short-circuit on ``cobrar`` still happens,
+    but the tarifa/IVA computation no longer skips).
     """
     await _truncate_tables(pg_dsn)
 
@@ -569,12 +573,22 @@ async def test_cotizar_con_mensualidad_vigente_devuelve_cobrar_false(
     assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
     assert resp.headers.get("Cache-Control") == "no-store"
     body = resp.json()
-    assert body == {
-        "cobrar": False,
-        "motivo": "mensualidad_vigente",
-    }, (
-        f"monthly-subscription short-circuit must return exactly "
-        f"{{'cobrar': False, 'motivo': 'mensualidad_vigente'}}; got {body!r}"
+    assert body["cobrar"] is False
+    assert body["motivo"] == "mensualidad_vigente"
+    # MIGRATION 0050: full fiscal breakdown + discount concept, even
+    # though cobrar=false. ``_seed_subscription_for_plate`` leaves
+    # ``uuid_tipo_subscripcion=None`` -> concepto_descuento falls back
+    # to the literal ``'Suscripcion'``.
+    assert body["subtotal"] is not None
+    assert body["iva"] is not None
+    assert body["total"] is not None
+    assert body["tarifa_uuid"] is not None
+    assert body["vigente_hasta"] is not None
+    assert body["concepto_descuento"] == "Suscripcion"
+    assert body["uuid_subscripcion_cliente"] is not None
+    assert 89.0 < float(body["tiempo_minutos"]) <= 91.0, (
+        f"tiempo_minutos must reflect the actual elapsed time (~90 "
+        f"minutes, CEIL'd); got {body['tiempo_minutos']!r}"
     )
 
 
@@ -804,19 +818,47 @@ def test_cotizar_facturacion_acepta_motivo_segunda_placa_misma_mensualidad(
     )
 
     # 3) CotizarMensualidad baseline literal still validates (regression).
+    #    MIGRATION 0050: the full fiscal breakdown + discount concept
+    #    fields are now REQUIRED (the PL/pgSQL always computes them).
+    mensualidad_fields = {
+        "subtotal": "8100",
+        "iva": "1900",
+        "total": "10000",
+        "tiempo_minutos": 90.0,
+        "tarifa_uuid": str(uuid_lib.uuid4()),
+        "vigente_hasta": now.isoformat(),
+        "uuid_subscripcion_cliente": str(uuid_lib.uuid4()),
+        "concepto_descuento": "Plan Oro",
+    }
     parsed_baseline = CotizarMensualidad.model_validate(
-        {"cobrar": False, "motivo": "mensualidad_vigente"}
+        {"cobrar": False, "motivo": "mensualidad_vigente", **mensualidad_fields}
     )
     assert parsed_baseline.cobrar is False
     assert parsed_baseline.motivo == "mensualidad_vigente"
+    assert parsed_baseline.concepto_descuento == "Plan Oro"
 
-    # 4) The 2nd-plate motivo literal is REJECTED on CotizarMensualidad
-    #    (it has moved to CotizarFacturacion per migration 0038).
+    # 3b) The NEW empresa/flota motivo literal validates too (operator
+    #     directive 2026-09-24): multiple simultaneous vehicles on a
+    #     fleet plan (cantidad_maxima_vehiculos > 2) also exit free.
+    parsed_empresa = CotizarMensualidad.model_validate(
+        {
+            "cobrar": False,
+            "motivo": "multiple_vehiculos_plan_empresa",
+            **mensualidad_fields,
+        }
+    )
+    assert parsed_empresa.motivo == "multiple_vehiculos_plan_empresa"
+
+    # 4) An unknown motivo literal is REJECTED on CotizarMensualidad.
     import pydantic
 
     with pytest.raises(pydantic.ValidationError) as exc_info:
         CotizarMensualidad.model_validate(
-            {"cobrar": False, "motivo": "segunda_placa_misma_mensualidad"}
+            {
+                "cobrar": False,
+                "motivo": "segunda_placa_misma_mensualidad",
+                **mensualidad_fields,
+            }
         )
     errors = exc_info.value.errors()
     motivo_errors = [e for e in errors if e.get("loc") == ("motivo",)]

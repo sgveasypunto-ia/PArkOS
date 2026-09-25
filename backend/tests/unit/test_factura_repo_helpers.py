@@ -81,6 +81,82 @@ def test_compute_total_retencion_default_cero() -> None:
     assert total == Decimal("119.00")
 
 
+def test_compute_total_resta_lineas_descuento() -> None:
+    """2026-09-24 (salida-mensualidad factura): ``tipo="descuento"``
+    lines are SUBTRACTED, not added -- a service line + a discount line
+    of the SAME value nets to zero (the operator's directive: mostrar
+    todos los valores + un descuento que deje el neto en $0).
+    """
+    items = [
+        FacturaItemCreate(
+            tipo="servicio",
+            concepto="Estadia",
+            cantidad=1,
+            valor_unitario=Decimal("10000.00"),
+            uuid_tarifa_sucursal=None,
+        ),
+        FacturaItemCreate(
+            tipo="descuento",
+            concepto="Descuento por mensualidad - Plan Oro",
+            cantidad=1,
+            valor_unitario=Decimal("10000.00"),
+            uuid_tarifa_sucursal=None,
+        ),
+    ]
+    total = compute_total(items=items, iva=Decimal("0.19"), retencion=Decimal("0"))
+    assert total == Decimal("0.00")
+
+
+def test_compute_total_descuento_parcial() -> None:
+    """A discount smaller than the service line leaves a positive net
+    (not every discount needs to zero out the total -- only the
+    salida-mensualidad flow happens to send an equal-value discount)."""
+    items = [
+        FacturaItemCreate(
+            tipo="servicio",
+            concepto="Estadia",
+            cantidad=1,
+            valor_unitario=Decimal("10000.00"),
+            uuid_tarifa_sucursal=None,
+        ),
+        FacturaItemCreate(
+            tipo="descuento",
+            concepto="Descuento parcial",
+            cantidad=1,
+            valor_unitario=Decimal("4000.00"),
+            uuid_tarifa_sucursal=None,
+        ),
+    ]
+    total = compute_total(items=items, iva=Decimal("0.19"), retencion=Decimal("0"))
+    assert total == Decimal("6000.00")
+
+
+def test_compute_descuento_suma_solo_lineas_descuento() -> None:
+    """``compute_descuento`` sums ONLY ``tipo="descuento"`` lines --
+    used to persist ``facturas.descuento`` / ``factura_electronica.
+    descuento`` (document-level fields)."""
+    from parkos_core.repo.factura import compute_descuento
+
+    items = [
+        FacturaItemCreate(
+            tipo="servicio",
+            concepto="Estadia",
+            cantidad=1,
+            valor_unitario=Decimal("10000.00"),
+            uuid_tarifa_sucursal=None,
+        ),
+        FacturaItemCreate(
+            tipo="descuento",
+            concepto="Descuento por mensualidad - Plan Oro",
+            cantidad=1,
+            valor_unitario=Decimal("10000.00"),
+            uuid_tarifa_sucursal=None,
+        ),
+    ]
+    assert compute_descuento(items) == Decimal("10000.00")
+    assert compute_descuento([items[0]]) == Decimal("0.00")
+
+
 def test_typed_exceptions_importable() -> None:
     """Typed exceptions are importable from repo/factura (handler chain)."""
     # All 7 typed exceptions from design §9 must be exposed in __all__.
