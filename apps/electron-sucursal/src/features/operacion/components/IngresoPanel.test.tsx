@@ -11,8 +11,7 @@
  * behaviour (TiqueteModal/ForzarIngresoModal mount on success/422) is
  * covered by `Principal.test.tsx` — this test pins only the new contract.
  */
-import * as React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -99,20 +98,25 @@ vi.mock('../lib/ingresoApi', () => ({
 }));
 
 // window.bridge.imprimir stub — needed by `openSuccessWithAutoPrint`.
-declare global {
-  interface Window {
-    bridge: { imprimir: (payload: unknown) => Promise<{ ok: boolean }> };
-  }
-}
-window.bridge = {
-  imprimir: vi.fn().mockResolvedValue({ ok: true }),
+// `window.bridge` is ambient-typed as the full `BridgeSurface`
+// (`electron/bridge.d.ts`: `imprimir` + `getQueue` + `onStatus`, plus
+// usb/kiosk/app/apiStatus/authStore/tarifasStore). The panel under test
+// only ever calls `bridge.imprimir(payload)`, so — same pattern as
+// `Principal.test.tsx` / `TiqueteModal.test.tsx` — install a minimal
+// stub via an `unknown` cast instead of redeclaring `interface Window`
+// (which would conflict with the ambient declaration) or satisfying
+// the full surface.
+const imprimirMock = vi.fn().mockResolvedValue({ ok: true });
+(window as unknown as { bridge: { imprimir: typeof imprimirMock } }).bridge = {
+  imprimir: imprimirMock,
 };
 
 import { IngresoPanel } from './IngresoPanel';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  window.bridge.imprimir = vi.fn().mockResolvedValue({ ok: true });
+  imprimirMock.mockReset();
+  imprimirMock.mockResolvedValue({ ok: true });
   mockUseIngresoActivo.mockReturnValue({
     hasActive: false,
     latestIngreso: null,
@@ -169,6 +173,7 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
     });
 
     expect(mockPostIngreso).toHaveBeenCalledWith({
+      placa_presente: true,
       placa: 'ABC123',
       uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000010',
     });
@@ -188,7 +193,11 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
   it('I4: 422 motivo_forzado_requerido opens ForzarIngresoModal (lazy) on confirmar', async () => {
     const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
     mockPostIngreso.mockRejectedValue(
-      new ParkosHttpError(422, 'motivo_forzado_requerido'),
+      new ParkosHttpError(
+        422,
+        'motivo_forzado_requerido',
+        '/api/v1/operacion/ingresos',
+      ),
     );
 
     render(

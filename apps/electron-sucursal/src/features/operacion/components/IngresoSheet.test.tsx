@@ -10,7 +10,6 @@
  *   IS4: open with placa → <IngresoPanel /> receives that placa as
  *        the `initialPlaca` prop so it can pre-fill the form.
  */
-import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 

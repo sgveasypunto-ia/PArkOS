@@ -20,7 +20,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
-import { useIngresoActivo } from './useIngresoActivo';
+import type { Ingreso } from '../api/ingresoActivoApi';
+import { pickLatest, useIngresoActivo } from './useIngresoActivo';
 
 interface SwrOptions {
   shouldRetryOnError?: (err: unknown) => boolean;
@@ -65,7 +66,6 @@ beforeEach(() => {
   useAuthStore.setState({
     accessToken: 'jwt-test',
     expiresAt: null,
-    user: null,
   });
 });
 
@@ -158,5 +158,58 @@ describe('useIngresoActivo SWR options', () => {
     const lastCall = useSwrSpyStorage.mock.calls.at(-1);
     const key = lastCall?.[0] as string | null;
     expect(key).toBeNull();
+  });
+});
+
+describe('pickLatest', () => {
+  function makeIngreso(overrides: Partial<Ingreso>): Ingreso {
+    return {
+      uuid: '00000000-0000-0000-0000-000000000001',
+      uuid_sucursal: '00000000-0000-0000-0000-000000000002',
+      placa: 'ABC123',
+      fecha_ingreso: '2026-09-20T10:00:00.000Z',
+      uuid_subscripcion_cliente: null,
+      ...overrides,
+    };
+  }
+
+  it('returns null for an empty/undefined list', () => {
+    expect(pickLatest(undefined)).toBeNull();
+    expect(pickLatest([])).toBeNull();
+  });
+
+  it('picks the row with the most recent fecha_ingreso', () => {
+    const older = makeIngreso({
+      uuid: 'older',
+      fecha_ingreso: '2026-09-20T10:00:00.000Z',
+    });
+    const newer = makeIngreso({
+      uuid: 'newer',
+      fecha_ingreso: '2026-09-22T08:00:00.000Z',
+    });
+    expect(pickLatest([older, newer])?.uuid).toBe('newer');
+    expect(pickLatest([newer, older])?.uuid).toBe('newer');
+  });
+
+  // BUGFIX regression: `fecha_ingreso` is nullable for historical rows
+  // (REGRESSION fix 2026-09-22, migration 0046 backward compat). The
+  // comparator used to call `.localeCompare` unconditionally and threw
+  // on the first `null` row it encountered.
+  it('does not throw when fecha_ingreso is null, and ranks a dated row above a null one', () => {
+    const sinFecha = makeIngreso({ uuid: 'sin-fecha', fecha_ingreso: null });
+    const conFecha = makeIngreso({
+      uuid: 'con-fecha',
+      fecha_ingreso: '2026-09-22T08:00:00.000Z',
+    });
+    expect(() => pickLatest([sinFecha, conFecha])).not.toThrow();
+    expect(pickLatest([sinFecha, conFecha])?.uuid).toBe('con-fecha');
+    expect(pickLatest([conFecha, sinFecha])?.uuid).toBe('con-fecha');
+  });
+
+  it('does not throw when every row has fecha_ingreso: null', () => {
+    const a = makeIngreso({ uuid: 'a', fecha_ingreso: null });
+    const b = makeIngreso({ uuid: 'b', fecha_ingreso: null });
+    expect(() => pickLatest([a, b])).not.toThrow();
+    expect(pickLatest([a, b])).not.toBeNull();
   });
 });

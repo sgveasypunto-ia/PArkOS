@@ -22,7 +22,7 @@
  * DEC-SUC-27 (auto-print on 201), A-04 (motivo ≥10 chars),
  * KD-FORZADO-01 (`[FORZADO:` prefix).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
@@ -271,7 +271,6 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         // Best-effort print — DEC-SUC-27; F5.1 retry queue handles reconnects.
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [invalidarConteos, sucursal?.uuid, sesion?.uuid],
   );
 
@@ -380,7 +379,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       }
       setSubmitError('network_error');
     },
-    [latestIngreso, openDrawer],
+    [latestIngreso],
   );
 
   /**
@@ -449,6 +448,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
     }
 
     const payload: PostIngresoPayload = {
+      placa_presente: true,
       placa,
       uuid_tipo_vehiculo,
       observaciones:
@@ -527,7 +527,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         setForzarPayload(null);
       }
     },
-    [forzarPayload, openSuccessWithAutoPrint, handlePostError],
+    [forzarPayload, openSuccessWithAutoPrint, handlePostError, tiposVehiculo.tipos],
   );
 
   const handleSiguiente = useCallback(() => {
@@ -854,13 +854,15 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           }
           initialObservaciones={observaciones}
           buildPrintPayload={(uuid) =>
-            buildPrintPayload({
-              uuid_ingreso: uuid,
-              tipo_vehiculo_nombre: success.tipo_vehiculo_nombre,
-              tipo_entrada: success.tipo_entrada,
-              uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
-              consecutivo: success.consecutivo,
-            })
+            buildPrintPayload(
+              {
+                uuid,
+                tipo_entrada: success.tipo_entrada,
+                uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
+                consecutivo: success.consecutivo,
+              },
+              success.placa,
+            )
           }
           onSiguiente={handleSiguiente}
           onIrASalida={() => {
@@ -881,7 +883,13 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       {forzarOpen && forzarPayload && (
         <ForzarIngresoModal
           open
-          placa={forzarPayload.placa}
+          // `forzarPayload` is only ever populated from the con-placa
+          // submit path (`handleConfirmarIngreso` / `handleForzarConfirm`
+          // above) — `IngresoSinPlacaPanel` owns its own error handling
+          // and never calls `setForzarPayload`. Narrow on the
+          // discriminant instead of a non-null assertion so the type
+          // stays honest if that invariant ever changes.
+          placa={forzarPayload.placa_presente ? forzarPayload.placa : ''}
           onConfirm={handleForzarConfirm}
           onCancel={() => {
             setForzarOpen(false);

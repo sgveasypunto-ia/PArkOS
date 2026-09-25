@@ -121,12 +121,12 @@ beforeEach(() => {
 
 describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   it('P1: closed by default — fields do not render', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} subtotal_cop={4200} total_cop={5000} />);
     expect(screen.queryByTestId('pago-medio-pago')).toBeNull();
   });
 
   it('P2: open via store → fields render with FE consumidor-final default', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} subtotal_cop={4200} total_cop={5000} />);
     act(() => useDashboardDrawerStore.getState().open('pago', 'anchor-x'));
     // After open, the Sheet primitive mounts content.
     // We don't assert on testids directly here because Radix Sheet
@@ -135,7 +135,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   });
 
   it('P3: open + PagoModal "Confirmar pago" button is reachable', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} subtotal_cop={4200} total_cop={5000} />);
     act(() => {
       useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
         uuid_ingreso: 'uuid-1',
@@ -153,7 +153,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   });
 
   it('P4: cancel button invokes close()', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} subtotal_cop={4200} total_cop={5000} />);
     act(() => useDashboardDrawerStore.getState().open('pago', 'anchor-x'));
     const cancelBtn = screen.queryByTestId('pago-cancelar');
     if (cancelBtn) {
@@ -165,7 +165,7 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
   });
 
   it('P5: store swap from pago → arqueo enforces single-drawer invariant', () => {
-    render(<PagoSheet uuid_ingreso="uuid-1" subtotal_cop={4200} total_cop={5000} />);
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} subtotal_cop={4200} total_cop={5000} />);
     act(() => useDashboardDrawerStore.getState().open('pago', 'anchor-pago'));
     expect(useDashboardDrawerStore.getState().openDrawer).toBe('pago');
     act(() => useDashboardDrawerStore.getState().open('arqueo', 'anchor-arqueo'));
@@ -213,14 +213,13 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
 
   it('P7 (F8.1-b): cancel button + uuid_salida=null (legacy) → NO annulment, just close', () => {
     render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida={null} subtotal_cop={4200} total_cop={5000} />);
-    act(() =>
-      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
-        uuid_ingreso: 'uuid-1',
-        uuid_salida: null,
-        subtotal_cop: 4200,
-        total_cop: 5000,
-      }),
-    );
+    // Legacy path: no `pagoContext` pushed (PagoContext.uuid_salida is
+    // a required non-null string — it only exists when `<SalidaPanel>`
+    // just created a real salida row, see dashboardDrawerStore.ts).
+    // `<PagoSheet>` doesn't read `pagoContext` itself (that's
+    // `<DrawerHost>`'s job) — it only needs `openDrawer === 'pago'`
+    // here, driven directly via its `uuid_salida={null}` prop above.
+    act(() => useDashboardDrawerStore.getState().open('pago', 'anchor-x'));
     const cancelBtn = screen.queryByTestId('pago-cancelar');
     if (!cancelBtn) {
       throw new Error('cancel button not found');
@@ -274,7 +273,9 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('pago-confirmar'));
     });
-    const payload = mockTrigger.mock.calls[mockTrigger.mock.calls.length - 1][0];
+    const lastCall = mockTrigger.mock.calls.at(-1);
+    if (!lastCall) throw new Error('mockTrigger was not called');
+    const payload = lastCall[0];
     expect(payload).toMatchObject({
       fe_con_datos: true,
       fe_datos_cliente: {
@@ -302,7 +303,9 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('pago-confirmar'));
     });
-    const payload = mockTrigger.mock.calls[mockTrigger.mock.calls.length - 1][0];
+    const lastCall = mockTrigger.mock.calls.at(-1);
+    if (!lastCall) throw new Error('mockTrigger was not called');
+    const payload = lastCall[0];
     expect(payload.medio_pago).toBe('datafono');
     expect(payload.referencia).toBe('VOUCHER-123');
     expect(payload.voucher).toBeUndefined();

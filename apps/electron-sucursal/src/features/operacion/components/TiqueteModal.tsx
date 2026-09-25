@@ -98,7 +98,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import type { ClienteContext } from '@/features/operacion/api/clienteApi';
+import type { ClienteContext } from '../api/clienteApi';
 
 // shadcn/ui doesn't ship a Textarea primitive in this codebase —
 // use the native HTML element with shadcn-friendly Tailwind classes
