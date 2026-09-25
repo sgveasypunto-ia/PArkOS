@@ -103,17 +103,21 @@ class Table:
 # in modelo_datos_er.mmd) — deliberately, not an omission. `create-49-table-
 # apis` PR7/PR8 added these as `LocalOnlyCatalog` entries
 # (`catalog/local_only_catalog.py`), never replicated, never ER-modeled.
-# Physical total = 51 ER + 3 non-ER = 54.
+# Physical total = 51 ER + 4 non-ER = 55.
 # `ingreso_consecutivo_contador` is the 4th non-ER table, added in
 # `ingreso-multi-tipo-consecutivo` PR-A (migration 0042, 2026-09-22): a
 # local-only per-branch counter for ingresos sin placa. Not replicated to
 # the cloud; never ER-modeled (same convention as the other 3).
+# `sync_cursor` is the 5th non-ER table, added in `sync-sucursal-cursor-
+# pull` (migration 0051): the branch worker's per-uuid_sucursal cloud-pull
+# high-water mark (CU-07). Local-only, never replicated, never ER-modeled.
 EXPECTED_NON_ER_TABLES: frozenset[str] = frozenset(
     {
         "idempotency_keys",
         "pairing_tokens",
         "revoked_sync_jwts",
         "ingreso_consecutivo_contador",
+        "sync_cursor",
     }
 )
 
