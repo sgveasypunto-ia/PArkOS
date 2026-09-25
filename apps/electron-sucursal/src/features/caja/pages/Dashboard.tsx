@@ -11,15 +11,16 @@
  *   │ (+33% vs │  [giant ABC123 input]                                    │
  *   │  versión │    placa hint (contextual)                               │
  *   │  previa) │                                                         │
- *   │ 7 action │  Vehículos dentro                                       │
+ *   │ 6 action │  Vehículos dentro                                       │
  *   │ buttons  │   (con cobros pendientes                                │
  *   │ → drawers│    inline si > 0)                                        │
  *   │ + tooltips                                                         │
  *   │ (help +   │                                                         │
  *   │  hotkey)  │                                                         │
  *   ├──────────┴─────────────────────────────────────────────────────────┤
- *   │ Footer full-width: inventario per-tipo  +  KPI "X cupos libres"    │
- *   │ (sticky bottom-0, max 80px)                                        │
+ *   │ Footer full-width: cupos por tipo (tarjetas) + KPI total libres    │
+ *   │ (sticky bottom-0 — 2026-09-24: altura ya no topeada, crece         │
+ *   │  a propósito para llamar la atención — ver CuposLibresStrip.tsx)   │
  *   └───────────────────────────────────────────────────────────────────┘
  *
  * **Operador 2026-09-22 (segunda iteración):** el right-sidebar de
@@ -49,7 +50,8 @@
  *   - Top header bar (operador + status + cerrar)
  *   - Left sidebar (7 navigation actions)
  *   - Placa input hero (the operator's only primary action during the turn)
- *   - Footer full-width sticky (inventario per-tipo + cupos libres agregados)
+ *   - Footer full-width sticky (tarjetas de cupos por tipo + KPI total,
+ *     2026-09-24: altura libre — ver CuposLibresStrip.tsx)
  *   - DrawerHost (single-drawer mounted for: IngresoSheet, SalidaSheet,
  *     PagoSheet, ReimprimirTiqueteSheet, ArqueoSheet, CierreDiarioDialog —
  *     triggered by sidebar, hotkey, OR the PlacaInputHero)
@@ -72,7 +74,6 @@ import {
   CreditCard,
   Wallet,
   ClipboardList,
-  Package,
   Receipt,
 } from 'lucide-react';
 
@@ -119,7 +120,6 @@ const DRAWER_BY_HOTKEY: Record<string, DrawerKind> = {
   F2: 'salida',
   F3: 'suscripciones',
   F4: 'arqueo',
-  F5: 'inventario',
   F6: 'cierre-diario',
 };
 
@@ -411,26 +411,6 @@ export function Dashboard(): JSX.Element | null {
               </TooltipTrigger>
               <TooltipContent side="right">
                 {t('caja:dashboard.help.cierre')}
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  data-testid="sidebar-inventario"
-                  className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
-                  onClick={() => {
-                    openDrawer('inventario', 'sidebar-inventario');
-                    setMobileNavOpen(false);
-                  }}
-                >
-                  <Package className="h-4 w-4 shrink-0" />
-                  <span>{t('caja:dashboard.inventario', { defaultValue: 'Inventario' })}</span>
-                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">F5</kbd>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                {t('caja:dashboard.help.inventario')}
               </TooltipContent>
             </Tooltip>
             <Tooltip>
@@ -839,8 +819,12 @@ function VehiculosDentroList({
         límite donde pageSize=10 entra justo pero el alto disponible
         es menor; en viewports normales (>=768px) no aparece scroll.
       */}
+      {/* Reserve 20rem (antes 14rem): el footer de cupos (2026-09-24)
+          dejó de estar topeado en 80px — crece a propósito para tener
+          más presencia visual, así que esta lista reserva más espacio
+          para que el footer más alto no la tape. */}
       <ul
-        className="max-h-[calc(100vh-14rem)] flex-1 divide-y divide-border/40 overflow-y-auto"
+        className="max-h-[calc(100vh-20rem)] flex-1 divide-y divide-border/40 overflow-y-auto"
         data-testid="vehiculos-list"
       >
         {visible.map((it) => {

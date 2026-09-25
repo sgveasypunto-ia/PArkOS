@@ -38,9 +38,12 @@
   "justificacionRequeridaStrictDesc": "Requerida en cierre de turno.",
   "justificacionOpcional": "Opcional. Requerida cuando hay diferencia fuera de tolerancia.",
   "justificacionOpcionalDesc": "Opcional",
+  "justificacionPlaceholder": "Describí brevemente el motivo (mín. 3 caracteres).",
+  "justificacionDescripcion": "Hay una diferencia respecto a lo esperado. Por favor justificá.",
   "cerrarTurno": {
     "titulo": "Cerrar turno",
     "subtitulo": "Confirmá el arqueo y cerrá tu turno.",
+    "resumenTitulo": "Resumen del turno",
     "arqueoJustificacionRequerida": "Justificación requerida (mín. 3 caracteres)",
     "errorArqueoFallido": "Arqueo no registrado — reintente",
     "errorRedArqueo": "Sin conexión — verifique la red",
@@ -67,7 +70,6 @@
       "salida": "Abrir el panel de salida (tecla F2).",
       "suscripciones": "Abrir suscripciones (módulo futuro).",
       "arqueo": "Hacer un arqueo parcial sin cerrar el turno (tecla F4).",
-      "inventario": "Ver los vehículos dentro del parqueadero (tecla F5).",
       "cierre": "Ir al cierre diario multi-sesión (tecla F6).",
       "facturas": "Reimprimir un tiquete o consultar facturas.",
       "esc": "Volver a esta pantalla desde cualquier drawer."
