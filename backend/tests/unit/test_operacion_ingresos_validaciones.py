@@ -10,15 +10,18 @@ from __future__ import annotations
 import json
 import uuid as uuid_lib
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from parkos_core.models.L_E.ingreso import Ingreso
 from parkos_core.models.V.cantidad_vehiculos_sucursal import (
     CantidadVehiculosSucursal,
 )
+from parkos_core.models.V.clientes import Clientes
 from parkos_core.models.V.empresa import Empresa
 from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
 from parkos_core.models.V.sucursal import Sucursal
+from parkos_core.models.V.tipo_subscripciones import TipoSubscripciones
 from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -213,14 +216,76 @@ async def _seed_subscripcion(
     estado: str = "activo",
 ) -> None:
     now = _now_naive()
+    cliente_uuid = uuid_lib.uuid4()
+    tipo_subscripcion_uuid = uuid_lib.uuid4()
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        # BUGFIX (found while validating the T13 test below, pre-existing
+        # on dev HEAD before this branch): this helper used to insert
+        # ``uuid_cliente=uuid_lib.uuid4()`` with no backing ``clientes``
+        # row, which violates ``fk_subscripciones_cliente_uuid_cliente``
+        # under the real ``parkos-postgres:16-pgpartman`` image (the FK is
+        # enforced; the failure was masked because this whole test file
+        # was being silently SKIPPED for lacking ``pg_partman``). Seed the
+        # minimal ``clientes`` row the FK requires.
+        session.add(
+            Clientes(
+                uuid=cliente_uuid,
+                nombre="Cliente Test",
+                apellido="Suscripcion",
+                tipo_identificador="CC",
+                numero_identificacion=f"CC{cliente_uuid.hex[:9]}",
+                telefono="+571234567",
+                email=None,
+                registro="sincronizado",
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        # No ``ForeignKey()`` is declared on these columns at the ORM
+        # level (the FK exists only as a raw DB constraint from the
+        # migration) -- SQLAlchemy's autoflush has no dependency graph to
+        # order these inserts by, so an explicit flush is required before
+        # adding the row that references it (observed: without this, the
+        # unit of work sent ``subscripciones_cliente`` before
+        # ``clientes``/``tipo_subscripciones`` and the FK violation
+        # reappeared even with both rows present in the same session).
+        await session.flush()
+        # Same pre-existing FK gap as ``clientes`` above:
+        # ``fk_subscripciones_cliente_uuid_tipo_subscripcion`` requires a
+        # real ``tipo_subscripciones`` row.
+        session.add(
+            TipoSubscripciones(
+                uuid=tipo_subscripcion_uuid,
+                tipo="Plan Test",
+                valor=Decimal("50000"),
+                duracion_dias=30,
+                cantidad_maxima_vehiculos=2,
+                mismo_tipo_vehiculo=False,
+                tipo_cliente_permitido=None,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
         session.add(
             SubscripcionesCliente(
                 uuid=uuid_subscripcion,
-                uuid_cliente=uuid_lib.uuid4(),
+                uuid_cliente=cliente_uuid,
                 uuid_sucursal=uuid_sucursal,
-                uuid_tipo_subscripcion=uuid_lib.uuid4(),
+                uuid_tipo_subscripcion=tipo_subscripcion_uuid,
                 fecha_inicio_cobertura=now.date(),
                 fecha_vencimiento=fecha_vencimiento,
                 created_at=now,
@@ -639,6 +704,67 @@ async def test_t6_cupo_agotado_con_forzado_inserta_ingreso_y_alerta(
     assert payload["uuid_ingreso"] == body["uuid"]
 
 
+async def test_t13_forzado_con_subscripcion_vencida_es_rotacion(
+    pg_engine, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """T13 (bugfix adenda): ingreso FORZADO + ``uuid_subscripcion_cliente``
+    apuntando a una suscripcion VENCIDA -> 201 ``tipo_entrada == "ROTACION"``.
+
+    Step 7 (V6) NO rechaza con 422 en el camino forzado aunque la
+    suscripcion este vencida (``forzado=True`` se lo pasa a
+    ``validar_subscripcion_vigente``) -- antes del fix, Step 10 solo
+    miraba la PRESENCIA de ``uuid_subscripcion_cliente`` en el payload
+    (no si ``sub_result.vigente`` era True), asi que este ingreso forzado
+    quedaba mal etiquetado "MENSUALIDAD" sin cobertura real. No debe
+    confundirse con test_t3 (suscripcion vigente -> MENSUALIDAD, sigue
+    igual) ni con test_t6 (forzado por cupo agotado, sin suscripcion).
+    """
+    from datetime import timedelta
+
+    await _truncate_ingreso_tables(pg_dsn)
+    branch = uuid_lib.uuid4()
+    actor = uuid_lib.uuid4()
+    tipo_auto = uuid_lib.uuid4()
+    sub = uuid_lib.uuid4()
+
+    await _seed_sucursal(pg_engine, uuid_sucursal=branch)
+    await _seed_tipos_y_cupo(
+        pg_engine,
+        uuid_sucursal=branch,
+        uuid_tipo_auto=tipo_auto,
+        uuid_tipo_moto=uuid_lib.uuid4(),
+    )
+    await _seed_subscripcion(
+        pg_engine,
+        uuid_subscripcion=sub,
+        uuid_sucursal=branch,
+        fecha_vencimiento=datetime.now(UTC).date() - timedelta(days=5),
+    )
+
+    token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=branch)
+    motivo = "cliente con cita medica urgente 2026-09-14"
+    resp = await client.post(
+        "/api/v1/operacion/ingresos",
+        json={
+            "placa": "ABC123",
+            "uuid_subscripcion_cliente": str(sub),
+            "forzado": True,
+            "observaciones": f"[FORZADO: {motivo}]",
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Sucursal-Context": str(branch),
+        },
+    )
+    assert resp.status_code == 201, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["tipo_entrada"] == "ROTACION", (
+        f"suscripcion vencida en camino forzado NO debe derivar MENSUALIDAD; "
+        f"got tipo_entrada={body['tipo_entrada']!r}"
+    )
+    assert body["forzado_en_creacion"] is True
+
+
 async def test_t7_placa_duplicada_activa_returns_409(
     pg_engine, mint_operador_jwt, client, pg_dsn
 ) -> None:
@@ -937,4 +1063,5 @@ __all__ = [
     "test_t10_post_ingreso_sin_placa_sin_uuid_tipo_rechazado_422",
     "test_t11_post_ingreso_sin_placa_cupo_agotado_422",
     "test_t12_post_ingreso_sin_placa_v8_skip_no_existe_ingreso_activo_call",
+    "test_t13_forzado_con_subscripcion_vencida_es_rotacion",
 ]

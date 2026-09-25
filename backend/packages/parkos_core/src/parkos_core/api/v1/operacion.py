@@ -295,12 +295,14 @@ async def create_ingreso(
         )
 
     # --- Step 7: V6 (subscripcion vigente, bi-temporal). --------------
+    subscripcion_vigente = False
     if payload.uuid_subscripcion_cliente is not None:
         sub_result = await validar_subscripcion_vigente(
             session,
             uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente,
             forzado=bool(bypass_reason),
         )
+        subscripcion_vigente = sub_result.vigente
         if not sub_result.vigente and not bypass_reason:
             raise HTTPException(
                 status_code=422,
@@ -436,7 +438,21 @@ async def create_ingreso(
         )
 
     # --- Step 10: V9 derivation (DEC-SUC-21). --------------------------
-    tipo_entrada: str = "MENSUALIDAD" if payload.uuid_subscripcion_cliente else "ROTACION"
+    # BUGFIX (adenda, mismo cambio que el campo impreso en el tiquete):
+    # antes solo miraba la PRESENCIA de ``uuid_subscripcion_cliente`` en
+    # el payload, no si la suscripcion referenciada seguia vigente. En el
+    # camino normal era invisible (Step 7 ya rechaza con 422 si no esta
+    # vigente), pero en el camino FORZADO (KD-FORZADO-01) Step 7 NO
+    # rechaza aunque ``sub_result.vigente`` sea False -- resultado: un
+    # ingreso forzado con una suscripcion vencida quedaba etiquetado
+    # "MENSUALIDAD" sin cobertura real. Usa el resultado real de V6
+    # (``subscripcion_vigente``, Step 7) en vez de la mera presencia del
+    # campo.
+    tipo_entrada: str = (
+        "MENSUALIDAD"
+        if (payload.uuid_subscripcion_cliente is not None and subscripcion_vigente)
+        else "ROTACION"
+    )
 
     # --- Step 11: response shape. --------------------------------------
     apply_no_store_header(response)
