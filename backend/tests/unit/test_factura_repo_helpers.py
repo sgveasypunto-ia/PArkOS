@@ -157,6 +157,38 @@ def test_compute_descuento_suma_solo_lineas_descuento() -> None:
     assert compute_descuento([items[0]]) == Decimal("0.00")
 
 
+def test_compute_base_bruta_ignora_descuento() -> None:
+    """2026-09-24 (live-validation bugfix): ``compute_base_bruta`` sums
+    ONLY servicio/producto lines -- used as the IVA snapshot base so a
+    salida-mensualidad factura shows the FULL IVA (como si fuera
+    rotacion), not $0 (which is what happens if the NET total, after
+    subtracting the descuento line, is used as the base instead)."""
+    from parkos_core.repo.factura import compute_base_bruta
+
+    items = [
+        FacturaItemCreate(
+            tipo="servicio",
+            concepto="Estadia",
+            cantidad=1,
+            valor_unitario=Decimal("10000.00"),
+            uuid_tarifa_sucursal=None,
+        ),
+        FacturaItemCreate(
+            tipo="descuento",
+            concepto="Descuento por mensualidad - Plan Oro",
+            cantidad=1,
+            valor_unitario=Decimal("10000.00"),
+            uuid_tarifa_sucursal=None,
+        ),
+    ]
+    assert compute_base_bruta(items) == Decimal("10000.00")
+    # Ordinary rotacion factura (no descuento lines): base_bruta ==
+    # compute_total() exactly -- this fix is a no-op for that flow.
+    assert compute_base_bruta([items[0]]) == compute_total(
+        items=[items[0]], iva=Decimal("0.19")
+    )
+
+
 def test_typed_exceptions_importable() -> None:
     """Typed exceptions are importable from repo/factura (handler chain)."""
     # All 7 typed exceptions from design §9 must be exposed in __all__.

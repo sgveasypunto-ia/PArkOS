@@ -417,8 +417,16 @@ async def create_factura(
     detalles_creados = await crear_factura_detalle_bulk(
         session, uuid_factura=new_factura.uuid, items=items_validados
     )
+    # ``base`` (2026-09-24, live-validation bugfix): the GROSS base
+    # (servicio/producto only), NOT ``total_server`` (net, post-
+    # descuento). A salida-mensualidad factura nets to total_server=0,
+    # which snapshotted factura_impuestos.valor=0 -- the operator's
+    # directive is to show the FULL IVA "como si fuera rotacion", not
+    # $0. No-op for an ordinary rotacion factura (no descuento lines,
+    # base_bruta == total_server).
+    base_bruta = repo_factura.compute_base_bruta(items_validados)
     await repo_factura.crear_factura_impuesto_iva(
-        session, uuid_factura=new_factura.uuid, base=total_server, iva=iva_porcentaje
+        session, uuid_factura=new_factura.uuid, base=base_bruta, iva=iva_porcentaje
     )
     await repo_factura.crear_factura_pago(
         session,

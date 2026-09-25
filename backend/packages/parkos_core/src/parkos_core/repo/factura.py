@@ -271,6 +271,30 @@ def compute_descuento(items: list[FacturaItemCreate]) -> Decimal:
     ).quantize(Decimal("0.01"))
 
 
+def compute_base_bruta(items: list[FacturaItemCreate]) -> Decimal:
+    """Sum of every ``servicio``/``producto`` line, BEFORE subtracting
+    any ``descuento`` line (2026-09-24, live-validation bugfix).
+
+    Used as the IVA snapshot's ``base`` (``crear_factura_impuesto_iva``)
+    instead of the NET ``compute_total()`` result. Found via live
+    Chrome DevTools validation: a salida-mensualidad factura (servicio
+    200 + descuento 200, net total 0) was snapshotting
+    ``factura_impuestos.valor = ROUND(0 * 0.19, 2) = 0`` -- the
+    operator's directive is to show the IVA "como si fuera rotacion"
+    (the FULL amount), not $0. For an ordinary rotacion factura
+    (no descuento lines) this equals ``compute_total()`` exactly, so
+    the fix is a no-op for the existing flow.
+    """
+    return sum(
+        (
+            item.cantidad * item.valor_unitario
+            for item in items
+            if item.tipo != "descuento"
+        ),
+        Decimal(0),
+    ).quantize(Decimal("0.01"))
+
+
 # ---------------------------------------------------------------------------
 # Step 9: INSERT prod.facturas [L-E]
 # ---------------------------------------------------------------------------
@@ -417,6 +441,7 @@ __all__ = [
     "VoucherRequeridoError",
     "buscar_o_crear_cliente_por_nit",
     "buscar_salida_facturable",
+    "compute_base_bruta",
     "compute_descuento",
     "compute_total",
     "crear_factura_evento",
