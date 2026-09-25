@@ -188,6 +188,64 @@ class TestPartmanSuffixNormalization:
         assert event["event_type"] == "caja"
         assert event["tabla"] == "caja"
 
+    @pytest.mark.parametrize(
+        "table_name",
+        [
+            "salidas",
+            "caja",
+            "arqueo",
+            "factura_detalle",
+            "factura_pagos",
+            "log_transaccional",
+            "sync_log",
+            "sync_queue",
+        ],
+    )
+    def test_bare_default_partition_suffix_normalized(self, table_name: str) -> None:
+        """BUG (real finding 2026-09-25): ``0001`` premade a BARE ``{parent}_
+        default`` partition for every one of the 8 partman parents, but the
+        suffix regex only knew partman's ``_p_default`` — so a row physically
+        landing in ``salidas_default`` (any ``salidas`` row, whose
+        ``fecha_retencion_hasta`` = today+730d is outside the ``_p_current``
+        month range) resolved to itself and died at
+        ``mark_failed(unknown_table)`` forever. The ``_default`` family must
+        normalize to the logical parent name too."""
+        from parkos_core.sync.catalog.sync_catalog import resolve_catalog_name
+
+        assert resolve_catalog_name(f"{table_name}_default") == table_name
+
+    @pytest.mark.asyncio
+    async def test_salidas_default_row_reaches_wire_as_logical_name(
+        self, worker: SyncSucursalWorker
+    ) -> None:
+        """E2E of the real scenario: a trigger-sourced row with
+        ``tabla='salidas_default'`` must resolve to ``salidas`` (catalog hit)
+        and land on the wire with the logical name — never ``unknown_table``.
+
+        This is the exact shape of the branch's stuck rows from the 3-plate
+        exit test (DNS25Q / PED12R / ABC12D) on 2026-09-25."""
+        row = _make_pending_row(tabla="salidas_default")
+
+        with patch(
+            "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed", AsyncMock()
+        ) as mark_failed_mock, patch(
+            "parkos_core.jobs.sync_sucursal.sq_helpers.mark_dispatched", AsyncMock()
+        ):
+            push_events = _wire_up_push_events(
+                worker,
+                EventsPushResponse(
+                    status=207,
+                    results=[{"event_type": "salidas", "status": "applied"}],
+                ),
+            )
+            await worker._push_and_handle_catalog([row])
+
+        mark_failed_mock.assert_not_awaited()
+        push_events.assert_awaited_once()
+        event = push_events.await_args.args[0][0]
+        assert event["event_type"] == "salidas"
+        assert event["tabla"] == "salidas"
+
 
 # ---------------------------------------------------------------------------
 # A3 — exact metadata stripping of _business_payload_for_apply

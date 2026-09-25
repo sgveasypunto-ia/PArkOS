@@ -58,11 +58,29 @@ assert len(SYNC_CATALOG_BY_NAME) == len(SYNC_CATALOG), "duplicate entry name in 
 # silently, permanently fails to sync every row from these 8 tables — found
 # concretely via ``log_transaccional`` and ``revocacion_factura``-adjacent
 # rows never reaching the destination in this session's closing exercise.
-_PARTMAN_SUFFIX_RE = re.compile(r"_p(?:_current|_default|\d{8})$")
+#
+# Two partition-naming families must both normalize:
+#   1. partman's own convention ``{parent}_p_current`` / ``{parent}_p_default``
+#      / ``{parent}_p<YYYYMMDD>`` (matches the docstring above).
+#   2. the BARE ``{parent}_default`` family that ``0001_initial_schema.py``
+#      actually premade for every one of these 8 parents (verified against the
+#      real branch/cloud DBs: ``salidas_default``, ``caja_default``, ...). The
+#      bare ``_p_default`` form alone was not enough — a row whose retention
+#      date falls outside the current-month partition (``salidas`` stamps
+#      ``fecha_retencion_hasta = today + 730d``, landing every salida in
+#      ``salidas_default`` for good) triggered ``fn_enqueue_sync()`` with
+#      ``TG_TABLE_NAME = 'salidas_default'``, which never resolved and left
+#      every such row stuck at ``mark_failed(unknown_table)`` with an
+#      unbounded retry loop (real finding, branch E2E 2026-09-25).
+_PARTMAN_SUFFIX_RE = re.compile(r"(?:_p(?:_current|_default|\d{8})|_default)$")
 
 
 def resolve_catalog_name(tabla: str) -> str:
     """Strip a pg_partman child-partition suffix, if present.
+
+    Handles both naming families produced by the schema: the partman
+    convention (``{parent}_p_current`` / ``_p_default`` / ``_p<YYYYMMDD>``)
+    and the bare ``{parent}_default`` premade by ``0001``.
 
     Returns ``tabla`` unchanged when it carries no recognized partition
     suffix (the overwhelming majority of tables — only the 8 named above
