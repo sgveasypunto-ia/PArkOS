@@ -1447,7 +1447,8 @@ Desbloquea: ninguna pantalla obligatoria de esta parte, pero cierra un hueco de 
 
 **Addendum — footer `<CuposLibresStrip />` del Dashboard (`apps/electron-sucursal`, mismo dato de `GET /operacion/ocupacion` + mismo umbral de color de esta HU, componente separado de `OcupacionStrip`):**
 - Directiva operador (2026-09-24): un tipo de vehículo con `cupo_maximo=0` (no habilitado en la sucursal) NUNCA se muestra en el footer — ni la tarjeta por tipo ni el agregado total lo cuentan.
-- Directiva operador (2026-09-24, rediseño — supersede la iteración minimalista anterior del 2026-09-22): el footer dejó de estar acotado a ~80px de alto; ahora usa tarjetas individuales por tipo (ícono + número de cupos libres en tipografía grande + color de fondo por umbral) y un bloque de total agregado con la mayor jerarquía visual de la franja, a propósito para llamar la atención. Sigue siendo `sticky bottom-0` dentro del mismo dashboard, nunca modal ni ruta aparte.
+- Directiva operador (2026-09-24, rediseño — REVERTIDA el 2026-09-25, se deja como historial): se probó sacar el tope de ~80px de alto y usar tarjetas individuales grandes por tipo (ícono + número de cupos libres en `text-3xl`+ color de fondo por umbral) con un bloque de total en `text-4xl`. El operador lo rechazó explícitamente ("rompe totalmente el diseño", "el tamaño es exageradamente grande").
+- Directiva operador (2026-09-25, vigente — corrección de escala): el footer vuelve a `max-h-[80px]` con chips compactos en una sola fila (ícono chico + label + cupos libres + ocupados/total como dato secundario), alineados a la misma escala tipográfica del resto del dashboard (botones de sidebar, chip de turno activo, chips de hotkey). Se mantiene el filtro de tipos con `cupo_maximo=0` (nunca se muestran) y que el dato protagonista de cada chip sea `disponible` (cupos libres), no solo ocupados/total. Sigue siendo `sticky bottom-0` dentro del mismo dashboard, nunca modal ni ruta aparte.
 
 ---
 
