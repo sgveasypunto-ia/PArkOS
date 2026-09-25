@@ -146,6 +146,7 @@ export default function Principal() {
       }
 
       const payload: PostIngresoPayload = {
+        placa_presente: true,
         placa: nextPlaca,
         uuid_tipo_vehiculo,
         observaciones: observaciones.trim() === '' ? undefined : observaciones.trim(),
@@ -409,12 +410,15 @@ export default function Principal() {
           }
           initialObservaciones={observaciones}
           buildPrintPayload={(uuid) =>
-            buildPrintPayload({
-              uuid_ingreso: uuid,
-              tipo_entrada: success.tipo_entrada,
-              uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
-              consecutivo: success.consecutivo,
-            })
+            buildPrintPayload(
+              {
+                uuid,
+                tipo_entrada: success.tipo_entrada,
+                uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
+                consecutivo: success.consecutivo,
+              },
+              success.placa,
+            )
           }
           onSiguiente={handleSiguiente}
           onIrASalida={() => {
@@ -426,7 +430,7 @@ export default function Principal() {
         />
       )}
 
-      {forzarOpen && forzarPayload && (
+      {forzarOpen && forzarPayload && forzarPayload.placa_presente && (
         <ForzarIngresoModal
           open
           placa={forzarPayload.placa}

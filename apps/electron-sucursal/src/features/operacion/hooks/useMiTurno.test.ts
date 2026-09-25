@@ -156,10 +156,18 @@ describe('useMiTurno — SWR config (REQ-OPS-188)', () => {
     useAuthStoreMock.mockReturnValue('jwt-abc');
     useMiTurno('00000000-0000-0000-0000-000000000099');
     const shouldRetry = swrOptions?.shouldRetryOnError as (err: unknown) => boolean;
-    expect(shouldRetry(new ParkosHttpError(401))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(403))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(404))).toBe(false);
-    expect(shouldRetry(new ParkosHttpError(500))).toBe(true);
+    expect(
+      shouldRetry(new ParkosHttpError(401, 'unauthorized', '/operacion/mi-turno')),
+    ).toBe(false);
+    expect(
+      shouldRetry(new ParkosHttpError(403, 'forbidden', '/operacion/mi-turno')),
+    ).toBe(false);
+    expect(
+      shouldRetry(new ParkosHttpError(404, 'not_found', '/operacion/mi-turno')),
+    ).toBe(false);
+    expect(
+      shouldRetry(new ParkosHttpError(500, 'server_error', '/operacion/mi-turno')),
+    ).toBe(true);
     expect(shouldRetry(new Error('network'))).toBe(true);
   });
 });
