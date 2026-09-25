@@ -57,7 +57,10 @@ function computeDV(nit: string): string {
   const weights = [71, 67, 59, 53, 47, 43, 41, 37, 31, 29, 23, 19, 17, 13, 7, 3];
   let sum = 0;
   for (let i = 0; i < digits.length; i++) {
-    const w = weights[i % weights.length];
+    // `weights[i % weights.length]` is always defined because
+    // `i < digits.length < ∞` and `weights.length === 16 > 0`;
+    // mirrors the same reasoning documented in `nit.ts::validarNitModulo11`.
+    const w = weights[i % weights.length]!;
     sum += Number(digits[i]) * w;
   }
   const mod = sum % 11;
@@ -75,6 +78,7 @@ describe('validarNitModulo11 — canonical reference (HU-F8.1 / BR7)', () => {
   it('T2: 800.123.456 with WRONG DV returns {ok:false, dvEsperado:"7"}', () => {
     const result = validarNitModulo11('800.123.456', '1');
     expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected {ok:false}, got {ok:true}');
     expect(result.dvEsperado).toBe('7');
   });
 
