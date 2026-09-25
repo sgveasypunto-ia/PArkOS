@@ -54,14 +54,24 @@ export function IngresoSheet(): JSX.Element | null {
     >
       <SheetContent
         side="right"
-        className="flex h-full flex-col overflow-hidden"
+        // F31.3 rediseño: padding por pasos (p-4 en mobile/tablet chico,
+        // p-6 desde sm) — a 320px el p-6 fijo del primitivo shadcn
+        // (sheetVariants) deja muy poco ancho útil para el formulario.
+        // `twMerge` (vía `cn()` en sheet.tsx) resuelve el conflicto con
+        // el p-6 default a favor de esta clase.
+        className="flex h-full flex-col overflow-hidden p-4 sm:p-6"
         data-testid="ingreso-sheet"
       >
         <SheetHeader>
           <SheetTitle>{t('ingreso', { defaultValue: 'Ingreso' })}</SheetTitle>
         </SheetHeader>
         <div className="flex flex-1 flex-col overflow-y-auto">
-          <div className="m-auto w-full">
+          {/* max-w-xl: el Sheet llega a `md:w-1/2` del viewport — en
+              1920/2560/3840/ultrawide eso sigue siendo muy ancho para un
+              formulario de un solo campo. Se cappea el contenido sin
+              tocar el ancho del propio drawer (primitivo compartido,
+              fuera de este lote). */}
+          <div className="m-auto w-full max-w-xl">
             <IngresoPanel initialPlaca={initialPlaca} />
           </div>
         </div>

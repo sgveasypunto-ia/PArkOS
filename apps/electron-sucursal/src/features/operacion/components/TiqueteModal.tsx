@@ -293,7 +293,14 @@ export function TiqueteModal({
 
         {/* REGRESSION fix (2026-09-22): render a print-preview thumbnail so
             the operator sees the layout that will be emitted to the
-            58 mm thermal printer before pressing "Imprimir". */}
+            58 mm thermal printer before pressing "Imprimir".
+            F31.3 rediseño: `bg-white`/`text-neutral-*` here are
+            INTENTIONALLY not theme tokens — this block simulates the
+            physical thermal-paper receipt (black ink on white paper),
+            which must look the same regardless of the app's light/dark
+            mode, otherwise the preview would misrepresent what actually
+            prints. Kept literal on purpose; do not swap for --card/
+            --foreground. */}
         <div
           data-testid="tiquete-preview"
           aria-label={t('tiquete_entrada_preview_header', {
@@ -451,14 +458,14 @@ export function TiqueteModal({
             rows={2}
             className="block w-full resize-none rounded border border-input bg-background px-3 py-2 text-sm outline-none ring-ring placeholder:text-muted-foreground focus:ring-2"
           />
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs text-muted-foreground">
               {observaciones.length}/500
             </span>
             <div className="flex items-center gap-2">
               {observacionesSaved && (
                 <span
-                  className="text-xs text-emerald-700"
+                  className="text-xs text-success-foreground"
                   data-testid="tiquete-observaciones-saved"
                 >
                   {t('tiquete_entrada_observaciones_guardado', {

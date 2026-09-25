@@ -197,7 +197,7 @@ function CotizacionPanelImpl({
       </CardHeader>
       <CardContent>
         <dl
-          className="grid grid-cols-2 gap-y-1 text-sm"
+          className="grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-2"
           data-testid="cotizacion-dl"
         >
           <dt>Tiempo</dt>
@@ -251,7 +251,7 @@ function CotizacionPanelImpl({
           </span>
         </div>
 
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 flex flex-wrap gap-2">
           <Button
             type="button"
             data-testid="cotizacion-confirmar"
