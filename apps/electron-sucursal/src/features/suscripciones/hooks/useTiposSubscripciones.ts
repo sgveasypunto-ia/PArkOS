@@ -42,6 +42,7 @@ async function fetchTiposSubscripciones(
 export interface UseTiposSubscripcionesResult {
   data: TipoSubscripcion[] | undefined;
   error: Error | undefined;
+  isLoading: boolean;
   refresh: () => Promise<TipoSubscripcion[] | undefined>;
 }
 
@@ -54,7 +55,7 @@ export function useTiposSubscripciones(
       ? `${GET_TIPOS_SUBSCRIPCION_PATH}?uuid_sucursal=${uuid_sucursal}`
       : null;
 
-  const { data, error, mutate } = useSWR<TipoSubscripcion[]>(
+  const { data, error, isLoading, mutate } = useSWR<TipoSubscripcion[]>(
     key,
     () => fetchTiposSubscripciones(uuid_sucursal as string),
     {
@@ -79,6 +80,7 @@ export function useTiposSubscripciones(
   return {
     data,
     error,
+    isLoading,
     refresh: async () => mutate(),
   };
 }

@@ -85,14 +85,15 @@ export interface VentaStepState {
 }
 
 // Per-step Zod schemas — mirrors F8.1 PagoModal discriminated union.
+// `email` is `.nullable()` only (not `.optional()`): `handlePaso1Siguiente`
+// below always passes `email: null` explicitly (step 1's form has no email
+// field yet) -- `VentaStepState.cliente.email` is typed `string | null`
+// (no `undefined`), and `.optional()` widened Zod's inferred output to
+// `string | null | undefined`, which no caller here ever actually produces.
 const clienteSchema = z.object({
   nit: z.string().min(6, 'nit_min_6'),
   nombre: z.string().min(1, 'nombre_requerido'),
-  email: z
-    .string()
-    .email('email_formato_invalido')
-    .nullable()
-    .optional(),
+  email: z.string().email('email_formato_invalido').nullable(),
 });
 
 const planSchema = z.object({
