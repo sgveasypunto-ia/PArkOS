@@ -47,11 +47,32 @@ export interface AuthUser {
    */
   uuid: string;
   email: string;
+  /**
+   * 2026-09-25 (rediseño visual, pedido operador): el backend
+   * (`UserItem`, `schemas/auth.py`) ya envía `nombre`/`apellido` en
+   * `GET /auth/me` — "Mirrors the columns the operator UI needs to
+   * render the avatar/name panel", literal del docstring — pero esta
+   * interfaz nunca los declaraba, así que el header de `electron-sucursal`
+   * derivaba un nombre falso del prefijo del email en vez de usar el
+   * dato real. Opcionales (no solo nullable): el backend los permite
+   * `None`, y así los mocks/fixtures existentes en tests de todo el
+   * monorepo que construyen un `AuthUser` sin estos 2 campos siguen
+   * compilando sin tocarlos uno por uno.
+   */
+  nombre?: string | null;
+  apellido?: string | null;
 }
 
 export interface SucursalItem {
   uuid: string;
   nombre: string | null;
+  /**
+   * 2026-09-25: idem `nombre`/`apellido` de arriba — el backend
+   * (`schemas/auth.py:293`) ya envía `prefijo_nombre` (código corto de
+   * sucursal, ej. "BOG-CEN") pero esta interfaz no lo declaraba. Opcional
+   * por la misma razón que `nombre`/`apellido` de `AuthUser`.
+   */
+  prefijo_nombre?: string | null;
 }
 
 export interface AuthMeResponse {

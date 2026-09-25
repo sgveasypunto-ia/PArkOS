@@ -81,6 +81,8 @@ import {
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { useAuth } from '@parkos/ui-kit/hooks';
 
+import logoLight from '../../../assets/brand/logos/logo-horizontal-light.svg';
+import logoDark from '../../../assets/brand/logos/logo-horizontal-dark--REQUIERE-VECTOR.png';
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { CuposLibresStrip } from '../../operacion/components/CuposLibresStrip';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
@@ -198,19 +200,32 @@ export function Dashboard(): JSX.Element | null {
   }
 
   if (sesion) {
+    // 2026-09-25 (pedido operador): antes se derivaba un nombre falso del
+    // prefijo del email — `apps/ui-kit useAuth.ts` ya expone `nombre`/
+    // `apellido` reales (el backend siempre los mandó, la interfaz TS no
+    // los declaraba). El email-prefix queda como último fallback si el
+    // operador no tiene nombre cargado en `prod.usuarios`.
+    const nombreCompleto = [user?.nombre, user?.apellido].filter(Boolean).join(' ').trim();
     const operadorLabel =
-      user?.email.split('@')[0] ?? t('common:operador', { defaultValue: 'Operador' });
-    // `SucursalItem` (ui-kit useAuth.ts) only exposes `{ uuid, nombre }`
-    // — `prefijo_nombre` never existed on the type (tsc caught this
-    // post-rediseño). `nombre` is the closest real field; it may read
-    // as a full branch name rather than the short "BOG-CEN"-style code
-    // the fallback implies — worth confirming with product/backend
-    // whether a short-code field belongs on the `/auth/me` contract.
-    const sucursalLabel = sucursal?.nombre ?? 'BOG-CEN';
+      nombreCompleto !== ''
+        ? nombreCompleto
+        : (user?.email.split('@')[0] ?? t('common:operador', { defaultValue: 'Operador' }));
+    // Idem: `prefijo_nombre` (código corto, ej. "BOG-CEN") ya lo manda el
+    // backend (`schemas/auth.py` SucursalItem) — se prefiere sobre el
+    // nombre completo de sucursal por ser más corto para el header.
+    const sucursalLabel =
+      sucursal?.prefijo_nombre ?? sucursal?.nombre ?? t('common:sucursal', { defaultValue: 'Sucursal' });
 
+    // Alto: `h-full` (no un `min-h-[calc(100dvh-...)]` propio) — el padre
+    // (`<main>` en App.tsx) ya es `flex-1 min-h-0`, un alto real y acotado
+    // al viewport menos StatusBar; heredarlo con `h-full` hace que
+    // `grid-rows-[auto_1fr_auto]` funcione de verdad (la fila `1fr` se
+    // acota al espacio real, no crece sin límite) y que el
+    // `overflow-y-auto` del `<main>` de abajo contenga el scroll ahí,
+    // nunca en la página. Ver comentario largo en App.tsx (2026-09-25).
     return (
       <div
-        className="grid min-h-[calc(100dvh-2.5rem)] w-full grid-rows-[auto_1fr_auto] grid-cols-1 md:grid-cols-[240px_1fr]"
+        className="grid h-full w-full grid-rows-[auto_1fr_auto] grid-cols-1 md:grid-cols-[240px_1fr]"
         data-testid="dashboard-hub"
       >
         {/* ── Top header bar (mobile-first: minimum on mobile, full on md+).
@@ -224,6 +239,30 @@ export function Dashboard(): JSX.Element | null {
             3ra columna implícita de 0px) que se corrige acá a
             `md:col-span-2`. */}
         <header className="col-span-1 min-w-0 flex flex-wrap items-center gap-2 border-b border-border/40 bg-card/80 px-4 py-2.5 backdrop-blur-md shadow-apple-sm md:col-span-2 md:gap-3 md:px-5 xl:px-6">
+          {/* Logo de marca EasyPunto — swap por tema vía `dark:` (clase
+              `.dark` en `<html>`, sin necesidad de estado React). El SVG
+              real (`logo-horizontal-light.svg`, wordmark blanco) es para
+              fondo oscuro; el PNG (`--REQUIERE-VECTOR`, wordmark oscuro)
+              es la única variante disponible para fondo claro — ver
+              `src/assets/brand/inventory.json` y la decisión del operador
+              de usarlo tal cual sin vectorizar. Alto 2026-09-25 (pedido
+              operador): "al menos 2cm" — h-20 = 5rem = 80px, por encima
+              de los ~76px que da la conversión CSS estándar (96dpi,
+              1cm≈37.8px); el tamaño físico real en pantalla varía según
+              el DPI del monitor, esto es la mejor aproximación en CSS. Sin
+              achicar en mobile — "al menos" es un piso, no un techo
+              responsive. */}
+          <img
+            src={logoDark}
+            alt="EasyPunto"
+            className="h-20 w-auto shrink-0 dark:hidden"
+          />
+          <img
+            src={logoLight}
+            alt="EasyPunto"
+            className="hidden h-20 w-auto shrink-0 dark:block"
+          />
+
           {/* Hamburger — only below md. 44×44 (antes 32×32) para cumplir
               tamaño mínimo de tap target en kiosko táctil. */}
           <button
@@ -239,52 +278,27 @@ export function Dashboard(): JSX.Element | null {
           </button>
 
           {/* Operador + sucursal — only on md+ (avoid header bloat on
-              mobile/phablet). `min-w-0` + `truncate` evitan que un nombre
-              de sucursal largo empuje overflow horizontal en el rango
-              768-1023 donde el header ya comparte espacio con hotkeys +
-              controles de turno. */}
-          <div className="hidden min-w-0 items-baseline gap-2 md:flex">
-            <strong className="shrink-0" data-testid="operador-name">{operadorLabel}</strong>
-            <span className="min-w-0 truncate text-xs text-muted-foreground" data-testid="operador-sucursal">
-              {sucursalLabel} — {t('common:administrador', { defaultValue: 'Administrador' })}
+              mobile/phablet). 2026-09-25 (pedido operador): simplificado a
+              nombre + sucursal apilados (antes "sucursal — Administrador"
+              en una sola línea, el rol no aportaba acá) y con más espacio
+              real: `flex-1` (no compite con nada más del clúster
+              izquierdo — hotkeys removidos, pill Online movido al clúster
+              derecho, ver abajo) + texto un escalón más grande para hacer
+              juego con el logo. */}
+          <div className="hidden min-w-0 flex-1 flex-col leading-tight md:flex">
+            <strong className="truncate text-base" data-testid="operador-name">{operadorLabel}</strong>
+            <span className="truncate text-sm text-muted-foreground" data-testid="operador-sucursal">
+              {sucursalLabel}
             </span>
           </div>
 
-          {/* Online status — `<SyncStatusBadge />` (fuera del alcance de
-              esta tarea) trae su propio `ml-auto lg:inline-flex` embebido
-              en el componente. Se envuelve en un `<div>` plano (fuera de
-              cualquier contexto flex) para neutralizar ese margen
-              automático — sin el wrapper, el badge empujaría todo lo que
-              viene después de sí mismo (hotkeys, tema, turno, cerrar) al
-              borde derecho en vez de vivir en el clúster central. Su
-              breakpoint interno (lg=1024) queda sin cambios — no es
-              editable desde acá. F11.1 realineado (REQ-OPS-171,
-              AD-3/AD-4/AD-5, 2026-09-24). */}
-          <div>
-            <SyncStatusBadge uuid_sucursal={uuid_sucursal} />
-          </div>
-
-          {/* F1-F6 hotkey chips — only on md+ (mobile/tablet chico usa los
-              botones del sidebar/drawer). */}
-          <span className="hidden gap-1 md:inline-flex">
-            {Object.entries(DRAWER_BY_HOTKEY).map(([key, kind]) => (
-              <kbd
-                key={key}
-                data-testid={`hotkey-${kind}`}
-                id={`hotkey-chip-${kind}`}
-                className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border/60 bg-background/80 px-2 font-mono text-[11px] font-semibold text-muted-foreground backdrop-blur-sm hover:bg-accent/60 hover:text-foreground"
-                onClick={() => {
-                  // Every F-key chip opens the matching drawer; the
-                  // dashboard route stays at `/`. F4 (arqueo) shares
-                  // the same pattern as F1/F2/F3 (the F10.1 routed
-                  // page was retired in F11.3 per UX direction).
-                  openDrawer(kind, `hotkey-chip-${kind}`);
-                }}
-              >
-                {key}
-              </kbd>
-            ))}
-          </span>
+          {/* F1-F6 hotkey chips: removidos del header (2026-09-25, pedido
+              explícito del operador) — son redundantes con el badge
+              `<kbd>F1</kbd>`..`<kbd>F6</kbd>` que cada botón del sidebar ya
+              muestra individualmente (ver más abajo). El listener global de
+              teclado (`DRAWER_BY_HOTKEY`, arriba en el archivo) sigue
+              funcionando igual — esto solo quita el chip clickeable
+              duplicado del header, no la funcionalidad de hotkey en sí. */}
 
           {/* Turno chip + Cerrar turno — always visible (mobile + desktop),
               ahora ancladas al borde derecho del header (`ml-auto`) en vez
@@ -295,6 +309,18 @@ export function Dashboard(): JSX.Element | null {
               320px, donde el chip de turno (contenido dinámico, fuera de
               alcance) puede no caber junto al botón de cerrar turno. */}
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {/* Online status — 2026-09-25 (pedido operador): movido del
+                clúster central al borde derecho, junto con tema/turno/
+                cerrar. `<SyncStatusBadge />` trae su propio
+                `ml-auto lg:inline-flex` embebido — envuelto en un `<div>`
+                plano para neutralizar ese margen automático dentro de
+                este flex (si no, se comería el espacio de lo que sigue).
+                Su breakpoint interno (lg=1024) sigue sin ser editable
+                desde acá. F11.1 realineado (REQ-OPS-171, AD-3/AD-4/AD-5,
+                2026-09-24; re-alineado 2026-09-25). */}
+            <div>
+              <SyncStatusBadge uuid_sucursal={uuid_sucursal} />
+            </div>
             <ThemeToggle />
             <TurnoActivoToggle sesion={sesion} />
             <Button
@@ -500,11 +526,14 @@ export function Dashboard(): JSX.Element | null {
           lang="es-CO"
           className="row-start-2 col-start-1 min-w-0 flex flex-col gap-3 overflow-y-auto p-[clamp(0.75rem,1.5vw,1.5rem)] md:col-start-2"
         >
-          {/* `placa-card` se centra con un ancho máximo (48rem) para que
-              en 4K/ultrawide no se estire a un input gigantesco e
-              ilegible — `vehiculos-list-card` (abajo) NO tiene este cap:
-              es contenido de datos y puede usar el ancho extra. */}
-          <Card data-testid="placa-card" className="mx-auto w-full max-w-3xl">
+          {/* `placa-card` — ancho acotado (48rem) hasta 2xl (1536px) para
+              que en laptop/desktop no se vea desproporcionado; en pantallas
+              grandes (2xl+) el operador pidió que ocupe el ancho completo
+              del área central, igual que `vehiculos-list-card` (abajo). El
+              input interno escala su tipografía en pasos adicionales para
+              esos anchos — ver `PlacaInputHero`, no queda un box gigante
+              con texto chico. */}
+          <Card data-testid="placa-card" className="mx-auto w-full max-w-3xl 2xl:max-w-none">
             <CardHeader className="px-5 pt-5 pb-3">
               <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
                 {t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
@@ -750,7 +779,27 @@ function PlacaInputHero({
   }
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-2">
+      {/* REGRESSION fix (2026-09-22) + pedido operador (2026-09-25): el
+          aviso de "esta placa ya está dentro" ahora vive ARRIBA del input
+          (antes abajo) y con estilo resaltado (chip de color, no texto
+          plano) para que se note antes de presionar Enter — sigue siendo
+          best-effort (SWR, puede ir un paso atrás del tecleo); la decisión
+          real en Enter usa el fetch directo de abajo, este chip es solo
+          UX. Reutiliza el token semántico `warning` (naranja/ámbar): no es
+          un error, pero sí algo que el operador debe notar antes de
+          continuar. */}
+      {latestIngreso && (
+        <p
+          data-testid="placa-hero-active-hint"
+          className="rounded-lg bg-warning px-3 py-1.5 text-center text-sm font-semibold text-warning-foreground"
+          role="status"
+        >
+          {t('caja:dashboard.placaActiveHint', {
+            defaultValue: 'Esta placa ya está dentro — presioná Enter para cobrar la salida.',
+          })}
+        </p>
+      )}
       <div className="relative">
         <input
           type="text"
@@ -769,7 +818,7 @@ function PlacaInputHero({
           // pasos están calculados para que "ABC123" (6 chars, tracking
           // incluido) siempre quepa dentro del `placa-card` (max-w-3xl)
           // sin recortarse, incluso en 320px.
-          className="block w-full rounded-2xl border-0 bg-muted/50 px-4 py-4 text-center font-mono text-[1.875rem] uppercase tracking-[0.12em] outline-none placeholder:text-muted-foreground/40 focus-ring-apple focus-visible:bg-background focus-visible:shadow-apple transition-all disabled:opacity-60 min-[375px]:text-[2.25rem] min-[480px]:py-5 min-[480px]:text-[2.75rem] min-[480px]:tracking-[0.2em] md:py-6 md:text-6xl md:tracking-[0.4em]"
+          className="mx-auto block w-full max-w-2xl rounded-2xl border-0 bg-muted/50 px-4 py-3 text-center font-mono text-[1.875rem] uppercase tracking-[0.12em] outline-none placeholder:text-muted-foreground/40 focus-ring-apple focus-visible:bg-background focus-visible:shadow-apple transition-all disabled:opacity-60 min-[375px]:text-[2.25rem] min-[480px]:py-4 min-[480px]:text-[2.75rem] min-[480px]:tracking-[0.2em] md:py-5 md:text-6xl md:tracking-[0.4em]"
           onKeyDown={onKeyDown}
           onBlur={() => setSuggestionsClosed(true)}
           aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
@@ -792,27 +841,6 @@ function PlacaInputHero({
           onSelect={selectCandidate}
         />
       </div>
-      {/* REGRESSION fix (2026-09-22): inline visual hint when the typed
-          plate already has an active ingreso. The SWR-fed
-          ``latestIngreso`` is best-effort (it can lag the operator's
-          keystrokes) — the actual decision on Enter uses a direct
-          fetch — but the hint helps the operator confirm "yes, this
-          plate is already inside" before pressing Enter. Without this
-          hint the operator might press Enter expecting "ingreso" and
-          be surprised when SalidaSheet opens instead. The hint is
-          intentionally subtle (text-muted-foreground) — primary
-          feedback comes from the drawer mount itself. */}
-      {latestIngreso && (
-        <p
-          data-testid="placa-hero-active-hint"
-          className="text-center text-xs text-muted-foreground"
-          role="status"
-        >
-          {t('caja:dashboard.placaActiveHint', {
-            defaultValue: 'Esta placa ya está dentro — presioná Enter para cobrar la salida.',
-          })}
-        </p>
-      )}
     </div>
   );
 }
