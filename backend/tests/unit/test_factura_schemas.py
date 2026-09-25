@@ -20,6 +20,11 @@ import pytest
 from parkos_core.schemas.clientes import ClientesCreate
 from parkos_core.schemas.facturacion import (
     FacturaCreate,
+    FacturaDisplayCliente,
+    FacturaDisplayImpuesto,
+    FacturaDisplayPago,
+    FacturaDisplaySucursal,
+    FacturaDisplayVehiculo,
     FacturaItemConDatosPropios,
     FacturaItemCreate,
     FacturaPagoAdicionalCreate,
@@ -131,7 +136,13 @@ def test_factura_create_rechaza_items_vacio() -> None:
 
 
 def test_factura_read_extrae_uuid_cliente() -> None:
-    """FacturaRead accepts server-derived uuid_cliente (DEC-FACT-06)."""
+    """FacturaRead accepts server-derived uuid_cliente (DEC-FACT-06).
+
+    Also covers the 11 HU-F8.4 display-enrichment fields added in
+    ``de1b83b`` (feat(backend): HU-F8.4 enrichment POST
+    /facturacion/factura response). ``FacturaRead`` grew from 11 a 22
+    campos obligatorios; este fixture refleja la forma completa actual.
+    """
     cliente_uuid = uuid_lib.uuid4()
     obj = FacturaRead(
         uuid=uuid_lib.uuid4(),
@@ -145,6 +156,55 @@ def test_factura_read_extrae_uuid_cliente() -> None:
         uuid_cliente=cliente_uuid,
         items=[],
         estado="emitida",
+        medio_pago="efectivo",
+        monto_recibido_cents=600_000,
+        vuelto_cents=5_000,
+        voucher=None,
+        numero_recibo="SUC01-20260914-000123",
+        cliente=FacturaDisplayCliente(
+            nit=None,
+            dv=None,
+            nombre="Juan",
+            apellido="Pérez",
+            email=None,
+            telefono=None,
+        ),
+        datos_sucursal=FacturaDisplaySucursal(
+            razon_social="Parqueadero Central S.A.S.",
+            nit="900123456",
+            direccion="Cra 10 # 20-30",
+            ciudad="Bogotá",
+            telefono="6011234567",
+            horario="6:00am - 10:00pm",
+            regimen="Común",
+        ),
+        datos_vehiculo=FacturaDisplayVehiculo(
+            placa="ABC123",
+            uuid_tipo_vehiculo=uuid_lib.uuid4(),
+            fecha_ingreso="2026-09-14T09:00:00",
+            fecha_salida="2026-09-14T10:00:00",
+            minutos=60,
+        ),
+        impuestos=[
+            FacturaDisplayImpuesto(
+                uuid=uuid_lib.uuid4(),
+                uuid_impuesto=uuid_lib.uuid4(),
+                nombre_impuesto="IVA",
+                codigo_impuesto="01",
+                base_calculo=Decimal("5000.00"),
+                porcentaje_aplicado=Decimal("19.00"),
+                valor=Decimal("950.00"),
+            ),
+        ],
+        pagos=[
+            FacturaDisplayPago(
+                uuid=uuid_lib.uuid4(),
+                medio_pago="efectivo",
+                valor=Decimal("5950.00"),
+                referencia=None,
+            ),
+        ],
+        factura_electronica=None,
     )
     assert obj.uuid_cliente == cliente_uuid
 
