@@ -90,6 +90,16 @@ def _make_reimpresion_orm(
     return row
 
 
+def _make_costo_servicio_orm(
+    *, costo: float = 1500.0
+) -> MagicMock:
+    """DEC-TKT-05 mock costos_servicios row (concepto='reimpresion')."""
+    row = MagicMock()
+    row.uuid = uuid_lib.uuid4()
+    row.costo = costo
+    return row
+
+
 # ---------------------------------------------------------------------------
 # T4.1 — happy path + V1..V5 error paths (mocked, no DB)
 # ---------------------------------------------------------------------------
@@ -133,6 +143,11 @@ async def test_create_reimpresion_happy_path_uuid_ingreso_only(
         workflows_reimpresion_mod.repo_reimpresion,
         "buscar_factura_por_uuid",
         AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "buscar_costo_servicio_vigente_por_concepto",
+        AsyncMock(return_value=_make_costo_servicio_orm()),
     )
     monkeypatch.setattr(
         workflows_reimpresion_mod.repo_workflow,
@@ -199,6 +214,11 @@ async def test_create_reimpresion_happy_path_with_uuid_factura_populated(
         workflows_reimpresion_mod.repo_reimpresion,
         "buscar_factura_por_uuid",
         AsyncMock(return_value=factura),
+    )
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "buscar_costo_servicio_vigente_por_concepto",
+        AsyncMock(return_value=_make_costo_servicio_orm()),
     )
     monkeypatch.setattr(
         workflows_reimpresion_mod.repo_workflow,

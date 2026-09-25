@@ -595,6 +595,29 @@ class FacturaCreate(_Base):
     fe_datos_cliente: FacturaItemConDatosPropios | None = None
 
 
+class FacturaServicioCreate(_Base):
+    """HU-F8.3 (ajuste 2026-09-25): POST ``/api/v1/facturacion/factura-servicio``.
+
+    Factura de un servicio suelto (ej. reimpresión de tiquete) que NO
+    tiene una ``prod.salidas`` asociada -- ancla a ``uuid_ingreso``
+    directamente en vez de ``uuid_salida``. Mismo shape que
+    :class:`FacturaCreate` salvo ese campo; reusa el mismo motor de
+    4-table insert (``create_factura_servicio``) SIN tocar el endpoint
+    ``POST /factura`` existente (DIAN/FE en producción).
+    """
+
+    uuid_ingreso: uuid_lib.UUID
+    items: list[FacturaItemCreate] = Field(min_length=1, max_length=50)
+    subtotal: Decimal
+    total: Decimal
+    medio_pago: Literal[
+        "efectivo", "tarjeta", "transferencia", "datafono", "mixto", "suscripcion"
+    ]
+    referencia: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
+    fe_con_datos: bool = False
+    fe_datos_cliente: FacturaItemConDatosPropios | None = None
+
+
 class FacturaItemRead(_Base):
     """Read-back for one ``prod.factura_detalle`` row."""
 
@@ -1044,6 +1067,7 @@ __all__ = [
     "FacturaPagosReversoCreate",
     "FacturaPagosUpdate",
     "FacturaRead",
+    "FacturaServicioCreate",
     "FacturasCreate",
     "FacturasFilter",
     "FacturasRead",

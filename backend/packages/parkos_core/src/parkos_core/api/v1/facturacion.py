@@ -51,6 +51,7 @@ from ...models.A.factura_impuestos import FacturaImpuestos
 from ...models.A.factura_otros_cobros import FacturaOtrosCobros
 from ...models.A.factura_pagos import FacturaPagos
 from ...models.L_E.facturas import Facturas
+from ...models.L_E.ingreso import Ingreso
 from ...repo import factura as repo_factura
 from ...repo.factura_detalle import crear_factura_detalle_bulk
 from ...repo.impuestos import obtener_iva_vigente
@@ -76,14 +77,15 @@ from ...schemas.facturacion import (
     FacturaPagosUpdate,
     FacturaRead,
     FacturasCreate,
+    FacturaServicioCreate,
     FacturasRead,
     FacturasReadList,
     FacturasUpdate,
 )
 from ..deps import requires_issuer
 from ..router_factory import make_router
-from ._helpers import apply_no_store_header, no_store_headers
 from ._factura_display import build_display_factura
+from ._helpers import apply_no_store_header, no_store_headers
 
 router = APIRouter(prefix="/facturacion", tags=["facturacion"])
 
@@ -538,6 +540,247 @@ async def create_factura_pago(
         valor=new_pago.valor,
         referencia=new_pago.referencia,
         timestamp_evento=new_pago.timestamp_evento,
+    )
+
+
+# ---------------------------------------------------------------------------
+# HU-F8.3 (ajuste 2026-09-25) — factura de servicio suelto (reimpresión de
+# tiquete y análogos futuros) SIN prod.salidas asociada.
+#
+# El operador corrigió el alcance de HU-F8.3: la reimpresión de tiquete
+# tiene que disparar el MISMO flujo de cobro real que la salida de
+# vehículo (monto -> método de pago -> factura -> tiquete de factura),
+# no solo snapshotear un costo dentro de `reimpresion_ticket`. Pero
+# `create_factura` (arriba) exige una `prod.salidas` real (V1
+# `salida_no_encontrada` + partial unique index `one_factura_per_
+# salida`) -- una reimpresión de tiquete de ENTRADA no genera salida.
+#
+# Directiva explícita del operador: endpoint NUEVO, separado, que NO
+# toca `create_factura` (esa ruta ya está en producción con DIAN/FE
+# encima). Este handler reusa el mismo motor de 4-table insert
+# (`repo_factura.crear_factura_evento` / `crear_factura_detalle_bulk` /
+# `crear_factura_impuesto_iva` / `crear_factura_pago` /
+# `build_display_factura`) pero ancla en `uuid_ingreso` en vez de
+# `uuid_salida` (`Facturas.uuid_salida` ya es nullable -- ver
+# modelo_datos_er.mmd: "uuid_salida FK 'salida que cerró la estadía
+# facturada'", separado de "uuid_ingreso FK 'estadía que se factura'").
+# No requiere migración (ninguna columna nueva).
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/factura-servicio",
+    response_model=FacturaRead,
+    status_code=201,
+    summary=(
+        "HU-F8.3 (ajuste 2026-09-25): factura de un servicio suelto (ej. "
+        "reimpresión de tiquete) sin prod.salidas asociada -- ancla a "
+        "uuid_ingreso. Mismo motor de 4-table insert que create_factura "
+        "(KD-FACT-01), endpoint separado -- NO modifica create_factura."
+    ),
+    responses={
+        400: {
+            "description": (
+                "voucher_requerido (V6 -- medio_pago='datafono' sin referencia)"
+            )
+        },
+        403: {"description": "tenant_scope_violation (cajero)"},
+        404: {
+            "description": (
+                "ingreso_no_encontrado (V1) | cliente_no_encontrado (V2)"
+            )
+        },
+        422: {
+            "description": (
+                "cliente_invalido (V2) | nit_invalido | "
+                "detalle_invalido (V4) | total_no_coherente (V5)"
+            )
+        },
+        500: {"description": "iva_no_configurado (V3)"},
+    },
+)
+async def create_factura_servicio(
+    response: Response,
+    payload: FacturaServicioCreate,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_facturacion_issuer_dep),
+) -> FacturaRead:
+    """HU-F8.3 (ajuste 2026-09-25): factura de servicio suelto sin salida.
+
+    Sequence (mirrors ``create_factura``'s chain, KD-FACT-01, sin V1
+    de salida ni el lock KD-FACT-02 -- reemplazado por V1 de ingreso):
+        1. KD-3 issuer claims + no_store headers
+        2. V1 ingreso existe (404 ingreso_no_encontrado)
+        3. tenant scope post-V1
+        4. V2 cliente existe cuando fe_con_datos=true
+        5. V3 IVA configurado (500 iva_no_configurado)
+        6. V4 detalle items coherentes (422 detalle_invalido)
+        7. V6 voucher_requerido si medio_pago='datafono' sin referencia
+        8. KD-FACT-02 lock FOR SHARE (no-op para items de servicio
+           suelto -- no traen uuid_tarifa_sucursal)
+        9. V5 server-side recompute total (±0.01 COP)
+       10. INSERT prod.facturas [L-E] con uuid_salida=None
+       11. INSERT factura_detalle + factura_impuestos + factura_pagos
+       12. single commit (KD-FACT-01)
+       13. response shape via build_display_factura (reuso verbatim)
+    """
+    no_store = no_store_headers()
+
+    # --- Step 2: V1 (prod.ingreso.uuid existe). -------------------------
+    ingreso = await session.get(Ingreso, payload.uuid_ingreso)
+    if ingreso is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "ingreso_no_encontrado",
+                "uuid_ingreso": str(payload.uuid_ingreso),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 3: tenant scope (post-V1). --------------------------------
+    target_sucursal = ingreso.uuid_sucursal
+    if (
+        ctx.issuer_prefix == "operador-"
+        and (ctx.sucursal_uuid is None or target_sucursal != ctx.sucursal_uuid)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "tenant_scope_violation",
+                "uuid_ingreso": str(payload.uuid_ingreso),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 4: V2 cliente existe cuando fe_con_datos=true. -----------
+    cliente_uuid: uuid_lib.UUID | None = None
+    if payload.fe_con_datos:
+        if payload.fe_datos_cliente is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "cliente_invalido",
+                    "reason": "fe_datos_cliente_requerido_cuando_fe_con_datos",
+                },
+                headers=no_store,
+            )
+        cliente = await repo_factura.buscar_o_crear_cliente_por_nit(
+            session,
+            numero_identificacion=payload.fe_datos_cliente.numero_identificacion,
+            datos=payload.fe_datos_cliente,
+        )
+        if cliente is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "cliente_no_encontrado",
+                    "numero_identificacion": (
+                        payload.fe_datos_cliente.numero_identificacion
+                    ),
+                },
+                headers=no_store,
+            )
+        cliente_uuid = cliente.uuid
+
+    # --- Step 5: V3 (IVA configurado). ----------------------------------
+    iva_porcentaje = await obtener_iva_vigente(session)
+    if iva_porcentaje is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "iva_no_configurado"},
+            headers=no_store,
+        )
+
+    # --- Step 6: V4 detalle items coherentes. ---------------------------
+    items_validados = repo_factura.validar_items(payload.items)
+    if not items_validados:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "detalle_invalido", "min_items": 1},
+            headers=no_store,
+        )
+
+    # --- Step 7: V6 voucher_requerido (datafono sin referencia). -------
+    if payload.medio_pago == "datafono" and (
+        not payload.referencia or payload.referencia.strip() == ""
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "voucher_requerido",
+                "medio_pago": "datafono",
+            },
+            headers=no_store,
+        )
+
+    # --- Step 8: KD-FACT-02 lock FOR SHARE (no-op sin uuid_tarifa). ----
+    await repo_factura.lock_tarifas_sucursal_para_items(
+        session, items=items_validados
+    )
+
+    # --- Step 9: V5 server-side recompute total (±0.01 COP). -----------
+    total_server = repo_factura.compute_total(
+        items=items_validados, iva=iva_porcentaje, retencion=Decimal(0)
+    )
+    if abs(total_server - payload.total) > Decimal("0.01"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "total_no_coherente",
+                "total_recibido": str(payload.total),
+                "total_calculado": str(total_server),
+                "diferencia": str(abs(total_server - payload.total)),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 10: INSERT prod.facturas [L-E] (uuid_salida=None). --------
+    descuento_server = repo_factura.compute_descuento(items_validados)
+    new_factura = await repo_factura.crear_factura_evento(
+        session,
+        actor_uuid=ctx.actor_uuid,
+        new_attrs={
+            "uuid_sucursal": target_sucursal,
+            "uuid_ingreso": payload.uuid_ingreso,
+            "uuid_salida": None,
+            "subtotal": payload.subtotal,
+            "descuento": descuento_server,
+            "total": payload.total,
+        },
+    )
+
+    # --- Step 11: INSERT factura_detalle (N) + impuestos (1) + pago. ---
+    detalles_creados = await crear_factura_detalle_bulk(
+        session, uuid_factura=new_factura.uuid, items=items_validados
+    )
+    base_bruta = repo_factura.compute_base_bruta(items_validados)
+    await repo_factura.crear_factura_impuesto_iva(
+        session, uuid_factura=new_factura.uuid, base=base_bruta, iva=iva_porcentaje
+    )
+    await repo_factura.crear_factura_pago(
+        session,
+        uuid_factura=new_factura.uuid,
+        medio_pago=payload.medio_pago,
+        valor=payload.total,
+        referencia=payload.referencia,
+        uuid_sesion=ctx.uuid_sesion,
+    )
+
+    # --- Step 12: KD-FACT-01 single commit. -----------------------------
+    await session.commit()  # UN solo commit (lock release, KD-FACT-02)
+
+    # --- Step 13: response shape. ----------------------------------------
+    apply_no_store_header(response)
+    await session.refresh(new_factura)
+    return await build_display_factura(
+        session,
+        new_factura=new_factura,
+        detalles_creados=detalles_creados,
+        payload=payload,
+        total_server=total_server,
+        cliente_uuid=cliente_uuid,
     )
 
 

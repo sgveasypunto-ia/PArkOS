@@ -172,6 +172,13 @@ def test_handler_single_commit_invariant() -> None:
     The file ALSO contains docstring mentions of ``await session.commit()``
     (in summary + step descriptions) so we use a regex that matches the
     call form ONLY (preceded by indentation, NOT a triple-quote line).
+
+    Count bumped 4 -> 5 (2026-09-25, HU-F8.3 ajuste 2026-09-25-c):
+    ``create_factura_servicio`` (factura de servicio suelto sin
+    ``uuid_salida``, para reimpresión de tiquete) is a 5th handler in
+    this same module, with its own single commit -- it does NOT modify
+    ``create_factura``/``create_factura_pago``/``create_factura_electronica``/
+    ``retry_envio_dian``.
     """
     import re
 
@@ -179,7 +186,8 @@ def test_handler_single_commit_invariant() -> None:
     # Match indented ``await session.commit()`` — excludes docstring occurrences.
     pattern = re.compile(r"^\s+await session\.commit\(\)", re.MULTILINE)
     commit_count = len(pattern.findall(src))
-    assert commit_count == 4, (
-        f"Expected exactly 4 commits (one per F1.9+F1.10 handler), found {commit_count}. "
-        "KD-FACT-01 invariant violated: each handler MUST commit exactly once."
+    assert commit_count == 5, (
+        f"Expected exactly 5 commits (one per F1.9+F1.10+HU-F8.3 handler), "
+        f"found {commit_count}. KD-FACT-01 invariant violated: each handler "
+        "MUST commit exactly once."
     )
