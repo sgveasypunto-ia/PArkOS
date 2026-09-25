@@ -465,7 +465,6 @@ function buildPrintPayload(
     response,
     response.consecutivo ? null : currentPlaca,
     {},
-    null, // cliente metadata not threaded into ESC/POS payload yet
   );
   const buffer = buildEntradaBuffer(entradaPayload);
   return {

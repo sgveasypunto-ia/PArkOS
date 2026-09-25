@@ -1611,11 +1611,11 @@ sequenceDiagram
 
 **Historia**: Como operador, quiero que al confirmar un ingreso se imprima automáticamente un tiquete completo y legible, que el cliente pueda usar para reclamar su vehículo.
 
-**Criterios de aceptación**: Given un ingreso confirmado, Then el tiquete impreso contiene los **15 campos literales** de CU-15E (encabezado, nombre de empresa, dirección, NIT, régimen, operario, "TIQUETE DE ENTRADA", número/folio, tarifa aplicada, fecha, hora de entrada, placa, horario de atención, póliza RC, observaciones) **más QR y logo**, añadidos porque CU-01 exige QR en su postcondición de éxito y la identidad de marca exige logo en todo tiquete (ninguno de los dos aparece en el listado literal de CU-15E, se agregan como extensión documentada, DEC-SUC-26); Given que la impresora no responde, Then cae a `fallbackBrowser.print()`.
+**Criterios de aceptación**: Given un ingreso confirmado, Then el tiquete impreso contiene los **15 campos literales** de CU-15E (encabezado, nombre de empresa, dirección, NIT, régimen, operario, "TIQUETE DE ENTRADA", número/folio, tarifa aplicada, fecha, hora de entrada, placa, horario de atención, póliza RC, observaciones) **más QR y logo**, añadidos porque CU-01 exige QR en su postcondición de éxito y la identidad de marca exige logo en todo tiquete (ninguno de los dos aparece en el listado literal de CU-15E, se agregan como extensión documentada, DEC-SUC-26); Given que la impresora no responde, Then cae a `fallbackBrowser.print()`. *(Corrección 2026-09-25, directiva del operador: se agrega un tercer campo añadido, "Tipo de operación" — ver tabla abajo — para que el operador identifique de un vistazo, con solo mirar el tiquete de entrada O el de salida, si ese vehículo se cobra o no. Antes era un tag condicional que solo aparecía para mensualidad; ahora es siempre explícito, ROTACIÓN o MENSUALIDAD.)*
 
 **Contenido del QR (ABIERTO-01, recomendación aplicada por defecto)**: folio (UUID del ingreso) + placa, ambos ya disponibles al momento de imprimir, sin necesidad de tabla ni columna nueva. Si el negocio decide otro contenido, es un cambio acotado al builder, no a datos del ER.
 
-**Los 17 campos exactos del tiquete de entrada (15 literales de CU-15E + 2 añadidos)**:
+**Los 18 campos exactos del tiquete de entrada (15 literales de CU-15E + 3 añadidos)**:
 
 | # | Campo | Fuente |
 |---|---|---|
@@ -1626,16 +1626,19 @@ sequenceDiagram
 | 5 | Régimen | `empresa.regimen` |
 | 6 | Operario | `uuid_sucursal` + `uuid_usuario` de la sesión |
 | 7 | Tipo de documento | texto fijo "TIQUETE DE ENTRADA" |
-| 8 | Número de tiquete (folio) | `ingreso.uuid` |
-| 9 | Tarifa aplicada | `tarifas_sucursal` resuelta en CU-01 |
-| 10 | Fecha de operación | `ingreso.fecha_ingreso` (fecha) |
-| 11 | Hora de entrada | `ingreso.fecha_ingreso` (hora) |
-| 12 | Placa del vehículo | `ingreso.placa` |
-| 13 | Horario de atención | `sucursal.horario` |
-| 14 | Póliza de responsabilidad civil | `documentos` (adaptación A-01) |
-| 15 | Observaciones | `sucursal` (dato configurado) |
-| 16 | **QR** (añadido, DEC-SUC-26) | folio + placa (ABIERTO-01) |
-| 17 | **Logo** (añadido, DEC-SUC-26) | `documentos` (`tipo='logo'`) |
+| 8 | **Tipo de operación** (añadido) | "ROTACIÓN" / "MENSUALIDAD" — derivado de `ingreso.uuid_subscripcion_cliente IS NOT NULL` al momento del ingreso (DEC-SUC-21) |
+| 9 | Número de tiquete (folio) | `ingreso.uuid` |
+| 10 | Tarifa aplicada | `tarifas_sucursal` resuelta en CU-01 |
+| 11 | Fecha de operación | `ingreso.fecha_ingreso` (fecha) |
+| 12 | Hora de entrada | `ingreso.fecha_ingreso` (hora) |
+| 13 | Placa del vehículo | `ingreso.placa` |
+| 14 | Horario de atención | `sucursal.horario` |
+| 15 | Póliza de responsabilidad civil | `documentos` (adaptación A-01) |
+| 16 | Observaciones | `sucursal` (dato configurado) |
+| 17 | **QR** (añadido, DEC-SUC-26) | folio + placa (ABIERTO-01) |
+| 18 | **Logo** (añadido, DEC-SUC-26) | `documentos` (`tipo='logo'`) |
+
+**Nota (2026-09-25)**: el campo "Tipo de operación" del tiquete de ENTRADA refleja el estado de la suscripción al momento de entrar, no necesariamente lo que se termina cobrando en la salida — `calcular_cotizacion` decide el cobro real y puede diferir (ver CU-03M: una 2da placa simultánea de una suscripción **personal** paga rotación aunque haya entrado marcada "MENSUALIDAD"; una suscripción **empresa**, `cantidad_maxima_vehiculos>2`, no tiene esa restricción). No es una inconsistencia — es la naturaleza de un dato resuelto en dos momentos distintos.
 
 **Tablas ER tocadas** (solo lectura, para armar el payload del tiquete): `sucursal` (nombre, dirección, NIT, régimen, horario, mensaje de bienvenida), `documentos` (`tipo='certificado'`, póliza RC — adaptación A-01), `ingreso` (folio, placa, fecha, tipo), `tipos_vehiculo` (nombre del tipo), `tarifas_sucursal` (tarifa aplicada), `usuarios` (nombre del operario).
 
@@ -1645,13 +1648,13 @@ sequenceDiagram
 
 **Manejo de errores**: A-05 — tras imprimir, se inserta una fila en `log_transaccional` (`accion='impreso'`, `datos_nuevos={estado:'impresa'}` o `{estado:'pendiente de impresión'}` si falla); el estado se lee como la última fila con esa acción para el registro.
 
-**Pruebas**: `src/lib/print/__tests__/escposBuilder.entrada.test.ts` — valida que los 17 campos (15+QR+logo) están presentes en el buffer generado; `e2e/print.spec.ts` con mock de `bridge.imprimir`.
+**Pruebas**: `src/lib/print/__tests__/escposBuilder.entrada.test.ts` — valida que los 18 campos (15+QR+logo+tipo de operación) están presentes en el buffer generado; `e2e/print.spec.ts` con mock de `bridge.imprimir`.
 
 **Tamaño estimado**: 220 LOC.
 
 **Tareas atómicas**:
 - **HU-F6.2-T1**: `escposTemplates.ts` — layout con los 15 campos literales de CU-15E + QR + logo.
-- **HU-F6.2-T2**: `TiqueteEntradaPayload` como interfaz con los 17 campos `readonly` — TypeScript da error de compilación si falta uno, garantía de completitud en tiempo de build.
+- **HU-F6.2-T2**: `TiqueteEntradaPayload` como interfaz con los 17 campos `readonly` (el campo 18, tipo de operación, vive en `esMensualidad` como side-channel — ver `escposTemplates.ts`) — TypeScript da error de compilación si falta uno, garantía de completitud en tiempo de build.
 - **HU-F6.2-T3**: integración con `log_transaccional` para el estado de impresión (vía backend, adaptación A-05).
 - **HU-F6.2-T4**: los tests de builder + e2e con mock de impresión.
 
@@ -1800,37 +1803,38 @@ sequenceDiagram
 **Corrección de secuencia obligatoria (DEC-SUC-27)**: el CU-03 original manda a imprimir el tiquete de salida en su propio paso 8, **antes** de que exista ningún pago — pero el propio CU-15S exige el campo "medio de pago" (atribuido por error de cita del corpus a "CU-02", cuando en realidad ese dato solo existe tras CU-04). Esta HU reordena la secuencia: **el tiquete de salida (CU-15S) se imprime después de confirmado el pago** (Fase 8), no al registrar la salida. El tiquete de salida-mensualidad (CU-15SM) sí se imprime de inmediato al confirmar la salida, porque no depende de ningún pago.
 
 **Criterios de aceptación**:
-- Given un pago confirmado (Fase 8), Then se imprime el tiquete CU-15S con los **19 campos literales** (encabezado, empresa, dirección, NIT, régimen, operario, "TIQUETE DE SALIDA", folio, tarifa aplicada, fecha, hora de entrada, hora de salida, tiempo total, subtotal, IVA, total a pagar, medio de pago, placa, horario/póliza RC/resolución FE/observaciones) más QR y logo (misma extensión que CU-15E).
-- Given una salida con mensualidad confirmada, Then se imprime el tiquete CU-15SM con los **15 campos literales** (mismo patrón que CU-15E, sin desglose de cobro), con el encabezado dinámico de la sucursal (**no** el texto fijo "PARQUEADERO PUBLICO" que trae el CU original — se trata como defecto de copia del corpus, corregido aquí en silencio) y un sello "*** PAGO CON MENSUALIDAD ***" (`0x1B 0x21 0x30`, texto 2x altura) que distingue visualmente el documento — el CU original no diferencia el texto de "TIPO DE DOCUMENTO" entre CU-15S y CU-15SM (ambos dicen literalmente "TIQUETE DE SALIDA"); el sello es la decisión de producto que sí introduce la distinción visual necesaria para que el cajero no confunda un tiquete sin cobro con uno cobrado. *(Corrección 2026-09-24, migration 0050: "se imprime de inmediato" ya no es exacto — el tiquete se imprime al cerrar `<FacturaDisplayModal />`, que se abre después de registrar la factura completa con descuento a $0. El FORMATO del tiquete NO cambia (sigue sin desglose de cobro, mismo sello) — lo que cambia es que ahora existe una factura completa detrás, visible en el modal antes de imprimir. Ver "Factura por mensualidad ($0)" en el glosario.)*
+- Given un pago confirmado (Fase 8), Then se imprime el tiquete CU-15S con los **19 campos literales** (encabezado, empresa, dirección, NIT, régimen, operario, "TIQUETE DE SALIDA", folio, tarifa aplicada, fecha, hora de entrada, hora de salida, tiempo total, subtotal, IVA, total a pagar, medio de pago, placa, horario/póliza RC/resolución FE/observaciones) más QR, logo y un campo explícito "Tipo de operación: ROTACIÓN" (misma extensión que CU-15E — directiva del operador 2026-09-25).
+- Given una salida con mensualidad confirmada, Then se imprime el tiquete CU-15SM con los **15 campos literales** (mismo patrón que CU-15E, sin desglose de cobro), con el encabezado dinámico de la sucursal (**no** el texto fijo "PARQUEADERO PUBLICO" que trae el CU original — se trata como defecto de copia del corpus, corregido aquí en silencio), un sello "*** PAGO CON MENSUALIDAD ***" (`0x1B 0x21 0x30`, texto 2x altura) que distingue visualmente el documento, y un campo explícito "Tipo de operación: MENSUALIDAD" (directiva del operador 2026-09-25, mismo campo que ahora llevan CU-15E y CU-15S) — el CU original no diferencia el texto de "TIPO DE DOCUMENTO" entre CU-15S y CU-15SM (ambos dicen literalmente "TIQUETE DE SALIDA"); el sello + el campo explícito son la decisión de producto que introduce la distinción visual/textual necesaria para que el cajero no confunda un tiquete sin cobro con uno cobrado. *(Corrección 2026-09-24, migration 0050: "se imprime de inmediato" ya no es exacto — el tiquete se imprime al cerrar `<FacturaDisplayModal />`, que se abre después de registrar la factura completa con descuento a $0. El FORMATO del tiquete NO cambia salvo el nuevo campo explícito de tipo (sigue sin desglose de cobro, mismo sello) — lo que cambia es que ahora existe una factura completa detrás, visible en el modal antes de imprimir. Ver "Factura por mensualidad ($0)" en el glosario.)*
 
-**Los 21 campos exactos del tiquete de salida (19 literales de CU-15S + 2 añadidos)**:
+**Los 22 campos exactos del tiquete de salida (19 literales de CU-15S + 3 añadidos)**:
 
 | # | Campo | Fuente |
 |---|---|---|
 | 1-6 | Encabezado, empresa, dirección, NIT, régimen, operario | `sucursal`/`empresa`/sesión (idéntico a CU-15E) |
 | 7 | Tipo de documento | texto fijo "TIQUETE DE SALIDA" |
-| 8 | Número de tiquete (folio) | `salidas.uuid` |
-| 9 | Tarifa aplicada | `tarifas_sucursal` (nota del corpus original: cita "CU-01", corregido aquí a la tarifa real usada en CU-02) |
-| 10 | Fecha de operación | `salidas.fecha_salida` (fecha) |
-| 11 | Hora de entrada | `ingreso.fecha_ingreso` (hora) |
-| 12 | Hora de salida | `salidas.fecha_salida` (hora) |
-| 13 | Tiempo total | `fecha_salida - fecha_ingreso` |
-| 14 | Subtotal | de la factura (CU-02/CU-04) |
-| 15 | IVA | de la factura |
-| 16 | Total a pagar | de la factura |
-| 17 | Medio de pago | `factura_pagos.medio_pago` (nota: el corpus original lo atribuye por error de cita a "CU-02"; el dato real proviene de CU-04) |
-| 18 | Placa del vehículo | `ingreso.placa` |
-| 19 | Horario/Póliza RC/Resolución FE/Observaciones | `sucursal`/`documentos`/`resolucion_facturacion` |
-| 20 | **QR** (añadido) | folio + placa |
-| 21 | **Logo** (añadido) | `documentos` (`tipo='logo'`) |
+| 8 | **Tipo de operación** (añadido, directiva 2026-09-25) | texto fijo "ROTACIÓN" — este builder solo se invoca cuando `tipo_salida==='ROTACION'` |
+| 9 | Número de tiquete (folio) | `salidas.uuid` |
+| 10 | Tarifa aplicada | `tarifas_sucursal` (nota del corpus original: cita "CU-01", corregido aquí a la tarifa real usada en CU-02) |
+| 11 | Fecha de operación | `salidas.fecha_salida` (fecha) |
+| 12 | Hora de entrada | `ingreso.fecha_ingreso` (hora) |
+| 13 | Hora de salida | `salidas.fecha_salida` (hora) |
+| 14 | Tiempo total | `fecha_salida - fecha_ingreso` |
+| 15 | Subtotal | de la factura (CU-02/CU-04) |
+| 16 | IVA | de la factura |
+| 17 | Total a pagar | de la factura |
+| 18 | Medio de pago | `factura_pagos.medio_pago` (nota: el corpus original lo atribuye por error de cita a "CU-02"; el dato real proviene de CU-04) |
+| 19 | Placa del vehículo | `ingreso.placa` |
+| 20 | Horario/Póliza RC/Resolución FE/Observaciones | `sucursal`/`documentos`/`resolucion_facturacion` |
+| 21 | **QR** (añadido) | folio + placa |
+| 22 | **Logo** (añadido) | `documentos` (`tipo='logo'`) |
 
-**Los 15 campos exactos del tiquete de salida-mensualidad (idénticos a CU-15E salvo la fuente)**: encabezado (dinámico de sucursal, no "PARQUEADERO PUBLICO" fijo), empresa, dirección, NIT, régimen, operario, "TIQUETE DE SALIDA" + sello "*** PAGO CON MENSUALIDAD ***", folio (`salidas.uuid`), fecha de operación, hora de entrada, hora de salida, tiempo total, placa, horario/póliza RC/resolución FE/observaciones — **sin** subtotal/IVA/total (no hay cobro).
+**Los 16 campos exactos del tiquete de salida-mensualidad (idénticos a CU-15E salvo la fuente)**: encabezado (dinámico de sucursal, no "PARQUEADERO PUBLICO" fijo), empresa, dirección, NIT, régimen, operario, "TIQUETE DE SALIDA" + sello "*** PAGO CON MENSUALIDAD ***", **Tipo de operación: "MENSUALIDAD" (añadido, directiva 2026-09-25)**, folio (`salidas.uuid`), fecha de operación, hora de entrada, hora de salida, tiempo total, placa, horario/póliza RC/resolución FE/observaciones — **sin** subtotal/IVA/total (no hay cobro). *(Nota preexistente, no corregida en este cambio: este listado en prosa tampoco menciona QR/logo, aunque el builder SÍ los emite — ver `escposBuilder.ts::buildSalidaMensualidadBody` — drift de documentación anterior a esta directiva.)*
 
 **Tablas ER tocadas** (solo lectura): `sucursal`, `ingreso`, `salidas`, `facturas`/`factura_pagos` (medio de pago, solo CU-15S), `subscripciones_cliente` (solo CU-15SM), `usuarios`.
 
-**Componentes UI**: `escposBuilder.build('salida', payload)`, `escposBuilder.build('salida_mensualidad', payload)`.
+**Componentes UI**: `escposBuilder.build('salida', payload)`, `escposBuilder.build('salida-mensualidad', payload)`.
 
-**Pruebas**: `src/lib/print/__tests__/escposBuilder.salida.test.ts` — 2 casos (19 campos de CU-15S, 15 campos + sello de CU-15SM), validando los bytes exactos del sello (`0x1B 0x21 0x30`).
+**Pruebas**: `src/lib/print/__tests__/escposBuilder.salida.test.ts` — 2 casos (22 campos de CU-15S, 16 campos + sello de CU-15SM), validando los bytes exactos del sello (`0x1B 0x21 0x30`).
 
 **Tamaño estimado**: 200 LOC.
 

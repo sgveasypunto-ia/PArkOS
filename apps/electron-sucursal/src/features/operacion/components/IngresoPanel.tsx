@@ -923,7 +923,6 @@ function buildPrintPayload(
     // TODO: hydrate from a future GET /print-context endpoint (or
     // individual fetches of empresa + sucursal + tarifa + documentos).
     {},
-    null, // cliente metadata not threaded into ESC/POS payload yet
   );
   const buffer = buildEntradaBuffer(entradaPayload);
   return {

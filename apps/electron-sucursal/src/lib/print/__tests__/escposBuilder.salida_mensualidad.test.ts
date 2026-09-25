@@ -15,6 +15,7 @@
  *   6. Operario         (payload.operario)
  *   7. Sello            (literal "*** PAGO CON MENSUALIDAD ***" wrapped by
  *                        escText2x [0x1B 0x21 0x30] + escTextReset [0x1B 0x21 0x00])
+ *   7b. Tipo de operación (literal "Tipo: MENSUALIDAD", bold — pedido del operador)
  *   8. Folio            (payload.folio)
  *   9. Fecha            (date-only, dd/MM/yyyy)
  *  10. Hora entrada     (HH:mm)
@@ -96,6 +97,8 @@ describe('buildSalidaMensualidadBuffer — CU-15SM 15-field byte presence (HU-F7
     expect(buf.indexOf(Buffer.from(`Operario: ${payload.operario}`))).toBeGreaterThanOrEqual(0);
     // 7. Sello "*** PAGO CON MENSUALIDAD ***"
     expect(buf.indexOf(Buffer.from('*** PAGO CON MENSUALIDAD ***'))).toBeGreaterThanOrEqual(0);
+    // 7b. Tipo de operación (pedido del operador — campo nuevo)
+    expect(buf.indexOf(Buffer.from('Tipo: MENSUALIDAD'))).toBeGreaterThanOrEqual(0);
     // 8. Folio
     expect(buf.indexOf(Buffer.from(`Folio: ${payload.folio}`))).toBeGreaterThanOrEqual(0);
     // 9. Fecha (date-only)

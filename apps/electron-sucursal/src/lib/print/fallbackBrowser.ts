@@ -148,9 +148,11 @@ export function renderEntradaTiqueteHtml(payload: EntradaPayload): string {
   const observaciones = payload.observaciones
     ? `<p>Observaciones: ${escapeHtml(payload.observaciones)}</p>`
     : '';
-  const mensualidadTag = payload.esMensualidad === true
-    ? '<p><strong>MENSUALIDAD</strong></p>'
-    : '';
+  // Tipo de operación — ALWAYS rendered (pedido del operador, mismo
+  // texto que el builder ESC/POS: ver `escposBuilder.ts::buildEntradaBody`).
+  const mensualidadTag = `<p><strong>Tipo: ${
+    payload.esMensualidad === true ? 'MENSUALIDAD' : 'ROTACIÓN'
+  }</strong></p>`;
   const logoHtml = payload.logoDataUrl === ''
     ? '<p>Logo: \u25A2</p>'
     : `<p><img src="${escapeHtml(payload.logoDataUrl)}" alt="Logo" /></p>`;
@@ -207,6 +209,7 @@ function renderSalidaHtml(payload: SalidaPayload): string {
     <p>${escapeHtml(payload.empresa.direccion)}</p>
     <p>${escapeHtml(payload.empresa.regimen)}</p>
     <h2>*** SALIDA ***</h2>
+    <p><strong>Tipo: ROTACIÓN</strong></p>
     <p>Folio: ${escapeHtml(payload.folio)}</p>
     <p>Placa: ${escapeHtml(payload.placa)}</p>
     <p>Entrada: ${fechaCorta(payload.fechaEntrada)}</p>
@@ -233,6 +236,7 @@ function renderSalidaMensualidadHtml(payload: SalidaMensualidadPayload): string 
     <p>${escapeHtml(payload.empresa.direccion)}</p>
     <p>${escapeHtml(payload.empresa.regimen)}</p>
     <h2>*** PAGO CON MENSUALIDAD ***</h2>
+    <p><strong>Tipo: MENSUALIDAD</strong></p>
     <p>Folio: ${escapeHtml(payload.folio)}</p>
     <p>Placa: ${escapeHtml(payload.placa)}</p>
     <p>Entrada: ${fechaCorta(payload.fechaEntrada)}</p>

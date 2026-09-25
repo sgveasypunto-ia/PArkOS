@@ -12,6 +12,7 @@
  *   5. Régimen          (payload.empresa.regimen)
  *   6. Operario         (payload.operario)
  *   7. Sello            (literal "*** SALIDA ***" wrapped by escText2x/escTextReset)
+ *   7b. Tipo de operación (literal "Tipo: ROTACIÓN", bold — pedido del operador)
  *   8. Folio            (payload.folio)
  *   9. Tarifa aplicada  (formatCOP(payload.tarifaAplicada) + "/hora")
  *  10. Fecha            (date-only, dd/MM/yyyy)
@@ -74,6 +75,8 @@ describe('buildSalidaBuffer — CU-15S 19-field byte presence (HU-F7.3 / REQ-OPS
     expect(buf.indexOf(Buffer.from(`Operario: ${payload.operario}`))).toBeGreaterThanOrEqual(0);
     // 7. Sello "*** SALIDA ***"
     expect(buf.indexOf(Buffer.from('*** SALIDA ***'))).toBeGreaterThanOrEqual(0);
+    // 7b. Tipo de operación (pedido del operador — campo nuevo)
+    expect(buf.indexOf(Buffer.from('Tipo: ROTACIÓN'))).toBeGreaterThanOrEqual(0);
     // 8. Folio
     expect(buf.indexOf(Buffer.from(`Folio: ${payload.folio}`))).toBeGreaterThanOrEqual(0);
     // 9. Tarifa aplicada

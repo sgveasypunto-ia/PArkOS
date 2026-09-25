@@ -227,8 +227,10 @@ export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
  * `esMensualidad` is an OPTIONAL control flag surfaced by
  * `buildEntradaPayload()` when `ingreso.uuid_subscripcion_cliente
  * IS NOT NULL`. It is NOT one of the 17 conceptual fields; it is a
- * side-channel so the builder can emit the `MENSUALIDAD` tag under
- * the sello without exposing a third party column on the conceptual
+ * side-channel so the builder can emit an explicit `Tipo: ROTACIÓN` /
+ * `Tipo: MENSUALIDAD` line under the sello (operator request: either
+ * ticket alone must tell the operator whether that vehicle gets
+ * charged) without exposing a third party column on the conceptual
  * 17-key shape (DEC-SUC-21 — `tipo_entrada` MUST NOT be persisted).
  */
 const entradaConPlacaSchema = z.object({

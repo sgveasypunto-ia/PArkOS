@@ -32,7 +32,6 @@
  */
 import type { EntradaPayload, Sucursal, Empresa } from './escposTemplates';
 import type { PostIngresoResponse } from '../../features/operacion/lib/ingresoApi';
-import type { ClienteContext } from '../../features/operacion/api/clienteApi';
 
 /**
  * Optional print-context metadata that the operator-facing renderer
@@ -51,13 +50,6 @@ export interface PrintContext {
 }
 
 /**
- * Optional cliente metadata fetched when ``uuid_subscripcion_cliente
- * IS NOT NULL``. Re-exported from ``clienteApi.ts`` (canonical SWR
- * shape) so callers keep a single import surface.
- */
-export type { ClienteContext };
-
-/**
  * Minimal default Empresa — until a ``GET /empresa/{uuid}`` endpoint
  * is wired, the tiquete carries these placeholders. The string values
  * are intentionally non-empty so ``empresaSchema.parse()`` (which
@@ -74,20 +66,27 @@ const DEFAULT_SUCURSAL_ENCABEZADO = 'Sucursal';
 const DEFAULT_HORARIO = '24h';
 
 /**
- * `buildEntradaPayloadFromResponse(response, placa, context, cliente)`
- * — assemble an `EntradaPayload` from the renderer-side state after a
+ * `buildEntradaPayloadFromResponse(response, placa, context)` —
+ * assemble an `EntradaPayload` from the renderer-side state after a
  * successful ingreso POST. Picks the correct discriminated-union
  * variant based on whether `placa` is present (legacy F6.2 path) or
  * the response carries `consecutivo` (HU-INGRESO-SIN-PLACA path).
  *
  * Returns the typed payload — the caller passes it to
  * ``escposBuilder.buildEntradaBuffer`` to produce the printable bytes.
+ *
+ * BUGFIX: this used to take an extra ``cliente: ClienteContext | null``
+ * parameter and derive ``esMensualidad`` from ``cliente !== null`` —
+ * removed because both call sites always passed ``null`` (cliente
+ * metadata was never threaded through), which made the printed
+ * tiquete NEVER show "MENSUALIDAD" regardless of the real subscription
+ * status. ``esMensualidad`` now reads ``response.tipo_entrada``
+ * directly (server-derived, DEC-SUC-21).
  */
 export function buildEntradaPayloadFromResponse(
   response: PostIngresoResponse,
   placa: string | null,
   context: PrintContext = {},
-  cliente: ClienteContext | null = null,
 ): EntradaPayload {
   const fechaHora = new Date().toISOString();
   const sucursal: Sucursal = {
@@ -106,7 +105,16 @@ export function buildEntradaPayloadFromResponse(
     horarioAtencion: context.horarioAtencion ?? DEFAULT_HORARIO,
     folio: response.uuid,
     observaciones: undefined,
-    esMensualidad: cliente !== null,
+    // BUGFIX (found while wiring the "Tipo: ROTACIÓN/MENSUALIDAD" ticket
+    // field, operator request): this used to read ``cliente !== null``,
+    // but the only call site (``IngresoPanel.tsx::buildPrintPayload``)
+    // ALWAYS passes ``cliente=null`` ("cliente metadata not threaded
+    // into ESC/POS payload yet" — separate unfinished feature). The
+    // printed tiquete therefore NEVER showed "MENSUALIDAD" in
+    // production, regardless of the vehicle's actual subscription.
+    // ``response.tipo_entrada`` is the server-derived, authoritative
+    // source (DEC-SUC-21) — use it directly instead.
+    esMensualidad: response.tipo_entrada === 'MENSUALIDAD',
     sucursal,
   };
 

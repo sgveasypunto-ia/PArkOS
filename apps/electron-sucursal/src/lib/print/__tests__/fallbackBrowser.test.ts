@@ -10,7 +10,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 
 import { print, PAGE_RULE } from '../fallbackBrowser';
-import { validEntradaPayload } from './escposBuilder.test';
+import { validEntradaPayload, validSalidaPayload } from './escposBuilder.test';
+import type { SalidaMensualidadPayload } from '../escposTemplates';
+
+function validSalidaMensualidadPayload(): SalidaMensualidadPayload {
+  return {
+    placa: 'ABC12D',
+    fechaEntrada: '2026-09-01T00:00:00Z',
+    fechaSalida: '2026-09-16T08:00:00Z',
+    qrDataUrl: 'data:image/png;base64,CCC',
+    logoDataUrl: 'data:image/png;base64,DDD',
+    empresa: {
+      nombre: 'Parkos Demo S.A.S.',
+      nit: '900123456-7',
+      direccion: 'Calle 1 #2-3, Bogota',
+      regimen: 'Responsable de IVA',
+    },
+    operario: 'op-002',
+    horarioAtencion: '24 horas',
+    polizaRC: 'POL-99999',
+    folio: '00000000-0000-4000-8000-000000000007',
+    observaciones: 'Mensualidad vigente',
+    sucursal: { encabezado: 'Sucursal Sur' },
+    tiempoTotal: '360h 00m',
+    esMensualidad: true,
+  } as SalidaMensualidadPayload;
+}
 
 describe('fallbackBrowser.print("entrada", payload)', () => {
   let printSpy: ReturnType<typeof vi.spyOn>;
@@ -63,6 +88,26 @@ describe('fallbackBrowser.print("entrada", payload)', () => {
   it('removes the injected <style> after window.print() resolves', () => {
     print('entrada', validEntradaPayload());
     expect(document.getElementById('parkos-escpos-fallback-style')).toBeNull();
+  });
+});
+
+describe('fallbackBrowser.print — Tipo de operación (pedido del operador)', () => {
+  beforeEach(() => {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+    vi.spyOn(window, 'print').mockImplementation(() => undefined);
+  });
+
+  it('renders <strong>Tipo: ROTACIÓN</strong> in the salida fallback HTML', () => {
+    print('salida', validSalidaPayload());
+    const container = document.getElementById('parkos-escpos-fallback-container');
+    expect(container?.innerHTML).toContain('<strong>Tipo: ROTACIÓN</strong>');
+  });
+
+  it('renders <strong>Tipo: MENSUALIDAD</strong> in the salida-mensualidad fallback HTML', () => {
+    print('salida-mensualidad', validSalidaMensualidadPayload());
+    const container = document.getElementById('parkos-escpos-fallback-container');
+    expect(container?.innerHTML).toContain('<strong>Tipo: MENSUALIDAD</strong>');
   });
 });
 

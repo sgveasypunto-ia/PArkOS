@@ -275,6 +275,38 @@ describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
     expect(buf.indexOf(Buffer.from('MENSUALIDAD'))).toBe(-1);
   });
 
+  // Tipo de operación — ALWAYS explicit now (pedido del operador: el
+  // tiquete debe decir ROTACIÓN o MENSUALIDAD, no dejarlo implícito).
+  it('Tipo de operación — emits "Tipo: ROTACIÓN" when uuid_subscripcion_cliente is null', () => {
+    const payload = buildEntradaPayload({
+      ingreso: makeIngreso({ uuid_subscripcion_cliente: null }),
+      sucursal: makeSucursal(),
+      empresa: makeEmpresa(),
+      operario: 'op-003',
+      tipoVehiculo: 'auto',
+      tarifa: makeTarifa(),
+      documentos: makeDocumentos(),
+      fechaHora: '2026-09-16T08:30:00Z',
+    });
+    const buf = build('entrada', payload);
+    expect(buf.indexOf(Buffer.from('Tipo: ROTACIÓN'))).toBeGreaterThanOrEqual(0);
+  });
+
+  it('Tipo de operación — emits "Tipo: MENSUALIDAD" when uuid_subscripcion_cliente is set', () => {
+    const payload = buildEntradaPayload({
+      ingreso: makeIngreso({ uuid_subscripcion_cliente: 'sub-uuid-8888' }),
+      sucursal: makeSucursal(),
+      empresa: makeEmpresa(),
+      operario: 'op-003',
+      tipoVehiculo: 'auto',
+      tarifa: makeTarifa(),
+      documentos: makeDocumentos(),
+      fechaHora: '2026-09-16T08:30:00Z',
+    });
+    const buf = build('entrada', payload);
+    expect(buf.indexOf(Buffer.from('Tipo: MENSUALIDAD'))).toBeGreaterThanOrEqual(0);
+  });
+
   // Logo placeholder — separate from byte-presence count
   it('Logo placeholder glyph — emitted when logoDataUrl is empty (cold cache)', () => {
     const payload = buildEntradaPayload({
