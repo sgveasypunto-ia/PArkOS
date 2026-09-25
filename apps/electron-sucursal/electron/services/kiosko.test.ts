@@ -167,7 +167,9 @@ describe('kiosko service', () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.reason).toBe('lockout');
-        expect(result.lockoutSecondsRemaining).toBe(LOCKOUT_SECONDS);
+        if (result.reason === 'lockout') {
+          expect(result.lockoutSecondsRemaining).toBe(LOCKOUT_SECONDS);
+        }
       }
     });
 

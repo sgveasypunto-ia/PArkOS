@@ -60,7 +60,7 @@ contextBridge.exposeInMainWorld('bridge', {
   },
 
   kiosk: {
-    toggle: (on) => ipcRenderer.send('kiosk:toggle', on),
+    toggle: (on: boolean) => ipcRenderer.send('kiosk:toggle', on),
   },
 
   app: {
@@ -72,14 +72,14 @@ contextBridge.exposeInMainWorld('bridge', {
   },
 
   authStore: {
-    get: (key) => ipcRenderer.invoke('auth-store:get', key),
-    set: (key, value) => ipcRenderer.invoke('auth-store:set', key, value),
-    delete: (key) => ipcRenderer.invoke('auth-store:delete', key),
+    get: (key: string) => ipcRenderer.invoke('auth-store:get', key),
+    set: (key: string, value: string) => ipcRenderer.invoke('auth-store:set', key, value),
+    delete: (key: string) => ipcRenderer.invoke('auth-store:delete', key),
   },
 
   tarifasStore: {
-    get: (key) => ipcRenderer.invoke('tarifas-store:get', key),
-    set: (key, value) => ipcRenderer.invoke('tarifas-store:set', key, value),
-    delete: (key) => ipcRenderer.invoke('tarifas-store:delete', key),
+    get: (key: string) => ipcRenderer.invoke('tarifas-store:get', key),
+    set: (key: string, value: string) => ipcRenderer.invoke('tarifas-store:set', key, value),
+    delete: (key: string) => ipcRenderer.invoke('tarifas-store:delete', key),
   },
 });

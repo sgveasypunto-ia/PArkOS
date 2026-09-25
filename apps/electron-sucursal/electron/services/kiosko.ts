@@ -28,19 +28,41 @@ export interface LogLike {
   error: (...args: unknown[]) => void;
 }
 
-/** BrowserWindow subset required by applyKiosko. */
+/**
+ * BrowserWindow subset required by applyKiosko.
+ *
+ * `on`/`webContents.on`/`webContents.off` are narrowed to the literal event
+ * names this module actually wires up (`'close'`, `'before-input-event'`)
+ * instead of a generic `event: string`. Electron's real `BrowserWindow.on`
+ * is a large overload set keyed by string-literal event names, which a
+ * plain `(event: string, …) => void` property can never structurally match
+ * (TS2345 "string is not assignable to '<literal event>'"). Narrowing to
+ * the literals actually used keeps this interface satisfied by the real
+ * `BrowserWindow` without widening to `unknown`/`any`, and a plain object
+ * stub still satisfies it in tests.
+ */
 export interface BrowserWindowLike {
   setKiosk: (on: boolean) => void;
-  on: (event: string, listener: (...args: unknown[]) => void) => void;
+  on(event: 'close', listener: (...args: unknown[]) => void): void;
   webContents: {
-    on: (event: string, listener: (...args: unknown[]) => void) => void;
-    off: (event: string, listener: (...args: unknown[]) => void) => void;
+    on(event: 'before-input-event', listener: (...args: unknown[]) => void): void;
+    off(event: 'before-input-event', listener: (...args: unknown[]) => void): void;
   };
 }
 
-/** Menu subset — only setApplicationMenu is required. */
+/**
+ * Menu subset — only setApplicationMenu is required.
+ *
+ * Narrowed to `null` (the only value this module ever passes — it always
+ * clears the menu, never sets one) instead of `unknown`. Electron's real
+ * `Menu.setApplicationMenu(menu: Menu | null): void` is not assignable to
+ * a `(menu: unknown) => void` slot (a real `Menu | null` parameter can't
+ * safely accept an arbitrary `unknown` value), so `unknown` silently broke
+ * that assignability; `null` is both accurate to actual usage and a valid
+ * subtype of `Menu | null`.
+ */
 export interface MenuLike {
-  setApplicationMenu: (menu: unknown) => void;
+  setApplicationMenu: (menu: null) => void;
 }
 
 /** Minimal electron-store shape used by tryUnlockKiosko. */
@@ -103,8 +125,19 @@ export function applyKiosko(
   win.setKiosk(on);
   if (on) {
     menu.setApplicationMenu(null);
-    win.on('close', (e: { preventDefault: () => void }) => e.preventDefault());
-    win.webContents.on('before-input-event', blockShortcuts);
+    // BrowserWindowLike.on/webContents.on declare a generic `(...args:
+    // unknown[]) => void` listener (see interface doc above) so tests can
+    // pass simple mocks. Real Electron listeners receive typed arguments,
+    // so the wrapper narrows `args` back to the shape this module expects
+    // before delegating — same runtime behavior, satisfies both types.
+    win.on('close', (...args: unknown[]) => {
+      const [e] = args as [{ preventDefault: () => void }];
+      e.preventDefault();
+    });
+    win.webContents.on('before-input-event', (...args: unknown[]) => {
+      const [event, input] = args as [{ preventDefault: () => void }, BeforeInputEventInput];
+      blockShortcuts(event, input);
+    });
     log.info('kiosko.applied');
   } else {
     log.info('kiosko.removed');

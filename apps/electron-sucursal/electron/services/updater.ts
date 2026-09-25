@@ -25,7 +25,19 @@ export interface AutoUpdaterLike {
   autoInstallOnAppQuit: boolean;
   allowDowngrade: boolean;
   checkForUpdates: () => Promise<unknown>;
-  on: (event: string, listener: (...args: unknown[]) => void) => void;
+  // Narrowed to the literal event names this module actually wires up
+  // (electron-updater's real `AppUpdater.on` is a single generic
+  // `<U extends keyof AppUpdaterEvents>` signature keyed by string literal
+  // event names, which a plain `(event: string, …) => void` property can
+  // never structurally match — TS2345 "string is not assignable to
+  // keyof AppUpdaterEvents"). Listing the 5 literals we use as overloads
+  // keeps this interface satisfied by the real AppUpdater without loosening
+  // it to `string`, and still lets tests pass a plain object stub.
+  on(event: 'update-available', listener: (...args: unknown[]) => void): void;
+  on(event: 'update-not-available', listener: (...args: unknown[]) => void): void;
+  on(event: 'download-progress', listener: (...args: unknown[]) => void): void;
+  on(event: 'update-downloaded', listener: (...args: unknown[]) => void): void;
+  on(event: 'error', listener: (...args: unknown[]) => void): void;
 }
 
 /** Minimal logger interface — accepts electron-log's default export. */
