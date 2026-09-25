@@ -82,7 +82,7 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { CuposLibresStrip } from '../../operacion/components/CuposLibresStrip';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
-import { SyncStatusStrip } from '../../sync/components/SyncStatusStrip';
+import { SyncStatusBadge } from '../../sync/components/SyncStatusBadge';
 import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
 import { useIngresosActivos } from '../../operacion/hooks/useIngresosActivos';
@@ -127,7 +127,7 @@ export function Dashboard(): JSX.Element | null {
   const { sesion, isLoading, error, refresh } = useSesionActiva();
   const { isAuthenticated, isLoading: isAuthLoading, sucursal, user } = useAuth();
   const navigate = useNavigate();
-  const { t } = useTranslation(['caja', 'common', 'operacion', 'suscripciones']);
+  const { t } = useTranslation(['caja', 'common', 'operacion', 'suscripciones', 'sync']);
   const uuid_sucursal = sucursal?.uuid ?? null;
   const openDrawer = useDashboardDrawerStore((s) => s.open);
   const closeDrawer = useDashboardDrawerStore((s) => s.close);
@@ -221,14 +221,14 @@ export function Dashboard(): JSX.Element | null {
             </span>
           </div>
 
-          {/* Online status — only on lg+ (avoid clutter on mobile). */}
-          <span
-            data-testid="dashboard-online"
-            className="ml-auto hidden items-center gap-1.5 rounded-full border border-emerald-200/60 bg-emerald-50/80 px-3 py-1 text-xs font-medium text-emerald-700 shadow-apple-sm lg:inline-flex"
-          >
-            <span aria-hidden className="h-2 w-2 rounded-full bg-emerald-500" />
-            {t('common:online', { defaultValue: 'Online' })}
-          </span>
+          {/* Online status — only on lg+ (avoid clutter on mobile). F11.1
+              realineado (REQ-OPS-171, AD-3/AD-4/AD-5, 2026-09-24): este
+              badge ya NO es un placeholder estático — es el indicador
+              real de sincronización hacia la nube (antes vivía en el
+              `<SyncBanner />` de arriba de la página, eliminado por
+              directiva del operador). El color del punto/fondo y el
+              tooltip reflejan `useSyncEstado` en tiempo real. */}
+          <SyncStatusBadge uuid_sucursal={uuid_sucursal} />
 
           {/* F1-F6 hotkey chips — only on md+ (mobile users use on-screen buttons). */}
           <span className="hidden gap-1 md:inline-flex">
@@ -518,14 +518,12 @@ export function Dashboard(): JSX.Element | null {
           {/* Hidden: legacy section panels for compatibility with the F4.4
               `OcupacionStrip` removal. The ingreso/salida panels now live
               inside DrawerHost (via IngresoSheet / SalidaSheet) so they
-              no longer need an `sr-only` anchor here. The remaining
-              panels stay because they are referenced by tests via
+              no longer need an `sr-only` anchor here. The `sync` section
+              anchor was removed in F11.1's navbar realineation — the
+              indicator now lives in the header as `<SyncStatusBadge />`
+              (real UI, not an sr-only test anchor). The remaining panel
+              stays because it is referenced by tests via
               `data-testid="dashboard-section-..."`. */}
-          <div aria-hidden className="sr-only">
-            <section data-testid="dashboard-section-sync">
-              <SyncStatusStrip uuid_sucursal={uuid_sucursal} />
-            </section>
-          </div>
           <div aria-hidden className="sr-only">
             <section data-testid="dashboard-section-alertas">
               <AlertasPanel uuid_sucursal={uuid_sucursal} />

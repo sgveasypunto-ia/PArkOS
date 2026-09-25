@@ -6,15 +6,12 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { Login } from '../features/auth/pages/Login';
 import { Dashboard } from '../features/caja/pages/Dashboard';
 import { AbrirTurno } from '../features/caja/pages/AbrirTurno';
-import { ArqueoParcial } from '../features/caja/pages/ArqueoParcial';
 import { CierreDiario } from '../features/caja/pages/CierreDiario';
 import { FacturaDetalle } from '../features/facturacion/pages/FacturaDetalle';
 import { ReimprimirTiquete } from '../features/facturacion/pages/ReimprimirTiquete';
 import { Venta } from '../features/suscripciones/pages/Venta';
 import { Listado } from '../features/suscripciones/pages/Listado';
-import { SyncBanner } from '../components/SyncBanner';
 import { LocalApiDownBanner } from '../components/LocalApiDownBanner';
-import { useAuth } from '@parkos/ui-kit/hooks';
 
 /**
  * App — F2.1 router + F2.3 StatusBar mount + F3.1 Login + F3.3 caja
@@ -28,10 +25,13 @@ import { useAuth } from '@parkos/ui-kit/hooks';
  *   1. `<StatusBar />` — F2.3 API health chip (kept).
  *   2. `<LocalApiDownBanner />` — sticky hard-fault banner, mounts
  *      only when selectApiStatusDown(state) === true.
- *   3. `<SyncBanner />` — top-of-page sync-to-cloud health banner,
- *      gated on `useAuth().sucursal?.uuid != null` so the
- *      /sync/estado SWR poll fires only when the operator has a
- *      branch context (REQ-OPS-139 lazy-mount precedent).
+ *
+ * F11.1 realineado (REQ-OPS-171, AD-3/AD-4/AD-5, 2026-09-24): el
+ * antiguo `<SyncBanner />` global (franja arriba de toda la app,
+ * incluido por encima del navbar del Dashboard) fue retirado por
+ * directiva del operador — la funcionalidad de sync-to-cloud ahora
+ * vive como `<SyncStatusBadge />` dentro del header del propio
+ * `<Dashboard />` (color real + tooltip), no como un banner global.
  *
  * F11.2 note: `<AlertasPanel />` (REQ-OPS-178) was previously mounted
  * here at the App root but is now SCOPED to `<Dashboard />` only --
@@ -54,14 +54,11 @@ import { useAuth } from '@parkos/ui-kit/hooks';
  */
 export default function App(): JSX.Element {
   const { t } = useTranslation('common');
-  const { sucursal } = useAuth();
-  const branchUuid = sucursal?.uuid ?? null;
 
   return (
     <>
       <StatusBar />
       <LocalApiDownBanner />
-      <SyncBanner uuid_sucursal={branchUuid} />
       <main
         lang="es-CO"
         className="block min-h-[calc(100vh-2rem)] w-full bg-muted/40 px-4 py-3"

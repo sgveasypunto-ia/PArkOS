@@ -22,13 +22,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+// Named type-only import so the `vi.mock` factory below can reference
+// `typeof ReactRouterDom` instead of an inline `import()` type query
+// (`@typescript-eslint/consistent-type-imports` forbids the latter) —
+// pre-existing lint violation found while working on HU-F11.1, fixed
+// mirroring the pattern already used by `Dashboard.test.tsx`.
+import type * as ReactRouterDom from 'react-router-dom';
 
 const mockUseSesionActiva = vi.fn();
 const mockUseAuth = vi.fn();
 const mockNavigate = vi.fn();
 
 vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  const actual = await vi.importActual<typeof ReactRouterDom>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
@@ -65,6 +71,17 @@ vi.mock('../../components/TurnoActivoPanel', () => ({
 vi.mock('../../components/OcupacionPanel', () => ({
   OcupacionPanel: () => <div data-testid="ocupacion-panel-stub" />,
 }));
+// Pre-existing bug found while working on HU-F11.1 (unrelated to this
+// change): `useIngresosActivos` was NOT mocked here, so `PlacaInputHero`
+// + `VehiculosDentroList` (both call it with `uuid_sucursal`) ran the
+// REAL hook once `sucursal` stopped being `null` (M2, warm branch) —
+// its SWR key became non-null and fired 2 real `parkosFetch` calls
+// against `/api/v1/operacion/ingresos`, violating the "0 panel fetches"
+// contract this test exists to enforce. Mirrors the same mock already
+// used by `Dashboard.test.tsx`.
+vi.mock('../../../operacion/hooks/useIngresosActivos', () => ({
+  useIngresosActivos: () => [],
+}));
 vi.mock('../../../operacion/components/CuposLibresStrip', () => ({
   // 2026-09-22: reorganización visual — el `<CuposLibresStrip />` (footer
   // full-width con inventario per-tipo + cupos libres agregados) se mockea
@@ -79,8 +96,8 @@ vi.mock('../../../operacion/components/IngresoPanel', () => ({
 vi.mock('../../../suscripciones/components/SuscripcionesPanel', () => ({
   SuscripcionesPanel: () => <div data-testid="suscripciones-panel-stub" />,
 }));
-vi.mock('../../../sync/components/SyncStatusStrip', () => ({
-  SyncStatusStrip: () => <div data-testid="sync-strip-stub" />,
+vi.mock('../../../sync/components/SyncStatusBadge', () => ({
+  SyncStatusBadge: () => <div data-testid="sync-badge-stub" />,
 }));
 vi.mock('../../../../components/AlertasPanel', () => ({
   AlertasPanel: () => <div data-testid="alertas-panel-stub" />,
@@ -154,7 +171,7 @@ describe('<Dashboard /> cold-mount network spy — REQ-OPS-137/139', () => {
     // paths are gated by their own UUIDs which Dashboard passes as
     // null by default (REQ-OPS-137 §composable-section contract).
     // The panels that DO fetch on a warm branch (OcupacionPanel /
-    // SyncStatusStrip / SuscripcionesPanel) are stubbed here, so we
+    // SyncStatusBadge / SuscripcionesPanel) are stubbed here, so we
     // still observe ZERO calls on the parkosFetch spy.
     // Note (F11.2): the F11.1 `AlertasPanel` sr-only stub was deleted
     // in C6 (R-F11.1-CARRY-2 authorised). The new orchestrator lives
