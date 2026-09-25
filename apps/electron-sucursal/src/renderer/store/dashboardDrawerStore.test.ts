@@ -110,7 +110,7 @@ describe('useDashboardDrawerStore — REQ-OPS-138 state machine', () => {
       'fe-retry',
       'reimpresion',
       'arqueo',
-      'cierre-diario',
+      'cierre-diario-multi',
       'ingreso',
       'salida',
       'suscripciones',

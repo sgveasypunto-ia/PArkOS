@@ -10,7 +10,12 @@
  *   - `cache_desactualizado` → `/sync/detalle`
  *   - `capacidad_agotada_forzado` → `/caja/ingreso/{datos_nuevos.uuid_ingreso}`
  *     (DA-F11.2-14 — JSONB column drill-down)
- *   - Other 6 business codes → `/alertas/{alert.uuid}` (default detail)
+ *   - Other 7 business codes → `/alertas/{alert.uuid}` (default detail)
+ *     — includes `reimpresion_excesiva` (BUGFIX 2026-09-25, directiva
+ *     del operador): la reimpresión con costo (HU-F8.3) se retiró como
+ *     ruta y ahora vive en un drawer/sheet del dashboard sin URL propia
+ *     que se pueda linkear directamente, así que cae al detalle
+ *     genérico en vez de un link roto a `/facturacion/reimprimir`.
  *
  * If a code lacks the FK field, the function returns the default
  * `/alertas/{alert.uuid}` route — the panel renders gracefully even
@@ -35,7 +40,6 @@ export const DRILL_DOWN_ROUTES: Readonly<Record<string, DrillDownFn>> = {
   arqueo_sin_cerrar: (alert) => (alert.uuid_arqueo ? `/caja/arqueo/${alert.uuid_arqueo}` : DEFAULT_DRILL_DOWN(alert)),
   caja_sin_apertura: () => '/caja/abrir-turno',
   suscripcion_proxima_vencer: () => '/suscripciones',
-  reimpresion_excesiva: () => '/facturacion/reimprimir',
   fallo_conexion_local: () => '/sync/detalle',
   diferencia_datafono: (alert) => (alert.uuid_arqueo ? `/caja/arqueo/${alert.uuid_arqueo}` : DEFAULT_DRILL_DOWN(alert)),
 };

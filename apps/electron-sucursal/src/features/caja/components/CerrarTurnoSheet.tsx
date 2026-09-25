@@ -61,13 +61,16 @@ export function CerrarTurnoSheet(): JSX.Element {
     >
       <SheetContent
         side="right"
-        // F31.3 rediseño: mismo tratamiento que `<ArqueoSheet />` — cap
-        // de ancho para 3840/ultrawide + padding fluido en 320px + chrome
-        // flex/overflow para que el form (resumen + 6 campos + banners)
-        // scrollee dentro del drawer en vez de desbordar el viewport en
-        // alturas chicas. Antes no tenía NINGÚN override, a diferencia
-        // de ArqueoSheet — inconsistencia corregida.
-        className="flex h-full w-full flex-col overflow-hidden p-4 sm:max-w-md sm:p-6 md:max-w-lg"
+        // F31.3 rediseño + ajuste 2026-09-25 (directiva del operador):
+        // el form (resumen + 6 campos + banners) necesita más ancho que
+        // el cap `max-w-lg` que tenía antes (mismo tratamiento que
+        // `<ArqueoSheet />`) — se saca el cap y queda en el 50% de
+        // ancho (`md:w-1/2`) que ya trae `sheetVariants` por defecto,
+        // en vez de un límite fijo en px. Padding fluido en 320px +
+        // chrome flex/overflow se mantienen para que el form scrollee
+        // dentro del drawer en vez de desbordar el viewport en alturas
+        // chicas.
+        className="flex h-full w-full flex-col overflow-hidden p-4 sm:p-6"
         data-testid="cerrar-turno-sheet"
       >
         <SheetHeader>
@@ -78,8 +81,17 @@ export function CerrarTurnoSheet(): JSX.Element {
             vuelve al login.
           </SheetDescription>
         </SheetHeader>
+        {/* Ajuste 2026-09-25 (directiva del operador): el sheet pasó a
+            50% de ancho (`md:w-1/2`, ver className de arriba), pero el
+            form no debe estirarse a rellenar todo ese ancho -- los
+            campos angostos (efectivo/datáfono contado) quedaban como
+            barras larguísimas, dando sensación de "toca el borde".
+            Se centra el contenido en un ancho de lectura cómodo dentro
+            del sheet más ancho. */}
         <div className="flex flex-1 flex-col overflow-y-auto">
-          <CerrarTurno />
+          <div className="mx-auto w-full max-w-xl">
+            <CerrarTurno />
+          </div>
         </div>
       </SheetContent>
     </Sheet>

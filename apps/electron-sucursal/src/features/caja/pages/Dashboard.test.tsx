@@ -254,12 +254,47 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
       ['sidebar-salida', 'F2'],
       ['sidebar-suscripciones', 'F3'],
       ['sidebar-arqueo', 'F4'],
+      ['sidebar-facturas', 'F8'],
     ];
     for (const [testId, hotkey] of expectedBadges) {
       const button = screen.getByTestId(testId);
       const badge = within(button).getByText(hotkey);
       expect(badge.tagName).toBe('KBD');
     }
+  });
+
+  it('U16c: click en "sidebar-facturas" abre el drawer "reimpresion" (HU-F8.3, sheet — no navega)', async () => {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+    await user.click(screen.getByTestId('sidebar-facturas'));
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('reimpresion');
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('U16d: tecla F8 abre el drawer "reimpresion" (HU-F8.3)', () => {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F8' }));
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('reimpresion');
   });
 
   it('U17: error ParkosHttpError(500) → dashboard-error + retry button → click llama refresh', () => {

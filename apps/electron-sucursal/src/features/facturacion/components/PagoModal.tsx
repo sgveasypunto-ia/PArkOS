@@ -92,8 +92,20 @@ export type PagoFormValues = z.infer<typeof pagoFormSchema>;
 
 export interface PagoModalProps {
   /**
-   * UUID del ingreso activo que se está pagando. Required to issue
-   * the POST against `/api/v1/facturacion/factura`.
+   * UUID del ingreso activo que se está pagando, o `null` cuando el
+   * cobro no está atado a un ingreso (venta de suscripción, F11.3
+   * `<Venta />` wizard). El componente NO lo usa para nada — el
+   * caller ya decide cuándo montar `<PagoModal>` y arma el POST con
+   * lo que corresponda; queda en la prop solo como metadata para el
+   * caller/tests.
+   *
+   * BUGFIX (2026-09-25, encontrado por el operador con una captura de
+   * pantalla real): el submit y el botón "Confirmar pago" estaban
+   * gateados con `!uuid_ingreso`, un remanente del único consumidor
+   * original (`<PagoSheet />`, salida de vehículo). Cuando `<Venta />`
+   * empezó a reusar este componente pasando `uuid_ingreso={null}` a
+   * propósito, el botón quedaba permanentemente deshabilitado y
+   * ninguna venta de suscripción podía cobrarse.
    */
   uuid_ingreso: string | null;
   /**
@@ -133,7 +145,6 @@ export interface PagoModalProps {
  * vueltos via `useMemo` (inline; ABIERTO-200 extracts `useVueltos`).
  */
 export function PagoModal({
-  uuid_ingreso,
   total_cop,
   onSubmit,
   clientePrefill,
@@ -215,7 +226,6 @@ export function PagoModal({
   // también rechazaría con 4xx, pero el bloqueo cliente evita el
   // round-trip y muestra el FormMessage inline antes de tocar la red.
   const handleSubmit = form.handleSubmit(async (values) => {
-    if (!uuid_ingreso) return;
     if (
       values.medio_pago === 'efectivo' &&
       values.monto_recibido_cop < total_cop
@@ -420,7 +430,7 @@ export function PagoModal({
         <div className="flex justify-end pt-4">
           <Button
             type="submit"
-            disabled={!uuid_ingreso || form.formState.isSubmitting}
+            disabled={form.formState.isSubmitting}
             data-testid="pago-confirmar"
           >
             {t('facturacion:pago.confirmar', { defaultValue: 'Confirmar pago' })}

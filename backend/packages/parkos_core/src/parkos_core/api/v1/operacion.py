@@ -976,13 +976,14 @@ async def get_ingreso_estado(
 async def list_ingresos(
     uuid_sucursal: uuid_lib.UUID | None = None,
     placa: str | None = None,
+    consecutivo: str | None = None,
     activo: bool | None = None,
     limit: int = 50,
     session: AsyncSession = Depends(get_session),  # noqa: B008
     _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_ingreso_issuer_dep),
 ) -> list[IngresoRead]:
-    """List recent ingresos (filters: uuid_sucursal, placa, activo).
+    """List recent ingresos (filters: uuid_sucursal, placa, consecutivo, activo).
 
     No cursor pagination (yet). ``activo=true`` (HU-F6.1, plan.md linea
     1518/2454) restringe a ingresos sin salida vigente -- misma
@@ -990,12 +991,19 @@ async def list_ingresos(
     ``repo/salida.py::buscar_ingreso_activo_por_uuid``: un ingreso con
     una salida ``ejecutada``-anulada sigue contando como activo (el
     vehiculo nunca salio realmente, HU-F8.1).
+
+    ``consecutivo`` (HU-F8.3, directiva del operador 2026-09-25): mismo
+    patron que ``placa`` -- exact match, SIN el filtro ``activo`` --
+    para que la reimpresion de tiquete pueda encontrar el cupo de un
+    vehiculo sin placa aunque el ingreso ya tenga salida registrada.
     """
     stmt = select(Ingreso)
     if uuid_sucursal is not None:
         stmt = stmt.where(Ingreso.uuid_sucursal == uuid_sucursal)
     if placa is not None:
         stmt = stmt.where(Ingreso.placa == placa)
+    if consecutivo is not None:
+        stmt = stmt.where(Ingreso.consecutivo == consecutivo)
     if activo:
         salida_vigente = (
             select(Salidas.uuid)

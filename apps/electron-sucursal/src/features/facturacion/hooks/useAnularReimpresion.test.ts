@@ -56,6 +56,7 @@ const anulacionRead = {
   uuid_reimpresion_padre: UUID_REIMPRESION_ORIGINAL,
   uuid_ingreso: UUID_INGRESO,
   uuid_factura: null,
+  costo_aplicado: 5000,
   motivo: 'Original reimpresion authorized correctly',
   motivo_anulacion: 'Error operativo: se reimprimio por error administrativo',
   created_at: '2026-09-19T12:00:00Z',

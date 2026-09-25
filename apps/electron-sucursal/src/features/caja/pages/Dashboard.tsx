@@ -53,7 +53,7 @@
  *   - Footer full-width sticky (chips compactos de cupos por tipo + KPI
  *     total, 2026-09-25: escala compacta — ver CuposLibresStrip.tsx)
  *   - DrawerHost (single-drawer mounted for: IngresoSheet, SalidaSheet,
- *     PagoSheet, ReimprimirTiqueteSheet, ArqueoSheet, CierreDiarioDialog —
+ *     PagoSheet, ReimprimirTiqueteSheet, ArqueoSheet, CierreDiarioSheet —
  *     triggered by sidebar, hotkey, OR the PlacaInputHero)
  *
  * **Cobros pendientes:** se renderizan inline en cada fila de
@@ -131,7 +131,16 @@ const DRAWER_BY_HOTKEY: Record<string, NonNullDrawerKind> = {
   F2: 'salida',
   F3: 'suscripciones',
   F4: 'arqueo',
-  F6: 'cierre-diario',
+  // F6 — HU-F10.3 (ajuste 2026-09-25, directiva del operador): unificado
+  // con el sheet multi-sesión — el viejo `'cierre-diario'` (per-session,
+  // `<CierreDiarioDialog />`) era código muerto confirmado (se montaba
+  // con uuid_sucursal/uuid_sesion=null siempre, su submit nunca hacía
+  // nada) y fue retirado. F6 y el botón del sidebar abren el mismo flujo.
+  F6: 'cierre-diario-multi',
+  // F8 — HU-F8.3 (directiva del operador 2026-09-25): reimpresión de
+  // tiquete con costo. Vive en el sheet (no en una ruta aparte del
+  // dashboard) — mismo code path que el resto de los F-keys.
+  F8: 'reimpresion',
 };
 
 export function Dashboard(): JSX.Element | null {
@@ -479,14 +488,18 @@ export function Dashboard(): JSX.Element | null {
                   data-testid="sidebar-cierre-diario"
                   className="h-11 justify-start gap-3 rounded-xl px-3 text-sm font-medium text-foreground/80 hover:bg-accent/70 hover:text-foreground transition-colors"
                   onClick={() => {
-                    // HU-F10.3 (REQ-OPS-164 + AD-2) — sidebar anchor
-                    // navigates to the routed page (mirrors the F10.1/F10.2
-                    // sidebar anchors). The F8.x `CierreDiarioDialog` drawer
-                    // (per-session quick close) remains accessible via the
-                    // DrawerHost but the canonical entry-point for the
-                    // multi-session daily reconciliation is this routed
-                    // page.
-                    navigate('/caja/cierre-diario');
+                    // Ajuste 2026-09-25 (directiva del operador: "cierre
+                    // diario no debe estar en una ruta aparte, debe estar
+                    // en un sheet dentro de / como todas las demás
+                    // funcionalidades"). Reemplaza la navegación a la ruta
+                    // `/caja/cierre-diario` (retirada de App.tsx) por el
+                    // Sheet `'cierre-diario-multi'` (HU-F10.3, mismo
+                    // patrón que Arqueo/CerrarTurno/Reimprimir). Unificado
+                    // con el hotkey F6 (ver comentario en DRAWER_BY_HOTKEY
+                    // arriba) — el viejo `'cierre-diario'` per-session
+                    // (`<CierreDiarioDialog />`, código muerto confirmado)
+                    // fue retirado, así que el badge F6 ya es coherente.
+                    openDrawer('cierre-diario-multi', 'sidebar-cierre-diario');
                     setMobileNavOpen(false);
                   }}
                 >
@@ -512,6 +525,7 @@ export function Dashboard(): JSX.Element | null {
                 >
                   <Receipt className="h-4 w-4 shrink-0" />
                   <span>{t('caja:dashboard.facturas', { defaultValue: 'Facturas' })}</span>
+                  <kbd className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">F8</kbd>
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">

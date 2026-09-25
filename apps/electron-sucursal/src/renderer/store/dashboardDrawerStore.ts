@@ -53,7 +53,10 @@ export type DrawerKind =
   | 'reimpresion'
   | 'arqueo'
   | 'cerrar-turno'
-  | 'cierre-diario'
+  // 'cierre-diario' (per-session, <CierreDiarioDialog />) retirado
+  // 2026-09-25 — código muerto confirmado, unificado en
+  // 'cierre-diario-multi' (HU-F10.3).
+  | 'cierre-diario-multi'
   | 'ingreso'
   | 'salida'
   | 'suscripciones'

@@ -200,6 +200,31 @@ class SesionRead(_Base):
     uuid_usuario_cierre: uuid_lib.UUID | None
 
 
+class SesionOpenResponse(SesionRead):
+    """Response for ``POST /caja-sesion/sesiones`` (open) and ``PUT
+    /caja-sesion/sesion/{uuid}/cerrar`` (close).
+
+    BUGFIX (2026-09-25): the access/refresh token the operator was
+    holding at open/close time never carried the ``sesion`` claim (see
+    ``auth/tenancy.py::TenantContext`` docstring, which claimed this
+    endpoint already set it -- it never did). ``ctx.uuid_sesion`` was
+    ALWAYS ``None`` for every operator, which silently broke every
+    feature keyed on it (e.g. ``prod.factura_pagos.uuid_sesion``, used
+    by the arqueo "esperado" calculation to sum cobros for the turno --
+    reimpresiones and ventas de suscripción were being charged for
+    real but never counted in arqueo).
+
+    Reissuing a fresh token pair here (with ``sesion`` set on open,
+    absent on close) is the only point where the backend knows the
+    operator's session identity changed; the frontend MUST replace its
+    stored tokens with these on both calls.
+    """
+
+    access_token: str
+    refresh_token: str
+    expires_in: int
+
+
 class SesionCreate(_Base):
     """INSERT payload for ``prod.sesion`` (REQ-40-S-OPEN).
 

@@ -145,12 +145,24 @@ async def buscar_reimpresion_por_uuid(
 async def buscar_factura_por_uuid(
     session: AsyncSession, *, uuid_factura: uuid_lib.UUID
 ) -> Facturas | None:
-    """V3 (DEC-TKT-04, optional): SELECT ``prod.facturas`` row by PK.
+    """V3 (DEC-TKT-04, optional): SELECT ``prod.facturas`` by ``uuid``.
+
+    BUGFIX (2026-09-25, encontrado al validar HU-F8.3 end-to-end -- la
+    primera vez que un `uuid_factura` real llegaba a este lookup):
+    ``prod.facturas`` tiene PK COMPUESTA ``(uuid, fecha_retencion_hasta)``
+    (bi-temporal + retención DIAN). ``session.get(Facturas, uuid_factura)``
+    exige tantos valores como columnas de la PK -- con un solo valor
+    escalar tira ``InvalidRequestError: Incorrect number of values in
+    identifier`` (500) en TODA reimpresión que de verdad cargue una
+    factura. ``uuid`` por sí solo ya es único (UUIDv4); un SELECT plano
+    por esa columna evita necesitar el `fecha_retencion_hasta` que el
+    caller no tiene.
 
     Returns the ORM row if found, else ``None``. The handler raises the
     404 only IF the payload supplied ``uuid_factura``.
     """
-    return await session.get(Facturas, uuid_factura)
+    stmt = select(Facturas).where(Facturas.uuid == uuid_factura)
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +200,15 @@ async def buscar_reimpresion_activa_por_ingreso(
         .where(
             ReimpresionTicket.uuid_ingreso == uuid_ingreso,
             ReimpresionTicket.vigente_hasta.is_(None),
-            ReimpresionTicket.estado == "activo",
+            # BUGFIX (2026-09-25, encontrado al validar HU-F8.3 end-to-end):
+            # este [L-W] jamas escribe `estado='activo'` -- create/anular
+            # escriben literalmente 'autorizada'/'rechazada' (ver
+            # `create_reimpresion_ticket`/`anular_reimpresion_ticket`).
+            # Filtrar por 'activo' hacia que este guard NUNCA encontrara
+            # una fila (0 matches siempre), dejando el guard V2 de
+            # `reimpresion_already_pending` completamente inerte -- un
+            # operador podia cobrar la misma reimpresion mas de una vez.
+            ReimpresionTicket.estado == "autorizada",
         )
         .order_by(
             ReimpresionTicket.timestamp_evento.desc(),

@@ -148,10 +148,17 @@ async def test_anular_reimpresion_happy_path(
         return {
             "uuid_root": uuid_root,
             "uuid_actual": uuid_tip,
-            "estado": "activo",
+            # BUGFIX (2026-09-25): `read_chain_tip` (repo/workflow.py) has
+            # NO `workflow_estado` key -- its real shape is `{uuid_root,
+            # uuid_actual, estado, timestamp_evento, chain_length}`, and
+            # for `reimpresion_ticket` the per-table `estado` cycle IS
+            # 'autorizada'/'rechazada' (not the generic 'activo'/
+            # 'inactivo'). This fake previously encoded the same
+            # misreading the handler had (`tip["workflow_estado"]`),
+            # which masked the real `KeyError: 'workflow_estado'` 500.
+            "estado": "autorizada",
             "timestamp_evento": _now(),
             "chain_length": 1,
-            "workflow_estado": "autorizada",
         }
 
     monkeypatch.setattr(
@@ -220,10 +227,9 @@ async def test_anular_reimpresion_returns_409_anulacion_no_permitida(
         return {
             "uuid_root": uuid_root,
             "uuid_actual": uuid_tip,
-            "estado": "activo",
+            "estado": "rechazada",  # terminal
             "timestamp_evento": _now(),
             "chain_length": 1,
-            "workflow_estado": "rechazada",  # terminal
         }
 
     monkeypatch.setattr(
@@ -337,10 +343,9 @@ async def test_anular_reimpresion_returns_403_tenant_scope_violation(
         return {
             "uuid_root": uuid_root,
             "uuid_actual": uuid_tip,
-            "estado": "activo",
+            "estado": "autorizada",
             "timestamp_evento": _now(),
             "chain_length": 1,
-            "workflow_estado": "autorizada",
         }
 
     monkeypatch.setattr(

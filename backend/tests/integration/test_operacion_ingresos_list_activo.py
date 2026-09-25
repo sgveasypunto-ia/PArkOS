@@ -131,9 +131,10 @@ async def _seed_branch(pg_engine, *, uuid_sucursal: uuid_lib.UUID) -> uuid_lib.U
 async def _seed_ingreso(
     pg_engine,
     *,
-    placa: str,
     uuid_sucursal: uuid_lib.UUID,
     uuid_tipo_vehiculo: uuid_lib.UUID,
+    placa: str | None = None,
+    consecutivo: str | None = None,
 ) -> uuid_lib.UUID:
     now = _now_naive()
     ingreso_uuid = uuid_lib.uuid4()
@@ -145,6 +146,7 @@ async def _seed_ingreso(
                 uuid_sucursal=uuid_sucursal,
                 uuid_tipo_vehiculo=uuid_tipo_vehiculo,
                 placa=placa,
+                consecutivo=consecutivo,
                 uuid_subscripcion_cliente=None,
                 fecha_ingreso=now,
                 observaciones=None,
@@ -292,7 +294,49 @@ async def test_activo_omitido_devuelve_historico_completo_backward_compat(
     assert uuids == {str(ing_abierto), str(ing_cerrado)}
 
 
+async def test_consecutivo_filtra_por_cupo_exacto_incluye_cerrados(
+    pg_engine, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """HU-F8.3 (directiva del operador 2026-09-25): la reimpresion de
+    tiquete debe poder encontrar el cupo de un vehiculo sin placa aunque
+    el ingreso ya tenga salida registrada -- ``consecutivo`` NO aplica el
+    filtro ``activo`` implicito (mismo criterio que ``placa``)."""
+    await _truncate(pg_dsn)
+    branch = uuid_lib.uuid4()
+    actor = uuid_lib.uuid4()
+    tipo_auto = await _seed_branch(pg_engine, uuid_sucursal=branch)
+
+    ing_cerrado_sin_placa = await _seed_ingreso(
+        pg_engine,
+        uuid_sucursal=branch,
+        uuid_tipo_vehiculo=tipo_auto,
+        consecutivo="BICICLETA-000001-aaaaaaaa",
+    )
+    await _seed_salida(pg_engine, uuid_ingreso=ing_cerrado_sin_placa, uuid_sucursal=branch)
+    await _seed_ingreso(
+        pg_engine,
+        uuid_sucursal=branch,
+        uuid_tipo_vehiculo=tipo_auto,
+        consecutivo="BICICLETA-000002-bbbbbbbb",
+    )
+
+    token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=branch)
+    resp = await client.get(
+        f"/api/v1/operacion/ingresos?uuid_sucursal={branch}"
+        "&consecutivo=BICICLETA-000001-aaaaaaaa",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Sucursal-Context": str(branch),
+        },
+    )
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert {item["uuid"] for item in body} == {str(ing_cerrado_sin_placa)}
+    assert body[0]["consecutivo"] == "BICICLETA-000001-aaaaaaaa"
+
+
 __all__ = [
     "test_activo_omitido_devuelve_historico_completo_backward_compat",
     "test_activo_true_excluye_ingresos_con_salida_no_anulada",
+    "test_consecutivo_filtra_por_cupo_exacto_incluye_cerrados",
 ]

@@ -165,11 +165,6 @@ export function CierreDiarioForm(props: {
                   })}
                 </th>
                 <th scope="col" className="px-3 py-2 text-right">
-                  {t('caja:cierreDiario.tabla.esperado', {
-                    defaultValue: 'Esperado',
-                  })}
-                </th>
-                <th scope="col" className="px-3 py-2 text-right">
                   {t('caja:cierreDiario.tabla.reportado', {
                     defaultValue: 'Reportado',
                   })}
@@ -210,9 +205,13 @@ export function CierreDiarioForm(props: {
                         ? formatFechaHoraCorta(s.timestamp_apertura)
                         : '—'}
                     </td>
-                    <td className="px-3 py-2 text-right">
-                      {formatCOP(s.valor_efectivo_esperado)}
-                    </td>
+                    {/* Ajuste 2026-09-25 (directiva del operador): el
+                        valor Esperado NO se muestra en pantalla (conteo
+                        a ciegas — el supervisor no debe ver cuánto
+                        "debería dar" antes de reportar el conteo real),
+                        pero SIGUE evaluándose: `diferencia` (abajo) y el
+                        estado de descuadre ya lo usan internamente sin
+                        exponerlo. */}
                     <td className="px-3 py-2 text-right">
                       {formatCOP(s.valor_efectivo_reportado)}
                     </td>
@@ -256,7 +255,6 @@ export function CierreDiarioForm(props: {
                 <td colSpan={2} className="px-3 py-2">
                   Σ
                 </td>
-                <td className="px-3 py-2 text-right">—</td>
                 <td className="px-3 py-2 text-right">
                   {formatCOP(props.totals.valor_efectivo_reportado)}
                 </td>

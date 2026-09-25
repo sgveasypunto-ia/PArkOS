@@ -196,6 +196,24 @@ async def create_reimpresion_ticket(
                 headers=no_store,
             )
 
+    # --- Step 5b: DEC-TKT-05 cost guard (BUGFIX 2026-09-25 -- el helper
+    # `buscar_costo_servicio_vigente_por_concepto` existia pero jamas se
+    # llamaba: el endpoint insertaba la fila sin cobrar nada, dejando
+    # `costo_aplicado`/`uuid_costo_servicio` en NULL siempre pese a ser
+    # el criterio de aceptacion central de HU-F1.11/HU-F8.3 ("se cobra
+    # el costo vigente de costos_servicios"). Ahora resuelve el costo
+    # vigente para el concepto 'reimpresion' (siembra MIGRATION 0029) y
+    # lo snapshotea en la fila, o responde 409 si la siembra falta.
+    costo_servicio = await repo_reimpresion.buscar_costo_servicio_vigente_por_concepto(
+        session, concepto="reimpresion"
+    )
+    if costo_servicio is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "costo_servicio_no_configurado", "concepto": "reimpresion"},
+            headers=no_store,
+        )
+
     # --- Step 6: KD-TKT-01 INSERT prod.reimpresion_ticket [L-W]. --------
     new_reimpresion = await repo_workflow.append_transition(
         session,
@@ -205,6 +223,8 @@ async def create_reimpresion_ticket(
             "uuid_sucursal": target_sucursal,
             "uuid_ingreso": payload.uuid_ingreso,
             "uuid_usuario": ctx.actor_uuid,
+            "uuid_costo_servicio": costo_servicio.uuid,
+            "costo_aplicado": costo_servicio.costo,
             "uuid_factura": payload.uuid_factura,
             "motivo": payload.motivo,
             "timestamp_evento": _now_naive(),
@@ -344,7 +364,13 @@ async def anular_reimpresion_ticket(
         )
 
     # --- Step 4: V2 chain tip state guard (DEC-TKT-03). ----------------
-    if tip["workflow_estado"] == "rechazada":
+    # BUGFIX (2026-09-25, encontrado al validar HU-F8.3 end-to-end):
+    # `read_chain_tip` (repo/workflow.py, generico para todo [L-W]) NUNCA
+    # devuelve una clave `workflow_estado` -- su shape real es
+    # `{uuid_root, uuid_actual, estado, timestamp_evento, chain_length}`.
+    # El lookup original tiraba `KeyError: 'workflow_estado'` (500) en
+    # CUALQUIER anulacion, sin excepcion.
+    if tip["estado"] == "rechazada":
         raise HTTPException(
             status_code=409,
             detail={
@@ -364,8 +390,19 @@ async def anular_reimpresion_ticket(
             "uuid_sucursal": tip_row.uuid_sucursal,
             "uuid_ingreso": tip_row.uuid_ingreso,
             "uuid_usuario": ctx.actor_uuid,
+            # BUGFIX (2026-09-25): `ReimpresionTicket` (models/L_W/
+            # reimpresion_ticket.py) no tiene columna `motivo_anulacion`
+            # -- ni en el ORM ni en modelo_datos_er.mmd. Pasarla como
+            # kwarg de constructor tiraba `TypeError: invalid keyword
+            # argument` (500) en TODA anulacion. El motivo de anulacion
+            # vive en el `motivo` propio de esta fila de la cadena (igual
+            # que cualquier otra transicion); se preserva ademas el
+            # costo original (`uuid_costo_servicio`/`costo_aplicado`) del
+            # tip para no perder el rastro de auditoria de cuanto se
+            # esta anulando.
+            "uuid_costo_servicio": tip_row.uuid_costo_servicio,
+            "costo_aplicado": tip_row.costo_aplicado,
             "motivo": payload.motivo_anulacion,
-            "motivo_anulacion": payload.motivo_anulacion,
             "timestamp_evento": _now_naive(),
             "estado": "rechazada",  # workflow state machine (synthesized)
         },
@@ -392,7 +429,10 @@ async def anular_reimpresion_ticket(
         costo_aplicado=new_row.costo_aplicado,
         uuid_factura=new_row.uuid_factura,
         motivo=new_row.motivo,
-        motivo_anulacion=new_row.motivo_anulacion,
+        # BUGFIX (2026-09-25): `new_row` (ORM) has no `motivo_anulacion`
+        # attribute (see new_attrs comment above) -- read the value the
+        # caller sent instead of a non-existent ORM field.
+        motivo_anulacion=payload.motivo_anulacion,
         uuid_reimpresion_padre=new_row.uuid_reimpresion_padre,  # = tip.uuid
         timestamp_evento=new_row.timestamp_evento,
         vigente_desde=new_row.vigente_desde,

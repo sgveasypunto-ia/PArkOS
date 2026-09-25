@@ -1997,41 +1997,52 @@ stateDiagram-v2
 **Historia**: Como operador, quiero reimprimir un tiquete perdido o dañado cobrando el servicio correspondiente, y poder anular ese cobro si me equivoqué.
 
 **Criterios de aceptación**:
-- Given un ingreso identificado por placa y un motivo de ≥10 caracteres, When `POST /workflows/reimpresion-ticket`, Then se cobra `costos_servicios` (concepto de reimpresión) cargado a una factura, y se reimprime con el mismo formato del tiquete original.
-- Given una reimpresión mal cobrada, When se anula, Then se inserta una fila nueva con `uuid_reimpresion_padre` (nunca `UPDATE` sobre la original).
+- Given un ingreso identificado por placa **o por cupo/consecutivo (vehículo sin placa, REQ-OPS-197)** y un motivo de ≥10 caracteres, When el operador confirma el cobro vía `<PagoModal>` (monto → método de pago), Then se crea una factura real (`POST /facturacion/factura-servicio`, monto = `costos_servicios` vigente del concepto de reimpresión) y luego `POST /workflows/reimpresion-ticket` con ese `uuid_factura`, y se reimprime el tiquete de entrada con el mismo formato del original.
+- Given una reimpresión mal cobrada, When se anula, Then se inserta una fila nueva con `uuid_reimpresion_padre` (nunca `UPDATE` sobre la original) — la anulación afecta solo el registro de workflow, no reversa la factura/pago (ver Ajuste 2026-09-25-c).
+
+**Ajuste 2026-09-25 (directiva del operador)**: la búsqueda no puede exigir el `uuid_ingreso` a mano — debe reutilizar el mismo patrón de resolución placa/consecutivo→`uuid_ingreso` que ya usa `SalidaPanel` (`matchVehiculos` + `VehiculoSuggestions` + `useIngresosActivos`/`getIngresosByPlaca`), para soportar tanto placa como cupo de vehículos sin placa.
+
+**Ajuste 2026-09-25-b (directiva del operador)**: el flujo entero (búsqueda, motivo, cobro, anulación, impresión) vive DENTRO de un drawer/sheet del dashboard (`<ReimprimirTiqueteSheet />`, hotkey **F8** + botón "Facturas" del sidebar) — **no** es una ruta aparte (`/facturacion/reimprimir` se retiró de `App.tsx`). Mismo patrón "thin shell" que `<ArqueoSheet />` envolviendo `pages/ArqueoParcial.tsx`: el shell resuelve open/close/focus-restore vía `useDashboardDrawerStore`, la forma (`pages/ReimprimirTiquete.tsx`) no sabe que está en un Sheet.
+
+**Ajuste 2026-09-25-c (directiva del operador — corrección de alcance)**: snapshotear un costo dentro de `reimpresion_ticket` NO alcanza — la reimpresión tiene que disparar el MISMO flujo de cobro real que la salida de vehículo (monto → método de pago → factura → tiquete de factura), reusando `<PagoModal>` sin fork. Esto reemplaza el diseño anterior (DEC-TKT-04, "uuid_factura opcional, sin crear prod.facturas") por uno que SÍ crea la factura:
+  - `useCostoServicioVigente('reimpresion')` (nuevo hook) — preview del costo vigente ANTES de mostrar `<PagoModal>` (`GET /catalogos/costos-servicios?concepto=reimpresion&estado=activo`, filtra `vigente_hasta IS NULL` client-side).
+  - `POST /api/v1/facturacion/factura-servicio` (endpoint NUEVO, **no** modifica `POST /facturacion/factura` que ya está en producción con DIAN/FE encima) — factura un servicio suelto ANCLADO a `uuid_ingreso` (no requiere `prod.salidas`; `Facturas.uuid_salida`/`uuid_ingreso` ya son nullable en el modelo). Reusa verbatim el motor de 4-table insert (`crear_factura_evento`/`crear_factura_detalle_bulk`/`crear_factura_impuesto_iva`/`crear_factura_pago`/`build_display_factura`) con `uuid_salida=None`.
+  - El `POST /workflows/reimpresion-ticket` ya existente ahora recibe el `uuid_factura` real de la factura recién creada (el campo ya era opcional en el schema, solo no se usaba).
+  - `<FacturaDisplayModal>` (reusado tal cual, sin fork) muestra el desglose completo post-cobro, igual que `<PagoSheet>`.
+  - **Fuera de alcance, documentado**: no hay plantilla ESC/POS dedicada para el recibo térmico de esta factura de servicio todavía (`ReciboPagoPayload` extiende `SalidaPayload` con campos de vehículo/tiempo parqueado que no aplican a un servicio suelto — fabricarlos imprimiría datos incorrectos). El tiquete de entrada SÍ se reimprime (buffer real). Follow-up: plantilla `'factura_servicio'` dedicada.
+  - **Fuera de alcance, decisión explícita**: anular una reimpresión NO reversa el pago/factura (eso es `factura_pagos.reverse_payment`, un flujo aparte).
 
 **Nota de alcance**: este workflow (con costo, tabla `reimpresion_ticket`) es **distinto** de la reimpresión gratuita inmediata de las Fases 6/7 (excepción E3 de CU-15x, "operación ya impresa") — no comparten código ni tabla.
 
-**Tablas ER tocadas**: `reimpresion_ticket` (INSERT en ambos casos), `costos_servicios` (SELECT, snapshot del costo), `facturas`/`factura_detalle` (carga del cobro).
+**Tablas ER tocadas**: `reimpresion_ticket` (INSERT en ambos casos), `costos_servicios` (SELECT, snapshot del costo), `facturas`/`factura_detalle`/`factura_impuestos`/`factura_pagos` (carga real del cobro, sin `uuid_salida`).
 
-**Endpoints**: `POST /workflows/reimpresion-ticket`, `POST .../{uuid}/anular` (ambos de HU-F1.11).
+**Endpoints**: `POST /workflows/reimpresion-ticket`, `POST .../{uuid}/anular` (ambos de HU-F1.11), `POST /facturacion/factura-servicio` (**nuevo**, Ajuste 2026-09-25-c), `GET /catalogos/costos-servicios` (ya existente, reusado para el preview del monto).
 
-**Componentes UI**: `ReimprimirTiquete` (page, form con búsqueda por placa; `role="alertdialog"` porque la acción tiene consecuencia de cobro, no un simple `dialog`).
+**Componentes UI**: `ReimprimirTiqueteSheet` (drawer, thin shell) envolviendo `ReimprimirTiquete` (form con búsqueda por placa o cupo/consecutivo + motivo + `<PagoModal>` reusado + `<FacturaDisplayModal>` reusado); `role="alertdialog"` en el dialog de anulación (consecuencia de cobro).
 
-**Validaciones Zod**: `z.object({ placa: z.string(), motivo: z.string().min(10) })`.
+**Validaciones Zod**: `z.object({ termino: z.string().min(1), motivo: z.string().min(10) })` — `termino` acepta placa o consecutivo, resuelto a `uuid_ingreso` client-side antes de mostrar `<PagoModal>`.
 
 **Manejo de errores**:
 
 | Código | Mensaje/acción en UI |
 |---|---|
 | validación cliente (Zod `min(10)`) | motivo <10 caracteres → error inline antes de enviar, sin llamar al backend |
-| `costo_servicio_no_configurado` | Backend sin fila vigente en `costos_servicios` para el concepto de reimpresión — banner de error de configuración |
+| `costo_servicio_no_configurado` | Sin fila vigente en `costos_servicios` para el concepto de reimpresión — el preview client-side ya lo detecta antes de mostrar `<PagoModal>` (banner de error de configuración) |
+| `ingreso_no_encontrado` (V1 de `factura-servicio`) | 404 — no debería ocurrir en el flujo normal (el ingreso ya se resolvió en la búsqueda) |
+| `voucher_requerido` | datáfono sin referencia — mismo V6 que `create_factura` |
 
-**Componentes UI — props clave**: `ReimprimirTiquete` — `onBuscar(placa)`, `onConfirmar(motivo)`; usa `role="alertdialog"` por la consecuencia de cobro.
+**Componentes UI — props clave**: `ReimprimirTiquete` — `onBuscar(termino)` resuelve `uuid_ingreso`; motivo confirmado abre `<PagoModal uuid_ingreso total_cop={costoVigente} onSubmit={handlePago}>`.
 
-**Pruebas**: `e2e/reimpresion.spec.ts` — 3 escenarios:
+**Pruebas**: `e2e/reimpresion.spec.ts` (stub, `test.skip` — sin backend real en CI) + `tests/unit/test_factura_servicio_create_handler.py` (backend, mock-everything) + `ReimprimirTiquete.test.tsx` (9 casos, incluye el submit real de `<PagoModal>` sin mockear).
 
-1. Reimprimir tiquete de entrada: cobro de `costos_servicios`, carga a factura, tiquete reimpreso idéntico al original.
-2. Reimprimir tiquete de salida: mismo patrón, con el desglose de cobro original preservado.
-3. Motivo con menos de 10 caracteres: bloqueado del lado cliente, sin llamar al backend.
-
-**Tamaño estimado**: 210 LOC.
+**Tamaño estimado**: 210 LOC (original) + ~450 LOC (Ajuste 2026-09-25-c: endpoint nuevo + schema + 2 hooks + 1 api client + rewiring de la página).
 
 **Tareas atómicas**:
-- **HU-F8.3-T1**: `src/features/facturacion/pages/ReimprimirTiquete.tsx` con búsqueda por placa + motivo.
-- **HU-F8.3-T2**: `escposBuilder.build('reimprimir', payload)` — mismo formato del tiquete original, con marca visual `0x1B 0x45` (negrita) y etiqueta "REIMPRESIÓN".
+- **HU-F8.3-T1**: `src/features/facturacion/pages/ReimprimirTiquete.tsx` (form, búsqueda por placa o cupo/consecutivo vía reuso de `matchVehiculos`/`VehiculoSuggestions` + motivo + `<PagoModal>`) envuelto por `src/features/facturacion/components/ReimprimirTiqueteSheet.tsx` (drawer, hotkey F8).
+- **HU-F8.3-T2**: `escposBuilder.build('reimpresion', payload)` (literal verificado en `escposBuilder.ts` — la prosa vieja decía `'reimprimir'`, drift anchor REQ-OPS-175) — mismo formato del tiquete original, con marca visual `0x1B 0x45` (negrita) y etiqueta "REIMPRESIÓN".
 - **HU-F8.3-T3**: acción de anulación (llama a `POST .../anular`).
-- **HU-F8.3-T4**: `e2e/reimpresion.spec.ts` (3 escenarios).
+- **HU-F8.3-T4**: `e2e/reimpresion.spec.ts` (stub) + tests unitarios backend/frontend.
+- **HU-F8.3-T5** (Ajuste 2026-09-25-c): `POST /facturacion/factura-servicio` (`backend/.../api/v1/facturacion.py::create_factura_servicio` + `schemas/facturacion.py::FacturaServicioCreate`) + `useCostoServicioVigente`/`useRegistrarPagoServicio` (frontend).
 
 ### HU-F8.4 — Mostrar factura post-pago con desglose (operador-ve la factura en la UI)
 
@@ -2336,13 +2347,17 @@ sequenceDiagram
 
 **Historia**: Como operador o supervisor, quiero cerrar todas las sesiones del día de una vez, con el resumen agregado de la jornada.
 
-**Criterios de aceptación**: Given `/caja/cierre-diario`, Then `GET /caja/arqueo/resumen?uuid_sucursal=X&fecha=YYYY-MM-DD` muestra el resumen por sesión (cajero, apertura/cierre, base, esperado, reportado, diferencia, justificado); When se confirma, Then `POST /caja/arqueo` con `codigo='cierre_dia'` y `uuid_sesion=NULL`, y se cierran todas las sesiones abiertas del día.
+**Criterios de aceptación**: Given el sheet de cierre diario (ver ajuste 2026-09-25 abajo), Then `GET /caja/arqueo/resumen?uuid_sucursal=X&fecha=YYYY-MM-DD` muestra el resumen por sesión (cajero, apertura/cierre, base, esperado, reportado, diferencia, justificado); When se confirma, Then `POST /caja/arqueo` con `codigo='cierre_dia'` y `uuid_sesion=NULL`, y se cierran todas las sesiones abiertas del día.
+
+**Ajuste 2026-09-25 (directiva del operador)**: "cierre diario no debe estar en una ruta aparte, debe estar en un sheet dentro de `/` como todas las demás funcionalidades". Se retira la ruta `/caja/cierre-diario` de `App.tsx`; `CierreDiario` (el form real, sin cambios de contenido) ahora se monta dentro de `<CierreDiarioSheet />` (thin shell, mismo patrón que `<ArqueoSheet />`/`<CerrarTurnoSheet />`), abierta desde el mismo botón del sidebar vía `useDashboardDrawerStore.open('cierre-diario-multi', ...)`. Ancho del sheet: 50% del viewport (`md:w-1/2` default), contenido centrado en `max-w-xl`.
+
+**Ajuste 2026-09-25-b (directiva del operador)**: se unificó el hotkey F6 con este mismo sheet. Existía un kind viejo `'cierre-diario'` (`<CierreDiarioDialog />`) — cierre rápido per-session — CONFIRMADO como código muerto (`DrawerHost` lo montaba con `uuid_sucursal`/`uuid_sesion` siempre `null`, su submit nunca hacía nada); era la implementación vieja de este mismo "cierre diario". Se retiró por completo (componente borrado) y F6 ahora abre `'cierre-diario-multi'`, igual que el botón del sidebar.
 
 **Tablas ER tocadas**: `arqueo` (INSERT, `uuid_sesion=NULL`), `sesion` (`UPDATE` masivo de cierre, filtrado por sucursal + rango del día).
 
 **Endpoints**: `GET /caja/arqueo/resumen`, `POST /caja/arqueo` (ambos de HU-F1.13).
 
-**Componentes UI**: `CierreDiario` (page, resumen + form).
+**Componentes UI**: `CierreDiarioSheet` (drawer, thin shell) envolviendo `CierreDiario` (form, resumen + totales).
 
 **Pruebas**: `e2e/cierre-diario.spec.ts` — cierre con 3 sesiones (2 ya cerradas + 1 abierta).
 
@@ -2499,6 +2514,7 @@ Los 8 códigos técnicos ya sembrados (`hash_chain_anomaly`, `dian_rechazada`, `
 | GET | `/documentos?uuid_sucursal=X&tipo=certificado` | Existente | — | F6 (póliza RC en tiquete) |
 | POST | `/workflows/reimpresion-ticket` | Nuevo | F1 (HU-F1.11) | F8 |
 | POST | `/workflows/reimpresion-ticket/{uuid}/anular` | Nuevo | F1 (HU-F1.11) | F8 |
+| POST | `/facturacion/factura-servicio` | Nuevo (ajuste 2026-09-25-c) | — | F8 (HU-F8.3 consume) |
 | POST | `/clientes/venta-suscripcion` | Nuevo | F1 (HU-F1.12) | F9 |
 | POST | `/caja/arqueo` | Nuevo | F1 (HU-F1.13) | F10 |
 | GET | `/caja/arqueo/resumen` | Nuevo | F1 (HU-F1.13) | F10 |
@@ -2578,7 +2594,7 @@ Todo error de esta parte sigue el contrato estándar del backend: `HTTPException
 | `/caja/abrir-turno` | `AbrirTurno` | `operador-` autenticado | F3 |
 | `/caja/cerrar-turno` | `CerrarTurno` | `operador-` autenticado | F3/F10 |
 | `/caja/arqueo-parcial` | `ArqueoParcial` | `realizar_arqueo` | F10 |
-| `/caja/cierre-diario` | `CierreDiario` | `realizar_arqueo` | F10 |
+| `/` (sheet `cierre-diario-multi`) | `CierreDiarioSheet` → `CierreDiario` | `realizar_arqueo` | F10 (ruta retirada 2026-09-25, directiva del operador) |
 | `/salida/:uuidIngreso` | `SalidaFlow` | `operador-` autenticado | F7 |
 | `/salida-mensualidad/:uuidIngreso` | `SalidaMensualidad` | `operador-` autenticado | F7 |
 | `/facturacion/factura/:uuid` | `FacturaDetalle` | `operador-` autenticado | F8 |
@@ -7639,6 +7655,7 @@ Nota: `/auth/me` (Parte 1, actor `operador-`) y `/admin/me` (Parte 2, actor `adm
 | `GET /workflows/reimpresion-ticket` | Parte 1 (HU-F1.1 corrige bug · HU-F8.3 consume) | Existe, corregido | — |
 | `POST /workflows/reimpresion-ticket` | Parte 1 (HU-F1.11 cierra · HU-F8.3 consume) | Nuevo | `reimprimir_ticket` (reconciliado, GAP-BE-04) |
 | `POST /workflows/reimpresion-ticket/{uuid}/anular` | Parte 1 (HU-F1.11 cierra · HU-F8.3 consume) | Nuevo | — |
+| `POST /facturacion/factura-servicio` | HU-F8.3 (ajuste 2026-09-25-c) | Nuevo — factura de servicio suelto sin `uuid_salida`, no modifica `POST /facturacion/factura` | — |
 
 #### A.6 Empresa y configuración
 

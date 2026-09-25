@@ -20,22 +20,63 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...auth.tokens import issue_token
 from ...exceptions import SesionAlreadyActive
 from ...models.L_S.sesion import Sesion
 from ...repo.sesion_activa import get_sesion_activa
 from ...repo.session_cycle import close_session_with_log, open_session
 from ...schemas.caja import (
     SesionCreate,
+    SesionOpenResponse,
     SesionRead,
     SesionReadList,
     SesionUpdate,
 )
 from ..deps import TenantContext, get_session, get_tenant_ctx, requires_issuer
 from ..router_factory import make_router
+from .auth import ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL
 
 router = APIRouter(prefix="/caja-sesion", tags=["caja-sesion"])
 
 _sesion_issuer_dep = requires_issuer("operador-", "admin-")
+
+
+def _reissue_tokens(
+    ctx: TenantContext, *, sesion_uuid: uuid_lib.UUID | None
+) -> tuple[str, str]:
+    """BUGFIX (2026-09-25): mint a fresh access+refresh pair carrying the
+    operator's CURRENT ``sesion`` claim.
+
+    Mirrors the claims shape ``api/v1/auth.py::login`` builds (same
+    ``rol``/``sucursal``/``sucursales_permitidas``) plus ``sesion`` --
+    the one claim that no endpoint ever actually set despite the
+    ``TenantContext`` docstring's claim otherwise. ``operador-`` is
+    always pinned to exactly one branch (``ctx.sucursal_uuid``), so
+    ``sucursales_permitidas`` is reconstructed as a one-element list
+    the same way ``login`` does; ``admin-`` never opens/closes a turno
+    (only ``operador-``/``admin-`` share the issuer dep here, but only
+    an actual cajero calls this in practice) so this stays a safe mirror.
+    """
+    claims: dict[str, object] = {
+        "rol": ctx.actor_rol,
+        "sucursales_permitidas": [str(ctx.sucursal_uuid)] if ctx.sucursal_uuid else [],
+        "sucursal": str(ctx.sucursal_uuid) if ctx.sucursal_uuid else None,
+    }
+    if sesion_uuid is not None:
+        claims["sesion"] = str(sesion_uuid)
+    access = issue_token(
+        subject_uuid=ctx.actor_uuid,
+        issuer=ctx.issuer_prefix,
+        claims=claims,
+        expires_in=ACCESS_TOKEN_TTL,
+    )
+    refresh = issue_token(
+        subject_uuid=ctx.actor_uuid,
+        issuer=ctx.issuer_prefix,
+        claims={"type": "refresh", **claims},
+        expires_in=REFRESH_TOKEN_TTL,
+    )
+    return access, refresh
 
 
 class SesionCerrarRequest(BaseModel):
@@ -80,7 +121,7 @@ class ArqueoDiferenciasResponse(BaseModel):
 
 @router.post(
     "/sesiones",
-    response_model=SesionRead,
+    response_model=SesionOpenResponse,
     status_code=201,
     summary="Open a cash session (REQ-40-S-OPEN)",
 )
@@ -89,7 +130,7 @@ async def open_sesion(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_sesion_issuer_dep),
-) -> SesionRead:
+) -> SesionOpenResponse:
     """Insert a new Sesion row + log_transaccional (REQ-40)."""
     if payload.uuid_sucursal is None or payload.uuid_usuario is None:
         raise HTTPException(
@@ -131,12 +172,18 @@ async def open_sesion(
         ) from exc
     await session.commit()
     await session.refresh(new_row)
-    return SesionRead.model_validate(new_row)
+    access, refresh = _reissue_tokens(ctx, sesion_uuid=new_row.uuid)
+    return SesionOpenResponse(
+        **SesionRead.model_validate(new_row).model_dump(),
+        access_token=access,
+        refresh_token=refresh,
+        expires_in=ACCESS_TOKEN_TTL,
+    )
 
 
 @router.put(
     "/sesion/{uuid}/cerrar",
-    response_model=SesionRead,
+    response_model=SesionOpenResponse,
     summary="Close a cash session (REQ-41, SC-42 — log-first)",
 )
 async def cerrar_sesion(
@@ -145,11 +192,17 @@ async def cerrar_sesion(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_sesion_issuer_dep),
-) -> SesionRead:
+) -> SesionOpenResponse:
     """Close the Sesion row + write log_transaccional FIRST.
 
     The DB trigger ``ls_session_guard`` validates the log exists in the
     same TX. If not, the trigger RAISES (REQ-41, SC-42).
+
+    BUGFIX (2026-09-25): also reissues the token pair WITHOUT the
+    ``sesion`` claim, symmetric with ``open_sesion`` -- otherwise the
+    operator's token would keep claiming an active session that just
+    closed, and any payment made before the next login/refresh cycle
+    would misattribute to a turno that is no longer open.
     """
     updated = await close_session_with_log(
         session,
@@ -161,7 +214,13 @@ async def cerrar_sesion(
         log_tx=True,
     )
     await session.commit()
-    return SesionRead.model_validate(updated)
+    access, refresh = _reissue_tokens(ctx, sesion_uuid=None)
+    return SesionOpenResponse(
+        **SesionRead.model_validate(updated).model_dump(),
+        access_token=access,
+        refresh_token=refresh,
+        expires_in=ACCESS_TOKEN_TTL,
+    )
 
 
 @router.get(

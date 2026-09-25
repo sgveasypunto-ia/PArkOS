@@ -93,6 +93,14 @@ def _make_reimpresion_orm(
     return row
 
 
+def _make_costo_servicio_orm(*, costo: float = 1500.0) -> MagicMock:
+    """DEC-TKT-05 mock costos_servicios row (concepto='reimpresion')."""
+    row = MagicMock()
+    row.uuid = uuid_lib.uuid4()
+    row.costo = costo
+    return row
+
+
 @pytest.mark.asyncio
 async def test_reimpresion_full_chain_post_create_then_anular_then_reanular_returns_409(
     monkeypatch: pytest.MonkeyPatch,
@@ -167,6 +175,11 @@ async def test_reimpresion_full_chain_post_create_then_anular_then_reanular_retu
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "buscar_costo_servicio_vigente_por_concepto",
+        AsyncMock(return_value=_make_costo_servicio_orm()),
+    )
+    monkeypatch.setattr(
         workflows_reimpresion_mod.repo_workflow,
         "append_transition",
         AsyncMock(return_value=r1),
@@ -200,10 +213,12 @@ async def test_reimpresion_full_chain_post_create_then_anular_then_reanular_retu
         return {
             "uuid_root": r1_uuid,
             "uuid_actual": r1_uuid,
-            "estado": "activo",
+            # BUGFIX (2026-09-25): real `read_chain_tip` shape has no
+            # `workflow_estado` key; `estado` carries the per-table
+            # workflow cycle value ('autorizada'/'rechazada' here).
+            "estado": "autorizada",
             "timestamp_evento": _now(),
             "chain_length": 1,
-            "workflow_estado": "autorizada",
         }
 
     monkeypatch.setattr(
@@ -253,14 +268,13 @@ async def test_reimpresion_full_chain_post_create_then_anular_then_reanular_retu
     response_3 = _new_response()
 
     async def _read_chain_tip_3(session, model_cls, *, root_uuid, parent_fk_column):
-        # Chain tip now is r2 with workflow_estado='rechazada' (terminal).
+        # Chain tip now is r2 with estado='rechazada' (terminal).
         return {
             "uuid_root": r1_uuid,
             "uuid_actual": r2_uuid,
-            "estado": "activo",
+            "estado": "rechazada",
             "timestamp_evento": _now(),
             "chain_length": 2,
-            "workflow_estado": "rechazada",
         }
 
     monkeypatch.setattr(

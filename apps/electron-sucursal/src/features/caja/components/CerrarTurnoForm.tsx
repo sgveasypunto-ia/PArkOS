@@ -154,7 +154,7 @@ export function CerrarTurnoForm({
         // resumen, cada FormField, los banners de error y los botones —
         // todos eran hijos directos sin `space-y`, quedaban pegados sin
         // aire entre sí. `space-y-4` es el mismo ritmo vertical que ya
-        // usa el resto de los forms del dominio (CierreDiarioDialog,
+        // usa el resto de los forms del dominio (CierreDiarioForm,
         // AbrirTurnoForm).
         className="space-y-4"
       >

@@ -369,12 +369,17 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     });
     expect(mockTrigger).toHaveBeenCalledTimes(1);
     const arg = mockTrigger.mock.calls[0]?.[0] as {
-      cliente: { nit: string };
+      cliente: { tipo_identificador: string; numero_identificacion: string };
       placas: string[];
       uuid_tipo_subscripcion: string;
       cobrar_ahora: boolean;
     };
-    expect(arg.cliente.nit).toBe('900123456');
+    // BUGFIX (2026-09-25): el wire contract real (`ClientesCreate`) no
+    // tiene `nit` -- `tipo_identificador`/`numero_identificacion`. Este
+    // assert encodeaba el mismo contrato equivocado que rompía el POST
+    // real (422 extra_forbidden) en cualquier venta a cliente nuevo.
+    expect(arg.cliente.tipo_identificador).toBe('NIT');
+    expect(arg.cliente.numero_identificacion).toBe('900123456');
     expect(arg.placas).toEqual(['ABC123']);
     expect(arg.uuid_tipo_subscripcion).toBe(
       '00000000-0000-0000-0000-0000000000a1',

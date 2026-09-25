@@ -66,6 +66,7 @@ from ...schemas.facturacion import (
     FacturaDisplayVehiculo,
     FacturaItemRead,
     FacturaRead,
+    FacturaServicioCreate,
 )
 
 
@@ -87,7 +88,7 @@ async def build_display_factura(
     *,
     new_factura: Facturas,
     detalles_creados: list[FacturaDetalle],
-    payload: FacturaCreate,
+    payload: FacturaCreate | FacturaServicioCreate,
     total_server: Decimal,
     cliente_uuid: uuid_lib.UUID | None,
 ) -> FacturaRead:
