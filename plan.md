@@ -376,7 +376,7 @@ RENDERER (React 18 + Vite 5 + TypeScript strict)
   src/features/{auth,operacion,caja,facturacion,suscripciones,sync,reimpresion}/
   src/components/ui/      — atomic design: primitivas shadcn/ui (Button, Dialog, Form, Input, Toast,
                              Table, Badge, Sheet, Select, Tabs, Popover, Tooltip, DropdownMenu, Skeleton)
-  src/components/         — moleculas/organismos propios (OcupacionStrip, SyncBanner, AlertasPanel)
+  src/components/         — moleculas/organismos propios (OcupacionStrip, AlertasPanel)
   src/lib/{parkosFetch,bridge,electron-store,validation,fechas,print}/
   src/i18n/               — namespaces: common, auth, operacion, caja, facturacion, sync, errors
 ```
@@ -2330,34 +2330,36 @@ sequenceDiagram
 
 **Objetivo**: lo que el operador ve y hace respecto a la sincronización (nunca el motor de sincronización en sí, que es transversal y corre en `job-sync-sucursal`, fuera de esta app) y el panel de alertas operativas.
 
-### HU-F11.1 — Banner de estado de sincronización
+### HU-F11.1 — Indicador de estado de sincronización (navbar)
 
 **Historia**: Como operador, quiero ver de un vistazo si mi sede está sincronizando bien con la nube, sin tener que interpretar logs.
 
+**Realineado 2026-09-24** (REQ-OPS-171, AD-3/AD-4/AD-5): esta funcionalidad vivió primero como un banner fijo arriba de toda la página (por encima incluso del navbar del Dashboard) — el operador reportó que esa franja tapaba contenido sin aportar valor en ese lugar. Por su directiva, la misma funcionalidad ahora vive integrada en el badge "Online" del header del Dashboard (`SyncStatusBadge`), con el detalle real en un tooltip. No es una sección nueva: es la realineación de esta misma HU.
+
 **Criterios de aceptación**:
-- Given `GET /sync/estado?uuid_sucursal=X` (cada 30 s), Then el banner muestra verde (sync al día en la última hora), amarillo (retrasos menores) o rojo (sync fallida o más de 1 hora sin sincronizar) — mismos umbrales que usa CU-14 para clasificar el estado por sucursal.
-- Given que `api-status` (Fase 2) falla 3 veces consecutivas, Then un banner **distinto** y persistente indica "Sin conexión con API local" — no debe confundirse con el banner de sincronización hacia la nube (son dos problemas distintos: uno es la API local de la propia sede, otro es el enlace de esa sede hacia la nube).
+- Given `GET /sync/estado?uuid_sucursal=X` (cada 30 s), Then el indicador del navbar cambia de color (verde = sync al día en la última hora, amarillo = retrasos menores, rojo = sync fallida o más de 1 hora sin sincronizar, gris neutro = sucursal sin sincronizar nunca) — mismos umbrales que usa CU-14 para clasificar el estado por sucursal — y el tooltip al pasar el mouse/enfocar muestra el detalle (`lag_seg`/`pendientes`).
+- Given que `api-status` (Fase 2) falla 3 veces consecutivas, Then un banner **distinto** y persistente (`<LocalApiDownBanner />`) indica "Sin conexión con API local" — no debe confundirse con el indicador de sincronización hacia la nube (son dos problemas distintos: uno es la API local de la propia sede, otro es el enlace de esa sede hacia la nube).
 
 **Tablas ER tocadas** (solo lectura): `sync_log`, `sync_queue`.
 
 **Endpoints**: `GET /sync/estado` (cerrado en HU-F1.14).
 
-**Componentes UI**: `SyncBanner` (`aria-live="polite"`, *polling* cada 30 s propio del componente, no solo del hook).
+**Componentes UI**: `SyncStatusBadge` (badge + tooltip Radix dentro del header de `<Dashboard />`; anuncio a lectores de pantalla vía `role="status"` + `aria-live="polite"` en un `span` `sr-only` separado, *polling* cada 30 s propio del componente, no solo del hook).
 
-**Pruebas**: `e2e/sync-banner.spec.ts` — 4 escenarios:
+**Pruebas**: `e2e/sync-status-badge.spec.ts` — 4 escenarios:
 
 1. Verde: `lag_seg` bajo, sync dentro de la última hora.
 2. Amarillo: retrasos menores (lag por encima del umbral, pero sin fallos consecutivos).
 3. Rojo: sync fallida o más de 1 hora sin sincronizar.
-4. "Sin conexión con API local": `api-status` falla 3 veces consecutivas, banner persistente distinto del de sync hacia la nube.
+4. "Sin conexión con API local": `api-status` falla 3 veces consecutivas, banner persistente distinto del indicador de sync hacia la nube.
 
 **Tamaño estimado**: 190 LOC.
 
 **Tareas atómicas**:
-- **HU-F11.1-T1**: `src/components/SyncBanner.tsx` con color por `lag_seg` y `pendientes`.
+- **HU-F11.1-T1**: `src/features/sync/components/SyncStatusBadge.tsx` con color por `lag_seg` y `pendientes`.
 - **HU-F11.1-T2**: *polling* SWR `refreshInterval: 30_000`.
-- **HU-F11.1-T3**: banner separado de "Sin conexión con API local" (Zustand, contador de fallos consecutivos de `api-status`).
-- **HU-F11.1-T4**: `e2e/sync-banner.spec.ts` (4 escenarios).
+- **HU-F11.1-T3**: indicador separado de "Sin conexión con API local" (Zustand, contador de fallos consecutivos de `api-status`).
+- **HU-F11.1-T4**: `e2e/sync-status-badge.spec.ts` (4 escenarios).
 
 ---
 
@@ -2486,7 +2488,7 @@ Los 8 códigos técnicos ya sembrados (`hash_chain_anomaly`, `dian_rechazada`, `
 | F8 | `FacturaDetalle`, `ReimprimirTiquete` | `PagoModal` |
 | F9 | `Venta`, `Listado` (suscripciones) | banner de vencimiento próximo (inline en `Principal`) |
 | F10 | `ArqueoParcial`, `CierreDiario` (completa `CerrarTurno` de F3) | — |
-| F11 | — | `SyncBanner`, `AlertasPanel` |
+| F11 | — | `SyncStatusBadge`, `AlertasPanel` |
 | F12 | — | `MiTurnoPanel` |
 
 ### Anexo C — Mapa de fases, historias y tareas atómicas (resumen)

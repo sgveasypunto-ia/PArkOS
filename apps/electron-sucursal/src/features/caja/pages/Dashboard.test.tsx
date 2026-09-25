@@ -4,7 +4,9 @@
  * Coverage (verbatim tasks.md §2):
  *   U15: Operador sin sesión activa → `navigate('/caja/abrir-turno', { replace: true })`.
  *   U16: Operador con sesión activa → renderiza el hub con placa hero
- *        + secciones placeholder (suscripciones / sync / alertas / fe-retry).
+ *        + secciones placeholder (alertas / fe-retry) + el badge real
+ *        de sync (`dashboard-online`, F11.1 realineado — ya no vive en
+ *        un `dashboard-section-sync` sr-only, ver `SyncStatusBadge`).
  *   U17: SWR 500 error → `<Alert>` + retry button.
  *   U18: isLoading=true → `<Skeleton>` sin redirect.
  *   U19: secciones renderizan con `data-testid="dashboard-section-*"`
@@ -218,7 +220,12 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     // SuscripcionesPanel sr-only anchor was removed in
     // feat/ux-remover-suscripciones-vencer (2026-09-22) — el panel
     // de vencimientos se mudó a otra ruta, fuera del kiosko.
-    expect(screen.getByTestId('dashboard-section-sync')).toBeInTheDocument();
+    // F11.1 realineado (2026-09-24): el `dashboard-section-sync` sr-only
+    // se retiró — el indicador de sync ahora es el badge real
+    // `dashboard-online` del header (ver SyncStatusBadge), no un anchor
+    // invisible.
+    expect(screen.queryByTestId('dashboard-section-sync')).not.toBeInTheDocument();
+    expect(screen.getByTestId('dashboard-online')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-section-alertas')).toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-section-ingreso')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-section-salida')).not.toBeInTheDocument();
