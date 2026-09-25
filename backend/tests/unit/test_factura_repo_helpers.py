@@ -19,11 +19,13 @@ from decimal import Decimal
 
 import pytest
 from parkos_core.models.A.salidas import Salidas
+from parkos_core.models.V.clientes import Clientes
 from parkos_core.models.V.impuestos import Impuestos
 from parkos_core.repo.factura import (
     FacturaDuplicadaError,
     PagoDuplicadoError,
     TotalNoCoherenteError,
+    buscar_o_crear_cliente_por_nit,
     buscar_salida_facturable,
     compute_total,
 )
@@ -258,6 +260,70 @@ async def test_buscar_salida_facturable_missing_returns_none(
         uuid_salida=uuid_lib.uuid4(),
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_buscar_cliente_por_nit_no_colisiona_con_cc_mismo_numero(
+    pg_session: object,
+) -> None:
+    """Regresión: CC y NIT con el mismo número no deben confundirse.
+
+    Pre-fix, el lookup filtraba SOLO por ``numero_identificacion`` —
+    violando la UK real (``tipo_identificador``, ``numero_identificacion``,
+    ``vigente_desde``) y devolviendo la primera fila que matcheara el
+    número sin importar el tipo de documento.
+
+    ``numero`` usa un sufijo aleatorio: la DB de este entorno es
+    compartida/persistente (no un container descartable), así que un
+    literal fijo podría colisionar con datos de pruebas manuales previas
+    y disparar ``MultipleResultsFound`` por una razón ajena al bug bajo
+    prueba.
+    """
+    numero = f"900{uuid_lib.uuid4().int % 1_000_000:06d}"
+    cliente_nit = Clientes(
+        tipo_identificador="NIT",
+        numero_identificacion=numero,
+        nombre="Empresa SAS",
+    )
+    cliente_cc = Clientes(
+        tipo_identificador="CC",
+        numero_identificacion=numero,
+        nombre="Persona Natural",
+    )
+    pg_session.add_all([cliente_nit, cliente_cc])  # type: ignore[attr-defined]
+    await pg_session.flush()  # type: ignore[attr-defined]
+
+    resultado_nit = await buscar_o_crear_cliente_por_nit(
+        pg_session,  # type: ignore[arg-type]
+        tipo_identificador="NIT",
+        numero_identificacion=numero,
+        datos=None,
+    )
+    resultado_cc = await buscar_o_crear_cliente_por_nit(
+        pg_session,  # type: ignore[arg-type]
+        tipo_identificador="CC",
+        numero_identificacion=numero,
+        datos=None,
+    )
+
+    assert resultado_nit is not None
+    assert resultado_nit.uuid == cliente_nit.uuid
+    assert resultado_cc is not None
+    assert resultado_cc.uuid == cliente_cc.uuid
+
+
+@pytest.mark.asyncio
+async def test_buscar_cliente_por_nit_missing_returns_none(
+    pg_session: object,
+) -> None:
+    """Regresión: tipo/número sin fila correspondiente sigue devolviendo None."""
+    resultado = await buscar_o_crear_cliente_por_nit(
+        pg_session,  # type: ignore[arg-type]
+        tipo_identificador="CE",
+        numero_identificacion="does-not-exist",
+        datos=None,
+    )
+    assert resultado is None
 
 
 @pytest.mark.asyncio

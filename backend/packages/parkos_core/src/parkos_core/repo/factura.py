@@ -120,17 +120,40 @@ async def buscar_salida_facturable(
 async def buscar_o_crear_cliente_por_nit(
     session: AsyncSession,
     *,
+    tipo_identificador: str,
     numero_identificacion: str,
     datos: Any,
 ) -> Any | None:
-    """V2 — lookup ``prod.clientes`` by ``numero_identificacion``.
+    """V2 — lookup the vigente ``prod.clientes`` row by ``(tipo_identificador,
+    numero_identificacion)`` — matches the real UK (``.mmd`` UK01:
+    ``tipo_identificador, numero_identificacion, vigente_desde``). Filtering
+    by number alone let a CC and a NIT sharing the same digits collide
+    silently once persona-natural documents were accepted alongside NIT.
+
+    Bi-temporal note: a real-world cliente can have multiple historical
+    versions sharing the same natural key (each with its own
+    ``vigente_desde``), so this also filters to ``vigente_hasta IS NULL``
+    (the current version) — same idiom as
+    :func:`repo.venta_suscripcion.buscar_o_crear_vehiculo_por_placa` — and
+    orders by ``vigente_desde DESC LIMIT 1`` as defense-in-depth so a
+    lookup can never raise ``MultipleResultsFound``.
 
     For MVP (F1.9): returns ``None`` when not found (handler maps to 404).
     Auto-creación is Fase 2 (per design).
     """
     from ..models.V.clientes import Clientes  # local import to avoid cycles
 
-    stmt = select(Clientes).where(Clientes.numero_identificacion == numero_identificacion)
+    stmt = (
+        select(Clientes)
+        .where(
+            Clientes.tipo_identificador == tipo_identificador,
+            Clientes.numero_identificacion == numero_identificacion,
+            Clientes.vigente_hasta.is_(None),
+            Clientes.estado == "activo",
+        )
+        .order_by(Clientes.vigente_desde.desc())
+        .limit(1)
+    )
     row = (await session.execute(stmt)).scalar_one_or_none()
     return row
 

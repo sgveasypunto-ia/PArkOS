@@ -206,4 +206,116 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     expect(label?.textContent).toMatch(/consumidor final/i);
     expect(label?.textContent).toMatch(/opcional/i);
   });
+
+  it('M8 (persona/empresa): checkbox marcado arranca en "empresa"/NIT sin ningún valor precargado (solo placeholder)', () => {
+    render(<PagoModal {...DEFAULT_PROPS} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId('pago-fe-toggle'));
+    });
+
+    const tipoPersonaSelect = screen.getByTestId('pago-tipo-persona') as HTMLSelectElement;
+    expect(tipoPersonaSelect.value).toBe('empresa');
+    // No hay selector de tipo de documento para empresa (siempre NIT).
+    expect(screen.queryByTestId('pago-tipo-documento')).toBeNull();
+
+    const nitInput = screen.getByTestId('pago-nit') as HTMLInputElement;
+    const nombreInput = screen.getByTestId('pago-fe-nombre') as HTMLInputElement;
+    // BUGFIX 2026-09-25: value vacío, NUNCA el sentinel de consumidor
+    // final precargado — el placeholder es solo un ejemplo cosmético.
+    expect(nitInput.value).toBe('');
+    expect(nitInput.placeholder).not.toBe('');
+    expect(nitInput.placeholder).not.toMatch(/^2{15}$/);
+    expect(nombreInput.value).toBe('');
+  });
+
+  it('M9 (persona natural): cambiar a "persona" muestra selector de tipo de documento + apellido, oculta DV', () => {
+    render(<PagoModal {...DEFAULT_PROPS} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId('pago-fe-toggle'));
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-tipo-persona'), { target: { value: 'persona' } });
+    });
+
+    const tipoDocumentoSelect = screen.getByTestId('pago-tipo-documento') as HTMLSelectElement;
+    expect(tipoDocumentoSelect.value).toBe('CC');
+    expect(screen.getByTestId('pago-fe-apellido')).toBeTruthy();
+    // DV (módulo 11) es un concepto exclusivo de NIT — no debe pedirse
+    // para persona natural (CC/CE/pasaporte no tienen dígito de
+    // verificación en Colombia).
+    expect(screen.queryByTestId('pago-fe-dv')).toBeNull();
+  });
+
+  it('M10 (persona natural, CC): submit con CC + nombre + apellido válidos llama onSubmit con tipo_identificador="CC"', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId('pago-fe-toggle'));
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-tipo-persona'), { target: { value: 'persona' } });
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-nit'), { target: { value: '1020304050' } });
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-fe-nombre'), { target: { value: 'Juan' } });
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-fe-apellido'), { target: { value: 'Pérez' } });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const arg = onSubmit.mock.calls[0]?.[0] as PagoFormValues & {
+      tipo_persona: string;
+      tipo_identificador: string;
+      apellido?: string;
+    };
+    expect(arg.tipo_persona).toBe('persona');
+    expect(arg.tipo_identificador).toBe('CC');
+    expect(arg.apellido).toBe('Pérez');
+  });
+
+  it('M11 (persona natural, CC inválida): submit bloqueado por formato de documento', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId('pago-fe-toggle'));
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-tipo-persona'), { target: { value: 'persona' } });
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-nit'), { target: { value: '12' } });
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-fe-nombre'), { target: { value: 'Juan' } });
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-fe-apellido'), { target: { value: 'Pérez' } });
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('M12 (checkbox off): sin tocar el bloque FE, submit pasa igual (cliente genérico) sin exigir nit/nombre/apellido', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const arg = onSubmit.mock.calls[0]?.[0] as PagoFormValues;
+    expect(arg.fe).toBe(false);
+  });
 });

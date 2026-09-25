@@ -64,7 +64,14 @@ interface ClienteRow {
 export interface ClienteContext {
   nombre: string;
   apellido: string;
-  tipoIdentificador: 'CC' | 'CE' | 'NIT' | 'PAS' | string;
+  // Espejo de solo lectura de `Clientes.tipo_identificador` (backend
+  // `Literal["NIT", "CC", "CE", "pasaporte"]`). Fix 2026-09-25: este
+  // campo declaraba `'PAS'` como variante — el backend nunca emite ese
+  // código (usa `'pasaporte'`, ver `facturaApi.ts`/`facturaServicioApi.ts`),
+  // así que `'PAS'` nunca podía matchear nada; queda como `string` porque
+  // este dato es puramente de display (preview del tiquete), no un
+  // discriminador sobre el que se ramifique lógica.
+  tipoIdentificador: string;
   numeroIdentificacion: string;
   /** ISO date string — ``null`` when the subscription has no
       ``fecha_vencimiento``. */

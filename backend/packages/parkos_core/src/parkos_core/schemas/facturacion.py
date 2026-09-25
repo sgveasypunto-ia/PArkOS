@@ -35,7 +35,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import StringConstraints
 
@@ -510,7 +510,7 @@ class FacturaPagosReadList(ReadListBase[FacturaPagosRead]):
 #   on ``prod.facturas`` (DEC-FACT-06).
 # ---------------------------------------------------------------------------
 
-from pydantic import Field, field_validator
+from pydantic import Field, model_validator
 
 from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
 
@@ -518,7 +518,7 @@ from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
 class FacturaItemConDatosPropios(_Base):
     """Client data block for ``fe_con_datos=true`` payloads.
 
-    Validates NIT módulo 11 via Pydantic v2 ``@field_validator`` when
+    Validates NIT módulo 11 via Pydantic v2 ``@model_validator`` when
     ``tipo_identificador='NIT'``. Re-uses :mod:`repo.nit_modulo11`.
 
     ``extra='forbid'`` (inherited from :class:`_Base`) rejects extra
@@ -533,10 +533,23 @@ class FacturaItemConDatosPropios(_Base):
     email: Annotated[str, StringConstraints(min_length=5, max_length=120)] | None = None
     telefono: Annotated[str, StringConstraints(min_length=7, max_length=20)] | None = None
 
-    @field_validator("numero_identificacion")
-    @classmethod
-    def _validar_nit_modulo11(cls, v: str, info: Any) -> str:
+    @model_validator(mode="after")
+    def _validar_nit_modulo11(self) -> FacturaItemConDatosPropios:
         """If ``tipo_identificador='NIT'``, apply módulo 11 algorithm.
+
+        BUGFIX (2026-09-25, encontrado en validación en vivo con Chrome
+        DevTools durante HU-F8.1 persona/empresa): la versión anterior
+        usaba ``@field_validator("numero_identificacion")`` leyendo
+        ``info.data.get("dv")`` — en Pydantic v2 ``info.data`` solo
+        contiene los campos declarados ANTES del campo validado, y
+        ``dv`` se declara DESPUÉS de ``numero_identificacion``, así que
+        ``dv`` era SIEMPRE ``None`` en ese punto. Resultado: todo pago
+        con NIT real (con datos propios) rechazaba con 422 "dv required"
+        aunque el DV viajara correcto en el payload — el camino de FE
+        con datos propios nunca pudo completarse en producción.
+        ``model_validator(mode="after")`` corre con TODOS los campos ya
+        poblados (mismo patrón que ``ClientesCreate._validar_nit_dv``),
+        eliminando el problema de orden de declaración.
 
         Raises ``ValueError`` (Pydantic v2 maps to ``ValidationError`` →
         HTTP 422) when:
@@ -544,15 +557,13 @@ class FacturaItemConDatosPropios(_Base):
         - ``dv`` is missing for NIT (cannot validate without it).
         - the DV does not match the computed módulo 11 result.
         """
-        tipo = info.data.get("tipo_identificador")
-        if tipo == "NIT":
-            dv = info.data.get("dv")
-            if dv is None:
+        if self.tipo_identificador == "NIT":
+            if self.dv is None:
                 raise ValueError("dv required when tipo_identificador='NIT'")
-            if not validar_nit_modulo11(v, dv):
-                expected = dv_esperado(v)
-                raise ValueError(f"DV inválido: recibido={dv}, esperado={expected}")
-        return v
+            if not validar_nit_modulo11(self.numero_identificacion, self.dv):
+                expected = dv_esperado(self.numero_identificacion)
+                raise ValueError(f"DV inválido: recibido={self.dv}, esperado={expected}")
+        return self
 
 
 class FacturaItemCreate(_Base):

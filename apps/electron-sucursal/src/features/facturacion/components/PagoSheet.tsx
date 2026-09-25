@@ -50,6 +50,7 @@ import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useRegistrarPago } from '../hooks/useRegistrarPago';
 import { useAnularSalidaNoPagada } from '../hooks/useAnularSalidaNoPagada';
 import { PagoModal, type PagoFormValues } from './PagoModal';
+import { buildClienteFePayload } from '../lib/clienteFePayload';
 import { useInvalidateConteosOperacion } from '../../operacion/hooks/useInvalidateConteosOperacion';
 import { useAuth } from '@parkos/ui-kit/hooks';
 import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
@@ -254,20 +255,7 @@ export function PagoSheet({
           valor_unitario: total_cop,
         },
       ];
-      const feDatos = values.fe
-        ? {
-            fe_con_datos: true as const,
-            fe_datos_cliente: {
-              tipo_identificador: 'NIT' as const,
-              numero_identificacion: values.nit ?? '',
-              dv: values.dv || null,
-              nombre: values.nombre_cliente ?? 'Consumidor final',
-              apellido: null,
-              email: values.email_cliente || null,
-              telefono: null,
-            },
-          }
-        : {};
+      const feDatos = buildClienteFePayload(values);
       const post = values.medio_pago === 'efectivo'
         ? {
             uuid_salida,
