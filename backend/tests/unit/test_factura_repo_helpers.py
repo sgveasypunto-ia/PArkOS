@@ -32,8 +32,12 @@ from parkos_core.repo.impuestos import obtener_iva_vigente
 from parkos_core.schemas.facturacion import FacturaItemCreate
 
 
-def test_compute_total_suma_items_mas_iva() -> None:
-    """V6 invariant: total = sum(cantidad*valor_unitario) + iva - retencion."""
+def test_compute_total_suma_items_sin_recargar_iva() -> None:
+    """V6 invariant (actualizado 2026-09-24, ver docstring de ``compute_total``):
+    los ``items`` YA vienen con IVA incluido (snapshot de cotización
+    F1.8/PL-pgSQL) -- ``total = sum(cantidad*valor_unitario) - retencion``,
+    SIN sumar IVA de nuevo (eso duplicaría el IVA, DEC-FACT-03).
+    """
     items = [
         FacturaItemCreate(
             tipo="servicio",
@@ -50,12 +54,11 @@ def test_compute_total_suma_items_mas_iva() -> None:
             uuid_tarifa_sucursal=None,
         ),
     ]
-    # subtotal = 1*5000 + 2*3000 = 11000.00
-    # iva = 11000.00 * 0.19 = 2090.00
-    # retencion = 0 (DEC-FACT-04 Fase 4 deferred)
-    # total = 13090.00
+    # total = 1*5000 + 2*3000 = 11000.00 (retencion=0, DEC-FACT-04 Fase 4 deferred)
+    # ``iva`` ya no participa de la suma -- se conserva como parámetro
+    # solo por compatibilidad de firma con el snapshot de factura_impuestos.
     total = compute_total(items=items, iva=Decimal("0.19"), retencion=Decimal("0"))
-    assert total == Decimal("13090.00")
+    assert total == Decimal("11000.00")
 
 
 def test_compute_total_items_vacio_retorna_iva_solo() -> None:
@@ -66,7 +69,12 @@ def test_compute_total_items_vacio_retorna_iva_solo() -> None:
 
 
 def test_compute_total_retencion_default_cero() -> None:
-    """DEC-FACT-04: retencion placeholder default is Decimal('0')."""
+    """DEC-FACT-04: retencion placeholder default is Decimal('0').
+
+    Actualizado 2026-09-24 (ver ``compute_total`` docstring): el ítem ya
+    trae el IVA incluido, así que sin retención el total es igual al
+    ítem tal cual.
+    """
     items = [
         FacturaItemCreate(
             tipo="servicio",
@@ -76,9 +84,9 @@ def test_compute_total_retencion_default_cero() -> None:
             uuid_tarifa_sucursal=None,
         ),
     ]
-    # 100 + 19 = 119 (iva=0.19, retencion=0)
+    # 100 - 0 = 100 (retencion default 0; iva ya no se vuelve a sumar)
     total = compute_total(items=items, iva=Decimal("0.19"))
-    assert total == Decimal("119.00")
+    assert total == Decimal("100.00")
 
 
 def test_compute_total_resta_lineas_descuento() -> None:
