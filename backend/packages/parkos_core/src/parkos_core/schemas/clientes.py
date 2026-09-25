@@ -94,12 +94,12 @@ class ClientesCreate(_Base):
             self.tipo_identificador == "NIT"
             and self.numero_identificacion
             and self.dv
+            and not validar_nit_modulo11(self.numero_identificacion, self.dv)
         ):
-            if not validar_nit_modulo11(self.numero_identificacion, self.dv):
-                expected = dv_esperado(self.numero_identificacion)
-                raise ValueError(
-                    f"DV inválido: recibido={self.dv}, esperado={expected}"
-                )
+            expected = dv_esperado(self.numero_identificacion)
+            raise ValueError(
+                f"DV inválido: recibido={self.dv}, esperado={expected}"
+            )
         return self
 
 
@@ -127,12 +127,12 @@ class ClientesUpdate(_Base):
             self.tipo_identificador == "NIT"
             and self.numero_identificacion
             and self.dv
+            and not validar_nit_modulo11(self.numero_identificacion, self.dv)
         ):
-            if not validar_nit_modulo11(self.numero_identificacion, self.dv):
-                expected = dv_esperado(self.numero_identificacion)
-                raise ValueError(
-                    f"DV inválido: recibido={self.dv}, esperado={expected}"
-                )
+            expected = dv_esperado(self.numero_identificacion)
+            raise ValueError(
+                f"DV inválido: recibido={self.dv}, esperado={expected}"
+            )
         return self
 
 
@@ -474,7 +474,89 @@ class VentaSuscripcionResponse(_Base):
     uuid_envio_dian: uuid_lib.UUID | None = None
 
 
+# ---------------------------------------------------------------------------
+# HU-F9.2 realineada — gestión de cupos de suscripción (sucursal, Sheet)
+# ---------------------------------------------------------------------------
+
+
+class ClienteResumen(_Base):
+    """Datos mínimos del cliente para mostrar en el listado/detalle de cupos."""
+
+    uuid: uuid_lib.UUID
+    nombre: str | None
+    apellido: str | None
+    numero_identificacion: str | None
+
+
+class PlanResumen(_Base):
+    """Datos mínimos del plan (``tipo_subscripciones``) para el listado/detalle."""
+
+    uuid: uuid_lib.UUID
+    tipo: str | None
+    valor: Decimal | None
+    cantidad_maxima_vehiculos: int | None
+    mismo_tipo_vehiculo: bool | None
+
+
+class VehiculoInscrito(_Base):
+    """Un vehículo inscrito vigente en una suscripción.
+
+    ``uuid`` es el uuid de la fila ``subscripcion_vehiculos`` (lo que se
+    necesita para "quitar" ese vehículo puntual); ``uuid_vehiculo`` es el
+    FK al catálogo de vehículos.
+    """
+
+    uuid: uuid_lib.UUID
+    uuid_vehiculo: uuid_lib.UUID
+    placa: str | None
+
+
+class SubscripcionActivaItem(_Base):
+    """Una fila del listado de suscripciones activas (paso 1 del Sheet)."""
+
+    uuid: uuid_lib.UUID
+    cliente: ClienteResumen
+    plan: PlanResumen
+    fecha_inicio_cobertura: date | None
+    fecha_vencimiento: date | None
+    cupo_maximo: int | None
+    vehiculos_inscritos: int
+
+
+class SubscripcionesActivasResponse(_Base):
+    """``GET /clientes/subscripciones-activas`` response."""
+
+    items: list[SubscripcionActivaItem]
+
+
+class SubscripcionCupoDetalle(_Base):
+    """Detalle de una suscripción para el paso de gestión de cupos.
+
+    Devuelto tanto por la búsqueda por identificación como por
+    agregar/quitar un vehículo (para que el frontend refresque el estado
+    sin un segundo round-trip).
+    """
+
+    uuid: uuid_lib.UUID
+    cliente: ClienteResumen
+    plan: PlanResumen
+    fecha_inicio_cobertura: date | None
+    fecha_vencimiento: date | None
+    cupo_maximo: int | None
+    cupo_disponible: int | None
+    vehiculos: list[VehiculoInscrito]
+
+
+class AgregarVehiculoCupoRequest(_Base):
+    """``POST /clientes/subscripcion-vehiculos/agregar`` payload."""
+
+    uuid_subscripcion_cliente: uuid_lib.UUID
+    placa: Annotated[str, StringConstraints(min_length=1, max_length=16)]
+
+
 __all__ = [
+    "AgregarVehiculoCupoRequest",
+    "ClienteResumen",
     "ClientesB2BCreate",
     "ClientesB2BFilter",
     "ClientesB2BRead",
@@ -485,16 +567,21 @@ __all__ = [
     "ClientesRead",
     "ClientesReadList",
     "ClientesUpdate",
+    "PlanResumen",
+    "SubscripcionActivaItem",
+    "SubscripcionCupoDetalle",
     "SubscripcionVehiculosCreate",
     "SubscripcionVehiculosFilter",
     "SubscripcionVehiculosRead",
     "SubscripcionVehiculosReadList",
     "SubscripcionVehiculosUpdate",
+    "SubscripcionesActivasResponse",
     "SubscripcionesClienteCreate",
     "SubscripcionesClienteFilter",
     "SubscripcionesClienteRead",
     "SubscripcionesClienteReadList",
     "SubscripcionesClienteUpdate",
+    "VehiculoInscrito",
     "VehiculosCreate",
     "VehiculosFilter",
     "VehiculosRead",

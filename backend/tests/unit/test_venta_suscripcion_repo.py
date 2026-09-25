@@ -240,7 +240,7 @@ async def test_buscar_o_crear_vehiculo_por_placa_inserts_when_missing() -> None:
     new_row.uuid = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
 
-    async def fake_detectar(_placa: str) -> uuid_lib.UUID:
+    async def fake_detectar(_session, _placa: str) -> uuid_lib.UUID:
         return detected_uuid
 
     with patch.object(

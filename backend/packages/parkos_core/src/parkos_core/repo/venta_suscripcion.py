@@ -301,7 +301,7 @@ async def buscar_o_crear_vehiculo_por_placa(
     if existing is not None:
         return existing, False
 
-    uuid_tipo_vehiculo = await repo_placa.detectar_tipo_vehiculo(placa)
+    uuid_tipo_vehiculo = await repo_placa.detectar_tipo_vehiculo(session, placa)
     nuevo = await versioned.close_and_insert(
         session,
         Vehiculos,
