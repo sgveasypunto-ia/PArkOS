@@ -11,7 +11,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 
 import { StatusBar } from './StatusBar';
-import type { ApiStatus } from '../../electron/bridge';
+import type { ApiStatus } from '../../../electron/bridge';
 
 interface BridgeMock {
   apiStatus: { get: ReturnType<typeof vi.fn> };
