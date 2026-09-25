@@ -1,0 +1,90 @@
+[
+  {
+    "file": "logos/logo-horizontal-light.svg",
+    "format": "svg",
+    "variant": "horizontal, wordmark blanco (fill #fff codificado en el SVG)",
+    "dimensions": "176.75x45.533 (viewBox)",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/Logo-Easy-Punto.svg",
+    "usoPrevisto": "Logo principal sobre fondos oscuros / hero / header transparente. Candidato directo para el modo oscuro de electron-sucursal."
+  },
+  {
+    "file": "logos/logo-horizontal-dark--REQUIERE-VECTOR.png",
+    "format": "png",
+    "variant": "horizontal, pin naranja + wordmark gris oscuro (#323133 aprox.)",
+    "dimensions": "282x74",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/Grupo-9360222.png",
+    "usoPrevisto": "Logo activo en el header del sitio cuando el fondo es claro (variante realmente cableada en el componente de navegación). Candidato para modo claro. Solo existe en bitmap: requiere trazado a vector antes de usarse en producción."
+  },
+  {
+    "file": "logos/logo-horizontal-dark-alt--REQUIERE-VECTOR.png",
+    "format": "png",
+    "variant": "horizontal, casi idéntico al anterior (pin con degradado ligeramente distinto)",
+    "dimensions": "212x91",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/LogoNegro.png",
+    "usoPrevisto": "Variante alterna usada en la sección de footer del sitio. Mantener como referencia; probablemente redundante con logo-horizontal-dark tras vectorizar. Requiere vector."
+  },
+  {
+    "file": "logos/logo-stacked-color--REQUIERE-VECTOR.png",
+    "format": "png",
+    "variant": "apilado/vertical, pin + wordmark en naranja, incluye marca ® ",
+    "dimensions": "256x191",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/easypuntologo.png",
+    "usoPrevisto": "Logo vertical usado en la columna del footer. Útil para splash screen o estados donde se necesite el isotipo apilado. Requiere vector."
+  },
+  {
+    "file": "logos/logo-social-preview--REQUIERE-VECTOR.png",
+    "format": "png",
+    "variant": "horizontal, usado como imagen social (og:image)",
+    "dimensions": "471x162",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2025/01/logoani.png",
+    "usoPrevisto": "Solo referencia (preview de compartidos/og:image); no se confirmó su uso visible dentro del layout del sitio. Requiere vector si se reutiliza como logo real."
+  },
+  {
+    "file": "icons/marker-glyph-01.svg",
+    "format": "svg",
+    "variant": "glifo abstracto de dos cápsulas superpuestas, colores #323133 y #e85f24",
+    "dimensions": "20x36 (viewBox)",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2024/11/Group-14618.svg",
+    "usoPrevisto": "Elemento decorativo/bullet propio del sitio. Confirma en el propio SVG (no solo por getComputedStyle) los valores exactos de marca: primario #e85f24 y secundario #323133."
+  },
+  {
+    "file": "icons/marker-glyph-02.svg",
+    "format": "svg",
+    "variant": "glifo abstracto de dos cápsulas superpuestas (variante de proporciones), mismos colores",
+    "dimensions": "22x39 (viewBox)",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/Grupo-14268.svg",
+    "usoPrevisto": "Igual que marker-glyph-01; posible variante de tamaño para otro breakpoint/sección."
+  },
+  {
+    "file": "illustrations/illustration-footer-fan--REQUIERE-VECTOR.png",
+    "format": "png",
+    "variant": "ilustración de línea (persona con guante de hincha '#1'), paleta crema/negro/naranja de marca",
+    "dimensions": "479x515",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/footer-grafico.png",
+    "usoPrevisto": "Ilustración decorativa junto al bloque de estadísticas del footer ('+10 parqueaderos...'). Solo existe en bitmap; requiere vector si se va a reutilizar a otras resoluciones."
+  },
+  {
+    "file": "favicons/favicon-32.png",
+    "format": "png",
+    "variant": "favicon 32x32",
+    "dimensions": "32x32",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/cropped-Enmascarar-grupo-39-32x32.png",
+    "usoPrevisto": "Favicon estándar (link rel=icon sizes=32x32)."
+  },
+  {
+    "file": "favicons/favicon-192.png",
+    "format": "png",
+    "variant": "favicon/ícono PWA 192x192",
+    "dimensions": "192x192",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/cropped-Enmascarar-grupo-39-192x192.png",
+    "usoPrevisto": "Ícono para manifest/PWA o accesos directos (link rel=icon sizes=192x192)."
+  },
+  {
+    "file": "favicons/apple-touch-icon-180.png",
+    "format": "png",
+    "variant": "apple-touch-icon 180x180",
+    "dimensions": "180x180",
+    "sourceUrl": "https://easypunto.com/wp-content/uploads/2023/11/cropped-Enmascarar-grupo-39-180x180.png",
+    "usoPrevisto": "Ícono para iOS/Safari (link rel=apple-touch-icon)."
+  }
+]
