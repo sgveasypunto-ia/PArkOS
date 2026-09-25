@@ -127,6 +127,16 @@ export type VentaSuscripcionCreate = z.infer<typeof VentaSuscripcionCreateSchema
  * `z.coerce.number()` composed with `.nullable()` still passes literal
  * JSON `null` through untouched (Zod short-circuits nullable BEFORE
  * running the inner schema).
+ *
+ * `factura_electronica_error` — KD-VENTA-03b (operator directive,
+ * 2026-09-25): "el flujo tiene que garantizarse solo hasta que se
+ * pague y se genere la factura". FE emission runs AFTER the payment
+ * commits, in its own transaction; a failure there degrades
+ * gracefully instead of undoing the sale. This field carries the
+ * reason (`resolucion_facturacion_no_encontrada`, `numeracion_agotada`,
+ * `resolucion_sin_prefijo`, `missing_sucursal_context`) so the wizard
+ * can tell the operator "cobrado, FE pendiente" instead of silently
+ * dropping it. `null` on success or when FE wasn't requested.
  */
 export const VentaSuscripcionReadSchema = z
   .object({
@@ -142,6 +152,7 @@ export const VentaSuscripcionReadSchema = z
     uuid_factura_electronica: z.string().uuid().nullable(),
     uuid_envio_dian: z.string().uuid().nullable(),
     factura: FacturaReadSchema.nullable(),
+    factura_electronica_error: z.string().nullable(),
   })
   .strict();
 export type VentaSuscripcionRead = z.infer<typeof VentaSuscripcionReadSchema>;

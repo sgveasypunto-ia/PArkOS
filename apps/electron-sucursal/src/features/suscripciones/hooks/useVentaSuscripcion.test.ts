@@ -78,6 +78,7 @@ const happyResponse = {
   uuid_factura_electronica: null,
   uuid_envio_dian: null,
   factura: null,
+  factura_electronica_error: null,
 };
 
 const inputBase = {

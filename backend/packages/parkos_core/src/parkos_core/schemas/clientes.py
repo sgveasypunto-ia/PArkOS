@@ -480,6 +480,16 @@ class VentaSuscripcionResponse(_Base):
     # the ingreso/salida cobro flow (HU-F8.4) instead of leaving the
     # operator without a ticket. ``None`` when `cobrar_ahora=false`.
     factura: FacturaRead | None = None
+    # KD-VENTA-03b (operator directive, 2026-09-25): FE emission is
+    # best-effort and runs AFTER the payment/factura commit above, in
+    # its own transaction (see `_intentar_emitir_factura_electronica` in
+    # `api/v1/clientes_venta.py`). A 201 response can carry this
+    # non-null while `uuid_factura`/`factura` are populated -- that is
+    # the sale succeeding with FE degraded, not a partial failure. One
+    # of: ``missing_sucursal_context``, ``resolucion_facturacion_no_encontrada``,
+    # ``numeracion_agotada``, ``resolucion_sin_prefijo``. ``None`` on
+    # success or when `emitir_factura_electronica=false`.
+    factura_electronica_error: str | None = None
 
 
 # ---------------------------------------------------------------------------

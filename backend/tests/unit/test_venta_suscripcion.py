@@ -138,6 +138,50 @@ def _make_plan(
     return plan
 
 
+def _minimal_factura_read(*, uuid_factura: uuid_lib.UUID):
+    """A real (minimal) ``FacturaRead`` -- see T5's docstring note: the
+    response field is typed ``FacturaRead | None`` and ``_Base`` sets
+    ``from_attributes=True``, so a bare ``MagicMock`` fails ~30 nested
+    validators when Pydantic walks it attribute-by-attribute.
+    """
+    from datetime import datetime
+
+    from parkos_core.schemas.facturacion import FacturaDisplaySucursal, FacturaRead
+
+    return FacturaRead(
+        uuid=uuid_factura,
+        created_at=datetime.now(),
+        uuid_sucursal=uuid_lib.uuid4(),
+        uuid_ingreso=None,
+        uuid_salida=None,
+        subtotal=Decimal("22000.00"),
+        descuento=Decimal("0"),
+        total=Decimal("26180.00"),
+        uuid_cliente=uuid_lib.uuid4(),
+        items=[],
+        estado="emitida",
+        medio_pago="efectivo",
+        monto_recibido_cents=None,
+        vuelto_cents=None,
+        voucher=None,
+        numero_recibo="test-recibo",
+        cliente=None,
+        datos_sucursal=FacturaDisplaySucursal(
+            razon_social=None,
+            nit=None,
+            direccion=None,
+            ciudad=None,
+            telefono=None,
+            horario=None,
+            regimen=None,
+        ),
+        datos_vehiculo=None,
+        impuestos=[],
+        pagos=[],
+        factura_electronica=None,
+    )
+
+
 # Patch stack reused by every happy-path test
 def _patch_happy_path(
     handler_mod,
@@ -615,3 +659,227 @@ async def test_cobrar_ahora_genera_factura_con_display_enriquecido() -> None:
     assert build_kwargs["detalles_creados"] is detalle_rows
     assert build_kwargs["cliente_uuid"] == cliente_row.uuid
     assert build_kwargs["payload"] is payload
+
+
+# ---------------------------------------------------------------------------
+# T6/T7 -- KD-VENTA-03b: FE emission is best-effort, AFTER the payment commit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fe_fallida_no_revierte_pago_ni_factura() -> None:
+    """T6 (bugfix 2026-09-25, directiva del operador): "el flujo tiene que
+    garantizarse solo hasta que se pague y se genere la factura" -- una
+    falla de FE (ej. sucursal sin resolución) NO debe tumbar una venta
+    con cobro ya procesado.
+
+    Asserts:
+      * 201 con ``uuid_factura``/``factura`` intactos (el pago SÍ quedó).
+      * ``uuid_factura_electronica`` es ``None`` y
+        ``factura_electronica_error == "resolucion_facturacion_no_encontrada"``.
+      * ``session.commit`` se llama UNA sola vez -- el commit del pago
+        (Step 10). El helper de FE nunca llega a su propio commit porque
+        la resolución no existe.
+    """
+    from parkos_core.api.v1 import clientes_venta as handler_mod
+
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload_nuevo_cliente(placas=["ABC123"], cobrar_ahora=True)
+    payload.emitir_factura_electronica = True
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    plan = _make_plan()
+    cliente_row = MagicMock()
+    cliente_row.uuid = uuid_lib.uuid4()
+    vehiculo_row = MagicMock()
+    vehiculo_row.uuid = uuid_lib.uuid4()
+    subscripcion_row = MagicMock()
+    subscripcion_row.uuid = uuid_lib.uuid4()
+    factura_row = MagicMock()
+    factura_row.uuid = uuid_lib.uuid4()
+
+    patchers = _patch_happy_path(
+        handler_mod,
+        plan=plan,
+        cliente_row=cliente_row,
+        vehiculos=[vehiculo_row],
+        subscripcion_row=subscripcion_row,
+    )[-1]
+    m_iva = AsyncMock(return_value=Decimal("0.19"))
+    m_crear_factura = AsyncMock(return_value=factura_row)
+    m_crear_detalle = AsyncMock(return_value=[MagicMock()])
+    m_crear_impuesto = AsyncMock()
+    m_crear_pago = AsyncMock()
+    m_build_display = AsyncMock(
+        return_value=_minimal_factura_read(uuid_factura=factura_row.uuid)
+    )
+    # No hay resolución vigente para la sucursal -- el helper de FE debe
+    # devolver el error SIN insertar nada ni tocar session.commit.
+    m_resolucion = AsyncMock(return_value=None)
+    m_assign_consecutivo = AsyncMock()
+    m_crear_fe = AsyncMock()
+    m_crear_envio = AsyncMock()
+    extra_patchers = [
+        patch.object(handler_mod.repo_impuestos, "obtener_iva_vigente", new=m_iva),
+        patch.object(handler_mod.repo_factura, "crear_factura_evento", new=m_crear_factura),
+        patch.object(
+            handler_mod.repo_factura_detalle,
+            "crear_factura_detalle_bulk",
+            new=m_crear_detalle,
+        ),
+        patch.object(handler_mod.repo_factura, "crear_factura_impuesto_iva", new=m_crear_impuesto),
+        patch.object(handler_mod.repo_factura, "crear_factura_pago", new=m_crear_pago),
+        patch.object(handler_mod, "build_display_factura", new=m_build_display),
+        patch.object(
+            handler_mod.repo_resolucion,
+            "buscar_resolucion_vigente_por_sucursal",
+            new=m_resolucion,
+        ),
+        patch.object(handler_mod.repo_resolucion, "assign_consecutivo", new=m_assign_consecutivo),
+        patch.object(
+            handler_mod.repo_factura_electronica,
+            "crear_factura_electronica_inicial",
+            new=m_crear_fe,
+        ),
+        patch.object(
+            handler_mod.repo_factura_electronica, "crear_envio_dian_inicial", new=m_crear_envio
+        ),
+    ]
+    for p in extra_patchers:
+        p.start()
+    try:
+        result = await handler_mod.venta_suscripcion(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
+    finally:
+        for p in patchers + extra_patchers:
+            p.stop()
+
+    # KD-VENTA-01: exactamente un commit -- el del pago. El helper de FE
+    # nunca llegó a su propio commit (la resolución no existe).
+    assert session.commit.await_count == 1
+    # El pago y la factura SIGUEN presentes -- eso es lo que se garantiza.
+    assert result.uuid_factura == factura_row.uuid
+    assert result.factura is not None
+    # FE degradó sin tumbar la venta.
+    assert result.uuid_factura_electronica is None
+    assert result.factura_electronica_error == "resolucion_facturacion_no_encontrada"
+    m_assign_consecutivo.assert_not_awaited()
+    m_crear_fe.assert_not_awaited()
+    m_crear_envio.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fe_exitosa_commitea_por_separado_del_pago() -> None:
+    """T7: cuando la resolución SÍ existe, la FE se emite en su PROPIO
+    commit, separado del commit del pago (KD-VENTA-03b) -- ambos deben
+    ejecutarse, en ese orden, y ``session.commit`` se llama DOS veces
+    en total (payment + FE), aunque ``venta_suscripcion`` en sí mismo
+    solo invoque una (la AST walk de KD-VENTA-01 solo mira su propio
+    cuerpo; el segundo commit vive en
+    ``_intentar_emitir_factura_electronica``).
+    """
+    from parkos_core.api.v1 import clientes_venta as handler_mod
+
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload_nuevo_cliente(placas=["ABC123"], cobrar_ahora=True)
+    payload.emitir_factura_electronica = True
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    plan = _make_plan()
+    cliente_row = MagicMock()
+    cliente_row.uuid = uuid_lib.uuid4()
+    vehiculo_row = MagicMock()
+    vehiculo_row.uuid = uuid_lib.uuid4()
+    subscripcion_row = MagicMock()
+    subscripcion_row.uuid = uuid_lib.uuid4()
+    factura_row = MagicMock()
+    factura_row.uuid = uuid_lib.uuid4()
+    fe_row = MagicMock()
+    fe_row.uuid = uuid_lib.uuid4()
+    resolucion_row = MagicMock()
+    resolucion_row.uuid = uuid_lib.uuid4()
+    resolucion_row.prefijo = "SETP"
+
+    patchers = _patch_happy_path(
+        handler_mod,
+        plan=plan,
+        cliente_row=cliente_row,
+        vehiculos=[vehiculo_row],
+        subscripcion_row=subscripcion_row,
+    )[-1]
+    extra_patchers = [
+        patch.object(
+            handler_mod.repo_impuestos,
+            "obtener_iva_vigente",
+            new=AsyncMock(return_value=Decimal("0.19")),
+        ),
+        patch.object(
+            handler_mod.repo_factura,
+            "crear_factura_evento",
+            new=AsyncMock(return_value=factura_row),
+        ),
+        patch.object(
+            handler_mod.repo_factura_detalle,
+            "crear_factura_detalle_bulk",
+            new=AsyncMock(return_value=[MagicMock()]),
+        ),
+        patch.object(handler_mod.repo_factura, "crear_factura_impuesto_iva", new=AsyncMock()),
+        patch.object(handler_mod.repo_factura, "crear_factura_pago", new=AsyncMock()),
+        patch.object(
+            handler_mod,
+            "build_display_factura",
+            new=AsyncMock(
+                return_value=_minimal_factura_read(uuid_factura=factura_row.uuid)
+            ),
+        ),
+        patch.object(
+            handler_mod.repo_resolucion,
+            "buscar_resolucion_vigente_por_sucursal",
+            new=AsyncMock(return_value=resolucion_row),
+        ),
+        patch.object(
+            handler_mod.repo_resolucion,
+            "assign_consecutivo",
+            new=AsyncMock(return_value=42),
+        ),
+        patch.object(
+            handler_mod.repo_factura_electronica,
+            "crear_factura_electronica_inicial",
+            new=AsyncMock(return_value=fe_row),
+        ),
+        patch.object(
+            handler_mod.repo_factura_electronica,
+            "crear_envio_dian_inicial",
+            new=AsyncMock(),
+        ),
+    ]
+    for p in extra_patchers:
+        p.start()
+    try:
+        result = await handler_mod.venta_suscripcion(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
+    finally:
+        for p in patchers + extra_patchers:
+            p.stop()
+
+    # Dos commits en total: pago (Step 10) + FE (helper propio).
+    assert session.commit.await_count == 2
+    assert result.uuid_factura == factura_row.uuid
+    assert result.uuid_factura_electronica == fe_row.uuid
+    assert result.factura_electronica_error is None
