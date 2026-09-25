@@ -7994,7 +7994,13 @@ Encontrado recorriendo dashboard, ingreso, suscripciones y arqueo: paneles later
 
 **Alcance**: header/sidebar, paneles de Ingreso/Salida/Suscripciones/Arqueo, componente de toggle de tema, catálogo de estados de componente (hover/focus/active/disabled/loading/error) sobre los componentes reales del inventario de `apps/electron-sucursal`. Breakpoints: rango completo del prompt maestro (320px–4K/ultrawide), confirmado por el operador.
 
-**Estado**: no iniciado.
+**Estado**: hecho (esta sesión) — shell (header/sidebar/layout) + los ~78 componentes del inventario (agrupados por dominio: caja, operación, auth+facturación+catálogos+reimpresión, suscripciones+sync+alertas), toggle de tema visible, logo real integrado (header + login + favicons), y los bugs de HU-F31.2 corregidos. Breakpoints reales probados: 320 a 3840px + ultrawide, claro y oscuro, vía Chrome DevTools (`resize_page`/`emulate`). `tsc -b`/`eslint` limpios, 947/947 tests. Estados de componente (hover/focus/active/disabled/loading/error) cubiertos donde ya existía la lógica — no se agregó ningún estado de negocio nuevo.
+
+Bugs funcionales reales encontrados y corregidos en el camino (no solo visuales): `CierreDiarioDialog.tsx` mostraba texto roto por una key de i18n mal usada (`t('cierreDiario')` devolvía el objeto del namespace, no un string); `ResolverAlertaButton` tragaba errores 403/red en silencio; `ReimprimirTiquete.tsx` tenía un `<label for>` apuntando a un `<div>` (bug real de accesibilidad, confirmado por Chrome DevTools); varios estados de éxito/warning en modo oscuro eran ilegibles por colores Tailwind sueltos sin variante dark (`IngresoPanel.tsx`, `TiqueteModal.tsx`, `AlertaCard.tsx`, `OcupacionPanel.tsx`, `TurnoActivoToggle.tsx`). Un bug estructural de layout (doble cálculo de alto basado en viewport, `App.tsx` vs `Dashboard.tsx`, sin relación entre sí) causaba scroll de página — corregido con un modelo de alto real acotado (flex + `h-dvh`), no un ajuste de valores mágicos.
+
+Componentes confirmados huérfanos (sin ruta ni import activo hoy, auditados igual por estar en el inventario, no se pudieron validar en vivo): `Principal.tsx`, `MiTurnoPanel.tsx`, `OcupacionPanel.tsx`, `TurnoActivoPanel.tsx`, `TarifaBadge.tsx`. No se eliminaron (fuera del alcance de esta HU decidir si son código muerto a retirar).
+
+Pendiente real, no inventado, requiere decisión del operador: el tiquete de **arqueo** (cierre de turno) nunca imprime de verdad — el bridge de impresión solo manda `{uuid}`, nunca un buffer ESC/POS real, pese a que existe un builder ya armado y testeado (`escposBuilder.buildArqueoBuffer`) sin conectar. Documentado en detalle en memoria de sesión (Engram), no en este plan para no duplicar. Mismo patrón roto en `SalidaMensualidad.tsx`/`PagoSheet.tsx`.
 
 #### HU-F31.4 — Accesibilidad y performance sobre el rediseño
 
