@@ -24,8 +24,14 @@
  * 17-key shape. The QR + logo data URLs are emitted as text markers
  * (the actual rasterization is the CALLER's responsibility per F5.2
  * R4 purity + the F6.2 design decision "QR encoding is the caller's
- * responsibility"). When `payload.esMensualidad === true`, the
- * builder emits a `MENSUALIDAD` tag line under the sello.
+ * responsibility"). The builder ALWAYS emits an explicit
+ * `Tipo: ROTACIÓN` / `Tipo: MENSUALIDAD` line under the sello, driven
+ * by `payload.esMensualidad` (DEC-SUC-21) — an 18th printed field, kept
+ * outside the 17-key `TiqueteEntradaCampos` shape (same side-channel
+ * pattern it already used when the tag was conditional). The same
+ * explicit line was added to `buildSalidaBody`/`buildSalidaMensualidadBody`
+ * (operator request: either ticket alone must tell the operator whether
+ * that vehicle gets charged).
  *
  * Purity contract:
  *   - NO DOM, NO `window`, NO `document`, NO `navigator`.
@@ -195,13 +201,20 @@ function buildEntradaBody(payload: EntradaPayload): Buffer {
     utf8('*** TIQUETE DE ENTRADA ***\n'),               // septimo (sello)
     escTextReset(),
   ];
-  // F6.2 — Mensualidad tag conditional (DEC-SUC-21 — derived from
-  // `ingreso.uuid_subscripcion_cliente IS NOT NULL`).
-  if (payload.esMensualidad === true) {
-    lines.push(escBoldOn());
-    lines.push(utf8('MENSUALIDAD\n'));
-    lines.push(escBoldOff());
-  }
+  // Tipo de operación (ROTACIÓN/MENSUALIDAD) — ALWAYS emitted (pedido del
+  // operador: el tiquete de entrada y los de salida deben dejar explícito
+  // si ese vehículo se cobra o no, con solo mirar cualquiera de los dos).
+  // `esMensualidad` sigue siendo derivado de
+  // `ingreso.uuid_subscripcion_cliente IS NOT NULL` (DEC-SUC-21) — refleja
+  // el estado de la suscripción AL MOMENTO DEL INGRESO. El cobro final en
+  // la salida lo decide `calcular_cotizacion` y puede diferir (ver CU-03M:
+  // una 2da placa simultánea de una suscripción personal paga rotación
+  // aunque haya entrado como "MENSUALIDAD" — no es un bug, ver plan.md).
+  lines.push(escBoldOn());
+  lines.push(
+    utf8(`Tipo: ${payload.esMensualidad === true ? 'MENSUALIDAD' : 'ROTACIÓN'}\n`),
+  );
+  lines.push(escBoldOff());
   lines.push(utf8('\n'));
   lines.push(utf8(`Folio: ${payload.folio}\n`));        // octavo
   lines.push(utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`)); // noveno
@@ -260,6 +273,9 @@ function buildSalidaBody(payload: SalidaPayload): Buffer {
     escText2x(),
     utf8('*** SALIDA ***\n'),                                 // 7: Sello
     escTextReset(),
+    escBoldOn(),
+    utf8('Tipo: ROTACIÓN\n'),                                 // 7b: Tipo de operación (pedido del operador)
+    escBoldOff(),
     utf8('\n'),
     utf8(`Folio: ${payload.folio}\n`),                        // 8: Folio
     utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`), // 9: Tarifa
@@ -329,6 +345,9 @@ function buildSalidaMensualidadBody(payload: SalidaMensualidadPayload): Buffer {
     escText2x(),
     utf8('*** PAGO CON MENSUALIDAD ***\n'),                 // 7: Sello (DEC-SUC-27)
     escTextReset(),
+    escBoldOn(),
+    utf8('Tipo: MENSUALIDAD\n'),                            // 7b: Tipo de operación (pedido del operador)
+    escBoldOff(),
     utf8('\n'),
     utf8(`Folio: ${payload.folio}\n`),                      // 8: Folio
     utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`),  // 9: Fecha (date-only)

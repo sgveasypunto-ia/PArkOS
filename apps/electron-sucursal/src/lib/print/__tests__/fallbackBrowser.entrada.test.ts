@@ -5,7 +5,8 @@
  *   - HTML 17-field layout — `<h1>`, `<p>`, `<img>` tags for QR + logo.
  *   - Verbatim `@page { size: 80mm auto; margin: 2mm }` CSS rule (DEC-SUC-08).
  *   - `window.print()` exactly once (F5.2 contract preserved).
- *   - Mensualidad tag conditional — `<strong>MENSUALIDAD</strong>` under sello.
+ *   - Tipo de operación — always-on `<strong>Tipo: ROTACIÓN</strong>` /
+ *     `<strong>Tipo: MENSUALIDAD</strong>` under sello (pedido del operador).
  *   - Logo placeholder — `▢` glyph when `logoDataUrl === ''`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
@@ -124,16 +125,17 @@ describe('renderEntradaTiqueteHtml — 17-field HTML layout', () => {
     expect(html).toContain('<img src="data:image/png;base64,BBB" alt="Logo" />');
   });
 
-  it('renders Mensualidad tag <strong>MENSUALIDAD</strong> when esMensualidad=true', () => {
+  it('renders Tipo tag <strong>Tipo: MENSUALIDAD</strong> when esMensualidad=true', () => {
     const payload = buildPayloadFromFactory({ esMensualidad: true });
     const html = renderEntradaTiqueteHtml(payload);
-    expect(html).toContain('<strong>MENSUALIDAD</strong>');
+    expect(html).toContain('<strong>Tipo: MENSUALIDAD</strong>');
   });
 
-  it('does NOT render Mensualidad tag when esMensualidad=false', () => {
+  it('renders Tipo tag <strong>Tipo: ROTACIÓN</strong> when esMensualidad=false (pedido del operador — siempre explícito)', () => {
     const payload = buildPayloadFromFactory({ esMensualidad: false });
     const html = renderEntradaTiqueteHtml(payload);
-    expect(html).not.toContain('<strong>MENSUALIDAD</strong>');
+    expect(html).toContain('<strong>Tipo: ROTACIÓN</strong>');
+    expect(html).not.toContain('MENSUALIDAD');
   });
 
   it('renders logo placeholder glyph ▢ when logoDataUrl is empty (cold cache)', () => {
@@ -193,10 +195,10 @@ describe('print("entrada", payload) — F6.2 wiring', () => {
     expect(document.getElementById('parkos-escpos-fallback-style')).toBeNull();
   });
 
-  it('renders the Mensualidad tag in the fallback HTML when esMensualidad=true', () => {
+  it('renders the Tipo tag in the fallback HTML when esMensualidad=true', () => {
     const payload = buildPayloadFromFactory({ esMensualidad: true });
     print('entrada', payload);
     const container = document.getElementById('parkos-escpos-fallback-container');
-    expect(container?.innerHTML).toContain('<strong>MENSUALIDAD</strong>');
+    expect(container?.innerHTML).toContain('<strong>Tipo: MENSUALIDAD</strong>');
   });
 });
