@@ -17,8 +17,8 @@
  * Mock `window.bridge.imprimir` because the dialog calls it directly.
  * Uses `fireEvent` (from `@testing-library/react`).
  */
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import '@/i18n';
 
@@ -26,12 +26,23 @@ import { TiqueteModal } from './TiqueteModal';
 
 const imprimirMock = vi.fn();
 
+// NOTE: `window` here is the real jsdom global — replacing it wholesale
+// (as this file used to do) strips `HTMLIFrameElement`, `MessageChannel`,
+// etc. and corrupts React's scheduler for every test that renders after
+// this one in the same worker. Only patch `window.bridge` and restore
+// the prior value in `afterEach` (mirrors `SalidaMensualidad.test.tsx`).
+let originalBridge: unknown;
+
 beforeEach(() => {
   imprimirMock.mockReset();
   imprimirMock.mockResolvedValue({ ok: true });
-  (globalThis as unknown as { window: unknown }).window = {
-    bridge: { imprimir: imprimirMock },
-  };
+  const w = globalThis as unknown as { window: { bridge?: unknown } };
+  originalBridge = w.window.bridge;
+  w.window.bridge = { imprimir: imprimirMock };
+});
+
+afterEach(() => {
+  (globalThis as unknown as { window: { bridge?: unknown } }).window.bridge = originalBridge;
 });
 
 describe('TiqueteModal', () => {
@@ -64,7 +75,10 @@ describe('TiqueteModal', () => {
         onSiguiente={vi.fn()}
       />,
     );
-    expect(screen.getByText(/mensualidad/i)).toBeInTheDocument();
+    // REGRESSION fix (2026-09-22) added a print-preview thumbnail that
+    // repeats the "Tipo:" line already shown in the summary below it,
+    // so "Mensualidad" now legitimately appears twice in the dialog.
+    expect(screen.getAllByText(/mensualidad/i).length).toBeGreaterThan(0);
   });
 
   it('HU-F11.x: shows the concrete vehicle type name when tipo_vehiculo_nombre is provided', () => {
@@ -171,8 +185,11 @@ describe('TiqueteModal', () => {
     );
     // No `Identificación:` line when consecutivo is undefined.
     expect(screen.queryByTestId('tiquete-identificacion')).not.toBeInTheDocument();
-    // Folio still rendered.
-    expect(screen.getByText(/11111111-1111-1111-1111-111111111111/)).toBeInTheDocument();
+    // Folio still rendered (the print-preview thumbnail repeats it
+    // alongside the summary block below, so it legitimately appears twice).
+    expect(
+      screen.getAllByText(/11111111-1111-1111-1111-111111111111/).length,
+    ).toBeGreaterThan(0);
   });
 
   it('test_renders_identificacion_with_consecutivo (REQ-OPS-197)', () => {
@@ -192,7 +209,10 @@ describe('TiqueteModal', () => {
     const idLine = screen.getByTestId('tiquete-identificacion');
     expect(idLine).toHaveTextContent(/Identificación/);
     expect(idLine).toHaveTextContent(/BICI-000001-3f8a1b2c/);
-    // Folio also rendered (always).
-    expect(screen.getByText(/11111111-1111-1111-1111-111111111111/)).toBeInTheDocument();
+    // Folio also rendered (always; appears in both the preview
+    // thumbnail and the summary block below it).
+    expect(
+      screen.getAllByText(/11111111-1111-1111-1111-111111111111/).length,
+    ).toBeGreaterThan(0);
   });
 });

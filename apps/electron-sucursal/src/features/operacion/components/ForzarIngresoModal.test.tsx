@@ -53,6 +53,11 @@ describe('ForzarIngresoModal', () => {
       target: { value: 'cliente VIP requiere acceso' },
     });
     const confirmBtn = screen.getByRole('button', { name: /confirmar/i });
+    // RHF's `mode: 'onChange'` + Zod resolver validates asynchronously —
+    // `formState.isValid` (and therefore the button's `disabled` prop)
+    // only flips after a re-render following the change event. Clicking
+    // immediately hits a still-disabled button, which never submits.
+    await waitFor(() => expect(confirmBtn).toBeEnabled());
     fireEvent.click(confirmBtn);
     await waitFor(() =>
       expect(onConfirm).toHaveBeenCalledWith({
@@ -77,7 +82,9 @@ describe('ForzarIngresoModal', () => {
     fireEvent.change(motivoInput, {
       target: { value: '   cliente VIP   ' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /confirmar/i }));
+    const confirmBtn = screen.getByRole('button', { name: /confirmar/i });
+    await waitFor(() => expect(confirmBtn).toBeEnabled());
+    fireEvent.click(confirmBtn);
     await waitFor(() =>
       expect(onConfirm).toHaveBeenCalledWith(
         expect.objectContaining({ motivo: 'cliente VIP' }),

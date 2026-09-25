@@ -12,9 +12,17 @@
  * F3.3 adds U18 (?closed=true detection + role=status + aria-live=polite).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import type * as ReactRouterDom from 'react-router-dom';
+
+// `<Login>` renders `<LoginForm>` / `<LockoutBlock>`, both of which call
+// `useTranslation()`. Without importing the real i18next bootstrap,
+// react-i18next has no registered instance (`NO_I18NEXT_INSTANCE`) and
+// `t()` returns the raw key instead of the translated string (mirrors
+// the pattern already used in TiqueteModal.test.tsx / Principal.test.tsx).
+import '@/i18n';
 
 const mockUseAuth = vi.fn();
 const mockSetTokens = vi.fn();
@@ -33,7 +41,7 @@ vi.mock('@parkos/ui-kit/store', () => ({
 }));
 
 vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  const actual = await vi.importActual<typeof ReactRouterDom>('react-router-dom');
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
@@ -81,7 +89,11 @@ describe('<Login /> container — T1 Zod validation', () => {
     await user.click(screen.getByTestId('login-submit'));
 
     await waitFor(() => {
-      expect(screen.getByText(/Ingresa un correo válido/i)).toBeInTheDocument();
+      // `<FormMessage>` translates `validation.*` keys against the
+      // `errors` namespace (form.tsx), whose current copy is "Correo
+      // electrónico inválido." — `auth.json`'s own (unused)
+      // `validation.email.invalid` key is dead text nothing reads.
+      expect(screen.getByText(/correo electr[oó]nico inv[aá]lido/i)).toBeInTheDocument();
     });
   });
 
@@ -115,10 +127,22 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
       isLoading: false,
       user: null,
     });
+    // `<LockoutBlock>` persists the lockout end-time in localStorage
+    // (`lockoutStorage.ts`) and keeps whichever stored value is
+    // LONGER ("el lockout más largo es el autoritativo"). Without
+    // clearing it here, U10b's 600s Retry-After lockout survives into
+    // U10's 2s lockout test, so its countdown never expires within
+    // `vi.advanceTimersByTimeAsync(2500)` and the test times out.
+    window.localStorage.clear();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // Belt-and-braces: if a test throws/times out before reaching its
+    // own `vi.useRealTimers()` (e.g. U10, which calls
+    // `vi.useFakeTimers()` mid-test), fake timers would otherwise leak
+    // into every later test in this describe block.
+    vi.useRealTimers();
   });
 
   it('U9: submit OK llama setTokens(acceso, refresh, expires_in)', async () => {
@@ -175,7 +199,10 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
 
     await waitFor(() => {
       const alert = screen.getByTestId('login-error-lockout');
-      expect(alert).toHaveAttribute('role', 'alert');
+      // `<LockoutBlock>` deliberately uses role="status" (not "alert")
+      // — a second role="alert" would compete with the invalid-credentials
+      // alert for screen-reader focus (see LockoutBlock.tsx docblock).
+      expect(alert).toHaveAttribute('role', 'status');
     });
   });
 
@@ -195,16 +222,28 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
       user: null,
     });
 
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    // `fireEvent` (not `userEvent`) on purpose: `userEvent`'s internal
+    // per-keystroke delays and pointer/focus handling rely on
+    // `requestAnimationFrame`, which jsdom polyfills via `setTimeout` —
+    // with `vi.useFakeTimers()` active that never fires without a
+    // manual advance, so `await user.click(...)` hangs indefinitely
+    // instead of resolving. `fireEvent` dispatches synchronously and
+    // sidesteps the whole timer dependency.
     render(
       <MemoryRouter>
         <Login />
       </MemoryRouter>,
     );
 
-    await user.type(screen.getByTestId('login-email'), 'op@test.co');
-    await user.type(screen.getByTestId('login-password'), 'wrong-pass-1234');
-    await user.click(screen.getByTestId('login-submit'));
+    fireEvent.change(screen.getByTestId('login-email'), {
+      target: { value: 'op@test.co' },
+    });
+    fireEvent.change(screen.getByTestId('login-password'), {
+      target: { value: 'wrong-pass-1234' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('login-submit'));
+    });
 
     // Wait for lockout error to appear
     await vi.waitFor(() => {
@@ -216,8 +255,12 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
       await vi.advanceTimersByTimeAsync(2500);
     });
 
-    // After expiry, errorState resets → lockout alert no longer in document
-    await waitFor(() => {
+    // After expiry, errorState resets → lockout alert no longer in document.
+    // Uses `vi.waitFor` (not RTL's `waitFor`) because fake timers are still
+    // active here: RTL's `waitFor` polls via a real `setInterval`, which
+    // never fires while `vi.useFakeTimers()` is on and hangs until its own
+    // timeout instead of re-checking the assertion.
+    await vi.waitFor(() => {
       expect(screen.queryByTestId('login-error-lockout')).not.toBeInTheDocument();
     });
 
@@ -263,8 +306,15 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
 
     const user = renderLogin();
     for (let i = 0; i < 3; i += 1) {
+      // `user.type` appends to the field's current value instead of
+      // replacing it, and a bare `wrong-${i}` (7 chars) is under the
+      // schema's 8-char minimum — both would leave the form stuck on
+      // client-side Zod validation instead of ever calling `fetch`.
+      // Clear first and use a password long enough to pass validation.
+      await user.clear(screen.getByTestId('login-email'));
       await user.type(screen.getByTestId('login-email'), 'op@test.co');
-      await user.type(screen.getByTestId('login-password'), `wrong-${i}`);
+      await user.clear(screen.getByTestId('login-password'));
+      await user.type(screen.getByTestId('login-password'), `wrong-pass-${i}`);
       await user.click(screen.getByTestId('login-submit'));
       // Wait for the error to surface + counter to update.
       await waitFor(() => {
@@ -303,8 +353,15 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
 
     const user = renderLogin();
     for (let i = 0; i < 2; i += 1) {
+      // `user.type` appends to the field's current value instead of
+      // replacing it, and a bare `wrong-${i}` (7 chars) is under the
+      // schema's 8-char minimum — both would leave the form stuck on
+      // client-side Zod validation instead of ever calling `fetch`.
+      // Clear first and use a password long enough to pass validation.
+      await user.clear(screen.getByTestId('login-email'));
       await user.type(screen.getByTestId('login-email'), 'op@test.co');
-      await user.type(screen.getByTestId('login-password'), `wrong-${i}`);
+      await user.clear(screen.getByTestId('login-password'));
+      await user.type(screen.getByTestId('login-password'), `wrong-pass-${i}`);
       await user.click(screen.getByTestId('login-submit'));
       await waitFor(() => {
         expect(screen.getByTestId('login-error-invalid')).toBeInTheDocument();
@@ -345,8 +402,15 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
 
     const user = renderLogin();
     for (let i = 0; i < 4; i += 1) {
+      // `user.type` appends to the field's current value instead of
+      // replacing it, and a bare `wrong-${i}` (7 chars) is under the
+      // schema's 8-char minimum — both would leave the form stuck on
+      // client-side Zod validation instead of ever calling `fetch`.
+      // Clear first and use a password long enough to pass validation.
+      await user.clear(screen.getByTestId('login-email'));
       await user.type(screen.getByTestId('login-email'), 'op@test.co');
-      await user.type(screen.getByTestId('login-password'), `wrong-${i}`);
+      await user.clear(screen.getByTestId('login-password'));
+      await user.type(screen.getByTestId('login-password'), `wrong-pass-${i}`);
       await user.click(screen.getByTestId('login-submit'));
       await waitFor(() => {
         expect(screen.getByTestId('login-error-invalid')).toBeInTheDocument();

@@ -47,7 +47,7 @@ const SAMPLE: OcupacionResponse = {
 };
 
 describe('<OcupacionPanel /> — REQ-OPS-140 in-dashboard parity', () => {
-  it('P1: renders chip "Auto: 23/50" green when data is present', () => {
+  it('P1: renders row "Auto 23/50" green when data is present', () => {
     useOcupacionMock.mockReturnValue({
       data: SAMPLE,
       error: undefined,
@@ -55,12 +55,12 @@ describe('<OcupacionPanel /> — REQ-OPS-140 in-dashboard parity', () => {
       refresh: vi.fn(),
     });
     render(<OcupacionPanel uuid_sucursal="00000000-0000-0000-0000-000000000099" />);
-    const chip = screen.getByTestId('ocupacion-panel-chip-Auto');
-    expect(chip.textContent).toBe('Auto: 23/50');
-    expect(chip.getAttribute('data-color')).toBe('green');
+    const row = screen.getByTestId('ocupacion-panel-row-Auto');
+    expect(row.textContent).toBe('Auto23/50');
+    expect(row.getAttribute('data-color')).toBe('green');
   });
 
-  it('P2: aria-live="polite" + aria-atomic="false" on each chip', () => {
+  it('P2: aria-live="polite" + aria-atomic="false" on each row', () => {
     useOcupacionMock.mockReturnValue({
       data: SAMPLE,
       error: undefined,
@@ -68,9 +68,9 @@ describe('<OcupacionPanel /> — REQ-OPS-140 in-dashboard parity', () => {
       refresh: vi.fn(),
     });
     render(<OcupacionPanel uuid_sucursal="00000000-0000-0000-0000-000000000099" />);
-    const chip = screen.getByTestId('ocupacion-panel-chip-Auto');
-    expect(chip.getAttribute('aria-live')).toBe('polite');
-    expect(chip.getAttribute('aria-atomic')).toBe('false');
+    const row = screen.getByTestId('ocupacion-panel-row-Auto');
+    expect(row.getAttribute('aria-live')).toBe('polite');
+    expect(row.getAttribute('aria-atomic')).toBe('false');
   });
 
   it('P3: data-stale="true" when last poll failed after success', () => {
@@ -85,7 +85,7 @@ describe('<OcupacionPanel /> — REQ-OPS-140 in-dashboard parity', () => {
     expect(root.getAttribute('data-stale')).toBe('true');
     expect(screen.getByTestId('ocupacion-panel-stale-icon')).toBeTruthy();
     // Last-known values preserved.
-    expect(screen.getByTestId('ocupacion-panel-chip-Auto').textContent).toBe('Auto: 23/50');
+    expect(screen.getByTestId('ocupacion-panel-row-Auto').textContent).toBe('Auto23/50');
   });
 
   it('P4: empty placeholder when data is undefined (pre-auth)', () => {

@@ -14,42 +14,14 @@
  *   Esta es una deviation D-axe-unit documentada en el verify-report.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { useForm, type UseFormReturn } from 'react-hook-form';
+import { render, screen } from '@testing-library/react';
+import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { I18nextProvider } from 'react-i18next';
 
 import i18n from '@/i18n';
-import { LoginForm, type LoginErrorState } from './LoginForm';
+import { LoginForm } from './LoginForm';
 import { loginSchema, type LoginInput } from '../api/loginSchema';
-
-function renderWithForm(
-  error: LoginErrorState = null,
-  onSubmit: () => void = vi.fn(),
-): { form: UseFormReturn<LoginInput>; user: ReturnType<typeof userEvent.setup> } {
-  const Wrapper = ({ children }: { children: React.ReactNode }): JSX.Element => {
-    const form = useForm<LoginInput>({
-      resolver: zodResolver(loginSchema),
-      mode: 'onBlur',
-      defaultValues: { email: '', password: '' },
-    });
-    return (
-      <I18nextProvider i18n={i18n}>
-        <LoginForm
-          form={form}
-          onSubmit={onSubmit}
-          isSubmitting={false}
-          error={error}
-        />
-        {/* expose form for assertions */}
-        <span data-testid="__form_marker__" data-form-ref={(form as unknown as { _ref: UseFormReturn<LoginInput> })._ref ? 'set' : 'unset'} />
-        {children}
-      </I18nextProvider>
-    );
-  };
-  return { form: undefined as unknown as UseFormReturn<LoginInput>, user: userEvent.setup() };
-}
 
 describe('<LoginForm />', () => {
   beforeEach(() => {
@@ -100,29 +72,9 @@ describe('<LoginForm />', () => {
     expect(alert).toHaveTextContent('Correo o contraseña incorrectos');
   });
 
-  it('U7b: error lockout → <p role="alert"> muestra t("lockout")', () => {
-    function Harness(): JSX.Element {
-      const form = useForm<LoginInput>({
-        resolver: zodResolver(loginSchema),
-        mode: 'onBlur',
-        defaultValues: { email: '', password: '' },
-      });
-      return (
-        <I18nextProvider i18n={i18n}>
-          <LoginForm
-            form={form}
-            onSubmit={vi.fn()}
-            isSubmitting={false}
-            error={{ kind: 'lockout', retryAfterSeconds: 300 }}
-          />
-        </I18nextProvider>
-      );
-    }
-    render(<Harness />);
-    const alert = screen.getByTestId('login-error-lockout');
-    expect(alert).toHaveAttribute('role', 'alert');
-    expect(alert).toHaveTextContent('Cuenta bloqueada temporalmente');
-  });
+  // U7b (lockout alert) moved to `LockoutBlock.test.tsx` — per the
+  // F11.4 follow-up, `<LoginForm>` no longer renders the lockout error
+  // itself (`<Login>` mounts `<LockoutBlock>` outside the card instead).
 
   it('U7c: error network → <p role="alert"> muestra t("errors:serverError")', () => {
     function Harness(): JSX.Element {
@@ -194,32 +146,8 @@ describe('<LoginForm />', () => {
     expect(submit).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('U9: countdown display visible durante lockout activo con formato mm:ss', () => {
-    function Harness(): JSX.Element {
-      const form = useForm<LoginInput>({
-        resolver: zodResolver(loginSchema),
-        mode: 'onBlur',
-        defaultValues: { email: '', password: '' },
-      });
-      return (
-        <I18nextProvider i18n={i18n}>
-          <LoginForm
-            form={form}
-            onSubmit={vi.fn()}
-            isSubmitting={false}
-            error={{ kind: 'lockout', retryAfterSeconds: 60 }}
-            onLockoutExpired={vi.fn()}
-          />
-        </I18nextProvider>
-      );
-    }
-    render(<Harness />);
-    const countdown = screen.getByTestId('login-countdown');
-    expect(countdown).toBeInTheDocument();
-    expect(countdown).toHaveAttribute('role', 'status');
-    expect(countdown).toHaveAttribute('aria-live', 'polite');
-    expect(countdown.textContent ?? '').toMatch(/\d{2}:\d{2}/);
-  });
+  // U9 (countdown mm:ss) moved to `LockoutBlock.test.tsx` — same reason
+  // as U7b above: the countdown display no longer lives in `<LoginForm>`.
 
   // ──────────────────────────────────────────────────────────────────────
   // F11.4 — attempt counter (UX feedback) rendering tests
@@ -299,7 +227,4 @@ describe('<LoginForm />', () => {
     expect(counter).toHaveAttribute('data-attempt-max', '5');
     expect(counter).toHaveTextContent('Intento 1 de 5');
   });
-
-  // Reference unused import to satisfy linter
-  expect(renderWithForm).toBeDefined();
 });

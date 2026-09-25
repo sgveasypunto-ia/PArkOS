@@ -171,24 +171,34 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2 (Plan)
+    // step 2 (Plan) — click the plan and click "Siguiente" in SEPARATE
+    // `act()` calls: batched together, the second click's onClick
+    // closure is still the pre-selection render (`planInput === ''`),
+    // so `planSchema.safeParse` fails and the wizard never advances
+    // past paso 2. Splitting mirrors T2's already-correct pattern.
     await act(async () => {
       const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
       fireEvent.click(plan);
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 (Cantidad)
+    // step 3 (Cantidad) — same split-act() reasoning as step 2 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
         target: { value: '1' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 (Placas)
+    // step 4 (Placas) — same split-act() reasoning as step 2 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
         target: { value: 'ABC123' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
     // step 5 PagoModal stub: click confirmar -> trigger throws typed error
@@ -214,24 +224,34 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2 (Plan)
+    // step 2 (Plan) — click the plan and click "Siguiente" in SEPARATE
+    // `act()` calls: batched together, the second click's onClick
+    // closure is still the pre-selection render (`planInput === ''`),
+    // so `planSchema.safeParse` fails and the wizard never advances
+    // past paso 2. Splitting mirrors T2's already-correct pattern.
     await act(async () => {
       const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
       fireEvent.click(plan);
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 (Cantidad)
+    // step 3 (Cantidad) — same split-act() reasoning as step 2 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
         target: { value: '1' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 (Placas)
+    // step 4 (Placas) — same split-act() reasoning as step 2 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
         target: { value: 'ABC123' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
     expect(screen.getByTestId('venta-paso-5')).toBeDefined();
@@ -250,24 +270,34 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2 (Plan)
+    // step 2 (Plan) — click the plan and click "Siguiente" in SEPARATE
+    // `act()` calls: batched together, the second click's onClick
+    // closure is still the pre-selection render (`planInput === ''`),
+    // so `planSchema.safeParse` fails and the wizard never advances
+    // past paso 2. Splitting mirrors T2's already-correct pattern.
     await act(async () => {
       const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
       fireEvent.click(plan);
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 (Cantidad)
+    // step 3 (Cantidad) — same split-act() reasoning as step 2 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
         target: { value: '1' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 (Placas)
+    // step 4 (Placas) — same split-act() reasoning as step 2 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
         target: { value: 'ABC123' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
     // step 5: prorrateo badge should be visible (total > 0)
@@ -287,24 +317,34 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       });
       fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
     });
-    // step 2 (Plan)
+    // step 2 (Plan) — click the plan and click "Siguiente" in SEPARATE
+    // `act()` calls: batched together, the second click's onClick
+    // closure is still the pre-selection render (`planInput === ''`),
+    // so `planSchema.safeParse` fails and the wizard never advances
+    // past paso 2. Splitting mirrors T2's already-correct pattern.
     await act(async () => {
       const plan = screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1');
       fireEvent.click(plan);
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
     });
-    // step 3 (Cantidad)
+    // step 3 (Cantidad) — same split-act() reasoning as step 2 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
         target: { value: '1' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
     });
-    // step 4 (Placas)
+    // step 4 (Placas) — same split-act() reasoning as step 2 above.
     await act(async () => {
       fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
         target: { value: 'ABC123' },
       });
+    });
+    await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
     // step 5 PagoModal stub: click confirmar
