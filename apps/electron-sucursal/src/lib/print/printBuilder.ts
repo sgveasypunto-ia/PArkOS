@@ -168,12 +168,22 @@ export function buildEntradaPayloadFromResponse(
  * currently exposes by `uuid_ingreso`. Fabricating those numbers from a
  * fresh cotización would show the WRONG charged amount on a financial
  * document — out of scope here, flagged as a follow-up.
+ *
+ * Return type FIX (2026-09-25): narrowed from the full `ReimpresionPayload`
+ * union (3 branches: entrada/salida/salida-mensualidad) to just the
+ * `originalTipo: 'entrada'` branch this function actually always
+ * returns. The wide annotation forced every caller (and every test) to
+ * re-narrow via `if (payload.originalTipo === 'entrada')` before it
+ * could even read `payload.payload.variant` — the `payload` field's
+ * type differs per branch (`EntradaPayload` only has `variant`;
+ * `SalidaPayload`/`SalidaMensualidadPayload` don't), so accessing it on
+ * the un-narrowed union is a real `TS2339`, not a false positive.
  */
 export function buildReimpresionEntradaPayload(
   ingreso: Ingreso,
   motivo: string,
   context: PrintContext = {},
-): ReimpresionPayload {
+): Extract<ReimpresionPayload, { originalTipo: 'entrada' }> {
   const fechaEntrada = new Date(ingreso.fecha_ingreso ?? Date.now()).toISOString();
   const sucursal: Sucursal = {
     encabezado: context.sucursalEncabezado ?? DEFAULT_SUCURSAL_ENCABEZADO,
