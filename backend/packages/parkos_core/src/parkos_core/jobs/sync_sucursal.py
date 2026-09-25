@@ -81,6 +81,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from parkos_core.jobs.runner import WorkerRunner
 from parkos_core.jobs.sync_cloud import _business_payload_for_apply, is_infra_table
+from parkos_core.repo import sync_cursor as sync_cursor_helpers
 from parkos_core.repo import sync_queue as sq_helpers
 from parkos_core.runtime import engine_flag
 from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME, resolve_catalog_name
@@ -148,10 +149,17 @@ class SyncSucursalWorker(WorkerRunner):
             (``PARKOS_SYNC_POLL_INTERVAL_S``).
         batch_size: Maximum rows per ``push`` cycle
             (``PARKOS_SYNC_BATCH_SIZE``).
-        branch_version: This worker's own semver, compared against
+        branch_version: Semver of this worker, compared against
             ``/sync/hello``'s ``min_branch_version`` (T-PR12-007,
             REQ-CUT-005). Defaults to ``PARKOS_BRANCH_VERSION`` or
             :data:`DEFAULT_BRANCH_VERSION`.
+        uuid_sucursal: THIS branch's UUID (``PARKOS_SUCURSAL_UUID``).
+            Optional: when set, the worker persists its cloud-pull
+            high-water mark in ``prod.sync_cursor`` (CU-07) and re-pulls
+            from the cursor instead of re-snapshotting ``since_seq=0``
+            every cycle. When ``None`` (the safe default — keeps every
+            existing test/caller working), each cycle re-pulls the full
+            idempotent snapshot exactly as before.
         logger: Optional structlog ``BoundLogger``; defaults to
             ``parkos.jobs.sync_sucursal``.
     """
@@ -165,6 +173,7 @@ class SyncSucursalWorker(WorkerRunner):
         poll_interval_s: int = DEFAULT_POLL_INTERVAL_S,
         batch_size: int = DEFAULT_BATCH_SIZE,
         branch_version: str | None = None,
+        uuid_sucursal: uuid_lib.UUID | None = None,
         logger: structlog.stdlib.BoundLogger | None = None,
     ) -> None:
         super().__init__(name="sync_sucursal")
@@ -176,6 +185,7 @@ class SyncSucursalWorker(WorkerRunner):
         self.branch_version = (
             branch_version or os.environ.get("PARKOS_BRANCH_VERSION") or DEFAULT_BRANCH_VERSION
         )
+        self.uuid_sucursal = uuid_sucursal
         self.log = logger or structlog.get_logger("parkos.jobs.sync_sucursal")
 
         # Per-cycle collaborators — instantiated lazily inside cycle()
@@ -237,6 +247,15 @@ class SyncSucursalWorker(WorkerRunner):
             await self._pull_and_apply_catalog()
         else:
             await self._pull_and_apply()
+
+        # CU-07 BR3 (Track 3, sync-sucursal-sweep-exhausted): after the
+        # push + pull work, one extra SELECT per cycle hunts pending rows
+        # that exhausted the queue-lifetime SLA (24h since FIRST enqueue
+        # or intentos >= len(BACKOFF_SCHEDULE)) and converts them to
+        # ``fallido permanente`` + an ``evento_no_procesado`` alert. Runs
+        # INSIDE this cycle so mark_exhausted + the alerta row commit
+        # atomically with everything else below.
+        await self._sweep_exhausted()
 
         # Real bug found + fixed (Docker deployment closing exercise,
         # post-testcontainers): ``self._session`` is owned by ``main()``'s
@@ -617,13 +636,38 @@ class SyncSucursalWorker(WorkerRunner):
     # Step 4: pull + apply
     # ------------------------------------------------------------------
 
+    async def _persist_pull_cursor(self, *, next_seq: int, unresolved: int) -> None:
+        """Advance the branch pull watermark (CU-07) when safe.
+
+        Two hard guards before persisting ``next_seq``:
+
+        * ``uuid_sucursal`` is set — without it there is no cursor,
+          behavior stays the legacy full ``since_seq=0`` resnapshot. The
+          callers below run for the default ``uuid_sucursal=None``
+          constructor (existing tests), so this helper MUST check it:
+          ``set_seq`` would otherwise INSERT a NULL ``uuid_sucursal`` and
+          violate the column's NOT NULL.
+        * ``unresolved == 0`` — a row whose ``tabla`` is outside THIS
+          branch's catalog was NOT applied. Advancing past it would make
+          the next pull (``since_seq`` above it) skip it forever: a
+          silent drop (REQ-CUT-015). Freezing the watermark re-delivers
+          it next cycle, idempotent via ``apply_guard.row_already_present``.
+        """
+        if self.uuid_sucursal is None or unresolved:
+            return
+        await sync_cursor_helpers.set_seq(
+            self._session,
+            uuid_sucursal=self.uuid_sucursal,
+            ultimo_seq=next_seq,
+        )
+
     async def _pull_and_apply(self) -> None:
         """Pull cloud changes and apply each one (Bug 4 fix).
 
         The pre-PR7 ``ConflictResolver.apply_pushed_row`` used to APPLY the
         row and return the outcome; PR7 (T-PR7-004) turned it into a pure
         decision shim ("the caller is responsible for translating outcomes
-        into repo writes") but this legacy caller was never updated —
+        into repo writes") but this legacy caller was never updated --
         since PR7 it only COLLECTED the decision and never wrote a single
         row. Two pulls of the same remote row landed ZERO local rows
         (test C5 pinned ``count == 0`` under LEG), and the fresh-uuid
@@ -633,15 +677,35 @@ class SyncSucursalWorker(WorkerRunner):
         Fix (Bug 4): dedup each delivery by ``uuid_registro`` via the
         shared ``apply_guard.row_already_present`` guard (the same one
         ``_pull_and_apply_catalog`` uses) and apply resolved rows through
-        ``SyncMotor.apply_batch`` — the same catalog pipeline, which
+        ``SyncMotor.apply_batch`` -- the same catalog pipeline, which
         preserves the incoming ``uuid`` end to end
         (``repo.versioned.close_and_insert`` carries ``payload["uuid"]``
         into the new version via ``new_attrs``). A decision-only no-op is
         not an applier.
+
+        CU-07 (pull cursor): when ``self.uuid_sucursal`` is set, the
+        branch pulls from its persisted high-water mark instead of
+        re-snapshotting ``since_seq=0`` every cycle, and advances the
+        cursor ONLY after a batch that applied cleanly with NO unresolved
+        row. ``since_seq`` is the cursor minus 1 (epoch-ms) so a second
+        row sharing the same ``created_at`` ms as the high-water mark is
+        re-delivered instead of silently skipped (``apply_guard.
+        row_already_present`` dedups it). When the cursor is ``None``
+        (default), behavior is unchanged: full ``since_seq=0`` resnapshot.
         """
         assert self._http_client is not None
+
+        cursor_seq = 0
+        if self.uuid_sucursal is not None:
+            cursor_seq = await sync_cursor_helpers.get_seq(
+                self._session, uuid_sucursal=self.uuid_sucursal
+            )
+        # ``max(0, cursor - 1)``: re-deliver the last epoch-ms so a row
+        # with the SAME ``created_at`` ms as the cursor is not skipped.
+        since_seq = max(0, cursor_seq - 1)
+
         try:
-            pulled = await self._http_client.pull(since_seq=0)
+            pulled = await self._http_client.pull(since_seq=since_seq)
         except SyncJwtMissingError as exc:
             # Pre-pairing — same contract as the push path (Bug 6): the
             # cycle keeps committing, JWT rotation not involved.
@@ -696,6 +760,12 @@ class SyncSucursalWorker(WorkerRunner):
         if already_applied:
             self.log.debug("sync_sucursal.pull_skipped_already_applied", count=already_applied)
         if not resolved:
+            # Everything was already applied (or unresolved) — the cursor
+            # only advances when nothing is left behind (CU-07); already-
+            # applied rows are local, so marking them consumed is safe.
+            await self._persist_pull_cursor(
+                next_seq=pulled.next_seq, unresolved=unresolved
+            )
             return
 
         if self._motor is None:
@@ -710,6 +780,11 @@ class SyncSucursalWorker(WorkerRunner):
         except Exception as exc:  # noqa: BLE001 — keep the cycle alive (mirrors sync_cloud.py)
             self.log.warning("sync_sucursal.pull_apply_batch_failed", error=str(exc))
             return
+
+        # Applied cleanly with no unresolved row — advance the watermark.
+        await self._persist_pull_cursor(
+            next_seq=pulled.next_seq, unresolved=unresolved
+        )
 
         self.log.info(
             "sync_sucursal.pull_applied",
@@ -731,10 +806,25 @@ class SyncSucursalWorker(WorkerRunner):
         Built with the EXPLICIT ``catalog_branch`` engine mode — never
         ``engine_flag.get_engine()`` — for the same D11 reason
         :meth:`_detect_applier_mode` doesn't read the env flag either.
+
+        CU-07 (pull cursor): same delivery-incremental behavior as
+        :meth:`_pull_and_apply` — pulls from the persisted watermark when
+        ``uuid_sucursal`` is set and advances it only after a clean apply
+        with no unresolved row.
         """
         assert self._http_client is not None
+
+        cursor_seq = 0
+        if self.uuid_sucursal is not None:
+            cursor_seq = await sync_cursor_helpers.get_seq(
+                self._session, uuid_sucursal=self.uuid_sucursal
+            )
+        # ``max(0, cursor - 1)``: re-deliver the last epoch-ms so a row
+        # sharing the high-water mark's ``created_at`` ms is not skipped.
+        since_seq = max(0, cursor_seq - 1)
+
         try:
-            pulled = await self._http_client.pull(since_seq=0)
+            pulled = await self._http_client.pull(since_seq=since_seq)
         except SyncJwtMissingError as exc:
             # Pre-pairing — same contract as the push path (Bug 6): the
             # cycle keeps committing, JWT rotation not involved.
@@ -758,8 +848,7 @@ class SyncSucursalWorker(WorkerRunner):
                 unresolved += 1
                 continue
 
-            # Real defect this closes: today's ``since_seq=0`` every-cycle
-            # call (see this method's own re-request below) means the SAME
+            # Real defect this closes: a since_seq>0 call means the SAME
             # row is delivered again on the next cycle — a blind
             # ``close_and_insert`` would try to re-insert it with a FRESH
             # uuid (identical class of bug already fixed in
@@ -788,6 +877,11 @@ class SyncSucursalWorker(WorkerRunner):
         if already_applied:
             self.log.debug("sync_sucursal.pull_skipped_already_applied", count=already_applied)
         if not resolved:
+            # All rows were already applied locally (or unresolved) — the
+            # cursor advances only when nothing is left behind (CU-07).
+            await self._persist_pull_cursor(
+                next_seq=pulled.next_seq, unresolved=unresolved
+            )
             return
 
         if self._motor is None:
@@ -813,12 +907,71 @@ class SyncSucursalWorker(WorkerRunner):
             self.log.warning("sync_sucursal.pull_apply_batch_failed", error=str(exc))
             return
 
+        # Applied cleanly with no unresolved row — advance the watermark.
+        await self._persist_pull_cursor(
+            next_seq=pulled.next_seq, unresolved=unresolved
+        )
+
         self.log.info(
             "sync_sucursal.pull_applied_catalog",
             pulled=len(pulled.rows),
             applied=len(result.applied),
             buffered=len(result.buffered),
             next_seq=pulled.next_seq,
+        )
+
+    # ------------------------------------------------------------------
+    # CU-07 BR3 — SLA-exhaustion sweep (Track 3, plan.md L6969/L6980)
+    # ------------------------------------------------------------------
+
+    async def _sweep_exhausted(self) -> None:
+        """Convert SLA-exhausted ``sync_queue`` rows + raise an alert (BR3).
+
+        One ``SELECT`` per cycle (runs inside :meth:`cycle`, right after
+        push+pull and before the commit, so the conversions and the alerta
+        row land atomically). Any ``pendiente`` row past the queue-lifetime
+        SLA — ``EXHAUSTION_MAX_AGE`` (24h from FIRST enqueue, BR3) or
+        ``intentos >= len(BACKOFF_SCHEDULE)`` — is converted to
+        ``fallido permanente`` via ``repo.sync_queue.mark_exhausted``
+        (NEVER ``mark_failed``, which would only re-queue it forever), and
+        a single ``evento_no_procesado`` alert is raised for the batch.
+
+        Dedup is structural: the DB row leaves ``estado='pendiente'`` on
+        conversion, so the next cycle's ``list_exhausted`` re-select cannot
+        match it again — the same event never raises a second alert.
+        """
+        exhausted = await sq_helpers.list_exhausted(
+            self._session,
+            limit=self.batch_size,
+            uuid_sucursal=self.uuid_sucursal,
+        )
+        if not exhausted:
+            return
+
+        for row in exhausted:
+            await sq_helpers.mark_exhausted(
+                self._session,
+                row.uuid,
+                (
+                    f"exhausted_sla tabla={row.tabla} intentos={row.intentos} "
+                    f"created_at={row.created_at} operacion={row.operacion}"
+                ),
+            )
+
+        # Lazy import — mirrors the other hooks/impls callers; keeps the
+        # worker's boot graph light (the hook self-registers on import).
+        from parkos_core.sync.hooks.impls.alert_emitter import alert_emitter
+
+        await alert_emitter(
+            self._session,
+            tipo_alerta="evento_no_procesado",
+            uuid_sucursal=self.uuid_sucursal,
+        )
+
+        self.log.warning(
+            "sync_sucursal.sweep_exhausted",
+            count=len(exhausted),
+            sq_uuids=[str(r.uuid) for r in exhausted],
         )
 
     # ------------------------------------------------------------------
@@ -951,6 +1104,7 @@ def main() -> int:  # pragma: no cover — exercised by docker smoke test
                 session=session,
                 poll_interval_s=cfg.sync_poll_interval_s,
                 batch_size=cfg.sync_batch_size,
+                uuid_sucursal=cfg.uuid_sucursal,
             )
             return await worker.run()
 

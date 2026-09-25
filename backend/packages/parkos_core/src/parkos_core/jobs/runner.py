@@ -60,6 +60,16 @@ class BaseRunner(ABC):
         ``MissingEnvError`` is mapped to exit code ``2`` (misconfig) per
         §21.7, raising the same exit-code contract the container
         entrypoints honor.
+
+        T-PR9-09 (Track 1, ``feature/worker-healthz``): after env is
+        proven valid and BEFORE the main loop, bring up the tiny HTTP
+        liveness server (:mod:`parkos_core.jobs.healthz`) so the
+        image-level ``HEALTHCHECK`` (Dockerfile.* → ``/healthz:9999``)
+        and Compose ``depends_on.condition: service_healthy`` signal a
+        *healthy binding worker*, not just a live process. A malformed
+        ``PARKOS_HEALTHZ_PORT`` is a misconfig (exit 2); a bind failure
+        (port already taken) is a fatal boot error (exit 1) — the worker
+        must never run without a liveness endpoint.
         """
         # T-PR8-02: env validation — exit 2 on missing/malformed vars.
         # Logging goes through structlog (``self.log``) so the operator
@@ -70,6 +80,21 @@ class BaseRunner(ABC):
         except MissingEnvError as exc:
             self.log.error("env_validation_failed", errors=exc.errors)
             return 2
+
+        # T-PR9-09: liveness server AFTER env validation (a misconfig must
+        # never open a port), BEFORE the loop (Compose reads healthy the
+        # moment the worker is ready to cycle).
+        from parkos_core.jobs.healthz import start_healthz, stop_healthz
+
+        healthz = None
+        try:
+            healthz = start_healthz()
+        except MissingEnvError as exc:
+            self.log.error("healthz_env_validation_failed", errors=exc.errors)
+            return 2
+        except OSError as exc:
+            self.log.error("healthz_bind_failed", error=str(exc))
+            return 1
 
         # Wire signal handlers (Unix only — Windows uses add_signal_handler)
         loop = asyncio.get_running_loop()
@@ -93,6 +118,10 @@ class BaseRunner(ABC):
         except Exception:
             self.log.exception("worker_fatal")
             return 1
+        finally:
+            # Stop the liveness server on every exit path — daemon thread
+            # closes the accept socket; the process can now terminate.
+            stop_healthz(healthz)
 
     def install_signal_handlers(self) -> None:
         """For environments that don't use asyncio.run() (e.g. CLI wrapper)."""

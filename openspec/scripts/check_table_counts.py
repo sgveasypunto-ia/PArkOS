@@ -15,8 +15,9 @@ Canonical counts after the ADR-002 amendment:
   - [L-W] workflows: 6
   - [L-S] sessions: 2
   - [A] append-only: 14
-  - Physical prod tables: 54 (51 ER + 3 non-ER operational: idempotency_keys,
-    pairing_tokens, revoked_sync_jwts — see check_schema_match.py)
+  - Physical prod tables: 55 (51 ER + 4 non-ER operational: idempotency_keys,
+    pairing_tokens, revoked_sync_jwts, ingreso_consecutivo_contador — plus
+    sync_cursor (0051), see check_schema_match.py)
 
 The old (pre-reconciliation) counts the script flags as stale:
   - "45 tables" / "24 [V]" / "9 [L]" / legacy "4 L-W" breakdown

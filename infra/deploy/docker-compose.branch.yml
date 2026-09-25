@@ -151,12 +151,6 @@ services:
       - jwt-volume:/var/run/parkos
     deploy:
       replicas: 1
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import os; os._exit(0 if os.getppid() != 1 else 1)\" >/dev/null"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
 
 networks:
   parkos-branch-net:

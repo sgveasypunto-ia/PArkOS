@@ -35,6 +35,7 @@ from .A.revocacion_factura import RevocacionFactura
 from .A.revoked_sync_jwts import RevokedSyncJwt
 from .A.salidas import Salidas
 from .A.sync_conflict import SyncConflict
+from .A.sync_cursor import SyncCursor
 from .A.sync_log import SyncLog
 from .A.sync_queue import SyncQueue
 from .A.sync_queue_lw_buffer import SyncQueueLwBuffer
@@ -117,6 +118,7 @@ __all__ = [
     "SubscripcionesCliente",
     "Sucursal",
     "SyncConflict",
+    "SyncCursor",
     "SyncLog",
     "SyncQueue",
     "SyncQueueLwBuffer",
