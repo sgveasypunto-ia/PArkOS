@@ -62,6 +62,39 @@ def _make_session_with_salida(salida: MagicMock) -> AsyncMock:
     return session
 
 
+async def _build_display_factura_stub(
+    _session: object,
+    *,
+    new_factura: MagicMock,
+    detalles_creados: list,
+    payload: object,
+    total_server: Decimal,
+    cliente_uuid: uuid_lib.UUID | None,
+) -> MagicMock:
+    """Stand-in for ``build_display_factura`` (HU-F8.4).
+
+    These tests exercise the KD-FACT-01 handler orchestration only —
+    the display projection itself (4-table join reading
+    ``factura_pagos``/``factura_impuestos``/``salidas``/``clientes``)
+    has its own dedicated tests in
+    ``tests/api/test_factura_display_projection.py``. A bare,
+    unconfigured ``AsyncMock()`` session cannot satisfy the real
+    projection: every attribute access on an ``AsyncMock`` auto-mocks
+    as async too, so ``(await session.execute(...)).scalar_one_or_none()``
+    — a SYNC call in real SQLAlchemy — returns an un-awaited coroutine
+    instead of a row, raising ``AttributeError: 'coroutine' object has
+    no attribute 'medio_pago'``. Monkeypatched out here so this file
+    stays scoped to the atomicity/orchestration invariant it documents.
+    """
+    result = MagicMock()
+    result.uuid = new_factura.uuid
+    result.estado = "emitida"
+    result.uuid_cliente = cliente_uuid
+    result.subtotal = new_factura.subtotal
+    result.total = new_factura.total
+    return result
+
+
 @pytest.mark.asyncio
 async def test_post_factura_invokes_session_commit_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
@@ -184,6 +217,10 @@ async def test_post_factura_invokes_session_commit_exactly_once(
     monkeypatch.setattr(
         "parkos_core.api.v1.facturacion.obtener_iva_vigente",
         _obtener_iva,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.build_display_factura",
+        _build_display_factura_stub,
     )
 
     # Invoke the handler
@@ -422,6 +459,10 @@ async def test_post_factura_uses_db_iva_not_hardcoded(
     monkeypatch.setattr(
         "parkos_core.api.v1.facturacion.repo_factura.crear_factura_pago",
         _crear_factura_pago,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.build_display_factura",
+        _build_display_factura_stub,
     )
 
     await create_factura(response, payload, session, ctx, None)
@@ -716,6 +757,10 @@ async def test_create_factura_datafono_con_referencia_201(
     monkeypatch.setattr(
         "parkos_core.api.v1.facturacion.repo_factura.crear_factura_pago",
         _crear_factura_pago,
+    )
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.build_display_factura",
+        _build_display_factura_stub,
     )
 
     result = await create_factura(response, payload, session, ctx, None)
