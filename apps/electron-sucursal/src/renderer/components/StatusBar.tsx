@@ -73,8 +73,17 @@ export function StatusBar(): JSX.Element | null {
   // window.bridge existe). En navegador (Vite standalone para dev/test) NO
   // se muestra — evita ruido visual tipo "🔴 Sin API" + "Fase 2 en construcción"
   // cuando la app corre fuera de Electron.
+  //
+  // React Hooks must run unconditionally, in the same order, on every
+  // render (rules-of-hooks). Bailing out with `return null` BEFORE the
+  // hook calls below meant `useState`/`useRef`/`useEffect` were skipped
+  // whenever `inElectron` was false, and would run whenever it was true —
+  // if the SAME mounted instance ever re-rendered with a different
+  // `inElectron` value (e.g. a parent toggling `window.bridge` without
+  // unmounting `<StatusBar />`), React would throw "Rendered fewer hooks
+  // than expected". Hooks now always run; the `inElectron` bail-out moved
+  // to the end, after every hook has been called.
   const inElectron = typeof window !== 'undefined' && typeof (window as { bridge?: unknown }).bridge !== 'undefined';
-  if (!inElectron) return null;
 
   const [state, setState] = useState<StatusBarState>({
     apiStatus: null,
@@ -87,6 +96,8 @@ export function StatusBar(): JSX.Element | null {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    if (!inElectron) return;
+
     cancelledRef.current = false;
 
     const tick = async (): Promise<void> => {
@@ -126,7 +137,9 @@ export function StatusBar(): JSX.Element | null {
       cancelledRef.current = true;
       if (intervalRef.current !== null) clearInterval(intervalRef.current);
     };
-  }, []);
+  }, [inElectron]);
+
+  if (!inElectron) return null;
 
   return (
     <div

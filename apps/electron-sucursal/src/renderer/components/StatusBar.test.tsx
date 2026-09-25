@@ -96,4 +96,32 @@ describe('<StatusBar />', () => {
       expect(el.textContent).toContain('🟢');
     }, { timeout: 1000 });
   });
+
+  it('S5: no renderiza nada cuando window.bridge no existe (fuera de Electron)', () => {
+    delete (window as unknown as { bridge?: unknown }).bridge;
+    render(<StatusBar />);
+    expect(screen.queryByTestId('status-bar')).not.toBeInTheDocument();
+  });
+
+  it('S6: rules-of-hooks — sobrevive un re-render en el mismo lugar del árbol cuando window.bridge aparece sin desmontar', async () => {
+    function Wrapper({ withBridge }: { withBridge: boolean }) {
+      if (withBridge) {
+        installBridge({ ok: true, latency_ms: 100, code: 200 });
+      } else {
+        delete (window as unknown as { bridge?: unknown }).bridge;
+      }
+      return <StatusBar />;
+    }
+
+    const { rerender } = render(<Wrapper withBridge={false} />);
+    expect(screen.queryByTestId('status-bar')).not.toBeInTheDocument();
+
+    // Same element type/position → React re-renders the same StatusBar
+    // instance instead of unmounting it. Before the rules-of-hooks fix,
+    // going from 0 hooks called (early `return null`) to 4 hooks called
+    // here would make React throw "Rendered fewer hooks than expected".
+    expect(() => rerender(<Wrapper withBridge={true} />)).not.toThrow();
+
+    await screen.findByTestId('status-bar');
+  });
 });

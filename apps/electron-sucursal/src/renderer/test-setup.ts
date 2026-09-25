@@ -102,7 +102,14 @@ if (typeof HTMLElement !== 'undefined' && !HTMLElement.prototype.scrollIntoView)
  * no-op for them.
  */
 if (typeof globalThis.ResizeObserver === 'undefined') {
-  class ResizeObserverStub {
+  class ResizeObserverStub implements ResizeObserver {
+    constructor(_callback: ResizeObserverCallback) {
+      // no-op: the real `ResizeObserver` constructor requires a callback
+      // (that's the shape `globalThis.ResizeObserver` is typed with), but
+      // this stub never invokes it — floating-ui's autoUpdate() only
+      // needs `ResizeObserver` to exist so it skips its polling fallback,
+      // it doesn't need real resize notifications in tests.
+    }
     observe(): void {
       // no-op
     }
@@ -113,6 +120,5 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
       // no-op
     }
   }
-  (globalThis as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver =
-    ResizeObserverStub;
+  globalThis.ResizeObserver = ResizeObserverStub;
 }
