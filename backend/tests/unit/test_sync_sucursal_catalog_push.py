@@ -274,11 +274,15 @@ class TestBusinessPayloadForApply:
         }
         payload = _business_payload_for_apply(spec, raw)
         # Bug 2 fix: uuid is the business identity and must survive the
-        # wire (close_and_insert preserves it via new_attrs; the queue
-        # metadata + versioning columns that the repo recomputes are still
-        # stripped).
+        # wire. Carril B fix (obs #18): vigente_desde is the origin's VALID
+        # TIME and must also survive — the receiver opens the new version at
+        # it and closes the prior row at the same boundary. Only the pure
+        # queue metadata + the versioning columns the repo recomputes
+        # (vigente_hasta/estado for the new open forward version) are
+        # stripped.
         assert payload == {
             "uuid": "11111111-1111-1111-1111-111111111111",
+            "vigente_desde": "2026-01-01T00:00:00",
             "descripcion": "carro",
         }
 

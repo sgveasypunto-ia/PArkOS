@@ -83,6 +83,15 @@ async def close_and_insert(
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
+    # Carril B fix: when the caller supplies an origin ``vigente_desde``
+    # (remote sync apply of a [V] row — see ``identity_reconciler.forward``),
+    # the new version opens at that valid time, so the row being closed must
+    # end at the SAME boundary (no gap/overlap: closed row's
+    # ``vigente_hasta`` == new row's ``vigente_desde``). Local writes (no
+    # origin valid time) keep the historical ``now`` semantics unchanged.
+    origin_valid_time = new_attrs.get("vigente_desde")
+    close_boundary = origin_valid_time if origin_valid_time is not None else now
+
     # 1. Close the current version (if any), and carry forward any business
     #    column not present in `new_attrs` from the row being closed.
     #
@@ -132,7 +141,7 @@ async def close_and_insert(
                 model_cls.vigente_hasta.is_(None),
             )
             .values(
-                vigente_hasta=now,
+                vigente_hasta=close_boundary,
                 estado="inactivo",
             )
         )
