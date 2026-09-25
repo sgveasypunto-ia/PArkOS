@@ -110,6 +110,41 @@ function deferredSafePrint(
   });
 }
 
+/**
+ * KD-VENTA-03b — maps the backend's `factura_electronica_error` code to
+ * an operator-facing message. `null` when the sale had no FE issue.
+ * Kept as a plain function (not a hook) so it can be called from the
+ * `handlePagoSubmit` closure without an extra `useCallback`.
+ */
+function facturaElectronicaErrorMessage(
+  code: string | null | undefined,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string | null {
+  if (!code) return null;
+  switch (code) {
+    case 'resolucion_facturacion_no_encontrada':
+      return t('suscripciones:venta.fe.resolucionNoEncontrada', {
+        defaultValue:
+          'El cobro y la suscripción quedaron registrados, pero no se pudo emitir la factura electrónica: falta configurar la resolución de facturación de esta sucursal.',
+      });
+    case 'numeracion_agotada':
+      return t('suscripciones:venta.fe.numeracionAgotada', {
+        defaultValue:
+          'El cobro y la suscripción quedaron registrados, pero se agotó la numeración de la resolución de facturación. Avisá para renovarla.',
+      });
+    case 'resolucion_sin_prefijo':
+      return t('suscripciones:venta.fe.resolucionSinPrefijo', {
+        defaultValue:
+          'El cobro y la suscripción quedaron registrados, pero la resolución de facturación no tiene prefijo configurado.',
+      });
+    default:
+      return t('suscripciones:venta.fe.errorGenerico', {
+        defaultValue:
+          'El cobro y la suscripción quedaron registrados, pero no se pudo emitir la factura electrónica. Reintentalo más tarde.',
+      });
+  }
+}
+
 export interface VentaStepState {
   paso: 1 | 2 | 3 | 4 | 5;
   cliente?: { nit: string; nombre: string; email: string | null };
@@ -227,6 +262,15 @@ export function Venta({
   // the wizard navigated away immediately after a paid sale with no
   // ticket/factura confirmation shown to the operator.
   const [facturaDisplay, setFacturaDisplay] = useState<FacturaRead | null>(null);
+  // KD-VENTA-03b (operator directive, 2026-09-25): FE emission is
+  // best-effort and runs AFTER the payment already committed -- a
+  // non-null `factura_electronica_error` means the sale + factura
+  // succeeded but the electronic invoice didn't. Shown as a
+  // non-blocking warning inside the same confirmation modal instead of
+  // silently dropping it.
+  const [facturaElectronicaWarning, setFacturaElectronicaWarning] = useState<
+    string | null
+  >(null);
   const { trigger, isMutating } = useVentaSuscripcion();
   const {
     data: planes,
@@ -396,6 +440,7 @@ export function Venta({
       });
     }
     setFacturaDisplay(null);
+    setFacturaElectronicaWarning(null);
     completeVenta();
   };
 
@@ -408,6 +453,9 @@ export function Venta({
         // `completeVenta()` runs once the operator dismisses the
         // modal (`handleFacturaDisplayClose`).
         setFacturaDisplay(result.factura);
+        setFacturaElectronicaWarning(
+          facturaElectronicaErrorMessage(result.factura_electronica_error, t),
+        );
         return;
       }
       completeVenta();
@@ -812,6 +860,7 @@ export function Venta({
       <FacturaDisplayModal
         factura={facturaDisplay}
         onClose={handleFacturaDisplayClose}
+        warning={facturaElectronicaWarning}
       />
     </div>
   );

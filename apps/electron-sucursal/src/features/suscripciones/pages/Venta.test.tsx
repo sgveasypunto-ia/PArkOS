@@ -433,6 +433,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       uuid_factura: facturaMock.uuid,
       monto_prorrateado: 11000,
       factura: facturaMock,
+      factura_electronica_error: null,
     });
     const firePrintEnvelope = vi.fn();
 
@@ -481,6 +482,8 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     // The modal is up; the wizard must NOT have completed yet.
     expect(screen.getByTestId('factura-display-modal')).toBeDefined();
     expect(screen.getByTestId('factura-display-total').textContent).toContain('35.700');
+    // KD-VENTA-03b: no FE issue on this sale -- no warning shown.
+    expect(screen.queryByTestId('factura-display-warning')).toBeNull();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('factura-display-cerrar'));
@@ -493,6 +496,104 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
         uuid_factura: facturaMock.uuid,
         numero_recibo: facturaMock.numero_recibo,
       }),
+    );
+  });
+
+  it('T9: FE degradada (KD-VENTA-03b) -- la venta se muestra igual, con advertencia no bloqueante', async () => {
+    // El backend garantiza el flujo SOLO hasta pagar + generar factura;
+    // si la emisión de FE falla después (ej. sin resolución configurada),
+    // la venta sigue siendo un 201 con factura_electronica_error
+    // poblado -- el wizard debe mostrar el ticket igual, con una
+    // advertencia no bloqueante, NUNCA revertir la venta.
+    const facturaMock = {
+      uuid: 'f0000000-0000-0000-0000-000000000002',
+      created_at: '2026-09-25T10:00:00.000Z',
+      uuid_sucursal: '00000000-0000-0000-0000-0000000000f1',
+      uuid_ingreso: null,
+      uuid_salida: null,
+      numero_recibo: 'suc-20260925-000002',
+      subtotal: 30000,
+      descuento: 0,
+      total: 35700,
+      uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
+      items: [],
+      estado: 'emitida' as const,
+      medio_pago: 'efectivo' as const,
+      monto_recibido_cents: null,
+      vuelto_cents: null,
+      voucher: null,
+      cliente: null,
+      datos_sucursal: {
+        razon_social: 'Sede Test',
+        nit: null,
+        direccion: null,
+        ciudad: null,
+        telefono: null,
+        horario: null,
+        regimen: null,
+      },
+      datos_vehiculo: null,
+      impuestos: [],
+      pagos: [],
+      factura_electronica: null,
+    };
+    mockTrigger.mockResolvedValueOnce({
+      uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
+      uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
+      uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
+      uuid_factura: facturaMock.uuid,
+      monto_prorrateado: 11000,
+      factura: facturaMock,
+      factura_electronica_error: 'resolucion_facturacion_no_encontrada',
+    });
+
+    render(
+      <MemoryRouter>
+        <Venta />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-cliente-nit'), {
+        target: { value: '900123456' },
+      });
+      fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
+        target: { value: 'ACME' },
+      });
+      fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
+        target: { value: '1' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
+        target: { value: 'ABC123' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
+    });
+
+    // La venta SÍ se muestra -- el pago y la factura quedaron registrados.
+    expect(screen.getByTestId('factura-display-modal')).toBeDefined();
+    // Con la advertencia no bloqueante de FE (el mock de react-i18next
+    // devuelve la key cruda, no el defaultValue -- ver el mock al inicio
+    // del archivo).
+    expect(screen.getByTestId('factura-display-warning').textContent).toContain(
+      'resolucionNoEncontrada',
     );
   });
 });

@@ -51,6 +51,13 @@ export interface FacturaDisplayModalProps {
   factura: FacturaRead | null;
   /** Operator dismisses the modal — PagoSheet clears state + closes sheet. */
   onClose: () => void;
+  /**
+   * Optional non-blocking warning shown below the ticket preview (ex.
+   * KD-VENTA-03b: the sale/factura succeeded but electronic-invoice
+   * emission degraded). Absent/`null` renders nothing — existing
+   * callers (PagoSheet, SalidaMensualidad) are unaffected.
+   */
+  warning?: string | null;
 }
 
 /**
@@ -80,6 +87,7 @@ function TicketDivider(): JSX.Element {
 export function FacturaDisplayModal({
   factura,
   onClose,
+  warning,
 }: FacturaDisplayModalProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
 
@@ -290,6 +298,25 @@ export function FacturaDisplayModal({
                 </div>
               )}
             </div>
+
+            {warning && (
+              // BUGFIX (2026-09-25): the opacity-modifier utilities
+              // (`bg-warning/10`, `border-warning/40`) resolve to
+              // transparent in this theme -- `--color-warning` is
+              // stored pre-wrapped as `hsl(...)`, not raw `H S% L%`
+              // components, so Tailwind's alpha-channel injection
+              // produces invalid CSS the browser silently drops. Plain
+              // (non-opacity) `bg-warning`/`border-warning` don't hit
+              // that path and render solid, readable amber regardless
+              // of light/dark theme.
+              <p
+                data-testid="factura-display-warning"
+                role="alert"
+                className="rounded border border-warning bg-warning p-2 text-xs font-medium text-warning-foreground"
+              >
+                {warning}
+              </p>
+            )}
 
             <DialogFooter>
               <Button
