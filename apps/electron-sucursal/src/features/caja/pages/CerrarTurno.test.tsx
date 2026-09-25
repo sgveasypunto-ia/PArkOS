@@ -38,6 +38,7 @@ const mockCerrarSesion = vi.fn();
 const mockSubmitArqueo = vi.fn();
 
 const mockUseSesionActiva = vi.fn();
+const mockUseTipoArqueoPorCodigo = vi.fn();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof ReactRouterDom>('react-router-dom');
@@ -46,6 +47,12 @@ vi.mock('react-router-dom', async () => {
 
 vi.mock('../hooks/useSesionActiva', () => ({
   useSesionActiva: () => mockUseSesionActiva(),
+}));
+
+// F11.3: the arqueo POST requires `uuid_tipo_arqueo` (UUID), resolved
+// from the 'cierre_turno' codigo via this catalog SWR hook.
+vi.mock('../hooks/useTipoArqueoPorCodigo', () => ({
+  useTipoArqueoPorCodigo: () => mockUseTipoArqueoPorCodigo(),
 }));
 
 vi.mock('../hooks/useArqueo', () => ({
@@ -100,16 +107,6 @@ vi.mock('../components/CerrarTurnoForm', () => ({
         data-testid="cerrar-turno-justificacion"
         type="text"
         {...form.register('justificacion')}
-      />
-      <input
-        data-testid="cerrar-turno-valor-efectivo"
-        type="text"
-        {...form.register('valor_final_efectivo', { valueAsNumber: true })}
-      />
-      <input
-        data-testid="cerrar-turno-valor-datafono"
-        type="text"
-        {...form.register('valor_final_datafono', { valueAsNumber: true })}
       />
       <input
         data-testid="cerrar-turno-observaciones"
@@ -168,12 +165,6 @@ function fillValidForm(): void {
   fireEvent.change(screen.getByTestId('cerrar-turno-valor-datafono-reportado'), {
     target: { value: '25000' },
   });
-  fireEvent.change(screen.getByTestId('cerrar-turno-valor-efectivo'), {
-    target: { value: '75000' },
-  });
-  fireEvent.change(screen.getByTestId('cerrar-turno-valor-datafono'), {
-    target: { value: '25000' },
-  });
   fireEvent.change(screen.getByTestId('cerrar-turno-observaciones'), {
     target: { value: 'Cierre turno tarde' },
   });
@@ -184,6 +175,11 @@ beforeEach(() => {
   mockUseSesionActiva.mockReturnValue({
     sesion: baseSesion,
     cerrarSesion: mockCerrarSesion,
+  });
+  mockUseTipoArqueoPorCodigo.mockReturnValue({
+    data: { uuid: 'tipo-arqueo-uuid-cierre-turno', codigo: 'cierre_turno' },
+    uuid: 'tipo-arqueo-uuid-cierre-turno',
+    error: undefined,
   });
 });
 
@@ -212,7 +208,7 @@ describe('<CerrarTurno /> container — T3', () => {
       expect(mockSubmitArqueo).toHaveBeenCalledWith(
         expect.objectContaining({
           uuid_sesion: 'sess-uuid-1',
-          tipo_arqueo: 'cierre_turno',
+          uuid_tipo_arqueo: 'tipo-arqueo-uuid-cierre-turno',
           valor_efectivo_reportado: 75000,
           valor_datafono_reportado: 25000,
         }),
@@ -270,6 +266,25 @@ describe('<CerrarTurno /> container — T3', () => {
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/');
     });
+    expect(mockSubmitArqueo).not.toHaveBeenCalled();
+    expect(mockCerrarSesion).not.toHaveBeenCalled();
+  });
+
+  it('uuid_tipo_arqueo aún no resuelto (catálogo cargando) → NO invoca arqueo ni cerrarSesion', async () => {
+    mockUseTipoArqueoPorCodigo.mockReturnValue({
+      data: undefined,
+      uuid: undefined,
+      error: undefined,
+    });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <CerrarTurno />
+      </MemoryRouter>,
+    );
+    fillValidForm();
+    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
+
     expect(mockSubmitArqueo).not.toHaveBeenCalled();
     expect(mockCerrarSesion).not.toHaveBeenCalled();
   });

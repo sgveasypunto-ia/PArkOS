@@ -222,6 +222,37 @@ class TestCloseSessionUpdateFields:
         compiled_sql = str(update_stmt.compile(dialect=postgresql.dialect()))
         assert "timestamp_cierre" in compiled_sql
         assert "uuid_usuario_cierre" in compiled_sql
+        # plan.md HU-F10.2 (línea 2273 + secuencia 2319-2320): el cierre
+        # de turno debe dejar `estado='cerrada'` -- el UPDATE real hasta
+        # ahora NUNCA tocaba `estado` (bug encontrado en vivo: toda fila
+        # de `prod.sesion` queda con `estado='activo'` para siempre,
+        # sin importar cuántas veces se cierre el turno).
+        assert "estado" in compiled_sql
+
+    async def test_update_sets_estado_cerrado(self):
+        """El valor SET para ``estado`` es ``'cerrado'`` (mismo vocabulario
+        que ``Login.estado``/``ingreso.estado`` -- 'activo' es el valor de
+        apertura que ya setea el trigger ``fn_set_vigente_inicial``)."""
+        session = _make_session()
+        session.execute.side_effect = [
+            _select_returns(_sesion_row_mock()),
+            _update_returns(rowcount=1),
+        ]
+
+        await close_session_with_log(
+            session,
+            actor_uuid=ACTOR_UUID,
+            sesion_uuid=uuid_lib.uuid4(),
+        )
+
+        update_call = next(
+            c for c in session.execute.call_args_list
+            if isinstance(c.args[0], Update)
+        )
+        update_stmt = update_call.args[0]
+        compiled = update_stmt.compile(dialect=postgresql.dialect())
+        params = compiled.params
+        assert params.get("estado") == "cerrado"
 
 
 class TestCloseSessionNotFound:

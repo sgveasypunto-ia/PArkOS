@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 from datetime import datetime
 
-from sqlalchemy import DateTime, Numeric, Text
+from sqlalchemy import DateTime, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,6 +45,17 @@ class Sesion(SessionBase):
     # value is mirrored into ``prod.log_transaccional.datos_nuevos``
     # via ``repo.session_cycle.open_session`` for audit (REQ-OPS-021).
     observaciones: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # Bug found live (2026-09-25): the DB trigger `fn_set_vigente_inicial`
+    # (shared with [V] tables) back-fills 'activo' on INSERT when this
+    # column is NULL, but `close_session_with_log` never flipped it to
+    # 'cerrado' -- every session in this environment's history was stuck
+    # at estado='activo' forever, regardless of how many times it closed.
+    # Mirrors `Login.estado` ('exitoso' | 'fallido' | 'cerrado') --
+    # 'activo' is the DB-trigger default; NOT mapped/written on open.
+    estado: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+    )  # 'activo' (DB trigger default) | 'cerrado' (repo.session_cycle.close_session_with_log)
 
     __table_args__ = (
         {

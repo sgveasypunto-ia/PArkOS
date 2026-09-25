@@ -366,7 +366,7 @@ async def close_session_with_log(
     update_result_raw = await session.execute(
         update(Sesion)
         .where(Sesion.uuid == sesion_uuid, Sesion.timestamp_cierre.is_(None))
-        .values(timestamp_cierre=now, uuid_usuario_cierre=actor_uuid)
+        .values(timestamp_cierre=now, uuid_usuario_cierre=actor_uuid, estado="cerrado")
     )
     # mypy --strict sees ``Result[Any]`` from ``session.execute``;
     # ``rowcount`` is only on ``CursorResult``. The UPDATE statement
