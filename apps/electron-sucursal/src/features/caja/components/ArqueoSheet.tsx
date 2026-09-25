@@ -61,14 +61,14 @@ export function ArqueoSheet(): JSX.Element {
     >
       <SheetContent
         side="right"
-        // F31.3 rediseño: el ancho default del Sheet (`w-full md:w-1/2`,
-        // primitiva compartida) llega a 1920px en 3840/ultrawide — un
-        // form de arqueo no necesita ese ancho y queda ilegible. El cap
-        // `sm:max-w-md md:max-w-lg` mantiene el drawer a un ancho de
-        // formulario razonable en cualquier viewport de la tabla de
-        // breakpoints sin tocar la primitiva compartida. Padding fluido
-        // (`p-4 sm:p-6`) recupera espacio útil en 320px.
-        className="flex h-full w-full flex-col overflow-hidden p-4 sm:max-w-md sm:p-6 md:max-w-lg"
+        // Ajuste 2026-09-25 (directiva del operador): se saca el cap
+        // `sm:max-w-md md:max-w-lg` — el sheet vuelve al 50% de ancho
+        // por defecto (`md:w-1/2` de `sheetVariants`), igual que
+        // `<CerrarTurnoSheet />`/`<ReimprimirTiqueteSheet />`. El
+        // contenido se centra abajo en un ancho de lectura cómodo para
+        // que el form no se estire edge-to-edge en el 50% más ancho.
+        // Padding fluido (`p-4 sm:p-6`) se mantiene.
+        className="flex h-full w-full flex-col overflow-hidden p-4 sm:p-6"
         data-testid="arqueo-sheet"
       >
         <SheetHeader>
@@ -79,7 +79,9 @@ export function ArqueoSheet(): JSX.Element {
           </SheetDescription>
         </SheetHeader>
         <div className="flex flex-1 flex-col overflow-y-auto">
-          <ArqueoParcial />
+          <div className="mx-auto w-full max-w-xl">
+            <ArqueoParcial />
+          </div>
         </div>
       </SheetContent>
     </Sheet>
