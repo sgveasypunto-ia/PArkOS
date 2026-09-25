@@ -245,22 +245,20 @@ export function Dashboard(): JSX.Element | null {
               fondo oscuro; el PNG (`--REQUIERE-VECTOR`, wordmark oscuro)
               es la única variante disponible para fondo claro — ver
               `src/assets/brand/inventory.json` y la decisión del operador
-              de usarlo tal cual sin vectorizar. Alto 2026-09-25 (pedido
-              operador): "al menos 2cm" — h-20 = 5rem = 80px, por encima
-              de los ~76px que da la conversión CSS estándar (96dpi,
-              1cm≈37.8px); el tamaño físico real en pantalla varía según
-              el DPI del monitor, esto es la mejor aproximación en CSS. Sin
-              achicar en mobile — "al menos" es un piso, no un techo
+              de usarlo tal cual sin vectorizar. Alto: h-20 (80px, "al menos
+              2cm") resultó demasiado grande en uso real — bajado a h-14
+              (56px, 2026-09-25, pedido operador tras verlo corriendo). Sin
+              achicar en mobile — sigue siendo un piso, no un techo
               responsive. */}
           <img
             src={logoDark}
             alt="EasyPunto"
-            className="h-20 w-auto shrink-0 dark:hidden"
+            className="h-14 w-auto shrink-0 dark:hidden"
           />
           <img
             src={logoLight}
             alt="EasyPunto"
-            className="hidden h-20 w-auto shrink-0 dark:block"
+            className="hidden h-14 w-auto shrink-0 dark:block"
           />
 
           {/* Hamburger — only below md. 44×44 (antes 32×32) para cumplir
