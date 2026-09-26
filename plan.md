@@ -2049,6 +2049,7 @@ stateDiagram-v2
 - **HU-F8.3-T3**: acción de anulación (llama a `POST .../anular`).
 - **HU-F8.3-T4**: `e2e/reimpresion.spec.ts` (stub) + tests unitarios backend/frontend.
 - **HU-F8.3-T5** (Ajuste 2026-09-25-c): `POST /facturacion/factura-servicio` (`backend/.../api/v1/facturacion.py::create_factura_servicio` + `schemas/facturacion.py::FacturaServicioCreate`) + `useCostoServicioVigente`/`useRegistrarPagoServicio` (frontend).
+- **HU-F8.3-T6** (Ajuste 2026-09-25, Flujo 3 de la directiva de identificación persona/empresa): sin cambio de código — `ReimprimirTiquete.tsx` ya reusa `<PagoModal>` + `buildClienteFePayload` (`clienteFePayload.ts`, Flujo 1) sin ningún hardcode propio de `tipo_identificador`, y el segundo call-site backend (`api/v1/facturacion.py:670-673`, reimpresión con cobro) ya pasa `tipo_identificador` a `buscar_o_crear_cliente_por_nit` desde el mismo fix de Flujo 1. No hay wizard multi-paso acá, por lo que tampoco aplica el hallazgo de "campos decorativos" de HU-F9.1. El módulo quedó desacoplado como se buscaba: este flujo no necesitó tocar ningún archivo.
 
 ### HU-F8.4 — Mostrar factura post-pago con desglose (operador-ve la factura en la UI)
 
