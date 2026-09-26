@@ -42,10 +42,12 @@ function Harness({
   sesion = SESION,
   efectivoReportado = sesion.valor_inicial_efectivo,
   datafonoReportado = sesion.valor_inicial_datafono,
+  forceRequireJustificacion = false,
 }: {
   sesion?: SesionRead;
   efectivoReportado?: number;
   datafonoReportado?: number;
+  forceRequireJustificacion?: boolean;
 }): JSX.Element {
   const form = useForm<CerrarTurnoInput>({
     resolver: zodResolver(cerrarTurnoSchema),
@@ -65,6 +67,7 @@ function Harness({
       sesion={sesion}
       onCancel={() => {}}
       requiredMode="cierre_turno"
+      forceRequireJustificacion={forceRequireJustificacion}
     />
   );
 }
@@ -115,6 +118,35 @@ describe('<CerrarTurnoForm /> — justificación condicional (conteo ciego)', ()
   it('con diferencia solo en datáfono → también exige justificación', () => {
     render(<Harness efectivoReportado={733_000} datafonoReportado={180_000} />);
     expect(screen.queryByTestId('cerrar-turno-required-justificacion')).not.toBeNull();
+  });
+
+  // REGRESSION (2026-09-25, bug real encontrado en vivo): el backend
+  // calcula el esperado real (inicial + transacciones del turno) SOLO
+  // server-side (conteo ciego); `hayDiferencia` acá compara contra
+  // `valor_inicial_*`, así que puede dar falso negativo cuando el
+  // operador cuenta exactamente el fondo inicial pero el esperado real
+  // es otro. Sin este flag, el campo nunca aparecía en el DOM y el
+  // operador quedaba en loop infinito contra `justificacion_requerida`
+  // (mismo payload, mismo rechazo, para siempre). `<CerrarTurno>` ahora
+  // fuerza este flag tras ese rechazo — ver cerrarTurnoChain.ts.
+  it('sin diferencia detectada (reportado === inicial) pero forceRequireJustificacion=true (backend ya rechazó) → el campo aparece igual y es obligatorio', () => {
+    // Sin el override: reportado === inicial → el heurístico cliente
+    // (`difTotal`) da 0, exactamente el escenario del bug real (operador
+    // cuenta el fondo inicial, el esperado real del backend es otro).
+    render(<Harness forceRequireJustificacion />);
+
+    const justificacionInput = screen.queryByTestId('cerrar-turno-required-justificacion');
+    expect(justificacionInput).not.toBeNull();
+
+    const confirmarBtn = screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement;
+    expect(confirmarBtn.disabled).toBe(true);
+
+    fireEvent.change(justificacionInput as HTMLElement, {
+      target: { value: 'Descuadre reportado por el backend' },
+    });
+    expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 });
 

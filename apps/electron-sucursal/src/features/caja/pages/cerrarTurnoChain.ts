@@ -77,9 +77,25 @@ export type CerrarTurnoChainResult =
   | { kind: 'redirect_login_closed'; sesion: SesionRead }
   | { kind: 'redirect_login' }
   | { kind: 'arqueo_fallido'; status: number }
+  | { kind: 'justificacion_requerida' }
   | { kind: 'red_arqueo' }
   | { kind: 'cierre_ya_cerrado'; uuid_arqueo?: string }
   | { kind: 'cierre_fallido'; uuid_arqueo?: string };
+
+/**
+ * Extrae `detail.error` del body crudo de un `ParkosHttpError` (JSON del
+ * backend, ej. `{"detail":{"error":"justificacion_requerida"}}`).
+ * `undefined` si el body no es JSON o no tiene esa forma — el caller
+ * cae al banner genérico `arqueo_fallido` en ese caso.
+ */
+function parseBackendErrorCode(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as { detail?: { error?: string } };
+    return parsed.detail?.error;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Build the POST /caja/arqueo body, dropping `justificacion` when
@@ -181,9 +197,25 @@ export async function runCerrarTurnoChain(args: {
     if (err instanceof TypeError) {
       return { kind: 'red_arqueo' };
     }
-    const status =
-      err instanceof ParkosHttpError ? err.status : 0;
-    return { kind: 'arqueo_fallido', status };
+    if (err instanceof ParkosHttpError) {
+      // The backend computes the REAL expected total (opening float +
+      // the shift's transactions) server-side only — "conteo ciego"
+      // (plan.md HU-F10.2) means the operator/client never sees it, so
+      // `hayDiferencia` (CerrarTurnoForm.tsx, client-side heuristic vs
+      // `sesion.valor_inicial_*`) can under-detect a real difference
+      // and never render the Justificación field at all. Without this
+      // dedicated result kind, that left the operator stuck resubmitting
+      // the identical payload forever against `justificacion_requerida`
+      // (bug found live 2026-09-25 — same idempotency-key on every
+      // retry, field never in the DOM to fill). Surfacing it distinctly
+      // lets the orchestrator force the field to render regardless of
+      // the client's own guess.
+      if (err.status === 400 && parseBackendErrorCode(err.body) === 'justificacion_requerida') {
+        return { kind: 'justificacion_requerida' };
+      }
+      return { kind: 'arqueo_fallido', status: err.status };
+    }
+    return { kind: 'arqueo_fallido', status: 0 };
   }
 
   // 3. PUT /caja-sesion/{uuid}/cerrar via the F3.3 logout-on-success
