@@ -3,8 +3,7 @@
     "name": "Parkos Admin",
     "dashboard": "Panel",
     "tagline": "Parkos — multi-tenant management",
-    "loginPlaceholder": "El formulario de inicio de sesión se conecta en PR10c.",
-    "bootstrapNotice": "Bootstrap shell — los módulos de sucursal y facturación se montan en PR10c/PR11."
+    "title": "Parkos Admin"
   },
   "branchSelector": {
     "label": "Seleccionar sucursal",
@@ -24,5 +23,28 @@
     "loading": "Cargando panel...",
     "noBranch": "Seleccioná una sucursal para ver el panel.",
     "loadError": "No se pudo cargar el panel de la sucursal."
+  },
+  "auth": {
+    "email": "Correo electrónico",
+    "password": "Contraseña",
+    "submit": "Iniciar sesión",
+    "submitting": "Ingresando...",
+    "invalidCredentials": "Correo o contraseña incorrectos.",
+    "locked": "Cuenta bloqueada por demasiados intentos",
+    "retryIn": "Reintentá en {{remaining}}",
+    "networkError": "Error de red. Verificá tu conexión y reintentá.",
+    "serverError": "Error del servidor (código {{status}}). Reintentá en un momento.",
+    "attemptCounter": "Intentos: {{current}} de {{max}}",
+    "loading": "Cargando...",
+    "validation": {
+      "required": "Este campo es obligatorio.",
+      "email": {
+        "invalid": "Ingresá un correo electrónico válido."
+      },
+      "password": {
+        "required": "La contraseña es obligatoria.",
+        "minLength": "La contraseña debe tener al menos 8 caracteres."
+      }
+    }
   }
 }

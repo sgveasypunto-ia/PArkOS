@@ -29,7 +29,6 @@
 import {
   test,
   expect,
-  chromium,
   type Page,
   type CDPSession,
 } from '@playwright/test';
@@ -88,7 +87,7 @@ async function collectCdpMetrics(
   return result.metrics as PerformanceMetric[];
 }
 
-async function collectNetworkRequests(cdp: CDPSession): Promise<NetworkRequest[]> {
+async function _collectNetworkRequests(cdp: CDPSession): Promise<NetworkRequest[]> {
   await cdp.send('Network.enable');
   const requests: NetworkRequest[] = [];
   cdp.on('Network.requestWillBeSent', (event) => {
