@@ -10,6 +10,7 @@ import suscripciones from './locales/suscripciones.json';
 import alertas from './locales/alertas.json';
 import sync from './locales/sync.json';
 import errors from './locales/errors.json';
+import pairing from './locales/pairing.json';
 
 /**
  * i18n bootstrap — 9 namespaces per DEC-ELEC-06 + PR-5 (suscripciones)
@@ -31,6 +32,7 @@ void i18n.use(initReactI18next).init({
       alertas,
       sync,
       errors,
+      pairing,
     },
   },
   lng: 'es-CO',
@@ -46,6 +48,7 @@ void i18n.use(initReactI18next).init({
     'alertas',
     'sync',
     'errors',
+    'pairing',
   ],
   interpolation: { escapeValue: false },
   returnNull: false,
