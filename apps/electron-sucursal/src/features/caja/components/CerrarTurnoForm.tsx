@@ -102,6 +102,14 @@ export interface CerrarTurnoFormProps {
    * F10.1 ArqueoParcial-style lenient path uses `undefined`.
    */
   requiredMode?: 'parcial' | 'cierre_turno' | 'cierre_dia';
+  /**
+   * Sticky flag set by `<CerrarTurno>` when the backend rejected a prior
+   * attempt with `justificacion_requerida` (HU-F10.2 "conteo ciego" —
+   * the real expected total is server-side only, so the client's own
+   * `hayDiferencia` guess below can miss a real difference). Forces the
+   * field to render + be required regardless of that guess.
+   */
+  forceRequireJustificacion?: boolean;
 }
 
 export function CerrarTurnoForm({
@@ -112,6 +120,7 @@ export function CerrarTurnoForm({
   sesion,
   onCancel,
   requiredMode,
+  forceRequireJustificacion = false,
 }: CerrarTurnoFormProps): JSX.Element {
   const { t } = useTranslation(['caja', 'common', 'operacion']);
   // Resumen visual del turno (directiva operador — Sheet más gráfico):
@@ -134,7 +143,11 @@ export function CerrarTurnoForm({
   const difTotal =
     Math.abs((watchEfectivoReportado ?? 0) - sesion.valor_inicial_efectivo) +
     Math.abs((watchDatafonoReportado ?? 0) - sesion.valor_inicial_datafono);
-  const hayDiferencia = difTotal > 0;
+  // `forceRequireJustificacion` (set by `<CerrarTurno>` after a real
+  // backend `justificacion_requerida` rejection) ORs into the client's
+  // own guess — the backend's real expected total is never visible
+  // here (conteo ciego), so `hayDiferencia` alone can under-detect it.
+  const mostrarJustificacion = difTotal > 0 || forceRequireJustificacion;
 
   // REQ-OPS-158 — strict-mode gate: button disabled while
   // justificacion is empty / below 3 chars, but ONLY when a difference
@@ -142,7 +155,7 @@ export function CerrarTurnoForm({
   // enforced at submit time; the visual gate is here.
   const watchJustificacion = form.watch('justificacion') ?? '';
   const strictModeButtonDisabled =
-    isStrictMode && hayDiferencia && (watchJustificacion ?? '').trim().length < 3;
+    isStrictMode && mostrarJustificacion && (watchJustificacion ?? '').trim().length < 3;
 
   return (
     <Form {...form}>
@@ -315,9 +328,11 @@ export function CerrarTurnoForm({
         />
 
         {/* Conteo ciego (HU-F10.2): este campo solo existe en el DOM
-            cuando `hayDiferencia` es true — nunca se expone el monto
-            esperado ni la diferencia, ni siquiera oculto. */}
-        {hayDiferencia && (
+            cuando `mostrarJustificacion` es true (guess del cliente O
+            el backend ya rechazó el intento anterior) — nunca se
+            expone el monto esperado ni la diferencia, ni siquiera
+            oculto. */}
+        {mostrarJustificacion && (
           <FormField
             control={form.control}
             name="justificacion"

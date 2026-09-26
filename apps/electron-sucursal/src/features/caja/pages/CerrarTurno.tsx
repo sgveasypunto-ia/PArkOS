@@ -60,6 +60,12 @@ export function CerrarTurno(): JSX.Element | null {
   const { uuid: uuidTipoArqueo } = useTipoArqueoPorCodigo('cierre_turno');
   const [errorState, setErrorState] = useState<CerrarTurnoErrorState>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Sticky: once the backend tells us a justificación is required
+  // (real server-side diferencia, "conteo ciego" hides it from the
+  // client's own hayDiferencia guess — see cerrarTurnoChain.ts), force
+  // the field to render + be required for every subsequent attempt in
+  // this session, regardless of what the client-side heuristic thinks.
+  const [forceRequireJustificacion, setForceRequireJustificacion] = useState(false);
 
   const form = useForm<CerrarTurnoInput>({
     resolver: zodResolver(cerrarTurnoSchema),
@@ -138,6 +144,10 @@ export function CerrarTurno(): JSX.Element | null {
       case 'arqueo_fallido':
         setErrorState({ kind: 'arqueo_fallido' });
         return;
+      case 'justificacion_requerida':
+        setForceRequireJustificacion(true);
+        setErrorState({ kind: 'arqueo_fallido' });
+        return;
       case 'red_arqueo':
         setErrorState({ kind: 'red_arqueo' });
         return;
@@ -169,6 +179,7 @@ export function CerrarTurno(): JSX.Element | null {
       sesion={sesion}
       onCancel={onCancel}
       requiredMode="cierre_turno"
+      forceRequireJustificacion={forceRequireJustificacion}
     />
   );
 }
