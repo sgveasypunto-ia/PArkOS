@@ -12,8 +12,10 @@ from __future__ import annotations
 import uuid as uuid_lib
 from datetime import UTC, datetime
 
+import pytest
 from parkos_core.models.A.log_transaccional import LogTransaccional
 from parkos_core.models.A.revocacion_factura import RevocacionFactura
+from parkos_core.repo.hash_chain import GENESIS_ACCION
 from parkos_core.repo.hash_chain import append as hash_chain_append
 from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG, SYNC_CATALOG_BY_NAME
 from parkos_core.sync.motor.verify_chain import (
@@ -22,6 +24,7 @@ from parkos_core.sync.motor.verify_chain import (
     verify_chain_for_spec,
 )
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 ACTOR_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000ad")
@@ -49,18 +52,32 @@ async def _insert_bypassing_chain_trigger(
     ``verify_chain``'s anomaly detection is meant to catch — the DB
     trigger is a real safety net in production; this test intentionally
     defeats it to prove the WALKER (not the trigger) also detects breaks.
+
+    Because the trigger that would normally assign ``seq`` is disabled, the
+    fixture derives the head position itself (mirroring the trigger's
+    ``COALESCE(MAX(seq), 1) + 1``) instead of accepting a caller-supplied
+    value. 0058 made the column NOT NULL, and ``seeded_sucursal_uuid`` is
+    shared across the tests in this module, so a hardcoded position would
+    collide with rows earlier tests already appended to the same chain.
     """
     row_uuid = uuid_lib.uuid4()
+    head_seq = await session.scalar(
+        text(
+            "SELECT COALESCE(MAX(seq), 1) + 1 FROM prod.log_transaccional "
+            "WHERE uuid_sucursal = :uuid_sucursal"
+        ),
+        {"uuid_sucursal": uuid_sucursal},
+    )
     await session.execute(text("SET session_replication_role = replica"))
     await session.execute(
         text(
             "INSERT INTO prod.log_transaccional "
             "(uuid, uuid_sucursal, accion, tabla_afectada, "
             " uuid_registro_afectado, timestamp_evento, "
-            " hash_anterior, hash_actual) "
+            " hash_anterior, hash_actual, seq) "
             "VALUES (:uuid, :uuid_sucursal, :accion, 'ingreso', "
             " :uuid_registro_afectado, :timestamp_evento, "
-            " :hash_anterior, :hash_actual)"
+            " :hash_anterior, :hash_actual, :seq)"
         ),
         {
             "uuid": row_uuid,
@@ -70,6 +87,7 @@ async def _insert_bypassing_chain_trigger(
             "timestamp_evento": timestamp_evento,
             "hash_anterior": hash_anterior,
             "hash_actual": hash_actual,
+            "seq": head_seq,
         },
     )
     await session.execute(text("SET session_replication_role = origin"))
@@ -324,3 +342,224 @@ def test_chain_anomaly_is_frozen() -> None:
         actual="b" * 64,
     )
     assert anomaly.reason == "hash_chain_break"
+
+
+# ---------------------------------------------------------------------------
+# Migration 0058 — causal ``seq`` ordering.
+#
+# These four tests pin the invariants the 2026-09-23 incident exposed. A row
+# that arrives late carrying an earlier business timestamp used to be placed
+# mid-chain by the ``(created_at, uuid)`` walk, which reported the row that
+# FOLLOWS it as a ``hash_chain_break`` even though nothing was ever
+# corrupted. ``seq`` records append order instead, so position no longer
+# depends on a clock.
+# ---------------------------------------------------------------------------
+
+
+async def _append_log(session, uuid_sucursal, timestamp_evento) -> LogTransaccional:
+    row = await hash_chain_append(
+        session,
+        LogTransaccional,
+        {
+            "uuid_sucursal": uuid_sucursal,
+            "accion": "crear",
+            "tabla_afectada": "ingreso",
+            "uuid_registro_afectado": uuid_lib.uuid4(),
+            "timestamp_evento": timestamp_evento,
+        },
+        actor_uuid=ACTOR_UUID,
+    )
+    await session.commit()
+    return row
+
+
+async def test_late_backdated_row_takes_head_seq_not_a_timestamp_slot(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
+    """A row appended LAST but carrying an EARLIER ``timestamp_evento`` still
+    occupies the head position and raises NO anomaly.
+
+    This is the exact shape of the historical incident: a row that arrives
+    out of band, stamped with a timestamp older than rows already in the
+    chain. Ordering by business time would slot it in the middle and make
+    its successor look broken; ordering by ``seq`` keeps the chain intact.
+    """
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+
+    async with Session() as session:
+        # Prime the chain first: this bootstraps the genesis row (seq 1) so
+        # the head position we assert against is a real data row.
+        await _append_log(
+            session, seeded_sucursal_uuid, datetime(2026, 5, 2, tzinfo=UTC).replace(tzinfo=None)
+        )
+        head_before = await session.scalar(
+            text(
+                "SELECT COALESCE(MAX(seq), 0) FROM prod.log_transaccional WHERE uuid_sucursal = :u"
+            ),
+            {"u": seeded_sucursal_uuid},
+        )
+
+        # A row whose business timestamp is far in the PAST relative to the
+        # chain that already exists.
+        backdated = await _append_log(
+            session,
+            seeded_sucursal_uuid,
+            datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC).replace(tzinfo=None),
+        )
+
+        assert backdated.seq == head_before + 1, (
+            f"late row must take the head position {head_before + 1}, "
+            f"got {backdated.seq} — the walk would place it mid-chain"
+        )
+
+        # Nothing is broken: the backdated row links to the previous head.
+        anomalies = await verify_chain(session, seeded_sucursal_uuid)
+        assert [a for a in anomalies if a.tabla == "log_transaccional"] == [], (
+            f"a late-but-correctly-linked row must not raise anomalies: {anomalies}"
+        )
+
+
+async def test_genesis_over_a_live_chain_is_rejected(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
+    """A second ``inicialización`` row cannot be appended once the chain is live.
+
+    0058 hardens the trigger: historically a genesis row
+    (``hash_anterior = hash_actual``) was only legal when the chain was
+    empty, but the check did not actually enforce that — which is how the
+    ``d4c7fc74`` row got in and forked the cloud-global chain.
+    """
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    anchor = "3" * 64
+
+    async with Session() as session:
+        # Make the chain live first (bootstraps genesis at seq 1, then a
+        # data row at seq 2) — the rogue genesis below must be refused
+        # precisely because a head now exists.
+        await _append_log(
+            session, seeded_sucursal_uuid, datetime(2026, 6, 1, tzinfo=UTC).replace(tzinfo=None)
+        )
+        # The trigger rejects via PL/pgSQL RAISE EXCEPTION, which surfaces
+        # as asyncpg.RaiseError wrapped in DBAPIError — not IntegrityError.
+        with pytest.raises(DBAPIError) as exc:
+            await session.execute(
+                text(
+                    "INSERT INTO prod.log_transaccional "
+                    "(uuid, uuid_sucursal, accion, tabla_afectada, "
+                    " uuid_registro_afectado, timestamp_evento, "
+                    " hash_anterior, hash_actual) "
+                    "VALUES (:uuid, :u, :accion, 'ingreso', "
+                    " :reg, :ts, :anchor, :anchor)"
+                ),
+                {
+                    "uuid": uuid_lib.uuid4(),
+                    "u": seeded_sucursal_uuid,
+                    "accion": GENESIS_ACCION,
+                    "reg": uuid_lib.uuid4(),
+                    "ts": datetime(2026, 1, 1, tzinfo=UTC).replace(tzinfo=None),
+                    "anchor": anchor,
+                },
+            )
+        assert "live chain" in str(exc.value), (
+            f"the trigger must name the live-chain violation, got {exc.value}"
+        )
+        await session.rollback()
+
+
+async def test_min_seq_suppresses_a_known_historical_prefix(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
+    """``min_seq`` re-anchors on the skipped prefix so a known break stops
+    alerting, while the walk still validates everything from the watermark on.
+
+    0058 deliberately leaves the two historical breaks in place (the user
+    chose "code only, history documented" over rewriting the chain), so the
+    cloud verifier needs a per-chain watermark to avoid re-alerting them
+    every sweep.
+    """
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    spec = SYNC_CATALOG_BY_NAME["log_transaccional"]
+
+    async with Session() as session:
+        await _append_log(
+            session, seeded_sucursal_uuid, datetime(2026, 3, 1, tzinfo=UTC).replace(tzinfo=None)
+        )
+        # Corrupt a row in the middle of the chain (trigger bypassed).
+        await _insert_bypassing_chain_trigger(
+            session,
+            uuid_sucursal=seeded_sucursal_uuid,
+            accion="actualizar",
+            uuid_registro_afectado=uuid_lib.uuid4(),
+            timestamp_evento=datetime(2026, 3, 2, tzinfo=UTC).replace(tzinfo=None),
+            hash_anterior="0" * 64,
+            hash_actual="4" * 64,
+        )
+        # ``min_seq`` is the FIRST seq examined (rows with seq < min_seq are
+        # skipped), so the watermark sits just past the known-bad row.
+        corrupt_seq = await session.scalar(
+            text(
+                "SELECT COALESCE(MAX(seq), 0) FROM prod.log_transaccional WHERE uuid_sucursal = :u"
+            ),
+            {"u": seeded_sucursal_uuid},
+        )
+        watermark = corrupt_seq + 1
+        # A healthy row appended after the incident.
+        await _append_log(
+            session, seeded_sucursal_uuid, datetime(2026, 3, 3, tzinfo=UTC).replace(tzinfo=None)
+        )
+
+        unfiltered = await verify_chain_for_spec(session, spec, seeded_sucursal_uuid)
+        assert len(unfiltered) == 1, (
+            f"without a watermark the historical break must be reported, got {len(unfiltered)}"
+        )
+
+        filtered = await verify_chain_for_spec(
+            session, spec, seeded_sucursal_uuid, min_seq=watermark
+        )
+        assert filtered == [], (
+            f"rows at/after the watermark are intact and must not alert, got {filtered}"
+        )
+
+
+async def test_min_seq_cannot_mask_a_break_after_the_watermark(
+    pg_engine, alembic_upgrade, seeded_sucursal_uuid
+) -> None:
+    """A watermark is not a blanket suppression: a NEW break past it still fires.
+
+    Without this, an operator could silence the chain forever by parking
+    ``PARKOS_HASH_CHAIN_VERIFY_MIN_SEQ`` at the head.
+    """
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    spec = SYNC_CATALOG_BY_NAME["log_transaccional"]
+
+    async with Session() as session:
+        await _append_log(
+            session, seeded_sucursal_uuid, datetime(2026, 4, 1, tzinfo=UTC).replace(tzinfo=None)
+        )
+        head_seq = await session.scalar(
+            text(
+                "SELECT COALESCE(MAX(seq), 0) FROM prod.log_transaccional WHERE uuid_sucursal = :u"
+            ),
+            {"u": seeded_sucursal_uuid},
+        )
+        # Watermark parked at the head: only rows appended FROM NOW ON are
+        # examined. A break planted in that region must still fire.
+        watermark = head_seq + 1
+        # A NEW corruption, positioned at/after the watermark.
+        await _insert_bypassing_chain_trigger(
+            session,
+            uuid_sucursal=seeded_sucursal_uuid,
+            accion="actualizar",
+            uuid_registro_afectado=uuid_lib.uuid4(),
+            timestamp_evento=datetime(2026, 4, 2, tzinfo=UTC).replace(tzinfo=None),
+            hash_anterior="0" * 64,
+            hash_actual="5" * 64,
+        )
+
+        anomalies = await verify_chain_for_spec(
+            session, spec, seeded_sucursal_uuid, min_seq=watermark
+        )
+        assert len(anomalies) == 1, (
+            f"a break after the watermark must still be reported, got {anomalies}"
+        )
+        assert anomalies[0].actual == "0" * 64

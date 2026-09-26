@@ -129,6 +129,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import os
 import sys
 import uuid as uuid_lib
 from collections.abc import Callable
@@ -164,6 +165,23 @@ DEFAULT_VERIFY_INTERVAL_S = 3600
 DEFAULT_SYNC_BACK_INTERVAL_S = 5
 # Default per-cycle cap for ``repo.sync_queue.list_pending`` (T-PR11-001).
 DEFAULT_APPLY_BATCH_LIMIT = 100
+
+
+def _hash_chain_min_seq() -> int:
+    """``PARKOS_HASH_CHAIN_VERIFY_MIN_SEQ`` as an int, defaulting to 0.
+
+    0 means "verify every row". A non-zero value skips that prefix of each
+    chain, which is how the two historical breaks left in place by migration
+    0058 are kept out of the alert stream without re-hashing immutable DIAN
+    data. Unparseable or negative values fall back to 0 (verify everything):
+    a typo must never silently hide a real break.
+    """
+    raw = os.environ.get("PARKOS_HASH_CHAIN_VERIFY_MIN_SEQ", "0")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, value)
 
 
 class HashChainBreak(Exception):
@@ -232,9 +250,7 @@ _QUEUE_METADATA_KEYS: frozenset[str] = frozenset(
 #:     made later origin versions compare against a receiver-local clock and
 #:     get wrongly classified ``historical`` (inverted state downstream).
 #:     ``close_and_insert`` now closes the prior row at that same boundary.
-_VERSIONED_ONLY_METADATA_KEYS: frozenset[str] = frozenset(
-    {"vigente_hasta", "estado"}
-)
+_VERSIONED_ONLY_METADATA_KEYS: frozenset[str] = frozenset({"vigente_hasta", "estado"})
 
 
 def _business_payload_for_apply(spec: Any, raw_datos: dict[str, Any]) -> dict[str, Any]:
@@ -719,18 +735,28 @@ class SyncCloudWorker(WorkerRunner):
     ) -> None:
         """Walk one tenant's chain. Raise :class:`HashChainBreak` on mismatch.
 
-        Order MUST mirror ``repo.hash_chain._read_prior_hash``'s own
-        ``ORDER BY created_at DESC, uuid DESC`` exactly (same columns,
-        reversed) — by ``created_at``, never ``timestamp_evento``. See
-        that function's docstring for the confirmed-live false-positive
-        this used to cause when a burst of rows shared one
-        ``timestamp_evento``.
+        Order MUST mirror ``repo.hash_chain._read_head``: by ``seq``,
+        the per-chain position migration 0058 allocates at insert time under
+        a per-chain advisory lock. ``seq`` is the only causal ordering —
+        ``timestamp_evento`` is business-supplied and collides across a
+        burst, and ``created_at`` is stamped per node so a replicated row
+        can carry a ``created_at`` behind rows already committed. Walking by
+        either one reported ``hash_chain_break`` for rows that were never
+        corrupted.
+
+        ``PARKOS_HASH_CHAIN_VERIFY_MIN_SEQ`` (default 0) skips a known-bad
+        prefix of every chain. Migration 0058 deliberately left the two
+        historical breaks in place, so without a watermark this method would
+        re-raise them on every sweep forever, drowning any NEW break in
+        noise. Set it to the head ``seq`` of the historical prefix at the
+        moment of the fix.
         """
         session = session if session is not None else self._session
         stmt = (
             select(LogTransaccional)
             .where(LogTransaccional.uuid_sucursal == uuid_sucursal)
             .order_by(
+                LogTransaccional.seq.asc().nullslast(),
                 LogTransaccional.created_at.asc(),
                 LogTransaccional.uuid.asc(),
             )
@@ -741,13 +767,22 @@ class SyncCloudWorker(WorkerRunner):
         if not rows:
             return
 
+        min_seq = _hash_chain_min_seq()
+
         # Genesis anchor for this tenant — must match the anchor
         # ``repo.hash_chain.append`` would compute for an empty chain.
         prior_hash = hc_helpers._genesis_hash(uuid_sucursal)
         for row in rows:
+            if min_seq and row.seq is not None and row.seq < min_seq:
+                # Known-bad historical prefix: re-anchor on this row so the
+                # first examined row is still checked against a real hash
+                # rather than silently passing.
+                if row.hash_actual is not None:
+                    prior_hash = row.hash_actual
+                continue
             if row.hash_anterior is None or row.hash_anterior != prior_hash:
                 raise HashChainBreak(
-                    f"hash_anterior mismatch at row {row.uuid}: "
+                    f"hash_anterior mismatch at row {row.uuid} (seq={row.seq}): "
                     f"expected {prior_hash[:12]}, got "
                     f"{(row.hash_anterior or '<null>')[:12]}"
                 )
@@ -779,8 +814,9 @@ class SyncCloudWorker(WorkerRunner):
             return
 
         spec = SYNC_CATALOG_BY_NAME["revocacion_factura"]
+        min_seq = _hash_chain_min_seq()
         for tenant in tenants:
-            anomalies = await verify_chain_for_spec(session, spec, tenant)
+            anomalies = await verify_chain_for_spec(session, spec, tenant, min_seq=min_seq)
             for anomaly in anomalies:
                 await self._handle_chain_break(
                     tenant,

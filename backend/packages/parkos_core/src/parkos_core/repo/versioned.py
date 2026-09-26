@@ -161,7 +161,7 @@ async def close_and_insert(
     session.add(new_row)
     # Flush NOW (still same TX, nothing committed) so ``new_row.uuid`` is
     # populated before the log-row branch below reads it, and so that
-    # branch's own query (``hash_chain.append`` -> ``_read_prior_hash``)
+    # branch's own query (``hash_chain.append`` -> ``_read_head``)
     # does not have to rely on SQLAlchemy's autoflush to persist this row
     # first — autoflush-triggered-by-SELECT does not reliably postfetch a
     # server-generated PK for every model in this codebase (observed with
