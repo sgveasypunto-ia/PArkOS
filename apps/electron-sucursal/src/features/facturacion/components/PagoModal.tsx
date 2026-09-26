@@ -180,10 +180,28 @@ function validarBloqueFe(
 // Schema defined locally; only the type is exported for consumers
 // (PagoModal.test.tsx, PagoSheet.test.tsx). Constraining exports
 // to the type-only satisfies react-refresh/only-export-components.
-const pagoFormSchema = z
-  .discriminatedUnion('medio_pago', [pagoEfectivoSchema, pagoDatafonoSchema])
-  .superRefine(validarBloqueFe);
-export type PagoFormValues = z.infer<typeof pagoFormSchema>;
+const pagoFormSchemaBase = z.discriminatedUnion('medio_pago', [
+  pagoEfectivoSchema,
+  pagoDatafonoSchema,
+]);
+export type PagoFormValues = z.infer<typeof pagoFormSchemaBase>;
+
+/**
+ * HU-F9.1 (`identificacionReadonly`): cuando el bloque de identificación
+ * es solo lectura (paso 5 de `<Venta>`), sus campos no son editables Y
+ * `buildVentaPayload` los ignora por completo (arma `cliente` desde el
+ * paso 1) — validarlos con `validarBloqueFe` bloquearía el submit por un
+ * DV que el operador no puede corregir ahí (el paso 1 no siempre lo
+ * reenvía vía `clientePrefill`). Por eso el cross-field refine se salta
+ * entero en ese modo; en el resto de los call-sites (`PagoSheet`,
+ * `ReimprimirTiquete`) el bloque SÍ es la fuente de verdad y se valida
+ * igual que siempre.
+ */
+function buildPagoFormSchema(identificacionReadonly: boolean) {
+  return identificacionReadonly
+    ? pagoFormSchemaBase
+    : pagoFormSchemaBase.superRefine(validarBloqueFe);
+}
 
 export interface PagoModalProps {
   /**
@@ -236,6 +254,20 @@ export interface PagoModalProps {
     tipo_identificador?: TipoIdentificador;
     apellido?: string;
   };
+  /**
+   * HU-F9.1 (decisión de producto, 2026-09-25): cuando `<Venta>` monta
+   * este modal en su paso 5, el bloque de identificación (tipo de
+   * cliente/documento, número, DV, nombre, apellido, email) es
+   * puramente decorativo — `buildVentaPayload` arma `cliente`
+   * exclusivamente desde el paso 1 (`state.cliente`), nunca desde estos
+   * campos. Antes de este fix, el operador podía editarlos igual y la
+   * validación de DV bloqueaba el submit sobre un valor que después se
+   * descartaba. Con `identificacionReadonly`, el bloque se muestra
+   * deshabilitado (los valores ya vienen fijados por `clientePrefill`)
+   * y no hay edición ni error de DV posible. `<PagoSheet>` no pasa esta
+   * prop (default `false`): ahí el bloque SÍ es la fuente de verdad.
+   */
+  identificacionReadonly?: boolean;
 }
 
 /**
@@ -248,6 +280,7 @@ export function PagoModal({
   total_cop,
   onSubmit,
   clientePrefill,
+  identificacionReadonly = false,
 }: PagoModalProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
   const formId = useId();
@@ -265,6 +298,10 @@ export function PagoModal({
   // de consumidor final. Ese sentinel (`NIT_CONSUMIDOR_FINAL`) sigue
   // viviendo SOLO en `PagoSheet`/`Venta`, para armar el payload cuando
   // `fe===false` (cliente genérico); ya no contamina el estado del form.
+  const pagoFormSchema = useMemo(
+    () => buildPagoFormSchema(identificacionReadonly),
+    [identificacionReadonly],
+  );
   const form = useForm<PagoFormValues>({
     resolver: zodResolver(pagoFormSchema),
     defaultValues: {
@@ -328,6 +365,10 @@ export function PagoModal({
   // verificación in Colombia), so this only applies when the chosen
   // tipo_identificador is NIT.
   const dvError = useMemo<string | null>(() => {
+    // Paso 5 de <Venta>: el bloque es solo lectura y sus valores ya
+    // vienen validados desde el paso 1 — no hay nada que re-validar
+    // ni un error de DV que mostrar sobre un campo no editable.
+    if (identificacionReadonly) return null;
     if (!feActive || tipoIdentificador !== 'NIT') return null;
     const stripped = nitValue.replace(/\D+/g, '');
     if (stripped.length < 6) return null;
@@ -337,7 +378,7 @@ export function PagoModal({
     const result = validarNitModulo11(stripped, dvValue);
     if (result.ok) return null;
     return `DV inválido (esperado ${result.dvEsperado})`;
-  }, [feActive, tipoIdentificador, nitValue, dvValue]);
+  }, [identificacionReadonly, feActive, tipoIdentificador, nitValue, dvValue]);
 
   // HU-F8.1 — bloquea el submit en cliente si el efectivo recibido es
   // menor al total (código de error `monto_insuficiente`). El backend
@@ -479,6 +520,7 @@ export function PagoModal({
                       data-testid="pago-tipo-persona"
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background transition-colors hover:border-ring/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       value={field.value}
+                      disabled={identificacionReadonly}
                       onChange={(event) => {
                         const next = event.target.value as 'persona' | 'empresa';
                         field.onChange(next);
@@ -515,6 +557,7 @@ export function PagoModal({
                         data-testid="pago-tipo-documento"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background transition-colors hover:border-ring/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                         value={field.value}
+                        disabled={identificacionReadonly}
                         onChange={field.onChange}
                         onBlur={field.onBlur}
                       >
@@ -543,6 +586,7 @@ export function PagoModal({
                     <Input
                       data-testid="pago-nit"
                       placeholder={NUMERO_PLACEHOLDER[tipoIdentificador]}
+                      disabled={identificacionReadonly}
                       {...field}
                     />
                   </FormControl>
@@ -563,6 +607,7 @@ export function PagoModal({
                         inputMode="numeric"
                         maxLength={1}
                         placeholder="0-9"
+                        disabled={identificacionReadonly}
                         {...field}
                       />
                     </FormControl>
@@ -591,6 +636,7 @@ export function PagoModal({
                           ? t('facturacion:pago.fe_nombres_placeholder', { defaultValue: 'Ej: Juan Pérez' })
                           : t('facturacion:pago.fe_razon_social_placeholder', { defaultValue: 'Ej: Comercializadora S.A.S.' })
                       }
+                      disabled={identificacionReadonly}
                       {...field}
                     />
                   </FormControl>
@@ -609,6 +655,7 @@ export function PagoModal({
                       <Input
                         data-testid="pago-fe-apellido"
                         placeholder={t('facturacion:pago.fe_apellidos_placeholder', { defaultValue: 'Ej: Gómez' })}
+                        disabled={identificacionReadonly}
                         {...field}
                       />
                     </FormControl>
@@ -627,6 +674,7 @@ export function PagoModal({
                     <Input
                       data-testid="pago-fe-email"
                       type="email"
+                      disabled={identificacionReadonly}
                       {...field}
                     />
                   </FormControl>

@@ -878,6 +878,14 @@ export function Venta({
             `emitir_factura_electronica: values.fe` and either
             navigates to /suscripciones (page route) or fires the
             parent's `onSuccess` (embedded drawer).
+
+            `identificacionReadonly` (fix 2026-09-25, decisión del
+            operador): `buildVentaPayload` arma `cliente` EXCLUSIVAMENTE
+            desde `state.cliente` (paso 1) -- el bloque de identificación
+            que `<PagoModal>` muestra acá es puramente decorativo, así
+            que se deshabilita (valores fijados por `clientePrefill`) en
+            vez de dejarlo editable y bloquear el submit con una
+            validación de DV sobre un valor que después se descarta.
           */}
           <PagoModal
             uuid_ingreso={null}
@@ -894,6 +902,7 @@ export function Venta({
               tipo_identificador: state.cliente?.tipo_identificador ?? 'NIT',
               apellido: state.cliente?.apellido ?? '',
             }}
+            identificacionReadonly
             onSubmit={handlePagoSubmit}
           />
           {isMutating && <span data-testid="venta-mutating">Procesando…</span>}
