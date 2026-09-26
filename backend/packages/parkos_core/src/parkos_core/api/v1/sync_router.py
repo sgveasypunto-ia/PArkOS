@@ -53,7 +53,7 @@ from __future__ import annotations
 import logging
 import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -74,7 +74,11 @@ from ...repo.pairing import (
 from ...repo.revoked_sync_jwt import is_revoked
 from ...runtime import engine_flag
 from ...runtime.clock import ClockSkewError
-from ...sync.catalog.sync_catalog import SYNC_CATALOG, SYNC_CATALOG_BY_NAME
+from ...sync.catalog.sync_catalog import (
+    SYNC_CATALOG,
+    SYNC_CATALOG_BY_NAME,
+    resolve_catalog_name,
+)
 from ...sync.cutover.dual_protocol import build_sync_hello_response
 from ...sync.motor import apply_guard
 from ...sync.motor.apply_result import ApplyResult
@@ -188,10 +192,28 @@ class _PushRequest(_Base):
 
 
 class _PushResponseRow(_Base):
-    """Per-row result inside the 207 multi-status push response."""
+    """Per-row result inside the 207 multi-status push response.
+
+    ``status`` carries the REAL outcome of applying that row, derived from
+    the motor's ``ApplyResult`` through
+    :func:`wire_status_for_apply_result` — the same REQ-MOT-005
+    vocabulary ``/sync/events`` reports:
+
+    - ``applied`` — the row was applied.
+    - ``conflict`` — applied with a conflict; the outbox treats it as
+      settled (a conflict is a decision, not a transport failure).
+    - ``retry_parent_missing`` — a declared ``depends_on`` parent has not
+      arrived yet; also settled for the outbox (T-PR12-005 leaves
+      ``intentos``/``next_retry_at`` untouched).
+    - ``unknown_table`` — the row names a table with no
+      ``SYNC_CATALOG`` entry. Reported, never silently dropped
+      (REQ-CUT-015).
+
+    A row is reported ``applied`` ONLY when the motor actually applied it.
+    """
 
     uuid_registro: uuid_lib.UUID
-    status: str  # "applied" | "conflict" | "error"
+    status: str
     detail: str | None = None
 
 
@@ -556,10 +578,17 @@ async def sync_push(
        on duplicate POST within 5 min).
     5. Per-(issuer, subject) rate limit (push=60/min).
 
-    Returns 207 Multi-Status with per-row results. The per-row
-    conflict resolution itself is a PR9 concern (when the cloud-side
-    applier lands); PR8c returns ``status="applied"`` for all rows so
-    the auth + cache + rate-limit plumbing is exercised end-to-end.
+    Returns 207 Multi-Status with one result per request row, in the
+    requester's original order. Each row is applied through
+    ``SyncMotor.apply_row`` and its status is the REAL outcome
+    (:func:`wire_status_for_apply_result`) — this handler is the
+    branch -> cloud receiver, and the per-row conflict resolution is
+    the same single source of truth ``/sync/events`` uses.
+
+    Nothing is reported ``applied`` unless the motor actually applied
+    the row, and the whole batch is committed only after every row has
+    been attempted. A commit failure propagates as a 5xx, so the
+    sender never records a delivery that did not happen.
     """
     issuer = claims.get("iss", "")
     subject = extract_subject_from_jwt(claims)
@@ -593,20 +622,81 @@ async def sync_push(
             headers={"Retry-After": str(e.retry_after_seconds)},
         ) from e
 
-    # PR9 will iterate `payload.rows` against the conflict-resolution
-    # applier; PR8c returns applied=true on all rows so the auth +
-    # rate-limit + cache plumbing is verified end-to-end.
-    results = [
-        _PushResponseRow(
-            uuid_registro=row.uuid_registro,
-            status="applied",
-            detail=None,
-        )
-        for row in payload.rows
-    ]
-    response_body = {"results": [r.model_dump(mode="json") for r in results]}
+    actor_uuid = uuid_lib.UUID(subject)
+    # Lazily built, exactly as in ``/sync/events`` — a batch whose rows all
+    # name an unrecognized table never touches SyncMotor at all.
+    motor: SyncMotor | None = None
 
-    # Persist in cache so a duplicate X-Request-Id replays.
+    # Every request row must produce exactly one response row, in the
+    # REQUESTER's order, so the sender can correlate by index (the
+    # convention ``_push_and_handle_catalog`` already relies on with
+    # ``zip(..., strict=True)``). Reordering for dependency-safety
+    # therefore writes into ``results_by_index`` rather than appending.
+    results_by_index: list[_PushResponseRow | None] = [None] * len(payload.rows)
+    index_by_row: dict[int, int] = {id(row): i for i, row in enumerate(payload.rows)}
+    try:
+        # Echo suppression for the whole request's transaction, set once
+        # before any apply — this handler is mounted on BOTH processes and
+        # every row it applies arrived via sync, so the AFTER INSERT
+        # trigger must not re-enqueue an echo. See
+        # ``sync.motor.apply_guard``'s own docstring.
+        await apply_guard.enable_echo_suppression(session)
+
+        # ``order_batch`` because the sender's order (``prioridad DESC,
+        # intentos ASC, created_at ASC``) is not dependency-aware; applying
+        # a child before its parent raised ``ForeignKeyViolationError`` and,
+        # since the whole loop shared one transaction, aborted every other
+        # valid row in the batch. The sender retries that same batch
+        # verbatim, so it reproduced deterministically.
+        # ``order_batch`` returns ``QueueRowLike``, a Protocol that declares
+        # only ``.tabla`` — the sole field it needs to sort. ``_PushedRow``
+        # satisfies it structurally and carries ``uuid_registro``/``datos``
+        # too; the cast re-states that, it does not widen any assumption.
+        for row in cast("list[_PushedRow]", order_batch(list(payload.rows))):
+            idx = index_by_row[id(row)]
+            # ``resolve_catalog_name`` strips a pg_partman child-partition
+            # suffix. The enqueue trigger stamps ``TG_TABLE_NAME`` with the
+            # PHYSICAL partition (``log_transaccional_p_current``,
+            # ``salidas_default``, ...), and ``SYNC_CATALOG_BY_NAME`` is
+            # keyed by the parent name only — without this, every row from
+            # the 8 partitioned tables fails ``unknown_table`` forever.
+            # Safe here (unlike the cloud's local drain loop, which must
+            # stay un-normalized to avoid an echo loop): this apply targets
+            # the OTHER database.
+            spec = SYNC_CATALOG_BY_NAME.get(resolve_catalog_name(row.tabla))
+            if spec is None:
+                # Never a silent drop (REQ-CUT-015): reported, not swallowed.
+                results_by_index[idx] = _PushResponseRow(
+                    uuid_registro=row.uuid_registro,
+                    status="unknown_table",
+                    detail=f"no SYNC_CATALOG entry for {row.tabla!r}",
+                )
+                continue
+
+            if motor is None:
+                motor = SyncMotor(engine=engine_flag.get_engine())
+            apply_result = await motor.apply_row(session, spec, row.datos, actor_uuid=actor_uuid)
+            results_by_index[idx] = _PushResponseRow(
+                uuid_registro=row.uuid_registro,
+                status=wire_status_for_apply_result(apply_result),
+                detail=apply_result.reason,
+            )
+
+        assert all(r is not None for r in results_by_index), (
+            "sync_push: every request row must produce exactly one response row"
+        )
+        results: list[_PushResponseRow] = results_by_index  # type: ignore[assignment]
+
+        # Single commit for the whole batch, AFTER every row was attempted.
+        # If this raises, the request returns 5xx and the sender's
+        # ``_handle_push_response`` marks the batch failed — so a lost
+        # commit can never be recorded as a delivery.
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+
+    response_body = {"results": [r.model_dump(mode="json") for r in results]}
     if x_request_id:
         _IDEMPOTENCY.put(issuer, cache_key_subject, x_request_id, 207, response_body)
 
