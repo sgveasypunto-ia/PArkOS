@@ -1,0 +1,24 @@
+{
+  "pairing": {
+    "title": "Pairing de sucursal",
+    "subtitle": "Pegá el token de pairing entregado por el administrador de cloud y el UUID de la sucursal. El sistema canjea el token por una credencial de larga duración (30 días).",
+    "field": {
+      "token": "Token de pairing",
+      "tokenHelp": "JWT de 24 horas, una sola vez, entregado por el admin.",
+      "uuid": "UUID de la sucursal",
+      "uuidHelp": "UUID que identifica esta sucursal. Lo entrega el admin junto al token."
+    },
+    "submit": "Vincular",
+    "submitting": "Vinculando...",
+    "error": {
+      "invalidToken": "Token inválido: {{reason}}. Generá uno nuevo desde el admin de cloud.",
+      "network": "Error de red. Verificá la conexión y reintentá.",
+      "server": "Error del servidor (código {{status}})."
+    },
+    "success": {
+      "title": "Sincronización vinculada",
+      "body": "Esta sucursal ya puede sincronizar con cloud. Iniciá sesión para continuar.",
+      "continue": "Iniciar sesión"
+    }
+  }
+}

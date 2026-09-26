@@ -53,6 +53,8 @@
     "src/features/sync/**/*.tsx",
     "src/features/alertas/**/*.ts",
     "src/features/alertas/**/*.tsx",
+    "src/features/pairing/**/*.ts",
+    "src/features/pairing/**/*.tsx",
     "src/shared/**/*.ts"
   ]
 }

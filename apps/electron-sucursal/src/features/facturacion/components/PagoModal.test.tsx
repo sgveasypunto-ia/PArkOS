@@ -314,7 +314,6 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
         onSubmit={onSubmit}
         clientePrefill={{
           nit: '900123456',
-          dv: undefined,
           nombre: 'ACME',
           fe: true,
           tipo_persona: 'empresa',

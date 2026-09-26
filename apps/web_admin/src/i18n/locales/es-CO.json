@@ -46,5 +46,48 @@
         "minLength": "La contraseña debe tener al menos 8 caracteres."
       }
     }
+  },
+  "common": {
+    "cancel": "Cancelar"
+  },
+  "sucursal": {
+    "title": "Sucursales",
+    "new": "Nueva sucursal",
+    "createTitle": "Crear nueva sucursal",
+    "loading": "Cargando sucursales...",
+    "loadError": "No se pudieron cargar las sucursales. Reintentá.",
+    "empty": "Aún no hay sucursales.",
+    "col": {
+      "nombre": "Nombre",
+      "prefijo": "Prefijo",
+      "ciudad": "Ciudad",
+      "actions": "Acciones"
+    },
+    "action": {
+      "pairing": "Token de pairing"
+    },
+    "field": {
+      "nombre": "Nombre",
+      "nombreHelp": "Nombre visible de la sucursal.",
+      "prefijo": "Prefijo",
+      "prefijoHelp": "3-6 caracteres en mayúsculas, dígitos o guion (UK).",
+      "ciudad": "Ciudad",
+      "telefono": "Teléfono",
+      "direccion": "Dirección"
+    },
+    "form": {
+      "create": "Crear sucursal",
+      "update": "Actualizar",
+      "submitting": "Creando..."
+    },
+    "pairing": {
+      "title": "Token de pairing",
+      "expiresIn": "Expira en {{remaining}}",
+      "expired": "El token expiró. Generá uno nuevo.",
+      "copy": "Copiar token",
+      "copied": "Token copiado al portapapeles.",
+      "copiedShort": "Copiado",
+      "close": "Cerrar"
+    }
   }
 }
