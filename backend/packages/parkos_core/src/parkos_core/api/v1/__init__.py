@@ -206,6 +206,22 @@ def _build_router() -> APIRouter:
             logger.error("Failed to import pairing endpoints: %s", e)
             raise
 
+        # T-IT-1.4/IT-1.5: admin user-management (POST /admin/usuarios,
+        # GET /admin/usuarios, POST/DELETE /admin/usuarios/{uuid}/sucursales).
+        # Cloud-only by the same DIAN-boundary reasoning as pairing
+        # (REQ-X2: branch operators have no business managing users).
+        try:
+            from . import admin_usuarios as _admin_usuarios
+
+            r.include_router(_admin_usuarios.router)
+            logger.info(
+                "Admin user-management mounted (cloud deploy): "
+                "/admin/usuarios + /admin/usuarios/{uuid}/sucursales"
+            )
+        except ImportError as e:
+            logger.error("Failed to import admin_usuarios: %s", e)
+            raise
+
     # T-PR6-11: lazy-import the DIAN cloud router ONLY on cloud deploy.
     # Branch images physically lack ``parkos_core/dian/`` (Layer 1) AND
     # the import-time guard inside ``cloud_router`` would raise
