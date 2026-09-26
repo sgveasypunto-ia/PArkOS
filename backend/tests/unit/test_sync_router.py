@@ -18,6 +18,7 @@ which exercises the CLIENT. Distinct from
 ``tests/unit/test_sync_router_helpers.py`` (T-PR8-22) which exercises
 only the helpers.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -39,6 +40,7 @@ from parkos_core.api.v1.sync_router import (
 from parkos_core.api.v1.sync_router import (
     router as sync_router_obj,
 )
+from parkos_core.sync.motor.apply_result import ApplyResult
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -307,14 +309,26 @@ class TestSyncPush:
     def test_push_returns_207_with_results(
         self, app: FastAPI, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Happy path: 207 multi-status, one ``applied`` row per input."""
+        """Happy path: 207 multi-status, one ``applied`` row per input.
+
+        Previously this test passed with NO motor wired at all — it
+        asserted ``all(status == "applied")`` against a handler that
+        hardcoded ``"applied"`` without touching the database (the PR8c
+        plumbing stub). It now drives the real ``SyncMotor.apply_row``
+        path; see ``test_sync_push_applier.py`` for the full contract.
+        """
         _override_claims(app, _claims())
 
         # Patch is_revoked to return False (the JWT is valid).
         from parkos_core.api.v1 import sync_router
 
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=False))
+        monkeypatch.setattr(sync_router.engine_flag, "get_engine", lambda: MagicMock())
+        monkeypatch.setattr(sync_router.apply_guard, "enable_echo_suppression", AsyncMock())
         monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=False)
+            sync_router.SyncMotor,
+            "apply_row",
+            AsyncMock(return_value=ApplyResult(status="APPLIED")),
         )
 
         c = TestClient(app)
@@ -339,9 +353,7 @@ class TestSyncPush:
         """``is_revoked`` returns True → 401 ``sync_jwt_revoked``."""
         from parkos_core.api.v1 import sync_router
 
-        monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=True)
-        )
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=True))
         _wire_full_chain_with_mocks(app, _claims(), is_revoked_value=True)
 
         c = TestClient(app)
@@ -365,13 +377,9 @@ class TestSyncPush:
         # on runtime.clock (clock_skew_seconds' clock). Both are needed
         # because the dep override calls ``_sr.check_iat_branch_skew``
         # which internally references ``server_now`` via clock_skew_seconds.
-        monkeypatch.setattr(
-            "parkos_core.sync.router_helpers.server_now", lambda: frozen
-        )
+        monkeypatch.setattr("parkos_core.sync.router_helpers.server_now", lambda: frozen)
         monkeypatch.setattr("parkos_core.runtime.clock.server_now", lambda: frozen)
-        monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=False)
-        )
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=False))
         _wire_full_chain_with_mocks(
             app, _claims(iat_branch="2026-09-03T11:00:00"), is_revoked_value=False
         )
@@ -385,15 +393,11 @@ class TestSyncPush:
         assert resp.status_code == 400, resp.text
         assert resp.json()["detail"]["error"] == "clock_skew_too_large"
 
-    def test_push_idempotency_replay(
-        self, app: FastAPI, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_push_idempotency_replay(self, app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> None:
         """Second POST with same ``X-Request-Id`` → cached body + ``Idempotent-Replay: true``."""
         from parkos_core.api.v1 import sync_router
 
-        monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=False)
-        )
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=False))
 
         _override_claims(app, _claims())
         c = TestClient(app)
@@ -421,9 +425,7 @@ class TestSyncPush:
         """61st request in a 60s window → 429 + ``Retry-After``."""
         from parkos_core.api.v1 import sync_router
 
-        monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=False)
-        )
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=False))
 
         _override_claims(app, _claims())
         c = TestClient(app)
@@ -458,9 +460,7 @@ class TestSyncHeartbeat:
         """Empty body + no rate-limit pressure → 204."""
         from parkos_core.api.v1 import sync_router
 
-        monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=False)
-        )
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=False))
 
         _override_claims(app, _claims())
         c = TestClient(app)
@@ -480,9 +480,7 @@ class TestSyncRotateJwt:
         """Valid request → 200 with ``{jwt, expires_at, grace_until}``."""
         from parkos_core.api.v1 import sync_router
 
-        monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=False)
-        )
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=False))
         monkeypatch.setattr(sync_router, "append_event", AsyncMock())
 
         _override_claims(app, _claims())
@@ -510,9 +508,7 @@ class TestSyncRotateJwt:
         """2nd rotate in 60s window → 429 (per_minute=1)."""
         from parkos_core.api.v1 import sync_router
 
-        monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=False)
-        )
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=False))
         monkeypatch.setattr(sync_router, "append_event", AsyncMock())
 
         _override_claims(app, _claims())
@@ -537,9 +533,7 @@ class TestSyncEvents:
         """Per-event ``delivered`` status."""
         from parkos_core.api.v1 import sync_router
 
-        monkeypatch.setattr(
-            sync_router, "is_revoked", AsyncMock(return_value=False)
-        )
+        monkeypatch.setattr(sync_router, "is_revoked", AsyncMock(return_value=False))
 
         _override_claims(app, _claims())
         c = TestClient(app)

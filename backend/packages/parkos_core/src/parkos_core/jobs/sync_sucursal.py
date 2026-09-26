@@ -325,8 +325,11 @@ class SyncSucursalWorker(WorkerRunner):
         Status code contract (per spec §21.7):
 
         - 2xx      → ``mark_dispatched`` for every row.
-        - 207      → partial: body has ``success_uuids``; mark those
-                     dispatched, the rest failed.
+        - 207      → partial: body has ``results`` (one per request row,
+                     in request order); ``applied``/``conflict``/
+                     ``retry_parent_missing`` settle the row, anything
+                     else (e.g. ``unknown_table``) fails it. Correlated
+                     by INDEX, never by uuid.
         - 401      → ``JwtManager.on_401_response``. ``RETRY_NEW_JWT``
                      triggers a rotate and the next cycle retries the
                      push. Anything else (HALT_*) raises out so the
@@ -369,31 +372,61 @@ class SyncSucursalWorker(WorkerRunner):
         """Translate a ``PushResponse`` into repo writes."""
         status = response.status
 
-        # 207 Multi-Status — partial. Cloud returns the accepted UUIDs
-        # in ``body.success_uuids``. We check 207 BEFORE the 2xx range
-        # because 207 is technically in 200-299; without this ordering
-        # the worker would treat every partial push as a clean success.
+        # 207 Multi-Status — partial. Correlate by INDEX, not by uuid.
+        # The response rows carry ``uuid_registro`` (the BUSINESS row's
+        # uuid) while ``row.uuid`` here is the sync_queue row's own uuid —
+        # two different namespaces that can never match, so a
+        # ``success_uuids`` intersection would be empty for EVERY row and
+        # wedge the whole batch in a retry loop. The receiver echoes one
+        # result per request row in request order, so index is the
+        # authoritative correlation — the same convention
+        # ``_push_and_handle_catalog`` already uses.
         if status == 207:
-            success_ids = _extract_success_uuids(response.body)
+            results = _push_results(response)
+            if results is None or len(results) != len(pending):
+                # Never guess a correlation across a mismatched count — fail
+                # the whole batch loudly (never a silent partial drop).
+                self.log.error(
+                    "sync_sucursal.push_result_count_mismatch",
+                    sent=len(pending),
+                    received=len(results) if results is not None else None,
+                )
+                await self._mark_failed_batch(pending, error="result_count_mismatch")
+                return
             accepted = 0
             rejected = 0
-            for row in pending:
-                if row.uuid in success_ids:
+            for row, result in zip(pending, results, strict=True):
+                wire_status = result.get("status")
+                if wire_status in ("applied", "conflict", "retry_parent_missing"):
+                    # design.md §2 Issue #8's table — the same three are the
+                    # SAME outbox action here as on the catalog path: a
+                    # conflict is a decision and a dependency wait is not a
+                    # transport failure (T-PR12-005 leaves intentos/
+                    # next_retry_at untouched).
                     await sq_helpers.mark_dispatched(self._session, row.uuid)
                     accepted += 1
                 else:
+                    # "unknown_table" or anything unrecognized — never a
+                    # silent drop (REQ-CUT-015).
                     await sq_helpers.mark_failed(
                         self._session,
                         row.uuid,
-                        "rejected_by_cloud",
+                        f"push_{wire_status}",
                     )
                     rejected += 1
-            self.log.warning(
-                "sync_sucursal.push_partial",
-                status=status,
-                accepted=accepted,
-                rejected=rejected,
-            )
+            if rejected:
+                self.log.warning(
+                    "sync_sucursal.push_partial",
+                    status=status,
+                    accepted=accepted,
+                    rejected=rejected,
+                )
+            else:
+                self.log.info(
+                    "sync_sucursal.push_ok",
+                    sent=len(pending),
+                    status=status,
+                )
             return
 
         # 2xx (except 207) — clean success.
@@ -622,9 +655,7 @@ class SyncSucursalWorker(WorkerRunner):
             # revoked case; let it propagate (orchestrator restart-loop).
             if response.status == 401:
                 assert self._jwt_manager is not None
-                action = await self._jwt_manager.on_401_response(
-                    _fake_httpx_response(response)
-                )
+                action = await self._jwt_manager.on_401_response(_fake_httpx_response(response))
                 if action == JwtAction.RETRY_NEW_JWT:
                     self.log.info("sync_sucursal.rotating_jwt_after_401_catalog")
                     await self._jwt_manager.rotate()
@@ -895,9 +926,7 @@ class SyncSucursalWorker(WorkerRunner):
             raw_uuid_registro = row.get("uuid_registro")
             try:
                 uuid_registro = (
-                    uuid_lib.UUID(str(raw_uuid_registro))
-                    if raw_uuid_registro is not None
-                    else None
+                    uuid_lib.UUID(str(raw_uuid_registro)) if raw_uuid_registro is not None else None
                 )
             except ValueError:
                 uuid_registro = None
@@ -917,9 +946,7 @@ class SyncSucursalWorker(WorkerRunner):
             # Everything was already applied (or unresolved) — the cursor
             # only advances when nothing is left behind (CU-07); already-
             # applied rows are local, so marking them consumed is safe.
-            await self._persist_pull_cursor(
-                next_seq=pulled.next_seq, unresolved=unresolved
-            )
+            await self._persist_pull_cursor(next_seq=pulled.next_seq, unresolved=unresolved)
             # Nothing was attempted, so nothing failed: this is a clean cycle
             # and must clear the streak, or a node that degraded during an
             # incident stays 503 for as long as the cloud is quiet.
@@ -1044,9 +1071,7 @@ class SyncSucursalWorker(WorkerRunner):
         if not resolved:
             # All rows were already applied locally (or unresolved) — the
             # cursor advances only when nothing is left behind (CU-07).
-            await self._persist_pull_cursor(
-                next_seq=pulled.next_seq, unresolved=unresolved
-            )
+            await self._persist_pull_cursor(next_seq=pulled.next_seq, unresolved=unresolved)
             # Nothing was attempted, so nothing failed: this is a clean cycle
             # and must clear the streak, or a node that degraded during an
             # incident stays 503 for as long as the cloud is quiet.
@@ -1204,16 +1229,28 @@ def _str_or_none(value: Any) -> str | None:
     return text or None
 
 
-def _extract_success_uuids(body: dict[str, Any]) -> set[uuid_lib.UUID]:
-    """Parse ``{"success_uuids": ["<uuid>", ...]}`` into a ``set``."""
-    raw = body.get("success_uuids") or body.get("accepted") or []
-    out: set[uuid_lib.UUID] = set()
-    for item in raw:
-        try:
-            out.add(uuid_lib.UUID(str(item)))
-        except (TypeError, ValueError):
-            continue
-    return out
+def _push_results(response: PushResponse) -> list[dict[str, Any]] | None:
+    """Extract the per-row ``results`` list from a 207 push response.
+
+    The receiver answers with ``{"results": [...]}``, one entry per
+    request row, in request order. Returns ``None`` when the body does
+    not carry a list, so the caller can fail the batch instead of
+    guessing a correlation.
+
+    Replaces the previous ``_extract_success_uuids`` helper, which read
+    ``body["success_uuids"]`` / ``body["accepted"]`` — keys this endpoint
+    never returned — and then intersected them against ``row.uuid`` (the
+    sync_queue row uuid) while the receiver reports ``uuid_registro``
+    (the business row uuid). Both halves of that comparison were wrong,
+    so every row of a 207 push was marked ``rejected_by_cloud``.
+    """
+    body = getattr(response, "body", None)
+    if not isinstance(body, dict):
+        return None
+    results = body.get("results")
+    if not isinstance(results, list):
+        return None
+    return [r for r in results if isinstance(r, dict)]
 
 
 def _fake_httpx_response(response: PushResponse | EventsPushResponse) -> Any:
