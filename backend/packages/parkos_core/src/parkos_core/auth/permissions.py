@@ -27,6 +27,39 @@ def require_permission(codigo: str):
 
     Args:
         codigo: The permission code (e.g. ``"config_catalogo"``).
+
+    WHY THIS IS AN EXISTENCE CHECK, NOT A UNIQUENESS CHECK
+    ------------------------------------------------------
+    ``prod.permisos`` has NO unique index on ``permiso`` alone --
+    ``permisos_uk01`` is ``(permiso, vigente_desde)``, and the bitemporal
+    model intentionally allows one logical code to have several rows. A
+    join that filters on ``permiso == codigo`` can therefore legitimately
+    return more than one row, and an actor can hold open grants pointing
+    at more than one of them.
+
+    ``scalar_one_or_none()`` RAISES ``MultipleResultsFound`` in that case
+    rather than returning the first row, which turned an authorization
+    decision into an unhandled HTTP 500. Live impact before this fix:
+    ``operador@parkos.local`` hit 500 on 16 codes -- including
+    ``gestionar_dian``, ``emitir_factura``, ``audit_read`` and
+    ``crear_arqueo`` -- in BOTH the cloud and branch databases.
+
+    Two independent defects, both required:
+
+    1. ``scalars().first()`` -- the question is "does an open grant exist
+       for this code", so more than one match must still authorize. This
+       keeps the check correct even though the catalogue currently holds 15
+       codes with more than one open row.
+
+    2. ``Permisos.vigente_hasta.is_(None)`` -- a grant pointing at a
+       CLOSED permission version must not authorize. The 16 grants that
+       were inflating the join are exactly the ones pointing at closed
+       rows, so this filter both corrects the authorization semantics and
+       removes the current duplication. It is not cosmetic.
+
+    Fixing only one leaves the other defect armed: ``.first()`` alone
+    keeps authorizing closed codes, and the filter alone still explodes
+    the moment an actor is granted both open rows of a duplicated code.
     """
 
     async def _dep(
@@ -43,9 +76,10 @@ def require_permission(codigo: str):
                 PermisosUsuario.uuid_usuario == actor_uuid,
                 PermisosUsuario.vigente_hasta.is_(None),
                 Permisos.permiso == codigo,
+                Permisos.vigente_hasta.is_(None),
             )
         )
-        if result.scalar_one_or_none() is None:
+        if result.scalars().first() is None:
             raise HTTPException(
                 status_code=403,
                 detail={"error": "permission_denied", "detail": codigo},
