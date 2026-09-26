@@ -231,7 +231,24 @@ class SyncSucursalWorker(WorkerRunner):
         """One iteration of the 6-step main loop.
 
         :class:`WorkerRunner.run` calls this in a loop until SIGTERM/SIGINT.
+
+        Rolls ``self._session`` back before propagating. The session is
+        owned by ``main()`` for the whole container lifetime, so a raise
+        that leaves the transaction aborted poisons every LATER cycle with
+        ``InFailedSQLTransactionError`` and buries the original error
+        forever: one transient fault would read as a permanent opaque one.
         """
+        try:
+            await self._run_cycle()
+        except BaseException:
+            try:
+                await self._session.rollback()
+            except Exception:  # noqa: BLE001 - any rollback failure must not mask the real error
+                # Never let a failed rollback mask the original error.
+                self.log.warning("sync_sucursal.cycle_rollback_failed")
+            raise
+
+    async def _run_cycle(self) -> None:
         # Lazily build collaborators — JWT file might be missing on first
         # boot (pre-pairing); the loop tolerates that and retries next cycle.
         if self._http_client is None:

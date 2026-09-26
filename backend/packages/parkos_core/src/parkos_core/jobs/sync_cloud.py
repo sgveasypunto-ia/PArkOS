@@ -332,7 +332,23 @@ class SyncCloudWorker(WorkerRunner):
         ``cycle`` itself is a sleep — the real work is in the two
         siblings, which the supervisor starts once on the first cycle
         and never tears down (until SIGTERM).
+
+        Rolls ``self._session`` back before propagating, for the same
+        reason as :meth:`parkos_core.jobs.sync_sucursal.SyncSucursalWorker.cycle`:
+        the session outlives every cycle, so an aborted transaction left
+        behind would turn the next cycle into ``InFailedSQLTransactionError``
+        and hide the real fault.
         """
+        try:
+            await self._run_cycle()
+        except BaseException:
+            try:
+                await self._session.rollback()
+            except Exception:  # noqa: BLE001 - any rollback failure must not mask the real error
+                self.log.warning("sync_cloud.cycle_rollback_failed")
+            raise
+
+    async def _run_cycle(self) -> None:
         # Lazily start the heavy loops on the first iteration.
         if not self._heavy_tasks:
             self._heavy_tasks = [
