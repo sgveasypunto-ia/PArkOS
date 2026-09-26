@@ -3,7 +3,10 @@
 End-to-end setup so the branch container can POST /sync/pair and receive
 a sync-agent JWT. Steps:
 
-  1. SQL INSERT a canonical admin user (idempotent — ON CONFLICT DO NOTHING).
+  1. SQL INSERT a canonical admin user, idempotent via NOT EXISTS guards on
+     the open version. NOT via ON CONFLICT: the UKs carry vigente_desde,
+     which is re-evaluated per INSERT, so a conflict target on it never
+     fires. See ensure_admin_user for the full account of that bug.
   2. Mint an admin- JWT for that user using the project's auth tokens.
   3. POST /admin/pairing-tokens with the admin JWT.
   4. Persist the returned plaintext + write the resolved sync_jwt to disk.
@@ -53,9 +56,9 @@ def http_post_json(url: str, body: dict, *, headers: dict[str, str] | None = Non
 def ensure_admin_user(cloud_dsn: str) -> uuid_lib.UUID:
     """Idempotent INSERT of an admin user + permissions. Returns the user uuid.
 
-    The admin user gets the ``gestionar_dian`` permission (required by
-    ``POST /admin/pairing-tokens`` per pairing.py:80) so the bootstrap
-    pairing flow works end-to-end without manual DB fiddling.
+    Grants every live permission code to the admin, matching migration
+    ``0054_grant_admin_all_permissions``. This used to grant a hand-kept
+    7-item tuple which silently drifted from the catalogue.
 
     Why we compute the hash here instead of hard-coding it: pydantic.EmailStr
     (or our lenient ParkosEmail in api-sucursal/api-admin) must accept the
@@ -64,6 +67,30 @@ def ensure_admin_user(cloud_dsn: str) -> uuid_lib.UUID:
     ``ValueError`` on the malformed sentinel and the operator will get HTTP
     500 instead of a clean 401 ``invalid_credentials``. So we always compute
     a real bcrypt hash for ``ADMIN_PASSWORD`` at bootstrap time.
+
+    THE BUG THIS FIXES
+    ------------------
+    The previous version inserted with ``ON CONFLICT (cedula, vigente_desde)
+    DO NOTHING``. That conflict target can never fire: ``vigente_desde`` is
+    set to ``NOW()``, which is re-evaluated per INSERT, so every run appended
+    another version of the same logical user. The grant loop then looked the
+    target up with ``SELECT uuid FROM prod.usuarios WHERE email = %s LIMIT 1``
+    -- no ``ORDER BY`` and no ``vigente_hasta IS NULL`` -- so the grants
+    landed on whichever row the planner returned, not the open one.
+
+    Result on the dev cloud DB: seven ``usuarios`` rows for
+    ``admin@parkos.local`` (all ``cedula = '1234567890'``) created across
+    ~46 minutes of repeated bootstraps. Six closed, each holding 7 grants;
+    the open one held ZERO. The admin authenticated fine and then got HTTP
+    403 on every permission-gated route.
+
+    ``permisos_usuario`` has the same UK shape ``(uuid_usuario,
+    uuid_permiso, vigente_desde)``, so its ``ON CONFLICT DO NOTHING`` was
+    equally inert.
+
+    The approach here is explicit ``NOT EXISTS`` guards against the OPEN
+    version, which is the only formulation that survives a re-evaluated
+    ``NOW()`` in the conflict key.
     """
     import bcrypt
     import psycopg
@@ -72,80 +99,133 @@ def ensure_admin_user(cloud_dsn: str) -> uuid_lib.UUID:
         ADMIN_PASSWORD.encode("utf-8"),
         bcrypt.gensalt(rounds=12),
     ).decode("utf-8")
-    REQUIRED_PERMISSIONS = (
-        "gestionar_dian",
-        "config_catalogo",
-        "audit_read",
-        "admin_usuarios",
-        "gestionar_clientes",
-        "emitir_factura",
-        "emitir_factura_electronica",
-    )
 
     with psycopg.connect(cloud_dsn) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            # INSERT admin user (idempotent).
+            # Resolve the OPEN admin version. ORDER BY created_at DESC makes
+            # this deterministic even on a database already damaged by the
+            # old bug, where several closed versions share the email.
             cur.execute(
                 """
-                INSERT INTO prod.usuarios (
-                    uuid, vigente_desde, vigente_hasta, estado,
-                    created_at, created_by,
-                    nombre, apellido, cedula, email, password_hash, rol,
-                    fecha_cambio_password
-                )
-                VALUES (
-                    gen_random_uuid(), NOW(), NULL, 'activo',
-                    NOW(), NULL,
-                    'Admin', 'Dev', '1234567890', %s, %s, 'admin',
-                    NULL
-                )
-                ON CONFLICT (cedula, vigente_desde) DO NOTHING
-                RETURNING uuid
+                SELECT uuid, password_hash, nombre, apellido, cedula, rol
+                FROM prod.usuarios
+                WHERE email = %s
+                  AND vigente_hasta IS NULL
+                ORDER BY created_at DESC
+                LIMIT 1
                 """,
-                (ADMIN_EMAIL, ADMIN_BCRYPT_HASH),
+                (ADMIN_EMAIL,),
             )
-            row = cur.fetchone()
-            if row is not None:
-                user_uuid = row[0]
-            else:
-                # Already exists — look up.
-                cur.execute(
-                    "SELECT uuid FROM prod.usuarios WHERE email = %s LIMIT 1",
-                    (ADMIN_EMAIL,),
-                )
-                row = cur.fetchone()
-                assert row is not None, "admin user lookup failed"
-                user_uuid = row[0]
+            existing = cur.fetchone()
 
-            # Grant required permissions (idempotent).
-            for code in REQUIRED_PERMISSIONS:
-                # Look up the permiso uuid.
-                cur.execute(
-                    "SELECT uuid FROM prod.permisos WHERE permiso = %s LIMIT 1",
-                    (code,),
-                )
-                prow = cur.fetchone()
-                if prow is None:
-                    print(f"   WARNING: permission code {code!r} not in seed data; skipping")
-                    continue
-                permiso_uuid = prow[0]
+            if existing is None:
+                # First bootstrap: insert the initial version.
                 cur.execute(
                     """
-                    INSERT INTO prod.permisos_usuario (
+                    INSERT INTO prod.usuarios (
                         uuid, vigente_desde, vigente_hasta, estado,
                         created_at, created_by,
-                        uuid_usuario, uuid_permiso
+                        nombre, apellido, cedula, email, password_hash, rol,
+                        fecha_cambio_password
                     )
                     VALUES (
                         gen_random_uuid(), NOW(), NULL, 'activo',
                         NOW(), NULL,
-                        %s, %s
+                        'Admin', 'Dev', '1234567890', %s, %s, 'admin',
+                        NULL
                     )
-                    ON CONFLICT DO NOTHING
+                    RETURNING uuid
                     """,
-                    (user_uuid, permiso_uuid),
+                    (ADMIN_EMAIL, ADMIN_BCRYPT_HASH),
                 )
+                user_uuid = cur.fetchone()[0]
+            elif bcrypt.checkpw(
+                ADMIN_PASSWORD.encode("utf-8"),
+                existing[1].encode("utf-8"),
+            ):
+                # Password already matches: do nothing. This is what makes
+                # re-running the bootstrap a genuine no-op instead of another
+                # duplicate version.
+                user_uuid = existing[0]
+            else:
+                # Password drifted from the env: rotate it the bi-temporal
+                # way -- close the current version, insert a new one. A bare
+                # UPDATE would violate the no-in-place-mutation canon.
+                cur.execute(
+                    """
+                    UPDATE prod.usuarios
+                    SET vigente_hasta = NOW(), estado = 'inactivo'
+                    WHERE uuid = %s AND vigente_hasta IS NULL
+                    """,
+                    (existing[0],),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO prod.usuarios (
+                        uuid, vigente_desde, vigente_hasta, estado,
+                        created_at, created_by,
+                        nombre, apellido, cedula, email, password_hash, rol,
+                        fecha_cambio_password
+                    )
+                    VALUES (
+                        gen_random_uuid(), NOW(), NULL, 'activo',
+                        NOW(), NULL,
+                        %s, %s, %s, %s, %s, %s,
+                        NULL
+                    )
+                    RETURNING uuid
+                    """,
+                    (
+                        existing[2],  # nombre
+                        existing[3],  # apellido
+                        existing[4],  # cedula
+                        ADMIN_EMAIL,
+                        ADMIN_BCRYPT_HASH,
+                        existing[5],  # rol
+                    ),
+                )
+                user_uuid = cur.fetchone()[0]
+
+            # Grant every live permission code, one grant per DISTINCT code.
+            #
+            # DISTINCT ON (permiso) + vigente_desde DESC picks the LATEST
+            # version of each code. A plain join would emit one grant per
+            # physical catalogue ROW, and prod.permisos currently carries 47
+            # rows for 32 codes -- duplicate-version damage from 0002's
+            # broken ON CONFLICT -- which would hand the admin 47 grants.
+            #
+            # The NOT EXISTS guard is the part that matters: it makes repeat
+            # runs converge instead of appending.
+            cur.execute(
+                """
+                INSERT INTO prod.permisos_usuario (
+                    uuid, vigente_desde, vigente_hasta, estado,
+                    created_at, created_by,
+                    uuid_usuario, uuid_permiso
+                )
+                SELECT gen_random_uuid(), NOW(), NULL, 'activo',
+                       NOW(), NULL,
+                       %s, p.uuid
+                FROM (
+                    SELECT DISTINCT ON (permiso) uuid, permiso
+                    FROM prod.permisos
+                    WHERE vigente_hasta IS NULL
+                      AND permiso IS NOT NULL
+                    ORDER BY permiso, vigente_desde DESC
+                ) p
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM prod.permisos_usuario pu
+                    WHERE pu.uuid_usuario = %s
+                      AND pu.uuid_permiso = p.uuid
+                      AND pu.vigente_hasta IS NULL
+                )
+                """,
+                (user_uuid, user_uuid),
+            )
+            granted = cur.rowcount
+            if granted:
+                print(f"   granted {granted} permission code(s) to {ADMIN_EMAIL}")
 
             return user_uuid
 
