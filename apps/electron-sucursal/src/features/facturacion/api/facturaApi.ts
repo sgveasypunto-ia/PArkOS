@@ -67,7 +67,8 @@ const decimalNumberNullable = z
   .transform((v) => (v === null ? null : Number(v)));
 
 const clienteSchema = z.object({
-  nit: z.string().nullable(),
+  tipo_identificador: z.enum(['NIT', 'CC', 'CE', 'pasaporte']).nullable(),
+  numero_identificacion: z.string().nullable(),
   dv: z.string().nullable().optional(),
   nombre: z.string().nullable(),
   apellido: z.string().nullable().optional(),

@@ -222,7 +222,8 @@ def test_factura_read_extrae_uuid_cliente() -> None:
         voucher=None,
         numero_recibo="SUC01-20260914-000123",
         cliente=FacturaDisplayCliente(
-            nit=None,
+            tipo_identificador="CC",
+            numero_identificacion="1020304050",
             dv=None,
             nombre="Juan",
             apellido="Pérez",
