@@ -11,6 +11,12 @@ Scenarios:
   1. JWT without a permisos_usuario row → 403 ``permission_denied``.
   2. JWT with a matching permisos_usuario row → claims returned.
   3. JWT with a permisos_usuario row for a DIFFERENT permission → 403.
+  4. JWT with a row whose ``vigente_hasta`` is set → 403.
+  5. Two OPEN ``permisos`` versions of one code, actor granted both →
+     claims returned. Regression guard for the ``MultipleResultsFound``
+     HTTP 500 (2026-09-26).
+  6. Open grant pointing at a CLOSED ``permisos`` version → 403. The
+     bitemporal invariant holds on both sides of the join.
 
 The tests construct a minimal test fixture inline (insert ``permisos`` +
 ``permisos_usuario``) because no factory-b / factory helpers exist yet.
@@ -176,6 +182,175 @@ async def test_require_permission_rejects_when_different_code(
     with pytest.raises(HTTPException) as exc:
         await dep(request=request, session=pg_session)
     assert exc.value.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-tolerant authorization (2026-09-26)
+#
+# ``prod.permisos`` has no unique index on ``permiso`` alone --
+# ``permisos_uk01`` is ``(permiso, vigente_desde)`` -- so a join filtering
+# ``permiso == codigo`` may legitimately return more than one row.
+# ``scalar_one_or_none()`` raised ``MultipleResultsFound`` on that, turning
+# an authorization decision into HTTP 500. Live impact: 16 codes for
+# ``operador@parkos.local`` in both cloud and branch, including
+# ``gestionar_dian``, ``emitir_factura``, ``audit_read`` and ``crear_arqueo``.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_two_open_permission_versions(
+    pg_engine,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    perm_code: str,
+) -> None:
+    """Two OPEN ``permisos`` rows for the same code, actor granted BOTH.
+
+    Reproduces the bitemporal state where one logical code has more than
+    one open version. The grant is open on both, so the join returns two
+    rows and pre-fix ``scalar_one_or_none()`` raised.
+    """
+    import datetime
+
+    from parkos_core.models.V.permisos import Permisos
+    from parkos_core.models.V.permisos_usuario import PermisosUsuario
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        # Same FK-ordered cleanup as _seed_permission: the junction row must
+        # go before the permiso row it references.
+        await session.execute(
+            delete(PermisosUsuario).where(PermisosUsuario.uuid_usuario == actor_uuid)
+        )
+        stale = (
+            await session.execute(
+                select(Permisos.uuid).where(Permisos.permiso == perm_code)
+            )
+        ).scalars().all()
+        if stale:
+            await session.execute(
+                delete(PermisosUsuario).where(PermisosUsuario.uuid_permiso.in_(stale))
+            )
+        await session.execute(delete(Permisos).where(Permisos.permiso == perm_code))
+
+        now = datetime.datetime.utcnow()
+        for offset in (0, 1):
+            permiso = Permisos(
+                permiso=perm_code,
+                vigente_desde=now + datetime.timedelta(seconds=offset),
+                vigente_hasta=None,  # BOTH versions stay open
+                estado="activo",
+                created_at=now + datetime.timedelta(seconds=offset),
+                created_by=None,
+                sync_status="sincronizado",
+            )
+            session.add(permiso)
+            await session.flush()
+            session.add(
+                PermisosUsuario(
+                    uuid_usuario=actor_uuid,
+                    uuid_permiso=permiso.uuid,
+                    vigente_desde=now + datetime.timedelta(seconds=offset),
+                    vigente_hasta=None,
+                    estado="activo",
+                    created_at=now + datetime.timedelta(seconds=offset),
+                    created_by=actor_uuid,
+                    sync_status="sincronizado",
+                )
+            )
+        await session.commit()
+
+
+async def test_require_permission_accepts_when_two_open_versions_match(
+    pg_engine, alembic_upgrade, mint_operador_jwt, pg_session, seeded_usuario_uuid
+) -> None:
+    """Two open ``permisos`` rows for one code → authorizes, no 500.
+
+    The regression guard for the ``MultipleResultsFound`` 500. Pre-fix this
+    raised instead of returning the claims.
+    """
+    from parkos_core.auth.permissions import require_permission
+
+    actor = seeded_usuario_uuid
+    await _seed_two_open_permission_versions(
+        pg_engine, actor_uuid=actor, perm_code="gestionar_dian"
+    )
+
+    request = _request_for(mint_operador_jwt(actor_uuid=actor, sucursal_uuid=uuid_lib.uuid4()))
+    dep = require_permission("gestionar_dian")
+    returned = await dep(request=request, session=pg_session)
+    assert returned["sub"] == str(actor)
+
+
+async def test_require_permission_rejects_grant_on_closed_permission_version(
+    pg_engine, alembic_upgrade, mint_operador_jwt, pg_session, seeded_usuario_uuid
+) -> None:
+    """A grant pointing at a CLOSED ``permisos`` version → 403.
+
+    The bitemporal invariant applies on BOTH sides of the join: an open
+    grant is only authoritative while the permission code it points at is
+    itself current. 16 grants in the live databases violated this.
+
+    Before the ``Permisos.vigente_hasta.is_(None)`` filter this authorized.
+    """
+    import datetime
+
+    from fastapi import HTTPException
+    from parkos_core.auth.permissions import require_permission
+    from parkos_core.models.V.permisos import Permisos
+    from parkos_core.models.V.permisos_usuario import PermisosUsuario
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    actor = seeded_usuario_uuid
+    code = "config_catalogo"
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        await session.execute(
+            delete(PermisosUsuario).where(PermisosUsuario.uuid_usuario == actor)
+        )
+        stale = (
+            await session.execute(select(Permisos.uuid).where(Permisos.permiso == code))
+        ).scalars().all()
+        if stale:
+            await session.execute(
+                delete(PermisosUsuario).where(PermisosUsuario.uuid_permiso.in_(stale))
+            )
+        await session.execute(delete(Permisos).where(Permisos.permiso == code))
+
+        now = datetime.datetime.utcnow()
+        permiso = Permisos(
+            permiso=code,
+            vigente_desde=now,
+            vigente_hasta=now,  # CLOSED permission version
+            estado="inactivo",
+            created_at=now,
+            created_by=None,
+            sync_status="sincronizado",
+        )
+        session.add(permiso)
+        await session.flush()
+        session.add(
+            PermisosUsuario(  # the GRANT itself is open -- that is the point
+                uuid_usuario=actor,
+                uuid_permiso=permiso.uuid,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=actor,
+                sync_status="sincronizado",
+            )
+        )
+        await session.commit()
+
+    request = _request_for(mint_operador_jwt(actor_uuid=actor, sucursal_uuid=uuid_lib.uuid4()))
+    dep = require_permission(code)
+    with pytest.raises(HTTPException) as exc:
+        await dep(request=request, session=pg_session)
+    assert exc.value.status_code == 403
+    assert exc.value.detail["error"] == "permission_denied"
     assert exc.value.detail["error"] == "permission_denied"
 
 
