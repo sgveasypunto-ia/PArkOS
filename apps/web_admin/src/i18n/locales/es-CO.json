@@ -89,5 +89,21 @@
       "copiedShort": "Copiado",
       "close": "Cerrar"
     }
+  },
+  "audit": {
+    "title": "Auditoría",
+    "subtitle": "Cambios auditados por sucursal (log_transaccional). Hash chain verificada por el job_sync_cloud.",
+    "loading": "Cargando log de auditoría...",
+    "loadingMore": "Cargando...",
+    "loadMore": "Cargar más",
+    "empty": "No hay eventos de auditoría para esta sucursal.",
+    "noBranchSelected": "Seleccioná una sucursal en el Panel para ver su auditoría.",
+    "tableCaption": "Log de auditoría de la sucursal seleccionada",
+    "col": {
+      "timestamp": "Fecha",
+      "accion": "Acción",
+      "tabla": "Tabla",
+      "hashChain": "Hash chain"
+    }
   }
 }

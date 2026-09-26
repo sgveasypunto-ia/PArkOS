@@ -220,6 +220,20 @@ def _build_router() -> APIRouter:
             )
         except ImportError as e:
             logger.error("Failed to import admin_usuarios: %s", e)
+
+        # IT-12: admin audit-log dashboard (GET /admin/audit/log,
+        # cursor-paginated log_transaccional feed for one branch).
+        # Cloud-only (REQ-X2). The audit log is for cross-branch
+        # visibility -- branch operators have no business here.
+        try:
+            from . import audit as _audit
+
+            r.include_router(_audit.router)
+            logger.info(
+                "Admin audit-log mounted (cloud deploy): /admin/audit/log"
+            )
+        except ImportError as e:
+            logger.error("Failed to import audit: %s", e)
             raise
 
     # T-PR6-11: lazy-import the DIAN cloud router ONLY on cloud deploy.
