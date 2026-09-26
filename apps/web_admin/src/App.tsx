@@ -3,6 +3,7 @@ import { Login } from '@/features/auth/pages/Login';
 import { RequireAdmin } from '@/components/auth/RequireAdmin';
 import Dashboard from '@/pages/Dashboard';
 import SucursalesList from '@/features/sucursales/pages/SucursalesList';
+import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 
 export default function App() {
   return (
@@ -21,6 +22,14 @@ export default function App() {
         element={
           <RequireAdmin>
             <SucursalesList />
+          </RequireAdmin>
+        }
+      />
+      <Route
+        path="/audit"
+        element={
+          <RequireAdmin>
+            <AuditDashboard />
           </RequireAdmin>
         }
       />
