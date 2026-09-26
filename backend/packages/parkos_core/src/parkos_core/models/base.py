@@ -22,12 +22,22 @@ Each abstract base carries a class-level marker (``__close_and_insert_only__`` /
 ``__session_only__``) consumed by the AST scan in ``tests/static/``. The
 markers carry zero runtime cost — they are pure metadata walked by ``__mro__``.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import date, datetime
 
-from sqlalchemy import CHAR, Date, DateTime, Integer, String, func, text
+from sqlalchemy import (
+    CHAR,
+    BigInteger,
+    Date,
+    DateTime,
+    Integer,
+    String,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -140,6 +150,20 @@ class HashChainMixin:
     hash_anterior: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
     hash_actual: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
 
+    # Per-chain monotonic position, allocated at INSERT time (migration
+    # 0058). This is the ONLY causal ordering for a chain: it is assigned
+    # inside ``prod.fn_extend_hash_chain()`` under a per-chain advisory
+    # lock, so it reflects append order and cannot be rewritten by a
+    # backdated or replicated ``created_at``. Both verifiers walk by this
+    # column; reconstructing order from a timestamp is what produced the
+    # confirmed-live false ``hash_chain_break`` alerts.
+    #
+    # Server-assigned: Pydantic schemas must not accept it from a client,
+    # exactly like the two hash columns above. NOT NULL after the
+    # migration backfills every row, with the trigger / ``append()`` as
+    # the only legitimate allocator.
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
 
 # ---------------------------------------------------------------------------
 # Abstract bases (one per audit level)
@@ -194,16 +218,16 @@ class AppendOnlyBase(Base, IdMixin, AuditMixin, SyncMixin, RetentionMixin):
 
 
 __all__ = [
-    "Base",
-    "IdMixin",
-    "AuditMixin",
-    "SyncMixin",
-    "VersionedMixin",
-    "RetentionMixin",
-    "HashChainMixin",
-    "VersionedBase",
-    "LifecycleEventBase",
-    "WorkflowBase",
-    "SessionBase",
     "AppendOnlyBase",
+    "AuditMixin",
+    "Base",
+    "HashChainMixin",
+    "IdMixin",
+    "LifecycleEventBase",
+    "RetentionMixin",
+    "SessionBase",
+    "SyncMixin",
+    "VersionedBase",
+    "VersionedMixin",
+    "WorkflowBase",
 ]

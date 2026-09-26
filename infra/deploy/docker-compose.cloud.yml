@@ -139,6 +139,14 @@ services:
       PARKOS_DIAN_PROVIDER_URL: ${PARKOS_DIAN_PROVIDER_URL:?PARKOS_DIAN_PROVIDER_URL required}
       PARKOS_DIAN_PROVIDER_TOKEN_PATH: /var/run/parkos/factus_token
       PARKOS_SYNC_VERIFY_INTERVAL_S: "3600"
+      # 0058 watermark: every historical anomaly lives at seq < 50 on every
+      # chain, verified against the live DB 2026-09-26 — GLOBAL rn=1
+      # (d4c7fc74, genesis self-reference) and branch rn=21/22 (8e1e0488
+      # backdated intruder + its legitimate successor 13ecad19 dragged out
+      # of order). The walker's re-anchor makes one value safe for all
+      # chains: rows below the watermark re-anchor the expected hash, rows
+      # at/above it are fully validated. Documented in 0058's header.
+      PARKOS_HASH_CHAIN_VERIFY_MIN_SEQ: ${PARKOS_HASH_CHAIN_VERIFY_MIN_SEQ:-50}
     depends_on:
       cloud-db:
         condition: service_healthy
