@@ -183,12 +183,12 @@ export function SuscripcionesSheet(): JSX.Element {
       <SheetContent
         side="right"
         data-testid="suscripciones-sheet"
-        // F31.3 rediseño: `w-[70vw]` era fijo en TODOS los breakpoints —
-        // a 320-480px el drawer quedaba angosto (~220-330px), cortando
-        // formularios/tablas. Mobile-first: full-bleed hasta `sm`, se
-        // angosta progresivamente a partir de ahí; `max-w-[1100px]`
-        // (sin cambios) sigue acotando el ancho en 4K/ultrawide.
-        className="flex h-full w-full flex-col gap-6 sm:w-[85vw] md:w-[75vw] max-w-[1100px]"
+        // Ajuste (directiva del operador): se saca el override de ancho
+        // (`sm:w-[85vw] md:w-[75vw] max-w-[1100px]`) — el sheet vuelve
+        // al 50% de ancho por defecto (`md:w-1/2` de `sheetVariants`),
+        // igual que el resto de los sheets del dashboard (uniformidad
+        // visual pedida explícitamente).
+        className="flex h-full w-full flex-col gap-6"
       >
         <SheetHeader className="pr-8">
           <SheetTitle>
