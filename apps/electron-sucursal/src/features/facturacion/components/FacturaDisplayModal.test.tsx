@@ -100,6 +100,52 @@ describe('<FacturaDisplayModal /> — HU-F8.4', () => {
     expect(screen.getByTestId('factura-display-cliente').textContent).toContain('Consumidor final');
   });
 
+  it('D8 (ajuste identificación persona/empresa): cliente persona natural/CC → label "Cédula de ciudadanía", sin sufijo DV', () => {
+    render(
+      <FacturaDisplayModal
+        factura={{
+          ...BASE_FACTURA,
+          cliente: {
+            tipo_identificador: 'CC',
+            numero_identificacion: '1020304050',
+            dv: null,
+            nombre: 'Laura',
+            apellido: 'Martinez',
+            email: null,
+            telefono: null,
+          },
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    const text = screen.getByTestId('factura-display-cliente').textContent ?? '';
+    expect(text).toContain('Cédula de ciudadanía');
+    expect(text).toContain('1020304050');
+    expect(text).not.toContain('-');
+  });
+
+  it('D9 (ajuste identificación persona/empresa): cliente empresa/NIT con DV → label "NIT" + sufijo "-DV"', () => {
+    render(
+      <FacturaDisplayModal
+        factura={{
+          ...BASE_FACTURA,
+          cliente: {
+            tipo_identificador: 'NIT',
+            numero_identificacion: '900123456',
+            dv: '7',
+            nombre: 'Empresa S.A.S.',
+            apellido: null,
+            email: null,
+            telefono: null,
+          },
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    const text = screen.getByTestId('factura-display-cliente').textContent ?? '';
+    expect(text).toContain('NIT 900123456-7');
+  });
+
   it('D6 (bug fix, 2026-09-24): descuento=0 → does NOT render a stray literal "0"', () => {
     // Regression: `{f.descuento && f.descuento > 0 && (...)}` renders the
     // literal "0" when `descuento` is the falsy NUMBER 0 (React only

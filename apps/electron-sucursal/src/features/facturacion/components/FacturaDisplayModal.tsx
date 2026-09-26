@@ -84,6 +84,29 @@ function TicketDivider(): JSX.Element {
   return <div className="mt-1 border-t border-dashed border-neutral-400 pt-1" />;
 }
 
+/**
+ * Etiqueta del tipo de documento para el display de la factura — reusa
+ * las mismas claves i18n que `<ClienteIdentificacionFields>` (captura)
+ * en vez de duplicar los strings. `NIT` no tiene clave propia (es una
+ * sigla, igual que ya se muestra sin traducir en `datos_sucursal`).
+ */
+function labelTipoDocumento(
+  tipo: string | null | undefined,
+  t: (key: string, opts?: { defaultValue: string }) => string,
+): string {
+  switch (tipo) {
+    case 'CC':
+      return t('facturacion:pago.tipo_documento_cc', { defaultValue: 'Cédula de ciudadanía' });
+    case 'CE':
+      return t('facturacion:pago.tipo_documento_ce', { defaultValue: 'Cédula de extranjería' });
+    case 'pasaporte':
+      return t('facturacion:pago.tipo_documento_pasaporte', { defaultValue: 'Pasaporte' });
+    case 'NIT':
+    default:
+      return 'NIT';
+  }
+}
+
 export function FacturaDisplayModal({
   factura,
   onClose,
@@ -163,8 +186,8 @@ export function FacturaDisplayModal({
                       {f.cliente.apellido ? ` ${f.cliente.apellido}` : ''}
                     </div>
                     <div>
-                      {f.cliente.nit ?? '—'}
-                      {f.cliente.dv ? `-${f.cliente.dv}` : ''}
+                      {labelTipoDocumento(f.cliente.tipo_identificador, t)} {f.cliente.numero_identificacion ?? '—'}
+                      {f.cliente.tipo_identificador === 'NIT' && f.cliente.dv ? `-${f.cliente.dv}` : ''}
                     </div>
                     {f.cliente.email && <div>{f.cliente.email}</div>}
                   </>

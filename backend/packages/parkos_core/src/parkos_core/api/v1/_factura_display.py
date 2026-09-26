@@ -255,7 +255,8 @@ async def build_display_factura(
         ).scalar_one_or_none()
         if cliente_row is not None:
             cliente_display = FacturaDisplayCliente(
-                nit=cliente_row.numero_identificacion,
+                tipo_identificador=cliente_row.tipo_identificador,
+                numero_identificacion=cliente_row.numero_identificacion,
                 dv=None,  # DV is on fe_datos_cliente (request), not persisted
                 nombre=cliente_row.nombre,
                 apellido=cliente_row.apellido,

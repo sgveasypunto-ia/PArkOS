@@ -692,7 +692,8 @@ class FacturaDisplayVehiculo(_Base):
 class FacturaDisplayCliente(_Base):
     """Display-only projection of ``prod.clientes`` for the FE consumidor."""
 
-    nit: str | None
+    tipo_identificador: Literal["NIT", "CC", "CE", "pasaporte"] | None
+    numero_identificacion: str | None
     dv: str | None
     nombre: str | None
     apellido: str | None
