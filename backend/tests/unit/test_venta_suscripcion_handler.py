@@ -432,6 +432,10 @@ async def test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_aho
     payload.referencia = None
     session = MagicMock()
     session.commit = AsyncMock()
+    # HU-F8.4 (2026-09-25 fix): Step 9 now does `session.refresh(new_factura)`
+    # + `build_display_factura(...)` after the commit -- both need mocking
+    # here or the plain `MagicMock` session blows up on `await`.
+    session.refresh = AsyncMock()
 
     plan = _make_plan()
     cliente_row = MagicMock()
@@ -483,7 +487,15 @@ async def test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_aho
     ) as mock_iva, patch.object(
         handler_mod.repo_factura, "crear_factura_pago",
         new=AsyncMock(),
-    ) as mock_pago:
+    ) as mock_pago, patch.object(
+        # HU-F8.4 (2026-09-25 fix): this test verifies the V8 cobro
+        # sub-chain, not the display projection's internals (those are
+        # covered by `_factura_display.py`'s own tests) -- mocking it
+        # out avoids re-deriving the ~6 queries it joins for a plain
+        # `MagicMock` session.
+        handler_mod, "build_display_factura",
+        new=AsyncMock(return_value=None),
+    ):
         result = await handler_mod.venta_suscripcion(
             response=response,
             payload=payload,
