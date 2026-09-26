@@ -306,6 +306,39 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it('M13 (HU-F9.1 paso 5, identificacionReadonly): con clientePrefill + identificacionReadonly, el bloque de identificación queda deshabilitado y el submit no exige re-validar DV', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PagoModal
+        {...DEFAULT_PROPS}
+        onSubmit={onSubmit}
+        clientePrefill={{
+          nit: '900123456',
+          dv: undefined,
+          nombre: 'ACME',
+          fe: true,
+          tipo_persona: 'empresa',
+          tipo_identificador: 'NIT',
+        }}
+        identificacionReadonly
+      />,
+    );
+
+    expect((screen.getByTestId('pago-tipo-persona') as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByTestId('pago-nit') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId('pago-fe-nombre') as HTMLInputElement).disabled).toBe(true);
+    // Sin DV precargado (el paso 1 de <Venta> no lo pide) — con el
+    // bloque en solo-lectura no debe aparecer ningún error de DV que
+    // bloquee el submit sobre un campo que el operador no puede editar.
+    expect(screen.queryByTestId('pago-fe-dv-error')?.textContent).toBeFalsy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
   it('M12 (checkbox off): sin tocar el bloque FE, submit pasa igual (cliente genérico) sin exigir nit/nombre/apellido', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} />);
