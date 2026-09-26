@@ -88,7 +88,7 @@ from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME, resolve_
 from parkos_core.sync.cutover import dual_protocol
 from parkos_core.sync.jwt_manager import JwtAction, JwtManager
 from parkos_core.sync.motor import apply_guard
-from parkos_core.sync.motor.sync_motor import SyncMotor
+from parkos_core.sync.motor.sync_motor import SyncMotor, describe_apply_error
 from parkos_core.sync.transport import (
     EventsPushResponse,
     HelloResponse,
@@ -133,6 +133,17 @@ def _parse_semver(value: str) -> tuple[int, int, int]:
 def _version_gte(a: str, b: str) -> bool:
     """``True`` iff semver ``a >= b`` (REQ-CUT-005's branch_version compare)."""
     return _parse_semver(a) >= _parse_semver(b)
+
+
+def _failed_count(result: Any) -> int:
+    """How many rows in this batch raised.
+
+    ``getattr`` rather than ``result.failed`` because ``apply_batch``'s
+    result is duck-typed in several existing tests, which build it as a
+    ``SimpleNamespace`` without the field. Reading it directly turned a
+    green suite red for a reason that has nothing to do with behaviour.
+    """
+    return len(getattr(result, "failed", None) or [])
 
 
 class SyncSucursalWorker(WorkerRunner):
@@ -204,6 +215,13 @@ class SyncSucursalWorker(WorkerRunner):
         # Track per-row in-flight seq so a partial-push (HTTP 207) can
         # tell which rows the cloud accepted vs rejected.
         self._last_pushed_uuids: list[uuid_lib.UUID] = []
+        # Consecutive cycles in which at least one pulled row could not be
+        # applied. Drives BOTH the log escalation and /healthz: this defect
+        # shipped 522 identical failures over 11 hours behind a container
+        # that kept reporting `healthy`, because nothing bridged a logical
+        # pull failure to the process-liveness signal Docker watches.
+        self._consecutive_apply_failures = 0
+        self._last_apply_error: str | None = None
 
     # ------------------------------------------------------------------
     # Public surface
@@ -636,10 +654,12 @@ class SyncSucursalWorker(WorkerRunner):
     # Step 4: pull + apply
     # ------------------------------------------------------------------
 
-    async def _persist_pull_cursor(self, *, next_seq: int, unresolved: int) -> None:
+    async def _persist_pull_cursor(
+        self, *, next_seq: int, unresolved: int, failed: int = 0
+    ) -> None:
         """Advance the branch pull watermark (CU-07) when safe.
 
-        Two hard guards before persisting ``next_seq``:
+        Three hard guards before persisting ``next_seq``:
 
         * ``uuid_sucursal`` is set — without it there is no cursor,
           behavior stays the legacy full ``since_seq=0`` resnapshot. The
@@ -652,13 +672,130 @@ class SyncSucursalWorker(WorkerRunner):
           the next pull (``since_seq`` above it) skip it forever: a
           silent drop (REQ-CUT-015). Freezing the watermark re-delivers
           it next cycle, idempotent via ``apply_guard.row_already_present``.
+        * ``failed == 0`` — same reasoning for a row that raised inside its
+          SAVEPOINT. The rows around it DID land, and re-delivering the
+          batch is free (``row_already_present`` skips them), so freezing
+          is correct: it retries the poison row without re-doing the rest.
         """
-        if self.uuid_sucursal is None or unresolved:
+        if self.uuid_sucursal is None or unresolved or failed:
             return
         await sync_cursor_helpers.set_seq(
             self._session,
             uuid_sucursal=self.uuid_sucursal,
             ultimo_seq=next_seq,
+        )
+
+    # Consecutive cycles with at least one unappliable pulled row before the
+    # node reports itself degraded. Three is the same threshold AGENTS.md
+    # already uses for the container healthcheck restart policy, so the two
+    # signals escalate on the same cadence instead of inventing a new one.
+    APPLY_FAILURE_DEGRADED_THRESHOLD = 3
+
+    def sync_health(self) -> dict[str, Any]:
+        """LOGICAL sync health, for the container's ``/healthz`` probe.
+
+        Docker's HEALTHCHECK answers "is the process alive?", which stayed
+        true for 11 hours while this worker rejected every batch it pulled.
+        This answers the question the incident actually needed answered:
+        is this node CONSUMING its cloud-to-branch changes?
+
+        Kept separate from process liveness on purpose. Restarting the
+        process would not have fixed the divergence it was reporting, and a
+        crash-loop would have hidden a still-alive-but-starved node behind a
+        restarting one.
+        """
+        consecutive = self._consecutive_apply_failures
+        return {
+            "ok": consecutive < self.APPLY_FAILURE_DEGRADED_THRESHOLD,
+            "consecutive_apply_failures": consecutive,
+            "degraded_threshold": self.APPLY_FAILURE_DEGRADED_THRESHOLD,
+            # The constraint name, not the driver message. /healthz is polled
+            # live and repeatedly; the log line it mirrors rotates away, and
+            # this is the difference between "something is wrong" and "this
+            # exact foreign key has no parent on this node".
+            "last_apply_error": self._last_apply_error,
+        }
+
+    def health_report(self) -> dict[str, Any]:
+        """Wire this worker's logical sync health into ``/healthz``."""
+        return self.sync_health()
+
+    def _note_clean_cycle(self) -> None:
+        """A cycle landed everything it pulled: clear the failure streak.
+
+        Called for a genuinely clean cycle INCLUDING one that had nothing to
+        apply. Without the empty-batch case, a node that degraded during an
+        incident would stay 503 forever afterwards, because a quiet cloud
+        produces no further cycles to clear it.
+        """
+        if self._consecutive_apply_failures:
+            self.log.info(
+                "sync_sucursal.pull_apply_recovered",
+                previous_consecutive=self._consecutive_apply_failures,
+            )
+        self._consecutive_apply_failures = 0
+        self._last_apply_error = None
+
+    def _record_apply_outcome(self, result: Any) -> None:
+        """Report per-row apply failures and update the health counter.
+
+        The counter RESETS on a fully clean cycle, so a transient bad batch
+        does not permanently degrade a node that has since recovered.
+        """
+        failed = getattr(result, "failed", None) or []
+        if not failed:
+            self._note_clean_cycle()
+            return
+
+        self._consecutive_apply_failures += 1
+        # Count by reason so a recurring constraint is visible as a pattern
+        # rather than as N indistinguishable rows.
+        reasons: dict[str, int] = {}
+        for _spec, _payload, reason in failed:
+            reasons[reason] = reasons.get(reason, 0) + 1
+        self._last_apply_error = max(reasons, key=lambda r: (reasons[r], r))
+        self._log_degraded(
+            "sync_sucursal.pull_apply_rows_failed",
+            failed=len(failed),
+            reasons=reasons,
+            tables=sorted({spec.name for spec, _p, _r in failed if spec is not None}),
+        )
+
+    def _note_batch_failure(self, exc: BaseException) -> None:
+        """A whole-batch raise is still "this node is not consuming".
+
+        ``apply_batch`` isolates per-row failures, but a fault in the batch
+        itself - ordering, session state - escapes it. That path must count
+        too, or a node wedging on every cycle reports itself healthy, which
+        is the failure mode this whole change exists to end.
+        """
+        self._consecutive_apply_failures += 1
+        self._last_apply_error = describe_apply_error(exc)
+        self._log_degraded(
+            "sync_sucursal.pull_apply_batch_failed",
+            failed=1,
+            reasons={self._last_apply_error: 1},
+            tables=[],
+        )
+
+    def _log_degraded(self, event: str, **fields: Any) -> None:
+        """Log at ``error`` once the streak is past the threshold, else ``warn``.
+
+        The level flip is the escalation: a single bad row is a warning, a
+        sustained streak stops being noise and becomes the reason a node is
+        not syncing.
+        """
+        consecutive = self._consecutive_apply_failures
+        log = (
+            self.log.error
+            if consecutive >= self.APPLY_FAILURE_DEGRADED_THRESHOLD
+            else self.log.warning
+        )
+        log(
+            event,
+            consecutive=consecutive,
+            degraded=consecutive >= self.APPLY_FAILURE_DEGRADED_THRESHOLD,
+            **fields,
         )
 
     async def _pull_and_apply(self) -> None:
@@ -766,6 +903,10 @@ class SyncSucursalWorker(WorkerRunner):
             await self._persist_pull_cursor(
                 next_seq=pulled.next_seq, unresolved=unresolved
             )
+            # Nothing was attempted, so nothing failed: this is a clean cycle
+            # and must clear the streak, or a node that degraded during an
+            # incident stays 503 for as long as the cloud is quiet.
+            self._note_clean_cycle()
             return
 
         if self._motor is None:
@@ -779,11 +920,17 @@ class SyncSucursalWorker(WorkerRunner):
                 )
         except Exception as exc:  # noqa: BLE001 — keep the cycle alive (mirrors sync_cloud.py)
             self.log.warning("sync_sucursal.pull_apply_batch_failed", error=str(exc))
+            self._note_batch_failure(exc)
             return
 
         # Applied cleanly with no unresolved row — advance the watermark.
+        self._record_apply_outcome(result)
+        # Advance only with no unresolved AND no failed row, so a poison row
+        # is retried next cycle instead of being silently skipped.
         await self._persist_pull_cursor(
-            next_seq=pulled.next_seq, unresolved=unresolved
+            next_seq=pulled.next_seq,
+            unresolved=unresolved,
+            failed=_failed_count(result),
         )
 
         self.log.info(
@@ -791,6 +938,7 @@ class SyncSucursalWorker(WorkerRunner):
             pulled=len(pulled.rows),
             applied=len(result.applied),
             buffered=len(result.buffered),
+            failed=_failed_count(result),
             next_seq=pulled.next_seq,
         )
 
@@ -882,6 +1030,10 @@ class SyncSucursalWorker(WorkerRunner):
             await self._persist_pull_cursor(
                 next_seq=pulled.next_seq, unresolved=unresolved
             )
+            # Nothing was attempted, so nothing failed: this is a clean cycle
+            # and must clear the streak, or a node that degraded during an
+            # incident stays 503 for as long as the cloud is quiet.
+            self._note_clean_cycle()
             return
 
         if self._motor is None:
@@ -905,11 +1057,17 @@ class SyncSucursalWorker(WorkerRunner):
                 )
         except Exception as exc:  # noqa: BLE001 — keep the cycle alive (mirrors sync_cloud.py)
             self.log.warning("sync_sucursal.pull_apply_batch_failed", error=str(exc))
+            self._note_batch_failure(exc)
             return
 
         # Applied cleanly with no unresolved row — advance the watermark.
+        self._record_apply_outcome(result)
+        # Advance only with no unresolved AND no failed row, so a poison row
+        # is retried next cycle instead of being silently skipped.
         await self._persist_pull_cursor(
-            next_seq=pulled.next_seq, unresolved=unresolved
+            next_seq=pulled.next_seq,
+            unresolved=unresolved,
+            failed=_failed_count(result),
         )
 
         self.log.info(
@@ -917,6 +1075,7 @@ class SyncSucursalWorker(WorkerRunner):
             pulled=len(pulled.rows),
             applied=len(result.applied),
             buffered=len(result.buffered),
+            failed=_failed_count(result),
             next_seq=pulled.next_seq,
         )
 
