@@ -48,7 +48,7 @@ const DASHBOARD = {
 };
 
 test.describe('BranchSelector integration', () => {
-  test.beforeEach(async ({ page, context }) => {
+  test.beforeEach(async ({ page: _page, context }) => {
     await context.route('**/api/v1/admin/me', (route) =>
       route.fulfill({
         status: 200,
