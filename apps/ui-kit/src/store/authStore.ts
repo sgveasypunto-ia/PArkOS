@@ -84,8 +84,10 @@ export interface AuthState {
   accessToken: string | null;
   refreshToken: string | null;
   expiresAt: string | null;
+  hasRehydrated: boolean;
   setTokens: (access: string, refresh: string, expiresIn: number) => void;
   clear: () => void;
+  _setHasRehydrated: () => void;
 }
 
 interface TokenPair {
@@ -101,11 +103,13 @@ export const useAuthStore = create<AuthState>()(
       accessToken: null,
       refreshToken: null,
       expiresAt: null,
+      hasRehydrated: false,
       setTokens: (access, refresh, expiresIn) => {
         const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
         set({ accessToken: access, refreshToken: refresh, expiresAt });
       },
       clear: () => set({ accessToken: null, refreshToken: null, expiresAt: null }),
+      _setHasRehydrated: () => set({ hasRehydrated: true }),
     }),
     {
       name: 'parkos.auth',
@@ -116,6 +120,9 @@ export const useAuthStore = create<AuthState>()(
         expiresAt: state.expiresAt,
       }),
       version: 1,
+      onRehydrateStorage: () => (state) => {
+        state?._setHasRehydrated();
+      },
     },
   ),
 );

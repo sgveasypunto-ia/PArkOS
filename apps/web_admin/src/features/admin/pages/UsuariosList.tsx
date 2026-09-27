@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { AdminUsuarioForm } from '../components/AdminUsuarioForm';
 import { createAdminUsuario } from '../api/adminUsuariosApi';
 import { adminUsuarioCreateSchema, type AdminUsuarioCreateInput } from '../api/adminUsuarioSchema';
+import { parkosFetchRaw } from '@/lib/fetch';
 
 interface BranchOption {
   uuid: string;
@@ -34,12 +35,8 @@ export default function UsuariosList() {
   const [successUuid, setSuccessUuid] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // List of permitted branches. The endpoint requires X-Sucursal-Context
-  // — we read the selected branch from localStorage (set by the
-  // Dashboard's BranchSelector). Empty list → no branches selectable.
-  const branchKey = 'parkos.lastSelectedSucursal';
-  const branchCtx = typeof window !== 'undefined' ? window.localStorage.getItem(branchKey) : null;
-
+  // List of permitted branches — admin can only assign users to branches
+  // they have access to (sucursales_permitidas from JWT).
   const form = useForm<AdminUsuarioCreateInput>({
     resolver: zodResolver(adminUsuarioCreateSchema),
     defaultValues: {
@@ -55,15 +52,13 @@ export default function UsuariosList() {
 
   const branches = useSWR<BranchOption[]>(
     '/api/v1/sucursales',
-    async (url: string) => {
-      const res = await fetch(url, {
-        headers: {
-          Accept: 'application/json',
-          'X-Sucursal-Context': branchCtx ?? '',
-        },
+    async () => {
+      const res = await parkosFetchRaw('/api/v1/sucursales', {
+        headers: { Accept: 'application/json' },
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as { items: BranchOption[] };
-      return body.items;
+      return body.items ?? [];
     },
     { revalidateOnFocus: false },
   );
