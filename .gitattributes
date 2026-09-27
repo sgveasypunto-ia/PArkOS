@@ -1,0 +1,13 @@
+# Parkos stores every text file with LF endings, in the repository AND in
+# the working tree, on every platform. Without this file the invariant is only
+# a coincidence: a Windows clone with core.autocrlf=true applies a CRLF
+# smudge filter to every text file, which invalidates the git index stat
+# cache and makes `git status` report every file as modified while `git diff`
+# reports no change. .gitattributes overrides core.autocrlf and stops that.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted. `text=auto` already
+# detects these from their content, but stating it explicitly is cheaper than
+# being wrong about a corrupted icon.
+*.png binary
+*.ico binary
