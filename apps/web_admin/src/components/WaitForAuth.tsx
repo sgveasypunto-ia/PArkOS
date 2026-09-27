@@ -1,25 +1,17 @@
-import { useEffect, useState } from 'react';
-import { useAuthStore, type AuthState } from '@parkos/ui-kit/store';
+import { useAuthStore } from '@parkos/ui-kit/store';
 
+/**
+ * WaitForAuth — blocks rendering until Zustand persist rehydrates.
+ *
+ * Uses a Zustand selector on `hasRehydrated` so the component re-renders
+ * exactly once (false → true) and never re-renders on subsequent store
+ * mutations (setTokens, clear, etc.). No useEffect, no useState, no
+ * subscribe, no useMemo — just the selector.
+ */
 export function WaitForAuth({ children }: { children: React.ReactNode }) {
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    let cancel = false;
-    const unsub = useAuthStore.subscribe((state: AuthState) => {
-      if (!cancel && state.hasRehydrated) {
-        setReady(true);
-      }
-    });
-    if (useAuthStore.getState().hasRehydrated) {
-      setReady(true);
-    }
-    return () => {
-      cancel = true;
-      unsub();
-    };
-  }, []);
+  const hasRehydrated = useAuthStore((s) => s.hasRehydrated);
 
-  if (!ready) {
+  if (!hasRehydrated) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
