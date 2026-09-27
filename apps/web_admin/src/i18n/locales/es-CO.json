@@ -88,6 +88,27 @@
       "copied": "Token copiado al portapapeles.",
       "copiedShort": "Copiado",
       "close": "Cerrar"
+    },
+    "admin": {
+      "title": "Usuarios administradores",
+      "subtitle": "Crea usuarios (admin u operador) y asígnalos a una o varias sucursales.",
+      "createTitle": "Crear nuevo usuario",
+      "email": "Correo electrónico",
+      "password": "Contraseña",
+      "passwordHelp": "Mínimo 8 caracteres. La contraseña se cifra (bcrypt) en el servidor.",
+      "rol": "Rol",
+      "rol.admin": "Administrador",
+      "rol.operador": "Operador de sucursal",
+      "nombre": "Nombre",
+      "apellido": "Apellido",
+      "cedula": "Cédula",
+      "sucursalesLabel": "Asignar a sucursales",
+      "noBranchesAvailable": "No hay sucursales activas para asignar.",
+      "showOptional": "Mostrar campos opcionales",
+      "hideOptional": "Ocultar campos opcionales",
+      "submit": "Crear usuario",
+      "submitting": "Creando...",
+      "created": "Usuario creado correctamente. UUID: {{uuid}}"
     }
   },
   "audit": {
