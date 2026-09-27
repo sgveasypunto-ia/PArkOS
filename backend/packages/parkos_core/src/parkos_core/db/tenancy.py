@@ -13,6 +13,7 @@ Note on the target: ``do_orm_execute`` fires on the underlying sync
 ``Session`` that ``AsyncSession`` wraps. Listening on ``Session`` covers
 both sync and async paths.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -46,6 +47,67 @@ def get_current_sucursal_uuid() -> uuid_lib.UUID | None:
     return _ctx_sucursal.get()
 
 
+# Compliance tables whose ``uuid_sucursal`` NULL marks a GLOBAL chain rather
+# than a branch-scoped row. Their SHA256 chain is per ``uuid_sucursal`` *and*
+# carries a global genesis, so a ``uuid_sucursal = :ctx`` predicate would hide
+# the NULL genesis rows from the chain-head probe and the verifier would then
+# try to open a second genesis over a live chain (HASH_CHAIN_INTEGRITY_VIOLATION
+# from ``prod.fn_extend_hash_chain``). Neither table is mounted as an HTTP
+# resource, so exempting them opens no read path; scoping their reads, if ever
+# needed, belongs in an explicit ``apply_admin_scope`` call.
+_HASH_CHAIN_TABLES = frozenset({"log_transaccional", "revocacion_factura"})
+
+
+def _is_hash_chain_table(column: Any) -> bool:
+    """True when ``column`` belongs to a DIAN hash-chain compliance table."""
+    return getattr(getattr(column, "table", None), "name", None) in _HASH_CHAIN_TABLES
+
+
+def _iter_tenant_columns(state: Any, *, is_select: bool) -> list[Any]:
+    """Resolve the ``uuid_sucursal`` columns a statement reads or writes.
+
+    ``do_orm_execute`` receives an :class:`sqlalchemy.orm.ORMExecuteState`,
+    which does **not** expose ``column_descriptions`` — that attribute lives
+    on the statement itself (``Select.column_descriptions``). Reading it off
+    the state silently yields ``[]`` and the tenant filter is never applied.
+
+    Two sources are combined, because neither is sufficient alone:
+
+    - Entity selects (``select(Model)``, and joins) carry the mapped class in
+      ``column_descriptions``; take ``Model.uuid_sucursal`` from there.
+    - Aggregates (``select(func.count()).select_from(Model)``) have no entity
+      in ``column_descriptions`` — their only column is the ``count()``
+      expression — so the ``uuid_sucursal`` column is read straight off the
+      FROM element. Without this an unfiltered aggregate would still read
+      every branch.
+
+    UPDATE / DELETE have no ``column_descriptions`` at all; the target comes
+    from ``state.bind_mapper``.
+    """
+    columns: list[Any] = []
+    seen: set[int] = set()
+
+    def _add(column: Any) -> None:
+        if column is not None and id(column) not in seen:
+            seen.add(id(column))
+            columns.append(column)
+
+    if is_select:
+        statement = state.statement
+        for desc in getattr(statement, "column_descriptions", None) or []:
+            if isinstance(desc, dict):
+                _add(getattr(desc.get("entity"), "uuid_sucursal", None))
+        for from_element in getattr(statement, "get_final_froms", list)():
+            collection = getattr(from_element, "c", None)
+            if collection is not None:
+                _add(collection.get("uuid_sucursal"))
+    else:
+        mapper = getattr(state, "bind_mapper", None)
+        _add(getattr(getattr(mapper, "class_", None), "uuid_sucursal", None))
+
+    return columns
+
+
 def install_tenant_event_listener() -> None:
     """Attach the listener that auto-filters SELECT/UPDATE/DELETE by tenant.
 
@@ -65,14 +127,12 @@ def install_tenant_event_listener() -> None:
         ctx_uuid = _ctx_sucursal.get()
         if ctx_uuid is None:
             return
-        for tbl in getattr(state, "column_descriptions", []) or []:
-            entity = tbl.get("entity") if isinstance(tbl, dict) else None
-            if entity is None:
+        for column in _iter_tenant_columns(state, is_select=is_select):
+            if _is_hash_chain_table(column):
                 continue
-            if hasattr(entity, "uuid_sucursal"):
-                state.statement = state.statement.where(  # type: ignore[attr-defined]
-                    entity.uuid_sucursal == ctx_uuid,
-                )
+            state.statement = state.statement.where(  # type: ignore[attr-defined]
+                column == ctx_uuid,
+            )
 
     install_tenant_event_listener._installed = True  # type: ignore[attr-defined]
 
