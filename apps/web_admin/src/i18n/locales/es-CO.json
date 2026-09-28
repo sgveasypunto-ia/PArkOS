@@ -372,7 +372,8 @@
       "horario": "Horario de atención",
       "horarioHelp": "Ej: Lun-Vie 8:00-18:00 / Sáb 9:00-13:00",
       "uuidTipoSucursal": "UUID tipo de sucursal",
-      "uuidEmpresa": "UUID empresa"
+      "uuidEmpresa": "UUID empresa",
+      "uuidFkHelp": "Asignado automáticamente al crear. No editable."
     },
     "form": {
       "create": "Crear sucursal",
