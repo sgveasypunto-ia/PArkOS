@@ -84,18 +84,6 @@ _ROUTER_CONFIG = {
     "cantidad-vehiculos-sucursal": ("admin-,operador-", "config_cupos"),
 }
 
-# Permission codes ``config_tarifas`` and ``config_cupos`` are required
-# by the factory's write paths above. Both codes were missing from
-# ``prod.permisos`` until MIGRATION 0059 (``0059_seed_router_permission_
-# codes.py``) seeded them with deterministic uuid5 IDs and granted them
-# to every open admin. Before 0059, POST and PUT on both resources
-# returned 403 for every caller — a silent dead feature indistinguishable
-# from "the frontend was never built". PR-C (``tests/integration/
-# test_tarifas_sucursal_e2e.py`` T2 and ``test_cantidad_vehiculos_
-# sucursal_e2e.py`` C2) is the first coverage that pins this
-# discriminator: admin WITHOUT the grant is 403, admin WITH the grant is
-# 201. Do not remove those tests when refactoring the factory.
-
 # Per-resource sub-routers exposed for the v1 package's selective mounting
 # (T-PR4-11, REQ-X3). Keys are the resource slugs from ``_ROUTER_CONFIG``;
 # values are the APIRouters returned by ``make_router``. Populated below by
