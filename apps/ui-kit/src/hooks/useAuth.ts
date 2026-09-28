@@ -103,7 +103,7 @@ export function useAuth(): UseAuthReturn {
     parkosFetch,
     {
       refreshInterval: REFRESH_INTERVAL_MS,
-      revalidateOnFocus: true,
+      revalidateOnFocus: false,
       shouldRetryOnError: (err) =>
         !(err instanceof ParkosHttpError && err.status === 401),
       onError: (err) => {

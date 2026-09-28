@@ -227,6 +227,47 @@ def ensure_admin_user(cloud_dsn: str) -> uuid_lib.UUID:
             if granted:
                 print(f"   granted {granted} permission code(s) to {ADMIN_EMAIL}")
 
+            # Branch scope for the cloud admin.
+            #
+            # A cloud admin is multi-tenant: it must be able to act on EVERY
+            # branch, chosen per call via the ``X-Sucursal-Context`` header.
+            # ``db.tenancy.apply_admin_scope`` restricts each query to the
+            # ``sucursales_permitidas`` claim and fail-closes an empty list
+            # (``WHERE FALSE``), so an admin with no ``usuarios_sucursal`` row
+            # is a valid login that cannot perform a single authorized call.
+            # Permission grants alone are therefore not sufficient scope.
+            #
+            # Same ``NOT EXISTS`` guard as the permission block above, for the
+            # same reason: ``usuarios_sucursal`` has a ``vigente_desde``
+            # default of ``now()``, so ``ON CONFLICT`` on the bi-temporal UK
+            # never fires and repeat runs would append forever.
+            cur.execute(
+                """
+                INSERT INTO prod.usuarios_sucursal (
+                    uuid, created_at, created_by,
+                    vigente_desde, vigente_hasta, estado,
+                    sync_status, sync_timestamp, sync_attempts,
+                    uuid_usuario, uuid_sucursal
+                )
+                SELECT gen_random_uuid(), NOW(), NULL,
+                       NOW(), NULL, 'activo',
+                       'pendiente', NULL, 0,
+                       %s, s.uuid
+                FROM prod.sucursal s
+                WHERE s.vigente_hasta IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM prod.usuarios_sucursal us
+                      WHERE us.uuid_usuario = %s
+                        AND us.uuid_sucursal = s.uuid
+                        AND us.vigente_hasta IS NULL
+                  )
+                """,
+                (user_uuid, user_uuid),
+            )
+            scoped = cur.rowcount
+            if scoped:
+                print(f"   scoped {ADMIN_EMAIL} to {scoped} branch(es)")
+
             return user_uuid
 
 
@@ -473,7 +514,20 @@ def main() -> int:
     admin_jwt = mint_admin_jwt(admin_uuid, jwt_key_path, branch_uuid)
     print(f"   admin JWT length = {len(admin_jwt)}")
 
-    print(f"== Step 3: POST /admin/pairing-tokens ==")
+    # Step 2c MUST run before /sync/pair. That handler writes a
+    # `pair_completed` row to prod.log_transaccional, and
+    # fn_extend_hash_chain() refuses the first INSERT for a uuid_sucursal
+    # that has no prior row ("HASH_CHAIN_INTEGRITY_VIOLATION: no genesis
+    # row"). For a branch that has already served operator logins the
+    # runtime helper repo/hash_chain.py::_ensure_genesis_row has created it
+    # long before, which is why this gap stayed hidden. A brand-new branch
+    # pairs BEFORE any login, so pairing is the first write on its chain and
+    # fails without this step. Ordering also matters against step 2b:
+    # log_transaccional has an FK to prod.sucursal.
+    print("== Step 2c: ensure genesis hash-chain row ==")
+    ensure_genesis_hash_chain(args.cloud_dsn, branch_uuid)
+
+    print("== Step 3: POST /admin/pairing-tokens ==")
     pairing = mint_pairing_token(args.cloud_api_url, admin_jwt, branch_uuid)
     pairing_token = pairing["token"]
     expires_at = pairing["expires_at"]

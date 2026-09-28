@@ -49,6 +49,8 @@ class ChainAnomaly:
     ``expected``/``actual``: the two divergent hash values (``expected`` is
     what the walker computed from the prior row / genesis anchor; ``actual``
     is what this row's own ``hash_anterior`` column holds).
+    ``seq``: the row's position in its chain, or ``None`` on a database
+    where migration 0058 has not run yet.
     """
 
     tabla: str
@@ -56,6 +58,7 @@ class ChainAnomaly:
     uuid: uuid_lib.UUID
     expected: str
     actual: str | None
+    seq: int | None = None
     reason: str = "hash_chain_break"
 
 
@@ -73,6 +76,7 @@ async def verify_chain_for_spec(
     session: AsyncSession,
     spec: SyncCatalogEntry,
     uuid_sucursal: uuid_lib.UUID | None = None,
+    min_seq: int | None = None,
 ) -> list[ChainAnomaly]:
     """Walk ``spec.model_cls`` (one chain-bearing table) for one tenant.
 
@@ -81,24 +85,34 @@ async def verify_chain_for_spec(
     chain verified call this once per known ``uuid_sucursal`` (mirroring
     ``repo.hash_chain.append``'s own per-tenant scoping).
 
-    Rows are read in ``(created_at, uuid)`` order (matching
-    ``repo.hash_chain._read_prior_hash``'s own ``ORDER BY created_at
-    DESC, uuid DESC`` tie-break, just walked forward instead of finding
-    the single latest row) — NEVER ``timestamp_evento``, which is
-    business-supplied and can collide across a burst of events, making
-    this walk's reconstructed order disagree with the order
-    ``_read_prior_hash`` actually chained at write time (confirmed live:
-    real ``hash_chain_break`` false positives on data that was never
-    corrupted — see that function's docstring). A mismatch does not stop
-    the walk — every subsequent row is still checked against ITS OWN
-    immediate predecessor, so a single corrupted link produces exactly
-    one anomaly, not a cascade.
+    Rows are read in ``seq`` order — the per-chain monotonic position
+    migration 0058 allocates at insert time under a per-chain advisory
+    lock. ``seq`` is the only causal ordering: ``timestamp_evento`` is
+    business-supplied and collides across a burst, and ``created_at`` is
+    stamped per node so a replicated or backfilled row can carry a
+    ``created_at`` behind rows already in the chain. Either one makes a
+    timestamp-ordered walk report ``hash_chain_break`` for rows that were
+    never corrupted, which is exactly the confirmed-live false positive
+    both orderings used to produce. A mismatch does not stop the walk —
+    every subsequent row is still checked against ITS OWN immediate
+    predecessor, so a single corrupted link produces exactly one anomaly,
+    not a cascade.
+
+    ``min_seq`` skips a known-bad prefix of a chain. It exists for the two
+    historical breaks left in place by 0058: the migration reproduces the
+    old ``(created_at, uuid)`` order precisely so that evidence is not
+    reshaped, which means those rows keep failing the linkage check
+    forever. Callers pass the head ``seq`` of that prefix to have them
+    reported as a known incident rather than re-alerted on every sweep.
+    The first row examined still has its ``hash_anterior`` checked against
+    the genesis anchor, so a skip can never mask a break of its own.
     """
     model_cls = spec.model_cls
     stmt = (
         select(model_cls)
         .where(model_cls.uuid_sucursal == uuid_sucursal)  # type: ignore[attr-defined]
         .order_by(
+            model_cls.seq.asc().nullslast(),  # type: ignore[attr-defined]
             model_cls.created_at.asc(),  # type: ignore[attr-defined]
             model_cls.uuid.asc(),  # type: ignore[attr-defined]
         )
@@ -109,6 +123,13 @@ async def verify_chain_for_spec(
     expected_prior_hash = _genesis_hash(uuid_sucursal)
 
     for row in rows:
+        row_seq = getattr(row, "seq", None)
+        if min_seq is not None and row_seq is not None and row_seq < min_seq:
+            # Skipped prefix: re-anchor on this row's own hash_actual so the
+            # first examined row is still checked against something real.
+            if row.hash_actual is not None:  # type: ignore[attr-defined]
+                expected_prior_hash = row.hash_actual  # type: ignore[attr-defined]
+            continue
         actual_hash_anterior = row.hash_anterior  # type: ignore[attr-defined]
         if actual_hash_anterior != expected_prior_hash:
             anomalies.append(
@@ -118,6 +139,7 @@ async def verify_chain_for_spec(
                     uuid=row.uuid,  # type: ignore[attr-defined]
                     expected=expected_prior_hash,
                     actual=actual_hash_anterior,
+                    seq=row_seq,
                 )
             )
         # Walk continues from THIS row's own hash_actual regardless of
@@ -131,6 +153,7 @@ async def verify_chain_for_spec(
 async def verify_chain(
     session: AsyncSession,
     uuid_sucursal: uuid_lib.UUID | None = None,
+    min_seq: int | None = None,
 ) -> list[ChainAnomaly]:
     """Walk EVERY ``verify_chain=True`` catalog entry (REQ-MOT-006).
 
@@ -144,7 +167,7 @@ async def verify_chain(
     for spec in SYNC_CATALOG:
         if not spec.verify_chain:
             continue
-        anomalies.extend(await verify_chain_for_spec(session, spec, uuid_sucursal))
+        anomalies.extend(await verify_chain_for_spec(session, spec, uuid_sucursal, min_seq=min_seq))
     return anomalies
 
 

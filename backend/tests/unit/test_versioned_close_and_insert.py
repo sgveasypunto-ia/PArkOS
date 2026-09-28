@@ -18,6 +18,7 @@ The helper writes a co-transactional ``log_transaccional`` row in the
 same TX. That is the ONLY [A] write the helper performs (per design §4.1)
 and the AST test ``test_no_raw_dml_on_a_tables.py`` allowlists this file.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -123,12 +124,11 @@ async def test_close_and_insert_closes_old_row(pg_engine, alembic_upgrade) -> No
         # Both rows are visible in the history endpoint semantics
         # (filter by uuid, not by vigente_hasta).
         from sqlalchemy import select
+
         stmt = select(Usuarios).where(Usuarios.uuid.in_([v1_uuid, v2.uuid]))
         result = await session.execute(stmt)
         all_rows = list(result.scalars().all())
-        assert len(all_rows) == 2, (
-            f"expected 2 history rows for {cedula}, got {len(all_rows)}"
-        )
+        assert len(all_rows) == 2, f"expected 2 history rows for {cedula}, got {len(all_rows)}"
 
 
 async def test_close_and_insert_uk_violation(pg_engine, alembic_upgrade) -> None:
@@ -237,3 +237,115 @@ async def test_close_and_insert_log_row_created(pg_engine, alembic_upgrade) -> N
         assert log_row is not None, (
             "close_and_insert did not write a co-transactional log_transaccional row"
         )
+
+
+async def test_close_and_insert_drops_validation_only_schema_fields(
+    pg_engine, alembic_upgrade
+) -> None:
+    """Schema fields with no column are dropped, not passed to the model.
+
+    ``ClientesCreate.dv`` is the canonical case: the DIAN NIT modulo-11
+    check needs a check digit, and the schema computes it for validation
+    only -- ``prod.clientes`` has eight business columns and none of them is
+    ``dv``. Handing that dict to the declarative constructor raised
+    ``TypeError: 'dv' is an invalid keyword argument for Clientes`` inside
+    SQLAlchemy's ``_declarative_constructor``, which the API surfaced as a
+    bare 500 on ``POST /api/v1/clientes/clientes``.
+
+    The fix filters ``new_attrs`` against the model's real columns inside
+    the shared helper, so every ``make_router``-mounted resource is covered
+    rather than only the repos that already stripped ``dv`` by hand.
+    """
+    from parkos_core.models.V.clientes import Clientes
+    from parkos_core.repo.versioned import close_and_insert
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    actor = uuid_lib.uuid4()
+
+    assert "dv" not in {c.name for c in Clientes.__table__.columns}, (
+        "precondition: prod.clientes must NOT have a dv column -- if a "
+        "migration added one, this test is asserting the wrong thing"
+    )
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        row = await close_and_insert(
+            session,
+            Clientes,
+            current_uuid=None,
+            new_attrs={
+                "tipo_identificador": "NIT",
+                "numero_identificacion": f"900{uuid_lib.uuid4().hex[:9]}",
+                "nombre": "Validacion",
+                "apellido": "Schema",
+                # Validation-only: present in ClientesCreate, absent from the table.
+                "dv": "3",
+                # Also absent from the table -- a typo-shaped extra must not
+                # become a 500 either.
+                "campo_inexistente": "ignorar",
+            },
+            actor_uuid=actor,
+            log_tx=True,
+        )
+        await session.commit()
+        await session.refresh(row)
+
+        assert row.uuid is not None
+        assert row.estado == "activo"
+        assert row.nombre == "Validacion"
+        assert not hasattr(row, "dv"), "dv must not be bound on the instance"
+
+
+async def test_close_and_insert_update_path_drops_validation_only_fields(
+    pg_engine, alembic_upgrade
+) -> None:
+    """The close+insert (Actualizaci6n) path filters them too, not just INSERT.
+
+    The Actualizaci6n path merges ``carried_forward`` (attributes carried
+    from the closed row) with ``new_attrs``. Only ``new_attrs`` comes from a
+    Pydantic schema, but the merge happens after both dicts are filtered, so
+    a validation-only key can never reach the constructor on either path.
+    """
+    from parkos_core.models.V.clientes import Clientes
+    from parkos_core.repo.versioned import close_and_insert
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    actor = uuid_lib.uuid4()
+    numero = f"901{uuid_lib.uuid4().hex[:9]}"
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        v1 = await close_and_insert(
+            session,
+            Clientes,
+            current_uuid=None,
+            new_attrs={
+                "tipo_identificador": "NIT",
+                "numero_identificacion": numero,
+                "nombre": "Antes",
+                "dv": "1",
+            },
+            actor_uuid=actor,
+            log_tx=True,
+        )
+        await session.commit()
+        v1_uuid = v1.uuid
+
+        v2 = await close_and_insert(
+            session,
+            Clientes,
+            current_uuid=v1_uuid,
+            new_attrs={"nombre": "Despues", "dv": "1"},
+            actor_uuid=actor,
+            log_tx=True,
+        )
+        await session.commit()
+        await session.refresh(v2)
+
+        assert v2.uuid != v1_uuid, "close_and_insert must open a NEW version"
+        assert v2.nombre == "Despues"
+        # The untouched business columns carried forward across the version
+        # boundary -- proof the filter did not eat real columns.
+        assert v2.numero_identificacion == numero
+        assert v2.vigente_hasta is None
+        assert v2.estado == "activo"

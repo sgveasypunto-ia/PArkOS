@@ -3,8 +3,7 @@
     "name": "Parkos Admin",
     "dashboard": "Panel",
     "tagline": "Parkos — multi-tenant management",
-    "loginPlaceholder": "El formulario de inicio de sesión se conecta en PR10c.",
-    "bootstrapNotice": "Bootstrap shell — los módulos de sucursal y facturación se montan en PR10c/PR11."
+    "title": "Parkos Admin"
   },
   "branchSelector": {
     "label": "Seleccionar sucursal",
@@ -24,5 +23,141 @@
     "loading": "Cargando panel...",
     "noBranch": "Seleccioná una sucursal para ver el panel.",
     "loadError": "No se pudo cargar el panel de la sucursal."
+  },
+  "auth": {
+    "email": "Correo electrónico",
+    "password": "Contraseña",
+    "submit": "Iniciar sesión",
+    "submitting": "Ingresando...",
+    "invalidCredentials": "Correo o contraseña incorrectos.",
+    "locked": "Cuenta bloqueada por demasiados intentos",
+    "retryIn": "Reintentá en {{remaining}}",
+    "networkError": "Error de red. Verificá tu conexión y reintentá.",
+    "serverError": "Error del servidor (código {{status}}). Reintentá en un momento.",
+    "attemptCounter": "Intentos: {{current}} de {{max}}",
+    "loading": "Cargando...",
+    "validation": {
+      "required": "Este campo es obligatorio.",
+      "email": {
+        "invalid": "Ingresá un correo electrónico válido."
+      },
+      "password": {
+        "required": "La contraseña es obligatoria.",
+        "minLength": "La contraseña debe tener al menos 8 caracteres."
+      }
+    }
+  },
+  "common": {
+    "cancel": "Cancelar"
+  },
+  "chrome": {
+    "navLabel": "Secciones",
+    "logout": "Cerrar sesión",
+    "signingOut": "Saliendo...",
+    "branches": "{{count}} sucursales"
+  },
+  "home": {
+    "title": "Todo el parqueo, en un solo lugar",
+    "subtitle": "Elegí una sección para empezar.",
+    "subtitleNamed": "Sesión de {{name}}.",
+    "loading": "Cargando tus secciones...",
+    "empty": "No tenés secciones disponibles con tu rol.",
+    "open": "Abrir",
+    "scope": "Alcance: {{count}} sucursal(es) autorizada(s). Las métricas y el log de auditoría se filtran por la sucursal seleccionada.",
+    "section": {
+      "dashboard": {
+        "label": "Panel de sucursal",
+        "description": "Ingresos, facturas emitidas y alertas abiertas de la sucursal seleccionada."
+      },
+      "sucursales": {
+        "label": "Sucursales",
+        "description": "Alta y edición de sucursales, y emisión de tokens de pairing."
+      },
+      "usuarios": {
+        "label": "Usuarios administradores",
+        "description": "Crea usuarios admin u operador y asígnalos a una o varias sucursales."
+      },
+      "auditoria": {
+        "label": "Auditoría",
+        "description": "Log transaccional append-only con cadena hash verificable por sucursal."
+      }
+    }
+  },
+  "sucursal": {
+    "title": "Sucursales",
+    "new": "Nueva sucursal",
+    "createTitle": "Crear nueva sucursal",
+    "loading": "Cargando sucursales...",
+    "loadError": "No se pudieron cargar las sucursales. Reintentá.",
+    "empty": "Aún no hay sucursales.",
+    "col": {
+      "nombre": "Nombre",
+      "prefijo": "Prefijo",
+      "ciudad": "Ciudad",
+      "actions": "Acciones"
+    },
+    "action": {
+      "pairing": "Token de pairing"
+    },
+    "field": {
+      "nombre": "Nombre",
+      "nombreHelp": "Nombre visible de la sucursal.",
+      "prefijo": "Prefijo",
+      "prefijoHelp": "3-6 caracteres en mayúsculas, dígitos o guion (UK).",
+      "ciudad": "Ciudad",
+      "telefono": "Teléfono",
+      "direccion": "Dirección"
+    },
+    "form": {
+      "create": "Crear sucursal",
+      "update": "Actualizar",
+      "submitting": "Creando..."
+    },
+    "pairing": {
+      "title": "Token de pairing",
+      "expiresIn": "Expira en {{remaining}}",
+      "expired": "El token expiró. Generá uno nuevo.",
+      "copy": "Copiar token",
+      "copied": "Token copiado al portapapeles.",
+      "copiedShort": "Copiado",
+      "close": "Cerrar"
+    }
+  },
+  "admin": {
+    "title": "Usuarios administradores",
+    "subtitle": "Crea usuarios (admin u operador) y asígnalos a una o varias sucursales.",
+    "createTitle": "Crear nuevo usuario",
+    "email": "Correo electrónico",
+    "password": "Contraseña",
+    "passwordHelp": "Mínimo 8 caracteres. La contraseña se cifra (bcrypt) en el servidor.",
+    "rol": "Rol",
+    "rol.admin": "Administrador",
+    "rol.operador": "Operador de sucursal",
+    "nombre": "Nombre",
+    "apellido": "Apellido",
+    "cedula": "Cédula",
+    "sucursalesLabel": "Asignar a sucursales",
+    "noBranchesAvailable": "No hay sucursales activas para asignar.",
+    "showOptional": "Mostrar campos opcionales",
+    "hideOptional": "Ocultar campos opcionales",
+    "submit": "Crear usuario",
+    "submitting": "Creando...",
+    "created": "Usuario creado correctamente. UUID: {{uuid}}"
+  },
+  "audit": {
+    "title": "Auditoría",
+    "subtitle": "Cambios auditados por sucursal (log_transaccional). Hash chain verificada por el job_sync_cloud.",
+    "loading": "Cargando log de auditoría...",
+    "loadingMore": "Cargando...",
+    "loadMore": "Cargar más",
+    "empty": "No hay eventos de auditoría para esta sucursal.",
+    "noBranchSelected": "Seleccioná una sucursal en el Panel para ver su auditoría.",
+    "tableCaption": "Log de auditoría de la sucursal seleccionada",
+    "col": {
+      "timestamp": "Fecha",
+      "accion": "Acción",
+      "tabla": "Tabla",
+      "hashChain": "Hash chain"
+    }
   }
 }

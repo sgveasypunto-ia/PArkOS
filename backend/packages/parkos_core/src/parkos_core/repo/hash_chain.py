@@ -57,7 +57,7 @@ import uuid as uuid_lib
 from datetime import UTC, date, datetime
 from typing import Any, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.base import AppendOnlyBase
@@ -65,6 +65,13 @@ from ..models.base import AppendOnlyBase
 T = TypeVar("T", bound=AppendOnlyBase)
 
 GENESIS_PREFIX = b"genesis:"
+
+# The ``accion`` that marks a chain's genesis row. The DB trigger
+# (``fn_extend_hash_chain``) branches on the same literal, so this constant
+# exists to keep the Python side from drifting away from the SQL side — the
+# ``d4c7fc74`` incident was a genesis row landing on a live chain, and a
+# one-character drift here would silently reopen it.
+GENESIS_ACCION = "inicialización"
 
 
 class HashChainIntegrityViolation(Exception):
@@ -142,11 +149,12 @@ def _genesis_hash(uuid_sucursal: uuid_lib.UUID | None) -> str:
     return hashlib.sha256(GENESIS_PREFIX + marker).hexdigest()
 
 
-# Sentinel ``timestamp_evento`` stamped on a bootstrapped genesis row — an
-# arbitrary point far enough in the past that it always sorts BEFORE any
-# real business event for the same ``uuid_sucursal`` (``_read_prior_hash``'s
-# ``ORDER BY timestamp_evento DESC`` must always pick the most recent REAL
-# row over the genesis row once at least one real row exists).
+# Sentinel ``timestamp_evento`` stamped on a bootstrapped genesis row. It
+# sorts before any real business event for the same ``uuid_sucursal`` so a
+# query that orders by ``timestamp_evento`` still sees the genesis row
+# first. It is no longer load-bearing for chain order — migration 0058
+# walks by ``seq`` — but it is kept so existing reads that order by
+# ``timestamp_evento`` keep behaving as before.
 _GENESIS_TIMESTAMP = datetime(1970, 1, 1, tzinfo=UTC).replace(tzinfo=None)
 
 
@@ -166,12 +174,12 @@ async def _ensure_genesis_row(
     genesis anchor). The migration deliberately does NOT insert that row —
     see its "Hash-chain genesis (runtime)" comment — the application is
     responsible for creating it on first use. This function IS that runtime
-    bootstrap: called from :func:`_read_prior_hash` exactly when no prior
+    bootstrap: called from :func:`_read_head` exactly when no prior
     row exists yet for ``uuid_sucursal`` (which is also the only moment a
     genesis row is legitimately missing), so a second call for the same
     ``uuid_sucursal`` never happens — the genesis row it inserts here
     immediately becomes the "prior row" every subsequent
-    :func:`_read_prior_hash` call for this tenant finds instead.
+    :func:`_read_head` call for this tenant finds instead.
 
     Works for both hash-chain carriers via ``hasattr`` rather than
     branching on ``model_cls`` by name: ``log_transaccional`` has an
@@ -193,11 +201,14 @@ async def _ensure_genesis_row(
         "timestamp_evento": _GENESIS_TIMESTAMP,
         "hash_anterior": anchor,
         "hash_actual": anchor,
+        # The genesis row is position 1 of its chain; 0058 makes that
+        # explicit and NOT NULL.
+        "seq": 1,
         "created_at": datetime.now(UTC).replace(tzinfo=None),
         "created_by": None,
     }
     if hasattr(model_cls, "accion"):
-        genesis_attrs["accion"] = "inicialización"
+        genesis_attrs["accion"] = GENESIS_ACCION
     if hasattr(model_cls, "tabla_afectada"):
         genesis_attrs["tabla_afectada"] = model_cls.__tablename__
 
@@ -210,42 +221,61 @@ async def _ensure_genesis_row(
     await session.flush()
 
 
-async def _read_prior_hash(
+async def _chain_lock(session: AsyncSession, uuid_sucursal: uuid_lib.UUID | None) -> None:
+    """Take the per-chain advisory lock ``prod.fn_extend_hash_chain`` uses.
+
+    The trigger allocates ``seq`` under this lock, so anything that reads the
+    head and then inserts must hold the same lock, or two concurrent
+    ``append`` calls would both read head N, both stamp
+    ``hash_anterior = head_N``, and the second would be rejected by the
+    trigger's linkage check with an error that has nothing to do with
+    corruption.
+
+    The key is derived by Postgres from the same expression the trigger
+    uses, rather than reimplemented here, so the two can never drift.
+    """
+    key = "GLOBAL" if uuid_sucursal is None else str(uuid_sucursal)
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(('x' || substr(md5(:k), 1, 16))::bit(64)::bigint)"),
+        {"k": key},
+    )
+
+
+async def _read_head(
     session: AsyncSession,
     model_cls: type[AppendOnlyBase],
     uuid_sucursal: uuid_lib.UUID | None,
-) -> str:
-    """Return the chain head ``hash_actual`` for ``uuid_sucursal``.
+) -> tuple[int, str]:
+    """Return ``(next_seq, head_hash_actual)`` for ``uuid_sucursal``.
 
-    Reads the latest row by ``created_at`` — the server-stamped append
-    order — NEVER by ``timestamp_evento``. ``timestamp_evento`` is a
-    business-supplied event time: two rows landing in the same burst
-    (batch backfill, several events in the same second) can carry the
-    IDENTICAL value, and the old ``ORDER BY timestamp_evento DESC, uuid
-    DESC`` tie-break then picks whichever existing row happens to have
-    the lexicographically-largest random UUID as "prior" — NOT the row
-    that was truly appended last. Confirmed live: a real Docker
-    deployment logged genuine ``hash_chain_break`` alerts
-    (``sync_cloud.hash_chain_break``) for ``log_transaccional`` rows
-    that were never actually corrupted, purely because
-    ``_verify_one_tenant_chain``'s reconstructed order (see
-    ``jobs/sync_cloud.py``) disagreed with the tie-break this function
-    used to pick each row's real ``hash_anterior`` at write time.
-    ``created_at`` doesn't have this problem — it's assigned once, in
-    Python, immediately before each row's own INSERT — so both sides of
-    the chain (this function's "find the prior" and the verifier's "walk
-    in order") now sort by the exact same, effectively-monotonic column.
-    When no prior row exists for the tenant, bootstraps the real genesis
-    row (:func:`_ensure_genesis_row`, PR6) and returns its hash — the
-    genesis anchor, now backed by an actual persisted row rather than a
-    value computed but never written.
+    Reads the highest ``seq`` — the per-chain monotonic position migration
+    0058 introduced — and returns the position the NEXT row must occupy.
+    ``seq`` is the only causal ordering available: it records append order,
+    so a row that arrives late with a backdated ``created_at`` still lands
+    at the head instead of appearing mid-chain and making its successor
+    look broken.
+
+    ``seq DESC NULLS LAST`` with the old ``(created_at DESC, uuid DESC)``
+    as a tie-break keeps this readable on a database where 0058 has not run
+    (every ``seq`` NULL) instead of failing outright.
+
+    An empty chain bootstraps its genesis row and reports ``(2, anchor)``:
+    the genesis row itself is ``seq`` 1.
+
+    History: this used to order by ``created_at``, and before that by
+    ``timestamp_evento``. Neither is causal — ``timestamp_evento`` is
+    business-supplied and collides across a burst of events, and
+    ``created_at`` is stamped per node and can be replicated backwards.
+    Both produced real ``hash_chain_break`` alerts for rows that were never
+    corrupted, which is what 0058 removes at the source.
     """
     stmt = (
         select(model_cls)
         .where(model_cls.uuid_sucursal == uuid_sucursal)
         .order_by(
-            model_cls.created_at.desc(),
-            model_cls.uuid.desc(),
+            model_cls.seq.desc().nullslast(),  # type: ignore[attr-defined]
+            model_cls.created_at.desc(),  # type: ignore[attr-defined]
+            model_cls.uuid.desc(),  # type: ignore[attr-defined]
         )
         .limit(1)
     )
@@ -255,8 +285,9 @@ async def _read_prior_hash(
     if prior is None:
         genesis = _genesis_hash(uuid_sucursal)
         await _ensure_genesis_row(session, model_cls, uuid_sucursal, genesis)
-        return genesis
-    return prior.hash_actual  # type: ignore[attr-defined]
+        return 2, genesis
+    prior_seq = getattr(prior, "seq", None)
+    return (prior_seq + 1 if prior_seq is not None else 2), prior.hash_actual  # type: ignore[attr-defined]
 
 
 async def append(  # noqa: UP047 (TypeVar style — matches repo/versioned.py)
@@ -299,7 +330,12 @@ async def append(  # noqa: UP047 (TypeVar style — matches repo/versioned.py)
         )
 
     uuid_sucursal = payload.get("uuid_sucursal")
-    prior_hash = await _read_prior_hash(session, model_cls, uuid_sucursal)
+    # Serialize read-head + INSERT against every other appender on this
+    # chain AND against the trigger's own seq allocation. Without this, two
+    # concurrent calls both stamp the same hash_anterior and the second is
+    # rejected by the trigger's linkage check.
+    await _chain_lock(session, uuid_sucursal)
+    next_seq, prior_hash = await _read_head(session, model_cls, uuid_sucursal)
 
     # Compute new hash over the canonical payload (audit + business).
     payload_with_audit = {
@@ -318,6 +354,13 @@ async def append(  # noqa: UP047 (TypeVar style — matches repo/versioned.py)
 
     payload_with_audit["hash_anterior"] = expected_anchor
     payload_with_audit["hash_actual"] = new_hash
+    # ``seq`` is stamped here as well as by the trigger. On
+    # ``log_transaccional`` the trigger recomputes the identical value (it
+    # holds the same advisory lock), so this is a mirror. On
+    # ``revocacion_factura``, which has never had a DB trigger, this IS the
+    # only allocator -- without it the 0058 NOT NULL constraint rejects
+    # every insert.
+    payload_with_audit["seq"] = next_seq
 
     new_row = model_cls(**payload_with_audit)
     session.add(new_row)
@@ -325,6 +368,7 @@ async def append(  # noqa: UP047 (TypeVar style — matches repo/versioned.py)
 
 
 __all__ = [
+    "GENESIS_ACCION",
     "GENESIS_PREFIX",
     "HashChainIntegrityViolation",
     "_canonical_json",

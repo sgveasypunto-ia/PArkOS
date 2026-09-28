@@ -21,11 +21,41 @@ Scenarios:
 The tests construct a minimal test fixture inline (insert ``permisos`` +
 ``permisos_usuario``) because no factory-b / factory helpers exist yet.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
 
 import pytest
+
+
+def _unique_code(prefix: str) -> str:
+    """A permission code no migration seeds and no other test can collide with.
+
+    This file used to seed the real canonical codes ("emitir_factura",
+    "config_catalogo", "gestionar_dian") and DELETE them beforehand, because
+    the tests need specific bi-temporal states on those rows. That was three
+    separate violations at once, all of them invisible in a green run:
+
+    1. A physical DELETE on ``prod.permisos`` / ``prod.permisos_usuario``,
+       which the audit-first canon forbids at every layer. The risk table
+       in AGENTS.md lists it as merge-blocking.
+    2. The session-scoped test DB is shared (``conftest.py::pg_engine``), and
+       no physical DELETE means nothing restores the row. Each run replaced
+       a migration-seeded row (``config_catalogo`` -> uuid
+       9cfbb830-d7f0-5582-8af9-923e61d3544d) with a random-uuid CLOSED
+       version, permanently, for every test that ran afterwards.
+    3. That corruption made ``test_migration_0056``/``0059``'s
+       deterministic-uuid invariant report shipped codes as missing, so a
+       correct invariant was failing because of this file.
+
+    None of these tests needs a canonical code. Each needs *a* code carrying
+    one bi-temporal state, which a throwaway code provides just as well --
+    the same approach ``test_branch_offline_flow.py`` already documents and
+    uses. With a unique code there is no prior row to clean up, so the
+    DELETEs are not merely moved, they are removed.
+    """
+    return f"test-perm-{prefix}-{uuid_lib.uuid4().hex[:8]}"
 
 
 async def _seed_permission(
@@ -35,39 +65,18 @@ async def _seed_permission(
     perm_code: str,
     vigente: bool = True,
 ) -> None:
-    """Insert one permisos + one permisos_usuario row for the test actor."""
+    """Insert one permisos + one permisos_usuario row for the test actor.
+
+    ``perm_code`` MUST come from :func:`_unique_code`. A canonical code here
+    inserts a second open version alongside the migration-seeded row, which
+    breaks every later ``scalar_one()`` lookup on that code.
+    """
     from parkos_core.models.V.permisos import Permisos
     from parkos_core.models.V.permisos_usuario import PermisosUsuario
-    from sqlalchemy import delete, select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        # Clean any leftover from a prior run. Two other tests in this file
-        # reuse the same perm_code ("emitir_factura") with a different actor
-        # each time, so a stale permisos_usuario row from an earlier test may
-        # still reference the permiso row this one is about to delete —
-        # permisos_usuario.uuid_permiso carries a DB-level FK to
-        # permisos.uuid, so it must go first regardless of which actor it
-        # belongs to.
-        await session.execute(
-            delete(PermisosUsuario).where(PermisosUsuario.uuid_usuario == actor_uuid)
-        )
-        stale_permiso_uuids = (
-            await session.execute(
-                select(Permisos.uuid).where(Permisos.permiso == perm_code)
-            )
-        ).scalars().all()
-        if stale_permiso_uuids:
-            await session.execute(
-                delete(PermisosUsuario).where(
-                    PermisosUsuario.uuid_permiso.in_(stale_permiso_uuids)
-                )
-            )
-        await session.execute(
-            delete(Permisos).where(Permisos.permiso == perm_code)
-        )
-
         # Insert permiso row.
         permiso = Permisos(
             permiso=perm_code,
@@ -141,10 +150,11 @@ async def test_require_permission_accepts_with_row(
     from parkos_core.auth.tokens import verify_token
 
     actor = seeded_usuario_uuid
+    perm_code = _unique_code("accepts")
     await _seed_permission(
         pg_engine,
         actor_uuid=actor,
-        perm_code="emitir_factura",
+        perm_code=perm_code,
         vigente=True,
     )
 
@@ -155,7 +165,7 @@ async def test_require_permission_accepts_with_row(
     claims = verify_token(token)
     assert claims["sub"] == str(actor)
 
-    dep = require_permission("emitir_factura")
+    dep = require_permission(perm_code)
     returned = await dep(request=request, session=pg_session)
     assert returned["sub"] == str(actor)
 
@@ -171,14 +181,14 @@ async def test_require_permission_rejects_when_different_code(
     await _seed_permission(
         pg_engine,
         actor_uuid=actor,
-        perm_code="config_catalogo",  # NOT emitir_factura
+        perm_code=_unique_code("other-granted"),  # a DIFFERENT code than the one checked
         vigente=True,
     )
 
     token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=uuid_lib.uuid4())
     request = _request_for(token)
 
-    dep = require_permission("emitir_factura")
+    dep = require_permission(_unique_code("never-granted"))
     with pytest.raises(HTTPException) as exc:
         await dep(request=request, session=pg_session)
     assert exc.value.status_code == 403
@@ -213,27 +223,10 @@ async def _seed_two_open_permission_versions(
 
     from parkos_core.models.V.permisos import Permisos
     from parkos_core.models.V.permisos_usuario import PermisosUsuario
-    from sqlalchemy import delete, select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        # Same FK-ordered cleanup as _seed_permission: the junction row must
-        # go before the permiso row it references.
-        await session.execute(
-            delete(PermisosUsuario).where(PermisosUsuario.uuid_usuario == actor_uuid)
-        )
-        stale = (
-            await session.execute(
-                select(Permisos.uuid).where(Permisos.permiso == perm_code)
-            )
-        ).scalars().all()
-        if stale:
-            await session.execute(
-                delete(PermisosUsuario).where(PermisosUsuario.uuid_permiso.in_(stale))
-            )
-        await session.execute(delete(Permisos).where(Permisos.permiso == perm_code))
-
         now = datetime.datetime.utcnow()
         for offset in (0, 1):
             permiso = Permisos(
@@ -273,12 +266,11 @@ async def test_require_permission_accepts_when_two_open_versions_match(
     from parkos_core.auth.permissions import require_permission
 
     actor = seeded_usuario_uuid
-    await _seed_two_open_permission_versions(
-        pg_engine, actor_uuid=actor, perm_code="gestionar_dian"
-    )
+    perm_code = _unique_code("two-open")
+    await _seed_two_open_permission_versions(pg_engine, actor_uuid=actor, perm_code=perm_code)
 
     request = _request_for(mint_operador_jwt(actor_uuid=actor, sucursal_uuid=uuid_lib.uuid4()))
-    dep = require_permission("gestionar_dian")
+    dep = require_permission(perm_code)
     returned = await dep(request=request, session=pg_session)
     assert returned["sub"] == str(actor)
 
@@ -300,25 +292,12 @@ async def test_require_permission_rejects_grant_on_closed_permission_version(
     from parkos_core.auth.permissions import require_permission
     from parkos_core.models.V.permisos import Permisos
     from parkos_core.models.V.permisos_usuario import PermisosUsuario
-    from sqlalchemy import delete, select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = seeded_usuario_uuid
-    code = "config_catalogo"
+    code = _unique_code("closed-version")
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        await session.execute(
-            delete(PermisosUsuario).where(PermisosUsuario.uuid_usuario == actor)
-        )
-        stale = (
-            await session.execute(select(Permisos.uuid).where(Permisos.permiso == code))
-        ).scalars().all()
-        if stale:
-            await session.execute(
-                delete(PermisosUsuario).where(PermisosUsuario.uuid_permiso.in_(stale))
-            )
-        await session.execute(delete(Permisos).where(Permisos.permiso == code))
-
         now = datetime.datetime.utcnow()
         permiso = Permisos(
             permiso=code,
@@ -366,17 +345,18 @@ async def test_require_permission_rejects_closed_junction(
     from parkos_core.auth.permissions import require_permission
 
     actor = seeded_usuario_uuid
+    perm_code = _unique_code("closed-junction")
     await _seed_permission(
         pg_engine,
         actor_uuid=actor,
-        perm_code="emitir_factura",
+        perm_code=perm_code,
         vigente=False,  # already closed
     )
 
     token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=uuid_lib.uuid4())
     request = _request_for(token)
 
-    dep = require_permission("emitir_factura")
+    dep = require_permission(perm_code)
     with pytest.raises(HTTPException) as exc:
         await dep(request=request, session=pg_session)
     assert exc.value.status_code == 403

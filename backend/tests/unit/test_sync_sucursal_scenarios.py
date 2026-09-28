@@ -25,6 +25,7 @@ What's mocked:
 
 Cites design 21.7, tasks.md T-PR9-06 + T-PR9-11..14.
 """
+
 from __future__ import annotations
 
 import sys
@@ -95,9 +96,7 @@ def _make_pending_row(uuid: uuid_lib.UUID | None = None) -> MagicMock:
 class TestSyncSucursalWorkerConstruction:
     """The worker wires its name + interval + batch_size + collaborators."""
 
-    def test_construction_sets_defaults(
-        self, jwt_file: Path, session_mock: MagicMock
-    ) -> None:
+    def test_construction_sets_defaults(self, jwt_file: Path, session_mock: MagicMock) -> None:
         w = SyncSucursalWorker(
             jwt_path=jwt_file,
             base_url="http://cloud/",
@@ -175,12 +174,13 @@ class Test401SyncJwtExpiredTriggersRotate:
     ) -> None:
         pending = [_make_pending_row() for _ in range(2)]
 
-        with patch(
-            "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed",
-            AsyncMock(),
-        ) as mark_failed_mock, patch(
-            "parkos_core.jobs.sync_sucursal.JwtManager"
-        ) as manager_cls:
+        with (
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed",
+                AsyncMock(),
+            ) as mark_failed_mock,
+            patch("parkos_core.jobs.sync_sucursal.JwtManager") as manager_cls,
+        ):
             manager = MagicMock()
             manager.on_401_response = AsyncMock(return_value=JwtAction.RETRY_NEW_JWT)
             manager.rotate = AsyncMock(return_value="new-jwt")
@@ -190,14 +190,10 @@ class Test401SyncJwtExpiredTriggersRotate:
 
             worker._http_client = MagicMock()
             worker._http_client.push = AsyncMock(
-                return_value=PushResponse(
-                    status=401, body={"error": "sync_jwt_expired"}
-                )
+                return_value=PushResponse(status=401, body={"error": "sync_jwt_expired"})
             )
 
-            await worker._handle_push_response(
-                worker._http_client.push.return_value, pending
-            )
+            await worker._handle_push_response(worker._http_client.push.return_value, pending)
 
         # rotate called exactly once.
         manager.rotate.assert_awaited_once()
@@ -282,9 +278,7 @@ class Test5xxBackoffMarksFailed:
             AsyncMock(),
         ) as mark_failed_mock:
             worker._http_client = MagicMock()
-            worker._http_client.push = AsyncMock(
-                side_effect=ConnectionError("dns blew up")
-            )
+            worker._http_client.push = AsyncMock(side_effect=ConnectionError("dns blew up"))
             await worker._push_and_handle(pending)
 
         assert mark_failed_mock.await_count == 2
@@ -298,34 +292,142 @@ class Test5xxBackoffMarksFailed:
 
 
 class Test207PartialPush:
-    """207 Multi-Status — only the success_uuids are dispatched."""
+    """207 Multi-Status - rows settle or fail by INDEX correlation.
+
+    The response carries ``results`` (one per request row, in request
+    order), NOT ``success_uuids``. The previous contract read
+    ``body["success_uuids"]`` — a key this endpoint never returned — and
+    intersected it against ``row.uuid`` (the ``sync_queue`` row uuid)
+    while the receiver reports ``uuid_registro`` (the business row uuid).
+    Two mismatches, so the intersection was always empty and every row of
+    a 207 push was marked ``rejected_by_cloud`` in an unbounded retry
+    loop. Index is the authoritative correlation, matching
+    ``_push_and_handle_catalog``.
+    """
+
+    @staticmethod
+    def _results(*statuses: str) -> dict[str, object]:
+        return {
+            "results": [
+                {
+                    "uuid_registro": str(uuid_lib.uuid4()),
+                    "status": s,
+                    "detail": None,
+                }
+                for s in statuses
+            ]
+        }
 
     @pytest.mark.asyncio
     async def test_partial_dispatch_marks_only_accepted(
         self, worker: SyncSucursalWorker, session_mock: MagicMock
     ) -> None:
         rows = [_make_pending_row() for _ in range(3)]
-        # Cloud accepts only the first row.
-        accepted = rows[0].uuid
 
-        with patch(
-            "parkos_core.jobs.sync_sucursal.sq_helpers.mark_dispatched",
-            AsyncMock(),
-        ) as mark_dispatched_mock, patch(
-            "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed",
-            AsyncMock(),
-        ) as mark_failed_mock:
+        with (
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_dispatched",
+                AsyncMock(),
+            ) as mark_dispatched_mock,
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed",
+                AsyncMock(),
+            ) as mark_failed_mock,
+        ):
             response = PushResponse(
                 status=207,
-                body={"success_uuids": [str(accepted)]},
+                body=self._results("applied", "unknown_table", "applied"),
             )
             await worker._handle_push_response(response, rows)
 
-        # 1 dispatched (the accepted one), 2 failed (the rejected).
+        # 2 dispatched (the applied ones), 1 failed (the unknown_table).
+        assert mark_dispatched_mock.await_count == 2
+        assert mark_failed_mock.await_count == 1
+        # Correlation is positional: dispatched rows are #0 and #2.
+        dispatched = [c.args[1] for c in mark_dispatched_mock.await_args_list]
+        assert dispatched == [rows[0].uuid, rows[2].uuid]
+        # The rejected row names the wire status (never a bare "rejected").
+        assert mark_failed_mock.await_args.args[1] == rows[1].uuid
+        assert mark_failed_mock.await_args.args[2] == "push_unknown_table"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("settling", ["conflict", "retry_parent_missing"])
+    async def test_conflict_and_dependency_wait_settle_the_row(
+        self,
+        worker: SyncSucursalWorker,
+        session_mock: MagicMock,
+        settling: str,
+    ) -> None:
+        """Both are the SAME outbox action as ``applied`` (design.md §2 #8).
+
+        A conflict is a decision and a dependency wait is not a transport
+        failure, so neither burns ``intentos``/``next_retry_at``.
+        """
+        rows = [_make_pending_row()]
+
+        with (
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_dispatched",
+                AsyncMock(),
+            ) as mark_dispatched_mock,
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed",
+                AsyncMock(),
+            ) as mark_failed_mock,
+        ):
+            response = PushResponse(status=207, body=self._results(settling))
+            await worker._handle_push_response(response, rows)
+
         assert mark_dispatched_mock.await_count == 1
-        assert mark_failed_mock.await_count == 2
-        dispatched_uuid = mark_dispatched_mock.await_args.args[1]
-        assert dispatched_uuid == accepted
+        assert mark_dispatched_mock.await_args.args[1] == rows[0].uuid
+        mark_failed_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_result_count_mismatch_fails_the_whole_batch(
+        self, worker: SyncSucursalWorker, session_mock: MagicMock
+    ) -> None:
+        """Never guess a correlation across a mismatched count."""
+        rows = [_make_pending_row() for _ in range(3)]
+
+        with (
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_dispatched",
+                AsyncMock(),
+            ) as mark_dispatched_mock,
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed",
+                AsyncMock(),
+            ) as mark_failed_mock,
+        ):
+            response = PushResponse(status=207, body=self._results("applied"))
+            await worker._handle_push_response(response, rows)
+
+        # Nothing dispatched: a short response cannot be trusted.
+        mark_dispatched_mock.assert_not_awaited()
+        assert mark_failed_mock.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_body_without_results_fails_the_whole_batch(
+        self, worker: SyncSucursalWorker, session_mock: MagicMock
+    ) -> None:
+        """A 207 with no parsable ``results`` must not mark rows dispatched."""
+        rows = [_make_pending_row()]
+
+        with (
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_dispatched",
+                AsyncMock(),
+            ) as mark_dispatched_mock,
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed",
+                AsyncMock(),
+            ) as mark_failed_mock,
+        ):
+            response = PushResponse(status=207, body={"unexpected": "shape"})
+            await worker._handle_push_response(response, rows)
+
+        mark_dispatched_mock.assert_not_awaited()
+        mark_failed_mock.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

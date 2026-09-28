@@ -88,7 +88,7 @@ from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME, resolve_
 from parkos_core.sync.cutover import dual_protocol
 from parkos_core.sync.jwt_manager import JwtAction, JwtManager
 from parkos_core.sync.motor import apply_guard
-from parkos_core.sync.motor.sync_motor import SyncMotor
+from parkos_core.sync.motor.sync_motor import SyncMotor, describe_apply_error
 from parkos_core.sync.transport import (
     EventsPushResponse,
     HelloResponse,
@@ -133,6 +133,17 @@ def _parse_semver(value: str) -> tuple[int, int, int]:
 def _version_gte(a: str, b: str) -> bool:
     """``True`` iff semver ``a >= b`` (REQ-CUT-005's branch_version compare)."""
     return _parse_semver(a) >= _parse_semver(b)
+
+
+def _failed_count(result: Any) -> int:
+    """How many rows in this batch raised.
+
+    ``getattr`` rather than ``result.failed`` because ``apply_batch``'s
+    result is duck-typed in several existing tests, which build it as a
+    ``SimpleNamespace`` without the field. Reading it directly turned a
+    green suite red for a reason that has nothing to do with behaviour.
+    """
+    return len(getattr(result, "failed", None) or [])
 
 
 class SyncSucursalWorker(WorkerRunner):
@@ -204,6 +215,13 @@ class SyncSucursalWorker(WorkerRunner):
         # Track per-row in-flight seq so a partial-push (HTTP 207) can
         # tell which rows the cloud accepted vs rejected.
         self._last_pushed_uuids: list[uuid_lib.UUID] = []
+        # Consecutive cycles in which at least one pulled row could not be
+        # applied. Drives BOTH the log escalation and /healthz: this defect
+        # shipped 522 identical failures over 11 hours behind a container
+        # that kept reporting `healthy`, because nothing bridged a logical
+        # pull failure to the process-liveness signal Docker watches.
+        self._consecutive_apply_failures = 0
+        self._last_apply_error: str | None = None
 
     # ------------------------------------------------------------------
     # Public surface
@@ -213,7 +231,24 @@ class SyncSucursalWorker(WorkerRunner):
         """One iteration of the 6-step main loop.
 
         :class:`WorkerRunner.run` calls this in a loop until SIGTERM/SIGINT.
+
+        Rolls ``self._session`` back before propagating. The session is
+        owned by ``main()`` for the whole container lifetime, so a raise
+        that leaves the transaction aborted poisons every LATER cycle with
+        ``InFailedSQLTransactionError`` and buries the original error
+        forever: one transient fault would read as a permanent opaque one.
         """
+        try:
+            await self._run_cycle()
+        except BaseException:
+            try:
+                await self._session.rollback()
+            except Exception:  # noqa: BLE001 - any rollback failure must not mask the real error
+                # Never let a failed rollback mask the original error.
+                self.log.warning("sync_sucursal.cycle_rollback_failed")
+            raise
+
+    async def _run_cycle(self) -> None:
         # Lazily build collaborators — JWT file might be missing on first
         # boot (pre-pairing); the loop tolerates that and retries next cycle.
         if self._http_client is None:
@@ -290,8 +325,11 @@ class SyncSucursalWorker(WorkerRunner):
         Status code contract (per spec §21.7):
 
         - 2xx      → ``mark_dispatched`` for every row.
-        - 207      → partial: body has ``success_uuids``; mark those
-                     dispatched, the rest failed.
+        - 207      → partial: body has ``results`` (one per request row,
+                     in request order); ``applied``/``conflict``/
+                     ``retry_parent_missing`` settle the row, anything
+                     else (e.g. ``unknown_table``) fails it. Correlated
+                     by INDEX, never by uuid.
         - 401      → ``JwtManager.on_401_response``. ``RETRY_NEW_JWT``
                      triggers a rotate and the next cycle retries the
                      push. Anything else (HALT_*) raises out so the
@@ -334,31 +372,61 @@ class SyncSucursalWorker(WorkerRunner):
         """Translate a ``PushResponse`` into repo writes."""
         status = response.status
 
-        # 207 Multi-Status — partial. Cloud returns the accepted UUIDs
-        # in ``body.success_uuids``. We check 207 BEFORE the 2xx range
-        # because 207 is technically in 200-299; without this ordering
-        # the worker would treat every partial push as a clean success.
+        # 207 Multi-Status — partial. Correlate by INDEX, not by uuid.
+        # The response rows carry ``uuid_registro`` (the BUSINESS row's
+        # uuid) while ``row.uuid`` here is the sync_queue row's own uuid —
+        # two different namespaces that can never match, so a
+        # ``success_uuids`` intersection would be empty for EVERY row and
+        # wedge the whole batch in a retry loop. The receiver echoes one
+        # result per request row in request order, so index is the
+        # authoritative correlation — the same convention
+        # ``_push_and_handle_catalog`` already uses.
         if status == 207:
-            success_ids = _extract_success_uuids(response.body)
+            results = _push_results(response)
+            if results is None or len(results) != len(pending):
+                # Never guess a correlation across a mismatched count — fail
+                # the whole batch loudly (never a silent partial drop).
+                self.log.error(
+                    "sync_sucursal.push_result_count_mismatch",
+                    sent=len(pending),
+                    received=len(results) if results is not None else None,
+                )
+                await self._mark_failed_batch(pending, error="result_count_mismatch")
+                return
             accepted = 0
             rejected = 0
-            for row in pending:
-                if row.uuid in success_ids:
+            for row, result in zip(pending, results, strict=True):
+                wire_status = result.get("status")
+                if wire_status in ("applied", "conflict", "retry_parent_missing"):
+                    # design.md §2 Issue #8's table — the same three are the
+                    # SAME outbox action here as on the catalog path: a
+                    # conflict is a decision and a dependency wait is not a
+                    # transport failure (T-PR12-005 leaves intentos/
+                    # next_retry_at untouched).
                     await sq_helpers.mark_dispatched(self._session, row.uuid)
                     accepted += 1
                 else:
+                    # "unknown_table" or anything unrecognized — never a
+                    # silent drop (REQ-CUT-015).
                     await sq_helpers.mark_failed(
                         self._session,
                         row.uuid,
-                        "rejected_by_cloud",
+                        f"push_{wire_status}",
                     )
                     rejected += 1
-            self.log.warning(
-                "sync_sucursal.push_partial",
-                status=status,
-                accepted=accepted,
-                rejected=rejected,
-            )
+            if rejected:
+                self.log.warning(
+                    "sync_sucursal.push_partial",
+                    status=status,
+                    accepted=accepted,
+                    rejected=rejected,
+                )
+            else:
+                self.log.info(
+                    "sync_sucursal.push_ok",
+                    sent=len(pending),
+                    status=status,
+                )
             return
 
         # 2xx (except 207) — clean success.
@@ -587,9 +655,7 @@ class SyncSucursalWorker(WorkerRunner):
             # revoked case; let it propagate (orchestrator restart-loop).
             if response.status == 401:
                 assert self._jwt_manager is not None
-                action = await self._jwt_manager.on_401_response(
-                    _fake_httpx_response(response)
-                )
+                action = await self._jwt_manager.on_401_response(_fake_httpx_response(response))
                 if action == JwtAction.RETRY_NEW_JWT:
                     self.log.info("sync_sucursal.rotating_jwt_after_401_catalog")
                     await self._jwt_manager.rotate()
@@ -636,10 +702,12 @@ class SyncSucursalWorker(WorkerRunner):
     # Step 4: pull + apply
     # ------------------------------------------------------------------
 
-    async def _persist_pull_cursor(self, *, next_seq: int, unresolved: int) -> None:
+    async def _persist_pull_cursor(
+        self, *, next_seq: int, unresolved: int, failed: int = 0
+    ) -> None:
         """Advance the branch pull watermark (CU-07) when safe.
 
-        Two hard guards before persisting ``next_seq``:
+        Three hard guards before persisting ``next_seq``:
 
         * ``uuid_sucursal`` is set — without it there is no cursor,
           behavior stays the legacy full ``since_seq=0`` resnapshot. The
@@ -652,13 +720,130 @@ class SyncSucursalWorker(WorkerRunner):
           the next pull (``since_seq`` above it) skip it forever: a
           silent drop (REQ-CUT-015). Freezing the watermark re-delivers
           it next cycle, idempotent via ``apply_guard.row_already_present``.
+        * ``failed == 0`` — same reasoning for a row that raised inside its
+          SAVEPOINT. The rows around it DID land, and re-delivering the
+          batch is free (``row_already_present`` skips them), so freezing
+          is correct: it retries the poison row without re-doing the rest.
         """
-        if self.uuid_sucursal is None or unresolved:
+        if self.uuid_sucursal is None or unresolved or failed:
             return
         await sync_cursor_helpers.set_seq(
             self._session,
             uuid_sucursal=self.uuid_sucursal,
             ultimo_seq=next_seq,
+        )
+
+    # Consecutive cycles with at least one unappliable pulled row before the
+    # node reports itself degraded. Three is the same threshold AGENTS.md
+    # already uses for the container healthcheck restart policy, so the two
+    # signals escalate on the same cadence instead of inventing a new one.
+    APPLY_FAILURE_DEGRADED_THRESHOLD = 3
+
+    def sync_health(self) -> dict[str, Any]:
+        """LOGICAL sync health, for the container's ``/healthz`` probe.
+
+        Docker's HEALTHCHECK answers "is the process alive?", which stayed
+        true for 11 hours while this worker rejected every batch it pulled.
+        This answers the question the incident actually needed answered:
+        is this node CONSUMING its cloud-to-branch changes?
+
+        Kept separate from process liveness on purpose. Restarting the
+        process would not have fixed the divergence it was reporting, and a
+        crash-loop would have hidden a still-alive-but-starved node behind a
+        restarting one.
+        """
+        consecutive = self._consecutive_apply_failures
+        return {
+            "ok": consecutive < self.APPLY_FAILURE_DEGRADED_THRESHOLD,
+            "consecutive_apply_failures": consecutive,
+            "degraded_threshold": self.APPLY_FAILURE_DEGRADED_THRESHOLD,
+            # The constraint name, not the driver message. /healthz is polled
+            # live and repeatedly; the log line it mirrors rotates away, and
+            # this is the difference between "something is wrong" and "this
+            # exact foreign key has no parent on this node".
+            "last_apply_error": self._last_apply_error,
+        }
+
+    def health_report(self) -> dict[str, Any]:
+        """Wire this worker's logical sync health into ``/healthz``."""
+        return self.sync_health()
+
+    def _note_clean_cycle(self) -> None:
+        """A cycle landed everything it pulled: clear the failure streak.
+
+        Called for a genuinely clean cycle INCLUDING one that had nothing to
+        apply. Without the empty-batch case, a node that degraded during an
+        incident would stay 503 forever afterwards, because a quiet cloud
+        produces no further cycles to clear it.
+        """
+        if self._consecutive_apply_failures:
+            self.log.info(
+                "sync_sucursal.pull_apply_recovered",
+                previous_consecutive=self._consecutive_apply_failures,
+            )
+        self._consecutive_apply_failures = 0
+        self._last_apply_error = None
+
+    def _record_apply_outcome(self, result: Any) -> None:
+        """Report per-row apply failures and update the health counter.
+
+        The counter RESETS on a fully clean cycle, so a transient bad batch
+        does not permanently degrade a node that has since recovered.
+        """
+        failed = getattr(result, "failed", None) or []
+        if not failed:
+            self._note_clean_cycle()
+            return
+
+        self._consecutive_apply_failures += 1
+        # Count by reason so a recurring constraint is visible as a pattern
+        # rather than as N indistinguishable rows.
+        reasons: dict[str, int] = {}
+        for _spec, _payload, reason in failed:
+            reasons[reason] = reasons.get(reason, 0) + 1
+        self._last_apply_error = max(reasons, key=lambda r: (reasons[r], r))
+        self._log_degraded(
+            "sync_sucursal.pull_apply_rows_failed",
+            failed=len(failed),
+            reasons=reasons,
+            tables=sorted({spec.name for spec, _p, _r in failed if spec is not None}),
+        )
+
+    def _note_batch_failure(self, exc: BaseException) -> None:
+        """A whole-batch raise is still "this node is not consuming".
+
+        ``apply_batch`` isolates per-row failures, but a fault in the batch
+        itself - ordering, session state - escapes it. That path must count
+        too, or a node wedging on every cycle reports itself healthy, which
+        is the failure mode this whole change exists to end.
+        """
+        self._consecutive_apply_failures += 1
+        self._last_apply_error = describe_apply_error(exc)
+        self._log_degraded(
+            "sync_sucursal.pull_apply_batch_failed",
+            failed=1,
+            reasons={self._last_apply_error: 1},
+            tables=[],
+        )
+
+    def _log_degraded(self, event: str, **fields: Any) -> None:
+        """Log at ``error`` once the streak is past the threshold, else ``warn``.
+
+        The level flip is the escalation: a single bad row is a warning, a
+        sustained streak stops being noise and becomes the reason a node is
+        not syncing.
+        """
+        consecutive = self._consecutive_apply_failures
+        log = (
+            self.log.error
+            if consecutive >= self.APPLY_FAILURE_DEGRADED_THRESHOLD
+            else self.log.warning
+        )
+        log(
+            event,
+            consecutive=consecutive,
+            degraded=consecutive >= self.APPLY_FAILURE_DEGRADED_THRESHOLD,
+            **fields,
         )
 
     async def _pull_and_apply(self) -> None:
@@ -741,9 +926,7 @@ class SyncSucursalWorker(WorkerRunner):
             raw_uuid_registro = row.get("uuid_registro")
             try:
                 uuid_registro = (
-                    uuid_lib.UUID(str(raw_uuid_registro))
-                    if raw_uuid_registro is not None
-                    else None
+                    uuid_lib.UUID(str(raw_uuid_registro)) if raw_uuid_registro is not None else None
                 )
             except ValueError:
                 uuid_registro = None
@@ -763,9 +946,11 @@ class SyncSucursalWorker(WorkerRunner):
             # Everything was already applied (or unresolved) — the cursor
             # only advances when nothing is left behind (CU-07); already-
             # applied rows are local, so marking them consumed is safe.
-            await self._persist_pull_cursor(
-                next_seq=pulled.next_seq, unresolved=unresolved
-            )
+            await self._persist_pull_cursor(next_seq=pulled.next_seq, unresolved=unresolved)
+            # Nothing was attempted, so nothing failed: this is a clean cycle
+            # and must clear the streak, or a node that degraded during an
+            # incident stays 503 for as long as the cloud is quiet.
+            self._note_clean_cycle()
             return
 
         if self._motor is None:
@@ -779,11 +964,17 @@ class SyncSucursalWorker(WorkerRunner):
                 )
         except Exception as exc:  # noqa: BLE001 — keep the cycle alive (mirrors sync_cloud.py)
             self.log.warning("sync_sucursal.pull_apply_batch_failed", error=str(exc))
+            self._note_batch_failure(exc)
             return
 
         # Applied cleanly with no unresolved row — advance the watermark.
+        self._record_apply_outcome(result)
+        # Advance only with no unresolved AND no failed row, so a poison row
+        # is retried next cycle instead of being silently skipped.
         await self._persist_pull_cursor(
-            next_seq=pulled.next_seq, unresolved=unresolved
+            next_seq=pulled.next_seq,
+            unresolved=unresolved,
+            failed=_failed_count(result),
         )
 
         self.log.info(
@@ -791,6 +982,7 @@ class SyncSucursalWorker(WorkerRunner):
             pulled=len(pulled.rows),
             applied=len(result.applied),
             buffered=len(result.buffered),
+            failed=_failed_count(result),
             next_seq=pulled.next_seq,
         )
 
@@ -879,9 +1071,11 @@ class SyncSucursalWorker(WorkerRunner):
         if not resolved:
             # All rows were already applied locally (or unresolved) — the
             # cursor advances only when nothing is left behind (CU-07).
-            await self._persist_pull_cursor(
-                next_seq=pulled.next_seq, unresolved=unresolved
-            )
+            await self._persist_pull_cursor(next_seq=pulled.next_seq, unresolved=unresolved)
+            # Nothing was attempted, so nothing failed: this is a clean cycle
+            # and must clear the streak, or a node that degraded during an
+            # incident stays 503 for as long as the cloud is quiet.
+            self._note_clean_cycle()
             return
 
         if self._motor is None:
@@ -905,11 +1099,17 @@ class SyncSucursalWorker(WorkerRunner):
                 )
         except Exception as exc:  # noqa: BLE001 — keep the cycle alive (mirrors sync_cloud.py)
             self.log.warning("sync_sucursal.pull_apply_batch_failed", error=str(exc))
+            self._note_batch_failure(exc)
             return
 
         # Applied cleanly with no unresolved row — advance the watermark.
+        self._record_apply_outcome(result)
+        # Advance only with no unresolved AND no failed row, so a poison row
+        # is retried next cycle instead of being silently skipped.
         await self._persist_pull_cursor(
-            next_seq=pulled.next_seq, unresolved=unresolved
+            next_seq=pulled.next_seq,
+            unresolved=unresolved,
+            failed=_failed_count(result),
         )
 
         self.log.info(
@@ -917,6 +1117,7 @@ class SyncSucursalWorker(WorkerRunner):
             pulled=len(pulled.rows),
             applied=len(result.applied),
             buffered=len(result.buffered),
+            failed=_failed_count(result),
             next_seq=pulled.next_seq,
         )
 
@@ -1028,16 +1229,28 @@ def _str_or_none(value: Any) -> str | None:
     return text or None
 
 
-def _extract_success_uuids(body: dict[str, Any]) -> set[uuid_lib.UUID]:
-    """Parse ``{"success_uuids": ["<uuid>", ...]}`` into a ``set``."""
-    raw = body.get("success_uuids") or body.get("accepted") or []
-    out: set[uuid_lib.UUID] = set()
-    for item in raw:
-        try:
-            out.add(uuid_lib.UUID(str(item)))
-        except (TypeError, ValueError):
-            continue
-    return out
+def _push_results(response: PushResponse) -> list[dict[str, Any]] | None:
+    """Extract the per-row ``results`` list from a 207 push response.
+
+    The receiver answers with ``{"results": [...]}``, one entry per
+    request row, in request order. Returns ``None`` when the body does
+    not carry a list, so the caller can fail the batch instead of
+    guessing a correlation.
+
+    Replaces the previous ``_extract_success_uuids`` helper, which read
+    ``body["success_uuids"]`` / ``body["accepted"]`` — keys this endpoint
+    never returned — and then intersected them against ``row.uuid`` (the
+    sync_queue row uuid) while the receiver reports ``uuid_registro``
+    (the business row uuid). Both halves of that comparison were wrong,
+    so every row of a 207 push was marked ``rejected_by_cloud``.
+    """
+    body = getattr(response, "body", None)
+    if not isinstance(body, dict):
+        return None
+    results = body.get("results")
+    if not isinstance(results, list):
+        return None
+    return [r for r in results if isinstance(r, dict)]
 
 
 def _fake_httpx_response(response: PushResponse | EventsPushResponse) -> Any:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from abc import ABC, abstractmethod
+from typing import Any
 
 import structlog
 
@@ -47,6 +48,20 @@ class BaseRunner(ABC):
     @abstractmethod
     async def cycle(self) -> None:
         """One iteration of the worker's main loop."""
+
+    def health_report(self) -> dict[str, Any] | None:
+        """Optional logical-health report for ``/healthz``.
+
+        Returns ``None`` (the default) to keep the endpoint's historical
+        constant-``ok`` liveness behaviour. Subclasses that can tell "alive
+        but not doing its job" override this; returning ``{"ok": False}``
+        downgrades the probe to ``503``.
+
+        Split from process liveness deliberately: restarting a wedged worker
+        does not fix a data divergence, and a restart loop hides an
+        alive-but-starved node behind a flapping one.
+        """
+        return None
 
     def request_shutdown(self) -> None:
         """Signal handler entry point — set the shutdown event."""
@@ -88,7 +103,7 @@ class BaseRunner(ABC):
 
         healthz = None
         try:
-            healthz = start_healthz()
+            healthz = start_healthz(health_provider=self.health_report)
         except MissingEnvError as exc:
             self.log.error("healthz_env_validation_failed", errors=exc.errors)
             return 2

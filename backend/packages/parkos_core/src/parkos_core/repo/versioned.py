@@ -146,6 +146,24 @@ async def close_and_insert(
             )
         )
 
+    # Drop validation-only schema fields that have no column on the model.
+    # A Pydantic create/update schema may carry fields that exist purely for
+    # cross-field validation and are never persisted (``ClientesCreate.dv``
+    # for the NIT modulo-11 check is the canonical case -- ``prod.clientes``
+    # has no ``dv`` column, and ``schemas/clientes.py`` says so explicitly).
+    # Passing them straight into the declarative constructor raises
+    # ``TypeError: '<field>' is an invalid keyword argument for <Model>``
+    # from SQLAlchemy's ``_declarative_constructor``, which surfaced as a
+    # bare 500 on ``POST /api/v1/clientes/clientes``. Filtering centrally
+    # here protects every ``make_router``-mounted resource, not just the
+    # ones whose repo already strips the field by hand
+    # (``venta_suscripcion.py`` does ``{k: v for k, v in ... if k != "dv"}``).
+    model_column_names = frozenset(
+        column.name for column in sa_inspect(model_cls).columns
+    )
+    new_attrs = {k: v for k, v in new_attrs.items() if k in model_column_names}
+    carried_forward = {k: v for k, v in carried_forward.items() if k in model_column_names}
+
     merged_attrs: dict[str, Any] = {**carried_forward, **new_attrs}
 
     # 2. Build the new row
@@ -161,7 +179,7 @@ async def close_and_insert(
     session.add(new_row)
     # Flush NOW (still same TX, nothing committed) so ``new_row.uuid`` is
     # populated before the log-row branch below reads it, and so that
-    # branch's own query (``hash_chain.append`` -> ``_read_prior_hash``)
+    # branch's own query (``hash_chain.append`` -> ``_read_head``)
     # does not have to rely on SQLAlchemy's autoflush to persist this row
     # first — autoflush-triggered-by-SELECT does not reliably postfetch a
     # server-generated PK for every model in this codebase (observed with

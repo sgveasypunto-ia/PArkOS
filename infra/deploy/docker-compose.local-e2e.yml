@@ -1,0 +1,122 @@
+# docker-compose.local-e2e.yml — SECOND branch node, in parallel with the
+# primary branch in docker-compose.local.yml.
+#
+# Why this file exists:
+#   A branch node is pinned to exactly one sucursal (PARKOS_SUCURSAL_UUID).
+#   To exercise a second branch end-to-end without touching the existing
+#   BOG-CEN node, we run a fully independent stack: its own Postgres volume,
+#   its own API/sync containers, its own host ports, and its own secrets
+#   directory (own `sync.jwt`). It joins the same external cloud network so
+#   the branch worker reaches the cloud at `http://api-admin:8000` with no
+#   host-port bridging.
+#
+#   Service names are prefixed `e2e-` because Docker DNS on a shared external
+#   network is flat: `branch-db` here would collide with the primary stack's
+#   `branch-db` and DNS would round-robin between the two databases.
+#
+# Run:
+#   docker compose -f infra/deploy/docker-compose.local-e2e.yml up -d
+#
+# Then pair it (one-shot, token is single-use with a 24h TTL):
+#   POST http://localhost:8101/api/v1/sync/pair  { "pairing_token": "..." }
+# and persist the returned sync_jwt into ./secrets-e2e/sync.jwt before the
+# sync worker is useful.
+
+name: parkos-e2e
+
+networks:
+  parkos-cloud-net:
+    external: true
+    name: parkos-cloud_parkos-cloud-net
+
+services:
+  # ---------------------------------------------------------------------------
+  # E2E branch Postgres — host port 5434 (primary branch uses 5433).
+  # ---------------------------------------------------------------------------
+  e2e-branch-db:
+    image: parkos-postgres:16-pgpartman
+    container_name: parkos-e2e-branch-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: parkos
+      POSTGRES_PASSWORD: parkos
+      POSTGRES_DB: parkos
+    volumes:
+      - e2e-branch-db-data:/var/lib/postgresql/data
+    networks:
+      - parkos-cloud-net
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parkos -d parkos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # E2E api-sucursal — branch FastAPI on host port 8101.
+  # ---------------------------------------------------------------------------
+  e2e-api-sucursal:
+    image: parkos:api-sucursal-test
+    container_name: parkos-e2e-api-sucursal
+    restart: unless-stopped
+    environment:
+      PARKOS_DEPLOY: branch
+      PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}
+      # E2E-NORTE. Overridable so the file is reusable for other branches.
+      PARKOS_SUCURSAL_UUID: ${E2E_SUCURSAL_UUID:?E2E_SUCURSAL_UUID required}
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@e2e-branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@e2e-branch-db:5432/parkos
+      PARKOS_CLOUD_API_URL: http://api-admin:8000
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
+      PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
+    depends_on:
+      e2e-branch-db:
+        condition: service_healthy
+    networks:
+      - parkos-cloud-net
+    ports:
+      - "8101:8000"
+    volumes:
+      - ./secrets-e2e:/var/run/parkos:ro
+    command: ["python", "-m", "uvicorn", "parkos_core.api.app_factory:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/openapi.json', timeout=4)\" >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # E2E job-sync-sucursal — branch sync worker for the second node.
+  # ---------------------------------------------------------------------------
+  e2e-job-sync-sucursal:
+    image: parkos:job-sync-sucursal-test
+    container_name: parkos-e2e-job-sync-sucursal
+    restart: unless-stopped
+    environment:
+      PARKOS_DEPLOY: branch
+      PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}
+      PARKOS_SUCURSAL_UUID: ${E2E_SUCURSAL_UUID:?E2E_SUCURSAL_UUID required}
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@e2e-branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@e2e-branch-db:5432/parkos
+      PARKOS_CLOUD_API_URL: http://api-admin:8000
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
+      PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
+      PARKOS_SYNC_POLL_INTERVAL_S: "10"
+      PARKOS_SYNC_BATCH_SIZE: "100"
+    depends_on:
+      e2e-branch-db:
+        condition: service_healthy
+      e2e-api-sucursal:
+        condition: service_healthy
+    networks:
+      - parkos-cloud-net
+    volumes:
+      - ./secrets-e2e:/var/run/parkos:ro
+    deploy:
+      replicas: 1
+
+volumes:
+  e2e-branch-db-data:

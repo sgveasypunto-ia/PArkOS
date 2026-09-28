@@ -25,7 +25,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import StringConstraints
+from pydantic import Field, StringConstraints
 
 from .common import FilterBase, ReadListBase, _Base
 
@@ -281,23 +281,47 @@ class TarifasSucursalRead(_Base):
 
 
 class TarifasSucursalCreate(_Base):
-    """REQ-03-V-INSERCION. Versioning columns excluded by ``extra='forbid'`` (C-6)."""
+    """REQ-03-V-INSERCION. Versioning columns excluded by ``extra='forbid'`` (C-6).
+
+    PR-C additions:
+
+    * ``vigente_desde``: optional client-supplied valid-time. When omitted
+      the factory defaults to ``clock_timestamp()`` (Carril B). When set
+      in the future, the new version opens at that future instant — the
+      operator schedules a rate change without a separate "scheduled
+      change" feature. The handler validates the resulting window does
+      not overlap any other open row for the same business key (409 if
+      it does — see ``repo.overlap``).
+    * ``valor > 0``, ``valor_plena >= 0``: enforced via Pydantic
+      constraints so a malformed payload is rejected at the API edge
+      instead of leaking through to the DB.
+    """
 
     uuid_sucursal: uuid_lib.UUID | None = None
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
     uuid_tipo_tarifa: uuid_lib.UUID | None = None
-    valor: Decimal | None = None
-    valor_plena: Decimal | None = None
+    valor: Decimal | None = Field(default=None, gt=Decimal("0"))
+    valor_plena: Decimal | None = Field(default=None, ge=Decimal("0"))
+    vigente_desde: datetime | None = None
 
 
 class TarifasSucursalUpdate(_Base):
-    """REQ-04-V-ACTUALIZACION. Same shape as Create."""
+    """REQ-04-V-ACTUALIZACION. Same shape as Create.
+
+    PR-C: ``vigente_desde`` becomes the boundary of the close+insert
+    Carril B — when set, the new version opens at that boundary AND
+    the row being closed ends at the SAME boundary (no gap, no overlap
+    with adjacent windows). The handler also enforces
+    ``uuid_sucursal`` immutability (422 if the payload differs from
+    the existing row).
+    """
 
     uuid_sucursal: uuid_lib.UUID | None = None
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
     uuid_tipo_tarifa: uuid_lib.UUID | None = None
-    valor: Decimal | None = None
-    valor_plena: Decimal | None = None
+    valor: Decimal | None = Field(default=None, gt=Decimal("0"))
+    valor_plena: Decimal | None = Field(default=None, ge=Decimal("0"))
+    vigente_desde: datetime | None = None
 
 
 class TarifasSucursalFilter(FilterBase):
@@ -339,19 +363,42 @@ class CantidadVehiculosSucursalRead(_Base):
 
 
 class CantidadVehiculosSucursalCreate(_Base):
-    """REQ-03-V-INSERCION."""
+    """REQ-03-V-INSERCION.
+
+    PR-C additions:
+
+    * ``vigente_desde``: optional client-supplied valid-time. Same
+      Carril B semantics as :class:`TarifasSucursalCreate`. The handler
+      validates the resulting window does not overlap any other open
+      row for the same ``(uuid_sucursal, uuid_tipo_vehiculo)`` (409).
+    * ``cantidad >= 0``: enforced at the API edge. ``cantidad == 0``
+      is allowed (effectively disables the tipo at that branch until
+      a later version restores capacity) and is the sanctioned
+      alternative to DELETE (which the project canon forbids).
+    """
 
     uuid_sucursal: uuid_lib.UUID | None = None
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
-    cantidad: int | None = None
+    cantidad: int | None = Field(default=None, ge=0)
+    vigente_desde: datetime | None = None
 
 
 class CantidadVehiculosSucursalUpdate(_Base):
-    """REQ-04-V-ACTUALIZACION. Same shape as Create."""
+    """REQ-04-V-ACTUALIZACION. Same shape as Create.
+
+    PR-C: in addition to the Carril B ``vigente_desde``, the handler
+    rejects (422) PUTs whose payload ``cantidad`` is below the count of
+    currently-active ``ingreso`` rows for the same
+    ``(uuid_sucursal, uuid_tipo_vehiculo)``. Lowering capacity below
+    active ingreso would silently leave the operator accepting ingreso
+    the system then rejects at the close step. The operator must
+    close / annul those ingreso first and then lower the capacity.
+    """
 
     uuid_sucursal: uuid_lib.UUID | None = None
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
-    cantidad: int | None = None
+    cantidad: int | None = Field(default=None, ge=0)
+    vigente_desde: datetime | None = None
 
 
 class CantidadVehiculosSucursalFilter(FilterBase):

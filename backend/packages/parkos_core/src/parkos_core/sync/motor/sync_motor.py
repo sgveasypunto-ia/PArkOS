@@ -74,6 +74,25 @@ class _OrderableRow:
     payload: dict[str, Any]
 
 
+def describe_apply_error(exc: BaseException) -> str:
+    """Summarise a failed row apply into a short, stable, loggable label.
+
+    For a foreign-key violation the actionable token is the CONSTRAINT name
+    (it names the child table and the parent that is missing), not the
+    driver message: asyncpg's text embeds every bound parameter, so logging
+    ``str(exc)`` re-emits the row's data on every retry - which is exactly
+    how this defect produced 522 near-identical log lines.
+    """
+    orig = getattr(exc, "orig", None)
+    constraint = getattr(getattr(orig, "diag", None), "constraint_name", None)
+    if constraint:
+        return f"fk_violation:{constraint}"
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if sqlstate:
+        return f"{type(orig).__name__}:{sqlstate}"
+    return type(exc).__name__
+
+
 @dataclass
 class BatchResult:
     """Outcome of one ``SyncMotor.apply_batch`` call.
@@ -81,13 +100,28 @@ class BatchResult:
     ``applied`` carries one :class:`ApplyResult` per row that actually went
     through ``apply_row`` (whatever its resulting status). ``buffered``
     carries every ``(spec, payload)`` pair that was buffered instead of
-    attempted — either because its own ``hook_validate_parent`` rejected it,
+    attempted - either because its own ``hook_validate_parent`` rejected it,
     or because a declared parent was already buffered earlier in this same
     batch (see the PR4-stub note in this module's docstring).
+
+    ``failed`` carries ``(spec, payload, reason)`` for every row whose apply
+    raised, isolated to its own SAVEPOINT so the rest of the batch still
+    lands. This exists because ``hook_validate_parent`` is a TEST-ONLY hook
+    today (see :mod:`.dependency_buffer`), so in production nothing checks
+    that a row's foreign-key parent is actually present locally: a
+    ``permisos_usuario`` naming a ``uuid_permiso`` the node has never seen
+    raised ``ForeignKeyViolationError``, which aborted the whole batch and
+    left the pull cursor frozen. Measured live: 522 consecutive identical
+    failures, the branch consuming nothing from the cloud, container health
+    still reporting ``healthy``. Rows land here instead, and the caller
+    reports them rather than dying.
     """
 
     applied: list[ApplyResult] = field(default_factory=list)
     buffered: list[tuple[SyncCatalogEntry, dict[str, Any]]] = field(default_factory=list)
+    failed: list[tuple[SyncCatalogEntry, dict[str, Any], str]] = field(
+        default_factory=list
+    )
 
 
 class SyncMotor:
@@ -240,9 +274,22 @@ class SyncMotor:
                 buffered_tables.add(spec.name)
                 continue
 
-            outcome = await self.apply_row(
-                session, spec, payload, actor_uuid=actor_uuid, log_tx=log_tx
-            )
+            outcome = None
+            try:
+                # Per-row SAVEPOINT. Without it, the first row that violates
+                # a foreign key aborts the enclosing transaction and every
+                # OTHER row in the batch is lost with it, even though most of
+                # them are perfectly applicable. Isolating the failure here is
+                # what turns "the whole pull is wedged" into "one row is
+                # reported, the rest land".
+                async with session.begin_nested():
+                    outcome = await self.apply_row(
+                        session, spec, payload, actor_uuid=actor_uuid, log_tx=log_tx
+                    )
+            except Exception as exc:  # noqa: BLE001 — isolate the row, keep the batch
+                result.failed.append((spec, payload, describe_apply_error(exc)))
+                continue
+
             if outcome.status == "RETRY" and outcome.reason == "parent_missing":
                 result.buffered.append((spec, payload))
                 buffered_tables.add(spec.name)

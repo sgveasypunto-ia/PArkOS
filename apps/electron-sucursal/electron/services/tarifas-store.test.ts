@@ -16,6 +16,13 @@ import { describe, it, expect } from 'vitest';
 import { readTarifasValue, writeTarifasValue, removeTarifasValue } from './tarifas-store';
 import type { StoreLike } from './kiosko';
 
+/**
+ * In-memory `StoreLike` that mirrors electron-store v8 semantics faithfully:
+ * `set(key, undefined)` THROWS exactly like the real library, and removal
+ * only works through `delete`. The previous mock treated `undefined` as a
+ * delete, which is why a broken removal shipped green — the double had to
+ * lie about the contract to hide the bug.
+ */
 function makeStore(initial: Record<string, unknown> = {}): StoreLike & {
   readonly data: Map<string, unknown>;
 } {
@@ -25,10 +32,12 @@ function makeStore(initial: Record<string, unknown> = {}): StoreLike & {
     get: (key: string) => (data.has(key) ? data.get(key) : null),
     set: (key: string, value: unknown) => {
       if (value === undefined) {
-        data.delete(key);
-      } else {
-        data.set(key, value);
+        throw new Error('Use `delete()` to clear values');
       }
+      data.set(key, value);
+    },
+    delete: (key: string) => {
+      data.delete(key);
     },
   };
 }

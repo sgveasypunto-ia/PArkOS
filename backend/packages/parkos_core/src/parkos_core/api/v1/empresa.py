@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext
 from ...models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
 from ...models.V.documentos import Documentos
@@ -40,7 +41,16 @@ from ...models.V.empresa import Empresa
 from ...models.V.resolucion_facturacion import ResolucionFacturacion
 from ...models.V.sucursal import Sucursal
 from ...models.V.tarifas_sucursal import TarifasSucursal
+from ...repo.cantidad_vigencia import validar_cantidad_vigente
+from ...repo.overlap import (
+    OverlapError,
+    SucursalInmutableError,
+    _Key,
+    assert_no_overlap,
+    assert_sucursal_inmutable,
+)
 from ...repo.tarifas_vigencia import list_tarifas_vigentes
+from ...repo.versioned import close_and_insert, current_version
 from ...schemas.empresa import (
     CantidadVehiculosSucursalCreate,
     CantidadVehiculosSucursalRead,
@@ -276,6 +286,501 @@ async def get_tarifa_sucursal_by_uuid(
 router.include_router(_tarifas_dedicated_router)
 
 
+# ---------------------------------------------------------------------------
+# PR-C dedicated write routers (tarifas-sucursal + cantidad-vehiculos-sucursal)
+# ---------------------------------------------------------------------------
+#
+# The factory ``make_router`` emits POST + PUT + GET by uuid + GET by
+# uuid/history + GET list. PR-C adds three behaviours the factory does
+# not cover, mounted on dedicated routers that take precedence over the
+# factory's POST/PUT for the same path:
+#
+#   * overlap guard — the factory's POST/PUT would happily INSERT a row
+#     whose ``vigente_desde`` falls inside an existing open window for
+#     the same business key. UK01 prevents two rows with the SAME
+#     ``vigente_desde`` but does NOT prevent a window that overlaps.
+#     See ``repo.overlap.assert_no_overlap``.
+#   * sucursal-inmutable guard — a PUT that changes ``uuid_sucursal``
+#     silently moves the rate / capacity to a different branch and
+#     invalidates every audit trail that referenced the original
+#     branch. See ``repo.overlap.assert_sucursal_inmutable``.
+#   * by-key / history endpoint — walks the bi-temporal version chain
+#     by business identity (UK01 columns) instead of by uuid. The
+#     factory's ``GET /{uuid}/history`` filters by uuid and misses the
+#     close+insert fresh-UUID case. See the dedicated handler below.
+#
+# The factory's GET list / GET /{uuid} / GET /{uuid}/history are kept
+# (registered after the dedicated router in ``_SUB_ROUTERS`` — see the
+# reordering block below). The factory's POST/PUT are shadowed by the
+# dedicated router for the same path; FastAPI matches the first
+# registered route.
+
+
+_tarifas_pr_c_perm_dep = require_permission("config_tarifas")
+_cantidad_pr_c_perm_dep = require_permission("config_cupos")
+_tarifas_pr_c_issuer_dep = requires_issuer("admin-", "operador-")
+_cantidad_pr_c_issuer_dep = requires_issuer("admin-", "operador-")
+
+
+_tarifas_pr_c_router = APIRouter(prefix="/tarifas-sucursal", tags=["tarifas-sucursal"])
+
+
+@_tarifas_pr_c_router.post(
+    "",
+    response_model=TarifasSucursalRead,
+    status_code=201,
+    dependencies=[Depends(_tarifas_pr_c_perm_dep)],
+)
+async def create_tarifa_pr_c(
+    payload: TarifasSucursalCreate,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+) -> TarifasSucursalRead:
+    """PR-C POST: opens a new version with overlap guard.
+
+    Rejects with 409 ``tarifa_overlap`` if the resulting window would
+    intersect an existing open row for the same
+    ``(uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa)`` business
+    key. Adjacent windows (``new.vigente_desde == old.vigente_hasta``)
+    are NOT overlaps — they are the close+insert Carril B contract.
+    """
+    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    # POST opens at ``nueva_desde`` with no upper bound (open-ended).
+    # We pass ``vigente_hasta = nueva_desde`` so the overlap test
+    # collapses to "an open row whose vigente_desde < nueva_desde" —
+    # any open row with vigente_desde == nueva_desde violates UK01
+    # (DB enforces) and any open row strictly before nueva_desde is
+    # by definition still active at nueva_desde (the open-ended row
+    # never closes), so it overlaps the new open-ended window. The
+    # second conjunct (``other.vigente_hasta > nueva_desde``) then
+    # trivially passes because other.vigente_hasta is NULL (open).
+    try:
+        await assert_no_overlap(
+            session,
+            table="prod.tarifas_sucursal",
+            resource="tarifas-sucursal",
+            key=_Key(
+                uuid_sucursal=payload.uuid_sucursal,
+                uuid_tipo_vehiculo=payload.uuid_tipo_vehiculo,
+                uuid_tipo_tarifa=payload.uuid_tipo_tarifa,
+            ),
+            nueva_vigente_desde=nueva_desde,
+            nueva_vigente_hasta=nueva_desde,
+            exclude_uuid=None,
+        )
+    except OverlapError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tarifa_overlap",
+                "conflicting_uuid": str(exc.conflicting_uuid),
+                "conflicting_vigente_desde": exc.conflicting_vigente_desde.isoformat()
+                if exc.conflicting_vigente_desde is not None
+                else None,
+                "conflicting_vigente_hasta": exc.conflicting_vigente_hasta.isoformat()
+                if exc.conflicting_vigente_hasta is not None
+                else None,
+            },
+        )
+    payload_dict = payload.model_dump(exclude_none=True)
+    new_row = await close_and_insert(
+        session,
+        TarifasSucursal,
+        current_uuid=None,
+        new_attrs=payload_dict,
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TarifasSucursalRead.model_validate(new_row)
+
+
+@_tarifas_pr_c_router.put(
+    "/{uuid}",
+    response_model=TarifasSucursalRead,
+    dependencies=[Depends(_tarifas_pr_c_perm_dep)],
+)
+async def update_tarifa_pr_c(
+    payload: TarifasSucursalUpdate,
+    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+) -> TarifasSucursalRead:
+    """PR-C PUT: close+insert with overlap guard and sucursal-inmutable.
+
+    Three rejections before the write:
+
+    1. **sucursal_inmutable (422)** — payload's ``uuid_sucursal`` differs
+       from the existing row. The tarifa belongs to the branch that
+       created it; moving it across branches would invalidate audit
+       trails. The operator must create a new version on the
+       destination branch instead.
+    2. **not_found (404)** — ``uuid`` does not match any active row.
+    3. **tarifa_overlap (409)** — the resulting new window would
+       intersect another open row. The current row is excluded from
+       the overlap test (it is the row being closed; the helper takes
+       ``exclude_uuid``).
+    """
+    current = await current_version(session, TarifasSucursal, uuid)
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "tarifa_no_encontrada", "uuid": str(uuid)},
+        )
+    try:
+        assert_sucursal_inmutable(
+            resource="tarifas-sucursal",
+            uuid=uuid,
+            existing_sucursal=current.uuid_sucursal,
+            payload_sucursal=payload.uuid_sucursal,
+        )
+    except SucursalInmutableError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "sucursal_inmutable",
+                "uuid": str(exc.uuid),
+                "existing_sucursal": str(exc.existing_sucursal),
+                "attempted_sucursal": str(exc.attempted_sucursal),
+            },
+        )
+    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    try:
+        await assert_no_overlap(
+            session,
+            table="prod.tarifas_sucursal",
+            resource="tarifas-sucursal",
+            key=_Key(
+                uuid_sucursal=current.uuid_sucursal,
+                uuid_tipo_vehiculo=payload.uuid_tipo_vehiculo
+                if payload.uuid_tipo_vehiculo is not None
+                else current.uuid_tipo_vehiculo,
+                uuid_tipo_tarifa=payload.uuid_tipo_tarifa
+                if payload.uuid_tipo_tarifa is not None
+                else current.uuid_tipo_tarifa,
+            ),
+            nueva_vigente_desde=nueva_desde,
+            nueva_vigente_hasta=nueva_desde,
+            exclude_uuid=uuid,
+        )
+    except OverlapError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tarifa_overlap",
+                "conflicting_uuid": str(exc.conflicting_uuid),
+                "conflicting_vigente_desde": exc.conflicting_vigente_desde.isoformat()
+                if exc.conflicting_vigente_desde is not None
+                else None,
+                "conflicting_vigente_hasta": exc.conflicting_vigente_hasta.isoformat()
+                if exc.conflicting_vigente_hasta is not None
+                else None,
+            },
+        )
+    payload_dict = payload.model_dump(exclude_none=True)
+    new_row = await close_and_insert(
+        session,
+        TarifasSucursal,
+        current_uuid=uuid,
+        new_attrs=payload_dict,
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TarifasSucursalRead.model_validate(new_row)
+
+
+@_tarifas_pr_c_router.get(
+    "/by-key",
+    response_model=list[TarifasSucursalRead],
+)
+async def get_tarifa_by_key_history_pr_c(
+    sucursal: uuid_lib.UUID = Query(...),  # noqa: B008
+    tipo_vehiculo: uuid_lib.UUID | None = Query(None),  # noqa: B008
+    tipo_tarifa: uuid_lib.UUID | None = Query(None),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+) -> list[TarifasSucursalRead]:
+    """PR-C by-key / history: walk the bi-temporal version chain by business key.
+
+    Why this endpoint exists: the factory's ``GET /{uuid}/history`` filters
+    by ``uuid == :u``, so it returns only the version(s) of the SAME
+    uuid (the closed original) and NOT the new version emitted by
+    ``close_and_insert`` (which has a fresh UUID). The audit use-case
+    "what rate did this branch apply between X and Y?" needs the full
+    chain.
+
+    Returns every version for the business key, DESC by
+    ``vigente_desde`` — the operator can read the timeline top-down.
+    Use the dedicated HU-F1.4 ``vigente_en`` parameter on the factory's
+    GET list for the "what's vigente at instant X" view; this endpoint
+    is the "every version, ever" view.
+    """
+    stmt = (
+        select(TarifasSucursal)
+        .where(
+            TarifasSucursal.uuid_sucursal == sucursal,
+            TarifasSucursal.uuid_tipo_vehiculo.is_not_distinct_from(tipo_vehiculo),
+            TarifasSucursal.uuid_tipo_tarifa.is_not_distinct_from(tipo_tarifa),
+        )
+        .order_by(TarifasSucursal.vigente_desde.desc())
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return [TarifasSucursalRead.model_validate(r) for r in rows]
+
+
+# Cantidad de vehiculos por sucursal: same shape.
+_cantidad_pr_c_router = APIRouter(
+    prefix="/cantidad-vehiculos-sucursal", tags=["cantidad-vehiculos-sucursal"]
+)
+
+
+@_cantidad_pr_c_router.post(
+    "",
+    response_model=CantidadVehiculosSucursalRead,
+    status_code=201,
+    dependencies=[Depends(_cantidad_pr_c_perm_dep)],
+)
+async def create_cantidad_pr_c(
+    payload: CantidadVehiculosSucursalCreate,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+) -> CantidadVehiculosSucursalRead:
+    """PR-C POST: opens a new cantidad version with overlap guard."""
+    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    try:
+        await assert_no_overlap(
+            session,
+            table="prod.cantidad_vehiculos_sucursal",
+            resource="cantidad-vehiculos-sucursal",
+            key=_Key(
+                uuid_sucursal=payload.uuid_sucursal,
+                uuid_tipo_vehiculo=payload.uuid_tipo_vehiculo,
+                uuid_tipo_tarifa=None,
+            ),
+            nueva_vigente_desde=nueva_desde,
+            nueva_vigente_hasta=nueva_desde,
+            exclude_uuid=None,
+        )
+    except OverlapError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "cantidad_overlap",
+                "conflicting_uuid": str(exc.conflicting_uuid),
+                "conflicting_vigente_desde": exc.conflicting_vigente_desde.isoformat()
+                if exc.conflicting_vigente_desde is not None
+                else None,
+                "conflicting_vigente_hasta": exc.conflicting_vigente_hasta.isoformat()
+                if exc.conflicting_vigente_hasta is not None
+                else None,
+            },
+        )
+    payload_dict = payload.model_dump(exclude_none=True)
+    new_row = await close_and_insert(
+        session,
+        CantidadVehiculosSucursal,
+        current_uuid=None,
+        new_attrs=payload_dict,
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return CantidadVehiculosSucursalRead.model_validate(new_row)
+
+
+@_cantidad_pr_c_router.put(
+    "/{uuid}",
+    response_model=CantidadVehiculosSucursalRead,
+    dependencies=[Depends(_cantidad_pr_c_perm_dep)],
+)
+async def update_cantidad_pr_c(
+    payload: CantidadVehiculosSucursalUpdate,
+    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+) -> CantidadVehiculosSucursalRead:
+    """PR-C PUT: close+insert with overlap, sucursal-inmutable, and
+    cantidad-bajo-ingresos-activos guards.
+
+    The third guard (the operator cannot lower ``cantidad`` below the
+    count of currently-active ``ingreso`` rows for the same
+    ``(uuid_sucursal, uuid_tipo_vehiculo)``) uses the MV
+    ``mv_ocupacion_diaria`` via :func:`validar_cantidad_vigente`. The
+    MV has a lag <= 10s accepted as live risk (KD-V8).
+    """
+    current = await current_version(session, CantidadVehiculosSucursal, uuid)
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "cantidad_no_encontrada", "uuid": str(uuid)},
+        )
+    try:
+        assert_sucursal_inmutable(
+            resource="cantidad-vehiculos-sucursal",
+            uuid=uuid,
+            existing_sucursal=current.uuid_sucursal,
+            payload_sucursal=payload.uuid_sucursal,
+        )
+    except SucursalInmutableError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "sucursal_inmutable",
+                "uuid": str(exc.uuid),
+                "existing_sucursal": str(exc.existing_sucursal),
+                "attempted_sucursal": str(exc.attempted_sucursal),
+            },
+        )
+    # Resolve the effective tipo_vehiculo: payload wins when present, else
+    # carry forward from the existing row (the factory's column-merge
+    # would do the same in ``close_and_insert``).
+    effective_tipo_vehiculo = (
+        payload.uuid_tipo_vehiculo
+        if payload.uuid_tipo_vehiculo is not None
+        else current.uuid_tipo_vehiculo
+    )
+    # The guard ONLY fires when the payload specifies a new cantidad
+    # BELOW the current one. An increase is always allowed; a
+    # no-cantidad-changed PUT (only vigente_desde) carries forward the
+    # existing value via the factory merge — the helper would have
+    # nothing to compare against, so we skip the guard in that case.
+    if (
+        payload.cantidad is not None
+        and payload.cantidad < (current.cantidad or 0)
+    ):
+        activos = await validar_cantidad_vigente(
+            session,
+            uuid_sucursal=current.uuid_sucursal,  # type: ignore[arg-type]
+            uuid_tipo_vehiculo=effective_tipo_vehiculo,  # type: ignore[arg-type]
+            at=datetime.now(UTC),
+        )
+        # ``activos`` is the count from the MV for that (sucursal,
+        # tipo_vehiculo) cell — 0 when the branch has no config for the
+        # cell. We use the SAME key the cupos row is on, not the row's
+        # current tipo_vehiculo, because the operator may be moving the
+        # capacity to a different tipo (PUT carrying the existing
+        # cantidad onto a new cell) and we want the guard to apply to
+        # the destination cell's activos.
+        if activos.activos > payload.cantidad:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "cantidad_bajo_ingresos_activos",
+                    "activos": activos.activos,
+                    "solicitada": payload.cantidad,
+                    "uuid_sucursal": str(current.uuid_sucursal),
+                    "uuid_tipo_vehiculo": str(effective_tipo_vehiculo),
+                },
+            )
+    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    try:
+        await assert_no_overlap(
+            session,
+            table="prod.cantidad_vehiculos_sucursal",
+            resource="cantidad-vehiculos-sucursal",
+            key=_Key(
+                uuid_sucursal=current.uuid_sucursal,
+                uuid_tipo_vehiculo=effective_tipo_vehiculo,
+                uuid_tipo_tarifa=None,
+            ),
+            nueva_vigente_desde=nueva_desde,
+            nueva_vigente_hasta=nueva_desde,
+            exclude_uuid=uuid,
+        )
+    except OverlapError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "cantidad_overlap",
+                "conflicting_uuid": str(exc.conflicting_uuid),
+                "conflicting_vigente_desde": exc.conflicting_vigente_desde.isoformat()
+                if exc.conflicting_vigente_desde is not None
+                else None,
+                "conflicting_vigente_hasta": exc.conflicting_vigente_hasta.isoformat()
+                if exc.conflicting_vigente_hasta is not None
+                else None,
+            },
+        )
+    payload_dict = payload.model_dump(exclude_none=True)
+    new_row = await close_and_insert(
+        session,
+        CantidadVehiculosSucursal,
+        current_uuid=uuid,
+        new_attrs=payload_dict,
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return CantidadVehiculosSucursalRead.model_validate(new_row)
+
+
+@_cantidad_pr_c_router.get(
+    "/by-key",
+    response_model=list[CantidadVehiculosSucursalRead],
+)
+async def get_cantidad_by_key_history_pr_c(
+    sucursal: uuid_lib.UUID = Query(...),  # noqa: B008
+    tipo_vehiculo: uuid_lib.UUID | None = Query(None),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+) -> list[CantidadVehiculosSucursalRead]:
+    """PR-C by-key / history for cantidad."""
+    stmt = (
+        select(CantidadVehiculosSucursal)
+        .where(
+            CantidadVehiculosSucursal.uuid_sucursal == sucursal,
+            CantidadVehiculosSucursal.uuid_tipo_vehiculo.is_not_distinct_from(
+                tipo_vehiculo
+            ),
+        )
+        .order_by(CantidadVehiculosSucursal.vigente_desde.desc())
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return [CantidadVehiculosSucursalRead.model_validate(r) for r in rows]
+
+
+# Register the dedicated write routers on the same aggregated ``router``
+# so the backward-compat direct-imports keep working. The v1 router in
+# ``api/v1/__init__.py`` picks them up via ``_SUB_ROUTERS`` (below).
+router.include_router(_tarifas_pr_c_router)
+router.include_router(_cantidad_pr_c_router)
+
+
+# Register the dedicated handlers under synthetic keys so the v1
+# router picks them up BEFORE the factory sub-routers. The dedicated
+# POST/PUT/by-key handlers MUST shadow the factory's POST/PUT/GET for
+# the same path so the validation runs.
+_SUB_ROUTERS["tarifas-sucursal__dedicated_hu_f1_4"] = _tarifas_dedicated_router
+_SUB_ROUTERS["tarifas-sucursal__dedicated_pr_c"] = _tarifas_pr_c_router
+_SUB_ROUTERS["cantidad-vehiculos-sucursal__dedicated_pr_c"] = _cantidad_pr_c_router
+
+# Reorder so the dedicated handlers come first.
+_reordered: dict[str, APIRouter] = {}
+for _pr_c_key in (
+    "tarifas-sucursal__dedicated_hu_f1_4",
+    "tarifas-sucursal__dedicated_pr_c",
+    "cantidad-vehiculos-sucursal__dedicated_pr_c",
+):
+    if _pr_c_key in _SUB_ROUTERS:
+        _reordered[_pr_c_key] = _SUB_ROUTERS[_pr_c_key]
+for _k, _v in _SUB_ROUTERS.items():
+    if _k not in _reordered:
+        _reordered[_k] = _v
+_SUB_ROUTERS.clear()
+_SUB_ROUTERS.update(_reordered)
+
+
 _mount_empresa(
     resource="tarifas-sucursal",
     model_cls=TarifasSucursal,
@@ -284,26 +789,6 @@ _mount_empresa(
     create_schema=TarifasSucursalCreate,
     update_schema=TarifasSucursalUpdate,
 )
-
-# Register the dedicated handler on the same per-resource sub-routers
-# dict that ``api/v1/__init__.py`` reads to build the v1 router — the
-# aggregated ``empresa.router`` is for backward-compat direct imports,
-# but the real HTTP path goes through the v1 router. Stash the
-# dedicated handler under a synthetic key so the v1 router picks it
-# up BEFORE the factory sub-router (Python dict preserves insertion
-# order; ``_build_empresa_router`` iterates ``_SUB_ROUTERS.items()``
-# in declaration order).
-_SUB_ROUTERS["tarifas-sucursal__dedicated_hu_f1_4"] = _tarifas_dedicated_router
-# Move the dedicated sub-router to the FRONT of the dict so it is
-# registered first by ``_build_empresa_router``.
-_reordered: dict[str, APIRouter] = {}
-_reordered["tarifas-sucursal__dedicated_hu_f1_4"] = _tarifas_dedicated_router
-for k, v in _SUB_ROUTERS.items():
-    if k == "tarifas-sucursal__dedicated_hu_f1_4":
-        continue
-    _reordered[k] = v
-_SUB_ROUTERS.clear()
-_SUB_ROUTERS.update(_reordered)
 _mount_empresa(
     resource="cantidad-vehiculos-sucursal",
     model_cls=CantidadVehiculosSucursal,

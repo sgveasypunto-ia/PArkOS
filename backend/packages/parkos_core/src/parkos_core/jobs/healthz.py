@@ -27,9 +27,12 @@ Contract (plan.md L4816 / L5691 / L7727, RNF-SLA-02, RNF-DISP-03):
 """
 from __future__ import annotations
 
+import json
 import os
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
+from typing import Any
 
 from parkos_core.runtime.env import MissingEnvError
 
@@ -54,19 +57,53 @@ def _resolve_port(*, env: dict[str, str] | None = None) -> int:
 
 
 class _HealthzHandler(BaseHTTPRequestHandler):
-    """Answer ``GET /healthz`` → 200; everything else → 404.
+    """Answer ``GET /healthz`` ��' 200; everything else ��' 404.
 
-    ``log_message`` is silenced — a worker that emits a health probe per
+    ``log_message`` is silenced �?" a worker that emits a health probe per
     HEALTHCHECK interval would otherwise spam stdout with access lines.
+
+    A class-level ``health_provider`` (``() -> dict``) is consulted when
+    present. Returning ``{"ok": False, ...}`` downgrades the response to
+    ``503`` with the report as the body, so a node that is ALIVE but no
+    longer consuming its cloud changes stops reporting plain ``ok``.
+
+    That distinction is the whole point: this endpoint shipped answering a
+    constant ``200 ok`` while the branch worker had rejected 522 consecutive
+    pull batches over 11 hours. ``docker ps`` showed ``healthy`` throughout,
+    because process liveness and functional liveness were the same signal.
+    Under plain ``docker compose`` an unhealthy container is NOT restarted
+    (that is a Swarm behaviour), so a degraded node becomes VISIBLE in
+    ``docker ps`` without entering a restart loop that would not fix
+    anything.
     """
+
+    health_provider: Any = None
 
     def do_GET(self) -> None:
         if self.path != "/healthz":
             self._reject()
             return
-        body = b"ok"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
+
+        report: dict[str, Any] | None = None
+        provider = self.health_provider
+        if provider is not None:
+            try:
+                candidate = provider()
+            except Exception:  # noqa: BLE001 — a broken probe must not kill the worker
+                candidate = None
+            if isinstance(candidate, dict):
+                report = candidate
+
+        if report is None:
+            body, status = b"ok", 200
+        else:
+            body = json.dumps(report, sort_keys=True).encode("utf-8")
+            status = 503 if report.get("ok") is False else 200
+
+        self.send_response(status)
+        self.send_header(
+            "Content-Type", "application/json" if report is not None else "text/plain"
+        )
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -116,21 +153,34 @@ def start_healthz(
     env: dict[str, str] | None = None,
     host: str = DEFAULT_HEALTHZ_HOST,
     port: int | None = None,
+    health_provider: Callable[[], dict[str, Any] | None] | None = None,
 ) -> HealthzServer:
     """Start the liveness server on a daemon thread and return it.
 
-    ``port`` short-circuits the ``PARKOS_HEALTHZ_PORT`` env lookup —
+    ``port`` short-circuits the ``PARKOS_HEALTHZ_PORT`` env lookup �?"
     used by tests to bind an ephemeral port without touching the
     process environment.
+
+    ``health_provider`` is an optional ``() -> dict`` consulted on every
+    probe (see ``_HealthzHandler``). It is injected as a per-server
+    subclass attribute rather than a module global so that a test binding
+    two servers with different providers cannot observe each other's state.
 
     Raises:
         MissingEnvError: ``PARKOS_HEALTHZ_PORT`` malformed (only when
             ``port`` is not supplied).
-        OSError: bind failure (e.g. port 9999 already taken) — the runner
+        OSError: bind failure (e.g. port 9999 already taken) �?" the runner
             must treat this as fatal (exit 1), never "start anyway".
     """
     resolved = port if port is not None else _resolve_port(env=env)
-    server = HealthzServer((host, resolved), _HealthzHandler)
+    handler: type[BaseHTTPRequestHandler] = _HealthzHandler
+    if health_provider is not None:
+        handler = type(
+            "_HealthzHandlerWithProvider",
+            (_HealthzHandler,),
+            {"health_provider": staticmethod(health_provider)},
+        )
+    server = HealthzServer((host, resolved), handler)
     thread = Thread(
         target=server.serve_forever,
         name=f"parkos-healthz-{resolved}",

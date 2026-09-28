@@ -43,6 +43,7 @@ interface MenuStub {
 interface StoreStub {
   get: ReturnType<typeof vi.fn>;
   set: ReturnType<typeof vi.fn>;
+  delete: ReturnType<typeof vi.fn>;
 }
 
 interface LogStub {
@@ -67,7 +68,15 @@ function makeStore(values: Record<string, unknown> = {}): StoreStub {
   return {
     get: vi.fn((key: string) => values[key] ?? null),
     set: vi.fn((key: string, value: unknown) => {
+      // electron-store v8 throws on `set(key, undefined)`; keep the double
+      // faithful so removal is never silently routed through `set`.
+      if (value === undefined) {
+        throw new Error('Use `delete()` to clear values');
+      }
       values[key] = value;
+    }),
+    delete: vi.fn((key: string) => {
+      delete values[key];
     }),
   };
 }

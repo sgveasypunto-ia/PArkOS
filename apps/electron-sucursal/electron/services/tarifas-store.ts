@@ -48,6 +48,7 @@ export function writeTarifasValue(store: StoreLike, key: string, value: string):
  * `readTarifasValue` calls return `null`. No-op for missing keys.
  */
 export function removeTarifasValue(store: StoreLike, key: string): void {
-  // electron-store semantics: deleting a missing key is a no-op.
-  store.set(key, undefined);
+  // electron-store v8 rejects `set(key, undefined)` with
+  // "Use `delete()` to clear values" — removal must go through `delete`.
+  store.delete(key);
 }

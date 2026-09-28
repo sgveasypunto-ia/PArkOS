@@ -31,7 +31,7 @@ const common = {
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  external: ['electron', 'usb'],
+  external: ['electron', 'escpos-usb', 'usb', '@node-usb/*', '*.node'],
   logLevel: 'info',
   sourcemap: true,
 };

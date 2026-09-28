@@ -23,6 +23,7 @@ PR1b shipped the login + logout skeleton. HU-F1.2 (PR7) ADDS:
 No Alembic migration. No new columns. No new tables. Counter is
 derived from rows already in ``prod.login`` (KD-1).
 """
+
 from __future__ import annotations
 
 import logging
@@ -145,6 +146,30 @@ async def _count_failed_logins_in_window(
     return int(result.scalar_one() or 0)
 
 
+async def _select_sucursales_permitidas(
+    session: AsyncSession,
+    usuario_uuid: uuid_lib.UUID,
+):
+    """Every ACTIVE branch assigned to ``usuario_uuid``, ordered by name.
+
+    Single source of truth for the ``sucursales_permitidas`` scope: both
+    the login claim and ``GET /auth/me`` read it. They used to be built
+    separately (login pinned one branch, ``/me`` listed all of them), and
+    that divergence is what let a login emit a scope the rest of the
+    system would reject. Callers dereference ``.scalars().all()``.
+    """
+    return await session.execute(
+        select(Sucursal)
+        .join(UsuariosSucursal, UsuariosSucursal.uuid_sucursal == Sucursal.uuid)
+        .where(
+            UsuariosSucursal.uuid_usuario == usuario_uuid,
+            UsuariosSucursal.vigente_hasta.is_(None),
+            Sucursal.vigente_hasta.is_(None),
+        )
+        .order_by(Sucursal.nombre.asc())
+    )
+
+
 @router.post("/login", response_model=TokenPair, status_code=status.HTTP_200_OK)
 async def login(
     payload: LoginRequest,
@@ -200,10 +225,12 @@ async def login(
     #    before bcrypt. The success path also uses ``limit(1)`` on the
     #    same SELECT — keeping the two paths aligned.
     asg = await session.execute(
-        select(UsuariosSucursal).where(
+        select(UsuariosSucursal)
+        .where(
             UsuariosSucursal.uuid_usuario == user.uuid,
             UsuariosSucursal.vigente_hasta.is_(None),
-        ).limit(1)
+        )
+        .limit(1)
     )
     branch_assignment = asg.scalar_one_or_none()
     branch_uuid = branch_assignment.uuid_sucursal if branch_assignment else None
@@ -250,27 +277,36 @@ async def login(
             detail={"error": "invalid_credentials"},
         )
 
-    # 4. Reuse the branch assignment already fetched before the lockout
-    #    pre-check (step 2 above). The success path shares the same
-    #    ``limit(1)`` selection so the two paths can't disagree on
-    #    which branch gets pinned.
-    sucursal_uuid = branch_uuid or user.uuid
-
+    # 4. Pin the JWT to the branch already resolved before the lockout
+    #    pre-check (step 2). ``branch_uuid`` is None for a cloud admin with
+    #    no ``usuarios_sucursal`` row, and None is the honest value:
+    #    ``login.uuid_sucursal`` is a nullable FK to ``prod.sucursal(uuid)``,
+    #    so substituting a user uuid there is a ForeignKeyViolationError.
+    #    Do not reintroduce a ``or user.uuid`` fallback — it also put a
+    #    non-branch id into the tenant claims below.
     # 5. Record the successful login (REQ-42).
     await record_login(
         session,
         usuario_uuid=user.uuid,
-        sucursal_uuid=sucursal_uuid or user.uuid,
+        sucursal_uuid=branch_uuid,
         actor_uuid=user.uuid,
         success=True,
     )
 
-    # 6. Issue tokens.
+    # 6. Issue tokens. ``sucursales_permitidas`` carries the FULL set of
+    #    active assignments from the same source ``GET /auth/me`` reads, not
+    #    just the pinned branch: ``tenancy.require_tenant`` fail-closes an
+    #    empty or missing list (``WHERE FALSE``), so a single-branch list
+    #    would lock an admin out of every other branch they legitimately own.
+    permitidas = [
+        str(s.uuid)
+        for s in (await _select_sucursales_permitidas(session, user.uuid)).scalars().all()
+    ]
     issuer = "operador-" if user.rol == "operador" else "admin-"
     claims = {
         "rol": user.rol or "operador",
-        "sucursales_permitidas": [str(sucursal_uuid)] if sucursal_uuid else [],
-        "sucursal": str(sucursal_uuid) if sucursal_uuid else None,
+        "sucursales_permitidas": permitidas,
+        "sucursal": str(branch_uuid) if branch_uuid else None,
     }
     access = issue_token(
         subject_uuid=user.uuid,
@@ -523,9 +559,7 @@ async def me(
             status_code=404,
             detail={"error": "not_found"},
         )
-    suc_row = await session.execute(
-        select(Sucursal).where(Sucursal.uuid == ctx.sucursal_uuid)
-    )
+    suc_row = await session.execute(select(Sucursal).where(Sucursal.uuid == ctx.sucursal_uuid))
     suc = suc_row.scalar_one_or_none()
     if suc is None:
         raise HTTPException(
@@ -539,20 +573,10 @@ async def me(
     )
 
     # ``sucursales_permitidas`` block — ALL active branches, no
-    # ``.limit(1)`` (KD-4).
-    suc_permitidas_rows = await session.execute(
-        select(Sucursal)
-        .join(UsuariosSucursal, UsuariosSucursal.uuid_sucursal == Sucursal.uuid)
-        .where(
-            UsuariosSucursal.uuid_usuario == ctx.actor_uuid,
-            UsuariosSucursal.vigente_hasta.is_(None),
-            Sucursal.vigente_hasta.is_(None),
-        )
-        .order_by(Sucursal.nombre.asc())
-    )
+    # ``.limit(1)`` (KD-4). Same helper the login claim reads.
     sucursales_permitidas = [
         SucursalItem(uuid=s.uuid, nombre=s.nombre, prefijo_nombre=s.prefijo_nombre)
-        for s in suc_permitidas_rows.scalars().all()
+        for s in (await _select_sucursales_permitidas(session, ctx.actor_uuid)).scalars().all()
     ]
 
     # ``permisos`` block — list of permission codes (``[]`` when none).
@@ -565,11 +589,7 @@ async def me(
             Permisos.vigente_hasta.is_(None),
         )
     )
-    permisos = [
-        p
-        for p in (await session.execute(permisos_stmt)).scalars().all()
-        if p is not None
-    ]
+    permisos = [p for p in (await session.execute(permisos_stmt)).scalars().all() if p is not None]
 
     # ``expires_at`` block — ISO 8601 UTC from the JWT ``exp`` claim.
     expires_at = _decode_exp_iso(bearer_token) or datetime.now(UTC).isoformat()

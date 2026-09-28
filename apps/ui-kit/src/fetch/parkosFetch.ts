@@ -131,6 +131,24 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+async function waitForAuthRehydration(): Promise<void> {
+  const { hasRehydrated, accessToken } = useAuthStore.getState();
+  if (hasRehydrated || accessToken !== null) return;
+  return new Promise<void>((resolve) => {
+    const maxWait = 3000;
+    const interval = 50;
+    let waited = 0;
+    const timer = setInterval(() => {
+      const { hasRehydrated: hr, accessToken: at } = useAuthStore.getState();
+      if (hr || at !== null || waited >= maxWait) {
+        clearInterval(timer);
+        resolve();
+      }
+      waited += interval;
+    }, interval);
+  });
+}
+
 async function buildInit(
   input: RequestInfo | URL,
   init?: ParkosFetchInit,
@@ -138,6 +156,11 @@ async function buildInit(
   const headers = new Headers(init?.headers);
   const url = typeof input === 'string' ? input : input.toString();
   const method = (init?.method ?? 'GET').toUpperCase();
+
+  // (0) Wait for Zustand persist rehydration so accessToken is available.
+  // Fix: SWR fires before Zustand rehydrates from localStorage, causing
+  // null token → 401 → handle401 → refresh failure → auth cleared.
+  await waitForAuthRehydration();
 
   // (1) Authorization Bearer desde authStore
   const { accessToken } = useAuthStore.getState();
