@@ -45,7 +45,13 @@ export type SectionPermission = string | null;
 
 export interface AdminSection {
   /** Stable key for testids + i18n lookup. */
-  key: 'dashboard' | 'sucursales' | 'usuarios' | 'auditoria';
+  key:
+    | 'dashboard'
+    | 'sucursales'
+    | 'usuarios'
+    | 'tarifas'
+    | 'cupos'
+    | 'auditoria';
   path: string;
   /** i18n key suffix under `home.section.*`. */
   labelKey: string;
@@ -74,6 +80,20 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     labelKey: 'home.section.usuarios.label',
     descriptionKey: 'home.section.usuarios.description',
     permission: null,
+  },
+  {
+    key: 'tarifas',
+    path: '/tarifas',
+    labelKey: 'home.section.tarifas.label',
+    descriptionKey: 'home.section.tarifas.description',
+    permission: 'config_tarifas',
+  },
+  {
+    key: 'cupos',
+    path: '/cupos',
+    labelKey: 'home.section.cupos.label',
+    descriptionKey: 'home.section.cupos.description',
+    permission: 'config_cupos',
   },
   {
     key: 'auditoria',

@@ -23,7 +23,11 @@ describe('visibleSections', () => {
     expect(keys).toEqual(expect.arrayContaining(['dashboard', 'sucursales', 'usuarios']));
   });
 
-  it('A3: reveals Auditoría once audit_read is granted', () => {
+  it('A3: reveals Auditoría once audit_read is granted (3 issuer-only + 1)', () => {
+    // With just `audit_read`, the operator sees the 3 issuer-only
+    // surfaces (dashboard / sucursales / usuarios) plus the audit
+    // surface. Tarifas and Cupos require their own codes
+    // (config_tarifas, config_cupos) which A3 does not grant.
     const keys = visibleSections(['audit_read']).map((s) => s.key);
     expect(keys).toContain('auditoria');
     expect(keys).toHaveLength(4);
@@ -44,14 +48,26 @@ describe('visibleSections', () => {
     }
   });
 
-  it('A6: the catalog advertises no route that does not exist yet', () => {
-    // Cupos, tarifas and reports are deliberately absent — a hub that
-    // links to unimplemented surfaces is worse than a smaller honest one.
+  it('A6: the catalog advertises every route the SPA can navigate to', () => {
+    // PR-D added /tarifas and /cupos; the catalog must reflect both
+    // or the user navigates to a 404 from a card that exists in the UI.
     expect(ADMIN_SECTIONS.map((s) => s.key)).toEqual([
       'dashboard',
       'sucursales',
       'usuarios',
+      'tarifas',
+      'cupos',
       'auditoria',
     ]);
+  });
+
+  it('A7: reveals Tarifas once config_tarifas is granted', () => {
+    const keys = visibleSections(['config_tarifas']).map((s) => s.key);
+    expect(keys).toContain('tarifas');
+  });
+
+  it('A8: reveals Cupos once config_cupos is granted', () => {
+    const keys = visibleSections(['config_cupos']).map((s) => s.key);
+    expect(keys).toContain('cupos');
   });
 });

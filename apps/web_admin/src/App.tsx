@@ -8,6 +8,8 @@ import Dashboard from '@/pages/Dashboard';
 import SucursalesList from '@/features/sucursales/pages/SucursalesList';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
+import Tarifas from '@/features/tarifas/pages/Tarifas';
+import Cupos from '@/features/cupos/pages/Cupos';
 
 /**
  * Route tree.
@@ -17,6 +19,7 @@ import UsuariosList from '@/features/admin/pages/UsuariosList';
  * `<RequireAdmin>` on every route. Same guard, one decision point.
  *
  * `/` is the hub; `/dashboard` stays the per-branch panel.
+ * `/tarifas` and `/cupos` were added in PR-D-ui-tarifas-cupos.
  */
 export default function App() {
   return (
@@ -34,6 +37,8 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/sucursales" element={<SucursalesList />} />
           <Route path="/admin/usuarios" element={<UsuariosList />} />
+          <Route path="/tarifas" element={<Tarifas />} />
+          <Route path="/cupos" element={<Cupos />} />
           <Route path="/audit" element={<AuditDashboard />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

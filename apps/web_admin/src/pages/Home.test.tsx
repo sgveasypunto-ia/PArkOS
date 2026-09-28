@@ -9,6 +9,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
+import { ADMIN_SECTIONS } from '@/lib/admin-sections';
+
 const useAdminAuthMock = vi.fn();
 vi.mock('@parkos/ui-kit/hooks', () => ({
   useAdminAuth: () => useAdminAuthMock(),
@@ -21,7 +23,12 @@ function authState(over: Record<string, unknown> = {}) {
     user: { uuid: 'u-1', email: 'admin@parkos.local' },
     rol: 'admin',
     sucursalUuids: ['2049f2cd-b2a8-4e45-9d19-31fa87eb67c6'],
-    permisos: ['admin_usuarios', 'audit_read'],
+    permisos: [
+      'admin_usuarios',
+      'audit_read',
+      'config_tarifas',
+      'config_cupos',
+    ],
     isAuthenticated: true,
     isLoading: false,
     error: undefined,
@@ -52,21 +59,34 @@ describe('Home', () => {
     expect(screen.queryByTestId('home-card-dashboard')).not.toBeInTheDocument();
   });
 
-  it('H2: renders one card per reachable section', () => {
+  it('H2: renders one card per reachable section (full permission set)', () => {
     useAdminAuthMock.mockReturnValue(authState());
     renderHome();
 
-    for (const key of ['dashboard', 'sucursales', 'usuarios', 'auditoria']) {
-      expect(screen.getByTestId(`home-card-${key}`)).toBeInTheDocument();
+    for (const section of ADMIN_SECTIONS) {
+      expect(screen.getByTestId(`home-card-${section.key}`)).toBeInTheDocument();
     }
   });
 
-  it('H3: omits Auditoría when audit_read is not granted', () => {
+  it('H3: omits permission-gated sections when the code is not granted', () => {
+    // Sin config_tarifas / config_cupos / audit_read.
     useAdminAuthMock.mockReturnValue(authState({ permisos: ['admin_usuarios'] }));
     renderHome();
 
     expect(screen.queryByTestId('home-card-auditoria')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('home-card-tarifas')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('home-card-cupos')).not.toBeInTheDocument();
     expect(screen.getByTestId('home-card-usuarios')).toBeInTheDocument();
+  });
+
+  it('H3b: shows Tarifas and Cupos when their config codes are granted', () => {
+    useAdminAuthMock.mockReturnValue(
+      authState({ permisos: ['config_tarifas', 'config_cupos'] }),
+    );
+    renderHome();
+
+    expect(screen.getByTestId('home-card-tarifas')).toBeInTheDocument();
+    expect(screen.getByTestId('home-card-cupos')).toBeInTheDocument();
   });
 
   it('H4: states the branch scope so the admin knows what is filtered', () => {
@@ -83,5 +103,13 @@ describe('Home', () => {
     expect(card.tagName).toBe('A');
     expect(card).toHaveAttribute('href', '/audit');
     expect(card.textContent?.trim().length).toBeGreaterThan(0);
+  });
+
+  it('H6: Tarifas card links to /tarifas and Cupos card links to /cupos', () => {
+    useAdminAuthMock.mockReturnValue(authState());
+    renderHome();
+
+    expect(screen.getByTestId('home-card-tarifas')).toHaveAttribute('href', '/tarifas');
+    expect(screen.getByTestId('home-card-cupos')).toHaveAttribute('href', '/cupos');
   });
 });

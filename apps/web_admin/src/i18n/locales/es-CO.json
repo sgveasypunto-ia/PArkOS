@@ -77,6 +77,14 @@
         "label": "Usuarios administradores",
         "description": "Crea usuarios admin u operador y asígnalos a una o varias sucursales."
       },
+      "tarifas": {
+        "label": "Tarifas",
+        "description": "Crea, edita y programa tarifas por sucursal con histórico de versiones."
+      },
+      "cupos": {
+        "label": "Cupos por sucursal",
+        "description": "Configura la capacidad máxima de vehículos por sucursal y tipo."
+      },
       "auditoria": {
         "label": "Auditoría",
         "description": "Log transaccional append-only con cadena hash verificable por sucursal."
