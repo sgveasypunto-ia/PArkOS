@@ -1,9 +1,14 @@
 import { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 import useSWR from 'swr';
 import { BranchSelector, type BranchOption } from '@/components/branch-selector/BranchSelector';
 import { parkosFetchRaw } from '@/lib/fetch';
 import { useSucursal } from '@/lib/sucursal-context';
+import { useCantidadList } from '@/features/cupos/hooks/useCantidadList';
+import { useTarifasList } from '@/features/tarifas/hooks/useTarifasList';
+import { useAdminUsuarios } from '@/features/admin/hooks/useAdminUsuarios';
+import { listAdminUsuarioSucursales } from '@/features/admin/api/adminUsuariosApi';
 
 /**
  * Dashboard — multi-tenant admin landing page (T-PR10-10..13).
@@ -111,6 +116,39 @@ export default function Dashboard() {
     { revalidateOnFocus: false },
   );
 
+  const { cupos } = useCantidadList();
+  const { tarifas } = useTarifasList(null);
+  const { usuarios } = useAdminUsuarios();
+
+  const cuposCount = useMemo(
+    () => cupos.filter((c) => c.uuid_sucursal === selected).length,
+    [cupos, selected],
+  );
+  const tarifasCount = useMemo(
+    () => tarifas.filter((t) => t.uuid_sucursal === selected).length,
+    [tarifas, selected],
+  );
+
+  const usuariosCountSWR = useSWR<number>(
+    selected && usuarios ? `dashboard-usuarios-count-${selected}` : null,
+    async () => {
+      let count = 0;
+      await Promise.all(
+        (usuarios ?? []).map(async (u) => {
+          try {
+            const items = await listAdminUsuarioSucursales(u.uuid);
+            if (items.some((a) => a.uuid_sucursal === selected)) count++;
+          } catch {
+            // skip user on per-row failure — count stays best-effort
+          }
+        }),
+      );
+      return count;
+    },
+    { revalidateOnFocus: false },
+  );
+  const usuariosCount = usuariosCountSWR.data ?? 0;
+
   return (
     <main
       className="min-h-screen bg-background p-6"
@@ -139,7 +177,7 @@ export default function Dashboard() {
         </header>
 
         <section
-          className="grid grid-cols-1 gap-4 sm:grid-cols-3"
+          className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6"
           aria-label="métricas"
         >
           <MetricCard
@@ -159,6 +197,30 @@ export default function Dashboard() {
             value={dashboard.data?.open_alertas_count}
             loading={dashboard.isLoading}
             error={Boolean(dashboard.error)}
+          />
+          <MetricCard
+            label={t('dashboard.usuariosAsignados', 'Usuarios asignados')}
+            value={usuariosCount}
+            loading={usuariosCountSWR.isLoading}
+            error={Boolean(usuariosCountSWR.error)}
+            to="/gestion-usuarios"
+            linkHint={t('dashboard.verUsuarios', 'Ver gestión de usuarios →')}
+          />
+          <MetricCard
+            label={t('dashboard.cuposVigentes', 'Cupos vigentes')}
+            value={cuposCount}
+            loading={false}
+            error={false}
+            to="/cupos"
+            linkHint={t('dashboard.verCupos', 'Ver cupos →')}
+          />
+          <MetricCard
+            label={t('dashboard.tarifasVigentes', 'Tarifas vigentes')}
+            value={tarifasCount}
+            loading={false}
+            error={false}
+            to="/tarifas"
+            linkHint={t('dashboard.verTarifas', 'Ver tarifas →')}
           />
         </section>
 
@@ -186,20 +248,44 @@ function MetricCard({
   value,
   loading,
   error,
+  to,
+  linkHint,
 }: {
   label: string;
   value: number | undefined;
   loading: boolean;
   error: boolean;
+  to?: string;
+  linkHint?: string;
 }) {
   const display = error ? '—' : loading ? '…' : (value ?? 0);
+  const testId = `metric-card-${label.toLowerCase().replace(/\s+/g, '-')}`;
+  const body = (
+    <>
+      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-2 text-3xl font-semibold tabular-nums">{display}</p>
+      {linkHint ? (
+        <p className="mt-2 text-xs font-medium text-primary">{linkHint}</p>
+      ) : null}
+    </>
+  );
+  if (to) {
+    return (
+      <Link
+        to={to}
+        className="rounded-lg border bg-card p-4 text-card-foreground shadow-sm transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
+        data-testid={testId}
+      >
+        {body}
+      </Link>
+    );
+  }
   return (
     <article
       className="rounded-lg border bg-card p-4 text-card-foreground shadow-sm"
-      data-testid={`metric-card-${label.toLowerCase().replace(/\s+/g, '-')}`}
+      data-testid={testId}
     >
-      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-2 text-3xl font-semibold tabular-nums">{display}</p>
+      {body}
     </article>
   );
 }
