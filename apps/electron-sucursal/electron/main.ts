@@ -158,7 +158,7 @@ function createMainWindow(): void {
   });
 
   if (isDev) {
-    void mainWindow.loadURL('http://localhost:5173');
+    void mainWindow.loadURL('http://localhost:5172');
   } else {
     void mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'renderer', 'index.html'));
   }
