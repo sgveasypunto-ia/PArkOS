@@ -69,6 +69,16 @@ export interface MenuLike {
 export interface StoreLike {
   get: (key: string) => unknown;
   set: (key: string, value: unknown) => void;
+  /**
+   * Removal goes through `delete`, never `set(key, undefined)`.
+   *
+   * electron-store v8 throws on the latter ("Use `delete()` to clear
+   * values"). Declaring `delete` on this interface is what forces the
+   * cache services to call it, and it keeps a test double honest: a mock
+   * that only implements `get`/`set` and silently treats `undefined` as a
+   * delete hides the real runtime failure.
+   */
+  delete: (key: string) => void;
 }
 
 /**

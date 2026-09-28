@@ -16,6 +16,11 @@ import {
   writeTarifasValue,
   removeTarifasValue,
 } from './services/tarifas-store';
+import {
+  readAuthValue,
+  writeAuthValue,
+  removeAuthValue,
+} from './services/auth-store';
 
 const isDev = !app.isPackaged;
 
@@ -243,6 +248,18 @@ function registerIpcHandlers(kioskoStore: StoreLike): void {
   });
   ipcMain.handle('tarifas-store:delete', (_e, key: string) => {
     removeTarifasValue(kioskoStore, key);
+  });
+
+  // `preload.ts` exposes `window.bridge.authStore` and `PairingWizard.tsx`
+  // persists the branch-to-cloud `sync_jwt` through it. These handlers were
+  // missing, so the pairing JWT was discarded on every pairing attempt. Same
+  // thin-shell pattern as the tarifas namespace above.
+  ipcMain.handle('auth-store:get', (_e, key: string) => readAuthValue(kioskoStore, key));
+  ipcMain.handle('auth-store:set', (_e, key: string, value: string) => {
+    writeAuthValue(kioskoStore, key, value);
+  });
+  ipcMain.handle('auth-store:delete', (_e, key: string) => {
+    removeAuthValue(kioskoStore, key);
   });
 }
 
