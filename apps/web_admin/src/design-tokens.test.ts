@@ -42,9 +42,12 @@ function blockTokens(selector: string): Tokens {
   if (!match) throw new Error(`no \`${selector}\` block found in index.css`);
 
   const tokens: Tokens = {};
-  for (const [, name, value] of match[1].matchAll(
+  for (const declaration of match[1]!.matchAll(
     /(--[a-z0-9-]+)\s*:\s*([^;]+);/g,
   )) {
+    const name = declaration[1];
+    const value = declaration[2];
+    if (name === undefined || value === undefined) continue;
     tokens[name] = value.trim();
   }
   return tokens;
@@ -79,6 +82,19 @@ function relativeLuminance(rgb: [number, number, number]): number {
   return 0.2126 * (r as number) + 0.7152 * (g as number) + 0.0722 * (b as number);
 }
 
+/**
+ * Read a token, failing loudly. `noUncheckedIndexedAccess` makes every
+ * `Record` lookup `string | undefined`, and silently coercing that to a
+ * colour would defeat the point of the check.
+ */
+function requireToken(scope: Tokens, name: string, scopeName: string): string {
+  const value = scope[name];
+  if (value === undefined) {
+    throw new Error(`\`${name}\` is not defined in ${scopeName}`);
+  }
+  return value;
+}
+
 /** Resolve an `211 100% 45%` style token into linear RGB. */
 function tokenToRgb(token: string): [number, number, number] {
   const parts = token.trim().split(/\s+/);
@@ -101,12 +117,16 @@ function contrast(a: [number, number, number], b: [number, number, number]) {
 }
 
 /** Contrast of `foreground` text painted on `background` in one scope. */
-function contrastIn(scope: Tokens, foreground: string, background: string) {
-  const fg = scope[foreground];
-  const bg = scope[background];
-  if (!fg) throw new Error(`${foreground} is not defined`);
-  if (!bg) throw new Error(`${background} is not defined`);
-  return contrast(tokenToRgb(fg), tokenToRgb(bg));
+function contrastIn(
+  scope: Tokens,
+  scopeName: string,
+  foreground: string,
+  background: string,
+) {
+  return contrast(
+    tokenToRgb(requireToken(scope, foreground, scopeName)),
+    tokenToRgb(requireToken(scope, background, scopeName)),
+  );
 }
 
 describe('tailwind color wiring', () => {
@@ -187,17 +207,17 @@ describe('WCAG 2.1 AA contrast', () => {
   ];
 
   it.each(pairs)('light: %s clears 4.5:1', (_label, fg, bg) => {
-    expect(contrastIn(root, fg, bg)).toBeGreaterThanOrEqual(AA);
+    expect(contrastIn(root, ':root', fg, bg)).toBeGreaterThanOrEqual(AA);
   });
 
   it.each(pairs)('dark: %s clears 4.5:1', (_label, fg, bg) => {
-    expect(contrastIn(dark, fg, bg)).toBeGreaterThanOrEqual(AA);
+    expect(contrastIn(dark, '.dark', fg, bg)).toBeGreaterThanOrEqual(AA);
   });
 
   it('keeps the focus ring at 3:1 against the page', () => {
     // Non-text contrast: a focus indicator only has to reach 3:1.
-    const fg = tokenToRgb(root['--ring']);
-    const bg = tokenToRgb(root['--background']);
+    const fg = tokenToRgb(requireToken(root, '--ring', ':root'));
+    const bg = tokenToRgb(requireToken(root, '--background', ':root'));
     expect(contrast(fg, bg)).toBeGreaterThanOrEqual(3);
   });
 });
