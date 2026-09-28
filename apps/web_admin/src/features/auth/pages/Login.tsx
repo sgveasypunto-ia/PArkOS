@@ -11,9 +11,14 @@
  *
  * DEC-LOGIN-07 redirect:
  *   On successful login we redirect to `?next=<path>` if present,
- *   else `/dashboard`. The `next` query parameter lets a deep link
- *   like `/dashboard/foo` survive the login bounce without a custom
+ *   else `/` (the hub). The `next` query parameter lets a deep link
+ *   like `/audit` survive the login bounce without a custom
  *   "you need to log in" screen.
+ *
+ *   Identity comes from `useAdminAuth`, not `useAuth`: `/auth/me` is
+ *   hardcoded to the `operador-` issuer and 404s for `admin-` tokens,
+ *   so `useAuth().user` is permanently null here and the
+ *   already-authenticated redirect below would never fire.
  *
  * DEC-LOGIN-08 anti-enumeration:
  *   401 → `InvalidCredentialsError` → form shows the SINGLE
@@ -43,7 +48,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
-import { useAuth } from '@parkos/ui-kit/hooks';
+import { useAdminAuth } from '@parkos/ui-kit/hooks';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
 import { LockoutBlock } from '../components/LockoutBlock';
@@ -63,14 +68,16 @@ function getNextPath(search: string): string {
   const params = new URLSearchParams(search);
   const next = params.get('next');
   if (next && next.startsWith('/') && !next.startsWith('//')) return next;
-  return '/dashboard';
+  // `/` is the hub; `/dashboard` is the per-branch panel. A successful
+  // login with no explicit `next` lands on the hub.
+  return '/';
 }
 
 export function Login(): JSX.Element {
   const navigate = useNavigate();
   const location = useLocation();
   const nextPath = useMemo(() => getNextPath(location.search), [location.search]);
-  const { isAuthenticated, isLoading, user } = useAuth();
+  const { isAuthenticated, isLoading, user } = useAdminAuth();
   const setTokens = useAuthStore((s) => s.setTokens);
 
   const [errorState, setErrorState] = useState<LoginErrorState>(null);

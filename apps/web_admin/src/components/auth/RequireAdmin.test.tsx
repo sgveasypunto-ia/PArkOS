@@ -23,44 +23,27 @@ const { setAuthState } = vi.hoisted(() => {
 });
 
 vi.mock('@parkos/ui-kit/hooks', () => ({
-  useAuth: () => {
+  useAdminAuth: () => {
     const state = (globalThis as { __AUTH_STATE?: string }).__AUTH_STATE ?? 'authenticated';
-    if (state === 'loading') {
-      return {
-        user: null,
-        sucursal: null,
-        sucursalesPermitidas: [],
-        permisos: [],
-        expiresAt: null,
-        isAuthenticated: false,
-        isLoading: true,
-        error: undefined,
-        refresh: async () => undefined,
-      };
-    }
-    if (state === 'unauthenticated') {
-      return {
-        user: null,
-        sucursal: null,
-        sucursalesPermitidas: [],
-        permisos: [],
-        expiresAt: null,
-        isAuthenticated: false,
-        isLoading: false,
-        error: undefined,
-        refresh: async () => undefined,
-      };
-    }
-    return {
-      user: { actor_uuid: '00000000-0000-0000-0000-0000000000ad' },
-      sucursal: null,
-      sucursalesPermitidas: [],
+    const base = {
+      rol: null,
+      sucursalUuids: [],
       permisos: [],
-      expiresAt: null,
-      isAuthenticated: true,
-      isLoading: false,
       error: undefined,
       refresh: async () => undefined,
+      logout: async () => undefined,
+    };
+    if (state === 'loading') {
+      return { ...base, user: null, isAuthenticated: false, isLoading: true };
+    }
+    if (state === 'unauthenticated') {
+      return { ...base, user: null, isAuthenticated: false, isLoading: false };
+    }
+    return {
+      ...base,
+      user: { uuid: '00000000-0000-0000-0000-0000000000ad', email: 'admin@parkos.local' },
+      isAuthenticated: true,
+      isLoading: false,
     };
   },
 }));

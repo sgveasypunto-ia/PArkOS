@@ -50,6 +50,39 @@
   "common": {
     "cancel": "Cancelar"
   },
+  "chrome": {
+    "navLabel": "Secciones",
+    "logout": "Cerrar sesión",
+    "signingOut": "Saliendo...",
+    "branches": "{{count}} sucursales"
+  },
+  "home": {
+    "title": "Todo el parqueo, en un solo lugar",
+    "subtitle": "Elegí una sección para empezar.",
+    "subtitleNamed": "Sesión de {{name}}.",
+    "loading": "Cargando tus secciones...",
+    "empty": "No tenés secciones disponibles con tu rol.",
+    "open": "Abrir",
+    "scope": "Alcance: {{count}} sucursal(es) autorizada(s). Las métricas y el log de auditoría se filtran por la sucursal seleccionada.",
+    "section": {
+      "dashboard": {
+        "label": "Panel de sucursal",
+        "description": "Ingresos, facturas emitidas y alertas abiertas de la sucursal seleccionada."
+      },
+      "sucursales": {
+        "label": "Sucursales",
+        "description": "Alta y edición de sucursales, y emisión de tokens de pairing."
+      },
+      "usuarios": {
+        "label": "Usuarios administradores",
+        "description": "Crea usuarios admin u operador y asígnalos a una o varias sucursales."
+      },
+      "auditoria": {
+        "label": "Auditoría",
+        "description": "Log transaccional append-only con cadena hash verificable por sucursal."
+      }
+    }
+  },
   "sucursal": {
     "title": "Sucursales",
     "new": "Nueva sucursal",

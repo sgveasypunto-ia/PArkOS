@@ -2,7 +2,7 @@
  * `Login.test.tsx` — Container integration tests for the `<Login />`
  * container (IT-1.10).
  *
- * Mocks `@parkos/ui-kit/hooks` (for `useAuth`) and the local
+ * Mocks `@parkos/ui-kit/hooks` (for `useAdminAuth`) and the local
  * `../api/loginApi` so we can exercise the success / 401 / 429
  * branches without a real backend.
  */
@@ -13,7 +13,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 const useAuthMock = vi.fn();
 vi.mock('@parkos/ui-kit/hooks', () => ({
-  useAuth: () => useAuthMock(),
+  useAdminAuth: () => useAuthMock(),
 }));
 
 const useAuthStoreMock = vi.fn();
@@ -37,8 +37,9 @@ function setup(): JSX.Element {
   return (
     <MemoryRouter initialEntries={['/login']}>
       <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/dashboard" element={<div data-testid="dashboard-target">dashboard</div>} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/" element={<div data-testid="home-target">home</div>} />
+      <Route path="/dashboard" element={<div data-testid="dashboard-target">dashboard</div>} />
       </Routes>
     </MemoryRouter>
   );
@@ -60,18 +61,18 @@ describe('Login container', () => {
     expect(screen.getByTestId('login-password')).toBeInTheDocument();
   });
 
-  it('redirects to /dashboard when already authenticated', async () => {
+  it('redirects to the hub when already authenticated', async () => {
     useAuthMock.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
-      user: { actor_uuid: '00000000-0000-0000-0000-0000000000ad' },
+      user: { uuid: '00000000-0000-0000-0000-0000000000ad', email: 'admin@parkos.local' },
     });
     useAuthStoreMock.mockImplementation((selector) =>
       selector({ setTokens: vi.fn(), clear: vi.fn() }),
     );
     render(setup());
     await waitFor(() => {
-      expect(screen.getByTestId('dashboard-target')).toBeInTheDocument();
+      expect(screen.getByTestId('home-target')).toBeInTheDocument();
     });
   });
 

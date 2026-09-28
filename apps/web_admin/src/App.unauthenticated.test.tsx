@@ -1,7 +1,7 @@
 /**
  * `App.unauthenticated.test.tsx` — Separated file because Vitest hoists
  * `vi.mock` above imports, so a single file cannot have two different
- * auth states. This file mocks `useAuth` as unauthenticated and
+ * auth states. This file mocks `useAdminAuth` as unauthenticated and
  * asserts that the route guard redirects `/dashboard` to `/login`.
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -12,16 +12,16 @@ import { SucursalProvider } from '@/lib/sucursal-context';
 import App from './App';
 
 vi.mock('@parkos/ui-kit/hooks', () => ({
-  useAuth: () => ({
+  useAdminAuth: () => ({
     user: null,
-    sucursal: null,
-    sucursalesPermitidas: [],
+    rol: null,
+    sucursalUuids: [],
     permisos: [],
-    expiresAt: null,
     isAuthenticated: false,
     isLoading: false,
     error: undefined,
     refresh: async () => undefined,
+    logout: async () => undefined,
   }),
 }));
 

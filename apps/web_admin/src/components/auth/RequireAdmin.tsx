@@ -25,18 +25,24 @@
  * a server-stored return URL (out of scope) or a query string.
  * The query string is the simplest viable solution that also
  * survives full-page refresh.
+ * Why `useAuth` is NOT used here: this app authenticates with `admin-`
+ * issuer tokens, and `/auth/me` (the endpoint behind `useAuth`) is
+ * hardcoded to `operador-` and 404s for them — a wasted request on
+ * every admin page. `useAdminAuth` reads `/api/v1/admin/me`, which
+ * exists. The two guards only read `isAuthenticated` / `isLoading`,
+ * which are token-derived and identical either way.
  */
 import type { ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 
-import { useAuth } from '@parkos/ui-kit/hooks';
+import { useAdminAuth } from '@parkos/ui-kit/hooks';
 
 export interface RequireAdminProps {
   children: ReactNode;
 }
 
 export function RequireAdmin({ children }: RequireAdminProps): JSX.Element {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading } = useAdminAuth();
   const location = useLocation();
 
   if (isLoading) {
