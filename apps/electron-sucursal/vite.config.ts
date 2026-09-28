@@ -19,12 +19,12 @@ export default defineConfig({
   },
   root: '.',
   server: {
-    port: 5172,
+    port: 5173,
     strictPort: true,
     // Dev proxy: reenvía /api/* al backend api-sucursal en Docker.
     // parkosFetch usa paths relativos (`/api/v1/...`) y los resuelve
-    // contra el origin del Vite dev server (:5172). Sin este proxy
-    // el navegador haría la petición a localhost:5172/api/... que no
+    // contra el origin del Vite dev server (:5173). Sin este proxy
+    // el navegador haría la petición a localhost:5173/api/... que no
     // existe. El backend ya está corriendo en Docker como
     // `parkos-api-sucursal` mapeado a host port 8100.
     proxy: {
