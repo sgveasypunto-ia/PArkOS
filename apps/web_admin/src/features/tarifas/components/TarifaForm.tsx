@@ -335,15 +335,16 @@ export function TarifaForm({
 export function TarifaFormHarness(
   props: Omit<TarifaFormProps, 'form'>,
 ): JSX.Element {
+  const initial = props.initialTarifa;
   const form = useForm<TarifaCreateInput>({
     resolver: zodResolver(tarifaCreateSchema) as never,
     defaultValues: {
-      uuid_sucursal: null,
-      uuid_tipo_vehiculo: null,
-      uuid_tipo_tarifa: null,
-      valor: null,
-      valor_plena: null,
-      vigente_desde: null,
+      uuid_sucursal: initial?.uuid_sucursal ?? null,
+      uuid_tipo_vehiculo: initial?.uuid_tipo_vehiculo ?? null,
+      uuid_tipo_tarifa: initial?.uuid_tipo_tarifa ?? null,
+      valor: initial?.valor ?? null,
+      valor_plena: initial?.valor_plena ?? null,
+      vigente_desde: initial?.vigente_desde ?? null,
     },
   });
   return <TarifaForm {...props} form={form} />;

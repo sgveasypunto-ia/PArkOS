@@ -180,4 +180,52 @@ describe('Tarifas page', () => {
     // pinned by the API tests + the manual browser walkthrough.
     expect(screen.getByTestId('tarifa-form')).toBeInTheDocument();
   });
+
+  it('TP7: clicking "Editar" opens the modal pre-filled with the tarifa row', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListTarifas.mockResolvedValue([
+      {
+        ...SAMPLE_TARIFA,
+        uuid_sucursal: SUCURSAL_1,
+        valor: '70.0000',
+      },
+    ]);
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    await user.click(
+      screen.getByTestId('tarifa-edit-aaaaaaaa-1111-1111-1111-111111111111'),
+    );
+    expect(screen.getByTestId('tarifa-form-modal')).toBeInTheDocument();
+    const valor = screen.getByTestId('tarifa-field-valor') as HTMLInputElement;
+    expect(valor.value).toBe('70.0000');
+    expect(screen.getByTestId('tarifa-form-editing')).toBeInTheDocument();
+    window.localStorage.removeItem('parkos.lastSelectedSucursal');
+  });
+
+  it('TP8: resolves uuid_tipo_vehiculo to the tipo name', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListTarifas.mockResolvedValue([
+      {
+        ...SAMPLE_TARIFA,
+        uuid_sucursal: SUCURSAL_1,
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+      },
+    ]);
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('tarifa-tipo-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByTestId('tarifa-tipo-aaaaaaaa-1111-1111-1111-111111111111')
+        .textContent,
+    ).toBe('carro');
+    window.localStorage.removeItem('parkos.lastSelectedSucursal');
+  });
 });
