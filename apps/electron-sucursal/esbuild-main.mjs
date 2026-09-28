@@ -24,7 +24,14 @@ const common = {
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  external: ['electron'],
+  // `electron` is provided by the runtime. The printer chain must stay
+  // external too: `electron/services/printer.ts` statically imports
+  // `escpos-usb`, which depends on `usb` -> `@node-usb/usb-win32-*`, and
+  // that package ships a platform-compiled `.node` addon. esbuild cannot
+  // bundle a native addon, so the whole chain is left external and Node
+  // resolves it from node_modules at runtime. Without this the main build
+  // fails with: "No loader is configured for .node files".
+  external: ['electron', 'escpos-usb', 'usb', '@node-usb/*', '*.node'],
   logLevel: 'info',
   sourcemap: true,
 };
