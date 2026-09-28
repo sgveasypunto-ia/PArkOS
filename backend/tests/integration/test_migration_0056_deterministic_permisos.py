@@ -41,6 +41,7 @@ also match a DOCSTRING that merely discusses ``uuid_permiso =`` or
 ``DELETE`` - which is exactly the false positive this file was rewritten
 to eliminate.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -55,11 +56,14 @@ _VERSIONS = _BACKEND_ROOT / "packages" / "parkos_core" / "migrations" / "version
 if str(_VERSIONS) not in sys.path:
     sys.path.insert(0, str(_VERSIONS))
 
+_M0002 = "0002_seed_permisos_canonicos"
 _M0019 = "0019_deterministic_permisos_uuids"
 _M0056 = "0056_deterministic_permisos_uuids_full"
+_M0059 = "0059_seed_router_permission_codes"
 
-# Shared on purpose: 0019's sixteen codes and 0056's additions must form
-# ONE scheme, or a code migrated by one and not the other never converges.
+# Shared on purpose: 0019's sixteen codes, 0056's additions and 0059's ten
+# must form ONE scheme, or a code migrated by one and not the other never
+# converges.
 _NAMESPACE = uuid.UUID("a3f1c9d4-6b2e-4e8a-9c1a-7d5f2b8e4c60")
 
 # A stand-in for "some other node's random uuid", i.e. the diverged state.
@@ -224,8 +228,7 @@ def test_0056_converges_a_diverged_node_for_every_mapped_code() -> None:
         if "INSERT INTO prod.permisos" in sql and "permisos_usuario" not in sql
     ]
     assert len(inserts) == len(m0056), (
-        f"expected a deterministic INSERT for each of {len(m0056)} codes, "
-        f"got {len(inserts)}"
+        f"expected a deterministic INSERT for each of {len(m0056)} codes, got {len(inserts)}"
     )
     for _sql, params in inserts:
         assert params["det_uuid"] == m0056[params["codigo"]]
@@ -312,7 +315,13 @@ def test_every_live_code_has_a_deterministic_uuid() -> None:
 
         pytest.skip("no test database available")
 
-    deterministic = set(_maps()[0]) | set(_maps()[1])
+    # Every migration that seeds a permission with a DETERMINISTIC uuid
+    # contributes to this union. "Every live code has one" is a
+    # project-wide invariant, not a property of any single migration, so a
+    # new seed migration must be added here. 0059 is the second case: it
+    # seeded ten codes that were absent from the catalogue entirely, and
+    # this test correctly reported them as unmapped the moment they landed.
+    deterministic = set(_maps()[0]) | set(_maps()[1]) | set(_load(_M0059)._ROUTER_PERMISSION_UUIDS)
 
     from sqlalchemy import text
 
@@ -320,17 +329,31 @@ def test_every_live_code_has_a_deterministic_uuid() -> None:
         rows = conn.execute(
             text("SELECT permiso, uuid FROM prod.permisos WHERE vigente_hasta IS NULL")
         ).all()
+    live = {permiso: str(value) for permiso, value in rows}
 
-    unmapped = sorted({permiso for permiso, _u in rows} - deterministic)
-    assert not unmapped, (
-        f"live permission codes with no deterministic uuid: {unmapped}. Each of "
-        "these mints a random uuid per node and will diverge cross-node again."
+    # The population under test is the SHIPPED catalogue, not "whatever rows
+    # happen to be in prod.permisos". Asserting the absence of extra rows
+    # makes the test a tripwire for every other test that seeds a permission:
+    # test_auth_me.py invents factura_crear / arqueo_cerrar and
+    # test_branch_offline_flow.py mints test-offline-flow-<hex>, neither of
+    # which is a code this project ships, and because [A]-style tables admit
+    # no physical DELETE those fixtures accumulate permanently. A test whose
+    # result depends on which other tests ran first is not an invariant.
+    #
+    # What actually diverges cross-node is a code seeded with
+    # gen_random_uuid() -- 0002 runs independently on the cloud and on every
+    # branch, so each of its codes must be carried by a deterministic map.
+    required = set(_load(_M0002).CANONICAL_PERMISOS) | deterministic
+
+    missing = sorted(required - set(live))
+    assert not missing, (
+        f"shipped permission codes absent from the live catalogue: {missing}. A "
+        "code no node can resolve diverges on the first call that gates on it."
     )
     wrong = sorted(
-        (permiso, str(value))
-        for permiso, value in rows
-        if permiso in deterministic
-        and str(value) != str(uuid.uuid5(_NAMESPACE, permiso))
+        (permiso, live[permiso])
+        for permiso in sorted(required & set(live))
+        if live[permiso] != str(uuid.uuid5(_NAMESPACE, permiso))
     )
     assert not wrong, f"live rows not on their deterministic uuid: {wrong}"
 
