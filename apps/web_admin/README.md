@@ -3,8 +3,10 @@
 Multi-tenant admin PWA for **Parkos** — the cloud-side surface that
 operators use to manage branches, configuration, and DIAN invoice flow.
 
-This is the **bootstrap** PWA shell (PR10b). The BranchSelector, admin
-`/me` wiring, and full dashboard come in PR10c.
+This is the **cloud-admin PWA**. After login the admin lands on
+`/seleccionar-sucursal` (gate), picks a branch, and works inside
+`/dashboard` with tabs that scope the configuration surfaces to the
+active branch.
 
 ## Stack
 
@@ -75,6 +77,27 @@ Any violation fails CI. RNF-022 is the source-of-truth requirement.
 
 ## Where to go next
 
-- PR10c — BranchSelector + `/admin/me` wiring (T-PR10-10..T-PR10-13)
-- PR11d — DIAN invoice preview surfaces (reuses the Button + Card primitives)
-- PR12  — web_sucursal (sibling workspace)
+- PR1 (`feat(web_admin): gate de sucursal + selector global en topbar`) — landed on `dev`.
+- PR2 (`feat(web_admin): tab 'Mi sucursal activa' en features de configuracion`) — landed on `dev`.
+- PR3 (`feat(web_admin): gestion de usuarios (lista + asignar sucursales)`) — landed on `dev`.
+
+## Dev: clearing a stale Service Worker
+
+`vite dev` does **not** register a Service Worker — only the
+production build does (via `vite-plugin-pwa` + `registerSW.js`).
+If you previously ran `npm run preview` or served the `dist/` folder
+on port `5173` and then switched back to `vite dev`, the old SW
+stays registered in the browser and serves the pre-PR bundle from
+its precache. Symptoms: `Ctrl+R` shows old UI, `Ctrl+F5` (hard
+reload) shows new UI.
+
+Fix once after the first merge that changes the shell:
+
+1. F12 → Application → Service Workers → **Unregister** the entry for `127.0.0.1:5173`.
+2. If the Unregister button is missing, F12 → Application → Storage → **Clear site data**.
+3. Reload with `Ctrl+R`.
+
+After that one-time clear, `vite dev` serves the live code without
+interception. The build-side SW (`registerType: 'autoUpdate'` in
+`vite.config.ts`) only kicks in on `npm run preview` or in
+containerized deployments where `dist/` is served by nginx.
