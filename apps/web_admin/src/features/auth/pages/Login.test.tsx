@@ -9,7 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 const useAuthMock = vi.fn();
 vi.mock('@parkos/ui-kit/hooks', () => ({
@@ -38,7 +38,11 @@ function setup(): JSX.Element {
     <MemoryRouter initialEntries={['/login']}>
       <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/" element={<div data-testid="home-target">home</div>} />
+      <Route path="/" element={<Navigate to="/seleccionar-sucursal" replace />} />
+      <Route
+        path="/seleccionar-sucursal"
+        element={<div data-testid="picker-target">picker</div>}
+      />
       <Route path="/dashboard" element={<div data-testid="dashboard-target">dashboard</div>} />
       </Routes>
     </MemoryRouter>
@@ -61,7 +65,7 @@ describe('Login container', () => {
     expect(screen.getByTestId('login-password')).toBeInTheDocument();
   });
 
-  it('redirects to the hub when already authenticated', async () => {
+  it('redirects to /seleccionar-sucursal when already authenticated', async () => {
     useAuthMock.mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
@@ -72,7 +76,7 @@ describe('Login container', () => {
     );
     render(setup());
     await waitFor(() => {
-      expect(screen.getByTestId('home-target')).toBeInTheDocument();
+      expect(screen.getByTestId('picker-target')).toBeInTheDocument();
     });
   });
 

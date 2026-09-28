@@ -4,7 +4,6 @@ import { RequireAdmin } from '@/components/auth/RequireAdmin';
 import { RequireSucursal } from '@/components/auth/RequireSucursal';
 import { WaitForAuth } from '@/components/WaitForAuth';
 import { AdminChrome } from '@/components/chrome/AdminChrome';
-import Home from '@/pages/Home';
 import Dashboard from '@/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
 import SucursalesList from '@/features/sucursales/pages/SucursalesList';
@@ -30,6 +29,13 @@ import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/Con
  * guard would redirect the picker back to itself in a loop). It is
  * still gated by `RequireAdmin` so an unauthenticated visitor never
  * sees it.
+ *
+ * `/` is a thin redirect to `/seleccionar-sucursal`: the picker is
+ * the canonical landing for an authed admin. The previous `/` home
+ * (`Home.tsx`, still on disk) is unused — kept for reference. The
+ * chrome's logo and any other NavLink that pointed at `/` now reach
+ * the picker, which matches the operator's decision to always
+ * re-confirm the branch on entry.
  *
  * `/admin/usuarios` is kept as a permanent redirect to
  * `/gestion-usuarios` (PR1 of the admin redesign) so old links still
@@ -59,7 +65,7 @@ export default function App() {
             </RequireAdmin>
           }
         >
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={<Navigate to="/seleccionar-sucursal" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/sucursales" element={<SucursalesList />} />
           <Route path="/gestion-usuarios" element={<UsuariosList />} />

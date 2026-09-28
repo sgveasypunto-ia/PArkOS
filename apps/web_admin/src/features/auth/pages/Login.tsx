@@ -68,9 +68,10 @@ function getNextPath(search: string): string {
   const params = new URLSearchParams(search);
   const next = params.get('next');
   if (next && next.startsWith('/') && !next.startsWith('//')) return next;
-  // `/` is the hub; `/dashboard` is the per-branch panel. A successful
-  // login with no explicit `next` lands on the hub.
-  return '/';
+  // Post-login lands on the picker. Decision: even with a valid
+  // persisted selection, we force a re-confirmation — sharing the
+  // browser or operator handoff is more common than an in-tab reload.
+  return '/seleccionar-sucursal';
 }
 
 export function Login(): JSX.Element {

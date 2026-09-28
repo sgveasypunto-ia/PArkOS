@@ -46,7 +46,7 @@ describe('App (authenticated)', () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', ALLOWED_UUID);
   });
 
-  it('renders the hub at the root path', () => {
+  it('redirects / to /seleccionar-sucursal (picker is the canonical landing)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -54,21 +54,11 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.getByTestId('page-home')).toBeInTheDocument();
-  });
-
-  it('renders every real section on the hub, including gated Auditoría', () => {
-    render(
-      <Providers>
-        <MemoryRouter initialEntries={['/']}>
-          <App />
-        </MemoryRouter>
-      </Providers>,
-    );
-    expect(screen.getByTestId('home-card-dashboard')).toBeInTheDocument();
-    expect(screen.getByTestId('home-card-sucursales')).toBeInTheDocument();
-    expect(screen.getByTestId('home-card-gestion-usuarios')).toBeInTheDocument();
-    expect(screen.getByTestId('home-card-auditoria')).toBeInTheDocument();
+    // The Hub (`Home`) is no longer mounted on `/`; the route is now a
+    // thin Navigate to the picker. With a valid session the picker
+    // mounts the loading shim under jsdom (no fetch).
+    expect(screen.getByTestId('sucursal-picker')).toBeInTheDocument();
+    expect(screen.queryByTestId('page-home')).not.toBeInTheDocument();
   });
 
   it('renders the dashboard page on /dashboard when authenticated', () => {
@@ -82,7 +72,7 @@ describe('App (authenticated)', () => {
     expect(screen.getByTestId('page-dashboard')).toBeInTheDocument();
   });
 
-  it('keeps /dashboard reachable as its own page, not aliased to the hub', () => {
+  it('keeps /dashboard reachable as its own page, not aliased to the picker', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/dashboard']}>
@@ -90,22 +80,23 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.queryByTestId('page-home')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sucursal-picker')).not.toBeInTheDocument();
   });
 
-  it('mounts the persistent chrome with a logout control', () => {
+  it('mounts the persistent chrome on protected routes (not on /)', () => {
     render(
       <Providers>
-        <MemoryRouter initialEntries={['/']}>
+        <MemoryRouter initialEntries={['/dashboard']}>
           <App />
         </MemoryRouter>
       </Providers>,
     );
     expect(screen.getByTestId('admin-chrome')).toBeInTheDocument();
     expect(screen.getByTestId('admin-logout')).toBeInTheDocument();
+    expect(screen.getByTestId('chrome-sucursal-selector')).toBeInTheDocument();
   });
 
-  it('renders the branch selector badge in the chrome', () => {
+  it('does NOT mount the chrome on / (picker is full-page)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -113,7 +104,7 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.getByTestId('chrome-sucursal-selector')).toBeInTheDocument();
+    expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
   });
 
   it('redirects /admin/usuarios to /gestion-usuarios', () => {
