@@ -4,3 +4,4 @@ export {
   ParkosHttpError,
   type ParkosFetchInit,
 } from './parkosFetch';
+export { resolveRequestUrl } from './resolveRequestUrl';

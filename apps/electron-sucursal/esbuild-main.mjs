@@ -15,6 +15,13 @@ import process from 'node:process';
  *   - bundle: true   (esbuild resolves all TS source into a single file)
  *
  * DEC-ELEC-03: vite owns the renderer, esbuild owns main+preload.
+ *
+ * `usb` (HU-F5.1 thermal printer USB detection, pulled in via
+ * `escpos-usb`) ships a native `.node` binding
+ * (`@node-usb/usb-win32-x64-msvc`) that esbuild cannot bundle - no loader
+ * exists for compiled binary files. Marking it external leaves
+ * `require('usb')` untouched in the bundled output; Node resolves it from
+ * `node_modules` at runtime, same as it always does for native addons.
  */
 
 const watch = process.argv.includes('--watch');
@@ -24,7 +31,7 @@ const common = {
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  external: ['electron'],
+  external: ['electron', 'usb'],
   logLevel: 'info',
   sourcemap: true,
 };

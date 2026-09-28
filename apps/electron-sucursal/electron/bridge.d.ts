@@ -2,7 +2,7 @@
  * Bridge IPC typed surface — exposed to the renderer via contextBridge.
  *
  * Stable contract (DEC-FETCH-08 + design.md §6.1):
- *   7 groups, 14 methods (post-F4.2 closure 2026-09-17).
+ *   8 groups, 15 methods (post-installer-port-reconciliation 2026-09-27).
  *   - imprimir          (3)  → print ticket via escpos-usb  (F5.1 main)
  *                              + getQueue() poll status
  *                              + onStatus(handler) push events
@@ -10,6 +10,9 @@
  *   - kiosk             (1)  → toggle kiosk mode           (F2.3 consumer)
  *   - app               (1)  → quit Electron app           (F2.3 consumer)
  *   - apiStatus         (1)  → backend health probe        (F11.x consumer)
+ *   - config            (1)  → resolved API origin         (parkosFetch's
+ *                              resolveRequestUrl.ts consumer - installer
+ *                              port reconciliation, DEC-INST-03)
  *   - authStore         (3)  → electron-store get/set/del  (F2.2 authStore)
  *   - tarifasStore      (3)  → electron-store get/set/del  (F4.2 cache)
  *
@@ -83,6 +86,16 @@ export interface BridgeSurface {
   apiStatus: {
     /** Health check del backend (ping /health). F11.x consumer. */
     get(): Promise<ApiStatus>;
+  };
+
+  config: {
+    /**
+     * Origin resuelto por el main process (`PARKOS_API_ORIGIN`, default
+     * `http://127.0.0.1:8000`) para que el renderer arme URLs absolutas
+     * bajo `file://` sin un puerto hardcodeado en el bundle compilado.
+     * Consumer: `apps/ui-kit/src/fetch/resolveRequestUrl.ts`.
+     */
+    getApiOrigin(): Promise<string>;
   };
 
   authStore: {

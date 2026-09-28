@@ -17,6 +17,7 @@ import { contextBridge, ipcRenderer } from 'electron';
  *   kiosk.toggle(on)       → ipcRenderer.send('kiosk:toggle', on)
  *   app.quit()             → ipcRenderer.send('app:quit')
  *   apiStatus.get()        → ipcRenderer.invoke('api:status')
+ *   config.getApiOrigin()  → ipcRenderer.invoke('config:api-origin')
  *   authStore.get          → ipcRenderer.invoke('auth-store:get', key)
  *   authStore.set          → ipcRenderer.invoke('auth-store:set', key, value)
  *   authStore.delete       → ipcRenderer.invoke('auth-store:delete', key)
@@ -69,6 +70,10 @@ contextBridge.exposeInMainWorld('bridge', {
 
   apiStatus: {
     get: () => ipcRenderer.invoke('api:status'),
+  },
+
+  config: {
+    getApiOrigin: () => ipcRenderer.invoke('config:api-origin'),
   },
 
   authStore: {

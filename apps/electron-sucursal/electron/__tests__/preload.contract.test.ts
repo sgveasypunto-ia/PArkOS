@@ -1,13 +1,14 @@
 /**
  * Preload contract test — validates `preload.ts` exposes exactly the
- * 14 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
- * Post-F4.2 closure (2026-09-17) the surface grew to 7 groups / 14 methods.
+ * 15 methods declared in `bridge.d.ts` (DEC-FETCH-08 + R4 mitigation).
+ * Post-installer-port-reconciliation (2026-09-27) the surface grew to
+ * 8 groups / 15 methods (added `config.getApiOrigin`).
  *
  * Vitest aliases the `electron` module to `./__mocks__/electron.ts`
  * (see `vitest.config.ts`), so `preload.ts` calls the stub's
  * `contextBridge.exposeInMainWorld` / `ipcRenderer.invoke` / `send`
  * spies. The contract test asserts:
- *   1. Exactly the 7 top-level groups are present (no spread, no extras).
+ *   1. Exactly the 8 top-level groups are present (no spread, no extras).
  *   2. `imprimir` is an OBJECT (callable + helpers per F5.1) and the
  *      helpers route to the correct channels.
  *   3. The raw `ipcRenderer` handle is NOT exposed.
@@ -46,10 +47,17 @@ beforeEach(() => {
 });
 
 describe('preload bridge contract', () => {
-  it('exposes exactly the 7 top-level groups (no spread, no extras)', () => {
+  it('exposes exactly the 8 top-level groups (no spread, no extras)', () => {
     expect(Object.keys(exposed).sort()).toEqual(
-      ['apiStatus', 'app', 'authStore', 'imprimir', 'kiosk', 'tarifasStore', 'usb'].sort(),
+      ['apiStatus', 'app', 'authStore', 'config', 'imprimir', 'kiosk', 'tarifasStore', 'usb'].sort(),
     );
+  });
+
+  it('exposes `config.getApiOrigin()` and invokes config:api-origin', () => {
+    const config = exposed.config as { getApiOrigin: () => Promise<string> };
+    expect(typeof config.getApiOrigin).toBe('function');
+    void config.getApiOrigin();
+    expect(invokeSpy).toHaveBeenCalledWith('config:api-origin');
   });
 
   it('tarifasStore.get routes to tarifas-store:get with the key verbatim', () => {

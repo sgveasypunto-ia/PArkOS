@@ -7,6 +7,14 @@
 node_modules/
 dist/
 build/
+# electron-builder's build/ under electron-sucursal is a SOURCE asset
+# directory (icon.ico, entitlements.mac.plist), not build output - the
+# blanket `build/` rule above would otherwise silently drop the real app
+# icon from version control (confirmed: `git check-ignore` matched it),
+# reintroducing the WiX LGHT0094 MSI-target failure for anyone else who
+# clones this repo and runs installer/build-release.ps1.
+!apps/electron-sucursal/build/
+!apps/electron-sucursal/build/**
 coverage/
 htmlcov/
 __pycache__/

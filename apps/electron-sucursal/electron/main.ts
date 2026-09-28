@@ -216,6 +216,19 @@ app.whenReady().then(() => {
 
 function registerIpcHandlers(kioskoStore: StoreLike): void {
   ipcMain.handle('api:status', () => getApiStatus());
+  // Port reconciliation (installer TUI): the renderer's parkosFetch/loginApi/
+  // authStore rewrite root-relative paths against this origin under file://
+  // (see resolveRequestUrl.ts) - baked into the compiled renderer bundle as a
+  // hardcoded default otherwise, so a non-default API port chosen at install
+  // time would never reach the renderer. PARKOS_API_ORIGIN is deliberately
+  // separate from PARKOS_API_BASE (line ~189): that one's default already
+  // carries a `/health` suffix for initApiStatus's health-check URL - reusing
+  // it here would silently break if an operator ever set it without that
+  // suffix.
+  ipcMain.handle(
+    'config:api-origin',
+    () => process.env['PARKOS_API_ORIGIN'] ?? 'http://127.0.0.1:8000',
+  );
   ipcMain.handle('kiosk:unlock', (_e, pin: string) =>
     tryUnlockKiosko(pin, kioskoStore, log),
   );

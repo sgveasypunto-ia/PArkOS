@@ -10,6 +10,17 @@ import path from 'node:path';
  * is a regular SPA loaded by Electron's BrowserWindow.
  */
 export default defineConfig({
+  // Relative asset paths (not Vite's default `/` root-relative) - the
+  // packaged app loads index.html via `file://` (electron/main.ts's
+  // `loadFile`, non-dev branch), where a root-relative `src="/assets/..."`
+  // resolves against the filesystem root, not the HTML file's own
+  // directory. Confirmed against the real built dist/renderer/index.html:
+  // every `<script src="/assets/...">`/`<link href="/assets/...">` was
+  // absolute, so the bundle never loaded - packaged window showed a blank/
+  // black screen with the default Electron menu (main.ts never got the
+  // chance to render anything, no JS ran) while `pnpm dev` (served over
+  // http://localhost:5173, where root-relative paths are fine) worked.
+  base: './',
   plugins: [react()],
   resolve: {
     alias: {

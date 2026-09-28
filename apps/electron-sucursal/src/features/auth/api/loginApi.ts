@@ -15,7 +15,7 @@
  *                                 401 invalid_credentials → InvalidCredentialsError
  *                                 429 account_locked + Retry-After → AccountLockedError
  */
-import { ParkosHttpError } from '@parkos/ui-kit/fetch';
+import { ParkosHttpError, resolveRequestUrl } from '@parkos/ui-kit/fetch';
 
 const LOGIN_PATH = '/api/v1/auth/login';
 
@@ -71,7 +71,11 @@ function parseRetryAfter(headerValue: string | null): number {
  *   - 5xx / 4xx no listados / network → `ParkosHttpError` o `Error`
  */
 export async function postLogin(email: string, password: string): Promise<TokenPair> {
-  const res = await fetch(LOGIN_PATH, {
+  // DEC-F3.1-05's raw fetch bypasses parkosFetch's own file://-origin
+  // rewrite (packaged electron-sucursal loads via `file://` — see
+  // parkosFetch.ts's resolveRequestUrl doc comment), so it needs the same
+  // rewrite applied explicitly here.
+  const res = await fetch(resolveRequestUrl(LOGIN_PATH), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include', // CRITICAL: cookie httpOnly round-trip (DEC-F3.1-03)

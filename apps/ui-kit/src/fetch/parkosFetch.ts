@@ -31,6 +31,9 @@
 import type { z } from 'zod';
 
 import { refreshAccessToken, useAuthStore } from '../store/authStore';
+import { resolveRequestUrl } from './resolveRequestUrl';
+
+export { resolveRequestUrl } from './resolveRequestUrl';
 
 const BACKOFF_MS: readonly number[] = [300, 600, 1200];
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -216,7 +219,7 @@ export async function parkosFetchRaw(
   }, timeoutMs);
 
   try {
-    const res = await fetch(input, { ...finalInit, signal: controller.signal });
+    const res = await fetch(resolveRequestUrl(input), { ...finalInit, signal: controller.signal });
 
     if (res.ok) return res;
 

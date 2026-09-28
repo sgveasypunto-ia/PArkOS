@@ -30,6 +30,8 @@ import {
   type StateStorage,
 } from 'zustand/middleware';
 
+import { resolveRequestUrl } from '../fetch/resolveRequestUrl';
+
 // ─── electron-store adapter (via preload IPC bridge) ────────────────
 // Production (Electron): real `window.bridge.authStore.{get,set,delete}` from T3.
 // Dev (Vite) + tests: fall back to `window.localStorage` so the auth
@@ -134,7 +136,10 @@ export async function refreshAccessToken(): Promise<string | null> {
     try {
       const { refreshToken } = useAuthStore.getState();
       if (!refreshToken) return null;
-      const res = await fetch(REFRESH_PATH, {
+      // Raw fetch (no parkosFetch — this IS the refresh call parkosFetch
+      // delegates to on 401) needs the same file://-origin rewrite as
+      // loginApi.ts's raw fetch. See resolveRequestUrl.ts's doc comment.
+      const res = await fetch(resolveRequestUrl(REFRESH_PATH), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refreshToken }),

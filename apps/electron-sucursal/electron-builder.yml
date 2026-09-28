@@ -17,19 +17,40 @@ win:
     - target: nsis
       arch:
         - x64
+    # MSI target — required by the branch installer's silent install
+    # step (plan.md HU-F24.3: `msiexec /i ... /qn`). DEC-SUC-16 already
+    # documented "nsis+msi" as the intended pair; only nsis was wired up
+    # here until now.
+    - target: msi
+      arch:
+        - x64
+  # Generated from the real brand asset
+  # src/assets/brand/favicons/favicon-192.png (192x192, the highest-res
+  # square mark shipped in the repo - web_admin/public/icon-512.png is a
+  # 1x1 placeholder stub, not usable) via Pillow, embedding 16/32/48/64/128/256
+  # frames. NSIS tolerated a missing icon.ico silently (falls back to the
+  # default Electron icon); the WiX-based MSI linker did not - it failed
+  # hard (LGHT0094, dangling `Icon:` reference) even with `icon:` omitted
+  # entirely, so a real file was required, not just removing the reference.
   icon: build/icon.ico
   artifactName: "${productName}-Setup-${version}.${ext}"
   # Windows Authenticode via electron-builder auto-sign.
   # certificate file: process.env.WINDOWS_CERT_FILE (build pipeline concern).
 
-# F2.3 enables auto-update via electron-updater (DEC-UPD-01..04).
-autoUpdate: true
+# F2.3 enables auto-update via electron-updater (DEC-UPD-01..04). Auto-update
+# is wired at runtime (electron-updater's autoUpdater API), not a build-time
+# flag - `autoUpdate` is not a valid electron-builder configuration key
+# (rejected by its schema validator); `publish` below is what electron-builder
+# actually needs to produce update metadata for electron-updater to consume.
 publish:
   - provider: github
     owner: easypunto_parkos
     repo: easypunto_parkos
     releaseType: release
-    allowPrerelease: false
+    # `allowPrerelease` is an electron-updater RUNTIME option
+    # (`autoUpdater.allowPrerelease`), not an electron-builder publish-config
+    # key - it isn't in this provider's schema and made the whole `publish`
+    # block fail validation (schema has no `additionalProperties`).
 
 # F5.1 — T1.5 housekeeping: consolidated the two pre-existing `mac:`
 # blocks (target/icon/category + hardenedRuntime) into ONE block,

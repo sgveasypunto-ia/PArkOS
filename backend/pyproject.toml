@@ -29,6 +29,10 @@ dev = [
     # (alembic/testcontainers pull it in), but declared explicitly here so
     # the test's dependency is not an accidental transitive one.
     "pyyaml>=6",
+    # Parte III (instalador): freezes api-sucursal/job-sync-sucursal into
+    # standalone .exe for the branch installer (installer/build-release.ps1).
+    # >=6.14 is the first line with confirmed Python 3.13 support.
+    "pyinstaller>=6.14",
 ]
 
 # ---------------------------------------------------------------------------
