@@ -1,8 +1,10 @@
 /**
- * `useCantidadList()` — SWR hook para el listado vigente de cupos
- * de una sucursal (wrapper de ``GET /api/v1/empresa/cantidad-vehiculos-sucursal``).
+ * `useCantidadList()` — SWR hook para el listado global de cupos
+ * vigentes de TODAS las sucursales (admin cross-branch).
  *
- * Análogo a ``useTarifasList``. Sin fallback hardcoded.
+ * Mismo patrón que ``useTarifasList`` después del fix D-02.3. El
+ * factory handler no filtra por sucursal (sólo ``vigente_hasta IS
+ * NULL``).
  */
 import useSWR from 'swr';
 
@@ -20,15 +22,14 @@ export interface UseCantidadListReturn {
   refresh: () => Promise<Cupo[] | undefined>;
 }
 
-export function useCantidadList(sucursal: string | null): UseCantidadListReturn {
+export function useCantidadList(_sucursal?: string | null): UseCantidadListReturn {
+  void _sucursal;
+
   const accessToken = useAuthStore((s) => s.accessToken);
 
   const { data, error, isLoading, mutate } = useSWR<Cupo[]>(
-    accessToken && sucursal ? ['cupos-list', sucursal] : null,
-    async () => {
-      if (!sucursal) return [];
-      return listCupos({ limit: 200 });
-    },
+    accessToken ? 'cupos-list' : null,
+    () => listCupos({ limit: 200 }),
     {
       dedupingInterval: DEDUPING_INTERVAL_MS,
       shouldRetryOnError: (err) =>

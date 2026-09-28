@@ -115,6 +115,37 @@
       "hideHistory": "Ocultar histórico"
     }
   },
+  "cupos": {
+    "title": "Cupos",
+    "new": "Nuevo cupo",
+    "createTitle": "Crear nuevo cupo",
+    "editTitle": "Editar cupo",
+    "modalDescription": "Cargá los datos. El cupo pertenece a la sucursal elegida y entra en vigencia al instante seleccionado.",
+    "loading": "Cargando cupos...",
+    "loadError": "No se pudieron cargar los cupos.",
+    "empty": "Aún no hay cupos configurados.",
+    "withoutSucursal": "Sin sucursal",
+    "historyLabel": "Cantidad",
+    "field": {
+      "sucursal": "Sucursal",
+      "sucursalHelp": "El cupo pertenece a esta sucursal.",
+      "cantidad": "Cantidad máxima de vehículos",
+      "cantidadHelp": "Debe ser >= 0. Una cantidad menor que los ingresos activos es rechazada.",
+      "vigenteDesde": "Vigente desde (opcional)",
+      "vigenteDesdeHelp": "Vacío = ahora. Una fecha futura programa un cambio de cupo."
+    },
+    "form": {
+      "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar",
+      "history": "Ver histórico",
+      "hideHistory": "Ocultar histórico"
+    }
+  },
   "sucursal": {
         "label": "Tarifas",
         "description": "Crea, edita y programa tarifas por sucursal con histórico de versiones."

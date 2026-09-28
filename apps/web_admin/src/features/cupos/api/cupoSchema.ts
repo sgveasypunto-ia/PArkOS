@@ -24,7 +24,8 @@ const nullableUuid = z.string().uuid().nullable();
 export const cupoCreateSchema = z.object({
   uuid_sucursal: nullableUuid,
   uuid_tipo_vehiculo: nullableUuid,
-  cantidad: z.number().int().min(0, 'La cantidad debe ser >= 0'),
+  cantidad: z
+    .union([z.number().int().min(0, 'La cantidad debe ser >= 0'), z.null()]),
   vigente_desde: z
     .string()
     .datetime({ offset: true })
