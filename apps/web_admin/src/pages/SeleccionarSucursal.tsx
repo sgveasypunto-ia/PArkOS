@@ -1,81 +1,188 @@
 /**
- * SeleccionarSucursal — gate page shown after login and when the operator
- * clicks the chrome badge to switch.
+ * SeleccionarSucursal -- unified page that combines the branch picker
+ * (cards, post-login gate / chrome badge target) with branch CRUD
+ * management (create, edit, pairing token mint).
  *
- * The admin may have many branches in their JWT claim
- * (`sucursales_permitidas`); we cross-reference that list against the
- * full `/api/v1/empresa/sucursal` list to get names. Branches in the
- * claim that do not yet have a name in the directory (race during
- * provisioning) still appear with their UUID as label — we never
- * silently hide a branch the operator is allowed to see.
+ * Replaces the previous two-page split: `/seleccionar-sucursal`
+ * (picker only) + `/sucursales` (CRUD only). The chrome badge still
+ * navigates here; the unified surface handles both flows.
  *
- * On select:
- *   1. Persist via `useSucursal().setSelected(uuid)` (which writes
- *      `localStorage['parkos.lastSelectedSucursal']`).
- *   2. Navigate to `/dashboard` with `replace: true` so the picker is
- *      not in the back stack.
+ * Two tabs, default "Seleccionar":
+ *   - Tab "Seleccionar": cards via <SucursalPicker>. Click a card ->
+ *     `useSucursal().setSelected(uuid)` + navigate /dashboard.
+ *   - Tab "Administrar": table with Edit + Pairing actions + "Nueva
+ *     sucursal" button. Endpoints: `/api/v1/empresa/sucursal` (factory,
+ *     full bi-temporal shape needed for edit).
  *
- * WHY THIS PAGE IS NOT WRAPPED BY `RequireSucursal`:
- *   `RequireSucursal` redirects to `/seleccionar-sucursal` when no
- *   branch is selected. Putting this route INSIDE that guard would loop
- *   forever. It sits at the top level of the route tree, gated only by
- *   `RequireAdmin` (auth), never by `RequireSucursal`.
+ * `?tab=admin` query param auto-switches to the Administrar tab so the
+ * legacy `/sucursales` redirect (Navigate to /seleccionar-sucursal?tab=admin)
+ * lands in the right view.
  */
-import { useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
 import { parkosFetchRaw } from '@/lib/fetch';
 import { useSucursal } from '@/lib/sucursal-context';
+import {
+  SucursalPicker,
+  type SucursalPickerOption,
+} from '@/components/branch-selector/SucursalPicker';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs';
 
-import { SucursalPicker, type SucursalPickerOption } from '@/components/branch-selector/SucursalPicker';
+import { SucursalFormHarness } from '@/features/sucursales/components/SucursalForm';
+import { PairingTokenDialog } from '@/features/sucursales/components/PairingTokenDialog';
+import {
+  createSucursal,
+  listSucursales,
+  mintPairingToken,
+  updateSucursal,
+} from '@/features/sucursales/api/sucursalesApi';
+import {
+  type PairingTokenResponse,
+  type Sucursal,
+  type SucursalCreateInput,
+} from '@/features/sucursales/api/sucursalSchema';
 
-interface SucursalListResponse {
-  items: SucursalPickerOption[];
+type TabValue = 'seleccionar' | 'admin';
+
+type ErrorState =
+  | { kind: 'create' | 'edit' | 'pairing' | 'load'; message: string }
+  | null;
+
+function mapTab(value: string | null): TabValue {
+  return value === 'admin' ? 'admin' : 'seleccionar';
 }
 
 export default function SeleccionarSucursal(): JSX.Element {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { sucursalUuids, isLoading: isAdminLoading } = useAdminAuth();
   const { selected, setSelected } = useSucursal();
 
-  const list = useSWR<SucursalListResponse>(
+  const tab = mapTab(searchParams.get('tab'));
+
+  function setTab(next: TabValue): void {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'seleccionar') {
+      params.delete('tab');
+    } else {
+      params.set('tab', next);
+    }
+    setSearchParams(params, { replace: true });
+  }
+
+  // -------------------------------------------------------------------------
+  // Data fetching
+  // -------------------------------------------------------------------------
+  // Picker: admin_views endpoint (lighter, scoped to permitted branches).
+  const listForPicker = useSWR<Array<{ uuid: string; nombre: string | null }>>(
     '/api/v1/sucursales',
     async (key: string) => {
       const res = await parkosFetchRaw(key, {
         headers: { Accept: 'application/json' },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return (await res.json()) as SucursalListResponse;
+      const body = (await res.json()) as {
+        items: Array<{ uuid: string; nombre: string | null }>;
+      };
+      return body.items;
     },
     { revalidateOnFocus: false },
   );
 
-  const allowed = useMemo<SucursalPickerOption[]>(() => {
-    const items = list.data?.items ?? [];
+  // Admin table: factory endpoint (full bi-temporal shape needed for edit).
+  const listForAdmin = useSWR<Sucursal[]>(
+    '/api/v1/empresa/sucursal?limit=200',
+    async () => listSucursales({ limit: 200 }),
+    { revalidateOnFocus: false },
+  );
+
+  // -------------------------------------------------------------------------
+  // Picker derived state
+  // -------------------------------------------------------------------------
+  const allowedPickerOptions = useMemo<SucursalPickerOption[]>(() => {
+    const items = listForPicker.data ?? [];
     if (sucursalUuids.length === 0) return items;
     const set = new Set(sucursalUuids);
-    return items.filter((i) => set.has(i.uuid));
-  }, [list.data, sucursalUuids]);
+    return items
+      .filter((i) => set.has(i.uuid))
+      .map((i) => ({ uuid: i.uuid, nombre: i.nombre, prefijo_nombre: null }));
+  }, [listForPicker.data, sucursalUuids]);
 
   useEffect(() => {
-    if (
-      selected &&
-      sucursalUuids.length > 0 &&
-      !sucursalUuids.includes(selected)
-    ) {
+    if (selected && sucursalUuids.length > 0 && !sucursalUuids.includes(selected)) {
       setSelected(null);
     }
   }, [selected, sucursalUuids, setSelected]);
 
-  const handleSelect = (uuid: string): void => {
+  // -------------------------------------------------------------------------
+  // Admin CRUD state
+  // -------------------------------------------------------------------------
+  const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing] = useState<Sucursal | null>(null);
+  const [pairingToken, setPairingToken] = useState<PairingTokenResponse | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorState, setErrorState] = useState<ErrorState>(null);
+
+  function closeModal(): void {
+    setShowCreate(false);
+    setEditing(null);
+    setErrorState(null);
+  }
+
+  async function onSubmit(values: SucursalCreateInput): Promise<void> {
+    setSubmitting(true);
+    setErrorState(null);
+    try {
+      if (editing !== null) {
+        await updateSucursal(editing.uuid, values);
+      } else {
+        await createSucursal(values);
+      }
+      closeModal();
+      await Promise.all([listForPicker.mutate?.(), listForAdmin.mutate?.()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error desconocido';
+      setErrorState({ kind: editing !== null ? 'edit' : 'create', message });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function onPairingClick(sucursalUuid: string): Promise<void> {
+    try {
+      const token = await mintPairingToken(sucursalUuid);
+      setPairingToken(token);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error desconocido';
+      setErrorState({ kind: 'pairing', message });
+    }
+  }
+
+  function handleSelect(uuid: string): void {
     setSelected(uuid);
     navigate('/dashboard', { replace: true });
-  };
+  }
 
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
   if (isAdminLoading) {
     return (
       <div
@@ -90,10 +197,193 @@ export default function SeleccionarSucursal(): JSX.Element {
   }
 
   return (
-    <SucursalPicker
-      options={allowed}
-      isLoading={list.isLoading}
-      onSelect={handleSelect}
-    />
+    <main
+      className="flex min-h-screen flex-col gap-4 bg-background p-4"
+      data-testid="page-seleccionar-sucursal"
+    >
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(mapTab(v))}
+        data-testid="sucursal-unified-tabs"
+      >
+        <TabsList>
+          <TabsTrigger value="seleccionar" data-testid="sucursal-tab-seleccionar">
+            {t('sucursalAdmin.tab.seleccionar', 'Seleccionar')}
+          </TabsTrigger>
+          <TabsTrigger value="admin" data-testid="sucursal-tab-admin">
+            {t('sucursalAdmin.tab.admin', 'Administrar')}
+          </TabsTrigger>
+        </TabsList>
+
+        {/* =================================================================
+            Tab: Seleccionar (cards)
+           ================================================================= */}
+        <TabsContent value="seleccionar">
+          <SucursalPicker
+            options={allowedPickerOptions}
+            isLoading={listForPicker.isLoading}
+            onSelect={handleSelect}
+          />
+        </TabsContent>
+
+        {/* =================================================================
+            Tab: Administrar (table + CRUD)
+           ================================================================= */}
+        <TabsContent value="admin">
+          <header className="mb-4 flex items-center justify-between">
+            <h1 className="text-2xl font-semibold">
+              {t('sucursalAdmin.title.admin', 'Sucursales')}
+            </h1>
+            <Button
+              type="button"
+              onClick={() => {
+                setShowCreate(true);
+                setEditing(null);
+                setErrorState(null);
+              }}
+              data-testid="sucursal-new"
+            >
+              {t('sucursal.new', 'Nueva sucursal')}
+            </Button>
+          </header>
+
+          {(showCreate || editing !== null) && (
+            <Card className="mb-4" data-testid="sucursal-form-card">
+              <CardHeader>
+                <CardTitle>
+                  {editing !== null
+                    ? t('sucursal.editTitle', 'Editar sucursal')
+                    : t('sucursal.createTitle', 'Nueva sucursal')}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {errorState !== null && (
+                  <p
+                    role="alert"
+                    aria-live="assertive"
+                    data-testid="sucursal-form-error"
+                    className="mb-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                  >
+                    {errorState.message}
+                  </p>
+                )}
+                <SucursalFormHarness
+                  onSubmit={onSubmit}
+                  isSubmitting={submitting}
+                  isUpdate={editing !== null}
+                  initialSucursal={editing}
+                  onCancel={closeModal}
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {listForAdmin.error !== undefined && (
+            <p
+              role="alert"
+              aria-live="assertive"
+              className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {t('sucursal.loadError', 'No se pudieron cargar las sucursales.')}
+            </p>
+          )}
+
+          {listForAdmin.isLoading && (listForAdmin.data ?? []).length === 0 && (
+            <p
+              role="status"
+              aria-live="polite"
+              className="text-sm text-muted-foreground"
+            >
+              {t('sucursal.loading', 'Cargando sucursales...')}
+            </p>
+          )}
+
+          {(listForAdmin.data ?? []).length === 0 &&
+          !listForAdmin.isLoading &&
+          listForAdmin.error === undefined ? (
+            <p
+              role="status"
+              aria-live="polite"
+              className="text-sm text-muted-foreground"
+              data-testid="sucursal-empty"
+            >
+              {t('sucursal.empty', 'Aún no hay sucursales configuradas.')}
+            </p>
+          ) : (
+            <div
+              className="overflow-x-auto rounded-lg border bg-card"
+              data-testid="sucursal-table-wrapper"
+            >
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="px-3 py-2">
+                      {t('sucursal.col.nombre', 'Nombre')}
+                    </th>
+                    <th className="px-3 py-2">
+                      {t('sucursal.col.prefijo', 'Prefijo')}
+                    </th>
+                    <th className="px-3 py-2">
+                      {t('sucursal.col.ciudad', 'Ciudad')}
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      {t('sucursal.col.actions', 'Acciones')}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(listForAdmin.data ?? []).map((s) => (
+                    <tr
+                      key={s.uuid}
+                      data-testid={`sucursal-row-${s.uuid}`}
+                      className="border-b"
+                    >
+                      <td className="px-3 py-2 font-medium">
+                        {s.nombre ?? s.uuid}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs">
+                        {s.prefijo_nombre ?? '—'}
+                      </td>
+                      <td className="px-3 py-2">{s.ciudad ?? '—'}</td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setEditing(s);
+                              setShowCreate(false);
+                              setErrorState(null);
+                            }}
+                            data-testid={`sucursal-edit-${s.uuid}`}
+                          >
+                            {t('sucursal.action.edit', 'Editar')}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => void onPairingClick(s.uuid)}
+                            data-testid={`sucursal-pairing-${s.uuid}`}
+                          >
+                            {t('sucursal.action.pairing', 'Token de pairing')}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      <PairingTokenDialog
+        token={pairingToken}
+        onClose={() => setPairingToken(null)}
+      />
+    </main>
   );
 }

@@ -1,10 +1,10 @@
 /**
- * `<SucursalForm />` -- presentational form for creating a new branch
- * (IT-2.1, IT-2.7).
+ * `<SucursalForm />` -- presentational form for creating + editing a
+ * branch (IT-2.1, IT-2.7).
  *
  * DEC-F3.1-02 mirror: container/presentational split. The parent
- * (`<SucursalesList />`) owns submit state, validation errors, and the
- * HTTP call; this component only renders the RHF form fields.
+ * (`<SeleccionarSucursal />`) owns submit state, validation errors, and
+ * the HTTP call; this component only renders the RHF form fields.
  *
  * Accessibility (RNF-022 WCAG 2.1 AA, mirror of LoginForm):
  *   - All inputs have `<FormLabel htmlFor>` + `<FormControl id>` paired.
@@ -14,7 +14,8 @@
  *   - `aria-busy` on the form element while submitting.
  *
  * Required fields: `nombre`, `prefijo_nombre`. Everything else is
- * optional in the schema (matches backend `SucursalCreate`).
+ * optional in the schema (matches backend `SucursalCreate` /
+ * `SucursalUpdate`).
  */
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -32,7 +33,11 @@ import {
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 
-import { sucursalCreateSchema, type SucursalCreateInput } from '../api/sucursalSchema';
+import {
+  sucursalCreateSchema,
+  type Sucursal,
+  type SucursalCreateInput,
+} from '../api/sucursalSchema';
 
 export interface SucursalFormProps {
   /** Caller's RHF form instance -- we re-render on every keystroke so the
@@ -41,9 +46,12 @@ export interface SucursalFormProps {
   form: UseFormReturn<SucursalCreateInput>;
   onSubmit: (values: SucursalCreateInput) => void;
   isSubmitting: boolean;
-  /** Optional: when true the submit button label changes to "Actualizar"
-   *  (reserved for a future update flow; IT-2 ships create-only). */
+  /** When true the submit button label changes to "Actualizar" (PUT). */
   isUpdate?: boolean;
+  /** Optional prefill for edit; null on create. */
+  initialSucursal?: Sucursal | null;
+  /** Close the parent modal (cancel button). */
+  onCancel?: () => void;
 }
 
 export function SucursalForm({
@@ -51,6 +59,8 @@ export function SucursalForm({
   onSubmit,
   isSubmitting,
   isUpdate = false,
+  initialSucursal = null,
+  onCancel,
 }: SucursalFormProps) {
   const { t } = useTranslation();
   return (
@@ -166,38 +176,135 @@ export function SucursalForm({
           )}
         />
 
-        <Button
-          type="submit"
-          className="w-full"
-          disabled={isSubmitting}
-          data-testid="sucursal-submit"
-        >
-          {isSubmitting
-            ? t('sucursal.form.submitting')
-            : isUpdate
-              ? t('sucursal.form.update')
-              : t('sucursal.form.create')}
-        </Button>
+        <FormField
+          control={form.control}
+          name="horario"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel htmlFor="horario">{t('sucursal.field.horario')}</FormLabel>
+              <FormControl>
+                <Input
+                  id="horario"
+                  data-testid="sucursal-field-horario"
+                  placeholder="Lun-Vie 8:00-18:00 / Sab 9:00-13:00"
+                  {...field}
+                  value={field.value ?? ''}
+                />
+              </FormControl>
+              <FormDescription>{t('sucursal.field.horarioHelp')}</FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <FormField
+            control={form.control}
+            name="uuid_tipo_sucursal"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="uuid_tipo_sucursal">
+                  {t('sucursal.field.uuidTipoSucursal')}
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    id="uuid_tipo_sucursal"
+                    data-testid="sucursal-field-uuid-tipo-sucursal"
+                    placeholder="00000000-0000-0000-0000-000000000000"
+                    {...field}
+                    value={field.value ?? ''}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="uuid_empresa"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="uuid_empresa">
+                  {t('sucursal.field.uuidEmpresa')}
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    id="uuid_empresa"
+                    data-testid="sucursal-field-uuid-empresa"
+                    placeholder="00000000-0000-0000-0000-000000000000"
+                    {...field}
+                    value={field.value ?? ''}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+
+        {initialSucursal !== null && (
+          <p
+            className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+            data-testid="sucursal-form-editing"
+          >
+            {t(
+              'sucursal.form.editingNotice',
+              'Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.',
+            )}
+          </p>
+        )}
+
+        <div className="mt-2 flex items-center justify-end gap-2">
+          {onCancel && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onCancel}
+              disabled={isSubmitting}
+              data-testid="sucursal-cancel"
+            >
+              {t('common.cancel', 'Cancelar')}
+            </Button>
+          )}
+          <Button
+            type="submit"
+            disabled={isSubmitting}
+            data-testid="sucursal-submit"
+          >
+            {isSubmitting
+              ? t('sucursal.form.submitting')
+              : isUpdate
+                ? t('sucursal.form.update')
+                : t('sucursal.form.create')}
+          </Button>
+        </div>
       </form>
     </Form>
   );
 }
 
 /**
- * `<SucursalForm.Harness />` -- test convenience: a full Harness that
- * builds the RHF form with `zodResolver` so vitest unit tests can
- * exercise the field rendering and submit handler without
- * instantiating a parent container.
+ * `<SucursalFormHarness />` -- builds the RHF form with `zodResolver`
+ * and seeds `defaultValues` from `initialSucursal` when present. Used
+ * by the page container for both create (initialSucursal=null) and
+ * edit (initialSucursal=<row>) flows. Mirror of CupoFormHarness /
+ * TarifaFormHarness.
  */
-export function SucursalFormHarness(props: Omit<SucursalFormProps, 'form'>) {
+export function SucursalFormHarness(
+  props: Omit<SucursalFormProps, 'form'>,
+): JSX.Element {
+  const initial = props.initialSucursal ?? null;
   const form = useForm<SucursalCreateInput>({
     resolver: zodResolver(sucursalCreateSchema),
     defaultValues: {
-      nombre: '',
-      prefijo_nombre: '',
-      ciudad: '',
-      telefono: '',
-      direccion: '',
+      nombre: initial?.nombre ?? '',
+      prefijo_nombre: initial?.prefijo_nombre ?? '',
+      ciudad: initial?.ciudad ?? '',
+      telefono: initial?.telefono ?? '',
+      direccion: initial?.direccion ?? '',
+      horario: initial?.horario ?? null,
+      uuid_tipo_sucursal: initial?.uuid_tipo_sucursal ?? null,
+      uuid_empresa: initial?.uuid_empresa ?? null,
     },
   });
   return <SucursalForm {...props} form={form} />;

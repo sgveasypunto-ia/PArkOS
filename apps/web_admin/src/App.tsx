@@ -6,7 +6,6 @@ import { WaitForAuth } from '@/components/WaitForAuth';
 import { AdminChrome } from '@/components/chrome/AdminChrome';
 import Dashboard from '@/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
-import SucursalesList from '@/features/sucursales/pages/SucursalesList';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
@@ -67,7 +66,10 @@ export default function App() {
         >
           <Route path="/" element={<Navigate to="/seleccionar-sucursal" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/sucursales" element={<SucursalesList />} />
+          <Route
+            path="/sucursales"
+            element={<Navigate to="/seleccionar-sucursal?tab=admin" replace />}
+          />
           <Route path="/gestion-usuarios" element={<UsuariosList />} />
           <Route
             path="/admin/usuarios"
