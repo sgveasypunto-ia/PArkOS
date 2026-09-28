@@ -46,6 +46,7 @@ import {
 
 import { SucursalFormHarness } from '@/features/sucursales/components/SucursalForm';
 import { PairingTokenDialog } from '@/features/sucursales/components/PairingTokenDialog';
+import { useTipoSucursal } from '@/features/tipo-sucursal/hooks/useTipoSucursal';
 import {
   createSucursal,
   listSucursales,
@@ -134,6 +135,13 @@ export default function SeleccionarSucursal(): JSX.Element {
   // -------------------------------------------------------------------------
   // Admin CRUD state
   // -------------------------------------------------------------------------
+  // Catalog for FK auto-fill on create: `uuid_tipo_sucursal` defaults
+  // to the first tipo_sucursal UUID (mirror of `bootstrap_pairing.py`
+  // pattern). The field is rendered `readOnly` regardless, so the
+  // operator cannot change it from the form.
+  const { tipos: tiposSucursal } = useTipoSucursal();
+  const defaultTipoSucursalUuid = tiposSucursal[0]?.uuid ?? null;
+
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Sucursal | null>(null);
   const [pairingToken, setPairingToken] = useState<PairingTokenResponse | null>(null);
@@ -273,6 +281,7 @@ export default function SeleccionarSucursal(): JSX.Element {
                   isUpdate={editing !== null}
                   initialSucursal={editing}
                   onCancel={closeModal}
+                  defaultTipoSucursalUuid={defaultTipoSucursalUuid}
                 />
               </CardContent>
             </Card>

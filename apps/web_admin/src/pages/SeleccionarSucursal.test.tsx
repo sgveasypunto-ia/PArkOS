@@ -160,7 +160,7 @@ describe('SeleccionarSucursal unified page', () => {
     });
   });
 
-  it('T4: "Nueva sucursal" opens an empty form', async () => {
+  it('T4: "Nueva sucursal" opens the form with uuid_tipo_sucursal auto-filled from HARDCODED_CATALOG', async () => {
     const user = userEvent.setup();
     mockedList.mockResolvedValue([]);
     renderAt(['/seleccionar-sucursal?tab=admin']);
@@ -171,6 +171,11 @@ describe('SeleccionarSucursal unified page', () => {
     expect(screen.getByTestId('sucursal-form-card')).toBeInTheDocument();
     const nombre = screen.getByTestId('sucursal-field-nombre') as HTMLInputElement;
     expect(nombre.value).toBe('');
+    // Auto-fill: HARDCODED_CATALOG[0].uuid in useTipoSucursal -> 'propia'
+    // sentinel (see apps/web_admin/src/features/tipo-sucursal/hooks/useTipoSucursal.ts).
+    const tipo = screen.getByTestId('sucursal-field-uuid-tipo-sucursal') as HTMLInputElement;
+    expect(tipo.value).toBe('00000000-0000-0000-0000-00000000c001');
+    expect(tipo.readOnly).toBe(true);
   });
 
   it('T5: clicking "Editar" opens the form pre-filled from the row', async () => {
@@ -190,6 +195,24 @@ describe('SeleccionarSucursal unified page', () => {
     const prefijo = screen.getByTestId('sucursal-field-prefijo') as HTMLInputElement;
     expect(nombre.value).toBe('Sucursal Norte');
     expect(prefijo.value).toBe('BOG-NOR');
+  });
+
+  it('T8: FK inputs are readOnly on edit too (defense in depth against operator typos)', async () => {
+    const user = userEvent.setup();
+    mockedList.mockResolvedValue([SUC_NORTE]);
+    renderAt(['/seleccionar-sucursal?tab=admin']);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('sucursal-edit-11111111-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    await user.click(
+      screen.getByTestId('sucursal-edit-11111111-1111-1111-1111-111111111111'),
+    );
+    const tipo = screen.getByTestId('sucursal-field-uuid-tipo-sucursal') as HTMLInputElement;
+    const empresa = screen.getByTestId('sucursal-field-uuid-empresa') as HTMLInputElement;
+    expect(tipo.readOnly).toBe(true);
+    expect(empresa.readOnly).toBe(true);
   });
 
   it('T6: clicking "Token de pairing" opens the PairingTokenDialog', async () => {

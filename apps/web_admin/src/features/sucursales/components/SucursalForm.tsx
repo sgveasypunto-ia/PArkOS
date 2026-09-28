@@ -52,6 +52,13 @@ export interface SucursalFormProps {
   initialSucursal?: Sucursal | null;
   /** Close the parent modal (cancel button). */
   onCancel?: () => void;
+  /**
+   * Optional UUID used as the default for `uuid_tipo_sucursal` on
+   * CREATE (when `initialSucursal` is null). The parent page typically
+   * resolves this from `useTipoSucursal()` (first UUID). On edit the
+   * existing `initialSucursal.uuid_tipo_sucursal` wins.
+   */
+  defaultTipoSucursalUuid?: string | null;
 }
 
 export function SucursalForm({
@@ -211,10 +218,18 @@ export function SucursalForm({
                     id="uuid_tipo_sucursal"
                     data-testid="sucursal-field-uuid-tipo-sucursal"
                     placeholder="00000000-0000-0000-0000-000000000000"
+                    readOnly
+                    className="cursor-not-allowed bg-muted/40 opacity-70"
                     {...field}
                     value={field.value ?? ''}
                   />
                 </FormControl>
+                <FormDescription>
+                  {t(
+                    'sucursal.field.uuidFkHelp',
+                    'Asignado automáticamente al crear. No editable.',
+                  )}
+                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -232,10 +247,18 @@ export function SucursalForm({
                     id="uuid_empresa"
                     data-testid="sucursal-field-uuid-empresa"
                     placeholder="00000000-0000-0000-0000-000000000000"
+                    readOnly
+                    className="cursor-not-allowed bg-muted/40 opacity-70"
                     {...field}
                     value={field.value ?? ''}
                   />
                 </FormControl>
+                <FormDescription>
+                  {t(
+                    'sucursal.field.uuidFkHelp',
+                    'Asignado automáticamente al crear. No editable.',
+                  )}
+                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -294,6 +317,11 @@ export function SucursalFormHarness(
   props: Omit<SucursalFormProps, 'form'>,
 ): JSX.Element {
   const initial = props.initialSucursal ?? null;
+  // On CREATE (`initial === null`), seed `uuid_tipo_sucursal` with the
+  // caller-provided default (typically the first UUID from
+  // `useTipoSucursal()`). On EDIT, the existing row wins.
+  const initialTipoSucursalUuid =
+    initial?.uuid_tipo_sucursal ?? props.defaultTipoSucursalUuid ?? null;
   const form = useForm<SucursalCreateInput>({
     resolver: zodResolver(sucursalCreateSchema),
     defaultValues: {
@@ -303,7 +331,7 @@ export function SucursalFormHarness(
       telefono: initial?.telefono ?? '',
       direccion: initial?.direccion ?? '',
       horario: initial?.horario ?? null,
-      uuid_tipo_sucursal: initial?.uuid_tipo_sucursal ?? null,
+      uuid_tipo_sucursal: initialTipoSucursalUuid,
       uuid_empresa: initial?.uuid_empresa ?? null,
     },
   });
