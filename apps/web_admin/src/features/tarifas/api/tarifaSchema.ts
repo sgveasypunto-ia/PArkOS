@@ -30,12 +30,16 @@ export const tarifaCreateSchema = z.object({
   uuid_sucursal: nullableUuid,
   uuid_tipo_vehiculo: nullableUuid,
   uuid_tipo_tarifa: nullableUuid,
-  valor: decimalString.refine((v) => Number(v) > 0, {
-    message: 'El valor debe ser mayor a 0',
-  }),
-  valor_plena: decimalString.refine((v) => Number(v) >= 0, {
-    message: 'El valor plena debe ser >= 0',
-  }),
+  valor: z
+    .union([decimalString, z.null()])
+    .refine((v) => v === null || Number(v) > 0, {
+      message: 'El valor debe ser mayor a 0',
+    }),
+  valor_plena: z
+    .union([decimalString, z.null()])
+    .refine((v) => v === null || Number(v) >= 0, {
+      message: 'El valor plena debe ser >= 0',
+    }),
   vigente_desde: z
     .string()
     .datetime({ offset: true })

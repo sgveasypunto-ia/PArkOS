@@ -3,27 +3,24 @@
  * de los catálogos PR-D (tarifas, cupos, tipos-vehiculo, tipo-tarifa,
  * configuracion-tolerancias, configuracion-seguridad).
  *
- * Envuelve el `Dialog` ya testeado con título, descripción, slot de
+ * Envuelve el `Dialog` ya testeado con título, descripción y slot de
  * error (server errors tipados en clases — `TarifaOverlapError`,
- * `CantidadBajoIngresosError`, `CantidadSucursalInmutableError`, etc.),
- * slot de children (el form concreto), y un footer con botones
- * Cancelar + Submit.
+ * `CantidadBajoIngresosError`, `CantidadSucursalInmutableError`, etc.).
  *
- * El `submitLabel` cambia entre "Crear" y "Actualizar" según el
- * caller. El estado `submitting` deshabilita ambos botones para
- * evitar double-submit. El `error` se renderiza como `role="alert"`
- * con `aria-live="assertive"` para que un screen reader lo anuncie.
+ * El caller es dueño de:
+ *   - el `<form onSubmit={...}>` que envuelve los fields + los buttons
+ *     Cancelar / Submit, para evitar formularios anidados (HTML inválido);
+ *   - la llamada a `form.handleSubmit(...)` con sus propias validaciones.
+ * El FormModal solo aporta la accesibilidad del shell (title wired to
+ * aria-labelledby via the Dialog component, error slot role="alert")
+ * y los estilos del Card-like container.
  *
- * NO incluye form logic ni Zod schema — eso vive en cada feature
- * concreta (TarifaForm, CupoForm, etc.). El FormModal solo da el
- * shell de presentación y la accesibilidad.
+ * El children debe ser el form completo. El error slot arriba del
+ * children muestra mensajes del backend.
  */
 import * as React from 'react';
 
-import { Button } from '@/components/ui/button';
 import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-
-import { cn } from '@/lib/utils';
 
 export interface FormModalProps {
   open: boolean;
@@ -31,18 +28,17 @@ export interface FormModalProps {
   title: string;
   /** Subtitle shown under the title. Optional. */
   description?: string;
-  submitLabel: string;
-  submitting: boolean;
   /** Server error to surface as `role="alert"`. Optional. */
   error?: string | null;
   /**
-   * The form fields. Caller is responsible for `<form onSubmit={...}>`
-   * and field-level labels/validation; FormModal only owns the shell.
+   * The complete form (caller-owned `<form onSubmit={...}>` wrapping
+   * the fields + the Cancelar / Submit buttons).
    */
   children: React.ReactNode;
-  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   /** Spread onto the underlying Dialog `contentProps` for `data-testid`. */
-  contentProps?: React.HTMLAttributes<HTMLDivElement>;
+  contentProps?: React.HTMLAttributes<HTMLDivElement> & {
+    'data-testid'?: string;
+  };
 }
 
 export function FormModal({
@@ -50,11 +46,8 @@ export function FormModal({
   onOpenChange,
   title,
   description,
-  submitLabel,
-  submitting,
   error,
   children,
-  onSubmit,
   contentProps,
 }: FormModalProps): JSX.Element | null {
   return (
@@ -63,10 +56,7 @@ export function FormModal({
       onOpenChange={onOpenChange}
       contentProps={contentProps}
     >
-      <form
-        onSubmit={onSubmit}
-        className="mx-auto flex max-w-2xl flex-col gap-4 rounded-xl border bg-card p-6 shadow-elevation-2"
-      >
+      <div className="mx-auto flex max-w-2xl flex-col gap-4 rounded-xl border bg-card p-6 shadow-elevation-2">
         <div className="flex flex-col gap-1">
           <DialogTitle>{title}</DialogTitle>
           {description !== undefined && (
@@ -85,28 +75,8 @@ export function FormModal({
           </p>
         )}
 
-        <div className="flex flex-col gap-3">{children}</div>
-
-        <div className="mt-2 flex items-center justify-end gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => onOpenChange(false)}
-            disabled={submitting}
-            data-testid="form-modal-cancel"
-          >
-            Cancelar
-          </Button>
-          <Button
-            type="submit"
-            disabled={submitting}
-            data-testid="form-modal-submit"
-            className={cn(submitting && 'opacity-70')}
-          >
-            {submitting ? `${submitLabel}…` : submitLabel}
-          </Button>
-        </div>
-      </form>
+        {children}
+      </div>
     </Dialog>
   );
 }

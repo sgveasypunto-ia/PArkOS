@@ -1,13 +1,12 @@
 /**
  * FormModal — unit tests.
  *
- * Pins:
- *   1. Renders title + description + children when open.
- *   2. Hidden when closed.
- *   3. Renders the error slot with role="alert" when error is set.
- *   4. Submit fires the onSubmit handler; cancel button fires
- *      onOpenChange(false).
- *   5. Submit button shows submitting label and is disabled.
+ * Pins the shell responsibilities only: title wiring, description,
+ * error slot, children passthrough, open/close.
+ *
+ * The caller-owned form is tested at the feature level (TarifaForm /
+ * CupoForm). FormModal does not own the form, the submit button, or
+ * the cancel button — that lives in the caller.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -15,24 +14,20 @@ import userEvent from '@testing-library/user-event';
 
 import { FormModal } from './FormModal';
 
-function setup(over: Partial<React.ComponentProps<typeof FormModal>> = {}) {
-  const onSubmit = vi.fn((event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-  });
+function setup(
+  over: Partial<Omit<React.ComponentProps<typeof FormModal>, 'children'>> = {},
+) {
   const onOpenChange = vi.fn();
   const props: React.ComponentProps<typeof FormModal> = {
     open: true,
     onOpenChange,
     title: 'Nueva tarifa',
     description: 'Cargá la tarifa de la sucursal',
-    submitLabel: 'Crear',
-    submitting: false,
-    onSubmit,
     children: <input data-testid="child-input" />,
     ...over,
   };
   const result = render(<FormModal {...props} />);
-  return { ...result, onSubmit, onOpenChange };
+  return { ...result, onOpenChange };
 }
 
 describe('FormModal', () => {
@@ -59,33 +54,18 @@ describe('FormModal', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('FM5: cancel fires onOpenChange(false)', async () => {
+  it('FM5: backdrop click fires onOpenChange(false)', async () => {
     const user = userEvent.setup();
-    const { onOpenChange } = setup();
-    await user.click(screen.getByTestId('form-modal-cancel'));
-    expect(onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it('FM6: submit button has type="submit" and the submitLabel', () => {
-    setup({ submitLabel: 'Actualizar' });
-    const btn = screen.getByTestId('form-modal-submit');
-    expect(btn).toHaveAttribute('type', 'submit');
-    expect(btn).toHaveTextContent('Actualizar');
-  });
-
-  it('FM7: submitting=true disables both buttons and shows ellipsis', () => {
-    setup({ submitting: true, submitLabel: 'Crear' });
-    const submit = screen.getByTestId('form-modal-submit');
-    const cancel = screen.getByTestId('form-modal-cancel');
-    expect(submit).toBeDisabled();
-    expect(cancel).toBeDisabled();
-    expect(submit).toHaveTextContent('Crear…');
-  });
-
-  it('FM8: form submit fires onSubmit with the event', async () => {
-    const user = userEvent.setup();
-    const { onSubmit } = setup();
-    await user.click(screen.getByTestId('form-modal-submit'));
-    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const { onOpenChange, container } = setup();
+    // The Dialog renders a fixed-position backdrop; click on it (not
+    // on a child) dispatches the close.
+    const backdrop = container.querySelector('[role="dialog"]')?.parentElement;
+    if (backdrop !== null && backdrop !== undefined) {
+      await user.click(backdrop);
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    } else {
+      throw new Error('backdrop not found');
+    }
   });
 });
+
