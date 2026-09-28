@@ -43,7 +43,7 @@ export default function SeleccionarSucursal(): JSX.Element {
   const { selected, setSelected } = useSucursal();
 
   const list = useSWR<SucursalListResponse>(
-    '/api/v1/empresa/sucursal',
+    '/api/v1/sucursales',
     async (key: string) => {
       const res = await parkosFetchRaw(key, {
         headers: { Accept: 'application/json' },
