@@ -9,27 +9,31 @@
  * `sync-agent-` JWT.
  *
  * WCAG 2.1 AA:
- *   - Role="dialog" + aria-labelledby + aria-describedby.
+ *   - Role="dialog" + aria-modal + aria-labelledby + aria-describedby, all
+ *     supplied by <Dialog />.
+ *   - Escape closes, focus is trapped while open and restored to the
+ *     trigger on close. This was previously claimed in the docblock but
+ *     not implemented; the behaviour now lives in, and is tested by,
+ *     `@/components/ui/dialog`.
  *   - The token itself is rendered inside a `<code>` with
  *     `aria-label="Pairing token"` (screen readers read the value
  *     back; clipboard is the canonical copy channel so the user can
  *     paste it into the wizard without hearing it spoken).
  *   - "Copied!" status announces via role=status aria-live=polite
  *     after the clipboard copy succeeds.
- *   - Escape closes the dialog (Radix Dialog built-in).
  */
 import { useState } from 'react';
+import type { HTMLAttributes } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle,
 } from '@/components/ui/card';
+import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 
 import { useCountdown, formatCountdown } from '@/features/auth/hooks/useCountdown';
 
@@ -65,21 +69,21 @@ export function PairingTokenDialog({ token, onClose }: PairingTokenDialogProps) 
   }
 
   return (
-    <div
-      role="dialog"
-      aria-labelledby="pairing-token-title"
-      aria-describedby="pairing-token-desc"
-      data-testid="pairing-token-dialog"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4"
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      contentProps={{ 'data-testid': 'pairing-token-dialog' } as HTMLAttributes<HTMLDivElement>}
     >
-      <Card className="w-full max-w-md">
+      <Card className="w-full max-w-md shadow-elevation-3">
         <CardHeader>
-          <CardTitle id="pairing-token-title">{t('sucursal.pairing.title')}</CardTitle>
-          <CardDescription id="pairing-token-desc">
+          <DialogTitle>{t('sucursal.pairing.title')}</DialogTitle>
+          <DialogDescription>
             {expired
               ? t('sucursal.pairing.expired')
               : t('sucursal.pairing.expiresIn', { remaining: formatted })}
-          </CardDescription>
+          </DialogDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <code
@@ -117,6 +121,6 @@ export function PairingTokenDialog({ token, onClose }: PairingTokenDialogProps) 
           </Button>
         </CardFooter>
       </Card>
-    </div>
+    </Dialog>
   );
 }
