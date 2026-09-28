@@ -27,12 +27,16 @@ const decimalString = z
 
 export const configuracionToleranciasCreateSchema = z.object({
   uuid_sucursal: nullableUuid,
-  tolerancia_efectivo: decimalString.refine((v) => Number(v) >= 0, {
-    message: 'La tolerancia de efectivo debe ser >= 0',
-  }),
-  tolerancia_datafono: decimalString.refine((v) => Number(v) >= 0, {
-    message: 'La tolerancia de datáfono debe ser >= 0',
-  }),
+  tolerancia_efectivo: z
+    .union([decimalString, z.null()])
+    .refine((v) => v === null || Number(v) >= 0, {
+      message: 'La tolerancia de efectivo debe ser >= 0',
+    }),
+  tolerancia_datafono: z
+    .union([decimalString, z.null()])
+    .refine((v) => v === null || Number(v) >= 0, {
+      message: 'La tolerancia de datáfono debe ser >= 0',
+    }),
 });
 
 export type ConfiguracionToleranciasCreateInput = z.infer<
