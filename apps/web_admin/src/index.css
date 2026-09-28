@@ -4,44 +4,107 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* Surfaces: chrome is a cool off-white, cards float above it in pure white. */
+    --background: 220 20% 98%;
+    --foreground: 220 15% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 47.4% 11.2%;
-    --radius: 0.5rem;
+    --card-foreground: 220 15% 12%;
+
+    /* macOS system blue is #007AFF, but that is 4.02:1 against white and
+       button.tsx paints 14px white text on this fill, so it misses AA.
+       45% lightness holds the same hue at 4.76:1. --ring keeps the true
+       system blue because a focus ring only needs 3:1. */
+    --primary: 211 100% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 16% 94%;
+    --secondary-foreground: 220 15% 20%;
+    --muted: 220 16% 95%;
+    --muted-foreground: 220 9% 42%;
+    --accent: 220 16% 92%;
+    --accent-foreground: 220 15% 18%;
+
+    /* Deepened past #FF3B30 so white button text clears AA; the stock
+       macOS red is only 3.3:1 on white and fails for 14px text. */
+    --destructive: 354 100% 42%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Same AA-driven deepening as --destructive: the stock systemGreen and
+       systemOrange are fills for large glyphs, not button backgrounds. */
+    --success: 142 58% 32%;
+    --success-foreground: 0 0% 100%;
+    --warning: 36 100% 33%;
+    --warning-foreground: 0 0% 100%;
+
+    /* Separators in macOS are far softer than the default slate. */
+    --border: 220 13% 87%;
+    --input: 220 13% 87%;
+    --ring: 211 100% 50%;
+
+    --radius: 0.75rem;
+
+    /* Vibrancy: translucent chrome that samples what is behind it. */
+    --surface-translucent: 255 255 255;
+    --surface-translucent-alpha: 0.72;
+    --surface-translucent-border: 255 255 255;
+    --surface-translucent-border-alpha: 0.6;
+    --backdrop-filter: saturate(180%) blur(20px);
+
+    /* Elevation: many faint layers instead of one dark drop shadow. */
+    --shadow-elevation-1:
+      0 1px 2px 0 rgb(0 0 0 / 0.04), 0 1px 3px 0 rgb(0 0 0 / 0.06);
+    --shadow-elevation-2:
+      0 2px 4px 0 rgb(0 0 0 / 0.04), 0 4px 12px 0 rgb(0 0 0 / 0.08);
+    --shadow-elevation-3:
+      0 2px 6px 0 rgb(0 0 0 / 0.05), 0 8px 24px 0 rgb(0 0 0 / 0.1);
+
+    /* The real macOS deceleration curve, not a stock cubic-bezier. */
+    --ease-macos: cubic-bezier(0.32, 0.72, 0, 1);
+    --duration-fast: 120ms;
+    --duration-base: 200ms;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --background: 240 5% 10%;
+    --foreground: 220 15% 95%;
+    --card: 240 5% 13%;
+    --card-foreground: 220 15% 95%;
+
+    --primary: 210 100% 52%;
+    /* Dark text on the lighter dark-mode blue: #0A84FF with white is
+       3.1:1 and fails AA at button sizes. */
+    --primary-foreground: 240 6% 9%;
+
+    --secondary: 240 4% 18%;
+    --secondary-foreground: 220 15% 92%;
+    --muted: 240 4% 17%;
+    --muted-foreground: 220 8% 65%;
+    --accent: 240 4% 20%;
+    --accent-foreground: 220 15% 95%;
+
+    --destructive: 4 80% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 50% 55%;
+    --success-foreground: 240 6% 9%;
+    --warning: 36 90% 58%;
+    --warning-foreground: 240 6% 9%;
+
+    --border: 240 4% 20%;
+    --input: 240 4% 20%;
+    --ring: 210 100% 52%;
+
+    --surface-translucent: 28 28 30;
+    --surface-translucent-alpha: 0.72;
+    --surface-translucent-border: 255 255 255;
+    --surface-translucent-border-alpha: 0.1;
+
+    --shadow-elevation-1:
+      0 1px 2px 0 rgb(0 0 0 / 0.2), 0 1px 3px 0 rgb(0 0 0 / 0.24);
+    --shadow-elevation-2:
+      0 2px 4px 0 rgb(0 0 0 / 0.2), 0 4px 12px 0 rgb(0 0 0 / 0.28);
+    --shadow-elevation-3:
+      0 2px 6px 0 rgb(0 0 0 / 0.24), 0 8px 24px 0 rgb(0 0 0 / 0.36);
   }
 }
 
@@ -49,9 +112,55 @@
   * {
     border-color: hsl(var(--border));
   }
+
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
+
+    /* The system stack is the loudest macOS tell there is. */
+    font-family:
+      -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter,
+      system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Honour the OS setting instead of only exposing a class toggle. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light) {
+      color-scheme: dark;
+    }
+  }
+}
+
+@layer components {
+  /* Translucent chrome for the sidebar and topbar. */
+  .surface-translucent {
+    background-color: rgb(
+      var(--surface-translucent) / var(--surface-translucent-alpha)
+    );
+    backdrop-filter: var(--backdrop-filter);
+    -webkit-backdrop-filter: var(--backdrop-filter);
+    border-color: rgb(
+      var(--surface-translucent-border) /
+        var(--surface-translucent-border-alpha)
+    );
+  }
+
+  /* Consistent, visible keyboard focus across every primitive. */
+  .focus-ring {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
   }
 }
