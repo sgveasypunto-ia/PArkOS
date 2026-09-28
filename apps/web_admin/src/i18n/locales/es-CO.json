@@ -54,7 +54,18 @@
     "navLabel": "Secciones",
     "logout": "Cerrar sesión",
     "signingOut": "Saliendo...",
-    "branches": "{{count}} sucursales"
+    "branches": "{{count}} sucursales",
+    "sucursalActive": "Sucursal activa: {{uuid}}",
+    "sucursalSelect": "Seleccionar sucursal",
+    "changeBranch": "Cambiar sucursal"
+  },
+  "sucursalPicker": {
+    "title": "Elegí una sucursal para empezar",
+    "subtitle": "Todas las métricas y configuraciones se filtran por la sucursal que elijas acá.",
+    "search": "Buscar por nombre o prefijo…",
+    "loading": "Cargando sucursales…",
+    "emptySystem": "No tenés sucursales autorizadas. Contactá al administrador.",
+    "emptyFilter": "Ningún resultado para esa búsqueda."
   },
   "home": {
     "title": "Todo el parqueo, en un solo lugar",
@@ -76,6 +87,10 @@
       "usuarios": {
         "label": "Usuarios administradores",
         "description": "Crea usuarios admin u operador y asígnalos a una o varias sucursales."
+      },
+      "gestionUsuarios": {
+        "label": "Gestión de usuarios",
+        "description": "Lista, crea y edita usuarios administradores y operadores, y asigna sucursales a cada uno."
       },
       "tarifas": {
         "label": "Tarifas",

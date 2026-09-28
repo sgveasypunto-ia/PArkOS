@@ -83,9 +83,15 @@ test.describe('BranchSelector integration', () => {
       });
     });
 
-    await context.addInitScript((token: string) => {
-      window.localStorage.setItem('parkos.auth.token', token);
-    }, ADMIN_TOKEN);
+    await context.addInitScript(
+      ({ token, uuid }: { token: string; uuid: string }) => {
+        window.localStorage.setItem('parkos.auth.token', token);
+        // PR1 added the branch gate; this spec targets the in-page
+        // dropdown on /dashboard, so the gate has to be satisfied.
+        window.localStorage.setItem('parkos.lastSelectedSucursal', uuid);
+      },
+      { token: ADMIN_TOKEN, uuid: BRANCH_NORTE },
+    );
   });
 
   test('renders both permitted branches', async ({ page }) => {

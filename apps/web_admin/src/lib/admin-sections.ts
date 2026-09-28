@@ -48,7 +48,7 @@ export interface AdminSection {
   key:
     | 'dashboard'
     | 'sucursales'
-    | 'usuarios'
+    | 'gestion-usuarios'
     | 'tarifas'
     | 'cupos'
     | 'tipos-vehiculo'
@@ -79,10 +79,10 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     permission: null,
   },
   {
-    key: 'usuarios',
-    path: '/admin/usuarios',
-    labelKey: 'home.section.usuarios.label',
-    descriptionKey: 'home.section.usuarios.description',
+    key: 'gestion-usuarios',
+    path: '/gestion-usuarios',
+    labelKey: 'home.section.gestionUsuarios.label',
+    descriptionKey: 'home.section.gestionUsuarios.description',
     permission: null,
   },
   {

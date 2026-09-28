@@ -79,7 +79,7 @@ describe('Home', () => {
     expect(screen.queryByTestId('home-card-auditoria')).not.toBeInTheDocument();
     expect(screen.queryByTestId('home-card-tarifas')).not.toBeInTheDocument();
     expect(screen.queryByTestId('home-card-cupos')).not.toBeInTheDocument();
-    expect(screen.getByTestId('home-card-usuarios')).toBeInTheDocument();
+    expect(screen.getByTestId('home-card-gestion-usuarios')).toBeInTheDocument();
   });
 
   it('H3b: shows Tarifas and Cupos when their config codes are granted', () => {

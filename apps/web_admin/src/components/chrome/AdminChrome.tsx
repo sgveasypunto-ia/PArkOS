@@ -17,15 +17,56 @@
  * ACCESSIBILITY: `<nav aria-label>` landmarks, `NavLink`'s automatic
  * `aria-current="page"` for the active section, and a real `<h1>`-free
  * header (the page owns its heading, so the document keeps exactly one).
+ *
+ * BRANCH SELECTOR (PR1): the chrome renders a `SucursalSelectorBadge`
+ * next to the nav. Clicking it navigates to `/seleccionar-sucursal`,
+ * which is the full-page grid where the operator can switch the active
+ * branch. We deliberately do NOT render the in-place `BranchSelector`
+ * dropdown here — keeping the choice in a single canonical surface
+ * (the picker) avoids two competing UI patterns for the same action.
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
+import { Building2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { visibleSections } from '@/lib/admin-sections';
+import { useSucursal } from '@/lib/sucursal-context';
+
+function SucursalSelectorBadge(): JSX.Element | null {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { selected } = useSucursal();
+  const { sucursalUuids } = useAdminAuth();
+
+  if (sucursalUuids.length === 0) return null;
+
+  const label = selected
+    ? t('chrome.sucursalActive', {
+        defaultValue: 'Sucursal activa: {{uuid}}',
+        uuid: selected.slice(0, 8),
+      })
+    : t('chrome.sucursalSelect', { defaultValue: 'Seleccionar sucursal' });
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={() => navigate('/seleccionar-sucursal')}
+      aria-label={t('chrome.changeBranch', { defaultValue: 'Cambiar sucursal' })}
+      data-testid="chrome-sucursal-selector"
+      className="gap-2 font-mono text-xs"
+    >
+      <Building2 className="size-3.5" aria-hidden="true" />
+      <span className="hidden sm:inline">{label}</span>
+      <span className="sm:hidden" aria-hidden="true">⇄</span>
+    </Button>
+  );
+}
 
 export function AdminChrome() {
   const { t } = useTranslation();
@@ -97,6 +138,7 @@ export function AdminChrome() {
           </nav>
 
           <div className="flex shrink-0 items-center gap-2">
+            <SucursalSelectorBadge />
             {sucursalUuids.length > 0 && (
               <Badge variant="secondary" className="hidden sm:inline-flex">
                 {t('chrome.branches', {

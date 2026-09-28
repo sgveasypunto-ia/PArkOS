@@ -10,6 +10,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
+import { SucursalProvider } from '@/lib/sucursal-context';
+
 const useAdminAuthMock = vi.fn();
 vi.mock('@parkos/ui-kit/hooks', () => ({
   useAdminAuth: () => useAdminAuthMock(),
@@ -33,16 +35,24 @@ function authState(over: Record<string, unknown> = {}) {
 }
 
 function renderChrome(initialPath = '/') {
+  // The chrome (PR1) reads `useSucursal()` for the branch badge, so
+  // every render is wrapped in the provider here.
   return render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route element={<AdminChrome />}>
-          <Route path="/" element={<div data-testid="outlet-home" />} />
-          <Route path="/audit" element={<div data-testid="outlet-audit" />} />
-          <Route path="/login" element={<div data-testid="outlet-login" />} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+    <SucursalProvider>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route element={<AdminChrome />}>
+            <Route path="/" element={<div data-testid="outlet-home" />} />
+            <Route path="/audit" element={<div data-testid="outlet-audit" />} />
+            <Route path="/login" element={<div data-testid="outlet-login" />} />
+            <Route
+              path="/seleccionar-sucursal"
+              element={<div data-testid="outlet-picker" />}
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </SucursalProvider>,
   );
 }
 

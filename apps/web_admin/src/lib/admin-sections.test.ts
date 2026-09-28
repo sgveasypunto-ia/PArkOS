@@ -20,12 +20,12 @@ describe('visibleSections', () => {
     // The backend gates Panel/Sucursales/Usuarios on the `admin-` issuer
     // alone, so a stricter UI would under-report real access.
     const keys = visibleSections([]).map((s) => s.key);
-    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'sucursales', 'usuarios']));
+    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'sucursales', 'gestion-usuarios']));
   });
 
   it('A3: reveals Auditoría once audit_read is granted (3 issuer-only + 1)', () => {
     // With just `audit_read`, the operator sees the 3 issuer-only
-    // surfaces (dashboard / sucursales / usuarios) plus the audit
+    // surfaces (dashboard / sucursales / gestion-usuarios) plus the audit
     // surface. Tarifas, Cupos and the 4 catalog/config surfaces
     // require their own codes which A3 does not grant.
     const keys = visibleSections(['audit_read']).map((s) => s.key);
@@ -55,7 +55,7 @@ describe('visibleSections', () => {
     expect(ADMIN_SECTIONS.map((s) => s.key)).toEqual([
       'dashboard',
       'sucursales',
-      'usuarios',
+      'gestion-usuarios',
       'tarifas',
       'cupos',
       'tipos-vehiculo',
