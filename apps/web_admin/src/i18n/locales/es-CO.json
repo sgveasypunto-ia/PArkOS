@@ -78,6 +78,44 @@
         "description": "Crea usuarios admin u operador y asígnalos a una o varias sucursales."
       },
       "tarifas": {
+    "title": "Tarifas",
+    "new": "Nueva tarifa",
+    "createTitle": "Crear nueva tarifa",
+    "editTitle": "Editar tarifa",
+    "modalDescription": "Cargá los datos. La tarifa pertenece a la sucursal elegida y entra en vigencia al instante seleccionado.",
+    "loading": "Cargando tarifas...",
+    "loadError": "No se pudieron cargar las tarifas.",
+    "loadSucursalesError": "No se pudieron cargar las sucursales.",
+    "empty": "Aún no hay tarifas configuradas.",
+    "withoutSucursal": "Sin sucursal",
+    "historyLabel": "Valor",
+    "tipoVehiculoAny": "Cualquiera",
+    "tipoTarifaAny": "Cualquiera",
+    "field": {
+      "sucursal": "Sucursal",
+      "sucursalHelp": "La tarifa pertenece a esta sucursal.",
+      "tipoVehiculo": "Tipo de vehículo (opcional)",
+      "tipoTarifa": "Modalidad (opcional)",
+      "valor": "Valor por hora",
+      "valorHelp": "Debe ser > 0. Cuatro decimales.",
+      "valorPlena": "Valor plena",
+      "valorPlenaHelp": "Debe ser >= 0. Cuatro decimales.",
+      "vigenteDesde": "Vigente desde (opcional)",
+      "vigenteDesdeHelp": "Vacío = ahora. Una fecha futura programa un cambio de tarifa."
+    },
+    "form": {
+      "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar",
+      "history": "Ver histórico",
+      "hideHistory": "Ocultar histórico"
+    }
+  },
+  "sucursal": {
         "label": "Tarifas",
         "description": "Crea, edita y programa tarifas por sucursal con histórico de versiones."
       },

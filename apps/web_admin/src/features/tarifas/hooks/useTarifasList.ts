@@ -1,14 +1,16 @@
 /**
- * `useTarifasList()` — SWR hook para el listado vigente de tarifas de
- * una sucursal (wrapper de ``GET /api/v1/empresa/tarifas-sucursal``).
+ * `useTarifasList()` — SWR hook para el listado global de tarifas
+ * vigentes de TODAS las sucursales (el admin necesita ver
+ * cross-branch). Wrapper de ``GET /api/v1/empresa/tarifas-sucursal``,
+ * que el factory emite sin filtro de sucursal (sólo ``vigente_hasta
+ * IS NULL``).
+ *
+ * El parámetro ``sucursal`` queda en la firma por compatibilidad con
+ * posibles callers futuros que quieran filtrar client-side; por ahora
+ * se ignora (el hook siempre lista todas).
  *
  * Mismo patrón que ``useTarifasByKey``: deduping 5min, 401 → logout
- * defensivo, sin refreshInterval activo (catálogo reference data).
- *
- * Devuelve un array vacío mientras el admin no carga la página o el
- * endpoint no está disponible. Sin fallback hardcoded — el listado
- * vigente es lo que se muestra al operador y un fallback estático
- * induciría a error de cálculo de cotización.
+ * defensivo, sin refreshInterval activo.
  */
 import useSWR from 'swr';
 
@@ -26,15 +28,18 @@ export interface UseTarifasListReturn {
   refresh: () => Promise<Tarifa[] | undefined>;
 }
 
-export function useTarifasList(sucursal: string | null): UseTarifasListReturn {
+export function useTarifasList(_sucursal?: string | null): UseTarifasListReturn {
+  // The factory handler does not filter by sucursal; the hook always
+  // lists all vigentes across branches. The parameter is kept for
+  // future client-side filtering and to match the by-key hook's
+  // signature (so a caller can swap without plumbing changes).
+  void _sucursal;
+
   const accessToken = useAuthStore((s) => s.accessToken);
 
   const { data, error, isLoading, mutate } = useSWR<Tarifa[]>(
-    accessToken && sucursal ? ['tarifas-list', sucursal] : null,
-    async () => {
-      if (!sucursal) return [];
-      return listTarifas({ limit: 200 });
-    },
+    accessToken ? 'tarifas-list' : null,
+    () => listTarifas({ limit: 200 }),
     {
       dedupingInterval: DEDUPING_INTERVAL_MS,
       shouldRetryOnError: (err) =>
