@@ -28,6 +28,8 @@ import {
   type VersionHistoryItem,
 } from '@/features/configuracion/components/VersionHistoryPanel';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
+import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
+import { useTipoTarifa } from '@/features/tipo-tarifa/hooks/useTipoTarifa';
 import { useSucursal } from '@/lib/sucursal-context';
 
 import {
@@ -40,7 +42,7 @@ import {
 } from '../api/tarifasApi';
 import { useTarifasByKey } from '../hooks/useTarifasByKey';
 import { useTarifasList } from '../hooks/useTarifasList';
-import { TarifaForm, TarifaFormHarness } from '../components/TarifaForm';
+import { TarifaFormHarness } from '../components/TarifaForm';
 
 type ErrorState = { kind: 'overlap' | 'inmutable' | 'network'; message: string } | null;
 
@@ -74,6 +76,8 @@ function toHistoryItem(t: Tarifa): VersionHistoryItem {
 interface ListContentProps {
   tarifas: Tarifa[];
   sucursales: Array<{ uuid: string; nombre: string | null }> | undefined;
+  tiposVehiculo: Array<{ uuid: string; tipo: string | null }>;
+  tiposTarifa: Array<{ uuid: string; tipo: string | null }>;
   onEdit: (t: Tarifa) => void;
   onToggleHistory: (sucursalKey: string) => void;
   historyOpenFor: string | null;
@@ -84,6 +88,8 @@ interface ListContentProps {
 function ListContent({
   tarifas,
   sucursales,
+  tiposVehiculo,
+  tiposTarifa,
   onEdit,
   onToggleHistory,
   historyOpenFor,
@@ -112,6 +118,14 @@ function ListContent({
         const sucursalNombre =
           sucursales?.find((s) => s.uuid === sucursalKey)?.nombre ??
           t('tarifas.withoutSucursal', 'Sin sucursal');
+        const tipoVehiculoNombre = tarifa.uuid_tipo_vehiculo
+          ? (tiposVehiculo.find((tv) => tv.uuid === tarifa.uuid_tipo_vehiculo)?.tipo ??
+            t('tarifas.unknownTipoVehiculo', 'Desconocido'))
+          : t('tarifas.tipoVehiculoAny', 'Cualquiera');
+        const modalidadNombre = tarifa.uuid_tipo_tarifa
+          ? (tiposTarifa.find((tt) => tt.uuid === tarifa.uuid_tipo_tarifa)?.tipo ??
+            t('tarifas.unknownTipoTarifa', 'Desconocida'))
+          : t('tarifas.tipoTarifaAny', 'Cualquiera');
         return (
           <Card
             key={tarifa.uuid}
@@ -124,11 +138,21 @@ function ListContent({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left">
-                    <th className="px-3 py-2">Tipo vehículo</th>
-                    <th className="px-3 py-2">Modalidad</th>
-                    <th className="px-3 py-2 text-right">Valor</th>
-                    <th className="px-3 py-2 text-right">Plena</th>
-                    <th className="px-3 py-2 text-right">Acciones</th>
+                    <th className="px-3 py-2">
+                      {t('tarifas.col.tipoVehiculo', 'Tipo vehículo')}
+                    </th>
+                    <th className="px-3 py-2">
+                      {t('tarifas.col.modalidad', 'Modalidad')}
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      {t('tarifas.col.valor', 'Valor')}
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      {t('tarifas.col.plena', 'Plena')}
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      {t('tarifas.col.acciones', 'Acciones')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -137,13 +161,17 @@ function ListContent({
                     data-testid={`tarifa-row-${tarifa.uuid}`}
                     className="border-b last:border-b-0"
                   >
-                    <td className="px-3 py-2 text-xs">
-                      {tarifa.uuid_tipo_vehiculo ??
-                        t('tarifas.tipoVehiculoAny', 'Cualquiera')}
+                    <td
+                      className="px-3 py-2 text-xs"
+                      data-testid={`tarifa-tipo-${tarifa.uuid}`}
+                    >
+                      {tipoVehiculoNombre}
                     </td>
-                    <td className="px-3 py-2 text-xs">
-                      {tarifa.uuid_tipo_tarifa ??
-                        t('tarifas.tipoTarifaAny', 'Cualquiera')}
+                    <td
+                      className="px-3 py-2 text-xs"
+                      data-testid={`tarifa-modalidad-${tarifa.uuid}`}
+                    >
+                      {modalidadNombre}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
                       {tarifa.valor ?? '—'}
@@ -207,6 +235,8 @@ export default function Tarifas(): JSX.Element {
   );
 
   const { tarifas, refresh, isLoading, error } = useTarifasList(null);
+  const { tipos: tiposVehiculo } = useTiposVehiculo();
+  const { tipos: tiposTarifa } = useTipoTarifa();
   const [editing, setEditing] = useState<Tarifa | null>(null);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -303,8 +333,7 @@ export default function Tarifas(): JSX.Element {
           contentProps={{ 'data-testid': 'tarifa-form-modal' }}
         >
           {editing !== null ? (
-            <TarifaForm
-              form={undefined as never}
+            <TarifaFormHarness
               onSubmit={onSubmit}
               isSubmitting={submitting}
               isUpdate
@@ -362,6 +391,8 @@ export default function Tarifas(): JSX.Element {
           <ListContent
             tarifas={tarifas}
             sucursales={sucursales}
+            tiposVehiculo={tiposVehiculo}
+            tiposTarifa={tiposTarifa}
             onEdit={handleEdit}
             onToggleHistory={handleToggleHistory}
             historyOpenFor={historyOpenFor}
@@ -387,6 +418,8 @@ export default function Tarifas(): JSX.Element {
             <ListContent
               tarifas={allFiltered}
               sucursales={sucursales}
+              tiposVehiculo={tiposVehiculo}
+              tiposTarifa={tiposTarifa}
               onEdit={handleEdit}
               onToggleHistory={handleToggleHistory}
               historyOpenFor={historyOpenFor}
