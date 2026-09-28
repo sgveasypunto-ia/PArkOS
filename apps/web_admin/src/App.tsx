@@ -10,6 +10,10 @@ import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
 import Cupos from '@/features/cupos/pages/Cupos';
+import TiposVehiculo from '@/features/tipos-vehiculo/pages/TiposVehiculo';
+import TipoTarifa from '@/features/tipo-tarifa/pages/TipoTarifa';
+import ConfiguracionTolerancias from '@/features/configuracion-tolerancias/pages/ConfiguracionTolerancias';
+import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/ConfiguracionSeguridad';
 
 /**
  * Route tree.
@@ -39,6 +43,16 @@ export default function App() {
           <Route path="/admin/usuarios" element={<UsuariosList />} />
           <Route path="/tarifas" element={<Tarifas />} />
           <Route path="/cupos" element={<Cupos />} />
+          <Route path="/tipos-vehiculo" element={<TiposVehiculo />} />
+          <Route path="/tipo-tarifa" element={<TipoTarifa />} />
+          <Route
+            path="/configuracion-tolerancias"
+            element={<ConfiguracionTolerancias />}
+          />
+          <Route
+            path="/configuracion-seguridad"
+            element={<ConfiguracionSeguridad />}
+          />
           <Route path="/audit" element={<AuditDashboard />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

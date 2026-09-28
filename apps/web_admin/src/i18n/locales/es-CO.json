@@ -85,6 +85,22 @@
         "label": "Cupos por sucursal",
         "description": "Configura la capacidad máxima de vehículos por sucursal y tipo."
       },
+      "tiposVehiculo": {
+        "label": "Tipos de vehículo",
+        "description": "Catálogo de tipos de vehículo (carro, moto, bicicleta, patineta). Edita los registros vigentes."
+      },
+      "tipoTarifa": {
+        "label": "Modalidades de tarifa",
+        "description": "Catálogo de modalidades (hora, fraccion, plena, nocturna). Edita los registros vigentes."
+      },
+      "configuracionTolerancias": {
+        "label": "Tolerancias de caja",
+        "description": "Default global y overrides por sucursal para las tolerancias de efectivo y datáfono."
+      },
+      "configuracionSeguridad": {
+        "label": "Configuración de seguridad",
+        "description": "Default global y overrides por sucursal para lockout (intentos máximos, minutos de bloqueo)."
+      },
       "auditoria": {
         "label": "Auditoría",
         "description": "Log transaccional append-only con cadena hash verificable por sucursal."
@@ -158,6 +174,120 @@
       "edit": "Editar",
       "history": "Ver histórico",
       "hideHistory": "Ocultar histórico"
+    }
+  },
+  "tiposVehiculo": {
+    "title": "Tipos de vehículo",
+    "new": "Nuevo tipo de vehículo",
+    "createTitle": "Nuevo tipo de vehículo",
+    "editTitle": "Editar tipo de vehículo",
+    "modalDescription": "Ingresá el nombre. El seed canónico usa lowercase (carro, moto, bicicleta, patineta).",
+    "loading": "Cargando tipos de vehículo...",
+    "loadError": "No se pudieron cargar los tipos de vehículo.",
+    "empty": "Aún no hay tipos de vehículo configurados.",
+    "field": {
+      "tipo": "Nombre del tipo de vehículo",
+      "tipoHelp": "El seed canónico usa lowercase (carro, moto, bicicleta, patineta). 1..64 caracteres."
+    },
+    "form": {
+      "editingNotice": "Estás editando un tipo existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar"
+    }
+  },
+  "tipoTarifa": {
+    "title": "Modalidades de tarifa",
+    "new": "Nueva modalidad",
+    "createTitle": "Nueva modalidad",
+    "editTitle": "Editar modalidad",
+    "modalDescription": "Ingresá el nombre. El seed canónico usa lowercase (hora, fraccion, plena, nocturna).",
+    "loading": "Cargando modalidades...",
+    "loadError": "No se pudieron cargar las modalidades.",
+    "empty": "Aún no hay modalidades configuradas.",
+    "field": {
+      "tipo": "Nombre de la modalidad",
+      "tipoHelp": "El seed canónico usa lowercase (hora, fraccion, plena, nocturna). 1..64 caracteres."
+    },
+    "form": {
+      "editingNotice": "Estás editando una modalidad existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar"
+    }
+  },
+  "configuracionTolerancias": {
+    "title": "Tolerancias de caja",
+    "titleGlobal": "Default global",
+    "titleOverride": "Override · sucursal {{uuid}}",
+    "new": "Nueva tolerancia",
+    "createTitle": "Nueva tolerancia",
+    "editTitle": "Editar tolerancia",
+    "modalDescription": "Elegí el alcance (default global o override por sucursal) y cargá las tolerancias.",
+    "loading": "Cargando tolerancias...",
+    "loadError": "No se pudieron cargar las tolerancias.",
+    "empty": "Aún no hay tolerancias configuradas.",
+    "field": {
+      "alcanceGlobal": "Default global",
+      "alcanceOverride": "Override por sucursal",
+      "sucursal": "Sucursal",
+      "sucursalHelp": "Este override reemplaza el default global solo para esta sucursal.",
+      "toleranciaEfectivo": "Tolerancia de efectivo (COP)",
+      "toleranciaEfectivoHelp": "Diferencia máxima admisible en el conteo de efectivo. >= 0. Cuatro decimales.",
+      "toleranciaDatafono": "Tolerancia de datáfono (COP)",
+      "toleranciaDatafonoHelp": "Diferencia máxima admisible en el conteo de datáfono. >= 0. Cuatro decimales."
+    },
+    "form": {
+      "editingNotice": "Estás editando una configuración existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar"
+    }
+  },
+  "configuracionSeguridad": {
+    "title": "Configuración de seguridad",
+    "titleGlobal": "Default global",
+    "titleOverride": "Override · sucursal {{uuid}}",
+    "new": "Nueva configuración",
+    "createTitle": "Nueva configuración de seguridad",
+    "editTitle": "Editar configuración de seguridad",
+    "modalDescription": "Elegí el alcance y cargá los valores. Al hacer click en \"Guardar\" te mostraremos un resumen antes de aplicar.",
+    "loading": "Cargando configuraciones...",
+    "loadError": "No se pudieron cargar las configuraciones.",
+    "empty": "Aún no hay configuraciones de seguridad.",
+    "field": {
+      "alcanceGlobal": "Default global",
+      "alcanceOverride": "Override por sucursal",
+      "sucursal": "Sucursal",
+      "maxIntentos": "Máx. intentos de login",
+      "maxIntentosHelp": "Entre 1 y 20. El default canónico es 5.",
+      "minutosBloqueo": "Minutos de bloqueo",
+      "minutosBloqueoHelp": "Entre 1 y 1440 (24h). El default canónico es 15."
+    },
+    "form": {
+      "editingNotice": "Estás editando una configuración existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "confirm": {
+      "title": "¿Aplicar los cambios de seguridad?",
+      "description": "Cambiar las políticas de lockout invalida los intentos en curso. Los operadores actualmente bloqueados verán el nuevo tiempo al volver a intentar.",
+      "maxIntentos": "Máx. intentos: {{n}}",
+      "minutosBloqueo": "Minutos de bloqueo: {{n}}",
+      "ok": "Aplicar"
+    },
+    "action": {
+      "edit": "Editar"
     }
   },
   "sucursal": {

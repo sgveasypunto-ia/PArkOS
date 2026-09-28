@@ -26,8 +26,8 @@ describe('visibleSections', () => {
   it('A3: reveals Auditoría once audit_read is granted (3 issuer-only + 1)', () => {
     // With just `audit_read`, the operator sees the 3 issuer-only
     // surfaces (dashboard / sucursales / usuarios) plus the audit
-    // surface. Tarifas and Cupos require their own codes
-    // (config_tarifas, config_cupos) which A3 does not grant.
+    // surface. Tarifas, Cupos and the 4 catalog/config surfaces
+    // require their own codes which A3 does not grant.
     const keys = visibleSections(['audit_read']).map((s) => s.key);
     expect(keys).toContain('auditoria');
     expect(keys).toHaveLength(4);
@@ -49,14 +49,19 @@ describe('visibleSections', () => {
   });
 
   it('A6: the catalog advertises every route the SPA can navigate to', () => {
-    // PR-D added /tarifas and /cupos; the catalog must reflect both
-    // or the user navigates to a 404 from a card that exists in the UI.
+    // PR-D added /tarifas and /cupos; PR-D-ui-catalogos added the 4
+    // catalog/config surfaces. The catalog must reflect all of them or
+    // the user navigates to a 404 from a card that exists in the UI.
     expect(ADMIN_SECTIONS.map((s) => s.key)).toEqual([
       'dashboard',
       'sucursales',
       'usuarios',
       'tarifas',
       'cupos',
+      'tipos-vehiculo',
+      'tipo-tarifa',
+      'configuracion-tolerancias',
+      'configuracion-seguridad',
       'auditoria',
     ]);
   });
@@ -69,5 +74,23 @@ describe('visibleSections', () => {
   it('A8: reveals Cupos once config_cupos is granted', () => {
     const keys = visibleSections(['config_cupos']).map((s) => s.key);
     expect(keys).toContain('cupos');
+  });
+
+  it('A9: reveals the catalog/config sections once their codes are granted', () => {
+    // The 4 catalog/config surfaces share ``config_catalogo`` (catalogos)
+    // or their own codes (config_tolerancias, config_seguridad).
+    const allCatalog = visibleSections([
+      'config_catalogo',
+      'config_tolerancias',
+      'config_seguridad',
+    ]).map((s) => s.key);
+    expect(allCatalog).toEqual(
+      expect.arrayContaining([
+        'tipos-vehiculo',
+        'tipo-tarifa',
+        'configuracion-tolerancias',
+        'configuracion-seguridad',
+      ]),
+    );
   });
 });

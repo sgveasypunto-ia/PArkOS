@@ -51,6 +51,10 @@ export interface AdminSection {
     | 'usuarios'
     | 'tarifas'
     | 'cupos'
+    | 'tipos-vehiculo'
+    | 'tipo-tarifa'
+    | 'configuracion-tolerancias'
+    | 'configuracion-seguridad'
     | 'auditoria';
   path: string;
   /** i18n key suffix under `home.section.*`. */
@@ -94,6 +98,34 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     labelKey: 'home.section.cupos.label',
     descriptionKey: 'home.section.cupos.description',
     permission: 'config_cupos',
+  },
+  {
+    key: 'tipos-vehiculo',
+    path: '/tipos-vehiculo',
+    labelKey: 'home.section.tiposVehiculo.label',
+    descriptionKey: 'home.section.tiposVehiculo.description',
+    permission: 'config_catalogo',
+  },
+  {
+    key: 'tipo-tarifa',
+    path: '/tipo-tarifa',
+    labelKey: 'home.section.tipoTarifa.label',
+    descriptionKey: 'home.section.tipoTarifa.description',
+    permission: 'config_catalogo',
+  },
+  {
+    key: 'configuracion-tolerancias',
+    path: '/configuracion-tolerancias',
+    labelKey: 'home.section.configuracionTolerancias.label',
+    descriptionKey: 'home.section.configuracionTolerancias.description',
+    permission: 'config_tolerancias',
+  },
+  {
+    key: 'configuracion-seguridad',
+    path: '/configuracion-seguridad',
+    labelKey: 'home.section.configuracionSeguridad.label',
+    descriptionKey: 'home.section.configuracionSeguridad.description',
+    permission: 'config_seguridad',
   },
   {
     key: 'auditoria',
