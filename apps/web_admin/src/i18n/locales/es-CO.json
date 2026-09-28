@@ -158,6 +158,12 @@
       "edit": "Editar",
       "history": "Ver histórico",
       "hideHistory": "Ocultar histórico"
+    },
+    "tabs": {
+      "all": "Todas las sucursales",
+      "active": "Mi sucursal activa",
+      "activeEmpty": "Elegí una sucursal en el selector del topbar para ver sus tarifas.",
+      "activeEmptyForBranch": "Esta sucursal no tiene tarifas configuradas."
     }
   },
   "cupos": {
@@ -189,6 +195,12 @@
       "edit": "Editar",
       "history": "Ver histórico",
       "hideHistory": "Ocultar histórico"
+    },
+    "tabs": {
+      "all": "Todas las sucursales",
+      "active": "Mi sucursal activa",
+      "activeEmpty": "Elegí una sucursal en el selector del topbar para ver sus cupos.",
+      "activeEmptyForBranch": "Esta sucursal no tiene cupos configurados."
     }
   },
   "tiposVehiculo": {
@@ -266,6 +278,14 @@
     },
     "action": {
       "edit": "Editar"
+    },
+    "tabs": {
+      "all": "Global y overrides",
+      "active": "Efectiva en mi sucursal",
+      "activeEmpty": "Elegí una sucursal en el selector del topbar para ver la configuración efectiva.",
+      "activeNoGlobal": "No hay default global todavía. Creá uno en \"Global y overrides\".",
+      "activeNoOverride": "Esta sucursal no tiene un override. Creá uno desde \"Global y overrides\" o usá el botón \"Nueva tolerancia\".",
+      "activeFromGlobal": "Heredada del default global"
     }
   },
   "configuracionSeguridad": {
@@ -303,6 +323,13 @@
     },
     "action": {
       "edit": "Editar"
+    },
+    "tabs": {
+      "all": "Global y overrides",
+      "active": "Efectiva en mi sucursal",
+      "activeEmpty": "Elegí una sucursal en el selector del topbar para ver su override.",
+      "activeNoOverride": "Esta sucursal no tiene un override. Creá uno desde \"Global y overrides\" o usá el botón \"Nueva tolerancia\".",
+      "activeFromGlobal": "Heredada del default global"
     }
   },
   "sucursal": {

@@ -7,19 +7,29 @@
  * changing ``max_intentos_login`` affects every operator across the
  * tenant. The modal gives the operator one last look at the diff
  * before persisting.
+ *
+ * PR2 of the web_admin redesign adds tabs:
+ *   - "Global y overrides" (default) — cross-branch view as before.
+ *   - "Mi sucursal activa" — calls `/configuracion-seguridad/efectiva
+ *     ?uuid_sucursal=<selected>` so the admin sees the actual effective
+ *     value (override OR global fallback) for the active branch in one
+ *     click. The endpoint already exists in `configuracionSeguridadApi`.
  */
 import * as React from 'react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import { FormModal } from '@/features/configuracion/components/FormModal';
+import { useSucursal } from '@/lib/sucursal-context';
 import {
   createConfiguracionSeguridad,
+  getConfiguracionSeguridadEfectiva,
   listConfiguracionSeguridad,
   updateConfiguracionSeguridad,
   type ConfiguracionSeguridad,
@@ -41,8 +51,56 @@ function isGlobal(row: ConfiguracionSeguridad): boolean {
   return row.uuid_sucursal === null;
 }
 
+function RowTable({
+  row,
+  testIdPrefix,
+  onEdit,
+}: {
+  row: ConfiguracionSeguridad;
+  testIdPrefix: string;
+  onEdit: () => void;
+}): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b text-left">
+          <th className="px-3 py-2 text-right">Máx. intentos</th>
+          <th className="px-3 py-2 text-right">Min. bloqueo</th>
+          <th className="px-3 py-2 text-right">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          data-testid={`${testIdPrefix}-row-${row.uuid}`}
+          className="border-b last:border-b-0"
+        >
+          <td className="px-3 py-2 text-right font-mono">
+            {row.max_intentos_login ?? '—'}
+          </td>
+          <td className="px-3 py-2 text-right font-mono">
+            {row.minutos_bloqueo_login ?? '—'}
+          </td>
+          <td className="px-3 py-2 text-right">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onEdit}
+              data-testid={`${testIdPrefix}-edit-${row.uuid}`}
+            >
+              {t('configuracionSeguridad.action.edit', 'Editar')}
+            </Button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
 export default function ConfiguracionSeguridad(): JSX.Element {
   const { t } = useTranslation();
+  const { selected: selectedSucursal } = useSucursal();
 
   const {
     data: rows = [],
@@ -52,6 +110,24 @@ export default function ConfiguracionSeguridad(): JSX.Element {
   } = useSWR<ConfiguracionSeguridad[]>(
     '/api/v1/configuracion/configuracion-seguridad?limit=200',
     async () => listConfiguracionSeguridad({ limit: 200 }),
+  );
+
+  // PR2: fetch the effective value for the active branch. The endpoint
+  // resolves override + global fallback server-side, so the UI shows
+  // what the operator actually experiences at login.
+  const effectiveKey = selectedSucursal
+    ? `/api/v1/configuracion/configuracion-seguridad/efectiva?uuid_sucursal=${encodeURIComponent(selectedSucursal)}`
+    : null;
+  const { data: effectiveRow, isLoading: effectiveLoading } = useSWR<ConfiguracionSeguridad | null | undefined>(
+    effectiveKey,
+    async (key: string) => {
+      const params = new URLSearchParams(key.split('?')[1] ?? '');
+      const uuid = params.get('uuid_sucursal');
+      if (!uuid) return null;
+      const row = await getConfiguracionSeguridadEfectiva(uuid);
+      return row;
+    },
+    { revalidateOnFocus: false },
   );
 
   const [editing, setEditing] = useState<ConfiguracionSeguridad | null>(null);
@@ -65,6 +141,11 @@ export default function ConfiguracionSeguridad(): JSX.Element {
   const globalRow = rows.find(isGlobal) ?? null;
   const overrides = rows.filter((r) => !isGlobal(r));
 
+  const activeOverride = useMemo(() => {
+    if (!selectedSucursal) return null;
+    return overrides.find((o) => o.uuid_sucursal === selectedSucursal) ?? null;
+  }, [overrides, selectedSucursal]);
+
   function closeModal(): void {
     setCreating(false);
     setEditing(null);
@@ -72,13 +153,6 @@ export default function ConfiguracionSeguridad(): JSX.Element {
   }
 
   function onRequestSubmit(): void {
-    // Validate via the schema first so the user sees errors before
-    // the confirmation modal opens. The form fields are already
-    // hooked into zodResolver, so we just trigger validation by
-    // reading the current values.
-    // The form's onSubmit onClick goes through here, so the form
-    // has already prevented default. We capture the current values
-    // and open the modal.
     setConfirming(true);
   }
 
@@ -101,6 +175,12 @@ export default function ConfiguracionSeguridad(): JSX.Element {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function handleEdit(row: ConfiguracionSeguridad): void {
+    setEditing(row);
+    setCreating(false);
+    setErrorState(null);
   }
 
   return (
@@ -261,123 +341,130 @@ export default function ConfiguracionSeguridad(): JSX.Element {
         </p>
       )}
 
-      {!isLoading && rows.length === 0 && (
-        <p
-          role="status"
-          aria-live="polite"
-          className="text-sm text-muted-foreground"
-          data-testid="seguridad-empty"
-        >
-          {t('configuracionSeguridad.empty', 'Aún no hay configuraciones de seguridad.')}
-        </p>
-      )}
-
-      <div className="flex flex-col gap-4">
-        {globalRow !== null && (
-          <Card data-testid="seguridad-card-global">
-            <CardHeader>
-              <CardTitle>
-                {t('configuracionSeguridad.titleGlobal', 'Default global')}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left">
-                    <th className="px-3 py-2 text-right">Máx. intentos</th>
-                    <th className="px-3 py-2 text-right">Min. bloqueo</th>
-                    <th className="px-3 py-2 text-right">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    data-testid={`seguridad-row-${globalRow.uuid}`}
-                    className="border-b last:border-b-0"
-                  >
-                    <td className="px-3 py-2 text-right font-mono">
-                      {globalRow.max_intentos_login ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono">
-                      {globalRow.minutos_bloqueo_login ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setEditing(globalRow);
-                          setCreating(false);
-                          setErrorState(null);
-                        }}
-                        data-testid={`seguridad-edit-${globalRow.uuid}`}
-                      >
-                        {t('configuracionSeguridad.action.edit', 'Editar')}
-                      </Button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
-        )}
-
-        {overrides.map((row) => (
-          <Card
-            key={row.uuid}
-            data-testid={`seguridad-card-override-${row.uuid_sucursal ?? 'null'}`}
+      <Tabs defaultValue="all" data-testid="seguridad-tabs">
+        <TabsList>
+          <TabsTrigger value="all" data-testid="seguridad-tab-all">
+            {t('configuracionSeguridad.tabs.all', 'Global y overrides')}
+          </TabsTrigger>
+          <TabsTrigger
+            value="active"
+            data-testid="seguridad-tab-active"
+            disabled={!selectedSucursal}
           >
-            <CardHeader>
-              <CardTitle>
-                {t(
-                  'configuracionSeguridad.titleOverride',
-                  'Override · sucursal {{uuid}}',
-                  { uuid: row.uuid_sucursal ?? '—' },
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left">
-                    <th className="px-3 py-2 text-right">Máx. intentos</th>
-                    <th className="px-3 py-2 text-right">Min. bloqueo</th>
-                    <th className="px-3 py-2 text-right">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    data-testid={`seguridad-row-${row.uuid}`}
-                    className="border-b last:border-b-0"
-                  >
-                    <td className="px-3 py-2 text-right font-mono">
-                      {row.max_intentos_login ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono">
-                      {row.minutos_bloqueo_login ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setEditing(row);
-                          setCreating(false);
-                          setErrorState(null);
-                        }}
-                        data-testid={`seguridad-edit-${row.uuid}`}
-                      >
-                        {t('configuracionSeguridad.action.edit', 'Editar')}
-                      </Button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+            {t('configuracionSeguridad.tabs.active', 'Efectiva en mi sucursal')}
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="all">
+          {!isLoading && rows.length === 0 ? (
+            <p
+              role="status"
+              aria-live="polite"
+              className="text-sm text-muted-foreground"
+              data-testid="seguridad-empty"
+            >
+              {t('configuracionSeguridad.empty', 'Aún no hay configuraciones de seguridad.')}
+            </p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {globalRow !== null && (
+                <Card data-testid="seguridad-card-global">
+                  <CardHeader>
+                    <CardTitle>
+                      {t('configuracionSeguridad.titleGlobal', 'Default global')}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <RowTable
+                      row={globalRow}
+                      testIdPrefix="seguridad"
+                      onEdit={() => handleEdit(globalRow)}
+                    />
+                  </CardContent>
+                </Card>
+              )}
+
+              {overrides.map((row) => (
+                <Card
+                  key={row.uuid}
+                  data-testid={`seguridad-card-override-${row.uuid_sucursal ?? 'null'}`}
+                >
+                  <CardHeader>
+                    <CardTitle>
+                      {t(
+                        'configuracionSeguridad.titleOverride',
+                        'Override · sucursal {{uuid}}',
+                        { uuid: row.uuid_sucursal ?? '—' },
+                      )}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <RowTable
+                      row={row}
+                      testIdPrefix="seguridad"
+                      onEdit={() => handleEdit(row)}
+                    />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="active">
+          {!selectedSucursal ? (
+            <p
+              role="status"
+              aria-live="polite"
+              className="text-sm text-muted-foreground"
+              data-testid="seguridad-active-empty-selection"
+            >
+              {t(
+                'configuracionSeguridad.tabs.activeEmpty',
+                'Elegí una sucursal en el selector del topbar para ver la configuración efectiva.',
+              )}
+            </p>
+          ) : effectiveLoading ? (
+            <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+              {t('configuracionSeguridad.loading', 'Cargando configuraciones...')}
+            </p>
+          ) : effectiveRow === null || effectiveRow === undefined ? (
+            <p
+              role="status"
+              aria-live="polite"
+              className="text-sm text-muted-foreground"
+              data-testid="seguridad-active-empty"
+            >
+              {t(
+                'configuracionSeguridad.tabs.activeNoGlobal',
+                'No hay default global todavía. Creá uno en "Global y overrides".',
+              )}
+            </p>
+          ) : (
+            <Card data-testid="seguridad-card-active">
+              <CardHeader>
+                <CardTitle>
+                  {activeOverride !== null
+                    ? t('configuracionSeguridad.titleOverride', 'Override · sucursal {{uuid}}', {
+                        uuid: selectedSucursal,
+                      })
+                    : t(
+                        'configuracionSeguridad.tabs.activeFromGlobal',
+                        'Heredada del default global',
+                      )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <RowTable
+                  row={effectiveRow}
+                  testIdPrefix="seguridad"
+                  onEdit={() => activeOverride !== null && handleEdit(activeOverride)}
+                />
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+      </Tabs>
     </main>
   );
 }

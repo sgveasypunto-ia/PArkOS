@@ -18,6 +18,8 @@ import { SWRConfig } from 'swr';
 import { createElement, type ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 
+import { SucursalProvider } from '@/lib/sucursal-context';
+
 vi.mock('@/features/sucursales/api/sucursalesApi', () => ({
   listSucursales: vi.fn(),
 }));
@@ -61,8 +63,13 @@ const mockedListByKey = listTarifasByKey as ReturnType<typeof vi.fn>;
 const mockedListSucursales = listSucursales as ReturnType<typeof vi.fn>;
 
 function wrapper({ children }: { children: ReactNode }): JSX.Element {
+  // PR2 added the "Mi sucursal activa" tab which reads `useSucursal()`.
   const configValue = { provider: (): never => new Map() as never };
-  return createElement(SWRConfig, { value: configValue }, children);
+  return createElement(
+    SucursalProvider,
+    null,
+    createElement(SWRConfig, { value: configValue }, children),
+  );
 }
 
 const SUCURSAL_1 = '11111111-1111-1111-1111-111111111111';
