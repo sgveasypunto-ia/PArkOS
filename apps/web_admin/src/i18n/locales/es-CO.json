@@ -48,7 +48,9 @@
     }
   },
   "common": {
-    "cancel": "Cancelar"
+    "cancel": "Cancelar",
+    "close": "Cerrar",
+    "loading": "Cargando…"
   },
   "chrome": {
     "navLabel": "Secciones",
@@ -392,6 +394,41 @@
     "submit": "Crear usuario",
     "submitting": "Creando...",
     "created": "Usuario creado correctamente. UUID: {{uuid}}"
+  },
+  "gestionUsuarios": {
+    "title": "Gestión de usuarios",
+    "subtitle": "Crea, lista y asigna sucursales a usuarios administradores y operadores.",
+    "newUser": "+ Nuevo usuario",
+    "loading": "Cargando usuarios…",
+    "empty": "Aún no hay usuarios administradores. Creá el primero con \"+ Nuevo usuario\".",
+    "error": "No se pudo cargar el listado. Reintentá.",
+    "tableCaption": "Listado de usuarios administradores y operadores",
+    "table": {
+      "email": "Correo",
+      "nombre": "Nombre",
+      "rol": "Rol",
+      "sucursales": "Sucursales",
+      "estado": "Estado",
+      "acciones": "Acciones",
+      "sinSucursales": "—"
+    },
+    "actions": {
+      "assignSucursales": "Asignar sucursales"
+    },
+    "modal": {
+      "create": "Crear nuevo usuario",
+      "createDescription": "Cargá los datos del usuario. La contraseña se cifra (bcrypt) en el servidor."
+    },
+    "sucursalesManager": {
+      "title": "Sucursales del usuario",
+      "subtitle": "Asigná o quitá sucursales. Los cambios se aplican al instante.",
+      "assigned": "Asignadas",
+      "empty": "Sin sucursales asignadas.",
+      "addLabel": "Agregar sucursal",
+      "addPlaceholder": "Elegí una sucursal…",
+      "add": "Agregar",
+      "noneAvailable": "No hay sucursales disponibles para asignar."
+    }
   },
   "audit": {
     "title": "Auditoría",

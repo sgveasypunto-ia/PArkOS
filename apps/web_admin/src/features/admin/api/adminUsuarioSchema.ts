@@ -1,6 +1,6 @@
 /**
  * `adminUsuarioSchema.ts` — Zod schemas for the admin user-management
- * endpoint (IT-1.4).
+ * surface (IT-1.4 + PR3 of the web_admin redesign).
  *
  * Wire shape mirrors the backend
  * `schemas/admin.py::AdminUsuarioCreateRequest`:
@@ -11,6 +11,11 @@
  *     list means "create the user without branch assignment". The
  *     admin can attach branches later via
  *     `POST /admin/usuarios/{uuid}/sucursales`.
+ *
+ * PR3 adds:
+ *   - `adminUsuarioReadListSchema` — envelope for `GET /admin/usuarios`.
+ *   - `adminSucursalAsignadaReadSchema` — single assignment row from
+ *     `GET/POST /admin/usuarios/{uuid}/sucursales`.
  *
  * Messages are i18n KEYS so the renderer can translate via
  * `useTranslation()` at the edge — same pattern as `sucursalSchema`.
@@ -53,3 +58,26 @@ export const adminUsuarioReadSchema = z.object({
 });
 
 export type AdminUsuarioRead = z.infer<typeof adminUsuarioReadSchema>;
+
+export const adminUsuarioReadListSchema = z.object({
+  items: z.array(adminUsuarioReadSchema),
+  next_cursor: z.string().nullable().optional(),
+});
+
+export type AdminUsuarioReadList = z.infer<typeof adminUsuarioReadListSchema>;
+
+/**
+ * A single open branch assignment. Backend returns at minimum the
+ * `uuid_sucursal` (FK). The optional `nombre` is filled by the
+ * frontend from the cached `/api/v1/empresa/sucursal` directory.
+ */
+export const adminSucursalAsignadaReadSchema = z.object({
+  uuid: z.string().uuid().optional(),
+  uuid_sucursal: z.string().uuid(),
+  vigente_desde: z.string().optional(),
+  vigente_hasta: z.string().nullable().optional(),
+  estado: z.string().optional(),
+  nombre: z.string().nullable().optional(),
+});
+
+export type AdminSucursalAsignadaRead = z.infer<typeof adminSucursalAsignadaReadSchema>;

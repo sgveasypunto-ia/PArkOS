@@ -1,42 +1,59 @@
 /**
- * `<UsuariosList />` — admin user management page (IT-1.4).
+ * `<UsuariosList />` — IT-1.4 + PR3 of the web_admin redesign.
  *
- * Container that loads active branches via SWR (for the branch
- * assignment checkboxes) and renders an `<AdminUsuarioForm />` that
- * POSTs to `/api/v1/admin/usuarios` with the chosen
- * `sucursales_asignadas`.
+ * Container that:
+ *   - Lists every active admin/operator user via SWR.
+ *   - Lets the admin create a new user (modal with the original
+ *     AdminUsuarioForm, unchanged contract).
+ *   - Lets the admin assign/unassign branches per user via the
+ *     AdminUsuarioSucursalesManager modal.
  *
- * Why a focused create-only page: the IT-1.4 endpoint already supports
- * editing via the `POST /admin/usuarios/{uuid}/sucursales` and
- * `DELETE /admin/usuarios/{uuid}/sucursales/{sucursal_uuid}` siblings
- * (PR2). Adding list/edit UI here is out of scope for IT-1.4.
+ * Edit by row is intentionally NOT exposed: the backend has no
+ * PUT `/admin/usuarios/{uuid}` endpoint, so any "Editar" button
+ * would silently no-op. The roadmap lists this as a follow-up.
+ *
+ * Cross-branch scope: the list is global by design (IT-1.4 admin
+ * user management is admin-wide, not per-sucursal). The picker
+ * switch does NOT invalidate this list.
  */
 import { useState } from 'react';
+import * as React from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+
+import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
 
 import { AdminUsuarioForm } from '../components/AdminUsuarioForm';
-import { createAdminUsuario } from '../api/adminUsuariosApi';
-import { adminUsuarioCreateSchema, type AdminUsuarioCreateInput } from '../api/adminUsuarioSchema';
-import { parkosFetchRaw } from '@/lib/fetch';
+import { AdminUsuarioTable, type SucursalChip } from '../components/AdminUsuarioTable';
+import { AdminUsuarioSucursalesManager } from '../components/AdminUsuarioSucursalesManager';
+import {
+  adminUsuarioCreateSchema,
+  type AdminUsuarioCreateInput,
+  type AdminUsuarioRead,
+} from '../api/adminUsuarioSchema';
+import { listAdminUsuarioSucursales } from '../api/adminUsuariosApi';
+import { useAdminUsuarios } from '../hooks/useAdminUsuarios';
 
 interface BranchOption {
   uuid: string;
   nombre: string | null;
 }
 
-export default function UsuariosList() {
-  const { t } = useTranslation();
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [successUuid, setSuccessUuid] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+interface AsignacionesByUser {
+  [userUuid: string]: SucursalChip[];
+}
 
-  // List of permitted branches — admin can only assign users to branches
-  // they have access to (sucursales_permitidas from JWT).
+function CreateUserForm(props: {
+  onSubmit: (values: AdminUsuarioCreateInput) => void;
+  isSubmitting: boolean;
+  availableBranches: BranchOption[];
+}): JSX.Element {
   const form = useForm<AdminUsuarioCreateInput>({
     resolver: zodResolver(adminUsuarioCreateSchema),
     defaultValues: {
@@ -49,88 +66,181 @@ export default function UsuariosList() {
       sucursales_asignadas: [],
     },
   });
+  return (
+    <AdminUsuarioForm
+      form={form}
+      onSubmit={props.onSubmit}
+      isSubmitting={props.isSubmitting}
+      availableBranches={props.availableBranches}
+    />
+  );
+}
 
-  const branches = useSWR<BranchOption[]>(
-    '/api/v1/sucursales',
+export default function UsuariosList(): JSX.Element {
+  const { t } = useTranslation();
+
+  const { usuarios, isLoading, error, refresh, create, assignBranch, unassignBranch } =
+    useAdminUsuarios();
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [assignTarget, setAssignTarget] = useState<AdminUsuarioRead | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const branchesDir = useSWR<BranchOption[]>(
+    '/api/v1/empresa/sucursal?limit=200',
+    async () => (await listSucursales({ limit: 200 })) as BranchOption[],
+    { revalidateOnFocus: false },
+  );
+
+  // Per-user assignment map. We fetch on demand when the modal opens
+  // (cached by `useAdminUsuarioSucursales` inside the manager) but for
+  // the table we want the FULL map to render the chips on first paint.
+  // Doing it inline keeps the UX snappy: open the modal and the chips
+  // are already there.
+  const asignacionesSWR = useSWR<Record<string, SucursalChip[]>>(
+    usuarios ? 'asignaciones-map' : null,
     async () => {
-      const res = await parkosFetchRaw('/api/v1/sucursales', {
-        headers: { Accept: 'application/json' },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as { items: BranchOption[] };
-      return body.items ?? [];
+      const map: AsignacionesByUser = {};
+      await Promise.all(
+        (usuarios ?? []).map(async (u) => {
+          try {
+            const items = await listAdminUsuarioSucursales(u.uuid);
+            map[u.uuid] = items.map((a) => ({
+              uuid: a.uuid_sucursal,
+              nombre:
+                branchesDir.data?.find((s) => s.uuid === a.uuid_sucursal)?.nombre ?? null,
+            }));
+          } catch {
+            map[u.uuid] = [];
+          }
+        }),
+      );
+      return map;
     },
     { revalidateOnFocus: false },
   );
 
-  const onSubmit = async (values: AdminUsuarioCreateInput) => {
-    setIsSubmitting(true);
-    setErrorMessage(null);
-    setSuccessUuid(null);
+  async function onCreate(values: AdminUsuarioCreateInput): Promise<void> {
+    setSubmitting(true);
+    setCreateError(null);
     try {
-      const created = await createAdminUsuario(values);
-      setSuccessUuid(created.uuid);
-      form.reset({
-        email: '',
-        password: '',
-        rol: 'operador',
-        nombre: '',
-        apellido: '',
-        cedula: '',
-        sucursales_asignadas: [],
-      });
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'unknown error');
+      await create(values);
+      setCreateOpen(false);
+      await refresh();
+      await asignacionesSWR.mutate();
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : 'error');
     } finally {
-      setIsSubmitting(false);
+      setSubmitting(false);
     }
-  };
+  }
 
   return (
     <main
       className="flex min-h-screen flex-col gap-4 bg-background p-4"
       data-testid="page-usuarios"
     >
-      <header>
-        <h1 className="text-2xl font-semibold">{t('admin.title')}</h1>
-        <p className="text-sm text-muted-foreground">{t('admin.subtitle')}</p>
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">
+            {t('gestionUsuarios.title', 'Gestión de usuarios')}
+          </h1>
+          <p className="text-muted-foreground text-sm">
+            {t(
+              'gestionUsuarios.subtitle',
+              'Crea, lista y asigna sucursales a usuarios administradores y operadores.',
+            )}
+          </p>
+        </div>
+        <Button
+          type="button"
+          onClick={() => {
+            setCreateOpen(true);
+            setCreateError(null);
+          }}
+          data-testid="admin-new"
+        >
+          {t('gestionUsuarios.newUser', '+ Nuevo usuario')}
+        </Button>
       </header>
 
-      <Card className="max-w-2xl">
-        <CardHeader>
-          <CardTitle>{t('admin.createTitle')}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {successUuid && (
-            <p
-              role="status"
-              aria-live="polite"
-              data-testid="admin-success"
-              className="mb-3 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300"
-            >
-              {t('admin.created', { uuid: successUuid })}
-            </p>
+      {error !== undefined && (
+        <p
+          role="alert"
+          aria-live="assertive"
+          className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          data-testid="admin-error"
+        >
+          {t(
+            'gestionUsuarios.error',
+            'No se pudo cargar el listado. Reintentá.',
           )}
+        </p>
+      )}
 
-          {errorMessage && (
-            <p
-              role="alert"
-              aria-live="assertive"
-              data-testid="admin-error"
-              className="mb-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-            >
-              {errorMessage}
-            </p>
-          )}
+      <AdminUsuarioTable
+        rows={usuarios ?? []}
+        asignacionesByUser={asignacionesSWR.data ?? {}}
+        isLoading={isLoading}
+        onAssignSucursales={(u) => setAssignTarget(u)}
+      />
 
-          <AdminUsuarioForm
-            form={form}
-            onSubmit={onSubmit}
-            isSubmitting={isSubmitting}
-            availableBranches={branches.data ?? []}
-          />
-        </CardContent>
-      </Card>
+      {/* Create modal */}
+      <Dialog
+        open={createOpen}
+        onOpenChange={(o) => {
+          if (!o) setCreateOpen(false);
+        }}
+        contentProps={
+          {
+            'data-testid': 'admin-create-modal',
+          } as React.HTMLAttributes<HTMLDivElement> & {
+            'data-testid'?: string;
+          }
+        }
+      >
+        <Card className="mx-auto max-w-2xl shadow-elevation-2">
+          <CardContent className="p-6">
+            <DialogTitle>
+              {t('gestionUsuarios.modal.create', 'Crear nuevo usuario')}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                'gestionUsuarios.modal.createDescription',
+                'Cargá los datos del usuario. La contraseña se cifra (bcrypt) en el servidor.',
+              )}
+            </DialogDescription>
+
+            {createError !== null && (
+              <p
+                role="alert"
+                aria-live="assertive"
+                className="mt-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                data-testid="admin-create-error"
+              >
+                {createError}
+              </p>
+            )}
+
+            <div className="mt-4">
+              <CreateUserForm
+                onSubmit={onCreate}
+                isSubmitting={submitting}
+                availableBranches={branchesDir.data ?? []}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      </Dialog>
+
+      {/* Assign-sucursales modal */}
+      <AdminUsuarioSucursalesManager
+        user={assignTarget}
+        onClose={() => setAssignTarget(null)}
+        onAssign={assignBranch}
+        onUnassign={unassignBranch}
+      />
     </main>
   );
 }
