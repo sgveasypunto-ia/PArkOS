@@ -78,6 +78,7 @@ class AdminUsuarioRead(_Base):
     vigente_hasta: datetime | None
     estado: str
     created_at: datetime
+    created_by: uuid_lib.UUID | None
     sync_status: str | None
 
 
