@@ -23,6 +23,7 @@ import {
   type VersionHistoryItem,
 } from '@/features/configuracion/components/VersionHistoryPanel';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
+import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
 import { useSucursal } from '@/lib/sucursal-context';
 
 import {
@@ -36,7 +37,7 @@ import {
 } from '../api/cuposApi';
 import { useCantidadByKey } from '../hooks/useCantidadByKey';
 import { useCantidadList } from '../hooks/useCantidadList';
-import { CupoForm, CupoFormHarness } from '../components/CupoForm';
+import { CupoFormHarness } from '../components/CupoForm';
 
 type ErrorState =
   | { kind: 'overlap' | 'inmutable' | 'bajo_ingresos' | 'network'; message: string }
@@ -78,6 +79,7 @@ function toHistoryItem(c: Cupo): VersionHistoryItem {
 interface ListContentProps {
   cupos: Cupo[];
   sucursales: Array<{ uuid: string; nombre: string | null }> | undefined;
+  tiposVehiculo: Array<{ uuid: string; tipo: string | null }>;
   onEdit: (c: Cupo) => void;
   onToggleHistory: (sucursalKey: string) => void;
   historyOpenFor: string | null;
@@ -88,6 +90,7 @@ interface ListContentProps {
 function ListContent({
   cupos,
   sucursales,
+  tiposVehiculo,
   onEdit,
   onToggleHistory,
   historyOpenFor,
@@ -116,6 +119,11 @@ function ListContent({
         const sucursalNombre =
           sucursales?.find((s) => s.uuid === sucursalKey)?.nombre ??
           t('cupos.withoutSucursal', 'Sin sucursal');
+        const tipoVehiculoNombre =
+          cupo.uuid_tipo_vehiculo
+            ? (tiposVehiculo.find((tv) => tv.uuid === cupo.uuid_tipo_vehiculo)?.tipo ??
+              t('cupos.unknownTipo', 'Desconocido'))
+            : t('cupos.anyTipo', 'Cualquiera');
         return (
           <Card
             key={cupo.uuid}
@@ -128,8 +136,15 @@ function ListContent({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left">
-                    <th className="px-3 py-2 text-right">Cantidad</th>
-                    <th className="px-3 py-2 text-right">Acciones</th>
+                    <th className="px-3 py-2 text-left">
+                      {t('cupos.col.tipoVehiculo', 'Tipo de vehículo')}
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      {t('cupos.col.cantidad', 'Cantidad')}
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      {t('cupos.col.acciones', 'Acciones')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -138,6 +153,12 @@ function ListContent({
                     data-testid={`cupo-row-${cupo.uuid}`}
                     className="border-b last:border-b-0"
                   >
+                    <td
+                      className="px-3 py-2"
+                      data-testid={`cupo-tipo-${cupo.uuid}`}
+                    >
+                      {tipoVehiculoNombre}
+                    </td>
                     <td className="px-3 py-2 text-right font-mono">
                       {cupo.cantidad ?? '—'}
                     </td>
@@ -197,6 +218,7 @@ export default function Cupos(): JSX.Element {
   );
 
   const { cupos, refresh, isLoading, error } = useCantidadList();
+  const { tipos: tiposVehiculo } = useTiposVehiculo();
   const [editing, setEditing] = useState<Cupo | null>(null);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -288,8 +310,7 @@ export default function Cupos(): JSX.Element {
           contentProps={{ 'data-testid': 'cupo-form-modal' }}
         >
           {editing !== null ? (
-            <CupoForm
-              form={undefined as never}
+            <CupoFormHarness
               onSubmit={onSubmit}
               isSubmitting={submitting}
               isUpdate
@@ -324,7 +345,7 @@ export default function Cupos(): JSX.Element {
         </p>
       )}
 
-      <Tabs defaultValue="all" data-testid="cupos-tabs">
+      <Tabs defaultValue="active" data-testid="cupos-tabs">
         <TabsList>
           <TabsTrigger value="all" data-testid="cupos-tab-all">
             {t('cupos.tabs.all', 'Todas las sucursales')}
@@ -347,6 +368,7 @@ export default function Cupos(): JSX.Element {
           <ListContent
             cupos={cupos}
             sucursales={sucursales}
+            tiposVehiculo={tiposVehiculo}
             onEdit={handleEdit}
             onToggleHistory={handleToggleHistory}
             historyOpenFor={historyOpenFor}
@@ -372,6 +394,7 @@ export default function Cupos(): JSX.Element {
             <ListContent
               cupos={activeFiltered}
               sucursales={sucursales}
+              tiposVehiculo={tiposVehiculo}
               onEdit={handleEdit}
               onToggleHistory={handleToggleHistory}
               historyOpenFor={historyOpenFor}

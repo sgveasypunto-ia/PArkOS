@@ -105,18 +105,22 @@ afterEach(() => {
 
 describe('Cupos page', () => {
   it('CP1: empty state when the API returns []', async () => {
+    const user = userEvent.setup();
     mockedListCupos.mockResolvedValue([]);
     render(<Cupos />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('cupos-tab-all'));
     await waitFor(() => {
       expect(screen.getByTestId('cupo-empty')).toBeInTheDocument();
     });
   });
 
   it('CP2: list grouped by sucursal with the vigente rows', async () => {
+    const user = userEvent.setup();
     mockedListCupos.mockResolvedValue([
       { ...SAMPLE_CUPO, uuid_sucursal: SUCURSAL_1, cantidad: 50 },
     ]);
     render(<Cupos />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('cupos-tab-all'));
     await waitFor(() => {
       expect(screen.getByTestId('cupo-sucursal-group-11111111-1111-1111-1111-111111111111')).toBeInTheDocument();
     });
@@ -127,9 +131,54 @@ describe('Cupos page', () => {
     const user = userEvent.setup();
     mockedListCupos.mockResolvedValue([]);
     render(<Cupos />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('cupos-tab-all'));
     await waitFor(() => screen.getByTestId('cupo-empty'));
     await user.click(screen.getByTestId('cupo-new'));
     expect(screen.getByTestId('cupo-form-modal')).toBeInTheDocument();
     expect(screen.getByTestId('cupo-form')).toBeInTheDocument();
+  });
+
+  it('CP4: clicking "Editar" opens the modal pre-filled with the cupo row', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([
+      { ...SAMPLE_CUPO, uuid_sucursal: SUCURSAL_1, cantidad: 50 },
+    ]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    await user.click(
+      screen.getByTestId('cupo-edit-aaaaaaaa-1111-1111-1111-111111111111'),
+    );
+    expect(screen.getByTestId('cupo-form-modal')).toBeInTheDocument();
+    const cantidad = screen.getByTestId('cupo-field-cantidad') as HTMLInputElement;
+    expect(cantidad.value).toBe('50');
+    expect(screen.getByTestId('cupo-form-editing')).toBeInTheDocument();
+    window.localStorage.removeItem('parkos.lastSelectedSucursal');
+  });
+
+  it('CP5: renders "Tipo de vehículo" column resolving uuid to name', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([
+      {
+        ...SAMPLE_CUPO,
+        uuid_sucursal: SUCURSAL_1,
+        cantidad: 10,
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+      },
+    ]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('cupo-tipo-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByTestId('cupo-tipo-aaaaaaaa-1111-1111-1111-111111111111').textContent,
+    ).toBe('carro');
+    window.localStorage.removeItem('parkos.lastSelectedSucursal');
   });
 });
