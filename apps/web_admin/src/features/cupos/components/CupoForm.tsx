@@ -215,13 +215,14 @@ export function CupoForm({
 }
 
 export function CupoFormHarness(props: Omit<CupoFormProps, 'form'>): JSX.Element {
+  const initial = props.initialCupo;
   const form = useForm<CupoCreateInput>({
     resolver: zodResolver(cupoCreateSchema) as never,
     defaultValues: {
-      uuid_sucursal: null,
-      uuid_tipo_vehiculo: null,
-      cantidad: null,
-      vigente_desde: null,
+      uuid_sucursal: initial?.uuid_sucursal ?? null,
+      uuid_tipo_vehiculo: initial?.uuid_tipo_vehiculo ?? null,
+      cantidad: initial?.cantidad ?? null,
+      vigente_desde: initial?.vigente_desde ?? null,
     },
   });
   return <CupoForm {...props} form={form} />;
