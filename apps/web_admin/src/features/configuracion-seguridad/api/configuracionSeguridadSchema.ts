@@ -20,9 +20,22 @@ const nullableUuid = z.string().uuid().nullable();
 
 export const configuracionSeguridadCreateSchema = z.object({
   uuid_sucursal: nullableUuid,
-  dias_expiracion_password: z.number().int().min(0).nullable().optional(),
-  max_intentos_login: z.number().int().min(1, 'Mínimo 1 intento').max(20, 'Máximo 20 intentos'),
-  minutos_bloqueo_login: z.number().int().min(1, 'Mínimo 1 minuto').max(1440, 'Máximo 1440 minutos (24h)'),
+  dias_expiracion_password: z
+    .number()
+    .int()
+    .min(0)
+    .nullable()
+    .optional(),
+  max_intentos_login: z
+    .union([
+      z.number().int().min(1, 'Mínimo 1 intento').max(20, 'Máximo 20 intentos'),
+      z.null(),
+    ]),
+  minutos_bloqueo_login: z
+    .union([
+      z.number().int().min(1, 'Mínimo 1 minuto').max(1440, 'Máximo 1440 minutos (24h)'),
+      z.null(),
+    ]),
 });
 
 export type ConfiguracionSeguridadCreateInput = z.infer<
