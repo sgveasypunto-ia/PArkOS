@@ -37,6 +37,27 @@ export const sucursalCreateSchema = z.object({
 
 export type SucursalCreateInput = z.infer<typeof sucursalCreateSchema>;
 
+// Mirror of the create schema: `SucursalUpdate` is "same shape as Create"
+// per backend `schemas/empresa.py::SucursalUpdate`. The Create rule on
+// `prefijo_nombre` is duplicated here so the standalone-update form
+// validates the same way without depending on Create.
+export const sucursalUpdateSchema = z.object({
+  nombre: z.string().min(1, 'El nombre es obligatorio').max(255),
+  direccion: z.string().max(255).nullish(),
+  telefono: z.string().max(64).nullish(),
+  prefijo_nombre: z
+    .string()
+    .min(1, 'El prefijo es obligatorio (UK)')
+    .max(64)
+    .regex(/^[A-Z0-9-]{3,7}$/, 'Prefijo: 3-7 caracteres en mayusculas, digitos o guion'),
+  ciudad: z.string().max(255).nullish(),
+  horario: z.string().max(255).nullish(),
+  uuid_tipo_sucursal: z.string().uuid().nullish(),
+  uuid_empresa: z.string().uuid().nullish(),
+});
+
+export type SucursalUpdateInput = z.infer<typeof sucursalUpdateSchema>;
+
 export const sucursalReadSchema = z.object({
   uuid: z.string().uuid(),
   nombre: z.string().nullable(),

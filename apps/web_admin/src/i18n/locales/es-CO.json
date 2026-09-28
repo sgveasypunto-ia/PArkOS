@@ -69,6 +69,15 @@
     "emptySystem": "No tenés sucursales autorizadas. Contactá al administrador.",
     "emptyFilter": "Ningún resultado para esa búsqueda."
   },
+  "sucursalAdmin": {
+    "tab": {
+      "seleccionar": "Seleccionar",
+      "admin": "Administrar"
+    },
+    "title": {
+      "admin": "Sucursales"
+    }
+  },
   "home": {
     "title": "Todo el parqueo, en un solo lugar",
     "subtitle": "Elegí una sección para empezar.",
@@ -338,6 +347,7 @@
     "title": "Sucursales",
     "new": "Nueva sucursal",
     "createTitle": "Crear nueva sucursal",
+    "editTitle": "Editar sucursal",
     "loading": "Cargando sucursales...",
     "loadError": "No se pudieron cargar las sucursales. Reintentá.",
     "empty": "Aún no hay sucursales.",
@@ -348,6 +358,7 @@
       "actions": "Acciones"
     },
     "action": {
+      "edit": "Editar",
       "pairing": "Token de pairing"
     },
     "field": {
@@ -357,12 +368,17 @@
       "prefijoHelp": "3-6 caracteres en mayúsculas, dígitos o guion (UK).",
       "ciudad": "Ciudad",
       "telefono": "Teléfono",
-      "direccion": "Dirección"
+      "direccion": "Dirección",
+      "horario": "Horario de atención",
+      "horarioHelp": "Ej: Lun-Vie 8:00-18:00 / Sáb 9:00-13:00",
+      "uuidTipoSucursal": "UUID tipo de sucursal",
+      "uuidEmpresa": "UUID empresa"
     },
     "form": {
       "create": "Crear sucursal",
       "update": "Actualizar",
-      "submitting": "Creando..."
+      "submitting": "Creando...",
+      "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente."
     },
     "pairing": {
       "title": "Token de pairing",
