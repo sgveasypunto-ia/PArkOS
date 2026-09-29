@@ -155,13 +155,16 @@ async def list_usuarios(
     assignments_by_user = await admin_repo.list_branch_assignments_for_users(
         session, user_uuids=[r.uuid for r in rows]
     )
-    items = [
-        AdminUsuarioRead(
-            **AdminUsuarioRead.model_validate(r).model_dump(),
-            sucursales=assignments_by_user.get(r.uuid, []),
+    items = []
+    for r in rows:
+        # ``exclude={"sucursales"}`` keeps the dump free of the field's
+        # default value (``[]``) so we can override it with the real
+        # branch assignments without colliding on a duplicate kwarg.
+        payload = AdminUsuarioRead.model_validate(r).model_dump(
+            exclude={"sucursales"}
         )
-        for r in rows
-    ]
+        payload["sucursales"] = assignments_by_user.get(r.uuid, [])
+        items.append(AdminUsuarioRead.model_validate(payload))
     return AdminUsuarioReadList(items=items, next_cursor=None)
 
 
@@ -191,7 +194,9 @@ async def get_usuario(
     assignments = await admin_repo.list_branch_assignments_for_users(
         session, user_uuids=[user.uuid]
     )
-    payload = AdminUsuarioRead.model_validate(user).model_dump()
+    payload = AdminUsuarioRead.model_validate(user).model_dump(
+        exclude={"sucursales"}
+    )
     payload["sucursales"] = assignments.get(user.uuid, [])
     return AdminUsuarioRead.model_validate(payload)
 
