@@ -2,7 +2,9 @@
 
 Three branches per issuer:
 - ``admin-`` — requires the ``X-Sucursal-Context`` header; validates the
-  uuid against ``claims["sucursales_permitidas"]``.
+  uuid against the actor's currently-open ``usuarios_sucursal`` rows read
+  FRESH from the DB, not against the ``claims["sucursales_permitidas"]``
+  snapshot captured at login.
 - ``operador-`` — JWT pins a single branch (``claims["sucursal"]``); the
   header is OPTIONAL and, if present, MUST match the JWT claim.
 - ``sync-agent-`` — JWT ``scope`` claim: ``branch`` pins one branch,
@@ -17,11 +19,13 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db.tenancy import set_tenant_context
+from ..db.engine import get_session
+from ..db.tenancy import extract_sucursales_permitidas_fresh, set_tenant_context
 from .jwt_issuer_guard import verify_jwt
 
 
@@ -59,7 +63,7 @@ class MissingSucursalContextError(HTTPException):
 
 
 class UnauthorizedSucursalContextError(HTTPException):
-    """403: header uuid not in admin's ``sucursales_permitidas`` claim."""
+    """403: header uuid not among the admin's currently-open assignments."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -78,8 +82,12 @@ class TenantScopeViolationError(HTTPException):
         )
 
 
+_DbSession = Annotated[AsyncSession, Depends(get_session)]
+
+
 async def get_tenant_ctx(
     request: Request,
+    session: _DbSession,
     x_sucursal_context: str | None = Header(None, alias="X-Sucursal-Context"),
 ) -> TenantContext:
     """FastAPI dependency: returns the per-request ``TenantContext``.
@@ -87,6 +95,11 @@ async def get_tenant_ctx(
     Reads the JWT (via :func:`verify_jwt`), enforces the issuer-specific
     tenant rule, and binds the resolved ``sucursal_uuid`` to the SQLAlchemy
     event listener for downstream query auto-filtering.
+
+    The ``session`` dependency is only *consumed* on the ``admin-`` branch.
+    For ``operador-``/``sync-agent-`` the ``AsyncSession`` is constructed
+    (cheap, connection is acquired lazily) but never queried, so their hot
+    path is unchanged.
     """
     claims: dict[str, Any] = await verify_jwt(request)
     iss = claims.get("iss", "")
@@ -147,8 +160,23 @@ async def get_tenant_ctx(
             header_uuid = uuid_lib.UUID(x_sucursal_context)
         except ValueError as e:
             raise UnauthorizedSucursalContextError() from e
-        permitidas = claims.get("sucursales_permitidas", []) or []
-        if str(header_uuid) not in {str(u) for u in permitidas}:
+        # Scope comes from the DB, not ``claims["sucursales_permitidas"]``.
+        # The claim is a login-time snapshot: an admin who creates a branch
+        # (the create hook inserts an open ``usuarios_sucursal`` row in the
+        # same transaction) would otherwise be locked out of the branch they
+        # just made until the token expired. Reading fresh also means a
+        # REVOKED assignment loses access on the next request instead of
+        # leaking for up to one token lifetime.
+        #
+        # The tenant event listener is a no-op here because the ContextVar is
+        # still unset at this point (``set_tenant_context`` runs below), and
+        # each request runs in its own asyncio task, so no value can leak in
+        # from a previous request. ``usuarios_sucursal`` is the scope-defining
+        # table: filtering it by the very scope it defines would be circular.
+        permitidas = await extract_sucursales_permitidas_fresh(
+            session, actor_uuid=actor_uuid
+        )
+        if header_uuid not in permitidas:
             raise UnauthorizedSucursalContextError()
         set_tenant_context(header_uuid)
         return TenantContext(

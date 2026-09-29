@@ -2,8 +2,8 @@
 
 Cloud-only endpoints (T-PR10-01..03):
 
-- ``GET /api/v1/sucursales`` — list permitted branches (filtered by
-  ``claims.sucursales_permitidas``).
+- ``GET /api/v1/sucursales`` — list permitted branches (scoped by the
+  actor's currently-open ``usuarios_sucursal`` rows, read fresh).
 - ``GET /api/v1/admin/sucursales/{uuid}/dashboard`` — aggregates for a
   single branch (ingresos_count, montos, sync_health, alerts).
 - ``GET /api/v1/admin/me`` — actor identity + permissions + permitted
@@ -53,22 +53,6 @@ _admin_issuer_dep = requires_issuer("admin-")
 
 AdminClaims = Annotated[dict[str, Any], Depends(_admin_issuer_dep)]
 DbSession = Annotated[AsyncSession, Depends(get_session)]
-
-
-def _permitidas(claims: dict[str, Any]) -> list[uuid_lib.UUID]:
-    """Coerce ``claims['sucursales_permitidas']`` to a list of UUIDs.
-
-    Malformed entries are dropped rather than 500-ing: an admin token with
-    a garbage entry must not widen scope, and dropping keeps the filter
-    strictly narrower (REQ-X2).
-    """
-    out: list[uuid_lib.UUID] = []
-    for raw in claims.get("sucursales_permitidas") or []:
-        try:
-            out.append(raw if isinstance(raw, uuid_lib.UUID) else uuid_lib.UUID(str(raw)))
-        except (ValueError, TypeError, AttributeError):
-            continue
-    return out
 
 
 # ============================================================================
@@ -285,8 +269,10 @@ async def branch_dashboard(
     """Aggregate metrics for one branch.
 
     Requires ``X-Sucursal-Context`` matching the path UUID (400 if missing,
-    403 if mismatched or outside ``sucursales_permitidas`` — REQ-X2).
-    Every metric is one aggregate query (no N+1).
+    403 if mismatched or outside the actor's open ``usuarios_sucursal``
+    rows — REQ-X2). The scope check reads the DB fresh for the same reason
+    as :func:`admin_me`: the JWT claim is a login-time snapshot. Every
+    metric is one aggregate query (no N+1).
     """
     if x_sucursal_context is None:
         raise HTTPException(
@@ -298,7 +284,10 @@ async def branch_dashboard(
             status_code=403,
             detail={"error": "x_sucursal_context_mismatch", "path_uuid": str(uuid)},
         )
-    if uuid not in _permitidas(claims):
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    if uuid not in await extract_sucursales_permitidas_fresh(
+        session, actor_uuid=actor_uuid
+    ):
         raise HTTPException(
             status_code=403,
             detail={"error": "unauthorized_sucursal_context"},
@@ -370,7 +359,16 @@ async def admin_me(
     session: DbSession,
     claims: AdminClaims,
 ) -> AdminMeResponse:
-    """Return the actor's identity + RBAC permissions for the BranchSelector."""
+    """Return the actor's identity + RBAC permissions for the BranchSelector.
+
+    ``sucursales_permitidas`` is read fresh from ``prod.usuarios_sucursal``
+    rather than from the JWT claim, for the same reason as
+    :func:`list_sucursales`: the claim is a login-time snapshot, so a branch
+    created (and auto-assigned) in the current session would stay invisible
+    until the token expires. This endpoint feeds the BranchSelector's own
+    filter, so a stale claim here re-introduced the same symptom on the
+    client even with ``/sucursales`` already reading fresh.
+    """
     try:
         actor_uuid = uuid_lib.UUID(str(claims["sub"]))
     except (KeyError, ValueError, TypeError) as e:
@@ -401,11 +399,15 @@ async def admin_me(
         p for p in (await session.execute(permisos_stmt)).scalars().all() if p is not None
     ]
 
+    permitidas = await extract_sucursales_permitidas_fresh(
+        session, actor_uuid=actor_uuid
+    )
+
     return AdminMeResponse(
         actor_uuid=actor_uuid,
         email=usuario.email if usuario else None,
         rol=usuario.rol if usuario else claims.get("rol"),
-        sucursales_permitidas=_permitidas(claims),
+        sucursales_permitidas=permitidas,
         permissions=sorted(set(permissions)),
     )
 

@@ -6,7 +6,9 @@ Verifies ``GET /api/v1/admin/me`` (admin_views.branch_dashboard-adjacent):
   ``sucursales_permitidas``, ``permissions``.
 - ``permissions`` is a list of permission codes from
   ``permisos_usuario`` (when DB seed data is present).
-- ``sucursales_permitidas`` mirrors the JWT claim, coerced to UUIDs.
+- ``sucursales_permitidas`` is read fresh from ``prod.usuarios_sucursal``,
+  NOT from the JWT claim (which is a login-time snapshot). See
+  ``test_admin_me_fresh_scope.py`` for the regression tests that pin it.
 - A ``sync-agent-`` token returns 401 (cross-issuer rejection).
 """
 from __future__ import annotations
@@ -234,7 +236,12 @@ def test_admin_me_shape_and_permissions(
             assert isinstance(code, str)
             assert code, "permission code must be non-empty string"
 
-    assert len(data["sucursales_permitidas"]) == len(sucursales)
+    # The token above carries two random sucursales in its claim, but the
+    # endpoint answers from ``usuarios_sucursal``. ``actor_uuid`` is a fresh
+    # uuid4() with no rows there, so the response must come back empty
+    # (fail-closed) -- which also proves the claim is NOT echoed back.
+    # Asserting equality with the claim would re-pin the reported bug.
+    assert data["sucursales_permitidas"] == []
 
 
 def test_admin_me_returns_actor_uuid_matching_sub_claim(
