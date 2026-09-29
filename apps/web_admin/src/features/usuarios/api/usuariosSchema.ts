@@ -36,12 +36,16 @@ export const usuarioCreateSchema = z.object({
 
 export type UsuarioCreate = z.infer<typeof usuarioCreateSchema>;
 
+// Update payload. Mirrors the nullable read model (`AdminUsuarioRead`
+// types every field as `str | None`), so the edit form can pre-fill
+// straight from the GET without a lossy cast — and clearing a field is
+// expressible as an explicit `null` rather than an empty string.
 export const usuarioUpdateSchema = z.object({
-  email: z.string().email().optional(),
-  nombre: z.string().optional(),
-  apellido: z.string().optional(),
-  cedula: z.string().optional(),
-  rol: z.string().optional(),
+  email: z.string().email().nullable().optional(),
+  nombre: z.string().nullable().optional(),
+  apellido: z.string().nullable().optional(),
+  cedula: z.string().nullable().optional(),
+  rol: z.string().nullable().optional(),
 });
 
 export type UsuarioUpdate = z.infer<typeof usuarioUpdateSchema>;

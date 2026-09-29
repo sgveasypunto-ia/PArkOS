@@ -35,7 +35,9 @@ export function UsuarioForm({ usuario }: UsuarioFormProps) {
       await mutate(`usuario-${usuario.uuid}`);
       alert('Usuario actualizado correctamente');
     } catch (error) {
-      alert('Error al actualizar usuario');
+      alert(
+        `Error al actualizar usuario: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   };
 

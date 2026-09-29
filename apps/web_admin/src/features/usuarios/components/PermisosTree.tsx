@@ -67,7 +67,9 @@ export function PermisosTree({ uuidUsuario }: PermisosTreeProps) {
       await mutate();
       await globalMutate(`permisos-usuario-${uuidUsuario}`);
     } catch (error) {
-      alert('Error al actualizar permisos');
+      alert(
+        `Error al actualizar permisos: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   };
 

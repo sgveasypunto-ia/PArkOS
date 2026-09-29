@@ -34,7 +34,10 @@ const FOCUSABLE = [
 interface DropdownContextValue {
   open: boolean;
   setOpen: (open: boolean) => void;
-  triggerRef: React.RefObject<HTMLButtonElement>;
+  // Mutable on purpose: `DropdownMenuTrigger` writes `current` from a
+  // callback ref. `React.RefObject<T>.current` is `readonly` under the
+  // React 18 types, so the mutable variant is the correct annotation.
+  triggerRef: React.MutableRefObject<HTMLButtonElement | null>;
   contentId: string;
   triggerId: string;
   labelId: string;

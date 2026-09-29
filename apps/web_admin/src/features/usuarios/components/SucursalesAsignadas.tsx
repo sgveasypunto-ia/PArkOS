@@ -24,7 +24,9 @@ export function SucursalesAsignadas({ uuidUsuario }: SucursalesAsignadasProps) {
       await mutate();
       await globalMutate(`sucursales-usuario-${uuidUsuario}`);
     } catch (error) {
-      alert('Error al asignar sucursal');
+      alert(
+        `Error al asignar sucursal: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   };
 
@@ -38,7 +40,9 @@ export function SucursalesAsignadas({ uuidUsuario }: SucursalesAsignadasProps) {
       await mutate();
       await globalMutate(`sucursales-usuario-${uuidUsuario}`);
     } catch (error) {
-      alert('Error al desasignar sucursal');
+      alert(
+        `Error al desasignar sucursal: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   };
 
