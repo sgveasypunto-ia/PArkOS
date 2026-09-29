@@ -5,11 +5,20 @@
  * la lista de campos editables, y los `defaults` del formulario.
  * El `CatalogEditor` consume esta config para renderizar la tabla
  * + el dialog sin saber nada del catálogo concreto.
+ *
+ * `fieldTypes` mirror los Pydantic types del backend:
+ *   - `text`    → str (max length por config)
+ *   - `number`  → Decimal/int en backend; el form manda float, Pydantic coerca
+ *   - `checkbox` → bool (true/false en JSON, nativo)
+ *
+ * El shape del form field DEBE matchear el schema `*Create` del backend
+ * (`extra="forbid"` rechaza lo que no esté declarado). Ver
+ * `backend/.../schemas/{tipo_persona,impuestos,...}.py`.
  */
 import type { z } from 'zod';
 import type { CatalogResource } from '../api/catalogApi';
 
-export type CatalogFieldType = 'text' | 'number' | 'email';
+export type CatalogFieldType = 'text' | 'number' | 'checkbox';
 
 export interface CatalogField {
   name: string;
@@ -32,14 +41,11 @@ export interface CatalogConfig {
   fields: CatalogField[];
   columns: CatalogColumn[];
   defaults: Record<string, unknown>;
+  /**
+   * Mapea el form values al payload que acepta `*Create` del backend.
+   * Por default es un identity spread. Usar override para convertir
+   * strings a JSON (ej. `caracteristicas`) o filtrar campos vacios.
+   */
   toCreatePayload: (form: Record<string, unknown>) => Record<string, unknown>;
   schema?: z.ZodTypeAny;
 }
-
-export const NUMERIC_FIELDS = new Set<string>([
-  'porcentaje',
-  'valor',
-  'valor_plena',
-  'tolerancia_efectivo',
-  'tolerancia_datafono',
-]);

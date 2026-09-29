@@ -57,9 +57,15 @@ export function NuevaVersionDialog({
     Object.fromEntries(
       fields.map((f) => [
         f.name,
-        f.required
-          ? z.string().min(1, t('catalogos.required', 'Requerido'))
-          : z.string().optional(),
+        f.type === 'checkbox'
+          ? z.boolean().optional()
+          : f.type === 'number'
+            ? f.required
+              ? z.coerce.number({ invalid_type_error: t('catalogos.required', 'Requerido') })
+              : z.coerce.number().optional()
+            : f.required
+              ? z.string().min(1, t('catalogos.required', 'Requerido'))
+              : z.string().optional(),
       ]),
     ),
   );
@@ -93,34 +99,66 @@ export function NuevaVersionDialog({
         >
           {fields.map((field) => {
             const error = form.formState.errors[field.name];
+            const isCheckbox = field.type === 'checkbox';
             return (
               <div key={field.name} className="grid gap-2">
-                <Label htmlFor={`field-${field.name}`}>
-                  {field.label}
-                  {field.required && (
-                    <span className="text-destructive" aria-hidden="true">
-                      {' '}*
-                    </span>
+                <Label
+                  htmlFor={`field-${field.name}`}
+                  className={isCheckbox ? 'flex items-center gap-2' : undefined}
+                >
+                  {isCheckbox ? (
+                    <>
+                      <input
+                        id={`field-${field.name}`}
+                        type="checkbox"
+                        {...form.register(field.name)}
+                        data-testid={`field-${field.name}`}
+                        aria-invalid={error ? 'true' : 'false'}
+                        className="border-input size-4 rounded"
+                      />
+                      <span>
+                        {field.label}
+                        {field.required && (
+                          <span className="text-destructive" aria-hidden="true">
+                            {' '}*
+                          </span>
+                        )}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      {field.label}
+                      {field.required && (
+                        <span className="text-destructive" aria-hidden="true">
+                          {' '}*
+                        </span>
+                      )}
+                    </>
                   )}
                 </Label>
-                <Input
-                  id={`field-${field.name}`}
-                  type={field.type ?? 'text'}
-                  {...form.register(field.name)}
-                  data-testid={`field-${field.name}`}
-                  aria-invalid={error ? 'true' : 'false'}
-                  aria-describedby={
-                    error ? `field-${field.name}-error` : undefined
-                  }
-                />
-                {error && (
-                  <p
-                    id={`field-${field.name}-error`}
-                    role="alert"
-                    className="text-destructive text-xs"
-                  >
-                    {error.message as string}
-                  </p>
+                {!isCheckbox && (
+                  <>
+                    <Input
+                      id={`field-${field.name}`}
+                      type={field.type === 'number' ? 'number' : 'text'}
+                      step={field.type === 'number' ? '0.0001' : undefined}
+                      {...form.register(field.name)}
+                      data-testid={`field-${field.name}`}
+                      aria-invalid={error ? 'true' : 'false'}
+                      aria-describedby={
+                        error ? `field-${field.name}-error` : undefined
+                      }
+                    />
+                    {error && (
+                      <p
+                        id={`field-${field.name}-error`}
+                        role="alert"
+                        className="text-destructive text-xs"
+                      >
+                        {error.message as string}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             );
