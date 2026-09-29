@@ -7,6 +7,14 @@
  * The endpoint returns the user's currently OPEN branch assignments
  * (rows where `vigente_hasta IS NULL`), so the modal renders the
  * chips without any client-side filtering on `estado`.
+ *
+ * Why the fetcher is a closure and not a bare function reference
+ * ---------------------------------------------------------------
+ * SWR invokes the fetcher as `fetcher(key)`. Passing
+ * `listAdminUsuarioSucursales` directly made its `uuid` parameter
+ * receive the SWR KEY — the whole URL — so the request went out as
+ * `/api/v1/admin/usuarios//api/v1/admin/usuarios/<uuid>/sucursales/sucursales`
+ * and always 404'd. The closure below closes over the real uuid.
  */
 import useSWR from 'swr';
 
@@ -27,7 +35,8 @@ export function useAdminUsuarioSucursales(
 } {
   const { data, error, isLoading, mutate } = useSWR<AdminSucursalAsignadaRead[]>(
     buildKey(usuarioUuid),
-    listAdminUsuarioSucursales,
+    async () =>
+      usuarioUuid === null ? [] : listAdminUsuarioSucursales(usuarioUuid),
     { revalidateOnFocus: false },
   );
   return { asignaciones: data, isLoading, error, refresh: mutate };

@@ -29,6 +29,22 @@ import {
 
 const PATH = '/api/v1/admin/usuarios';
 
+/**
+ * Guard for path interpolation. These URLs are built by template
+ * literal, so a caller that passes a URL instead of a uuid produces a
+ * silently malformed path (`/admin/usuarios//api/v1/admin/usuarios/.../sucursales/sucursales`)
+ * that the backend answers with a 404 and no explanation. Failing here
+ * turns that into an actionable error at the source.
+ */
+function assertUuid(value: string, paramName: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+    throw new Error(
+      `adminUsuariosApi: "${paramName}" must be a bare UUID, got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
 async function fetchJson<T>(input: string, init: ParkosFetchInit): Promise<T> {
   const res = await parkosFetchRaw(input, init);
   if (!res.ok) {
@@ -61,7 +77,7 @@ export async function listAdminUsuarios(): Promise<AdminUsuarioRead[]> {
 }
 
 export async function getAdminUsuario(uuid: string): Promise<AdminUsuarioRead> {
-  const raw = await fetchJson<unknown>(`${PATH}/${uuid}`, {
+  const raw = await fetchJson<unknown>(`${PATH}/${assertUuid(uuid, 'uuid')}`, {
     method: 'GET',
     headers: { Accept: 'application/json' },
   });
@@ -71,10 +87,13 @@ export async function getAdminUsuario(uuid: string): Promise<AdminUsuarioRead> {
 export async function listAdminUsuarioSucursales(
   uuid: string,
 ): Promise<AdminSucursalAsignadaRead[]> {
-  const raw = await fetchJson<unknown>(`${PATH}/${uuid}/sucursales`, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-  });
+  const raw = await fetchJson<unknown>(
+    `${PATH}/${assertUuid(uuid, 'usuarioUuid')}/sucursales`,
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    },
+  );
   const items = Array.isArray(raw) ? raw : [];
   return items.map((item) => adminSucursalAsignadaReadSchema.parse(item));
 }
@@ -83,11 +102,14 @@ export async function asignarAdminUsuarioSucursal(
   uuid: string,
   sucursalUuid: string,
 ): Promise<AdminSucursalAsignadaRead> {
-  const raw = await fetchJson<unknown>(`${PATH}/${uuid}/sucursales`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uuid_sucursal: sucursalUuid }),
-  });
+  const raw = await fetchJson<unknown>(
+    `${PATH}/${assertUuid(uuid, 'usuarioUuid')}/sucursales`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uuid_sucursal: assertUuid(sucursalUuid, 'sucursalUuid') }),
+    },
+  );
   return adminSucursalAsignadaReadSchema.parse(raw);
 }
 
@@ -95,14 +117,15 @@ export async function desasignarAdminUsuarioSucursal(
   uuid: string,
   sucursalUuid: string,
 ): Promise<void> {
-  const res = await parkosFetchRaw(`${PATH}/${uuid}/sucursales/${sucursalUuid}`, {
+  const url = `${PATH}/${assertUuid(uuid, 'usuarioUuid')}/sucursales/${assertUuid(sucursalUuid, 'sucursalUuid')}`;
+  const res = await parkosFetchRaw(url, {
     method: 'DELETE',
     headers: { Accept: 'application/json' },
   });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(
-      `adminUsuariosApi: DELETE ${PATH}/${uuid}/sucursales/${sucursalUuid} -> ${res.status}: ${body.slice(0, 200)}`,
+      `adminUsuariosApi: DELETE ${url} -> ${res.status}: ${body.slice(0, 200)}`,
     );
   }
 }
