@@ -377,6 +377,8 @@ export default function Tarifas(): JSX.Element {
               onCancel={closeModal}
               sucursalActivaUuid={selectedSucursal}
               sucursalActivaNombre={activeSucursalLabel}
+              tiposVehiculo={tiposVehiculo}
+              tiposTarifa={tiposTarifa}
               tiposVehiculoEnUsoEnSucursal={tiposVehiculoEnUsoEnSucursal}
               tiposTarifaEnUsoEnSucursal={tiposTarifaEnUsoEnSucursal}
             />
@@ -389,6 +391,8 @@ export default function Tarifas(): JSX.Element {
               onCancel={closeModal}
               sucursalActivaUuid={selectedSucursal}
               sucursalActivaNombre={activeSucursalLabel}
+              tiposVehiculo={tiposVehiculo}
+              tiposTarifa={tiposTarifa}
               tiposVehiculoEnUsoEnSucursal={tiposVehiculoEnUsoEnSucursal}
               tiposTarifaEnUsoEnSucursal={tiposTarifaEnUsoEnSucursal}
             />

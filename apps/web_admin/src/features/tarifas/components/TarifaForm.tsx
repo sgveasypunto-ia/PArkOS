@@ -20,7 +20,9 @@
  *     one of the 5 canonical tipos). The sentinel
  *     ``TIPO_NULL_SENTINEL_VEHICULO`` still participates in the
  *     per-branch used-set check so the operator never tries to open
- *     a second version for a cell that already has one open.
+ *     a second version for a cell that already has one open. The
+ *     harness pre-selects the first available catalog entry on CREATE
+ *     so the operator never submits null by forgetting to pick one.
  *   - `uuid_tipo_tarifa` (select on CREATE, readonly on EDIT) — same
  *     rule, sentinel ``TIPO_NULL_SENTINEL_TARIFA``.
  *   - `valor`, `valor_plena` — Numeric(18,4). `valor > 0`, `valor_plena
@@ -30,6 +32,7 @@
  *     operator's local TZ); EDIT defaults to "now" too per the
  *     canonical UX rule shipped 2026-09-29 for this screen.
  */
+import { useEffect } from 'react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
@@ -51,6 +54,8 @@ import {
   type Tarifa,
   type TarifaCreateInput,
 } from '../api/tarifaSchema';
+import type { TipoVehiculo } from '@/features/tipos-vehiculo/api/tiposVehiculoApi';
+import type { TipoTarifa } from '@/features/tipo-tarifa/api/tipoTarifaApi';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
 import { useTipoTarifa } from '@/features/tipo-tarifa/hooks/useTipoTarifa';
 
@@ -69,6 +74,13 @@ export interface TarifaFormProps {
   onCancel: () => void;
   /** Display label for the branch shown in the readonly field. */
   sucursalActivaNombre: string;
+  /** Catalog of tipos_vehiculo (full set, not filtered). The harness
+   *  pre-picks the first available entry for CREATE defaults; the
+   *  form filters it by ``tiposVehiculoEnUsoEnSucursal`` before
+   *  rendering the CREATE select. */
+  tiposVehiculo: TipoVehiculo[];
+  /** Catalog of tipos_tarifa (full set). */
+  tiposTarifa: TipoTarifa[];
   /** Set of uuid_tipo_vehiculo (or
    *  ``TIPO_NULL_SENTINEL_VEHICULO`` for NULL) already in use by an
    *  open tarifa for the active branch. CREATE hides these from the
@@ -119,13 +131,12 @@ export function TarifaForm({
   initialTarifa = null,
   onCancel,
   sucursalActivaNombre,
+  tiposVehiculo,
+  tiposTarifa,
   tiposVehiculoEnUsoEnSucursal,
   tiposTarifaEnUsoEnSucursal,
 }: TarifaFormProps) {
   const { t } = useTranslation();
-
-  const { tipos: tiposVehiculo } = useTiposVehiculo();
-  const { tipos: tiposTarifa } = useTipoTarifa();
 
   return (
     <Form {...form}>
@@ -451,6 +462,14 @@ export function TarifaFormHarness(
   props: Omit<TarifaFormProps, 'form'> & TarifaFormHarnessExtraProps,
 ): JSX.Element {
   const initial = props.initialTarifa;
+  // The wiring layer owns the catalog reads — moving them here lets
+  // the harness default the tipo selects in CREATE before the operator
+  // submits, so an operator who forgets to interact with either
+  // select still has the form pre-populated (and the backend's
+  // strict-required rule never fires for a UI submit).
+  const { tipos: tiposVehiculoCatalog } = useTiposVehiculo();
+  const { tipos: tiposTarifaCatalog } = useTipoTarifa();
+
   // Per the canonical UX rule shipped 2026-09-29, the tarifa is a
   // single-tenant resource. The harness receives ``sucursalActivaUuid``
   // from the page (already bound to the topbar selection) and uses it as
@@ -467,8 +486,12 @@ export function TarifaFormHarness(
     localNowAsDatetimeLocal() + ':00+00:00';
   // Strip the harness-only prop before forwarding to the presentational
   // form — keeps the form's interface focused on what it actually
-  // renders (the readonly name, not the uuid).
+  // renders (the readonly name, not the uuid). The used-sets are
+  // passed through to the form unchanged (it filters the CREATE
+  // selects with them).
   const { sucursalActivaUuid, ...formProps } = props;
+  const tiposVehiculoEnUsoEnSucursal = formProps.tiposVehiculoEnUsoEnSucursal;
+  const tiposTarifaEnUsoEnSucursal = formProps.tiposTarifaEnUsoEnSucursal;
   const form = useForm<TarifaCreateInput>({
     resolver: zodResolver(tarifaCreateSchema) as never,
     defaultValues: {
@@ -480,5 +503,48 @@ export function TarifaFormHarness(
       vigente_desde: defaultVigenteDesde,
     },
   });
+
+  // CREATE-only default-pre-population. The backend (post-2026-09-29)
+  // rejects null ``uuid_tipo_vehiculo`` / ``uuid_tipo_tarifa`` with
+  // 422, so we must default both selects to the first available entry
+  // filtered by per-branch in-use set. The ``useEffect`` runs after the
+  // catalog loads so the first render (with empty catalog) doesn't
+  // race with a later ``setValue``. The idempotent guard
+  // (``=== null``) avoids overwriting an operator's manual selection
+  // if they picked a tipo before the catalog finished loading.
+  useEffect(() => {
+    if (initial !== null) return; // EDIT: tipos locked from initialTarifa
+    const current = form.getValues();
+    if (
+      current.uuid_tipo_vehiculo === null
+      && tiposVehiculoCatalog.length > 0
+    ) {
+      const primero = tiposVehiculoCatalog.find(
+        (tv) => !tiposVehiculoEnUsoEnSucursal.has(tv.uuid),
+      );
+      if (primero) {
+        form.setValue('uuid_tipo_vehiculo', primero.uuid, { shouldDirty: false });
+      }
+    }
+    if (
+      current.uuid_tipo_tarifa === null
+      && tiposTarifaCatalog.length > 0
+    ) {
+      const primero = tiposTarifaCatalog.find(
+        (tt) => !tiposTarifaEnUsoEnSucursal.has(tt.uuid),
+      );
+      if (primero) {
+        form.setValue('uuid_tipo_tarifa', primero.uuid, { shouldDirty: false });
+      }
+    }
+  }, [
+    tiposVehiculoCatalog,
+    tiposTarifaCatalog,
+    tiposVehiculoEnUsoEnSucursal,
+    tiposTarifaEnUsoEnSucursal,
+    initial,
+    form,
+  ]);
+
   return <TarifaForm {...formProps} form={form} />;
 }
