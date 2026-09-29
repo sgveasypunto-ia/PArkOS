@@ -200,14 +200,17 @@
     "field": {
       "sucursal": "Sucursal",
       "sucursalHelp": "La tarifa pertenece a esta sucursal.",
-      "tipoVehiculo": "Tipo de vehículo (opcional)",
-      "tipoTarifa": "Modalidad (opcional)",
+      "tipoVehiculo": "Tipo de vehículo",
+      "tipoTarifa": "Modalidad",
       "valor": "Valor por hora",
       "valorHelp": "Debe ser > 0. Cuatro decimales.",
       "valorPlena": "Valor plena",
       "valorPlenaHelp": "Debe ser >= 0. Cuatro decimales.",
-      "vigenteDesde": "Vigente desde (opcional)",
-      "vigenteDesdeHelp": "Vacío = ahora. Una fecha futura programa un cambio de tarifa."
+      "vigenteDesde": "Vigente desde",
+      "vigenteDesdeHelp": "Una fecha futura programa un cambio de tarifa.",
+      "sucursalHelp": "La tarifa pertenece a la sucursal activa seleccionada en el topbar.",
+      "tipoVehiculoLocked": "Tarifa fija — el tipo de vehículo no se puede cambiar después de creada.",
+      "tipoTarifaLocked": "Tarifa fija — la modalidad no se puede cambiar después de creada."
     },
     "form": {
       "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
@@ -221,8 +224,6 @@
       "hideHistory": "Ocultar histórico"
     },
     "tabs": {
-      "all": "Todas las sucursales",
-      "active": "Mi sucursal activa",
       "activeEmpty": "Elegí una sucursal en el selector del topbar para ver sus tarifas.",
       "activeEmptyForBranch": "Esta sucursal no tiene tarifas configuradas."
     }

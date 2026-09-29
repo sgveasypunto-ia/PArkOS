@@ -42,9 +42,7 @@ export const tarifaCreateSchema = z.object({
     }),
   vigente_desde: z
     .string()
-    .datetime({ offset: true })
-    .nullable()
-    .optional(),
+    .datetime({ offset: true }),
 });
 
 export type TarifaCreateInput = z.infer<typeof tarifaCreateSchema>;
