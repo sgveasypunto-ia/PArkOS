@@ -67,9 +67,37 @@ export const tarifaCreateSchema = z.object({
 
 export type TarifaCreateInput = z.infer<typeof tarifaCreateSchema>;
 
-export const tarifaUpdateSchema = tarifaCreateSchema;
+// Schema for the wire payload sent to the backend (one POST per
+// modalidad). Mirrors `backend/.../schemas/empresa.py:283
+// TarifasSucursalCreate` exactly: ``uuid_tipo_tarifa`` REQUIRED,
+// ``valor`` > 0, ``valor_plena`` >= 0. The page-side ``onSubmit``
+// (``Tarifas.tsx``) splits the 4-input form into 4 calls to
+// ``createTarifa(input)`` where each input carries one
+// (uuid_tipo_tarifa, valor, valor_plena) tuple.
+export const tarifaBackendCreateSchema = z.object({
+  uuid_sucursal: nullableUuid,
+  uuid_tipo_vehiculo: z.string().uuid(),
+  uuid_tipo_tarifa: z.string().uuid(),
+  valor: z
+    .union([decimalString, z.null()])
+    .refine((v) => v === null || Number(v) > 0, {
+      message: 'El valor debe ser mayor a 0',
+    }),
+  valor_plena: z
+    .union([decimalString, z.null()])
+    .refine((v) => v === null || Number(v) >= 0, {
+      message: 'El valor plena debe ser >= 0',
+    }),
+  vigente_desde: z
+    .string()
+    .datetime({ offset: true }),
+});
 
-export type TarifaUpdateInput = z.infer<typeof tarifaUpdateSchema>;
+export type TarifaBackendCreateInput = z.infer<typeof tarifaBackendCreateSchema>;
+
+export const tarifaUpdateSchema = tarifaBackendCreateSchema;
+
+export type TarifaUpdateInput = TarifaBackendCreateInput;
 
 export const tarifaReadSchema = z.object({
   uuid: z.string().uuid(),

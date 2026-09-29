@@ -18,18 +18,19 @@
 import { parkosFetchRaw, type ParkosFetchInit } from '@parkos/ui-kit/fetch';
 
 import {
-  tarifaCreateSchema,
+  tarifaBackendCreateSchema,
   tarifaOverlapErrorSchema,
   tarifaReadListEnvelopeSchema,
   tarifaReadSchema,
   tarifaSucursalInmutableErrorSchema,
   tarifaUpdateSchema,
   type Tarifa,
+  type TarifaBackendCreateInput,
   type TarifaCreateInput,
   type TarifaUpdateInput,
 } from './tarifaSchema';
 
-export type { Tarifa, TarifaCreateInput, TarifaUpdateInput };
+export type { Tarifa, TarifaCreateInput, TarifaUpdateInput, TarifaBackendCreateInput };
 
 const jsonHeaders = {
   Accept: 'application/json',
@@ -180,8 +181,8 @@ export async function getTarifa(uuid: string): Promise<Tarifa> {
   return tarifaReadSchema.parse(raw);
 }
 
-export async function createTarifa(input: TarifaCreateInput): Promise<Tarifa> {
-  const parsed = tarifaCreateSchema.parse(input);
+export async function createTarifa(input: TarifaBackendCreateInput): Promise<Tarifa> {
+  const parsed = tarifaBackendCreateSchema.parse(input);
   const raw = await fetchJsonOrTyped('/api/v1/empresa/tarifas-sucursal', {
     method: 'POST',
     headers: jsonHeaders,
@@ -190,7 +191,10 @@ export async function createTarifa(input: TarifaCreateInput): Promise<Tarifa> {
   return tarifaReadSchema.parse(raw);
 }
 
-export async function updateTarifa(uuid: string, input: TarifaUpdateInput): Promise<Tarifa> {
+export async function updateTarifa(
+  uuid: string,
+  input: TarifaUpdateInput,
+): Promise<Tarifa> {
   const parsed = tarifaUpdateSchema.parse(input);
   const raw = await fetchJsonOrTyped(`/api/v1/empresa/tarifas-sucursal/${uuid}`, {
     method: 'PUT',
