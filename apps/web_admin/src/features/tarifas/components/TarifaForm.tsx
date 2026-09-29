@@ -56,9 +56,9 @@ import { Input } from '@/components/ui/input';
 
 import {
   tarifaCreateSchema,
-  type Tarifa,
   type TarifaCreateInput,
 } from '../api/tarifaSchema';
+import type { TarifaAgrupada } from '../api/tarifaAgrupada';
 import type { TipoVehiculo } from '@/features/tipos-vehiculo/api/tiposVehiculoApi';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
 
@@ -70,20 +70,18 @@ export interface TarifaFormProps {
   isSubmitting: boolean;
   /** Update mode renders "Actualizar" + PUT semantics in the parent. */
   isUpdate?: boolean;
-  /** Optional prefill from the row being edited (PUT). */
-  initialTarifa?: Tarifa | null;
+  /** Optional prefill from the grouped row being edited (PUT). The
+   * page passes this to pre-fill the 4 valor_* inputs from the 4
+   * per-modalidad rows in the cell. */
+  initialTarifaAgrupada?: TarifaAgrupada | null;
   /** Close the parent modal (e.g. cancel button). */
   onCancel: () => void;
   /** Display label for the branch shown in the readonly field. */
   sucursalActivaNombre: string;
-  /** Catalog of tipos_vehiculo (full set, not filtered). The harness
-   *  pre-picks the first available entry for CREATE defaults; the
-   *  form filters it by ``tiposVehiculoEnUsoEnSucursal`` before
-   *  rendering the CREATE select. */
+  /** Catalog of tipos_vehiculo (full set, not filtered). */
   tiposVehiculo: TipoVehiculo[];
   /** Set of uuid_tipo_vehiculo already in use by an open tarifa for
-   * the active branch. CREATE hides these from the select; EDIT ignores
-   * them (field is locked anyway). */
+   * the active branch. */
   tiposVehiculoEnUsoEnSucursal: Set<string>;
 }
 
@@ -147,7 +145,7 @@ export function TarifaForm({
   onSubmit,
   isSubmitting,
   isUpdate = false,
-  initialTarifa = null,
+  initialTarifaAgrupada = null,
   onCancel,
   sucursalActivaNombre,
   tiposVehiculo,
@@ -191,10 +189,10 @@ export function TarifaForm({
               // operator edits valor / valor_plena / vigente_desde;
               // switching tipo_vehiculo would open a new version in a
               // different cell, which is outside the scope of "edit".
-              const tipoFijo = initialTarifa !== null;
+              const tipoFijo = initialTarifaAgrupada !== null;
               const tipoActualLabel = (() => {
                 if (!tipoFijo) return null;
-                const actual = initialTarifa?.uuid_tipo_vehiculo;
+                const actual = initialTarifaAgrupada?.uuid_tipo_vehiculo;
                 if (actual === null || actual === undefined) {
                   return t('tarifas.tipoVehiculoAny', 'Cualquiera');
                 }
@@ -427,7 +425,7 @@ export function TarifaForm({
           )}
         />
 
-        {initialTarifa !== null && (
+        {initialTarifaAgrupada !== null && (
           <p
             className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
             data-testid="tarifa-form-editing"
@@ -469,7 +467,7 @@ export function TarifaForm({
 export function TarifaFormHarness(
   props: Omit<TarifaFormProps, 'form'> & TarifaFormHarnessExtraProps,
 ): JSX.Element {
-  const initial = props.initialTarifa;
+  const initial = props.initialTarifaAgrupada;
   // The wiring layer owns the catalog reads — moving them here lets
   // the harness default the tipo select in CREATE before the operator
   // submits, so an operator who forgets to interact with the select
@@ -477,58 +475,35 @@ export function TarifaFormHarness(
   // strict-required rule never fires for a UI submit).
   const { tipos: tiposVehiculoCatalog } = useTiposVehiculo();
 
-  // Per the canonical UX rule shipped 2026-09-29, the tarifa is a
-  // single-tenant resource. The harness receives ``sucursalActivaUuid``
-  // from the page (already bound to the topbar selection) and uses it as
-  // the default for ``uuid_sucursal``. If the operator is editing a
-  // tarifa whose sucursal differs from the active one, the page's
-  // ``sucursal_inmutable`` backend guard (422) refuses the PUT — the
-  // form surface should never expose that case in practice (the list
-  // is filtered to the active branch).
-  //
   // ``vigente_desde`` defaults to "now" in CREATE and "now + 1 minute"
   // in EDIT (the canonical UX rule for /tarifas, matching /cupos).
   const defaultVigenteDesde =
     initial === null
       ? localNowAsDatetimeLocal() + ':00+00:00'
       : localNowPlusMinutesAsIso(1);
-  // Strip the harness-only prop before forwarding to the presentational
-  // form — keeps the form's interface focused on what it actually
-  // renders (the readonly name, not the uuid). The used-sets are
-  // passed through to the form unchanged (it filters the CREATE
-  // selects with them).
   const { sucursalActivaUuid, ...formProps } = props;
   const tiposVehiculoEnUsoEnSucursal = formProps.tiposVehiculoEnUsoEnSucursal;
-  // The tarifa cell-key is now (sucursal, tipo_vehiculo) only — the
-  // 4 modalities (hora, fraccion, plena, nocturna) are configured in a
-  // single CREATE via 4 separate value inputs, producing 4 rows on
-  // submit. ``tiposTarifaEnUsoEnSucursal`` is intentionally ignored
-  // here: a (sucursal, tipo_vehiculo) cell already having tarifa rows
-  // is fine — the page-side split just closes-and-inserts each
-  // modality in the back end.
+  // Pre-fill the 4 valor_* inputs from the grouped row's per-modalidad
+  // entries in EDIT. In CREATE they're null and the operator types
+  // them. The page splits the single submit into 4 POSTs/PUTs.
   const form = useForm<TarifaCreateInput>({
     resolver: zodResolver(tarifaCreateSchema) as never,
     defaultValues: {
       uuid_sucursal: sucursalActivaUuid ?? initial?.uuid_sucursal ?? null,
       uuid_tipo_vehiculo: initial?.uuid_tipo_vehiculo ?? null,
-      valor_hora: null,
-      valor_fraccion: null,
-      valor_plena: null,
-      valor_nocturna: null,
+      valor_hora: initial?.hora.valor ?? null,
+      valor_fraccion: initial?.fraccion.valor ?? null,
+      valor_plena: initial?.plena.valor ?? null,
+      valor_nocturna: initial?.nocturna.valor ?? null,
       vigente_desde: defaultVigenteDesde,
     },
   });
 
-  // CREATE-only default-pre-population. The backend (post-2026-09-29)
-  // rejects null ``uuid_tipo_vehiculo`` with 422, so we must default
-  // the select to the first available entry filtered by per-branch
-  // in-use set. The ``useEffect`` runs after the catalog loads so the
-  // first render (with empty catalog) doesn't race with a later
-  // ``setValue``. The idempotent guard (``=== null``) avoids overwriting
-  // an operator's manual selection if they picked a tipo before the
-  // catalog finished loading.
+  // CREATE-only default-pre-population. The backend rejects null
+  // ``uuid_tipo_vehiculo`` with 422, so we must default the select to
+  // the first available entry filtered by per-branch in-use set.
   useEffect(() => {
-    if (initial !== null) return; // EDIT: tipos locked from initialTarifa
+    if (initial !== null) return; // EDIT: tipo locked from initialTarifaAgrupada
     const current = form.getValues();
     if (
       current.uuid_tipo_vehiculo === null

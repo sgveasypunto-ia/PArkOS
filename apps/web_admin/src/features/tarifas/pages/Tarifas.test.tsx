@@ -161,11 +161,21 @@ function fullWrapper({ children }: { children: ReactNode }): JSX.Element {
 const SUCURSAL_1 = '11111111-1111-1111-1111-111111111111';
 const SUCURSAL_2 = '22222222-2222-2222-2222-222222222222';
 
+// Compose the table row's data-testid — mirrors the page-side
+// ``grupoKey`` shape (sucursal | tipo_vehiculo | vigente_desde).
+function grupoKeyFor(
+  sucursal: string | null,
+  tipoVehiculo: string | null,
+  vigenteDesde: string,
+): string {
+  return `${sucursal ?? ''}|${tipoVehiculo ?? ''}|${vigenteDesde}`;
+}
+
 const SAMPLE_TARIFA: {
   uuid: string;
   uuid_sucursal: string;
-  uuid_tipo_vehiculo: null;
-  uuid_tipo_tarifa: null;
+  uuid_tipo_vehiculo: string | null;
+  uuid_tipo_tarifa: string | null;
   valor: string;
   valor_plena: string;
   vigente_desde: string;
@@ -177,8 +187,8 @@ const SAMPLE_TARIFA: {
 } = {
   uuid: 'aaaaaaaa-1111-1111-1111-111111111111',
   uuid_sucursal: SUCURSAL_1,
-  uuid_tipo_vehiculo: null,
-  uuid_tipo_tarifa: null,
+  uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+  uuid_tipo_tarifa: '00000000-0000-0000-0000-0000000000a1',
   valor: '1500.0000',
   valor_plena: '2000.0000',
   vigente_desde: '2026-09-01T00:00:00',
@@ -188,6 +198,12 @@ const SAMPLE_TARIFA: {
   created_by: null,
   sync_status: 'sincronizado',
 };
+
+const SAMPLE_GRUPO_KEY = grupoKeyFor(
+  SUCURSAL_1,
+  SAMPLE_TARIFA.uuid_tipo_vehiculo,
+  SAMPLE_TARIFA.vigente_desde,
+);
 
 const SUCURSAL_NOMBRES = [
   { uuid: SUCURSAL_1, nombre: 'Sucursal Centro' },
@@ -241,16 +257,17 @@ describe('Tarifas page', () => {
       },
     ]);
     render(<Tarifas />, { wrapper: fullWrapper });
+    const grupoKey = `${SUCURSAL_1}|${SAMPLE_TARIFA.uuid_tipo_vehiculo}|${SAMPLE_TARIFA.vigente_desde}`;
     await waitFor(() =>
       expect(
         screen.getByTestId('tarifa-sucursal-group-11111111-1111-1111-1111-111111111111'),
       ).toBeInTheDocument(),
     );
     expect(
-      screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      screen.getByTestId(`tarifa-row-${grupoKey}`),
     ).toBeInTheDocument();
     expect(
-      screen.queryByTestId('tarifa-row-bbbbbbbb-1111-1111-1111-111111111111'),
+      screen.queryByTestId(`tarifa-row-${SUCURSAL_2}|${SAMPLE_TARIFA.uuid_tipo_vehiculo}|${SAMPLE_TARIFA.vigente_desde}`),
     ).not.toBeInTheDocument();
   });
 
@@ -318,7 +335,7 @@ describe('Tarifas page', () => {
     render(<Tarifas />, { wrapper: fullWrapper });
     await waitFor(() =>
       expect(
-        screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+        screen.getByTestId(`tarifa-row-${SAMPLE_GRUPO_KEY}`),
       ).toBeInTheDocument(),
     );
     await userEvent.setup().click(screen.getByTestId('tarifa-new'));
@@ -348,11 +365,11 @@ describe('Tarifas page', () => {
     render(<Tarifas />, { wrapper: fullWrapper });
     await waitFor(() =>
       expect(
-        screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+        screen.getByTestId(`tarifa-row-${SAMPLE_GRUPO_KEY}`),
       ).toBeInTheDocument(),
     );
     await userEvent.setup().click(
-      screen.getByTestId('tarifa-edit-aaaaaaaa-1111-1111-1111-111111111111'),
+      screen.getByTestId(`tarifa-edit-${SAMPLE_GRUPO_KEY}`),
     );
     // The vehiculo select is replaced by a readonly input with its label.
     const vehiculoInput = screen.getByTestId(
@@ -392,11 +409,11 @@ describe('Tarifas page', () => {
     render(<Tarifas />, { wrapper: fullWrapper });
     await waitFor(() =>
       expect(
-        screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+        screen.getByTestId(`tarifa-row-${SAMPLE_GRUPO_KEY}`),
       ).toBeInTheDocument(),
     );
     await userEvent.setup().click(
-      screen.getByTestId('tarifa-edit-aaaaaaaa-1111-1111-1111-111111111111'),
+      screen.getByTestId(`tarifa-edit-${SAMPLE_GRUPO_KEY}`),
     );
     expect(screen.getByTestId('tarifa-form-modal')).toBeInTheDocument();
     expect(screen.getByTestId('tarifa-form-editing')).toBeInTheDocument();
@@ -438,7 +455,7 @@ describe('Tarifas page', () => {
     render(<Tarifas />, { wrapper: fullWrapper });
     await waitFor(() =>
       expect(
-        screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+        screen.getByTestId(`tarifa-row-${SAMPLE_GRUPO_KEY}`),
       ).toBeInTheDocument(),
     );
     await userEvent.setup().click(screen.getByTestId('tarifa-new'));
@@ -453,23 +470,25 @@ describe('Tarifas page', () => {
 
   it('TP12: EDIT keeps the existing tipo_vehiculo value (regression — the harness useEffect must skip EDIT)', async () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const motoUuid = '00000000-0000-0000-0000-000000000002';
     mockedListTarifas.mockResolvedValue([
       {
         ...SAMPLE_TARIFA,
         uuid_sucursal: SUCURSAL_1,
-        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002', // moto
-        uuid_tipo_tarifa: '00000000-0000-0000-0000-0000000000a1', // hora
+        uuid_tipo_vehiculo: motoUuid,
+        uuid_tipo_tarifa: '00000000-0000-0000-0000-0000000000a1',
         valor: '70.0000',
       },
     ]);
+    const grupoKey = grupoKeyFor(SUCURSAL_1, motoUuid, SAMPLE_TARIFA.vigente_desde);
     render(<Tarifas />, { wrapper: fullWrapper });
     await waitFor(() =>
       expect(
-        screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+        screen.getByTestId(`tarifa-row-${grupoKey}`),
       ).toBeInTheDocument(),
     );
     await userEvent.setup().click(
-      screen.getByTestId('tarifa-edit-aaaaaaaa-1111-1111-1111-111111111111'),
+      screen.getByTestId(`tarifa-edit-${grupoKey}`),
     );
     const vehiculoInput = screen.getByTestId(
       'tarifa-field-tipo-vehiculo',
