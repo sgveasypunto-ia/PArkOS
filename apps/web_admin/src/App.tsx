@@ -10,6 +10,7 @@ import Dashboard from '@/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
 import Perfil from '@/pages/Perfil';
 import CatalogPage from '@/features/catalogos/CatalogPage';
+import EmpresaPage from '@/features/empresa/pages/EmpresaPage';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
@@ -88,6 +89,7 @@ export default function App() {
         >
           <Route path="/" element={<HomeHub />} />
           <Route path="/catalogos" element={<CatalogPage />} />
+          <Route path="/empresa" element={<EmpresaPage />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 
