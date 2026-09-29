@@ -44,10 +44,10 @@ import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/Con
  * branch-scoped surface.
  *
  * TopNav (identity: email + profile + logout) wraps EVERY authed
- * group — global, picker, and branch-scoped alike. The `<AdminChrome />`
- * keeps living inside the branch-scoped group and still owns the
- * section nav and the `SucursalSelectorBadge`. The two bars share the
- * same translucent surface so they read as a single two-row frame.
+ * group — global, picker, and branch-scoped alike. In branch-scoped
+ * routes, `showBranchNav` is passed so TopNav also renders the section
+ * nav and branch selector. The `<AdminChrome />` is now just a layout
+ * wrapper for the Outlet.
  *
  * DEC-LOGIN-07 revisado: el post-login ya no fuerza
  * `/seleccionar-sucursal`. El admin aterriza en `/` (HomeHub). La
@@ -98,12 +98,13 @@ export default function App() {
         </Route>
 
         {/* Branch-scoped routes — auth + branch required, render inside AdminChrome.
-            TopNav wraps the whole branch-scoped group; AdminChrome
-            sits BELOW it as the second row with the section nav. */}
+            TopNav wraps the whole branch-scoped group with showBranchNav=true
+            so it renders the section nav and branch selector. AdminChrome
+            is now just a layout wrapper for the Outlet. */}
         <Route
           element={
             <RequireAdmin>
-              <TopNav />
+              <TopNav showBranchNav />
               <RequireSucursal>
                 <AdminChrome />
               </RequireSucursal>

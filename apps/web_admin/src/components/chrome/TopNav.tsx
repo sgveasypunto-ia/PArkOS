@@ -2,23 +2,21 @@
  * `<TopNav />` — top bar con la identidad del admin (email, rol, logout)
  * en TODAS las rutas autenticadas de `web_admin` excepto `/login`.
  *
- * NO monta la nav de secciones ni el badge de sucursal: esa responsabilidad
- * sigue en `<AdminChrome />` y solo aparece en las rutas branch-scoped.
- * Las dos barras viven una arriba de la otra en esas rutas y comparten
- * estilo (`surface-translucent` + `border-b` + `shadow-elevation-1`)
- * para que se lean como una sola pieza de dos filas.
+ * Cuando `showBranchNav` es `true` (rutas branch-scoped), tambien
+ * renderiza la navegacion de secciones y el selector de sucursal.
+ * Esto unifica en una sola barra lo que antes eran dos (TopNav +
+ * AdminChrome), eliminando la duplicacion de brand y logout.
  *
  * RESPONSABILIDADES:
  *   - Brand "Parkos Admin" como link a `/`.
- *   - Avatar del usuario con la inicial del email (o dos iniciales si
- *     `useAdminAuth` ya trae `nombre`/`apellido`; hoy vienen `null`).
+ *   - (Opcional) Nav de secciones + SucursalSelectorBadge.
+ *   - Avatar del usuario con la inicial del email.
  *   - Email del usuario, truncado en pantallas chicas.
  *   - Dropdown (primitivo propio) con:
  *       * Cabecera: avatar + email + rol.
  *       * "Mi perfil" -> navega a `/perfil`.
  *       * "Configuración" -> disabled con tooltip "Próximamente".
- *       * "Cerrar sesión" -> `logout()` + `navigate('/login')`, con
- *         estado `signingOut` para evitar doble-click.
+ *       * "Cerrar sesión" -> `logout()` + `navigate('/login')`.
  *
  * POR QUE NO SE MONTA EN /login:
  *   El `Login` es la unica ruta que no esta envuelta en
@@ -33,16 +31,16 @@
  *     string | null`. Cuando lo es, mostramos el UUID acortado como
  *     fallback para que el top bar nunca quede con el avatar solo.
  *   - `logout()` desde `useAdminAuth` ya hace `clear()` local en
- *     `finally`; lo envolvemos igual que `AdminChrome::handleLogout`
- *     para que la navegacion a `/login` sea siempre local, jamas
- *     delegada al backend.
+ *     `finally`; lo envolvemos para que la navegacion a `/login` sea
+ *     siempre local, jamas delegada al backend.
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
-import { LogOut, Settings, UserCircle2 } from 'lucide-react';
+import { Building2, LogOut, Settings, UserCircle2 } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -51,6 +49,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { visibleSections } from '@/lib/admin-sections';
+import { useSucursal } from '@/lib/sucursal-context';
 
 function avatarLabel(email: string | null, uuid: string): string {
   if (email && email.length > 0) {
@@ -66,16 +66,53 @@ function displayEmail(email: string | null, uuid: string): string {
   return `${uuid.slice(0, 8)}…`;
 }
 
-export function TopNav(): JSX.Element {
+function SucursalSelectorBadge(): JSX.Element | null {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { user, rol, logout } = useAdminAuth();
+  const { selected } = useSucursal();
+  const { sucursalUuids } = useAdminAuth();
+
+  if (sucursalUuids.length === 0) return null;
+
+  const label = selected
+    ? t('chrome.sucursalActive', {
+        defaultValue: 'Sucursal activa: {{uuid}}',
+        uuid: selected.slice(0, 8),
+      })
+    : t('chrome.sucursalSelect', { defaultValue: 'Seleccionar sucursal' });
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={() => navigate('/seleccionar-sucursal')}
+      aria-label={t('chrome.changeBranch', { defaultValue: 'Cambiar sucursal' })}
+      data-testid="chrome-sucursal-selector"
+      className="gap-2 font-mono text-xs"
+    >
+      <Building2 className="size-3.5" aria-hidden="true" />
+      <span className="hidden sm:inline">{label}</span>
+      <span className="sm:hidden" aria-hidden="true">⇄</span>
+    </Button>
+  );
+}
+
+interface TopNavProps {
+  showBranchNav?: boolean;
+}
+
+export function TopNav({ showBranchNav = false }: TopNavProps): JSX.Element {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { user, rol, permisos, logout } = useAdminAuth();
   const [signingOut, setSigningOut] = useState(false);
 
   const email = user?.email ?? null;
   const uuid = user?.uuid ?? '';
   const initial = avatarLabel(email, uuid);
   const displayed = displayEmail(email, uuid);
+  const sections = visibleSections(permisos);
 
   const handleLogout = async (): Promise<void> => {
     setSigningOut(true);
@@ -107,7 +144,37 @@ export function TopNav(): JSX.Element {
           {t('app.name', 'Parkos Admin')}
         </Link>
 
-        <div className="min-w-0 flex-1" aria-hidden="true" />
+        {showBranchNav && (
+          <nav
+            aria-label={t('chrome.navLabel', 'Secciones')}
+            className="min-w-0 flex-1 overflow-x-auto"
+          >
+            <ul className="flex items-center gap-1">
+              {sections.map((section) => (
+                <li key={section.key}>
+                  <NavLink
+                    to={section.path}
+                    end={section.path === '/'}
+                    className={({ isActive }) =>
+                      [
+                        'focus-ring rounded-md px-2.5 py-1.5 text-sm transition-colors duration-fast ease-macos',
+                        isActive
+                          ? 'bg-accent text-accent-foreground font-medium'
+                          : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
+                      ].join(' ')
+                    }
+                  >
+                    {t(section.labelKey)}
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )}
+
+        {showBranchNav && <SucursalSelectorBadge />}
+
+        {!showBranchNav && <div className="min-w-0 flex-1" aria-hidden="true" />}
 
         <DropdownMenu>
           <DropdownMenuTrigger
