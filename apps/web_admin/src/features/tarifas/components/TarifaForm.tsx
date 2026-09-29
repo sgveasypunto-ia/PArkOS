@@ -29,7 +29,7 @@
  *     >= 0`. Coerced to string for the wire format.
  *   - `vigente_desde` (datetime-local, REQUIRED). The operator cannot
  *     clear it. CREATE defaults to "now" (current minute in the
- *     operator's local TZ); EDIT defaults to "now" too per the
+ *     operator's local TZ); EDIT defaults to "now + 1 minute" per the
  *     canonical UX rule shipped 2026-09-29 for this screen.
  */
 import { useEffect } from 'react';
@@ -112,7 +112,7 @@ function datetimeLocalToIso(local: string): string {
 function localNowAsDatetimeLocal(): string {
   /** Return the current local datetime as ``YYYY-MM-DDTHH:mm`` for the
    * ``<input type="datetime-local">`` default. Naive local time so the
-   * operator sees "right now" in their own timezone when creating a
+   * operator sees "right now" in their own timezone when creating a new
    * tarifa. The conversion back to UTC for the wire is the handler's
    * job (``_to_naive_utc`` in backend). */
   const now = new Date();
@@ -120,6 +120,28 @@ function localNowAsDatetimeLocal(): string {
   return (
     `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
     `T${pad(now.getHours())}:${pad(now.getMinutes())}`
+  );
+}
+
+function localNowPlusMinutesAsIso(minutes: number): string {
+  /** Return the current local datetime shifted by ``minutes`` minutes,
+   * formatted as ``YYYY-MM-DDTHH:mm:00+00:00`` (the wire format the
+   * form submits for ``vigente_desde``). Used by the EDIT modal as a
+   * default: when the operator opens an existing tarifa for editing, the
+   * boundary is pre-set to "now + 1 minute" so submitting without
+   * touching the field opens a new version one minute ahead of the
+   * current boundary — strictly forward in time, no overlap risk on
+   * the same exact instant.
+   *
+   * CREATE keeps its own default ("now", current minute) — see
+   * ``TarifaFormHarness``. Per the UX rule shipped 2026-09-29, CREATE
+   * and EDIT differ on this default. */
+  const now = new Date();
+  now.setMinutes(now.getMinutes() + minutes);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `T${pad(now.getHours())}:${pad(now.getMinutes())}:00+00:00`
   );
 }
 
@@ -479,11 +501,12 @@ export function TarifaFormHarness(
   // form surface should never expose that case in practice (the list
   // is filtered to the active branch).
   //
-  // ``vigente_desde`` defaults to "now" in both CREATE and EDIT (the
-  // canonical UX rule for /tarifas; differs from /cupos where EDIT
-  // gets +1 minute).
+  // ``vigente_desde`` defaults to "now" in CREATE and "now + 1 minute"
+  // in EDIT (the canonical UX rule for /tarifas, matching /cupos).
   const defaultVigenteDesde =
-    localNowAsDatetimeLocal() + ':00+00:00';
+    initial === null
+      ? localNowAsDatetimeLocal() + ':00+00:00'
+      : localNowPlusMinutesAsIso(1);
   // Strip the harness-only prop before forwarding to the presentational
   // form — keeps the form's interface focused on what it actually
   // renders (the readonly name, not the uuid). The used-sets are
