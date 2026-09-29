@@ -47,6 +47,12 @@ export default function TiposVehiculo(): JSX.Element {
     listTiposVehiculo({ limit: 200 }),
   );
 
+  // 5-type cap mirrored from the backend (catalogos.py:cap on POST →
+  // 409 ``tipos_vehiculo_max_reached``). Editing existing canonical
+  // tipos is still allowed; only creation of a 6th tipo is blocked.
+  const TIPOS_MAX = 5;
+  const atCap = tipos.length >= TIPOS_MAX;
+
   const [editing, setEditing] = useState<TipoVehiculo | null>(null);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -85,17 +91,32 @@ export default function TiposVehiculo(): JSX.Element {
         <h1 className="text-2xl font-semibold">
           {t('tiposVehiculo.title', 'Tipos de vehículo')}
         </h1>
-        <Button
-          type="button"
-          onClick={() => {
-            setCreating(true);
-            setEditing(null);
-            setErrorState(null);
-          }}
-          data-testid="tipo-vehiculo-new"
-        >
-          {t('tiposVehiculo.new', 'Nuevo tipo de vehículo')}
-        </Button>
+        <div className="flex items-center gap-2">
+          {atCap && (
+            <span
+              className="text-xs text-muted-foreground"
+              data-testid="tipo-vehiculo-cap-notice"
+              title={t(
+                'tiposVehiculo.capReachedTitle',
+                'Máximo de 5 tipos activos alcanzado',
+              )}
+            >
+              {t('tiposVehiculo.capReached', '5/5 tipos activos')}
+            </span>
+          )}
+          <Button
+            type="button"
+            onClick={() => {
+              setCreating(true);
+              setEditing(null);
+              setErrorState(null);
+            }}
+            disabled={atCap}
+            data-testid="tipo-vehiculo-new"
+          >
+            {t('tiposVehiculo.new', 'Nuevo tipo de vehículo')}
+          </Button>
+        </div>
       </header>
 
       {(creating || editing !== null) && (
@@ -111,7 +132,7 @@ export default function TiposVehiculo(): JSX.Element {
           }
           description={t(
             'tiposVehiculo.modalDescription',
-            'Ingresá el nombre. El seed canónico usa lowercase (carro, moto, bicicleta, patineta).',
+            'Ingresá el nombre. El seed canónico usa lowercase (carro, moto, bicicleta, patineta, otro).',
           )}
           error={errorState?.message ?? null}
           contentProps={{ 'data-testid': 'tipo-vehiculo-form-modal' }}

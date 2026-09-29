@@ -14,6 +14,11 @@
  * sentinels de FALLBACK, no IDs reales para sync). Degradación
  * explícita si la API está down: NUNCA pantalla rota.
  *
+ * The 5 canonical tipos match the seed in migration
+ * 0062_canonical_tipos_vehiculo (carro, moto, bicicleta, patineta,
+ * otro). Backend enforces ``tipos_vehiculo_max_reached`` on the 6th
+ * POST so the catalog never exceeds 5 active rows in production.
+ *
  * 401 → useAuthStore.clear() + dispatch ``parkos:auth:cleared``
  * (logout defensivo, precedent F3.3).
  */
@@ -40,6 +45,36 @@ const HARDCODED_CATALOG: TipoVehiculo[] = [
   {
     uuid: '00000000-0000-0000-0000-000000000002',
     tipo: 'moto',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-000000000003',
+    tipo: 'bicicleta',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-000000000004',
+    tipo: 'patineta',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-000000000005',
+    tipo: 'otro',
     vigente_desde: '2026-01-01T00:00:00',
     vigente_hasta: null,
     estado: 'activo',

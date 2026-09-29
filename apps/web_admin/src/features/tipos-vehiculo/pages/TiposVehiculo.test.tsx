@@ -108,4 +108,37 @@ describe('TiposVehiculo page', () => {
     expect(screen.getByTestId('tipo-vehiculo-form-modal')).toBeInTheDocument();
     expect(screen.getByTestId('tipo-vehiculo-form')).toBeInTheDocument();
   });
+
+  it('TV4: "Nuevo tipo de vehículo" is disabled when the catalog is at the 5-tipo cap', async () => {
+    // Seed 5 active canonical tipos to mirror the post-migration state.
+    const cinco = ['carro', 'moto', 'bicicleta', 'patineta', 'otro'].map(
+      (tipo, idx) => ({
+        ...SAMPLE,
+        uuid: `aaaaaaaa-1111-1111-1111-1111111111${idx.toString().padStart(2, '0')}`,
+        tipo,
+      }),
+    );
+    mockedList.mockResolvedValue(cinco);
+    render(<TiposVehiculo />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('tipo-vehiculo-card'));
+    const newBtn = screen.getByTestId('tipo-vehiculo-new') as HTMLButtonElement;
+    expect(newBtn).toBeDisabled();
+    // Surface the cap to the operator (UX hint).
+    expect(screen.getByTestId('tipo-vehiculo-cap-notice')).toHaveTextContent(
+      /5\/5/,
+    );
+    // Edit still allowed — cap applies to creation only.
+    expect(
+      screen.getByTestId('tipo-vehiculo-edit-aaaaaaaa-1111-1111-1111-111111111100'),
+    ).toBeInTheDocument();
+  });
+
+  it('TV5: "Nuevo tipo de vehículo" stays enabled when below the 5-tipo cap', async () => {
+    mockedList.mockResolvedValue([SAMPLE]);
+    render(<TiposVehiculo />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('tipo-vehiculo-card'));
+    const newBtn = screen.getByTestId('tipo-vehiculo-new') as HTMLButtonElement;
+    expect(newBtn).not.toBeDisabled();
+    expect(screen.queryByTestId('tipo-vehiculo-cap-notice')).not.toBeInTheDocument();
+  });
 });

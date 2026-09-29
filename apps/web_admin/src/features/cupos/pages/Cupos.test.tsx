@@ -30,30 +30,69 @@ vi.mock('@/features/tipos-vehiculo/api/tiposVehiculoApi', () => ({
   createTipoVehiculo: vi.fn(),
 }));
 
+const SAMPLE_TIPOS = [
+  {
+    uuid: '00000000-0000-0000-0000-000000000001',
+    tipo: 'carro',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-000000000002',
+    tipo: 'moto',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-000000000003',
+    tipo: 'bicicleta',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-000000000004',
+    tipo: 'patineta',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-000000000005',
+    tipo: 'otro',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+];
+
+// Module-scoped mutable holder so per-test overrides (CP7 below) can
+// shrink the catalog without re-mocking the module. Default: first two
+// entries (carro, moto) — the prior tests assume this 2-item shape.
+let __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+
 vi.mock('@/features/tipos-vehiculo/hooks/useTiposVehiculo', () => ({
   useTiposVehiculo: () => ({
-    tipos: [
-      {
-        uuid: '00000000-0000-0000-0000-000000000001',
-        tipo: 'carro',
-        vigente_desde: '2026-01-01T00:00:00',
-        vigente_hasta: null,
-        estado: 'activo',
-        created_at: '2026-01-01T00:00:00',
-        created_by: null,
-        sync_status: 'sincronizado',
-      },
-      {
-        uuid: '00000000-0000-0000-0000-000000000002',
-        tipo: 'moto',
-        vigente_desde: '2026-01-01T00:00:00',
-        vigente_hasta: null,
-        estado: 'activo',
-        created_at: '2026-01-01T00:00:00',
-        created_by: null,
-        sync_status: 'sincronizado',
-      },
-    ],
+    get tipos() {
+      return __mockTipos;
+    },
     isLoading: false,
     error: undefined,
     refresh: vi.fn().mockResolvedValue([]),
@@ -247,5 +286,68 @@ describe('Cupos page', () => {
     await userEvent.setup().click(screen.getByTestId('cupo-new-tipo-toggle'));
     expect(screen.getByTestId('cupo-new-tipo-panel')).toBeInTheDocument();
     expect(screen.getByTestId('cupo-new-tipo-input')).toBeInTheDocument();
+  });
+
+  it('CP7: hides "+ Nuevo tipo" toggle when the catalog is at the 5-tipo cap', async () => {
+    // The mock returns all 5 canonical tipos by default for THIS test only.
+    __mockTipos = SAMPLE_TIPOS;
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('cupo-empty'));
+    await userEvent.setup().click(screen.getByTestId('cupo-new'));
+    expect(screen.getByTestId('cupo-field-tipo-vehiculo')).toBeInTheDocument();
+    expect(screen.queryByTestId('cupo-new-tipo-toggle')).not.toBeInTheDocument();
+    __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+  });
+
+  it('CP8: CREATE modal pre-populates "vigente_desde" with the current datetime', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('cupo-empty'));
+    await userEvent.setup().click(screen.getByTestId('cupo-new'));
+    const dateInput = screen.getByTestId('cupo-field-vigente-desde') as HTMLInputElement;
+    expect(dateInput).toBeInTheDocument();
+    // The input renders a local-ISO datetime-local value (YYYY-MM-DDTHH:mm).
+    // Tolerate a 1-minute skew vs ``new Date()`` so the test is stable
+    // when the minute rolls over between the harness init and the assert.
+    const before = new Date();
+    before.setSeconds(0, 0);
+    const expected = new Date(before);
+    expected.setMinutes(expected.getMinutes() + 1);
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const fmt = (d: Date): string =>
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const candidates = new Set<string>([fmt(before), fmt(expected)]);
+    // The input is populated with the current local minute (or the next
+    // one if the test crossed a minute boundary mid-run).
+    expect(candidates.has(dateInput.value)).toBe(true);
+  });
+
+  it('CP9: EDIT modal preserves the existing "vigente_desde" instead of overwriting with today', async () => {
+    const futureVigenteDesde = '2027-06-15T08:30:00';
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([
+      {
+        ...SAMPLE_CUPO,
+        uuid_sucursal: SUCURSAL_1,
+        cantidad: 50,
+        vigente_desde: futureVigenteDesde,
+      },
+    ]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    await userEvent.setup().click(
+      screen.getByTestId('cupo-edit-aaaaaaaa-1111-1111-1111-111111111111'),
+    );
+    const dateInput = screen.getByTestId('cupo-field-vigente-desde') as HTMLInputElement;
+    // isoToDatetimeLocal truncates to 16 chars (no offset, no seconds).
+    expect(dateInput.value).toBe(futureVigenteDesde.slice(0, 16));
   });
 });

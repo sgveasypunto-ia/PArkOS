@@ -82,7 +82,7 @@ export function TipoVehiculoForm({
               <FormDescription>
                 {t(
                   'tiposVehiculo.field.tipoHelp',
-                  'El seed canónico usa lowercase (carro, moto, bicicleta, patineta). 1..64 caracteres.',
+                  'El seed canónico usa lowercase (carro, moto, bicicleta, patineta, otro). 1..64 caracteres.',
                 )}
               </FormDescription>
               <FormMessage />
