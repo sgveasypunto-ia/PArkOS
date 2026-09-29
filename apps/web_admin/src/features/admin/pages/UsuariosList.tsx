@@ -20,14 +20,14 @@ import { useState } from 'react';
 import * as React from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 
+import type { BranchOption } from '@/components/branch-selector/BranchSelector';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 
-import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
+import { useSucursalOptions } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 
 import { AdminUsuarioForm } from '../components/AdminUsuarioForm';
 import { AdminUsuarioTable } from '../components/AdminUsuarioTable';
@@ -38,11 +38,6 @@ import {
   type AdminUsuarioRead,
 } from '../api/adminUsuarioSchema';
 import { useAdminUsuarios } from '../hooks/useAdminUsuarios';
-
-interface BranchOption {
-  uuid: string;
-  nombre: string | null;
-}
 
 function CreateUserForm(props: {
   onSubmit: (values: AdminUsuarioCreateInput) => void;
@@ -82,18 +77,12 @@ export default function UsuariosList(): JSX.Element {
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const branchesDir = useSWR<BranchOption[]>(
-    '/api/v1/empresa/sucursal?limit=200',
-    async () => {
-      const sucursales = await listSucursales({ limit: 200 });
-      return sucursales.map((s) => ({ uuid: s.uuid, nombre: s.nombre }));
-    },
-    { revalidateOnFocus: false },
-  );
+  const branchDirectory = useSucursalOptions();
 
-  // Per-user assignment map is no longer preloaded. The table shows
-  // "—" for all users, and the modal loads assignments on demand.
-  // This eliminates N API calls (one per user) on page load.
+  // Per-user branch assignments are intentionally NOT preloaded here.
+  // Doing it cost one request per row on every page load (the N+1 the
+  // user reported). The assignment modal is the single source of
+  // truth and loads on demand via `useAdminUsuarioSucursales`.
 
   async function onCreate(values: AdminUsuarioCreateInput): Promise<void> {
     setSubmitting(true);
@@ -102,7 +91,6 @@ export default function UsuariosList(): JSX.Element {
       await create(values);
       setCreateOpen(false);
       await refresh();
-      await asignacionesSWR.mutate();
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : 'error');
     } finally {
@@ -200,7 +188,7 @@ export default function UsuariosList(): JSX.Element {
               <CreateUserForm
                 onSubmit={onCreate}
                 isSubmitting={submitting}
-                availableBranches={branchesDir.data ?? []}
+                availableBranches={branchDirectory.options}
               />
             </div>
           </CardContent>

@@ -16,7 +16,6 @@
  */
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import useSWR from 'swr';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -27,7 +26,7 @@ import {
   VersionHistoryPanel,
   type VersionHistoryItem,
 } from '@/features/configuracion/components/VersionHistoryPanel';
-import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
+import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
 import { useTipoTarifa } from '@/features/tipo-tarifa/hooks/useTipoTarifa';
 import { useSucursal } from '@/lib/sucursal-context';
@@ -230,9 +229,7 @@ export default function Tarifas(): JSX.Element {
   const { t } = useTranslation();
   const { selected: selectedSucursal } = useSucursal();
 
-  const { data: sucursales } = useSWR('/api/v1/empresa/sucursal?limit=200', async () =>
-    listSucursales({ limit: 200 }),
-  );
+  const { sucursales } = useSucursalesDirectorio();
 
   const { tarifas, refresh, isLoading, error } = useTarifasList(null);
   const { tipos: tiposVehiculo } = useTiposVehiculo();

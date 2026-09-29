@@ -3,10 +3,10 @@
  * manage the branch assignments of a single user (PR3 of the
  * web_admin redesign).
  *
- * Reads from three SWR-shaped sources:
+ * Reads from three sources:
  *   1. `useAdminUsuarioSucursales(usuario.uuid)` — current assignments.
- *   2. `useSWR('/api/v1/empresa/sucursal')` — full directory of branches
- *      to populate the picker with friendly names.
+ *   2. `useSucursalesDirectorio()` — full directory of branches to
+ *      populate the picker with friendly names.
  *   3. `useAdminAuth().sucursalUuids` — limits the picker to branches
  *      the admin is allowed to see (admin-side tenancy).
  *
@@ -21,7 +21,6 @@
  */
 import { useState } from 'react';
 import * as React from 'react';
-import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 
@@ -33,7 +32,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
-import { parkosFetchRaw } from '@/lib/fetch';
+
+import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 
 import type { AdminUsuarioRead } from '../api/adminUsuarioSchema';
 import { useAdminUsuarioSucursales } from '../hooks/useAdminUsuarioSucursales';
@@ -43,16 +43,6 @@ export interface AdminUsuarioSucursalesManagerProps {
   onClose: () => void;
   onAssign: (usuarioUuid: string, sucursalUuid: string) => Promise<void>;
   onUnassign: (usuarioUuid: string, sucursalUuid: string) => Promise<void>;
-}
-
-interface SucursalListItem {
-  uuid: string;
-  nombre: string | null;
-  prefijo_nombre?: string | null;
-}
-
-interface SucursalListResponse {
-  items: SucursalListItem[];
 }
 
 export function AdminUsuarioSucursalesManager({
@@ -72,23 +62,13 @@ export function AdminUsuarioSucursalesManager({
 
   const { asignaciones, refresh } = useAdminUsuarioSucursales(usuarioUuid);
 
-  const sucursalesDir = useSWR<SucursalListResponse>(
-    '/api/v1/empresa/sucursal?limit=200',
-    async (key: string) => {
-      const res = await parkosFetchRaw(key, {
-        headers: { Accept: 'application/json' },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return (await res.json()) as SucursalListResponse;
-    },
-    { revalidateOnFocus: false },
-  );
+  const { sucursales } = useSucursalesDirectorio();
 
   if (!open || user === null) return null;
 
   const assignedUuids = new Set((asignaciones ?? []).map((a) => a.uuid_sucursal));
 
-  const allowed = (sucursalesDir.data?.items ?? []).filter((s) =>
+  const allowed = sucursales.filter((s) =>
     sucursalUuids.length === 0 ? true : sucursalUuids.includes(s.uuid),
   );
   const available = allowed.filter((s) => !assignedUuids.has(s.uuid));

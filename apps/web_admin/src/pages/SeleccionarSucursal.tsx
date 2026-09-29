@@ -49,10 +49,10 @@ import { PairingTokenDialog } from '@/features/sucursales/components/PairingToke
 import { useTipoSucursal } from '@/features/tipo-sucursal/hooks/useTipoSucursal';
 import {
   createSucursal,
-  listSucursales,
   mintPairingToken,
   updateSucursal,
 } from '@/features/sucursales/api/sucursalesApi';
+import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 import {
   type PairingTokenResponse,
   type Sucursal,
@@ -108,11 +108,7 @@ export default function SeleccionarSucursal(): JSX.Element {
   );
 
   // Admin table: factory endpoint (full bi-temporal shape needed for edit).
-  const listForAdmin = useSWR<Sucursal[]>(
-    '/api/v1/empresa/sucursal?limit=200',
-    async () => listSucursales({ limit: 200 }),
-    { revalidateOnFocus: false },
-  );
+  const listForAdmin = useSucursalesDirectorio();
 
   // -------------------------------------------------------------------------
   // Picker derived state
@@ -176,7 +172,7 @@ export default function SeleccionarSucursal(): JSX.Element {
       //    the full trace -- the user's "must re-login" report 2026-09-29.
       await Promise.all([
         listForPicker.mutate?.(),
-        listForAdmin.mutate?.(),
+        listForAdmin.refresh(),
         refreshAdminAuth(),
       ]);
     } catch (err) {
@@ -311,7 +307,7 @@ export default function SeleccionarSucursal(): JSX.Element {
             </p>
           )}
 
-          {listForAdmin.isLoading && (listForAdmin.data ?? []).length === 0 && (
+          {listForAdmin.isLoading && listForAdmin.sucursales.length === 0 && (
             <p
               role="status"
               aria-live="polite"
@@ -321,7 +317,7 @@ export default function SeleccionarSucursal(): JSX.Element {
             </p>
           )}
 
-          {(listForAdmin.data ?? []).length === 0 &&
+          {listForAdmin.sucursales.length === 0 &&
           !listForAdmin.isLoading &&
           listForAdmin.error === undefined ? (
             <p
@@ -355,7 +351,7 @@ export default function SeleccionarSucursal(): JSX.Element {
                   </tr>
                 </thead>
                 <tbody>
-                  {(listForAdmin.data ?? []).map((s) => (
+                  {listForAdmin.sucursales.map((s) => (
                     <tr
                       key={s.uuid}
                       data-testid={`sucursal-row-${s.uuid}`}

@@ -25,13 +25,9 @@
  */
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 
-import {
-  BranchSelector,
-  type BranchOption,
-} from '@/components/branch-selector/BranchSelector';
+import { BranchSelector } from '@/components/branch-selector/BranchSelector';
 import { Button } from '@/components/ui/button';
 import {
   Form,
@@ -49,7 +45,7 @@ import {
   type Tarifa,
   type TarifaCreateInput,
 } from '../api/tarifaSchema';
-import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
+import { useSucursalOptions } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
 import { useTipoTarifa } from '@/features/tipo-tarifa/hooks/useTipoTarifa';
 
@@ -75,14 +71,7 @@ export function TarifaForm({
 }: TarifaFormProps) {
   const { t } = useTranslation();
 
-  const { data: sucursalesResp } = useSWR(
-    '/api/v1/empresa/sucursal?limit=200',
-    async () => listSucursales({ limit: 200 }),
-  );
-  const sucursalOptions: BranchOption[] = (sucursalesResp ?? []).map((s) => ({
-    uuid: s.uuid,
-    nombre: s.nombre,
-  }));
+  const { options: sucursalOptions } = useSucursalOptions();
 
   const { tipos: tiposVehiculo } = useTiposVehiculo();
   const { tipos: tiposTarifa } = useTipoTarifa();
