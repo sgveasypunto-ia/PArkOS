@@ -28,7 +28,7 @@ covered by the tarifa e2e file.
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 # Note: no module-level ``pytestmark = parametrize(app=...)`` here.
 # These tests bypass the HTTP client (they call the helper directly
@@ -43,12 +43,59 @@ def _now_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def _truncate_tarifas(pg_dsn: str) -> None:
+async def _truncate(pg_dsn: str, *tables: str) -> None:
+    """Empty ``tables`` in the test DB.
+
+    ``async def`` because every call site awaits it — it used to be a
+    sync ``def``, so the suite died at collection-time with
+    ``TypeError: 'NoneType' object can't be awaited`` and never
+    exercised the helper it was written for.
+    """
     import psycopg
 
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute("TRUNCATE prod.tarifas_sucursal")
-        conn.commit()
+    async with await psycopg.AsyncConnection.connect(pg_dsn) as conn:
+        async with conn.cursor() as cur:
+            for table in tables:
+                await cur.execute("TRUNCATE " + table)
+        await conn.commit()
+
+
+async def _truncate_tarifas(pg_dsn: str) -> None:
+    await _truncate(pg_dsn, "prod.tarifas_sucursal")
+
+
+async def _truncate_cantidad(pg_dsn: str) -> None:
+    await _truncate(pg_dsn, "prod.cantidad_vehiculos_sucursal")
+
+
+async def _seed_one_sucursal(pg_engine, *, nombre: str | None = None) -> uuid_lib.UUID:
+    """Insert one open ``sucursal`` and return its uuid.
+
+    ``tarifas_sucursal.uuid_sucursal`` and
+    ``cantidad_vehiculos_sucursal.uuid_sucursal`` are enforced FKs, so the
+    seeds need a real parent row — a bare ``uuid4()`` dies on
+    ForeignKeyViolation.
+    """
+    from parkos_core.models.V.sucursal import Sucursal
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        row = Sucursal(
+            uuid=uuid_lib.uuid4(),
+            nombre=nombre or f"sucursal-{uuid_lib.uuid4().hex[:8]}",
+            vigente_desde=_now_naive() - timedelta(days=30),
+            vigente_hasta=None,
+            estado="activo",
+            created_at=_now_naive(),
+            created_by=None,
+            sync_status="sincronizado",
+            sync_timestamp=_now_naive(),
+            sync_attempts=0,
+        )
+        session.add(row)
+        await session.commit()
+        return row.uuid
 
 
 async def _seed_one_open_tarifa(
@@ -56,6 +103,8 @@ async def _seed_one_open_tarifa(
     *,
     uuid_sucursal: uuid_lib.UUID,
     vigente_desde: datetime,
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None,
+    uuid_tipo_tarifa: uuid_lib.UUID | None = None,
 ) -> uuid_lib.UUID:
     """Insert one open tarifa (vigente_hasta=NULL, estado='activo')."""
     from parkos_core.models.V.tarifas_sucursal import TarifasSucursal
@@ -66,10 +115,78 @@ async def _seed_one_open_tarifa(
         row = TarifasSucursal(
             uuid=uuid_lib.uuid4(),
             uuid_sucursal=uuid_sucursal,
-            uuid_tipo_vehiculo=None,
-            uuid_tipo_tarifa=None,
+            uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+            uuid_tipo_tarifa=uuid_tipo_tarifa,
             valor=100,
             valor_plena=100,
+            vigente_desde=vigente_desde,
+            vigente_hasta=None,
+            estado="activo",
+            created_at=_now_naive(),
+            created_by=None,
+            sync_status="sincronizado",
+            sync_timestamp=_now_naive(),
+            sync_attempts=0,
+        )
+        session.add(row)
+        await session.commit()
+        return row.uuid
+
+
+async def _seed_one_tipo_tarifa(pg_engine, *, tipo: str) -> uuid_lib.UUID:
+    """Insert one open catalog row in ``tipo_tarifa`` and return its uuid.
+
+    Needed by the NULL-tipo regression: proving the ``uuid_tipo_tarifa``
+    filter is still applied requires a row whose tipo is NOT null, which
+    in turn requires the parent catalog row to satisfy the FK.
+    """
+    from parkos_core.models.V.tipo_tarifa import TipoTarifa
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        row = TipoTarifa(
+            uuid=uuid_lib.uuid4(),
+            tipo=tipo,
+            vigente_desde=_now_naive() - timedelta(days=1),
+            vigente_hasta=None,
+            estado="activo",
+            created_at=_now_naive(),
+            created_by=None,
+            sync_status="sincronizado",
+            sync_timestamp=_now_naive(),
+            sync_attempts=0,
+        )
+        session.add(row)
+        await session.commit()
+        return row.uuid
+
+
+async def _seed_one_open_cantidad(
+    pg_engine,
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    vigente_desde: datetime,
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None,
+    cantidad: int = 50,
+) -> uuid_lib.UUID:
+    """Insert one open cantidad_vehiculos_sucursal row.
+
+    This table has NO ``uuid_tipo_tarifa`` column — that absence is the
+    whole reason the SQL is dispatched per table.
+    """
+    from parkos_core.models.V.cantidad_vehiculos_sucursal import (
+        CantidadVehiculosSucursal,
+    )
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        row = CantidadVehiculosSucursal(
+            uuid=uuid_lib.uuid4(),
+            uuid_sucursal=uuid_sucursal,
+            uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+            cantidad=cantidad,
             vigente_desde=vigente_desde,
             vigente_hasta=None,
             estado="activo",
@@ -90,26 +207,38 @@ async def _assert_no_overlap_call(
     uuid_sucursal: uuid_lib.UUID,
     nueva_desde: datetime,
     exclude_uuid: uuid_lib.UUID | None,
+    table: str = "prod.tarifas_sucursal",
+    resource: str = "tarifas-sucursal",
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None,
+    uuid_tipo_tarifa: uuid_lib.UUID | None = None,
 ):
-    """Invoke :func:`assert_no_overlap` against the tarifas table for a
-    generic business key (all FK columns NULL) and return the exception
-    or ``None``."""
-    from parkos_core.repo.overlap import OverlapError, _Key, assert_no_overlap
+    """Invoke :func:`assert_no_overlap` for a business key and return the
+    raised :class:`OverlapError` or ``None``.
 
+    ``table`` / ``resource`` / the two tipo columns default to the
+    original all-NULL tarifas case so the O1-O5 call sites stay unchanged.
+    """
+    from parkos_core.repo.overlap import OverlapError, _Key, assert_no_overlap
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     try:
-        await assert_no_overlap(
-            pg_engine,
-            table="prod.tarifas_sucursal",
-            resource="tarifas-sucursal",
-            key=_Key(
-                uuid_sucursal=uuid_sucursal,
-                uuid_tipo_vehiculo=None,
-                uuid_tipo_tarifa=None,
-            ),
-            nueva_vigente_desde=nueva_desde,
-            nueva_vigente_hasta=nueva_desde,
-            exclude_uuid=exclude_uuid,
-        )
+        # assert_no_overlap awaits session.execute(...); an AsyncEngine has
+        # no .execute(), it needs a real AsyncSession.
+        async with Session() as session:
+            await assert_no_overlap(
+                session,
+                table=table,
+                resource=resource,
+                key=_Key(
+                    uuid_sucursal=uuid_sucursal,
+                    uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+                    uuid_tipo_tarifa=uuid_tipo_tarifa,
+                ),
+                nueva_vigente_desde=nueva_desde,
+                nueva_vigente_hasta=nueva_desde,
+                exclude_uuid=exclude_uuid,
+            )
         return None
     except OverlapError as exc:
         return exc
@@ -132,7 +261,7 @@ async def test_o1_strictly_after_existing_open_no_overlap(
     ``<=`` / ``>=``), so equal boundaries do not trigger overlap.
     """
     await _truncate_tarifas(pg_dsn)
-    branch_uuid = uuid_lib.uuid4()
+    branch_uuid = await _seed_one_sucursal(pg_engine)
     seed_vigente_desde = _now_naive() - timedelta(days=10)
     seed_uuid = await _seed_one_open_tarifa(
         pg_engine,
@@ -156,10 +285,6 @@ async def test_o1_strictly_after_existing_open_no_overlap(
     )
 
 
-# `timedelta` import is needed for the strict-overlap arithmetic in O2/O3.
-from datetime import timedelta  # noqa: E402
-
-
 # ---------------------------------------------------------------------------
 # O2 — Strict overlap (new opens INSIDE an existing open window)
 # ---------------------------------------------------------------------------
@@ -176,7 +301,7 @@ async def test_o2_strict_overlap_inside_open_raises(
     closes). The helper MUST raise.
     """
     await _truncate_tarifas(pg_dsn)
-    branch_uuid = uuid_lib.uuid4()
+    branch_uuid = await _seed_one_sucursal(pg_engine)
     seed_vigente_desde = _now_naive() - timedelta(days=10)
     await _seed_one_open_tarifa(
         pg_engine,
@@ -215,7 +340,7 @@ async def test_o3_strict_overlap_contains_open_raises(
     This is the dual of O2 and the helper must raise.
     """
     await _truncate_tarifas(pg_dsn)
-    branch_uuid = uuid_lib.uuid4()
+    branch_uuid = await _seed_one_sucursal(pg_engine)
     seed_vigente_desde = _now_naive() + timedelta(days=5)  # future
     await _seed_one_open_tarifa(
         pg_engine,
@@ -257,7 +382,7 @@ async def test_o4_same_vigente_desde_does_not_raise_in_helper(
     that folds UK01 into the helper would need to update this test.
     """
     await _truncate_tarifas(pg_dsn)
-    branch_uuid = uuid_lib.uuid4()
+    branch_uuid = await _seed_one_sucursal(pg_engine)
     same_desde = _now_naive()
     await _seed_one_open_tarifa(
         pg_engine,
@@ -295,7 +420,7 @@ async def test_o5_exclude_uuid_skips_self_overlap(
     helper sees no other open rows and does NOT raise.
     """
     await _truncate_tarifas(pg_dsn)
-    branch_uuid = uuid_lib.uuid4()
+    branch_uuid = await _seed_one_sucursal(pg_engine)
     seed_vigente_desde = _now_naive() - timedelta(days=1)
     seed_uuid = await _seed_one_open_tarifa(
         pg_engine,
@@ -325,3 +450,135 @@ async def test_o5_exclude_uuid_skips_self_overlap(
         f"with exclude_uuid={seed_uuid}, the helper must skip the seed; "
         f"got {result_with!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# O6 — Dispatch is by TABLE: cantidad_vehiculos_sucursal has no
+#      uuid_tipo_tarifa column at all
+# ---------------------------------------------------------------------------
+
+
+async def test_o6_cantidad_table_does_not_reference_missing_column(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """``prod.cantidad_vehiculos_sucursal`` has only ``uuid_sucursal`` /
+    ``uuid_tipo_vehiculo`` / ``cantidad``. A single overlap SQL that always
+    names ``uuid_tipo_tarifa`` makes Postgres raise
+    ``UndefinedColumn: column "uuid_tipo_tarifa" does not exist``, so every
+    POST and PUT of a cantidad 500s.
+
+    Two assertions, because "it did not raise UndefinedColumn" alone would
+    also pass if the predicate were a no-op:
+
+    * overlapping window on the cantidad table -> ``OverlapError`` (the
+      query really ran and really matched);
+    * same window with ``exclude_uuid`` -> no raise (no false positive).
+    """
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = await _seed_one_sucursal(pg_engine)
+    seed_uuid = await _seed_one_open_cantidad(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        vigente_desde=_now_naive() - timedelta(days=10),
+    )
+
+    overlapping = await _assert_no_overlap_call(
+        pg_engine,
+        table="prod.cantidad_vehiculos_sucursal",
+        resource="cantidad-vehiculos-sucursal",
+        uuid_sucursal=branch_uuid,
+        nueva_desde=_now_naive() - timedelta(days=5),
+        exclude_uuid=None,
+        uuid_tipo_tarifa=None,
+    )
+    assert overlapping is not None, (
+        "the seed is open-ended and starts before nueva_desde, so the "
+        "cantidad table MUST report an overlap; if this is None the "
+        "predicate matched nothing and the test proves nothing"
+    )
+
+    excluded = await _assert_no_overlap_call(
+        pg_engine,
+        table="prod.cantidad_vehiculos_sucursal",
+        resource="cantidad-vehiculos-sucursal",
+        uuid_sucursal=branch_uuid,
+        nueva_desde=_now_naive() - timedelta(days=5),
+        exclude_uuid=seed_uuid,
+        uuid_tipo_tarifa=None,
+    )
+    assert excluded is None, f"exclude_uuid must skip the seed; got {excluded!r}"
+
+
+# ---------------------------------------------------------------------------
+# O7 — Dispatch is by TABLE, not by key value: a tarifa whose
+#      uuid_tipo_tarifa IS NULL still filters by tipo
+# ---------------------------------------------------------------------------
+
+
+async def test_o7_tarifa_with_null_tipo_still_filters_by_tipo(
+    pg_engine, alembic_upgrade, pg_dsn
+) -> None:
+    """``tarifas_sucursal.uuid_tipo_tarifa`` exists but is NULLABLE, and
+    ``TarifasSucursalCreate.uuid_tipo_tarifa`` defaults to ``None`` — a
+    tarifa with no tipo is an ordinary state, not legacy data.
+
+    On PUT, ``empresa.py`` falls back to ``current.uuid_tipo_tarifa``, so
+    such a row is re-saved with the key at ``None``. Dispatching the SQL
+    variant on that None picks the narrow statement, drops the
+    ``uuid_tipo_tarifa`` conjunct, matches the other open tarifa of a
+    DIFFERENT tipo, and answers a legitimate price edit with a spurious
+    409 ``tarifa_overlap``.
+
+    The contrast case is what makes this meaningful: the same window
+    queried WITH the other tipo DOES overlap, so the two rows collide in
+    time and the only thing keeping the first call clean is the tipo
+    filter being applied.
+    """
+    await _truncate_tarifas(pg_dsn)
+    branch_uuid = await _seed_one_sucursal(pg_engine)
+    tipo_tarifa = await _seed_one_tipo_tarifa(
+        pg_engine,
+        tipo=f"test-{uuid_lib.uuid4().hex[:8]}",
+    )
+    seed_desde = _now_naive() - timedelta(days=10)
+
+    # Another open tarifa on the same branch/vehicle but a different tipo.
+    await _seed_one_open_tarifa(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        vigente_desde=seed_desde,
+        uuid_tipo_tarifa=tipo_tarifa,
+    )
+    # The row being re-priced: same branch/vehicle, no tipo.
+    null_tipo_uuid = await _seed_one_open_tarifa(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        vigente_desde=seed_desde,
+        uuid_tipo_tarifa=None,
+    )
+    nueva_desde = _now_naive() - timedelta(days=5)
+
+    conflict = await _assert_no_overlap_call(
+        pg_engine,
+        uuid_sucursal=branch_uuid,
+        uuid_tipo_tarifa=tipo_tarifa,
+        nueva_desde=nueva_desde,
+        exclude_uuid=None,
+    )
+    assert conflict is not None, (
+        "control: the two seeded rows overlap in time, so querying the "
+        "other tipo MUST report a conflict; if this is None the seeds do "
+        "not collide and the next assertion proves nothing"
+    )
+
+    # The PUT that regresses: key.uuid_tipo_tarifa is None.
+    assert (
+        await _assert_no_overlap_call(
+            pg_engine,
+            uuid_sucursal=branch_uuid,
+                uuid_tipo_tarifa=None,
+            nueva_desde=nueva_desde,
+            exclude_uuid=null_tipo_uuid,
+        )
+        is None
+    ), "a tarifa with NULL tipo must not collide with a tarifa of another tipo"

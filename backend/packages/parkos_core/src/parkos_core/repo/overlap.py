@@ -113,22 +113,39 @@ class _Key:
 # ---------------------------------------------------------------------------
 #
 # The overlap predicate has two variants because the tarifas table has
-# three business keys and the cantidad table has two. We pass them as a
-# single SQL with a NULL-aware equality test on each column. The
+# three business keys and the cantidad table has two. We use two separate
+# SQL statements to avoid referencing non-existent columns. The
 # ``exclude_uuid`` lets the caller exclude the row being PUT'd (whose
 # own current version is still open during the transaction and would
 # otherwise always self-overlap).
 
-_OVERLAP_SQL = """
+# Tables that have no ``uuid_tipo_tarifa`` column at all. The predicate
+# for these must not name the column or Postgres raises UndefinedColumn
+# and every POST/PUT against the table 500s.
+_TABLES_WITHOUT_TIPO_TARIFA = frozenset({"prod.cantidad_vehiculos_sucursal"})
+
+_OVERLAP_SQL_WITH_TIPO_TARIFA = """
 SELECT uuid, vigente_desde, vigente_hasta
 FROM {table}
 WHERE vigente_hasta IS NULL
   AND (uuid_sucursal = :sucursal OR (uuid_sucursal IS NULL AND :sucursal IS NULL))
   AND (uuid_tipo_vehiculo = :tipo_vehiculo
        OR (uuid_tipo_vehiculo IS NULL AND :tipo_vehiculo IS NULL))
-  AND (:tipo_tarifa_check = 0
-       OR (uuid_tipo_tarifa = :tipo_tarifa
-           OR (uuid_tipo_tarifa IS NULL AND :tipo_tarifa IS NULL)))
+  AND (uuid_tipo_tarifa = :tipo_tarifa
+       OR (uuid_tipo_tarifa IS NULL AND :tipo_tarifa IS NULL))
+  AND uuid <> COALESCE(:exclude_uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+  AND vigente_desde < :nueva_hasta
+  AND (vigente_hasta IS NULL OR vigente_hasta > :nueva_desde)
+LIMIT 1
+"""
+
+_OVERLAP_SQL_WITHOUT_TIPO_TARIFA = """
+SELECT uuid, vigente_desde, vigente_hasta
+FROM {table}
+WHERE vigente_hasta IS NULL
+  AND (uuid_sucursal = :sucursal OR (uuid_sucursal IS NULL AND :sucursal IS NULL))
+  AND (uuid_tipo_vehiculo = :tipo_vehiculo
+       OR (uuid_tipo_vehiculo IS NULL AND :tipo_vehiculo IS NULL))
   AND uuid <> COALESCE(:exclude_uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND vigente_desde < :nueva_hasta
   AND (vigente_hasta IS NULL OR vigente_hasta > :nueva_desde)
@@ -173,21 +190,32 @@ async def assert_no_overlap(
     are NOT overlaps — the new version opens exactly when the old one
     closes, which is the close+insert Carril B contract.
     """
-    # The SQL uses a flag (``tipo_tarifa_check``) so the SAME statement
-    # can serve both tablas — tarifas with the tipo_tarifa column and
-    # cupos without it (``tipo_tarifa_check=1`` vs ``0``). SQLAlchemy's
-    # parameter binding does not support dynamic table / column lists
-    # safely; a single static statement is the right shape.
-    sql = _OVERLAP_SQL.format(table=table)
-    params: dict[str, object] = {
-        "sucursal": key.uuid_sucursal,
-        "tipo_vehiculo": key.uuid_tipo_vehiculo,
-        "tipo_tarifa": key.uuid_tipo_tarifa,
-        "tipo_tarifa_check": 1 if key.uuid_tipo_tarifa is not None else 0,
-        "nueva_desde": nueva_vigente_desde,
-        "nueva_hasta": nueva_vigente_hasta,
-        "exclude_uuid": exclude_uuid,
-    }
+    # Select the SQL variant from the TABLE, never from whether the key
+    # value happens to be None. ``tarifas_sucursal`` HAS a nullable
+    # ``uuid_tipo_tarifa`` column, so a PUT on a tarifa whose tipo is NULL
+    # passes ``uuid_tipo_tarifa=None`` and would pick the narrow SQL — that
+    # drops the tipo_tarifa filter and matches rows of a different tipo,
+    # turning a legitimate edit into a spurious 409. The column's presence
+    # is a property of the table, not of the row.
+    if table in _TABLES_WITHOUT_TIPO_TARIFA:
+        sql = _OVERLAP_SQL_WITHOUT_TIPO_TARIFA.format(table=table)
+        params: dict[str, object] = {
+            "sucursal": key.uuid_sucursal,
+            "tipo_vehiculo": key.uuid_tipo_vehiculo,
+            "nueva_desde": nueva_vigente_desde,
+            "nueva_hasta": nueva_vigente_hasta,
+            "exclude_uuid": exclude_uuid,
+        }
+    else:
+        sql = _OVERLAP_SQL_WITH_TIPO_TARIFA.format(table=table)
+        params = {
+            "sucursal": key.uuid_sucursal,
+            "tipo_vehiculo": key.uuid_tipo_vehiculo,
+            "tipo_tarifa": key.uuid_tipo_tarifa,
+            "nueva_desde": nueva_vigente_desde,
+            "nueva_hasta": nueva_vigente_hasta,
+            "exclude_uuid": exclude_uuid,
+        }
     row = (await session.execute(text(sql), params)).first()
     if row is not None:
         raise OverlapError(
