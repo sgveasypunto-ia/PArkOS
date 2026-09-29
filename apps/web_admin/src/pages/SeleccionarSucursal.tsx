@@ -73,7 +73,7 @@ export default function SeleccionarSucursal(): JSX.Element {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { sucursalUuids, isLoading: isAdminLoading } = useAdminAuth();
+  const { sucursalUuids, isLoading: isAdminLoading, refresh: refreshAdminAuth } = useAdminAuth();
   const { selected, setSelected } = useSucursal();
 
   const tab = mapTab(searchParams.get('tab'));
@@ -164,7 +164,21 @@ export default function SeleccionarSucursal(): JSX.Element {
         await createSucursal(values);
       }
       closeModal();
-      await Promise.all([listForPicker.mutate?.(), listForAdmin.mutate?.()]);
+      // Refresh SWR caches that the mutation invalidated:
+      //  - ``listForPicker`` + ``listForAdmin``: re-fetch the branch list
+      //    (server-side fix already returns the new branch from
+      //    ``/api/v1/sucursales``; this clears the local SWR cache).
+      //  - ``refreshAdminAuth``: re-fetch ``/api/v1/admin/me`` so the
+      //    cached ``sucursalUuids`` JWT-claim-derived list picks up the
+      //    new branch. Without this, the picker filter (line 124)
+      //    excludes the just-created branch until ``REFRESH_INTERVAL_MS``
+      //    (50 min) elapses or the admin re-logs. See commit history for
+      //    the full trace -- the user's "must re-login" report 2026-09-29.
+      await Promise.all([
+        listForPicker.mutate?.(),
+        listForAdmin.mutate?.(),
+        refreshAdminAuth(),
+      ]);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error desconocido';
       setErrorState({ kind: editing !== null ? 'edit' : 'create', message });
