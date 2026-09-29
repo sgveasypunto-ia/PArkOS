@@ -2,7 +2,7 @@
  * `<CupoForm />` — presentational form for create + edit cupo.
  *
  * Fields:
- *   - `uuid_sucursal` (BranchSelector).
+ *   - `uuid_sucursal` (read-only, shows current branch name).
  *   - `cantidad` (integer, >= 0). The backend Pydantic constraint is
  *     ``z.number().int().min(0)``; we coerce to string in the schema
  *     to match the wire format the api layer expects, but the form
@@ -17,13 +17,8 @@
  */
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 
-import {
-  BranchSelector,
-  type BranchOption,
-} from '@/components/branch-selector/BranchSelector';
 import { Button } from '@/components/ui/button';
 import {
   Form,
@@ -41,7 +36,6 @@ import {
   type Cupo,
   type CupoCreateInput,
 } from '../api/cupoSchema';
-import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
 
 export interface CupoFormProps {
   form: UseFormReturn<CupoCreateInput>;
@@ -50,6 +44,16 @@ export interface CupoFormProps {
   isUpdate?: boolean;
   initialCupo?: Cupo | null;
   onCancel: () => void;
+  sucursalNombre: string;
+}
+
+function isoToDatetimeLocal(iso: string | null | undefined): string {
+  if (!iso) return '';
+  return iso.slice(0, 16);
+}
+
+function datetimeLocalToIso(local: string): string {
+  return `${local}:00+00:00`;
 }
 
 export function CupoForm({
@@ -59,17 +63,9 @@ export function CupoForm({
   isUpdate = false,
   initialCupo = null,
   onCancel,
+  sucursalNombre,
 }: CupoFormProps) {
   const { t } = useTranslation();
-
-  const { data: sucursalesResp } = useSWR(
-    '/api/v1/empresa/sucursal?limit=200',
-    async () => listSucursales({ limit: 200 }),
-  );
-  const sucursalOptions: BranchOption[] = (sucursalesResp ?? []).map((s) => ({
-    uuid: s.uuid,
-    nombre: s.nombre,
-  }));
 
   return (
     <Form {...form}>
@@ -80,28 +76,15 @@ export function CupoForm({
         aria-busy={isSubmitting}
         data-testid="cupo-form"
       >
-        <FormField
-          control={form.control}
-          name="uuid_sucursal"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel htmlFor="uuid_sucursal">
-                {t('cupos.field.sucursal', 'Sucursal')}
-              </FormLabel>
-              <FormControl>
-                <BranchSelector
-                  options={sucursalOptions}
-                  value={field.value ?? null}
-                  onChange={(uuid) => field.onChange(uuid)}
-                />
-              </FormControl>
-              <FormDescription>
-                {t('cupos.field.sucursalHelp', 'El cupo pertenece a esta sucursal.')}
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
+        <div className="space-y-2">
+          <FormLabel>{t('cupos.field.sucursal', 'Sucursal')}</FormLabel>
+          <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+            {sucursalNombre}
+          </p>
+          <FormDescription>
+            {t('cupos.field.sucursalHelp', 'El cupo pertenece a esta sucursal.')}
+          </FormDescription>
+        </div>
 
         <FormField
           control={form.control}
@@ -153,14 +136,14 @@ export function CupoForm({
                   data-testid="cupo-field-vigente-desde"
                   type="datetime-local"
                   {...field}
-                  value={field.value ?? ''}
+                  value={isoToDatetimeLocal(field.value)}
                   onChange={(e) => {
                     const raw = e.target.value;
                     if (raw === '') {
                       field.onChange(null);
                       return;
                     }
-                    field.onChange(`${raw}:00+00:00`);
+                    field.onChange(datetimeLocalToIso(raw));
                   }}
                 />
               </FormControl>

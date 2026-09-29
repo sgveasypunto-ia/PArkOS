@@ -244,10 +244,11 @@ export default function Cupos(): JSX.Element {
     setSubmitting(true);
     setErrorState(null);
     try {
+      const payload = { ...values, uuid_sucursal: selectedSucursal ?? null };
       if (editing !== null) {
-        await updateCupo(editing.uuid, values);
+        await updateCupo(editing.uuid, payload);
       } else {
-        await createCupo(values);
+        await createCupo(payload);
       }
       closeModal();
       await refresh();
@@ -316,6 +317,7 @@ export default function Cupos(): JSX.Element {
               isUpdate
               initialCupo={editing}
               onCancel={closeModal}
+              sucursalNombre={activeSucursalLabel}
             />
           ) : (
             <CupoFormHarness
@@ -324,6 +326,7 @@ export default function Cupos(): JSX.Element {
               isUpdate={false}
               initialCupo={null}
               onCancel={closeModal}
+              sucursalNombre={activeSucursalLabel}
             />
           )}
         </FormModal>
