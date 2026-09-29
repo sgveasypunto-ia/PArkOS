@@ -3,6 +3,12 @@
  *
  * Fields:
  *   - `uuid_sucursal` (read-only, shows current branch name).
+ *   - `uuid_tipo_vehiculo` (select, optional) — NULL for "any vehicle
+ *     type" (the cell-key with ``uuid_tipo_vehiculo IS NULL``). When the
+ *     catalog is empty or the operator wants a brand-new tipo, an
+ *     inline "+ Nuevo tipo" sub-form calls
+ *     ``createTipoVehiculo`` and refreshes the cache so the new entry
+ *     appears in the select immediately.
  *   - `cantidad` (integer, >= 0). The backend Pydantic constraint is
  *     ``z.number().int().min(0)``; we coerce to string in the schema
  *     to match the wire format the api layer expects, but the form
@@ -15,6 +21,7 @@
  * actionable. The form only knows about the lower-level Zod
  * validation.
  */
+import { useState } from 'react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +43,7 @@ import {
   type Cupo,
   type CupoCreateInput,
 } from '../api/cupoSchema';
+import type { TipoVehiculo } from '@/features/tipos-vehiculo/api/tiposVehiculoApi';
 
 export interface CupoFormProps {
   form: UseFormReturn<CupoCreateInput>;
@@ -45,6 +53,11 @@ export interface CupoFormProps {
   initialCupo?: Cupo | null;
   onCancel: () => void;
   sucursalNombre: string;
+  tiposVehiculo: TipoVehiculo[];
+  onTipoCreated: (
+    nombre: string,
+  ) => Promise<{ uuid: string } | void> | { uuid: string } | void;
+  isCreatingTipo?: boolean;
 }
 
 function isoToDatetimeLocal(iso: string | null | undefined): string {
@@ -64,8 +77,39 @@ export function CupoForm({
   initialCupo = null,
   onCancel,
   sucursalNombre,
+  tiposVehiculo,
+  onTipoCreated,
+  isCreatingTipo = false,
 }: CupoFormProps) {
   const { t } = useTranslation();
+  const [showNuevoTipo, setShowNuevoTipo] = useState(false);
+  const [nuevoTipo, setNuevoTipo] = useState('');
+  const [nuevoTipoError, setNuevoTipoError] = useState<string | null>(null);
+
+  async function handleCrearNuevoTipo(): Promise<void> {
+    const trimmed = nuevoTipo.trim();
+    if (trimmed.length === 0) {
+      setNuevoTipoError(
+        t('cupos.field.tipoVehiculoNombreRequired', 'Ingresá un nombre.'),
+      );
+      return;
+    }
+    setNuevoTipoError(null);
+    try {
+      const creado = await onTipoCreated(trimmed);
+      if (creado && typeof creado.uuid === 'string' && creado.uuid.length > 0) {
+        form.setValue('uuid_tipo_vehiculo', creado.uuid);
+      }
+      setNuevoTipo('');
+      setShowNuevoTipo(false);
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : t('cupos.field.tipoVehiculoCreateError', 'No se pudo crear el tipo.');
+      setNuevoTipoError(message);
+    }
+  }
 
   return (
     <Form {...form}>
@@ -85,6 +129,106 @@ export function CupoForm({
             {t('cupos.field.sucursalHelp', 'El cupo pertenece a esta sucursal.')}
           </FormDescription>
         </div>
+
+        <FormField
+          control={form.control}
+          name="uuid_tipo_vehiculo"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel htmlFor="uuid_tipo_vehiculo">
+                {t('cupos.field.tipoVehiculo', 'Tipo de vehículo (opcional)')}
+              </FormLabel>
+              <FormControl>
+                <div className="flex gap-2">
+                  <select
+                    id="uuid_tipo_vehiculo"
+                    data-testid="cupo-field-tipo-vehiculo"
+                    {...field}
+                    value={field.value ?? ''}
+                    onChange={(e) =>
+                      field.onChange(e.target.value === '' ? null : e.target.value)
+                    }
+                    className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="">
+                      {t('cupos.field.tipoVehiculoAny', 'Cualquiera')}
+                    </option>
+                    {tiposVehiculo.map((tv) => (
+                      <option key={tv.uuid} value={tv.uuid}>
+                        {tv.tipo ?? tv.uuid}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setShowNuevoTipo((s) => !s);
+                      setNuevoTipoError(null);
+                    }}
+                    data-testid="cupo-new-tipo-toggle"
+                    disabled={isSubmitting}
+                  >
+                    {showNuevoTipo
+                      ? t('cupos.field.tipoVehiculoCancelNew', 'Cancelar')
+                      : t('cupos.field.tipoVehiculoNew', '+ Nuevo tipo')}
+                  </Button>
+                </div>
+              </FormControl>
+              <FormDescription>
+                {t(
+                  'cupos.field.tipoVehiculoHelp',
+                  'Vacío = aplica a cualquier tipo. Elegí uno o creá uno nuevo.',
+                )}
+              </FormDescription>
+              <FormMessage />
+              {showNuevoTipo && (
+                <div
+                  className="mt-2 space-y-2 rounded-md border bg-muted/40 p-3"
+                  data-testid="cupo-new-tipo-panel"
+                >
+                  <FormLabel htmlFor="cupo-new-tipo-input">
+                    {t('cupos.field.tipoVehiculoNombre', 'Nombre del nuevo tipo')}
+                  </FormLabel>
+                  <div className="flex gap-2">
+                    <Input
+                      id="cupo-new-tipo-input"
+                      data-testid="cupo-new-tipo-input"
+                      value={nuevoTipo}
+                      onChange={(e) => setNuevoTipo(e.target.value)}
+                      placeholder={t(
+                        'cupos.field.tipoVehiculoNombrePlaceholder',
+                        'ej. bicicleta',
+                      )}
+                      disabled={isCreatingTipo}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleCrearNuevoTipo}
+                      data-testid="cupo-new-tipo-submit"
+                      disabled={isCreatingTipo || nuevoTipo.trim().length === 0}
+                    >
+                      {isCreatingTipo
+                        ? t('cupos.field.tipoVehiculoCreating', 'Creando…')
+                        : t('cupos.field.tipoVehiculoSaveNew', 'Guardar')}
+                    </Button>
+                  </div>
+                  {nuevoTipoError !== null && (
+                    <p
+                      role="alert"
+                      className="text-xs text-destructive"
+                      data-testid="cupo-new-tipo-error"
+                    >
+                      {nuevoTipoError}
+                    </p>
+                  )}
+                </div>
+              )}
+            </FormItem>
+          )}
+        />
 
         <FormField
           control={form.control}
