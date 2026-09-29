@@ -248,26 +248,16 @@ export default function Tarifas(): JSX.Element {
     return tarifas.filter((tt) => tt.uuid_sucursal === selectedSucursal);
   }, [tarifas, selectedSucursal]);
 
-  // Sets of uuid_tipo_vehiculo / uuid_tipo_tarifa (or
-  // TIPO_NULL_SENTINEL_VEHICULO / TIPO_NULL_SENTINEL_TARIFA for NULL)
-  // already in use by an OPEN tarifa for the selected branch. Used by
-  // the CREATE flow to hide options that would collide with the
-  // backend's ``tarifa_overlap`` guard (409). Note the tarifa
-  // cell-key is the full tuple
-  // ``(sucursal, tipo_vehiculo, tipo_tarifa)`` — this filter is
-  // intentionally per-tipo (not per (v, t) tuple). The backend guard
-  // is the safety net for the finer granularity.
+  // Cell-key for tarifas is now (sucursal, tipo_vehiculo) only —
+  // the CREATE form configures all 4 modalities in a single shot, so
+  // we only track which tipo_vehiculos already have ANY open tarifa
+  // for the branch. If a (sucursal, tipo_vehiculo) cell is already
+  // populated, the page-side submit will trigger tarifa_overlap (409)
+  // per modality and surface the conflict.
   const tiposVehiculoEnUsoEnSucursal = useMemo(() => {
     const used = new Set<string>();
     for (const t of allFiltered) {
       used.add(t.uuid_tipo_vehiculo ?? '__VEHICULO_NULL__');
-    }
-    return used;
-  }, [allFiltered]);
-  const tiposTarifaEnUsoEnSucursal = useMemo(() => {
-    const used = new Set<string>();
-    for (const t of allFiltered) {
-      used.add(t.uuid_tipo_tarifa ?? '__TARIFA_NULL__');
     }
     return used;
   }, [allFiltered]);
@@ -300,11 +290,46 @@ export default function Tarifas(): JSX.Element {
         });
         return;
       }
-      const payload = { ...values, uuid_sucursal: selectedSucursal };
+      if (!values.uuid_tipo_vehiculo) {
+        setErrorState({
+          kind: 'network',
+          message: 'Seleccioná un tipo de vehículo antes de crear la tarifa.',
+        });
+        return;
+      }
       if (editing !== null) {
-        await updateTarifa(editing.uuid, payload);
+        // EDIT: tarifa-specific update; we don't change cell-key, just valor/valor_plena/vigente_desde.
+        await updateTarifa(editing.uuid, {
+          ...values,
+          uuid_sucursal: selectedSucursal,
+          uuid_tipo_tarifa: editing.uuid_tipo_tarifa,
+          valor: values.valor_plena,
+          valor_plena: values.valor_plena,
+        });
       } else {
-        await createTarifa(payload);
+        // CREATE: the form carries valor_hora / valor_fraccion / valor_plena /
+        // valor_nocturna for one (sucursal, tipo_vehiculo) cell. We split into
+        // four POSTs — one per tipo_tarifa — so the backend's overlap guard
+        // runs per modality and surfaces partial conflicts cleanly.
+        const base = {
+          uuid_sucursal: selectedSucursal,
+          uuid_tipo_vehiculo: values.uuid_tipo_vehiculo,
+          vigente_desde: values.vigente_desde,
+        };
+        const items: Array<{ uuid_tipo_tarifa: string; valor: string; valor_plena: string | null }> = [
+          { uuid_tipo_tarifa: '12e3886a-7059-47ee-bdb2-aa5fb1272bea', valor: values.valor_hora ?? '0', valor_plena: null },
+          { uuid_tipo_tarifa: 'c41b6602-f7b2-437d-bcfc-0462cd385eda', valor: values.valor_fraccion ?? '0', valor_plena: null },
+          { uuid_tipo_tarifa: 'd83ebff8-9546-43b3-91b1-bedffa57717f', valor: values.valor_plena ?? '0', valor_plena: null },
+          { uuid_tipo_tarifa: '9f8ba4a9-6fd9-4da7-8ddb-97ce323a8600', valor: values.valor_nocturna ?? '0', valor_plena: null },
+        ];
+        for (const it of items) {
+          await createTarifa({
+            ...base,
+            uuid_tipo_tarifa: it.uuid_tipo_tarifa,
+            valor: it.valor,
+            valor_plena: it.valor_plena,
+          });
+        }
       }
       closeModal();
       await refresh();
@@ -378,9 +403,7 @@ export default function Tarifas(): JSX.Element {
               sucursalActivaUuid={selectedSucursal}
               sucursalActivaNombre={activeSucursalLabel}
               tiposVehiculo={tiposVehiculo}
-              tiposTarifa={tiposTarifa}
               tiposVehiculoEnUsoEnSucursal={tiposVehiculoEnUsoEnSucursal}
-              tiposTarifaEnUsoEnSucursal={tiposTarifaEnUsoEnSucursal}
             />
           ) : (
             <TarifaFormHarness
@@ -392,9 +415,7 @@ export default function Tarifas(): JSX.Element {
               sucursalActivaUuid={selectedSucursal}
               sucursalActivaNombre={activeSucursalLabel}
               tiposVehiculo={tiposVehiculo}
-              tiposTarifa={tiposTarifa}
               tiposVehiculoEnUsoEnSucursal={tiposVehiculoEnUsoEnSucursal}
-              tiposTarifaEnUsoEnSucursal={tiposTarifaEnUsoEnSucursal}
             />
           )}
         </FormModal>

@@ -25,8 +25,13 @@
  *     so the operator never submits null by forgetting to pick one.
  *   - `uuid_tipo_tarifa` (select on CREATE, readonly on EDIT) — same
  *     rule, sentinel ``TIPO_NULL_SENTINEL_TARIFA``.
- *   - `valor`, `valor_plena` — Numeric(18,4). `valor > 0`, `valor_plena
- *     >= 0`. Coerced to string for the wire format.
+ *   - `valor_hora`, `valor_fraccion`, `valor_plena`, `valor_nocturna`
+ *     — four inputs for the 4 canonical modalidades. The page-side
+ *     ``onSubmit`` splits this into one POST per modality to the
+ *     dedicated single-row handler, producing 4 ``tarifas_sucursal``
+ *     rows per (sucursal, tipo_vehiculo) cell. Each field is
+ *     REQUIRED (no nulls) — a tarifa cell always has all four
+ *     modalities priced. `valor_*` > 0; `valor_plena` >= 0.
  *   - `vigente_desde` (datetime-local, REQUIRED). The operator cannot
  *     clear it. CREATE defaults to "now" (current minute in the
  *     operator's local TZ); EDIT defaults to "now + 1 minute" per the
@@ -55,12 +60,9 @@ import {
   type TarifaCreateInput,
 } from '../api/tarifaSchema';
 import type { TipoVehiculo } from '@/features/tipos-vehiculo/api/tiposVehiculoApi';
-import type { TipoTarifa } from '@/features/tipo-tarifa/api/tipoTarifaApi';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
-import { useTipoTarifa } from '@/features/tipo-tarifa/hooks/useTipoTarifa';
 
 export const TIPO_NULL_SENTINEL_VEHICULO = '__VEHICULO_NULL__';
-export const TIPO_NULL_SENTINEL_TARIFA = '__TARIFA_NULL__';
 
 export interface TarifaFormProps {
   form: UseFormReturn<TarifaCreateInput>;
@@ -79,15 +81,10 @@ export interface TarifaFormProps {
    *  form filters it by ``tiposVehiculoEnUsoEnSucursal`` before
    *  rendering the CREATE select. */
   tiposVehiculo: TipoVehiculo[];
-  /** Catalog of tipos_tarifa (full set). */
-  tiposTarifa: TipoTarifa[];
-  /** Set of uuid_tipo_vehiculo (or
-   *  ``TIPO_NULL_SENTINEL_VEHICULO`` for NULL) already in use by an
-   *  open tarifa for the active branch. CREATE hides these from the
-   *  select; EDIT ignores them (field is locked anyway). */
+  /** Set of uuid_tipo_vehiculo already in use by an open tarifa for
+   * the active branch. CREATE hides these from the select; EDIT ignores
+   * them (field is locked anyway). */
   tiposVehiculoEnUsoEnSucursal: Set<string>;
-  /** Same, for uuid_tipo_tarifa. */
-  tiposTarifaEnUsoEnSucursal: Set<string>;
 }
 
 /** Props only the harness consumes — never reaches the presentational
@@ -154,9 +151,7 @@ export function TarifaForm({
   onCancel,
   sucursalActivaNombre,
   tiposVehiculo,
-  tiposTarifa,
   tiposVehiculoEnUsoEnSucursal,
-  tiposTarifaEnUsoEnSucursal,
 }: TarifaFormProps) {
   const { t } = useTranslation();
 
@@ -270,89 +265,16 @@ export function TarifaForm({
 
           <FormField
             control={form.control}
-            name="uuid_tipo_tarifa"
-            render={({ field }) => {
-              const tipoFijo = initialTarifa !== null;
-              const tipoActualLabel = (() => {
-                if (!tipoFijo) return null;
-                const actual = initialTarifa?.uuid_tipo_tarifa;
-                if (actual === null || actual === undefined) {
-                  return t('tarifas.tipoTarifaAny', 'Cualquiera');
-                }
-                return (
-                  tiposTarifa.find((tt) => tt.uuid === actual)?.tipo ?? actual
-                );
-              })();
-              const disponibles = tiposTarifa.filter(
-                (tt) => !tiposTarifaEnUsoEnSucursal.has(tt.uuid),
-              );
-              return (
-                <FormItem>
-                  <FormLabel htmlFor="uuid_tipo_tarifa">
-                    {t('tarifas.field.tipoTarifa', 'Modalidad')}
-                  </FormLabel>
-                  <FormControl>
-                    {tipoFijo ? (
-                      <div className="flex flex-col gap-2">
-                        <input
-                          id="uuid_tipo_tarifa"
-                          data-testid="tarifa-field-tipo-tarifa"
-                          readOnly
-                          aria-readonly="true"
-                          className="block w-full rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
-                          value={tipoActualLabel ?? ''}
-                        />
-                        <p
-                          className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
-                          data-testid="tarifa-field-tipo-tarifa-locked"
-                        >
-                          {t(
-                            'tarifas.field.tipoTarifaLocked',
-                            'Tarifa fija — la modalidad no se puede cambiar después de creada.',
-                          )}
-                        </p>
-                      </div>
-                    ) : (
-                      <select
-                        id="uuid_tipo_tarifa"
-                        data-testid="tarifa-field-tipo-tarifa"
-                        {...field}
-                        value={field.value ?? ''}
-                        onChange={(e) =>
-                          field.onChange(
-                            e.target.value === '' ? null : e.target.value,
-                          )
-                        }
-                        className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
-                      >
-                        {disponibles.map((tt) => (
-                          <option key={tt.uuid} value={tt.uuid}>
-                            {tt.tipo ?? tt.uuid}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              );
-            }}
-          />
-        </div>
-
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <FormField
-            control={form.control}
-            name="valor"
+            name="valor_hora"
             render={({ field }) => (
               <FormItem>
-                <FormLabel htmlFor="valor">
-                  {t('tarifas.field.valor', 'Valor por hora')}
+                <FormLabel htmlFor="valor_hora">
+                  {t('tarifas.field.valorHora', 'Valor hora')}
                 </FormLabel>
                 <FormControl>
                   <Input
-                    id="valor"
-                    data-testid="tarifa-field-valor"
+                    id="valor_hora"
+                    data-testid="tarifa-field-valor-hora"
                     type="number"
                     step="0.0001"
                     min="0"
@@ -365,13 +287,46 @@ export function TarifaForm({
                   />
                 </FormControl>
                 <FormDescription>
-                  {t('tarifas.field.valorHelp', 'Debe ser > 0. Cuatro decimales.')}
+                  {t('tarifas.field.valorHoraHelp', 'Debe ser > 0. Cuatro decimales.')}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
           />
 
+          <FormField
+            control={form.control}
+            name="valor_fraccion"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="valor_fraccion">
+                  {t('tarifas.field.valorFraccion', 'Valor fracción')}
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    id="valor_fraccion"
+                    data-testid="tarifa-field-valor-fraccion"
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    placeholder="800"
+                    {...field}
+                    value={field.value ?? ''}
+                    onChange={(e) =>
+                      field.onChange(e.target.value === '' ? null : e.target.value)
+                    }
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t('tarifas.field.valorFraccionHelp', 'Debe ser > 0. Cuatro decimales.')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField
             control={form.control}
             name="valor_plena"
@@ -397,6 +352,37 @@ export function TarifaForm({
                 </FormControl>
                 <FormDescription>
                   {t('tarifas.field.valorPlenaHelp', 'Debe ser >= 0. Cuatro decimales.')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="valor_nocturna"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="valor_nocturna">
+                  {t('tarifas.field.valorNocturna', 'Valor nocturna')}
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    id="valor_nocturna"
+                    data-testid="tarifa-field-valor-nocturna"
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    placeholder="1000"
+                    {...field}
+                    value={field.value ?? ''}
+                    onChange={(e) =>
+                      field.onChange(e.target.value === '' ? null : e.target.value)
+                    }
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t('tarifas.field.valorNocturnaHelp', 'Debe ser > 0. Cuatro decimales.')}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
@@ -485,12 +471,11 @@ export function TarifaFormHarness(
 ): JSX.Element {
   const initial = props.initialTarifa;
   // The wiring layer owns the catalog reads — moving them here lets
-  // the harness default the tipo selects in CREATE before the operator
-  // submits, so an operator who forgets to interact with either
-  // select still has the form pre-populated (and the backend's
+  // the harness default the tipo select in CREATE before the operator
+  // submits, so an operator who forgets to interact with the select
+  // still has the form pre-populated (and the backend's
   // strict-required rule never fires for a UI submit).
   const { tipos: tiposVehiculoCatalog } = useTiposVehiculo();
-  const { tipos: tiposTarifaCatalog } = useTipoTarifa();
 
   // Per the canonical UX rule shipped 2026-09-29, the tarifa is a
   // single-tenant resource. The harness receives ``sucursalActivaUuid``
@@ -514,27 +499,34 @@ export function TarifaFormHarness(
   // selects with them).
   const { sucursalActivaUuid, ...formProps } = props;
   const tiposVehiculoEnUsoEnSucursal = formProps.tiposVehiculoEnUsoEnSucursal;
-  const tiposTarifaEnUsoEnSucursal = formProps.tiposTarifaEnUsoEnSucursal;
+  // The tarifa cell-key is now (sucursal, tipo_vehiculo) only — the
+  // 4 modalities (hora, fraccion, plena, nocturna) are configured in a
+  // single CREATE via 4 separate value inputs, producing 4 rows on
+  // submit. ``tiposTarifaEnUsoEnSucursal`` is intentionally ignored
+  // here: a (sucursal, tipo_vehiculo) cell already having tarifa rows
+  // is fine — the page-side split just closes-and-inserts each
+  // modality in the back end.
   const form = useForm<TarifaCreateInput>({
     resolver: zodResolver(tarifaCreateSchema) as never,
     defaultValues: {
       uuid_sucursal: sucursalActivaUuid ?? initial?.uuid_sucursal ?? null,
       uuid_tipo_vehiculo: initial?.uuid_tipo_vehiculo ?? null,
-      uuid_tipo_tarifa: initial?.uuid_tipo_tarifa ?? null,
-      valor: initial?.valor ?? null,
-      valor_plena: initial?.valor_plena ?? null,
+      valor_hora: null,
+      valor_fraccion: null,
+      valor_plena: null,
+      valor_nocturna: null,
       vigente_desde: defaultVigenteDesde,
     },
   });
 
   // CREATE-only default-pre-population. The backend (post-2026-09-29)
-  // rejects null ``uuid_tipo_vehiculo`` / ``uuid_tipo_tarifa`` with
-  // 422, so we must default both selects to the first available entry
-  // filtered by per-branch in-use set. The ``useEffect`` runs after the
-  // catalog loads so the first render (with empty catalog) doesn't
-  // race with a later ``setValue``. The idempotent guard
-  // (``=== null``) avoids overwriting an operator's manual selection
-  // if they picked a tipo before the catalog finished loading.
+  // rejects null ``uuid_tipo_vehiculo`` with 422, so we must default
+  // the select to the first available entry filtered by per-branch
+  // in-use set. The ``useEffect`` runs after the catalog loads so the
+  // first render (with empty catalog) doesn't race with a later
+  // ``setValue``. The idempotent guard (``=== null``) avoids overwriting
+  // an operator's manual selection if they picked a tipo before the
+  // catalog finished loading.
   useEffect(() => {
     if (initial !== null) return; // EDIT: tipos locked from initialTarifa
     const current = form.getValues();
@@ -549,22 +541,9 @@ export function TarifaFormHarness(
         form.setValue('uuid_tipo_vehiculo', primero.uuid, { shouldDirty: false });
       }
     }
-    if (
-      current.uuid_tipo_tarifa === null
-      && tiposTarifaCatalog.length > 0
-    ) {
-      const primero = tiposTarifaCatalog.find(
-        (tt) => !tiposTarifaEnUsoEnSucursal.has(tt.uuid),
-      );
-      if (primero) {
-        form.setValue('uuid_tipo_tarifa', primero.uuid, { shouldDirty: false });
-      }
-    }
   }, [
     tiposVehiculoCatalog,
-    tiposTarifaCatalog,
     tiposVehiculoEnUsoEnSucursal,
-    tiposTarifaEnUsoEnSucursal,
     initial,
     form,
   ]);

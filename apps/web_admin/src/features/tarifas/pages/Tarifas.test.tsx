@@ -292,18 +292,19 @@ describe('Tarifas page', () => {
       `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     const candidates = new Set<string>([fmt(before), fmt(expected)]);
     expect(candidates.has(dateInput.value)).toBe(true);
-    // Neither tipo select offers "Cualquiera" in CREATE.
+    // The vehiculo select does NOT include "Cualquiera" in CREATE.
     const vehiculoSelect = screen.getByTestId(
       'tarifa-field-tipo-vehiculo',
     ) as HTMLSelectElement;
     expect(Array.from(vehiculoSelect.options).map((o) => o.value)).not.toContain('');
-    const tarifaSelect = screen.getByTestId(
-      'tarifa-field-tipo-tarifa',
-    ) as HTMLSelectElement;
-    expect(Array.from(tarifaSelect.options).map((o) => o.value)).not.toContain('');
+    // The four modality value inputs are present.
+    expect(screen.getByTestId('tarifa-field-valor-hora')).toBeInTheDocument();
+    expect(screen.getByTestId('tarifa-field-valor-fraccion')).toBeInTheDocument();
+    expect(screen.getByTestId('tarifa-field-valor-plena')).toBeInTheDocument();
+    expect(screen.getByTestId('tarifa-field-valor-nocturna')).toBeInTheDocument();
   });
 
-  it('TP5: CREATE hides tipos already in use by an open tarifa for this branch', async () => {
+  it('TP5: CREATE hides tipos_vehiculo already in use by an open tarifa for this branch', async () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     // Existing tarifa uses (carro, hora).
     mockedListTarifas.mockResolvedValue([
@@ -324,25 +325,16 @@ describe('Tarifas page', () => {
     const vehiculoSelect = screen.getByTestId(
       'tarifa-field-tipo-vehiculo',
     ) as HTMLSelectElement;
-    const tarifaSelect = screen.getByTestId(
-      'tarifa-field-tipo-tarifa',
-    ) as HTMLSelectElement;
-    // "carro" hidden; "moto" remains. "hora" hidden; "plena" remains.
+    // "carro" hidden; "moto" remains.
     expect(Array.from(vehiculoSelect.options).map((o) => o.value)).not.toContain(
       '00000000-0000-0000-0000-000000000001',
     );
     expect(Array.from(vehiculoSelect.options).map((o) => o.value)).toContain(
       '00000000-0000-0000-0000-000000000002',
     );
-    expect(Array.from(tarifaSelect.options).map((o) => o.value)).not.toContain(
-      '00000000-0000-0000-0000-0000000000a1',
-    );
-    expect(Array.from(tarifaSelect.options).map((o) => o.value)).toContain(
-      '00000000-0000-0000-0000-0000000000a2',
-    );
   });
 
-  it('TP6: EDIT modal locks tipo_vehiculo and tipo_tarifa (readonly inputs)', async () => {
+  it('TP6: EDIT modal locks tipo_vehiculo (readonly input)', async () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListTarifas.mockResolvedValue([
       {
@@ -362,8 +354,7 @@ describe('Tarifas page', () => {
     await userEvent.setup().click(
       screen.getByTestId('tarifa-edit-aaaaaaaa-1111-1111-1111-111111111111'),
     );
-    // Both selects replaced by readonly inputs with their label as the
-    // value. Lock hints visible.
+    // The vehiculo select is replaced by a readonly input with its label.
     const vehiculoInput = screen.getByTestId(
       'tarifa-field-tipo-vehiculo',
     ) as HTMLInputElement;
@@ -372,15 +363,6 @@ describe('Tarifas page', () => {
     expect(vehiculoInput.value).toBe('carro');
     expect(
       screen.getByTestId('tarifa-field-tipo-vehiculo-locked'),
-    ).toBeInTheDocument();
-    const tarifaInput = screen.getByTestId(
-      'tarifa-field-tipo-tarifa',
-    ) as HTMLInputElement;
-    expect(tarifaInput.tagName).toBe('INPUT');
-    expect(tarifaInput.readOnly).toBe(true);
-    expect(tarifaInput.value).toBe('hora');
-    expect(
-      screen.getByTestId('tarifa-field-tipo-tarifa-locked'),
     ).toBeInTheDocument();
   });
 
@@ -404,6 +386,7 @@ describe('Tarifas page', () => {
         ...SAMPLE_TARIFA,
         uuid_sucursal: SUCURSAL_1,
         valor: '70.0000',
+        valor_plena: '80.0000',
       },
     ]);
     render(<Tarifas />, { wrapper: fullWrapper });
@@ -416,18 +399,16 @@ describe('Tarifas page', () => {
       screen.getByTestId('tarifa-edit-aaaaaaaa-1111-1111-1111-111111111111'),
     );
     expect(screen.getByTestId('tarifa-form-modal')).toBeInTheDocument();
-    const valor = screen.getByTestId('tarifa-field-valor') as HTMLInputElement;
-    expect(valor.value).toBe('70.0000');
     expect(screen.getByTestId('tarifa-form-editing')).toBeInTheDocument();
   });
 
-  it('TP9: CREATE pre-populates both tipo selects with the first catalog entry (regression for the 422 UX trap)', async () => {
+  it('TP9: CREATE pre-populates tipo_vehiculo with the first catalog entry (regression for the 422 UX trap)', async () => {
     // The bug the operator hit on 2026-09-29: the form's
-    // ``defaultValues.uuid_tipo_*`` were ``null`` in CREATE, so an
-    // operator who forgot to interact with either select submitted
-    // ``uuid_tipo_tarifa: null`` and got a 422 from the strict
+    // ``defaultValues.uuid_tipo_vehiculo`` was ``null`` in CREATE, so an
+    // operator who forgot to interact with the select submitted
+    // ``uuid_tipo_vehiculo: null`` and got a 422 from the strict
     // backend. The harness now pre-picks the first available entry
-    // from each catalog so the form is never blank by default.
+    // from the catalog so the form is never blank by default.
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListTarifas.mockResolvedValue([]);
     render(<Tarifas />, { wrapper: fullWrapper });
@@ -436,23 +417,16 @@ describe('Tarifas page', () => {
     const vehiculoSelect = screen.getByTestId(
       'tarifa-field-tipo-vehiculo',
     ) as HTMLSelectElement;
-    const tarifaSelect = screen.getByTestId(
-      'tarifa-field-tipo-tarifa',
-    ) as HTMLSelectElement;
-    // First catalog entry is "carro" (uuid sentinels
+    // First catalog entry is "carro" (uuid sentinel
     // 00000000-0000-0000-0000-000000000001 in the test mock).
     expect(vehiculoSelect.value).toBe(
       '00000000-0000-0000-0000-000000000001',
     );
-    // First catalog entry for tipo_tarifa is "hora".
-    expect(tarifaSelect.value).toBe(
-      '00000000-0000-0000-0000-0000000000a1',
-    );
   });
 
-  it('TP10: CREATE skips tipos already in use by an open tarifa for the branch', async () => {
+  it('TP10: CREATE skips tipo_vehiculo already in use by an open tarifa for the branch', async () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
-    // Existing tarifa uses (carro, plena).
+    // Existing tarifa uses carro.
     mockedListTarifas.mockResolvedValue([
       {
         ...SAMPLE_TARIFA,
@@ -471,20 +445,13 @@ describe('Tarifas page', () => {
     const vehiculoSelect = screen.getByTestId(
       'tarifa-field-tipo-vehiculo',
     ) as HTMLSelectElement;
-    const tarifaSelect = screen.getByTestId(
-      'tarifa-field-tipo-tarifa',
-    ) as HTMLSelectElement;
     // Skip "carro" → default to "moto" (next in catalog).
     expect(vehiculoSelect.value).toBe(
       '00000000-0000-0000-0000-000000000002',
     );
-    // Skip "plena" → default to "hora" (first available).
-    expect(tarifaSelect.value).toBe(
-      '00000000-0000-0000-0000-0000000000a1',
-    );
   });
 
-  it('TP12: EDIT keeps the existing tipo values (regression — the harness useEffect must skip EDIT)', async () => {
+  it('TP12: EDIT keeps the existing tipo_vehiculo value (regression — the harness useEffect must skip EDIT)', async () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListTarifas.mockResolvedValue([
       {
@@ -509,14 +476,8 @@ describe('Tarifas page', () => {
     ) as HTMLInputElement;
     expect(vehiculoInput.tagName).toBe('INPUT');
     expect(vehiculoInput.value).toBe('moto');
-    const tarifaInput = screen.getByTestId(
-      'tarifa-field-tipo-tarifa',
-    ) as HTMLInputElement;
-    expect(tarifaInput.tagName).toBe('INPUT');
-    expect(tarifaInput.value).toBe('hora');
     // The form must NOT pre-pick the first catalog entry — that
-    // would overwrite the tarifa's locked tipo with 'carro'/'plena'
-    // (TP9's defaults). The useEffect's ``initial !== null`` guard
-    // pins this behavior.
+    // would overwrite the tarifa's locked tipo with 'carro'.
+    // The useEffect's ``initial !== null`` guard pins this behavior.
   });
 });
