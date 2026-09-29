@@ -9,15 +9,11 @@
  *         `/login` even when the server call rejects.
  *   - T5: the item swaps to "Saliendo…" and stays disabled while the
  *         logout promise is pending.
- *   - T8: when `showBranchNav` is true, renders section nav and branch selector.
- *   - T9: when `showBranchNav` is false (default), does NOT render nav/branch selector.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
-
-import { SucursalProvider } from '@/lib/sucursal-context';
 
 const useAdminAuthMock = vi.fn();
 vi.mock('@parkos/ui-kit/hooks', () => ({
@@ -43,35 +39,28 @@ function authState(over: Record<string, unknown> = {}) {
   };
 }
 
-function renderTopNav(initialPath = '/', showBranchNav = false) {
+function renderTopNav(initialPath = '/') {
   // Mirrors the production layout: `<TopNav />` is a sibling of the
   // route's content, not a parent that owns an `<Outlet />`. The
   // test wraps the layout in a fragment that renders the trigger
   // plus `<Outlet />` so the navigated child becomes queryable.
   return render(
-    <SucursalProvider>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route
-            element={
-              <>
-                <TopNav showBranchNav={showBranchNav} />
-                <Outlet />
-              </>
-            }
-          >
-            <Route path="/" element={<div data-testid="outlet-home" />} />
-            <Route path="/perfil" element={<div data-testid="outlet-perfil" />} />
-            <Route path="/login" element={<div data-testid="outlet-login" />} />
-            <Route path="/audit" element={<div data-testid="outlet-audit" />} />
-            <Route
-              path="/seleccionar-sucursal"
-              element={<div data-testid="outlet-picker" />}
-            />
-          </Route>
-        </Routes>
-      </MemoryRouter>
-    </SucursalProvider>,
+    <MemoryRouter initialEntries={[initialPath]}>
+      <Routes>
+        <Route
+          element={
+            <>
+              <TopNav />
+              <Outlet />
+            </>
+          }
+        >
+          <Route path="/" element={<div data-testid="outlet-home" />} />
+          <Route path="/perfil" element={<div data-testid="outlet-perfil" />} />
+          <Route path="/login" element={<div data-testid="outlet-login" />} />
+        </Route>
+      </Routes>
+    </MemoryRouter>,
   );
 }
 
@@ -179,19 +168,5 @@ describe('TopNav', () => {
     await user.click(screen.getByTestId('topnav-profile'));
 
     await waitFor(() => expect(screen.getByTestId('outlet-perfil')).toBeInTheDocument());
-  });
-
-  it('T8: when showBranchNav is true, renders branch selector', () => {
-    useAdminAuthMock.mockReturnValue(authState());
-    renderTopNav('/', true);
-
-    expect(screen.getByTestId('chrome-sucursal-selector')).toBeInTheDocument();
-  });
-
-  it('T9: when showBranchNav is false (default), does NOT render branch selector', () => {
-    useAdminAuthMock.mockReturnValue(authState());
-    renderTopNav('/', false);
-
-    expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
   });
 });

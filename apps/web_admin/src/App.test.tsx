@@ -84,7 +84,7 @@ describe('App (authenticated)', () => {
     expect(screen.queryByTestId('sucursal-picker')).not.toBeInTheDocument();
   });
 
-  it('mounts TopNav with branch selector on protected routes', () => {
+  it('mounts TopNav on protected routes', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/dashboard']}>
@@ -94,10 +94,9 @@ describe('App (authenticated)', () => {
     );
     expect(screen.getByTestId('topnav')).toBeInTheDocument();
     expect(screen.getByTestId('topnav-email')).toHaveTextContent('admin@parkos.local');
-    expect(screen.getByTestId('chrome-sucursal-selector')).toBeInTheDocument();
   });
 
-  it('mounts TopNav without branch selector on / (HomeHub is global)', () => {
+  it('mounts TopNav on / (HomeHub is global)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -105,12 +104,11 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
     expect(screen.getByTestId('topnav')).toBeInTheDocument();
     expect(screen.getByTestId('topnav-email')).toHaveTextContent('admin@parkos.local');
   });
 
-  it('mounts TopNav without branch selector on /catalogos (global, no branch scope)', () => {
+  it('mounts TopNav on /catalogos (global, no branch scope)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/catalogos']}>
@@ -118,11 +116,10 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
     expect(screen.getByTestId('topnav')).toBeInTheDocument();
   });
 
-  it('mounts TopNav without branch selector on /seleccionar-sucursal (authed picker)', () => {
+  it('mounts TopNav on /seleccionar-sucursal (authed picker)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/seleccionar-sucursal']}>
@@ -130,7 +127,6 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
     expect(screen.getByTestId('topnav')).toBeInTheDocument();
   });
 

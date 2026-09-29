@@ -2,12 +2,8 @@
  * `<TopNav />` — top bar con la identidad del admin (email, rol, logout)
  * en TODAS las rutas autenticadas de `web_admin` excepto `/login`.
  *
- * Cuando `showBranchNav` es `true` (rutas branch-scoped), tambien
- * renderiza el selector de sucursal.
- *
  * RESPONSABILIDADES:
  *   - Brand "Parkos Admin" como link a `/`.
- *   - (Opcional) SucursalSelectorBadge.
  *   - Avatar del usuario con la inicial del email.
  *   - Email del usuario, truncado en pantallas chicas.
  *   - Dropdown (primitivo propio) con:
@@ -36,9 +32,8 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
-import { Building2, LogOut, Settings, UserCircle2 } from 'lucide-react';
+import { LogOut, Settings, UserCircle2 } from 'lucide-react';
 
-import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,7 +42,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useSucursal } from '@/lib/sucursal-context';
 
 function avatarLabel(email: string | null, uuid: string): string {
   if (email && email.length > 0) {
@@ -63,43 +57,7 @@ function displayEmail(email: string | null, uuid: string): string {
   return `${uuid.slice(0, 8)}…`;
 }
 
-function SucursalSelectorBadge(): JSX.Element | null {
-  const { t } = useTranslation();
-  const navigate = useNavigate();
-  const { selected } = useSucursal();
-  const { sucursalUuids } = useAdminAuth();
-
-  if (sucursalUuids.length === 0) return null;
-
-  const label = selected
-    ? t('chrome.sucursalActive', {
-        defaultValue: 'Sucursal activa: {{uuid}}',
-        uuid: selected.slice(0, 8),
-      })
-    : t('chrome.sucursalSelect', { defaultValue: 'Seleccionar sucursal' });
-
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      onClick={() => navigate('/seleccionar-sucursal')}
-      aria-label={t('chrome.changeBranch', { defaultValue: 'Cambiar sucursal' })}
-      data-testid="chrome-sucursal-selector"
-      className="gap-2 font-mono text-xs"
-    >
-      <Building2 className="size-3.5" aria-hidden="true" />
-      <span className="hidden sm:inline">{label}</span>
-      <span className="sm:hidden" aria-hidden="true">⇄</span>
-    </Button>
-  );
-}
-
-interface TopNavProps {
-  showBranchNav?: boolean;
-}
-
-export function TopNav({ showBranchNav = false }: TopNavProps): JSX.Element {
+export function TopNav(): JSX.Element {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { user, rol, logout } = useAdminAuth();
@@ -139,8 +97,6 @@ export function TopNav({ showBranchNav = false }: TopNavProps): JSX.Element {
           />
           {t('app.name', 'Parkos Admin')}
         </Link>
-
-        {showBranchNav && <SucursalSelectorBadge />}
 
         <div className="min-w-0 flex-1" aria-hidden="true" />
 

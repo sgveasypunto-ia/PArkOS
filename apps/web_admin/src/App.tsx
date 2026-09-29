@@ -98,13 +98,12 @@ export default function App() {
         </Route>
 
         {/* Branch-scoped routes — auth + branch required, render inside AdminChrome.
-            TopNav wraps the whole branch-scoped group with showBranchNav=true
-            so it renders the section nav and branch selector. AdminChrome
-            is now just a layout wrapper for the Outlet. */}
+            TopNav wraps the whole branch-scoped group as the identity bar.
+            AdminChrome is just a layout wrapper for the Outlet. */}
         <Route
           element={
             <RequireAdmin>
-              <TopNav showBranchNav />
+              <TopNav />
               <RequireSucursal>
                 <AdminChrome />
               </RequireSucursal>
