@@ -234,7 +234,11 @@ async def test_create_usuario_writes_user_and_queue(pg_engine, alembic_upgrade, 
 
 
 async def test_get_usuarios_returns_active_only(pg_engine, alembic_upgrade, pg_session) -> None:
-    """GET returns one row per open user, never the closed/historical one."""
+    """GET returns one row per open user, never the closed/historical one.
+
+    Also asserts the new ``sucursales`` field is present and well-typed
+    even when the user has no branch assignments (default ``[]``).
+    """
     app = _build_cloud_admin_app(pg_engine)
     admin_jwt = _admin_token()
 
@@ -264,6 +268,117 @@ async def test_get_usuarios_returns_active_only(pg_engine, alembic_upgrade, pg_s
     emails = sorted(item["email"] for item in items)
     assert "u0@parkos.local" in emails
     assert "u1@parkos.local" in emails
+    # The new field must be present and serialise as a list (empty when
+    # the user has no branch assignments).
+    for item in items:
+        assert "sucursales" in item
+        assert isinstance(item["sucursales"], list)
+        assert item["sucursales"] == []
+
+
+async def test_list_usuarios_includes_active_branch_assignments(
+    pg_engine, alembic_upgrade, pg_session
+) -> None:
+    """The ``sucursales`` field on each list item embeds the user's
+    currently-open branch assignments.
+
+    Seeds two branches, creates a user attached to BOTH, lists, and
+    asserts the embedded array contains both with the right shape
+    (``uuid_sucursal`` + ``nombre`` + ``prefijo_nombre`` +
+    ``vigente_desde``).
+    """
+    app = _build_cloud_admin_app(pg_engine)
+    admin_jwt = _admin_token()
+    auth = {"Authorization": f"Bearer {admin_jwt}"}
+
+    sucursal_a = await _seed_sucursal(pg_engine)
+    sucursal_b = await _seed_sucursal(pg_engine)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
+        create = await client.post(
+            "/api/v1/admin/usuarios",
+            headers=auth,
+            json={
+                "nombre": "Multi",
+                "apellido": "Branch",
+                "email": "multi@parkos.local",
+                "password": "Pass1234word",
+                "rol": "operador",
+                "sucursales_asignadas": [str(sucursal_a), str(sucursal_b)],
+            },
+        )
+        assert create.status_code == 201, create.text
+        user_uuid = create.json()["uuid"]
+
+        # Single-user GET also embeds the array.
+        single = await client.get(f"/api/v1/admin/usuarios/{user_uuid}", headers=auth)
+        assert single.status_code == 200, single.text
+        single_branches = single.json()["sucursales"]
+        assert len(single_branches) == 2
+        assert {b["uuid_sucursal"] for b in single_branches} == {
+            str(sucursal_a),
+            str(sucursal_b),
+        }
+        for entry in single_branches:
+            assert entry["nombre"] == "Sucursal Test"
+            assert entry["prefijo_nombre"] is None
+            assert "vigente_desde" in entry
+
+        # List GET also embeds the array -- same data, one round trip.
+        list_response = await client.get("/api/v1/admin/usuarios", headers=auth)
+    assert list_response.status_code == 200
+    item = next(i for i in list_response.json()["items"] if i["uuid"] == user_uuid)
+    assert len(item["sucursales"]) == 2
+    assert {b["uuid_sucursal"] for b in item["sucursales"]} == {
+        str(sucursal_a),
+        str(sucursal_b),
+    }
+
+
+async def test_list_usuarios_excludes_closed_branch_assignments(
+    pg_engine, alembic_upgrade, pg_session
+) -> None:
+    """A deassigned branch must NOT show up in the embedded array.
+
+    Closes one of two assignments via ``DELETE /admin/usuarios/{uuid}/
+    sucursales/{sucursal}`` and verifies the list response shows only
+    the remaining branch.
+    """
+    app = _build_cloud_admin_app(pg_engine)
+    admin_jwt = _admin_token()
+    auth = {"Authorization": f"Bearer {admin_jwt}"}
+
+    sucursal_a = await _seed_sucursal(pg_engine)
+    sucursal_b = await _seed_sucursal(pg_engine)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
+        create = await client.post(
+            "/api/v1/admin/usuarios",
+            headers=auth,
+            json={
+                "email": "closes@parkos.local",
+                "password": "Pass1234word",
+                "rol": "operador",
+                "sucursales_asignadas": [str(sucursal_a), str(sucursal_b)],
+            },
+        )
+        assert create.status_code == 201, create.text
+        user_uuid = create.json()["uuid"]
+
+        # Close one assignment.
+        deassign = await client.delete(
+            f"/api/v1/admin/usuarios/{user_uuid}/sucursales/{sucursal_a}",
+            headers=auth,
+        )
+        assert deassign.status_code == 204, deassign.text
+
+        list_response = await client.get("/api/v1/admin/usuarios", headers=auth)
+    assert list_response.status_code == 200
+    item = next(i for i in list_response.json()["items"] if i["uuid"] == user_uuid)
+    assert len(item["sucursales"]) == 1
+    assert item["sucursales"][0]["uuid_sucursal"] == str(sucursal_b)
 
 
 # ---------------------------------------------------------------------------
