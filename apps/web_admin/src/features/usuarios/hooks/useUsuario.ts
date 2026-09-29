@@ -10,7 +10,6 @@ export function useUsuarios() {
 
   return {
     usuarios: data?.items ?? [],
-    total: data?.total ?? 0,
     isLoading,
     error,
     mutate,

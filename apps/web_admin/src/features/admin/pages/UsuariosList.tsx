@@ -30,23 +30,18 @@ import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
 
 import { AdminUsuarioForm } from '../components/AdminUsuarioForm';
-import { AdminUsuarioTable, type SucursalChip } from '../components/AdminUsuarioTable';
+import { AdminUsuarioTable } from '../components/AdminUsuarioTable';
 import { AdminUsuarioSucursalesManager } from '../components/AdminUsuarioSucursalesManager';
 import {
   adminUsuarioCreateSchema,
   type AdminUsuarioCreateInput,
   type AdminUsuarioRead,
 } from '../api/adminUsuarioSchema';
-import { listAdminUsuarioSucursales } from '../api/adminUsuariosApi';
 import { useAdminUsuarios } from '../hooks/useAdminUsuarios';
 
 interface BranchOption {
   uuid: string;
   nombre: string | null;
-}
-
-interface AsignacionesByUser {
-  [userUuid: string]: SucursalChip[];
 }
 
 function CreateUserForm(props: {
@@ -89,37 +84,16 @@ export default function UsuariosList(): JSX.Element {
 
   const branchesDir = useSWR<BranchOption[]>(
     '/api/v1/empresa/sucursal?limit=200',
-    async () => (await listSucursales({ limit: 200 })) as BranchOption[],
-    { revalidateOnFocus: false },
-  );
-
-  // Per-user assignment map. We fetch on demand when the modal opens
-  // (cached by `useAdminUsuarioSucursales` inside the manager) but for
-  // the table we want the FULL map to render the chips on first paint.
-  // Doing it inline keeps the UX snappy: open the modal and the chips
-  // are already there.
-  const asignacionesSWR = useSWR<Record<string, SucursalChip[]>>(
-    usuarios ? 'asignaciones-map' : null,
     async () => {
-      const map: AsignacionesByUser = {};
-      await Promise.all(
-        (usuarios ?? []).map(async (u) => {
-          try {
-            const items = await listAdminUsuarioSucursales(u.uuid);
-            map[u.uuid] = items.map((a) => ({
-              uuid: a.uuid_sucursal,
-              nombre:
-                branchesDir.data?.find((s) => s.uuid === a.uuid_sucursal)?.nombre ?? null,
-            }));
-          } catch {
-            map[u.uuid] = [];
-          }
-        }),
-      );
-      return map;
+      const sucursales = await listSucursales({ limit: 200 });
+      return sucursales.map((s) => ({ uuid: s.uuid, nombre: s.nombre }));
     },
     { revalidateOnFocus: false },
   );
+
+  // Per-user assignment map is no longer preloaded. The table shows
+  // "—" for all users, and the modal loads assignments on demand.
+  // This eliminates N API calls (one per user) on page load.
 
   async function onCreate(values: AdminUsuarioCreateInput): Promise<void> {
     setSubmitting(true);
@@ -181,7 +155,6 @@ export default function UsuariosList(): JSX.Element {
 
       <AdminUsuarioTable
         rows={usuarios ?? []}
-        asignacionesByUser={asignacionesSWR.data ?? {}}
         isLoading={isLoading}
         onAssignSucursales={(u) => setAssignTarget(u)}
       />

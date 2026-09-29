@@ -1,51 +1,65 @@
+import { z } from 'zod';
 import { parkosFetch } from '@/lib/fetch';
-import type {
-  Usuario,
-  UsuarioCreate,
-  UsuarioUpdate,
-  UsuarioListResponse,
-  Permiso,
-  PermisoUsuario,
-  Sesion,
-  LoginHistorico,
-  SucursalUsuario,
+import {
+  usuarioSchema,
+  usuarioListSchema,
+  permisoSchema,
+  permisoUsuarioSchema,
+  sesionSchema,
+  loginHistoricoSchema,
+  sucursalUsuarioSchema,
+  type Usuario,
+  type UsuarioCreate,
+  type UsuarioUpdate,
+  type UsuarioListResponse,
+  type Permiso,
+  type PermisoUsuario,
+  type Sesion,
+  type LoginHistorico,
+  type SucursalUsuario,
 } from './usuariosSchema';
 
 export async function getUsuarios(): Promise<UsuarioListResponse> {
-  return parkosFetch<UsuarioListResponse>('/api/v1/admin/usuarios');
+  const raw = await parkosFetch<unknown>('/api/v1/admin/usuarios');
+  return usuarioListSchema.parse(raw);
 }
 
 export async function getUsuario(uuid: string): Promise<Usuario> {
-  return parkosFetch<Usuario>(`/api/v1/admin/usuarios/${uuid}`);
+  const raw = await parkosFetch<unknown>(`/api/v1/admin/usuarios/${uuid}`);
+  return usuarioSchema.parse(raw);
 }
 
 export async function createUsuario(data: UsuarioCreate): Promise<Usuario> {
-  return parkosFetch<Usuario>('/api/v1/admin/usuarios', {
+  const raw = await parkosFetch<unknown>('/api/v1/admin/usuarios', {
     method: 'POST',
     body: JSON.stringify(data),
   });
+  return usuarioSchema.parse(raw);
 }
 
 export async function updateUsuario(
   uuid: string,
   data: UsuarioUpdate,
 ): Promise<Usuario> {
-  return parkosFetch<Usuario>(`/api/v1/admin/usuarios/${uuid}`, {
+  const raw = await parkosFetch<unknown>(`/api/v1/admin/usuarios/${uuid}`, {
     method: 'PUT',
     body: JSON.stringify(data),
   });
+  return usuarioSchema.parse(raw);
 }
 
 export async function getPermisos(): Promise<Permiso[]> {
-  return parkosFetch<Permiso[]>('/api/v1/admin/permisos');
+  const raw = await parkosFetch<unknown>('/api/v1/admin/permisos');
+  return z.array(permisoSchema).parse(raw);
 }
 
 export async function getPermisosUsuario(
   uuidUsuario: string,
 ): Promise<PermisoUsuario[]> {
-  return parkosFetch<PermisoUsuario[]>(
+  const raw = await parkosFetch<unknown>(
     `/api/v1/admin/usuarios/${uuidUsuario}/permisos`,
   );
+  return z.array(permisoUsuarioSchema).parse(raw);
 }
 
 export async function asignarPermiso(
@@ -75,9 +89,10 @@ export async function revocarPermiso(
 export async function getSesionesActivas(
   uuidUsuario: string,
 ): Promise<Sesion[]> {
-  return parkosFetch<Sesion[]>(
+  const raw = await parkosFetch<unknown>(
     `/api/v1/admin/usuarios/${uuidUsuario}/sesiones?activas=true`,
   );
+  return z.array(sesionSchema).parse(raw);
 }
 
 export async function cerrarSesion(
@@ -95,9 +110,10 @@ export async function cerrarSesion(
 export async function getLoginHistorico(
   uuidUsuario: string,
 ): Promise<LoginHistorico[]> {
-  return parkosFetch<LoginHistorico[]>(
+  const raw = await parkosFetch<unknown>(
     `/api/v1/admin/usuarios/${uuidUsuario}/login-historico`,
   );
+  return z.array(loginHistoricoSchema).parse(raw);
 }
 
 export async function resetPassword(
@@ -113,9 +129,10 @@ export async function resetPassword(
 export async function getSucursalesUsuario(
   uuidUsuario: string,
 ): Promise<SucursalUsuario[]> {
-  return parkosFetch<SucursalUsuario[]>(
+  const raw = await parkosFetch<unknown>(
     `/api/v1/admin/usuarios/${uuidUsuario}/sucursales`,
   );
+  return z.array(sucursalUsuarioSchema).parse(raw);
 }
 
 export async function asignarSucursal(

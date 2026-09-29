@@ -24,15 +24,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import type { AdminUsuarioRead } from '../api/adminUsuarioSchema';
 
-export interface SucursalChip {
-  uuid: string;
-  nombre?: string | null;
-}
-
 export interface AdminUsuarioTableProps {
   rows: AdminUsuarioRead[];
-  /** Map of user_uuid -> branch assignments for the listed users. */
-  asignacionesByUser: Record<string, SucursalChip[]>;
   isLoading: boolean;
   onAssignSucursales: (user: AdminUsuarioRead) => void;
 }
@@ -44,7 +37,6 @@ function displayName(user: AdminUsuarioRead): string {
 
 export function AdminUsuarioTable({
   rows,
-  asignacionesByUser,
   isLoading,
   onAssignSucursales,
 }: AdminUsuarioTableProps): JSX.Element {
@@ -100,9 +92,6 @@ export function AdminUsuarioTable({
               {t('gestionUsuarios.table.rol', 'Rol')}
             </th>
             <th scope="col" className="px-3 py-2">
-              {t('gestionUsuarios.table.sucursales', 'Sucursales')}
-            </th>
-            <th scope="col" className="px-3 py-2">
               {t('gestionUsuarios.table.estado', 'Estado')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
@@ -112,7 +101,6 @@ export function AdminUsuarioTable({
         </thead>
         <tbody>
           {rows.map((user) => {
-            const chips = asignacionesByUser[user.uuid] ?? [];
             return (
               <tr
                 key={user.uuid}
@@ -131,26 +119,6 @@ export function AdminUsuarioTable({
                 <td className="px-3 py-2 align-top">{displayName(user)}</td>
                 <td className="px-3 py-2 align-top">
                   <Badge variant="outline">{user.rol ?? '—'}</Badge>
-                </td>
-                <td className="px-3 py-2 align-top">
-                  {chips.length === 0 ? (
-                    <span className="text-muted-foreground text-xs">
-                      {t('gestionUsuarios.table.sinSucursales', '—')}
-                    </span>
-                  ) : (
-                    <ul className="flex flex-wrap gap-1" aria-label="Sucursales">
-                      {chips.map((chip) => (
-                        <li key={chip.uuid}>
-                          <Badge
-                            variant="secondary"
-                            data-testid={`admin-row-${user.uuid}-sucursal-${chip.uuid}`}
-                          >
-                            {chip.nombre ?? chip.uuid.slice(0, 8)}
-                          </Badge>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
                 </td>
                 <td className="px-3 py-2 align-top">
                   <Badge

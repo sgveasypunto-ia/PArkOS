@@ -1,23 +1,29 @@
 import { z } from 'zod';
 
+// Schema aligned with backend AdminUsuarioRead (schemas/admin.py:63-82)
 export const usuarioSchema = z.object({
   uuid: z.string().uuid(),
-  email: z.string().email(),
   nombre: z.string().nullable(),
   apellido: z.string().nullable(),
   cedula: z.string().nullable(),
-  rol: z.string(),
-  estado: z.enum(['activo', 'inactivo']),
-  creado_en: z.string(),
-  modificado_en: z.string(),
+  email: z.string().nullable(),
+  rol: z.string().nullable(),
+  vigente_desde: z.string(),
+  vigente_hasta: z.string().nullable(),
+  estado: z.string(),
+  created_at: z.string(),
+  created_by: z.string().uuid().nullable(),
+  sync_status: z.string().nullable(),
 });
 
 export type Usuario = z.infer<typeof usuarioSchema>;
 
 export const usuarioListSchema = z.object({
   items: z.array(usuarioSchema),
-  total: z.number(),
+  next_cursor: z.string().nullable().optional(),
 });
+
+export type UsuarioListResponse = z.infer<typeof usuarioListSchema>;
 
 export const usuarioCreateSchema = z.object({
   email: z.string().email(),
