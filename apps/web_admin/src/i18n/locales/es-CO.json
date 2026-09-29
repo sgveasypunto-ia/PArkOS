@@ -152,6 +152,10 @@
     "empresa": {
       "label": "Empresa",
       "description": "Razón social, NIT, régimen tributario, mensajes de ticket y bitácora del singleton Empresa."
+    },
+    "usuarios": {
+      "label": "Usuarios",
+      "description": "Gestioná usuarios administradores y operadores, asigná sucursales y configurá permisos."
     }
   },
   "catalogos": {

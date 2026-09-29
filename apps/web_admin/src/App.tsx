@@ -13,6 +13,7 @@ import CatalogPage from '@/features/catalogos/CatalogPage';
 import EmpresaPage from '@/features/empresa/pages/EmpresaPage';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
+import { UsuarioDetalle } from '@/features/usuarios/pages/UsuarioDetalle';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
 import Cupos from '@/features/cupos/pages/Cupos';
 import TiposVehiculo from '@/features/tipos-vehiculo/pages/TiposVehiculo';
@@ -53,9 +54,9 @@ import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/Con
  * decisión previa (siempre re-confirmar sucursal) está revertida; el
  * comentario histórico vive en `Login.tsx::getNextPath`.
  *
- * `/admin/usuarios` is kept as a permanent redirect to
- * `/gestion-usuarios` (PR1 of the admin redesign) so old links still
- * resolve while the rest of the app points at the new canonical name.
+ * `/admin/usuarios` y `/gestion-usuarios` son redirects permanentes a
+ * `/usuarios` (PR1 of the admin redesign + HU-F16) para que los links
+ * antiguos sigan funcionando mientras la app apunta al nombre canónico.
  */
 export default function App() {
   return (
@@ -74,11 +75,12 @@ export default function App() {
         />
 
         {/* Global routes — auth required, NO branch required.
-            `Catalogos` is a tenant-global surface (DEC-CATALOG-01),
-            so it sits OUTSIDE `<RequireSucursal>`. The TopNav
-            wraps them so the operator always sees their identity +
-            logout even before picking a branch — pineado by
-            `App.test.tsx` "mounts TopNav but NOT AdminChrome on /". */}
+            `Catalogos`, `Empresa`, and `Usuarios` are tenant-global
+            surfaces (DEC-CATALOG-01), so they sit OUTSIDE
+            `<RequireSucursal>`. The TopNav wraps them so the operator
+            always sees their identity + logout even before picking a
+            branch — pineado by `App.test.tsx` "mounts TopNav but NOT
+            AdminChrome on /". */}
         <Route
           element={
             <RequireAdmin>
@@ -90,6 +92,8 @@ export default function App() {
           <Route path="/" element={<HomeHub />} />
           <Route path="/catalogos" element={<CatalogPage />} />
           <Route path="/empresa" element={<EmpresaPage />} />
+          <Route path="/usuarios" element={<UsuariosList />} />
+          <Route path="/usuarios/:uuid" element={<UsuarioDetalle />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 
@@ -111,10 +115,13 @@ export default function App() {
             path="/sucursales"
             element={<Navigate to="/seleccionar-sucursal?tab=admin" replace />}
           />
-          <Route path="/gestion-usuarios" element={<UsuariosList />} />
+          <Route
+            path="/gestion-usuarios"
+            element={<Navigate to="/usuarios" replace />}
+          />
           <Route
             path="/admin/usuarios"
-            element={<Navigate to="/gestion-usuarios" replace />}
+            element={<Navigate to="/usuarios" replace />}
           />
           <Route path="/tarifas" element={<Tarifas />} />
           <Route path="/cupos" element={<Cupos />} />

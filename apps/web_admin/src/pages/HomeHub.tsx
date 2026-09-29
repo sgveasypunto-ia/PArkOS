@@ -18,12 +18,12 @@
  */
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Building2, FolderTree, Landmark } from 'lucide-react';
+import { Building2, FolderTree, Landmark, Users } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 
 interface HubCard {
-  key: 'sucursales' | 'catalogos' | 'empresa';
+  key: 'sucursales' | 'catalogos' | 'empresa' | 'usuarios';
   path: string;
   icon: typeof Building2;
   titleKey: string;
@@ -55,6 +55,14 @@ export const HUB_CARDS: readonly HubCard[] = [
     titleKey: 'homeHub.empresa.label',
     descriptionKey: 'homeHub.empresa.description',
     testId: 'home-hub-card-empresa',
+  },
+  {
+    key: 'usuarios',
+    path: '/usuarios',
+    icon: Users,
+    titleKey: 'homeHub.usuarios.label',
+    descriptionKey: 'homeHub.usuarios.description',
+    testId: 'home-hub-card-usuarios',
   },
 ] as const;
 
