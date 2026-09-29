@@ -295,7 +295,8 @@ export default function Tarifas(): JSX.Element {
         return;
       }
       if (editingGrupo !== null) {
-        // EDIT: PUT each modalidad row individually.
+        // EDIT: split PUT (modalidad exists in DB) vs CREATE
+        // (modalidad is brand-new — operator added a value for it).
         const base = {
           uuid_sucursal: selectedSucursal,
           uuid_tipo_vehiculo: values.uuid_tipo_vehiculo,
@@ -307,40 +308,86 @@ export default function Tarifas(): JSX.Element {
           valor: string;
           valor_plena: string | null;
         }> = [];
-        if (editingGrupo.hora.uuid) {
+        const creates: Array<{
+          uuid_tipo_tarifa: string;
+          valor: string;
+          valor_plena: string | null;
+        }> = [];
+
+        // hora
+        if (editingGrupo.hora.uuid && values.valor_hora) {
           updates.push({
             uuid: editingGrupo.hora.uuid,
             uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora,
-            valor: values.valor_hora ?? '0',
+            valor: values.valor_hora,
+            valor_plena: null,
+          });
+        } else if (!editingGrupo.hora.uuid && values.valor_hora) {
+          creates.push({
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora,
+            valor: values.valor_hora,
             valor_plena: null,
           });
         }
-        if (editingGrupo.fraccion.uuid) {
+
+        // fraccion
+        if (editingGrupo.fraccion.uuid && values.valor_fraccion) {
           updates.push({
             uuid: editingGrupo.fraccion.uuid,
             uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion,
-            valor: values.valor_fraccion ?? '0',
+            valor: values.valor_fraccion,
+            valor_plena: null,
+          });
+        } else if (!editingGrupo.fraccion.uuid && values.valor_fraccion) {
+          creates.push({
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion,
+            valor: values.valor_fraccion,
             valor_plena: null,
           });
         }
-        if (editingGrupo.plena.uuid) {
+
+        // plena
+        if (editingGrupo.plena.uuid && values.valor_plena) {
           updates.push({
             uuid: editingGrupo.plena.uuid,
             uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena,
-            valor: values.valor_plena ?? '0',
+            valor: values.valor_plena,
+            valor_plena: null,
+          });
+        } else if (!editingGrupo.plena.uuid && values.valor_plena) {
+          creates.push({
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena,
+            valor: values.valor_plena,
             valor_plena: null,
           });
         }
-        if (editingGrupo.nocturna.uuid) {
+
+        // nocturna
+        if (editingGrupo.nocturna.uuid && values.valor_nocturna) {
           updates.push({
             uuid: editingGrupo.nocturna.uuid,
             uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna,
-            valor: values.valor_nocturna ?? '0',
+            valor: values.valor_nocturna,
+            valor_plena: null,
+          });
+        } else if (!editingGrupo.nocturna.uuid && values.valor_nocturna) {
+          creates.push({
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna,
+            valor: values.valor_nocturna,
             valor_plena: null,
           });
         }
+
         for (const it of updates) {
           await updateTarifa(it.uuid, {
+            ...base,
+            uuid_tipo_tarifa: it.uuid_tipo_tarifa,
+            valor: it.valor,
+            valor_plena: it.valor_plena,
+          });
+        }
+        for (const it of creates) {
+          await createTarifa({
             ...base,
             uuid_tipo_tarifa: it.uuid_tipo_tarifa,
             valor: it.valor,
