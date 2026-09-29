@@ -148,6 +148,10 @@
     "catalogos": {
       "label": "Catálogos",
       "description": "Editá los catálogos globales (tipos de vehículo, tarifas, impuestos, etc.) con histórico de versiones."
+    },
+    "empresa": {
+      "label": "Empresa",
+      "description": "Razón social, NIT, régimen tributario, mensajes de ticket y bitácora del singleton Empresa."
     }
   },
   "catalogos": {
@@ -524,6 +528,47 @@
       "rol": "Rol",
       "uuid": "UUID",
       "sucursales": "Sucursales autorizadas"
+    }
+  },
+  "empresa": {
+    "title": "Empresa",
+    "subtitle": "Datos tributarios, mensajes de ticket y bitácora del singleton Empresa.",
+    "tabsLabel": "Secciones de empresa",
+    "tabs": {
+      "datos": "Datos",
+      "mensajes": "Mensajes",
+      "bitacora": "Bitácora"
+    },
+    "datos": {
+      "nombre": "Razón social",
+      "nit": "NIT",
+      "nitHelp": "Con o sin DV. Se valida con el algoritmo módulo 11 de la DIAN.",
+      "regimen": "Régimen tributario",
+      "regimenComun": "Común",
+      "regimenSimplificado": "Simplificado",
+      "submit": "Guardar datos",
+      "submitting": "Guardando…",
+      "editingNotice": "Estás editando el singleton Empresa. El cambio publica una nueva versión bi-temporal; la anterior se cierra automáticamente.",
+      "empty": "Aún no se sembró el singleton Empresa. Pedile al equipo de plataforma que corra el seed correspondiente.",
+      "uuid": "UUID: {{uuid}}"
+    },
+    "mensajes": {
+      "bienvenida": "Mensaje de bienvenida",
+      "salida": "Mensaje de salida",
+      "previewBienvenida": "Preview ticket de entrada",
+      "previewSalida": "Preview ticket de salida",
+      "submit": "Guardar mensajes",
+      "submitting": "Guardando…",
+      "editingNotice": "Cambiar los mensajes publica una nueva versión bi-temporal. La reimpresión de tickets usa la versión vigente al momento del cierre del ingreso.",
+      "empty": "Aún no se sembró el singleton Empresa. Los mensajes no se pueden editar hasta entonces."
+    },
+    "bitacora": {
+      "pendingTitle": "Integración pendiente con la API de bitácora",
+      "pendingBody": "El endpoint /api/v1/admin/audit/log requiere uuid_sucursal y Empresa es un singleton tenant-global. La consulta por uuid_referencia + tabla_afectada se cablea en Fase 20.",
+      "sampleCaption": "Ejemplo visual del badge HashChainStatus",
+      "col": {
+        "estado": "Estado"
+      }
     }
   }
 }
