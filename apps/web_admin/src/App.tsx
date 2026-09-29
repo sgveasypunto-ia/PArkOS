@@ -7,6 +7,7 @@ import { AdminChrome } from '@/components/chrome/AdminChrome';
 import HomeHub from '@/pages/HomeHub';
 import Dashboard from '@/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
+import CatalogPage from '@/features/catalogos/CatalogPage';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
@@ -62,7 +63,10 @@ export default function App() {
           }
         />
 
-        {/* Global routes — auth required, NO branch required. */}
+        {/* Global routes — auth required, NO branch required.
+            `Catalogos` is a tenant-global surface (DEC-CATALOG-01),
+            so it sits OUTSIDE `<RequireSucursal>` — pineado by
+            `App.test.tsx` "does NOT mount the chrome on /catalogos". */}
         <Route
           element={
             <RequireAdmin>
@@ -71,6 +75,7 @@ export default function App() {
           }
         >
           <Route path="/" element={<HomeHub />} />
+          <Route path="/catalogos" element={<CatalogPage />} />
         </Route>
 
         {/* Branch-scoped routes — auth + branch required, render inside AdminChrome. */}

@@ -50,11 +50,14 @@ describe('visibleSections', () => {
 
   it('A6: the catalog advertises every route the SPA can navigate to', () => {
     // PR-D added /tarifas and /cupos; PR-D-ui-catalogos added the 4
-    // catalog/config surfaces. The catalog must reflect all of them or
-    // the user navigates to a 404 from a card that exists in the UI.
+    // catalog/config surfaces; home-hub-2-cards added `/catalogos`
+    // (the unified 9-tab editor). The catalog must reflect all of
+    // them or the user navigates to a 404 from a card that exists
+    // in the UI.
     expect(ADMIN_SECTIONS.map((s) => s.key)).toEqual([
       'dashboard',
       'sucursales',
+      'catalogos',
       'gestion-usuarios',
       'tarifas',
       'cupos',
@@ -79,6 +82,7 @@ describe('visibleSections', () => {
   it('A9: reveals the catalog/config sections once their codes are granted', () => {
     // The 4 catalog/config surfaces share ``config_catalogo`` (catalogos)
     // or their own codes (config_tolerancias, config_seguridad).
+    // home-hub-2-cards adds a 5th: the unified `/catalogos` editor.
     const allCatalog = visibleSections([
       'config_catalogo',
       'config_tolerancias',
@@ -86,6 +90,7 @@ describe('visibleSections', () => {
     ]).map((s) => s.key);
     expect(allCatalog).toEqual(
       expect.arrayContaining([
+        'catalogos',
         'tipos-vehiculo',
         'tipo-tarifa',
         'configuracion-tolerancias',
