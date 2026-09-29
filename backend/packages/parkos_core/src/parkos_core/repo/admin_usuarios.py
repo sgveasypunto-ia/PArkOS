@@ -56,8 +56,10 @@ import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.V.sucursal import Sucursal
 from ..models.V.usuarios import Usuarios
 from ..models.V.usuarios_sucursal import UsuariosSucursal
+from ..schemas.admin import SucursalAsignadaResumen
 from .sync_queue import enqueue
 from .versioned import close_and_insert
 
@@ -188,6 +190,109 @@ async def list_active_asignaciones_usuario(
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def list_branch_assignments_for_users(
+    session: AsyncSession,
+    *,
+    user_uuids: list[uuid_lib.UUID],
+) -> dict[uuid_lib.UUID, list[SucursalAsignadaResumen]]:
+    """Return currently-open branch assignments for a batch of users.
+
+    Powers the embedded ``sucursales`` field on
+    :class:`schemas.admin.AdminUsuarioRead`. The two-round-trip shape
+    is deliberate: ONE ``SELECT`` against ``prod.usuarios_sucursal``
+    with ``uuid_usuario IN (...) AND vigente_hasta IS NULL`` to grab
+    every active assignment, plus ONE ``SELECT`` against
+    ``prod.sucursal`` with ``uuid IN (...) AND vigente_hasta IS NULL``
+    to resolve the ``nombre`` / ``prefijo_nombre`` snapshot of each
+    referenced branch. The Python-side join avoids both N+1 (per-user
+    round trips) and a single fat ``JOIN`` (which would emit duplicate
+    user rows and complicate ordering).
+
+    Bi-temporal semantics
+    ---------------------
+
+    - Assignment filter: ``vigente_hasta IS NULL`` on
+      ``prod.usuarios_sucursal`` -- only currently-open assignments.
+    - Branch filter: ``vigente_hasta IS NULL`` on ``prod.sucursal`` --
+      only the currently-open version of the branch.
+    - An assignment to a branch whose currently-open version does not
+      exist (closed/expired branch) still appears in the output with
+      ``nombre=None`` / ``prefijo_nombre=None``. We surface the row
+      rather than silently dropping it: it is auditable evidence that
+      this user once had access to that branch, and the admin table
+      can render "(sucursal cerrada)" without a second query.
+
+    Returns a dict keyed by ``uuid_usuario``. Users with no open
+    assignments map to an empty list (not absent), so callers can do
+    ``mapping[user.uuid]`` without a default. Empty ``user_uuids``
+    short-circuits to ``{}`` without touching the DB.
+
+    Why not eager-load via an ORM relationship?
+    -------------------------------------------
+
+    ``Usuarios`` already has bi-temporal close+insert semantics
+    (``vigente_hasta``) that interact poorly with SQLAlchemy's
+    ``selectinload`` on a relationship that has its own
+    ``vigente_hasta IS NULL`` filter -- the loader wants the full
+    history and the consumer wants only the open window. Keeping this
+    helper as two explicit ``SELECT``s is shorter, more predictable,
+    and reviewable line-by-line in ``EXPLAIN ANALYZE``.
+    """
+    if not user_uuids:
+        return {}
+
+    # 1) All currently-open assignments for the batch.
+    stmt = (
+        select(UsuariosSucursal.uuid, UsuariosSucursal.uuid_usuario, UsuariosSucursal.uuid_sucursal, UsuariosSucursal.vigente_desde)
+        .where(
+            UsuariosSucursal.uuid_usuario.in_(user_uuids),
+            UsuariosSucursal.vigente_hasta.is_(None),
+        )
+        .order_by(
+            UsuariosSucursal.uuid_usuario.asc(),
+            UsuariosSucursal.vigente_desde.desc(),
+        )
+    )
+    result = await session.execute(stmt)
+    assignment_rows = result.all()
+
+    if not assignment_rows:
+        return {uuid: [] for uuid in user_uuids}
+
+    # 2) Resolve the currently-open version of every referenced branch
+    #    in one shot. The result set is small (max one row per branch
+    #    UUID) -- a regular ``SELECT ... IN (...)`` is the right shape.
+    branch_uuids = {row[2] for row in assignment_rows}
+    branch_stmt = select(Sucursal.uuid, Sucursal.nombre, Sucursal.prefijo_nombre).where(
+        Sucursal.uuid.in_(branch_uuids),
+        Sucursal.vigente_hasta.is_(None),
+    )
+    branch_result = await session.execute(branch_stmt)
+    branch_lookup: dict[uuid_lib.UUID, tuple[str | None, str | None]] = {
+        uuid_: (nombre, prefijo) for uuid_, nombre, prefijo in branch_result.all()
+    }
+
+    # 3) Stitch the two result sets into the response shape. We keep
+    #    the assignment's ``vigente_desde`` (when the user was attached
+    #    to the branch) and the branch's currently-open name snapshot.
+    out: dict[uuid_lib.UUID, list[SucursalAsignadaResumen]] = {
+        uuid_: [] for uuid_ in user_uuids
+    }
+    for _asig_uuid, user_uuid, branch_uuid, vigente_desde in assignment_rows:
+        nombre, prefijo = branch_lookup.get(
+            branch_uuid, (None, None)
+        )
+        out[user_uuid].append(
+            SucursalAsignadaResumen(
+                uuid_sucursal=branch_uuid,
+                nombre=nombre,
+                prefijo_nombre=prefijo,
+                vigente_desde=vigente_desde,
+            )
+        )
+    return out
 
 
 async def asignar_sucursal(

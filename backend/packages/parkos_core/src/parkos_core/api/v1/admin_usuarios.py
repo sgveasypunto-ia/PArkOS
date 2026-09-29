@@ -145,23 +145,30 @@ async def create_usuario(
 @router.get(
     "",
     response_model=AdminUsuarioReadList,
-    summary="List active users (admin-only, read-only).",
+    summary="List active users (admin-only, read-only). Each item embeds the user's open branch assignments in ``sucursales``.",
 )
 async def list_usuarios(
     claims: AdminClaims,
     session: DbSession,
 ) -> AdminUsuarioReadList:
     rows = await admin_repo.list_active_usuarios(session, limit=100)
-    return AdminUsuarioReadList(
-        items=[AdminUsuarioRead.model_validate(r) for r in rows],
-        next_cursor=None,
+    assignments_by_user = await admin_repo.list_branch_assignments_for_users(
+        session, user_uuids=[r.uuid for r in rows]
     )
+    items = [
+        AdminUsuarioRead(
+            **AdminUsuarioRead.model_validate(r).model_dump(),
+            sucursales=assignments_by_user.get(r.uuid, []),
+        )
+        for r in rows
+    ]
+    return AdminUsuarioReadList(items=items, next_cursor=None)
 
 
 @router.get(
     "/{uuid}",
     response_model=AdminUsuarioRead,
-    summary="Get a single active user by UUID (admin-only).",
+    summary="Get a single active user by UUID (admin-only). The ``sucursales`` field is populated with the user's open branch assignments.",
 )
 async def get_usuario(
     uuid: uuid_lib.UUID,
@@ -181,7 +188,12 @@ async def get_usuario(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"no active user with uuid={uuid}",
         )
-    return AdminUsuarioRead.model_validate(user)
+    assignments = await admin_repo.list_branch_assignments_for_users(
+        session, user_uuids=[user.uuid]
+    )
+    payload = AdminUsuarioRead.model_validate(user).model_dump()
+    payload["sucursales"] = assignments.get(user.uuid, [])
+    return AdminUsuarioRead.model_validate(payload)
 
 
 @router.post(

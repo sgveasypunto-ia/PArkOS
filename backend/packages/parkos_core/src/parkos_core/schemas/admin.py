@@ -60,12 +60,46 @@ class AdminUsuarioCreateRequest(_Base):
     sucursales_asignadas: list[uuid_lib.UUID] = Field(default_factory=list)
 
 
+class SucursalAsignadaResumen(_Base):
+    """Lightweight per-branch payload embedded in :class:`AdminUsuarioRead`.
+
+    Returned by ``GET /admin/usuarios`` (list + single) so the admin
+    users table can render a Sucursales column without a second round
+    trip per row. Distinct from :class:`AdminSucursalAsignadaRead`,
+    which carries the full bi-temporal lifecycle fields for the
+    dedicated ``GET /admin/usuarios/{uuid}/sucursales`` endpoint.
+
+    Only currently-open assignments (``vigente_hasta IS NULL``) are
+    surfaced. The branch-side join also requires the joined
+    ``prod.sucursal`` row to be the currently-open version -- an
+    assignment to a long-since-closed branch still appears here but
+    with ``nombre=None``/``prefijo_nombre=None`` to signal "the
+    assignment is real but the branch as a unit is gone". We keep the
+    row rather than silently dropping it: it is auditable evidence
+    that this user once had access to that branch.
+    """
+
+    uuid_sucursal: uuid_lib.UUID
+    nombre: str | None
+    prefijo_nombre: str | None
+    vigente_desde: datetime
+
+
 class AdminUsuarioRead(_Base):
     """Read-back shape for ``GET /admin/usuarios`` (single + list).
 
     Deliberately OMITS ``password_hash`` -- never leak the hash at the
     HTTP edge. The ``__init__.py`` model_config's ``extra='forbid'``
     will reject any client that sends ``password_hash`` back.
+
+    The ``sucursales`` field carries the user's currently-open branch
+    assignments (one entry per active assignment). It is populated by
+    the handler from :func:`repo.admin_usuarios.
+    list_branch_assignments_for_users`, which runs a single
+    ``WHERE uuid_usuario IN (...) AND vigente_hasta IS NULL`` query
+    so listing N users costs exactly ONE extra round trip -- no N+1.
+    Default ``[]`` so a malformed payload still validates against the
+    schema.
     """
 
     uuid: uuid_lib.UUID
@@ -80,6 +114,7 @@ class AdminUsuarioRead(_Base):
     created_at: datetime
     created_by: uuid_lib.UUID | None
     sync_status: str | None
+    sucursales: list[SucursalAsignadaResumen] = Field(default_factory=list)
 
 
 class AdminUsuarioReadList(ReadListBase[AdminUsuarioRead]):
