@@ -167,17 +167,19 @@ export function CupoForm({
               );
             })();
             // CREATE: filter tipos already in use by an open cupo on this
-            // branch. The "Cualquiera" sentinel participates too — if a
-            // cupo for (sucursal, NULL) already exists, the operator
-            // cannot create another cell with NULL tipo.
+            // branch. CREATE no longer offers the "Cualquiera" cell
+            // (uuid_tipo_vehiculo = null) — every cupo must target a
+            // specific tipo from the catalog. The NULL sentinel still
+            // matters for the empty-state check below: if every one of
+            // the 5 tipos is taken AND the NULL cell is also taken,
+            // there is literally nothing to create.
             const disponibles = tiposVehiculo.filter(
               (tv) => !tiposEnUsoEnSucursal.has(tv.uuid),
             );
-            const cualquierDisponible = !tiposEnUsoEnSucursal.has(
+            const cualquierTomada = tiposEnUsoEnSucursal.has(
               TIPO_NULL_SENTINEL,
             );
-            const todoEnUso =
-              !cualquierDisponible && disponibles.length === 0;
+            const todoEnUso = cualquierTomada && disponibles.length === 0;
             return (
             <FormItem>
               <FormLabel htmlFor="uuid_tipo_vehiculo">
@@ -231,11 +233,6 @@ export function CupoForm({
                           }
                           className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
                         >
-                          {cualquierDisponible && (
-                            <option value="">
-                              {t('cupos.field.tipoVehiculoAny', 'Cualquiera')}
-                            </option>
-                          )}
                           {disponibles.map((tv) => (
                             <option key={tv.uuid} value={tv.uuid}>
                               {tv.tipo ?? tv.uuid}
@@ -270,7 +267,7 @@ export function CupoForm({
               <FormDescription>
                 {t(
                   'cupos.field.tipoVehiculoHelp',
-                  'Vacío = aplica a cualquier tipo. Elegí uno o creá uno nuevo.',
+                  'Elegí uno de los tipos existentes o creá uno nuevo.',
                 )}
               </FormDescription>
               <FormMessage />
@@ -364,7 +361,7 @@ export function CupoForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel htmlFor="vigente_desde">
-                {t('cupos.field.vigenteDesde', 'Vigente desde (opcional)')}
+                {t('cupos.field.vigenteDesde', 'Vigente desde')}
               </FormLabel>
               <FormControl>
                 <Input
@@ -374,11 +371,11 @@ export function CupoForm({
                   {...field}
                   value={isoToDatetimeLocal(field.value)}
                   onChange={(e) => {
+                    // The field is required (see Zod schema ``cupoCreateSchema``
+                    // in ``api/cupoSchema.ts``). Clearing is intentionally
+                    // a no-op — the operator must pick a valid datetime.
                     const raw = e.target.value;
-                    if (raw === '') {
-                      field.onChange(null);
-                      return;
-                    }
+                    if (raw === '') return;
                     field.onChange(datetimeLocalToIso(raw));
                   }}
                 />
@@ -386,7 +383,7 @@ export function CupoForm({
               <FormDescription>
                 {t(
                   'cupos.field.vigenteDesdeHelp',
-                  'Vacío = ahora. Una fecha futura programa un cambio de cupo.',
+                  'Una fecha futura programa un cambio de cupo.',
                 )}
               </FormDescription>
               <FormMessage />
@@ -449,16 +446,48 @@ function localNowAsDatetimeLocal(): string {
 }
 
 
+function localNowPlusMinutesAsIso(minutes: number): string {
+  /** Return the current local datetime shifted by ``minutes`` minutes,
+   * formatted as ``YYYY-MM-DDTHH:mm:00+00:00`` (the wire format the
+   * form submits for ``vigente_desde``). Used by the EDIT modal as a
+   * default: when the operator opens an existing cupo for editing, the
+   * boundary is pre-set to "now + 1 minute" so submitting without
+   * touching the field opens a new version one minute ahead of the
+   * current boundary — strictly forward in time, no overlap risk on
+   * the same exact instant.
+   *
+   * CREATE keeps its own default ("now", current minute) — see
+   * ``CupoFormHarness``. Per the UX rule shipped 2026-09-29, CREATE
+   * and EDIT differ on this default.
+   */
+  const now = new Date();
+  now.setMinutes(now.getMinutes() + minutes);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `T${pad(now.getHours())}:${pad(now.getMinutes())}:00+00:00`
+  );
+}
+
+
 export function CupoFormHarness(props: Omit<CupoFormProps, 'form'>): JSX.Element {
   const initial = props.initialCupo;
-  // For CREATE (no initialCupo), default ``vigente_desde`` to "now" so the
-  // operator has a sensible starting point — they can clear or override
-  // before submit. For UPDATE, preserve the existing row's vigente_desde
-  // (an accidental overwrite would silently re-open the version at
-  // today, eating any scheduled-future change the operator was relying
-  // on).
+  // Per-mode default for ``vigente_desde``:
+  //   - CREATE (no initialCupo): "now" (current minute in the operator's
+  //     local TZ). The new cupo opens at the current instant if
+  //     submitted without changes.
+  //   - EDIT (initialCupo !== null): "now + 1 minute". The 1-minute shift
+  //     keeps the new boundary strictly forward of the prior version's
+  //     cierre (Carril B: ``close_and_insert`` closes the previous row
+  //     at the boundary the new one opens) and matches the canonical
+  //     UX rule shipped 2026-09-29.
+  // The field is required (see ``cupoCreateSchema`` — drop
+  // ``.nullable().optional()``) so the form never ships ``null`` on
+  // submit. Operators can still edit the value freely.
   const defaultVigenteDesde =
-    initial?.vigente_desde ?? localNowAsDatetimeLocal() + ':00+00:00';
+    initial === null
+      ? localNowAsDatetimeLocal() + ':00+00:00'
+      : localNowPlusMinutesAsIso(1);
   const form = useForm<CupoCreateInput>({
     resolver: zodResolver(cupoCreateSchema) as never,
     defaultValues: {

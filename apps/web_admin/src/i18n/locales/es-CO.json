@@ -243,8 +243,8 @@
       "sucursalHelp": "El cupo pertenece a esta sucursal.",
       "cantidad": "Cantidad máxima de vehículos",
       "cantidadHelp": "Debe ser >= 0. Una cantidad menor que los ingresos activos es rechazada.",
-      "vigenteDesde": "Vigente desde (opcional)",
-      "vigenteDesdeHelp": "Vacío = ahora. Una fecha futura programa un cambio de cupo."
+      "vigenteDesde": "Vigente desde",
+      "vigenteDesdeHelp": "Una fecha futura programa un cambio de cupo."
     },
     "form": {
       "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
