@@ -21,6 +21,13 @@ their closed-version ``prod.sucursal`` row still exists, so the FK is
 satisfied; only the JOIN-vs-``vigente_hasta IS NULL`` semantics need the
 separate fix.
 
+A second helper, ``assign_creator_to_new_sucursal``, covers the
+complementary CREATE-side defect: when an admin POSTs a brand-new
+Sucursal, the hook in ``close_and_insert`` inserts a ``usuarios_sucursal``
+row granting the creator access -- otherwise the new branch is invisible
+to the picker until the creator manually assigns themselves via the
+``/admin/usuarios/{uuid}/sucursales`` endpoint.
+
 CALL SITE
 ---------
 Invoked from ``repo.versioned.close_and_insert`` immediately after the
@@ -34,6 +41,14 @@ import uuid as uuid_lib
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# Model import is lazy (see the call site in ``close_and_insert`` and
+# the module docstring) to avoid pulling the [V] model registry at
+# module load time -- the helper runs in a post-flush hook where
+# ``session`` is already bound. Importing here would be a no-op at
+# call time, but keeps the lazy-import boilerplate in one place.
+from ..models.V.usuarios_sucursal import UsuariosSucursal
+from .versioned import close_and_insert
 
 # Same 7 tables as the one-shot data migration; same rationale.
 # Keep this list in sync with ``0061_repair_sucursal_fk_chain.py::_FK_TABLES``.
@@ -84,4 +99,54 @@ async def propagate_uuid_to_fks(
         )
 
 
-__all__ = ["propagate_uuid_to_fks"]
+async def assign_creator_to_new_sucursal(
+    session: AsyncSession,
+    *,
+    admin_user_uuid: uuid_lib.UUID,
+    sucursal_uuid: uuid_lib.UUID,
+    actor_uuid: uuid_lib.UUID,
+) -> None:
+    """Auto-grant the creating admin access to a just-created Sucursal.
+
+    The creator of a branch is implicitly its first admin: their JWT
+    ``sucursales_permitidas`` claim must include the new branch or the
+    picker drops it (``admin_views.list_sucursales`` filters by
+    ``claims.sucursales_permitidas``, which is built from the open
+    ``usuarios_sucursal`` rows at login time). Without this auto-assign,
+    the admin who just created the branch can see it in
+    ``GET /empresa/sucursal`` (factory endpoint) but NOT in
+    ``GET /sucursales`` (admin_views picker) -- exactly the
+    "invisible branch" symptom reported 2026-09-29 on a freshly
+    created Sucursal.
+
+    Uses the same bi-temporal write pattern as
+    ``admin_usuarios.asignar_sucursal`` (``UsuariosSucursal`` close+insert
+    with ``current_uuid=None``), but invoked automatically from the
+    POST /empresa/sucursal hook. ``operador-`` issuers never reach
+    here -- the ``config_sucursal`` permission check at the endpoint
+    rejects them with 403 first -- so ``actor_uuid`` is always the
+    admin's user UUID in practice.
+
+    Idempotent: a UK violation (the same admin already has an open
+    assignment to this branch in the same TX) is swallowed so the
+    call site does not have to guard against double-inserts.
+    """
+    import contextlib
+
+    from sqlalchemy.exc import IntegrityError
+
+    with contextlib.suppress(IntegrityError):
+        await close_and_insert(
+            session,
+            UsuariosSucursal,
+            current_uuid=None,
+            new_attrs={
+                "uuid_usuario": admin_user_uuid,
+                "uuid_sucursal": sucursal_uuid,
+            },
+            actor_uuid=actor_uuid,
+            log_tx=False,
+        )
+
+
+__all__ = ["assign_creator_to_new_sucursal", "propagate_uuid_to_fks"]

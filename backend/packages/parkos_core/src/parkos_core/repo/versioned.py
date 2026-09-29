@@ -238,6 +238,28 @@ async def close_and_insert(
             new_uuid=new_row.uuid,
         )
 
+    # CREATE-side auto-assignment. Companion to the FK-propagation
+    # hook above: when an admin POSTs a brand-new Sucursal (the
+    # ``current_uuid is None`` branch), nothing repoints the creator's
+    # ``sucursales_permitidas`` because nothing pointed at the row before
+    # it existed. Without this, the picker drops the just-created branch
+    # for the admin who created it -- exactly the "invisible branch"
+    # reported 2026-09-29 on ``testTTTTTTTT``. The hook inserts an open
+    # ``usuarios_sucursal`` row in the same TX so the next login rebuilds
+    # ``sucursales_permitidas`` with the new UUID present. Idempotent on
+    # UK violation (see ``repo.sucursal.assign_creator_to_new_sucursal``).
+    # ``operador-`` issuers never reach here -- ``config_sucursal``
+    # permission check at the endpoint rejects them with 403 first.
+    if current_uuid is None and model_cls.__tablename__ == "sucursal":
+        from .sucursal import assign_creator_to_new_sucursal
+
+        await assign_creator_to_new_sucursal(
+            session,
+            admin_user_uuid=actor_uuid,
+            sucursal_uuid=new_row.uuid,
+            actor_uuid=actor_uuid,
+        )
+
     # 3. Log row — extends the SHA-256 hash chain (PR6, REQ-16 + REQ-X4).
     #    A plain ``LogTransaccional(...)`` + ``session.add()`` (the PR2-era
     #    stub this replaces) leaves ``hash_anterior``/``hash_actual`` NULL
