@@ -7,8 +7,18 @@
  * switching the picker does NOT invalidate this list. Mutations from
  * `AdminUsuarioTable` and the create/edit dialogs call `mutate()` to
  * revalidate after a successful write.
+ *
+ * Why `assignBranch` / `unassignBranch` also invalidate the per-user
+ * key: the assignment modal and the lazy row panel in the table both
+ * read from `useAdminUsuarioSucursales(uuid)`, which uses the SWR key
+ * `/api/v1/admin/usuarios/{uuid}/sucursales`. Without this invalidate
+ * the modal's `await refresh()` updates its own copy but the table's
+ * expanded row stays stale until the next focus revalidation. Mutating
+ * the per-user key globally keeps both consumers in sync with zero
+ * extra network round-trip on the consumer side — they re-read the
+ * already-fresh cache.
  */
-import useSWR from 'swr';
+import useSWR, { mutate as globalMutate } from 'swr';
 
 import {
   listAdminUsuarios,
@@ -19,6 +29,10 @@ import {
 import type { AdminUsuarioRead } from '../api/adminUsuarioSchema';
 
 const KEY = '/api/v1/admin/usuarios';
+
+function perUserKey(uuid: string): string {
+  return `/api/v1/admin/usuarios/${uuid}/sucursales`;
+}
 
 export interface UseAdminUsuariosReturn {
   usuarios: AdminUsuarioRead[] | undefined;
@@ -43,6 +57,10 @@ export function useAdminUsuarios(): UseAdminUsuariosReturn {
   ): Promise<void> {
     await asignarAdminUsuarioSucursal(usuarioUuid, sucursalUuid);
     await mutate();
+    // The modal already awaits its own `refresh()`; this invalidate is
+    // for every OTHER consumer of the same key (the table's expanded
+    // row panel), which has no local mutate handle.
+    await globalMutate(perUserKey(usuarioUuid));
   }
 
   async function unassignBranch(
@@ -51,6 +69,7 @@ export function useAdminUsuarios(): UseAdminUsuariosReturn {
   ): Promise<void> {
     await desasignarAdminUsuarioSucursal(usuarioUuid, sucursalUuid);
     await mutate();
+    await globalMutate(perUserKey(usuarioUuid));
   }
 
   return {
