@@ -35,7 +35,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.permissions import require_permission
-from ...auth.tenancy import TenantContext
+
+
+def _to_naive_utc(value: datetime | None) -> datetime | None:
+    """Normalize a (possibly tz-aware) datetime to naive UTC.
+
+    Pydantic v2 ``datetime | None`` keeps ``tzinfo`` on the parsed value
+    when the wire payload carries an offset (e.g. ``2026-12-31T01:00:00+00:00``
+    from the admin ``<CupoForm>`` ``datetimeLocalToIso`` helper). All
+    ``[V]`` ``vigente_desde`` columns in this project are
+    ``DateTime(timezone=False)`` and asyncpg refuses to bind an aware
+    datetime into a tz-naive column for the overlap guard SQL
+    (``can't subtract offset-naive and offset-aware datetimes``,
+    DataError 500). Centralizing here means both POST/PUT of cupos AND
+    tarifas normalize the same way at the handler boundary, before any
+    SQL parameter binding or ``close_and_insert`` payload build.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+from ...auth.tenancy import TenantContext, requires_sucursal
 from ...db.tenancy import (
     extract_sucursales_permitidas,
     extract_sucursales_permitidas_fresh,
@@ -83,8 +104,7 @@ from ...schemas.empresa import (
     TarifasSucursalReadList,
     TarifasSucursalUpdate,
 )
-from ..deps import get_session, get_tenant_ctx, requires_issuer
-from ...auth.tenancy import requires_sucursal
+from ..deps import get_session, requires_issuer
 from ..router_factory import make_router
 
 router = APIRouter(prefix="/empresa", tags=["empresa"])
@@ -193,8 +213,14 @@ async def list_sucursal_global(
     """
     from ...repo.pagination import (
         Cursor as _Cursor,
+    )
+    from ...repo.pagination import (
         InvalidCursorError,
+    )
+    from ...repo.pagination import (
         decode as _cursor_decode,
+    )
+    from ...repo.pagination import (
         encode as _cursor_encode,
     )
 
@@ -252,8 +278,8 @@ async def list_sucursal_global(
     responses={404: {"description": "sucursal_no_encontrada"}},
 )
 async def get_sucursal_global(
-    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
     _claims: None = Depends(_sucursal_global_reads_issuer_dep),
 ) -> SucursalRead:
     """Header-free read of a single branch by uuid (vigente version)."""
@@ -280,8 +306,8 @@ async def get_sucursal_global(
     responses={404: {"description": "sucursal_no_encontrada"}},
 )
 async def get_sucursal_history_global(
-    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
     _claims: None = Depends(_sucursal_global_reads_issuer_dep),
 ) -> list[SucursalRead]:
     """Header-free bi-temporal history of a branch (all versions)."""
@@ -438,12 +464,12 @@ async def list_tarifas_sucursal_vigente_en(
     responses={404: {"description": "tarifa_no_encontrada"}},
 )
 async def get_tarifa_sucursal_by_uuid(
-    uuid: uuid_lib.UUID = Path(  # noqa: B008
+    uuid: uuid_lib.UUID = Path(
         ...,
         description="UUIDv4 de la fila de prod.tarifas_sucursal a leer.",
     ),
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
     _claims: None = Depends(_tarifas_issuer_dep),
 ) -> TarifasSucursalRead:
     """HU-F1.4 / CU-02 (operador, 2026-09-22): detalle de una tarifa específica.
@@ -540,9 +566,9 @@ _tarifas_pr_c_router = APIRouter(prefix="/tarifas-sucursal", tags=["tarifas-sucu
 )
 async def create_tarifa_pr_c(
     payload: TarifasSucursalCreate,
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
-    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),
 ) -> TarifasSucursalRead:
     """PR-C POST: opens a new version with overlap guard.
 
@@ -552,7 +578,8 @@ async def create_tarifa_pr_c(
     key. Adjacent windows (``new.vigente_desde == old.vigente_hasta``)
     are NOT overlaps — they are the close+insert Carril B contract.
     """
-    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    payload_vigente_desde = _to_naive_utc(payload.vigente_desde)
+    nueva_desde = payload_vigente_desde or datetime.now(UTC).replace(tzinfo=None)
     # POST opens at ``nueva_desde`` with no upper bound (open-ended).
     # We pass ``vigente_hasta = nueva_desde`` so the overlap test
     # collapses to "an open row whose vigente_desde < nueva_desde" —
@@ -591,6 +618,8 @@ async def create_tarifa_pr_c(
             },
         )
     payload_dict = payload.model_dump(exclude_none=True)
+    if payload_vigente_desde is not None:
+        payload_dict["vigente_desde"] = payload_vigente_desde
     new_row = await close_and_insert(
         session,
         TarifasSucursal,
@@ -611,10 +640,10 @@ async def create_tarifa_pr_c(
 )
 async def update_tarifa_pr_c(
     payload: TarifasSucursalUpdate,
-    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
-    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),
 ) -> TarifasSucursalRead:
     """PR-C PUT: close+insert with overlap guard and sucursal-inmutable.
 
@@ -654,7 +683,7 @@ async def update_tarifa_pr_c(
                 "attempted_sucursal": str(exc.attempted_sucursal),
             },
         )
-    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    nueva_desde = _to_naive_utc(payload.vigente_desde) or datetime.now(UTC).replace(tzinfo=None)
     try:
         await assert_no_overlap(
             session,
@@ -688,6 +717,8 @@ async def update_tarifa_pr_c(
             },
         )
     payload_dict = payload.model_dump(exclude_none=True)
+    if payload.vigente_desde is not None:
+        payload_dict["vigente_desde"] = _to_naive_utc(payload.vigente_desde)
     new_row = await close_and_insert(
         session,
         TarifasSucursal,
@@ -706,12 +737,12 @@ async def update_tarifa_pr_c(
     response_model=list[TarifasSucursalRead],
 )
 async def get_tarifa_by_key_history_pr_c(
-    sucursal: uuid_lib.UUID = Query(...),  # noqa: B008
-    tipo_vehiculo: uuid_lib.UUID | None = Query(None),  # noqa: B008
-    tipo_tarifa: uuid_lib.UUID | None = Query(None),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
-    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+    sucursal: uuid_lib.UUID = Query(...),
+    tipo_vehiculo: uuid_lib.UUID | None = Query(None),
+    tipo_tarifa: uuid_lib.UUID | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),
 ) -> list[TarifasSucursalRead]:
     """PR-C by-key / history: walk the bi-temporal version chain by business key.
 
@@ -755,12 +786,18 @@ _cantidad_pr_c_router = APIRouter(
 )
 async def create_cantidad_pr_c(
     payload: CantidadVehiculosSucursalCreate,
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
-    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),
 ) -> CantidadVehiculosSucursalRead:
     """PR-C POST: opens a new cantidad version with overlap guard."""
-    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    # Normalize the client-supplied valid-time to naive UTC so the
+    # overlap guard SQL parameter and the ``vigente_desde`` column bind
+    # safely (see ``_to_naive_utc`` docstring for the asyncpg DataError
+    # this prevents). Same for ``payload_dict`` so ``close_and_insert``
+    # does not stamp an aware datetime onto the new ``[V]`` row.
+    payload_vigente_desde = _to_naive_utc(payload.vigente_desde)
+    nueva_desde = payload_vigente_desde or datetime.now(UTC).replace(tzinfo=None)
     try:
         await assert_no_overlap(
             session,
@@ -790,6 +827,8 @@ async def create_cantidad_pr_c(
             },
         )
     payload_dict = payload.model_dump(exclude_none=True)
+    if payload_vigente_desde is not None:
+        payload_dict["vigente_desde"] = payload_vigente_desde
     new_row = await close_and_insert(
         session,
         CantidadVehiculosSucursal,
@@ -810,10 +849,10 @@ async def create_cantidad_pr_c(
 )
 async def update_cantidad_pr_c(
     payload: CantidadVehiculosSucursalUpdate,
-    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
-    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),
 ) -> CantidadVehiculosSucursalRead:
     """PR-C PUT: close+insert with overlap, sucursal-inmutable, and
     cantidad-bajo-ingresos-activos guards.
@@ -888,7 +927,7 @@ async def update_cantidad_pr_c(
                     "uuid_tipo_vehiculo": str(effective_tipo_vehiculo),
                 },
             )
-    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    nueva_desde = _to_naive_utc(payload.vigente_desde) or datetime.now(UTC).replace(tzinfo=None)
     try:
         await assert_no_overlap(
             session,
@@ -918,6 +957,11 @@ async def update_cantidad_pr_c(
             },
         )
     payload_dict = payload.model_dump(exclude_none=True)
+    # Strip tz from any tz-aware payload carry-forward (see ``_to_naive_utc``
+    # docstring). The ``close_and_insert`` helper would otherwise stamp an
+    # aware datetime onto a ``DateTime(timezone=False)`` column.
+    if payload.vigente_desde is not None:
+        payload_dict["vigente_desde"] = _to_naive_utc(payload.vigente_desde)
     new_row = await close_and_insert(
         session,
         CantidadVehiculosSucursal,
@@ -936,11 +980,11 @@ async def update_cantidad_pr_c(
     response_model=list[CantidadVehiculosSucursalRead],
 )
 async def get_cantidad_by_key_history_pr_c(
-    sucursal: uuid_lib.UUID = Query(...),  # noqa: B008
-    tipo_vehiculo: uuid_lib.UUID | None = Query(None),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
-    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+    sucursal: uuid_lib.UUID = Query(...),
+    tipo_vehiculo: uuid_lib.UUID | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),
 ) -> list[CantidadVehiculosSucursalRead]:
     """PR-C by-key / history for cantidad."""
     stmt = (
