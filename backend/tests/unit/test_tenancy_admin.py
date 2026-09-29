@@ -373,7 +373,7 @@ class TestRequiresSucursal:
     instead of a cryptic downstream error.
     """
 
-    def test_global_mode_raises_400(self) -> None:
+    async def test_global_mode_raises_400(self) -> None:
         """``requires_sucursal`` on a global-mode context => 400."""
         from parkos_core.auth.tenancy import TenantContext, requires_sucursal
 
@@ -384,11 +384,11 @@ class TestRequiresSucursal:
             sucursal_uuid=None,  # global mode
         )
         with pytest.raises(HTTPException) as exc:
-            requires_sucursal(ctx)
+            await requires_sucursal(ctx)
         assert exc.value.status_code == 400
         assert exc.value.detail["error"] == "missing_sucursal_context"
 
-    def test_branch_mode_passes_through(self) -> None:
+    async def test_branch_mode_passes_through(self) -> None:
         """``requires_sucursal`` on a branch-scoped context => returns ctx."""
         from parkos_core.auth.tenancy import TenantContext, requires_sucursal
 
@@ -399,6 +399,6 @@ class TestRequiresSucursal:
             issuer_prefix="admin-",
             sucursal_uuid=branch_uuid,
         )
-        result = requires_sucursal(ctx)
+        result = await requires_sucursal(ctx)
         assert result is ctx
         assert result.sucursal_uuid == branch_uuid

@@ -82,19 +82,6 @@ class TenantScopeViolationError(HTTPException):
         )
 
 
-def requires_sucursal(ctx: TenantContext) -> TenantContext:
-    """Dependency that raises 400 if the request has no branch context.
-
-    Use this on endpoints that MUST operate on a specific branch (e.g.
-    ``/empresa/tarifas-sucursal``, ``/empresa/cantidad-vehiculos-sucursal``).
-    Global endpoints (``/empresa/empresa``, ``/catalogos/*``) do NOT use
-    this dependency — they accept ``ctx.sucursal_uuid=None``.
-    """
-    if ctx.sucursal_uuid is None:
-        raise MissingSucursalContextError()
-    return ctx
-
-
 _DbSession = Annotated[AsyncSession, Depends(get_session)]
 
 
@@ -249,6 +236,42 @@ async def get_tenant_ctx(
         status_code=401,
         detail={"error": "unknown_issuer", "detail": issuer_prefix},
     )
+
+
+async def requires_sucursal(
+    ctx: TenantContext = Depends(get_tenant_ctx),
+) -> TenantContext:
+    """Dependency that raises 400 if the request has no branch context.
+
+    Use this on endpoints that MUST operate on a specific branch (e.g.
+    ``/empresa/tarifas-sucursal``, ``/empresa/cantidad-vehiculos-sucursal``).
+    Global endpoints (``/empresa/empresa``, ``/catalogos/*``) do NOT use
+    this dependency — they accept ``ctx.sucursal_uuid=None``.
+
+    Implementation notes — FastAPI 0.141.1 route classification
+    -----------------------------------------------------------
+    MUST be ``async`` AND the ``ctx`` parameter MUST have a
+    ``= Depends(get_tenant_ctx)`` default. Without the default, FastAPI
+    0.141.1 cannot resolve ``TenantContext`` (a frozen ``@dataclass``,
+    not a Request/Header/Body type) and falls back to classifying the
+    *caller's* parameter as a body field. Every GET endpoint depending
+    on ``requires_sucursal`` then returns ``422 ``"Field required"``
+    with ``loc=["body"]`` on a request without a body.
+
+    Repro: ``body_field`` on ``/tarifas-sucursal`` GET was
+    ``ModelField(field_info=Body(PydanticUndefined), name='ctx', …)``
+    before this fix; afterwards it is ``None``. See
+    ``tests/unit/test_route_classification_requires_sucursal.py`` for
+    the regression test that guards this invariant.
+
+    Ordering note: this function is defined AFTER ``get_tenant_ctx``
+    because the default value ``Depends(get_tenant_ctx)`` is evaluated
+    at function-definition time. Defining ``requires_sucursal`` above
+    ``get_tenant_ctx`` would raise ``NameError`` at module load.
+    """
+    if ctx.sucursal_uuid is None:
+        raise MissingSucursalContextError()
+    return ctx
 
 
 __all__ = [
