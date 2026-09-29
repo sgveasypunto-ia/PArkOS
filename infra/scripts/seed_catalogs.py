@@ -9,7 +9,7 @@ Usage:
     cd backend
     PARKOS_JWT_KEY_PATH=../infra/deploy/secrets/jwt_private.pem \
     uv run python ../infra/scripts/seed_catalogs.py --cloud-api-url http://localhost:8000 \
-        --table tipos-vehiculo --rows 'carro,moto,bicicleta,patineta'
+        --table tipos-vehiculo --rows 'carro,moto,bicicleta,patineta,otro'
 """
 from __future__ import annotations
 
