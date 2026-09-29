@@ -99,10 +99,15 @@ export default function SeleccionarSucursal(): JSX.Element {
         headers: { Accept: 'application/json' },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as {
-        items: Array<{ uuid: string; nombre: string | null }>;
-      };
-      return body.items;
+      const body = (await res.json()) as unknown;
+      if (!body || typeof body !== 'object' || !('items' in body)) {
+        throw new Error('Invalid response shape: missing items');
+      }
+      const items = (body as { items: unknown }).items;
+      if (!Array.isArray(items)) {
+        throw new Error('Invalid response shape: items is not an array');
+      }
+      return items as Array<{ uuid: string; nombre: string | null }>;
     },
     { revalidateOnFocus: false },
   );
@@ -114,7 +119,8 @@ export default function SeleccionarSucursal(): JSX.Element {
   // Picker derived state
   // -------------------------------------------------------------------------
   const allowedPickerOptions = useMemo<SucursalPickerOption[]>(() => {
-    const items = listForPicker.data ?? [];
+    const rawItems = listForPicker.data;
+    const items = Array.isArray(rawItems) ? rawItems : [];
     if (sucursalUuids.length === 0) return items;
     const set = new Set(sucursalUuids);
     return items
