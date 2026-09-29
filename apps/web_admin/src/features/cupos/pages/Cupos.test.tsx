@@ -25,6 +25,42 @@ vi.mock('../api/cuposApi', () => ({
   CantidadSucursalInmutableError: class CantidadSucursalInmutableError extends Error {},
 }));
 
+vi.mock('@/features/tipos-vehiculo/api/tiposVehiculoApi', () => ({
+  listTiposVehiculo: vi.fn().mockResolvedValue([]),
+  createTipoVehiculo: vi.fn(),
+}));
+
+vi.mock('@/features/tipos-vehiculo/hooks/useTiposVehiculo', () => ({
+  useTiposVehiculo: () => ({
+    tipos: [
+      {
+        uuid: '00000000-0000-0000-0000-000000000001',
+        tipo: 'carro',
+        vigente_desde: '2026-01-01T00:00:00',
+        vigente_hasta: null,
+        estado: 'activo',
+        created_at: '2026-01-01T00:00:00',
+        created_by: null,
+        sync_status: 'sincronizado',
+      },
+      {
+        uuid: '00000000-0000-0000-0000-000000000002',
+        tipo: 'moto',
+        vigente_desde: '2026-01-01T00:00:00',
+        vigente_hasta: null,
+        estado: 'activo',
+        created_at: '2026-01-01T00:00:00',
+        created_by: null,
+        sync_status: 'sincronizado',
+      },
+    ],
+    isLoading: false,
+    error: undefined,
+    refresh: vi.fn().mockResolvedValue([]),
+    isFromFallback: false,
+  }),
+}));
+
 vi.mock('@parkos/ui-kit/hooks', () => ({
   useAdminAuth: () => ({
     user: { uuid: 'u-1', email: 'admin@parkos.local' },
@@ -49,7 +85,6 @@ const mockedCreateCupo = createCupo as ReturnType<typeof vi.fn>;
 const mockedListSucursales = listSucursales as ReturnType<typeof vi.fn>;
 
 function wrapper({ children }: { children: ReactNode }): JSX.Element {
-  // PR2 added the "Mi sucursal activa" tab which reads `useSucursal()`.
   const configValue = { provider: (): never => new Map() as never };
   return createElement(
     SucursalProvider,
@@ -100,46 +135,68 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.localStorage.removeItem('parkos.lastSelectedSucursal');
   useAuthStore.setState({ accessToken: null, refreshToken: null, expiresAt: null });
 });
 
 describe('Cupos page', () => {
-  it('CP1: empty state when the API returns []', async () => {
-    const user = userEvent.setup();
+  it('CP1: empty state when no branch is selected', async () => {
     mockedListCupos.mockResolvedValue([]);
     render(<Cupos />, { wrapper: fullWrapper });
-    await user.click(screen.getByTestId('cupos-tab-all'));
+    await waitFor(() => {
+      expect(screen.getByTestId('cupos-active-empty-selection')).toBeInTheDocument();
+    });
+  });
+
+  it('CP1b: empty state when a branch is selected but the API returns []', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([]);
+    render(<Cupos />, { wrapper: fullWrapper });
     await waitFor(() => {
       expect(screen.getByTestId('cupo-empty')).toBeInTheDocument();
     });
   });
 
-  it('CP2: list grouped by sucursal with the vigente rows', async () => {
-    const user = userEvent.setup();
+  it('CP2: list filtered strictly by the selected branch', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListCupos.mockResolvedValue([
       { ...SAMPLE_CUPO, uuid_sucursal: SUCURSAL_1, cantidad: 50 },
+      // a row that belongs to ANOTHER branch must NOT render under the
+      // selected one (regression for "solo la sucursal seleccionada").
+      {
+        ...SAMPLE_CUPO,
+        uuid: 'bbbbbbbb-1111-1111-1111-111111111111',
+        uuid_sucursal: '99999999-9999-9999-9999-999999999999',
+        cantidad: 99,
+      },
     ]);
     render(<Cupos />, { wrapper: fullWrapper });
-    await user.click(screen.getByTestId('cupos-tab-all'));
     await waitFor(() => {
-      expect(screen.getByTestId('cupo-sucursal-group-11111111-1111-1111-1111-111111111111')).toBeInTheDocument();
+      expect(
+        screen.getByTestId('cupo-sucursal-group-11111111-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument();
     });
-    expect(screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('cupo-row-bbbbbbbb-1111-1111-1111-111111111111'),
+    ).not.toBeInTheDocument();
   });
 
-  it('CP3: "Nuevo cupo" opens the modal with an empty form', async () => {
-    const user = userEvent.setup();
+  it('CP3: "Nuevo cupo" opens the modal with an empty form (no "Todas" tab)', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListCupos.mockResolvedValue([]);
     render(<Cupos />, { wrapper: fullWrapper });
-    await user.click(screen.getByTestId('cupos-tab-all'));
     await waitFor(() => screen.getByTestId('cupo-empty'));
-    await user.click(screen.getByTestId('cupo-new'));
+    await userEvent.setup().click(screen.getByTestId('cupo-new'));
     expect(screen.getByTestId('cupo-form-modal')).toBeInTheDocument();
     expect(screen.getByTestId('cupo-form')).toBeInTheDocument();
+    // The "Todas las sucursales" tab is gone — strict single-list screen.
+    expect(screen.queryByTestId('cupos-tab-all')).not.toBeInTheDocument();
   });
 
   it('CP4: clicking "Editar" opens the modal pre-filled with the cupo row', async () => {
-    const user = userEvent.setup();
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListCupos.mockResolvedValue([
       { ...SAMPLE_CUPO, uuid_sucursal: SUCURSAL_1, cantidad: 50 },
@@ -150,14 +207,13 @@ describe('Cupos page', () => {
         screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
       ).toBeInTheDocument(),
     );
-    await user.click(
+    await userEvent.setup().click(
       screen.getByTestId('cupo-edit-aaaaaaaa-1111-1111-1111-111111111111'),
     );
     expect(screen.getByTestId('cupo-form-modal')).toBeInTheDocument();
     const cantidad = screen.getByTestId('cupo-field-cantidad') as HTMLInputElement;
     expect(cantidad.value).toBe('50');
     expect(screen.getByTestId('cupo-form-editing')).toBeInTheDocument();
-    window.localStorage.removeItem('parkos.lastSelectedSucursal');
   });
 
   it('CP5: renders "Tipo de vehículo" column resolving uuid to name', async () => {
@@ -179,6 +235,17 @@ describe('Cupos page', () => {
     expect(
       screen.getByTestId('cupo-tipo-aaaaaaaa-1111-1111-1111-111111111111').textContent,
     ).toBe('carro');
-    window.localStorage.removeItem('parkos.lastSelectedSucursal');
+  });
+
+  it('CP6: "Nuevo tipo" toggle reveals the inline sub-form inside the modal', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('cupo-empty'));
+    await userEvent.setup().click(screen.getByTestId('cupo-new'));
+    expect(screen.queryByTestId('cupo-new-tipo-panel')).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByTestId('cupo-new-tipo-toggle'));
+    expect(screen.getByTestId('cupo-new-tipo-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('cupo-new-tipo-input')).toBeInTheDocument();
   });
 });

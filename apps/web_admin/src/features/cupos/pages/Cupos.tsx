@@ -6,15 +6,15 @@
  * ``CantidadBajoIngresosError`` (422) surfaces an actionable message
  * with ``activos`` and ``solicitada``.
  *
- * PR2 adds the "Mi sucursal activa" tab. Filter is client-side over
- * the list already loaded by `useCantidadList` (no extra round-trip).
+ * The list is filtered strictly by the branch selected in the topbar
+ * selector. Cross-branch views are out of scope for this screen —
+ * the multi-branch admin view lives in a separate dashboard surface.
  */
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import { FormModal } from '@/features/configuracion/components/FormModal';
 import {
@@ -22,6 +22,7 @@ import {
   type VersionHistoryItem,
 } from '@/features/configuracion/components/VersionHistoryPanel';
 import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
+import { createTipoVehiculo } from '@/features/tipos-vehiculo/api/tiposVehiculoApi';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
 import { useSucursal } from '@/lib/sucursal-context';
 
@@ -215,10 +216,11 @@ export default function Cupos(): JSX.Element {
   const { sucursales } = useSucursalesDirectorio();
 
   const { cupos, refresh, isLoading, error } = useCantidadList();
-  const { tipos: tiposVehiculo } = useTiposVehiculo();
+  const { tipos: tiposVehiculo, refresh: refreshTipos } = useTiposVehiculo();
   const [editing, setEditing] = useState<Cupo | null>(null);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [isCreatingTipo, setIsCreatingTipo] = useState(false);
   const [errorState, setErrorState] = useState<ErrorState>(null);
   const [historyOpenFor, setHistoryOpenFor] = useState<string | null>(null);
 
@@ -253,6 +255,17 @@ export default function Cupos(): JSX.Element {
       setErrorState(mapError(err));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function onTipoCreated(nombre: string): Promise<{ uuid: string }> {
+    setIsCreatingTipo(true);
+    try {
+      const created = await createTipoVehiculo({ tipo: nombre });
+      await refreshTipos();
+      return { uuid: created.uuid };
+    } finally {
+      setIsCreatingTipo(false);
     }
   }
 
@@ -315,6 +328,9 @@ export default function Cupos(): JSX.Element {
               initialCupo={editing}
               onCancel={closeModal}
               sucursalNombre={activeSucursalLabel}
+              tiposVehiculo={tiposVehiculo}
+              onTipoCreated={onTipoCreated}
+              isCreatingTipo={isCreatingTipo}
             />
           ) : (
             <CupoFormHarness
@@ -324,6 +340,9 @@ export default function Cupos(): JSX.Element {
               initialCupo={null}
               onCancel={closeModal}
               sucursalNombre={activeSucursalLabel}
+              tiposVehiculo={tiposVehiculo}
+              onTipoCreated={onTipoCreated}
+              isCreatingTipo={isCreatingTipo}
             />
           )}
         </FormModal>
@@ -345,68 +364,33 @@ export default function Cupos(): JSX.Element {
         </p>
       )}
 
-      <Tabs defaultValue="active" data-testid="cupos-tabs">
-        <TabsList>
-          <TabsTrigger value="all" data-testid="cupos-tab-all">
-            {t('cupos.tabs.all', 'Todas las sucursales')}
-          </TabsTrigger>
-          <TabsTrigger
-            value="active"
-            data-testid="cupos-tab-active"
-            disabled={!selectedSucursal}
-          >
-            {t('cupos.tabs.active', 'Mi sucursal activa')}
-            {selectedSucursal && activeSucursalLabel && (
-              <span className="text-muted-foreground ml-2 font-mono text-xs">
-                · {activeSucursalLabel}
-              </span>
-            )}
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="all">
-          <ListContent
-            cupos={cupos}
-            sucursales={sucursales}
-            tiposVehiculo={tiposVehiculo}
-            onEdit={handleEdit}
-            onToggleHistory={handleToggleHistory}
-            historyOpenFor={historyOpenFor}
-            historyVersiones={historyVersiones}
-            emptyMessage={t('cupos.empty', 'Aún no hay cupos configurados.')}
-          />
-        </TabsContent>
-
-        <TabsContent value="active">
-          {!selectedSucursal ? (
-            <p
-              role="status"
-              aria-live="polite"
-              className="text-sm text-muted-foreground"
-              data-testid="cupos-active-empty-selection"
-            >
-              {t(
-                'cupos.tabs.activeEmpty',
-                'Elegí una sucursal en el selector del topbar para ver sus cupos.',
-              )}
-            </p>
-          ) : (
-            <ListContent
-              cupos={activeFiltered}
-              sucursales={sucursales}
-              tiposVehiculo={tiposVehiculo}
-              onEdit={handleEdit}
-              onToggleHistory={handleToggleHistory}
-              historyOpenFor={historyOpenFor}
-              historyVersiones={historyVersiones}
-              emptyMessage={t(
-                'cupos.tabs.activeEmptyForBranch',
-                'Esta sucursal no tiene cupos configurados.',
-              )}
-            />
+      {!selectedSucursal ? (
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-sm text-muted-foreground"
+          data-testid="cupos-active-empty-selection"
+        >
+          {t(
+            'cupos.tabs.activeEmpty',
+            'Elegí una sucursal en el selector del topbar para ver sus cupos.',
           )}
-        </TabsContent>
-      </Tabs>
+        </p>
+      ) : (
+        <ListContent
+          cupos={activeFiltered}
+          sucursales={sucursales}
+          tiposVehiculo={tiposVehiculo}
+          onEdit={handleEdit}
+          onToggleHistory={handleToggleHistory}
+          historyOpenFor={historyOpenFor}
+          historyVersiones={historyVersiones}
+          emptyMessage={t(
+            'cupos.tabs.activeEmptyForBranch',
+            'Esta sucursal no tiene cupos configurados.',
+          )}
+        />
+      )}
     </main>
   );
 }
