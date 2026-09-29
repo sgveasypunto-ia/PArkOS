@@ -38,6 +38,19 @@ interface ListEnvelope {
   items: CatalogRow[];
 }
 
+/**
+ * Headers para mutacionales. parkosFetch ya setea
+ * `Content-Type: application/json` cuando detecta body, pero ser
+ * explícito previene la clase de bug donde el body se serializa
+ * mal y el server termina parseando `{}` vacío (422 Unprocessable).
+ * El patrón mirror está en
+ * `features/tipos-vehiculo/api/tiposVehiculoApi.ts:32`.
+ */
+const JSON_HEADERS = {
+  'Content-Type': 'application/json',
+  Accept: 'application/json',
+} as const;
+
 export async function listCatalog(resource: CatalogResource): Promise<CatalogRow[]> {
   const envelope = await parkosFetch<ListEnvelope>(
     `/api/v1/catalogos/${resource}`,
@@ -52,7 +65,8 @@ export async function createCatalogVersion(
 ): Promise<CatalogRow> {
   return parkosFetch<CatalogRow>(`/api/v1/catalogos/${resource}`, {
     method: 'POST',
-    body: payload as unknown as BodyInit,
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
   });
 }
 
@@ -63,6 +77,7 @@ export async function updateCatalogVersion(
 ): Promise<CatalogRow> {
   return parkosFetch<CatalogRow>(`/api/v1/catalogos/${resource}/${uuid}`, {
     method: 'PUT',
-    body: payload as unknown as BodyInit,
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
   });
 }
