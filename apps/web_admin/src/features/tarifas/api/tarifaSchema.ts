@@ -32,25 +32,31 @@ export const tarifaCreateSchema = z.object({
   // Batch creation: operator enters one value per modality (hora, fraccion,
   // plena, nocturna) for the selected (sucursal, tipo_vehiculo) cell.
   // The page-side ``onSubmit`` splits this into one POST per modality to
-  // the dedicated single-row handler. Each field is REQUIRED (no
-  // nulls) — a tarifa cell always has all four modalities priced.
+  // the dedicated single-row handler. Each field accepts null OR
+  // undefined (React Hook Form can omit untouched fields from the
+  // submitted payload — the operator may leave modalities blank while
+  // editing the others).
   valor_hora: z
-    .union([decimalString, z.null()])
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined ? null : v))
     .refine((v) => v === null || Number(v) > 0, {
       message: 'El valor hora debe ser mayor a 0',
     }),
   valor_fraccion: z
-    .union([decimalString, z.null()])
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined ? null : v))
     .refine((v) => v === null || Number(v) > 0, {
       message: 'El valor fracción debe ser mayor a 0',
     }),
   valor_plena: z
-    .union([decimalString, z.null()])
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined ? null : v))
     .refine((v) => v === null || Number(v) >= 0, {
       message: 'El valor plena debe ser >= 0',
     }),
   valor_nocturna: z
-    .union([decimalString, z.null()])
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined ? null : v))
     .refine((v) => v === null || Number(v) > 0, {
       message: 'El valor nocturna debe ser mayor a 0',
     }),
