@@ -60,9 +60,15 @@ describe('useTiposVehiculo', () => {
   it('T2: no accessToken → fallback (HARDCODED_CATALOG) without fetch', () => {
     useAuthStore.setState({ accessToken: null, refreshToken: null, expiresAt: null });
     const { result } = renderHook(() => useTiposVehiculo(), { wrapper });
-    expect(result.current.tipos).toHaveLength(2);
+    // 5 canonical tipos seeded by 0062_canonical_tipos_vehiculo: carro,
+    // moto, bicicleta, patineta, otro. Backend enforces a 5-type cap on
+    // creation, so the fallback mirrors that exact set.
+    expect(result.current.tipos).toHaveLength(5);
     expect(result.current.tipos[0]?.tipo).toBe('carro');
     expect(result.current.tipos[1]?.tipo).toBe('moto');
+    expect(result.current.tipos[2]?.tipo).toBe('bicicleta');
+    expect(result.current.tipos[3]?.tipo).toBe('patineta');
+    expect(result.current.tipos[4]?.tipo).toBe('otro');
     expect(result.current.isFromFallback).toBe(true);
     expect(mockedList).not.toHaveBeenCalled();
   });

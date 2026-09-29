@@ -159,21 +159,26 @@ export function CupoForm({
                       </option>
                     ))}
                   </select>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setShowNuevoTipo((s) => !s);
-                      setNuevoTipoError(null);
-                    }}
-                    data-testid="cupo-new-tipo-toggle"
-                    disabled={isSubmitting}
-                  >
-                    {showNuevoTipo
-                      ? t('cupos.field.tipoVehiculoCancelNew', 'Cancelar')
-                      : t('cupos.field.tipoVehiculoNew', '+ Nuevo tipo')}
-                  </Button>
+                  {/* Cap of 5 active tipos is enforced server-side (409
+                      ``tipos_vehiculo_max_reached``); hiding the toggle
+                      keeps the UX consistent with the cap. */}
+                  {tiposVehiculo.length < 5 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setShowNuevoTipo((s) => !s);
+                        setNuevoTipoError(null);
+                      }}
+                      data-testid="cupo-new-tipo-toggle"
+                      disabled={isSubmitting}
+                    >
+                      {showNuevoTipo
+                        ? t('cupos.field.tipoVehiculoCancelNew', 'Cancelar')
+                        : t('cupos.field.tipoVehiculoNew', '+ Nuevo tipo')}
+                    </Button>
+                  )}
                 </div>
               </FormControl>
               <FormDescription>
@@ -341,15 +346,39 @@ export function CupoForm({
   );
 }
 
+function localNowAsDatetimeLocal(): string {
+  /** Return the current local datetime as ``YYYY-MM-DDTHH:mm`` for the
+   * ``<input type="datetime-local">`` default. Naive local time so the
+   * operator sees "right now" in their own timezone when creating a new
+   * cupo. The conversion back to UTC for the wire is the handler's job
+   * (``_to_naive_utc`` in backend).
+   */
+  const now = new Date();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `T${pad(now.getHours())}:${pad(now.getMinutes())}`
+  );
+}
+
+
 export function CupoFormHarness(props: Omit<CupoFormProps, 'form'>): JSX.Element {
   const initial = props.initialCupo;
+  // For CREATE (no initialCupo), default ``vigente_desde`` to "now" so the
+  // operator has a sensible starting point — they can clear or override
+  // before submit. For UPDATE, preserve the existing row's vigente_desde
+  // (an accidental overwrite would silently re-open the version at
+  // today, eating any scheduled-future change the operator was relying
+  // on).
+  const defaultVigenteDesde =
+    initial?.vigente_desde ?? localNowAsDatetimeLocal() + ':00+00:00';
   const form = useForm<CupoCreateInput>({
     resolver: zodResolver(cupoCreateSchema) as never,
     defaultValues: {
       uuid_sucursal: initial?.uuid_sucursal ?? null,
       uuid_tipo_vehiculo: initial?.uuid_tipo_vehiculo ?? null,
       cantidad: initial?.cantidad ?? null,
-      vigente_desde: initial?.vigente_desde ?? null,
+      vigente_desde: defaultVigenteDesde,
     },
   });
   return <CupoForm {...props} form={form} />;

@@ -42,12 +42,13 @@ factory sub-router and therefore still require ``X-Sucursal-Context`` for
 from __future__ import annotations
 
 import uuid as uuid_lib
-from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...auth.permissions import require_permission
+from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
 from ...models.V.costos_servicios import CostosServicios
 from ...models.V.impuestos import Impuestos
@@ -62,11 +63,7 @@ from ...repo.pagination import Cursor, InvalidCursorError
 from ...repo.pagination import decode as cursor_decode
 from ...repo.pagination import encode as cursor_encode
 from ...repo.tipos_vehiculo_subscripcion import get_tipos_vehiculo_con_subscripcion
-from ...repo.versioned import current_version
-from ..deps import requires_issuer
-
-if TYPE_CHECKING:
-    from pydantic import BaseModel
+from ...repo.versioned import close_and_insert, current_version
 from ...schemas.costos_servicios import (
     CostosServiciosCreate,
     CostosServiciosRead,
@@ -121,6 +118,7 @@ from ...schemas.tipos_vehiculo import (
     TiposVehiculoReadList,
     TiposVehiculoUpdate,
 )
+from ..deps import requires_issuer
 from ..router_factory import make_router
 
 router = APIRouter(prefix="/catalogos", tags=["catalogos"])
@@ -331,6 +329,112 @@ _mount_catalog(
     update_schema=TipoPersonaUpdate,
     tenant_free_reads=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# 5-type cap on ``tipos-vehiculo`` POST
+# ---------------------------------------------------------------------------
+#
+# The canonical vehicle-type catalog is exactly 5 entries: ``carro``,
+# ``moto``, ``bicicleta``, ``patineta``, ``otro`` (seeded by migration
+# 0062_canonical_tipos_vehiculo). Without a server-side cap, anyone
+# with ``config_catalogo`` could POST arbitrary strings (``"barco"``,
+# ``"motoo"`` typo, etc.) and the catalog would grow unbounded — and
+# since ``tipos_vehiculo`` is a level-0 sync catalog
+# (``sync_entries_v.py:118``), every garbage row replicates to every
+# branch. The placa detector hardcodes
+# ``["carro", "moto", "bicicleta", "patineta"]`` so typos silently
+# bypass it.
+#
+# Pattern mirrors ``empresa.py:_cantidad_pr_c_router`` (PR-C dedicated
+# POST with overlap guard) and the tarifas dedicated router — both
+# shadow the factory's POST with a more specialized handler. The
+# dedicated POST is mounted FIRST on ``catalogos.router`` so FastAPI's
+# order-of-registration resolver routes ``POST /tipos-vehiculo`` here.
+# The factory's GET/PUT are NOT shadowed (edits to existing canonical
+# tipos stay on the factory). The factory's POST is shadowed at the
+# router registration layer (FastAPI first-match wins).
+_TIPOS_VEHICULO_MAX_ACTIVE = 5
+_tipos_vehiculo_dedicated_perm_dep = require_permission("config_catalogo")
+_tipos_vehiculo_dedicated_issuer_dep = requires_issuer("admin-", "operador-")
+
+
+async def _count_active_tipos_vehiculo(session: AsyncSession) -> int:
+    """Return the count of currently-open tipos_vehiculo rows.
+
+    Mirrors the factory GET filter ``vigente_hasta IS NULL`` (line 199
+    of this file). Used by the dedicated POST to enforce the 5-type
+    cap before opening a new version.
+    """
+    stmt = select(func.count(TiposVehiculo.uuid)).where(
+        TiposVehiculo.vigente_hasta.is_(None)
+    )
+    result = await session.execute(stmt)
+    return int(result.scalar_one())
+
+
+_tipos_vehiculo_dedicated_router = APIRouter(
+    prefix="/tipos-vehiculo", tags=["tipos-vehiculo"]
+)
+
+
+@_tipos_vehiculo_dedicated_router.post(
+    "",
+    response_model=TiposVehiculoRead,
+    status_code=201,
+    dependencies=[
+        Depends(_tipos_vehiculo_dedicated_perm_dep),
+    ],
+)
+async def create_tipo_vehiculo_dedicated(
+    payload: TiposVehiculoCreate,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tipos_vehiculo_dedicated_issuer_dep),
+) -> TiposVehiculoRead:
+    """Shadow the factory's POST to enforce the canonical 5-type cap.
+
+    Mirrors ``make_router``'s create_endpoint at
+    ``api/router_factory.py:269-308`` (close+insert via
+    ``repo.versioned.close_and_insert`` + commit + refresh + read-back).
+    One addition: the **5-type cap** (409 ``tipos_vehiculo_max_reached``)
+    — if the count of currently-open tipos_vehiculo rows is already
+    ``_TIPOS_VEHICULO_MAX_ACTIVE``, reject the POST with the current
+    count in the detail so the UI can render an actionable message.
+
+    ``log_tx=True`` matches the factory so the audit chain (log_transaccional
+    + SHA-256 hash) keeps treating catalog writes uniformly with every
+    other versioned write.
+    """
+    current_count = await _count_active_tipos_vehiculo(session)
+    if current_count >= _TIPOS_VEHICULO_MAX_ACTIVE:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tipos_vehiculo_max_reached",
+                "limit": _TIPOS_VEHICULO_MAX_ACTIVE,
+                "current": current_count,
+            },
+        )
+    new_row = await close_and_insert(
+        session,
+        TiposVehiculo,
+        current_uuid=None,
+        new_attrs={"tipo": payload.tipo},
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TiposVehiculoRead.model_validate(new_row)
+
+
+# Mount the dedicated router BEFORE the factory mount for ``tipos-vehiculo``
+# so FastAPI's first-match resolver routes ``POST /tipos-vehiculo`` to the
+# cap-enforcing handler. GET/PUT keep flowing through the factory.
+router.include_router(_tipos_vehiculo_dedicated_router)
+
+
 _mount_catalog(
     resource="tipos-vehiculo",
     model_cls=TiposVehiculo,
