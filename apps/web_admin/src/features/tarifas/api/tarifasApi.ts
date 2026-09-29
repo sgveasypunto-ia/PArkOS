@@ -36,6 +36,10 @@ const jsonHeaders = {
   'Content-Type': 'application/json',
 };
 
+const getHeaders = {
+  Accept: 'application/json',
+};
+
 async function fetchJson<T>(input: string, init: ParkosFetchInit): Promise<T> {
   const res = await parkosFetchRaw(input, init);
   if (!res.ok) {
@@ -140,7 +144,7 @@ export async function listTarifas(opts: ListTarifasOpts = {}): Promise<Tarifa[]>
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
   const url = `/api/v1/empresa/tarifas-sucursal${qs ? `?${qs}` : ''}`;
-  const raw = await fetchJson<unknown>(url, { method: 'GET', headers: jsonHeaders });
+  const raw = await fetchJson<unknown>(url, { method: 'GET', headers: getHeaders });
   return tarifaReadListEnvelopeSchema.parse(raw).items;
 }
 
@@ -164,14 +168,14 @@ export async function listTarifasByKey(opts: ByKeyOpts): Promise<Tarifa[]> {
     params.set('tipo_tarifa', opts.tipo_tarifa);
   }
   const url = `/api/v1/empresa/tarifas-sucursal/by-key?${params.toString()}`;
-  const raw = await fetchJson<unknown>(url, { method: 'GET', headers: jsonHeaders });
+  const raw = await fetchJson<unknown>(url, { method: 'GET', headers: getHeaders });
   return tarifaReadListEnvelopeSchema.parse(raw).items;
 }
 
 export async function getTarifa(uuid: string): Promise<Tarifa> {
   const raw = await fetchJsonOrTyped(`/api/v1/empresa/tarifas-sucursal/${uuid}`, {
     method: 'GET',
-    headers: jsonHeaders,
+    headers: getHeaders,
   });
   return tarifaReadSchema.parse(raw);
 }
