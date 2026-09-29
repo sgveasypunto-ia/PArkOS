@@ -82,6 +82,19 @@ class TenantScopeViolationError(HTTPException):
         )
 
 
+def requires_sucursal(ctx: TenantContext) -> TenantContext:
+    """Dependency that raises 400 if the request has no branch context.
+
+    Use this on endpoints that MUST operate on a specific branch (e.g.
+    ``/empresa/tarifas-sucursal``, ``/empresa/cantidad-vehiculos-sucursal``).
+    Global endpoints (``/empresa/empresa``, ``/catalogos/*``) do NOT use
+    this dependency — they accept ``ctx.sucursal_uuid=None``.
+    """
+    if ctx.sucursal_uuid is None:
+        raise MissingSucursalContextError()
+    return ctx
+
+
 _DbSession = Annotated[AsyncSession, Depends(get_session)]
 
 
@@ -154,8 +167,31 @@ async def get_tenant_ctx(
         )
 
     if issuer_prefix == "admin-":
+        # ``X-Sucursal-Context`` is OPTIONAL for admin-. When absent, the
+        # request runs in "global" mode: no tenant filter is applied, so
+        # endpoints that don't need a branch (``/empresa/empresa``,
+        # ``/catalogos/*``, ``/admin/usuarios``) work without the header.
+        #
+        # When present, the header is validated against the admin's
+        # currently-open ``usuarios_sucursal`` rows read FRESH from the DB
+        # (not the ``claims["sucursales_permitidas"]`` snapshot, which is
+        # stale after creating/editing a branch). This keeps the branch
+        # selector working without re-login.
+        #
+        # Endpoints that DO require a branch (``/empresa/tarifas-sucursal``,
+        # ``/empresa/cantidad-vehiculos-sucursal``, etc.) must validate
+        # ``ctx.sucursal_uuid is not None`` themselves — this function does
+        # NOT raise ``MissingSucursalContextError`` here because that would
+        # break the global endpoints.
         if x_sucursal_context is None:
-            raise MissingSucursalContextError()
+            # Global mode: no tenant filter, no scope check.
+            return TenantContext(
+                actor_uuid=actor_uuid,
+                actor_rol=actor_rol,
+                issuer_prefix=issuer_prefix,
+                sucursal_uuid=None,
+                uuid_sesion=None,
+            )
         try:
             header_uuid = uuid_lib.UUID(x_sucursal_context)
         except ValueError as e:
@@ -221,4 +257,5 @@ __all__ = [
     "MissingSucursalContextError",
     "UnauthorizedSucursalContextError",
     "get_tenant_ctx",
+    "requires_sucursal",
 ]

@@ -181,20 +181,17 @@ describe('TopNav', () => {
     await waitFor(() => expect(screen.getByTestId('outlet-perfil')).toBeInTheDocument());
   });
 
-  it('T8: when showBranchNav is true, renders section nav and branch selector', () => {
-    useAdminAuthMock.mockReturnValue(authState({ permisos: ['audit_read'] }));
+  it('T8: when showBranchNav is true, renders branch selector', () => {
+    useAdminAuthMock.mockReturnValue(authState());
     renderTopNav('/', true);
 
-    expect(screen.getByRole('navigation')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /auditor/i })).toBeInTheDocument();
     expect(screen.getByTestId('chrome-sucursal-selector')).toBeInTheDocument();
   });
 
-  it('T9: when showBranchNav is false (default), does NOT render nav/branch selector', () => {
-    useAdminAuthMock.mockReturnValue(authState({ permisos: ['audit_read'] }));
+  it('T9: when showBranchNav is false (default), does NOT render branch selector', () => {
+    useAdminAuthMock.mockReturnValue(authState());
     renderTopNav('/', false);
 
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
     expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
   });
 });

@@ -3,13 +3,11 @@
  * en TODAS las rutas autenticadas de `web_admin` excepto `/login`.
  *
  * Cuando `showBranchNav` es `true` (rutas branch-scoped), tambien
- * renderiza la navegacion de secciones y el selector de sucursal.
- * Esto unifica en una sola barra lo que antes eran dos (TopNav +
- * AdminChrome), eliminando la duplicacion de brand y logout.
+ * renderiza el selector de sucursal.
  *
  * RESPONSABILIDADES:
  *   - Brand "Parkos Admin" como link a `/`.
- *   - (Opcional) Nav de secciones + SucursalSelectorBadge.
+ *   - (Opcional) SucursalSelectorBadge.
  *   - Avatar del usuario con la inicial del email.
  *   - Email del usuario, truncado en pantallas chicas.
  *   - Dropdown (primitivo propio) con:
@@ -36,7 +34,7 @@
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, NavLink, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
 import { Building2, LogOut, Settings, UserCircle2 } from 'lucide-react';
 
@@ -49,7 +47,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { visibleSections } from '@/lib/admin-sections';
 import { useSucursal } from '@/lib/sucursal-context';
 
 function avatarLabel(email: string | null, uuid: string): string {
@@ -105,14 +102,13 @@ interface TopNavProps {
 export function TopNav({ showBranchNav = false }: TopNavProps): JSX.Element {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { user, rol, permisos, logout } = useAdminAuth();
+  const { user, rol, logout } = useAdminAuth();
   const [signingOut, setSigningOut] = useState(false);
 
   const email = user?.email ?? null;
   const uuid = user?.uuid ?? '';
   const initial = avatarLabel(email, uuid);
   const displayed = displayEmail(email, uuid);
-  const sections = visibleSections(permisos);
 
   const handleLogout = async (): Promise<void> => {
     setSigningOut(true);
@@ -144,37 +140,9 @@ export function TopNav({ showBranchNav = false }: TopNavProps): JSX.Element {
           {t('app.name', 'Parkos Admin')}
         </Link>
 
-        {showBranchNav && (
-          <nav
-            aria-label={t('chrome.navLabel', 'Secciones')}
-            className="min-w-0 flex-1 overflow-x-auto"
-          >
-            <ul className="flex items-center gap-1">
-              {sections.map((section) => (
-                <li key={section.key}>
-                  <NavLink
-                    to={section.path}
-                    end={section.path === '/'}
-                    className={({ isActive }) =>
-                      [
-                        'focus-ring rounded-md px-2.5 py-1.5 text-sm transition-colors duration-fast ease-macos',
-                        isActive
-                          ? 'bg-accent text-accent-foreground font-medium'
-                          : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
-                      ].join(' ')
-                    }
-                  >
-                    {t(section.labelKey)}
-                  </NavLink>
-                </li>
-              ))}
-            </ul>
-          </nav>
-        )}
-
         {showBranchNav && <SucursalSelectorBadge />}
 
-        {!showBranchNav && <div className="min-w-0 flex-1" aria-hidden="true" />}
+        <div className="min-w-0 flex-1" aria-hidden="true" />
 
         <DropdownMenu>
           <DropdownMenuTrigger

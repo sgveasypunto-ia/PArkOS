@@ -84,7 +84,7 @@ describe('App (authenticated)', () => {
     expect(screen.queryByTestId('sucursal-picker')).not.toBeInTheDocument();
   });
 
-  it('mounts TopNav with branch nav on protected routes', () => {
+  it('mounts TopNav with branch selector on protected routes', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/dashboard']}>
@@ -92,14 +92,12 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    // TopNav with showBranchNav renders section nav + branch selector.
     expect(screen.getByTestId('topnav')).toBeInTheDocument();
     expect(screen.getByTestId('topnav-email')).toHaveTextContent('admin@parkos.local');
-    expect(screen.getByRole('navigation')).toBeInTheDocument();
     expect(screen.getByTestId('chrome-sucursal-selector')).toBeInTheDocument();
   });
 
-  it('mounts TopNav without branch nav on / (HomeHub is global)', () => {
+  it('mounts TopNav without branch selector on / (HomeHub is global)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -107,14 +105,12 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
     expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
-    // The identity bar is on every authed route.
     expect(screen.getByTestId('topnav')).toBeInTheDocument();
     expect(screen.getByTestId('topnav-email')).toHaveTextContent('admin@parkos.local');
   });
 
-  it('mounts TopNav without branch nav on /catalogos (global, no branch scope)', () => {
+  it('mounts TopNav without branch selector on /catalogos (global, no branch scope)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/catalogos']}>
@@ -122,11 +118,11 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
     expect(screen.getByTestId('topnav')).toBeInTheDocument();
   });
 
-  it('mounts TopNav without branch nav on /seleccionar-sucursal (authed picker)', () => {
+  it('mounts TopNav without branch selector on /seleccionar-sucursal (authed picker)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/seleccionar-sucursal']}>
@@ -134,7 +130,7 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
     expect(screen.getByTestId('topnav')).toBeInTheDocument();
   });
 

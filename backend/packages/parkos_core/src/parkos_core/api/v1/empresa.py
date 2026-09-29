@@ -84,6 +84,7 @@ from ...schemas.empresa import (
     TarifasSucursalUpdate,
 )
 from ..deps import get_session, get_tenant_ctx, requires_issuer
+from ..auth.tenancy import requires_sucursal
 from ..router_factory import make_router
 
 router = APIRouter(prefix="/empresa", tags=["empresa"])
