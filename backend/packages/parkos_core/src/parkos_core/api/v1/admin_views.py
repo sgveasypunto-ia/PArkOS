@@ -37,7 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_session, requires_issuer
-from ...db.tenancy import apply_admin_scope
+from ...db.tenancy import extract_sucursales_permitidas_fresh
 from ...models.A.sync_log import SyncLog
 from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_E.ingreso import Ingreso
@@ -161,7 +161,7 @@ class AdminMeResponse(BaseModel):
 @router.get(
     "/sucursales",
     response_model=SucursalListResponse,
-    summary="List branches in claims.sucursales_permitidas (T-PR10-01, REQ-X2)",
+    summary="List branches the admin can manage (T-PR10-01, REQ-X2)",
 )
 async def list_sucursales(
     session: DbSession,
@@ -170,20 +170,40 @@ async def list_sucursales(
 ) -> SucursalListResponse:
     """Return branches + sync status + alerts count + last pairing.
 
-    Scope filter: ``claims.sucursales_permitidas``, applied through
-    :func:`~parkos_core.db.tenancy.apply_admin_scope` (single source of
-    truth for admin scope — T-PR10-04, defense in depth).
+    Scope filter: queries ``prod.usuarios_sucursal`` fresh on every
+    request (rather than reading the JWT claim ``sucursales_permitidas``
+    which is captured at login time and would miss branches created in
+    the same session). See
+    :func:`~parkos_core.db.tenancy.extract_sucursales_permitidas_fresh`
+    for the rationale and the security upside (revocations take effect
+    immediately, not on next login).
     """
-    permitidas = _permitidas(claims)
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    permitidas = await extract_sucursales_permitidas_fresh(
+        session, actor_uuid=actor_uuid
+    )
 
-    stmt = select(Sucursal).where(Sucursal.vigente_hasta.is_(None))
-    stmt = apply_admin_scope(session, stmt, claims)
-    stmt = stmt.order_by(Sucursal.nombre).limit(limit)
+    if not permitidas:
+        # Fail closed: admin with no open assignments sees nothing.
+        return SucursalListResponse(items=[], next_cursor=None)
+
+    stmt = (
+        select(Sucursal)
+        .where(
+            Sucursal.vigente_hasta.is_(None),
+            Sucursal.uuid.in_(permitidas),
+        )
+        .order_by(Sucursal.nombre)
+        .limit(limit)
+    )
     rows = (await session.execute(stmt)).scalars().all()
 
     items: list[SucursalItem] = []
     for row in rows:
-        # Belt-and-suspenders: never emit a branch outside the claim.
+        # Belt-and-suspenders: ``Sucursal.uuid.in_(permitidas)`` already
+        # restricts the SELECT, but a defensive belt-and-suspenders check
+        # here keeps the contract documented at the item-construction
+        # site. Cheap (set membership).
         if row.uuid not in permitidas:
             continue
 
