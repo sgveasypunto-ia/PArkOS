@@ -229,6 +229,23 @@ export default function Cupos(): JSX.Element {
     return cupos.filter((c) => c.uuid_sucursal === selectedSucursal);
   }, [cupos, selectedSucursal]);
 
+  // Set of ``uuid_tipo_vehiculo`` already in use by an OPEN cupo
+  // (``vigente_hasta IS NULL``) for the selected branch. Used by
+  // ``<CupoForm>`` to filter the tipo select on CREATE (each
+  // ``(sucursal, uuid_tipo_vehiculo)`` cell can hold at most one open
+  // cupo; the backend's overlap guard already enforces this with 409,
+  // we just hide the conflict from the UI). Sentinel ``'__NULL__'``
+  // stands in for ``uuid_tipo_vehiculo === null`` (the "Cualquiera"
+  // cell — bi-temporal NULL semantics mean it is its own distinct
+  // cell, not a synonym for "no filter").
+  const tiposEnUsoEnSucursal = useMemo(() => {
+    const used = new Set<string>();
+    for (const c of activeFiltered) {
+      used.add(c.uuid_tipo_vehiculo ?? '__NULL__');
+    }
+    return used;
+  }, [activeFiltered]);
+
   const { versiones: historyVersiones } = useCantidadByKey(
     historyOpenFor === 'sin-sucursal' ? null : historyOpenFor,
   );
@@ -329,6 +346,7 @@ export default function Cupos(): JSX.Element {
               onCancel={closeModal}
               sucursalNombre={activeSucursalLabel}
               tiposVehiculo={tiposVehiculo}
+              tiposEnUsoEnSucursal={tiposEnUsoEnSucursal}
               onTipoCreated={onTipoCreated}
               isCreatingTipo={isCreatingTipo}
             />
@@ -341,6 +359,7 @@ export default function Cupos(): JSX.Element {
               onCancel={closeModal}
               sucursalNombre={activeSucursalLabel}
               tiposVehiculo={tiposVehiculo}
+              tiposEnUsoEnSucursal={tiposEnUsoEnSucursal}
               onTipoCreated={onTipoCreated}
               isCreatingTipo={isCreatingTipo}
             />

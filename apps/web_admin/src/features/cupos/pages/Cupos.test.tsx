@@ -350,4 +350,100 @@ describe('Cupos page', () => {
     // isoToDatetimeLocal truncates to 16 chars (no offset, no seconds).
     expect(dateInput.value).toBe(futureVigenteDesde.slice(0, 16));
   });
+
+  it('CP10: CREATE modal hides tipos already in use by an open cupo for this branch', async () => {
+    // Mock returns the full 5-tipocatalog AND a cupo for (sucursal, 'carro').
+    __mockTipos = SAMPLE_TIPOS;
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([
+      {
+        ...SAMPLE_CUPO,
+        uuid_sucursal: SUCURSAL_1,
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001', // carro
+        cantidad: 50,
+      },
+    ]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('cupo-empty')); // empty because no null-tipo cupo
+    await userEvent.setup().click(screen.getByTestId('cupo-new'));
+    const select = screen.getByTestId(
+      'cupo-field-tipo-vehiculo',
+    ) as HTMLSelectElement;
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    // "carro" is hidden; the other 4 + Cualquiera remain.
+    expect(optionValues).not.toContain('00000000-0000-0000-0000-000000000001');
+    expect(optionValues).toContain('00000000-0000-0000-0000-000000000002'); // moto
+    expect(optionValues).toContain('00000000-0000-0000-0000-000000000003'); // bicicleta
+    expect(optionValues).toContain('00000000-0000-0000-0000-000000000004'); // patineta
+    expect(optionValues).toContain('00000000-0000-0000-0000-000000000005'); // otro
+    expect(optionValues).toContain(''); // Cualquiera
+    __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+  });
+
+  it('CP11: EDIT modal locks the tipo field (cannot change it after creation)', async () => {
+    __mockTipos = SAMPLE_TIPOS;
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([
+      {
+        ...SAMPLE_CUPO,
+        uuid_sucursal: SUCURSAL_1,
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001', // carro
+        cantidad: 50,
+      },
+    ]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    await userEvent.setup().click(
+      screen.getByTestId('cupo-edit-aaaaaaaa-1111-1111-1111-111111111111'),
+    );
+    // No <select>; the tipo is rendered as a readonly input with the
+    // label as its value. The locked-hint is also visible.
+    expect(screen.queryByTestId('cupo-field-tipo-vehiculo')).not.toBeInstanceOf(
+      HTMLSelectElement,
+    );
+    const lockedInput = screen.getByTestId(
+      'cupo-field-tipo-vehiculo',
+    ) as HTMLInputElement;
+    expect(lockedInput.readOnly).toBe(true);
+    expect(lockedInput.value).toBe('carro');
+    expect(screen.getByTestId('cupo-field-tipo-vehiculo-locked')).toBeInTheDocument();
+    __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+  });
+
+  it('CP12: CREATE modal hides "Cualquiera" when a cupo already uses uuid_tipo_vehiculo=NULL', async () => {
+    __mockTipos = SAMPLE_TIPOS;
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([
+      {
+        ...SAMPLE_CUPO,
+        uuid_sucursal: SUCURSAL_1,
+        uuid_tipo_vehiculo: null, // Cualquiera cell
+        cantidad: 25,
+      },
+    ]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    // Wait for the existing cupo row to render (no empty-state path when
+    // at least one open cupo exists for the selected branch).
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    await userEvent.setup().click(screen.getByTestId('cupo-new'));
+    const select = screen.getByTestId(
+      'cupo-field-tipo-vehiculo',
+    ) as HTMLSelectElement;
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    // Cualquera (value="") is hidden — the NULL cell is already taken.
+    expect(optionValues).not.toContain('');
+    // All 5 catalog tipos are still available.
+    for (const tv of SAMPLE_TIPOS) {
+      expect(optionValues).toContain(tv.uuid);
+    }
+    __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+  });
 });
