@@ -994,14 +994,10 @@ _SUB_ROUTERS.clear()
 _SUB_ROUTERS.update(_reordered)
 
 
-_mount_empresa(
-    resource="tarifas-sucursal",
-    model_cls=TarifasSucursal,
-    read_schema=TarifasSucursalRead,
-    read_list_schema=TarifasSucursalReadList,
-    create_schema=TarifasSucursalCreate,
-    update_schema=TarifasSucursalUpdate,
-)
+# tarifas-sucursal: factory router removed — all endpoints are provided by
+# dedicated routers (_tarifas_dedicated_router for GET list/by-uuid,
+# _tarifas_pr_c_router for POST/PUT/by-key). The factory router was causing
+# route resolution conflicts with FastAPI's _IncludedRouter mechanism.
 _mount_empresa(
     resource="cantidad-vehiculos-sucursal",
     model_cls=CantidadVehiculosSucursal,
