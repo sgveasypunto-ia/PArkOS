@@ -1,29 +1,34 @@
 /**
- * `AdminUsuarioTable.test.tsx` — HU-F16.col, lazy branch panel.
+ * `AdminUsuarioTable.test.tsx` — HU-F16.col, INLINE branch chips.
  *
  * Why this test exists
  * --------------------
- * The column exists so the user can see which branches each row is
- * bound to without opening the modal. The contract we care about:
+ * The Sucursales column was first introduced as a lazy disclosure
+ * (commit 9330f93) and then refactored to inline render once the
+ * backend started embedding `user.sucursales` on the list payload.
+ * The contract we now care about:
  *
  *   1. The header is present and positioned between Rol and Estado.
- *   2. No fetch fires on render — the N+1 we removed in commit 812badc
- *      must not come back through the table.
- *   3. The toggle flips aria-expanded and the panel mounts on expand.
- *   4. The panel projects the friendly name from the shared directory
- *      cache; an unknown uuid falls back to the short prefix instead
- *      of crashing.
- *   5. Errors are surfaced inline, not swallowed.
- *   6. The Asignar sucursales action still works alongside the new
- *      toggle — we did not break the modal entry point.
+ *   2. No fetch fires on render — the backend already shipped the
+ *      assignments inline, so the table does not call
+ *      `/api/v1/admin/usuarios/{uuid}/sucursales` per row.
+ *   3. Each open branch assignment renders as a chip with the
+ *      friendly name from `s.nombre`.
+ *   4. When the backend payload has `nombre=null` for a closed
+ *      branch, the chip falls back to `prefijo_nombre`, then to the
+ *      short uuid prefix (no crash, just a readable identifier).
+ *   5. A user with no assignments renders the muted "Sin sucursales"
+ *      span, not an empty `<ul>`.
+ *   6. The Asignar sucursales action still works alongside the chips
+ *      — we did not break the modal entry point.
  *
- * The mock is at the fetch layer, not at the hook layer. That is the
- * seam `useAdminUsuarioSucursales` and `useSucursalesDirectorio` both
- * go through, and it lets the test exercise the real SWR keys.
+ * The mock is at the fetch layer so the test exercises the real SWR
+ * keys via `parkosFetchRaw` (the same seam `useAdminUsuarios` and
+ * `useSucursalesDirectorio` go through).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { SWRConfig } from 'swr';
 
 vi.mock('@parkos/ui-kit/fetch', () => ({
@@ -41,7 +46,8 @@ const mockedRaw = vi.mocked(parkosFetchRaw);
 const USER_A = '83ef5d9f-dd65-47e3-9b13-50deed0f03d3';
 const SUC_NORTE = 'aaaa1111-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const SUC_SUR = 'bbbb2222-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
-const SUC_FANTASMA = 'cccc3333-cccc-cccc-cccc-cccccccccccc';
+const SUC_PREFIX = 'cccc3333-cccc-cccc-cccc-cccccccccccc';
+const SUC_FANTASMA = 'dddd4444-dddd-dddd-dddd-dddddddddddd';
 
 function makeRow(overrides: Partial<AdminUsuarioRead> = {}): AdminUsuarioRead {
   return {
@@ -57,37 +63,9 @@ function makeRow(overrides: Partial<AdminUsuarioRead> = {}): AdminUsuarioRead {
     created_at: '2026-01-01T00:00:00Z',
     created_by: null,
     sync_status: null,
+    sucursales: [],
     ...overrides,
   };
-}
-
-const SUCURSAL_NORTE = {
-  uuid: SUC_NORTE,
-  nombre: 'Sucursal Norte',
-  direccion: 'Calle 100',
-  telefono: '+57 1 0000',
-  prefijo_nombre: 'NOR',
-  ciudad: 'Bogota',
-  horario: '24/7',
-  uuid_tipo_sucursal: null,
-  uuid_empresa: null,
-  vigente_desde: '2026-01-01T00:00:00Z',
-  vigente_hasta: null,
-  estado: 'activo',
-  created_at: '2026-01-01T00:00:00Z',
-  created_by: null,
-  sync_status: null,
-};
-
-const SUCURSAL_SUR = {
-  ...SUCURSAL_NORTE,
-  uuid: SUC_SUR,
-  nombre: 'Sucursal Sur',
-  prefijo_nombre: 'SUR',
-};
-
-function okResponse(body: unknown): Response {
-  return { ok: true, status: 200, json: async () => body } as unknown as Response;
 }
 
 function requestedUrls(): string[] {
@@ -107,32 +85,25 @@ function isolatedCache({ children }: { children: ReactNode }) {
   );
 }
 
-function renderTable(
-  rows: AdminUsuarioRead[],
-  expandedUserUuid: string | null = null,
-) {
+function renderTable(rows: AdminUsuarioRead[]) {
   const onAssign = vi.fn();
-  const onToggle = vi.fn();
   const view = render(
     <AdminUsuarioTable
       rows={rows}
       isLoading={false}
-      expandedUserUuid={expandedUserUuid}
-      onToggleExpanded={onToggle}
       onAssignSucursales={onAssign}
     />,
     { wrapper: isolatedCache },
   );
-  return { ...view, onAssign, onToggle };
+  return { ...view, onAssign };
 }
 
 beforeEach(() => {
   mockedRaw.mockReset();
 });
 
-describe('AdminUsuarioTable — Sucursales column', () => {
+describe('AdminUsuarioTable — Sucursales column (inline chips)', () => {
   it('renders the Sucursales header between Rol and Estado', () => {
-    mockedRaw.mockResolvedValue(okResponse([SUCURSAL_NORTE]));
     renderTable([makeRow()]);
 
     const headers = screen.getAllByRole('columnheader');
@@ -149,8 +120,18 @@ describe('AdminUsuarioTable — Sucursales column', () => {
   });
 
   it('does NOT fire any per-user assignment request on initial render', () => {
-    mockedRaw.mockResolvedValue(okResponse([SUCURSAL_NORTE]));
-    renderTable([makeRow()]);
+    renderTable([
+      makeRow({
+        sucursales: [
+          {
+            uuid_sucursal: SUC_NORTE,
+            nombre: 'Sucursal Norte',
+            prefijo_nombre: 'NOR',
+            vigente_desde: '2026-01-01T00:00:00Z',
+          },
+        ],
+      }),
+    ]);
 
     const perUserUrls = requestedUrls().filter((u) =>
       u.includes(`/api/v1/admin/usuarios/${USER_A}/sucursales`),
@@ -158,111 +139,89 @@ describe('AdminUsuarioTable — Sucursales column', () => {
     expect(perUserUrls).toHaveLength(0);
   });
 
-  it('renders a Ver button per row with aria-expanded=false', () => {
-    mockedRaw.mockResolvedValue(okResponse([SUCURSAL_NORTE]));
-    renderTable([makeRow()]);
+  it('renders each open branch as a chip with the friendly name from the payload', () => {
+    renderTable([
+      makeRow({
+        sucursales: [
+          {
+            uuid_sucursal: SUC_NORTE,
+            nombre: 'Sucursal Norte',
+            prefijo_nombre: 'NOR',
+            vigente_desde: '2026-01-01T00:00:00Z',
+          },
+          {
+            uuid_sucursal: SUC_SUR,
+            nombre: 'Sucursal Sur',
+            prefijo_nombre: 'SUR',
+            vigente_desde: '2026-01-01T00:00:00Z',
+          },
+        ],
+      }),
+    ]);
 
-    const btn = screen.getByTestId(`admin-row-${USER_A}-toggle-sucursales`);
-    expect(btn).toBeInTheDocument();
-    expect(btn.textContent).toMatch(/Ver/);
-    expect(btn.getAttribute('aria-expanded')).toBe('false');
-    expect(btn.getAttribute('aria-controls')).toBe(`admin-row-${USER_A}-panel`);
+    const norte = screen.getByTestId(`admin-row-${USER_A}-chip-${SUC_NORTE}`);
+    const sur = screen.getByTestId(`admin-row-${USER_A}-chip-${SUC_SUR}`);
+    expect(norte).toHaveTextContent('Sucursal Norte');
+    expect(sur).toHaveTextContent('Sucursal Sur');
   });
 
-  it('fetches the per-user assignments exactly once when the cell is expanded', async () => {
-    mockedRaw.mockImplementation(async (url) => {
-      const s = String(url);
-      if (s === '/api/v1/empresa/sucursal?limit=200') {
-        return okResponse({ items: [SUCURSAL_NORTE], next_cursor: null });
-      }
-      if (s === `/api/v1/admin/usuarios/${USER_A}/sucursales`) {
-        return okResponse([{ uuid_sucursal: SUC_NORTE }]);
-      }
-      throw new Error(`unexpected URL in test: ${s}`);
-    });
+  it('renders the "Sin sucursales" span when the user has no open assignments', () => {
+    renderTable([makeRow({ sucursales: [] })]);
 
-    renderTable([makeRow()], USER_A);
-
-    await waitFor(() => {
-      const calls = requestedUrls().filter(
-        (u) => u === `/api/v1/admin/usuarios/${USER_A}/sucursales`,
-      );
-      expect(calls).toHaveLength(1);
-    });
-
-    // The button label flips to "Ocultar" once expanded.
-    const btn = screen.getByTestId(`admin-row-${USER_A}-toggle-sucursales`);
-    expect(btn.textContent).toMatch(/Ocultar/);
-    expect(btn.getAttribute('aria-expanded')).toBe('true');
-
-    // The chip renders with the friendly name from the directory.
-    await waitFor(() => {
-      expect(
-        screen.getByTestId(`admin-row-${USER_A}-chip-${SUC_NORTE}`),
-      ).toHaveTextContent('Sucursal Norte');
-    });
+    expect(
+      screen.getByTestId(`admin-row-${USER_A}-sucursales-empty`),
+    ).toHaveTextContent(/Sin sucursales/i);
+    // No chips should render for an empty row.
+    expect(
+      screen.queryByTestId(`admin-row-${USER_A}-sucursales-chips`),
+    ).not.toBeInTheDocument();
   });
 
-  it('falls back to the short uuid when the directory has no name for a branch', async () => {
-    mockedRaw.mockImplementation(async (url) => {
-      const s = String(url);
-      if (s === '/api/v1/empresa/sucursal?limit=200') {
-        return okResponse({
-          items: [SUCURSAL_NORTE, SUCURSAL_SUR],
-          next_cursor: null,
-        });
-      }
-      if (s === `/api/v1/admin/usuarios/${USER_A}/sucursales`) {
-        return okResponse([
-          { uuid_sucursal: SUC_FANTASMA },
-          { uuid_sucursal: SUC_NORTE },
-        ]);
-      }
-      throw new Error(`unexpected URL in test: ${s}`);
-    });
+  it('falls back to prefijo_nombre then short uuid when nombre is null', () => {
+    renderTable([
+      makeRow({
+        sucursales: [
+          {
+            uuid_sucursal: SUC_PREFIX,
+            nombre: null,
+            prefijo_nombre: 'PREFIX',
+            vigente_desde: '2026-01-01T00:00:00Z',
+          },
+          {
+            uuid_sucursal: SUC_FANTASMA,
+            nombre: null,
+            prefijo_nombre: null,
+            vigente_desde: '2026-01-01T00:00:00Z',
+          },
+        ],
+      }),
+    ]);
 
-    renderTable([makeRow()], USER_A);
-
-    await waitFor(() => {
-      expect(
-        screen.getByTestId(`admin-row-${USER_A}-chip-${SUC_FANTASMA}`),
-      ).toHaveTextContent(SUC_FANTASMA.slice(0, 8));
-    });
-    await waitFor(() => {
-      expect(
-        screen.getByTestId(`admin-row-${USER_A}-chip-${SUC_NORTE}`),
-      ).toHaveTextContent('Sucursal Norte');
-    });
+    expect(
+      screen.getByTestId(`admin-row-${USER_A}-chip-${SUC_PREFIX}`),
+    ).toHaveTextContent('PREFIX');
+    expect(
+      screen.getByTestId(`admin-row-${USER_A}-chip-${SUC_FANTASMA}`),
+    ).toHaveTextContent(SUC_FANTASMA.slice(0, 8));
   });
 
-  it('surfaces an inline error when the per-user fetch fails', async () => {
-    mockedRaw.mockImplementation(async (url) => {
-      const s = String(url);
-      if (s === '/api/v1/empresa/sucursal?limit=200') {
-        return okResponse({ items: [SUCURSAL_NORTE], next_cursor: null });
-      }
-      if (s === `/api/v1/admin/usuarios/${USER_A}/sucursales`) {
-        throw new Error('network down');
-      }
-      throw new Error(`unexpected URL in test: ${s}`);
-    });
-
-    renderTable([makeRow()], USER_A);
-
-    await waitFor(() => {
-      expect(
-        screen.getByTestId(`admin-row-${USER_A}-panel-error`),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it('still shows the Asignar sucursales action alongside the new toggle', () => {
-    mockedRaw.mockResolvedValue(okResponse([SUCURSAL_NORTE]));
-    renderTable([makeRow()]);
+  it('still shows the Asignar sucursales action alongside the chips', () => {
+    renderTable([
+      makeRow({
+        sucursales: [
+          {
+            uuid_sucursal: SUC_NORTE,
+            nombre: 'Sucursal Norte',
+            prefijo_nombre: 'NOR',
+            vigente_desde: '2026-01-01T00:00:00Z',
+          },
+        ],
+      }),
+    ]);
 
     expect(screen.getByTestId(`admin-row-${USER_A}-assign`)).toBeInTheDocument();
     expect(
-      screen.getByTestId(`admin-row-${USER_A}-toggle-sucursales`),
+      screen.getByTestId(`admin-row-${USER_A}-chip-${SUC_NORTE}`),
     ).toBeInTheDocument();
   });
 });

@@ -76,18 +76,14 @@ export default function UsuariosList(): JSX.Element {
   const [assignTarget, setAssignTarget] = useState<AdminUsuarioRead | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  // Which row in the table has its Sucursales panel expanded. Mutually
-  // exclusive: opening one row closes the previous. Keeping the state
-  // at the page level lets the table itself stay a pure renderer.
-  const [expandedUserUuid, setExpandedUserUuid] = useState<string | null>(null);
 
   const branchDirectory = useSucursalOptions();
 
-  // Per-user branch assignments are intentionally NOT preloaded here.
-  // The lazy row panel in AdminUsuarioTable reads them on demand via
-  // the shared `useAdminUsuarioSucursales` SWR hook, and `assignBranch`
-  // / `unassignBranch` invalidate that per-user key so the modal and
-  // the table's panel stay in sync without an extra round-trip.
+  // Branch assignments are rendered INLINE in the table from
+  // `user.sucursales` (embedded by the backend on the list payload),
+  // so no per-row fetch is needed here. Mutations from the assignment
+  // modal call `assignBranch` / `unassignBranch`, which revalidate the
+  // list key (`useAdminUsuarios`) — the table chips refresh in place.
 
   async function onCreate(values: AdminUsuarioCreateInput): Promise<void> {
     setSubmitting(true);
@@ -149,10 +145,6 @@ export default function UsuariosList(): JSX.Element {
       <AdminUsuarioTable
         rows={usuarios ?? []}
         isLoading={isLoading}
-        expandedUserUuid={expandedUserUuid}
-        onToggleExpanded={(uuid) =>
-          setExpandedUserUuid((prev) => (prev === uuid ? null : uuid))
-        }
         onAssignSucursales={(u) => setAssignTarget(u)}
       />
 
