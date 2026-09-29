@@ -11,23 +11,29 @@
  * part of the form; the FormModal shell no longer renders its own.
  *
  * Fields:
- *   - `uuid_sucursal` (BranchSelector) — the tarifa belongs to one
- *     branch.
- *   - `uuid_tipo_vehiculo` (select, optional) — NULL for "any vehicle
- *     type". Filled with `useTiposVehiculo`'s HARDCODED_CATALOG fallback.
- *   - `uuid_tipo_tarifa` (select, optional) — same with `useTipoTarifa`.
+ *   - `uuid_sucursal` (read-only display) — the tarifa belongs to the
+ *     branch selected in the topbar. The form no longer lets the
+ *     operator change it; the page pins the value via
+ *     ``onSubmit`` to defend against any caller-side drift.
+ *   - `uuid_tipo_vehiculo` (select on CREATE, readonly on EDIT) — NULL
+ *     is gone from the public CREATE surface (the operator must pick
+ *     one of the 5 canonical tipos). The sentinel
+ *     ``TIPO_NULL_SENTINEL_VEHICULO`` still participates in the
+ *     per-branch used-set check so the operator never tries to open
+ *     a second version for a cell that already has one open.
+ *   - `uuid_tipo_tarifa` (select on CREATE, readonly on EDIT) — same
+ *     rule, sentinel ``TIPO_NULL_SENTINEL_TARIFA``.
  *   - `valor`, `valor_plena` — Numeric(18,4). `valor > 0`, `valor_plena
  *     >= 0`. Coerced to string for the wire format.
- *   - `vigente_desde` (datetime-local, optional) — empty = "starts
- *     now" (server default). A future date schedules a rate change.
- *     The form normalizes the naive browser string to `+00:00` before
- *     submitting.
+ *   - `vigente_desde` (datetime-local, REQUIRED). The operator cannot
+ *     clear it. CREATE defaults to "now" (current minute in the
+ *     operator's local TZ); EDIT defaults to "now" too per the
+ *     canonical UX rule shipped 2026-09-29 for this screen.
  */
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
 
-import { BranchSelector } from '@/components/branch-selector/BranchSelector';
 import { Button } from '@/components/ui/button';
 import {
   Form,
@@ -45,9 +51,11 @@ import {
   type Tarifa,
   type TarifaCreateInput,
 } from '../api/tarifaSchema';
-import { useSucursalOptions } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
 import { useTipoTarifa } from '@/features/tipo-tarifa/hooks/useTipoTarifa';
+
+export const TIPO_NULL_SENTINEL_VEHICULO = '__VEHICULO_NULL__';
+export const TIPO_NULL_SENTINEL_TARIFA = '__TARIFA_NULL__';
 
 export interface TarifaFormProps {
   form: UseFormReturn<TarifaCreateInput>;
@@ -59,6 +67,48 @@ export interface TarifaFormProps {
   initialTarifa?: Tarifa | null;
   /** Close the parent modal (e.g. cancel button). */
   onCancel: () => void;
+  /** Display label for the branch shown in the readonly field. */
+  sucursalActivaNombre: string;
+  /** Set of uuid_tipo_vehiculo (or
+   *  ``TIPO_NULL_SENTINEL_VEHICULO`` for NULL) already in use by an
+   *  open tarifa for the active branch. CREATE hides these from the
+   *  select; EDIT ignores them (field is locked anyway). */
+  tiposVehiculoEnUsoEnSucursal: Set<string>;
+  /** Same, for uuid_tipo_tarifa. */
+  tiposTarifaEnUsoEnSucursal: Set<string>;
+}
+
+/** Props only the harness consumes — never reaches the presentational
+ *  form. Lets the harness default ``uuid_sucursal`` to the active
+ *  branch without leaking that wiring into the form's signature. */
+interface TarifaFormHarnessExtraProps {
+  /** Branch selected in the topbar. The harness uses it as the
+   *  default for ``uuid_sucursal``; the form never picks it (the
+   *  parent page pins it again on submit as defense in depth). */
+  sucursalActivaUuid: string | null;
+}
+
+function isoToDatetimeLocal(iso: string | null | undefined): string {
+  if (!iso) return '';
+  return iso.slice(0, 16);
+}
+
+function datetimeLocalToIso(local: string): string {
+  return `${local}:00+00:00`;
+}
+
+function localNowAsDatetimeLocal(): string {
+  /** Return the current local datetime as ``YYYY-MM-DDTHH:mm`` for the
+   * ``<input type="datetime-local">`` default. Naive local time so the
+   * operator sees "right now" in their own timezone when creating a
+   * tarifa. The conversion back to UTC for the wire is the handler's
+   * job (``_to_naive_utc`` in backend). */
+  const now = new Date();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `T${pad(now.getHours())}:${pad(now.getMinutes())}`
+  );
 }
 
 export function TarifaForm({
@@ -68,10 +118,11 @@ export function TarifaForm({
   isUpdate = false,
   initialTarifa = null,
   onCancel,
+  sucursalActivaNombre,
+  tiposVehiculoEnUsoEnSucursal,
+  tiposTarifaEnUsoEnSucursal,
 }: TarifaFormProps) {
   const { t } = useTranslation();
-
-  const { options: sucursalOptions } = useSucursalOptions();
 
   const { tipos: tiposVehiculo } = useTiposVehiculo();
   const { tipos: tiposTarifa } = useTipoTarifa();
@@ -85,96 +136,174 @@ export function TarifaForm({
         aria-busy={isSubmitting}
         data-testid="tarifa-form"
       >
-        <FormField
-          control={form.control}
-          name="uuid_sucursal"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel htmlFor="uuid_sucursal">
-                {t('tarifas.field.sucursal', 'Sucursal')}
-              </FormLabel>
-              <FormControl>
-                <BranchSelector
-                  options={sucursalOptions}
-                  value={field.value ?? null}
-                  onChange={(uuid) => field.onChange(uuid)}
-                />
-              </FormControl>
-              <FormDescription>
-                {t('tarifas.field.sucursalHelp', 'La tarifa pertenece a esta sucursal.')}
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
+        <div className="space-y-2">
+          <FormLabel>{t('tarifas.field.sucursal', 'Sucursal')}</FormLabel>
+          <p
+            className="rounded-md border bg-muted/40 px-3 py-2 text-sm"
+            data-testid="tarifa-field-sucursal-readonly"
+          >
+            {sucursalActivaNombre || '—'}
+          </p>
+          <FormDescription>
+            {t(
+              'tarifas.field.sucursalHelp',
+              'La tarifa pertenece a la sucursal activa seleccionada en el topbar.',
+            )}
+          </FormDescription>
+        </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField
             control={form.control}
             name="uuid_tipo_vehiculo"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel htmlFor="uuid_tipo_vehiculo">
-                  {t('tarifas.field.tipoVehiculo', 'Tipo de vehículo (opcional)')}
-                </FormLabel>
-                <FormControl>
-                  <select
-                    id="uuid_tipo_vehiculo"
-                    data-testid="tarifa-field-tipo-vehiculo"
-                    {...field}
-                    value={field.value ?? ''}
-                    onChange={(e) =>
-                      field.onChange(e.target.value === '' ? null : e.target.value)
-                    }
-                    className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="">
-                      {t('tarifas.field.tipoVehiculoAny', 'Cualquiera')}
-                    </option>
-                    {tiposVehiculo.map((t) => (
-                      <option key={t.uuid} value={t.uuid}>
-                        {t.tipo ?? t.uuid}
-                      </option>
-                    ))}
-                  </select>
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
+            render={({ field }) => {
+              // EDIT: lock the tipo. The (sucursal, tipo_vehiculo,
+              // tipo_tarifa) cell is the tarifa's identity — once a
+              // tarifa is created, those three columns are fixed. The
+              // operator edits valor / valor_plena / vigente_desde;
+              // switching tipo_vehiculo would open a new version in a
+              // different cell, which is outside the scope of "edit".
+              const tipoFijo = initialTarifa !== null;
+              const tipoActualLabel = (() => {
+                if (!tipoFijo) return null;
+                const actual = initialTarifa?.uuid_tipo_vehiculo;
+                if (actual === null || actual === undefined) {
+                  return t('tarifas.tipoVehiculoAny', 'Cualquiera');
+                }
+                return (
+                  tiposVehiculo.find((tv) => tv.uuid === actual)?.tipo ??
+                  actual
+                );
+              })();
+              // CREATE: hide tipos already in use by an open tarifa
+              // for this branch. CREATE no longer offers the NULL
+              // cell (uuid_tipo_vehiculo = null) — every tarifa must
+              // target a specific tipo from the catalog.
+              const disponibles = tiposVehiculo.filter(
+                (tv) => !tiposVehiculoEnUsoEnSucursal.has(tv.uuid),
+              );
+              return (
+                <FormItem>
+                  <FormLabel htmlFor="uuid_tipo_vehiculo">
+                    {t('tarifas.field.tipoVehiculo', 'Tipo de vehículo')}
+                  </FormLabel>
+                  <FormControl>
+                    {tipoFijo ? (
+                      <div className="flex flex-col gap-2">
+                        <input
+                          id="uuid_tipo_vehiculo"
+                          data-testid="tarifa-field-tipo-vehiculo"
+                          readOnly
+                          aria-readonly="true"
+                          className="block w-full rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                          value={tipoActualLabel ?? ''}
+                        />
+                        <p
+                          className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+                          data-testid="tarifa-field-tipo-vehiculo-locked"
+                        >
+                          {t(
+                            'tarifas.field.tipoVehiculoLocked',
+                            'Tarifa fija — el tipo de vehículo no se puede cambiar después de creada.',
+                          )}
+                        </p>
+                      </div>
+                    ) : (
+                      <select
+                        id="uuid_tipo_vehiculo"
+                        data-testid="tarifa-field-tipo-vehiculo"
+                        {...field}
+                        value={field.value ?? ''}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === '' ? null : e.target.value,
+                          )
+                        }
+                        className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      >
+                        {disponibles.map((tv) => (
+                          <option key={tv.uuid} value={tv.uuid}>
+                            {tv.tipo ?? tv.uuid}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              );
+            }}
           />
 
           <FormField
             control={form.control}
             name="uuid_tipo_tarifa"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel htmlFor="uuid_tipo_tarifa">
-                  {t('tarifas.field.tipoTarifa', 'Modalidad (opcional)')}
-                </FormLabel>
-                <FormControl>
-                  <select
-                    id="uuid_tipo_tarifa"
-                    data-testid="tarifa-field-tipo-tarifa"
-                    {...field}
-                    value={field.value ?? ''}
-                    onChange={(e) =>
-                      field.onChange(e.target.value === '' ? null : e.target.value)
-                    }
-                    className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="">
-                      {t('tarifas.field.tipoTarifaAny', 'Cualquiera')}
-                    </option>
-                    {tiposTarifa.map((t) => (
-                      <option key={t.uuid} value={t.uuid}>
-                        {t.tipo ?? t.uuid}
-                      </option>
-                    ))}
-                  </select>
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
+            render={({ field }) => {
+              const tipoFijo = initialTarifa !== null;
+              const tipoActualLabel = (() => {
+                if (!tipoFijo) return null;
+                const actual = initialTarifa?.uuid_tipo_tarifa;
+                if (actual === null || actual === undefined) {
+                  return t('tarifas.tipoTarifaAny', 'Cualquiera');
+                }
+                return (
+                  tiposTarifa.find((tt) => tt.uuid === actual)?.tipo ?? actual
+                );
+              })();
+              const disponibles = tiposTarifa.filter(
+                (tt) => !tiposTarifaEnUsoEnSucursal.has(tt.uuid),
+              );
+              return (
+                <FormItem>
+                  <FormLabel htmlFor="uuid_tipo_tarifa">
+                    {t('tarifas.field.tipoTarifa', 'Modalidad')}
+                  </FormLabel>
+                  <FormControl>
+                    {tipoFijo ? (
+                      <div className="flex flex-col gap-2">
+                        <input
+                          id="uuid_tipo_tarifa"
+                          data-testid="tarifa-field-tipo-tarifa"
+                          readOnly
+                          aria-readonly="true"
+                          className="block w-full rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                          value={tipoActualLabel ?? ''}
+                        />
+                        <p
+                          className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+                          data-testid="tarifa-field-tipo-tarifa-locked"
+                        >
+                          {t(
+                            'tarifas.field.tipoTarifaLocked',
+                            'Tarifa fija — la modalidad no se puede cambiar después de creada.',
+                          )}
+                        </p>
+                      </div>
+                    ) : (
+                      <select
+                        id="uuid_tipo_tarifa"
+                        data-testid="tarifa-field-tipo-tarifa"
+                        {...field}
+                        value={field.value ?? ''}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === '' ? null : e.target.value,
+                          )
+                        }
+                        className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      >
+                        {disponibles.map((tt) => (
+                          <option key={tt.uuid} value={tt.uuid}>
+                            {tt.tipo ?? tt.uuid}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              );
+            }}
           />
         </div>
 
@@ -248,7 +377,7 @@ export function TarifaForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel htmlFor="vigente_desde">
-                {t('tarifas.field.vigenteDesde', 'Vigente desde (opcional)')}
+                {t('tarifas.field.vigenteDesde', 'Vigente desde')}
               </FormLabel>
               <FormControl>
                 <Input
@@ -256,25 +385,22 @@ export function TarifaForm({
                   data-testid="tarifa-field-vigente-desde"
                   type="datetime-local"
                   {...field}
-                  value={field.value ?? ''}
+                  value={isoToDatetimeLocal(field.value)}
                   onChange={(e) => {
+                    // The field is required (see Zod schema
+                    // ``tarifaCreateSchema`` in ``api/tarifaSchema.ts``).
+                    // Clearing is intentionally a no-op — the operator
+                    // must pick a valid datetime.
                     const raw = e.target.value;
-                    if (raw === '') {
-                      field.onChange(null);
-                      return;
-                    }
-                    // The browser emits a naive ISO string ("2026-12-01T08:00").
-                    // The Pydantic schema requires an offset; we tag the
-                    // operator's intent as UTC so the server's bi-temporal
-                    // predicate uses the right boundary.
-                    field.onChange(`${raw}:00+00:00`);
+                    if (raw === '') return;
+                    field.onChange(datetimeLocalToIso(raw));
                   }}
                 />
               </FormControl>
               <FormDescription>
                 {t(
                   'tarifas.field.vigenteDesdeHelp',
-                  'Vacío = ahora. Una fecha futura programa un cambio de tarifa.',
+                  'Una fecha futura programa un cambio de tarifa.',
                 )}
               </FormDescription>
               <FormMessage />
@@ -322,19 +448,37 @@ export function TarifaForm({
 }
 
 export function TarifaFormHarness(
-  props: Omit<TarifaFormProps, 'form'>,
+  props: Omit<TarifaFormProps, 'form'> & TarifaFormHarnessExtraProps,
 ): JSX.Element {
   const initial = props.initialTarifa;
+  // Per the canonical UX rule shipped 2026-09-29, the tarifa is a
+  // single-tenant resource. The harness receives ``sucursalActivaUuid``
+  // from the page (already bound to the topbar selection) and uses it as
+  // the default for ``uuid_sucursal``. If the operator is editing a
+  // tarifa whose sucursal differs from the active one, the page's
+  // ``sucursal_inmutable`` backend guard (422) refuses the PUT — the
+  // form surface should never expose that case in practice (the list
+  // is filtered to the active branch).
+  //
+  // ``vigente_desde`` defaults to "now" in both CREATE and EDIT (the
+  // canonical UX rule for /tarifas; differs from /cupos where EDIT
+  // gets +1 minute).
+  const defaultVigenteDesde =
+    localNowAsDatetimeLocal() + ':00+00:00';
+  // Strip the harness-only prop before forwarding to the presentational
+  // form — keeps the form's interface focused on what it actually
+  // renders (the readonly name, not the uuid).
+  const { sucursalActivaUuid, ...formProps } = props;
   const form = useForm<TarifaCreateInput>({
     resolver: zodResolver(tarifaCreateSchema) as never,
     defaultValues: {
-      uuid_sucursal: initial?.uuid_sucursal ?? null,
+      uuid_sucursal: sucursalActivaUuid ?? initial?.uuid_sucursal ?? null,
       uuid_tipo_vehiculo: initial?.uuid_tipo_vehiculo ?? null,
       uuid_tipo_tarifa: initial?.uuid_tipo_tarifa ?? null,
       valor: initial?.valor ?? null,
       valor_plena: initial?.valor_plena ?? null,
-      vigente_desde: initial?.vigente_desde ?? null,
+      vigente_desde: defaultVigenteDesde,
     },
   });
-  return <TarifaForm {...props} form={form} />;
+  return <TarifaForm {...formProps} form={form} />;
 }

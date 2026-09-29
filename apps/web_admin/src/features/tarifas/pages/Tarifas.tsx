@@ -5,11 +5,12 @@
  * Layout:
  *   - Header: title + "Nueva tarifa" button.
  *   - TarifaForm modal (create + edit). Cancel dispatches close.
- *   - Tabs (PR2): "Todas las sucursales" (cross-branch, default) +
- *     "Mi sucursal activa" (filtered by `useSucursal().selected`).
- *   - Each tab renders the same grouped list of vigente tarifas.
- *     Each row has an "Editar" button (PUT) and a "Ver histórico"
- *     toggle that reveals the VersionHistoryPanel below the list.
+ *   - Single filtered list scoped to the branch selected in the topbar
+ *     (`useSucursal().selected`). Cross-branch views are out of scope
+ *     for this screen — the multi-branch admin view lives in a
+ *     separate dashboard surface. Each row has an "Editar" button
+ *     (PUT) and a "Ver histórico" toggle that reveals the
+ *     VersionHistoryPanel below the list.
  *
  * Container/presentational split: this file owns state, SWR mutations,
  * and error mapping. TarifaForm and VersionHistoryPanel are presentational.
@@ -19,7 +20,6 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import { FormModal } from '@/features/configuracion/components/FormModal';
 import {
@@ -241,12 +241,36 @@ export default function Tarifas(): JSX.Element {
   const [historyOpenFor, setHistoryOpenFor] = useState<string | null>(null);
 
   const allFiltered = useMemo(() => {
-    // PR2: client-side filter by the picker selection. The full list is
-    // already loaded once by `useTarifasList`; slicing it avoids a
-    // second round-trip and keeps the tab snappy when toggling.
-    if (!selectedSucursal) return tarifas;
+    // Strict per-branch filter: the page is single-tenant by design.
+    // Each tarifa belongs to one branch — the multi-branch admin view
+    // lives in a separate dashboard surface.
+    if (!selectedSucursal) return [];
     return tarifas.filter((tt) => tt.uuid_sucursal === selectedSucursal);
   }, [tarifas, selectedSucursal]);
+
+  // Sets of uuid_tipo_vehiculo / uuid_tipo_tarifa (or
+  // TIPO_NULL_SENTINEL_VEHICULO / TIPO_NULL_SENTINEL_TARIFA for NULL)
+  // already in use by an OPEN tarifa for the selected branch. Used by
+  // the CREATE flow to hide options that would collide with the
+  // backend's ``tarifa_overlap`` guard (409). Note the tarifa
+  // cell-key is the full tuple
+  // ``(sucursal, tipo_vehiculo, tipo_tarifa)`` — this filter is
+  // intentionally per-tipo (not per (v, t) tuple). The backend guard
+  // is the safety net for the finer granularity.
+  const tiposVehiculoEnUsoEnSucursal = useMemo(() => {
+    const used = new Set<string>();
+    for (const t of allFiltered) {
+      used.add(t.uuid_tipo_vehiculo ?? '__VEHICULO_NULL__');
+    }
+    return used;
+  }, [allFiltered]);
+  const tiposTarifaEnUsoEnSucursal = useMemo(() => {
+    const used = new Set<string>();
+    for (const t of allFiltered) {
+      used.add(t.uuid_tipo_tarifa ?? '__TARIFA_NULL__');
+    }
+    return used;
+  }, [allFiltered]);
 
   const { versiones: historyVersiones } = useTarifasByKey(
     historyOpenFor === 'sin-sucursal' ? null : historyOpenFor,
@@ -262,10 +286,25 @@ export default function Tarifas(): JSX.Element {
     setSubmitting(true);
     setErrorState(null);
     try {
+      // The form is single-tenant: the operator never picks a branch
+      // (the topbar selector is the only source). We pin ``uuid_sucursal``
+      // here so any caller-side drift between the topbar selection and
+      // the form's default value can't reach the wire. If
+      // ``selectedSucursal`` is null we refuse to submit (the page's
+      // empty-state guard should prevent that path in practice).
+      if (!selectedSucursal) {
+        setErrorState({
+          kind: 'network',
+          message:
+            'Seleccioná una sucursal activa antes de crear una tarifa.',
+        });
+        return;
+      }
+      const payload = { ...values, uuid_sucursal: selectedSucursal };
       if (editing !== null) {
-        await updateTarifa(editing.uuid, values);
+        await updateTarifa(editing.uuid, payload);
       } else {
-        await createTarifa(values);
+        await createTarifa(payload);
       }
       closeModal();
       await refresh();
@@ -336,6 +375,10 @@ export default function Tarifas(): JSX.Element {
               isUpdate
               initialTarifa={editing}
               onCancel={closeModal}
+              sucursalActivaUuid={selectedSucursal}
+              sucursalActivaNombre={activeSucursalLabel}
+              tiposVehiculoEnUsoEnSucursal={tiposVehiculoEnUsoEnSucursal}
+              tiposTarifaEnUsoEnSucursal={tiposTarifaEnUsoEnSucursal}
             />
           ) : (
             <TarifaFormHarness
@@ -344,6 +387,10 @@ export default function Tarifas(): JSX.Element {
               isUpdate={false}
               initialTarifa={null}
               onCancel={closeModal}
+              sucursalActivaUuid={selectedSucursal}
+              sucursalActivaNombre={activeSucursalLabel}
+              tiposVehiculoEnUsoEnSucursal={tiposVehiculoEnUsoEnSucursal}
+              tiposTarifaEnUsoEnSucursal={tiposTarifaEnUsoEnSucursal}
             />
           )}
         </FormModal>
@@ -365,70 +412,34 @@ export default function Tarifas(): JSX.Element {
         </p>
       )}
 
-      <Tabs defaultValue="all" data-testid="tarifas-tabs">
-        <TabsList>
-          <TabsTrigger value="all" data-testid="tarifas-tab-all">
-            {t('tarifas.tabs.all', 'Todas las sucursales')}
-          </TabsTrigger>
-          <TabsTrigger
-            value="active"
-            data-testid="tarifas-tab-active"
-            disabled={!selectedSucursal}
-          >
-            {t('tarifas.tabs.active', 'Mi sucursal activa')}
-            {selectedSucursal && activeSucursalLabel && (
-              <span className="text-muted-foreground ml-2 font-mono text-xs">
-                · {activeSucursalLabel}
-              </span>
-            )}
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="all">
-          <ListContent
-            tarifas={tarifas}
-            sucursales={sucursales}
-            tiposVehiculo={tiposVehiculo}
-            tiposTarifa={tiposTarifa}
-            onEdit={handleEdit}
-            onToggleHistory={handleToggleHistory}
-            historyOpenFor={historyOpenFor}
-            historyVersiones={historyVersiones}
-            emptyMessage={t('tarifas.empty', 'Aún no hay tarifas configuradas.')}
-          />
-        </TabsContent>
-
-        <TabsContent value="active">
-          {!selectedSucursal ? (
-            <p
-              role="status"
-              aria-live="polite"
-              className="text-sm text-muted-foreground"
-              data-testid="tarifas-active-empty-selection"
-            >
-              {t(
-                'tarifas.tabs.activeEmpty',
-                'Elegí una sucursal en el selector del topbar para ver sus tarifas.',
-              )}
-            </p>
-          ) : (
-            <ListContent
-              tarifas={allFiltered}
-              sucursales={sucursales}
-              tiposVehiculo={tiposVehiculo}
-              tiposTarifa={tiposTarifa}
-              onEdit={handleEdit}
-              onToggleHistory={handleToggleHistory}
-              historyOpenFor={historyOpenFor}
-              historyVersiones={historyVersiones}
-              emptyMessage={t(
-                'tarifas.tabs.activeEmptyForBranch',
-                'Esta sucursal no tiene tarifas configuradas.',
-              )}
-            />
+      {!selectedSucursal ? (
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-sm text-muted-foreground"
+          data-testid="tarifas-active-empty-selection"
+        >
+          {t(
+            'tarifas.tabs.activeEmpty',
+            'Elegí una sucursal en el selector del topbar para ver sus tarifas.',
           )}
-        </TabsContent>
-      </Tabs>
+        </p>
+      ) : (
+        <ListContent
+          tarifas={allFiltered}
+          sucursales={sucursales}
+          tiposVehiculo={tiposVehiculo}
+          tiposTarifa={tiposTarifa}
+          onEdit={handleEdit}
+          onToggleHistory={handleToggleHistory}
+          historyOpenFor={historyOpenFor}
+          historyVersiones={historyVersiones}
+          emptyMessage={t(
+            'tarifas.tabs.activeEmptyForBranch',
+            'Esta sucursal no tiene tarifas configuradas.',
+          )}
+        />
+      )}
     </main>
   );
 }

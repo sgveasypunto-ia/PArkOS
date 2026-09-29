@@ -2,13 +2,24 @@
  * Tarifas — page-level integration tests (mock the api layer).
  *
  * Pins the container-level behaviour:
- *   1. Empty state when the API returns [].
- *   2. List grouped by sucursal with the vigente rows.
- *   3. "Nueva tarifa" opens the modal with an empty form.
- *   4. Submit calls createTarifa and refreshes.
- *   5. "Editar" on a row opens the modal in update mode.
- *   6. Server error 409 tarifa_overlap renders the typed message.
- *   7. "Ver histórico" toggles the VersionHistoryPanel and calls
+ *   1. Empty state when no branch is selected (activeEmpty path).
+ *   1b. Empty state when a branch is selected but the API returns [].
+ *   2. List filtered strictly by the selected branch.
+ *   3. "Nueva tarifa" opens the modal — no "Todas" tab, no
+ *      BranchSelector inside the modal (sucursal is the active one).
+ *   4. CREATE modal pre-populates vigente_desde with the current
+ *      minute; SELECTs do NOT include the "Cualquiera" cell.
+ *   5. CREATE hides tipos already in use by an open tarifa for the
+ *      selected branch (per-tipo filter, mirror of cupos).
+ *   6. EDIT modal locks both tipo fields (readonly inputs) — the
+ *      (sucursal, tipo_vehiculo, tipo_tarifa) cell-key is the
+ *      tarifa's identity, fixed at creation.
+ *   7. "Vigente desde" label drops "(opcional)" — the field is
+ *      required (Zod schema + onChange blocks clear).
+ *   8. "Editar" pre-fills the form with the existing tarifa row's
+ *      values.
+ *   9. Server error 409 tarifa_overlap renders the typed message.
+ *  10. "Ver histórico" toggles the VersionHistoryPanel and calls
  *      listTarifasByKey.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,6 +45,74 @@ vi.mock('../api/tarifasApi', () => ({
   TarifaSucursalInmutableError: class TarifaSucursalInmutableError extends Error {},
 }));
 
+// Mirror the cupos test mock: HARDCODED_CATALOG with the 5 canonical
+// tipos so the tipo_vehiculo / tipo_tarifa selects render real
+// options in the form.
+const SAMPLE_TIPOS_VEHICULO = [
+  {
+    uuid: '00000000-0000-0000-0000-000000000001',
+    tipo: 'carro',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-000000000002',
+    tipo: 'moto',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+];
+const SAMPLE_TIPOS_TARIFA = [
+  {
+    uuid: '00000000-0000-0000-0000-0000000000a1',
+    tipo: 'hora',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+  {
+    uuid: '00000000-0000-0000-0000-0000000000a2',
+    tipo: 'plena',
+    vigente_desde: '2026-01-01T00:00:00',
+    vigente_hasta: null,
+    estado: 'activo',
+    created_at: '2026-01-01T00:00:00',
+    created_by: null,
+    sync_status: 'sincronizado',
+  },
+];
+
+vi.mock('@/features/tipos-vehiculo/hooks/useTiposVehiculo', () => ({
+  useTiposVehiculo: () => ({
+    tipos: SAMPLE_TIPOS_VEHICULO,
+    isLoading: false,
+    error: undefined,
+    refresh: vi.fn().mockResolvedValue(SAMPLE_TIPOS_VEHICULO),
+    isFromFallback: false,
+  }),
+}));
+
+vi.mock('@/features/tipo-tarifa/hooks/useTipoTarifa', () => ({
+  useTipoTarifa: () => ({
+    tipos: SAMPLE_TIPOS_TARIFA,
+    isLoading: false,
+    error: undefined,
+    refresh: vi.fn().mockResolvedValue(SAMPLE_TIPOS_TARIFA),
+    isFromFallback: false,
+  }),
+}));
+
 vi.mock('@parkos/ui-kit/hooks', () => ({
   useAdminAuth: () => ({
     user: { uuid: 'u-1', email: 'admin@parkos.local' },
@@ -48,9 +127,9 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
   }),
 }));
 
-// The hooks (useTarifasList, useTarifasByKey, useTiposVehiculo, etc.)
-// read from `useAuthStore` directly. Seed it with a token so the SWR
-// key is non-null and the fetcher runs.
+// The hooks (useTarifasList, useTarifasByKey, etc.) read from
+// useAuthStore directly. Seed it with a token so the SWR key is
+// non-null and the fetcher runs.
 import { useAuthStore } from '@parkos/ui-kit/store';
 
 import { listTarifas, createTarifa, listTarifasByKey } from '../api/tarifasApi';
@@ -63,12 +142,19 @@ const mockedListByKey = listTarifasByKey as ReturnType<typeof vi.fn>;
 const mockedListSucursales = listSucursales as ReturnType<typeof vi.fn>;
 
 function wrapper({ children }: { children: ReactNode }): JSX.Element {
-  // PR2 added the "Mi sucursal activa" tab which reads `useSucursal()`.
   const configValue = { provider: (): never => new Map() as never };
   return createElement(
     SucursalProvider,
     null,
     createElement(SWRConfig, { value: configValue }, children),
+  );
+}
+
+function fullWrapper({ children }: { children: ReactNode }): JSX.Element {
+  return createElement(
+    MemoryRouter,
+    null,
+    createElement(wrapper, { children }),
   );
 }
 
@@ -119,19 +205,21 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.localStorage.removeItem('parkos.lastSelectedSucursal');
   useAuthStore.setState({ accessToken: null, refreshToken: null, expiresAt: null });
 });
 
-function fullWrapper({ children }: { children: ReactNode }): JSX.Element {
-  return createElement(
-    MemoryRouter,
-    null,
-    createElement(wrapper, { children }),
-  );
-}
-
 describe('Tarifas page', () => {
-  it('TP1: empty state when the API returns []', async () => {
+  it('TP1: shows the active-empty hint when no branch is selected', async () => {
+    mockedListTarifas.mockResolvedValue([]);
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await waitFor(() => {
+      expect(screen.getByTestId('tarifas-active-empty-selection')).toBeInTheDocument();
+    });
+  });
+
+  it('TP1b: shows the per-branch empty state when a branch is selected but the API returns []', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListTarifas.mockResolvedValue([]);
     render(<Tarifas />, { wrapper: fullWrapper });
     await waitFor(() => {
@@ -139,50 +227,177 @@ describe('Tarifas page', () => {
     });
   });
 
-  it('TP2: list grouped by sucursal with the vigente rows', async () => {
+  it('TP2: list filtered strictly by the selected branch', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListTarifas.mockResolvedValue([
       { ...SAMPLE_TARIFA, uuid_sucursal: SUCURSAL_1 },
-      { ...SAMPLE_TARIFA, uuid: 'bbbb', uuid_sucursal: SUCURSAL_2, valor: '3000.0000' },
+      // a row that belongs to ANOTHER branch must NOT render under the
+      // selected one (regression for "solo la sucursal seleccionada").
+      {
+        ...SAMPLE_TARIFA,
+        uuid: 'bbbbbbbb-1111-1111-1111-111111111111',
+        uuid_sucursal: SUCURSAL_2,
+        valor: '3000.0000',
+      },
     ]);
     render(<Tarifas />, { wrapper: fullWrapper });
-    await waitFor(() => {
-      expect(screen.getByTestId('tarifa-sucursal-group-11111111-1111-1111-1111-111111111111')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('tarifa-sucursal-group-22222222-2222-2222-2222-222222222222')).toBeInTheDocument();
-    expect(screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111')).toBeInTheDocument();
-    expect(screen.getByTestId('tarifa-row-bbbb')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('tarifa-sucursal-group-11111111-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('tarifa-row-bbbbbbbb-1111-1111-1111-111111111111'),
+    ).not.toBeInTheDocument();
   });
 
-  it('TP3: "Nueva tarifa" opens the modal with an empty form', async () => {
-    const user = userEvent.setup();
+  it('TP3: "Nueva tarifa" opens the modal with no BranchSelector inside (sucursal pinned to the active one)', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListTarifas.mockResolvedValue([]);
     render(<Tarifas />, { wrapper: fullWrapper });
     await waitFor(() => screen.getByTestId('tarifa-empty'));
-    await user.click(screen.getByTestId('tarifa-new'));
+    await userEvent.setup().click(screen.getByTestId('tarifa-new'));
     expect(screen.getByTestId('tarifa-form-modal')).toBeInTheDocument();
     expect(screen.getByTestId('tarifa-form')).toBeInTheDocument();
+    // The "Todas las sucursales" tab is gone — strict single-list screen.
+    expect(screen.queryByTestId('tarifas-tab-all')).not.toBeInTheDocument();
+    // No BranchSelector inside the modal — the sucursal is the active
+    // one shown as a read-only block.
+    expect(screen.getByTestId('tarifa-field-sucursal-readonly')).toBeInTheDocument();
+    // The select for uuid_sucursal is gone.
+    expect(screen.queryByLabelText(/^Sucursal$/)).not.toBeInstanceOf(
+      HTMLSelectElement,
+    );
   });
 
-  it('TP4: the page wires createTarifa through the form submit', async () => {
-    // Lower-level test: confirms the page reaches createTarifa with the
-    // values the form collected. The BranchSelector is rendered by Radix
-    // and is not user-friendly in jsdom — we exercise the POST path by
-    // calling createTarifa directly from a successful submit.
-    const user = userEvent.setup();
-    mockedListTarifas.mockResolvedValueOnce([]);
-    mockedCreateTarifa.mockResolvedValueOnce(SAMPLE_TARIFA);
+  it('TP4: CREATE modal pre-populates "vigente_desde" with the current minute and drops "Cualquiera"', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListTarifas.mockResolvedValue([]);
     render(<Tarifas />, { wrapper: fullWrapper });
     await waitFor(() => screen.getByTestId('tarifa-empty'));
-    await user.click(screen.getByTestId('tarifa-new'));
-    // The form has a `data-testid="tarifa-form"`; asserting its
-    // presence covers the submit wiring without driving the complex
-    // BranchSelector in jsdom. The end-to-end createTarifa path is
-    // pinned by the API tests + the manual browser walkthrough.
-    expect(screen.getByTestId('tarifa-form')).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByTestId('tarifa-new'));
+    const dateInput = screen.getByTestId('tarifa-field-vigente-desde') as HTMLInputElement;
+    // The input renders a local-ISO datetime-local value
+    // (YYYY-MM-DDTHH:mm) within [now, now+1min].
+    const before = new Date();
+    before.setSeconds(0, 0);
+    const expected = new Date(before);
+    expected.setMinutes(expected.getMinutes() + 1);
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const fmt = (d: Date): string =>
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const candidates = new Set<string>([fmt(before), fmt(expected)]);
+    expect(candidates.has(dateInput.value)).toBe(true);
+    // Neither tipo select offers "Cualquiera" in CREATE.
+    const vehiculoSelect = screen.getByTestId(
+      'tarifa-field-tipo-vehiculo',
+    ) as HTMLSelectElement;
+    expect(Array.from(vehiculoSelect.options).map((o) => o.value)).not.toContain('');
+    const tarifaSelect = screen.getByTestId(
+      'tarifa-field-tipo-tarifa',
+    ) as HTMLSelectElement;
+    expect(Array.from(tarifaSelect.options).map((o) => o.value)).not.toContain('');
   });
 
-  it('TP7: clicking "Editar" opens the modal pre-filled with the tarifa row', async () => {
-    const user = userEvent.setup();
+  it('TP5: CREATE hides tipos already in use by an open tarifa for this branch', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    // Existing tarifa uses (carro, hora).
+    mockedListTarifas.mockResolvedValue([
+      {
+        ...SAMPLE_TARIFA,
+        uuid_sucursal: SUCURSAL_1,
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001', // carro
+        uuid_tipo_tarifa: '00000000-0000-0000-0000-0000000000a1', // hora
+      },
+    ]);
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    await userEvent.setup().click(screen.getByTestId('tarifa-new'));
+    const vehiculoSelect = screen.getByTestId(
+      'tarifa-field-tipo-vehiculo',
+    ) as HTMLSelectElement;
+    const tarifaSelect = screen.getByTestId(
+      'tarifa-field-tipo-tarifa',
+    ) as HTMLSelectElement;
+    // "carro" hidden; "moto" remains. "hora" hidden; "plena" remains.
+    expect(Array.from(vehiculoSelect.options).map((o) => o.value)).not.toContain(
+      '00000000-0000-0000-0000-000000000001',
+    );
+    expect(Array.from(vehiculoSelect.options).map((o) => o.value)).toContain(
+      '00000000-0000-0000-0000-000000000002',
+    );
+    expect(Array.from(tarifaSelect.options).map((o) => o.value)).not.toContain(
+      '00000000-0000-0000-0000-0000000000a1',
+    );
+    expect(Array.from(tarifaSelect.options).map((o) => o.value)).toContain(
+      '00000000-0000-0000-0000-0000000000a2',
+    );
+  });
+
+  it('TP6: EDIT modal locks tipo_vehiculo and tipo_tarifa (readonly inputs)', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListTarifas.mockResolvedValue([
+      {
+        ...SAMPLE_TARIFA,
+        uuid_sucursal: SUCURSAL_1,
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001', // carro
+        uuid_tipo_tarifa: '00000000-0000-0000-0000-0000000000a1', // hora
+        valor: '70.0000',
+      },
+    ]);
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    await userEvent.setup().click(
+      screen.getByTestId('tarifa-edit-aaaaaaaa-1111-1111-1111-111111111111'),
+    );
+    // Both selects replaced by readonly inputs with their label as the
+    // value. Lock hints visible.
+    const vehiculoInput = screen.getByTestId(
+      'tarifa-field-tipo-vehiculo',
+    ) as HTMLInputElement;
+    expect(vehiculoInput.tagName).toBe('INPUT');
+    expect(vehiculoInput.readOnly).toBe(true);
+    expect(vehiculoInput.value).toBe('carro');
+    expect(
+      screen.getByTestId('tarifa-field-tipo-vehiculo-locked'),
+    ).toBeInTheDocument();
+    const tarifaInput = screen.getByTestId(
+      'tarifa-field-tipo-tarifa',
+    ) as HTMLInputElement;
+    expect(tarifaInput.tagName).toBe('INPUT');
+    expect(tarifaInput.readOnly).toBe(true);
+    expect(tarifaInput.value).toBe('hora');
+    expect(
+      screen.getByTestId('tarifa-field-tipo-tarifa-locked'),
+    ).toBeInTheDocument();
+  });
+
+  it('TP7: "Vigente desde" label drops "(opcional)" — the field is required', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListTarifas.mockResolvedValue([]);
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('tarifa-empty'));
+    await userEvent.setup().click(screen.getByTestId('tarifa-new'));
+    const label = screen.getByText(/^Vigente desde/);
+    expect(label.textContent).not.toMatch(/\(opcional\)/i);
+    expect(
+      screen.queryByText(/Vacío = ahora/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('TP8: clicking "Editar" opens the modal pre-filled with the tarifa row', async () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListTarifas.mockResolvedValue([
       {
@@ -197,35 +412,12 @@ describe('Tarifas page', () => {
         screen.getByTestId('tarifa-row-aaaaaaaa-1111-1111-1111-111111111111'),
       ).toBeInTheDocument(),
     );
-    await user.click(
+    await userEvent.setup().click(
       screen.getByTestId('tarifa-edit-aaaaaaaa-1111-1111-1111-111111111111'),
     );
     expect(screen.getByTestId('tarifa-form-modal')).toBeInTheDocument();
     const valor = screen.getByTestId('tarifa-field-valor') as HTMLInputElement;
     expect(valor.value).toBe('70.0000');
     expect(screen.getByTestId('tarifa-form-editing')).toBeInTheDocument();
-    window.localStorage.removeItem('parkos.lastSelectedSucursal');
-  });
-
-  it('TP8: resolves uuid_tipo_vehiculo to the tipo name', async () => {
-    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
-    mockedListTarifas.mockResolvedValue([
-      {
-        ...SAMPLE_TARIFA,
-        uuid_sucursal: SUCURSAL_1,
-        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
-      },
-    ]);
-    render(<Tarifas />, { wrapper: fullWrapper });
-    await waitFor(() =>
-      expect(
-        screen.getByTestId('tarifa-tipo-aaaaaaaa-1111-1111-1111-111111111111'),
-      ).toBeInTheDocument(),
-    );
-    expect(
-      screen.getByTestId('tarifa-tipo-aaaaaaaa-1111-1111-1111-111111111111')
-        .textContent,
-    ).toBe('carro');
-    window.localStorage.removeItem('parkos.lastSelectedSucursal');
   });
 });
