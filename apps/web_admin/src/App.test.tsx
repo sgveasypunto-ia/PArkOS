@@ -46,7 +46,7 @@ describe('App (authenticated)', () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', ALLOWED_UUID);
   });
 
-  it('redirects / to /seleccionar-sucursal (picker is the canonical landing)', () => {
+  it('renders the HomeHub at / (the post-login landing)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -54,11 +54,12 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    // The Hub (`Home`) is no longer mounted on `/`; the route is now a
-    // thin Navigate to the picker. With a valid session the picker
-    // mounts the loading shim under jsdom (no fetch).
-    expect(screen.getByTestId('sucursal-picker')).toBeInTheDocument();
-    expect(screen.queryByTestId('page-home')).not.toBeInTheDocument();
+    // The HomeHub is the canonical landing post-login. It is mounted
+    // OUTSIDE `<RequireSucursal>`, so the picker must NOT take over.
+    expect(screen.getByTestId('home-hub')).toBeInTheDocument();
+    expect(screen.getByTestId('home-hub-card-sucursales')).toBeInTheDocument();
+    expect(screen.getByTestId('home-hub-card-catalogos')).toBeInTheDocument();
+    expect(screen.queryByTestId('sucursal-picker')).not.toBeInTheDocument();
   });
 
   it('renders the dashboard page on /dashboard when authenticated', () => {
@@ -96,7 +97,7 @@ describe('App (authenticated)', () => {
     expect(screen.getByTestId('chrome-sucursal-selector')).toBeInTheDocument();
   });
 
-  it('does NOT mount the chrome on / (picker is full-page)', () => {
+  it('does NOT mount the chrome on / (HomeHub is global, no branch selector)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -105,6 +106,7 @@ describe('App (authenticated)', () => {
       </Providers>,
     );
     expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
   });
 
   it('redirects /admin/usuarios to /gestion-usuarios', () => {

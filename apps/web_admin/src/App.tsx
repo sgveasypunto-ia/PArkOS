@@ -1,11 +1,13 @@
-import { Route, Routes, Navigate } from 'react-router-dom';
+import { Route, Routes, Navigate, Outlet } from 'react-router-dom';
 import { Login } from '@/features/auth/pages/Login';
 import { RequireAdmin } from '@/components/auth/RequireAdmin';
 import { RequireSucursal } from '@/components/auth/RequireSucursal';
 import { WaitForAuth } from '@/components/WaitForAuth';
 import { AdminChrome } from '@/components/chrome/AdminChrome';
+import HomeHub from '@/pages/HomeHub';
 import Dashboard from '@/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
+import CatalogPage from '@/features/catalogos/CatalogPage';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
@@ -29,12 +31,18 @@ import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/Con
  * still gated by `RequireAdmin` so an unauthenticated visitor never
  * sees it.
  *
- * `/` is a thin redirect to `/seleccionar-sucursal`: the picker is
- * the canonical landing for an authed admin. The previous `/` home
- * (`Home.tsx`, still on disk) is unused — kept for reference. The
- * chrome's logo and any other NavLink that pointed at `/` now reach
- * the picker, which matches the operator's decision to always
- * re-confirm the branch on entry.
+ * Global routes (`/`) sit in their own
+ * `<RequireAdmin><Outlet/></RequireAdmin>` group OUTSIDE the branch
+ * guard. They render without the `<AdminChrome />`, so no
+ * `SucursalSelectorBadge` and no `BranchSelector` are mounted — the
+ * admin reaches them on first login, before confirming a branch.
+ * The HomeHub links to `/seleccionar-sucursal` to opt into the
+ * branch-scoped surface.
+ *
+ * DEC-LOGIN-07 revisado: el post-login ya no fuerza
+ * `/seleccionar-sucursal`. El admin aterriza en `/` (HomeHub). La
+ * decisión previa (siempre re-confirmar sucursal) está revertida; el
+ * comentario histórico vive en `Login.tsx::getNextPath`.
  *
  * `/admin/usuarios` is kept as a permanent redirect to
  * `/gestion-usuarios` (PR1 of the admin redesign) so old links still
@@ -55,6 +63,22 @@ export default function App() {
           }
         />
 
+        {/* Global routes — auth required, NO branch required.
+            `Catalogos` is a tenant-global surface (DEC-CATALOG-01),
+            so it sits OUTSIDE `<RequireSucursal>` — pineado by
+            `App.test.tsx` "does NOT mount the chrome on /catalogos". */}
+        <Route
+          element={
+            <RequireAdmin>
+              <Outlet />
+            </RequireAdmin>
+          }
+        >
+          <Route path="/" element={<HomeHub />} />
+          <Route path="/catalogos" element={<CatalogPage />} />
+        </Route>
+
+        {/* Branch-scoped routes — auth + branch required, render inside AdminChrome. */}
         <Route
           element={
             <RequireAdmin>
@@ -64,7 +88,6 @@ export default function App() {
             </RequireAdmin>
           }
         >
-          <Route path="/" element={<Navigate to="/seleccionar-sucursal" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route
             path="/sucursales"

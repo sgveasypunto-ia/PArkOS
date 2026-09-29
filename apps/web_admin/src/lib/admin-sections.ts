@@ -48,6 +48,7 @@ export interface AdminSection {
   key:
     | 'dashboard'
     | 'sucursales'
+    | 'catalogos'
     | 'gestion-usuarios'
     | 'tarifas'
     | 'cupos'
@@ -77,6 +78,13 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     labelKey: 'home.section.sucursales.label',
     descriptionKey: 'home.section.sucursales.description',
     permission: null,
+  },
+  {
+    key: 'catalogos',
+    path: '/catalogos',
+    labelKey: 'home.section.catalogos.label',
+    descriptionKey: 'home.section.catalogos.description',
+    permission: 'config_catalogo',
   },
   {
     key: 'gestion-usuarios',

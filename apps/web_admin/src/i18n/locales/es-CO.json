@@ -119,6 +119,10 @@
         "label": "Modalidades de tarifa",
         "description": "Catálogo de modalidades (hora, fraccion, plena, nocturna). Edita los registros vigentes."
       },
+      "catalogos": {
+        "label": "Catálogos",
+        "description": "Editá los 9 catálogos globales (tipos de persona, vehículo, impuestos, etc.) en una sola pantalla."
+      },
       "configuracionTolerancias": {
         "label": "Tolerancias de caja",
         "description": "Default global y overrides por sucursal para las tolerancias de efectivo y datáfono."
@@ -132,6 +136,44 @@
         "description": "Log transaccional append-only con cadena hash verificable por sucursal."
       }
     }
+  },
+  "homeHub": {
+    "title": "Todo el parqueo, en un solo lugar",
+    "subtitle": "Elegí una sección para empezar.",
+    "open": "Abrir",
+    "sucursales": {
+      "label": "Sucursales",
+      "description": "Seleccioná una sucursal activa, o administrá el alta y los tokens de pairing."
+    },
+    "catalogos": {
+      "label": "Catálogos",
+      "description": "Editá los catálogos globales (tipos de vehículo, tarifas, impuestos, etc.) con histórico de versiones."
+    }
+  },
+  "catalogos": {
+    "title": "Catálogos",
+    "subtitle": "Editá los catálogos globales. \"Nueva versión\" publica un cambio sin perder la versión anterior.",
+    "tabsLabel": "Catálogos",
+    "newVersion": "Nueva versión",
+    "editAsNew": "Nueva versión",
+    "versioningNote": "Cada cambio publica una nueva versión; la anterior se cierra automáticamente.",
+    "loadError": "No se pudo cargar el catálogo.",
+    "loading": "Cargando…",
+    "empty": "Sin versiones vigentes.",
+    "submitError": "No se pudo guardar. Reintentá.",
+    "forbidden": "No tenés permiso para editar este catálogo.",
+    "errorUnknown": "Error desconocido",
+    "estado": "Estado",
+    "state": "Estado",
+    "vigente": "Vigente",
+    "noVigente": "No vigente",
+    "editRowAria": "Nueva versión basada en la fila {{uuid}}",
+    "dialogTitle": "Nueva versión",
+    "dialogCreateTitle": "Nueva {{label}}",
+    "dialogEditTitle": "Nueva versión de {{label}}",
+    "dialogDescription": "Creá una nueva versión. La actual se cierra automáticamente al guardar.",
+    "submit": "Nueva versión",
+    "required": "Requerido"
   },
   "tarifas": {
     "title": "Tarifas",
