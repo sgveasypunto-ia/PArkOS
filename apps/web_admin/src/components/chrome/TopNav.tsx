@@ -92,10 +92,7 @@ export function TopNav(): JSX.Element {
   };
 
   return (
-    <header
-      className="surface-translucent sticky top-0 z-40 border-b shadow-elevation-1"
-      data-testid="topnav"
-    >
+    <header data-testid="topnav">
       <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4">
         <Link
           to="/"
