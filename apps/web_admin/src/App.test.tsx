@@ -84,7 +84,7 @@ describe('App (authenticated)', () => {
     expect(screen.queryByTestId('sucursal-picker')).not.toBeInTheDocument();
   });
 
-  it('mounts the persistent chrome on protected routes (not on /)', () => {
+  it('mounts the persistent chrome AND the topnav on protected routes', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/dashboard']}>
@@ -92,12 +92,16 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
+    // AdminChrome still owns the section nav + branch selector.
     expect(screen.getByTestId('admin-chrome')).toBeInTheDocument();
     expect(screen.getByTestId('admin-logout')).toBeInTheDocument();
     expect(screen.getByTestId('chrome-sucursal-selector')).toBeInTheDocument();
+    // TopNav sits above it as the identity bar.
+    expect(screen.getByTestId('topnav')).toBeInTheDocument();
+    expect(screen.getByTestId('topnav-email')).toHaveTextContent('admin@parkos.local');
   });
 
-  it('does NOT mount the chrome on / (HomeHub is global, no branch selector)', () => {
+  it('mounts TopNav but NOT AdminChrome on / (HomeHub is global, no branch selector)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -107,6 +111,45 @@ describe('App (authenticated)', () => {
     );
     expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
     expect(screen.queryByTestId('chrome-sucursal-selector')).not.toBeInTheDocument();
+    // The identity bar is on every authed route.
+    expect(screen.getByTestId('topnav')).toBeInTheDocument();
+    expect(screen.getByTestId('topnav-email')).toHaveTextContent('admin@parkos.local');
+  });
+
+  it('mounts TopNav but NOT AdminChrome on /catalogos (global, no branch scope)', () => {
+    render(
+      <Providers>
+        <MemoryRouter initialEntries={['/catalogos']}>
+          <App />
+        </MemoryRouter>
+      </Providers>,
+    );
+    expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
+    expect(screen.getByTestId('topnav')).toBeInTheDocument();
+  });
+
+  it('mounts TopNav but NOT AdminChrome on /seleccionar-sucursal (authed picker)', () => {
+    render(
+      <Providers>
+        <MemoryRouter initialEntries={['/seleccionar-sucursal']}>
+          <App />
+        </MemoryRouter>
+      </Providers>,
+    );
+    expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
+    expect(screen.getByTestId('topnav')).toBeInTheDocument();
+  });
+
+  it('renders the /perfil placeholder inside the global authed group', () => {
+    render(
+      <Providers>
+        <MemoryRouter initialEntries={['/perfil']}>
+          <App />
+        </MemoryRouter>
+      </Providers>,
+    );
+    expect(screen.getByTestId('page-perfil')).toBeInTheDocument();
+    expect(screen.getByTestId('topnav')).toBeInTheDocument();
   });
 
   it('redirects /admin/usuarios to /gestion-usuarios', () => {

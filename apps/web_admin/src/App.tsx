@@ -4,9 +4,11 @@ import { RequireAdmin } from '@/components/auth/RequireAdmin';
 import { RequireSucursal } from '@/components/auth/RequireSucursal';
 import { WaitForAuth } from '@/components/WaitForAuth';
 import { AdminChrome } from '@/components/chrome/AdminChrome';
+import { TopNav } from '@/components/chrome/TopNav';
 import HomeHub from '@/pages/HomeHub';
 import Dashboard from '@/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
+import Perfil from '@/pages/Perfil';
 import CatalogPage from '@/features/catalogos/CatalogPage';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
@@ -39,6 +41,12 @@ import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/Con
  * The HomeHub links to `/seleccionar-sucursal` to opt into the
  * branch-scoped surface.
  *
+ * TopNav (identity: email + profile + logout) wraps EVERY authed
+ * group — global, picker, and branch-scoped alike. The `<AdminChrome />`
+ * keeps living inside the branch-scoped group and still owns the
+ * section nav and the `SucursalSelectorBadge`. The two bars share the
+ * same translucent surface so they read as a single two-row frame.
+ *
  * DEC-LOGIN-07 revisado: el post-login ya no fuerza
  * `/seleccionar-sucursal`. El admin aterriza en `/` (HomeHub). La
  * decisión previa (siempre re-confirmar sucursal) está revertida; el
@@ -58,6 +66,7 @@ export default function App() {
           path="/seleccionar-sucursal"
           element={
             <RequireAdmin>
+              <TopNav />
               <SeleccionarSucursal />
             </RequireAdmin>
           }
@@ -65,23 +74,30 @@ export default function App() {
 
         {/* Global routes — auth required, NO branch required.
             `Catalogos` is a tenant-global surface (DEC-CATALOG-01),
-            so it sits OUTSIDE `<RequireSucursal>` — pineado by
-            `App.test.tsx` "does NOT mount the chrome on /catalogos". */}
+            so it sits OUTSIDE `<RequireSucursal>`. The TopNav
+            wraps them so the operator always sees their identity +
+            logout even before picking a branch — pineado by
+            `App.test.tsx` "mounts TopNav but NOT AdminChrome on /". */}
         <Route
           element={
             <RequireAdmin>
+              <TopNav />
               <Outlet />
             </RequireAdmin>
           }
         >
           <Route path="/" element={<HomeHub />} />
           <Route path="/catalogos" element={<CatalogPage />} />
+          <Route path="/perfil" element={<Perfil />} />
         </Route>
 
-        {/* Branch-scoped routes — auth + branch required, render inside AdminChrome. */}
+        {/* Branch-scoped routes — auth + branch required, render inside AdminChrome.
+            TopNav wraps the whole branch-scoped group; AdminChrome
+            sits BELOW it as the second row with the section nav. */}
         <Route
           element={
             <RequireAdmin>
+              <TopNav />
               <RequireSucursal>
                 <AdminChrome />
               </RequireSucursal>

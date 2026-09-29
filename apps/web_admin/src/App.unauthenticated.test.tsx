@@ -72,4 +72,22 @@ describe('App (unauthenticated)', () => {
     );
     expect(screen.getByTestId('page-login')).toBeInTheDocument();
   });
+
+  it('does NOT mount the TopNav on /login (the auth guard fires first)', () => {
+    // Even though `/login` is the only route not wrapped in
+    // `<RequireAdmin>`, the TopNav is mounted ONLY inside the authed
+    // groups — `/login` is the explicit exception. Without an
+    // authenticated session there is no email to show and no session
+    // to log out of, so the bar must stay away.
+    render(
+      <Providers>
+        <MemoryRouter initialEntries={['/login']}>
+          <App />
+        </MemoryRouter>
+      </Providers>,
+    );
+    expect(screen.getByTestId('page-login')).toBeInTheDocument();
+    expect(screen.queryByTestId('topnav')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
+  });
 });

@@ -1,11 +1,17 @@
 /**
  * `HomeHub` — invariantes que el resto del repo no debe romper.
  *
- * H1/H2: el chrome con badge NO se monta acá. Si alguien mueve esta
- *        ruta adentro de `<RequireSucursal>` por simetría, el test falla.
+ * H1/H2: el chrome branch-scoped (con badge de sucursal) NO se monta acá.
+ *        Si alguien mueve esta ruta adentro de `<RequireSucursal>` por
+ *        simetría, el test falla.
  * H3:   cada card es un `<a>` real con href y nombre accesible.
  * H4:   el deep-link `?next=/ruta` sobrevive al login bounce
  *        cuando el guard nos manda a `/` (DEC-LOGIN-07 revisado).
+ *
+ * NOTA: la cobertura de `<TopNav />` montado en `/` vive en
+ * `App.test.tsx` ("mounts TopNav but NOT AdminChrome on /"). Este test
+ * mantiene la convencion de pinear invariantes de `HomeHub` en
+ * aislamiento, sin el `App` completo.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';

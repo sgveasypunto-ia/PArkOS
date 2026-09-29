@@ -504,5 +504,26 @@
       "tabla": "Tabla",
       "hashChain": "Hash chain"
     }
+  },
+  "topnav": {
+    "brand": "Parkos Admin",
+    "userMenu": "Menú de usuario",
+    "profile": "Mi perfil",
+    "settings": "Configuración",
+    "settingsSoon": "Próximamente",
+    "logout": "Cerrar sesión",
+    "signingOut": "Saliendo…"
+  },
+  "perfil": {
+    "title": "Mi perfil",
+    "subtitle": "Datos de tu cuenta.",
+    "identity": "Identidad",
+    "back": "Volver al inicio",
+    "row": {
+      "email": "Correo electrónico",
+      "rol": "Rol",
+      "uuid": "UUID",
+      "sucursales": "Sucursales autorizadas"
+    }
   }
 }
