@@ -614,6 +614,9 @@ async def test_cross_branch_operador_rejected_at_auth_layer() -> None:
         await get_tenant_ctx(
             request=request,
             x_sucursal_context=str(branch_y),
+            # ``get_tenant_ctx`` takes a session for the ``admin-`` scope
+            # read; the operador- path is pinned by JWT and never uses it.
+            session=AsyncMock(),
         )
     assert exc.value.status_code == 403
     assert exc.value.detail["error"] == "unauthorized_sucursal_context"

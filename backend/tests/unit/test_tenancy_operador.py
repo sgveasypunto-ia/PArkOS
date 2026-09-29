@@ -22,6 +22,7 @@ Scenarios:
 from __future__ import annotations
 
 import uuid as uuid_lib
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException, Request
@@ -71,14 +72,19 @@ async def test_operador_jwt_pinned_to_branch_succeeds_when_header_matches() -> N
     branch_uuid = uuid_lib.uuid4()
     token = _issue("operador", rol="operador", sucursal=str(branch_uuid))
     request = _build_request(token)
+    session = AsyncMock()
 
     ctx = await get_tenant_ctx(
         request=request,
         x_sucursal_context=str(branch_uuid),
+        session=session,
     )
     assert ctx.issuer_prefix == "operador-"
     assert ctx.sucursal_uuid == branch_uuid
     assert str(ctx.sucursal_uuid) == str(branch_uuid)
+    # ``get_tenant_ctx`` takes a session for the ``admin-`` scope read, but the
+    # operador- branch is pinned by JWT and must not query the DB.
+    session.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -90,7 +96,11 @@ async def test_operador_jwt_pinned_to_branch_succeeds_without_header() -> None:
     token = _issue("operador", rol="operador", sucursal=str(branch_uuid))
     request = _build_request(token)
 
-    ctx = await get_tenant_ctx(request=request, x_sucursal_context=None)
+    ctx = await get_tenant_ctx(
+        request=request,
+        x_sucursal_context=None,
+        session=AsyncMock(),
+    )
     assert ctx.issuer_prefix == "operador-"
     assert ctx.sucursal_uuid == branch_uuid
 
@@ -111,6 +121,7 @@ async def test_operador_jwt_header_mismatch_returns_403() -> None:
         await get_tenant_ctx(
             request=request,
             x_sucursal_context=str(branch_y),
+            session=AsyncMock(),
         )
     assert exc.value.status_code == 403
     assert exc.value.detail["error"] == "unauthorized_sucursal_context"
@@ -126,7 +137,11 @@ async def test_operador_jwt_missing_sucursal_claim_returns_401() -> None:
     request = _build_request(token)
 
     with pytest.raises(HTTPException) as exc:
-        await get_tenant_ctx(request=request, x_sucursal_context=None)
+        await get_tenant_ctx(
+            request=request,
+            x_sucursal_context=None,
+            session=AsyncMock(),
+        )
     assert exc.value.status_code == 401
 
 

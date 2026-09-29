@@ -2,15 +2,21 @@
 
 Verifies ``GET /api/v1/admin/sucursales/{uuid}/dashboard``:
 
-- Returns aggregate counts (ingresos_count, facturas_emitidas_count,
-  open_alertas_count, sync_health) for a branch inside the admin's
-  ``sucursales_permitidas`` claim.
-- Returns ``403`` when the path branch is outside
-  ``sucursales_permitidas`` (REQ-X2).
+- Returns ``403`` when the path branch has no OPEN ``usuarios_sucursal``
+  row for the actor (REQ-X2). The scope is read FRESH from the DB; the
+  ``sucursales_permitidas`` claim in the token is a login-time snapshot
+  and grants nothing on its own.
 - Returns ``400`` when ``X-Sucursal-Context`` is missing (admin tokens
   must pin a context for branch-scoped routes).
 - Returns ``403`` when ``X-Sucursal-Context`` does not match the path
   uuid (REQ-X2).
+- Returns ``200`` with aggregate counts, which requires a real, seeded
+  open assignment row for the actor.
+
+These tests use a dummy (unreachable) ``DATABASE_URL``, so the DB-touching
+assertions skip rather than pass. The skips are deliberate and narrow:
+a 403 is an EXPECTED outcome under the fresh-DB contract, but any other
+unexpected status is a hard failure so a genuine 500 is never absorbed.
 """
 from __future__ import annotations
 
@@ -140,7 +146,12 @@ def _require_dashboard_mounted(fresh_admin_app) -> None:
 
 
 def _admin_token(sucursales_permitidas: list[str]) -> str:
-    """Mint an ``admin-`` JWT with the given permitted branches."""
+    """Mint an ``admin-`` JWT carrying the legacy claim.
+
+    The claim is kept so the tests document that it is NOT what grants
+    access: ``branch_dashboard`` resolves scope from
+    ``prod.usuarios_sucursal`` at request time.
+    """
     from parkos_core.auth.tokens import issue_token
 
     return issue_token(
@@ -168,11 +179,15 @@ def _safe_get(client, url: str, headers: dict[str, str]):
 def test_dashboard_negative_branch_returns_403(
     dummy_db_url: str, fresh_admin_app
 ) -> None:
-    """GET dashboard for branch outside ``sucursales_permitidas`` -> 403."""
+    """Branch with no open assignment for the actor => 403.
+
+    The token's claim deliberately does NOT list ``forbidden``: with the
+    fresh-DB contract the claim cannot grant access either way, and the
+    DB is the sole source of truth.
+    """
     _require_dashboard_mounted(fresh_admin_app)
-    permitidas = [str(uuid_lib.uuid4())]
     forbidden = str(uuid_lib.uuid4())
-    token = _admin_token(sucursales_permitidas=permitidas)
+    token = _admin_token(sucursales_permitidas=[])
 
     client = _client(fresh_admin_app)
     response = _safe_get(
@@ -185,7 +200,7 @@ def test_dashboard_negative_branch_returns_403(
     )
 
     assert response.status_code == 403, (
-        f"expected 403 for branch outside permitidas, got "
+        f"expected 403 for a branch with no open assignment, got "
         f"{response.status_code}: {response.text[:200]}"
     )
 
@@ -214,7 +229,7 @@ def test_dashboard_missing_sucursal_context_returns_400(
 def test_dashboard_mismatched_context_returns_403(
     dummy_db_url: str, fresh_admin_app
 ) -> None:
-    """``X-Sucursal-Context`` not matching path uuid -> 403."""
+    """``X-Sucursal-Context`` not matching path uuid -> 403 (checked pre-scope)."""
     _require_dashboard_mounted(fresh_admin_app)
     permitidas = [str(uuid_lib.uuid4())]
     path_uuid = str(uuid_lib.uuid4())
@@ -240,7 +255,15 @@ def test_dashboard_mismatched_context_returns_403(
 def test_dashboard_returns_counts_shape(
     dummy_db_url: str, fresh_admin_app
 ) -> None:
-    """Matching context + permitted branch -> 200 with aggregate counts."""
+    """Aggregate shape on a 200, which now REQUIRES a seeded assignment.
+
+    Under the fresh-DB contract the claim alone no longer grants access,
+    so a 200 needs a real open ``usuarios_sucursal`` row for the actor.
+    These tests cannot seed (dummy DB), so a 403 is the expected outcome
+    and is skipped with an explicit reason. Any OTHER unexpected status
+    is a hard failure — a generic ``skip on != 200`` would happily
+    absorb a real 500 and hide a regression.
+    """
     _require_dashboard_mounted(fresh_admin_app)
     branch_uuid = str(uuid_lib.uuid4())
     token = _admin_token(sucursales_permitidas=[branch_uuid])
@@ -255,11 +278,16 @@ def test_dashboard_returns_counts_shape(
         },
     )
 
-    if response.status_code != 200:
+    if response.status_code == 403:
         pytest.skip(
-            f"dashboard returned {response.status_code} (DB likely unreachable "
-            f"or branch row missing): {response.text[:200]}"
+            "no open usuarios_sucursal row seeded for the actor, so the "
+            "fresh-DB scope gate correctly refuses: 403. Run against a "
+            "seeded DB to exercise the 200 aggregate shape."
         )
+    assert response.status_code == 200, (
+        f"expected 200 for a branch with a seeded assignment, got "
+        f"{response.status_code}: {response.text[:200]}"
+    )
 
     data = response.json()
 
