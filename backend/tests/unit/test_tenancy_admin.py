@@ -176,12 +176,18 @@ class TestAdminTenantDependency:
         return stub
 
     @pytest.mark.asyncio
-    async def test_missing_x_sucursal_context_returns_400(
+    async def test_missing_x_sucursal_context_returns_global_mode(
         self, monkeypatch
     ) -> None:
-        """admin- token without ``X-Sucursal-Context`` => 400 missing_sucursal_context."""
-        from parkos_core.auth.tenancy import get_tenant_ctx
+        """admin- token without ``X-Sucursal-Context`` => global mode (sucursal_uuid=None).
 
+        Global endpoints (``/empresa/empresa``, ``/catalogos/*``) don't need a
+        branch selected, so the header is optional. The request runs without a
+        tenant filter. Endpoints that DO require a branch use
+        ``requires_sucursal`` (tested separately) to raise 400.
+        """
+        from parkos_core.auth.tenancy import get_tenant_ctx
+        
         permitidas = [uuid_lib.uuid4()]
         token = _issue(
             "admin",
@@ -190,15 +196,15 @@ class TestAdminTenantDependency:
         )
         request = _build_request(token)
         self._patch_scope(monkeypatch, permitidas)
-
-        with pytest.raises(HTTPException) as exc:
-            await get_tenant_ctx(
-                request=request,
-                x_sucursal_context=None,
-                session=AsyncMock(),
-            )
-        assert exc.value.status_code == 400
-        assert exc.value.detail["error"] == "missing_sucursal_context"
+        
+        ctx = await get_tenant_ctx(
+            request=request,
+            x_sucursal_context=None,
+            session=AsyncMock(),
+        )
+        
+        assert ctx.sucursal_uuid is None
+        assert ctx.actor_rol == "admin"
 
     @pytest.mark.asyncio
     async def test_header_not_in_permitidas_returns_403(
@@ -350,3 +356,49 @@ class TestAdminTenantDependency:
             await dep(request)
         assert exc.value.status_code == 401
         assert exc.value.detail["error"] == "wrong_issuer"
+
+
+# ---------------------------------------------------------------------------
+# requires_sucursal — endpoints that MUST have a branch selected
+# ---------------------------------------------------------------------------
+
+
+class TestRequiresSucursal:
+    """``requires_sucursal`` raises 400 when ``ctx.sucursal_uuid is None``.
+
+    Global endpoints (``/empresa/empresa``, ``/catalogos/*``) don't use this
+    dependency — they accept ``sucursal_uuid=None``. Branch-scoped endpoints
+    (``/empresa/tarifas-sucursal``, ``/empresa/cantidad-vehiculos-sucursal``)
+    do use it, so a request without ``X-Sucursal-Context`` gets a clear 400
+    instead of a cryptic downstream error.
+    """
+
+    def test_global_mode_raises_400(self) -> None:
+        """``requires_sucursal`` on a global-mode context => 400."""
+        from parkos_core.auth.tenancy import TenantContext, requires_sucursal
+
+        ctx = TenantContext(
+            actor_uuid=uuid_lib.uuid4(),
+            actor_rol="admin",
+            issuer_prefix="admin-",
+            sucursal_uuid=None,  # global mode
+        )
+        with pytest.raises(HTTPException) as exc:
+            requires_sucursal(ctx)
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"] == "missing_sucursal_context"
+
+    def test_branch_mode_passes_through(self) -> None:
+        """``requires_sucursal`` on a branch-scoped context => returns ctx."""
+        from parkos_core.auth.tenancy import TenantContext, requires_sucursal
+
+        branch_uuid = uuid_lib.uuid4()
+        ctx = TenantContext(
+            actor_uuid=uuid_lib.uuid4(),
+            actor_rol="admin",
+            issuer_prefix="admin-",
+            sucursal_uuid=branch_uuid,
+        )
+        result = requires_sucursal(ctx)
+        assert result is ctx
+        assert result.sucursal_uuid == branch_uuid

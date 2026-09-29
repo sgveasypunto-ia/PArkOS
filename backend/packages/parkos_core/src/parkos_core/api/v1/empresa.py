@@ -84,7 +84,7 @@ from ...schemas.empresa import (
     TarifasSucursalUpdate,
 )
 from ..deps import get_session, get_tenant_ctx, requires_issuer
-from ..auth.tenancy import requires_sucursal
+from ...auth.tenancy import requires_sucursal
 from ..router_factory import make_router
 
 router = APIRouter(prefix="/empresa", tags=["empresa"])
@@ -411,7 +411,7 @@ async def list_tarifas_sucursal_vigente_en(
         ),
     ),
     session: AsyncSession = Depends(get_session),
-    _ctx: TenantContext = Depends(get_tenant_ctx),
+    _ctx: TenantContext = Depends(requires_sucursal),
     _claims: None = Depends(_tarifas_issuer_dep),
 ) -> TarifasSucursalReadList:
     """HU-F1.4 — bi-temporal ``GET /empresa/tarifas-sucursal``.
@@ -443,7 +443,7 @@ async def get_tarifa_sucursal_by_uuid(
         description="UUIDv4 de la fila de prod.tarifas_sucursal a leer.",
     ),
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
     _claims: None = Depends(_tarifas_issuer_dep),
 ) -> TarifasSucursalRead:
     """HU-F1.4 / CU-02 (operador, 2026-09-22): detalle de una tarifa específica.
@@ -541,7 +541,7 @@ _tarifas_pr_c_router = APIRouter(prefix="/tarifas-sucursal", tags=["tarifas-sucu
 async def create_tarifa_pr_c(
     payload: TarifasSucursalCreate,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
     _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
 ) -> TarifasSucursalRead:
     """PR-C POST: opens a new version with overlap guard.
@@ -613,7 +613,7 @@ async def update_tarifa_pr_c(
     payload: TarifasSucursalUpdate,
     uuid: uuid_lib.UUID = Path(...),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
     _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
 ) -> TarifasSucursalRead:
     """PR-C PUT: close+insert with overlap guard and sucursal-inmutable.
@@ -710,7 +710,7 @@ async def get_tarifa_by_key_history_pr_c(
     tipo_vehiculo: uuid_lib.UUID | None = Query(None),  # noqa: B008
     tipo_tarifa: uuid_lib.UUID | None = Query(None),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
     _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
 ) -> list[TarifasSucursalRead]:
     """PR-C by-key / history: walk the bi-temporal version chain by business key.
@@ -756,7 +756,7 @@ _cantidad_pr_c_router = APIRouter(
 async def create_cantidad_pr_c(
     payload: CantidadVehiculosSucursalCreate,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
     _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
 ) -> CantidadVehiculosSucursalRead:
     """PR-C POST: opens a new cantidad version with overlap guard."""
@@ -812,7 +812,7 @@ async def update_cantidad_pr_c(
     payload: CantidadVehiculosSucursalUpdate,
     uuid: uuid_lib.UUID = Path(...),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
     _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
 ) -> CantidadVehiculosSucursalRead:
     """PR-C PUT: close+insert with overlap, sucursal-inmutable, and
@@ -939,7 +939,7 @@ async def get_cantidad_by_key_history_pr_c(
     sucursal: uuid_lib.UUID = Query(...),  # noqa: B008
     tipo_vehiculo: uuid_lib.UUID | None = Query(None),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
     _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
 ) -> list[CantidadVehiculosSucursalRead]:
     """PR-C by-key / history for cantidad."""
