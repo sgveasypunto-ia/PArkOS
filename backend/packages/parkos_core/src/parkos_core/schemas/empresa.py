@@ -295,13 +295,26 @@ class TarifasSucursalCreate(_Base):
     * ``valor > 0``, ``valor_plena >= 0``: enforced via Pydantic
       constraints so a malformed payload is rejected at the API edge
       instead of leaking through to the DB.
+    * ``uuid_tipo_vehiculo`` and ``uuid_tipo_tarifa`` are REQUIRED
+      (non-null). The cell-key
+      ``(uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa)`` is
+      what identifies a tarifa; the "Cualquiera x Cualquiera" /
+      "Cualquiera x hora" / "carro x Cualquiera" cells were the legacy
+      surface where any vehicle or modality matched. The 2026-09-29 UX
+      sweep removed that surface from the admin UI (the CREATE selects
+      no longer offer a null option, EDIT locks the tipo fields), and
+      this schema mirrors the rule at the API edge so direct API
+      callers (curl, Postman, sync-agent) can't bypass it. Historical
+      rows with null tipos still exist in the DB and remain visible via
+      the read endpoints (``TarifaSucursalRead`` keeps both fields
+      nullable for that reason) — only writes are strict.
     """
 
     uuid_sucursal: uuid_lib.UUID | None = None
-    uuid_tipo_vehiculo: uuid_lib.UUID | None = None
-    uuid_tipo_tarifa: uuid_lib.UUID | None = None
-    valor: Decimal | None = Field(default=None, gt=Decimal("0"))
-    valor_plena: Decimal | None = Field(default=None, ge=Decimal("0"))
+    uuid_tipo_vehiculo: uuid_lib.UUID
+    uuid_tipo_tarifa: uuid_lib.UUID
+    valor: Decimal | None = Field(default=None, gt=Decimal(0))
+    valor_plena: Decimal | None = Field(default=None, ge=Decimal(0))
     vigente_desde: datetime | None = None
 
 
@@ -314,13 +327,19 @@ class TarifasSucursalUpdate(_Base):
     with adjacent windows). The handler also enforces
     ``uuid_sucursal`` immutability (422 if the payload differs from
     the existing row).
+
+    Both tipo fields stay REQUIRED on UPDATE for the same reason as
+    on Create — the tarifa cell-key is fixed at creation, and any
+    change to the tipo tuple would actually create a new tarifa in a
+    different cell (which the operator should do via CREATE, not
+    EDIT). The admin UI locks both fields in EDIT to mirror this rule.
     """
 
     uuid_sucursal: uuid_lib.UUID | None = None
-    uuid_tipo_vehiculo: uuid_lib.UUID | None = None
-    uuid_tipo_tarifa: uuid_lib.UUID | None = None
-    valor: Decimal | None = Field(default=None, gt=Decimal("0"))
-    valor_plena: Decimal | None = Field(default=None, ge=Decimal("0"))
+    uuid_tipo_vehiculo: uuid_lib.UUID
+    uuid_tipo_tarifa: uuid_lib.UUID
+    valor: Decimal | None = Field(default=None, gt=Decimal(0))
+    valor_plena: Decimal | None = Field(default=None, ge=Decimal(0))
     vigente_desde: datetime | None = None
 
 
