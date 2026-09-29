@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import select
@@ -35,6 +36,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext
+from ...db.tenancy import (
+    extract_sucursales_permitidas,
+    extract_sucursales_permitidas_fresh,
+)
 from ...models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
 from ...models.V.documentos import Documentos
 from ...models.V.empresa import Empresa
@@ -99,6 +104,207 @@ _ROUTER_CONFIG = {
 # values are the APIRouters returned by ``make_router``. Populated below by
 # ``_mount_empresa``.
 _SUB_ROUTERS: dict[str, APIRouter] = {}
+
+
+# ---------------------------------------------------------------------------
+# fix/catalog-sucursal-global-reads — ``GET /empresa/sucursal`` tenant-free
+# ---------------------------------------------------------------------------
+#
+# ``prod.sucursal`` is the BRANCH DIRECTORY: it carries ``uuid_sucursal``
+# (every row IS a branch), but the table itself is conceptually global —
+# admin-issued pairing tokens and the BranchSelector both need the list
+# before any branch is selected. The factory sub-router at
+# ``/empresa/sucursal`` injects ``get_tenant_ctx`` and therefore requires
+# ``X-Sucursal-Context`` for ``admin-`` tokens — which broke the
+# ``<SeleccionarSucursal>`` tab "Administrar" and the admin user-management
+# assignee dropdown (``features/admin/components/AdminUsuarioSucursalesManager.tsx:8``
+# and the related ``useSWR('/api/v1/empresa/sucursal?limit=200')`` calls in
+# cupos / tarifas / configuracion-* pages — all reachable before branch
+# selection).
+#
+# Carve-out: register a dedicated sub-router for the 3 read endpoints
+# (list, by-uuid, history) WITHOUT ``get_tenant_ctx``, BEFORE the factory
+# mount for the same resource. POST/PUT remain on the factory sub-router
+# (writes stay tenant-scoped — defence in depth).
+#
+# What the carve-out does NOT do: drop authorization. Only the HEADER
+# requirement goes away; the result set is still bounded to the caller's
+# own branches by :func:`_permitted_sucursal_uuids`. "Global" here means
+# "does not need a branch selected", never "sees every branch".
+#
+# Mirrors the HU-F1.4 dedicated-tarifas pattern: a separate APIRouter
+# registered ahead of the factory sub-router so FastAPI's first-match
+# resolver picks the dedicated handler for the read paths.
+_sucursal_global_reads_issuer_dep = requires_issuer("admin-", "operador-")
+_sucursal_global_reads_router = APIRouter(prefix="/sucursal", tags=["sucursal"])
+
+
+async def _permitted_sucursal_uuids(
+    session: AsyncSession,
+    claims: Any,
+) -> list[uuid_lib.UUID]:
+    """Resolve which branches the caller may read in the directory.
+
+    Dropping ``get_tenant_ctx`` from these handlers removes the HEADER
+    requirement, NOT the authorization requirement. The directory still
+    has to be bounded to the caller's own branches, otherwise any
+    ``admin-`` token could enumerate every branch in the installation
+    (name, NIT, address) — a cross-tenant leak. ``AGENTS.md`` lists
+    "Tenant scope leak in admin JWT" as a HIGH risk whose mitigation is
+    enforcing ``sucursales_permitidas`` on every call.
+
+    - ``admin-`` → read ``prod.usuarios_sucursal`` FRESH, mirroring
+      :func:`~parkos_core.api.v1.admin_views.list_sucursales`. The JWT
+      claim is a login-time snapshot, so a branch created since login
+      would be invisible in the picker and a revoked assignment would
+      linger until the token expires.
+    - ``operador-`` → the claim list, which the login handler pins to the
+      operator's own single branch. A ``usuarios_sucursal`` read would
+      fail closed for an operator with no admin assignment rows.
+
+    An empty result means the caller sees nothing (fail closed, per
+    ``db.tenancy.apply_admin_scope``).
+    """
+    if str(claims.get("iss", "")).startswith("admin-"):
+        return await extract_sucursales_permitidas_fresh(
+            session, actor_uuid=uuid_lib.UUID(str(claims["sub"]))
+        )
+    return extract_sucursales_permitidas(claims)
+
+
+@_sucursal_global_reads_router.get("", response_model=SucursalReadList)
+async def list_sucursal_global(
+    cursor: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    _claims: None = Depends(_sucursal_global_reads_issuer_dep),
+) -> SucursalReadList:
+    """Header-free directory of branches, bounded to the caller's scope.
+
+    Reads no longer require ``X-Sucursal-Context`` (the FE branch picker
+    and the assignee dropdowns run before any branch is selected), but the
+    result set is still restricted to the caller's permitted branches via
+    :func:`_permitted_sucursal_uuids`. Cursor pagination + limit mirror the
+    factory contract so the FE ``useSWR('/api/v1/empresa/sucursal?limit=200')``
+    callers (``SeleccionarSucursal``, ``Cupos``, ``Tarifas``,
+    ``ConfiguracionTolerancias``, ``AdminUsuarioSucursalesManager``)
+    can paginate as if it were the factory endpoint.
+    """
+    from ...repo.pagination import (
+        Cursor as _Cursor,
+        InvalidCursorError,
+        decode as _cursor_decode,
+        encode as _cursor_encode,
+    )
+
+    permitidas = await _permitted_sucursal_uuids(session, _claims)
+    if not permitidas:
+        # Fail closed: a caller with no permitted branch sees nothing.
+        return SucursalReadList(items=[], next_cursor=None)
+
+    try:
+        decoded = _cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(e)},
+        )
+    stmt = (
+        select(Sucursal)
+        .where(
+            Sucursal.vigente_hasta.is_(None),
+            Sucursal.uuid.in_(permitidas),
+        )
+        .order_by(Sucursal.vigente_desde.desc(), Sucursal.uuid.asc())
+    )
+    if decoded is not None:
+        cursor_ts = datetime.fromisoformat(decoded.vigente_desde)
+        if cursor_ts.tzinfo is not None:
+            cursor_ts = cursor_ts.replace(tzinfo=None)
+        stmt = stmt.where(
+            (Sucursal.vigente_desde < cursor_ts)
+            | (
+                (Sucursal.vigente_desde == cursor_ts)
+                & (Sucursal.uuid > uuid_lib.UUID(decoded.uuid))
+            )
+        )
+    stmt = stmt.limit(limit + 1)
+    rows = list((await session.execute(stmt)).scalars().all())
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = _cursor_encode(
+            _Cursor(
+                vigente_desde=last.vigente_desde.isoformat(),
+                created_at=None,
+                uuid=str(last.uuid),
+            )
+        )
+    items = [SucursalRead.model_validate(r) for r in rows]
+    return SucursalReadList(items=items, next_cursor=next_cursor)
+
+
+@_sucursal_global_reads_router.get(
+    "/{uuid}",
+    response_model=SucursalRead,
+    responses={404: {"description": "sucursal_no_encontrada"}},
+)
+async def get_sucursal_global(
+    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _claims: None = Depends(_sucursal_global_reads_issuer_dep),
+) -> SucursalRead:
+    """Header-free read of a single branch by uuid (vigente version)."""
+    permitidas = await _permitted_sucursal_uuids(session, _claims)
+    if uuid not in permitidas:
+        # 404, not 403: a non-permitted branch must be indistinguishable
+        # from one that does not exist.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sucursal_no_encontrada", "uuid": str(uuid)},
+        )
+    row = await current_version(session, Sucursal, uuid)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sucursal_no_encontrada", "uuid": str(uuid)},
+        )
+    return SucursalRead.model_validate(row)
+
+
+@_sucursal_global_reads_router.get(
+    "/{uuid}/history",
+    response_model=list[SucursalRead],
+    responses={404: {"description": "sucursal_no_encontrada"}},
+)
+async def get_sucursal_history_global(
+    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _claims: None = Depends(_sucursal_global_reads_issuer_dep),
+) -> list[SucursalRead]:
+    """Header-free bi-temporal history of a branch (all versions)."""
+    permitidas = await _permitted_sucursal_uuids(session, _claims)
+    if uuid not in permitidas:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sucursal_no_encontrada", "uuid": str(uuid)},
+        )
+    stmt = (
+        select(Sucursal)
+        .where(Sucursal.uuid == uuid)
+        .order_by(Sucursal.vigente_desde.desc())
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return [SucursalRead.model_validate(r) for r in rows]
+
+
+# Register the dedicated reads on the aggregated ``router`` (backward-compat
+# direct imports) AND in ``_SUB_ROUTERS`` so the v1 package picks them up.
+# Both insertions happen BEFORE the factory mount for ``sucursal`` below so
+# FastAPI's first-match resolver picks the dedicated handlers.
+router.include_router(_sucursal_global_reads_router)
+_SUB_ROUTERS["sucursal__dedicated_global_reads"] = _sucursal_global_reads_router
 
 
 def _mount_empresa(
@@ -771,6 +977,12 @@ for _pr_c_key in (
     "tarifas-sucursal__dedicated_hu_f1_4",
     "tarifas-sucursal__dedicated_pr_c",
     "cantidad-vehiculos-sucursal__dedicated_pr_c",
+    # fix/catalog-sucursal-global-reads: the global-reads router was
+    # added to _SUB_ROUTERS above the factory mount, but list it here
+    # explicitly so the ordering stays correct if a future PR reorders
+    # the insertion block. POST/PUT keep flowing through the factory
+    # sub-router (tenant-scoped writes).
+    "sucursal__dedicated_global_reads",
 ):
     if _pr_c_key in _SUB_ROUTERS:
         _reordered[_pr_c_key] = _SUB_ROUTERS[_pr_c_key]
