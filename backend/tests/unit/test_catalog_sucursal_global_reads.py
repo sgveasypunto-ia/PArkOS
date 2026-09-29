@@ -42,6 +42,8 @@ which already verifies branch switching in the admin app):
 from __future__ import annotations
 
 import uuid as uuid_lib
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -456,3 +458,285 @@ class TestGlobalReadsHTTPSmoke:
         )
         body = r.json()
         assert body == {"items": [], "next_cursor": None}
+
+
+# ---------------------------------------------------------------------------
+# Scope enforcement — the carve-out removes the HEADER requirement, not the
+# authorization requirement. ``/empresa/sucursal`` is still bounded to the
+# caller's permitted branches. Tests below pin that contract so a future
+# refactor cannot silently turn the directory into a cross-tenant leak.
+# ---------------------------------------------------------------------------
+
+
+def _statement_entity_name(stmt: Any) -> str | None:
+    """Return the ORM entity class name targeted by ``stmt``, if any.
+
+    SQLAlchemy's :attr:`ColumnCollection.column_descriptions` exposes the
+    source ``Mapped`` entity for every column originated from an ORM
+    descriptor. ``select(UsuariosSucursal.uuid_sucursal)`` and
+    ``select(Sucursal)`` both populate it, which is enough to tell the
+    two queries apart in a fake session.
+    """
+    for desc in getattr(stmt, "column_descriptions", []) or []:
+        if not isinstance(desc, dict):
+            continue
+        entity = desc.get("entity")
+        if entity is not None:
+            return getattr(entity, "__name__", None)
+    return None
+
+
+class _ScopeFakeSession:
+    """Session that serves ``UsuariosSucursal`` and ``Sucursal`` queries.
+
+    Any other query — e.g. ``current_version`` invoked for a UUID that
+    should have been short-circuited — raises. That makes the
+    "the handler returned 404 without ever touching the Sucursal table"
+    property visible as a test failure rather than a silent green.
+    """
+
+    def __init__(
+        self,
+        *,
+        permitted: list[Any],
+        sucursal_rows: list[Any] | None = None,
+    ) -> None:
+        self._permitted = list(permitted)
+        self._rows = list(sucursal_rows or [])
+
+    async def execute(self, stmt: Any) -> Any:
+        entity = _statement_entity_name(stmt)
+        if entity == "UsuariosSucursal":
+            scalars = self._permitted
+        elif entity == "Sucursal":
+            scalars = self._rows
+        else:
+            raise AssertionError(
+                f"_ScopeFakeSession.execute: unexpected entity {entity!r} "
+                "for stmt; the security property requires the handler to "
+                "short-circuit BEFORE this query is reached."
+            )
+
+        class _Scalars:
+            def __init__(self, items: list[Any]) -> None:
+                self._items = items
+
+            def all(self) -> list[Any]:
+                return list(self._items)
+
+            def first(self) -> Any | None:
+                return self._items[0] if self._items else None
+
+        class _Result:
+            def __init__(self, items: list[Any]) -> None:
+                self._items = items
+
+            def scalars(self) -> Any:
+                return _Scalars(self._items)
+
+        return _Result(scalars)
+
+    async def commit(self) -> None:
+        return None
+
+    async def refresh(self, obj: Any) -> None:
+        return None
+
+
+def _install_scope_patches(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    app: Any,
+    permitted: list[Any],
+    rows: list[Any] | None = None,
+    iss_claim: str = "admin-test",
+) -> dict[str, Any]:
+    """Wire a minimal app with the scope-enforcing fake session.
+
+    Returns the claim dict so the test can assert against it.
+    """
+    import uuid as _uuid
+
+    from parkos_core.auth.tenancy import TenantContext, get_tenant_ctx
+    from parkos_core.db.engine import get_session
+
+    actor_uuid = _uuid.uuid4()
+    claim: dict[str, Any] = {
+        "iss": iss_claim,
+        "sub": str(actor_uuid),
+        "rol": "admin",
+        "sucursales_permitidas": [],  # stale snapshot — ignored on admin-
+    }
+
+    async def fake_verify_jwt(request: Any) -> dict[str, Any]:
+        return claim
+
+    async def fake_get_session() -> Any:
+        return _ScopeFakeSession(permitted=permitted, sucursal_rows=rows or [])
+
+    async def fake_get_tenant_ctx(*args: Any, **kwargs: Any) -> TenantContext:
+        return TenantContext(
+            actor_uuid=actor_uuid,
+            actor_rol="admin",
+            issuer_prefix="admin-",
+            sucursal_uuid=None,
+        )
+
+    app.dependency_overrides[get_session] = fake_get_session
+    app.dependency_overrides[get_tenant_ctx] = fake_get_tenant_ctx
+
+    import parkos_core.auth.jwt_issuer_guard as _gj
+    import parkos_core.auth.permissions as _pj
+    import parkos_core.auth.tenancy as _tj
+
+    monkeypatch.setattr(_gj, "verify_jwt", fake_verify_jwt)
+    monkeypatch.setattr(_pj, "verify_jwt", fake_verify_jwt)
+    monkeypatch.setattr(_tj, "verify_jwt", fake_verify_jwt)
+
+    return claim
+
+
+class TestEmpresaSucursalScopeEnforced:
+    """The directory is still bounded to the caller's permitted branches.
+
+    Dropping the ``X-Sucursal-Context`` requirement was a HEADER change,
+    not an authorization change. ``AGENTS.md`` lists "Tenant scope leak
+    in admin JWT" as a HIGH risk whose mitigation is enforcing
+    ``sucursales_permitidas`` on every call. These tests fail closed if
+    a future refactor removes that filter from any of the 3 read
+    handlers.
+    """
+
+    @pytest.fixture
+    def scoped_app(self, monkeypatch: pytest.MonkeyPatch):
+        from fastapi import FastAPI
+
+        from parkos_core.api.v1.empresa import router as empresa_router
+
+        app = FastAPI()
+        app.include_router(empresa_router, prefix="/api/v1")
+        return app
+
+    @pytest.mark.asyncio
+    async def test_list_returns_empty_when_caller_has_no_permitted_branches(
+        self, monkeypatch: pytest.MonkeyPatch, scoped_app: Any
+    ) -> None:
+        """``admin-`` with no ``usuarios_sucursal`` rows must see NOTHING.
+
+        Fail closed: the directory is part of the auth boundary, so a
+        caller who has not been assigned a branch cannot enumerate the
+        directory. ``db.tenancy.apply_admin_scope`` documents the same
+        contract for the factory path.
+        """
+        import httpx
+
+        _install_scope_patches(
+            monkeypatch, app=scoped_app, permitted=[], rows=[]
+        )
+        transport = httpx.ASGITransport(app=scoped_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t"
+        ) as client:
+            r = await client.get("/api/v1/empresa/sucursal?limit=200")
+        assert r.status_code == 200, r.text
+        assert r.json() == {"items": [], "next_cursor": None}
+
+    @pytest.mark.asyncio
+    async def test_list_with_no_permitted_does_not_touch_sucursal_table(
+        self, monkeypatch: pytest.MonkeyPatch, scoped_app: Any
+    ) -> None:
+        """Fail-closed path must NOT execute the ``Sucursal`` SELECT.
+
+        Defence in depth: even if the table is poisoned with extra rows,
+        an admin with no assignments must never read them. The fake
+        session raises if the handler reaches ``select(Sucursal)`` while
+        the permitted set is empty — that turns a silent leak into a
+        visible regression.
+        """
+        import httpx
+
+        _install_scope_patches(
+            monkeypatch,
+            app=scoped_app,
+            permitted=[],
+            rows=[_build_fake_sucursal()],  # would leak if handler ran the SELECT
+        )
+        transport = httpx.ASGITransport(app=scoped_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t"
+        ) as client:
+            r = await client.get("/api/v1/empresa/sucursal")
+        assert r.status_code == 200
+        assert r.json() == {"items": [], "next_cursor": None}
+
+    @pytest.mark.asyncio
+    async def test_detail_of_non_permitted_branch_returns_404(
+        self, monkeypatch: pytest.MonkeyPatch, scoped_app: Any
+    ) -> None:
+        """Detail must NOT leak whether a UUID exists outside scope.
+
+        A non-permitted UUID is indistinguishable from a non-existent
+        one (``404 sucursal_no_encontrada``), so an attacker cannot use
+        the endpoint as a directory-discovery oracle. The fake session
+        raises if the handler reaches ``current_version(Sucursal, ...)``
+        for a UUID outside the permitted set.
+        """
+        import httpx
+
+        permitted = [uuid_lib.uuid4()]
+        non_permitted = uuid_lib.uuid4()
+        _install_scope_patches(
+            monkeypatch,
+            app=scoped_app,
+            permitted=permitted,
+            rows=[],  # empty — must not be queried
+        )
+        transport = httpx.ASGITransport(app=scoped_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t"
+        ) as client:
+            r = await client.get(f"/api/v1/empresa/sucursal/{non_permitted}")
+        assert r.status_code == 404, r.text
+        body = r.json()
+        assert body["detail"]["error"] == "sucursal_no_encontrada"
+        assert body["detail"]["uuid"] == str(non_permitted)
+
+    @pytest.mark.asyncio
+    async def test_history_of_non_permitted_branch_returns_404(
+        self, monkeypatch: pytest.MonkeyPatch, scoped_app: Any
+    ) -> None:
+        """History endpoint inherits the same 404 short-circuit."""
+        import httpx
+
+        permitted = [uuid_lib.uuid4()]
+        non_permitted = uuid_lib.uuid4()
+        _install_scope_patches(
+            monkeypatch,
+            app=scoped_app,
+            permitted=permitted,
+            rows=[],
+        )
+        transport = httpx.ASGITransport(app=scoped_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t"
+        ) as client:
+            r = await client.get(
+                f"/api/v1/empresa/sucursal/{non_permitted}/history"
+            )
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"]["error"] == "sucursal_no_encontrada"
+
+
+def _build_fake_sucursal() -> Any:
+    """Build a minimal Sucursal-shaped object for the ``Sucursal`` SELECT.
+
+    Only fields the handler reads before model_validate are populated;
+    the model_validate step itself is bypassed because the test
+    ``test_list_with_no_permitted_does_not_touch_sucursal_table`` must
+    prove the handler never reaches the Sucursal SELECT.
+    """
+    return SimpleNamespace(
+        uuid=uuid_lib.uuid4(),
+        vigente_desde=datetime.now(UTC),
+        vigente_hasta=None,
+    )
