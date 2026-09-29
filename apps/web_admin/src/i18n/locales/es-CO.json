@@ -133,6 +133,19 @@
       }
     }
   },
+  "homeHub": {
+    "title": "Todo el parqueo, en un solo lugar",
+    "subtitle": "Elegí una sección para empezar.",
+    "open": "Abrir",
+    "sucursales": {
+      "label": "Sucursales",
+      "description": "Seleccioná una sucursal activa, o administrá el alta y los tokens de pairing."
+    },
+    "catalogos": {
+      "label": "Catálogos",
+      "description": "Editá los catálogos globales (tipos de vehículo, tarifas, impuestos, etc.) con histórico de versiones."
+    }
+  },
   "tarifas": {
     "title": "Tarifas",
     "new": "Nueva tarifa",

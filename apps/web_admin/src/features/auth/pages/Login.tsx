@@ -9,11 +9,18 @@
  * Doesn't own: layout, chrome, logo, a11y labels — those live in
  * the presentational `<LoginForm />` (DEC-F3.1-02 mirror).
  *
- * DEC-LOGIN-07 redirect:
+ * DEC-LOGIN-07 redirect (revisado):
  *   On successful login we redirect to `?next=<path>` if present,
- *   else `/` (the hub). The `next` query parameter lets a deep link
- *   like `/audit` survive the login bounce without a custom
+ *   else `/` (the HomeHub). The `next` query parameter lets a deep
+ *   link like `/audit` survive the login bounce without a custom
  *   "you need to log in" screen.
+ *
+ *   The previous default (`/seleccionar-sucursal`, forcing a branch
+ *   re-confirmation on every login) was reverted: the HomeHub now
+ *   lets the operator pick between branch-scoped surfaces
+ *   ("Sucursales") and tenant-global surfaces ("Catálogos") without
+ *   a mandatory stop at the picker. See `App.tsx` route tree for
+ *   the grouping that backs this.
  *
  *   Identity comes from `useAdminAuth`, not `useAuth`: `/auth/me` is
  *   hardcoded to the `operador-` issuer and 404s for `admin-` tokens,
@@ -68,10 +75,11 @@ function getNextPath(search: string): string {
   const params = new URLSearchParams(search);
   const next = params.get('next');
   if (next && next.startsWith('/') && !next.startsWith('//')) return next;
-  // Post-login lands on the picker. Decision: even with a valid
-  // persisted selection, we force a re-confirmation — sharing the
-  // browser or operator handoff is more common than an in-tab reload.
-  return '/seleccionar-sucursal';
+  // Post-login lands on the HomeHub (`/`). The operator picks the
+  // surface from there — `Sucursales` re-confirms branch, `Catálogos`
+  // is tenant-global and skips the picker. See DEC-LOGIN-07
+  // (revisado) in the file header.
+  return '/';
 }
 
 export function Login(): JSX.Element {
