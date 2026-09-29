@@ -13,6 +13,7 @@ import CatalogPage from '@/features/catalogos/CatalogPage';
 import EmpresaPage from '@/features/empresa/pages/EmpresaPage';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
+import { UsuarioDetalle } from '@/features/usuarios/pages/UsuarioDetalle';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
 import Cupos from '@/features/cupos/pages/Cupos';
 import TiposVehiculo from '@/features/tipos-vehiculo/pages/TiposVehiculo';
@@ -92,7 +93,7 @@ export default function App() {
           <Route path="/catalogos" element={<CatalogPage />} />
           <Route path="/empresa" element={<EmpresaPage />} />
           <Route path="/usuarios" element={<UsuariosList />} />
-          <Route path="/usuarios/:uuid" element={<div data-testid="usuario-detalle-placeholder">Detalle de usuario (próximamente)</div>} />
+          <Route path="/usuarios/:uuid" element={<UsuarioDetalle />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 
