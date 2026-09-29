@@ -303,12 +303,14 @@ export default function Tarifas(): JSX.Element {
         };
         const updates: Array<{
           uuid: string;
+          uuid_tipo_tarifa: string;
           valor: string;
           valor_plena: string | null;
         }> = [];
         if (editingGrupo.hora.uuid) {
           updates.push({
             uuid: editingGrupo.hora.uuid,
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora,
             valor: values.valor_hora ?? '0',
             valor_plena: null,
           });
@@ -316,6 +318,7 @@ export default function Tarifas(): JSX.Element {
         if (editingGrupo.fraccion.uuid) {
           updates.push({
             uuid: editingGrupo.fraccion.uuid,
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion,
             valor: values.valor_fraccion ?? '0',
             valor_plena: null,
           });
@@ -323,6 +326,7 @@ export default function Tarifas(): JSX.Element {
         if (editingGrupo.plena.uuid) {
           updates.push({
             uuid: editingGrupo.plena.uuid,
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena,
             valor: values.valor_plena ?? '0',
             valor_plena: null,
           });
@@ -330,6 +334,7 @@ export default function Tarifas(): JSX.Element {
         if (editingGrupo.nocturna.uuid) {
           updates.push({
             uuid: editingGrupo.nocturna.uuid,
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna,
             valor: values.valor_nocturna ?? '0',
             valor_plena: null,
           });
@@ -337,6 +342,7 @@ export default function Tarifas(): JSX.Element {
         for (const it of updates) {
           await updateTarifa(it.uuid, {
             ...base,
+            uuid_tipo_tarifa: it.uuid_tipo_tarifa,
             valor: it.valor,
             valor_plena: it.valor_plena,
           });
