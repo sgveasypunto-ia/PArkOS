@@ -3,17 +3,25 @@
  *
  * Fields:
  *   - `uuid_sucursal` (read-only, shows current branch name).
- *   - `uuid_tipo_vehiculo` (select, optional) — NULL for "any vehicle
- *     type" (the cell-key with ``uuid_tipo_vehiculo IS NULL``). When the
+ *   - `uuid_tipo_vehiculo` (select on CREATE, readonly on EDIT) —
+ *     NULL for "any vehicle type" (the cell-key with
+ *     ``uuid_tipo_vehiculo IS NULL``). On CREATE the select hides
+ *     tipos already in use by an OPEN cupo for the current branch
+ *     (each ``(sucursal, uuid_tipo_vehiculo)`` cell can hold at most
+ *     one open version — the backend's overlap guard already enforces
+ *     this with 409; we hide the conflict from the UI). On EDIT the
+ *     field is locked to the existing row's tipo (the operator can
+ *     still change ``cantidad`` and ``vigente_desde``). When the
  *     catalog is empty or the operator wants a brand-new tipo, an
- *     inline "+ Nuevo tipo" sub-form calls
- *     ``createTipoVehiculo`` and refreshes the cache so the new entry
- *     appears in the select immediately.
+ *     inline "+ Nuevo tipo" sub-form calls ``createTipoVehiculo``
+ *     and refreshes the cache so the new entry appears in the select
+ *     immediately.
  *   - `cantidad` (integer, >= 0). The backend Pydantic constraint is
  *     ``z.number().int().min(0)``; we coerce to string in the schema
  *     to match the wire format the api layer expects, but the form
  *     input is a plain number.
- *   - `vigente_desde` (datetime-local, optional).
+ *   - `vigente_desde` (datetime-local, optional). CREATE pre-fills
+ *     with ``new Date()``; EDIT preserves the existing row's value.
  *
  * The error message for the ``cantidad_bajo_ingresos_activos`` guard
  * lives in the page (Cupos.tsx) — it carries the operator-readable
@@ -45,6 +53,8 @@ import {
 } from '../api/cupoSchema';
 import type { TipoVehiculo } from '@/features/tipos-vehiculo/api/tiposVehiculoApi';
 
+export const TIPO_NULL_SENTINEL = '__NULL__';
+
 export interface CupoFormProps {
   form: UseFormReturn<CupoCreateInput>;
   onSubmit: (values: CupoCreateInput) => void;
@@ -54,6 +64,10 @@ export interface CupoFormProps {
   onCancel: () => void;
   sucursalNombre: string;
   tiposVehiculo: TipoVehiculo[];
+  /** Set of ``uuid_tipo_vehiculo`` (or ``TIPO_NULL_SENTINEL`` for NULL)
+   *  already in use by an OPEN cupo for the current branch. CREATE
+   *  filters these out of the select; EDIT locks the field instead. */
+  tiposEnUsoEnSucursal: Set<string>;
   onTipoCreated: (
     nombre: string,
   ) => Promise<{ uuid: string } | void> | { uuid: string } | void;
@@ -78,6 +92,7 @@ export function CupoForm({
   onCancel,
   sucursalNombre,
   tiposVehiculo,
+  tiposEnUsoEnSucursal,
   onTipoCreated,
   isCreatingTipo = false,
 }: CupoFormProps) {
@@ -133,53 +148,124 @@ export function CupoForm({
         <FormField
           control={form.control}
           name="uuid_tipo_vehiculo"
-          render={({ field }) => (
+          render={({ field }) => {
+            // EDIT: tipo is locked. The cell (sucursal, uuid_tipo_vehiculo)
+            // can only hold one open cupo; if the operator wants a different
+            // tipo they must edit a different cupo (or wait for the current
+            // one's version to close). The form still submits the existing
+            // uuid, so backend overlap-check sees no change.
+            const tipoFijo = initialCupo !== null;
+            const tipoActualLabel = (() => {
+              if (!tipoFijo) return null;
+              const actual = initialCupo?.uuid_tipo_vehiculo;
+              if (actual === null || actual === undefined) {
+                return t('cupos.field.tipoVehiculoAny', 'Cualquiera');
+              }
+              return (
+                tiposVehiculo.find((tv) => tv.uuid === actual)?.tipo ??
+                actual
+              );
+            })();
+            // CREATE: filter tipos already in use by an open cupo on this
+            // branch. The "Cualquiera" sentinel participates too — if a
+            // cupo for (sucursal, NULL) already exists, the operator
+            // cannot create another cell with NULL tipo.
+            const disponibles = tiposVehiculo.filter(
+              (tv) => !tiposEnUsoEnSucursal.has(tv.uuid),
+            );
+            const cualquierDisponible = !tiposEnUsoEnSucursal.has(
+              TIPO_NULL_SENTINEL,
+            );
+            const todoEnUso =
+              !cualquierDisponible && disponibles.length === 0;
+            return (
             <FormItem>
               <FormLabel htmlFor="uuid_tipo_vehiculo">
                 {t('cupos.field.tipoVehiculo', 'Tipo de vehículo (opcional)')}
               </FormLabel>
               <FormControl>
-                <div className="flex gap-2">
-                  <select
-                    id="uuid_tipo_vehiculo"
-                    data-testid="cupo-field-tipo-vehiculo"
-                    {...field}
-                    value={field.value ?? ''}
-                    onChange={(e) =>
-                      field.onChange(e.target.value === '' ? null : e.target.value)
-                    }
-                    className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="">
-                      {t('cupos.field.tipoVehiculoAny', 'Cualquiera')}
-                    </option>
-                    {tiposVehiculo.map((tv) => (
-                      <option key={tv.uuid} value={tv.uuid}>
-                        {tv.tipo ?? tv.uuid}
-                      </option>
-                    ))}
-                  </select>
-                  {/* Cap of 5 active tipos is enforced server-side (409
-                      ``tipos_vehiculo_max_reached``); hiding the toggle
-                      keeps the UX consistent with the cap. */}
-                  {tiposVehiculo.length < 5 && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setShowNuevoTipo((s) => !s);
-                        setNuevoTipoError(null);
-                      }}
-                      data-testid="cupo-new-tipo-toggle"
-                      disabled={isSubmitting}
+                {tipoFijo ? (
+                  <div className="flex flex-col gap-2">
+                    <input
+                      id="uuid_tipo_vehiculo"
+                      data-testid="cupo-field-tipo-vehiculo"
+                      readOnly
+                      aria-readonly="true"
+                      className="block w-full rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                      value={tipoActualLabel ?? ''}
+                    />
+                    <p
+                      className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+                      data-testid="cupo-field-tipo-vehiculo-locked"
                     >
-                      {showNuevoTipo
-                        ? t('cupos.field.tipoVehiculoCancelNew', 'Cancelar')
-                        : t('cupos.field.tipoVehiculoNew', '+ Nuevo tipo')}
-                    </Button>
-                  )}
-                </div>
+                      {t(
+                        'cupos.field.tipoVehiculoLocked',
+                        'Tipo fijo — ya existe un cupo con este tipo en esta sucursal. Solo se puede editar la cantidad y la vigencia.',
+                      )}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {todoEnUso ? (
+                      <p
+                        role="status"
+                        className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                        data-testid="cupo-field-tipo-vehiculo-all-used"
+                      >
+                        {t(
+                          'cupos.field.tipoVehiculoAllUsed',
+                          'Todos los tipos de vehículo están en uso para esta sucursal. Editá o cerrá un cupo existente antes de crear uno nuevo.',
+                        )}
+                      </p>
+                    ) : (
+                      <div className="flex gap-2">
+                        <select
+                          id="uuid_tipo_vehiculo"
+                          data-testid="cupo-field-tipo-vehiculo"
+                          {...field}
+                          value={field.value ?? ''}
+                          onChange={(e) =>
+                            field.onChange(
+                              e.target.value === '' ? null : e.target.value,
+                            )
+                          }
+                          className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
+                        >
+                          {cualquierDisponible && (
+                            <option value="">
+                              {t('cupos.field.tipoVehiculoAny', 'Cualquiera')}
+                            </option>
+                          )}
+                          {disponibles.map((tv) => (
+                            <option key={tv.uuid} value={tv.uuid}>
+                              {tv.tipo ?? tv.uuid}
+                            </option>
+                          ))}
+                        </select>
+                        {/* Cap of 5 active tipos is enforced server-side (409
+                            ``tipos_vehiculo_max_reached``); hiding the toggle
+                            keeps the UX consistent with the cap. */}
+                        {tiposVehiculo.length < 5 && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setShowNuevoTipo((s) => !s);
+                              setNuevoTipoError(null);
+                            }}
+                            data-testid="cupo-new-tipo-toggle"
+                            disabled={isSubmitting}
+                          >
+                            {showNuevoTipo
+                              ? t('cupos.field.tipoVehiculoCancelNew', 'Cancelar')
+                              : t('cupos.field.tipoVehiculoNew', '+ Nuevo tipo')}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </FormControl>
               <FormDescription>
                 {t(
@@ -232,7 +318,8 @@ export function CupoForm({
                 </div>
               )}
             </FormItem>
-          )}
+            );
+          }}
         />
 
         <FormField
