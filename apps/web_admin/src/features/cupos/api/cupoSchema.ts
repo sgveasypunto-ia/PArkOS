@@ -28,9 +28,7 @@ export const cupoCreateSchema = z.object({
     .union([z.number().int().min(0, 'La cantidad debe ser >= 0'), z.null()]),
   vigente_desde: z
     .string()
-    .datetime({ offset: true })
-    .nullable()
-    .optional(),
+    .datetime({ offset: true }),
 });
 
 export type CupoCreateInput = z.infer<typeof cupoCreateSchema>;

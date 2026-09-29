@@ -326,15 +326,16 @@ describe('Cupos page', () => {
     expect(candidates.has(dateInput.value)).toBe(true);
   });
 
-  it('CP9: EDIT modal preserves the existing "vigente_desde" instead of overwriting with today', async () => {
-    const futureVigenteDesde = '2027-06-15T08:30:00';
+  it('CP9: EDIT modal defaults "vigente_desde" to current time + 1 minute', async () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     mockedListCupos.mockResolvedValue([
       {
         ...SAMPLE_CUPO,
         uuid_sucursal: SUCURSAL_1,
         cantidad: 50,
-        vigente_desde: futureVigenteDesde,
+        // The existing row's vigente_desde is in the past; EDIT default
+        // should ignore it and use now + 1min (canonical UX rule).
+        vigente_desde: '2020-01-01T00:00:00',
       },
     ]);
     render(<Cupos />, { wrapper: fullWrapper });
@@ -347,8 +348,25 @@ describe('Cupos page', () => {
       screen.getByTestId('cupo-edit-aaaaaaaa-1111-1111-1111-111111111111'),
     );
     const dateInput = screen.getByTestId('cupo-field-vigente-desde') as HTMLInputElement;
-    // isoToDatetimeLocal truncates to 16 chars (no offset, no seconds).
-    expect(dateInput.value).toBe(futureVigenteDesde.slice(0, 16));
+    // Expected: now in YYYY-MM-DDTHH:mm (local) within [now, now+2min].
+    // Tolerate a 2-minute skew vs ``new Date()`` so the test is stable
+    // when the minute rolls over between the harness init and the assert.
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const fmt = (d: Date): string =>
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const candidates = new Set<string>();
+    for (let offset = 0; offset <= 2; offset += 1) {
+      const d = new Date();
+      d.setSeconds(0, 0);
+      d.setMinutes(d.getMinutes() + offset);
+      candidates.add(fmt(d));
+    }
+    // 2020-01-01T00:00 must NOT appear (existing row's value).
+    expect(dateInput.value).not.toBe('2020-01-01T00:00');
+    // The input is populated with the current local minute +1
+    // (or the next minute if the test crossed a boundary mid-run).
+    expect(candidates.has(dateInput.value)).toBe(true);
   });
 
   it('CP10: CREATE modal hides tipos already in use by an open cupo for this branch', async () => {
@@ -364,19 +382,21 @@ describe('Cupos page', () => {
       },
     ]);
     render(<Cupos />, { wrapper: fullWrapper });
-    await waitFor(() => screen.getByTestId('cupo-empty')); // empty because no null-tipo cupo
+    await waitFor(() => screen.getByTestId('cupo-empty'));
     await userEvent.setup().click(screen.getByTestId('cupo-new'));
     const select = screen.getByTestId(
       'cupo-field-tipo-vehiculo',
     ) as HTMLSelectElement;
     const optionValues = Array.from(select.options).map((o) => o.value);
-    // "carro" is hidden; the other 4 + Cualquiera remain.
+    // "carro" is hidden; the other 4 remain. CREATE no longer offers
+    // the "Cualquiera" cell (uuid_tipo_vehiculo = null) — every cupo
+    // must target a specific tipo from the catalog.
     expect(optionValues).not.toContain('00000000-0000-0000-0000-000000000001');
     expect(optionValues).toContain('00000000-0000-0000-0000-000000000002'); // moto
     expect(optionValues).toContain('00000000-0000-0000-0000-000000000003'); // bicicleta
     expect(optionValues).toContain('00000000-0000-0000-0000-000000000004'); // patineta
     expect(optionValues).toContain('00000000-0000-0000-0000-000000000005'); // otro
-    expect(optionValues).toContain(''); // Cualquiera
+    expect(optionValues).not.toContain(''); // Cualquiera gone in CREATE
     __mockTipos = SAMPLE_TIPOS.slice(0, 2);
   });
 
@@ -414,36 +434,40 @@ describe('Cupos page', () => {
     __mockTipos = SAMPLE_TIPOS.slice(0, 2);
   });
 
-  it('CP12: CREATE modal hides "Cualquiera" when a cupo already uses uuid_tipo_vehiculo=NULL', async () => {
+  it('CP12: CREATE modal never offers "Cualquiera" — every cupo must target a specific tipo', async () => {
+    // Even when no cupo exists yet, the CREATE select must not surface a
+    // uuid_tipo_vehiculo=null option. Every cupo created from this UI
+    // carries a non-null uuid_tipo_vehiculo.
     __mockTipos = SAMPLE_TIPOS;
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
-    mockedListCupos.mockResolvedValue([
-      {
-        ...SAMPLE_CUPO,
-        uuid_sucursal: SUCURSAL_1,
-        uuid_tipo_vehiculo: null, // Cualquiera cell
-        cantidad: 25,
-      },
-    ]);
+    mockedListCupos.mockResolvedValue([]);
     render(<Cupos />, { wrapper: fullWrapper });
-    // Wait for the existing cupo row to render (no empty-state path when
-    // at least one open cupo exists for the selected branch).
-    await waitFor(() =>
-      expect(
-        screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
-      ).toBeInTheDocument(),
-    );
+    await waitFor(() => screen.getByTestId('cupo-empty'));
     await userEvent.setup().click(screen.getByTestId('cupo-new'));
     const select = screen.getByTestId(
       'cupo-field-tipo-vehiculo',
     ) as HTMLSelectElement;
     const optionValues = Array.from(select.options).map((o) => o.value);
-    // Cualquera (value="") is hidden — the NULL cell is already taken.
-    expect(optionValues).not.toContain('');
-    // All 5 catalog tipos are still available.
+    expect(optionValues).not.toContain(''); // Cualquiera gone from CREATE
+    // All 5 canonical tipos are available.
     for (const tv of SAMPLE_TIPOS) {
       expect(optionValues).toContain(tv.uuid);
     }
     __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+  });
+
+  it('CP13: "vigente_desde" label drops "(opcional)" — the field is required', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('cupo-empty'));
+    await userEvent.setup().click(screen.getByTestId('cupo-new'));
+    // Label text no longer contains "(opcional)".
+    const label = screen.getByText(/^Vigente desde/);
+    expect(label.textContent).not.toMatch(/\(opcional\)/i);
+    // Help text no longer mentions "Vacío = ahora".
+    expect(
+      screen.queryByText(/Vacío = ahora/i),
+    ).not.toBeInTheDocument();
   });
 });
