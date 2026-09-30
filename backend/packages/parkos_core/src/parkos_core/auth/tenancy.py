@@ -274,11 +274,103 @@ async def requires_sucursal(
     return ctx
 
 
+@dataclass(frozen=True)
+class BranchScope:
+    """Resolved set of branches the caller may READ for this request.
+
+    Exists because ``get_tenant_ctx`` alone is not sufficient authorization
+    for a read path, for two independent reasons:
+
+    1. **Global mode.** For ``admin-``, ``X-Sucursal-Context`` is optional.
+       When the header is absent ``get_tenant_ctx`` returns ``sucursal_uuid=None``
+       and never calls ``set_tenant_context``, so the ``do_orm_execute``
+       listener in ``db/tenancy.py`` short-circuits on ``ctx_uuid is None`` and
+       applies NO tenant filter. A query param like ``?uuid_sucursal=B`` is then
+       applied verbatim and the admin reads branch B.
+    2. **Raw SQL bypasses the listener entirely.** ``/operacion/ocupacion``
+       goes through ``repo/ocupacion.py``'s ``text(...)``. ``do_orm_execute``
+       resolves zero tenant columns for a ``TextClause`` (``column_descriptions``
+       and ``get_final_froms`` are both absent), so the listener never fires —
+       even when the header IS present and validated. Its only guard was the
+       ``operador-``-specific check inside the handler, which an ``admin-``
+       issuer skips entirely.
+
+    So endpoints that read branch-scoped rows must intersect their filter with
+    ``scope.permitidas`` explicitly. Handlers MUST narrow, never widen: an
+    omitted filter means "every permitted branch", NOT "every branch".
+
+    ``permitidas`` is read FRESH from ``prod.usuarios_sucursal`` for ``admin-``,
+    matching :func:`db.tenancy.extract_sucursales_permitidas_fresh` and the
+    precedent in ``api/v1/admin_views.py``. A revoked assignment loses access on
+    the next request instead of leaking for one token lifetime.
+    """
+
+    actor_uuid: uuid_lib.UUID
+    issuer_prefix: str
+    permitidas: frozenset[uuid_lib.UUID]
+
+    def allows(self, uuid_sucursal: uuid_lib.UUID | None) -> bool:
+        """True when this branch is readable. ``None`` is never readable."""
+        return uuid_sucursal is not None and uuid_sucursal in self.permitidas
+
+    def narrow(self, requested: uuid_lib.UUID | None) -> frozenset[uuid_lib.UUID]:
+        """Resolve a caller-supplied ``uuid_sucursal`` filter to a safe set.
+
+        Raises 403 ``tenant_scope_violation`` when the caller explicitly names a
+        branch outside the scope — that is a client bug worth surfacing, not a
+        filter to silently swallow. Returns the single branch when it is allowed,
+        and the full permitted set when the caller named none.
+        """
+        if requested is None:
+            return self.permitidas
+        if not self.allows(requested):
+            raise TenantScopeViolationError()
+        return frozenset({requested})
+
+
+async def require_branch_scope(
+    session: _DbSession,
+    ctx: TenantContext = Depends(get_tenant_ctx),
+) -> BranchScope:
+    """Resolve the caller's readable-branch set. See :class:`BranchScope`.
+
+    Follows the ``requires_sucursal`` convention: ``async``, with the ``ctx``
+    parameter carrying an explicit ``Depends`` default so FastAPI 0.141.1 does
+    not classify it as a body field (see the route-classification note on
+    ``requires_sucursal``). ``session`` is declared first and without a default,
+    matching ``get_tenant_ctx`` — reversing that order is a ``SyntaxError``, and
+    this is not a stylistic preference.
+
+    ``operador-`` is pinned to its JWT branch and needs no DB read.
+    ``admin-`` reads the current ``usuarios_sucursal`` rows fresh — the same
+    source ``admin_views.list_sucursales`` and ``admin_views.branch_dashboard``
+    trust, so the branch selector, the scope check and the picker cannot drift.
+    """
+    if ctx.issuer_prefix == "operador-":
+        pinned = frozenset({ctx.sucursal_uuid}) if ctx.sucursal_uuid else frozenset()
+        return BranchScope(
+            actor_uuid=ctx.actor_uuid,
+            issuer_prefix=ctx.issuer_prefix,
+            permitidas=pinned,
+        )
+
+    permitidas = await extract_sucursales_permitidas_fresh(
+        session, actor_uuid=ctx.actor_uuid
+    )
+    return BranchScope(
+        actor_uuid=ctx.actor_uuid,
+        issuer_prefix=ctx.issuer_prefix,
+        permitidas=frozenset(permitidas),
+    )
+
+
 __all__ = [
     "TenantContext",
     "TenantScopeViolationError",
     "MissingSucursalContextError",
     "UnauthorizedSucursalContextError",
+    "BranchScope",
     "get_tenant_ctx",
     "requires_sucursal",
+    "require_branch_scope",
 ]

@@ -6,7 +6,7 @@ walking the package hierarchy. New dependencies added in future PRs land here.
 from __future__ import annotations
 
 from ..auth.jwt_issuer_guard import requires_issuer
-from ..auth.tenancy import TenantContext, get_tenant_ctx
+from ..auth.tenancy import BranchScope, TenantContext, get_tenant_ctx, require_branch_scope
 from ..db.engine import get_session
 from ..db.tenancy import install_tenant_event_listener
 
@@ -17,6 +17,8 @@ __all__ = [
     "get_session",
     "get_tenant_ctx",
     "TenantContext",
+    "BranchScope",
     "requires_issuer",
+    "require_branch_scope",
     "install_tenant_event_listener",
 ]
