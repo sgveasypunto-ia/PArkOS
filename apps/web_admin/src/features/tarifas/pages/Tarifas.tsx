@@ -497,7 +497,7 @@ export default function Tarifas(): JSX.Element {
               onSubmit={onSubmit}
               isSubmitting={submitting}
               isUpdate={false}
-              initialTarifa={null}
+              initialTarifaAgrupada={null}
               onCancel={closeModal}
               sucursalActivaUuid={selectedSucursal}
               sucursalActivaNombre={activeSucursalLabel}
