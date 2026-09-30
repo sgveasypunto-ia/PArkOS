@@ -133,6 +133,7 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
 import { useAuthStore } from '@parkos/ui-kit/store';
 
 import { listTarifas, createTarifa, listTarifasByKey } from '../api/tarifasApi';
+import { TIPO_TARIFA_UUIDS } from '../api/tarifaAgrupada';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
 import Tarifas from './Tarifas';
 
@@ -498,5 +499,39 @@ describe('Tarifas page', () => {
     // The form must NOT pre-pick the first catalog entry — that
     // would overwrite the tarifa's locked tipo with 'carro'.
     // The useEffect's ``initial !== null`` guard pins this behavior.
+  });
+
+  it('TP13: the table renders valores without wire decimals and with thousands separators', async () => {
+    // The backend serializes NUMERIC(18,4) as "10000.0000". The
+    // operator asked to see "10.000" instead. The formatter is
+    // display-only: the modal inputs and the payloads keep the raw
+    // four-decimal string.
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const motoUuid = '00000000-0000-0000-0000-000000000002';
+    const porModalidad = (uuid_tipo_tarifa: string, valor: string) => ({
+      ...SAMPLE_TARIFA,
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: motoUuid,
+      uuid_tipo_tarifa,
+      valor,
+      valor_plena: valor,
+    });
+    mockedListTarifas.mockResolvedValue([
+      porModalidad(TIPO_TARIFA_UUIDS.hora, '10000.0000'),
+      porModalidad(TIPO_TARIFA_UUIDS.fraccion, '2500.0000'),
+      porModalidad(TIPO_TARIFA_UUIDS.plena, '1000000.0000'),
+      porModalidad(TIPO_TARIFA_UUIDS.nocturna, '999.0000'),
+    ]);
+    const grupoKey = grupoKeyFor(SUCURSAL_1, motoUuid, SAMPLE_TARIFA.vigente_desde);
+    render(<Tarifas />, { wrapper: fullWrapper });
+    const row = await screen.findByTestId(`tarifa-row-${grupoKey}`);
+
+    // hora, fraccion, plena, nocturna in table-column order.
+    const celdas = Array.from(row.querySelectorAll('td')).map((td) =>
+      td.textContent?.trim(),
+    );
+    expect(celdas.slice(1, 5)).toEqual(['10.000', '2.500', '1.000.000', '999']);
+    // The raw wire string must NOT leak into the table.
+    expect(row.textContent).not.toMatch(/\d+\.0000/);
   });
 });

@@ -51,6 +51,7 @@ import {
 } from '../api/tarifaAgrupada';
 import { useTarifasByKey } from '../hooks/useTarifasByKey';
 import { useTarifasList } from '../hooks/useTarifasList';
+import { formatTarifaValor } from '../lib/formatTarifaValor';
 import { TarifaFormHarness } from '../components/TarifaForm';
 
 type ErrorState = { kind: 'overlap' | 'inmutable' | 'network'; message: string } | null;
@@ -165,16 +166,16 @@ function ListContent({
                       {tipoVehiculoNombre}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
-                      {g.hora.valor ?? '—'}
+                      {formatTarifaValor(g.hora.valor)}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
-                      {g.fraccion.valor ?? '—'}
+                      {formatTarifaValor(g.fraccion.valor)}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
-                      {g.plena.valor ?? '—'}
+                      {formatTarifaValor(g.plena.valor)}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
-                      {g.nocturna.valor ?? '—'}
+                      {formatTarifaValor(g.nocturna.valor)}
                     </td>
                     <td className="px-3 py-2 text-right">
                       <div className="flex justify-end gap-2">
