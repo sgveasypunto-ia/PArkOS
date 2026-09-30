@@ -595,6 +595,44 @@ async def test_salidas_scope_no_degrada_el_left_join(
     assert str(orphan) in uuids, "LEFT JOIN degraded to INNER under branch scope"
 
 
+async def test_salidas_scope_con_header_no_degradacion_no_changel_join(
+    pg_engine, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """With the X-Sucursal-Context header the listener auto-filters.
+
+    The pre-PR-A bug: when the listener activates (header present),
+    it injects ``Ingreso.uuid_sucursal = ctx`` ALONGSIDE the
+    handler's ``Salidas.uuid_sucursal = ctx``. The LEFT JOIN to
+    ``prod.ingreso`` becomes effectively INNER because the joined
+    column is also constrained — orphan exits vanish from the
+    list and occupancy under-reports. The previous test
+    (``test_salidas_scope_no_degrada_el_left_join``) does not
+    trigger this because no header means the listener never runs.
+
+    This test pins the WITH-HEADER case so the regression cannot
+    sneak in via a listener tweak.
+    """
+    await _truncate(pg_dsn)
+    a, b, _tipo_a, _tipo_b = await _seed_two_branches(pg_engine)
+    admin = uuid_lib.uuid4()
+    await _assign_admin(pg_engine, actor_uuid=admin, sucursales=[a])
+    orphan = await _seed_salida(
+        pg_engine, uuid_sucursal=a, uuid_ingreso=None, fecha_salida=_now_naive()
+    )
+
+    token = mint_admin_jwt(actor_uuid=admin, sucursales_permitidas=[a])
+    resp = await client.get(
+        "/api/v1/operacion/salidas",
+        headers=_auth(token, a),
+    )
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    uuids = [row["uuid"] for row in resp.json()]
+    assert str(orphan) in uuids, (
+        "LEFT JOIN degraded to INNER under X-Sucursal-Context; "
+        "the tenant listener is constraining the joined column"
+    )
+
+
 async def test_salida_detalle_fuera_de_scope_es_404(
     pg_engine, mint_admin_jwt, client, pg_dsn
 ) -> None:

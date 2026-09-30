@@ -21,6 +21,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
+import { seedAuth, mockAuxiliaryEndpoints } from './helpers/seedAuth';
+
 const EMPRESA_UUID = '00000000-0000-0000-0000-00000000c0ee';
 
 const SAMPLE_EMPRESA = {
@@ -63,7 +65,26 @@ async function mockEmpresaApi(
   });
 }
 
+const ADMIN_ME = {
+  actor_uuid: '00000000-0000-0000-0000-000000000111',
+  email: 'admin@parkos.test',
+  rol: 'admin',
+  sucursales_permitidas: [],
+  permissions: ['config_empresa'],
+};
+
 test.describe('web_admin /empresa', () => {
+  test.beforeEach(async ({ context }) => {
+    await mockAuxiliaryEndpoints(context);
+    await context.route('**/api/v1/admin/me', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(ADMIN_ME),
+      }),
+    );
+    await seedAuth(context, { accessToken: 'fake-token' });
+  });
   test('E1: la card Empresa en HomeHub navega a /empresa con tab Datos activo', async ({ page }) => {
     await mockEmpresaApi(page);
     await page.goto('/');

@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
+import { seedAuth, mockAuxiliaryEndpoints } from './helpers/seedAuth';
+
 const ADMIN_TOKEN = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0LWFkbWluIn0.fake';
 const BRANCH_NORTE = '22222222-2222-2222-2222-222222222222';
 
@@ -47,7 +49,7 @@ test.describe('web_admin smoke', () => {
         body: JSON.stringify(ADMIN_ME),
       }),
     );
-    await context.route('**/api/v1/empresa/sucursal*', (route) =>
+    await context.route('**/api/v1/sucursales', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -74,18 +76,29 @@ test.describe('web_admin smoke', () => {
       });
     });
 
-    await context.addInitScript(
-      ({ token, uuid }: { token: string; uuid: string }) => {
-        window.localStorage.setItem('parkos.auth.token', token);
-        window.localStorage.setItem('parkos.lastSelectedSucursal', uuid);
-      },
-      { token: ADMIN_TOKEN, uuid: BRANCH_NORTE },
-    );
+    await mockAuxiliaryEndpoints(context);
+    await seedAuth(context, {
+      accessToken: ADMIN_TOKEN,
+      branchUuid: BRANCH_NORTE,
+    });
   });
 
   test('root renders the hub', async ({ page }) => {
+    // The branch-gate redirect (/ -> /dashboard) is what makes
+    // "root renders the hub" the wrong assertion once a branch is
+    // persisted. Seed the auth token alone (no branch) so / falls
+    // through to the global route group that renders HomeHub.
+    await page.addInitScript((token: string) => {
+      window.localStorage.setItem(
+        'parkos.auth',
+        JSON.stringify({
+          state: { accessToken: token, refreshToken: 'r', expiresAt: '2099-01-01T00:00:00Z' },
+          version: 1,
+        }),
+      );
+    }, ADMIN_TOKEN);
     await page.goto('/');
-    await expect(page.getByTestId('page-home')).toBeVisible();
+    await expect(page.getByTestId('home-hub')).toBeVisible();
   });
 
   test('/dashboard renders with no WCAG 2.1 AA violations (axe-core)', async ({
@@ -100,6 +113,13 @@ test.describe('web_admin smoke', () => {
   });
 
   test('/login renders the login page', async ({ page }) => {
+    // The auth-seeded beforeEach already lands the admin session, so
+    // /login redirects to / via the post-login Navigate. Wipe the
+    // auth envelope so the Login container renders instead.
+    await page.addInitScript(() => {
+      window.localStorage.removeItem('parkos.auth');
+      window.localStorage.removeItem('parkos.lastSelectedSucursal');
+    });
     await page.goto('/login');
     await expect(page.getByTestId('page-login')).toBeVisible();
   });

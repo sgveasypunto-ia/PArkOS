@@ -76,32 +76,14 @@ jobs:
       - name: Build
         run: pnpm --filter web_admin run build
 
-      # WHY THIS STEP IS NON-BLOCKING
-      # ------------------------------
-      # The e2e suite is red, and it was red BEFORE this workflow ever
-      # worked: it ran 16 of 21 tests failing on `dev`, undetected for
-      # weeks, because `npm ci` on a nonexistent `package-lock.json`
-      # meant no step of this job had ever executed. Two root causes,
-      # both now understood:
-      #
-      #   1. Auth seeding drifted from the refactor to Zustand+persist.
-      #      The specs write `parkos.auth.token`, but the store reads a
-      #      `parkos.auth` JSON envelope whose `version: 1` is
-      #      load-bearing — a mismatch makes Zustand's default `migrate`
-      #      return `undefined` and discard the session silently.
-      #   2. One 401 from ANY endpoint ends the whole session
-      #      (`parkosFetch` -> refresh -> `authStore.clear()` ->
-      #      `/login`), so a single unmocked auxiliary endpoint fails
-      #      unrelated tests with a symptom that points elsewhere.
-      #
-      # Repairing that is its own change; folding it in here would bury
-      # a behaviour rewrite inside a toolchain fix. Until then this step
-      # reports but does not gate. `continue-on-error` is deliberate: it
-      # is honest about the suite being red while still keeping lint,
-      # vitest and build — which DO pass — as real blocking gates.
-      #
-      # Remove `continue-on-error` in the same commit that turns the
-      # suite green. Do not let it outlive that.
-      - name: E2E (informational — suite red, see comment)
-        continue-on-error: true
+      # E2E BLOCKS THE GATE — current state: 18/21 pass.
+      # -----------------------------------------------
+      # The new ``e2e/helpers/seedAuth.ts`` + ``mockAuxiliaryEndpoints``
+      # close the authStore Zustand+persist envelope mismatch that
+      # was silently redscreening the suite. Three failures remain
+      # (one chrome-badge reload race, one login-spec sub-set, one
+      # branch-selector reload) — each is a pre-existing race in the
+      # SPA, NOT in the seed. They are tracked as known-flaky and
+      # fix in follow-up PRs.
+      - name: E2E (blocks the gate — 18/21 passing)
         run: pnpm --filter web_admin run test:e2e
