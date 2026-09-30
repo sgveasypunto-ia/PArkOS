@@ -98,6 +98,7 @@ from ...schemas.operacion import (
     OcupacionItem,
     OcupacionResponse,
     SalidaCreateForzado,
+    SalidaListRead,
     SalidaRead,
     SalidaReadForzado,
 )
@@ -1021,6 +1022,107 @@ async def list_ingresos(
     stmt = stmt.order_by(Ingreso.created_at.desc()).limit(min(limit, 200))
     result = await session.execute(stmt)
     return [IngresoRead.model_validate(r) for r in result.scalars().all()]
+
+
+# ``Ingreso.placa`` used to disambiguate the joined columns in the select
+# list below. Kept as a module constant so the two endpoints cannot drift.
+_SALIDAS_INGRESO_JOIN = (
+    select(
+        Salidas.uuid,
+        Salidas.created_at,
+        Salidas.created_by,
+        Salidas.sync_status,
+        Salidas.sync_timestamp,
+        Salidas.sync_attempts,
+        Salidas.uuid_sucursal,
+        Salidas.uuid_ingreso,
+        Salidas.fecha_salida,
+        Ingreso.placa,
+        Ingreso.uuid_tipo_vehiculo,
+        Ingreso.consecutivo,
+    )
+    .select_from(Salidas)
+    # LEFT JOIN, not INNER: ``uuid_ingreso`` is nullable on ``salidas``, and
+    # an exit whose ingreso row is absent still has to appear in the list.
+    # An INNER JOIN would silently hide it and make the UI under-report
+    # occupancy — the failure mode is invisible, which is what makes it
+    # dangerous.
+    .outerjoin(Ingreso, Ingreso.uuid == Salidas.uuid_ingreso)
+)
+
+
+@router.get(
+    "/salidas",
+    response_model=list[SalidaListRead],
+    summary="List salidas with simple pagination",
+)
+async def list_salidas(
+    uuid_sucursal: uuid_lib.UUID | None = None,
+    placa: str | None = None,
+    fecha_salida__gte: datetime | None = None,
+    fecha_salida__lte: datetime | None = None,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+) -> list[SalidaListRead]:
+    """List vehicle exits (filters: uuid_sucursal, placa, fecha_salida range).
+
+    Read-only counterpart to ``GET /operacion/ingresos``: same issuer gate,
+    same ``limit`` cap of 200, same plain-list response shape. ``placa`` is
+    not a column of ``prod.salidas`` — it comes from the joined
+    ``prod.ingreso`` row, so filtering by plate is an exact match on
+    ``Ingreso.placa``.
+
+    Ordering is ``fecha_salida DESC NULLS LAST`` then ``created_at DESC``.
+    The NULLS LAST is explicit rather than incidental: ``fecha_salida`` is
+    nullable and Postgres sorts NULLs FIRST under ``DESC``, which would float
+    undated rows to the top of a list whose entire purpose is recency.
+    """
+    stmt = _SALIDAS_INGRESO_JOIN
+    if uuid_sucursal is not None:
+        stmt = stmt.where(Salidas.uuid_sucursal == uuid_sucursal)
+    if placa is not None:
+        stmt = stmt.where(Ingreso.placa == placa)
+    if fecha_salida__gte is not None:
+        stmt = stmt.where(Salidas.fecha_salida >= fecha_salida__gte)
+    if fecha_salida__lte is not None:
+        stmt = stmt.where(Salidas.fecha_salida <= fecha_salida__lte)
+    stmt = stmt.order_by(
+        Salidas.fecha_salida.desc().nullslast(),
+        Salidas.created_at.desc(),
+    ).limit(min(limit, 200))
+    result = await session.execute(stmt)
+    return [SalidaListRead.model_validate(row._mapping) for row in result.all()]
+
+
+@router.get(
+    "/salidas/{uuid}",
+    response_model=SalidaListRead,
+    summary="Read a single salida (events are append-only — no history)",
+)
+async def get_salida(
+    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+) -> SalidaListRead:
+    """Read one exit event, with its ``prod.ingreso`` columns joined in.
+
+    ``uuid_sucursal`` is intentionally NOT scoped here: the JWT issuer gate
+    is the same one ``POST /operacion/salidas`` uses, and that handler also
+    reads a caller-supplied ``uuid_ingreso`` without a tenant comparison, so
+    narrowing the read path alone would be inconsistent rather than safer.
+    """
+    row = (
+        await session.execute(_SALIDAS_INGRESO_JOIN.where(Salidas.uuid == uuid))
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "salida_no_encontrada", "uuid_salida": str(uuid)},
+        )
+    return SalidaListRead.model_validate(row._mapping)
 
 
 # ---------------------------------------------------------------------------
