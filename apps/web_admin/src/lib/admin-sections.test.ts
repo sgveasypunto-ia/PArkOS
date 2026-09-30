@@ -23,14 +23,14 @@ describe('visibleSections', () => {
     expect(keys).toEqual(expect.arrayContaining(['dashboard', 'sucursales', 'gestion-usuarios']));
   });
 
-  it('A3: reveals Auditoría once audit_read is granted (3 issuer-only + 1)', () => {
-    // With just `audit_read`, the operator sees the 3 issuer-only
-    // surfaces (dashboard / sucursales / gestion-usuarios) plus the audit
-    // surface. Tarifas, Cupos and the 4 catalog/config surfaces
-    // require their own codes which A3 does not grant.
+  it('A3: reveals Auditoría once audit_read is granted (4 issuer-only + 1)', () => {
+    // With just `audit_read`, the operator sees the 4 issuer-only
+    // surfaces (dashboard / sucursales / gestion-usuarios / reporteria)
+    // plus the audit surface. Tarifas, Cupos and the 4 catalog/config
+    // surfaces require their own codes which A3 does not grant.
     const keys = visibleSections(['audit_read']).map((s) => s.key);
     expect(keys).toContain('auditoria');
-    expect(keys).toHaveLength(4);
+    expect(keys).toHaveLength(5);
   });
 
   it('A4: an unrelated permission does not unlock Auditoría', () => {
@@ -65,6 +65,7 @@ describe('visibleSections', () => {
       'tipo-tarifa',
       'configuracion-tolerancias',
       'configuracion-seguridad',
+      'reporteria',
       'auditoria',
     ]);
   });

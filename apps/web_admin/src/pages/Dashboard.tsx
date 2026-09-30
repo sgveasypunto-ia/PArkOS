@@ -26,6 +26,14 @@ import { listAdminUsuarioSucursales } from '@/features/admin/api/adminUsuariosAp
  * SWR key strategy: the dashboard key embeds the branch UUID, so the
  * SWR invalidator (`useInvalidateOnBranchSwitch`) drops the cache for
  * the previously-selected branch on every switch — no stale data leaks.
+ *
+ * HU-F17.2 (monto real): the backend currently hardcodes
+ * ``ingresos_monto_total = 0.0`` because the amount is derived at exit
+ * via ``Ingreso -> Facturas -> FacturaPagos.total`` and no aggregation
+ * endpoint exists yet. The card surfaces this honestly with a
+ * "pendiente PR-C" hint pointing the admin to `/reporteria`, where the
+ * raw row data is already visible. The endpoint that closes the gap
+ * (factura chain aggregation per branch) ships in PR-C.
  */
 
 interface AdminMe {
@@ -177,7 +185,7 @@ export default function Dashboard() {
         </header>
 
         <section
-          className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6"
+          className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-7"
           aria-label="métricas"
         >
           <MetricCard
@@ -197,6 +205,14 @@ export default function Dashboard() {
             value={dashboard.data?.open_alertas_count}
             loading={dashboard.isLoading}
             error={Boolean(dashboard.error)}
+          />
+          <MetricCard
+            label={t('dashboard.montoTotal', 'Monto total (COP)')}
+            value={dashboard.data?.ingresos_monto_total}
+            loading={dashboard.isLoading}
+            error={Boolean(dashboard.error)}
+            to="/reporteria"
+            linkHint={t('dashboard.prcNotice', 'Pendiente PR-C — ver reportería →')}
           />
           <MetricCard
             label={t('dashboard.usuariosAsignados', 'Usuarios asignados')}
