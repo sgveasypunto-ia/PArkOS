@@ -1,37 +1,35 @@
 /**
  * `<Reporteria />` — operational report container (HU-F17.1, web_admin).
  *
- * One Radix-Tabs surface with three tabs (Ingresos | Salidas |
- * Ocupación). Each tab fetches on activation so the page does not pull
- * three lists it does not need on first paint. The lazy SWR keys keep
- * the cache small and the API calls under the operator's control
- * (which tab the operator reaches for first).
+ * Top section: the "Totales del período" panel (KPIs from
+ * ``GET /admin/reporteria/operacional``) with a date-range picker
+ * (default = current month) and four preset shortcuts (hoy, ayer,
+ * últimos 7 días, este mes). The picker drives the operacional
+ * endpoint's SWR key — branch switch and range switch both invalidate
+ * the cache.
  *
- * Branch context comes from `useSucursal()`; this page lives inside
- * the branch-scoped route group (gated by `<RequireSucursal>` in
- * `App.tsx`), so an admin without a selected branch never reaches
+ * Bottom section: a Radix-Tabs drill-down with three tabs (Ingresos
+ * | Salidas | Ocupación) showing the raw rows for the active branch.
+ * The drill-down does NOT honour the date range: those endpoints
+ * return the latest N entries, and the totals panel above already
+ * covers the same range at aggregate level. Wiring the drill-down
+ * to the range would require backend support for ``fecha_ingreso__gte``
+ * and ``fecha_salida__gte`` on the existing endpoints, which is out of
+ * scope for this PR.
+ *
+ * Branch context comes from ``useSucursal()``; this page lives inside
+ * the branch-scoped route group (gated by ``<RequireSucursal>`` in
+ * ``App.tsx``), so an admin without a selected branch never reaches
  * here — we render a placeholder rather than a confusing 400.
  *
- * F17.1 SPEC GAP — what is NOT here on purpose:
- *   - Aggregations (totales por día, monto facturado, facturación
- *     electrónica vs física, time series): PR-C adds aggregation
- *     endpoints. The placeholder notice points at /dashboard for the
- *     today's snapshot that exists today, and notes the richer report
- *     arrives in PR-C.
- *   - Charts (4 chart types in F17.1) and 24h heatmap: deferred
- *     beyond PR-C by user direction (see
- *     `openspec/changes/hu-f17-1-2-reporteria-operacional/`).
- *   - Ingresos/salidas time-range filters: the backend already
- *     supports them (date_salida__gte/__lte) but they need an
- *     aggregation layer to make sense across many rows; out of scope
- *     for the raw-listing slice we ship now.
- *
  * RNF-022 (WCAG 2.1 AA): Tabs and triggers come from Radix so keyboard
- * navigation (Left/Right, Home/End) and `aria-controls`/`aria-selected`
- * are correct; the per-tab containers carry `aria-labelledby` for
- * screen readers.
+ * navigation (Left/Right, Home/End) and ``aria-controls``/
+ * ``aria-selected`` are correct; the per-tab containers carry
+ * ``aria-labelledby`` for screen readers. The date range picker is a
+ * separate ``<DateRangePicker />`` component with its own a11y surface
+ * (labels, status, alert).
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 
@@ -54,6 +52,11 @@ import { IngresosTable } from '../components/IngresosTable';
 import { SalidasTable } from '../components/SalidasTable';
 import { OcupacionPanel } from '../components/OcupacionPanel';
 import { ReporteOperacionalPanel } from '../components/ReporteOperacionalPanel';
+import {
+  DateRangePicker,
+  type DateRange,
+} from '../components/DateRangePicker';
+import { defaultRange } from '../components/dateRange';
 
 interface BranchSummary {
   uuid: string;
@@ -79,6 +82,7 @@ export default function Reporteria() {
   const [tab, setTab] = useState<'ingresos' | 'salidas' | 'ocupacion'>(
     'ingresos',
   );
+  const [range, setRange] = useState<DateRange>(() => defaultRange());
 
   const branches = useSWR<{ items: BranchSummary[] }>(
     BRANCHES_PATH,
@@ -94,9 +98,15 @@ export default function Reporteria() {
   const ingresos = useReporteriaIngresos(ingresosQuery);
   const salidas = useReporteriaSalidas(salidasQuery);
   const ocupacion = useReporteriaOcupacion(selected);
-  const operacionalQuery = selected
-    ? { uuid_sucursal: selected }
-    : null;
+
+  const operacionalQuery = useMemo(() => {
+    if (!selected) return null;
+    return {
+      uuid_sucursal: selected,
+      fecha_desde: range.fecha_desde,
+      fecha_hasta: range.fecha_hasta,
+    };
+  }, [selected, range]);
   const operacional = useReporteriaOperacional(operacionalQuery);
 
   if (!selected) {
@@ -117,6 +127,11 @@ export default function Reporteria() {
       </main>
     );
   }
+
+  const rangeInvalid =
+    range.fecha_desde > range.fecha_hasta ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(range.fecha_desde) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(range.fecha_hasta);
 
   return (
     <main
@@ -139,30 +154,30 @@ export default function Reporteria() {
               </span>
             ) : null}
           </p>
-          <p
-            className="mt-2 text-xs text-muted-foreground"
-            data-testid="reporteria-prc-notice"
-          >
-            {t(
-              'reporteria.prcNotice',
-              'Totales agregados y series temporales llegan en PR-C; esta vista muestra las filas crudas devueltas por /operacion.',
-            )}
-          </p>
         </header>
 
         <section
           aria-label={t('reporteria.totales.label', 'Totales del período')}
-          className="rounded-lg border bg-muted/20 p-4"
+          className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-4"
           data-testid="reporteria-totales-section"
         >
-          <h2 className="mb-2 text-base font-semibold">
-            {t('reporteria.totales.title', 'Totales del período')}
-          </h2>
-          <ReporteOperacionalPanel
-            data={operacional.data}
-            isLoading={operacional.isLoading}
-            error={operacional.error}
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-semibold">
+              {t('reporteria.totales.title', 'Totales del período')}
+            </h2>
+          </div>
+          <DateRangePicker
+            value={range}
+            onChange={setRange}
+            disabled={operacional.isLoading && !operacional.data}
           />
+          {!rangeInvalid ? (
+            <ReporteOperacionalPanel
+              data={operacional.data}
+              isLoading={operacional.isLoading}
+              error={operacional.error}
+            />
+          ) : null}
         </section>
 
         <Tabs
