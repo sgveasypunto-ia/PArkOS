@@ -40,6 +40,7 @@ from ...api.deps import get_session, requires_issuer
 from ...db.tenancy import extract_sucursales_permitidas_fresh
 from ...models.A.sync_log import SyncLog
 from ...models.L_E.factura_electronica import FacturaElectronica
+from ...models.L_E.facturas import Facturas
 from ...models.L_E.ingreso import Ingreso
 from ...models.L_W.alerta import Alerta
 from ...models.V.permisos import Permisos
@@ -299,10 +300,20 @@ async def branch_dashboard(
         )
     ).scalar() or 0
 
-    # ``ingreso`` carries no monetary column (the amount is derived at exit
-    # via tarifas + facturas). The field is reported as 0.0 until the
-    # salidas/facturas join lands; the shape stays stable for the UI.
-    ingresos_monto_total = 0.0
+    # HU-F17.2 / PR-C: real monto total, summed from the local invoice
+    # chain. ``prod.facturas.total`` (operational invoice total) is the
+    # wire-level number the operator sees on the receipt; we sum it for
+    # the branch's ingresos in the current calendar day so the dashboard
+    # KPI matches what ``/admin/reporteria/operacional`` reports on the
+    # same range.
+    ingresos_monto_total = (
+        await session.execute(
+            select(func.coalesce(func.sum(Facturas.total), 0.0))
+            .join(Ingreso, Ingreso.uuid == Facturas.uuid_ingreso)
+            .where(Ingreso.uuid_sucursal == uuid)
+            .where(func.date(Ingreso.created_at) == datetime.now(UTC).date())
+        )
+    ).scalar() or 0.0
 
     facturas_electronicas_count = (
         await session.execute(

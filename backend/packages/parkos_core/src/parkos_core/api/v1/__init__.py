@@ -171,11 +171,14 @@ def _build_router() -> APIRouter:
     else:
         try:
             from . import admin_views as _admin_views
+            from . import reporteria as _reporteria
 
             r.include_router(_admin_views.router)
+            r.include_router(_reporteria.router)
             logger.info(
                 "Admin views mounted (cloud deploy): /sucursales + "
-                "/admin/sucursales/{uuid}/dashboard + /admin/me"
+                "/admin/sucursales/{uuid}/dashboard + /admin/me + "
+                "/admin/reporteria/operacional"
             )
         except ImportError as e:
             logger.error("Failed to import admin_views: %s", e)
