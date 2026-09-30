@@ -91,3 +91,26 @@ export interface ReporteriaQuery {
   fecha_hasta?: string;
   limit?: number;
 }
+
+export const reporteOperacionalItemSchema = z.object({
+  fecha: z.string().nullable(),
+  ingresos_count: z.number().int(),
+  ingresos_activos_count: z.number().int(),
+  salidas_count: z.number().int(),
+  facturas_emitidas_count: z.number().int(),
+  monto_facturado_total: z.number(),
+  monto_cobrado_total: z.number(),
+});
+
+export type ReporteOperacionalItem = z.infer<typeof reporteOperacionalItemSchema>;
+
+export const reporteOperacionalResponseSchema = z.object({
+  uuid_sucursal: z.string().uuid(),
+  fecha_desde: z.string(),
+  fecha_hasta: z.string(),
+  items: z.array(reporteOperacionalItemSchema),
+  totales: reporteOperacionalItemSchema,
+  generado_en: z.string(),
+});
+
+export type ReporteOperacionalResponse = z.infer<typeof reporteOperacionalResponseSchema>;

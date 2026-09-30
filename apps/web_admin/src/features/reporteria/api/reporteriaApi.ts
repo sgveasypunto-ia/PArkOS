@@ -24,9 +24,11 @@ import {
   ingresoReadSchema,
   salidaListReadSchema,
   ocupacionResponseSchema,
+  reporteOperacionalResponseSchema,
   type IngresoRead,
   type SalidaListRead,
   type OcupacionResponse,
+  type ReporteOperacionalResponse,
   type ReporteriaQuery,
 } from './reporteriaSchema';
 
@@ -89,4 +91,23 @@ export async function fetchReporteriaOcupacion(
     headers: { Accept: 'application/json' },
   });
   return ocupacionResponseSchema.parse(raw);
+}
+
+const OPER_PATH = '/api/v1/admin/reporteria/operacional';
+
+export async function fetchReporteriaOperacional(query: {
+  uuid_sucursal: string;
+  fecha_desde?: string;
+  fecha_hasta?: string;
+}): Promise<ReporteOperacionalResponse> {
+  const params = new URLSearchParams();
+  params.set('uuid_sucursal', query.uuid_sucursal);
+  if (query.fecha_desde) params.set('fecha_desde', query.fecha_desde);
+  if (query.fecha_hasta) params.set('fecha_hasta', query.fecha_hasta);
+  const url = `${OPER_PATH}?${params.toString()}`;
+  const raw = await fetchJson<unknown>(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  return reporteOperacionalResponseSchema.parse(raw);
 }

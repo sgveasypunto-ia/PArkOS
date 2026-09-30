@@ -48,10 +48,12 @@ import {
   useReporteriaIngresos,
   useReporteriaSalidas,
   useReporteriaOcupacion,
+  useReporteriaOperacional,
 } from '../hooks/useReporteria';
 import { IngresosTable } from '../components/IngresosTable';
 import { SalidasTable } from '../components/SalidasTable';
 import { OcupacionPanel } from '../components/OcupacionPanel';
+import { ReporteOperacionalPanel } from '../components/ReporteOperacionalPanel';
 
 interface BranchSummary {
   uuid: string;
@@ -92,6 +94,10 @@ export default function Reporteria() {
   const ingresos = useReporteriaIngresos(ingresosQuery);
   const salidas = useReporteriaSalidas(salidasQuery);
   const ocupacion = useReporteriaOcupacion(selected);
+  const operacionalQuery = selected
+    ? { uuid_sucursal: selected }
+    : null;
+  const operacional = useReporteriaOperacional(operacionalQuery);
 
   if (!selected) {
     return (
@@ -143,6 +149,21 @@ export default function Reporteria() {
             )}
           </p>
         </header>
+
+        <section
+          aria-label={t('reporteria.totales.label', 'Totales del período')}
+          className="rounded-lg border bg-muted/20 p-4"
+          data-testid="reporteria-totales-section"
+        >
+          <h2 className="mb-2 text-base font-semibold">
+            {t('reporteria.totales.title', 'Totales del período')}
+          </h2>
+          <ReporteOperacionalPanel
+            data={operacional.data}
+            isLoading={operacional.isLoading}
+            error={operacional.error}
+          />
+        </section>
 
         <Tabs
           value={tab}

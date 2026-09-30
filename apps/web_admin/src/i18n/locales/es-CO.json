@@ -28,7 +28,6 @@
     "title": "Reportería operacional",
     "subtitle": "Ingresos, salidas y ocupación de la sucursal seleccionada.",
     "noBranch": "Seleccioná una sucursal para ver la reportería.",
-    "prcNotice": "Totales agregados y series temporales llegan en PR-C; esta vista muestra las filas crudas devueltas por /operacion.",
     "loading": "Cargando...",
     "empty": "No hay registros para la sucursal seleccionada.",
     "tabsLabel": "Sección de reporte",
@@ -36,6 +35,17 @@
       "ingresos": "Ingresos",
       "salidas": "Salidas",
       "ocupacion": "Ocupación"
+    },
+    "totales": {
+      "label": "Totales del período",
+      "title": "Totales del período",
+      "rango": "Rango: {{desde}} → {{hasta}}",
+      "ingresos": "Ingresos",
+      "ingresosActivos": "Ingresos activos",
+      "salidas": "Salidas",
+      "facturas": "Facturas",
+      "facturado": "Monto facturado",
+      "cobrado": "Monto cobrado"
     },
     "ingresos": {
       "caption": "Ingresos de la sucursal",
