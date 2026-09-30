@@ -20,6 +20,7 @@ import TiposVehiculo from '@/features/tipos-vehiculo/pages/TiposVehiculo';
 import TipoTarifa from '@/features/tipo-tarifa/pages/TipoTarifa';
 import ConfiguracionTolerancias from '@/features/configuracion-tolerancias/pages/ConfiguracionTolerancias';
 import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/ConfiguracionSeguridad';
+import Reporteria from '@/features/reporteria/pages/Reporteria';
 
 /**
  * Route tree.
@@ -135,6 +136,7 @@ export default function App() {
             path="/configuracion-seguridad"
             element={<ConfiguracionSeguridad />}
           />
+          <Route path="/reporteria" element={<Reporteria />} />
           <Route path="/audit" element={<AuditDashboard />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

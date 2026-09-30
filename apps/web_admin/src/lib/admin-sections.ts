@@ -13,6 +13,8 @@
  *                      GET /admin/sucursales/{uuid}/dashboard    admin- issuer only
  *   Sucursales         GET /sucursales                          admin- issuer only
  *   Usuarios           * /admin/usuarios                        admin- issuer only
+ *   Reportería         GET /operacion/ingresos, /operacion/salidas,
+ *                            /operacion/ocupacion               admin-/operador- issuer + branch_scope (PR-A)
  *   Auditoría          * /audit/*                               admin- issuer + audit_read
  *
  * `admin_usuarios.py` and `admin_views.py` depend on
@@ -56,6 +58,7 @@ export interface AdminSection {
     | 'tipo-tarifa'
     | 'configuracion-tolerancias'
     | 'configuracion-seguridad'
+    | 'reporteria'
     | 'auditoria';
   path: string;
   /** i18n key suffix under `home.section.*`. */
@@ -134,6 +137,19 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     labelKey: 'home.section.configuracionSeguridad.label',
     descriptionKey: 'home.section.configuracionSeguridad.description',
     permission: 'config_seguridad',
+  },
+  {
+    // HU-F17.1: operational report list views (HU-F17.1 includes the
+    // aggregate endpoints that ship in PR-C; this entry exposes the
+    // raw /operacion reads the current slice has data for).
+    key: 'reporteria',
+    path: '/reporteria',
+    labelKey: 'home.section.reporteria.label',
+    descriptionKey: 'home.section.reporteria.description',
+    // The /operacion read paths are gated by issuer + require_branch_scope
+    // (see auth/tenancy.py), with no permission dep. Mirrors the
+    // permission-null pattern of `sucursales` and `gestion-usuarios`.
+    permission: null,
   },
   {
     key: 'auditoria',

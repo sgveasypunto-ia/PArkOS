@@ -24,6 +24,39 @@
     "noBranch": "Seleccioná una sucursal para ver el panel.",
     "loadError": "No se pudo cargar el panel de la sucursal."
   },
+  "reporteria": {
+    "title": "Reportería operacional",
+    "subtitle": "Ingresos, salidas y ocupación de la sucursal seleccionada.",
+    "noBranch": "Seleccioná una sucursal para ver la reportería.",
+    "prcNotice": "Totales agregados y series temporales llegan en PR-C; esta vista muestra las filas crudas devueltas por /operacion.",
+    "loading": "Cargando...",
+    "empty": "No hay registros para la sucursal seleccionada.",
+    "tabsLabel": "Sección de reporte",
+    "tabs": {
+      "ingresos": "Ingresos",
+      "salidas": "Salidas",
+      "ocupacion": "Ocupación"
+    },
+    "ingresos": {
+      "caption": "Ingresos de la sucursal",
+      "placa": "Placa",
+      "consecutivo": "Consecutivo",
+      "fechaIngreso": "Fecha de ingreso",
+      "observaciones": "Observaciones"
+    },
+    "salidas": {
+      "caption": "Salidas de la sucursal",
+      "placa": "Placa",
+      "consecutivo": "Consecutivo",
+      "fechaSalida": "Fecha de salida"
+    },
+    "ocupacion": {
+      "empty": "No hay tipos de vehículo configurados para esta sucursal.",
+      "na": "N/A",
+      "generadoEn": "Generado en {{ts}}",
+      "activosDe": "{{activos}} de {{cupo}} activos"
+    }
+  },
   "auth": {
     "email": "Correo electrónico",
     "password": "Contraseña",
@@ -134,6 +167,10 @@
       "auditoria": {
         "label": "Auditoría",
         "description": "Log transaccional append-only con cadena hash verificable por sucursal."
+      },
+      "reporteria": {
+        "label": "Reportería operacional",
+        "description": "Ingresos, salidas y ocupación por sucursal. Totales agregados llegan en PR-C."
       }
     }
   },
