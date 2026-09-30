@@ -47,6 +47,19 @@
       "facturado": "Monto facturado",
       "cobrado": "Monto cobrado"
     },
+    "dateRange": {
+      "desde": "Desde",
+      "hasta": "Hasta",
+      "error": "Rango inválido: la fecha de inicio debe ser anterior o igual a la de fin.",
+      "futureWarning": "La fecha de fin está en el futuro. Probablemente no hay datos para esos días.",
+      "tooOld": "El reporte cubre más de un año. La factura electrónica tiene retención DIAN de 5+ años pero el endpoint actual agrega solo las facturas vivas en el rango.",
+      "preset": {
+        "hoy": "Hoy",
+        "ayer": "Ayer",
+        "7d": "Últimos 7 días",
+        "mes": "Este mes"
+      }
+    },
     "ingresos": {
       "caption": "Ingresos de la sucursal",
       "placa": "Placa",
