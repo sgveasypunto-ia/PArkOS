@@ -21,11 +21,13 @@ import {
   fetchReporteriaIngresos,
   fetchReporteriaSalidas,
   fetchReporteriaOcupacion,
+  fetchReporteriaOperacional,
 } from '../api/reporteriaApi';
 import type {
   IngresoRead,
   SalidaListRead,
   OcupacionResponse,
+  ReporteOperacionalResponse,
   ReporteriaQuery,
 } from '../api/reporteriaSchema';
 
@@ -55,6 +57,22 @@ export function useReporteriaOcupacion(uuid_sucursal: string | null) {
   );
 }
 
+export function useReporteriaOperacional(
+  query:
+    | {
+        uuid_sucursal: string;
+        fecha_desde?: string;
+        fecha_hasta?: string;
+      }
+    | null,
+) {
+  return useSWR<ReporteOperacionalResponse>(
+    query ? reporteriaOperacionalKey(query) : null,
+    () => fetchReporteriaOperacional(query as never),
+    STALE,
+  );
+}
+
 export function reporteriaIngresosKey(q: ReporteriaQuery): string {
   return [
     '/api/v1/operacion/ingresos',
@@ -78,4 +96,17 @@ export function reporteriaSalidasKey(q: ReporteriaQuery): string {
 
 export function reporteriaOcupacionKey(uuid: string): string {
   return `/api/v1/operacion/ocupacion::${uuid}`;
+}
+
+export function reporteriaOperacionalKey(q: {
+  uuid_sucursal: string;
+  fecha_desde?: string;
+  fecha_hasta?: string;
+}): string {
+  return [
+    '/api/v1/admin/reporteria/operacional',
+    q.uuid_sucursal,
+    q.fecha_desde ?? '',
+    q.fecha_hasta ?? '',
+  ].join('::');
 }

@@ -212,7 +212,7 @@ export default function Dashboard() {
             loading={dashboard.isLoading}
             error={Boolean(dashboard.error)}
             to="/reporteria"
-            linkHint={t('dashboard.prcNotice', 'Pendiente PR-C — ver reportería →')}
+            linkHint={t('dashboard.verReporteria', 'Ver reportería →')}
           />
           <MetricCard
             label={t('dashboard.usuariosAsignados', 'Usuarios asignados')}
