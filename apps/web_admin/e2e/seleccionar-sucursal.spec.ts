@@ -15,6 +15,8 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
+import { seedAuth, mockAuxiliaryEndpoints } from './helpers/seedAuth';
+
 const ADMIN_TOKEN = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0LWFkbWluIn0.fake';
 const BRANCH_NORTE = '22222222-2222-2222-2222-222222222222';
 const BRANCH_SUR = '33333333-3333-3333-3333-333333333333';
@@ -29,8 +31,8 @@ const ADMIN_ME = {
 
 const SUCURSALES = {
   items: [
-    { uuid: BRANCH_NORTE, nombre: 'Sucursal Norte', prefijo_nombre: 'BOG-NOR' },
-    { uuid: BRANCH_SUR, nombre: 'Sucursal Sur', prefijo_nombre: 'BOG-SUR' },
+    { uuid: BRANCH_NORTE, nombre: 'Sucursal Norte', prefijo_nombre: 'BOG-NOR', regimen: 'comun' },
+    { uuid: BRANCH_SUR, nombre: 'Sucursal Sur', prefijo_nombre: 'BOG-SUR', regimen: 'comun' },
   ],
   next_cursor: null,
 };
@@ -55,13 +57,6 @@ test.describe('Branch gate (/seleccionar-sucursal)', () => {
         body: JSON.stringify(ADMIN_ME),
       }),
     );
-    await context.route('**/api/v1/empresa/sucursal*', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(SUCURSALES),
-      }),
-    );
     await context.route('**/api/v1/admin/sucursales/**/dashboard', (route) => {
       const url = new URL(route.request().url());
       const headerUuid =
@@ -82,9 +77,15 @@ test.describe('Branch gate (/seleccionar-sucursal)', () => {
       });
     });
 
-    await context.addInitScript((token: string) => {
-      window.localStorage.setItem('parkos.auth.token', token);
-    }, ADMIN_TOKEN);
+    await mockAuxiliaryEndpoints(context);
+    await seedAuth(context, { accessToken: ADMIN_TOKEN });
+    await context.route('**/api/v1/sucursales', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(SUCURSALES),
+      }),
+    );
   });
 
   test('drops the admin on the picker when no branch is selected', async ({ page }) => {
@@ -97,10 +98,10 @@ test.describe('Branch gate (/seleccionar-sucursal)', () => {
     await page.goto('/seleccionar-sucursal');
     await expect(page.getByTestId('sucursal-picker')).toBeVisible();
     await expect(
-      page.getByRole('button', { name: /Sucursal Norte \(BOG-NOR\)/ }),
+      page.getByRole('button', { name: /Sucursal Norte/ }),
     ).toBeVisible();
     await expect(
-      page.getByRole('button', { name: /Sucursal Sur \(BOG-SUR\)/ }),
+      page.getByRole('button', { name: /Sucursal Sur/ }),
     ).toBeVisible();
   });
 
@@ -109,7 +110,7 @@ test.describe('Branch gate (/seleccionar-sucursal)', () => {
   }) => {
     await page.goto('/seleccionar-sucursal');
     await page
-      .getByRole('button', { name: /Sucursal Sur \(BOG-SUR\)/ })
+      .getByRole('button', { name: /Sucursal Sur/ })
       .click();
 
     await expect(page).toHaveURL(/\/dashboard$/);
@@ -124,7 +125,7 @@ test.describe('Branch gate (/seleccionar-sucursal)', () => {
     await page.goto('/dashboard');
     // First the picker forces a choice; pick Norte.
     await page
-      .getByRole('button', { name: /Sucursal Norte \(BOG-NOR\)/ })
+      .getByRole('button', { name: /Sucursal Norte/ })
       .click();
     await expect(page).toHaveURL(/\/dashboard$/);
 

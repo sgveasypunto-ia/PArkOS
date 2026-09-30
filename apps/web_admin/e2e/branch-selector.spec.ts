@@ -16,6 +16,8 @@
  */
 import { test, expect } from '@playwright/test';
 
+import { seedAuth, mockAuxiliaryEndpoints } from './helpers/seedAuth';
+
 const ADMIN_TOKEN = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0LWFkbWluIn0.fake';
 const BRANCH_NORTE = '22222222-2222-2222-2222-222222222222';
 const BRANCH_SUR = '33333333-3333-3333-3333-333333333333';
@@ -83,15 +85,11 @@ test.describe('BranchSelector integration', () => {
       });
     });
 
-    await context.addInitScript(
-      ({ token, uuid }: { token: string; uuid: string }) => {
-        window.localStorage.setItem('parkos.auth.token', token);
-        // PR1 added the branch gate; this spec targets the in-page
-        // dropdown on /dashboard, so the gate has to be satisfied.
-        window.localStorage.setItem('parkos.lastSelectedSucursal', uuid);
-      },
-      { token: ADMIN_TOKEN, uuid: BRANCH_NORTE },
-    );
+    await mockAuxiliaryEndpoints(context);
+    await seedAuth(context, {
+      accessToken: ADMIN_TOKEN,
+      branchUuid: BRANCH_NORTE,
+    });
   });
 
   test('renders both permitted branches', async ({ page }) => {

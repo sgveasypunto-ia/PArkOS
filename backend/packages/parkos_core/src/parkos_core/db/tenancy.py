@@ -65,25 +65,32 @@ def _is_hash_chain_table(column: Any) -> bool:
 
 
 def _iter_tenant_columns(state: Any, *, is_select: bool) -> list[Any]:
-    """Resolve the ``uuid_sucursal`` columns a statement reads or writes.
+    """Resolve the OWNING ``uuid_sucursal`` column for the statement.
 
     ``do_orm_execute`` receives an :class:`sqlalchemy.orm.ORMExecuteState`,
     which does **not** expose ``column_descriptions`` — that attribute lives
     on the statement itself (``Select.column_descriptions``). Reading it off
     the state silently yields ``[]`` and the tenant filter is never applied.
 
-    Two sources are combined, because neither is sufficient alone:
-
-    - Entity selects (``select(Model)``, and joins) carry the mapped class in
-      ``column_descriptions``; take ``Model.uuid_sucursal`` from there.
-    - Aggregates (``select(func.count()).select_from(Model)``) have no entity
-      in ``column_descriptions`` — their only column is the ``count()``
-      expression — so the ``uuid_sucursal`` column is read straight off the
-      FROM element. Without this an unfiltered aggregate would still read
-      every branch.
+    Heuristic: the listener scopes ONLY the first entity in
+    ``column_descriptions``. Joined tables (``outerjoin(Ingreso, ...)`` for
+    context columns like the plate) keep their tables intact — adding
+    ``joined.uuid_sucursal = ctx`` to the WHERE turns a LEFT JOIN into an
+    effective INNER JOIN and silently drops orphan rows. The PRE-PR-A bug
+    pinned by ``tests/integration/test_operacion_scope_lista.py::
+    test_salidas_scope_con_header_no_degradacion_no_changel_join``:
+    the listener added ``Ingreso.uuid_sucursal = ctx`` on top of the
+    handler's ``Salidas.uuid_sucursal = ctx``, and exits without an
+    ``ingreso`` row disappeared from the listing.
 
     UPDATE / DELETE have no ``column_descriptions`` at all; the target comes
-    from ``state.bind_mapper``.
+    from ``state.bind_mapper`` (single-table mutation, no joins).
+
+    Aggregates (``select(func.count()).select_from(Model)``) have no entity
+    in ``column_descriptions`` — their only column is the ``count()``
+    expression — so the ``uuid_sucursal`` column is read straight off the
+    FROM element. Without this an unfiltered aggregate would still read
+    every branch.
     """
     columns: list[Any] = []
     seen: set[int] = set()
@@ -95,13 +102,21 @@ def _iter_tenant_columns(state: Any, *, is_select: bool) -> list[Any]:
 
     if is_select:
         statement = state.statement
+        owner_resolved = False
         for desc in getattr(statement, "column_descriptions", None) or []:
             if isinstance(desc, dict):
-                _add(getattr(desc.get("entity"), "uuid_sucursal", None))
-        for from_element in getattr(statement, "get_final_froms", list)():
-            collection = getattr(from_element, "c", None)
-            if collection is not None:
-                _add(collection.get("uuid_sucursal"))
+                candidate = getattr(desc.get("entity"), "uuid_sucursal", None)
+                if candidate is not None:
+                    _add(candidate)
+                    owner_resolved = True
+                    break
+        if not owner_resolved:
+            # Aggregate: read the uuid_sucursal column off the FROM.
+            for from_element in getattr(statement, "get_final_froms", list)():
+                collection = getattr(from_element, "c", None)
+                if collection is not None:
+                    _add(collection.get("uuid_sucursal"))
+                    break
     else:
         mapper = getattr(state, "bind_mapper", None)
         _add(getattr(getattr(mapper, "class_", None), "uuid_sucursal", None))
