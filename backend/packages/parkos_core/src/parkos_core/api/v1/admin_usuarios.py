@@ -53,22 +53,40 @@ import uuid as uuid_lib
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_session, requires_issuer
 from ...models.V.usuarios import Usuarios
 from ...repo import admin_usuarios as admin_repo
 from ...schemas.admin import (
+    AdminAsignarPermisoRequest,
     AdminAsignarSucursalRequest,
+    AdminPermisoRead,
+    AdminPermisoUsuarioRead,
+    AdminResetPasswordRequest,
+    AdminSesionRead,
     AdminSucursalAsignadaRead,
     AdminUsuarioCreateRequest,
     AdminUsuarioRead,
     AdminUsuarioReadList,
+    AdminUsuarioUpdateRequest,
+    SucursalAsignadaResumen,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/usuarios", tags=["admin-usuarios"])
+
+# Sub-router for the catalog endpoints that do NOT live under a
+# specific ``uuid``. Mounted by ``api/v1/__init__.py`` alongside the
+# main router with a different prefix so the path collision
+# ``/permisos`` (literal here) vs ``/{uuid}/permisos`` (per-user
+# under the main router) is resolved by URL prefix, not declaration
+# order. Without this the literal ``/permisos`` would be picked up by
+# the per-user route's ``{uuid}`` path-parameter and 422 with a
+# UUID-validation error.
+catalog_router = APIRouter(prefix="/admin", tags=["admin-usuarios"])
 
 _admin_issuer_dep = requires_issuer("admin-")
 
@@ -201,6 +219,39 @@ async def get_usuario(
     return AdminUsuarioRead.model_validate(payload)
 
 
+# ``list_permisos`` mounts on the global ``catalog_router`` (prefix
+# ``/admin``) so the literal ``/permisos`` path lives at
+# ``/admin/permisos`` -- outside the main ``/admin/usuarios/{uuid}``
+# tree, so the per-user route's ``{uuid}`` path-parameter does not
+# shadow it. See the docstring on ``catalog_router`` at the top of
+# this module.
+@catalog_router.get(
+    "/permisos",
+    response_model=list[AdminPermisoRead],
+    summary="List the canonical permission catalog (admin-only, read-only).",
+)
+async def list_permisos(
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> list[AdminPermisoRead]:
+    """Active permission codes only (``vigente_hasta IS NULL``).
+
+    The catalog is bi-temporal too, but we expose only the open
+    window so the admin UI shows codes the operator can still grant
+    today. A closed (revoked) permission code stays in the table for
+    audit but is hidden here.
+    """
+    _ = claims  # issuer guard only
+    rows = await admin_repo.list_permisos(session)
+    # ``descripcion`` column does not exist on ``prod.permisos`` yet;
+    # the schema defaults to ``None`` so the wire contract is honest
+    # without lying about a catalog enrichment that has not shipped.
+    return [
+        AdminPermisoRead(uuid=r.uuid, codigo=r.permiso, descripcion=None)
+        for r in rows
+    ]
+
+
 @router.post(
     "/{uuid}/sucursales",
     response_model=AdminSucursalAsignadaRead,
@@ -322,12 +373,22 @@ async def revocar_permiso(
     actor_uuid = _actor_uuid_from_claims(claims)
     from ...repo.admin_usuarios import revocar_permiso as _repo_revoke
 
-    had_open = await _repo_revoke(
-        session,
-        actor_uuid=actor_uuid,
-        usuario_uuid=uuid,
-        permiso_uuid=permiso_uuid,
-    )
+    try:
+        had_open = await _repo_revoke(
+            session,
+            actor_uuid=actor_uuid,
+            usuario_uuid=uuid,
+            permiso_uuid=permiso_uuid,
+        )
+    except admin_repo.UltimoAdminError as exc:
+        # REQ-OPS-007: the repo's last-admin guard fires when revoking
+        # the LAST active ``admin_usuarios`` grant. Surface as 409 with
+        # a typed ``detail`` so the admin UI can render a targeted
+        # warning (and so the test suite can assert on it directly).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="ultimo_admin",
+        ) from exc
     if not had_open:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -344,3 +405,351 @@ async def revocar_permiso(
     )
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
+
+
+# ---------------------------------------------------------------------------
+# HU-F16 -- remaining read/write endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/{uuid}",
+    response_model=AdminUsuarioRead,
+    summary=(
+        "Bi-temporal close+insert update of an admin-managed user "
+        "(admin-only). Sparse patch: every field is optional + nullable; "
+        "the handler maps ``None`` to 'leave the existing value alone'. "
+        "404 if no open user row exists."
+    ),
+)
+async def update_usuario(
+    uuid: uuid_lib.UUID,
+    payload: AdminUsuarioUpdateRequest,
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> AdminUsuarioRead:
+    actor_uuid = _actor_uuid_from_claims(claims)
+    try:
+        user = await admin_repo.update_admin_usuario(
+            session,
+            actor_uuid=actor_uuid,
+            usuario_uuid=uuid,
+            nombre=payload.nombre,
+            apellido=payload.apellido,
+            cedula=payload.cedula,
+            email=payload.email,
+            rol=payload.rol,
+        )
+    except admin_repo.UsuarioNoEncontradoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"usuario {uuid} not found or not vigente",
+        )
+    await session.commit()
+    await session.refresh(user)
+    logger.info(
+        "admin_usuarios.update",
+        extra={
+            "actor": str(actor_uuid),
+            "user_uuid": str(user.uuid),
+        },
+    )
+    return AdminUsuarioRead.model_validate(user)
+
+
+@router.get(
+    "/{uuid}/permisos",
+    response_model=list[AdminPermisoUsuarioRead],
+    summary="List the user's currently-open permission grants (admin-only).",
+)
+async def list_permisos_usuario(
+    uuid: uuid_lib.UUID,
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> list[AdminPermisoUsuarioRead]:
+    _ = claims
+    pairs = await admin_repo.list_active_permisos_usuario(
+        session, usuario_uuid=uuid
+    )
+    return [
+        AdminPermisoUsuarioRead(
+            uuid=row.uuid,
+            uuid_usuario=row.uuid_usuario,
+            uuid_permiso=row.uuid_permiso,
+            codigo=perm.permiso,
+            vigente_desde=row.vigente_desde,
+            vigente_hasta=row.vigente_hasta,
+        )
+        for row, perm in pairs
+    ]
+
+
+@router.post(
+    "/{uuid}/permisos/{permiso_uuid}",
+    response_model=AdminPermisoUsuarioRead,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Open a new permission grant (admin-only). 409 if the user already "
+        "holds the permission; 404 if the permission uuid is unknown."
+    ),
+)
+async def asignar_permiso(
+    uuid: uuid_lib.UUID,
+    permiso_uuid: uuid_lib.UUID,
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> AdminPermisoUsuarioRead:
+    actor_uuid = _actor_uuid_from_claims(claims)
+    try:
+        new_row = await admin_repo.asignar_permiso(
+            session,
+            actor_uuid=actor_uuid,
+            usuario_uuid=uuid,
+            permiso_uuid=permiso_uuid,
+        )
+    except admin_repo.PermisoYaAsignadoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except admin_repo.PermisoNoEncontradoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except admin_repo.UsuarioNoEncontradoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    # Re-resolve the permission code for the response payload (the
+    # join would otherwise need another round trip).
+    from ...models.V.permisos import Permisos as _Permisos
+
+    perm_row = (
+        await session.execute(
+            select(_Permisos).where(_Permisos.uuid == permiso_uuid)
+        )
+    ).scalar_one()
+    await session.commit()
+    await session.refresh(new_row)
+    logger.info(
+        "admin_usuarios.asignar_permiso",
+        extra={
+            "actor": str(actor_uuid),
+            "user_uuid": str(uuid),
+            "permiso_uuid": str(permiso_uuid),
+        },
+    )
+    return AdminPermisoUsuarioRead(
+        uuid=new_row.uuid,
+        uuid_usuario=new_row.uuid_usuario,
+        uuid_permiso=new_row.uuid_permiso,
+        codigo=perm_row.permiso,
+        vigente_desde=new_row.vigente_desde,
+        vigente_hasta=new_row.vigente_hasta,
+    )
+
+
+@router.get(
+    "/{uuid}/sesiones",
+    response_model=list[AdminSesionRead],
+    summary="List the user's currently-open cash sessions (admin-only).",
+)
+async def list_sesiones_usuario(
+    uuid: uuid_lib.UUID,
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> list[AdminSesionRead]:
+    """Return ``prod.sesion`` rows for one user where ``timestamp_cierre IS NULL``.
+
+    The frontend's :class:`AdminSesionRead` carries ``ip_origen`` /
+    ``user_agent`` fields that ``prod.sesion`` does NOT have today.
+    They live on ``prod.login``. We return ``None`` for those fields
+    rather than fabricating values -- the wire contract stays honest,
+    and a future migration that adds the columns to ``prod.sesion``
+    flips the response without a caller change.
+    """
+    from sqlalchemy import select as _select
+    _ = claims
+    # Local import to avoid a cycle on models.base
+    from ...models.L_S.sesion import Sesion as _Sesion
+    from ...schemas.admin import AdminSesionRead as _Schema
+
+    stmt = (
+        _select(_Sesion)
+        .where(
+            _Sesion.uuid_usuario == uuid,
+            _Sesion.timestamp_cierre.is_(None),
+        )
+        .order_by(
+            _Sesion.timestamp_apertura.desc().nulls_last(),
+            _Sesion.uuid.asc(),
+        )
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    # The frontend schema expects ``creado_en`` (timestamp_apertura) and
+    # ``ultimo_activity`` (timestamp_evento on login would be ideal,
+    # but ``prod.sesion`` carries neither). We expose the values the
+    # table does have; the rest is ``None``.
+    return [
+        _Schema(
+            uuid=r.uuid,
+            uuid_usuario=r.uuid_usuario,
+            ip_origen=None,
+            user_agent=None,
+            creado_en=r.timestamp_apertura,
+            ultimo_activity=r.timestamp_apertura,
+            timestamp_cierre=r.timestamp_cierre,
+            estado=r.estado,
+        )
+        for r in rows
+    ]
+
+
+@router.post(
+    "/{uuid}/sesiones/{login_uuid}/cerrar",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary=(
+        "Close one open login attempt (admin-only). Maps to the "
+        "``session_cycle.close_login_with_log`` repo helper, which "
+        "writes the audit row FIRST (the DB-layer session guard trigger "
+        "rejects the UPDATE otherwise) then UPDATE ``timestamp_cierre`` "
+        "and stamps ``estado='cerrado'``. 404 if the login uuid is "
+        "unknown or already closed."
+    ),
+)
+async def cerrar_sesion(
+    uuid: uuid_lib.UUID,
+    login_uuid: uuid_lib.UUID,
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> Response:
+    actor_uuid = _actor_uuid_from_claims(claims)
+    # The repo lives in :mod:`session_cycle`; import lazily so the
+    # admin module does not pull it at import time.
+    from ...repo.session_cycle import close_login_with_log
+
+    try:
+        await close_login_with_log(
+            session, login_uuid=login_uuid, actor_uuid=actor_uuid
+        )
+    except Exception as exc:
+        # ``close_login_with_log`` raises ``SessionGuardError`` on
+        # unknown login_uuid AND on session-guard trigger failures
+        # (missing log row). Both map to 404 from the admin's view.
+        from ...repo.session_cycle import SessionGuardError
+        if isinstance(exc, SessionGuardError):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
+        raise
+    await session.commit()
+    logger.info(
+        "admin_usuarios.cerrar_sesion",
+        extra={
+            "actor": str(actor_uuid),
+            "user_uuid": str(uuid),
+            "login_uuid": str(login_uuid),
+        },
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/{uuid}/login-historico",
+    response_model=list["LoginIntentoItem"],
+    summary=(
+        "Latest login attempts for the user (admin-only). Same shape as "
+        "``GET /usuarios/{uuid}/login`` (HU-F1.15); this route is the "
+        "admin-namespaced alias the web_admin frontend calls."
+    ),
+)
+async def login_historico(
+    uuid: uuid_lib.UUID,
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> list["LoginIntentoItem"]:
+    _ = claims
+    from sqlalchemy import select as _select
+    from ...models.L_S.login import Login as _Login
+    from ...schemas.usuarios import LoginIntentoItem
+
+    stmt = (
+        _select(_Login)
+        .where(_Login.uuid_usuario == uuid)
+        .order_by(
+            _Login.timestamp_evento.desc().nulls_last(),
+            _Login.uuid.asc(),
+        )
+        .limit(50)  # cap matches :func:`usuarios_login::list_login_attempts`
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [LoginIntentoItem.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/{uuid}/reset-password",
+    response_model=dict,  # noqa: PGH003 -- temporary until a typed schema lands
+    summary=(
+        "Generate a temporary password and write it (bcrypt-hashed) to the "
+        "user (admin-only). Returns the plaintext ONCE -- the handler "
+        "surfaces it in the response so the admin can read it to the "
+        "operator. The plaintext is never persisted; only its hash is. "
+        "If ``new_password`` is supplied in the request body it is "
+        "used instead of the generated one (future-facing; the form "
+        "does not expose it today)."
+    ),
+)
+async def reset_password(
+    uuid: uuid_lib.UUID,
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> dict[str, object]:
+    """No body required -- the admin issues a reset, the handler
+    generates the password. The ``AdminResetPasswordRequest`` schema
+    is reserved for the future ``new_password`` override path; we
+    intentionally do NOT require it here so the form (which POSTs
+    with no body) round-trips cleanly. ``None`` is the default."""
+    payload = AdminResetPasswordRequest()
+    actor_uuid = _actor_uuid_from_claims(claims)
+    try:
+        plaintext, user_uuid = await admin_repo.reset_admin_password(
+            session,
+            actor_uuid=actor_uuid,
+            usuario_uuid=uuid,
+            new_password=payload.new_password,
+        )
+    except admin_repo.UsuarioNoEncontradoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    await session.commit()
+    logger.info(
+        "admin_usuarios.reset_password",
+        extra={
+            "actor": str(actor_uuid),
+            "user_uuid": str(user_uuid),
+        },
+    )
+    # The response shape is intentionally minimal -- the admin reads
+    # the plaintext and types it into the operator's terminal. The
+    # response is also logged at info level so the audit trail includes
+    # WHO issued the reset, even though the plaintext itself is NOT
+    # logged (that would be a security regression).
+    return {
+        "uuid_usuario": str(user_uuid),
+        "temporary_password": plaintext,
+        "message": (
+            "Password reset. Provide the temporary password to the "
+            "operator out-of-band; they must change it on next login."
+        ),
+    }

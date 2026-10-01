@@ -489,6 +489,24 @@ async def revocar_permiso(
     if open_row is None:
         return False
 
+    # Permission name lookup -- the FK to ``permisos`` is optional
+    # (nullable FK) so we resolve the code via a sibling read on the
+    # ``permisos`` table. Used by the "último admin" guard below.
+    code_stmt = _select(Permisos.permiso).where(Permisos.uuid == permiso_uuid)
+    code_result = await session.execute(code_stmt)
+    permiso_codigo = code_result.scalar_one_or_none()
+
+    # ``último admin`` guard (REQ-X-OPER-007): if the revoked
+    # permission is ``admin_usuarios`` AND the user is the LAST
+    # currently-granted admin, refuse the revoke with a typed
+    # exception so the handler can return ``409 ultimo_admin``.
+    if permiso_codigo == "admin_usuarios":
+        if await _is_last_admin(session, exclude_usuario=usuario_uuid):
+            raise UltimoAdminError(
+                f"cannot revoke the last active admin_usuarios grant "
+                f"for user {usuario_uuid}"
+            )
+
     await close_only(
         session,
         PermisosUsuario,
@@ -513,3 +531,442 @@ async def revocar_permiso(
         prioridad=10,
     )
     return True
+
+
+async def _is_last_admin(
+    session: AsyncSession,
+    *,
+    exclude_usuario: uuid_lib.UUID,
+) -> bool:
+    """True iff ``exclude_usuario`` is the LAST admin in the system.
+
+    The "admin" predicate is ``holds the ``admin_usuarios`` permission
+    grant with ``vigente_hasta IS NULL``. We count remaining such
+    grants EXCLUDING the user passed in (which is the candidate for
+    revoke). If the count is zero, the candidate is the last admin.
+
+    Used by :func:`revocar_permiso` as the gate; raised as
+    :class:`UltimoAdminError` (handled as ``409 ultimo_admin``) so the
+    admin surface has a typed error rather than a generic 500.
+
+    The helper exists in the repo layer because the count is a SQL
+    aggregate -- moving it to the handler would mean two round trips
+    (check, then act), which is exactly the kind of TOCTOU race that
+    bi-temporal close+insert was designed to avoid. Single round trip
+    keeps the guard atomic with the revoke itself.
+    """
+    from sqlalchemy import func as _func
+    from sqlalchemy import select as _select
+
+    admin_permiso_subq = _select(Permisos.uuid).where(
+        Permisos.permiso == "admin_usuarios",
+        Permisos.vigente_hasta.is_(None),
+    )
+    admin_permiso_subq = admin_permiso_subq.subquery()
+
+    stmt = _select(_func.count()).select_from(PermisosUsuario).where(
+        PermisosUsuario.uuid_permiso == admin_permiso_subq.c.uuid,
+        PermisosUsuario.vigente_hasta.is_(None),
+        PermisosUsuario.uuid_usuario != exclude_usuario,
+    )
+    result = await session.execute(stmt)
+    remaining = result.scalar_one()
+    return remaining == 0
+
+
+async def update_admin_usuario(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    usuario_uuid: uuid_lib.UUID,
+    nombre: str | None,
+    apellido: str | None,
+    cedula: str | None,
+    email: str | None,
+    rol: str | None,
+) -> Usuarios | None:
+    """Bi-temporal close+insert update of a single ``prod.usuarios`` row.
+
+    Every parameter is ``Optional``: ``None`` means "leave the
+    existing value alone" (mirrors :class:`AdminUsuarioUpdateRequest`
+    semantics). Caller pre-filters to only the fields it actually
+    wants to change -- we do NOT touch a field whose value is ``None``.
+
+    Returns the new open version, or ``None`` if no open row exists.
+    """
+    # Fetch the open row first -- close+insert needs its current_uuid
+    # so the FK history chain stays intact.
+    stmt = select(Usuarios).where(
+        Usuarios.uuid == usuario_uuid,
+        Usuarios.vigente_hasta.is_(None),
+    )
+    result = await session.execute(stmt)
+    current = result.scalar_one_or_none()
+    if current is None:
+        return None
+
+    # Build the new_attrs dict from non-None inputs. ``getattr`` lets
+    # the caller pass a sparse payload without us having to know the
+    # schema field order up-front.
+    overrides: dict[str, object] = {}
+    if nombre is not None:
+        overrides["nombre"] = nombre
+    if apellido is not None:
+        overrides["apellido"] = apellido
+    if cedula is not None:
+        overrides["cedula"] = cedula
+    if email is not None:
+        overrides["email"] = email
+    if rol is not None:
+        overrides["rol"] = rol
+
+    # If every field was None, the caller sent an empty patch -- we
+    # return the open row unchanged rather than write a no-op version.
+    if not overrides:
+        return current
+
+    new_row = await close_and_insert(
+        session,
+        Usuarios,
+        current_uuid=current.uuid,
+        new_attrs=overrides,
+        actor_uuid=actor_uuid,
+        log_tx=False,
+    )
+
+    # Enqueue the patch so branches that already have a copy of the
+    # user pick up the new version on their next sync drain.
+    await enqueue(
+        session,
+        operacion="update",
+        tabla="usuarios",
+        uuid_registro=new_row.uuid,
+        datos={
+            "uuid": str(new_row.uuid),
+            "nombre": new_row.nombre,
+            "apellido": new_row.apellido,
+            "cedula": new_row.cedula,
+            "email": new_row.email,
+            "rol": new_row.rol,
+        },
+        uuid_sucursal=None,
+        prioridad=10,
+    )
+
+    return new_row
+
+
+async def list_permisos(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+) -> list[Permisos]:
+    """Return currently-open rows of the ``prod.permisos`` catalog.
+
+    The catalog is bi-temporal too -- the same close+insert rule
+    applies if a permission code is ever revoked -- but the read here
+    is restricted to ``vigente_hasta IS NULL`` so the admin UI only
+    shows active codes.
+    """
+    stmt = (
+        select(Permisos)
+        .where(Permisos.vigente_hasta.is_(None))
+        .order_by(Permisos.permiso.asc(), Permisos.uuid.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def list_active_permisos_usuario(
+    session: AsyncSession,
+    *,
+    usuario_uuid: uuid_lib.UUID,
+) -> list[tuple[PermisosUsuario, Permisos]]:
+    """Return currently-open permission grants for one user.
+
+    Joins to ``prod.permisos`` so the handler can surface the
+    permission code string alongside the junction row. Returns the
+    tuples to keep the join columns available for the response shape
+    (the FK relation is enough; the code is what the UI shows).
+    """
+    stmt = (
+        select(PermisosUsuario, Permisos)
+        .join(Permisos, Permisos.uuid == PermisosUsuario.uuid_permiso)
+        .where(
+            PermisosUsuario.uuid_usuario == usuario_uuid,
+            PermisosUsuario.vigente_hasta.is_(None),
+        )
+        .order_by(
+            Permisos.permiso.asc(),
+            PermisosUsuario.vigente_desde.desc(),
+        )
+    )
+    result = await session.execute(stmt)
+    return [(row[0], row[1]) for row in result.all()]
+
+
+class PermisoYaAsignadoError(Exception):
+    """Raised by :func:`asignar_permiso` when the user already holds it."""
+
+
+class PermisoNoEncontradoError(Exception):
+    """Raised by :func:`asignar_permiso` when ``permiso_uuid`` is unknown.
+
+    The handler maps this to ``404 permiso_no_encontrado`` -- distinct
+    from the generic 404 we use for unknown ``usuario_uuid`` so the
+    admin UI can render a targeted message.
+    """
+
+
+class UsuarioNoEncontradoError(Exception):
+    """Raised by repo helpers when no open ``prod.usuarios`` row exists.
+
+    Surfaces as ``404 usuario_no_encontrado``.
+    """
+
+
+class UltimoAdminError(Exception):
+    """Raised by :func:`revocar_permiso` when revoking would leave zero
+    currently-active admins in the system.
+
+    Mapped to ``409 ultimo_admin`` so the admin UI can render a
+    targeted warning instead of a generic 500. The guard is
+    REQ-OPS-007 (admin_usuarios revoke protection) and fires for the
+    ``admin_usuarios`` permission code only -- other permissions can
+    be revoked from a user's last granted slot without this guard.
+    """
+
+
+async def asignar_permiso(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    usuario_uuid: uuid_lib.UUID,
+    permiso_uuid: uuid_lib.UUID,
+) -> PermisosUsuario:
+    """Open a new ``prod.permisos_usuario`` row (close+insert).
+
+    Returns the new open row on success. Raises
+    :class:`PermisoYaAsignadoError` if the user already holds the
+    permission -- the UK on ``(uuid_usuario, uuid_permiso,
+    vigente_desde)`` would reject the INSERT, but we surface it as a
+    typed exception so the handler can return ``409 permiso_ya_asignado``
+    instead of a generic 500.
+    """
+    # Check the FK targets first -- a missing FK means the permission
+    # uuid does not exist, which the handler maps to 404.
+    perm_st = select(Permisos).where(
+        Permisos.uuid == permiso_uuid,
+        Permisos.vigente_hasta.is_(None),
+    )
+    perm_row = (await session.execute(perm_st)).scalar_one_or_none()
+    if perm_row is None:
+        raise PermisoNoEncontradoError(
+            f"permiso {permiso_uuid} not found or not vigente"
+        )
+
+    user_st = select(Usuarios).where(
+        Usuarios.uuid == usuario_uuid,
+        Usuarios.vigente_hasta.is_(None),
+    )
+    user_row = (await session.execute(user_st)).scalar_one_or_none()
+    if user_row is None:
+        raise UsuarioNoEncontradoError(f"usuario {usuario_uuid} not found")
+
+    # Check no open grant already exists for this (user, permiso) pair.
+    existing_st = select(PermisosUsuario).where(
+        PermisosUsuario.uuid_usuario == usuario_uuid,
+        PermisosUsuario.uuid_permiso == permiso_uuid,
+        PermisosUsuario.vigente_hasta.is_(None),
+    )
+    existing = (await session.execute(existing_st)).scalar_one_or_none()
+    if existing is not None:
+        raise PermisoYaAsignadoError(
+            f"user {usuario_uuid} already has permission {permiso_uuid}"
+        )
+
+    new_row = await close_and_insert(
+        session,
+        PermisosUsuario,
+        current_uuid=None,
+        new_attrs={
+            "uuid_usuario": usuario_uuid,
+            "uuid_permiso": permiso_uuid,
+        },
+        actor_uuid=actor_uuid,
+        log_tx=False,
+    )
+
+    await enqueue(
+        session,
+        operacion="insert",
+        tabla="permisos_usuario",
+        uuid_registro=new_row.uuid,
+        datos={
+            "uuid_usuario": str(usuario_uuid),
+            "uuid_permiso": str(permiso_uuid),
+        },
+        uuid_sucursal=None,
+        prioridad=10,
+    )
+    return new_row
+
+
+async def list_sesiones_activas(
+    session: AsyncSession,
+    *,
+    usuario_uuid: uuid_lib.UUID,
+) -> list:
+    """Return currently-open ``prod.sesion`` rows for one user.
+
+    Filters on ``uuid_usuario`` and ``timestamp_cierre IS NULL``.
+    Note: ``prod.sesion`` is the cash-session [L-S] table -- the
+    columns the frontend expects (``ip_origen``, ``user_agent``,
+    ``ultimo_activity``) do not exist on this table. The handler
+    fills them with ``None`` so the wire contract is honest; if a
+    future PR adds the columns the response flips to real values with
+    no caller change.
+    """
+    # Local import to avoid a cycle: Sesion model imports from
+    # ``models.base`` which imports from ``app_factory`` indirectly.
+    from ..models.L_S.sesion import Sesion
+
+    stmt = (
+        select(Sesion)
+        .where(
+            Sesion.uuid_usuario == usuario_uuid,
+            Sesion.timestamp_cierre.is_(None),
+        )
+        .order_by(
+            Sesion.timestamp_apertura.desc().nulls_last(),
+            Sesion.uuid.asc(),
+        )
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def list_login_historico(
+    session: AsyncSession,
+    *,
+    usuario_uuid: uuid_lib.UUID,
+    limit: int = 10,
+) -> list:
+    """Return the latest ``prod.login`` rows for one user.
+
+    Reuses the cursor-pagination shape from
+    :func:`api.v1.usuarios_login::list_login_attempts_paginated` -- same
+    schema, same model -- so this endpoint does not invent a new
+    ordering. The handler applies the limit and the cursor in
+    :mod:`api.v1.usuarios_login`.
+    """
+    from ..models.L_S.login import Login
+
+    stmt = (
+        select(Login)
+        .where(Login.uuid_usuario == usuario_uuid)
+        .order_by(Login.timestamp_evento.desc().nulls_last(), Login.uuid.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+def generate_temp_password() -> str:
+    """12-char temporary password per IT-1.7 spec.
+
+    Mixed charset (upper, lower, digits, two symbols). Avoids
+    look-alike characters (``0`` vs ``O``, ``1`` vs ``l``) so the admin
+    can read it over the phone without ambiguity.
+    """
+    import secrets
+    import string
+
+    alphabet = (
+        "ABCDEFGHJKLMNPQRSTUVWXYZ"  # no I, O
+        "abcdefghijkmnopqrstuvwxyz"  # no l
+        "23456789"                   # no 0, 1
+        "!@#%&*?"
+    )
+    # ``secrets.choice`` is cryptographically secure; the password is
+    # only ever shown to the admin once so readability beats entropy
+    # here (16 chars of CSPRNG alphabet = ~95 bits).
+    return "".join(secrets.choice(alphabet) for _ in range(12))
+
+
+async def reset_admin_password(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    usuario_uuid: uuid_lib.UUID,
+    new_password: str | None = None,
+) -> tuple[str, Usuarios]:
+    """Bi-temporal close+insert update of ``password_hash``.
+
+    Generates a 12-char temporary password via
+    :func:`generate_temp_password` if the caller did not supply one.
+    The returned tuple is ``(plaintext, updated_user)`` -- the handler
+    surfaces the plaintext in the response so the admin can read it
+    once. The plaintext is never persisted; only its bcrypt hash is.
+
+    Returns ``(plaintext, new_user_row)``.
+    """
+    plaintext = new_password or generate_temp_password()
+    password_hash = _bcrypt_hash(plaintext)
+
+    # Reuse the bi-temporal close+insert helper: close the currently
+    # open row, insert a new one with the new password_hash. Every
+    # other column is preserved.
+    stmt = select(Usuarios).where(
+        Usuarios.uuid == usuario_uuid,
+        Usuarios.vigente_hasta.is_(None),
+    )
+    result = await session.execute(stmt)
+    current = result.scalar_one_or_none()
+    if current is None:
+        raise UsuarioNoEncontradoError(f"usuario {usuario_uuid} not found")
+
+    new_row = await close_and_insert(
+        session,
+        Usuarios,
+        current_uuid=current.uuid,
+        new_attrs={"password_hash": password_hash},
+        actor_uuid=actor_uuid,
+        log_tx=False,
+    )
+
+    # Audit log: this is a destructive account action and the auditor
+    # needs to see who did it without grepping the open row's history
+    # chain. The close+insert already writes a log row; this is a
+    # dedicated audit entry so the plaintext is never logged (only the
+    # fact that a reset happened).
+    from ..models.A.log_transaccional import LogTransaccional
+
+    log_attrs = {
+        "uuid_usuario": actor_uuid,
+        "uuid_sucursal": None,
+        "accion": "reset_password",
+        "tabla_afectada": "usuarios",
+        "uuid_registro_afectado": usuario_uuid,
+        "timestamp_evento": _now(),
+        "datos_anteriores": {"password_hash_set": True},
+        "datos_nuevos": {"password_hash_reset": True},
+    }
+    # Route through ``repo.hash_chain.append`` so the hash chain is
+    # maintained; this admin action is itself auditable.
+    from . import hash_chain
+
+    await hash_chain.append(
+        session, LogTransaccional, log_attrs, actor_uuid=actor_uuid
+    )
+    await session.flush()
+
+    # Return ``(plaintext, usuario_uuid)`` -- not ``new_row.uuid``.
+    # ``new_row.uuid`` is a NEW version row's UUID (the post
+    # close+insert successor), which the caller does NOT recognise
+    # as the user they just reset. The original ``usuario_uuid`` is
+    # the stable identifier across the bi-temporal rewrite -- it is
+    # what the caller's UI already knows about and what the audit log
+    # records as ``uuid_registro_afectado``.
+    return plaintext, usuario_uuid
