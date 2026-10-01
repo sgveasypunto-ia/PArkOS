@@ -58,12 +58,22 @@ from ...repo.config_override import resolve_efectiva_seguridad
 from ...repo.session_cycle import record_login
 from ...schemas.auth import (
     AuthMeResponse,
+    CambiarPasswordRequest,
     LoginRequest,
     RefreshRequest,
     SucursalItem,
     TokenPair,
     UserItem,
 )
+
+# HU-F16 must-change enforcement: when the user authenticated against a
+# temporary credential, the login handler issues this short-lived JWT
+# instead of a normal pair. The operator MUST exchange it at
+# ``POST /auth/cambiar-password`` before the system treats them as
+# logged in. The TTL is short because the only reason the token exists
+# is to carry a freshly-issued password change; there is no UI flow
+# that would justify a longer window.
+MUST_CHANGE_TOKEN_TTL = 5 * 60  # 5 minutes
 
 logger = logging.getLogger(__name__)
 
@@ -277,14 +287,59 @@ async def login(
             detail={"error": "invalid_credentials"},
         )
 
-    # 4. Pin the JWT to the branch already resolved before the lockout
+    # 4. HU-F16 must-change enforcement (KD-1). The user authenticated
+    #    against a bcrypt hash that the system marked as temporary via
+    #    ``prod.usuarios.debe_cambiar_password`` (set to ``True`` by
+    #    ``repo.admin_usuarios.reset_admin_password`` after an admin
+    #    reset). The handler returns the SAME 200 status with a body
+    #    variant: ``must_change_password=True`` and ``temporary_token``
+    #    carrying a 5-minute JWT scoped to that one user with
+    #    ``purpose="must_change"``. The frontend routes to
+    #    ``<CambiarPasswordForm>`` which POSTs to ``/auth/cambiar-password``
+    #    and exchanges the temp token for a real TokenPair.
+    #
+    #    We log a successful login (``estado='exitoso'``) regardless of
+    #    must_change -- the audit trail needs to know the operator
+    #    authenticated, and ``motivo`` carries the nuance.
+    #
+    #    The temp token claims include ``sub`` and ``purpose`` only --
+    #    NO ``rol`` or ``sucursales_permitidas``. Until the operator
+    #    chooses a real password the system refuses to attach them to
+    #    a branch context (KD-2 / KD-3): a temporary operator with
+    #    branch scope is a security hole, not a feature.
+    if user.debe_cambiar_password:
+        temp_token = issue_token(
+            subject_uuid=user.uuid,
+            issuer="operador-" if user.rol == "operador" else "admin-",
+            claims={
+                "purpose": "must_change",
+                "must_change_password": True,
+            },
+            expires_in=MUST_CHANGE_TOKEN_TTL,
+        )
+        await record_login(
+            session,
+            usuario_uuid=user.uuid,
+            sucursal_uuid=branch_uuid,
+            actor_uuid=user.uuid,
+            success=True,
+            motivo="must_change_password",
+        )
+        await session.commit()
+        return TokenPair(
+            must_change_password=True,
+            temporary_token=temp_token,
+            token_type="Bearer",
+            expires_in=MUST_CHANGE_TOKEN_TTL,
+        )
+
+    # 5. Pin the JWT to the branch already resolved before the lockout
     #    pre-check (step 2). ``branch_uuid`` is None for a cloud admin with
     #    no ``usuarios_sucursal`` row, and None is the honest value:
     #    ``login.uuid_sucursal`` is a nullable FK to ``prod.sucursal(uuid)``,
     #    so substituting a user uuid there is a ForeignKeyViolationError.
-    #    Do not reintroduce a ``or user.uuid`` fallback — it also put a
-    #    non-branch id into the tenant claims below.
-    # 5. Record the successful login (REQ-42).
+    #    Do not reintroduce a ``or user.uuid`` fallback.
+    # 6. Record the successful login (REQ-42).
     await record_login(
         session,
         usuario_uuid=user.uuid,
@@ -293,7 +348,7 @@ async def login(
         success=True,
     )
 
-    # 6. Issue tokens. ``sucursales_permitidas`` carries the FULL set of
+    # 7. Issue tokens. ``sucursales_permitidas`` carries the FULL set of
     #    active assignments from the same source ``GET /auth/me`` reads, not
     #    just the pinned branch: ``tenancy.require_tenant`` fail-closes an
     #    empty or missing list (``WHERE FALSE``), so a single-branch list
@@ -381,6 +436,166 @@ async def refresh(
     return TokenPair(
         access_token=access,
         refresh_token=payload.refresh_token,
+        expires_in=ACCESS_TOKEN_TTL,
+    )
+
+
+@router.post(
+    "/cambiar-password",
+    response_model=TokenPair,
+    status_code=status.HTTP_200_OK,
+    summary=(
+        "Exchange a temporary credential issued by ``/auth/login`` (when "
+        "``must_change_password=True``) for a real TokenPair. Closes the "
+        "current ``prod.usuarios`` row and inserts a new one with the new "
+        "bcrypt hash and ``debe_cambiar_password=false``. Validates that the "
+        "incoming ``temporary_token`` carries ``purpose='must_change'`` "
+        "(any other token, including the operator's regular pair, is "
+        "rejected with ``401 invalid_temporary_token``)."
+    ),
+    responses={
+        200: {"description": "Password changed, normal TokenPair returned."},
+        401: {"description": "Token invalid, expired, or not a must-change token."},
+        404: {"description": "User no longer exists (must-change token points at a deleted user)."},
+    },
+)
+async def cambiar_password(
+    payload: CambiarPasswordRequest,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> TokenPair:
+    """Resolve the must-change token to its subject, hash the new password,
+    close+insert the user row, and return the regular TokenPair.
+
+    Errors are deliberately narrow: a 401 with a typed ``detail`` (instead of
+    a 500) when the token is malformed/expired/not-must-change keeps the
+    operator UI honest. The handler does NOT log a ``prod.login`` row --
+    ``/auth/login`` already did, and ``/auth/cambiar-password`` is a
+    credential lifecycle event, not an authentication event.
+    """
+    try:
+        claims = verify_token(payload.temporary_token)
+    except (JWTValidationError, JWTIssuerPrefixError) as e:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_temporary_token", "detail": str(e)},
+        ) from e
+
+    if claims.get("purpose") != "must_change":
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_temporary_token", "detail": "purpose must be 'must_change'"},
+        )
+
+    try:
+        subject_uuid = uuid_lib.UUID(claims["sub"])
+    except (KeyError, ValueError) as e:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_temporary_token", "detail": f"missing sub: {e}"},
+        ) from e
+
+    # Find the active open row. If the user was deactivated between the
+    # temp-token mint and the change, refuse with 404 instead of leaving
+    # the system in an inconsistent state.
+    stmt = select(Usuarios).where(
+        Usuarios.uuid == subject_uuid,
+        Usuarios.vigente_hasta.is_(None),
+    )
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=404,
+            detail="user_not_found",
+        )
+
+    # Bcrypt-hash the new password using the same pipeline as
+    # ``repo.admin_usuarios.reset_admin_password`` -- a fresh cost
+    # factor, no plaintext persisted, only the hash lands in
+    # ``prod.usuarios.password_hash``.
+    new_hash = bcrypt.hashpw(
+        payload.new_password.encode("utf-8"), bcrypt.gensalt(rounds=12)
+    ).decode("utf-8")
+
+    # Close+insert: the new row carries ``debe_cambiar_password=False``,
+    # clearing the flag. We also stamp ``fecha_cambio_password=NOW()`` so
+    # future compliance / DIAN retention reviews can reason about the
+    # rotation cadence without per-byte SQL on ``log_transaccional``.
+    from ...repo.versioned import close_and_insert
+
+    await close_and_insert(
+        session,
+        Usuarios,
+        current_uuid=user.uuid,
+        new_attrs={
+            "password_hash": new_hash,
+            "debe_cambiar_password": False,
+            "fecha_cambio_password": datetime.now(UTC).replace(tzinfo=None),
+        },
+        actor_uuid=user.uuid,
+        log_tx=True,
+    )
+    await session.flush()
+
+    # Re-resolve the same fields login() does for the normal path. The
+    # operator just changed their password; they now deserve the full
+    # pair with their branch scope attached.
+    asg = await session.execute(
+        select(UsuariosSucursal)
+        .where(
+            UsuariosSucursal.uuid_usuario == user.uuid,
+            UsuariosSucursal.vigente_hasta.is_(None),
+        )
+        .limit(1)
+    )
+    branch_assignment = asg.scalar_one_or_none()
+    branch_uuid = branch_assignment.uuid_sucursal if branch_assignment else None
+
+    permitidas = [
+        str(s.uuid)
+        for s in (await _select_sucursales_permitidas(session, user.uuid)).scalars().all()
+    ]
+    issuer = "operador-" if user.rol == "operador" else "admin-"
+    claims_for_pair = {
+        "rol": user.rol or "operador",
+        "sucursales_permitidas": permitidas,
+        "sucursal": str(branch_uuid) if branch_uuid else None,
+    }
+    access = issue_token(
+        subject_uuid=user.uuid,
+        issuer=issuer,
+        claims=claims_for_pair,
+        expires_in=ACCESS_TOKEN_TTL,
+    )
+    refresh = issue_token(
+        subject_uuid=user.uuid,
+        issuer=issuer,
+        claims={"type": "refresh", **claims_for_pair},
+        expires_in=REFRESH_TOKEN_TTL,
+    )
+
+    response.set_cookie(
+        key="parkos_session",
+        value=access,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=ACCESS_TOKEN_TTL,
+        path="/",
+    )
+
+    await session.commit()
+
+    logger.info(
+        "auth.cambiar_password",
+        extra={"actor": str(user.uuid)},
+    )
+
+    return TokenPair(
+        access_token=access,
+        refresh_token=refresh,
+        token_type="Bearer",
         expires_in=ACCESS_TOKEN_TTL,
     )
 

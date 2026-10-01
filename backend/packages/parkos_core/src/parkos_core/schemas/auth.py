@@ -255,12 +255,54 @@ class RefreshRequest(_Base):
 
 
 class TokenPair(_Base):
-    """Successful login response (REQ-42)."""
+    """Successful login response (REQ-42).
 
-    access_token: str
-    refresh_token: str
+    Successful login has TWO output shapes (both 200 OK):
+
+    1. **Normal** -- the password is permanent. All four fields are
+       populated and ``must_change_password`` is False. Frontends stash
+       the pair and proceed to the original target.
+
+    2. **Must change** -- the user was just issued a temporary
+       credential by ``POST /admin/usuarios/{uuid}/reset-password``.
+       ``access_token`` and ``refresh_token`` are ``None``; instead
+       ``temporary_token`` carries a short-lived JWT (5 min TTL) with
+       ``purpose="must_change"``. Frontends MUST route the operator
+       to ``<CambiarPasswordForm>`` and POST it to
+       ``/auth/cambiar-password`` before treating them as logged in.
+
+    The discriminator is ``must_change_password``: when True, the
+    frontend reads ``temporary_token``; when False, it reads
+    ``access_token``/``refresh_token``. We deliberately keep a single
+    response_model instead of two endpoints because the auth contract
+    (one round trip per "log in") is more important than the strict
+    type separation, and Pydantic can validate both shapes against
+    the same model by using ``model_config = ConfigDict(extra='allow')``
+    or by simply making every optional field a union.
+    """
+
+    access_token: str | None = None
+    refresh_token: str | None = None
+    temporary_token: str | None = None
     token_type: str = "Bearer"
-    expires_in: int
+    expires_in: int | None = None
+    must_change_password: bool = False
+
+
+class CambiarPasswordRequest(_Base):
+    """``POST /auth/cambiar-password`` body.
+
+    The ``temporary_token`` is the 5-minute JWT the login handler
+    returned when the operator authenticated against a temporary
+    credential. The handler validates that the token's ``purpose`` is
+    exactly ``"must_change"`` before accepting the password change.
+    Plaintext ``new_password`` is bcrypt-hashed in the same way the
+    ``reset_admin_password`` repo does (no plaintext persisted, only
+    its hash).
+    """
+
+    temporary_token: Annotated[str, StringConstraints(min_length=1)]
+    new_password: Annotated[str, StringConstraints(min_length=8, max_length=128)]
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +366,7 @@ class AuthMeResponse(_Base):
 
 __all__ = [
     "AuthMeResponse",
+    "CambiarPasswordRequest",
     "LoginCreate",
     "LoginFilter",
     "LoginRead",

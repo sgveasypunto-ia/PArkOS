@@ -974,3 +974,250 @@ async def test_sync_agent_token_is_rejected(pg_engine, alembic_upgrade, pg_sessi
             headers={"Authorization": f"Bearer {sync_agent_jwt}"},
         )
     assert r.status_code == 401, r.text
+
+
+# ---------------------------------------------------------------------------
+# HU-F16 must-change enforcement (migration 0065)
+# ---------------------------------------------------------------------------
+
+
+async def test_reset_password_sets_must_change_flag(
+    pg_engine, alembic_upgrade, pg_session
+) -> None:
+    """``POST /admin/usuarios/{uuid}/reset-password`` writes ``debe_cambiar_password=true``
+    on the new bi-temporal version row.
+
+    This is the row-level half of the HU-F16 contract. The login handler
+    half is exercised by the test below. Together they close the loop that
+    was open before migration 0065: the response promised "must change on
+    next login" but the storage did not back that promise.
+    """
+    from datetime import UTC, datetime
+
+    app = _build_cloud_admin_app(pg_engine)
+    admin_jwt = _admin_token()
+    auth = {"Authorization": f"Bearer {admin_jwt}"}
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    user_uuid = uuid_lib.uuid4()
+    plain_old_hash = bcrypt.hashpw(b"old-password", bcrypt.gensalt(rounds=4)).decode("utf-8")
+    async with Session() as session:
+        session.add(
+            Usuarios(
+                uuid=user_uuid,
+                nombre="Must",
+                apellido="Change",
+                cedula=f"must-{user_uuid.hex[:8]}",
+                email=f"mustchange-{user_uuid.hex[:8]}@parkos.local",
+                password_hash=plain_old_hash,
+                rol="operador",
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+            )
+        )
+        await session.flush()
+        # The handler will issue the close+insert + audit row + enqueue, so
+        # the seed session must commit before the HTTP call.
+        await session.commit()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
+        r = await client.post(
+            f"/api/v1/admin/usuarios/{user_uuid}/reset-password",
+            headers=auth,
+            json={},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "temporary_password" in body
+
+    # The new open row carries the flag; the closed predecessor does not.
+    async with Session() as session:
+        rows_open = (
+            await session.execute(
+                select(Usuarios).where(
+                    Usuarios.uuid == user_uuid,
+                    Usuarios.vigente_hasta.is_(None),
+                )
+            )
+        ).scalars().all()
+    assert len(rows_open) == 1, "reset must produce exactly one open row"
+    assert rows_open[0].debe_cambiar_password is True
+
+
+async def test_login_with_must_change_returns_temporary_token(
+    pg_engine, alembic_upgrade, pg_session
+) -> None:
+    """Login against a user whose ``debe_cambiar_password=true`` returns a
+    200 with a body variant -- no ``access_token``/``refresh_token`` but a
+    ``temporary_token`` and ``must_change_password=true``. This is the
+    *handler half* of the HU-F16 contract.
+    """
+    from datetime import UTC, datetime
+
+    app = _build_cloud_admin_app(pg_engine)
+    plain = b"MustChange-Login-2026!"
+    hash_ = bcrypt.hashpw(plain, bcrypt.gensalt(rounds=4)).decode("utf-8")
+    user_uuid = uuid_lib.uuid4()
+    email = f"mustlogin-{user_uuid.hex[:8]}@parkos.local"
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            Usuarios(
+                uuid=user_uuid,
+                nombre="Login",
+                apellido="Must",
+                cedula=f"login-must-{user_uuid.hex[:8]}",
+                email=email,
+                password_hash=hash_,
+                rol="operador",
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                debe_cambiar_password=True,
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+            )
+        )
+        await session.commit()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
+        r = await client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": plain.decode("utf-8")},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["must_change_password"] is True
+    assert body["access_token"] is None
+    assert body["refresh_token"] is None
+    assert body["temporary_token"] is not None
+    assert body["token_type"] == "Bearer"
+    # 5-minute TTL (KD-1 of must-change enforcement).
+    assert body["expires_in"] == 300
+
+
+async def test_cambiar_password_clears_flag_and_returns_normal_token(
+    pg_engine, alembic_upgrade, pg_session
+) -> None:
+    """``POST /auth/cambiar-password`` clears ``debe_cambiar_password`` and
+    returns the regular TokenPair. After the change a fresh login against
+    the same credentials succeeds and returns the same shape (no must_change).
+    """
+    from datetime import UTC, datetime
+
+    app = _build_cloud_admin_app(pg_engine)
+    plain_old = b"OldMustChange-2026!"
+    hash_ = bcrypt.hashpw(plain_old, bcrypt.gensalt(rounds=4)).decode("utf-8")
+    user_uuid = uuid_lib.uuid4()
+    email = f"change-{user_uuid.hex[:8]}@parkos.local"
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            Usuarios(
+                uuid=user_uuid,
+                nombre="Change",
+                apellido="Password",
+                cedula=f"change-pwd-{user_uuid.hex[:8]}",
+                email=email,
+                password_hash=hash_,
+                rol="operador",
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                debe_cambiar_password=True,
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+            )
+        )
+        await session.commit()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
+        # First login: must_change_password=true, temporary_token issued.
+        r1 = await client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": plain_old.decode("utf-8")},
+        )
+        assert r1.status_code == 200
+        first = r1.json()
+        assert first["must_change_password"] is True
+        temp_token = first["temporary_token"]
+
+        # Negative: a normal access token is NOT a valid temporary_token.
+        # We synthesize one by completing the change flow first.
+        new_password = b"NewStrong-2026!"
+        r2 = await client.post(
+            "/auth/cambiar-password",
+            json={
+                "temporary_token": temp_token,
+                "new_password": new_password.decode("utf-8"),
+            },
+        )
+        assert r2.status_code == 200, r2.text
+        second = r2.json()
+        assert second["must_change_password"] is False
+        assert second["access_token"] is not None
+        assert second["refresh_token"] is not None
+        assert second["temporary_token"] is None
+
+        # The flag on the new open row is now False (this is what makes
+        # the next login not ask again).
+        async with Session() as session2:
+            rows_open = (
+                await session2.execute(
+                    select(Usuarios).where(
+                        Usuarios.email == email,
+                        Usuarios.vigente_hasta.is_(None),
+                    )
+                )
+            ).scalars().all()
+        assert len(rows_open) == 1
+        assert rows_open[0].debe_cambiar_password is False
+
+        # And a follow-up login with the new password returns a normal pair.
+        r3 = await client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": new_password.decode("utf-8")},
+        )
+        assert r3.status_code == 200
+        third = r3.json()
+        assert third["must_change_password"] is False
+        assert third["access_token"] is not None
+        assert third["temporary_token"] is None
+
+
+async def test_cambiar_password_with_normal_access_token_returns_401(
+    pg_engine, alembic_upgrade, pg_session
+) -> None:
+    """Reject a normal access token as ``temporary_token``.
+
+    The handler decodes the JWT, sees ``purpose`` is not ``must_change``,
+    and returns 401 with ``invalid_temporary_token``. This is the defense
+    against an operator who tries to skip the must-change dialog by
+    re-using their existing access token.
+    """
+    app = _build_cloud_admin_app(pg_engine)
+    normal_jwt = _admin_token()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
+        r = await client.post(
+            "/auth/cambiar-password",
+            json={"temporary_token": normal_jwt, "new_password": "Ignored2026!"},
+        )
+    assert r.status_code == 401, r.text
+    body = r.json()
+    assert body["detail"]["error"] == "invalid_temporary_token"
+    assert "must_change" in body["detail"]["detail"]
