@@ -250,6 +250,7 @@
     "loading": "Cargando…",
     "empty": "Sin versiones vigentes.",
     "submitError": "No se pudo guardar. Reintentá.",
+    "tipoVehiculoConSubscripcionesVigentes": "No se puede deshabilitar: hay vehículos con suscripciones vigentes que usan este tipo.",
     "forbidden": "No tenés permiso para editar este catálogo.",
     "errorUnknown": "Error desconocido",
     "estado": "Estado",

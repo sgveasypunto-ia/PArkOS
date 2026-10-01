@@ -53,12 +53,15 @@ from ...db.engine import get_session
 from ...models.V.costos_servicios import CostosServicios
 from ...models.V.impuestos import Impuestos
 from ...models.V.otros_cobros import OtrosCobros
+from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
+from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.tipo_arqueo import TipoArqueo
 from ...models.V.tipo_persona import TipoPersona
 from ...models.V.tipo_subscripciones import TipoSubscripciones
 from ...models.V.tipo_sucursal import TipoSucursal
 from ...models.V.tipo_tarifa import TipoTarifa
 from ...models.V.tipos_vehiculo import TiposVehiculo
+from ...models.V.vehiculos import Vehiculos
 from ...repo.pagination import Cursor, InvalidCursorError
 from ...repo.pagination import decode as cursor_decode
 from ...repo.pagination import encode as cursor_encode
@@ -351,9 +354,11 @@ _mount_catalog(
 # shadow the factory's POST with a more specialized handler. The
 # dedicated POST is mounted FIRST on ``catalogos.router`` so FastAPI's
 # order-of-registration resolver routes ``POST /tipos-vehiculo`` here.
-# The factory's GET/PUT are NOT shadowed (edits to existing canonical
-# tipos stay on the factory). The factory's POST is shadowed at the
-# router registration layer (FastAPI first-match wins).
+# The factory's GET is NOT shadowed (reads stay on the factory /
+# ``_register_global_catalog_reads``). The factory's POST and PUT are
+# BOTH shadowed at the router registration layer (FastAPI first-match
+# wins) — PUT also needs a dedicated handler as of HU-F14.1-T5 (BR3,
+# see below).
 _TIPOS_VEHICULO_MAX_ACTIVE = 5
 _tipos_vehiculo_dedicated_perm_dep = require_permission("config_catalogo")
 _tipos_vehiculo_dedicated_issuer_dep = requires_issuer("admin-", "operador-")
@@ -429,9 +434,106 @@ async def create_tipo_vehiculo_dedicated(
     return TiposVehiculoRead.model_validate(new_row)
 
 
+# ---------------------------------------------------------------------------
+# BR3 (HU-F14.1-T5, plan.md CU-12 E3) — block PUT when the current version
+# has dependent vigente subscriptions
+# ---------------------------------------------------------------------------
+#
+# ``PUT /tipos-vehiculo/{uuid}`` always closes the current open row as step 1
+# of ``repo.versioned.close_and_insert`` (``vigente_hasta = NOW()``,
+# ``estado = "inactivo"``) and opens a REPLACEMENT row under a brand-new
+# ``uuid`` — the business uuid never survives an edit (see that module's
+# docstring, "UUID REGENERATION"). No FK-propagation hook is registered for
+# ``tipos_vehiculo`` there (only ``Sucursal`` opted in), so every FK still
+# pointing at the OLD uuid silently starts referencing a closed
+# (``vigente_hasta IS NOT NULL``) row the moment the PUT commits.
+#
+# ``vehiculos.uuid_tipo_vehiculo`` is exactly such an FK. If a vehicle of
+# this type is covered by a currently open ``subscripciones_cliente`` (via
+# the ``subscripcion_vehiculos`` junction — there is no direct FK between
+# ``subscripciones_cliente`` and ``vehiculos``), closing the current
+# ``tipos_vehiculo`` version would orphan that subscriber's vehicle-type
+# reference. Mirrors the style of ``admin_usuarios.py``'s "último admin"
+# guard (check-before-close, then a typed 409) but inline here since this
+# check only guards this one dedicated endpoint.
+async def _count_subscripciones_vigentes_dependientes(
+    session: AsyncSession, tipo_vehiculo_uuid: uuid_lib.UUID
+) -> int:
+    """Count vigente ``subscripciones_cliente`` rows covering a vehicle of
+    ``tipo_vehiculo_uuid`` (vigente ``vehiculos`` row, joined through the
+    vigente ``subscripcion_vehiculos`` junction row)."""
+    stmt = (
+        select(func.count())
+        .select_from(Vehiculos)
+        .join(
+            SubscripcionVehiculos,
+            SubscripcionVehiculos.uuid_vehiculo == Vehiculos.uuid,
+        )
+        .join(
+            SubscripcionesCliente,
+            SubscripcionesCliente.uuid == SubscripcionVehiculos.uuid_subscripcion_cliente,
+        )
+        .where(
+            Vehiculos.uuid_tipo_vehiculo == tipo_vehiculo_uuid,
+            Vehiculos.vigente_hasta.is_(None),
+            SubscripcionVehiculos.vigente_hasta.is_(None),
+            SubscripcionesCliente.vigente_hasta.is_(None),
+        )
+    )
+    result = await session.execute(stmt)
+    return int(result.scalar_one())
+
+
+@_tipos_vehiculo_dedicated_router.put(
+    "/{uuid}",
+    response_model=TiposVehiculoRead,
+    dependencies=[
+        Depends(_tipos_vehiculo_dedicated_perm_dep),
+    ],
+)
+async def update_tipo_vehiculo_dedicated(
+    payload: TiposVehiculoUpdate,
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tipos_vehiculo_dedicated_issuer_dep),
+) -> TiposVehiculoRead:
+    """Shadow the factory's PUT to enforce BR3 (HU-F14.1-T5).
+
+    Mirrors ``make_router``'s update_endpoint at
+    ``api/router_factory.py:312-338`` (close+insert via
+    ``repo.versioned.close_and_insert`` + commit + refresh + read-back).
+    One addition: a 409 ``tipo_vehiculo_con_subscripciones_vigentes`` guard
+    — see the module comment above — runs BEFORE ``close_and_insert`` so
+    the current version is never closed when the dependency exists.
+    """
+    dependientes = await _count_subscripciones_vigentes_dependientes(session, uuid)
+    if dependientes > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tipo_vehiculo_con_subscripciones_vigentes",
+                "uuid": str(uuid),
+                "subscripciones_vigentes": dependientes,
+            },
+        )
+    new_row = await close_and_insert(
+        session,
+        TiposVehiculo,
+        current_uuid=uuid,
+        new_attrs={"tipo": payload.tipo},
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TiposVehiculoRead.model_validate(new_row)
+
+
 # Mount the dedicated router BEFORE the factory mount for ``tipos-vehiculo``
-# so FastAPI's first-match resolver routes ``POST /tipos-vehiculo`` to the
-# cap-enforcing handler. GET/PUT keep flowing through the factory.
+# so FastAPI's first-match resolver routes ``POST``/``PUT /tipos-vehiculo``
+# to the cap-enforcing / dependency-guarding handlers above. GET keeps
+# flowing through the factory.
 router.include_router(_tipos_vehiculo_dedicated_router)
 
 
