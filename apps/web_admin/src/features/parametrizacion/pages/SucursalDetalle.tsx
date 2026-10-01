@@ -21,8 +21,17 @@
  *     muestran la sucursal activa global, no necesariamente el `:uuid`
  *     de la URL. Adaptar esas pantallas para aceptar un scope explícito
  *     es trabajo de otra HU -- acá no se las duplica ni se las reescribe.
- *   - **Resoluciones** / **Caja** / **Documentos**: placeholders
- *     "Próximamente" (otra HU las completa).
+ *   - **Documentos**: completa -- `<SucursalDocumentos />` (HU-F15.4:
+ *     logo, póliza de responsabilidad civil, plantilla de ticket,
+ *     observaciones). A diferencia de Tarifas/Capacidad (pantallas
+ *     PRE-EXISTENTES reusadas tal cual), este es un componente NUEVO
+ *     construido para esta HU, así que recibe el `uuid` de la ruta
+ *     explícitamente -- ver el docstring de `SucursalDocumentos.tsx`
+ *     para por qué igual necesita bloquear su propia UI ante un
+ *     mismatch de sucursal activa (el backend solo scopea el GET por el
+ *     header ambient, no por un query param confiable).
+ *   - **Resoluciones** / **Caja**: placeholders "Próximamente" (otra HU
+ *     las completa).
  *   - **Bitácora**: `<SucursalBitacoraTab />`, mismo enfoque que
  *     `EmpresaBitacoraTab` pero scopeada a esta sucursal.
  *
@@ -45,6 +54,7 @@ import { useSucursal } from '@/lib/sucursal-context';
 import { useSucursalDetalle } from '../../sucursales/hooks/useSucursalDetalle';
 import { ParametrizacionEfectivaSelector } from '../components/ParametrizacionEfectivaSelector';
 import { SucursalBitacoraTab } from '../components/SucursalBitacoraTab';
+import { SucursalDocumentos } from '../components/SucursalDocumentos';
 import { SucursalGeneralForm } from '../components/SucursalGeneralForm';
 import { useParametrizacionEfectiva } from '../hooks/useParametrizacionEfectiva';
 
@@ -203,10 +213,7 @@ export default function SucursalDetalle(): JSX.Element {
         </TabsContent>
 
         <TabsContent value="documentos" className="mt-4">
-          <ProximamentePlaceholder
-            slug="documentos"
-            nombre={t('sucursalDetalle.tabs.documentos', 'Documentos')}
-          />
+          <SucursalDocumentos uuidSucursal={uuid} />
         </TabsContent>
 
         <TabsContent value="bitacora" className="mt-4">
