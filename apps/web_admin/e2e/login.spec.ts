@@ -15,18 +15,35 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
-test.describe('web_admin login', () => {
-  test('submits credentials, persists tokens, and redirects to /dashboard', async ({ page }) => {
-    // Pre-seed the access token in localStorage so the authStore
-    // rehydrates as authenticated; the mock route just makes the
-    // POST succeed so the container can setTokens() the way it would
-    // in production.
-    await page.addInitScript(() => {
-      // The authStore persists tokens under "parkos.auth" in
-      // localStorage; pre-seed both tokens so the post-login state
-      // is observable.
-    });
+import { mockAuxiliaryEndpoints } from './helpers/seedAuth';
 
+const BRANCH_NORTE = '22222222-2222-2222-2222-222222222222';
+
+test.describe('web_admin login', () => {
+  test.beforeEach(async ({ context }) => {
+    await mockAuxiliaryEndpoints(context);
+    await context.route('**/api/v1/admin/me', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          actor_uuid: '11111111-1111-1111-1111-111111111111',
+          email: 'admin@parkos.test',
+          rol: 'admin',
+          sucursales_permitidas: [BRANCH_NORTE],
+          permissions: [],
+        }),
+      }),
+    );
+  });
+
+  test('submits credentials, persists tokens, and redirects to /', async ({ page }) => {
+    // DEC-LOGIN-07 (revisado): post-login lands on the HomeHub (`/`).
+    // The picker is no longer forced — the admin picks the
+    // branch-scoped surface from HomeHub. The previous default
+    // (`/seleccionar-sucursal`) was reverted because it forced a
+    // branch re-confirmation on every login, which broke the
+    // "operator already had a branch chosen" workflow.
     await page.route('**/api/v1/auth/login', async (route) => {
       await route.fulfill({
         status: 200,
@@ -45,11 +62,18 @@ test.describe('web_admin login', () => {
     await page.getByTestId('login-password').fill('Pass1234word');
     await page.getByTestId('login-submit').click();
 
-    // The container should bounce to /dashboard once authStore has
-    // the access_token. We don't pre-seed it (so RequireAdmin
-    // wouldn't redirect without login) — the login flow itself
-    // populates authStore via setTokens().
-    await expect(page).toHaveURL(/\/dashboard$/, { timeout: 5000 });
+    // The container's success redirect is to ``?next=`` or ``/``.
+    await expect(page).toHaveURL(/\/$/, { timeout: 5_000 });
+
+    // The token was persisted — re-read it from the authStore envelope.
+    const persisted = await page.evaluate(() =>
+      window.localStorage.getItem('parkos.auth'),
+    );
+    expect(persisted).not.toBeNull();
+    const parsed = JSON.parse(persisted as string);
+    expect(parsed.state.accessToken).toBe('fake.access.token');
+    expect(parsed.state.refreshToken).toBe('fake.refresh.token');
+    expect(parsed.version).toBe(1);
   });
 
   test('shows an inline 401 error on invalid credentials', async ({ page }) => {

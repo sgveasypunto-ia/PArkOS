@@ -253,10 +253,15 @@ async def list_asignaciones(
     return [AdminSucursalAsignadaRead.model_validate(r) for r in rows]
 
 
-@router.delete(
-    "/{uuid}/sucursales/{sucursal_uuid}",
+@router.post(
+    "/{uuid}/sucursales/{sucursal_uuid}/revocar",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Close a branch assignment (admin-only). 404 if not currently assigned.",
+    summary=(
+        "Close a branch assignment (admin-only). POST despite the "
+        "destructive verb because the underlying table is bi-temporal "
+        "(AGENTS.md §3 -- [V] rows are NEVER physically deleted; the "
+        "repo layer does ``close_only``). 404 if not currently assigned."
+    ),
 )
 async def desasignar_sucursal(
     response: Response,
@@ -287,6 +292,54 @@ async def desasignar_sucursal(
             "actor": str(actor_uuid),
             "usuario_uuid": str(uuid),
             "sucursal_uuid": str(sucursal_uuid),
+        },
+    )
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
+
+
+@router.post(
+    "/{uuid}/permisos/{permiso_uuid}/revocar",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary=(
+        "Close a permission grant (admin-only). POST because the "
+        "underlying table is bi-temporal (AGENTS.md §3 -- [V] rows are "
+        "NEVER physically deleted; the repo layer does ``close_only``). "
+        "404 if no open grant exists."
+    ),
+    responses={
+        204: {"description": "Grant closed."},
+        404: {"description": "No open grant for that user+permission pair."},
+    },
+)
+async def revocar_permiso(
+    response: Response,
+    uuid: uuid_lib.UUID,
+    permiso_uuid: uuid_lib.UUID,
+    claims: AdminClaims,  # type: ignore[assignment]
+    session: DbSession,  # type: ignore[assignment]
+) -> Response:
+    actor_uuid = _actor_uuid_from_claims(claims)
+    from ...repo.admin_usuarios import revocar_permiso as _repo_revoke
+
+    had_open = await _repo_revoke(
+        session,
+        actor_uuid=actor_uuid,
+        usuario_uuid=uuid,
+        permiso_uuid=permiso_uuid,
+    )
+    if not had_open:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"no open grant for user={uuid} permission={permiso_uuid}",
+        )
+    await session.commit()
+    logger.info(
+        "admin_usuarios.revocar_permiso",
+        extra={
+            "actor": str(actor_uuid),
+            "usuario_uuid": str(uuid),
+            "permiso_uuid": str(permiso_uuid),
         },
     )
     response.status_code = status.HTTP_204_NO_CONTENT

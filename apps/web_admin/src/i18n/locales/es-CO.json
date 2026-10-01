@@ -581,7 +581,8 @@
     "settings": "Configuración",
     "settingsSoon": "Próximamente",
     "logout": "Cerrar sesión",
-    "signingOut": "Saliendo…"
+    "signingOut": "Saliendo…",
+    "switchBranch": "Cambiar sucursal"
   },
   "perfil": {
     "title": "Mi perfil",
