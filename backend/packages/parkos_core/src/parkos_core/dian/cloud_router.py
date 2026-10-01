@@ -24,6 +24,11 @@ Endpoints (all cloud-only, REQ-X3):
   revocation, inserts ``prod.revocacion_factura`` extending the
   per-tenant SHA-256 chain; T-PR11-06 fires the dispatcher which
   extends the chain AGAIN with the confirmation row.
+- ``GET /envio-dian`` / ``GET /validacion-evento`` — HU-F13.4.
+  Cursor-paginated read-only listings for these 2 cloud-only
+  ``[L-W]`` tables (``workflows.py`` explicitly must not mount them
+  — see that module's docstring). Same ``{items, next_cursor}``
+  contract as the rest of the system (:mod:`repo.pagination`).
 
 Issuer: ``admin-,operador-`` (admin writes; branch operator triggers
 DIAN flows via an admin token from the cloud admin app).
@@ -33,11 +38,13 @@ from __future__ import annotations
 import logging
 import os
 import uuid as uuid_lib
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Cloud-only enforcement guard (REQ-X3, design §10 Layer 2).
@@ -59,15 +66,33 @@ from ..models.L_W.envio_dian import EnvioDian
 from ..models.L_W.validacion_evento import ValidacionEvento
 from ..repo.append_only import append_event
 from ..repo.event import record_event
-from ..repo.workflow import append_transition
-from ..schemas.dian import EnvioDianCreate, ValidacionEventoCreate
+from ..repo.pagination import Cursor, InvalidCursorError
+from ..repo.pagination import decode as cursor_decode
+from ..repo.pagination import encode as cursor_encode
+from ..repo.workflow import STATE_MACHINES, append_transition
+from ..schemas.dian import (
+    EnvioDianCreate,
+    EnvioDianRead,
+    EnvioDianReadList,
+    ValidacionEventoCreate,
+    ValidacionEventoRead,
+    ValidacionEventoReadList,
+)
 from ..schemas.facturacion import CloudFacturaElectronicaCreate
 from .cloud.atomic_next_consecutivo import (
     PrefijoMissingError,
     ResolucionNotFoundError,
     next_consecutivo,
 )
-from .cloud.dispatcher import dispatch_factura_electronica, dispatch_revocacion
+from .cloud.dispatcher import (
+    ESTADO_ACEPTADO,
+    ESTADO_EN_PROCESO,
+    ESTADO_ERROR,
+    ESTADO_RECHAZADO,
+    ESTADO_TIMEOUT,
+    dispatch_factura_electronica,
+    dispatch_revocacion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +312,231 @@ async def create_validacion_evento(
     await session.commit()
     await session.refresh(new_row)
     return {"uuid": new_row.uuid}
+
+
+# ---------------------------------------------------------------------------
+# HU-F13.4 — read-only cursor-paginated listings (REQ-25 / REQ-25-W-CLOUD-ONLY)
+# ---------------------------------------------------------------------------
+#
+# BR1: reads only — same ``{items, next_cursor}`` contract as the rest of
+# the system (``repo.pagination``), no new writes. BR3: mounted on THIS
+# router so the module-level ``PARKOS_DEPLOY=branch`` guard at the top of
+# the file covers them too.
+#
+# ``estado`` 422-validation sets, below, are NOT the 4 values plan.md's
+# HU-F13.4 BR2 names (``pendiente|enviado|aceptado|rechazado`` for
+# envio_dian; ``recibido|validado|observado|rechazado`` for
+# validacion_evento) — those 4 values are drift: they mirror
+# ``schemas.facturacion.FacturaDisplayFE.estado_dian``, a DERIVED FE-display
+# projection that collapses the raw column into a simplified enum, not the
+# raw table's own domain (confirmed against every writer in the codebase):
+#
+# - ``envio_dian.estado`` has TWO independent writers: (a) the
+#   ``POST /envio-dian`` transition endpoint above, validated against
+#   :data:`repo.workflow.STATE_MACHINES['envio_dian']`
+#   (``pendiente|enviado|ack|error``); and (b) ``dian.cloud.dispatcher``'s
+#   ``dispatch_factura_electronica`` / ``*_with_backoff``, which mutates
+#   ``envio.estado`` DIRECTLY (bypassing STATE_MACHINES) with its own
+#   ``ESTADO_*`` constants (``aceptado|rechazado|timeout|en_proceso|error``).
+#   The real domain is the UNION of both.
+# - ``validacion_evento.estado`` has exactly ONE writer (the
+#   ``POST /validacion-evento`` transition endpoint above), so its real
+#   domain is exactly :data:`repo.workflow.STATE_MACHINES['validacion_evento']`
+#   (``pendiente|validado|rechazado`` — neither ``recibido`` nor
+#   ``observado`` is ever written; ``recibido`` is actually a ``reclamos``
+#   state in the same ``STATE_MACHINES`` dict, a likely copy/paste source
+#   of the plan.md drift).
+_ENVIO_DIAN_ESTADOS: frozenset[str] = frozenset(STATE_MACHINES["envio_dian"]) | {
+    ESTADO_ACEPTADO,
+    ESTADO_RECHAZADO,
+    ESTADO_TIMEOUT,
+    ESTADO_EN_PROCESO,
+    ESTADO_ERROR,
+}
+_VALIDACION_EVENTO_ESTADOS: frozenset[str] = frozenset(STATE_MACHINES["validacion_evento"])
+
+
+def _parse_cursor_timestamp(value: str) -> datetime:
+    """Parse the cursor's ISO-8601 ``vigente_desde`` into a naive ``datetime``.
+
+    Mirrors ``api.router_factory._parse_cursor_timestamp`` (not imported —
+    that helper is module-private, and this cloud-only module stays
+    self-contained per the ``RevocacionFacturaWebhookPayload`` precedent
+    above). asyncpg needs a naive ``datetime`` bound against a
+    ``DateTime(timezone=False)`` column; Postgres refuses the implicit
+    cast from a tz-aware value otherwise.
+    """
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))  # noqa: FURB162
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
+async def _list_workflow_rows(
+    session: AsyncSession,
+    *,
+    model_cls: Any,
+    estado_values: frozenset[str],
+    estado: str | None,
+    cursor: str | None,
+    limit: int,
+    extra_where: list[Any] | None = None,
+) -> tuple[list[Any], str | None]:
+    """Shared cursor-paginated SELECT for ``envio_dian`` / ``validacion_evento``.
+
+    Mirrors ``api.router_factory.make_router``'s generic ``list_endpoint``
+    for ``[L-W]`` tables that declare ``vigente_desde`` (same ordering,
+    same cursor shape via ``repo.pagination``) — these two cloud-only
+    tables share that exact shape with their branch-originated siblings
+    (``alerta``/``reclamos``/``anulaciones``/``reimpresion_ticket``,
+    mounted via that factory in ``api/v1/workflows.py``), just read here
+    instead because ``workflows.py`` must not mount them (REQ-X3).
+
+    Raises:
+        HTTPException: 422 ``invalid_estado`` when ``estado`` is not in
+            ``estado_values``; 400 ``invalid_cursor`` on a malformed or
+            wrong-shape cursor (mirrors ``repo.pagination.InvalidCursorError``
+            — same contract as the rest of the system).
+    """
+    if estado is not None and estado not in estado_values:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_estado",
+                "estado": estado,
+                "allowed": sorted(estado_values),
+            },
+        )
+
+    try:
+        decoded = cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    cursor_tuple: tuple[datetime, uuid_lib.UUID] | None = None
+    if decoded is not None:
+        if decoded.vigente_desde is None:
+            # Decodes cleanly (exactly one of vigente_desde/created_at was
+            # present) but carries the WRONG key for an [L-W] table cursor —
+            # e.g. copy-pasted from an [A]/[L-E] listing's cursor.
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_cursor",
+                    "detail": "cursor missing vigente_desde (required for this [L-W] table)",
+                },
+            )
+        cursor_tuple = (
+            _parse_cursor_timestamp(decoded.vigente_desde),
+            uuid_lib.UUID(decoded.uuid),
+        )
+
+    stmt = select(model_cls).where(model_cls.vigente_hasta.is_(None))
+    if estado is not None:
+        stmt = stmt.where(model_cls.estado == estado)
+    for clause in extra_where or []:
+        stmt = stmt.where(clause)
+    stmt = stmt.order_by(model_cls.vigente_desde.desc(), model_cls.uuid.asc())
+    if cursor_tuple is not None:
+        cursor_ts, cursor_uuid = cursor_tuple
+        stmt = stmt.where(
+            (model_cls.vigente_desde < cursor_ts)
+            | ((model_cls.vigente_desde == cursor_ts) & (model_cls.uuid > cursor_uuid))
+        )
+    stmt = stmt.limit(limit + 1)
+
+    result = await session.execute(stmt)
+    rows = list(result.scalars().all())
+
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = cursor_encode(
+            Cursor(vigente_desde=last.vigente_desde.isoformat(), uuid=str(last.uuid))
+        )
+    return rows, next_cursor
+
+
+@router.get(
+    "/envio-dian",
+    response_model=EnvioDianReadList,
+    status_code=200,
+    summary="HU-F13.4: cursor-paginated read of envio_dian (REQ-25-W-CLOUD-ONLY)",
+)
+async def list_envio_dian(
+    uuid_sucursal: uuid_lib.UUID | None = Query(default=None),  # noqa: B008
+    estado: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _claims: None = Depends(_cloud_issuer_dep),
+) -> EnvioDianReadList:
+    """``GET /api/v1/envio-dian`` — cursor-paginated read-only listing.
+
+    Filters (both optional, composed with AND): ``uuid_sucursal`` and
+    ``estado`` (422 ``invalid_estado`` if not a real value — see the
+    module-level comment above ``_ENVIO_DIAN_ESTADOS`` for the full
+    drift-vs-plan.md rationale). Orders by
+    ``(vigente_desde DESC, uuid ASC)`` — same convention as every other
+    ``[L-W]`` table with ``vigente_desde`` (``api.router_factory``).
+    """
+    extra_where: list[Any] = []
+    if uuid_sucursal is not None:
+        extra_where.append(EnvioDian.uuid_sucursal == uuid_sucursal)
+
+    rows, next_cursor = await _list_workflow_rows(
+        session,
+        model_cls=EnvioDian,
+        estado_values=_ENVIO_DIAN_ESTADOS,
+        estado=estado,
+        cursor=cursor,
+        limit=limit,
+        extra_where=extra_where,
+    )
+    items = [EnvioDianRead.model_validate(row) for row in rows]
+    return EnvioDianReadList(items=items, next_cursor=next_cursor)
+
+
+@router.get(
+    "/validacion-evento",
+    response_model=ValidacionEventoReadList,
+    status_code=200,
+    summary="HU-F13.4: cursor-paginated read of validacion_evento (REQ-25)",
+)
+async def list_validacion_evento(
+    uuid_sucursal: uuid_lib.UUID | None = Query(default=None),  # noqa: B008
+    estado: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _claims: None = Depends(_cloud_issuer_dep),
+) -> ValidacionEventoReadList:
+    """``GET /api/v1/validacion-evento`` — cursor-paginated read-only listing.
+
+    Filters (both optional, composed with AND): ``uuid_sucursal`` and
+    ``estado`` (422 ``invalid_estado`` if not a real value — see the
+    module-level comment above ``_VALIDACION_EVENTO_ESTADOS``). Orders by
+    ``(vigente_desde DESC, uuid ASC)``, same as :func:`list_envio_dian`.
+    """
+    extra_where: list[Any] = []
+    if uuid_sucursal is not None:
+        extra_where.append(ValidacionEvento.uuid_sucursal == uuid_sucursal)
+
+    rows, next_cursor = await _list_workflow_rows(
+        session,
+        model_cls=ValidacionEvento,
+        estado_values=_VALIDACION_EVENTO_ESTADOS,
+        estado=estado,
+        cursor=cursor,
+        limit=limit,
+        extra_where=extra_where,
+    )
+    items = [ValidacionEventoRead.model_validate(row) for row in rows]
+    return ValidacionEventoReadList(items=items, next_cursor=next_cursor)
 
 
 @router.post(
