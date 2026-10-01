@@ -3,8 +3,9 @@
  * (PR-D.4, PR2 of the web_admin redesign).
  *
  * Same shape as `<Tarifas />` with one extra typed error class:
- * ``CantidadBajoIngresosError`` (422) surfaces an actionable message
- * with ``activos`` and ``solicitada``.
+ * ``CantidadBajoIngresosError`` (422 ``capacidad_insuficiente``, BR2
+ * HU-F14.4) surfaces an actionable message with ``tipo`` and
+ * ``ocupadoActual`` / ``solicitado``.
  *
  * The list is filtered strictly by the branch selected in the topbar
  * selector. Cross-branch views are out of scope for this screen —
@@ -53,7 +54,7 @@ function mapError(err: unknown): ErrorState {
   if (err instanceof CantidadBajoIngresosError) {
     return {
       kind: 'bajo_ingresos',
-      message: `Hay ${err.activos} ingreso(s) activo(s); no podés bajar el cupo a ${err.solicitada}. Cerrá o anulá los ingresos primero.`,
+      message: `Hay ${err.ocupadoActual} vehiculo(s) ocupando el tipo ${err.tipo ?? '?'}; no podés bajar el cupo a ${err.solicitado}. Cerrá o anulá los ingresos primero.`,
     };
   }
   if (err instanceof CantidadSucursalInmutableError) {

@@ -8,8 +8,9 @@ This file covers the four behaviours added on top of the factory:
      when a new window would intersect an existing open row.
   3. ``sucursal_inmutable`` guard — 422 on PUT that changes the row's
      branch.
-  4. ``cantidad_bajo_ingresos_activos`` guard — 422 on PUT that lowers
-     capacity below the count of currently-active ``ingreso`` rows.
+  4. ``capacidad_insuficiente`` guard (BR2, HU-F14.4) — 422 on PUT that
+     lowers capacity below the count of currently-active ``ingreso``
+     rows for the same ``(uuid_sucursal, uuid_tipo_vehiculo)``.
   5. ``by-key / history`` endpoint — walks the bi-temporal version
      chain by business identity (UK01 columns) instead of by uuid.
 
@@ -198,16 +199,85 @@ def _cantidad_payload(
     *,
     uuid_sucursal: uuid_lib.UUID,
     cantidad: int = 50,
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None,
     vigente_desde: datetime | None = None,
 ) -> dict[str, object]:
     body: dict[str, object] = {
         "uuid_sucursal": str(uuid_sucursal),
-        "uuid_tipo_vehiculo": None,
+        "uuid_tipo_vehiculo": str(uuid_tipo_vehiculo) if uuid_tipo_vehiculo else None,
         "cantidad": cantidad,
     }
     if vigente_desde is not None:
         body["vigente_desde"] = vigente_desde.isoformat()
     return body
+
+
+async def _seed_tipo_vehiculo(pg_engine, *, uuid_tipo: uuid_lib.UUID, tipo: str) -> None:
+    """Insert one vigente ``tipos_vehiculo`` row (mirror of
+    ``test_mv_ocupacion_diaria_db.py::_seed_tipo_vehiculo``)."""
+    from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            TiposVehiculo(
+                uuid=uuid_tipo,
+                tipo=tipo,
+                vigente_desde=_now_naive(),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=_now_naive(),
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+
+async def _seed_ingreso_activo(
+    pg_engine, *, uuid_sucursal: uuid_lib.UUID, uuid_tipo_vehiculo: uuid_lib.UUID
+) -> uuid_lib.UUID:
+    """Insert one active ``prod.ingreso`` row (no matching salida/anulacion),
+    the same minimal shape ``test_mv_ocupacion_diaria_db.py::_seed_ingreso``
+    uses. Return its uuid."""
+    from parkos_core.models.L_E.ingreso import Ingreso
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    ingreso_uuid = uuid_lib.uuid4()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            Ingreso(
+                uuid=ingreso_uuid,
+                uuid_sucursal=uuid_sucursal,
+                uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+                placa=f"PRC{ingreso_uuid.hex[:6]}",
+                uuid_subscripcion_cliente=None,
+                fecha_ingreso=_now_naive(),
+                observaciones=None,
+                created_at=_now_naive(),
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+    return ingreso_uuid
+
+
+async def _refresh_mv_ocupacion(pg_dsn: str) -> None:
+    """Force-refresh ``prod.mv_ocupacion_diaria`` so the guard's read
+    sees ingresos seeded in this test (the real refresh runs on a
+    worker; tests cannot wait on it, see C2/C9/C10 below)."""
+    import psycopg
+
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY prod.mv_ocupacion_diaria;")
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -516,35 +586,25 @@ async def test_c1_post_cantidad_vigente_desde_futuro(
 async def test_c2_put_cantidad_bajo_ingresos_activos_devuelve_422(
     pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
 ) -> None:
-    """The operator cannot lower ``cantidad`` below the count of
-    currently-active ``ingreso`` rows for the same
-    ``(uuid_sucursal, uuid_tipo_vehiculo)``. The guard reads from
-    ``mv_ocupacion_diaria`` via ``validar_cantidad_vigente``.
+    """BR2 (HU-F14.4): the operator cannot lower ``cantidad`` below the
+    count of currently-active ``ingreso`` rows for the same
+    ``(uuid_sucursal, uuid_tipo_vehiculo)``. The guard reuses
+    ``repo.ocupacion.get_ocupacion_puros_activos`` (the HU-F1.5
+    ``mv_ocupacion_diaria`` breakdown, catalog-driven by
+    ``tipos_vehiculo``).
 
-    We do NOT seed an active ``ingreso`` row directly (the test would
-    need the full ingreso flow); we seed a fake "activos" via the MV
-    by inserting an ingreso with the right shape. With the MV lag
-    (<=10s) accepted as live risk, we ``time.sleep`` only if needed;
-    a 422 on ``activos=1 > solicitada=0`` is enough to pin the guard.
-
-    To pin the GUARD without seeding ingreso rows, we POST
-    ``cantidad=50`` and then PUT ``cantidad=0``. Without an active
-    ingreso the MV returns activos=0, which is NOT greater than 0,
-    so the guard does NOT fire and the PUT succeeds. To force the
-    guard to fire we need activos > solicitada. The simplest
-    deterministic way is to seed an ingreso row directly via psycopg
-    — but that requires the ingreso FK chain (cliente, vehiculo,
-    tipo_vehiculo). We accept the cost: a focused integration test
-    is worth the seed.
-
-    Alternative approach (chosen here): seed the ingresos indirectly
-    via a direct INSERT into ``prod.ingreso`` with the minimum column
-    set the MV reads. This pins the guard's reactivity to MV state.
+    A REAL ``uuid_tipo_vehiculo`` (not the NULL "blanket" cell the
+    other C-series tests use) is required here: the MV's breakdown
+    join is driven by the ``tipos_vehiculo`` catalog, so a NULL-typed
+    cupos row never matches a breakdown row and the guard would never
+    fire for it (by design — see the PR-C PUT handler docstring).
     """
     await _truncate_cantidad(pg_dsn)
     branch_uuid = uuid_lib.uuid4()
+    tipo_uuid = uuid_lib.uuid4()
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
+    await _seed_tipo_vehiculo(pg_engine, uuid_tipo=tipo_uuid, tipo="moto")
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
@@ -552,74 +612,127 @@ async def test_c2_put_cantidad_bajo_ingresos_activos_devuelve_422(
         "X-Sucursal-Context": str(branch_uuid),
     }
 
-    # Seed an open cantidad with capacidad 50.
+    # Seed an open cantidad with capacidad 50 for the real tipo.
     post = await client.post(
         "/api/v1/empresa/cantidad-vehiculos-sucursal",
-        json=_cantidad_payload(uuid_sucursal=branch_uuid, cantidad=50),
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid, cantidad=50, uuid_tipo_vehiculo=tipo_uuid
+        ),
         headers=headers,
     )
     assert post.status_code == 201, post.text
     cupos_uuid = post.json()["uuid"]
 
-    # Seed an active ingreso row so the MV reports activos >= 1. We
-    # bypass the API (which would require the full ingreso contract)
-    # and INSERT directly via psycopg. The MV refresh is async; we
-    # wait up to 12s for it to pick up the row.
-    import psycopg
+    # Seed 2 active ingreso rows (ORM insert — the model does not
+    # require cliente/vehiculo FKs) and refresh the MV so the guard
+    # observes ``ocupado_actual == 2``.
+    await _seed_ingreso_activo(pg_engine, uuid_sucursal=branch_uuid, uuid_tipo_vehiculo=tipo_uuid)
+    await _seed_ingreso_activo(pg_engine, uuid_sucursal=branch_uuid, uuid_tipo_vehiculo=tipo_uuid)
+    await _refresh_mv_ocupacion(pg_dsn)
 
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        # The ingreso table requires a cliente + vehiculo + tipo_vehiculo
-        # (FK chain). We seed a minimal valid row. The full FK
-        # validation in tests is heavy; for this test we only need
-        # the MV to see an open ingreso at our (sucursal, tipo_vehiculo).
-        # We use a NULL uuid_tipo_vehiculo so the row matches the
-        # NULL-cell cupos (the cell ``ingreso.uuid_tipo_vehiculo IS NULL``).
-        cur.execute(
-            """
-            INSERT INTO prod.ingreso (
-                uuid, uuid_sucursal, uuid_tipo_vehiculo, uuid_cliente,
-                uuid_vehiculo, consecutivo, placa, fecha_ingreso,
-                estado, vigente_desde, vigente_hasta, created_at,
-                created_by, sync_status, sync_attempts
-            ) VALUES (
-                gen_random_uuid(), %s, NULL,
-                (SELECT uuid FROM prod.clientes LIMIT 1),
-                (SELECT uuid FROM prod.vehiculos LIMIT 1),
-                9001, 'PRCCAPO',
-                clock_timestamp(), 'activo', clock_timestamp(),
-                NULL, clock_timestamp(), NULL, 'sincronizado', 0
-            )
-            """,
-            (branch_uuid,),
-        )
-        conn.commit()
-
-    # Refresh the MV (its refresh is on a worker; for the test we
-    # force a refresh via psycopg so we do not depend on ``psql`` on
-    # PATH). CONCURRENTLY requires the MV to have a unique index
-    # (which it does — see ``0024_add_mv_ocupacion_diaria``), and
-    # permits reads to continue during the refresh.
-    import psycopg
-
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY prod.mv_ocupacion_diaria;")
-        conn.commit()
-
-    # PUT lower cantidad to 0 with 1+ active ingreso → 422.
-    import asyncio
-
-    await asyncio.sleep(0.01)
-
+    # PUT lower cantidad to 1 (< 2 active ingresos) → 422.
     put = await client.put(
         f"/api/v1/empresa/cantidad-vehiculos-sucursal/{cupos_uuid}",
-        json=_cantidad_payload(uuid_sucursal=branch_uuid, cantidad=0),
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid, cantidad=1, uuid_tipo_vehiculo=tipo_uuid
+        ),
         headers=headers,
     )
     assert put.status_code == 422, f"got {put.status_code}: {put.text}"
     detail = put.json()["detail"]
-    assert detail["error"] == "cantidad_bajo_ingresos_activos"
-    assert detail["activos"] >= 1
-    assert detail["solicitada"] == 0
+    assert detail["error"] == "capacidad_insuficiente"
+    assert detail["tipo"] == "moto"
+    assert detail["ocupado_actual"] == 2
+    assert detail["solicitado"] == 1
+
+
+@_HTTP_PYTESTMARK
+async def test_c8_put_cantidad_aumenta_capacidad_ok(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """BR2: increasing ``cantidad`` for a tipo always succeeds (200),
+    regardless of current occupancy — the guard only fires on a
+    reduction below ``ocupado_actual``."""
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    tipo_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _seed_tipo_vehiculo(pg_engine, uuid_tipo=tipo_uuid, tipo="carro")
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch_uuid),
+    }
+
+    post = await client.post(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid, cantidad=10, uuid_tipo_vehiculo=tipo_uuid
+        ),
+        headers=headers,
+    )
+    assert post.status_code == 201, post.text
+    cupos_uuid = post.json()["uuid"]
+
+    await _seed_ingreso_activo(pg_engine, uuid_sucursal=branch_uuid, uuid_tipo_vehiculo=tipo_uuid)
+    await _refresh_mv_ocupacion(pg_dsn)
+
+    put = await client.put(
+        f"/api/v1/empresa/cantidad-vehiculos-sucursal/{cupos_uuid}",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid, cantidad=20, uuid_tipo_vehiculo=tipo_uuid
+        ),
+        headers=headers,
+    )
+    assert put.status_code == 200, f"got {put.status_code}: {put.text}"
+    assert put.json()["cantidad"] == 20
+
+
+@_HTTP_PYTESTMARK
+async def test_c9_put_cantidad_reduce_por_encima_de_ocupado_ok(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """BR2: reducing ``cantidad`` is allowed as long as the new total
+    stays at or above ``ocupado_actual`` (200)."""
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    tipo_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _seed_tipo_vehiculo(pg_engine, uuid_tipo=tipo_uuid, tipo="carro")
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch_uuid),
+    }
+
+    post = await client.post(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid, cantidad=10, uuid_tipo_vehiculo=tipo_uuid
+        ),
+        headers=headers,
+    )
+    assert post.status_code == 201, post.text
+    cupos_uuid = post.json()["uuid"]
+
+    # 2 active ingresos — reducing to 5 (> 2) must still succeed.
+    await _seed_ingreso_activo(pg_engine, uuid_sucursal=branch_uuid, uuid_tipo_vehiculo=tipo_uuid)
+    await _seed_ingreso_activo(pg_engine, uuid_sucursal=branch_uuid, uuid_tipo_vehiculo=tipo_uuid)
+    await _refresh_mv_ocupacion(pg_dsn)
+
+    put = await client.put(
+        f"/api/v1/empresa/cantidad-vehiculos-sucursal/{cupos_uuid}",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid, cantidad=5, uuid_tipo_vehiculo=tipo_uuid
+        ),
+        headers=headers,
+    )
+    assert put.status_code == 200, f"got {put.status_code}: {put.text}"
+    assert put.json()["cantidad"] == 5
 
 
 # ---------------------------------------------------------------------------
