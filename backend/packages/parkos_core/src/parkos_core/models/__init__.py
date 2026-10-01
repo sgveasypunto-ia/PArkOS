@@ -53,6 +53,7 @@ from .L_W.validacion_evento import ValidacionEvento
 from .V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
 from .V.clientes import Clientes
 from .V.clientes_b2b import ClientesB2B
+from .V.configuracion_caja import ConfiguracionCaja
 from .V.configuracion_seguridad import ConfiguracionSeguridad
 from .V.configuracion_tolerancias import ConfiguracionTolerancias
 from .V.costos_servicios import CostosServicios
@@ -86,6 +87,7 @@ __all__ = [
     "CantidadVehiculosSucursal",
     "Clientes",
     "ClientesB2B",
+    "ConfiguracionCaja",
     "ConfiguracionSeguridad",
     "ConfiguracionTolerancias",
     "CostosServicios",

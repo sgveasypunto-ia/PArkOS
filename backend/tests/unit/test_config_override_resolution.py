@@ -6,6 +6,10 @@ Per PR4 plan, these are pure-Python tests — no live Postgres. We mock
 - Per-branch row (vigente_hasta IS NULL AND uuid_sucursal = :requested) wins.
 - Falls back to global default (uuid_sucursal IS NULL) when no per-branch.
 - Returns None if neither is configured (caller raises 404).
+
+HU-F13.3 extends this file with the equivalent coverage for
+``configuracion_caja`` (``resolve_efectiva_caja``) — same resolution
+policy, same mocking strategy.
 """
 from __future__ import annotations
 
@@ -14,8 +18,9 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from parkos_core.models.V.configuracion_caja import ConfiguracionCaja
 from parkos_core.models.V.configuracion_seguridad import ConfiguracionSeguridad
-from parkos_core.repo.config_override import resolve_efectiva_seguridad
+from parkos_core.repo.config_override import resolve_efectiva_caja, resolve_efectiva_seguridad
 
 BRANCH_A = uuid_lib.UUID("00000000-0000-0000-0000-00000000000a")
 BRANCH_B = uuid_lib.UUID("00000000-0000-0000-0000-00000000000b")
@@ -142,3 +147,143 @@ class TestConfiguracionSeguridadSchemaOverride:
         )
         assert c.uuid_sucursal == BRANCH_A
         assert c.dias_expiracion_password == 15
+
+
+# ---------------------------------------------------------------------------
+# ConfiguracionCaja (HU-F13.3) — mirror of the ConfiguracionSeguridad suite.
+# ---------------------------------------------------------------------------
+
+
+def _row_caja(
+    *,
+    uuid_sucursal: uuid_lib.UUID | None,
+    base_inicial: str,
+    redondeo: str,
+    denominaciones: list[int],
+) -> MagicMock:
+    """Build a mock ORM row for ``configuracion_caja``."""
+    row = MagicMock(spec=ConfiguracionCaja)
+    row.uuid = uuid_lib.uuid4()
+    row.uuid_sucursal = uuid_sucursal
+    row.base_inicial_sugerida = base_inicial
+    row.redondeo = redondeo
+    row.denominaciones_permitidas = denominaciones
+    row.vigente_desde = NOW
+    row.vigente_hasta = None
+    row.estado = "activo"
+    row.created_at = NOW
+    row.created_by = None
+    row.sync_status = None
+    return row
+
+
+class TestResolveEfectivaCaja:
+    """Per-branch override → global default resolution policy (HU-F13.3)."""
+
+    @pytest.mark.asyncio
+    async def test_per_branch_wins_over_global(self):
+        """Per-branch row wins when both are configured (override)."""
+        branch_row = _row_caja(
+            uuid_sucursal=BRANCH_A,
+            base_inicial="50000.0000",
+            redondeo="100",
+            denominaciones=[1000, 2000, 5000],
+        )
+        global_row = _row_caja(
+            uuid_sucursal=None,
+            base_inicial="100000.0000",
+            redondeo="ninguno",
+            denominaciones=[1000, 2000, 5000, 10000, 20000, 50000],
+        )
+        session = _session_with_rows(branch_result=branch_row, global_result=global_row)
+
+        result = await resolve_efectiva_caja(session, BRANCH_A)
+
+        assert result is branch_row, "Per-branch override must win over global"
+        assert result.base_inicial_sugerida == "50000.0000"
+        assert result.redondeo == "100"
+        assert result.denominaciones_permitidas == [1000, 2000, 5000]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_global_when_no_per_branch(self):
+        """Non-override branch (no per-branch row) gets the global default."""
+        global_row = _row_caja(
+            uuid_sucursal=None,
+            base_inicial="100000.0000",
+            redondeo="ninguno",
+            denominaciones=[1000, 2000, 5000, 10000, 20000, 50000],
+        )
+        session = _session_with_rows(branch_result=None, global_result=global_row)
+
+        result = await resolve_efectiva_caja(session, BRANCH_B)
+
+        assert result is global_row, "Non-override branch must get global default"
+        assert result.redondeo == "ninguno"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_neither_configured(self):
+        """No per-branch, no global → None (caller raises 404)."""
+        session = _session_with_rows(branch_result=None, global_result=None)
+
+        result = await resolve_efectiva_caja(session, BRANCH_A)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_branch_a_overrides_branch_b_global_shared(self):
+        """Two branches share global, only one overrides — each gets the right value."""
+        branch_a_row = _row_caja(
+            uuid_sucursal=BRANCH_A,
+            base_inicial="30000.0000",
+            redondeo="500",
+            denominaciones=[1000, 2000],
+        )
+        global_row = _row_caja(
+            uuid_sucursal=None,
+            base_inicial="100000.0000",
+            redondeo="ninguno",
+            denominaciones=[1000, 2000, 5000, 10000, 20000, 50000],
+        )
+        # For BRANCH_A: branch=branch_a_row, global=global_row → override wins
+        session_a = _session_with_rows(branch_result=branch_a_row, global_result=global_row)
+        result_a = await resolve_efectiva_caja(session_a, BRANCH_A)
+        assert result_a is branch_a_row
+        # For BRANCH_B: branch=None, global=global_row → fallback to global
+        session_b = _session_with_rows(branch_result=None, global_result=global_row)
+        result_b = await resolve_efectiva_caja(session_b, BRANCH_B)
+        assert result_b is global_row
+
+
+class TestConfiguracionCajaSchemaOverride:
+    """Pydantic schema allows both None (global) and uuid (per-branch);
+    ``redondeo`` and ``denominaciones_permitidas`` validate per BR3."""
+
+    def test_create_global_default(self):
+        from parkos_core.schemas.configuracion import ConfiguracionCajaCreate
+        c = ConfiguracionCajaCreate(
+            uuid_sucursal=None,
+            base_inicial_sugerida="100000.0000",
+            redondeo="ninguno",
+            denominaciones_permitidas=[1000, 2000, 5000, 10000, 20000, 50000],
+        )
+        assert c.uuid_sucursal is None
+        assert c.redondeo == "ninguno"
+        assert c.denominaciones_permitidas == [1000, 2000, 5000, 10000, 20000, 50000]
+
+    def test_create_per_branch_override(self):
+        from parkos_core.schemas.configuracion import ConfiguracionCajaCreate
+        c = ConfiguracionCajaCreate(
+            uuid_sucursal=BRANCH_A,
+            base_inicial_sugerida="50000.0000",
+            redondeo="1000",
+            denominaciones_permitidas=[1000, 2000],
+        )
+        assert c.uuid_sucursal == BRANCH_A
+        assert c.redondeo == "1000"
+
+    def test_redondeo_rejects_invalid_literal(self):
+        from parkos_core.schemas.configuracion import ConfiguracionCajaCreate
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ConfiguracionCajaCreate(redondeo="50")

@@ -16,10 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.tenancy import TenantContext
 from ...db.engine import get_session
+from ...models.V.configuracion_caja import ConfiguracionCaja
 from ...models.V.configuracion_seguridad import ConfiguracionSeguridad
 from ...models.V.configuracion_tolerancias import ConfiguracionTolerancias
-from ...repo.config_override import resolve_efectiva_seguridad
+from ...repo.config_override import resolve_efectiva_caja, resolve_efectiva_seguridad
 from ...schemas.configuracion import (
+    ConfiguracionCajaCreate,
+    ConfiguracionCajaRead,
+    ConfiguracionCajaReadList,
+    ConfiguracionCajaUpdate,
     ConfiguracionSeguridadCreate,
     ConfiguracionSeguridadRead,
     ConfiguracionSeguridadReadList,
@@ -38,6 +43,7 @@ router = APIRouter(prefix="/configuracion", tags=["configuracion"])
 _ROUTER_CONFIG = {
     "configuracion-tolerancias": ("admin-,operador-", "config_tolerancias"),
     "configuracion-seguridad": ("admin-,operador-", "config_seguridad"),
+    "configuracion-caja": ("admin-,operador-", "config_caja"),
 }
 
 
@@ -83,6 +89,14 @@ _mount_config(
     create_schema=ConfiguracionSeguridadCreate,
     update_schema=ConfiguracionSeguridadUpdate,
 )
+_mount_config(
+    resource="configuracion-caja",
+    model_cls=ConfiguracionCaja,
+    read_schema=ConfiguracionCajaRead,
+    read_list_schema=ConfiguracionCajaReadList,
+    create_schema=ConfiguracionCajaCreate,
+    update_schema=ConfiguracionCajaUpdate,
+)
 
 
 # --- Custom: GET /configuracion/configuracion-seguridad/efectiva ------------
@@ -126,6 +140,45 @@ async def efectiva(
         )
 
     return ConfiguracionSeguridadRead.model_validate(row)
+
+
+# --- Custom: GET /configuracion/configuracion-caja/efectiva ------------
+# Resolves per-branch override OR global default (HU-F13.3, REQ-OP-12, SC-OP-06).
+#
+# Query: per-branch first; if None, global (uuid_sucursal IS NULL).
+# Returns 404 if neither exists.
+
+
+@router.get(
+    "/configuracion-caja/efectiva",
+    response_model=ConfiguracionCajaRead,
+    summary="Effective caja config for a branch (per-branch override OR global default)",
+)
+async def efectiva_caja(
+    uuid_sucursal: uuid_lib.UUID = Query(...),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_efectiva_issuer_dep),
+) -> ConfiguracionCajaRead:
+    """Resolve the effective ``configuracion_caja`` for ``uuid_sucursal``.
+
+    Priority: per-branch row (uuid_sucursal = :requested, vigente_hasta IS NULL)
+    → global default (uuid_sucursal IS NULL, vigente_hasta IS NULL)
+    → 404 if neither.
+    """
+    row = await resolve_efectiva_caja(session, uuid_sucursal)
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "resource": "configuracion-caja",
+                "uuid_sucursal": str(uuid_sucursal),
+            },
+        )
+
+    return ConfiguracionCajaRead.model_validate(row)
 
 
 __all__ = ["router"]
