@@ -931,7 +931,17 @@ async def reset_admin_password(
         session,
         Usuarios,
         current_uuid=current.uuid,
-        new_attrs={"password_hash": password_hash},
+        new_attrs={
+            "password_hash": password_hash,
+            # HU-F16 must-change enforcement (migration 0065). The login
+            # handler reads this column to decide between a normal TokenPair
+            # and a 5-minute JWT with purpose="must_change" that the operator
+            # must exchange at POST /auth/cambiar-password before they get a
+            # regular session. Only the cambiar-password handler clears it
+            # back to false, so the flag survives every close+insert cycle
+            # until the operator actually exchanges the temporary credential.
+            "debe_cambiar_password": True,
+        },
         actor_uuid=actor_uuid,
         log_tx=False,
     )

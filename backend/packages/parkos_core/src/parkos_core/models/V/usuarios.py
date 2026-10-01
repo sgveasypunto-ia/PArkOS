@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..base import VersionedBase
@@ -38,6 +38,20 @@ class Usuarios(VersionedBase):
         String,
         nullable=True,
     )  # 'admin' | 'operador'
+
+    # HU-F16 must-change enforcement (migration 0065). ``False`` for every
+    # existing open row (the default) and for every close+insert that is NOT
+    # a password reset. ``True`` is written only by
+    # ``repo.admin_usuarios.reset_admin_password`` and cleared only by
+    # ``api.v1.auth.cambiar_password``. The login handler reads this column
+    # to decide whether to issue the normal pair or to issue a 5-minute JWT
+    # with ``purpose="must_change"`` that the operator must exchange at
+    # ``POST /auth/cambiar-password`` before the system treats them as logged in.
+    debe_cambiar_password: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default="false",
+    )
 
     # ``uuid`` is inherited as-is from ``IdMixin`` (``primary_key=True,
     # server_default=func.gen_random_uuid()``, matching the migration's
