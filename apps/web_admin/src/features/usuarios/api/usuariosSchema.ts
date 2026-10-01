@@ -76,18 +76,17 @@ export const sesionSchema = z.object({
   user_agent: z.string().nullable(),
   creado_en: z.string(),
   ultimo_activity: z.string(),
+  estado: z.string(),
 });
 
 export type Sesion = z.infer<typeof sesionSchema>;
 
 export const loginHistoricoSchema = z.object({
   uuid: z.string().uuid(),
-  uuid_usuario: z.string().uuid(),
-  ip_origen: z.string().nullable(),
-  user_agent: z.string().nullable(),
-  exitoso: z.boolean(),
-  motivo_fallo: z.string().nullable(),
-  creado_en: z.string(),
+  timestamp_evento: z.string(),
+  timestamp_cierre: z.string().nullable(),
+  estado: z.string(),
+  uuid_sucursal: z.string().uuid().nullable(),
 });
 
 export type LoginHistorico = z.infer<typeof loginHistoricoSchema>;

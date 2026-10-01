@@ -37,11 +37,11 @@ export function BitacoraUsuario({ uuidUsuario }: BitacoraUsuarioProps) {
                 {login.user_agent ?? 'N/A'}
               </TableCell>
               <TableCell>
-                {login.exitoso ? (
+                {login.estado === 'exitoso' ? (
                   <span className="text-green-600">Exitoso</span>
                 ) : (
                   <span className="text-red-600">
-                    Fallido {login.motivo_fallo && `(${login.motivo_fallo})`}
+                    {login.estado === 'fallido' ? 'Fallido' : login.estado}
                   </span>
                 )}
               </TableCell>
