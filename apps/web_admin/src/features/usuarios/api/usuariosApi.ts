@@ -8,6 +8,7 @@ import {
   sesionSchema,
   loginHistoricoSchema,
   sucursalUsuarioSchema,
+  resetPasswordResponseSchema,
   type Usuario,
   type UsuarioCreate,
   type UsuarioUpdate,
@@ -17,6 +18,7 @@ import {
   type Sesion,
   type LoginHistorico,
   type SucursalUsuario,
+  type ResetPasswordResponse,
 } from './usuariosSchema';
 
 export async function getUsuarios(): Promise<UsuarioListResponse> {
@@ -122,12 +124,14 @@ export async function getLoginHistorico(
 
 export async function resetPassword(
   uuidUsuario: string,
-  newPassword: string,
-): Promise<void> {
-  await parkosFetch(`/api/v1/admin/usuarios/${uuidUsuario}/reset-password`, {
-    method: 'POST',
-    body: JSON.stringify({ new_password: newPassword }),
-  });
+): Promise<ResetPasswordResponse> {
+  const raw = await parkosFetch<unknown>(
+    `/api/v1/admin/usuarios/${uuidUsuario}/reset-password`,
+    {
+      method: 'POST',
+    },
+  );
+  return resetPasswordResponseSchema.parse(raw);
 }
 
 export async function getSucursalesUsuario(

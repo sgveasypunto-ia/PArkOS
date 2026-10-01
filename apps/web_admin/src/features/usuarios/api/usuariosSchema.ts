@@ -52,7 +52,7 @@ export type UsuarioUpdate = z.infer<typeof usuarioUpdateSchema>;
 
 export const permisoSchema = z.object({
   uuid: z.string().uuid(),
-  codigo: z.string(),
+  codigo: z.string().nullable(),
   descripcion: z.string().nullable(),
 });
 
@@ -62,12 +62,20 @@ export const permisoUsuarioSchema = z.object({
   uuid: z.string().uuid(),
   uuid_usuario: z.string().uuid(),
   uuid_permiso: z.string().uuid(),
-  codigo: z.string(),
+  codigo: z.string().nullable(),
   vigente_desde: z.string(),
   vigente_hasta: z.string().nullable(),
 });
 
 export type PermisoUsuario = z.infer<typeof permisoUsuarioSchema>;
+
+export const resetPasswordResponseSchema = z.object({
+  uuid_usuario: z.string().uuid(),
+  temporary_password: z.string(),
+  message: z.string().optional(),
+});
+
+export type ResetPasswordResponse = z.infer<typeof resetPasswordResponseSchema>;
 
 export const sesionSchema = z.object({
   uuid: z.string().uuid(),

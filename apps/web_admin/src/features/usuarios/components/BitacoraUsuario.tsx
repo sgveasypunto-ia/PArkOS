@@ -23,18 +23,20 @@ export function BitacoraUsuario({ uuidUsuario }: BitacoraUsuarioProps) {
         <TableHeader>
           <TableRow>
             <TableHead>Fecha</TableHead>
-            <TableHead>IP</TableHead>
-            <TableHead>User Agent</TableHead>
+            <TableHead>Sucursal</TableHead>
             <TableHead>Resultado</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {loginHistorico.map((login) => (
             <TableRow key={login.uuid}>
-              <TableCell>{new Date(login.creado_en).toLocaleString()}</TableCell>
-              <TableCell>{login.ip_origen ?? 'N/A'}</TableCell>
-              <TableCell className="max-w-xs truncate">
-                {login.user_agent ?? 'N/A'}
+              <TableCell>
+                {login.timestamp_evento
+                  ? new Date(login.timestamp_evento).toLocaleString()
+                  : 'N/A'}
+              </TableCell>
+              <TableCell className="font-mono text-xs">
+                {login.uuid_sucursal ? login.uuid_sucursal.slice(0, 8) : 'N/A'}
               </TableCell>
               <TableCell>
                 {login.estado === 'exitoso' ? (
