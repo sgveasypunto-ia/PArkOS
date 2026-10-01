@@ -39,7 +39,7 @@ import uuid as uuid_lib
 from datetime import UTC, datetime
 from datetime import date as date_cls
 from decimal import Decimal
-from typing import Any
+from typing import Any, Dict
 
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,8 +47,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.A.arqueo import Arqueo
 from ..models.A.factura_pagos import FacturaPagos
 from ..models.L_S.sesion import Sesion
-from ..models.L_W.alerta import Alerta
 from ..models.V.configuracion_tolerancias import ConfiguracionTolerancias
+from ..models.V.sucursal import Sucursal
 from ..models.V.tipo_arqueo import TipoArqueo
 from . import append_only, workflow
 
@@ -71,9 +71,11 @@ __all__ = [
     "insertar_alerta_descuadre_critico",
     "insertar_arqueo",
     "listar_arqueos_admin",
+    "listar_sucursales_vigentes",
     "listar_sesiones_abiertas_del_dia",
     "listar_sesiones_del_dia",
     "obtener_cierre_dia_del_dia",
+    "resumen_admin_del_dia",
     "resolver_tipo_arqueo_por_uuid",
     "resolver_tolerancia_vigente",
     "validar_sesion_abierta_para_arqueo",
@@ -865,3 +867,117 @@ async def listar_arqueos_admin(
 
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# HU-F18.3 admin cross-branch resumen (REQ-OPS-153)
+# ---------------------------------------------------------------------------
+
+
+async def listar_sucursales_vigentes(
+    session: AsyncSession,
+) -> list[Sucursal]:
+    """Return the vigente (vigente_hasta IS NULL) ``prod.sucursal`` rows.
+
+    Used by the admin cross-branch resumen (F18.3) to enumerate every
+    branch the admin sees today. Admin's tenant scope (KD-S2) bypasses
+    the per-branch filter the operador- issuer would apply.
+    """
+    stmt = (
+        select(Sucursal)
+        .where(Sucursal.vigente_hasta.is_(None))
+        .order_by(Sucursal.nombre.asc())
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def resumen_admin_del_dia(
+    session: AsyncSession,
+    *,
+    fecha: date_cls,
+) -> list[Dict[str, Any]]:
+    """Cross-branch per-day resumen for the admin (HU-F18.3, REQ-OPS-153).
+
+    Returns one dict per vigente ``prod.sucursal`` with the day's
+    expected totals (``calcular_esperado_cierre_dia``), the cierre_dia
+    arqueo if one exists, and a total of regular arqueos for the date.
+
+    Used by ``GET /api/v1/admin/caja/arqueo/resumen?fecha=YYYY-MM-DD``
+    which mirrors the operator-side ``/caja/arqueo/resumen`` but across
+    every branch in one round trip. No tenant scope (``admin-``
+    issuer; F18.1 already uses the same split).
+
+    Empty case (``date`` with zero arqueos anywhere) returns ``[]``
+    with HTTP 200 -- a day with no activity is a valid response, not
+    a 404.
+    """
+    out: list[Dict[str, Any]] = []
+    sucursales = await listar_sucursales_vigentes(session)
+    for s in sucursales:
+        esperado_e, esperado_d = await calcular_esperado_cierre_dia(
+            session,
+            uuid_sucursal=s.uuid,
+            fecha=fecha,
+        )
+        # Latest cierre_dia for the date (uuid_sesion IS NULL per DEC-ARQUEO-03).
+        stmt_cd = (
+            select(Arqueo)
+            .where(
+                Arqueo.uuid_sucursal == s.uuid,
+                Arqueo.uuid_sesion.is_(None),
+                func.date(Arqueo.created_at) == fecha,
+            )
+            .order_by(Arqueo.created_at.desc())
+            .limit(1)
+        )
+        cd_row = (await session.execute(stmt_cd)).scalar_one_or_none()
+        # Total regular arqueos at the branch for the date (excludes
+        # cierre_dia which has uuid_sesion IS NULL).
+        stmt_total = select(func.count(Arqueo.uuid)).where(
+            Arqueo.uuid_sucursal == s.uuid,
+            func.date(Arqueo.created_at) == fecha,
+            Arqueo.uuid_sesion.is_not(None),
+        )
+        total = int((await session.execute(stmt_total)).scalar_one() or 0)
+        cierre_dia_dict = (
+            _to_resumen_item(cd_row) if cd_row is not None else None
+        )
+        out.append(
+            {
+                "uuid_sucursal": s.uuid,
+                "nombre": s.nombre,
+                "esperado_efectivo": esperado_e,
+                "esperado_datafono": esperado_d,
+                "cierre_dia": cierre_dia_dict,
+                "total_arqueos": total,
+            }
+        )
+    return out
+
+
+def _to_resumen_item(arq: Arqueo) -> Dict[str, Any]:
+    """Convert an ``Arqueo`` row to the wire-shape ``ArqueoResumenItem`` dict.
+
+    Mirrors ``construir_resumen_sesion`` but for a single Arqueo
+    (cierre_dia has ``uuid_sesion IS NULL`` per DEC-ARQUEO-03). The
+    summary caller maps the dict to the Pydantic schema on the way
+    out.
+    """
+    return {
+        "uuid": arq.uuid,
+        "uuid_tipo_arqueo": arq.uuid_tipo_arqueo,
+        "codigo_tipo_arqueo": None,
+        "uuid_sesion": arq.uuid_sesion,
+        "valor_efectivo_esperado": _to_decimal(arq.valor_efectivo_esperado),
+        "valor_datafono_esperado": _to_decimal(arq.valor_datafono_esperado),
+        "valor_efectivo_reportado": _to_decimal(arq.valor_efectivo_reportado),
+        "valor_datafono_reportado": _to_decimal(arq.valor_datafono_reportado),
+        "diferencia_efectivo": _to_decimal(arq.valor_efectivo_reportado)
+        - _to_decimal(arq.valor_efectivo_esperado),
+        "diferencia_datafono": _to_decimal(arq.valor_datafono_reportado)
+        - _to_decimal(arq.valor_datafono_esperado),
+        "descuadre_pct": None,
+        "alerta_generada": None,
+        "alerta_uuid": None,
+    }

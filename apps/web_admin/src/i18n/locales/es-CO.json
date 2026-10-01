@@ -715,6 +715,17 @@
     "detail.efectivo": "Efectivo",
     "detail.datafono": "Datáfono",
     "detail.descuadreWarning": "Hay descuadre: el arqueo requiere justificación en el siguiente paso.",
-    "detail.viewAlerta": "Ver alerta generada"
+    "detail.viewAlerta": "Ver alerta generada",
+    "tabList": "Listado",
+    "tabResumen": "Resumen",
+    "resumen.title": "Resumen admin por día",
+    "resumen.subtitle": "Totales esperados vs reportados por sucursal con descuadre destacado cuando hay diferencia.",
+    "resumen.dateLabel": "Fecha",
+    "resumen.totalSucursales": "{{count}} sucursal(es)",
+    "resumen.totalDescuadres": "{{count}} descuadre(s)",
+    "resumen.totalArqueos": "{{count}} arqueo(s)",
+    "resumen.cierreTitle": "Cierre del día",
+    "resumen.noCierre": "Sin cierre del día registrado para esta sucursal.",
+    "resumen.empty": "No hay sucursales con cierre del día registrado para esta fecha."
   }
 }

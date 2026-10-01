@@ -15,7 +15,6 @@ import { fetchArqueosAdmin } from '../api/arqueosApi';
 import { useArqueosAdmin } from './useArqueosAdmin';
 import type {
   ArqueoRead,
-  ArqueosListResponse,
 } from '../api/arqueosSchema';
 
 const mockFetch = vi.mocked(fetchArqueosAdmin);

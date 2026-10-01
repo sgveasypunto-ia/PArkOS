@@ -411,6 +411,58 @@ class ArqueoResumenRead(_Base):
     cierre_dia: ArqueoResumenItem | None = None
 
 
+# ---------------------------------------------------------------------------
+# HU-F18.3 admin resumen cross-branch (REQ-OPS-153)
+# ---------------------------------------------------------------------------
+
+
+class AdminResumenQueryParams(_Base):
+    """Query params for ``GET /api/v1/admin/caja/arqueo/resumen``.
+
+    ``fecha`` is the ONLY required param (ISO YYYY-MM-DD, validated
+    as a real ``date``). The endpoint returns one ``ArqueoResumenAdminItem``
+    per vigente ``prod.sucursal`` regardless of branch filter -- the
+    admin sees everything by default; per-branch filtering is the
+    operator side's concern.
+
+    ``extra='forbid'`` rejects client smuggling. The endpoint will
+    gain more filters in subsequent commits.
+    """
+
+    fecha: date_cls
+
+
+class ArqueoResumenAdminItem(_Base):
+    """Per-sucursal row in the admin cross-branch resumen (HU-F18.3).
+
+    One row per vigente ``prod.sucursal``. ``cierre_dia`` is ``None``
+    when the branch has no cierre_dia arqueo for the date (the admin
+    doesn't enforce just ificacion cross-branch -- that's still a
+    per-branch operator contract on the write path). ``total_arqueos``
+    counts the day's regular arqueos at the branch (excludes the
+    cierre_dia, which is its own event).
+    """
+
+    uuid_sucursal: uuid_lib.UUID
+    nombre: str | None
+    esperado_efectivo: Decimal | None = None
+    esperado_datafono: Decimal | None = None
+    cierre_dia: ArqueoResumenItem | None = None
+    total_arqueos: int = 0
+
+
+class ArqueoResumenAdminRead(_Base):
+    """``GET /api/v1/admin/caja/arqueo/resumen`` response.
+
+    ``fecha`` is the requested day (UTC). ``items`` is one row per
+    vigente ``prod.sucursal``. Empty ``items`` is a valid response
+    (a branch with no arqueo for the day).
+    """
+
+    fecha: date
+    items: list[ArqueoResumenAdminItem]
+
+
 class CierreDiarioQueryParams(_Base):
     """HU-F1.13 / REQ-OPS-097: GET /arqueo/resumen query params.
 

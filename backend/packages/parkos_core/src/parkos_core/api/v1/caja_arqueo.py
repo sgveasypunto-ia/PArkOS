@@ -37,11 +37,15 @@ from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
 from ...repo import arqueo as repo_arqueo
 from ...schemas.caja import (
+    AdminResumenQueryParams,
     ArqueoCreateV2,
     ArqueoListQueryParams,
     ArqueoReadForHandler,
     ArqueoReadList,
     ArqueoRequiereJustificacionRead,
+    ArqueoResumenAdminItem,
+    ArqueoResumenAdminRead,
+    ArqueoResumenItem,
     ArqueoResumenRead,
     CierreDiaNoAceptaSesionErrorRead,
     CierreDiarioQueryParams,
@@ -51,6 +55,7 @@ from ...schemas.caja import (
     SesionYaCerradaErrorRead,
     TipoArqueoNoEncontradoErrorRead,
     ToleranciaNoConfiguradaErrorRead,
+    _Base,
 )
 from ..deps import requires_issuer
 from . import _helpers
@@ -71,6 +76,9 @@ from . import _helpers
 # (factory mount). Removing the prefix lets the parent's prefix carry
 # the canonical path.
 router = APIRouter(tags=["caja"])
+admin_router = APIRouter(tags=["caja"])
+
+
 # ---------------------------------------------------------------------------
 # HU-F18.1 admin list (REQ-OPS-152) -- GET /api/v1/caja/arqueo
 # ---------------------------------------------------------------------------
@@ -633,4 +641,102 @@ async def get_arqueo_resumen(
     return resumen
 
 
-__all__ = ["router"]
+# ---------------------------------------------------------------------------
+# HU-F18.3 admin resumen cross-branch (REQ-OPS-153)
+#
+# Mounted on ``admin_router`` (prefix="/admin/caja") so the path lives
+# under a separate admin tree, mirroring the F18.1 split. The operator
+# tree at ``/caja/...`` is unchanged (operadores continue to see only
+# their own branch via ``CierreDiarioQueryParams.uuid_sucursal``).
+# ---------------------------------------------------------------------------
+
+
+_admin_arqueo_resumen_issuer_dep = requires_issuer("admin-")
+_admin_arqueo_resumen_perm_dep = require_permission("audit_read")
+
+
+class AdminResumenQueryParams(_Base):
+    """Query params for ``GET /api/v1/admin/caja/arqueo/resumen``.
+
+    ``fecha`` is the ONLY required param (ISO YYYY-MM-DD, validated
+    as a real ``date``). The endpoint returns one ``ArqueoResumenAdminItem``
+    per vigente ``prod.sucursal`` regardless of branch filter -- the
+    admin sees everything by default; per-branch filtering is the
+    operator side's concern.
+
+    Validation: ``fecha`` is required. ``extra='forbid'`` rejects
+    client smuggling (the endpoint will gain more filters in
+    subsequent commits).
+    """
+
+    fecha: date_cls
+
+
+@admin_router.get(
+    "/arqueo/resumen-admin",
+    response_model=ArqueoResumenAdminRead,
+    status_code=200,
+    summary=(
+        "HU-F18.3: cross-branch admin resumen por día (REQ-OPS-153). "
+        "One item per vigente ``prod.sucursal`` with the day's expected "
+        "totals + cierre_dia (if any) + total_arqueos. Empty days "
+        "return ``items=[]`` with HTTP 200, not 404."
+    ),
+)
+async def get_admin_arqueo_resumen(
+    response: Response,
+    params: AdminResumenQueryParams = Depends(),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _claims: None = Depends(_admin_arqueo_resumen_issuer_dep),
+    _perm: None = Depends(_admin_arqueo_resumen_perm_dep),
+) -> ArqueoResumenAdminRead:
+    """``GET /api/v1/admin/caja/arqueo/resumen`` -- 4-step read chain.
+
+      1. Layer 1 issuer dep (admin- only) + audit_read perm gate.
+      2. Layer 4 Pydantic validation (fecha required, extra='forbid').
+      3. KD-MOT-2025-10-01: SELECT via 1 typed helper
+         ``repo.arqueo.resumen_admin_del_dia``. NO UPDATE/DELETE,
+         NO commit (read-only).
+      4. Build ``ArqueoResumenAdminRead`` from the per-branch dicts.
+
+    Cache-Control: no-store (XR6 Layer 5, same as the operator
+    resumen). Stale arqueo summary is worse than no summary.
+
+    Empty case: a day with zero arqueos returns ``items=[]`` + 200,
+    never 404. Cross-branch visibility was a prereq for the operator
+    F18.2 detail per plan.md:4048 -- this is its counterpart for the
+    admin cross-branch read.
+    """
+    items = await repo_arqueo.resumen_admin_del_dia(
+        session,
+        fecha=params.fecha,
+    )
+    _helpers.apply_no_store_header(response)
+    return ArqueoResumenAdminRead(
+        fecha=params.fecha,
+        items=[_row_to_admin_item(i) for i in items],
+    )
+
+
+def _row_to_admin_item(row: dict) -> ArqueoResumenAdminItem:
+    """Convert a repo-dict row from ``resumen_admin_del_dia`` to the
+    wire-shape ``ArqueoResumenAdminItem``.
+
+    The repo produces ``dict[str, Any]`` because its return type is
+    shared across helpers; the route handler does the conversion at
+    the wire boundary.
+    """
+    cierre = row.get("cierre_dia")
+    return ArqueoResumenAdminItem(
+        uuid_sucursal=row["uuid_sucursal"],
+        nombre=row.get("nombre"),
+        esperado_efectivo=row.get("esperado_efectivo"),
+        esperado_datafono=row.get("esperado_datafono"),
+        cierre_dia=(
+            ArqueoResumenItem(**cierre) if cierre is not None else None
+        ),
+        total_arqueos=row.get("total_arqueos", 0),
+    )
+
+
+__all__ = ["router", "admin_router"]

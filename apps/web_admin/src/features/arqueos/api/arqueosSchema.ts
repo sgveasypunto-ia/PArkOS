@@ -68,26 +68,6 @@ export const arqueosListResponseSchema = z.object({
 export type ArqueosListResponse = z.infer<typeof arqueosListResponseSchema>;
 
 /**
- * Per-arqueo deltas (GET /caja-sesion/arqueos/{uuid}/diferencias).
- *
- * The BE serializes ``Decimal`` as ``float`` -- the schema accepts
- * ``number`` directly so we don't coerce. The shape carries all four
- * signed components plus the two computed differences; the FE renders
- * the abs values via i18n'd labels.
- */
-export const diferenciasReadSchema = z.object({
-  uuid_arqueo: z.string().uuid(),
-  valor_efectivo_esperado: z.number(),
-  valor_datafono_esperado: z.number(),
-  valor_efectivo_reportado: z.number(),
-  valor_datafono_reportado: z.number(),
-  diferencia_efectivo: z.number(),
-  diferencia_datafono: z.number(),
-});
-
-export type DiferenciasRead = z.infer<typeof diferenciasReadSchema>;
-
-/**
  * Per-arqueo resumen row (the response of ``GET /arqueo/resumen``).
  *
  * Carries the operator-/admin-side ``valor_efectivo_esperado /
@@ -113,3 +93,45 @@ export const arqueoResumenItemSchema = z.object({
 });
 
 export type ArqueoResumenItem = z.infer<typeof arqueoResumenItemSchema>;
+
+/**
+ * ``ArqueoResumenAdminItem`` -- per-sucursal row in the HU-F18.3 admin
+ * cross-branch resumen. Mirrors the BE ``schemas/caja.py::ArqueoResumenAdminItem``.
+ */
+export const arqueoResumenAdminItemSchema = z.object({
+  uuid_sucursal: z.string().uuid(),
+  nombre: z.string().nullable(),
+  esperado_efectivo: z.string().nullable(),
+  esperado_datafono: z.string().nullable(),
+  cierre_dia: arqueoResumenItemSchema.nullable(),
+  total_arqueos: z.number().int(),
+});
+
+export type ArqueoResumenAdminItem = z.infer<typeof arqueoResumenAdminItemSchema>;
+
+export const arqueoResumenAdminReadSchema = z.object({
+  fecha: z.string(),
+  items: z.array(arqueoResumenAdminItemSchema),
+});
+
+export type ArqueoResumenAdminRead = z.infer<typeof arqueoResumenAdminReadSchema>;
+
+/**
+ * Per-arqueo deltas (GET /caja-sesion/arqueos/{uuid}/diferencias).
+ *
+ * The BE serializes ``Decimal`` as ``float`` -- the schema accepts
+ * ``number`` directly so we don't coerce. The shape carries all four
+ * signed components plus the two computed differences; the FE renders
+ * the abs values via i18n'd labels.
+ */
+export const diferenciasReadSchema = z.object({
+  uuid_arqueo: z.string().uuid(),
+  valor_efectivo_esperado: z.number(),
+  valor_datafono_esperado: z.number(),
+  valor_efectivo_reportado: z.number(),
+  valor_datafono_reportado: z.number(),
+  diferencia_efectivo: z.number(),
+  diferencia_datafono: z.number(),
+});
+
+export type DiferenciasRead = z.infer<typeof diferenciasReadSchema>;

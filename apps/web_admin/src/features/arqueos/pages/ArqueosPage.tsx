@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next';
 import { useQueries } from '@tanstack/react-query';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import {
   ArqueosFilters,
@@ -31,6 +32,7 @@ import {
 } from '../components/ArqueosFilters';
 import { ArqueosList } from '../components/ArqueosList';
 import { ArqueoDetalle } from '../components/ArqueoDetalle';
+import { ArqueosResumen } from '../components/ArqueosResumen';
 import {
   useArqueosAdmin,
   type UseArqueosAdminReturn,
@@ -160,25 +162,42 @@ export function ArqueosPage(): JSX.Element {
         </div>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">
-            {t('arqueos.listTitle', 'Resultados')}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ArqueosList
-            items={items}
-            isLoading={isLoading && items.length === 0}
-            hasMore={hasMore}
-            isLoadingMore={false}
-            onLoadMore={() => {
-              void loadMore();
-            }}
-            onSelect={setSelectedArqueo}
-          />
-        </CardContent>
-      </Card>
+      <Tabs defaultValue="list">
+        <TabsList>
+          <TabsTrigger value="list" data-testid="arqueos-tab-list-trigger">
+            {t('arqueos.tabList', 'Listado')}
+          </TabsTrigger>
+          <TabsTrigger value="resumen" data-testid="arqueos-tab-resumen-trigger">
+            {t('arqueos.tabResumen', 'Resumen')}
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="list" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">
+                {t('arqueos.listTitle', 'Resultados')}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ArqueosList
+                items={items}
+                isLoading={isLoading && items.length === 0}
+                hasMore={hasMore}
+                isLoadingMore={false}
+                onLoadMore={() => {
+                  void loadMore();
+                }}
+                onSelect={setSelectedArqueo}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="resumen" className="mt-4">
+          <ArqueosResumen />
+        </TabsContent>
+      </Tabs>
 
       <ArqueoDetalle
         arqueo={selectedArqueo}

@@ -11,10 +11,13 @@ from fastapi import APIRouter
 from ...models.A.arqueo import Arqueo
 from ...models.A.caja import Caja
 from ...schemas.caja import (
+    AdminResumenQueryParams,
     ArqueoCreate,
     ArqueoRead,
     ArqueoReadList,
     ArqueoUpdate,
+    ArqueoResumenAdminItem,
+    ArqueoResumenAdminRead,
     CajaCreate,
     CajaRead,
     CajaReadList,
@@ -89,9 +92,11 @@ _mount_caja(
 # resuelva antes de que el ``{uuid}`` genérico tenga chance de
 # matchear.
 # ---------------------------------------------------------------------------
+from .caja_arqueo import admin_router as caja_admin_arqueo_router
 from .caja_arqueo import router as caja_arqueo_router
 
 router.include_router(caja_arqueo_router)
+router.include_router(caja_admin_arqueo_router)
 
 _mount_caja(
     resource="arqueo",
