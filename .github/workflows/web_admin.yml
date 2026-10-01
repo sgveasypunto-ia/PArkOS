@@ -87,3 +87,54 @@ jobs:
       # fix in follow-up PRs.
       - name: E2E (blocks the gate — 18/21 passing)
         run: pnpm --filter web_admin run test:e2e
+
+  docker-smoke:
+    # HU-F13.7 (T3): proves the deployment image actually builds and
+    # serves traffic — independent of the `test` job above, so it does
+    # NOT need pnpm/node on the runner (`docker build` resolves the whole
+    # pnpm workspace inside the builder stage; see
+    # `apps/web_admin/Dockerfile`'s header comment for why the build
+    # context must be `apps/`, not `apps/web_admin/`).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          docker build \
+            -f apps/web_admin/Dockerfile \
+            -t parkos-web-admin:ci \
+            apps/
+
+      - name: Run container
+        run: |
+          docker run --rm -d \
+            --name web-admin-smoke \
+            -p 8080:80 \
+            parkos-web-admin:ci
+
+      - name: Wait for container healthcheck
+        run: |
+          for i in $(seq 1 30); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' web-admin-smoke)"
+            echo "healthcheck status: $status"
+            [ "$status" = "healthy" ] && exit 0
+            sleep 2
+          done
+          echo "::error::container never became healthy"
+          docker logs web-admin-smoke
+          exit 1
+
+      - name: curl localhost (GET / -> 200)
+        run: |
+          status="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)"
+          echo "HTTP status: $status"
+          [ "$status" = "200" ]
+
+      - name: Container logs (always, for debugging)
+        if: always()
+        run: docker logs web-admin-smoke || true
+
+      - name: Stop container
+        if: always()
+        run: docker stop web-admin-smoke || true
