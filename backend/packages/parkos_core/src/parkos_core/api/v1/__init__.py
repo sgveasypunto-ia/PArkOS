@@ -83,8 +83,16 @@ _DEPLOY = os.environ.get("PARKOS_DEPLOY", "cloud").lower()
 _IS_BRANCH = _DEPLOY == "branch"
 
 # Resources excluded from branch deploy (DIAN boundary, REQ-X3).
+#
+# HU-F15.1: ``resolucion-facturacion__dedicated_vigente_en`` is the new
+# dedicated ``GET /empresa/resolucion-facturacion`` handler (BR4 ``vigente_en``
+# filter) registered under its OWN ``_SUB_ROUTERS`` key in ``api/v1/empresa.py``
+# (same carve-out pattern as the HU-F1.4 tarifas dedicated router). The
+# exclusion below matches on the EXACT key, so the new key has to be listed
+# here too or it would leak onto the branch (``api_sucursal``) build despite
+# ``resolucion_facturacion`` being the DIAN-root, cloud-only-writes table.
 _CLOUD_ONLY_EMPRESA_RESOURCES: frozenset[str] = frozenset(
-    {"resolucion-facturacion"}
+    {"resolucion-facturacion", "resolucion-facturacion__dedicated_vigente_en"}
 )
 
 # Side-effect imports: each submodule registers its router at module load.

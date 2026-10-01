@@ -251,6 +251,10 @@ class ResolucionFacturacionFilter(FilterBase):
     vigente_desde__gte: datetime | None = None
     vigente_desde__lte: datetime | None = None
     uuid_sucursal: uuid_lib.UUID | None = None
+    # HU-F15.1 BR4: point-in-time for the bi-temporal predicate, mirrors
+    # ``TarifasSucursalFilter.vigente_en`` (HU-F1.4). Default ``None`` keeps
+    # every other call site (factory GET/POST/PUT) untouched.
+    vigente_en: datetime | None = None
 
 
 class ResolucionFacturacionReadList(ReadListBase[ResolucionFacturacionRead]):
@@ -426,6 +430,10 @@ class CantidadVehiculosSucursalFilter(FilterBase):
     vigente_desde__lte: datetime | None = None
     uuid_sucursal: uuid_lib.UUID | None = None
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
+    # HU-F15.1 BR4: point-in-time for the bi-temporal predicate, mirrors
+    # ``TarifasSucursalFilter.vigente_en`` (HU-F1.4). Default ``None`` keeps
+    # every other call site (factory GET/POST/PUT) untouched.
+    vigente_en: datetime | None = None
 
 
 class CantidadVehiculosSucursalReadList(ReadListBase[CantidadVehiculosSucursalRead]):
