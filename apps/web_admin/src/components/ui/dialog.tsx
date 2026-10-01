@@ -69,6 +69,13 @@ export interface DialogProps {
    * Spread onto the `role="dialog"` element, so a consumer can attach its
    * own `data-testid` / `data-*` hooks without the ids drifting from the
    * generated `aria-labelledby` wiring.
+   *
+   * Typed exactly as `React.HTMLAttributes` on purpose. Widening it to
+   * admit bare `data-*` keys forces every existing call site (which
+   * passes `HTMLAttributes & { 'data-testid'?: string }`) to satisfy a
+   * required index signature they do not declare, which is a widening
+   * that buys nothing -- `data-testid` on `DialogContent` is the
+   * supported way to reach the body from a test.
    */
   contentProps?: React.HTMLAttributes<HTMLDivElement>;
   children: React.ReactNode;
