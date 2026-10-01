@@ -521,7 +521,23 @@
     "hideOptional": "Ocultar campos opcionales",
     "submit": "Crear usuario",
     "submitting": "Creando...",
-    "created": "Usuario creado correctamente. UUID: {{uuid}}"
+    "created": "Usuario creado correctamente. UUID: {{uuid}}",
+    "resetPassword": "Resetear contraseña",
+    "resetPasswordConfirm": "¿Resetear la contraseña de este usuario?",
+    "resetPasswordSuccess": "Contraseña reseteada. El operador debe cambiarla en su próximo login.",
+    "resetPasswordError": "Error al resetear contraseña"
+  },
+  "sesiones": {
+    "title": "Sesiones activas",
+    "uuid": "UUID",
+    "creadoEn": "Creada en",
+    "estado": "Estado",
+    "cerrar": "Cerrar",
+    "empty": "No hay sesiones activas",
+    "loading": "Cargando sesiones...",
+    "cerrarConfirm": "¿Cerrar esta sesión?",
+    "cerrarSuccess": "Sesión cerrada",
+    "cerrarError": "Error al cerrar sesión"
   },
   "gestionUsuarios": {
     "title": "Gestión de usuarios",

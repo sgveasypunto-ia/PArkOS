@@ -5,6 +5,7 @@ import { UsuarioForm } from '../components/UsuarioForm';
 import { PermisosTree } from '../components/PermisosTree';
 import { SucursalesAsignadas } from '../components/SucursalesAsignadas';
 import { BitacoraUsuario } from '../components/BitacoraUsuario';
+import { SesionesActivasTable } from '../components/SesionesActivasTable';
 
 export function UsuarioDetalle() {
   const { uuid } = useParams<{ uuid: string }>();
@@ -38,6 +39,7 @@ export function UsuarioDetalle() {
           <TabsTrigger value="permisos">Permisos</TabsTrigger>
           <TabsTrigger value="sucursales">Sucursales</TabsTrigger>
           <TabsTrigger value="bitacora">Bitácora</TabsTrigger>
+          <TabsTrigger value="sesiones">Sesiones</TabsTrigger>
         </TabsList>
 
         <TabsContent value="datos" className="mt-6">
@@ -54,6 +56,10 @@ export function UsuarioDetalle() {
 
         <TabsContent value="bitacora" className="mt-6">
           <BitacoraUsuario uuidUsuario={usuario.uuid} />
+        </TabsContent>
+
+        <TabsContent value="sesiones" className="mt-6">
+          <SesionesActivasTable uuidUsuario={usuario.uuid} />
         </TabsContent>
       </Tabs>
     </div>

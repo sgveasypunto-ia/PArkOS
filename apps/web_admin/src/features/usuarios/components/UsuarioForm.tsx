@@ -3,7 +3,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { updateUsuario } from '../api/usuariosApi';
+import { resetPassword, updateUsuario } from '../api/usuariosApi';
 import { usuarioUpdateSchema, type Usuario, type UsuarioUpdate } from '../api/usuariosSchema';
 import { useSWRConfig } from 'swr';
 
@@ -41,6 +41,21 @@ export function UsuarioForm({ usuario }: UsuarioFormProps) {
     }
   };
 
+  const onResetPassword = async () => {
+    if (!window.confirm('¿Resetear la contraseña de este usuario?')) {
+      return;
+    }
+    try {
+      // Empty string -> backend generates a 12-char temporary password
+      await resetPassword(usuario.uuid, '');
+      alert('Contraseña reseteada. El operador debe cambiarla en su próximo login.');
+    } catch (error) {
+      alert(
+        `Error al resetear contraseña: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 max-w-2xl">
       <div>
@@ -71,9 +86,19 @@ export function UsuarioForm({ usuario }: UsuarioFormProps) {
         <Input id="rol" {...register('rol')} />
       </div>
 
-      <Button type="submit" disabled={isSubmitting}>
-        {isSubmitting ? 'Guardando...' : 'Guardar cambios'}
-      </Button>
+      <div className="flex items-center gap-3">
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? 'Guardando...' : 'Guardar cambios'}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => void onResetPassword()}
+          data-testid="reset-password-btn"
+        >
+          Resetear contraseña
+        </Button>
+      </div>
     </form>
   );
 }
