@@ -67,6 +67,12 @@ describe('EmpresaPage', () => {
       'data-state',
       'active',
     );
-    expect(screen.getByTestId('empresa-bitacora-placeholder')).toBeInTheDocument();
+    // HU-F15.2 wire-up: EmpresaBitacoraTab is no longer a placeholder --
+    // it queries /admin/audit/log?tabla_afectada=empresa and renders one
+    // of three testid'd states (loading/empty/error/list). The mocked
+    // ``fetchAuditLog`` resolves with the Zod-parsed shape; in this
+    // test the SWR call hasn't returned yet, so we see the loading
+    // state.
+    expect(screen.getByTestId('empresa-bitacora-root')).toBeInTheDocument();
   });
 });

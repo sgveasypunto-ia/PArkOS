@@ -122,9 +122,32 @@ async def list_audit_log(
             },
         ) from exc
 
+    # KD-MOT-2025-10-01 (HU-F15.2): the schema validator rejects the
+    # no-selector case, but FastAPI's Depends() does NOT translate the
+    # raw ``pydantic_core.ValidationError`` raised by ``model_validator``
+    # into a 422 -- the validator's ``ValueError`` propagates as a 500.
+    # We re-check here and raise a typed 422 explicitly so the FE sees
+    # the same shape as the rest of the Layer-4 violations.
+    if params.uuid_sucursal is None and not params.tabla_afectada:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "missing_selector",
+                "detail": (
+                    "audit_log requires at least one of uuid_sucursal "
+                    "or tabla_afectada -- the table is partitioned by "
+                    "fecha_retencion_hasta, not by branch, so a missing "
+                    "selector would scan the whole partition range."
+                ),
+            },
+        )
+
+    # KD-MOT-2025-10-01 (HU-F15.2): ``tabla_afectada`` filter is now wired
+    # alongside the branch selector. Both compose with AND.
     rows = await repo_audit.listar_eventos_paginados(
         session,
         uuid_sucursal=params.uuid_sucursal,
+        tabla_afectada=params.tabla_afectada,
         cursor=cursor,
         limit=params.limit,
     )

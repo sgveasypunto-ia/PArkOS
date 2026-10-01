@@ -123,13 +123,18 @@ def decode_audit_cursor(cursor: str | None) -> AuditCursor | None:
 async def listar_eventos_paginados(
     session: AsyncSession,
     *,
-    uuid_sucursal: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID | None,
+    tabla_afectada: str | None,
     cursor: AuditCursor | None,
     limit: int,
 ) -> list[LogTransaccional]:
-    """Return one page of ``prod.log_transaccional`` rows for a branch.
+    """Return one page of ``prod.log_transaccional`` rows.
 
-    KD-MOT-AUDIT-01: SELECT-only. NO UPDATE/DELETE/INSERT. NO commit.
+    KD-MOT-2025-10-01 (HU-F15.2): the function now accepts BOTH a
+    branch selector (``uuid_sucursal``) and a singleton-table filter
+    (``tabla_afectada``). At least one must be provided -- the schema
+    validator rejects the no-selector case with 422. Filters compose
+    with AND.
 
     Pagination (DEC-AUDIT-01):
       - ORDER BY ``(timestamp_evento DESC, uuid ASC)``.
@@ -141,15 +146,16 @@ async def listar_eventos_paginados(
     """
     limit = min(limit, _LIMIT_CEILING)
 
-    stmt = (
-        select(LogTransaccional)
-        .where(LogTransaccional.uuid_sucursal == uuid_sucursal)
-        .order_by(
-            LogTransaccional.timestamp_evento.desc(),
-            LogTransaccional.uuid.asc(),
-        )
-        .limit(limit + 1)
-    )
+    stmt = select(LogTransaccional)
+    if uuid_sucursal is not None:
+        stmt = stmt.where(LogTransaccional.uuid_sucursal == uuid_sucursal)
+    if tabla_afectada is not None:
+        stmt = stmt.where(LogTransaccional.tabla_afectada == tabla_afectada)
+    stmt = stmt.order_by(
+        LogTransaccional.timestamp_evento.desc(),
+        LogTransaccional.uuid.asc(),
+    ).limit(limit + 1)
+
     if cursor is not None:
         cursor_ts = cursor.ts
         cursor_uuid = cursor.uuid

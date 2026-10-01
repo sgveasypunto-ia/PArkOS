@@ -662,12 +662,10 @@
       "empty": "Aún no se sembró el singleton Empresa. Los mensajes no se pueden editar hasta entonces."
     },
     "bitacora": {
-      "pendingTitle": "Integración pendiente con la API de bitácora",
-      "pendingBody": "El endpoint /api/v1/admin/audit/log requiere uuid_sucursal y Empresa es un singleton tenant-global. La consulta por uuid_referencia + tabla_afectada se cablea en Fase 20.",
-      "sampleCaption": "Ejemplo visual del badge HashChainStatus",
-      "col": {
-        "estado": "Estado"
-      }
+      "title": "Bitácora de cambios",
+      "subtitle": "Cada modificación del singleton Empresa con su cadena hash. Máx. 20 filas.",
+      "errorLoading": "No se pudo cargar la bitácora. Reintenta en un momento.",
+      "empty": "Sin cambios registrados aún. La bitácora se pobla automáticamente con cada edición."
     }
   },
   "usuarios": {

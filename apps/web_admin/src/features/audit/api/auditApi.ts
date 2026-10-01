@@ -35,7 +35,12 @@ export async function fetchAuditLog(query: AuditQuery): Promise<{
   next_cursor: string | null;
 }> {
   const params = new URLSearchParams();
-  params.set('uuid_sucursal', query.uuid_sucursal);
+  if (query.uuid_sucursal) {
+    params.set('uuid_sucursal', query.uuid_sucursal);
+  }
+  if (query.tabla_afectada) {
+    params.set('tabla_afectada', query.tabla_afectada);
+  }
   params.set('limit', String(query.limit));
   if (query.cursor !== undefined && query.cursor !== null) {
     params.set('cursor', query.cursor);

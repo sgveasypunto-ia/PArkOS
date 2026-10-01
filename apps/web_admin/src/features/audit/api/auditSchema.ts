@@ -35,7 +35,13 @@ export const auditLogListResponseSchema = z.object({
 export type AuditLogListResponse = z.infer<typeof auditLogListResponseSchema>;
 
 export const auditQuerySchema = z.object({
-  uuid_sucursal: z.string().uuid(),
+  // HU-F15.2 EmpresaBitacoraTab queries by ``tabla_afectada='empresa'``
+  // alone (Empresa is a singleton tenant-global, no uuid_sucursal).
+  // The branch-scoped AuditDashboard keeps passing uuid_sucursal.
+  // The backend (``schemas/log_transaccional.py``) raises a typed
+  // ``missing_selector`` 422 if NEITHER is provided.
+  uuid_sucursal: z.string().uuid().optional(),
+  tabla_afectada: z.string().min(1).max(64).optional(),
   limit: z.number().int().min(1).max(100).default(20),
   cursor: z.string().nullable().optional(),
 });
