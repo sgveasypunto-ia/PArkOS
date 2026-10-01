@@ -1,0 +1,36 @@
+# apps/.dockerignore — applies to any image whose build context is this
+# pnpm workspace root (today: `docker build -f apps/web_admin/Dockerfile apps/`
+# per HU-F13.7). Keeps the context small and out of the final image layers.
+
+**/node_modules
+**/dist
+**/dist-ssr
+**/build
+**/out
+**/.vite
+**/.cache
+**/coverage
+**/.turbo
+
+# Test tooling output — not needed to `vite build` the production bundle.
+web_admin/e2e
+web_admin/e2e-evidence
+web_admin/playwright-report
+web_admin/test-results
+electron-sucursal/e2e
+electron-sucursal/playwright-report
+electron-sucursal/test-results
+
+**/.git
+**/.github
+**/*.log
+**/npm-debug.log*
+**/.DS_Store
+**/Thumbs.db
+**/.vscode
+**/.idea
+
+# Secrets — never let a stray local .env reach a build layer.
+**/.env
+**/.env.local
+**/.env.*.local
