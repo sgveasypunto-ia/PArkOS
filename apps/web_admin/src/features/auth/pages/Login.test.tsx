@@ -93,8 +93,10 @@ describe('Login container', () => {
     postLoginMock.mockResolvedValue({
       access_token: 'a',
       refresh_token: 'b',
+      temporary_token: null,
       token_type: 'Bearer',
       expires_in: 3600,
+      must_change_password: false,
     });
 
     render(setup());
@@ -107,6 +109,43 @@ describe('Login container', () => {
       expect(postLoginMock).toHaveBeenCalledWith('admin@parkos.local', 'Pass1234word');
     });
     expect(setTokens).toHaveBeenCalledWith('a', 'b', 3600);
+  });
+
+  it('routes to the change-password form when login returns must_change_password', async () => {
+    useAuthMock.mockReturnValue({
+      isAuthenticated: false,
+      isLoading: false,
+      user: null,
+    });
+    useAuthStoreMock.mockImplementation((selector) =>
+      selector({ setTokens: vi.fn(), clear: vi.fn() }),
+    );
+    postLoginMock.mockResolvedValue({
+      access_token: null,
+      refresh_token: null,
+      temporary_token: 'temp-jwt-purpose-must-change',
+      token_type: 'Bearer',
+      expires_in: 300,
+      must_change_password: true,
+    });
+
+    render(setup());
+    const user = userEvent.setup();
+    await user.type(screen.getByTestId('login-email'), 'operador@parkos.local');
+    await user.type(screen.getByTestId('login-password'), 'TempPassword!');
+    await user.click(screen.getByTestId('login-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('page-must-change-password')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('change-password-new')).toBeInTheDocument();
+    expect(screen.getByTestId('change-password-confirm')).toBeInTheDocument();
+    // The change form's cancel button must drop us back to the login form
+    // (the cancel handler clears mustChange state).
+    await user.click(screen.getByTestId('change-password-cancel'));
+    await waitFor(() => {
+      expect(screen.getByTestId('page-login')).toBeInTheDocument();
+    });
   });
 
   it('shows the invalid-credentials error on 401', async () => {

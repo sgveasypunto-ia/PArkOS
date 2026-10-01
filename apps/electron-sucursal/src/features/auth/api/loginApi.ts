@@ -20,14 +20,26 @@ import { ParkosHttpError, resolveRequestUrl } from '@parkos/ui-kit/fetch';
 const LOGIN_PATH = '/api/v1/auth/login';
 
 /**
- * Response de POST /api/v1/auth/login (HU-F1.2 shipped, schemas/auth.py).
- * Coincide 1:1 con backend `TokenPair` Pydantic schema.
+ * HU-F16 must-change enforcement (HU-F16, migration 0065). El login
+ * retorna una UNION shape -- la pareja normal o una credencial
+ * temporal. El discriminador es ``must_change_password``: cuando es
+ * True, el frontend rutea a ``<CambiarPasswordForm>`` y canjea el
+ * token temporal en ``POST /auth/cambiar-password``. Cuando es
+ * False, es un login normal.
+ *
+ * Ambos ``access_token``/``refresh_token``/``temporary_token`` son
+ * nullable para modelar la union: una respuesta must-change no tiene
+ * pareja normal; una respuesta normal no tiene token temporal.
+ * ``must_change_password`` siempre viene (default ``False`` en el BE).
+ * El caller es responsable de ramificar sobre el flag.
  */
-export interface TokenPair {
-  access_token: string;
-  refresh_token: string;
+export interface LoginResponse {
+  access_token: string | null;
+  refresh_token: string | null;
+  temporary_token: string | null;
   token_type: 'Bearer';
-  expires_in: number;
+  expires_in: number | null;
+  must_change_password: boolean;
 }
 
 /**
@@ -70,7 +82,7 @@ function parseRetryAfter(headerValue: string | null): number {
  *   - 429 → `AccountLockedError(retryAfterSeconds)` (DEC-F3.1-08)
  *   - 5xx / 4xx no listados / network → `ParkosHttpError` o `Error`
  */
-export async function postLogin(email: string, password: string): Promise<TokenPair> {
+export async function postLogin(email: string, password: string): Promise<LoginResponse> {
   // DEC-F3.1-05's raw fetch bypasses parkosFetch's own file://-origin
   // rewrite (packaged electron-sucursal loads via `file://` — see
   // parkosFetch.ts's resolveRequestUrl doc comment), so it needs the same
@@ -93,5 +105,5 @@ export async function postLogin(email: string, password: string): Promise<TokenP
     throw new ParkosHttpError(res.status, await res.text().catch(() => ''), res.url);
   }
 
-  return (await res.json()) as TokenPair;
+  return (await res.json()) as LoginResponse;
 }

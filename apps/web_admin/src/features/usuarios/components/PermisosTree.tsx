@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
 import { Tree, type TreeItem } from '@/components/ui/tree';
 import { usePermisos, usePermisosUsuario } from '../hooks/usePermisos';
+import { useTranslation } from 'react-i18next';
 import { asignarPermiso, revocarPermiso } from '../api/usuariosApi';
+import { ParkosHttpError } from '@/lib/fetch';
 import { useSWRConfig } from 'swr';
-
 interface PermisosTreeProps {
   uuidUsuario: string;
 }
@@ -30,6 +31,7 @@ function agruparPermisosPorPrefijo(codigos: string[]): TreeItem[] {
 }
 
 export function PermisosTree({ uuidUsuario }: PermisosTreeProps) {
+  const { t } = useTranslation();
   const {
     permisos,
     isLoading: loadingPermisos,
@@ -149,9 +151,22 @@ export function PermisosTree({ uuidUsuario }: PermisosTreeProps) {
       await mutate();
       await globalMutate(`permisos-usuario-${uuidUsuario}`);
     } catch (error) {
-      alert(
-        `Error al actualizar permisos: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      // REQ-OPS-007 (T4): the backend refuses to revoke the LAST
+      // ``admin_usuarios`` grant by raising 409 with detail
+      // ``"ultimo_admin"``. The generic ``alert(error.message)`` would
+      // surface a confusing "HTTP 409 ..." string; the dedicated branch
+      // below renders the targeted copy from i18n.
+      if (
+        error instanceof ParkosHttpError &&
+        error.status === 409 &&
+        error.body.includes('ultimo_admin')
+      ) {
+        alert(t('usuarios.permisos.ultimoAdminRevoke'));
+      } else {
+        alert(
+          `Error al actualizar permisos: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   };
 

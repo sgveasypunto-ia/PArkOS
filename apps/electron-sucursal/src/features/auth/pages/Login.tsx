@@ -41,12 +41,24 @@ import { useAuthStore } from '@parkos/ui-kit/store';
 
 import { LoginForm, type LoginErrorState } from '../components/LoginForm';
 import { LockoutBlock } from '../components/LockoutBlock';
+import {
+  CambiarPasswordForm,
+  type CambiarPasswordErrorState,
+} from '../components/CambiarPasswordForm';
 import { loginSchema, type LoginInput } from '../api/loginSchema';
+import {
+  cambiarPasswordSchema,
+  type CambiarPasswordInput,
+} from '../api/cambiarPasswordSchema';
 import {
   postLogin,
   AccountLockedError,
   InvalidCredentialsError,
 } from '../api/loginApi';
+import {
+  InvalidTemporaryTokenError,
+  postCambiarPassword,
+} from '../api/cambiarPasswordApi';
 
 /** Coincide con `DEFAULT_MAX_INTENTOS` en backend/.../auth.py:80. */
 const MAX_ATTEMPTS = 5;
@@ -66,6 +78,20 @@ export function Login(): JSX.Element {
   // cuenta (AccountLockedError — el countdown del lockout es el feedback
   // visual prioritario; el contador deja de importar).
   const [attemptCount, setAttemptCount] = useState(0);
+
+  // HU-F16 must-change enforcement: cuando el login devuelve
+  // ``must_change_password=true`` con un ``temporary_token``,
+  // intercambiamos el set de componentes a un CambiarPasswordForm
+  // que consume el token temporal en ``POST /auth/cambiar-password``.
+  const [mustChange, setMustChange] = useState<{ temporaryToken: string } | null>(null);
+  const [changeErrorState, setChangeErrorState] = useState<CambiarPasswordErrorState>(null);
+  const [isChangeSubmitting, setIsChangeSubmitting] = useState(false);
+
+  const changeForm = useForm<CambiarPasswordInput>({
+    resolver: zodResolver(cambiarPasswordSchema),
+    mode: 'onBlur',
+    defaultValues: { new_password: '', confirm_password: '' },
+  });
 
   const form = useForm<LoginInput>({
     resolver: zodResolver(loginSchema),
@@ -107,6 +133,22 @@ export function Login(): JSX.Element {
     });
     try {
       const pair = await postLogin(values.email, values.password);
+      // HU-F16 must-change enforcement: el BE response puede ser una
+      // union -- rama normal con access+refresh, o must-change con
+      // temporary_token. Discriminamos por ``must_change_password``.
+      if (pair.must_change_password) {
+        if (!pair.temporary_token) {
+          setErrorState({ kind: 'network' });
+          return;
+        }
+        setMustChange({ temporaryToken: pair.temporary_token });
+        setChangeErrorState(null);
+        return;
+      }
+      if (!pair.access_token || !pair.refresh_token || pair.expires_in === null) {
+        setErrorState({ kind: 'network' });
+        return;
+      }
       // DEC-F3.1-03 + authStore invariant: setTokens es atómico (access +
       // refresh + expiresAt simultáneamente). El redirect lo dispara el
       // useEffect cuando SWR resuelve `user` post-/auth/me. Reset del
@@ -146,6 +188,45 @@ export function Login(): JSX.Element {
       }
     }
   });
+
+  const onChangeSubmit = async (values: CambiarPasswordInput): Promise<void> => {
+    if (mustChange === null) return;
+    setIsChangeSubmitting(true);
+    setChangeErrorState(null);
+    try {
+      const pair = await postCambiarPassword(
+        mustChange.temporaryToken,
+        values.new_password,
+      );
+      if (
+        pair.must_change_password ||
+        !pair.access_token ||
+        !pair.refresh_token ||
+        pair.expires_in === null
+      ) {
+        setChangeErrorState({ kind: 'server', status: 500 });
+        return;
+      }
+      setTokens(pair.access_token, pair.refresh_token, pair.expires_in);
+      setAttemptCount(0);
+      // useEffect arriba detecta isAuthenticated=true y redirige a '/'.
+    } catch (err) {
+      if (err instanceof InvalidTemporaryTokenError) {
+        setChangeErrorState({ kind: 'expired' });
+        setMustChange(null);
+      } else {
+        setChangeErrorState({ kind: 'network' });
+      }
+    } finally {
+      setIsChangeSubmitting(false);
+    }
+  };
+
+  const onChangeCancel = (): void => {
+    setMustChange(null);
+    setChangeErrorState(null);
+    changeForm.reset();
+  };
 
   // F11.4 — el lockout block se renderiza POR FUERA del card (mismo patrón
   // que `turno-cerrado-exito` arriba) con `text-muted-foreground` + centrado.
@@ -194,15 +275,27 @@ export function Login(): JSX.Element {
         data-testid="login-page-wrapper"
       >
         <div className="w-full max-w-md">
-          <LoginForm
-            form={form}
-            onSubmit={onSubmit}
-            isSubmitting={form.formState.isSubmitting}
-            error={errorState}
-            onLockoutExpired={handleLockoutExpired}
-            attemptCount={attemptCount}
-            maxAttempts={MAX_ATTEMPTS}
-          />
+          {/* HU-F16 must-change: when the login returned must_change_password,
+              swap the form for the change-password form (and back on cancel). */}
+          {mustChange !== null ? (
+            <CambiarPasswordForm
+              form={changeForm}
+              onSubmit={(values) => void onChangeSubmit(values)}
+              onCancel={onChangeCancel}
+              isSubmitting={isChangeSubmitting}
+              errorState={changeErrorState}
+            />
+          ) : (
+            <LoginForm
+              form={form}
+              onSubmit={onSubmit}
+              isSubmitting={form.formState.isSubmitting}
+              error={errorState}
+              onLockoutExpired={handleLockoutExpired}
+              attemptCount={attemptCount}
+              maxAttempts={MAX_ATTEMPTS}
+            />
+          )}
         </div>
 
         {/* F11.4 — F3.2 countdown live, POR FUERA del card (DEBAJO del

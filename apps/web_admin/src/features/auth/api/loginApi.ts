@@ -23,7 +23,8 @@
  *
  * Endpoints consumed (HU-F1.2 shipped Fase 1):
  *   - POST /api/v1/auth/login
- *       200 → TokenPair (access_token, refresh_token, token_type, expires_in)
+ *       200 → LoginResponse (must_change_password flag discriminates the
+ *             shape; see HU-F16 must-change enforcement, migration 0065)
  *       401 → InvalidCredentialsError (DEC-LOGIN-08 anti-enumeration)
  *       429 → AccountLockedError with `Retry-After` seconds
  *
@@ -37,11 +38,28 @@ import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 const LOGIN_PATH = '/api/v1/auth/login';
 
-export interface TokenPair {
-  access_token: string;
-  refresh_token: string;
+/**
+ * HU-F16 must-change enforcement: the login endpoint returns a UNION
+ * shape -- either a normal pair or a temporary credential. The
+ * discriminator is ``must_change_password``: when True, the frontend
+ * routes to ``<CambiarPasswordForm>`` and exchanges the temporary
+ * token at ``POST /auth/cambiar-password`` before treating the
+ * operator as logged in.
+ *
+ * Both access_token / refresh_token / temporary_token are nullable to
+ * model the union: a must-change response has no normal pair, a
+ * normal response has no temporary token. ``must_change_password``
+ * itself is REQUIRED (boolean) because the backend always sets it
+ * (default ``False``). The container at :class:`pages/Login.tsx`
+ * branches on it before deciding which fields to read.
+ */
+export interface LoginResponse {
+  access_token: string | null;
+  refresh_token: string | null;
+  temporary_token: string | null;
   token_type: 'Bearer';
-  expires_in: number;
+  expires_in: number | null;
+  must_change_password: boolean;
 }
 
 export class InvalidCredentialsError extends Error {
@@ -56,16 +74,20 @@ export class AccountLockedError extends Error {
 }
 
 /**
- * POST /api/v1/auth/login — exchange email+password for a token pair.
+ * POST /api/v1/auth/login — exchange email+password for a token pair
+ * (or, after an admin reset, a temporary credential that the operator
+ * must exchange at ``POST /auth/cambiar-password``).
  *
  * Throws:
  *   - `InvalidCredentialsError` on 401 (DEC-LOGIN-08 single message).
  *   - `AccountLockedError` on 429 with `Retry-After: <seconds>`.
- *   - The underlying `ParkosHttpError` (re-exported via
- *     `@parkos/ui-kit/fetch`) on any other 4xx/5xx — surfaced to the
- *     form as a generic error message; the user retries.
+ *   - The underlying `ParkosHttpError` on any other 4xx/5xx — surfaced
+ *     to the form as a generic error message; the user retries.
+ *
+ * The success shape is the union ``LoginResponse`` above. The caller
+ * is responsible for branching on ``must_change_password``.
  */
-export async function postLogin(email: string, password: string): Promise<TokenPair> {
+export async function postLogin(email: string, password: string): Promise<LoginResponse> {
   let response: Response;
   try {
     response = await fetch(LOGIN_PATH, {
@@ -103,5 +125,5 @@ export async function postLogin(email: string, password: string): Promise<TokenP
     throw new ParkosHttpError(response.status, bodyText, LOGIN_PATH);
   }
 
-  return (await response.json()) as TokenPair;
+  return (await response.json()) as LoginResponse;
 }

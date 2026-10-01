@@ -92,6 +92,23 @@
     "serverError": "Error del servidor (código {{status}}). Reintentá en un momento.",
     "attemptCounter": "Intentos: {{current}} de {{max}}",
     "loading": "Cargando...",
+    "mustChangePassword": {
+      "title": "Cambia tu contraseña temporal",
+      "subtitle": "Tu cuenta tiene una contraseña temporal asignada por el administrador. Define una nueva para empezar a operar.",
+      "fields": {
+        "newPassword": "Nueva contraseña",
+        "confirmPassword": "Confirmar contraseña"
+      },
+      "submit": "Guardar contraseña",
+      "submitting": "Guardando...",
+      "cancel": "Volver",
+      "errors": {
+        "minLength": "La contraseña debe tener al menos 8 caracteres.",
+        "maxLength": "La contraseña no puede tener más de 128 caracteres.",
+        "mismatch": "Las contraseñas no coinciden.",
+        "expired": "La contraseña temporal expiró. Vuelve a iniciar sesión con tu nueva contraseña."
+      }
+    },
     "validation": {
       "required": "Este campo es obligatorio.",
       "email": {
@@ -259,7 +276,7 @@
     "tipoTarifaAny": "Cualquiera",
     "field": {
       "sucursal": "Sucursal",
-      "sucursalHelp": "La tarifa pertenece a esta sucursal.",
+      "sucursalHelp": "La tarifa pertenece a la sucursal activa seleccionada en el topbar.",
       "tipoVehiculo": "Tipo de vehículo",
       "tipoTarifa": "Modalidad",
       "valor": "Valor por hora",
@@ -268,7 +285,6 @@
       "valorPlenaHelp": "Debe ser >= 0. Cuatro decimales.",
       "vigenteDesde": "Vigente desde",
       "vigenteDesdeHelp": "Una fecha futura programa un cambio de tarifa.",
-      "sucursalHelp": "La tarifa pertenece a la sucursal activa seleccionada en el topbar.",
       "tipoVehiculoLocked": "Tarifa fija — el tipo de vehículo no se puede cambiar después de creada.",
       "tipoTarifaLocked": "Tarifa fija — la modalidad no se puede cambiar después de creada."
     },
@@ -652,6 +668,11 @@
       "col": {
         "estado": "Estado"
       }
+    }
+  },
+  "usuarios": {
+    "permisos": {
+      "ultimoAdminRevoke": "No se puede revocar el permiso admin_usuarios del último administrador. Crea o activa otro admin primero."
     }
   }
 }

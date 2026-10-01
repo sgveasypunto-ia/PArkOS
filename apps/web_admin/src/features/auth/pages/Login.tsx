@@ -60,13 +60,25 @@ import { useAuthStore } from '@parkos/ui-kit/store';
 
 import { LockoutBlock } from '../components/LockoutBlock';
 import { LoginForm, type LoginErrorState } from '../components/LoginForm';
+import {
+  CambiarPasswordForm,
+  type CambiarPasswordErrorState,
+} from '../components/CambiarPasswordForm';
 import { useCountdown, formatCountdown } from '../hooks/useCountdown';
 import { loginSchema, type LoginInput } from '../api/loginSchema';
+import {
+  cambiarPasswordSchema,
+  type CambiarPasswordInput,
+} from '../api/cambiarPasswordSchema';
 import {
   AccountLockedError,
   InvalidCredentialsError,
   postLogin,
 } from '../api/loginApi';
+import {
+  InvalidTemporaryTokenError,
+  postCambiarPassword,
+} from '../api/cambiarPasswordApi';
 
 /** Mirrors `DEFAULT_MAX_INTENTOS` in `backend/.../auth.py`. */
 const MAX_ATTEMPTS = 5;
@@ -93,6 +105,21 @@ export function Login(): JSX.Element {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [attemptCount, setAttemptCount] = useState(0);
   const [accountLockedUntil, setAccountLockedUntil] = useState<Date | null>(null);
+
+  // HU-F16 must-change enforcement: when ``postLogin`` returns the
+  // ``must_change_password=true`` body variant, we hold the temporary
+  // token in component state and render the change form instead of the
+  // login form. The normal auth flow does not run until the change
+  // succeeds; on cancel we drop the temp token and return to login.
+  const [mustChange, setMustChange] = useState<{ temporaryToken: string } | null>(null);
+  const [changeErrorState, setChangeErrorState] = useState<CambiarPasswordErrorState>(null);
+  const [isChangeSubmitting, setIsChangeSubmitting] = useState(false);
+
+  const changeForm = useForm<CambiarPasswordInput>({
+    resolver: zodResolver(cambiarPasswordSchema),
+    mode: 'onBlur',
+    defaultValues: { new_password: '', confirm_password: '' },
+  });
 
   const secondsRemaining = useCountdown(accountLockedUntil, {
     onComplete: useCallback(() => {
@@ -124,6 +151,22 @@ export function Login(): JSX.Element {
     setErrorState(null);
     try {
       const pair = await postLogin(values.email, values.password);
+      if (pair.must_change_password) {
+        if (!pair.temporary_token) {
+          // Should never happen: backend always sends the temp token
+          // alongside must_change_password=true. If we get a pair,
+          // surface it as a server error and let the operator retry.
+          setErrorState({ kind: 'server', status: 500 });
+        } else {
+          setMustChange({ temporaryToken: pair.temporary_token });
+          setChangeErrorState(null);
+        }
+        return;
+      }
+      if (!pair.access_token || !pair.refresh_token || pair.expires_in === null) {
+        setErrorState({ kind: 'server', status: 500 });
+        return;
+      }
       setTokens(pair.access_token, pair.refresh_token, pair.expires_in);
       setAttemptCount(0);
       // SWR will pick up the new accessToken on its next tick and revalidate
@@ -147,8 +190,62 @@ export function Login(): JSX.Element {
     }
   };
 
+  const onChangeSubmit = async (values: CambiarPasswordInput): Promise<void> => {
+    if (mustChange === null) return; // defensive -- the form is only rendered then
+    setIsChangeSubmitting(true);
+    setChangeErrorState(null);
+    try {
+      const pair = await postCambiarPassword(mustChange.temporaryToken, values.new_password);
+      if (pair.must_change_password || !pair.access_token || !pair.refresh_token || pair.expires_in === null) {
+        // Backend should always return a normal pair here; if it does
+        // not, treat as a server error and let the operator retry.
+        setChangeErrorState({ kind: 'server', status: 500 });
+        return;
+      }
+      setTokens(pair.access_token, pair.refresh_token, pair.expires_in);
+      setAttemptCount(0);
+      // The useEffect above catches the isAuthenticated transition and
+      // routes us to `nextPath` (default `/`).
+    } catch (err) {
+      if (err instanceof InvalidTemporaryTokenError) {
+        setChangeErrorState({ kind: 'expired' });
+        setMustChange(null);
+      } else if (err instanceof ParkosHttpError) {
+        setChangeErrorState({ kind: 'server', status: err.status });
+      } else {
+        setChangeErrorState({ kind: 'network' });
+      }
+    } finally {
+      setIsChangeSubmitting(false);
+    }
+  };
+
+  const onChangeCancel = (): void => {
+    setMustChange(null);
+    setChangeErrorState(null);
+    changeForm.reset();
+  };
+
   if (isAuthenticated && !isLoading && user !== null) {
     return <Navigate to={nextPath} replace />;
+  }
+
+  // Must-change view -- rendered whenever the temp token is in flight.
+  // Note: the authStore is still empty here, so ``isAuthenticated`` is
+  // false and the redirect effect doesn't run; we only flip to the
+  // change form on the success path of ``onSubmit`` above.
+  if (mustChange !== null) {
+    return (
+      <CambiarPasswordForm
+        form={changeForm}
+        onSubmit={(values) => {
+          void onChangeSubmit(values);
+        }}
+        onCancel={onChangeCancel}
+        isSubmitting={isChangeSubmitting}
+        errorState={changeErrorState}
+      />
+    );
   }
 
   return (

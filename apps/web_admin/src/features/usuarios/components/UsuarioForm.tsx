@@ -57,7 +57,11 @@ export function UsuarioForm({ usuario }: UsuarioFormProps) {
       // leave the detail page permanently broken after any edit.
       if (updated.uuid !== usuario.uuid) {
         await mutate(`usuario-${usuario.uuid}`, updated, { revalidate: false });
-        navigate(`/admin/usuarios/${updated.uuid}`, { replace: true });
+        // `App.tsx` mounts `/admin/usuarios` as a permanent redirect to
+        // `/usuarios` (the list) -- routing there would drop us OUT of
+        // the detail page we are trying to stay on. The dynamic detail
+        // route is `/usuarios/:uuid` and lives in the same global group.
+        navigate(`/usuarios/${updated.uuid}`, { replace: true });
         return;
       }
 
