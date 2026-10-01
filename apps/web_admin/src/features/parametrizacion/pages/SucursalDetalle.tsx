@@ -30,8 +30,9 @@
  *     para por qué igual necesita bloquear su propia UI ante un
  *     mismatch de sucursal activa (el backend solo scopea el GET por el
  *     header ambient, no por un query param confiable).
- *   - **Resoluciones** / **Caja**: placeholders "Próximamente" (otra HU
- *     las completa).
+ *   - **Caja**: `<SucursalCaja />` (HU-F15.5) -- base/redondeo +
+ *     tolerancias de arqueo, scopeadas a esta sucursal.
+ *   - **Resoluciones**: placeholder "Próximamente" (otra HU la completa).
  *   - **Bitácora**: `<SucursalBitacoraTab />`, mismo enfoque que
  *     `EmpresaBitacoraTab` pero scopeada a esta sucursal.
  *
@@ -54,6 +55,7 @@ import { useSucursal } from '@/lib/sucursal-context';
 import { useSucursalDetalle } from '../../sucursales/hooks/useSucursalDetalle';
 import { ParametrizacionEfectivaSelector } from '../components/ParametrizacionEfectivaSelector';
 import { SucursalBitacoraTab } from '../components/SucursalBitacoraTab';
+import { SucursalCaja } from '../components/SucursalCaja';
 import { SucursalDocumentos } from '../components/SucursalDocumentos';
 import { SucursalGeneralForm } from '../components/SucursalGeneralForm';
 import { useParametrizacionEfectiva } from '../hooks/useParametrizacionEfectiva';
@@ -209,7 +211,7 @@ export default function SucursalDetalle(): JSX.Element {
         </TabsContent>
 
         <TabsContent value="caja" className="mt-4">
-          <ProximamentePlaceholder slug="caja" nombre={t('sucursalDetalle.tabs.caja', 'Caja')} />
+          <SucursalCaja uuidSucursal={uuid} />
         </TabsContent>
 
         <TabsContent value="documentos" className="mt-4">

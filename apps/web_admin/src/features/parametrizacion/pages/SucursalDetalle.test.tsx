@@ -8,18 +8,19 @@
  *   T3: click en "Tarifas" embebe `<Tarifas />` tal cual (no duplica
  *       lógica -- se mockea el módulo real, no se reimplementa).
  *   T4: click en "Capacidad" embebe `<Cupos />` tal cual.
- *   T5: click en "Resoluciones"/"Caja" muestra el placeholder
- *       "Próximamente".
+ *   T5: click en "Resoluciones" muestra el placeholder "Próximamente".
  *   T6: click en "Bitácora" muestra `<SucursalBitacoraTab />` scopeada
  *       al uuid de la ruta.
  *   T7: click en "Documentos" muestra `<SucursalDocumentos />` scopeada
  *       al uuid de la ruta (HU-F15.4).
+ *   T8: click en "Caja" embebe `<SucursalCaja />` (HU-F15.5) scopeada
+ *       al uuid de la ruta -- ya NO es un placeholder.
  *
  * Child pages/components (`Tarifas`, `Cupos`, `SucursalGeneralForm`,
- * `SucursalBitacoraTab`, `SucursalDocumentos`) are mocked as stubs: each
- * already has (or, for the two new components, will have) its own test
- * suite -- this file's job is the SHELL (tab wiring, default tab,
- * routing), not re-testing their internals.
+ * `SucursalBitacoraTab`, `SucursalDocumentos`, `SucursalCaja`) are mocked
+ * as stubs: each already has its own test suite -- this file's job is
+ * the SHELL (tab wiring, default tab, routing), not re-testing their
+ * internals.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -89,6 +90,12 @@ vi.mock('../components/SucursalDocumentos', () => ({
   ),
 }));
 
+vi.mock('../components/SucursalCaja', () => ({
+  SucursalCaja: ({ uuidSucursal }: { uuidSucursal: string }) => (
+    <div data-testid="sucursal-caja-mock">Caja mock para {uuidSucursal}</div>
+  ),
+}));
+
 import SucursalDetalle from './SucursalDetalle';
 
 function renderPage(): void {
@@ -137,7 +144,7 @@ describe('SucursalDetalle', () => {
     expect(screen.getByTestId('cupos-mock')).toBeInTheDocument();
   });
 
-  it.each(['resoluciones', 'caja'])(
+  it.each(['resoluciones'])(
     'T5: click en "%s" muestra el placeholder Próximamente',
     async (tabValue) => {
       const user = userEvent.setup();
@@ -168,5 +175,14 @@ describe('SucursalDetalle', () => {
     await user.click(screen.getByTestId('sucursal-tab-documentos'));
     expect(screen.getByTestId('sucursal-tab-documentos')).toHaveAttribute('data-state', 'active');
     expect(screen.getByTestId('sucursal-documentos-mock')).toHaveTextContent(SAMPLE_SUCURSAL.uuid);
+  });
+
+  it('T8: click en "Caja" embebe SucursalCaja (HU-F15.5) scopeada al uuid de la ruta', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId('sucursal-detalle-page');
+    await user.click(screen.getByTestId('sucursal-tab-caja'));
+    expect(screen.getByTestId('sucursal-tab-caja')).toHaveAttribute('data-state', 'active');
+    expect(screen.getByTestId('sucursal-caja-mock')).toHaveTextContent(SAMPLE_SUCURSAL.uuid);
   });
 });
