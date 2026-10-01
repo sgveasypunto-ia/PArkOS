@@ -30,8 +30,8 @@ import uuid as uuid_lib
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.permissions import require_permission
@@ -56,7 +56,7 @@ def _to_naive_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value
     return value.astimezone(UTC).replace(tzinfo=None)
-from ...auth.tenancy import TenantContext, requires_sucursal
+from ...auth.tenancy import TenantContext, get_tenant_ctx, requires_sucursal
 from ...db.tenancy import (
     extract_sucursales_permitidas,
     extract_sucursales_permitidas_fresh,
@@ -75,8 +75,8 @@ from ...repo.overlap import (
     assert_no_overlap,
     assert_sucursal_inmutable,
 )
-from ...repo.tarifas_vigencia import list_tarifas_vigentes
-from ...repo.versioned import close_and_insert, current_version
+from ...repo.tarifas_vigencia import bitemporal_vigente_predicate, list_tarifas_vigentes
+from ...repo.versioned import close_and_insert, close_only, current_version
 from ...schemas.empresa import (
     CantidadVehiculosSucursalCreate,
     CantidadVehiculosSucursalRead,
@@ -105,7 +105,7 @@ from ...schemas.empresa import (
     TarifasSucursalUpdate,
 )
 from ..deps import get_session, requires_issuer
-from ..router_factory import make_router
+from ..router_factory import _order_key, _parse_cursor_timestamp, make_router
 
 router = APIRouter(prefix="/empresa", tags=["empresa"])
 
@@ -1015,11 +1015,342 @@ async def get_cantidad_by_key_history_pr_c(
     return [CantidadVehiculosSucursalRead.model_validate(r) for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# HU-F15.1 BR4 — dedicated handler for ``GET /empresa/cantidad-vehiculos-sucursal``
+# ---------------------------------------------------------------------------
+#
+# Same ``vigente_en`` pattern as the HU-F1.4 tarifas handler above (reuses
+# the SAME generic ``bitemporal_vigente_predicate`` helper — it already
+# takes ``model_cls`` as a parameter, so no new repo helper is needed).
+# Registered on the ALREADY-mounted ``_cantidad_pr_c_router`` (prefix
+# ``/cantidad-vehiculos-sucursal``, included on ``router`` below this
+# block and stored under the ``cantidad-vehiculos-sucursal__dedicated_pr_c``
+# key that the reorder block already places ahead of the factory mount) —
+# no new router / no new ``_SUB_ROUTERS`` key needed.
+@_cantidad_pr_c_router.get(
+    "",
+    response_model=CantidadVehiculosSucursalReadList,
+)
+async def list_cantidad_vehiculos_sucursal_vigente_en(
+    cursor: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    vigente_en: datetime | None = Query(
+        None,
+        description=(
+            "Punto en el tiempo para el predicado de vigencia (HU-F15.1 BR4). "
+            "Acepta ISO-8601 con o sin tz (naive = UTC). "
+            "Default: datetime.now(UTC)."
+        ),
+    ),
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),
+) -> CantidadVehiculosSucursalReadList:
+    """HU-F15.1 BR4 — bi-temporal ``GET /empresa/cantidad-vehiculos-sucursal``.
+
+    Same response shape as the factory's list endpoint. ``requires_sucursal``
+    (not the lenient ``get_tenant_ctx``) is deliberate: ``cantidad_vehiculos_
+    sucursal`` carries ``uuid_sucursal`` and is auto-filtered by the ambient
+    tenant listener (``db.tenancy.do_orm_execute``) only when a branch
+    context was actually resolved -- an absent header would otherwise return
+    every branch's rows combined. Mirrors
+    ``list_tarifas_sucursal_vigente_en`` exactly.
+    """
+    v = vigente_en if vigente_en is not None else datetime.now(UTC)
+    v_utc = _to_naive_utc(v) or datetime.now(UTC).replace(tzinfo=None)
+
+    from ...repo.pagination import Cursor as _Cursor
+    from ...repo.pagination import InvalidCursorError as _InvalidCursorError
+    from ...repo.pagination import decode as _cursor_decode
+    from ...repo.pagination import encode as _cursor_encode
+
+    try:
+        decoded = _cursor_decode(cursor) if cursor else None
+    except _InvalidCursorError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(e)},
+        ) from e
+
+    order_col, cursor_field = _order_key(CantidadVehiculosSucursal)
+    stmt = select(CantidadVehiculosSucursal).where(
+        bitemporal_vigente_predicate(CantidadVehiculosSucursal, v_utc)
+    )
+    stmt = stmt.order_by(order_col, CantidadVehiculosSucursal.uuid.asc())
+    if decoded is not None:
+        cursor_ts = _parse_cursor_timestamp(getattr(decoded, cursor_field))
+        stmt = stmt.where(
+            (order_col.element < cursor_ts)
+            | (
+                (order_col.element == cursor_ts)
+                & (CantidadVehiculosSucursal.uuid > uuid_lib.UUID(decoded.uuid))
+            )
+        )
+    stmt = stmt.limit(limit + 1)
+
+    rows = list((await session.execute(stmt)).scalars().all())
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        last_vigente_desde: datetime | None = last.vigente_desde
+        next_cursor = _cursor_encode(
+            _Cursor(
+                vigente_desde=(
+                    last_vigente_desde.isoformat() if last_vigente_desde is not None else None
+                ),
+                created_at=None,
+                uuid=str(last.uuid),
+            )
+        )
+    items = [CantidadVehiculosSucursalRead.model_validate(r) for r in rows]
+    return CantidadVehiculosSucursalReadList(items=items, next_cursor=next_cursor)
+
+
+# ---------------------------------------------------------------------------
+# HU-F15.1 BR4 — dedicated handler for ``GET /empresa/resolucion-facturacion``
+# ---------------------------------------------------------------------------
+#
+# Unlike tarifas/cantidad there is NO existing dedicated router for this
+# resource (only the factory mount below). Mirrors ``_tarifas_dedicated_
+# router`` exactly: own ``APIRouter`` with the SAME ``/resolucion-facturacion``
+# prefix, included on ``router`` BEFORE the factory mount for the same
+# resource so FastAPI's first-match resolver answers the bare ``GET`` list
+# path here. Issuer is ``admin-`` ONLY (no ``operador-``), matching
+# ``_ROUTER_CONFIG["resolucion-facturacion"]`` -- this is the DIAN root
+# table (REQ-X3, cloud-only writes). ``requires_sucursal`` for the same
+# ambient-tenant-listener reason as the cantidad handler above
+# (``resolucion_facturacion`` carries ``uuid_sucursal``).
+#
+# DIAN boundary note: this dedicated router is registered under its OWN
+# ``_SUB_ROUTERS`` key (below), NOT the plain ``"resolucion-facturacion"``
+# key the factory mount uses. ``api/v1/__init__.py``'s branch-deploy
+# exclusion (``_CLOUD_ONLY_EMPRESA_RESOURCES``) matches on the exact key —
+# the new key is added there too so this handler stays excluded from
+# ``api_sucursal`` the same way the factory's resource already is.
+_resolucion_issuer_dep = requires_issuer("admin-")
+_resolucion_dedicated_router = APIRouter(
+    prefix="/resolucion-facturacion", tags=["resolucion-facturacion"]
+)
+
+
+@_resolucion_dedicated_router.get(
+    "",
+    response_model=ResolucionFacturacionReadList,
+)
+async def list_resolucion_facturacion_vigente_en(
+    cursor: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    vigente_en: datetime | None = Query(
+        None,
+        description=(
+            "Punto en el tiempo para el predicado de vigencia (HU-F15.1 BR4). "
+            "Acepta ISO-8601 con o sin tz (naive = UTC). "
+            "Default: datetime.now(UTC)."
+        ),
+    ),
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_resolucion_issuer_dep),
+) -> ResolucionFacturacionReadList:
+    """HU-F15.1 BR4 — bi-temporal ``GET /empresa/resolucion-facturacion``.
+
+    Same response shape and cursor contract as the factory's list endpoint;
+    same bi-temporal predicate as the tarifas/cantidad siblings above.
+    """
+    v = vigente_en if vigente_en is not None else datetime.now(UTC)
+    v_utc = _to_naive_utc(v) or datetime.now(UTC).replace(tzinfo=None)
+
+    from ...repo.pagination import Cursor as _Cursor
+    from ...repo.pagination import InvalidCursorError as _InvalidCursorError
+    from ...repo.pagination import decode as _cursor_decode
+    from ...repo.pagination import encode as _cursor_encode
+
+    try:
+        decoded = _cursor_decode(cursor) if cursor else None
+    except _InvalidCursorError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(e)},
+        ) from e
+
+    order_col, cursor_field = _order_key(ResolucionFacturacion)
+    stmt = select(ResolucionFacturacion).where(
+        bitemporal_vigente_predicate(ResolucionFacturacion, v_utc)
+    )
+    stmt = stmt.order_by(order_col, ResolucionFacturacion.uuid.asc())
+    if decoded is not None:
+        cursor_ts = _parse_cursor_timestamp(getattr(decoded, cursor_field))
+        stmt = stmt.where(
+            (order_col.element < cursor_ts)
+            | (
+                (order_col.element == cursor_ts)
+                & (ResolucionFacturacion.uuid > uuid_lib.UUID(decoded.uuid))
+            )
+        )
+    stmt = stmt.limit(limit + 1)
+
+    rows = list((await session.execute(stmt)).scalars().all())
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        last_vigente_desde: datetime | None = last.vigente_desde
+        next_cursor = _cursor_encode(
+            _Cursor(
+                vigente_desde=(
+                    last_vigente_desde.isoformat() if last_vigente_desde is not None else None
+                ),
+                created_at=None,
+                uuid=str(last.uuid),
+            )
+        )
+    items = [ResolucionFacturacionRead.model_validate(r) for r in rows]
+    return ResolucionFacturacionReadList(items=items, next_cursor=next_cursor)
+
+
+# ---------------------------------------------------------------------------
+# HU-F15.1 BR2/BR3 — ``POST /empresa/sucursal/{uuid}/deshabilitar``
+# ---------------------------------------------------------------------------
+#
+# BR2: a disabled branch (``vigente_hasta`` closed, no replacement version)
+# stops accepting NEW ingresos but still allows salidas -- that differential
+# behaviour is enforced by ``web_sucursal`` reading ``vigente_hasta``; this
+# endpoint's only job is the close itself (``repo.versioned.close_only`` --
+# same close-only / no-replacement-version primitive
+# ``admin_usuarios.py::revocar_permiso`` already uses for the symmetric
+# "último admin" guard, mirrored here for sucursal).
+#
+# BR3: refuses with 409 when the branch has active ingresos (vehicles
+# currently inside) OR vigente subscriptions still referencing it. Both
+# checks run BEFORE the close so the row is never left half-guarded.
+#
+# ``get_tenant_ctx`` (NOT ``requires_sucursal``): ``Sucursal`` itself has no
+# ``uuid_sucursal`` column (it IS the branch, not data scoped BY a branch),
+# so there is no ambient-listener leak risk the cantidad/resolucion handlers
+# above have to worry about. Mirrors the factory's OWN POST/PUT for
+# ``sucursal`` (``router_factory.make_router``'s ``create_endpoint`` /
+# ``update_endpoint``), which also use the lenient ``get_tenant_ctx`` so an
+# admin can manage any branch from ``/sucursales/:uuid`` without first
+# "selecting" it via ``X-Sucursal-Context``.
+_sucursal_actions_issuer_dep = requires_issuer("admin-", "operador-")
+_sucursal_actions_perm_dep = require_permission("config_sucursal")
+_sucursal_actions_router = APIRouter(prefix="/sucursal", tags=["sucursal"])
+
+
+async def _count_ingresos_activos_sucursal(
+    session: AsyncSession, uuid_sucursal: uuid_lib.UUID
+) -> int:
+    """BR3 (HU-F15.1): total active ``ingreso`` rows for a branch.
+
+    Sums ``.activos`` across every tipo from the SAME per-tipo breakdown
+    helper the cantidad-vehiculos-sucursal capacity guard already relies on
+    (``repo.ocupacion.get_ocupacion_puros_activos`` -- raw SQL against
+    ``prod.mv_ocupacion_diaria``, same <=10s lag accepted as live risk,
+    KD-V4/RIESGO-SUC-02). No new query needed: the branch's total occupancy
+    is tipo-agnostic for this guard, unlike the capacity guard which checks
+    one tipo at a time.
+    """
+    rows = await get_ocupacion_puros_activos(session, uuid_sucursal=uuid_sucursal)
+    return sum(r.activos for r in rows)
+
+
+async def _count_suscripciones_vigentes_sucursal(
+    session: AsyncSession, uuid_sucursal: uuid_lib.UUID
+) -> int:
+    """BR3 (HU-F15.1): vigente ``subscripciones_cliente`` rows referencing a branch.
+
+    Raw SQL (``text(...)``), deliberately NOT an ORM ``select(...)``:
+    ``subscripciones_cliente`` carries ``uuid_sucursal`` and this endpoint
+    uses the lenient ``get_tenant_ctx`` (see the module comment above), so
+    an admin's ambient ``X-Sucursal-Context`` (if any, possibly a DIFFERENT
+    branch than the one being disabled) must never silently narrow this
+    guard's count via the ``db.tenancy.do_orm_execute`` listener. Mirrors
+    ``repo.ocupacion.get_ocupacion_puros_activos``'s own use of ``text(...)``
+    for the identical reason.
+    """
+    stmt = text(
+        """
+        SELECT COUNT(*) AS total
+        FROM prod.subscripciones_cliente
+        WHERE uuid_sucursal = :uuid_sucursal
+          AND vigente_hasta IS NULL
+          AND estado = 'activo'
+        """
+    )
+    result = await session.execute(stmt, {"uuid_sucursal": str(uuid_sucursal)})
+    return int(result.scalar_one())
+
+
+@_sucursal_actions_router.post(
+    "/{uuid}/deshabilitar",
+    status_code=204,
+    dependencies=[Depends(_sucursal_actions_perm_dep)],
+    summary=(
+        "Close a branch (admin/operador config_sucursal). POST because the "
+        "underlying table is bi-temporal (AGENTS.md §3 -- [V] rows are "
+        "NEVER physically deleted; the repo layer does ``close_only``, no "
+        "replacement version). 404 if the branch is already closed/unknown; "
+        "409 if it still has active ingresos or vigente subscriptions (BR3)."
+    ),
+    responses={
+        204: {"description": "Sucursal deshabilitada."},
+        404: {"description": "sucursal_no_encontrada"},
+        409: {
+            "description": (
+                "sucursal_con_ocupacion (vehiculos adentro) o "
+                "sucursal_con_suscripciones_vigentes"
+            )
+        },
+    },
+)
+async def deshabilitar_sucursal(
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(get_tenant_ctx),
+    _claims: None = Depends(_sucursal_actions_issuer_dep),
+) -> Response:
+    current = await current_version(session, Sucursal, uuid)
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sucursal_no_encontrada", "uuid": str(uuid)},
+        )
+
+    ocupacion_activa = await _count_ingresos_activos_sucursal(session, uuid)
+    if ocupacion_activa > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "sucursal_con_ocupacion",
+                "uuid": str(uuid),
+                "activos": ocupacion_activa,
+            },
+        )
+
+    suscripciones_vigentes = await _count_suscripciones_vigentes_sucursal(session, uuid)
+    if suscripciones_vigentes > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "sucursal_con_suscripciones_vigentes",
+                "uuid": str(uuid),
+                "suscripciones_vigentes": suscripciones_vigentes,
+            },
+        )
+
+    await close_only(session, Sucursal, uuid, actor_uuid=ctx.actor_uuid)
+    await session.commit()
+    return Response(status_code=204)
+
+
 # Register the dedicated write routers on the same aggregated ``router``
 # so the backward-compat direct-imports keep working. The v1 router in
 # ``api/v1/__init__.py`` picks them up via ``_SUB_ROUTERS`` (below).
 router.include_router(_tarifas_pr_c_router)
 router.include_router(_cantidad_pr_c_router)
+router.include_router(_resolucion_dedicated_router)
+router.include_router(_sucursal_actions_router)
 
 
 # Register the dedicated handlers under synthetic keys so the v1
@@ -1029,6 +1360,12 @@ router.include_router(_cantidad_pr_c_router)
 _SUB_ROUTERS["tarifas-sucursal__dedicated_hu_f1_4"] = _tarifas_dedicated_router
 _SUB_ROUTERS["tarifas-sucursal__dedicated_pr_c"] = _tarifas_pr_c_router
 _SUB_ROUTERS["cantidad-vehiculos-sucursal__dedicated_pr_c"] = _cantidad_pr_c_router
+_SUB_ROUTERS["resolucion-facturacion__dedicated_vigente_en"] = _resolucion_dedicated_router
+# ``/sucursal/{uuid}/deshabilitar`` is a brand-new path (no factory
+# equivalent to shadow) so registration order does not matter for
+# correctness, but it is tracked here for consistency with every other
+# dedicated handler in this module.
+_SUB_ROUTERS["sucursal__dedicated_deshabilitar"] = _sucursal_actions_router
 
 # Reorder so the dedicated handlers come first.
 _reordered: dict[str, APIRouter] = {}
@@ -1036,6 +1373,11 @@ for _pr_c_key in (
     "tarifas-sucursal__dedicated_hu_f1_4",
     "tarifas-sucursal__dedicated_pr_c",
     "cantidad-vehiculos-sucursal__dedicated_pr_c",
+    # HU-F15.1: new dedicated GET must precede the factory's plain
+    # "resolucion-facturacion" mount the same way the tarifas/cantidad
+    # dedicated handlers precede theirs.
+    "resolucion-facturacion__dedicated_vigente_en",
+    "sucursal__dedicated_deshabilitar",
     # fix/catalog-sucursal-global-reads: the global-reads router was
     # added to _SUB_ROUTERS above the factory mount, but list it here
     # explicitly so the ordering stays correct if a future PR reorders

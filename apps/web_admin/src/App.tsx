@@ -14,6 +14,7 @@ import EmpresaPage from '@/features/empresa/pages/EmpresaPage';
 import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
 import { UsuarioDetalle } from '@/features/usuarios/pages/UsuarioDetalle';
+import SucursalDetalle from '@/features/parametrizacion/pages/SucursalDetalle';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
 import Cupos from '@/features/cupos/pages/Cupos';
 import TiposVehiculo from '@/features/tipos-vehiculo/pages/TiposVehiculo';
@@ -96,6 +97,15 @@ export default function App() {
           <Route path="/empresa" element={<EmpresaPage />} />
           <Route path="/usuarios" element={<UsuariosList />} />
           <Route path="/usuarios/:uuid" element={<UsuarioDetalle />} />
+          {/* HU-F15.1: detalle de sucursal (datos generales + tabs de
+              parametrización). Global como `/empresa` y `/usuarios/:uuid`
+              -- gestionar UNA sucursal no requiere tener una sucursal
+              ACTIVA seleccionada en el topbar (ver `lib/sucursal-context`),
+              así que vive fuera de `<RequireSucursal>`. El único flujo
+              existente de selección de sucursal (`SeleccionarSucursal.tsx`,
+              modal de edición embebido) queda intacto: esta ruta es
+              ADICIONAL, no un reemplazo. */}
+          <Route path="/sucursales/:uuid" element={<SucursalDetalle />} />
           <Route path="/arqueos" element={<ArqueosPage />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>

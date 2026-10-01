@@ -11,8 +11,10 @@
  * `api/v1/__init__.py`):
  *
  * - `GET  /api/v1/empresa/sucursal`                -- list
+ * - `GET  /api/v1/empresa/sucursal/{uuid}`         -- single (HU-F15.1)
  * - `POST /api/v1/empresa/sucursal`                -- create
  * - `PUT  /api/v1/empresa/sucursal/{uuid}`         -- update (bi-temporal close+insert)
+ * - `POST /api/v1/empresa/sucursal/{uuid}/deshabilitar` -- close-only disable (HU-F15.1 BR2/BR3)
  * - `GET  /api/v1/sucursal/{uuid}/pairing-token`   -- mint pairing token
  */
 import { parkosFetchRaw, type ParkosFetchInit } from '@parkos/ui-kit/fetch';
@@ -43,6 +45,58 @@ async function fetchJson<T>(input: RequestInfo, init: ParkosFetchInit): Promise<
     );
   }
   return (await res.json()) as T;
+}
+
+/**
+ * HU-F15.1 BR3 — typed 409 raised by {@link disableSucursal} when the
+ * branch still has vehicles inside (``sucursal_con_ocupacion``) or
+ * vigente subscriptions referencing it
+ * (``sucursal_con_suscripciones_vigentes``). The form layer renders an
+ * operator-readable message instead of a generic 409 (mirrors
+ * `tarifasApi.ts`'s `TarifaOverlapError` convention).
+ */
+export class SucursalDeshabilitarBloqueadoError extends Error {
+  readonly reason: 'sucursal_con_ocupacion' | 'sucursal_con_suscripciones_vigentes';
+  readonly activos: number | null;
+  readonly suscripcionesVigentes: number | null;
+
+  constructor(body: unknown) {
+    const detail =
+      typeof body === 'object' && body !== null && 'detail' in body
+        ? (body as { detail?: unknown }).detail
+        : undefined;
+    const error =
+      typeof detail === 'object' && detail !== null && 'error' in detail
+        ? (detail as { error?: unknown }).error
+        : undefined;
+    if (error === 'sucursal_con_ocupacion') {
+      const activos = (detail as { activos?: unknown }).activos;
+      super(
+        `La sucursal tiene ${typeof activos === 'number' ? activos : 'vehículos'} adentro. No se puede deshabilitar mientras haya ocupación activa.`,
+      );
+      this.name = 'SucursalDeshabilitarBloqueadoError';
+      this.reason = 'sucursal_con_ocupacion';
+      this.activos = typeof activos === 'number' ? activos : null;
+      this.suscripcionesVigentes = null;
+      return;
+    }
+    const suscripciones = (detail as { suscripciones_vigentes?: unknown } | undefined)
+      ?.suscripciones_vigentes;
+    super(
+      `La sucursal tiene ${typeof suscripciones === 'number' ? suscripciones : ''} suscripciones vigentes. No se puede deshabilitar mientras existan suscripciones activas referenciándola.`,
+    );
+    this.name = 'SucursalDeshabilitarBloqueadoError';
+    this.reason = 'sucursal_con_suscripciones_vigentes';
+    this.activos = null;
+    this.suscripcionesVigentes = typeof suscripciones === 'number' ? suscripciones : null;
+  }
+}
+
+export class SucursalNoEncontradaError extends Error {
+  constructor(uuid: string) {
+    super(`La sucursal ${uuid} no existe o ya no está vigente.`);
+    this.name = 'SucursalNoEncontradaError';
+  }
 }
 
 export async function listSucursales(opts: { limit?: number } = {}): Promise<Sucursal[]> {
@@ -89,4 +143,52 @@ export async function mintPairingToken(sucursalUuid: string): Promise<PairingTok
     headers: jsonHeaders,
   });
   return pairingTokenResponseSchema.parse(raw);
+}
+
+/**
+ * HU-F15.1 — single-branch read for `/sucursales/:uuid`. Hits the
+ * dedicated header-free global-reads router (`get_sucursal_global`),
+ * bounded to the caller's own permitted branches server-side; a branch
+ * outside that scope 404s (indistinguishable from non-existent, by
+ * backend design).
+ */
+export async function getSucursal(uuid: string): Promise<Sucursal> {
+  const res = await parkosFetchRaw(`/api/v1/empresa/sucursal/${uuid}`, {
+    method: 'GET',
+    headers: jsonHeaders,
+  });
+  if (!res.ok) {
+    if (res.status === 404) throw new SucursalNoEncontradaError(uuid);
+    const body = await res.text();
+    throw new Error(`sucursalesApi: GET ${uuid} -> ${res.status}: ${body.slice(0, 200)}`);
+  }
+  return sucursalReadSchema.parse(await res.json());
+}
+
+/**
+ * HU-F15.1 BR2/BR3 — close-only disable (no replacement version). Throws
+ * {@link SucursalNoEncontradaError} (404) or
+ * {@link SucursalDeshabilitarBloqueadoError} (409) on failure; resolves
+ * with no value on success (backend returns 204).
+ */
+export async function disableSucursal(uuid: string): Promise<void> {
+  const res = await parkosFetchRaw(`/api/v1/empresa/sucursal/${uuid}/deshabilitar`, {
+    method: 'POST',
+    headers: jsonHeaders,
+  });
+  if (res.ok) return;
+  if (res.status === 404) throw new SucursalNoEncontradaError(uuid);
+  const body = await res.text();
+  if (res.status === 409) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      throw new Error(`sucursalesApi: 409 ${body.slice(0, 200)}`);
+    }
+    throw new SucursalDeshabilitarBloqueadoError(parsed);
+  }
+  throw new Error(
+    `sucursalesApi: POST ${uuid}/deshabilitar -> ${res.status}: ${body.slice(0, 200)}`,
+  );
 }
