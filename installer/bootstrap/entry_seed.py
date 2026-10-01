@@ -19,12 +19,21 @@ never built, not a seed step this installer can perform. This entry point
 therefore seeds ONLY `tipos_vehiculo`, which genuinely has no seed
 anywhere in the migrations.
 
-Usage: seed.exe --database-url <migration DSN> --api-base-url <http://127.0.0.1:8000>
+Usage: seed.exe [--database-url <migration DSN>] --api-base-url <http://127.0.0.1:8000>
                --jwt-key-path <path> --sucursal-uuid <uuid>
+
+`--database-url` is optional on the command line - falls back to the
+`DATABASE_URL` environment variable when omitted (security fix: the caller
+- installer/parkos-installer.ps1's Invoke-CatalogSeed - now sets
+`DATABASE_URL` as a process environment variable instead of a CLI argument,
+same pattern already used for migrate.exe/Invoke-MigrationsAndSeed, so the
+DSN's embedded superuser password never appears in the process command line
+audited by Windows Event ID 4688/Sysmon/EDR).
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import uuid as uuid_lib
 
@@ -154,15 +163,32 @@ def seed_tipos_vehiculo(client: httpx.Client, sucursal_uuid: str) -> None:
     print(f"catalog.seed.ok tipos_vehiculo_created={created} tipos_vehiculo_already_present={len(existing_tipos)}")
 
 
+def _resolve_database_url(cli_value: str | None) -> str | None:
+    """Prefer the `--database-url` CLI flag; fall back to the `DATABASE_URL`
+    environment variable when omitted.
+
+    Security fix: a DSN carries the Postgres superuser password in plain
+    text - a required CLI argument would put it in the process argv
+    (Windows Event ID 4688/Sysmon/EDR). The caller (installer's
+    Invoke-CatalogSeed) now sets DATABASE_URL as a process environment
+    variable instead, same pattern already used for migrate.exe.
+    """
+    return cli_value or os.environ.get("DATABASE_URL")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--database-url", required=True)
+    parser.add_argument("--database-url", default=None)
     parser.add_argument("--api-base-url", required=True)
     parser.add_argument("--jwt-key-path", required=True)
     parser.add_argument("--sucursal-uuid", required=True)
     args = parser.parse_args()
 
-    user_uuid = ensure_seed_admin(args.database_url)
+    database_url = _resolve_database_url(args.database_url)
+    if not database_url:
+        parser.error("--database-url is required (or set the DATABASE_URL environment variable)")
+
+    user_uuid = ensure_seed_admin(database_url)
     token = mint_seed_jwt(user_uuid, args.jwt_key_path, uuid_lib.UUID(args.sucursal_uuid))
 
     with httpx.Client(base_url=args.api_base_url, headers={"Authorization": f"Bearer {token}"}, timeout=10.0) as client:

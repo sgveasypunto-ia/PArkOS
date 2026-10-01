@@ -91,6 +91,43 @@ function Get-BuildPayload {
     Get-PostgresZip
     Get-NssmBinary
     Get-PgPartmanBinaries
+    Get-ManagementModulePayload
+    Get-MasterKeyPayload
+}
+
+# The Parkos management module (installer/payload/management/*) is NOT
+# downloaded like the other Stage 0 payload pieces above - it is first-party
+# source, versioned in the repo right next to the installer. This just
+# validates it exists before the release build proceeds, so a missing file
+# fails loudly here instead of silently producing a payload that later
+# breaks parkos-installer.ps1's Fase 24 Install-ManagementModule step.
+function Get-ManagementModulePayload {
+    $moduleDir = Join-Path $PayloadRoot 'management'
+    $manifestPath = Join-Path $moduleDir 'Parkos.psd1'
+    $modulePath = Join-Path $moduleDir 'Parkos.psm1'
+
+    if (-not (Test-Path $manifestPath)) {
+        throw "Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga)."
+    }
+    if (-not (Test-Path $modulePath)) {
+        throw "Falta $modulePath - el modulo Parkos.psm1 debe existir versionado en el repo (no se descarga)."
+    }
+    Write-Host '[payload] Parkos management module found, staged in place.'
+}
+
+# La clave maestra de Parkos (installer/payload/security/parkos-master.key,
+# DEC-INST-42) es un secreto de la EMPRESA, no de la instalacion - al igual
+# que el ZIP de Postgres de Get-PostgresZip, nunca se genera automaticamente
+# ni se descarga: debe ser provista manualmente por el equipo de soporte
+# antes de un build real. Falla aca en vez de dejar que
+# parkos-installer.ps1 la descubra faltante recien durante una instalacion.
+function Get-MasterKeyPayload {
+    $masterKeyPath = Join-Path $PayloadRoot 'security\parkos-master.key'
+
+    if (-not (Test-Path $masterKeyPath)) {
+        throw "Falta $masterKeyPath - la clave maestra debe ser provista por el equipo de soporte antes de un build real, nunca se genera automaticamente."
+    }
+    Write-Host '[payload] Parkos master key found, staged in place.'
 }
 
 function Get-PowerShell7Msi {
@@ -333,6 +370,56 @@ function Build-ParkosInstallerExe {
 }
 
 # ---------------------------------------------------------------------------
+# Stage 5 - manifest de integridad del payload completo (DEC-INST-26)
+# ---------------------------------------------------------------------------
+# Mismo shape (generated_at + binaries) que parkos-installer.ps1's propio
+# New-ParkosBinaryManifest, con UNA diferencia deliberada (DEC-INST-26): las
+# claves de "binaries" aca son la RUTA RELATIVA de cada archivo bajo la raiz
+# del payload, no el nombre de archivo suelto - varios archivos del payload
+# comparten nombre suelto entre subarboles distintos (a diferencia de los 3
+# binarios instalados, unicos por nombre), y el nombre real del .msi varia
+# por version (se descubre con Get-ChildItem, nunca se hardcodea).
+# Invoke-ParkosUpdate's paso VERIFY BINARIES (parkos-installer.ps1) hace
+# Get-FileHash directamente contra Join-Path $PayloadPath <clave-manifest>.
+function New-PayloadIntegrityManifest {
+    param([Parameter(Mandatory)][string]$PayloadRoot)
+
+    $expectedRelativePaths = @(
+        'services\api-sucursal\api-sucursal\api-sucursal.exe'
+        'services\job-sync-sucursal\job-sync-sucursal\job-sync-sucursal.exe'
+        'services\migrate\migrate\migrate.exe'
+        'services\doctor\doctor\doctor.exe'
+    )
+
+    $hashes = [ordered]@{}
+    foreach ($relativePath in $expectedRelativePaths) {
+        $fullPath = Join-Path $PayloadRoot $relativePath
+        if (Test-Path $fullPath) {
+            $hashes[$relativePath] = (Get-FileHash -Path $fullPath -Algorithm SHA256).Hash.ToUpperInvariant()
+        } else {
+            Write-Host "Manifest de payload: $relativePath no encontrado - se omite del manifest (correr antes las etapas que lo generan)." -ForegroundColor Yellow
+        }
+    }
+
+    $msi = Get-ChildItem -Path (Join-Path $PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($msi) {
+        $msiRelativePath = "apps\$($msi.Name)"
+        $hashes[$msiRelativePath] = (Get-FileHash -Path $msi.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+    } else {
+        Write-Host 'Manifest de payload: no se encontro ningun .msi bajo apps\ - se omite del manifest.' -ForegroundColor Yellow
+    }
+
+    $manifest = [ordered]@{
+        generated_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        binaries     = $hashes
+    }
+
+    $manifestPath = Join-Path $PayloadRoot 'manifest.sha256.json'
+    $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath
+    Write-Host "[payload] Manifest de integridad generado en: $manifestPath"
+}
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -360,6 +447,13 @@ try {
     if ($Seed) { Invoke-Stage 'seed.exe (PyInstaller)' { Build-SeedExe } }
     if ($Doctor) { Invoke-Stage 'doctor.exe (PyInstaller)' { Build-DoctorExe } }
     if ($Installer) { Invoke-Stage 'parkos-installer.exe (ps2exe)' { Build-ParkosInstallerExe } }
+    # DEC-INST-26: el manifest de integridad del payload completo solo tiene
+    # sentido si las 5 etapas de las que depende (los 4 exes congelados + el
+    # MSI de web_sucursal) realmente corrieron en esta invocacion - mismo
+    # idioma de gating por switch que cada etapa de arriba.
+    if ($ApiSucursal -and $JobSync -and $Migrate -and $Doctor -and $WebSucursal) {
+        Invoke-Stage 'Payload integrity manifest' { New-PayloadIntegrityManifest -PayloadRoot $PayloadRoot }
+    }
 } finally {
     Write-Host ''
     Write-Host ('=' * 70)

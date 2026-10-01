@@ -1,4 +1,3 @@
-#Requires -Version 7.0
 <#
 .SYNOPSIS
     Parkos branch installer - installs the full sucursal stack (Postgres,
@@ -12,48 +11,135 @@
     the two frozen service exes, and the offline Postgres/pg_partman/NSSM
     payload.
 
-    DEC-INST-02/03/04 (2026-09-27): Invoke-ParkosInstall is a MENU, not a
+    DEC-INST-17/18/19/20 (2026-09-27): Invoke-ParkosInstall is a MENU, not a
     forced linear wizard - the operator runs/re-runs any of 9 stages
     independently (0: descargar main + compilar, 1: Postgres+roles+pg_partman,
-    2: migraciones, 3: crear sucursal real en prod.sucursal, 4: seed de
-    catalogos, 5: servicio api-sucursal, 6: job de sync, 7: app de escritorio,
+    2: migraciones, 3: configurar UUID de sucursal, 4: seed de catalogos,
+    5: servicio api-sucursal, 6: job de sync, 7: app de escritorio,
     8: verificacion final). Each stage keeps its own hard gate (throws on
     failure, caught at the menu level so one bad stage doesn't kill the
-    whole session) - see Invoke-TuiStep. Port reconciliation (DEC-INST-03):
+    whole session) - see Invoke-TuiStep. Port reconciliation (DEC-INST-18):
     the API port is no longer hardcoded to 8000 anywhere - Test-ApiPort picks
     a free one and Set-MachineApiOrigin/PARKOS_API_ORIGIN propagate it to the
     packaged Electron app via its preload bridge (resolveRequestUrl.ts).
-    Sucursal creation (DEC-INST-03): no REST endpoint or CLI exists anywhere
-    in the backend for this (verified directly against
-    backend/.../api/v1/admin_views.py) - Install-SucursalRow is a direct SQL
-    INSERT against models/V/sucursal.py's exact contract, replacing the
-    previous raw "paste a UUID" prompt that never corresponded to any real
-    row.
+    Sucursal UUID (DEC-INST-19, CORRECTED by DEC-INST-22 on 2026-09-28): this
+    installer never creates the prod.sucursal row - that row is created from
+    the admin panel (a separate system, source of truth for sucursal data).
+    The installer only collects/validates the UUID the admin panel already
+    generated (Read-SucursalUuid) and writes it into the local env vars so
+    api-sucursal/job-sync-sucursal know which sucursal they belong to; the
+    row itself reaches this machine's Postgres later via job-sync-sucursal's
+    own sync cycle, never via a direct SQL INSERT from this installer. Menu
+    item 0 (descargar main + compilar) is DEC-INST-20. Stage 8 (verify) also
+    installs the separate Parkos management module (Install-ManagementModule)
+    after Test-PostInstallation passes - DEC-INST-21.
+
+    NOTE (2026-09-28): DEC-INST-17/18/19/20 were originally miscited in this
+    file as DEC-INST-02/03/04, colliding with the canonical decisions already
+    assigned to those IDs in plan.md Sec.0.2 (standalone binaries, Postgres
+    winget/ZIP fallback, no-superuser-at-runtime). Renumbered here and in
+    plan.md's DEC-INST table to remove the collision; DEC-INST-01/02/14 below
+    are correct, pre-existing citations and were left unchanged.
+
+    DEC-INST-28..31 (PR4b, ultimo de 11 del plan de cierre de gaps): agrega
+    -Command Restore real (Invoke-ParkosRestore), que revierte esta
+    instalacion a una version previa archivada bajo releases\<version>\ (el
+    mismo arbol que REPLACE de Invoke-ParkosUpdate ya escribe). Los binarios
+    de api-sucursal/job-sync-sucursal siempre se revierten; la base de datos
+    (-RestoreDatabase) y el MSI de escritorio son opcionales/best-effort - ver
+    plan.md Sec.0.2 para el detalle de cada decision.
+
+    DEC-INST-32..35 (PR5 de 11 del plan de cierre de gaps): -Unattended
+    -Command Install ya NO cae en el menu interactivo de Invoke-ParkosInstall
+    (que siempre terminaba bloqueado en un Read-Host, incompatible con un
+    modo desatendido de verdad) - corre Invoke-ParkosUnattendedCascade, una
+    cascada automatica de las mismas 9 etapas (0->8, definidas una sola vez
+    en Get-ParkosStageDefinitions, compartida con el menu) con rollback
+    automatico por etapa fallida, logging estructurado a
+    $DataPath\installer-runs\<timestamp>.log, y exit codes 0 (completo u
+    omitido a proposito)/1 (etapa fallida, con rollback intentado)/2
+    (configuracion o pre-flight invalidos). -EulaAccepted reemplaza la
+    aceptacion implicita que -Unattended tenia hasta ahora en Show-Eula;
+    -SkipStage/-StopAfterStage permiten omitir etapas puntuales o cortar la
+    cascada deliberadamente en una etapa dada.
 
 .NOTES
     Ternary/null-coalescing operators are deliberately avoided even though
     PS7 supports them, so this file stays parseable (for syntax checks) on
     a box that only has Windows PowerShell 5.1 - the actual dev machine
     this was written on has no PowerShell 7 installed at all.
+
+    Deliberately has NO `#Requires -Version 7.0`: that directive is
+    enforced by the PS5.1 host before any script code runs, so it was
+    silently defeating Ensure-PowerShell7 (HU-F21.2) below - the whole
+    point of that function is to detect PS5.1, install PS7 and relaunch
+    itself, but it can never run if the host refuses to start the script
+    in the first place. PS7 is still required past that point; it is just
+    no longer gated at parse time.
 #>
 
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param(
+    # DEC-INST-24..27 (PR4a) + DEC-INST-28..31 (PR4b) de 11 del plan de
+    # cierre de gaps: modo de la invocacion. 'Install' (default) preserva el
+    # comportamiento previo (Invoke-ParkosInstall, TUI de menu). 'Update'
+    # reemplaza binarios ya instalados por un payload nuevo
+    # (Invoke-ParkosUpdate), con backup y rollback automatico obligatorios.
+    # 'Restore' (PR4b) revierte esta instalacion a una version previa
+    # archivada bajo releases\<version>\ (Invoke-ParkosRestore) - binarios
+    # siempre, base de datos y MSI de escritorio opcionales/best-effort.
+    [ValidateSet('Install', 'Update', 'Restore')]
+    [string]$Command = 'Install',
     [string]$InstallPath = 'C:\Program Files\Parkos',
     [string]$DataPath = 'C:\ProgramData\Parkos',
     # Operational values the installer cannot invent - real business/ops
     # inputs, not defaults. Prompted interactively if left empty and
     # -Unattended is not set; -Unattended requires them to be passed.
+    # UUID real de la sucursal, generado por el panel admin al crearla ahi -
+    # este instalador NUNCA inserta la fila en prod.sucursal (DEC-INST-22,
+    # corrige DEC-INST-19); solo valida el formato y lo propaga a las
+    # variables de entorno. Prompted interactivamente si se deja vacio y no
+    # se paso -Unattended; -Unattended lo exige.
     [string]$SucursalUuid = '',
-    # Datos reales de la sucursal - usados para GENERAR el UUID e insertar
-    # la fila en prod.sucursal (Install-SucursalRow). Si -SucursalUuid ya
-    # vino explicito (sucursal existente, escenario repair/reinstall), se
-    # ignoran y no se crea ninguna fila nueva.
-    [string]$SucursalNombre = '',
-    [string]$SucursalPrefijo = '',
-    [string]$SucursalCiudad = '',
     [string]$CloudApiUrl = '',
-    [switch]$Unattended
+    [switch]$Unattended,
+    # -Command Update: carpeta con el payload NUEVO (misma forma que
+    # installer\payload\), compilado en otra maquina por build-release.ps1.
+    [string]$PayloadPath = '',
+    # -Command Update: restaura la release N-1 sin intentar reemplazar
+    # binarios nuevos (sin backup nuevo, sin verificacion de payload nuevo).
+    [switch]$RollbackOnly,
+    # -Command Update: omite el pre-check de salud (Get-ParkosHealth). NUNCA
+    # omite el backup ni la verificacion de firma/manifest del payload.
+    [switch]$Force,
+    # -Command Restore (PR4b): version objetivo - nombre de carpeta bajo
+    # $InstallPath\releases\<Version>\, la misma que REPLACE de
+    # Invoke-ParkosUpdate ya escribe (DEC-INST-24). Flag de confirmacion
+    # desatendida con el mismo patron que -UnattendedPurgeConfirmed de
+    # Uninstall-Parkos (plan.md BR2) - un solo flag copiado por error nunca
+    # dispara un restore desatendido.
+    [string]$Version = '',
+    [switch]$UnattendedRestoreConfirmed,
+    # -Command Restore: por defecto SOLO revierte binarios (api-sucursal/
+    # job-sync-sucursal). Revertir tambien el schema de base de datos es mas
+    # riesgoso (puede perder datos escritos despues de esa version) - exige
+    # este switch explicito, nunca es el comportamiento por defecto.
+    [switch]$RestoreDatabase,
+    # DEC-INST-33 (PR5, cascada -Unattended): antes -Unattended aceptaba el
+    # EULA IMPLICITAMENTE (Show-Eula: `if ($Unattended) { return $true }` sin
+    # pedir nada). Ahora -Unattended exige este switch explicito ademas -
+    # ver Show-Eula mas abajo. Fuera de -Unattended no tiene efecto (el
+    # prompt interactivo ACEPTO sigue igual).
+    [switch]$EulaAccepted,
+    # DEC-INST-34 (PR5): etapas (0..8) a omitir en la cascada -Unattended
+    # (ejemplo: -SkipStage @(7) para saltar la app de escritorio). Solo lo
+    # consume Invoke-ParkosUnattendedCascade - el menu interactivo de
+    # Invoke-ParkosInstall siempre muestra las 9 opciones, sin filtrar.
+    [int[]]$SkipStage = @(),
+    # DEC-INST-34 (PR5): -1 (default) corre las 9 etapas; un valor 0..8 corta
+    # la cascada deliberadamente DESPUES de esa etapa (exit 0, no es un
+    # fallo - util para debug de una etapa puntual sin correr el resto).
+    [int]$StopAfterStage = -1
 )
 
 Set-StrictMode -Version Latest
@@ -66,6 +152,21 @@ $script:PS7_MSI_URL = "https://github.com/PowerShell/PowerShell/releases/downloa
 # this exact GitHub Releases URL (Get-FileHash against the payload's cached
 # copy) - not fabricated, not copy-pasted from a doc.
 $script:PS7_MSI_SHA256 = 'ED331A04679B83D4C013705282D1F3F8D8300485EB04C081F36E11EAF1148BD0'
+
+# DEC-INST-41 (PR10 de 11 del plan de cierre de gaps): $script:StageStatus
+# pasa de booleano ($true/$false) a este enum - PowerShell trata CUALQUIER
+# string no vacio (incluido el literal 'NotRun') como verdadero, asi que todo
+# gate que compare el valor de una etapa debe hacerlo EXPLICITAMENTE contra
+# [ParkosStageState]::Ok (nunca con `if (-not ...)`/`if (...)` implicito) -
+# ver los gates de las etapas 3 y 4 en Get-ParkosStageDefinitions mas abajo.
+enum ParkosStageState {
+    NotRun
+    Running
+    Ok
+    Failed
+    RolledBack
+    Blocked
+}
 
 # ---------------------------------------------------------------------------
 # Fase 21 - HU-F21.1: pre-flight check (6 blocking verifications)
@@ -150,7 +251,7 @@ function Request-Elevation {
 }
 
 # ---------------------------------------------------------------------------
-# DEC-INST-04: descargar main + compilar (menu item 0)
+# DEC-INST-20: descargar main + compilar (menu item 0)
 # ---------------------------------------------------------------------------
 # Corre en la maquina del TECNICO (con toolchain de desarrollo completo -
 # git/pnpm/uv), NUNCA en el PC final de la sucursal - confirmado
@@ -262,6 +363,18 @@ function Show-Eula {
     [CmdletBinding()]
     param([string]$EulaPath = (Join-Path $script:PayloadRoot 'README-EULA.txt'))
 
+    # DEC-INST-33 (PR5): -Unattended ya NO acepta el EULA implicitamente -
+    # exige -EulaAccepted explicito. Ni siquiera se muestra el texto por
+    # consola en este camino (Out-Host -Paging bloquearia esperando input de
+    # pagina, algo sin sentido - y sin operador presente - en un proceso
+    # desatendido).
+    if ($Unattended) {
+        if ($EulaAccepted -ne $true) {
+            throw 'EULA no aceptada explicitamente - modo -Unattended requiere -EulaAccepted.'
+        }
+        return $true
+    }
+
     if (-not (Test-Path $EulaPath)) {
         # Real legal text is a business/legal deliverable, not something to
         # fabricate here - fail loudly instead of shipping a blank EULA.
@@ -269,10 +382,6 @@ function Show-Eula {
     }
 
     Get-Content $EulaPath | Out-Host -Paging
-
-    if ($Unattended) {
-        return $true
-    }
 
     $answer = Read-Host 'Escriba ACEPTO para continuar (cualquier otra respuesta cancela la instalacion)'
     if ($answer -ne 'ACEPTO') {
@@ -330,7 +439,7 @@ function Test-PostgresPorts {
     throw 'Puertos 5432 y 5433 ambos ocupados; no se puede instalar Postgres de Parkos.'
 }
 
-# DEC-INST-03 (port reconciliation): mismo patron que Test-PostgresPorts -
+# DEC-INST-18 (port reconciliation): mismo patron que Test-PostgresPorts -
 # el puerto de api-sucursal estaba hardcodeado a 8000 en 3 lugares
 # (Write-RuntimeEnvFile, Invoke-CatalogSeed, Wait-ForApiHealth) sin ninguna
 # deteccion de conflicto. `resolveRequestUrl.ts` en electron-sucursal (via
@@ -373,9 +482,38 @@ function Set-MachineApiOrigin {
 function Install-PostgresViaWinget {
     param([int]$Port, [string]$SuperuserPassword)
 
-    $overrideArgs = "--mode unattended --unattendedmodeui none --superpassword $SuperuserPassword --serverport $Port --disable-components stackbuilder"
-    winget install --id PostgreSQL.PostgreSQL.16 --silent --accept-package-agreements --accept-source-agreements --override $overrideArgs | Out-Host
-    return $LASTEXITCODE -eq 0
+    # Auditoria de seguridad (confianza 8/10, severidad Medium): $SuperuserPassword
+    # viajaba antes en texto plano dentro de $overrideArgs (argumento -c de
+    # winget), visible en el argv del proceso hijo ante cualquier auditoria de
+    # creacion de procesos de Windows (Event ID 4688 con linea de comandos
+    # habilitada, Sysmon, EDR).
+    #
+    # Investigado (no asumido) contra la documentacion oficial real del
+    # instalador de PostgreSQL para Windows - BitRock/InstallBuilder, el mismo
+    # binario que `winget install --override` invoca en modo silencioso:
+    # https://www.enterprisedb.com/docs/supported-open-source/postgresql/installing/command_line_parameters/
+    # documenta `--optionfile <path>` como alternativa real (no inventada) a
+    # pasar `--superpassword`/`--serverport`/`--disable-components` como
+    # argumentos sueltos - el instalador lee esos mismos parametros de un
+    # archivo en vez del command line. `mode`/`unattendedmodeui` (ningun
+    # secreto) se dejan en el override literal a proposito: un hilo de la
+    # lista de correo de postgresql.org documenta que definir
+    # `mode=unattended` DENTRO del optionfile (en vez del CLI) deja vacio el
+    # data directory en algunas versiones del instalador - se evita ese bug
+    # conocido dejando esas dos claves fuera del archivo.
+    $optionFile = New-TemporaryFile
+    try {
+        Set-Content -Path $optionFile -Encoding ascii -Value @(
+            "superpassword=$SuperuserPassword"
+            "serverport=$Port"
+            'disable-components=stackbuilder'
+        )
+        $overrideArgs = "--mode unattended --unattendedmodeui none --optionfile `"$optionFile`""
+        winget install --id PostgreSQL.PostgreSQL.16 --silent --accept-package-agreements --accept-source-agreements --override $overrideArgs | Out-Host
+        return $LASTEXITCODE -eq 0
+    } finally {
+        Remove-Item $optionFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Install-PostgresViaZip {
@@ -405,6 +543,11 @@ function Install-PostgresViaZip {
     Add-Content -Path $confPath -Value "port = $Port"
 }
 
+# DEC-INST-32 (PR5): devuelve el metodo REAL que instalo Postgres ('winget'
+# o 'zip') - antes esta funcion era void. El rollback automatico de la etapa
+# 1 (-Unattended, Get-ParkosStageDefinitions) necesita saber cual de los dos
+# para desinstalar con el mecanismo correcto (winget uninstall vs. borrar el
+# directorio del ZIP); guardado por el llamador en $script:PostgresInstallMethod.
 function Install-Postgres {
     param([string]$PgInstallPath, [string]$PgDataPath, [int]$Port, [string]$SuperuserPassword)
 
@@ -417,7 +560,7 @@ function Install-Postgres {
     }
 
     if ($wingetOk) {
-        return
+        return 'winget'
     }
 
     Write-Host 'winget no disponible o fallo; usando ZIP de EDB del payload...' -ForegroundColor Yellow
@@ -426,6 +569,7 @@ function Install-Postgres {
         throw "Ni winget ni el ZIP de fallback ($zipPath) estan disponibles; no se puede instalar Postgres."
     }
     Install-PostgresViaZip -PayloadZipPath $zipPath -PgInstallPath $PgInstallPath -PgDataPath $PgDataPath -Port $Port -SuperuserPassword $SuperuserPassword
+    return 'zip'
 }
 
 # ---------------------------------------------------------------------------
@@ -437,6 +581,54 @@ function New-SecurePassword {
     $bytes = New-Object byte[] $Length
     [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
     return ([Convert]::ToBase64String($bytes) -replace '[+/=]', 'x').Substring(0, $Length)
+}
+
+# DEC-INST-42: las 3 passwords de Postgres que usa Initialize-DatabaseRoles
+# (bootstrap del rol nativo `postgres` + superusuario `parkos` + rol de
+# runtime `parkos_app`) dejan de ser aleatorias (New-SecurePassword de
+# arriba) y pasan a derivarse deterministicamente de
+# HMAC-SHA256(clave_maestra, "<uuid_sucursal>:<purpose>"). Motivo real: el
+# UUID de sucursal NO es secreto - se tipea a mano en el prompt, queda sin
+# redactar en env-redacted.txt (Export-ParkosDiagnostics, DEC-INST-38) y vive
+# tambien en el panel admin. Si la password derivara SOLO del UUID (p. ej.
+# base64(uuid)), cualquiera que vea el UUID - incluido quien recibe un ZIP de
+# diagnostico de soporte - reconstruye la password real de la base de datos.
+# Con una clave maestra que no viaja en el repo ni se deriva de nada publico,
+# la password sigue siendo reproducible por soporte (con el UUID + la clave
+# maestra, sin entrar a cada maquina ni depender de backups de .pgpass), pero
+# nadie mas puede derivarla solo con el UUID. `Ensure-ServiceAccount` (mas
+# abajo) NO participa de este cambio: esa es la password de la cuenta LOCAL
+# DE WINDOWS svc-parkos, no una password de Postgres, y sigue usando
+# New-SecurePassword sin modificar.
+function Get-ParkosMasterKeyBytes {
+    param([string]$MasterKeyPath = (Join-Path $script:PayloadRoot 'security\parkos-master.key'))
+    if (-not (Test-Path $MasterKeyPath)) {
+        throw "No se encontro la clave maestra de Parkos en $MasterKeyPath - debe ser provista por el equipo de soporte antes de instalar (nunca se genera automaticamente ni se versiona en el repo)."
+    }
+    return [System.IO.File]::ReadAllBytes($MasterKeyPath)
+}
+
+# `Purpose` distinto por rol es CRITICO: garantiza que las 3 passwords NUNCA
+# sean iguales entre si aunque compartan UUID+clave maestra - evita que
+# comprometer una cascada a las otras dos. El `-replace '[+/=]'` es el MISMO
+# criterio que ya usa New-SecurePassword de arriba: un password con
+# `+`/`/`/`=` puede romper la sintaxis de connection strings/comandos
+# `psql -c` en algunos casos.
+function New-ParkosDerivedPassword {
+    param(
+        [Parameter(Mandatory)][string]$SucursalUuid,
+        [Parameter(Mandatory)][ValidateSet('postgres-bootstrap', 'parkos-superuser', 'parkos-app')][string]$Purpose,
+        [byte[]]$MasterKeyBytes
+    )
+    if (-not $MasterKeyBytes) { $MasterKeyBytes = Get-ParkosMasterKeyBytes }
+    $message = "${SucursalUuid}:${Purpose}"
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new($MasterKeyBytes)
+    try {
+        $hash = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($message))
+    } finally {
+        $hmac.Dispose()
+    }
+    return ([Convert]::ToBase64String($hash) -replace '[+/=]', 'x')
 }
 
 # Found by actually running this installer end-to-end, not by re-reading
@@ -485,10 +677,10 @@ function Set-PgPassFile {
 }
 
 function Initialize-DatabaseRoles {
-    param([string]$PsqlPath, [int]$Port, [string]$BootstrapPassword)
+    param([string]$PsqlPath, [int]$Port, [string]$BootstrapPassword, [Parameter(Mandatory)][string]$SucursalUuid)
 
-    $superuserPassword = New-SecurePassword
-    $appPassword = New-SecurePassword
+    $superuserPassword = New-ParkosDerivedPassword -SucursalUuid $SucursalUuid -Purpose 'parkos-superuser'
+    $appPassword = New-ParkosDerivedPassword -SucursalUuid $SucursalUuid -Purpose 'parkos-app'
 
     # Write postgres+parkos credentials to .pgpass BEFORE the first psql
     # call below - `-w` (never prompt) turns any credential mistake here
@@ -520,7 +712,20 @@ END
     # value in PowerShell - without this, the caller gets psql's own "DO"
     # output mixed into the hashtable below (confirmed: turns the return
     # into an array, so $roles.AppPassword resolves to nothing).
-    & $PsqlPath -w -p $Port -h 127.0.0.1 -U postgres -c $sql | Out-Null
+    #
+    # Auditoria de seguridad (confianza 8/10, severidad Medium): $sql (que
+    # embebe $superuserPassword en texto plano dentro del `PASSWORD '...'`)
+    # viajaba antes como argumento -c, visible en el argv del proceso ante
+    # Event ID 4688/Sysmon/EDR - mismo hallazgo que Install-PostgresViaWinget.
+    # psql, sin -c/-f, lee el batch completo desde stdin cuando no es
+    # interactivo (comportamiento estandar y documentado de psql) - se pasa
+    # el mismo texto SQL por el pipeline en vez de como argumento; el
+    # contenido de un pipe no aparece en el argv del proceso hijo. El patron
+    # ya existente en Install-PostgresViaZip (variable + limpieza) usa un
+    # archivo temporal en vez de stdin porque ahi el consumidor es initdb.exe
+    # (--pwfile), que no acepta stdin para ese proposito - psql si, por eso
+    # aca la tecnica es el pipe, no un archivo.
+    $sql | & $PsqlPath -w -p $Port -h 127.0.0.1 -U postgres | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'No se pudo configurar el superusuario parkos.'
     }
@@ -570,6 +775,26 @@ function Write-RuntimeEnvFile {
 
     $lines = @(
         'PARKOS_DEPLOY=branch'
+        # DEC-INST-43: gap real detectado comparando el despliegue Docker
+        # (infra/deploy/docker-compose.branch.yml fija
+        # PARKOS_SYNC_ENGINE=${PARKOS_SYNC_ENGINE:-catalog_branch} para
+        # AMBOS servicios, api-sucursal y job-sync-sucursal) contra este
+        # instalador, que nunca la seteaba. La variable es OBLIGATORIA, no
+        # opcional - engine_flag.py::_parse() hace `raise
+        # InvalidEngineModeError(...)` si esta ausente, sin ningun default.
+        # get_engine() la invoca sync_router.py (montado por api-sucursal) y,
+        # del lado de job-sync-sucursal, el flujo que sync_sucursal.py usa en
+        # su loop principal (sync.cutover.dual_protocol/backfill). NOTA: a
+        # diferencia de lo que se penso al principio, db/engine.py (motor de
+        # SQLAlchemy, DATABASE_URL) NO llama get_engine() - confirmado
+        # leyendo su codigo, no importa engine_flag; igual ambos servicios la
+        # necesitan por las rutas de arriba. Sin esta linea, los 2 servicios
+        # NSSM (ParkosApiSucursal, ParkosJobSyncSucursal) lanzan
+        # InvalidEngineModeError apenas arrancan. 'catalog_branch' es el
+        # unico valor ratificado (D22/ADR-001) para "branch workers"; los
+        # otros 4 valores del enum son de otros servicios (api_admin,
+        # dian/cloud dispatcher, jobs/sync_cloud) y no aplican aca.
+        'PARKOS_SYNC_ENGINE=catalog_branch'
         "PARKOS_SUCURSAL_UUID=$SucursalUuid"
         "PARKOS_DB_URL=postgresql+psycopg://parkos_app:$AppPassword@127.0.0.1:$Port/parkos"
         "DATABASE_URL=postgresql+asyncpg://parkos_app:$AppPassword@127.0.0.1:$Port/parkos"
@@ -587,7 +812,7 @@ function Write-RuntimeEnvFile {
     )
 
     New-Item -ItemType Directory -Force -Path (Split-Path $EnvFilePath) | Out-Null
-    Set-Content -Path $EnvFilePath -Value $lines -NoNewline:$false
+    Protect-ParkosEnvContent -EnvFilePath $EnvFilePath -Lines $lines
 }
 
 # ---------------------------------------------------------------------------
@@ -732,114 +957,56 @@ function Invoke-MigrationsAndSeed {
 }
 
 # ---------------------------------------------------------------------------
-# Fase 22b - HU-F22.x: creacion real de la fila de sucursal (DEC-INST-03)
+# Fase 22b - HU-F22.x: UUID de sucursal (DEC-INST-22, corrige DEC-INST-19)
 # ---------------------------------------------------------------------------
-# Investigacion directa (2026-09-27) confirmo que NO existe ningun endpoint
-# REST ni CLI para esto en todo el repo -
-# backend/packages/parkos_core/src/parkos_core/api/v1/admin_views.py solo
-# expone GET /admin/sucursales y GET /admin/sucursales/{uuid}/dashboard,
-# ningun POST. El unico precedente es
-# infra/scripts/bootstrap_pairing.py::ensure_sucursal, que ademas apunta a
-# la CLOUD-db, no a la base LOCAL de esta sucursal. Sin esto, el operador
-# tipeaba un UUID crudo (Read-Host 'UUID (v4)...') que nunca correspondia a
-# ninguna fila real - runtime/env.py's load_config() solo valida que tenga
-# FORMA de UUIDv4, nunca que exista, asi que el sistema "funcionaba" con un
-# UUID inventado hasta que algo necesitara datos reales de la sucursal.
+# DEC-INST-19 asumia que este instalador debia CREAR la fila de sucursal
+# (Install-SucursalRow, un INSERT SQL directo) porque la investigacion
+# original no encontro ningun endpoint/CLI para eso en el backend. Esa
+# investigacion era correcta pero la conclusion no: el diseno real
+# (confirmado por el operador, 2026-09-28) es que la sucursal SIEMPRE se
+# crea desde el panel admin - un sistema aparte, no este instalador -, y esa
+# fila llega a este Postgres local mas tarde via el propio ciclo de sync de
+# job-sync-sucursal, nunca via SQL directo desde aca. Insertarla nosotros
+# duplicaria/desincronizaria la fila que el sync va a traer.
 #
-# Contrato exacto verificado en models/V/sucursal.py: 8 columnas de negocio
-# nullable (String sin limite de longitud), FKs a tipo_sucursal/empresa
-# "application-enforced" (sin constraint SQL - se dejan NULL), UK real en
-# (prefijo_nombre, vigente_desde). `uuid` es la PK fisica heredada de
-# VersionedBase (misma base que `ON CONFLICT (uuid)` ya asume en
-# ensure_sucursal, confirmado ahi mismo).
-function Read-SucursalData {
+# Este instalador entonces NUNCA escribe en prod.sucursal: solo recibe el
+# UUID que el panel admin ya genero (por -SucursalUuid o interactivamente) y
+# valida que tenga forma de UUID - mismo gate de siempre que ya usa
+# runtime/env.py's load_config() (solo FORMA, nunca existencia), ahora la
+# unica fuente de verdad esperada. Install-SucursalRow queda eliminada por
+# completo - no es codigo muerto a mantener "por si acaso": es un camino que
+# nunca deberia ejecutarse.
+function Read-SucursalUuid {
     [CmdletBinding()]
-    param(
-        [string]$Nombre = '',
-        [string]$Prefijo = '',
-        [string]$Ciudad = ''
-    )
+    param([string]$Uuid = '')
 
-    if ($Unattended) {
-        if ([string]::IsNullOrWhiteSpace($Nombre) -or [string]::IsNullOrWhiteSpace($Prefijo)) {
-            throw '-SucursalNombre y -SucursalPrefijo son obligatorios en modo -Unattended.'
+    if ([string]::IsNullOrWhiteSpace($Uuid)) {
+        if ($Unattended) {
+            throw '-SucursalUuid es obligatorio en modo -Unattended (la sucursal se crea desde el panel admin, no desde este instalador).'
         }
-    } else {
-        if ([string]::IsNullOrWhiteSpace($Nombre)) {
-            $Nombre = Read-Host 'Nombre de la sucursal (ej. "Parqueadero Centro")'
-        }
-        if ([string]::IsNullOrWhiteSpace($Nombre)) {
-            throw 'El nombre de la sucursal es obligatorio.'
-        }
-
-        if ([string]::IsNullOrWhiteSpace($Prefijo)) {
-            $Prefijo = Read-Host 'Prefijo / siglas de la sucursal (ej. "PQC")'
-        }
-        if ([string]::IsNullOrWhiteSpace($Prefijo)) {
-            throw 'El prefijo/siglas de la sucursal es obligatorio.'
-        }
-
-        if ([string]::IsNullOrWhiteSpace($Ciudad)) {
-            $Ciudad = Read-Host 'Ciudad de la sucursal'
-        }
+        $Uuid = Read-Host 'UUID de la sucursal (generado al crearla desde el panel admin)'
     }
 
-    # El operador ya NO tipea el UUID (era el bug original) - se genera aca
-    # y se informa en pantalla para que quede documentado.
-    $uuid = [guid]::NewGuid().ToString()
-    Write-Host "UUID generado para esta sucursal: $uuid" -ForegroundColor Cyan
+    $parsed = [guid]::Empty
+    if (-not [guid]::TryParse($Uuid, [ref]$parsed)) {
+        throw "El UUID de sucursal '$Uuid' no tiene formato valido (UUIDv4 esperado). Verificalo en el panel admin antes de reintentar."
+    }
 
-    return @{ Uuid = $uuid; Nombre = $Nombre; Prefijo = $Prefijo; Ciudad = $Ciudad }
+    return $parsed.ToString()
 }
 
-function Install-SucursalRow {
-    param(
-        [string]$PsqlPath,
-        [int]$Port,
-        [string]$Uuid,
-        [string]$Nombre,
-        [string]$Prefijo,
-        [string]$Ciudad
-    )
+# Idempotente - reescribe solo la linea PARKOS_SUCURSAL_UUID del .env sin
+# tocar el resto (passwords, JWT paths, etc. ya escritos por la opcion 1).
+# Permite corregir un UUID mal tipeado sin tener que reinstalar Postgres.
+function Update-SucursalUuidInEnvFile {
+    param([string]$EnvFilePath, [string]$SucursalUuid)
 
-    # Texto libre tipeado por el operador (no generado por el programa, a
-    # diferencia de las passwords en Initialize-DatabaseRoles) - escapar
-    # comillas simples es necesario de verdad, no defensivo de mas: nombres
-    # reales de sucursal/ciudad ("Parqueadero D'Elia") rompen la sintaxis
-    # SQL sin esto.
-    $nombreSql = $Nombre.Replace("'", "''")
-    $prefijoSql = $Prefijo.Replace("'", "''")
-    $ciudadSql = $Ciudad.Replace("'", "''")
-
-    # ON CONFLICT (uuid) DO NOTHING - idempotente, mismo patron que
-    # ensure_sucursal en bootstrap_pairing.py: reintentar esta opcion del
-    # menu con el mismo UUID no duplica la fila.
-    $sql = @"
-INSERT INTO prod.sucursal (
-    uuid, vigente_desde, vigente_hasta, estado,
-    created_at, created_by,
-    nombre, prefijo_nombre, ciudad,
-    uuid_tipo_sucursal, uuid_empresa
-) VALUES (
-    '$Uuid', NOW(), NULL, 'activo',
-    NOW(), NULL,
-    '$nombreSql', '$prefijoSql', '$ciudadSql',
-    NULL, NULL
-)
-ON CONFLICT (uuid) DO NOTHING;
-"@
-    & $PsqlPath -w -p $Port -h 127.0.0.1 -U parkos_app -d parkos -c $sql | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw 'No se pudo crear la fila de sucursal en prod.sucursal.'
+    if (-not (Test-Path $EnvFilePath)) {
+        throw "No existe el archivo .env en $EnvFilePath - corre primero 'Instalar base de datos' (opcion 1)."
     }
-
-    # Gate real (no solo "el comando termino sin error"): confirmar que la
-    # fila realmente quedo visible y vigente antes de dejar avanzar al
-    # siguiente paso (sembrar catalogos depende de esto).
-    $exists = (& $PsqlPath -w -p $Port -h 127.0.0.1 -U parkos_app -d parkos -tAc "SELECT 1 FROM prod.sucursal WHERE uuid = '$Uuid' AND vigente_hasta IS NULL;").Trim()
-    if ($exists -ne '1') {
-        throw 'La fila de sucursal no quedo visible tras el INSERT (verificacion post-insert fallo).'
-    }
+    $lines = @(Read-ParkosEnvLines -EnvFilePath $EnvFilePath) | Where-Object { $_ -notmatch '^PARKOS_SUCURSAL_UUID=' }
+    $lines += "PARKOS_SUCURSAL_UUID=$SucursalUuid"
+    Protect-ParkosEnvContent -EnvFilePath $EnvFilePath -Lines $lines
 }
 
 # ---------------------------------------------------------------------------
@@ -868,7 +1035,7 @@ function Invoke-CatalogSeed {
     $logDir = Join-Path $script:DataPath 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-    $envLines = Get-Content $EnvFilePath | Where-Object { $_ -match '=' }
+    $envLines = Read-ParkosEnvLines -EnvFilePath $EnvFilePath
     foreach ($line in $envLines) {
         $parts = $line -split '=', 2
         Set-Item -Path "Env:$($parts[0])" -Value $parts[1]
@@ -890,11 +1057,23 @@ function Invoke-CatalogSeed {
             throw 'api-sucursal.exe (temporal, para seed) no respondio /health a tiempo.'
         }
 
+        # Auditoria de seguridad (confianza 8/10, severidad Medium): $migrationDsn
+        # (embebe $Roles.SuperuserPassword en texto plano) viajaba antes como
+        # argumento --database-url, visible en el argv del proceso ante Event
+        # ID 4688/Sysmon/EDR. Mismo patron exacto que Invoke-MigrationsAndSeed
+        # ya usa para migrate.exe (variable de entorno DATABASE_URL + limpieza
+        # en finally) - entry_seed.py cae a leer DATABASE_URL del entorno
+        # cuando --database-url no se pasa por CLI.
         $migrationDsn = "postgresql://parkos:$($Roles.SuperuserPassword)@127.0.0.1:$Port/parkos"
-        & $seedExe --database-url $migrationDsn --api-base-url "http://127.0.0.1:$ApiPort" `
-            --jwt-key-path $JwtKeyPath --sucursal-uuid $SucursalUuid
-        if ($LASTEXITCODE -ne 0) {
-            throw "seed.exe fallo (exit $LASTEXITCODE)."
+        try {
+            $env:DATABASE_URL = $migrationDsn
+            & $seedExe --api-base-url "http://127.0.0.1:$ApiPort" `
+                --jwt-key-path $JwtKeyPath --sucursal-uuid $SucursalUuid
+            if ($LASTEXITCODE -ne 0) {
+                throw "seed.exe fallo (exit $LASTEXITCODE)."
+            }
+        } finally {
+            Remove-Item Env:\DATABASE_URL -ErrorAction SilentlyContinue
         }
     } finally {
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
@@ -928,7 +1107,7 @@ function Install-ApiService {
     & $NssmPath set ParkosApiSucursal Start SERVICE_AUTO_START | Out-Null
     & $NssmPath set ParkosApiSucursal AppRestartDelay 1000 | Out-Null
 
-    $envVars = (Get-Content $EnvFilePath | Where-Object { $_ -match '=' }) -join "`r`n"
+    $envVars = (Read-ParkosEnvLines -EnvFilePath $EnvFilePath) -join "`r`n"
     & $NssmPath set ParkosApiSucursal AppEnvironmentExtra $envVars | Out-Null
 
     Start-Service ParkosApiSucursal
@@ -957,7 +1136,7 @@ function Install-JobService {
     & $NssmPath set ParkosJobSyncSucursal Start SERVICE_AUTO_START | Out-Null
     & $NssmPath set ParkosJobSyncSucursal AppRestartDelay 1000 | Out-Null
 
-    $envVars = ((Get-Content $EnvFilePath | Where-Object { $_ -match '=' }) + @(
+    $envVars = ((Read-ParkosEnvLines -EnvFilePath $EnvFilePath) + @(
         'PARKOS_SYNC_POLL_INTERVAL_S=10', 'PARKOS_SYNC_BATCH_SIZE=100'
     )) -join "`r`n"
     & $NssmPath set ParkosJobSyncSucursal AppEnvironmentExtra $envVars | Out-Null
@@ -1010,6 +1189,31 @@ function Install-Electron {
     }
 }
 
+# DEC-INST-31 (PR4b): wrapper propio para desinstalar el MSI de web_sucursal
+# ANTES de reinstalar una version archivada durante -Command Restore - mismo
+# motivo que los wrappers de pg_dump/pg_restore/migrate.exe (comentario mas
+# abajo, seccion "Wrappers de binarios externos"): Pester no puede mockear
+# selectivamente un `Start-Process msiexec.exe` sin arrastrar cualquier otro
+# uso de Start-Process en el archivo, asi que esto vive en su propia funcion
+# nombrada. Mismo patron de registro que Install-Electron para encontrar la
+# instalacion actual (Uninstall registry key, no Get-Package/Win32_Product).
+# Si no hay ninguna instalacion actual (por ejemplo, la etapa 7 del menu
+# nunca corrio en esta maquina), no hay nada que desinstalar - continua sin
+# error, Install-Electron instala la version archivada igual.
+function Uninstall-ParkosElectron {
+    [CmdletBinding()]
+    param()
+
+    $installed = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -match 'Parkos' } | Select-Object -First 1
+    if (-not $installed) {
+        Write-Host 'No hay una version de web_sucursal instalada para desinstalar antes del restore; se procede directo a instalar la version archivada.' -ForegroundColor Yellow
+        return
+    }
+    $productCode = $installed.PSChildName
+    Start-Process msiexec.exe -ArgumentList "/x $productCode /qn" -Wait | Out-Null
+}
+
 # ---------------------------------------------------------------------------
 # Fase 24 - HU-F24.4: verificacion post-instalacion integral (el gate final)
 # ---------------------------------------------------------------------------
@@ -1018,7 +1222,7 @@ function Test-PostInstallation {
     param([string]$EnvFilePath, [int]$Port)
 
     $doctorExe = Join-Path $script:PayloadRoot 'services\doctor\doctor\doctor.exe'
-    $envLines = Get-Content $EnvFilePath | Where-Object { $_ -match '=' }
+    $envLines = Read-ParkosEnvLines -EnvFilePath $EnvFilePath
     foreach ($line in $envLines) {
         $parts = $line -split '=', 2
         Set-Item -Path "Env:$($parts[0])" -Value $parts[1]
@@ -1039,19 +1243,798 @@ function Test-PostInstallation {
     if ($LASTEXITCODE -eq 0) { $privilegeDenied = $false }
     $isAppUser = ($currentUser -eq 'parkos_app') -and $privilegeDenied
 
+    # Test-JwtSecretGate (Fase 27/HU-F27.3/DEC-INST-40) reemplaza la
+    # validacion inline previa (solo longitud >=32) - cubre lo mismo mas el
+    # chequeo de denylist; como throws en vez de devolver booleano, se
+    # envuelve en try/catch para seguir agregando a $results sin abortar
+    # antes de tiempo (el throw agregado de "algun check en $false" ya pasa
+    # unas lineas mas abajo).
     $jwtPath = ($envLines | Where-Object { $_ -match '^PARKOS_JWT_KEY_PATH=' }) -replace '^PARKOS_JWT_KEY_PATH=', ''
-    $jwtOk = (Test-Path $jwtPath) -and ((Get-Item $jwtPath).Length -ge 32)
+    $jwtOk = $true
+    try {
+        Test-JwtSecretGate -Path $jwtPath | Out-Null
+    } catch {
+        $jwtOk = $false
+    }
 
     $results = [ordered]@{
         'Diagnostico general (doctor)'       = $doctorOk
         'Runtime conecta como parkos_app'    = $isAppUser
         'parkos_app no puede CREATE ROLE'    = $privilegeDenied
-        'Secreto JWT real (>=32 bytes)'       = $jwtOk
+        'Secreto JWT pasa el gate (longitud + denylist)' = $jwtOk
     }
     $results.GetEnumerator() | Format-Table -AutoSize | Out-Host
     if ($results.Values -contains $false) {
         throw 'Verificacion post-instalacion fallo; ver detalle arriba. La instalacion NO se considera exitosa.'
     }
+}
+
+# ---------------------------------------------------------------------------
+# Fase 24 - DEC-INST-23: manifest de hashes SHA256 de binarios instalados
+# ---------------------------------------------------------------------------
+# Base de verdad que Repair-ParkosInstall (modulo Parkos, PR3) usa para
+# detectar binarios alterados (escenario E3) comparando Get-FileHash contra
+# este archivo en vez de confiar ciegamente en lo que haya en disco. Se
+# regenera COMPLETO en cada corrida de Install-ManagementModule (no es
+# acumulativo) - un binario esperado que todavia no exista (por ejemplo si
+# las etapas 5/6 del menu no corrieron en esta sesion) se omite del
+# manifest con un warning en vez de hacer fallar toda la verificacion; el
+# manifest documenta lo que SI esta instalado, no lo que deberia estarlo.
+function New-ParkosBinaryManifest {
+    param(
+        [Parameter(Mandatory)][string]$InstallPath,
+        [Parameter(Mandatory)][string]$DataPath
+    )
+
+    $expectedBinaries = [ordered]@{
+        'api-sucursal.exe'      = Join-Path $InstallPath 'api-sucursal\api-sucursal.exe'
+        'job-sync-sucursal.exe' = Join-Path $InstallPath 'job-sync-sucursal\job-sync-sucursal.exe'
+        'doctor.exe'            = Join-Path $InstallPath 'doctor\doctor.exe'
+    }
+
+    $hashes = [ordered]@{}
+    foreach ($name in $expectedBinaries.Keys) {
+        $path = $expectedBinaries[$name]
+        if (Test-Path $path) {
+            $hashes[$name] = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToUpperInvariant()
+        } else {
+            Write-Host "Manifest: $name no encontrado en $path - se omite del manifest (correr antes las etapas que lo instalan)." -ForegroundColor Yellow
+        }
+    }
+
+    $manifest = [ordered]@{
+        generated_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        binaries     = $hashes
+    }
+
+    New-Item -ItemType Directory -Force -Path $DataPath | Out-Null
+    $manifestPath = Join-Path $DataPath 'manifest.sha256.json'
+    $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath
+    Write-Host "Manifest de binarios generado en: $manifestPath" -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
+# Fase 24 - modulo de gestion Parkos (PR1 de 11 del plan de cierre de gaps)
+# ---------------------------------------------------------------------------
+# DEC-INST-21: el modulo de gestion post-instalacion (diagnostico, reparacion,
+# desinstalacion, backups, etc.) vive en un paquete PowerShell SEPARADO
+# (installer/payload/management/Parkos.psd1|psm1), versionado semanticamente
+# (carpeta C:\Program Files\PowerShell\Modules\Parkos\<version>\, el layout
+# estandar que $env:PSModulePath resuelve para PS7) en vez de vivir dentro de
+# parkos-installer.ps1. Un tecnico de campo puede importarlo de forma
+# independiente sin correr el TUI completo. Install-ManagementModule NUNCA
+# sobreescribe una version ya instalada con contenido distinto - ver el
+# comentario dentro de la funcion.
+function Install-ManagementModule {
+    param(
+        [string]$ManagementPayloadPath = (Join-Path $script:PayloadRoot 'management'),
+        [string]$InstallPath = 'C:\Program Files\Parkos'
+    )
+
+    $moduleVersion = '1.0.0'
+    $sourceFiles = 'Parkos.psd1', 'Parkos.psm1', 'about_Parkos.help.txt'
+    foreach ($file in $sourceFiles) {
+        $src = Join-Path $ManagementPayloadPath $file
+        if (-not (Test-Path $src)) {
+            throw "Falta $src en el payload - no se puede instalar el modulo de gestion Parkos."
+        }
+    }
+
+    $destDir = Join-Path "$env:ProgramFiles\PowerShell\Modules\Parkos" $moduleVersion
+    $destModulePath = Join-Path $destDir 'Parkos.psm1'
+
+    if (Test-Path $destDir) {
+        # No hay logica de versionado automatico todavia (eso queda para un
+        # PR futuro si aparece en la practica) - si la MISMA version exacta
+        # ya esta instalada, comparamos el contenido real (hash) en vez de
+        # asumir. Si son iguales, es un re-run idempotente: skip. Si son
+        # distintos, alguien instalo manualmente una version 1.0.0 divergente
+        # - eso es un conflicto que debe resolverse a mano, nunca sobreescrito
+        # en silencio.
+        if (Test-Path $destModulePath) {
+            $srcHash = (Get-FileHash (Join-Path $ManagementPayloadPath 'Parkos.psm1') -Algorithm SHA256).Hash
+            $destHash = (Get-FileHash $destModulePath -Algorithm SHA256).Hash
+            if ($srcHash -eq $destHash) {
+                Write-Host "Modulo de gestion Parkos $moduleVersion ya esta instalado (contenido identico); no se reinstala." -ForegroundColor Yellow
+                return
+            }
+            throw "Ya existe una version $moduleVersion del modulo Parkos en $destDir con contenido DISTINTO al del payload actual. Esto no se resuelve automaticamente (sin versionado automatico en PR1) - revisa manualmente cual version debe prevalecer antes de continuar."
+        }
+    }
+
+    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    foreach ($file in $sourceFiles) {
+        Copy-Item (Join-Path $ManagementPayloadPath $file) (Join-Path $destDir $file) -Force
+    }
+
+    Write-Host "Modulo de gestion Parkos instalado en: $destDir" -ForegroundColor Green
+
+    # doctor.exe (onedir de PyInstaller) HOY solo vive en el payload del
+    # instalador - Copy-ServiceBundle (Fase 24) nunca lo copia a la maquina
+    # final (solo copia api-sucursal y job-sync-sucursal). El modulo de
+    # gestion Parkos (Get-ParkosHealth) lo necesita en runtime para su check
+    # de diagnostico, asi que se copia aca, con el mismo patron de
+    # Copy-ServiceBundle: el onedir COMPLETO, no solo el .exe suelto.
+    $doctorSrc = Join-Path $script:PayloadRoot 'services\doctor\doctor'
+    if (-not (Test-Path $doctorSrc)) {
+        throw "Falta $doctorSrc en el payload - no se puede instalar doctor.exe para el modulo de gestion Parkos."
+    }
+    $doctorDest = Join-Path $InstallPath 'doctor'
+    New-Item -ItemType Directory -Force -Path $doctorDest | Out-Null
+    Copy-Item "$doctorSrc\*" $doctorDest -Recurse -Force
+
+    Write-Host "doctor.exe instalado en: $doctorDest" -ForegroundColor Green
+
+    # nssm.exe: igual que doctor.exe arriba, el modulo de gestion Parkos
+    # (Repair-ParkosInstall, PR3) corre standalone en una sucursal ya
+    # instalada, sin el resto del payload del instalador disponible - E1
+    # (re-registrar un servicio NSSM faltante) necesita su propia copia de
+    # nssm.exe en vez de asumir que el payload completo sigue presente.
+    $nssmSrc = Join-Path $script:PayloadRoot 'nssm.exe'
+    if (-not (Test-Path $nssmSrc)) {
+        throw "Falta $nssmSrc en el payload - no se puede instalar nssm.exe para el modulo de gestion Parkos."
+    }
+    Copy-Item $nssmSrc (Join-Path $InstallPath 'nssm.exe') -Force
+    Write-Host "nssm.exe instalado en: $(Join-Path $InstallPath 'nssm.exe')" -ForegroundColor Green
+
+    # DEC-INST-23: manifest de hashes de los binarios recien instalados -
+    # ver New-ParkosBinaryManifest arriba.
+    New-ParkosBinaryManifest -InstallPath $InstallPath -DataPath $script:DataPath
+}
+
+# ---------------------------------------------------------------------------
+# Fase 25/26 - HU-F25/26: actualizacion (-Command Update)
+# ---------------------------------------------------------------------------
+# PR4a (de 11 del plan de cierre de gaps): reemplaza binarios ya instalados
+# por un payload NUEVO (compilado en otra maquina por build-release.ps1, con
+# el manifest DEC-INST-26), con backup obligatorio (pg_dump) y rollback
+# automatico ante cualquier falla posterior al reemplazo. PR4b (un PR
+# posterior, NO este) implementara -Command Restore reusando esta misma
+# infraestructura (Start-ParkosServicesInOrder, manifest de payload, etc.).
+
+# Duplica la logica de deteccion de puerto de Parkos.psm1's
+# script:Get-ParkosPostgresPort - esa funcion es privada del modulo
+# (script:) y no se puede importar/reusar entre archivos; consecuencia
+# mecanica del split de modulo separado de DEC-INST-21, no una decision
+# nueva.
+function Get-EnvFilePostgresPort {
+    param([Parameter(Mandatory)][string]$EnvFilePath)
+
+    if (-not (Test-Path $EnvFilePath)) {
+        throw "No se encontro el archivo .env en $EnvFilePath - corre primero una instalacion (Invoke-ParkosInstall) antes de actualizar."
+    }
+    $envMap = [ordered]@{}
+    foreach ($line in (Read-ParkosEnvLines -EnvFilePath $EnvFilePath)) {
+        $parts = $line -split '=', 2
+        $envMap[$parts[0]] = $parts[1]
+    }
+    foreach ($key in 'PARKOS_DB_URL', 'DATABASE_URL') {
+        if ($envMap.Contains($key) -and $envMap[$key] -match '@[^:/]+:(\d+)/') {
+            return [int]$Matches[1]
+        }
+    }
+    throw 'No se pudo determinar el puerto de Postgres desde PARKOS_DB_URL ni DATABASE_URL en el .env.'
+}
+
+# DEC-INST-25: migrate.exe necesita la contrasena del superusuario 'parkos'
+# para su DATABASE_URL, pero Invoke-ParkosUpdate corre en una sesion nueva
+# sin $script:roles en memoria (eso solo existe durante una corrida en vivo
+# de Invoke-ParkosInstall). Initialize-DatabaseRoles ya escribe la entrada
+# del superusuario 'parkos' en pgpass.conf via Set-PgPassFile al instalar -
+# esta funcion la recupera parseando ese mismo formato
+# (host:port:database:user:password). Lanza excepcion si no la encuentra -
+# nunca continua en silencio con una credencial faltante. La contrasena
+# jamas se imprime con Write-Host.
+function Get-PgPassPassword {
+    param(
+        [Parameter(Mandatory)][string]$DataPath,
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][int]$Port
+    )
+
+    $pgpassPath = Join-Path $DataPath 'secrets\pgpass.conf'
+    if (-not (Test-Path $pgpassPath)) {
+        throw "No se encontro pgpass.conf en $pgpassPath - no se puede recuperar la credencial de '$User'."
+    }
+    foreach ($line in (Get-Content -Path $pgpassPath)) {
+        $parts = $line -split ':', 5
+        if ($parts.Count -ne 5) { continue }
+        if ([int]$parts[1] -eq $Port -and $parts[3] -eq $User) {
+            return $parts[4]
+        }
+    }
+    throw "No se encontro una credencial para el usuario '$User' en el puerto $Port dentro de pgpass.conf."
+}
+
+# ---------------------------------------------------------------------------
+# Wrappers de binarios externos (pg_dump/pg_restore/migrate.exe) - Pester no
+# puede interceptar una llamada `&` a una ruta literal, pero SI puede
+# mockear una funcion nombrada (mismo motivo por el que Parkos.psm1 ya usa
+# script:Invoke-ParkosNssm). Necesario para que installer/tests pueda
+# mockear cada limite externo sin invocar binarios reales.
+# ---------------------------------------------------------------------------
+
+function Invoke-ParkosPgDump {
+    param([Parameter(Mandatory)][string]$DumpPath, [Parameter(Mandatory)][int]$Port)
+
+    $pgDumpExe = 'C:\Program Files\PostgreSQL\16\bin\pg_dump.exe'
+    & $pgDumpExe -Fc -U parkos_app -h 127.0.0.1 -p $Port -d parkos -f $DumpPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "pg_dump.exe fallo (exit $LASTEXITCODE) generando el backup en $DumpPath."
+    }
+}
+
+# Verifica que el dump generado no este vacio/corrupto: pg_restore --list
+# debe listar al menos 1 objeto real. Cualquier linea que no empiece con ';'
+# (comentario del listado) cuenta como objeto.
+function Test-ParkosDumpHasObjects {
+    param([Parameter(Mandatory)][string]$DumpPath)
+
+    $pgRestoreExe = 'C:\Program Files\PostgreSQL\16\bin\pg_restore.exe'
+    $listing = & $pgRestoreExe --list $DumpPath 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+    $objectLines = $listing | Where-Object { $_ -and ($_ -notmatch '^;') }
+    return (@($objectLines).Count -ge 1)
+}
+
+function Invoke-ParkosPgRestoreClean {
+    param([Parameter(Mandatory)][string]$DumpPath, [Parameter(Mandatory)][int]$Port)
+
+    $pgRestoreExe = 'C:\Program Files\PostgreSQL\16\bin\pg_restore.exe'
+    & $pgRestoreExe --clean --if-exists -U parkos -h 127.0.0.1 -p $Port -d parkos $DumpPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "pg_restore --clean --if-exists fallo (exit $LASTEXITCODE) restaurando $DumpPath durante el rollback."
+    }
+}
+
+# Corre migrate.exe ya parado en su propio directorio (alembic.ini es
+# CWD-relative, ver Invoke-MigrationsAndSeed) con DATABASE_URL ya seteado
+# por el llamador; devuelve el exit code en vez de lanzar, para que
+# Invoke-ParkosUpdate decida el rollback tier-2 en su propio catch.
+function Invoke-ParkosMigrateExe {
+    param([Parameter(Mandatory)][string]$MigrateExePath)
+
+    & $MigrateExePath -c alembic.ini upgrade head
+    return $LASTEXITCODE
+}
+
+# DEC-INST-29 (PR4b): extraida del paso STOP de Invoke-ParkosUpdate (que
+# antes tenia este mismo Stop-Service x2 inline) para que Invoke-ParkosRestore
+# (PR4b) reuse la MISMA funcion en vez de duplicar el stop-en-orden-inverso -
+# mismo motivo que Start-ParkosServicesInOrder ya existia como funcion propia
+# en vez de vivir inline en cada llamador. Orden inverso al de arranque (job
+# de sync primero, luego api) - -ErrorAction SilentlyContinue porque un
+# servicio que ya esta detenido (o que nunca llego a registrarse) no debe
+# abortar ni STOP ni Restore.
+function Stop-ParkosServicesInOrder {
+    Stop-Service ParkosJobSyncSucursal -ErrorAction SilentlyContinue
+    Stop-Service ParkosApiSucursal -ErrorAction SilentlyContinue
+}
+
+# Rollback architecture compartida (evita triplicar esta logica entre
+# MIGRATE/RESTART/SMOKE TEST): arranca los 2 servicios en el mismo orden que
+# el resto del instalador (api primero, luego job de sync), con los mismos
+# helpers Wait-ForApiHealth/Wait-ForSyncPollCycle que ya existen (30s de
+# timeout cada uno). Usada 3 veces: RESTART normal, recuperacion tier-1 de
+# VERIFY BINARIES, y al final del rollback completo tier-2.
+function Start-ParkosServicesInOrder {
+    param(
+        [Parameter(Mandatory)][int]$ApiPort,
+        [Parameter(Mandatory)][string]$SyncLogPath
+    )
+
+    Start-Service ParkosApiSucursal
+    if (-not (Wait-ForApiHealth -Url "http://127.0.0.1:$ApiPort/health" -TimeoutSeconds 30)) {
+        throw 'ParkosApiSucursal no respondio /health a tiempo tras el reinicio.'
+    }
+    Start-Service ParkosJobSyncSucursal
+    if (-not (Wait-ForSyncPollCycle -LogPath $SyncLogPath -TimeoutSeconds 30)) {
+        throw 'ParkosJobSyncSucursal no mostro un ciclo de sondeo en el log tras el reinicio.'
+    }
+}
+
+# Rollback tier-2 (ver el comentario extenso dentro de Invoke-ParkosUpdate
+# sobre por que existen dos tiers distintos): REPLACE ya corrio (binarios
+# movidos y, segun donde haya fallado, tambien la migracion) - esta funcion
+# revierte AMBOS: restaura el dump de backup con pg_restore --clean, mueve
+# los binarios viejos desde releases\<version>\ de vuelta a su lugar, y
+# reinicia los servicios. NUNCA la llama el paso VERIFY BINARIES (tier-1) -
+# ahi nada toco la DB ni los binarios todavia.
+function Invoke-ParkosUpdateFullRollback {
+    param(
+        [Parameter(Mandatory)][string]$DumpPath,
+        [Parameter(Mandatory)][string]$OutgoingVersion,
+        [Parameter(Mandatory)][string]$InstallPath,
+        [Parameter(Mandatory)][string]$DataPath,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][int]$ApiPort,
+        [Parameter(Mandatory)][string]$SyncLogPath
+    )
+
+    Write-Host '  Revirtiendo actualizacion (rollback completo)...' -ForegroundColor Yellow
+
+    Invoke-ParkosPgRestoreClean -DumpPath $DumpPath -Port $Port
+
+    $releaseDir = Join-Path $InstallPath "releases\$OutgoingVersion"
+    foreach ($name in 'api-sucursal', 'job-sync-sucursal') {
+        $releaseBundle = Join-Path $releaseDir $name
+        if (Test-Path $releaseBundle) {
+            $dest = Join-Path $InstallPath $name
+            Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+            Move-Item $releaseBundle $dest -Force
+        } else {
+            Write-Host "  Advertencia: no se encontro $releaseBundle - no se pudo revertir $name (revisar manualmente)." -ForegroundColor Yellow
+        }
+    }
+
+    New-ParkosBinaryManifest -InstallPath $InstallPath -DataPath $DataPath
+    Start-ParkosServicesInOrder -ApiPort $ApiPort -SyncLogPath $SyncLogPath
+
+    Write-Host '  Rollback completado; version anterior restaurada.' -ForegroundColor Green
+}
+
+function Invoke-ParkosUpdate {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
+    $stepNames = @(
+        'PRE-CHECK', 'BACKUP', 'STOP', 'VERIFY BINARIES', 'REPLACE',
+        'MIGRATE', 'RESTART', 'SMOKE TEST', 'SUCCESS'
+    )
+    if ($WhatIfPreference) {
+        Write-Host '=== Parkos - actualizacion (-WhatIf, ningun cambio real) ===' -ForegroundColor Cyan
+        foreach ($step in $stepNames) {
+            Write-Host "  [WHATIF] $step" -ForegroundColor Yellow
+        }
+        return [PSCustomObject]@{ ExitCode = 0; Detail = 'WhatIf: ningun paso se ejecuto realmente.' }
+    }
+
+    $envFilePath = Join-Path $DataPath 'secrets\.env'
+    $releasesPath = Join-Path $InstallPath 'releases'
+    $syncLogPath = Join-Path $DataPath 'logs\job-sync.out.log'
+    $currentVersionFile = Join-Path $DataPath 'current-version.txt'
+
+    $port = Get-EnvFilePostgresPort -EnvFilePath $envFilePath
+    $envLines = Read-ParkosEnvLines -EnvFilePath $envFilePath
+    $apiPort = 8000
+    $apiPortLine = $envLines | Where-Object { $_ -match '^PORT=' } | Select-Object -First 1
+    if ($apiPortLine) {
+        $apiPort = [int]($apiPortLine -replace '^PORT=', '')
+    }
+
+    if ($RollbackOnly) {
+        Write-Host '=== Parkos - rollback a la release anterior (-RollbackOnly) ===' -ForegroundColor Cyan
+        if (-not (Test-Path $releasesPath)) {
+            throw "No hay releases previas en $releasesPath - no hay nada a lo cual revertir."
+        }
+        $releaseDirs = Get-ChildItem -Path $releasesPath -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+        if (-not $releaseDirs -or @($releaseDirs).Count -eq 0) {
+            throw "No hay releases previas en $releasesPath - no hay nada a lo cual revertir."
+        }
+        $mostRecent = @($releaseDirs)[0]
+        foreach ($name in 'api-sucursal', 'job-sync-sucursal') {
+            $releaseBundle = Join-Path $mostRecent.FullName $name
+            if (Test-Path $releaseBundle) {
+                $dest = Join-Path $InstallPath $name
+                Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+                Move-Item $releaseBundle $dest -Force
+            }
+        }
+        New-ParkosBinaryManifest -InstallPath $InstallPath -DataPath $DataPath
+        Start-ParkosServicesInOrder -ApiPort $apiPort -SyncLogPath $syncLogPath
+        Write-Host "Rollback a $($mostRecent.Name) completado." -ForegroundColor Green
+        return [PSCustomObject]@{ ExitCode = 0; Detail = "Rollback a $($mostRecent.Name) completado." }
+    }
+
+    # -------------------------------------------------------------------
+    # PRE-CHECK
+    # -------------------------------------------------------------------
+    Write-Host '=== Parkos - actualizacion ===' -ForegroundColor Cyan
+    if ([string]::IsNullOrWhiteSpace($PayloadPath) -or -not (Test-Path $PayloadPath)) {
+        throw "-PayloadPath vacio o inexistente ('$PayloadPath') - se requiere la carpeta con el payload nuevo (misma forma que installer\payload\)."
+    }
+
+    if (-not $Force) {
+        Import-Module "$env:ProgramFiles\PowerShell\Modules\Parkos\1.0.0\Parkos.psd1" -Force -ErrorAction SilentlyContinue
+        if (Get-Command Get-ParkosHealth -ErrorAction SilentlyContinue) {
+            $health = Get-ParkosHealth
+            if ($health.ExitCode -eq 2) {
+                throw 'Get-ParkosHealth reporto ExitCode 2 (critico) - corre Repair-ParkosInstall antes de actualizar, o usa -Force para omitir este pre-check (el backup y la verificacion de integridad del payload NUNCA se omiten).'
+            }
+        } else {
+            Write-Host 'Advertencia: el modulo de gestion Parkos no esta instalado (instalacion previa a PR1); no se puede correr el pre-check de salud. Continuando.' -ForegroundColor Yellow
+        }
+    }
+
+    # Ausencia de releases previas es NORMAL en la primera actualizacion de
+    # esta instalacion (DEC-INST-24) - nunca se aborta por esto.
+    if (-not (Test-Path $releasesPath)) {
+        Write-Host "Advertencia: no hay releases previas en $releasesPath (primera actualizacion de esta instalacion)." -ForegroundColor Yellow
+    }
+
+    # DEC-INST-24: version saliente (para nombrar releases\<version>\ y
+    # correlacionar con el dump de backup) y version nueva (timestamp de
+    # esta corrida, escrito en current-version.txt recien al final, en
+    # SUCCESS - una falla a mitad de camino debe seguir apuntando a la
+    # version vieja).
+    $newVersion = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    if (Test-Path $currentVersionFile) {
+        $outgoingVersion = (Get-Content $currentVersionFile -Raw).Trim()
+    } else {
+        $outgoingVersion = "unknown-$newVersion"
+        Write-Host "Advertencia: no existe $currentVersionFile (primera actualizacion) - el seguimiento de versiones empieza ahora; la carpeta de release saliente se llama '$outgoingVersion' (no es un identificador de release real)." -ForegroundColor Yellow
+    }
+
+    # -------------------------------------------------------------------
+    # BACKUP (siempre corre, incluso con -Force - nunca se omite)
+    # -------------------------------------------------------------------
+    $backupsDir = Join-Path $DataPath 'backups'
+    New-Item -ItemType Directory -Force -Path $backupsDir | Out-Null
+    $dumpPath = Join-Path $backupsDir "pre-update-$outgoingVersion-$newVersion.dump"
+
+    Invoke-TuiStep -Name 'BACKUP: pg_dump de la base de datos' -Action {
+        Invoke-ParkosPgDump -DumpPath $dumpPath -Port $port
+    }
+    if (-not (Test-ParkosDumpHasObjects -DumpPath $dumpPath)) {
+        throw "El backup en $dumpPath quedo vacio o invalido (pg_restore --list no reporto objetos) - actualizacion abortada ANTES de detener servicios; nada mas se ejecuto."
+    }
+
+    # -------------------------------------------------------------------
+    # STOP (orden inverso al de arranque)
+    # -------------------------------------------------------------------
+    Invoke-TuiStep -Name 'STOP: detener servicios' -Action {
+        Stop-ParkosServicesInOrder
+    }
+
+    # -------------------------------------------------------------------
+    # VERIFY BINARIES - tier-1: si esto falla, REPLACE todavia NO corrio
+    # (nada en disco ni en la DB cambio) - la unica recuperacion necesaria
+    # es reiniciar los servicios que STOP acaba de detener. Llamar aca al
+    # rollback completo (tier-2, pg_restore --clean incluido) seria
+    # incorrecto/inutil: no hay nada que revertir en la DB todavia.
+    # -------------------------------------------------------------------
+    try {
+        $manifestPath = Join-Path $PayloadPath 'manifest.sha256.json'
+        if (-not (Test-Path $manifestPath)) {
+            throw "Falta el manifest de integridad del payload en $manifestPath - no se puede verificar el payload nuevo."
+        }
+        # DEC-INST-26: las claves del manifest son rutas relativas bajo la
+        # raiz del payload, no nombres de archivo sueltos.
+        $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        foreach ($relativePath in $manifest.binaries.PSObject.Properties.Name) {
+            $expectedHash = $manifest.binaries.$relativePath
+            $fullPath = Join-Path $PayloadPath $relativePath
+            if (-not (Test-Path $fullPath)) {
+                throw "El payload nuevo no tiene el archivo esperado por el manifest: $relativePath."
+            }
+            $actualHash = (Get-FileHash -Path $fullPath -Algorithm SHA256).Hash
+            if ($actualHash.ToUpperInvariant() -ne "$expectedHash".ToUpperInvariant()) {
+                throw "Hash SHA256 no coincide para $relativePath - el payload puede estar corrupto o alterado."
+            }
+        }
+        Write-Host '  [ OK ] VERIFY BINARIES: manifest de integridad del payload' -ForegroundColor Green
+    } catch {
+        Write-Host '  [FAIL] VERIFY BINARIES: manifest de integridad del payload' -ForegroundColor Red
+        Write-Host "         $($_.Exception.Message)" -ForegroundColor Red
+        Start-ParkosServicesInOrder -ApiPort $apiPort -SyncLogPath $syncLogPath
+        throw
+    }
+
+    # -------------------------------------------------------------------
+    # REPLACE
+    # -------------------------------------------------------------------
+    Invoke-TuiStep -Name 'REPLACE: mover binarios actuales a releases y copiar el payload nuevo' -Action {
+        $outgoingDir = Join-Path $releasesPath $outgoingVersion
+        New-Item -ItemType Directory -Force -Path $outgoingDir | Out-Null
+        foreach ($name in 'api-sucursal', 'job-sync-sucursal') {
+            $currentDir = Join-Path $InstallPath $name
+            if (Test-Path $currentDir) {
+                Move-Item $currentDir (Join-Path $outgoingDir $name) -Force
+            }
+            $newSrc = Join-Path $PayloadPath "services\$name\$name"
+            $newDest = Join-Path $InstallPath $name
+            New-Item -ItemType Directory -Force -Path $newDest | Out-Null
+            Copy-Item "$newSrc\*" $newDest -Recurse -Force
+        }
+
+        # Rotacion: conservar solo las 2 releases mas recientes bajo
+        # releases\ (orden lexicografico = cronologico, formato
+        # yyyyMMdd-HHmmss).
+        $allReleases = Get-ChildItem -Path $releasesPath -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+        if (@($allReleases).Count -gt 2) {
+            foreach ($old in (@($allReleases) | Select-Object -Skip 2)) {
+                Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # Reusa la funcion ya existente (Fase 24/DEC-INST-23) para que
+        # $DataPath\manifest.sha256.json (consumido por Repair-ParkosInstall)
+        # refleje los binarios recien reemplazados.
+        New-ParkosBinaryManifest -InstallPath $InstallPath -DataPath $DataPath
+
+        # DEC-INST-28 (PR4b, gap retroactivo): archiva tambien el MSI NUEVO
+        # (el que se esta instalando en ESTA actualizacion) bajo
+        # releases\<newVersion>\apps\<nombre-original> - notar que es
+        # $newVersion (la version que empieza ahora), no $outgoingVersion (la
+        # que se esta reemplazando arriba): esto habilita que un futuro
+        # -Command Restore -Version <newVersion> pueda reinstalar el MSI de
+        # ESTA version. Es solo una copia de archivo - no dispara ninguna
+        # (des)instalacion real, Install-Electron sigue siendo el unico lugar
+        # que instala el MSI de verdad (etapa 7 del menu). Versiones
+        # archivadas ANTES de este cambio nunca van a tener este MSI
+        # disponible - Invoke-ParkosRestore maneja ese caso con un warning,
+        # nunca asumiendo que siempre esta (ver DEC-INST-31).
+        $newMsi = Get-ChildItem (Join-Path $PayloadPath 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($newMsi) {
+            $msiArchiveDir = Join-Path $releasesPath "$newVersion\apps"
+            New-Item -ItemType Directory -Force -Path $msiArchiveDir | Out-Null
+            Copy-Item $newMsi.FullName (Join-Path $msiArchiveDir $newMsi.Name) -Force
+        } else {
+            Write-Host "Advertencia: no se encontro un MSI en $PayloadPath\apps - no se archivo ningun instalador de escritorio para la version $newVersion (un futuro Restore a esta version no podra revertir la app de escritorio)." -ForegroundColor Yellow
+        }
+    }
+
+    # -------------------------------------------------------------------
+    # MIGRATE - tier-2: REPLACE ya corrio, cualquier falla desde aca en
+    # adelante requiere el rollback completo (Invoke-ParkosUpdateFullRollback).
+    # -------------------------------------------------------------------
+    try {
+        Invoke-TuiStep -Name 'MIGRATE: alembic upgrade head con el migrate.exe del payload nuevo' -Action {
+            $migrateDir = Join-Path $PayloadPath 'services\migrate\migrate'
+            $migrateExe = Join-Path $migrateDir 'migrate.exe'
+            # DEC-INST-25: recupera la contrasena del superusuario 'parkos'
+            # desde pgpass.conf - no hay $script:roles en esta sesion nueva.
+            $superuserPassword = Get-PgPassPassword -DataPath $DataPath -User 'parkos' -Port $port
+            Push-Location $migrateDir
+            try {
+                $env:DATABASE_URL = "postgresql://parkos:$superuserPassword@127.0.0.1:$port/parkos"
+                $exitCode = Invoke-ParkosMigrateExe -MigrateExePath $migrateExe
+                if ($exitCode -ne 0) {
+                    throw "alembic upgrade head fallo (exit $exitCode) durante la actualizacion."
+                }
+            } finally {
+                Remove-Item Env:\DATABASE_URL -ErrorAction SilentlyContinue
+                Pop-Location
+            }
+        }
+    } catch {
+        $failureMessage = $_.Exception.Message
+        Invoke-ParkosUpdateFullRollback -DumpPath $dumpPath -OutgoingVersion $outgoingVersion `
+            -InstallPath $InstallPath -DataPath $DataPath -Port $port -ApiPort $apiPort -SyncLogPath $syncLogPath
+        return [PSCustomObject]@{ ExitCode = 1; Detail = "MIGRATE fallo y se reviritio la actualizacion: $failureMessage" }
+    }
+
+    # -------------------------------------------------------------------
+    # RESTART - tier-2
+    # -------------------------------------------------------------------
+    try {
+        Invoke-TuiStep -Name 'RESTART: reiniciar servicios' -Action {
+            Start-ParkosServicesInOrder -ApiPort $apiPort -SyncLogPath $syncLogPath
+        }
+    } catch {
+        $failureMessage = $_.Exception.Message
+        Invoke-ParkosUpdateFullRollback -DumpPath $dumpPath -OutgoingVersion $outgoingVersion `
+            -InstallPath $InstallPath -DataPath $DataPath -Port $port -ApiPort $apiPort -SyncLogPath $syncLogPath
+        return [PSCustomObject]@{ ExitCode = 1; Detail = "RESTART fallo y se revirtio la actualizacion: $failureMessage" }
+    }
+
+    # -------------------------------------------------------------------
+    # SMOKE TEST - tier-2. DEC-INST-27: no existe ningun usuario
+    # smoke-test@parkos.local sembrado en installer/bootstrap/entry_seed.py
+    # (solo installer-seed@parkos.local, rol admin) - el smoke test real
+    # aca es /health (re-chequeado, ya cubierto implicitamente por RESTART)
+    # mas GET /api/v1/sync/hello, publico por diseno (sin Depends de auth).
+    # Un smoke test con login autenticado real queda pendiente de un
+    # usuario de solo lectura dedicado que todavia no existe.
+    # -------------------------------------------------------------------
+    try {
+        Invoke-TuiStep -Name 'SMOKE TEST: /health + GET /api/v1/sync/hello' -Action {
+            $healthResp = Invoke-WebRequest -Uri "http://127.0.0.1:$apiPort/health" -UseBasicParsing -TimeoutSec 5
+            if ($healthResp.StatusCode -ne 200) {
+                throw "/health respondio $($healthResp.StatusCode), se esperaba 200."
+            }
+            $helloResp = Invoke-WebRequest -Uri "http://127.0.0.1:$apiPort/api/v1/sync/hello" -UseBasicParsing -TimeoutSec 5
+            if ($helloResp.StatusCode -ne 200) {
+                throw "/api/v1/sync/hello respondio $($helloResp.StatusCode), se esperaba 200."
+            }
+        }
+    } catch {
+        $failureMessage = $_.Exception.Message
+        Invoke-ParkosUpdateFullRollback -DumpPath $dumpPath -OutgoingVersion $outgoingVersion `
+            -InstallPath $InstallPath -DataPath $DataPath -Port $port -ApiPort $apiPort -SyncLogPath $syncLogPath
+        return [PSCustomObject]@{ ExitCode = 1; Detail = "SMOKE TEST fallo y se revirtio la actualizacion: $failureMessage" }
+    }
+
+    # -------------------------------------------------------------------
+    # SUCCESS
+    # -------------------------------------------------------------------
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists('ParkosInstaller')) {
+            New-EventLog -LogName Application -Source 'ParkosInstaller'
+        }
+        Write-EventLog -LogName Application -Source 'ParkosInstaller' -EventId 9001 -EntryType Information `
+            -Message "Actualizacion de Parkos completada: $outgoingVersion -> $newVersion."
+    } catch {
+        Write-Host "Advertencia: no se pudo escribir en el Event Log ($($_.Exception.Message)); esto es solo informativo y no afecta el resultado de la actualizacion." -ForegroundColor Yellow
+    }
+
+    # DEC-INST-24: recien aca se sobreescribe current-version.txt - una
+    # falla en cualquier paso anterior debe seguir apuntando a $outgoingVersion.
+    Set-Content -Path $currentVersionFile -Value $newVersion -NoNewline
+
+    Write-Host ''
+    Write-Host "Actualizacion completada: $outgoingVersion -> $newVersion" -ForegroundColor Green
+    Write-Host "Backup pre-actualizacion: $dumpPath" -ForegroundColor Green
+
+    return [PSCustomObject]@{ ExitCode = 0; Detail = "Actualizacion completada: $outgoingVersion -> $newVersion." }
+}
+
+# ---------------------------------------------------------------------------
+# Fase 26 - HU-F26.x: restauracion a una version anterior (-Command Restore)
+# ---------------------------------------------------------------------------
+# PR4b (ultimo de 11 del plan de cierre de gaps): reemplaza el placeholder
+# `throw` de -Command Restore. Reusa la MISMA infraestructura que
+# Invoke-ParkosUpdate ya escribe: releases\<version>\ bajo $InstallPath (NO
+# bajo $DataPath - DEC-INST-30 corrige esto: $releasesPath ya vive bajo
+# $InstallPath desde PR4a, ver la linea equivalente de Invoke-ParkosUpdate;
+# usar $DataPath habria sido inconsistente con lo que REPLACE realmente
+# escribe), Stop-/Start-ParkosServicesInOrder, New-ParkosBinaryManifest,
+# current-version.txt, y los wrappers de pg_dump/pg_restore. Los binarios
+# (api-sucursal/job-sync-sucursal) SIEMPRE se revierten; la base de datos
+# (-RestoreDatabase) y el MSI de web_sucursal son opcionales/best-effort -
+# ver DEC-INST-30/31 en plan.md para el detalle de cada criterio.
+function Invoke-ParkosRestore {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        throw '-Version es obligatorio para -Command Restore (ejemplo: -Version 20250101-000000).'
+    }
+
+    $releasesPath = Join-Path $InstallPath 'releases'
+    $releaseDir = Join-Path $releasesPath $Version
+    if (-not (Test-Path $releaseDir)) {
+        $available = Get-ChildItem -Path $releasesPath -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+        $availableText = if ($available) { $available -join ', ' } else { '(ninguna)' }
+        throw "No existe la version '$Version' en $releasesPath. Versiones disponibles: $availableText."
+    }
+
+    # Confirmacion de doble paso (mismo patron que -PurgeData de
+    # Uninstall-Parkos, plan.md BR2): palabra exacta 'RESTAURAR' en modo
+    # interactivo, o el flag explicito -UnattendedRestoreConfirmed en modo
+    # -Unattended - revertir binarios/DB es una operacion destructiva, nunca
+    # silenciosa por defecto.
+    if ($Unattended) {
+        if (-not $UnattendedRestoreConfirmed) {
+            throw '-UnattendedRestoreConfirmed es obligatorio junto con -Unattended para -Command Restore (evita que un flag copiado por error dispare un restore desatendido).'
+        }
+    } else {
+        $answer = Read-Host "Esto va a restaurar Parkos a la version '$Version'. Escriba RESTAURAR para continuar (cualquier otra respuesta cancela sin tocar nada)"
+        if ($answer -ne 'RESTAURAR') {
+            Write-Host 'Restore cancelado por el operador. Nada fue modificado.' -ForegroundColor Yellow
+            return [PSCustomObject]@{ ExitCode = 0; Detail = 'Restore cancelado por el operador antes de cualquier cambio.' }
+        }
+    }
+
+    if ($WhatIfPreference) {
+        Write-Host "=== Parkos - restore a $Version (-WhatIf, ningun cambio real) ===" -ForegroundColor Cyan
+        return [PSCustomObject]@{ ExitCode = 0; Detail = 'WhatIf: ningun paso se ejecuto realmente.' }
+    }
+
+    Write-Host "=== Parkos - restore a version $Version ===" -ForegroundColor Cyan
+
+    $envFilePath = Join-Path $DataPath 'secrets\.env'
+    $port = Get-EnvFilePostgresPort -EnvFilePath $envFilePath
+    $envLines = Read-ParkosEnvLines -EnvFilePath $envFilePath
+    $apiPort = 8000
+    $apiPortLine = $envLines | Where-Object { $_ -match '^PORT=' } | Select-Object -First 1
+    if ($apiPortLine) { $apiPort = [int]($apiPortLine -replace '^PORT=', '') }
+    $syncLogPath = Join-Path $DataPath 'logs\job-sync.out.log'
+    $currentVersionFile = Join-Path $DataPath 'current-version.txt'
+    $backupsDir = Join-Path $DataPath 'backups'
+
+    # DEC-INST-30: flag puramente informacional en este PR - ningun otro
+    # componente lo lee todavia. Un futuro mecanismo de auto-update deberia
+    # respetarlo (no reintentar una actualizacion automatica sobre una
+    # instalacion recien revertida a mano).
+    $pauseFlagPath = Join-Path $DataPath 'auto-update-paused.flag'
+    $pauseTimestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    Set-Content -Path $pauseFlagPath -Value "$pauseTimestamp restored-to=$Version" -NoNewline
+
+    try {
+        Invoke-TuiStep -Name 'STOP: detener servicios' -Action {
+            Stop-ParkosServicesInOrder
+        }
+
+        New-Item -ItemType Directory -Force -Path $backupsDir | Out-Null
+        $preRestoreTimestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $preRestoreDumpPath = Join-Path $backupsDir "pre-restore-$Version-$preRestoreTimestamp.dump"
+        Invoke-TuiStep -Name 'BACKUP: pg_dump previo al restore' -Action {
+            Invoke-ParkosPgDump -DumpPath $preRestoreDumpPath -Port $port
+        }
+
+        Invoke-TuiStep -Name 'REPLACE BINARIES: restaurar binarios desde releases' -Action {
+            foreach ($name in 'api-sucursal', 'job-sync-sucursal') {
+                $releaseBundle = Join-Path $releaseDir $name
+                if (-not (Test-Path $releaseBundle)) {
+                    throw "Falta $releaseBundle - la version '$Version' archivada no tiene este binario disponible."
+                }
+                $dest = Join-Path $InstallPath $name
+                Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+                New-Item -ItemType Directory -Force -Path $dest | Out-Null
+                Copy-Item "$releaseBundle\*" $dest -Recurse -Force
+            }
+            New-ParkosBinaryManifest -InstallPath $InstallPath -DataPath $DataPath
+            Set-Content -Path $currentVersionFile -Value $Version -NoNewline
+        }
+
+        # DEC-INST-30: SOLO si se pide explicitamente (-RestoreDatabase,
+        # default $false - revertir schema es mas riesgoso que revertir
+        # binarios). El dump debe matchear EXACTAMENTE
+        # pre-update-<Version>-*.dump (el que Invoke-ParkosUpdate tomo justo
+        # ANTES de actualizar DESDE esa version - representa su estado real).
+        # Si hay varios (poco comun, pero posible tras reintentos), se usa el
+        # mas reciente por nombre (el timestamp ordena lexicograficamente).
+        # Nunca se adivina con "el dump mas reciente que sea" si no matchea
+        # el patron exacto - eso podria restaurar el schema equivocado.
+        if ($RestoreDatabase) {
+            $matchingDumps = @(Get-ChildItem -Path $backupsDir -Filter "pre-update-$Version-*.dump" -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+            if ($matchingDumps.Count -gt 0) {
+                $dbDump = $matchingDumps[0]
+                Invoke-TuiStep -Name "RESTORE DATABASE: pg_restore --clean desde $($dbDump.Name)" -Action {
+                    Invoke-ParkosPgRestoreClean -DumpPath $dbDump.FullName -Port $port
+                }
+            } else {
+                Write-Host "Advertencia: no se encontro un dump 'pre-update-$Version-*.dump' en $backupsDir - no hay backup de base de datos que corresponda EXACTAMENTE a la version '$Version'. Continuando SIN restaurar la base de datos (el restore de binarios ya se aplico y no se revierte)." -ForegroundColor Yellow
+            }
+        }
+
+        # DEC-INST-31: solo versiones archivadas DESPUES de DEC-INST-28 (este
+        # PR) tienen un MSI bajo releases\<version>\apps\ - best-effort,
+        # nunca aborta el restore de binarios ya aplicado.
+        $archivedMsi = Get-ChildItem -Path (Join-Path $releaseDir 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($archivedMsi) {
+            Invoke-TuiStep -Name "REINSTALL MSI: revertir web_sucursal a $Version" -Action {
+                Uninstall-ParkosElectron
+                Install-Electron -MsiPath $archivedMsi.FullName
+            }
+        } else {
+            Write-Host "Advertencia: no hay un MSI archivado para la version '$Version' (solo versiones archivadas despues de este cambio lo tienen) - la app de escritorio NO se pudo revertir. Continuando." -ForegroundColor Yellow
+        }
+
+        Invoke-TuiStep -Name 'RESTART: reiniciar servicios' -Action {
+            Start-ParkosServicesInOrder -ApiPort $apiPort -SyncLogPath $syncLogPath
+        }
+    } catch {
+        $failureMessage = $_.Exception.Message
+        return [PSCustomObject]@{ ExitCode = 1; Detail = "Restore a $Version fallo: $failureMessage" }
+    }
+
+    Write-Host ''
+    Write-Host "Restore a $Version completado." -ForegroundColor Green
+    return [PSCustomObject]@{ ExitCode = 0; Detail = "Restore a $Version completado." }
 }
 
 # ---------------------------------------------------------------------------
@@ -1068,6 +2051,249 @@ function New-JwtSigningKey {
 }
 
 # ---------------------------------------------------------------------------
+# Fase 27 (HU-F27.2/DEC-INST-40): certificado CMS para cifrar el .env en reposo
+# ---------------------------------------------------------------------------
+# El plan original (HU-F27.2) pedia cifrado "DPAPI" via
+# Protect-CmsMessage -To 'CN=ParkosLocalMachine' - verificado contra la
+# documentacion real de PowerShell: no existe una API DPAPI de ALCANCE DE
+# MAQUINA expuesta directamente por ningun cmdlet nativo (ConvertTo-
+# SecureString solo cifra con alcance de USUARIO actual, inutil para un
+# archivo que un servicio bajo otra cuenta - svc-parkos - necesita poder
+# leer). El mecanismo real detras de la idea del plan es CMS (Cryptographic
+# Message Syntax) contra un certificado de la maquina, que es exactamente lo
+# que Protect-CmsMessage/Unprotect-CmsMessage implementan - y lo que
+# Repair-ParkosInstall (Parkos.psm1, escenario E5) ya anticipa: CUALQUIER
+# excepcion al parsear el .env (incluido un futuro fallo de
+# Unprotect-CmsMessage) cae hoy en su mismo catch generico (ver
+# Parkos.psm1:713-719), asi que ningun cambio adicional hace falta ahi para
+# soportar este nuevo formato.
+#
+# -Type DocumentEncryptionCert (Key Encipherment + Data Encipherment, EKU de
+# Document Encryption) es el UNICO tipo de New-SelfSignedCertificate que
+# Protect-CmsMessage acepta como destinatario valido - un certificado
+# generico sin ese EKU hace que Protect-CmsMessage falle con "No certificate
+# found for recipient" pese a existir el certificado con el Subject correcto.
+#
+# Idempotente por Subject exacto (nunca por thumbprint): busca primero un
+# certificado existente en Cert:\LocalMachine\My antes de crear uno nuevo,
+# para nunca terminar con dos certificados validos para 'CN=ParkosEnvProtection'
+# (un segundo certificado dejaria ambiguo cual usa Protect-CmsMessage al
+# resolver el destinatario por nombre). El thumbprint se persiste en
+# $DataPath\secrets\env-cert-thumbprint.txt solo como identificador de
+# diagnostico - NO es secreto (no permite descifrar nada por si solo, la
+# clave privada vive en el almacen de certificados de la maquina, protegida
+# por Windows), asi que le alcanza con la misma ACL de secrets\ que protege
+# al resto del directorio (Set-ParkosSecretsAcl, Fase 27/HU-F27.1).
+# Wrapper minimo sobre Get-ChildItem contra el PSDrive Cert:\ - existe solo
+# para que esta busqueda sea testeable: Pester 3.4.0 no intercepta de forma
+# confiable un Mock de Get-ChildItem contra un proveedor con parametros
+# dinamicos propios (Cert:\) - confirmado empiricamente (un Mock con
+# -ParameterFilter sobre 'Cert:\LocalMachine\My' no siempre reemplaza la
+# llamada real) - mismo motivo exacto por el que Parkos.psm1 ya envuelve
+# nssm.exe/psql.exe/[EventLog]::SourceExists() en sus propios wrappers
+# (Invoke-ParkosNssm/Invoke-ParkosPsql/Test-ParkosEventLogSourceExists).
+# Devuelve $null (nunca un objeto vacio) cuando no hay ningun certificado con
+# ese Subject.
+function Get-ParkosEnvCert {
+    [CmdletBinding()]
+    param()
+
+    return Get-ChildItem -Path 'Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Subject -eq 'CN=ParkosEnvProtection' } |
+        Select-Object -First 1
+}
+
+function Get-OrCreateParkosEnvCert {
+    param([Parameter(Mandatory)][string]$DataPath)
+
+    $cert = Get-ParkosEnvCert
+
+    if (-not $cert) {
+        $cert = New-SelfSignedCertificate -CertStoreLocation 'Cert:\LocalMachine\My' `
+            -Subject 'CN=ParkosEnvProtection' -KeyUsage KeyEncipherment, DataEncipherment `
+            -Type DocumentEncryptionCert
+    }
+
+    $secretsDir = Join-Path $DataPath 'secrets'
+    New-Item -ItemType Directory -Force -Path $secretsDir | Out-Null
+    Set-Content -Path (Join-Path $secretsDir 'env-cert-thumbprint.txt') -Value $cert.Thumbprint -NoNewline
+
+    Grant-ParkosEnvCertKeyAccess -Certificate $cert
+
+    return $cert
+}
+
+# Gap real dejado pendiente por PR9 (Fase 27): sin esto, Invoke-DailyBackup.ps1
+# (PR8) corre bajo svc-parkos via tarea programada y necesita Unprotect-
+# CmsMessage para leer el puerto de Postgres del .env cifrado - pero la clave
+# privada del certificado, por default, solo es legible por Administrators/
+# SYSTEM (quien la creo), NUNCA por una cuenta de servicio comun como
+# svc-parkos. Sin esta ACL, el backup diario fallaria en produccion la
+# primera vez que corriera de verdad (algo que ningun test unitario con
+# mocks puede detectar). Best-effort deliberado (try/catch, solo advierte):
+# esto es un endurecimiento adicional, no un gate que deba bloquear la
+# instalacion si el mecanismo de claves de esta maquina difiere.
+function Grant-ParkosEnvCertKeyAccess {
+    # $Certificate deliberadamente SIN tipo declarado ([X509Certificate2]):
+    # un parametro fuertemente tipado rechaza en el binding (antes de entrar
+    # al try/catch de abajo) el fake [PSCustomObject] que los tests de
+    # Get-OrCreateParkosEnvCert usan para simular un certificado - con el
+    # parametro sin tipo, ese caso simplemente falla DENTRO del try (el
+    # metodo de RSACertificateExtensions no aplica a un PSCustomObject) y
+    # se maneja como cualquier otro "no se pudo ajustar la ACL", sin romper
+    # esos tests.
+    param(
+        [Parameter(Mandatory)]$Certificate,
+        [string]$Account = 'svc-parkos'
+    )
+
+    try {
+        $rsaKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
+        if (-not $rsaKey) {
+            Write-Host "No se pudo resolver la clave privada de 'CN=ParkosEnvProtection' para ajustar su ACL - omitido." -ForegroundColor Yellow
+            return
+        }
+
+        # CNG (moderno, default de New-SelfSignedCertificate en Windows
+        # actuales) guarda la clave como un archivo suelto bajo
+        # ProgramData\Microsoft\Crypto\Keys\<UniqueName> - fallback a la ruta
+        # legacy CAPI (MachineKeys) si el tipo de clave no es CNG.
+        $keyPath = $null
+        if ($rsaKey -is [System.Security.Cryptography.RSACng]) {
+            $uniqueName = $rsaKey.Key.UniqueName
+            $keyPath = Join-Path $env:ProgramData "Microsoft\Crypto\Keys\$uniqueName"
+        } elseif ($rsaKey -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
+            $uniqueName = $rsaKey.CspKeyContainerInfo.UniqueKeyContainerName
+            $keyPath = Join-Path $env:ProgramData "Microsoft\Crypto\RSA\MachineKeys\$uniqueName"
+        }
+
+        if (-not $keyPath -or -not (Test-Path $keyPath)) {
+            Write-Host "No se encontro el archivo de clave privada de 'CN=ParkosEnvProtection' en disco (ruta esperada: $keyPath) - ACL para '$Account' omitida." -ForegroundColor Yellow
+            return
+        }
+
+        icacls $keyPath /grant "${Account}:(R)" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "icacls no pudo otorgar acceso de lectura a '$Account' sobre la clave privada del certificado - el backup diario podria fallar al descifrar el .env." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "No se pudo ajustar la ACL de la clave privada de 'CN=ParkosEnvProtection' para '$Account': $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+# Cifra $Lines (KEY=VALUE) con CMS contra 'CN=ParkosEnvProtection' y escribe
+# el resultado ASCII-armored (formato por defecto de Protect-CmsMessage,
+# encabezado '-----BEGIN CMS-----') directamente en $EnvFilePath. Compartida
+# por Write-RuntimeEnvFile (primera escritura del .env, mas arriba en este
+# archivo) y Update-SucursalUuidInEnvFile (reescritura puntual de una sola
+# linea) - unico lugar que valida la existencia del certificado ANTES de
+# llamar Protect-CmsMessage, para no dejar que ese cmdlet falle con un error
+# generico de "no se encontro el certificado" sin contexto de que hacer al
+# respecto.
+function Protect-ParkosEnvContent {
+    param(
+        [Parameter(Mandatory)][string]$EnvFilePath,
+        [Parameter(Mandatory)][string[]]$Lines
+    )
+
+    $envCert = Get-ParkosEnvCert
+    if (-not $envCert) {
+        throw "No se encontro el certificado 'CN=ParkosEnvProtection' en Cert:\LocalMachine\My - corre Get-OrCreateParkosEnvCert antes de escribir el .env (el cifrado CMS del runtime env depende de el)."
+    }
+
+    $content = $Lines -join "`r`n"
+    Protect-CmsMessage -To 'cn=ParkosEnvProtection' -Content $content -OutFile $EnvFilePath | Out-Null
+}
+
+# Lector retrocompatible de .env: detecta si el contenido crudo es CMS
+# (encabezado ASCII-armored '-----BEGIN CMS-----') o texto plano y devuelve
+# SIEMPRE lineas 'KEY=VALUE' ya decodificadas - nunca por extension de
+# archivo ni por convencion de nombre, solo por el contenido real. Necesario
+# para no romper ningun .env preexistente en texto plano (instalaciones
+# hechas con una version anterior de este instalador, o cualquier fixture de
+# test que siga escribiendo texto plano). Duplicado a proposito respecto de
+# script:Import-ParkosEnvFile en Parkos.psm1 (mismo criterio ya aceptado en
+# PRs anteriores: un .ps1 y un .psm1 no comparten funciones facilmente sin un
+# modulo comun).
+function Read-ParkosEnvLines {
+    param([Parameter(Mandatory)][string]$EnvFilePath)
+
+    if (-not (Test-Path $EnvFilePath)) {
+        throw "No se encontro el archivo .env en $EnvFilePath."
+    }
+
+    $rawContent = Get-Content -Path $EnvFilePath -Raw
+    if ($rawContent -match '^\s*-----BEGIN CMS-----') {
+        $rawContent = Unprotect-CmsMessage -Path $EnvFilePath
+    }
+
+    return @($rawContent -split "`r?`n") | Where-Object { $_ -match '=' }
+}
+
+# ---------------------------------------------------------------------------
+# Fase 27 (HU-F27.3/DEC-INST-40): gate de fortaleza/denylist del secreto JWT
+# ---------------------------------------------------------------------------
+# Denylist defensiva/heuristica de hashes SHA256 (mayusculas) de secretos de
+# desarrollo/placeholder conocidos - deliberadamente NO exhaustiva, es
+# defensa en profundidad, no la unica linea de defensa (esa es que
+# New-JwtSigningKey SIEMPRE genera 64 bytes con RandomNumberGenerator, nunca
+# texto legible). El primer valor es el UNICO secreto de desarrollo REAL
+# encontrado en el backend (confirmado leyendo
+# backend/packages/parkos_core/src/parkos_core/auth/tokens.py:26 -
+# _DEFAULT_DEV_SECRET - reusado tal cual por
+# backend/tests/unit/test_auth_me_not_found.py:33 como _DEV_SECRET); el
+# resto son placeholders de texto genericos de uso comun en la industria
+# (nunca usados de verdad en este repo), agregados solo como defensa
+# adicional.
+#
+# Desviacion deliberada del plan original (documentada, no un olvido): el
+# plan (HU-F27.3-T3) tambien pide una "allowlist firmada de secretos buenos"
+# (KNOWN_GOOD_SECRETS.sha256.txt) - NO se implementa aca. Es logicamente
+# incoherente para este secreto en particular: New-JwtSigningKey genera 64
+# bytes aleatorios criptograficamente distintos en CADA instalacion, asi que
+# ningun valor futuro va a "estar" nunca en una lista fija de valores
+# pre-aprobados - una allowlist solo tiene sentido para un conjunto finito y
+# estable de valores conocidos de antemano, que es exactamente lo que un
+# secreto aleatorio NUNCA es. La denylist (valores conocidos MALOS) si tiene
+# sentido porque esa lista es finita y estable ("estos valores nunca deberian
+# aparecer"), al reves de la allowlist.
+$script:KnownDevJwtSecretHashes = @(
+    'C2E05E703F5E772BC07AEA71DE9E5BE850CB505156E8F0685149FCCB5C7DE715' # _DEFAULT_DEV_SECRET (backend real)
+    'BD4B969EC202E3B67240D985AAA4262999C614E4E7A2CCB7FCD314853A8A1D7B' # 'dev-secret-change-me'
+    '057BA03D6C44104863DC7361FE4578965D1887360F90A0895882E58A6248FC86' # 'changeme'
+    'EF1767361F0CA8D71F7FB0EECC8253B88888DB4BF304DF4408C0B09C8207AB28' # 'insecure-default-key'
+    '2CEAC6F36363C6246A64CCA805CD43CA7A01B14EB2FCC532CEEC3F60F2F7DF1C' # 'test-secret-key'
+    '2BB80D537B1DA3E38BD30361AA855686BDE0EACD7162FEF6A25FE97BF527A25B' # 'secret'
+)
+
+# Gate de fortaleza del secreto JWT - longitud (>=32 bytes, igual que la
+# validacion inline que reemplaza dentro de Test-PostInstallation) MAS hash
+# SHA256 fuera de la denylist de arriba. Llamado tambien justo despues de
+# New-JwtSigningKey en la etapa '1' (db) del instalador, como defensa en
+# profundidad en el momento de generacion (en la practica nunca deberia
+# fallar ahi, dado que el secreto es aleatorio) ademas de en la verificacion
+# final de Test-PostInstallation.
+function Test-JwtSecretGate {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        throw "No se encontro el archivo de secreto JWT en $Path."
+    }
+
+    $length = (Get-Item $Path).Length
+    if ($length -lt 32) {
+        throw 'Secreto JWT demasiado corto. Regenerar.'
+    }
+
+    $hash = (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+    if ($script:KnownDevJwtSecretHashes -contains $hash) {
+        throw 'Secreto JWT es uno de desarrollo conocido. Regenerar.'
+    }
+
+    return $true
+}
+
+# ---------------------------------------------------------------------------
 # TUI paso a paso (DEC-INST-01: "ANSI puro, sin Terminal.Gui")
 # ---------------------------------------------------------------------------
 # `\r` (carriage return) alone - not a full ANSI/VT cursor-control sequence -
@@ -1076,7 +2302,7 @@ function New-JwtSigningKey {
 # that need VT mode explicitly enabled. That is "ANSI puro" in the simplest,
 # most compatible sense DEC-INST-01 asks for, not a TUI framework.
 #
-# DEC-INST-02: no longer a fixed "[i/N]" linear counter - the menu (see
+# DEC-INST-17: no longer a fixed "[i/N]" linear counter - the menu (see
 # Invoke-ParkosInstall below) lets the operator run/re-run any stage in any
 # order, so a running index across the whole session would be misleading
 # (e.g. "[9/7]" after re-running one stage twice). The stage's own name plus
@@ -1093,6 +2319,287 @@ function Invoke-TuiStep {
         Write-Host "         $($_.Exception.Message)" -ForegroundColor Red
         throw
     }
+}
+
+# ---------------------------------------------------------------------------
+# DEC-INST-32 (PR5 de 11): fabrica compartida de las 9 definiciones de etapa
+# ---------------------------------------------------------------------------
+# Antes esto vivia INLINE dentro de Invoke-ParkosInstall (las 9 Action
+# scriptblocks + las variables de closure que usan: $pgInstallPath,
+# $psqlPath, $secretsDir, $envFilePath, $nssmPath, etc.) - la cascada nueva
+# -Unattended (Invoke-ParkosUnattendedCascade, mas abajo) necesitaba las
+# MISMAS 9 etapas sin duplicar su cuerpo, asi que se extrajo a esta funcion.
+# Ambos callers (el menu interactivo y la cascada) consumen la misma
+# definicion devuelta aca - cero duplicacion de las 9 Action.
+#
+# Cada entrada agrega ahora una propiedad Rollback (scriptblock o $null,
+# parte del manejo de errores/recuperacion de la cascada -Unattended - el
+# menu interactivo la ignora por completo, DEC-INST-17 ya deja esa decision
+# en manos del operador). Los Rollback son AUTONOMOS: recalculan lo que
+# necesitan (p.ej. la etapa 7 vuelve a buscar el MSI) en vez de depender de
+# variables locales efimeras de su propio Action - un scriptblock crea su
+# propio scope hijo al ejecutarse, asi que una variable declarada dentro de
+# Action no es visible desde su Rollback sibling aunque ambos esten
+# definidos en el mismo lugar de este archivo.
+function Get-ParkosStageDefinitions {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$InstallPath,
+        [Parameter(Mandatory)][string]$DataPath,
+        [Parameter(Mandatory)][string]$SucursalUuid,
+        [Parameter(Mandatory)][string]$CloudApiUrl
+    )
+
+    $pgInstallPath = 'C:\Program Files\PostgreSQL\16'
+    $pgDataPath = Join-Path $DataPath 'pg-data'
+    $psqlPath = Join-Path $pgInstallPath 'bin\psql.exe'
+    $secretsDir = Join-Path $DataPath 'secrets'
+    $jwtKeyPath = Join-Path $secretsDir 'jwt.key'
+    $syncJwtPath = Join-Path $secretsDir 'sync-agent.jwt'  # written later by the pairing flow (Fase 29), not here
+    $envFilePath = Join-Path $secretsDir '.env'
+    $nssmPath = Join-Path $script:PayloadRoot 'nssm.exe'
+
+    $stages = [ordered]@{
+        '0' = @{
+            Key      = 'build'
+            Name     = 'Descargar ultima version de main y compilar artefactos'
+            Action   = {
+                Invoke-SourceUpdateAndBuild
+            }
+            # De solo lectura sobre la maquina destino - este build corre en
+            # la maquina del TECNICO (DEC-INST-20), nunca en el equipo final;
+            # no hay nada que revertir aca.
+            Rollback = $null
+        }
+        '1' = @{
+            Key      = 'db'
+            Name     = 'Instalar base de datos (Postgres + roles + pg_partman)'
+            Action   = {
+                $script:port = Test-PostgresPorts
+                $script:apiPort = Test-ApiPort
+                $bootstrapPassword = New-ParkosDerivedPassword -SucursalUuid $SucursalUuid -Purpose 'postgres-bootstrap'
+                $script:PostgresInstallMethod = Install-Postgres -PgInstallPath $pgInstallPath -PgDataPath $pgDataPath -Port $script:port -SuperuserPassword $bootstrapPassword
+                $script:roles = Initialize-DatabaseRoles -PsqlPath $psqlPath -Port $script:port -BootstrapPassword $bootstrapPassword -SucursalUuid $SucursalUuid
+
+                # svc-parkos tiene que existir ANTES de Get-OrCreateParkosEnvCert:
+                # Grant-ParkosEnvCertKeyAccess (llamada desde ahi) le otorga acceso
+                # de lectura a la clave privada del certificado CMS, y eso
+                # requiere que la cuenta ya se pueda resolver - moverla mas tarde
+                # (como estaba originalmente, justo antes de Register-
+                # PgPartmanMaintenance) dejaba esa ACL fallando siempre en la
+                # primera instalacion real de cualquier maquina.
+                Ensure-ServiceAccount
+
+                New-JwtSigningKey -Path $jwtKeyPath
+                Test-JwtSecretGate -Path $jwtKeyPath | Out-Null
+                Get-OrCreateParkosEnvCert -DataPath $DataPath | Out-Null
+                Write-RuntimeEnvFile -EnvFilePath $envFilePath -AppPassword $script:roles.AppPassword -Port $script:port -ApiPort $script:apiPort `
+                    -SucursalUuid $SucursalUuid -CloudApiUrl $CloudApiUrl -JwtKeyPath $jwtKeyPath -SyncJwtPath $syncJwtPath
+                Set-MachineApiOrigin -Port $script:apiPort
+
+                Install-PgPartman -PgInstallPath $pgInstallPath -PsqlPath $psqlPath -Port $script:port
+                Register-PgPartmanMaintenance -PsqlPath $psqlPath -Port $script:port
+            }
+            # Desinstala Postgres con el MISMO mecanismo que lo instalo
+            # ($script:PostgresInstallMethod, seteado por Install-Postgres en
+            # el Action de arriba): winget uninstall si vino por winget,
+            # borrar el directorio si vino por el ZIP de fallback. El data
+            # directory se borra siempre (ambos metodos lo crean en el mismo
+            # lugar).
+            Rollback = {
+                if ($script:PostgresInstallMethod -eq 'winget') {
+                    winget uninstall --id PostgreSQL.PostgreSQL.16 --silent | Out-Host
+                } elseif ($script:PostgresInstallMethod -eq 'zip') {
+                    Remove-Item $pgInstallPath -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                Remove-Item $pgDataPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        '2' = @{
+            Key      = 'migrate'
+            Name     = 'Ejecutar migraciones de base de datos'
+            Action   = {
+                if ($null -eq $script:roles) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }
+                Invoke-MigrationsAndSeed -Roles $script:roles -Port $script:port
+            }
+            # Intenta revertir el schema con el mismo migrate.exe (mismo
+            # patron de invocacion que Invoke-MigrationsAndSeed) - si el
+            # downgrade falla, NUNCA revienta el rollback completo de la
+            # cascada: solo advierte (WARN) y continua (el rollback de una
+            # etapa fallida no puede el mismo tirar una excepcion sin
+            # manejar).
+            Rollback = {
+                $migrateDir = Join-Path $script:PayloadRoot 'services\migrate\migrate'
+                $migrateExe = Join-Path $migrateDir 'migrate.exe'
+                if (-not (Test-Path $migrateExe)) {
+                    Write-Host '  [ROLLBACK] migrate.exe no encontrado; no se pudo intentar el downgrade.' -ForegroundColor Yellow
+                    return
+                }
+                Push-Location $migrateDir
+                try {
+                    if ($null -ne $script:roles -and $null -ne $script:port) {
+                        $env:DATABASE_URL = "postgresql://parkos:$($script:roles.SuperuserPassword)@127.0.0.1:$($script:port)/parkos"
+                    }
+                    & $migrateExe -c alembic.ini downgrade base
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "  [ROLLBACK] migrate.exe downgrade base fallo (exit $LASTEXITCODE) - continua sin revertir el schema." -ForegroundColor Yellow
+                    }
+                } catch {
+                    Write-Host "  [ROLLBACK] downgrade de migraciones fallo: $($_.Exception.Message)" -ForegroundColor Yellow
+                } finally {
+                    Remove-Item Env:\DATABASE_URL -ErrorAction SilentlyContinue
+                    Pop-Location
+                }
+            }
+        }
+        '3' = @{
+            Key      = 'sucursal'
+            Name     = 'Confirmar UUID de sucursal (creada desde el panel admin)'
+            Action   = {
+                if ($script:StageStatus.db -ne [ParkosStageState]::Ok) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }
+                Update-SucursalUuidInEnvFile -EnvFilePath $envFilePath -SucursalUuid $SucursalUuid
+                Write-Host "UUID de sucursal confirmado: $SucursalUuid" -ForegroundColor Cyan
+                Write-Host 'La fila de esta sucursal vive en el panel admin y llega aca via el sync de job-sync-sucursal; este instalador nunca la crea.' -ForegroundColor Yellow
+            }
+            # Solo reescribe una linea del .env (DEC-INST-22 - ya no inserta
+            # nada en prod.sucursal) - no hay nada real que revertir.
+            Rollback = $null
+        }
+        '4' = @{
+            Key      = 'seed'
+            Name     = 'Sembrar catalogos iniciales (arranca api-sucursal temporalmente)'
+            Action   = {
+                if ($script:StageStatus.migrate -ne [ParkosStageState]::Ok) { throw 'Corre primero "Ejecutar migraciones" (opcion 2).' }
+                Invoke-CatalogSeed -EnvFilePath $envFilePath -Roles $script:roles -Port $script:port -JwtKeyPath $jwtKeyPath -SucursalUuid $SucursalUuid -ApiPort $script:apiPort
+            }
+            # Limitacion documentada (no un placeholder descuidado): un
+            # rollback real de los catalogos sembrados necesitaria trackear
+            # que filas EXACTAS creo esta corrida - ese tracking no existe
+            # hoy. Un DELETE generico (p.ej. "borrar todo tipos_vehiculo")
+            # es peligroso: podria borrar datos legitimos de una corrida
+            # anterior. Se prefiere documentar la limitacion antes que
+            # inventar un DELETE amplio.
+            Rollback = $null
+        }
+        '5' = @{
+            Key      = 'api'
+            Name     = 'Instalar servicio api-sucursal (NSSM)'
+            Action   = {
+                $apiExePath = Copy-ServiceBundle -Name 'api-sucursal' -InstallPath $InstallPath
+                Install-ApiService -NssmPath $nssmPath -ExePath $apiExePath -EnvFilePath $envFilePath
+                if (-not (Wait-ForApiHealth -Url "http://127.0.0.1:$($script:apiPort)/health")) {
+                    throw 'ParkosApiSucursal no respondio /health a tiempo tras el registro NSSM.'
+                }
+            }
+            Rollback = {
+                & $nssmPath stop ParkosApiSucursal | Out-Null
+                & $nssmPath remove ParkosApiSucursal confirm | Out-Null
+            }
+        }
+        '6' = @{
+            Key      = 'job'
+            Name     = 'Instalar job de sincronizacion (NSSM)'
+            Action   = {
+                $jobExePath = Copy-ServiceBundle -Name 'job-sync-sucursal' -InstallPath $InstallPath
+                Install-JobService -NssmPath $nssmPath -ExePath $jobExePath -EnvFilePath $envFilePath
+                $syncLogPath = Join-Path $DataPath 'logs\job-sync.out.log'
+                if (-not (Wait-ForSyncPollCycle -LogPath $syncLogPath)) {
+                    throw 'ParkosJobSyncSucursal no mostro un ciclo de sondeo en el log a tiempo.'
+                }
+            }
+            Rollback = {
+                & $nssmPath stop ParkosJobSyncSucursal | Out-Null
+                & $nssmPath remove ParkosJobSyncSucursal confirm | Out-Null
+            }
+        }
+        '7' = @{
+            Key      = 'electron'
+            Name     = 'Instalar aplicacion de escritorio (web_sucursal)'
+            Action   = {
+                $msiPath = (Get-ChildItem (Join-Path $script:PayloadRoot 'apps') -Filter '*.msi' | Select-Object -First 1).FullName
+                if (-not $msiPath) {
+                    throw 'No se encontro el MSI de web_sucursal en el payload.'
+                }
+                Install-Electron -MsiPath $msiPath
+            }
+            # Recalcula $msiPath en vez de reusar el del Action de arriba -
+            # ver el comentario general sobre Rollback autonomos.
+            Rollback = {
+                $msiPath = (Get-ChildItem (Join-Path $script:PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+                if ($msiPath) {
+                    Start-Process msiexec.exe -ArgumentList "/x `"$msiPath`" /qn" -Wait | Out-Null
+                }
+            }
+        }
+        '8' = @{
+            Key      = 'verify'
+            Name     = 'Verificacion final (Postgres, JWT, servicios)'
+            Action   = {
+                Test-PostInstallation -EnvFilePath $envFilePath -Port $script:port
+                Install-ManagementModule -InstallPath $InstallPath
+            }
+            # De solo lectura - no hay nada que revertir.
+            Rollback = $null
+        }
+    }
+
+    return @{
+        Stages = $stages
+        Paths  = @{
+            PgInstallPath = $pgInstallPath
+            PgDataPath    = $pgDataPath
+            PsqlPath      = $psqlPath
+            SecretsDir    = $secretsDir
+            JwtKeyPath    = $jwtKeyPath
+            SyncJwtPath   = $syncJwtPath
+            EnvFilePath   = $envFilePath
+            NssmPath      = $nssmPath
+        }
+    }
+}
+
+# DEC-INST-41 (PR10): helper puro (sin Write-Host adentro) que arma las
+# lineas de texto del menu de etapas - separado del bucle principal de
+# Invoke-ParkosInstall para poder verificar el TEXTO exacto de cada estado
+# (Ok/Failed/RolledBack/NotRun-Running/Blocked) desde un test sin tener que
+# mockear Write-Host ni parsear su salida por consola. $Prereqs es un mapeo
+# MINIMO y a proposito NO generico: solo expone en el render los 2 gates que
+# YA tiran throw hoy dentro de Get-ParkosStageDefinitions (etapa 3 exige 'db'
+# Ok, etapa 4 exige 'migrate' Ok) - no es un grafo de dependencias nuevo.
+function Get-ParkosStageMenuLines {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Stages,
+        [Parameter(Mandatory)]$StageStatus,
+        [hashtable]$Prereqs = @{}
+    )
+
+    $lines = @()
+    foreach ($number in $Stages.Keys) {
+        $stage = $Stages[$number]
+        $state = $StageStatus[$stage.Key]
+        $prereq = $Prereqs[$number]
+
+        if ($null -ne $prereq -and $StageStatus[$prereq.Key] -ne [ParkosStageState]::Ok) {
+            $tag = '[BLOQ]'
+            $color = 'DarkYellow'
+            $suffix = " (requiere que $($prereq.Number) este OK)"
+        } else {
+            switch ($state) {
+                ([ParkosStageState]::Ok)         { $tag = '[ OK ]'; $color = 'Green'; $suffix = '' }
+                ([ParkosStageState]::Failed)     { $tag = '[FAIL]'; $color = 'Red'; $suffix = ' (re-ejecutable)' }
+                ([ParkosStageState]::RolledBack) { $tag = '[ROLL]'; $color = 'Yellow'; $suffix = ' (rollback aplicado, re-ejecutable)' }
+                ([ParkosStageState]::Blocked)    { $tag = '[BLOQ]'; $color = 'DarkYellow'; $suffix = '' }
+                default                          { $tag = '[....]'; $color = 'White'; $suffix = '' }
+            }
+        }
+
+        $lines += [PSCustomObject]@{
+            Text  = ("  {0} {1}) {2}{3}" -f $tag, $number, $stage.Name, $suffix)
+            Color = $color
+        }
+    }
+    return $lines
 }
 
 function Invoke-ParkosInstall {
@@ -1118,22 +2625,13 @@ function Invoke-ParkosInstall {
     $paths = Read-InstallPaths -DefaultInstallPath $InstallPath -DefaultDataPath $DataPath
     $script:DataPath = $paths.DataPath
 
-    # Real operational values - never fabricated. Prompted here (once) if
-    # not passed as parameters; -Unattended requires them upfront.
+    # Real operational value - never fabricated. Prompted here (once) if not
+    # passed as a parameter; -Unattended requires it upfront.
     #
-    # DEC-INST-03: ya no se le pide al operador un UUID crudo por teclado -
-    # ese UUID nunca correspondia a ninguna fila real en prod.sucursal (ver
-    # Install-SucursalRow, Fase 22b - no existe ningun endpoint/CLI para
-    # crear una sucursal, confirmado por investigacion directa 2026-09-27).
-    # Si -SucursalUuid vino explicito por parametro (repair/reinstall de una
-    # sucursal que YA tiene su fila en otro lado), se respeta tal cual y se
-    # salta la recoleccion de datos nueva - $script:SucursalData queda $null
-    # y la opcion 3 del menu ("Crear sucursal") lo refleja al intentarse.
-    $script:SucursalData = $null
-    if ([string]::IsNullOrWhiteSpace($SucursalUuid)) {
-        $script:SucursalData = Read-SucursalData -Nombre $SucursalNombre -Prefijo $SucursalPrefijo -Ciudad $SucursalCiudad
-        $SucursalUuid = $script:SucursalData.Uuid
-    }
+    # DEC-INST-22 (corrige DEC-INST-19): la sucursal se crea desde el panel
+    # admin, no desde este instalador - Read-SucursalUuid solo valida forma
+    # de UUID, nunca inserta nada en prod.sucursal (Fase 22b).
+    $SucursalUuid = Read-SucursalUuid -Uuid $SucursalUuid
     if ([string]::IsNullOrWhiteSpace($CloudApiUrl)) {
         if ($Unattended) { throw '-CloudApiUrl es obligatorio en modo -Unattended.' }
         $CloudApiUrl = Read-Host 'URL de la API cloud (PARKOS_CLOUD_API_URL)'
@@ -1142,18 +2640,11 @@ function Invoke-ParkosInstall {
     Write-Host ''
     Write-Host '=== Parkos - instalacion (Fases 22-24) ===' -ForegroundColor Cyan
 
-    $pgInstallPath = 'C:\Program Files\PostgreSQL\16'
-    $pgDataPath = Join-Path $paths.DataPath 'pg-data'
-    $psqlPath = Join-Path $pgInstallPath 'bin\psql.exe'
-    $secretsDir = Join-Path $paths.DataPath 'secrets'
-    $jwtKeyPath = Join-Path $secretsDir 'jwt.key'
-    $syncJwtPath = Join-Path $secretsDir 'sync-agent.jwt'  # written later by the pairing flow (Fase 29), not here
-    $envFilePath = Join-Path $secretsDir '.env'
-    $nssmPath = Join-Path $script:PayloadRoot 'nssm.exe'
     $script:roles = $null
     $script:port = $null
+    $script:PostgresInstallMethod = $null
 
-    # DEC-INST-02: menu-driven instead of a single forced top-to-bottom pass.
+    # DEC-INST-17: menu-driven instead of a single forced top-to-bottom pass.
     # Each stage keeps its own internal gate (Wait-ForApiHealth,
     # Wait-ForSyncPollCycle, etc. still throw exactly as before) - what
     # changes is that a thrown failure now returns to the menu (see the
@@ -1161,137 +2652,227 @@ function Invoke-ParkosInstall {
     # operator can re-run any single stage independently (e.g. re-run
     # migrations after an update without repeating Postgres install).
     $script:StageStatus = [ordered]@{
-        build = $false
-        db = $false; migrate = $false; sucursal = $false; seed = $false
-        api = $false; job = $false; electron = $false; verify = $false
+        build = [ParkosStageState]::NotRun
+        db = [ParkosStageState]::NotRun; migrate = [ParkosStageState]::NotRun; sucursal = [ParkosStageState]::NotRun; seed = [ParkosStageState]::NotRun
+        api = [ParkosStageState]::NotRun; job = [ParkosStageState]::NotRun; electron = [ParkosStageState]::NotRun; verify = [ParkosStageState]::NotRun
     }
 
-    $stages = [ordered]@{
-        '0' = @{
-            Key    = 'build'
-            Name   = 'Descargar ultima version de main y compilar artefactos'
-            Action = {
-                Invoke-SourceUpdateAndBuild
-            }
-        }
-        '1' = @{
-            Key    = 'db'
-            Name   = 'Instalar base de datos (Postgres + roles + pg_partman)'
-            Action = {
-                $script:port = Test-PostgresPorts
-                $script:apiPort = Test-ApiPort
-                $bootstrapPassword = New-SecurePassword
-                Install-Postgres -PgInstallPath $pgInstallPath -PgDataPath $pgDataPath -Port $script:port -SuperuserPassword $bootstrapPassword
-                $script:roles = Initialize-DatabaseRoles -PsqlPath $psqlPath -Port $script:port -BootstrapPassword $bootstrapPassword
+    # DEC-INST-32 (PR5): las 9 definiciones de etapa (Action + Rollback)
+    # viven en Get-ParkosStageDefinitions, compartida con la cascada
+    # -Unattended (Invoke-ParkosUnattendedCascade) - el menu interactivo de
+    # abajo ignora la propiedad Rollback por completo (DEC-INST-17 deja esa
+    # decision en manos del operador, sin cambios aca).
+    $definitions = Get-ParkosStageDefinitions -InstallPath $paths.InstallPath -DataPath $paths.DataPath `
+        -SucursalUuid $SucursalUuid -CloudApiUrl $CloudApiUrl
+    $stages = $definitions.Stages
 
-                New-JwtSigningKey -Path $jwtKeyPath
-                Write-RuntimeEnvFile -EnvFilePath $envFilePath -AppPassword $script:roles.AppPassword -Port $script:port -ApiPort $script:apiPort `
-                    -SucursalUuid $SucursalUuid -CloudApiUrl $CloudApiUrl -JwtKeyPath $jwtKeyPath -SyncJwtPath $syncJwtPath
-                Set-MachineApiOrigin -Port $script:apiPort
-
-                Install-PgPartman -PgInstallPath $pgInstallPath -PsqlPath $psqlPath -Port $script:port
-                Ensure-ServiceAccount
-                Register-PgPartmanMaintenance -PsqlPath $psqlPath -Port $script:port
-            }
-        }
-        '2' = @{
-            Key    = 'migrate'
-            Name   = 'Ejecutar migraciones de base de datos'
-            Action = {
-                if ($null -eq $script:roles) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }
-                Invoke-MigrationsAndSeed -Roles $script:roles -Port $script:port
-            }
-        }
-        '3' = @{
-            Key    = 'sucursal'
-            Name   = 'Crear sucursal en base de datos'
-            Action = {
-                if (-not $script:StageStatus.migrate) { throw 'Corre primero "Ejecutar migraciones" (opcion 2).' }
-                if ($null -eq $script:SucursalData) {
-                    throw '-SucursalUuid vino por parametro (sucursal existente) - no hay datos nuevos que insertar.'
-                }
-                Install-SucursalRow -PsqlPath $psqlPath -Port $script:port -Uuid $script:SucursalData.Uuid `
-                    -Nombre $script:SucursalData.Nombre -Prefijo $script:SucursalData.Prefijo -Ciudad $script:SucursalData.Ciudad
-            }
-        }
-        '4' = @{
-            Key    = 'seed'
-            Name   = 'Sembrar catalogos iniciales (arranca api-sucursal temporalmente)'
-            Action = {
-                if (-not $script:StageStatus.migrate) { throw 'Corre primero "Ejecutar migraciones" (opcion 2).' }
-                Invoke-CatalogSeed -EnvFilePath $envFilePath -Roles $script:roles -Port $script:port -JwtKeyPath $jwtKeyPath -SucursalUuid $SucursalUuid -ApiPort $script:apiPort
-            }
-        }
-        '5' = @{
-            Key    = 'api'
-            Name   = 'Instalar servicio api-sucursal (NSSM)'
-            Action = {
-                $apiExePath = Copy-ServiceBundle -Name 'api-sucursal' -InstallPath $paths.InstallPath
-                Install-ApiService -NssmPath $nssmPath -ExePath $apiExePath -EnvFilePath $envFilePath
-                if (-not (Wait-ForApiHealth -Url "http://127.0.0.1:$($script:apiPort)/health")) {
-                    throw 'ParkosApiSucursal no respondio /health a tiempo tras el registro NSSM.'
-                }
-            }
-        }
-        '6' = @{
-            Key    = 'job'
-            Name   = 'Instalar job de sincronizacion (NSSM)'
-            Action = {
-                $jobExePath = Copy-ServiceBundle -Name 'job-sync-sucursal' -InstallPath $paths.InstallPath
-                Install-JobService -NssmPath $nssmPath -ExePath $jobExePath -EnvFilePath $envFilePath
-                $syncLogPath = Join-Path $paths.DataPath 'logs\job-sync.out.log'
-                if (-not (Wait-ForSyncPollCycle -LogPath $syncLogPath)) {
-                    throw 'ParkosJobSyncSucursal no mostro un ciclo de sondeo en el log a tiempo.'
-                }
-            }
-        }
-        '7' = @{
-            Key    = 'electron'
-            Name   = 'Instalar aplicacion de escritorio (web_sucursal)'
-            Action = {
-                $msiPath = (Get-ChildItem (Join-Path $script:PayloadRoot 'apps') -Filter '*.msi' | Select-Object -First 1).FullName
-                if (-not $msiPath) {
-                    throw 'No se encontro el MSI de web_sucursal en el payload.'
-                }
-                Install-Electron -MsiPath $msiPath
-            }
-        }
-        '8' = @{
-            Key    = 'verify'
-            Name   = 'Verificacion final (Postgres, JWT, servicios)'
-            Action = {
-                Test-PostInstallation -EnvFilePath $envFilePath -Port $script:port
-            }
-        }
+    # DEC-INST-41 (PR10): mapeo MINIMO de los 2 gates que YA tiran throw hoy
+    # dentro de Get-ParkosStageDefinitions (etapa 3 exige 'db' Ok, etapa 4
+    # exige 'migrate' Ok) - solo para que Get-ParkosStageMenuLines pueda
+    # mostrar [BLOQ] ANTES de que el operador intente y falle. No es un grafo
+    # de dependencias nuevo (item 7 del PR).
+    $stagePrereqs = @{
+        '3' = @{ Key = 'db'; Number = '1' }
+        '4' = @{ Key = 'migrate'; Number = '2' }
     }
+
+    # DEC-INST-41 (PR10): el modulo Parkos (8 cmdlets, PR1..PR8) se importa
+    # recien la PRIMERA vez que se usa alguna de las opciones A/R/U/V/X/D/M/C
+    # - nunca al arrancar el script. SIEMPRE desde el PAYLOAD local
+    # ($script:PayloadRoot), nunca asumiendo que ya esta instalado bajo
+    # Program Files\PowerShell\Modules\Parkos\ (esa copia recien existe al
+    # terminar la etapa 8 - durante una instalacion en curso o recien
+    # completada puede no existir todavia).
+    $moduleImported = $false
+    $letterOptions = @('A', 'R', 'U', 'V', 'X', 'D', 'M', 'C')
+    $exemptFromCompletionGate = @('A', 'D', 'X')
 
     while ($true) {
         Write-Host ''
         Write-Host '=== Parkos - menu de instalacion ===' -ForegroundColor Cyan
-        foreach ($number in $stages.Keys) {
-            $stage = $stages[$number]
-            $isDone = $script:StageStatus[$stage.Key]
-            $tag = if ($isDone) { '[ OK ]' } else { '[ .. ]' }
-            $color = if ($isDone) { 'Green' } else { 'White' }
-            Write-Host ("  {0} {1}) {2}" -f $tag, $number, $stage.Name) -ForegroundColor $color
+        foreach ($line in (Get-ParkosStageMenuLines -Stages $stages -StageStatus $script:StageStatus -Prereqs $stagePrereqs)) {
+            Write-Host $line.Text -ForegroundColor $line.Color
         }
+        Write-Host '  [    ] A) Diagnosticar estado actual (Get-ParkosHealth)' -ForegroundColor White
+        Write-Host '  [    ] R) Reparar instalacion rota (Repair-ParkosInstall)' -ForegroundColor White
+        Write-Host '  [    ] U) Actualizar stack completo (Update-ParkosStack)' -ForegroundColor White
+        Write-Host '  [    ] V) Restaurar version anterior (Restore-ParkosVersion)' -ForegroundColor White
+        Write-Host '  [    ] X) Desinstalar Parkos (Uninstall-Parkos)' -ForegroundColor White
+        Write-Host '  [    ] D) Exportar diagnostico para soporte (Export-ParkosDiagnostics)' -ForegroundColor White
+        Write-Host '  [    ] M) Configurar backup automatico (Register-ParkosBackupTask)' -ForegroundColor White
+        Write-Host '  [    ] C) Verificar recuperacion ante corte (Test-CrashRecovery)' -ForegroundColor White
         Write-Host '  [    ] Q) Salir' -ForegroundColor White
         $choice = Read-Host 'Elegi una opcion'
 
-        if ($choice -eq 'q' -or $choice -eq 'Q') { break }
-        if (-not $stages.Contains($choice)) {
+        if ($stages.Contains($choice)) {
+            $stage = $stages[$choice]
+            $script:StageStatus[$stage.Key] = [ParkosStageState]::Running
+            try {
+                Invoke-TuiStep -Name $stage.Name -Action $stage.Action
+                $script:StageStatus[$stage.Key] = [ParkosStageState]::Ok
+            } catch {
+                $script:StageStatus[$stage.Key] = [ParkosStageState]::Failed
+                Write-Host "La etapa '$($stage.Name)' fallo: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host 'Podes reintentar esta opcion o resolver el problema antes de continuar.' -ForegroundColor Yellow
+            }
+            continue
+        }
+
+        $upperChoice = $choice.ToUpper()
+        $installComplete = -not (@($script:StageStatus.Values) | Where-Object { $_ -ne [ParkosStageState]::Ok })
+
+        if ($upperChoice -eq 'Q') {
+            if (-not $installComplete) {
+                $pendingKeys = @($script:StageStatus.Keys) | Where-Object { $script:StageStatus[$_] -ne [ParkosStageState]::Ok }
+                $answer = Read-Host "La instalacion NO esta completa. Etapas pendientes: $($pendingKeys -join ', '). Salir de todos modos? (s/N)"
+                if ($answer -eq 's') {
+                    Write-Host 'Saliendo con la instalacion incompleta (confirmado por el operador).' -ForegroundColor Yellow
+                    break
+                }
+                continue
+            }
+            break
+        }
+
+        if ($letterOptions -notcontains $upperChoice) {
             Write-Host 'Opcion invalida.' -ForegroundColor Red
             continue
         }
 
-        $stage = $stages[$choice]
-        try {
-            Invoke-TuiStep -Name $stage.Name -Action $stage.Action
-            $script:StageStatus[$stage.Key] = $true
-        } catch {
-            Write-Host "La etapa '$($stage.Name)' fallo: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host 'Podes reintentar esta opcion o resolver el problema antes de continuar.' -ForegroundColor Yellow
+        if (-not $installComplete -and $exemptFromCompletionGate -notcontains $upperChoice) {
+            $answer = Read-Host 'La instalacion no esta completa. Continuar? (s/N)'
+            if ($answer -ne 's') {
+                continue
+            }
         }
+
+        if (-not $moduleImported) {
+            Import-Module (Join-Path $script:PayloadRoot 'management\Parkos.psd1') -Force -ErrorAction Stop
+            $moduleImported = $true
+        }
+
+        $exitMenu = $false
+        switch ($upperChoice) {
+            'A' {
+                try {
+                    Get-ParkosHealth -Detailed
+                } catch {
+                    Write-Host "Get-ParkosHealth fallo: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            'R' {
+                try {
+                    $forceAnswer = Read-Host 'Forzar sin confirmacion interactiva? (s/N)'
+                    if ($forceAnswer -eq 's') {
+                        Repair-ParkosInstall -Force
+                    } else {
+                        Repair-ParkosInstall
+                    }
+                } catch {
+                    Write-Host "Repair-ParkosInstall fallo: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            'U' {
+                try {
+                    $payloadPathInput = Read-Host 'Ruta del nuevo payload (-PayloadPath)'
+                    if ([string]::IsNullOrWhiteSpace($payloadPathInput)) {
+                        Write-Host 'Actualizacion cancelada: no se indico una ruta de payload.' -ForegroundColor Yellow
+                    } else {
+                        # Invoke-ParkosUpdate es `param()` - lee $PayloadPath
+                        # del scope de script directamente (mismo mecanismo
+                        # que $script:DataPath mas arriba), nunca
+                        # -PayloadPath posicional/nombrado (esa firma no
+                        # existe en la funcion real).
+                        $script:PayloadPath = $payloadPathInput
+                        $updateResult = Invoke-ParkosUpdate
+                        if ($null -ne $updateResult -and $updateResult.ExitCode -ne 0) {
+                            Write-Host "Invoke-ParkosUpdate fallo: $($updateResult.Detail)" -ForegroundColor Red
+                        }
+                    }
+                } catch {
+                    Write-Host "Invoke-ParkosUpdate fallo: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            'V' {
+                try {
+                    # DEC-INST-37: releases\ vive bajo InstallPath, NUNCA bajo
+                    # DataPath (verificado contra Invoke-ParkosRestore, que
+                    # define $releasesPath = Join-Path $InstallPath
+                    # 'releases').
+                    $releasesPath = Join-Path $paths.InstallPath 'releases'
+                    $availableVersions = Get-ChildItem -Path $releasesPath -Directory -ErrorAction SilentlyContinue |
+                        Select-Object -ExpandProperty Name
+                    if ($availableVersions) {
+                        Write-Host 'Versiones disponibles:' -ForegroundColor Cyan
+                        foreach ($v in $availableVersions) { Write-Host "  - $v" -ForegroundColor White }
+                    } else {
+                        Write-Host "No se encontraron versiones archivadas en $releasesPath." -ForegroundColor Yellow
+                    }
+                    $versionInput = Read-Host 'Version a restaurar'
+                    if ([string]::IsNullOrWhiteSpace($versionInput)) {
+                        Write-Host 'Restore cancelado: no se indico una version.' -ForegroundColor Yellow
+                    } else {
+                        # Invoke-ParkosRestore tambien es `param()` - mismo
+                        # mecanismo que Invoke-ParkosUpdate arriba.
+                        $script:Version = $versionInput
+                        $restoreResult = Invoke-ParkosRestore
+                        if ($null -ne $restoreResult -and $restoreResult.ExitCode -ne 0) {
+                            Write-Host "Invoke-ParkosRestore fallo: $($restoreResult.Detail)" -ForegroundColor Red
+                        }
+                    }
+                } catch {
+                    Write-Host "Invoke-ParkosRestore fallo: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            'X' {
+                try {
+                    $purgeAnswer = Read-Host 'Purgar tambien los datos? (s/N)'
+                    if ($purgeAnswer -eq 's') {
+                        $result = Uninstall-Parkos -PurgeData
+                    } else {
+                        $result = Uninstall-Parkos
+                    }
+                    if ($null -ne $result -and $result.ExitCode -eq 0) {
+                        Write-Host 'Parkos fue desinstalado. Cerrando el menu.' -ForegroundColor Green
+                        $exitMenu = $true
+                    }
+                } catch {
+                    Write-Host "Uninstall-Parkos fallo: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            'D' {
+                try {
+                    $diag = Export-ParkosDiagnostics
+                    if ($null -ne $diag) {
+                        Write-Host "Diagnostico exportado a: $($diag.OutputPath)" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-Host "Export-ParkosDiagnostics fallo: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            'M' {
+                try {
+                    $dailyAtInput = Read-Host 'Hora diaria del backup [03:00]'
+                    if ([string]::IsNullOrWhiteSpace($dailyAtInput)) { $dailyAtInput = '03:00' }
+                    Register-ParkosBackupTask -DailyAt $dailyAtInput
+                } catch {
+                    Write-Host "Register-ParkosBackupTask fallo: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            'C' {
+                try {
+                    $confirmAnswer = Read-Host 'Esto reinicia Postgres a la fuerza. Continuar? (s/N)'
+                    if ($confirmAnswer -eq 's') {
+                        Test-CrashRecovery
+                    } else {
+                        Write-Host 'Cancelado por el operador.' -ForegroundColor Yellow
+                    }
+                } catch {
+                    Write-Host "Test-CrashRecovery fallo: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+        }
+        if ($exitMenu) { break }
     }
 
     $port = $script:port
@@ -1305,7 +2886,203 @@ function Invoke-ParkosInstall {
     Write-Host 'Sesion de instalacion finalizada.' -ForegroundColor Green
 }
 
+# ---------------------------------------------------------------------------
+# Fase 30 - HU-F30.x (PR5 de 11): cascada automatica -Unattended
+# ---------------------------------------------------------------------------
+# DEC-INST-35: hasta este PR, -Unattended -Command Install seguia llamando a
+# Invoke-ParkosInstall - que, aunque respeta $Unattended en Show-Eula/
+# Read-InstallPaths/Read-SucursalUuid, SIEMPRE termina en el bucle del menu
+# interactivo (`Read-Host 'Elegi una opcion'`), asi que en la practica
+# quedaba colgado esperando input humano igual. Invoke-ParkosUnattendedCascade
+# reemplaza ese bucle por una corrida automatica de las 9 etapas en orden
+# (0->8), sin ningun Read-Host, con rollback automatico por etapa fallida
+# (algo que el modo interactivo deliberadamente NO tiene - DEC-INST-17 deja
+# esa decision en manos del operador quien SI esta presente ahi) y logging
+# estructurado a archivo (Write-ParkosInstallerLog).
+
+# Escribe cada linea de log a la vez por consola (Write-Host, igual que el
+# resto del archivo) Y a un archivo de la corrida - un solo archivo por
+# corrida completa (el timestamp se fija UNA vez, al arrancar
+# Invoke-ParkosUnattendedCascade, nunca uno nuevo por linea). Formato:
+# "[yyyy-MM-ddTHH:mm:ss] [Level] Message".
+function Write-ParkosInstallerLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$LogPath,
+        [Parameter(Mandatory)][string]$Level,
+        [Parameter(Mandatory)][string]$Message
+    )
+
+    $timestamp = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss')
+    $line = "[$timestamp] [$Level] $Message"
+
+    Write-Host $line
+
+    $logDir = Split-Path $LogPath
+    if ($logDir -and -not (Test-Path $logDir)) {
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    }
+    Add-Content -Path $LogPath -Value $line
+}
+
+# DEC-INST-34: valida los parametros propios de la cascada -Unattended.
+# Separada de Invoke-ParkosUnattendedCascade a proposito para poder probarla
+# con `{ ... } | Should Throw` de forma aislada, sin tener que mockear toda
+# la cascada solo para verificar un mensaje de validacion.
+function Assert-ParkosCascadeParamsValid {
+    [CmdletBinding()]
+    param(
+        [int[]]$SkipStage = @(),
+        [int]$StopAfterStage = -1,
+        [switch]$Force,
+        [switch]$Unattended,
+        [switch]$EulaAccepted,
+        [string]$CloudApiUrl = ''
+    )
+
+    foreach ($stageNumber in $SkipStage) {
+        if ($stageNumber -lt 0 -or $stageNumber -gt 8) {
+            throw "-SkipStage contiene un valor invalido ($stageNumber) - cada etapa debe estar entre 0 y 8."
+        }
+    }
+    if ($StopAfterStage -ne -1 -and ($StopAfterStage -lt 0 -or $StopAfterStage -gt 8)) {
+        throw "-StopAfterStage invalido ($StopAfterStage) - debe ser -1 (correr todas las etapas) o un valor entre 0 y 8."
+    }
+
+    if ($SkipStage -contains 1) {
+        if (-not $Force) {
+            throw 'Saltar la etapa 1 (Postgres) puede dejar el resto de las etapas sin base de datos - si estas seguro, agrega -Force.'
+        }
+        Write-Host 'Advertencia: -SkipStage incluye la etapa 1 (Postgres) junto con -Force - el resto de la instalacion puede fallar sin una base de datos disponible.' -ForegroundColor Yellow
+    }
+
+    if ($Unattended) {
+        if (-not $EulaAccepted) {
+            throw '-Unattended requiere -EulaAccepted (ver Show-Eula).'
+        }
+        if ([string]::IsNullOrWhiteSpace($CloudApiUrl)) {
+            throw '-Unattended requiere -CloudApiUrl.'
+        }
+        # -SucursalUuid deliberadamente NO se revalida aca: Read-SucursalUuid
+        # ya lanza su propia excepcion en modo -Unattended si viene vacio
+        # (ver mas abajo, dentro de Invoke-ParkosUnattendedCascade) - duplicar
+        # el mismo chequeo en dos lugares solo divergiria con el tiempo.
+    }
+}
+
+function Invoke-ParkosUnattendedCascade {
+    [CmdletBinding()]
+    param()
+
+    $runTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $logPath = Join-Path $DataPath "installer-runs\$runTimestamp.log"
+    Write-ParkosInstallerLog -LogPath $logPath -Level 'INIT' -Message 'parkos-installer iniciando (modo=Unattended)'
+
+    try {
+        Assert-ParkosCascadeParamsValid -SkipStage $SkipStage -StopAfterStage $StopAfterStage -Force:$Force `
+            -Unattended:$Unattended -EulaAccepted:$EulaAccepted -CloudApiUrl $CloudApiUrl
+
+        Write-Host '=== Parkos - pre-flight ===' -ForegroundColor Cyan
+        $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath
+        if (-not $preflightOk) {
+            throw 'Pre-flight fallo - instalacion abortada, sin cambios en el sistema.'
+        }
+
+        Show-Eula | Out-Null
+
+        $paths = Read-InstallPaths -DefaultInstallPath $InstallPath -DefaultDataPath $DataPath
+        $script:DataPath = $paths.DataPath
+
+        # DEC-INST-22: solo valida forma de UUID, nunca inserta nada en
+        # prod.sucursal - lanza su propia excepcion si viene vacio en modo
+        # -Unattended (ver comentario de Assert-ParkosCascadeParamsValid).
+        $resolvedSucursalUuid = Read-SucursalUuid -Uuid $SucursalUuid
+
+        $script:roles = $null
+        $script:port = $null
+        $script:PostgresInstallMethod = $null
+        $script:StageStatus = [ordered]@{
+            build = [ParkosStageState]::NotRun
+            db = [ParkosStageState]::NotRun; migrate = [ParkosStageState]::NotRun; sucursal = [ParkosStageState]::NotRun; seed = [ParkosStageState]::NotRun
+            api = [ParkosStageState]::NotRun; job = [ParkosStageState]::NotRun; electron = [ParkosStageState]::NotRun; verify = [ParkosStageState]::NotRun
+        }
+
+        $definitions = Get-ParkosStageDefinitions -InstallPath $paths.InstallPath -DataPath $paths.DataPath `
+            -SucursalUuid $resolvedSucursalUuid -CloudApiUrl $CloudApiUrl
+        $stages = $definitions.Stages
+    } catch {
+        $message = $_.Exception.Message
+        Write-ParkosInstallerLog -LogPath $logPath -Level 'FAIL' -Message "Configuracion invalida: $message"
+        Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Exit code: 2'
+        return [PSCustomObject]@{ ExitCode = 2; Detail = $message }
+    }
+
+    foreach ($number in 0..8) {
+        $stage = $stages["$number"]
+
+        if ($SkipStage -contains $number) {
+            Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message 'Omitida por -SkipStage'
+        } else {
+            Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message 'Iniciando'
+            $script:StageStatus[$stage.Key] = [ParkosStageState]::Running
+            $stageStart = Get-Date
+            try {
+                & $stage.Action
+                $script:StageStatus[$stage.Key] = [ParkosStageState]::Ok
+                $elapsedSeconds = [int]((Get-Date) - $stageStart).TotalSeconds
+                Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message "[OK] $($stage.Name)"
+                Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message "Estado: Ok (${elapsedSeconds}s)"
+            } catch {
+                $failureMessage = $_.Exception.Message
+                $script:StageStatus[$stage.Key] = [ParkosStageState]::Failed
+                Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message "[FAIL] $failureMessage"
+
+                if ($null -ne $stage.Rollback) {
+                    try {
+                        & $stage.Rollback
+                        $script:StageStatus[$stage.Key] = [ParkosStageState]::RolledBack
+                        Write-ParkosInstallerLog -LogPath $logPath -Level 'ROLLBACK' -Message "[OK] $($stage.Name)"
+                    } catch {
+                        Write-ParkosInstallerLog -LogPath $logPath -Level 'ROLLBACK' -Message "[FAIL] $($_.Exception.Message)"
+                    }
+                }
+
+                Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Exit code: 1'
+                return [PSCustomObject]@{ ExitCode = 1; Detail = "Etapa $number ($($stage.Name)) fallo: $failureMessage" }
+            }
+        }
+
+        if ($StopAfterStage -ne -1 -and $number -eq $StopAfterStage) {
+            Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message "Detenido en etapa $number por -StopAfterStage"
+            Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Exit code: 0'
+            return [PSCustomObject]@{ ExitCode = 0; Detail = "Detenido deliberadamente en etapa $number (-StopAfterStage)." }
+        }
+    }
+
+    Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Estado final: Ok (todas las etapas)'
+    Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Exit code: 0'
+    return [PSCustomObject]@{ ExitCode = 0; Detail = 'Instalacion desatendida completada (todas las etapas).' }
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
     $script:OriginalArgs = $args
-    Invoke-ParkosInstall
+    switch ($Command) {
+        'Install' {
+            if ($Unattended) {
+                # DEC-INST-35: nunca Invoke-ParkosInstall aca - ese es el
+                # menu interactivo (Read-Host), incompatible con -Unattended
+                # por diseno. La funcion de cascada nunca llama `exit`
+                # internamente (para poder testearla con Pester, que no
+                # intercepta un `exit` real del proceso host de forma
+                # confiable) - este wrapper delgado es el UNICO lugar del
+                # archivo que traduce su ExitCode a una salida real de
+                # proceso.
+                $cascadeResult = Invoke-ParkosUnattendedCascade
+                exit $cascadeResult.ExitCode
+            }
+            Invoke-ParkosInstall
+        }
+        'Update'  { $updateResult = Invoke-ParkosUpdate; exit $updateResult.ExitCode }
+        'Restore' { $restoreResult = Invoke-ParkosRestore; exit $restoreResult.ExitCode }
+    }
 }

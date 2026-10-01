@@ -1,0 +1,71 @@
+TOPIC
+    about_Parkos
+
+SHORT DESCRIPTION
+    Cmdlets de gestion del ciclo de vida de una instalacion Parkos en una
+    sucursal.
+
+LONG DESCRIPTION
+    El modulo Parkos se instala junto con el stack de sucursal (Postgres,
+    api-sucursal, job-sync-sucursal, web_sucursal) y permite a un tecnico de
+    campo diagnosticar, reparar, desinstalar y respaldar una instalacion
+    existente sin necesitar el instalador TUI completo
+    (parkos-installer.ps1).
+
+    El modulo se importa de forma independiente:
+
+        Import-Module Parkos
+
+    Cmdlets disponibles:
+
+    Get-ParkosHealth
+        Corre 6 checks de salud (Postgres, servicio api-sucursal, servicio
+        job-sync-sucursal, endpoint /health, doctor.exe, espacio en disco) y
+        devuelve un veredicto con codigo de salida 0/1/2.
+
+    Repair-ParkosInstall
+        Repara automaticamente escenarios conocidos y seguros (NSSM
+        faltante, servicio detenido, binario alterado, ACL alterada, .env
+        ilegible); aborta sin tocar nada ante una base de datos corrupta o
+        tras 3 reintentos fallidos.
+
+    Uninstall-Parkos
+        Desinstala el stack de sucursal, preservando los datos por defecto
+        (o purgandolos si se pide explicitamente).
+
+    Export-ParkosDiagnostics
+        Genera un ZIP de diagnostico (logs, configuracion, hechos del
+        entorno) con los secretos redactados, listo para escalar un
+        problema.
+
+    Register-ParkosBackupTask
+        Crea la tarea programada de backup diario de Postgres via pg_dump.
+
+    Test-CrashRecovery
+        Simula un corte abrupto de Postgres y verifica la recuperacion via
+        WAL dentro de un tiempo limite.
+
+    Get-ParkosVersion
+        Devuelve la version instalada de los binarios y del propio modulo.
+
+    Test-ParkosSecretsAcl
+        Verifica que la carpeta de secretos solo sea accesible para
+        Administrators y SYSTEM.
+
+    NOTA (PR1): en esta version los 8 cmdlets son placeholders - registran
+    un log de mejor esfuerzo, muestran un aviso en pantalla y retornan sin
+    hacer cambios reales. La implementacion real de cada uno llega en PRs
+    futuros (PR2-PR9).
+
+EXAMPLES
+    PS C:\> Get-ParkosHealth
+
+SEE ALSO
+    Get-ParkosHealth
+    Repair-ParkosInstall
+    Uninstall-Parkos
+    Export-ParkosDiagnostics
+    Register-ParkosBackupTask
+    Test-CrashRecovery
+    Get-ParkosVersion
+    Test-ParkosSecretsAcl

@@ -1,0 +1,132 @@
+name: installer E2E unattended lifecycle
+
+# PR11/11 (plan de cierre de gaps del instalador, HU-F30.4-T3 / DEC-INST-24..35)
+# — smoke test de release de punta a punta en una VM Windows desechable de
+# GitHub Actions: instalacion limpia -Unattended -> chequeo de salud ->
+# -Command Update -> -Command Restore -> chequeo de salud otra vez.
+#
+# workflow_dispatch UNICAMENTE (nunca push/pull_request) a proposito: esto
+# instala un Postgres real, servicios NSSM reales y una cuenta local real
+# (svc-parkos) en el runner, cuesta minutos de CI reales (los runners
+# Windows hospedados por GitHub se facturan a 2x la tarifa por minuto de un
+# runner Linux) y es una suite de smoke-test de RELEASE, no un chequeo por
+# cada PR. Se dispara a mano hoy; podria conectarse mas adelante como un
+# `needs:` de un workflow de release real - eso queda fuera de alcance de
+# este PR.
+#
+# runs-on fijado a windows-2022 (nunca windows-latest, para no correr contra
+# un target de SO movil que cambiaria el comportamiento de instalacion de
+# servicios/NSSM de forma impredecible). plan.md (HU-F30.3/HU-F30.4) asumia
+# originalmente `windows-2019`, pero esa imagen entro en deprecacion el
+# 2025-06-01 y fue retirada por completo el 2025-06-30 (verificado:
+# actions/runner-images issues #12045 y #12955, y el changelog de GitHub del
+# 2025-04-15) - ya no es seleccionable, de ahi la sustitucion.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: >-
+          Tag/version opcional a registrar en el resumen de la corrida
+          (puramente informativo - este job NUNCA reinstala desde una
+          release N-1 real publicada, ver el comentario en
+          Invoke-UpdateAndRestoreCycle dentro del script invocado abajo).
+        required: false
+        type: string
+
+jobs:
+  unattended-install-health:
+    name: unattended install + health
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      # Los runners Windows hospedados por GitHub ya traen pwsh (PowerShell
+      # 7) preinstalado - no hace falta un paso de setup-powershell aparte
+      # (confirmado: es el shell por defecto de `run:` en este mismo job via
+      # `defaults.run.shell: pwsh` de arriba, y build-release.ps1/
+      # parkos-installer.ps1 ya asumen pwsh en el resto del repo).
+      #
+      # Elevacion: los pasos de un runner Windows hospedado por GitHub
+      # corren, segun observacion consistente de la comunidad y de otros
+      # workflows que instalan servicios/escriben HKLM sin pasos de
+      # elevacion adicionales, con un token de proceso que ya satisface
+      # WindowsPrincipal.IsInRole(Administrator) (la cuenta de servicio del
+      # runner es miembro de Administradores). parkos-installer.ps1's propio
+      # Test-Preflight exige exactamente ese rol y NO esta mockeado aqui, asi
+      # que si esa asuncion fuera falsa este job fallaria alto y claro en el
+      # primer stage, en vez de fallar en silencio mas adelante - no se pudo
+      # verificar esto lanzando un runner real desde esta sesion.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      # ci.yml (workflow de backend) nunca configura Node/pnpm, asi que no
+      # hay una convencion de pnpm propia del repo que replicar aca.
+      # Corepack viene incluido con Node >= 16.9 y es el mecanismo
+      # documentado para obtener pnpm sin una action de terceros aparte;
+      # apps/package.json no fija un campo "packageManager", de ahi el
+      # `prepare pnpm@latest --activate` explicito.
+      - name: Enable pnpm via Corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      # NOTA (verificada durante la investigacion de este PR): el unico
+      # pnpm-workspace.yaml del repo vive en apps/pnpm-workspace.yaml, NO en
+      # la raiz del repo - por eso `pnpm install` corre con working-directory
+      # apps aca. build-release.ps1's Build-WebSucursal, en cambio,
+      # Push-Location a la raiz del repo y corre `pnpm --filter
+      # '@parkos/electron-sucursal' build` desde ahi; si esto es correcto o
+      # no es una preocupacion PRE-EXISTENTE de build-release.ps1 (que este
+      # PR tiene prohibido modificar), no de este workflow.
+      - name: Install web_sucursal workspace dependencies (pnpm)
+        working-directory: apps
+        run: pnpm install --frozen-lockfile
+
+      # Mismo setup-uv que ya usa .github/workflows/ci.yml (astral-sh/
+      # setup-uv@v3) en vez del one-liner `irm .../install.ps1 | iex`: ese
+      # one-liner instala uv pero NO agrega su carpeta a $GITHUB_PATH, asi
+      # que pasos posteriores del mismo job (uv run pyinstaller dentro de
+      # build-release.ps1) no lo verian en el PATH sin un paso extra de
+      # `echo ... >> $env:GITHUB_PATH`. La action oficial ya resuelve el
+      # PATH y el cache correctamente y mantiene consistencia con ci.yml.
+      - uses: astral-sh/setup-uv@v3
+
+      # Build de release completo (Electron MSI + los 4 exes congelados por
+      # PyInstaller + el payload offline de Postgres/pg_partman/NSSM/PS7) -
+      # sin switches -> corre las 8 etapas (build-release.ps1 trata "ningun
+      # switch" como -All). Build pesado (~10+ min); necesita pnpm y uv ya
+      # en PATH (pasos de arriba).
+      - name: Build release payload
+        run: pwsh -File installer/build-release.ps1
+
+      - name: Generate a disposable sucursal UUID for this run
+        id: sucursal
+        run: |
+          $uuid = [guid]::NewGuid().ToString()
+          "uuid=$uuid" >> $env:GITHUB_OUTPUT
+
+      # Toda la orquestacion (install -> health -> update -> restore ->
+      # health) vive en el script invocado, no inline aca - ver
+      # installer/tests/e2e/Invoke-UnattendedE2E.ps1, reproducible a mano por
+      # un ingeniero en una VM real sin leer este YAML.
+      - name: Run unattended install -> health -> update -> restore -> health cycle
+        run: >-
+          pwsh -File installer/tests/e2e/Invoke-UnattendedE2E.ps1
+          -SucursalUuid '${{ steps.sucursal.outputs.uuid }}'
+          -CloudApiUrl 'https://parkos-e2e.invalid'
+          -VersionTag '${{ inputs.version_tag }}'
+
+      - name: Upload installer logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parkos-installer-e2e-logs
+          path: |
+            C:\ProgramData\Parkos\installer-runs\*.log
+            C:\ProgramData\Parkos\logs\*
+          if-no-files-found: warn
