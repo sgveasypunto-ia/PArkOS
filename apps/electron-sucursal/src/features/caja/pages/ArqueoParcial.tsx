@@ -40,6 +40,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput } from '@/components/ui/money-input';
 import {
   Card,
   CardContent,
@@ -281,16 +282,11 @@ export function ArqueoParcial(): JSX.Element {
               defaultValue: 'Efectivo contado',
             })}
           </label>
-          <Input
-            id="arqueo-efectivo-input"
-            type="number"
-            inputMode="decimal"
-            data-testid="arqueo-efectivo-input"
-            value={reportEfectivo}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setReportEfectivo(Number.isFinite(v) && v >= 0 ? v : 0);
-            }}
+          <MoneyInput
+            inputId="arqueo-efectivo-input"
+            inputTestId="arqueo-efectivo-input"
+            value={reportEfectivo || undefined}
+            onChange={(raw) => setReportEfectivo(raw === '' ? 0 : Number(raw))}
             placeholder="0"
           />
         </div>
@@ -300,16 +296,11 @@ export function ArqueoParcial(): JSX.Element {
               defaultValue: 'Datáfono contado',
             })}
           </label>
-          <Input
-            id="arqueo-datafono-input"
-            type="number"
-            inputMode="decimal"
-            data-testid="arqueo-datafono-input"
-            value={reportDatafono}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setReportDatafono(Number.isFinite(v) && v >= 0 ? v : 0);
-            }}
+          <MoneyInput
+            inputId="arqueo-datafono-input"
+            inputTestId="arqueo-datafono-input"
+            value={reportDatafono || undefined}
+            onChange={(raw) => setReportDatafono(raw === '' ? 0 : Number(raw))}
             placeholder="0"
           />
         </div>

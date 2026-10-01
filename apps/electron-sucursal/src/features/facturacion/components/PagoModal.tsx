@@ -25,6 +25,7 @@ import { z } from 'zod';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput } from '@/components/ui/money-input';
 import {
   Form,
   FormControl,
@@ -444,11 +445,13 @@ export function PagoModal({
                 <FormItem>
                   <FormLabel>{t('facturacion:pago.montoRecibido', { defaultValue: 'Monto recibido' })}</FormLabel>
                   <FormControl>
-                    <Input
-                      type="number"
-                      inputMode="numeric"
-                      data-testid="pago-monto-recibido"
-                      {...field}
+                    <MoneyInput
+                      inputTestId="pago-monto-recibido"
+                      value={field.value}
+                      onChange={(raw) => field.onChange(raw === '' ? 0 : Number(raw))}
+                      onBlur={field.onBlur}
+                      name={field.name}
+                      ref={field.ref}
                     />
                   </FormControl>
                   <FormMessage />

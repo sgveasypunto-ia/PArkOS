@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput } from '@/components/ui/money-input';
 import {
   Card,
   CardContent,
@@ -39,17 +40,15 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 
-import {
-  NUMERIC_INPUT_REGEX,
-  type AbrirTurnoInput,
-} from '../api/schemas/turnoSchema';
+import { type AbrirTurnoInput } from '../api/schemas/turnoSchema';
 
 /**
  * Raw RHF form-state shape — BEFORE `abrirTurnoSchema`'s `.transform()`
  * coerces the numeric fields to `number` on submit. The operator types
- * into a `type="text"` input (see `NUMERIC_INPUT_REGEX` below) so the
- * live form state MUST stay `string`; `AbrirTurnoInput` (turnoSchema.ts)
- * is the POST-transform/output shape the submit handler receives.
+ * into a `<MoneyInput>` (digits-only, es-CO thousands grouping) whose
+ * `onChange` hands back a raw digit string, so the live form state MUST
+ * stay `string`; `AbrirTurnoInput` (turnoSchema.ts) is the
+ * POST-transform/output shape the submit handler receives.
  */
 export type AbrirTurnoFormValues = Omit<
   AbrirTurnoInput,
@@ -130,32 +129,20 @@ export function AbrirTurnoForm({
             <FormItem>
               <FormLabel>{t('caja:valorInicialEfectivo')}</FormLabel>
               <FormControl>
-                {/* type="text" + regex filter (NUMERIC_INPUT_REGEX del
-                   schema) -- los inputs numéricos `type="number"`
-                   tienen quirks en Electron/Chromium que el operador
-                   sufria: defaultValue=0 que no se podia borrar,
-                   scroll-wheels que cambiaban el valor, etc. Con
-                   text + filtro el operador puede borrar, tipear
-                   libremente, pegar, y los keystrokes invalidos se
-                   caen silenciosamente sin tocar el field. Schema
-                   valida la misma regex en blur/submit; ver
-                   api/schemas/turnoSchema.ts. */}
-                <Input
-                  {...field}
-                  type="text"
-                  inputMode="decimal"
-                  autoComplete="off"
-                  data-testid="abrir-turno-valor-efectivo"
-                  value={field.value ?? ''}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    if (raw === '' || NUMERIC_INPUT_REGEX.test(raw)) {
-                      // Mantenemos el field como string en form state
-                      // (coherente con el schema). El transform del
-                      // schema lo convierte a number en submit.
-                      field.onChange(raw);
-                    }
-                  }}
+                {/* MoneyInput sanitiza a solo-dígitos en cada tecla
+                   (ningún carácter inválido llega al form state),
+                   formatea con separador de miles es-CO mientras se
+                   tipea, y sigue entregando al field un string de
+                   dígitos crudos — coherente con el shape `string`
+                   pre-transform que espera el schema (ver
+                   api/schemas/turnoSchema.ts). */}
+                <MoneyInput
+                  value={field.value === '' ? undefined : Number(field.value)}
+                  onChange={field.onChange}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  ref={field.ref}
+                  inputTestId="abrir-turno-valor-efectivo"
                   placeholder={t('caja:valorInicialEfectivoPlaceholder', {
                     defaultValue: 'Ingrese aquí el valor…',
                   })}
@@ -173,19 +160,13 @@ export function AbrirTurnoForm({
             <FormItem>
               <FormLabel>{t('caja:valorInicialDatafono')}</FormLabel>
               <FormControl>
-                <Input
-                  {...field}
-                  type="text"
-                  inputMode="decimal"
-                  autoComplete="off"
-                  data-testid="abrir-turno-valor-datafono"
-                  value={field.value ?? ''}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    if (raw === '' || NUMERIC_INPUT_REGEX.test(raw)) {
-                      field.onChange(raw);
-                    }
-                  }}
+                <MoneyInput
+                  value={field.value === '' ? undefined : Number(field.value)}
+                  onChange={field.onChange}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  ref={field.ref}
+                  inputTestId="abrir-turno-valor-datafono"
                   placeholder={t('caja:valorInicialDatafonoPlaceholder', {
                     defaultValue: 'Ingrese aquí el valor…',
                   })}
