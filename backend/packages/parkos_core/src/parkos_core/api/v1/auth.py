@@ -82,6 +82,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 ACCESS_TOKEN_TTL = 3600  # 1 hour
 REFRESH_TOKEN_TTL = 7 * 24 * 3600  # 7 days
 
+# HU-F13.2 (plan.md:3120) — roles that emit an ``operador-`` JWT issuer.
+# ``"Usuario"`` is the CU-08 business-role label; ``"operador"`` is kept for
+# retro-compatibility with existing data/tests. Every other role
+# (Facturador, Supervisor, Administrador, Auditor, Desarrollo) emits
+# ``admin-``.
+ROLES_OPERADOR = {"operador", "Usuario"}
+
 # HU-F1.2 defaults (KD-3, plan.md:609) — used when
 # ``resolve_efectiva_seguridad`` returns ``None`` (no per-branch override
 # AND no global default row in ``configuracion_seguridad``). Logging a
@@ -310,7 +317,7 @@ async def login(
     if user.debe_cambiar_password:
         temp_token = issue_token(
             subject_uuid=user.uuid,
-            issuer="operador-" if user.rol == "operador" else "admin-",
+            issuer="operador-" if user.rol in ROLES_OPERADOR else "admin-",
             claims={
                 "purpose": "must_change",
                 "must_change_password": True,
@@ -357,7 +364,7 @@ async def login(
         str(s.uuid)
         for s in (await _select_sucursales_permitidas(session, user.uuid)).scalars().all()
     ]
-    issuer = "operador-" if user.rol == "operador" else "admin-"
+    issuer = "operador-" if user.rol in ROLES_OPERADOR else "admin-"
     claims = {
         "rol": user.rol or "operador",
         "sucursales_permitidas": permitidas,
@@ -556,7 +563,7 @@ async def cambiar_password(
         str(s.uuid)
         for s in (await _select_sucursales_permitidas(session, user.uuid)).scalars().all()
     ]
-    issuer = "operador-" if user.rol == "operador" else "admin-"
+    issuer = "operador-" if user.rol in ROLES_OPERADOR else "admin-"
     claims_for_pair = {
         "rol": user.rol or "operador",
         "sucursales_permitidas": permitidas,
