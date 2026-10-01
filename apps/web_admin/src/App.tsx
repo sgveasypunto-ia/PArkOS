@@ -21,6 +21,7 @@ import TipoTarifa from '@/features/tipo-tarifa/pages/TipoTarifa';
 import ConfiguracionTolerancias from '@/features/configuracion-tolerancias/pages/ConfiguracionTolerancias';
 import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/ConfiguracionSeguridad';
 import Reporteria from '@/features/reporteria/pages/Reporteria';
+import { ArqueosPage } from '@/features/arqueos/pages/ArqueosPage';
 
 /**
  * Route tree.
@@ -95,6 +96,7 @@ export default function App() {
           <Route path="/empresa" element={<EmpresaPage />} />
           <Route path="/usuarios" element={<UsuariosList />} />
           <Route path="/usuarios/:uuid" element={<UsuarioDetalle />} />
+          <Route path="/arqueos" element={<ArqueosPage />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 

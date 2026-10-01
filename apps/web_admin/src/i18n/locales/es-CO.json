@@ -233,6 +233,10 @@
     "usuarios": {
       "label": "Usuarios",
       "description": "Gestioná usuarios administradores y operadores, asigná sucursales y configurá permisos."
+    },
+    "arqueos": {
+      "label": "Arqueos",
+      "description": "Listado cross-branch de arqueos con filtros por sucursal, fecha y tipo."
     }
   },
   "catalogos": {
@@ -672,5 +676,45 @@
     "permisos": {
       "ultimoAdminRevoke": "No se puede revocar el permiso admin_usuarios del último administrador. Crea o activa otro admin primero."
     }
+  },
+  "arqueos": {
+    "title": "Arqueos",
+    "subtitle": "Listado admin cross-branch de arqueos con filtros por sucursal, fecha y tipo.",
+    "listTitle": "Resultados",
+    "filters.title": "Filtros",
+    "filters.branch": "Sucursal",
+    "filters.allBranches": "Todas las sucursales",
+    "filters.dateFrom": "Desde",
+    "filters.dateTo": "Hasta",
+    "filters.type": "Tipo de arqueo",
+    "filters.allTypes": "Todos los tipos",
+    "filters.reset": "Limpiar",
+    "empty": "Sin arqueos registrados con esos filtros.",
+    "errorLoading": "No se pudieron cargar los arqueos.",
+    "table.createdAt": "Fecha",
+    "table.sucursal": "Sucursal",
+    "table.tipo": "Tipo",
+    "table.sesion": "Sesión",
+    "table.efectivo": "Efectivo reportado",
+    "table.datafono": "Datáfono reportado",
+    "table.hashChain": "Cadena hash",
+    "table.openButton": "Ver detalle",
+    "table.loadMore": "Cargar más",
+    "table.loadingMore": "Cargando...",
+    "detail.title": "Detalle del arqueo",
+    "detail.close": "Cerrar",
+    "detail.pickRow": "Selecciona un arqueo de la lista para ver su detalle.",
+    "detail.loading": "Cargando detalle...",
+    "detail.errorLoading": "No se pudo cargar la diferencia.",
+    "detail.hashChain": "Cadena hash",
+    "detail.diferenciasTitle": "Diferencias",
+    "detail.medio": "Medio",
+    "detail.esperado": "Esperado",
+    "detail.reportado": "Reportado",
+    "detail.diferencia": "Diferencia",
+    "detail.efectivo": "Efectivo",
+    "detail.datafono": "Datáfono",
+    "detail.descuadreWarning": "Hay descuadre: el arqueo requiere justificación en el siguiente paso.",
+    "detail.viewAlerta": "Ver alerta generada"
   }
 }
