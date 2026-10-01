@@ -90,6 +90,7 @@ from ...schemas.empresa import (
     EmpresaRead,
     EmpresaReadList,
     EmpresaUpdate,
+    ResolucionFacturacionConsecutivoActual,
     ResolucionFacturacionCreate,
     ResolucionFacturacionRead,
     ResolucionFacturacionReadList,
@@ -1207,6 +1208,67 @@ async def list_resolucion_facturacion_vigente_en(
         )
     items = [ResolucionFacturacionRead.model_validate(r) for r in rows]
     return ResolucionFacturacionReadList(items=items, next_cursor=next_cursor)
+
+
+@_resolucion_dedicated_router.get(
+    "/{uuid}/consecutivo-actual",
+    response_model=ResolucionFacturacionConsecutivoActual,
+    responses={404: {"description": "resolucion_no_encontrada"}},
+)
+async def get_resolucion_facturacion_consecutivo_actual(
+    uuid: uuid_lib.UUID = Path(
+        ...,
+        description="UUIDv4 de la fila de prod.resolucion_facturacion a consultar.",
+    ),
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_resolucion_issuer_dep),
+) -> ResolucionFacturacionConsecutivoActual:
+    """HU-F15.3 BR1/BR2 — ``GET /empresa/resolucion-facturacion/{uuid}/consecutivo-actual``.
+
+    Read-only projection of the current consecutivo + remaining-range state
+    for one resolución. Mirrors ``dian.cloud.atomic_next_consecutivo
+    .next_consecutivo``'s read (``COALESCE(MAX(consecutivo), rango_desde - 1)
+    + 1`` scoped to the resolution) but WITHOUT ``SELECT ... FOR UPDATE``:
+    this handler never allocates a consecutivo, it only reports the current
+    state, so it does not need (and must not take) the write-path lock.
+    Registered on the same ``_resolucion_dedicated_router`` as the BR4
+    ``vigente_en`` list handler above, so it inherits the same DIAN boundary
+    exclusion (``_CLOUD_ONLY_EMPRESA_RESOURCES`` in ``api/v1/__init__.py``
+    matches the router's ``_SUB_ROUTERS`` key, not the individual path).
+    """
+    row = (
+        await session.execute(
+            select(ResolucionFacturacion).where(ResolucionFacturacion.uuid == uuid)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "resolucion_no_encontrada", "uuid": str(uuid)},
+        )
+
+    start = (row.rango_desde - 1) if row.rango_desde is not None else -1
+    max_consecutivo = (
+        await session.execute(
+            text(
+                "SELECT COALESCE(MAX(consecutivo), :start) "
+                "FROM prod.factura_electronica "
+                "WHERE uuid_resolucion_facturacion = :uuid"
+            ),
+            {"start": start, "uuid": str(uuid)},
+        )
+    ).scalar_one()
+    consecutivo_actual = int(max_consecutivo) + 1
+    rango_hasta = row.rango_hasta
+    restantes = (rango_hasta - consecutivo_actual) if rango_hasta is not None else None
+    agotandose = restantes is not None and restantes < 100
+    return ResolucionFacturacionConsecutivoActual(
+        consecutivo_actual=consecutivo_actual,
+        rango_hasta=rango_hasta,
+        restantes=restantes,
+        agotandose=agotandose,
+    )
 
 
 # ---------------------------------------------------------------------------
