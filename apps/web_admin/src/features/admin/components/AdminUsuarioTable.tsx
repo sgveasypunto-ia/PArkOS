@@ -20,15 +20,24 @@
  *     consumes the per-user endpoint (`/admin/usuarios/{uuid}/sucursales`)
  *     via `useAdminUsuarioSucursales` because the modal needs the
  *     full bi-temporal lifecycle fields, not just the summary.
- *   - Actions column exposes "Asignar sucursales" (opens the manager
- *     modal). Edit is intentionally out of scope: the backend has no
- *     PUT endpoint, so the UI cannot mutate fields other than the
- *     branch list.
+ *   - Actions column exposes "Detalle" (navigates to
+ *     `/usuarios/{uuid}`, the HU-F16 detail screen) and "Asignar
+ *     sucursales" (opens the manager modal).
+ *
+ * Why the detail link matters: the PUT endpoint DOES exist
+ * (`PUT /api/v1/admin/usuarios/{uuid}`, wired in `admin_usuarios.py`)
+ * and the permisos / update / reset features all live on the detail
+ * screen. Before this link existed that screen was reachable only by
+ * hand-typing a uuid, so a perfectly working feature was effectively
+ * dead in the UI. An earlier revision of this docblock claimed the
+ * backend had no PUT endpoint; that was stale and hid the feature from
+ * everyone reading it.
  */
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 
 import type {
   AdminUsuarioRead,
@@ -192,7 +201,17 @@ export function AdminUsuarioTable({
                 scope="row"
                 className="px-3 py-2 text-left align-top font-normal"
               >
-                <span className="block font-medium">{user.email ?? '—'}</span>
+                {/* A real <Link>, not an onClick on the row: this keeps
+                    middle-click / ctrl-click / "open in new tab" working
+                    and keeps the target keyboard-reachable (a clickable
+                    <tr> is neither, and axe flags it). */}
+                <Link
+                  to={`/usuarios/${user.uuid}`}
+                  className="block font-medium underline-offset-2 hover:underline"
+                  data-testid={`admin-row-${user.uuid}-detail-link`}
+                >
+                  {user.email ?? '—'}
+                </Link>
                 <span className="text-muted-foreground block font-mono text-[11px]">
                   {user.uuid}
                 </span>
@@ -212,15 +231,27 @@ export function AdminUsuarioTable({
                 </Badge>
               </td>
               <td className="px-3 py-2 align-top text-right">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onAssignSucursales(user)}
-                  data-testid={`admin-row-${user.uuid}-assign`}
-                >
-                  {t('gestionUsuarios.actions.assignSucursales', 'Asignar sucursales')}
-                </Button>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Link
+                    to={`/usuarios/${user.uuid}`}
+                    className={buttonVariants({
+                      variant: 'outline',
+                      size: 'sm',
+                    })}
+                    data-testid={`admin-row-${user.uuid}-detalle`}
+                  >
+                    {t('gestionUsuarios.actions.detalle', 'Detalle')}
+                  </Link>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onAssignSucursales(user)}
+                    data-testid={`admin-row-${user.uuid}-assign`}
+                  >
+                    {t('gestionUsuarios.actions.assignSucursales', 'Asignar sucursales')}
+                  </Button>
+                </div>
               </td>
             </tr>
           ))}

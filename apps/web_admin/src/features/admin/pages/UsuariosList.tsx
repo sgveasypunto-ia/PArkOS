@@ -8,9 +8,12 @@
  *   - Lets the admin assign/unassign branches per user via the
  *     AdminUsuarioSucursalesManager modal.
  *
- * Edit by row is intentionally NOT exposed: the backend has no
- * PUT `/admin/usuarios/{uuid}` endpoint, so any "Editar" button
- * would silently no-op. The roadmap lists this as a follow-up.
+ * Field editing lives on the detail screen (`/usuarios/{uuid}`), which
+ * the table links to from the email and the "Detalle" button. The PUT
+ * endpoint does exist and is wired -- an earlier revision of this
+ * docblock claimed it did not, which is what kept the detail screen
+ * unreachable for so long. This page owns creation plus branch
+ * assignment; it deliberately does not duplicate the edit form.
  *
  * Cross-branch scope: the list is global by design (IT-1.4 admin
  * user management is admin-wide, not per-sucursal). The picker

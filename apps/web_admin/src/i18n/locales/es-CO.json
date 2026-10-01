@@ -557,7 +557,8 @@
       "sinSucursales": "—"
     },
     "actions": {
-      "assignSucursales": "Asignar sucursales"
+      "assignSucursales": "Asignar sucursales",
+      "detalle": "Detalle"
     },
     "modal": {
       "create": "Crear nuevo usuario",

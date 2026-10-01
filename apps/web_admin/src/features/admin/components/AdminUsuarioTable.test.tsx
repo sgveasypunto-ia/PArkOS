@@ -30,6 +30,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
 import { render, screen } from '@testing-library/react';
 import { SWRConfig } from 'swr';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('@parkos/ui-kit/fetch', () => ({
   parkosFetchRaw: vi.fn(),
@@ -73,15 +74,20 @@ function requestedUrls(): string[] {
 }
 
 /**
- * Per-test SWR cache. Without this, fetches written by a previous test
- * would satisfy the next one — same mechanism that caused the original
- * SWR-key shape collision.
+ * Per-test SWR cache + a Router. Without this, fetches written by a
+ * previous test would satisfy the next one — same mechanism that caused
+ * the original SWR-key shape collision.
+ *
+ * The Router is required because the table renders the detail `<Link>`
+ * on the email cell. `<Link>` outside a Router throws, so any future
+ * addition of a router-aware element to this table has to keep this
+ * wrapper in place.
  */
 function isolatedCache({ children }: { children: ReactNode }) {
   return createElement(
     SWRConfig,
     { value: { provider: () => new Map(), dedupingInterval: 0 } },
-    children,
+    createElement(MemoryRouter, null, children),
   );
 }
 
