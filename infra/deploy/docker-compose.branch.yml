@@ -102,7 +102,11 @@ services:
     networks:
       - parkos-branch-net
     ports:
-      - "8000:8000"
+      # host 8100 -> container 8000. The cloud api-admin already owns host
+      # 8000 (web_admin proxies to :8000), and electron-sucursal's Vite
+      # proxy targets http://localhost:8100. Publishing 8000 here collided
+      # with api-admin and made `compose up` fail to program the endpoint.
+      - "8100:8000"
     volumes:
       - jwt-volume:/var/run/parkos
     command: ["python", "-m", "uvicorn", "parkos_core.api.app_factory:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

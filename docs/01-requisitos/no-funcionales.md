@@ -91,6 +91,19 @@
 
 Nota adicional (no pedida explícitamente, pero real): otras 3 tablas también están particionadas por el mismo mecanismo — `pairing_tokens` y `revoked_sync_jwts` por `fecha_retencion_hasta`, y `sync_queue_lw_buffer` por `buffered_at` (particionado diario, no mensual). El privilegio de `rol_app` sobre una tabla particionada se hereda automáticamente a todas sus particiones desde PostgreSQL 11 (nota explícita de la migración `0021`).
 
+> **CORRECCIÓN 2026-10-01 — este requisito NO estaba cumplido, y el "confirmado" era falso.** `RANGE (fecha_retencion_hasta)` en el DML confirma que las tablas *están* particionadas; no confirma que *alguien mantenga* esas particiones. `pg_partman` 5.5.0 sí estaba instalado, con `pg_partman_bgw` en `shared_preload_libraries` y las 8 tablas registradas en `partman.part_config` con `automatic_maintenance = 'on'`. Ninguno de esos hechos demuestra nada, porque las 8 estaban registradas como `parkos.prod.<tabla>` en vez de `prod.<tabla>`: el worker emitía
+>
+> ```
+> WARNING:  pg_partman maintenance skipped partition set for parent table
+>           parkos.prod.salidas: Given parent table not found in system catalogs
+> ```
+>
+> y salía con código 0. `maintenance_last_run` era `NULL` en las 9 filas. Las particiones se habían creado una sola vez, en septiembre 2026, cuando corrió `0001_initial_schema.py` con `date_trunc('month', CURRENT_DATE)` — un valor que no se reevalúa. El 2026-10-01 el sistema llevaba **un mes** sin partición para el mes en curso: `sync_queue` no tiene partición DEFAULT, así que el trigger `login_enqueue_sync` de `prod.login` lanzaba `CheckViolationError` y `POST /api/v1/auth/login` devolvía **500 con credenciales válidas**. Las otras 9 degradaban en silencio a `*_default` sin ninguna alerta.
+>
+> Causa raíz twofold: (1) los nombres en `part_config` nunca resolvieron, y (2) aun corregidos, `pg_cron` no está disponible en la imagen, así que nada invoca `run_maintenance_proc()`.
+>
+> Estado hoy: migración `0064_ensure_forward_partitions` repara los nombres de `part_config` **y** crea las particiones explícitamente (292 particiones: ventana cercana 2026-10..2028-01, ventana de retención DIAN 2031-10..2032-07, buffer diario 31 días + DEFAULT). `openspec/scripts/check_schema_match.py` check (h) ahora es conductual: verifica cobertura de `CURRENT_DATE`, que cada `parent_table` resuelva a una relación real, y que ningún `*_default` reciba filas nuevas. El mecanismo automático queda como deuda técnica en [ADR-004](../02-arquitectura/decisiones-tecnicas.md#adr-004).
+
 **RNF-PERF-02 — Límites de tasa por endpoint de sync** (protegen al cloud de saturación por sucursales): `push` 60/min, `pull` 120/min (compartido con `events`), `heartbeat` 10/min, `rotate-jwt` 1/min, emisión de pairing-token 5/hora por administrador. Fuente: `api/v1/sync_router.py`, `api/rate_limit_pairing.py`.
 
 **RNF-PERF-03 — `lock_timeout` corto en migraciones**: toda migración que toca privilegios usa `SET lock_timeout = '5s'` antes de ejecutar `GRANT`/`REVOKE` (migración `0021`), para no dejar una migración colgada esperando un lock en producción.

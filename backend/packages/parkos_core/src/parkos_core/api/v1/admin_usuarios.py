@@ -74,6 +74,20 @@ from ...schemas.admin import (
     SucursalAsignadaResumen,
 )
 
+# `LoginIntentoItem` MUST be resolvable at module scope. The
+# `login_historico` route below declares `response_model=list["LoginIntentoItem"]`,
+# and FastAPI resolves that string when it builds the OpenAPI document -- not
+# when the handler runs. A function-local import (the previous form) leaves
+# the name out of the module namespace, so Pydantic raised
+# `TypeAdapter[Annotated[list['LoginIntentoItem'], FieldInfo(...)]] is not
+# fully defined` and `GET /openapi.json` returned 500. That is the api-admin
+# HEALTHCHECK: the container reported `unhealthy` while the API served fine,
+# which is a worse failure than the one it was hiding.
+# No circular import: `schemas.usuarios` is a leaf module (Pydantic models
+# only), exactly like `schemas.admin` imported directly above. The sibling
+# router `usuarios_login.py` has always imported it at module level.
+from ...schemas.usuarios import LoginIntentoItem
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/usuarios", tags=["admin-usuarios"])
@@ -665,7 +679,7 @@ async def cerrar_sesion(
 
 @router.get(
     "/{uuid}/login-historico",
-    response_model=list["LoginIntentoItem"],
+    response_model=list[LoginIntentoItem],
     summary=(
         "Latest login attempts for the user (admin-only). Same shape as "
         "``GET /usuarios/{uuid}/login`` (HU-F1.15); this route is the "
@@ -676,11 +690,10 @@ async def login_historico(
     uuid: uuid_lib.UUID,
     claims: AdminClaims,  # type: ignore[assignment]
     session: DbSession,  # type: ignore[assignment]
-) -> list["LoginIntentoItem"]:
+) -> list[LoginIntentoItem]:
     _ = claims
     from sqlalchemy import select as _select
     from ...models.L_S.login import Login as _Login
-    from ...schemas.usuarios import LoginIntentoItem
 
     stmt = (
         _select(_Login)

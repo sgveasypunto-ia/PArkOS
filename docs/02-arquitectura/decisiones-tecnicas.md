@@ -10,6 +10,7 @@ Este documento cubre las decisiones arquitectónicas del motor de sincronizació
 - ADR-001: enum `PARKOS_SYNC_ENGINE`
 - ADR-002: el canon ER crece de 49 a 51 entidades (54 tablas físicas)
 - ADR-003: `depends_on` y un único camino de escalación
+- ADR-004: particionado sin mantenimiento automático (real)
 - Concurrencia y condiciones de carrera
 
 ---
@@ -164,7 +165,74 @@ Cada sucursal numera localmente dentro de su propio rango autorizado y disjunto 
 
 ---
 
-## Ver también
+## ADR-004: particionado sin mantenimiento automático (real)
+
+**Estado**: Aceptada (2026-10-01) — parche estático como mitigación; el arreglo definitivo sigue abierto.
+**Alcance**: 11 tablas particionadas en `prod` (10 por `RANGE (fecha_retencion_hasta)`, 1 por `RANGE (buffered_at)`).
+
+### Contexto
+
+La documentación afirmaba que `pg_partman` gestionaba las tablas de alto volumen, y esa afirmación llevaba meses marcada como *confirmado*. El 2026-10-01 el login devolvía **500 con credenciales válidas**. La causa no era el particionado en sí, sino que nadie lo mantenía — y el sistema no tenía forma de enterarse.
+
+Reproducción de la cadena completa:
+
+1. `0001_initial_schema.py` creó las particiones con `date_trunc('month', CURRENT_DATE)`. Ese `CURRENT_DATE` se evalúa **una vez**, cuando corre la migración. Corrió en septiembre 2026, así que creó `FOR VALUES FROM ('2026-09-01') TO ('2026-10-01')` y nada más, para siempre.
+2. `pg_partman` 5.5.0 estaba instalado, `pg_partman_bgw` estaba en `shared_preload_libraries`, y las 8 tablas estaban en `partman.part_config` con `automatic_maintenance = 'on'`. Todo correcto, y todo inútil: `parent_table` estaba guardado como `parkos.prod.<tabla>` —calificado con nombre de base de datos— en vez de `prod.<tabla>`. El worker no puede resolverlo y responde:
+
+   ```
+   WARNING:  pg_partman maintenance skipped partition set for parent table
+             parkos.prod.salidas: Given parent table not found in system catalogs
+   ```
+
+   con código de salida **0**. `maintenance_last_run` quedó `NULL` en las 9 filas: ese era el síntoma observable. La única registrada bien era `prod.sync_queue_lw_buffer`, lo que delató el formato esperado.
+3. Aun con los nombres corregidos, `pg_cron` no está en la imagen, así que nada invoca `run_maintenance_proc()`. El bgw no tiene disparador.
+
+Dos modos de fallo, de severidad distinta:
+
+| Modo | Tablas | Síntoma |
+|---|---|---|
+| **Fallo duro** | `sync_queue`, `sync_queue_lw_buffer` (sin DEFAULT) | `CheckViolationError: no partition of relation "sync_queue" found for row`. El trigger `login_enqueue_sync` de `prod.login` hace que un login válido devuelva 500. |
+| **Degradación silenciosa** | las otras 9 (con DEFAULT) | La fila cae en `*_default`, sin error y sin alerta. Peor: `log_transaccional` es la cadena hash de auditoría DIAN y llevaba un mes enrutándose ahí. |
+
+### La lección: el gate comprobaba la bookkeeping, no el comportamiento
+
+El check (h) de `openspec/scripts/check_schema_match.py` afirmaba que las 8 tablas estaban en `part_config`. **Pasaba**, porque estaban registradas. No comprobaba que el registro resolviera a una relación real, ni que existiera una partición que cubriera hoy. Un gate que verifica que alguien anotó algo en una libreta, en vez de verificar que el sistema funciona, no es un gate: fabrica confianza. Está reescrito para ser conductual (ver *Decisión*).
+
+### Decisión
+
+1. **Parche estático inmediato** — migración `0064_ensure_forward_partitions`:
+   - Repara `part_config.parent_table` (quita el prefijo `parkos.`) en la misma transacción, antes de crear particiones. Idempotente.
+   - Crea las particiones explícitamente vía `prod.fn_ensure_partitions()`: 292 particiones. Ventana cercana 2026-10..2028-01 (offset 0..15 inclusive), ventana de retención 2031-10..2032-07 (offset 60..69), buffer diario 31 particiones + DEFAULT.
+   - Agrega partición DEFAULT donde falte, para que una fecha inesperada degrade en vez de tumbar el sistema.
+2. **Gate conductual** — el check (h) ahora afirma tres cosas: (h1) todo padre `relkind='p'` tiene partición acotada que cubre `CURRENT_DATE`; (h2) todo `part_config.parent_table` resuelve contra el catálogo; (h3) ningún `*_default` recibe filas nuevas (allowlist explícita para las 2 que ya las tenían antes de 0064).
+3. **Dos ventanas, porque `fecha_retencion_hasta` es una clave polimórfica** — no es un descuido del diagnóstico. `repo/factura_detalle.py` escribe `date.today()` (con una NOTA que dice que se cambió desde `today + 5*365` porque una fecha de retención correcta "caía fuera de la única partición"); `dian/cloud/dispatcher.py` escribe `today + 365 * _DIAN_RETENTION_YEARS`; y `prod.salidas_default` con 8 filas fechadas 2028-09 prueba que `salidas` sigue escribiendo fechas de retención reales. Una fila escrita hoy puede pertenecer a este mes o a dentro de cinco años, así que una sola ventana "mes actual" no puede servir ambas semánticas.
+
+### Consecuencias
+
+- **Aceptadas**: 292 particiones creadas en total (una sola vez; `CREATE TABLE ... PARTITION OF` escribe metadatos, no datos). El volumen de catálogo crece ~26 filas de catálogo por padre al año.
+- **Deuda técnica asumida**: la ventana vence. La cercana agota en **2028-01** y la de retención en **2032-07**. Antes de esas fechas hay que ejecutar `SELECT prod.fn_ensure_partitions();` (idempotente, sin argumentos) o resolver el mantenimiento automático.
+- **Pendiente (no resuelto por este ADR)**: `pg_cron` o un equivalente que invoque `run_maintenance_proc()`, y registrar en `part_config` las 2 tablas particionadas que faltan (`pairing_tokens`, `revoked_sync_jwts`). Con los nombres ya reparados, `CALL partman.run_maintenance_proc()` funciona y deja `maintenance_last_run` poblado en las 9 — verificado el 2026-10-01 en cloud y branch.
+- **No resuelto**: las 8 filas en `salidas_default` (2028-09) y las 8 en `pairing_tokens_default` (2026-09, solo cloud) siguen donde están. Crear una partición no las mueve, y moverlas exigiría `DELETE` sobre `prod.salidas`, que el trigger `salidas_inmutable` y el `REVOKE` bloquean. La razón de por qué el gate (h3) las tiene en allowlist en vez de exigir cero.
+- **Deuda semántica aparte**: el cambio a `date.today()` en `repo/factura_detalle.py` se hizo para forzar que la fila entrara en la partición de septiembre. Eso contradice la intención de retención DIAN de 5 años documentada en `models/base.py::RetentionMixin`. Corregir la retención y el particionado son dos problemas distintos y no deben resolverse en el mismo commit.
+
+### Cómo verificar
+
+```sql
+-- debe devolver 11, y ninguno con maintenance_last_run IS NULL
+SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+WHERE n.nspname='prod' AND c.relkind='p';
+
+-- el nombre que el worker de pg_partman NO puede resolver
+SELECT parent_table FROM partman.part_config
+WHERE parent_table NOT IN (
+  SELECT format('%I.%I', table_schema, table_name)
+  FROM information_schema.tables WHERE table_type='BASE TABLE');
+```
+
+Y el gate: `python openspec/scripts/check_schema_match.py --database-url postgresql://...` debe imprimir `(h1)` sin fallos, `(h2) info: 9 part_config parent(s), all resolvable`, y solo mensajes `info` en `(h3)`.
+
+---
+
 
 - [`./modelo-datos.md`](./modelo-datos.md) — modelo de datos completo, ER y clases de auditoría (`[V]`/`[L-E]`/`[L-W]`/`[L-S]`/`[A]`).
 - [`./seguridad.md`](./seguridad.md) — autenticación, autorización, pairing, revocación y roles de base de datos.

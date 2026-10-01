@@ -365,7 +365,9 @@ Las 3 están documentadas de forma consistente en tres puntos del código:
 
 ## 6. Particionado (pg_partman)
 
-8 tablas de alto volumen usan particionado gestionado por `pg_partman`:
+> **Corrección 2026-10-01:** el título y la frase "gestionado por `pg_partman`" eran engañosos. `pg_partman` sí estaba instalado y las 8 tablas sí estaban registradas, pero **ninguna partición se mantuvo nunca**: los `parent_table` estaban guardados como `parkos.prod.<tabla>` en lugar de `prod.<tabla>`, forma que el worker de pg_partman 5.x no resuelve — emite un `WARNING` y sale con código 0, así que no había alerta. Además `pg_cron` no está disponible, así que nada invocaba `run_maintenance_proc()`. La sección enumera las 8 tablas **registradas**, que es un hecho real pero no el que el título sugería. El estado operativo y el plan de arreglo están en [ADR-004](./decisiones-tecnicas.md#adr-004-particionado-sin-mantenimiento-automático-real) y en la corrección de [RNF-PERF-01](../01-requisitos/no-funcionales.md).
+
+8 tablas de alto volumen están registradas en `partman.part_config` (`parent_table = 'prod.<tabla>'`):
 
 | Tabla | Clase | Motivo |
 |---|---|---|
@@ -378,9 +380,11 @@ Las 3 están documentadas de forma consistente en tres puntos del código:
 | arqueo | `[A]` | Un conteo por turno/auditoría por sede |
 | salidas | `[A]` | Una fila por estadía cerrada |
 
-**Nota sobre la evidencia en el `.mmd`:** el `.mmd` confirma partición explícita ("particionable por mes") en `caja`, `salidas` y `arqueo`, y de forma más genérica ("archivado/particiones") en `sync_conflict`, `sync_log` y `log_transaccional`. No trae mención textual de partición para `factura_detalle`, `factura_pagos` ni `sync_queue`; su inclusión en esta lista de 8 se apoya en la configuración real de `pg_partman`, no en el comentario del ERD.
+**Particionado real (11 padres, no 8).** El inventario completo sale del catálogo, no de una lista escrita a mano: `pg_class` con `relkind = 'p'` devuelve 10 padres con clave `RANGE (fecha_retencion_hasta)` — las 8 de arriba más `pairing_tokens` y `revoked_sync_jwts` — y 1 con clave `RANGE (buffered_at)`, que es `sync_queue_lw_buffer` (diaria, no mensual). Las 2 sin registro en `part_config` no están rotas por eso: las mantiene `prod.fn_ensure_partitions()` junto con las otras 9.
 
-**Posible tabla adicional a confirmar:** `sync_queue_lw_buffer` (fuera de esta lista de 8; ver [sección 4](#4-resto-de-entidades--tabla-resumen-por-clase)) declara partición diaria **explícita** por `buffered_at` directamente en el `.mmd` ("clave de partición, particionado diario por pg_partman") — evidencia textual más fuerte que la de varias de las 8 tablas de arriba. Vale confirmar con el equipo si falta en el listado de tablas particionadas o si se excluye a propósito por ser un buffer efímero (TTL 24h) y no una tabla de negocio de alto volumen sostenido.
+**Sobre la evidencia en el `.mmd`:** el `.mmd` confirma partición explícita ("particionable por mes") en `caja`, `salidas` y `arqueo`, y de forma más genérica ("archivado/particiones") en `sync_conflict`, `sync_log` y `log_transaccional`. No trae mención textual de partición para `factura_detalle`, `factura_pagos` ni `sync_queue`; su inclusión en esta lista de 8 se apoya en la configuración real de `pg_partman`, no en el comentario del ERD.
+
+**`sync_queue_lw_buffer` sí está registrada** desde 2026-10-01 (antes quedaba fuera de la lista de 8). Usa `parent_table = 'prod.sync_queue_lw_buffer'` — la única forma correcta, y la que delató el defecto de las otras 8. Quedó confirmado que no hay que excluirla por ser un buffer efímero (TTL 24h): es justamente la que más necesita mantenimiento, porque su clave es diaria y sin mantenimiento se rompe en 24 horas, no en un mes.
 
 ---
 
