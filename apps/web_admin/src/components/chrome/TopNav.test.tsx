@@ -21,6 +21,7 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
 }));
 
 import { TopNav } from './TopNav';
+import { SucursalProvider } from '@/lib/sucursal-context';
 
 const ADMIN_UUID = '00000000-0000-0000-0000-0000000000ad';
 
@@ -44,22 +45,28 @@ function renderTopNav(initialPath = '/') {
   // route's content, not a parent that owns an `<Outlet />`. The
   // test wraps the layout in a fragment that renders the trigger
   // plus `<Outlet />` so the navigated child becomes queryable.
+  // ``<SucursalProvider>`` wraps TopNav because TopNav now reads the
+  // selected branch from the context to render the switcher
+  // (chrome-sucursal-selector); without it the production code
+  // throws.
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route
-          element={
-            <>
-              <TopNav />
-              <Outlet />
-            </>
-          }
-        >
-          <Route path="/" element={<div data-testid="outlet-home" />} />
-          <Route path="/perfil" element={<div data-testid="outlet-perfil" />} />
-          <Route path="/login" element={<div data-testid="outlet-login" />} />
-        </Route>
-      </Routes>
+      <SucursalProvider>
+        <Routes>
+          <Route
+            element={
+              <>
+                <TopNav />
+                <Outlet />
+              </>
+            }
+          >
+            <Route path="/" element={<div data-testid="outlet-home" />} />
+            <Route path="/perfil" element={<div data-testid="outlet-perfil" />} />
+            <Route path="/login" element={<div data-testid="outlet-login" />} />
+          </Route>
+        </Routes>
+      </SucursalProvider>
     </MemoryRouter>,
   );
 }

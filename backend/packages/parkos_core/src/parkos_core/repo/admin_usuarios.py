@@ -56,12 +56,14 @@ import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.V.permisos import Permisos
+from ..models.V.permisos_usuario import PermisosUsuario
 from ..models.V.sucursal import Sucursal
 from ..models.V.usuarios import Usuarios
 from ..models.V.usuarios_sucursal import UsuariosSucursal
 from ..schemas.admin import SucursalAsignadaResumen
 from .sync_queue import enqueue
-from .versioned import close_and_insert
+from .versioned import close_and_insert, close_only
 
 # Bcrypt cost factor -- symmetric with ``auth.py::login`` (which calls
 # ``bcrypt.gensalt()`` without arguments). Keep both sides in sync if
@@ -449,3 +451,65 @@ class UsuarioYaAsignadoError(Exception):
 
     The handler maps this to HTTP 409 (Conflict).
     """
+
+
+async def revocar_permiso(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    usuario_uuid: uuid_lib.UUID,
+    permiso_uuid: uuid_lib.UUID,
+) -> bool:
+    """Close the currently-open ``prod.permisos_usuario`` row.
+
+    Returns ``True`` if an open grant was found and closed; ``False``
+    if no open grant existed (the handler maps that to 404).
+
+    Symmetric with :func:`desasignar_sucursal`: same close-only
+    semantics (no successor row), same FK-existence guard, same
+    sync_queue enqueue so the revoke propagates to the branches. The
+    ``_no_op_if_missing`` contract is what the AGENTS.md §3
+    bi-temporal convention requires: every "destructive" operation
+    against a ``[V]`` table is actually a ``close_only`` against the
+    currently-open row, NOT a ``DELETE``.
+    """
+    from sqlalchemy import select as _select
+
+    # Fetch the open row's UUID first -- the
+    # (uuid_usuario, uuid_permiso) pair alone isn't enough because
+    # each pair has many history versions (the UK includes
+    # ``vigente_desde``).
+    stmt = _select(PermisosUsuario).where(
+        PermisosUsuario.uuid_usuario == usuario_uuid,
+        PermisosUsuario.uuid_permiso == permiso_uuid,
+        PermisosUsuario.vigente_hasta.is_(None),
+    )
+    result = await session.execute(stmt)
+    open_row = result.scalar_one_or_none()
+    if open_row is None:
+        return False
+
+    await close_only(
+        session,
+        PermisosUsuario,
+        open_row.uuid,
+        actor_uuid=actor_uuid,
+    )
+
+    # Enqueue the revoke for the apply-pending loop on the branches.
+    # The payload mirrors ``asignar_permiso`` (not yet implemented --
+    # PR-B of HU-F16 will add it), so for now we send the bare pair
+    # and let the branch resolve by uuid alone.
+    await enqueue(
+        session,
+        operacion="delete",
+        tabla="permisos_usuario",
+        uuid_registro=open_row.uuid,
+        datos={
+            "uuid_usuario": str(usuario_uuid),
+            "uuid_permiso": str(permiso_uuid),
+        },
+        uuid_sucursal=None,
+        prioridad=10,
+    )
+    return True

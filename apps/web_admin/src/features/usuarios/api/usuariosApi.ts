@@ -78,10 +78,14 @@ export async function revocarPermiso(
   uuidUsuario: string,
   uuidPermiso: string,
 ): Promise<void> {
+  // AGENTS.md §3: [V] tables are NEVER physically deleted. The
+  // underlying ``prod.permisos_usuario`` row gets ``close_only``
+  // (vigente_hasta = NOW()); the verb on the wire is POST because
+  // close+insert is logically a write, not a deletion.
   await parkosFetch(
-    `/api/v1/admin/usuarios/${uuidUsuario}/permisos/${uuidPermiso}`,
+    `/api/v1/admin/usuarios/${uuidUsuario}/permisos/${uuidPermiso}/revocar`,
     {
-      method: 'DELETE',
+      method: 'POST',
     },
   );
 }
@@ -149,10 +153,12 @@ export async function desasignarSucursal(
   uuidUsuario: string,
   uuidSucursal: string,
 ): Promise<void> {
+  // AGENTS.md §3: see ``revocarPermiso``. The repo layer closes the
+  // ``prod.usuarios_sucursal`` row in place; the wire verb is POST.
   await parkosFetch(
-    `/api/v1/admin/usuarios/${uuidUsuario}/sucursales/${uuidSucursal}`,
+    `/api/v1/admin/usuarios/${uuidUsuario}/sucursales/${uuidSucursal}/revocar`,
     {
-      method: 'DELETE',
+      method: 'POST',
     },
   );
 }

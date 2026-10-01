@@ -32,7 +32,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
-import { LogOut, Settings, UserCircle2 } from 'lucide-react';
+import { Building2, LogOut, Settings, UserCircle2 } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -42,6 +42,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { useSucursal } from '@/lib/sucursal-context';
 
 function avatarLabel(email: string | null, uuid: string): string {
   if (email && email.length > 0) {
@@ -61,6 +62,7 @@ export function TopNav(): JSX.Element {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { user, rol, logout } = useAdminAuth();
+  const { selected } = useSucursal();
   const [signingOut, setSigningOut] = useState(false);
 
   const email = user?.email ?? null;
@@ -99,6 +101,29 @@ export function TopNav(): JSX.Element {
         </Link>
 
         <div className="min-w-0 flex-1" aria-hidden="true" />
+
+        {/*
+          Branch-switch shortcut. Only renders once the operator has
+          actually picked a branch — before that the picker in
+          HomeHub is the entry point, and showing the shortcut would
+          be circular (the button just takes you to the same picker).
+          After the first branch selection this button lets the
+          operator swap branches without first going back to HomeHub.
+        */}
+        {selected !== null && (
+          <button
+            type="button"
+            onClick={() => navigate('/seleccionar-sucursal')}
+            data-testid="chrome-sucursal-selector"
+            className="focus-ring inline-flex shrink-0 items-center gap-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent/60"
+            aria-label={t('topnav.switchBranch', 'Cambiar sucursal')}
+          >
+            <Building2 className="size-4" aria-hidden="true" />
+            <span className="hidden md:inline">
+              {t('topnav.switchBranch', 'Cambiar sucursal')}
+            </span>
+          </button>
+        )}
 
         <DropdownMenu>
           <DropdownMenuTrigger

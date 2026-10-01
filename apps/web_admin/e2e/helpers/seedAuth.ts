@@ -25,6 +25,16 @@
  */
 import type { BrowserContext, Page } from '@playwright/test';
 
+/**
+ * Type-guard for the ``seedAuth`` helper: ``Page`` and
+ * ``BrowserContext`` overlap on most methods but the helper needs to
+ * distinguish them to refuse ``transient`` branch scopes that target a
+ * single page (the init script must outlive navigations).
+ */
+function isPage(target: BrowserContext | Page): target is Page {
+  return typeof (target as Page).goto === 'function';
+}
+
 const AUTH_KEY = 'parkos.auth';
 const BRANCH_KEY = 'parkos.lastSelectedSucursal';
 const AUTH_VERSION = 1;
@@ -34,8 +44,22 @@ export interface SeedAuthOptions {
   refreshToken?: string;
   /** ISO 8601 UTC. Defaults to 24 hours from now. */
   expiresAt?: string;
-  /** Branch uuid for the gate. */
+  /**
+   * Branch uuid for the gate.
+   *
+   * ``persistent`` (default): the branch is planted via
+   * ``addInitScript`` so every navigation (including ``page.reload()``)
+   * re-seeds it. Safe for tests that do not modify the branch
+   * mid-test.
+   *
+   * ``transient``: the branch is planted via ``page.evaluate`` AFTER
+   * the first navigation completes, so a subsequent reload that the
+   * user changes the branch on (the persistence-under-test scenario)
+   * is not silently overwritten. Required by the branch-selector
+   * reload spec.
+   */
   branchUuid?: string;
+  branchScope?: 'persistent' | 'transient';
 }
 
 /**
@@ -55,6 +79,30 @@ export async function seedAuth(
     options.expiresAt ??
     new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const refreshToken = options.refreshToken ?? 'refresh-token-fixture';
+  const branchScope = options.branchScope ?? 'persistent';
+
+  // Branch goes through a separate channel so that ``transient``
+  // scopes can plant it AFTER the first navigation completes — an
+  // ``addInitScript`` would re-seed it on every reload and silently
+  // overwrite whatever the test was trying to verify.
+  if (branchScope === 'transient') {
+    if (options.branchUuid === undefined) {
+      throw new Error(
+        'seedAuth: branchScope="transient" requires branchUuid',
+      );
+    }
+    if (isPage(target)) {
+      throw new Error(
+        'seedAuth: branchScope="transient" must use a BrowserContext; '
+          + 'the helper needs to attach to context.addInitScript so the '
+          + 'plant survives page.evaluate across navigation.',
+      );
+    }
+    await seedBranchTransient(
+      target as BrowserContext,
+      options.branchUuid,
+    );
+  }
 
   await target.addInitScript(
     ({
@@ -84,7 +132,13 @@ export async function seedAuth(
         version: AUTH_VERSION,
       }),
       branchKey: BRANCH_KEY,
-      branch: options.branchUuid ?? null,
+      // When branchScope="transient" the branch is seeded separately
+      // by ``seedBranchTransient`` — pass null here so this init
+      // script does NOT clobber the test's writes on reload.
+      branch:
+        branchScope === 'persistent'
+          ? options.branchUuid ?? null
+          : null,
     },
   );
 }
@@ -99,6 +153,41 @@ export async function seedBranchSelection(
 ): Promise<void> {
   await target.addInitScript(
     ({ key, uuid }: { key: string; uuid: string }) => {
+      window.localStorage.setItem(key, uuid);
+    },
+    { key: BRANCH_KEY, uuid: branchUuid },
+  );
+}
+
+/**
+ * Plant a branch uuid that survives exactly ONE navigation, not
+ * every reload. Used together with ``seedAuth({branchScope: 'transient'})``
+ * — the auth init script writes the token (every navigation), the
+ * branch init script writes the branch ONLY if localStorage is empty
+ * for that key, so the test's later writes via ``page.evaluate`` or
+ * ``BranchSelector.onChange`` survive ``page.reload()``.
+ *
+ * Why this shape: reload re-runs every ``addInitScript``. A counter
+ * on ``window`` cannot survive reload (the window is recreated), so
+ * a "first-write-only" counter loses its memory at reload and would
+ * re-plant. Reading the existing localStorage value, on the other
+ * hand, persists across reload — the SPA's own ``setSelected`` wrote
+ * it, and the helper does not overwrite an existing value.
+ *
+ * Tradeoff: this ONLY works for the branch-selection key, where the
+ * helper's "if empty, plant Norte" is the right behaviour. It would
+ * NOT work for a key the test expects to mutate freely (because the
+ * helper would silently overwrite the test's mutation on the next
+ * navigation). The branch-scope parameter is named to make that
+ * intent obvious.
+ */
+async function seedBranchTransient(
+  context: BrowserContext,
+  branchUuid: string,
+): Promise<void> {
+  await context.addInitScript(
+    ({ key, uuid }: { key: string; uuid: string }) => {
+      if (window.localStorage.getItem(key) !== null) return;
       window.localStorage.setItem(key, uuid);
     },
     { key: BRANCH_KEY, uuid: branchUuid },

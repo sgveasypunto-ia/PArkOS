@@ -34,6 +34,8 @@ from parkos_core.api.v1.admin_usuarios import router as admin_router_obj  # noqa
 from parkos_core.auth.tokens import issue_token  # noqa: E402
 from parkos_core.db.engine import get_session  # noqa: E402
 from parkos_core.models.A.sync_queue import SyncQueue  # noqa: E402
+from parkos_core.models.V.permisos import Permisos  # noqa: E402
+from parkos_core.models.V.permisos_usuario import PermisosUsuario  # noqa: E402
 from parkos_core.models.V.sucursal import Sucursal  # noqa: E402
 from parkos_core.models.V.usuarios import Usuarios  # noqa: E402
 from parkos_core.models.V.usuarios_sucursal import UsuariosSucursal  # noqa: E402
@@ -137,6 +139,66 @@ async def _seed_sucursal(pg_engine) -> uuid_lib.UUID:
         return row.uuid
 
 
+async def _grant_permiso(
+    pg_engine,
+    *,
+    uuid_usuario: uuid_lib.UUID,
+    uuid_permiso: uuid_lib.UUID,
+) -> None:
+    """Open one ``prod.permisos_usuario`` row.
+
+    The canonical permission set is seeded by migration 0002 -- we
+    look up an existing ``permiso`` by its ``permiso`` code and
+    insert the user-permiso junction row. Used by the
+    revocar-permiso endpoint test below.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        # Resolve the permission uuid from its canonical code.
+        result = await session.execute(
+            select(Permisos).where(
+                Permisos.permiso == "config_catalogo",
+                Permisos.vigente_hasta.is_(None),
+            )
+        )
+        permiso_row = result.scalar_one()
+        session.add(
+            PermisosUsuario(
+                uuid_usuario=uuid_usuario,
+                uuid_permiso=uuid_permiso or permiso_row.uuid,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+
+async def _permiso_uuid(pg_engine) -> uuid_lib.UUID:
+    """Resolve the uuid of the canonical ``config_catalogo`` permission."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        result = await session.execute(
+            select(Permisos).where(
+                Permisos.permiso == "config_catalogo",
+                Permisos.vigente_hasta.is_(None),
+            )
+        )
+        return result.scalar_one().uuid
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _truncate_admin_tables(pg_engine) -> AsyncIterator[None]:
     """Wipe admin tables before each test so prior commits don't leak.
@@ -152,8 +214,8 @@ async def _truncate_admin_tables(pg_engine) -> AsyncIterator[None]:
     async with Session() as session:
         await session.execute(
             text(
-                "TRUNCATE prod.usuarios_sucursal, prod.usuarios, "
-                "prod.sync_queue, prod.sucursal CASCADE"
+                "TRUNCATE prod.permisos_usuario, prod.usuarios_sucursal, "
+                "prod.usuarios, prod.sync_queue, prod.sucursal CASCADE"
             )
         )
         await session.commit()
@@ -368,8 +430,8 @@ async def test_list_usuarios_excludes_closed_branch_assignments(
         user_uuid = create.json()["uuid"]
 
         # Close one assignment.
-        deassign = await client.delete(
-            f"/api/v1/admin/usuarios/{user_uuid}/sucursales/{sucursal_a}",
+        deassign = await client.post(
+            f"/api/v1/admin/usuarios/{user_uuid}/sucursales/{sucursal_a}/revocar",
             headers=auth,
         )
         assert deassign.status_code == 204, deassign.text
@@ -431,9 +493,11 @@ async def test_asignar_then_desasignar_round_trip(pg_engine, alembic_upgrade, pg
         assert len(lst.json()) == 1
         assert lst.json()[0]["uuid_sucursal"] == str(sucursal_a)
 
-        # Deassign.
-        deassign = await client.delete(
-            f"/api/v1/admin/usuarios/{user_uuid}/sucursales/{sucursal_a}",
+        # Deassign. POST despite the destructive verb -- the underlying
+        # table is bi-temporal (AGENTS.md §3); the handler does
+        # ``close_only``, not DELETE.
+        deassign = await client.post(
+            f"/api/v1/admin/usuarios/{user_uuid}/sucursales/{sucursal_a}/revocar",
             headers=auth,
         )
         assert deassign.status_code == 204, deassign.text
@@ -444,11 +508,100 @@ async def test_asignar_then_desasignar_round_trip(pg_engine, alembic_upgrade, pg
         assert lst2.json() == []
 
         # Deassign again -> 404 (no open row).
-        deassign2 = await client.delete(
-            f"/api/v1/admin/usuarios/{user_uuid}/sucursales/{sucursal_a}",
+        deassign2 = await client.post(
+            f"/api/v1/admin/usuarios/{user_uuid}/sucursales/{sucursal_a}/revocar",
             headers=auth,
         )
         assert deassign2.status_code == 404, deassign2.text
+
+
+async def test_revocar_permiso_round_trip(
+    pg_engine, alembic_upgrade, pg_session
+) -> None:
+    """AGENTS.md §3: POST despite the destructive verb.
+
+    Open a ``prod.permisos_usuario`` row, revoke it via the new
+    ``POST /permisos/{uuid_permiso}/revocar`` endpoint, and verify
+    the row is closed (vigente_hasta NOT NULL). Revoking an already-
+    revoked grant returns 404 (no open row), matching the same
+    no-op contract that ``desasignar_sucursal`` enforces.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select as _select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    app = _build_cloud_admin_app(pg_engine)
+    admin_jwt = _admin_token()
+    auth = {"Authorization": f"Bearer {admin_jwt}"}
+
+    # Seed a user + an open permission grant directly via the engine.
+    user_uuid = uuid_lib.uuid4()
+    permiso_uuid = await _permiso_uuid(pg_engine)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            Usuarios(
+                uuid=user_uuid,
+                nombre="Revocar",
+                apellido="Permiso",
+                email=f"revocar-{user_uuid.hex[:8]}@parkos.local",
+                password_hash="placeholder-bcrypt",
+                rol="operador",
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+            )
+        )
+        await session.flush()  # INSERT usuario before permisos_usuario FK
+        session.add(
+            PermisosUsuario(
+                uuid_usuario=user_uuid,
+                uuid_permiso=permiso_uuid,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+            )
+        )
+        await session.commit()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
+        # First revoke -> 204, row closed in place (close_only).
+        ok = await client.post(
+            f"/api/v1/admin/usuarios/{user_uuid}/permisos/{permiso_uuid}/revocar",
+            headers=auth,
+        )
+        assert ok.status_code == 204, ok.text
+
+        # Verify the close_only: same uuid, vigente_hasta now set.
+        async with Session() as session:
+            row = (
+                await session.execute(
+                    _select(PermisosUsuario).where(
+                        PermisosUsuario.uuid_usuario == user_uuid,
+                        PermisosUsuario.uuid_permiso == permiso_uuid,
+                    )
+                )
+            ).scalar_one()
+            assert row.vigente_hasta is not None, (
+                "revoke must set vigente_hasta, not physically delete"
+            )
+            assert row.estado == "inactivo"
+
+        # Second revoke -> 404 (no open row).
+        dup = await client.post(
+            f"/api/v1/admin/usuarios/{user_uuid}/permisos/{permiso_uuid}/revocar",
+            headers=auth,
+        )
+        assert dup.status_code == 404, dup.text
 
 
 # ---------------------------------------------------------------------------
