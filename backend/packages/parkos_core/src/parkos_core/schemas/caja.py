@@ -172,6 +172,45 @@ class ArqueoReadList(ReadListBase[ArqueoRead]):
 
 
 # ---------------------------------------------------------------------------
+# HU-F18.1 admin list query schema (REQ-OPS-152)
+# ---------------------------------------------------------------------------
+
+
+class ArqueoListQueryParams(_Base):
+    """Query params for ``GET /api/v1/caja/arqueo`` (admin-only).
+
+    All four selectors are OPTIONAL -- no "at least one" rule. When
+    none are provided, the endpoint returns the most-recent ``limit``
+    arqueos across every branch (the admin lands on the page and sees
+    recent activity first; UI narrows from there).
+
+    Filter semantics:
+
+    - ``uuid_sucursal``: scope to one branch. The admin- issuer dep
+      already permits cross-branch reads; this filter is the UI's
+      narrowing hint.
+    - ``fecha_desde`` / ``fecha_hasta``: inclusive date filter applied on
+      ``prod.arqueo.created_at::date``. Independent: ``fecha_desde``
+      alone means "from that date to now"; ``fecha_hasta`` alone means
+      "up to that date"; both = range; neither = unbounded.
+    - ``uuid_tipo_arqueo``: scope to one of the two seed codes
+      (``auditoria`` or ``cierre_turno``, mapped via
+      ``tipo_arqueo.codigo`` -> uuid in ``prod.caja_arqueo``).
+
+    Pagination mirrors the audit listing: ``limit`` 1..100 with
+    default 20; ``cursor`` opaque base64 JSON ``(ts, uuid)`` from the
+    previous page's last row.
+    """
+
+    uuid_sucursal: uuid_lib.UUID | None = None
+    fecha_desde: date | None = None
+    fecha_hasta: date | None = None
+    uuid_tipo_arqueo: uuid_lib.UUID | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+    cursor: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Sesion ([L-S] cash session, REQ-40 / REQ-41 / SC-40 / SC-42)
 # ---------------------------------------------------------------------------
 

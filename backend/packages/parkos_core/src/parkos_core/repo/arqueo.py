@@ -33,13 +33,15 @@ KD-FE-01 + F1.11 KD-TKT-01 + F1.12 KD-VENTA-01).
 """
 from __future__ import annotations
 
+import base64
+import json
 import uuid as uuid_lib
 from datetime import UTC, datetime
 from datetime import date as date_cls
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.A.arqueo import Arqueo
@@ -52,6 +54,7 @@ from . import append_only, workflow
 
 __all__ = [
     "CierreDiaNoAceptaSesionError",
+    "InvalidArqueoCursorError",
     "JustificacionRequeridaError",
     "SesionNoEncontradaError",
     "SesionYaCerradaError",
@@ -62,9 +65,12 @@ __all__ = [
     "calcular_esperado_sesion",
     "cerrar_sesiones_del_dia_bulk",
     "construir_resumen_sesion",
+    "decode_arqueo_cursor",
+    "encode_arqueo_cursor",
     "es_descuadre_critico",
     "insertar_alerta_descuadre_critico",
     "insertar_arqueo",
+    "listar_arqueos_admin",
     "listar_sesiones_abiertas_del_dia",
     "listar_sesiones_del_dia",
     "obtener_cierre_dia_del_dia",
@@ -733,3 +739,129 @@ async def obtener_cierre_dia_del_dia(
         "valor_datafono_reportado": _to_decimal(arqueo_row.valor_datafono_reportado),
         "uuid_arqueo": arqueo_row.uuid,
     }
+
+
+# ---------------------------------------------------------------------------
+# HU-F18.1 admin list (REQ-X2 cross-branch arqueo visibility)
+# ---------------------------------------------------------------------------
+
+
+class InvalidArqueoCursorError(Exception):
+    """Raised when the base64 cursor payload is malformed.
+
+    Mapped to ``400 invalid_cursor`` by the route handler. Mirrors the
+    ``repo.log_transaccional.InvalidAuditCursorError`` shape so the
+    cursor contract is uniform across audit and arqueo listings.
+    """
+
+
+def encode_arqueo_cursor(items: list[Arqueo], limit: int) -> str | None:
+    """Opaque base64 ``(timestamp_evento_iso, uuid_str)`` cursor.
+
+    Returns ``None`` at EOF (when the SQL returned no more rows than
+    the page asked for). When the EOF probe (``limit + 1``) returns
+    more, the cursor is the LAST SHIPPED row's key
+    (``items[limit - 1]``) -- same convention as the audit cursor.
+    """
+    if len(items) <= limit:
+        return None
+    last = items[limit - 1]
+    payload = json.dumps(
+        {
+            "ts": last.created_at.isoformat(),
+            "uuid": str(last.uuid),
+        },
+        separators=(",", ":"),
+    )
+    return base64.b64encode(payload.encode("ascii")).decode("ascii")
+
+
+def decode_arqueo_cursor(cursor: str | None) -> tuple[datetime, uuid_lib.UUID] | None:
+    """Decode the opaque cursor back into ``(timestamp_evento, uuid)``.
+
+    Returns ``None`` for the first page (no cursor). Raises
+    :class:`InvalidArqueoCursorError` on malformed base64 / JSON / missing
+    keys -- the route handler maps that to ``400 invalid_cursor``.
+    """
+    if cursor is None:
+        return None
+    try:
+        decoded = base64.b64decode(cursor.encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise InvalidArqueoCursorError(f"invalid base64: {exc}") from exc
+    try:
+        data = json.loads(decoded)
+    except json.JSONDecodeError as exc:
+        raise InvalidArqueoCursorError(f"invalid JSON: {exc}") from exc
+    if not isinstance(data, dict) or "ts" not in data or "uuid" not in data:
+        raise InvalidArqueoCursorError(
+            "missing required keys (ts, uuid) in cursor payload"
+        )
+    try:
+        return (datetime.fromisoformat(data["ts"]), uuid_lib.UUID(data["uuid"]))
+    except (ValueError, TypeError) as exc:
+        raise InvalidArqueoCursorError(f"invalid cursor field: {exc}") from exc
+
+
+async def listar_arqueos_admin(
+    session: AsyncSession,
+    *,
+    uuid_sucursal: uuid_lib.UUID | None = None,
+    fecha_desde: date_cls | None = None,
+    fecha_hasta: date_cls | None = None,
+    uuid_tipo_arqueo: uuid_lib.UUID | None = None,
+    cursor: tuple[datetime, uuid_lib.UUID] | None,
+    limit: int,
+) -> list[Arqueo]:
+    """HU-F18.1 (REQ-OPS-152): cursor-paginated admin-side arqueo listing.
+
+    All four WHERE predicates are OPTIONAL. Composed with AND. The
+    endpoint is admin-only; the ``admin-`` issuer dep at the route
+    handler gatekeeps it (no operador- access).
+
+    Parameters:
+
+    - ``uuid_sucursal``: scope to a single branch. The admin sees every
+      branch by default; UI-driven filtering by ``<BranchSelector />``.
+    - ``fecha_desde`` / ``fecha_hasta``: inclusive date filter applied on
+      ``created_at::date``. Both independent (``fecha_desde`` alone
+      returns "from that date to now", ``fecha_hasta`` alone returns
+      "everything up to that date"). Both ``None`` means "no
+      date filter".
+    - ``uuid_tipo_arqueo``: scope to a single arqueo-type code. The
+      two seed codes are ``auditoria`` and ``cierre_turno`` (one
+      per ``prod.caja`` row per migration 0026).
+
+    Pagination mirrors the audit listing pattern: ORDER BY
+    ``(created_at DESC, uuid ASC)``; the stable cursor excludes the
+    cursor row and everything that sorts strictly after it in the DESC
+    stream. Read-only -- does NOT mutate ``prod.arqueo`` (the [A]
+    append-only contract from migration 0023 is preserved).
+    """
+    limit = min(limit, 100)
+
+    stmt = select(Arqueo)
+    if uuid_sucursal is not None:
+        stmt = stmt.where(Arqueo.uuid_sucursal == uuid_sucursal)
+    if fecha_desde is not None:
+        stmt = stmt.where(func.date(Arqueo.created_at) >= fecha_desde)
+    if fecha_hasta is not None:
+        stmt = stmt.where(func.date(Arqueo.created_at) <= fecha_hasta)
+    if uuid_tipo_arqueo is not None:
+        stmt = stmt.where(Arqueo.uuid_tipo_arqueo == uuid_tipo_arqueo)
+
+    if cursor is not None:
+        cursor_ts, cursor_uuid = cursor
+        cursor_clause = or_(
+            Arqueo.created_at < cursor_ts,
+            and_(
+                Arqueo.created_at == cursor_ts,
+                Arqueo.uuid > cursor_uuid,
+            ),
+        )
+        stmt = stmt.where(cursor_clause)
+
+    stmt = stmt.order_by(Arqueo.created_at.desc(), Arqueo.uuid.asc()).limit(limit + 1)
+
+    result = await session.execute(stmt)
+    return list(result.scalars().all())

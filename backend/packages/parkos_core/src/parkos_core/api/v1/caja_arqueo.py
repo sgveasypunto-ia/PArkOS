@@ -32,12 +32,15 @@ from datetime import date as date_cls
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
 from ...repo import arqueo as repo_arqueo
 from ...schemas.caja import (
     ArqueoCreateV2,
+    ArqueoListQueryParams,
     ArqueoReadForHandler,
+    ArqueoReadList,
     ArqueoRequiereJustificacionRead,
     ArqueoResumenRead,
     CierreDiaNoAceptaSesionErrorRead,
@@ -68,6 +71,118 @@ from . import _helpers
 # (factory mount). Removing the prefix lets the parent's prefix carry
 # the canonical path.
 router = APIRouter(tags=["caja"])
+# ---------------------------------------------------------------------------
+# HU-F18.1 admin list (REQ-OPS-152) -- GET /api/v1/caja/arqueo
+# ---------------------------------------------------------------------------
+# Mounted ABOVE the dedicated router block so the module-level
+# ``router = APIRouter(...)`` below captures it. The GET endpoint is
+# admin-only (admin- issuer) + audit_read permission; it does NOT
+# share the operador- + realizar_arqueo gate of the write handler
+# below (operators do not list arqueos -- they only POST their own).
+# ---------------------------------------------------------------------------
+
+
+_admin_arqueo_list_issuer_dep = requires_issuer("admin-")
+_admin_arqueo_list_perm_dep = require_permission("audit_read")
+
+
+@router.get(
+    "/arqueo",
+    response_model=ArqueoReadList,
+    status_code=200,
+    summary=(
+        "HU-F18.1: cursor-paginated admin list of arqueos (REQ-OPS-152). "
+        "All four selectors -- ``uuid_sucursal``, ``fecha_desde``, "
+        "``fecha_hasta``, ``uuid_tipo_arqueo`` -- are optional. When "
+        "none are provided, returns the most-recent ``limit`` arqueos "
+        "across every branch."
+    ),
+)
+async def list_arqueos(
+    response: Response,
+    params: ArqueoListQueryParams = Depends(),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _claims: None = Depends(_admin_arqueo_list_issuer_dep),
+    _perm: None = Depends(_admin_arqueo_list_perm_dep),
+) -> ArqueoReadList:
+    """``GET /api/v1/caja/arqueo`` -- 4-step read chain.
+
+    Step chain (mirrors the audit listing pattern):
+
+      1. Layer 1 issuer dep + permission gate (``admin-`` + ``audit_read``).
+      2. Layer 4 Pydantic validation: each query param is optional and
+         ``extra='forbid'`` rejects unknown keys with 422 before the
+         handler body runs.
+      3. KD-MOT-AUDIT-01: SELECT via 1 typed helper
+         ``repo.arqueo.listar_arqueos_admin``. NO UPDATE/DELETE, NO commit.
+      4. Build the cursor via ``repo.arqueo.encode_arqueo_cursor`` --
+         returns ``None`` at EOF (the SQL returns ``limit + 1`` rows; if
+         ``len(items) <= limit`` the page was the last one).
+
+    Empty case: zero rows returns ``items=[]`` + ``next_cursor=None``
+    with HTTP 200 (NEVER 404 -- the absence of arqueos is a valid result,
+    not a "branch not found" error).
+
+    Cursor validation: ``decode_arqueo_cursor`` raises
+    :class:`InvalidArqueoCursorError` on malformed base64/JSON/missing
+    keys; this handler maps that to ``400 invalid_cursor``.
+
+    Cache: ``Cache-Control: no-store`` (XR6 Layer 5) -- listing
+    stale arqueos is worse than no list at all.
+    """
+    try:
+        decoded_cursor = repo_arqueo.decode_arqueo_cursor(params.cursor)
+    except repo_arqueo.InvalidArqueoCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    rows = await repo_arqueo.listar_arqueos_admin(
+        session,
+        uuid_sucursal=params.uuid_sucursal,
+        fecha_desde=params.fecha_desde,
+        fecha_hasta=params.fecha_hasta,
+        uuid_tipo_arqueo=params.uuid_tipo_arqueo,
+        cursor=decoded_cursor,
+        limit=params.limit,
+    )
+
+    next_cursor = repo_arqueo.encode_arqueo_cursor(rows, params.limit)
+
+    _helpers.apply_no_store_header(response)
+    return ArqueoReadList(
+        items=[_to_arqueo_read(r) for r in rows[: params.limit]],
+        next_cursor=next_cursor,
+    )
+
+
+def _to_arqueo_read(row: repo_arqueo.Arqueo) -> "ArqueoRead":
+    """Shrink an ``Arqueo`` ORM row to the wire schema ``ArqueoRead``.
+
+    The repo hands ``Arqueo`` with composite PK (``uuid`` +
+    ``fecha_retencion_hasta``); the wire schema mirrors the column set
+    1:1 (see ``schemas/caja.py::ArqueoRead``). Single-row mapper; the
+    list endpoint wraps it inside ``items=[...]`` of the envelope.
+    """
+    from ...schemas.caja import ArqueoRead
+
+    return ArqueoRead(
+        uuid=row.uuid,
+        created_at=row.created_at,
+        created_by=row.created_by,
+        sync_status=row.sync_status,
+        sync_timestamp=row.sync_timestamp,
+        sync_attempts=row.sync_attempts,
+        fecha_retencion_hasta=row.fecha_retencion_hasta,
+        uuid_sucursal=row.uuid_sucursal,
+        uuid_tipo_arqueo=row.uuid_tipo_arqueo,
+        uuid_sesion=row.uuid_sesion,
+        valor_efectivo_esperado=row.valor_efectivo_esperado,
+        valor_datafono_esperado=row.valor_datafono_esperado,
+        valor_efectivo_reportado=row.valor_efectivo_reportado,
+        valor_datafono_reportado=row.valor_datafono_reportado,
+    )
 
 # KD-3 issuer chain + ``realizar_arqueo`` permission gate (DEC-ARQUEO-05).
 _caja_arqueo_issuer_dep = requires_issuer("operador-", "admin-")
