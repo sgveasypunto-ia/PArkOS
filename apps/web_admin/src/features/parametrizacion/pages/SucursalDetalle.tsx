@@ -32,7 +32,12 @@
  *     header ambient, no por un query param confiable).
  *   - **Caja**: `<SucursalCaja />` (HU-F15.5) -- base/redondeo +
  *     tolerancias de arqueo, scopeadas a esta sucursal.
- *   - **Resoluciones**: placeholder "Próximamente" (otra HU la completa).
+ *   - **Resoluciones**: `<ResolucionesDIAN uuidSucursal={uuid} />` (HU-F15.3)
+ *     -- mismo patrón de prop que `<SucursalBitacoraTab uuidSucursal>`: usa
+ *     el uuid de la RUTA, no el de la sucursal activa del topbar, porque el
+ *     backend de `resolucion-facturacion` no filtra por `uuid_sucursal`
+ *     server-side (ver docstring de ese componente). Con esto, las 7
+ *     pestañas quedan completas -- ya no hay placeholders "Próximamente".
  *   - **Bitácora**: `<SucursalBitacoraTab />`, mismo enfoque que
  *     `EmpresaBitacoraTab` pero scopeada a esta sucursal.
  *
@@ -54,6 +59,7 @@ import { useSucursal } from '@/lib/sucursal-context';
 
 import { useSucursalDetalle } from '../../sucursales/hooks/useSucursalDetalle';
 import { ParametrizacionEfectivaSelector } from '../components/ParametrizacionEfectivaSelector';
+import { ResolucionesDIAN } from '../components/ResolucionesDIAN';
 import { SucursalBitacoraTab } from '../components/SucursalBitacoraTab';
 import { SucursalCaja } from '../components/SucursalCaja';
 import { SucursalDocumentos } from '../components/SucursalDocumentos';
@@ -69,20 +75,6 @@ const TABS = [
   { value: 'documentos', labelKey: 'sucursalDetalle.tabs.documentos', testId: 'sucursal-tab-documentos' },
   { value: 'bitacora', labelKey: 'sucursalDetalle.tabs.bitacora', testId: 'sucursal-tab-bitacora' },
 ] as const;
-
-function ProximamentePlaceholder({ slug, nombre }: { slug: string; nombre: string }): JSX.Element {
-  const { t } = useTranslation();
-  return (
-    <div
-      className="rounded-md border border-dashed bg-muted/40 px-4 py-8 text-center text-sm text-muted-foreground"
-      data-testid={`sucursal-placeholder-${slug}`}
-    >
-      {t('sucursalDetalle.proximamente', '{{nombre}} — próximamente. Otra historia de usuario completa esta pestaña.', {
-        nombre,
-      })}
-    </div>
-  );
-}
 
 function ScopeMismatchNotice({ uuidRuta }: { uuidRuta: string }): JSX.Element | null {
   const { t } = useTranslation();
@@ -204,10 +196,7 @@ export default function SucursalDetalle(): JSX.Element {
         </TabsContent>
 
         <TabsContent value="resoluciones" className="mt-4">
-          <ProximamentePlaceholder
-            slug="resoluciones"
-            nombre={t('sucursalDetalle.tabs.resoluciones', 'Resoluciones')}
-          />
+          <ResolucionesDIAN uuidSucursal={uuid} />
         </TabsContent>
 
         <TabsContent value="caja" className="mt-4">

@@ -301,3 +301,47 @@ class TestNumeroResolucionLength:
             fecha_fin_vigencia=date(2027, 1, 1),
         )
         assert len(c.numero_resolucion) == 64
+
+
+class TestVigenciaDateOrder:
+    """HU-F15.3: ``fecha_fin_vigencia`` must be strictly after
+    ``fecha_inicio_vigencia`` on both Create and Update.
+
+    The other two HU-F15.3 guards (``rango_hasta > rango_desde`` and
+    unique ``prefijo`` among vigentes) do NOT apply here: neither field is
+    client-writable on this schema (see ``TestCreateSchemaEnforcesDIANBoundary``
+    above, REQ-X3) — there is nothing in the payload to validate."""
+
+    @pytest.mark.parametrize(
+        ("inicio", "fin"),
+        [
+            (date(2026, 1, 1), date(2026, 1, 1)),  # equal: not strictly after
+            (date(2026, 6, 1), date(2026, 1, 1)),  # fin before inicio
+        ],
+    )
+    def test_create_rejects_fin_not_after_inicio(self, inicio: date, fin: date) -> None:
+        with pytest.raises(ValidationError):
+            ResolucionFacturacionCreate(
+                uuid_sucursal=SUCURSAL_UUID,
+                numero_resolucion="1876",
+                fecha_resolucion=date(2026, 1, 1),
+                fecha_inicio_vigencia=inicio,
+                fecha_fin_vigencia=fin,
+            )
+
+    @pytest.mark.parametrize(
+        ("inicio", "fin"),
+        [
+            (date(2026, 1, 1), date(2026, 1, 1)),
+            (date(2026, 6, 1), date(2026, 1, 1)),
+        ],
+    )
+    def test_update_rejects_fin_not_after_inicio(self, inicio: date, fin: date) -> None:
+        with pytest.raises(ValidationError):
+            ResolucionFacturacionUpdate(
+                uuid_sucursal=SUCURSAL_UUID,
+                numero_resolucion="1876",
+                fecha_resolucion=date(2026, 1, 1),
+                fecha_inicio_vigencia=inicio,
+                fecha_fin_vigencia=fin,
+            )

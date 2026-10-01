@@ -8,19 +8,23 @@
  *   T3: click en "Tarifas" embebe `<Tarifas />` tal cual (no duplica
  *       lógica -- se mockea el módulo real, no se reimplementa).
  *   T4: click en "Capacidad" embebe `<Cupos />` tal cual.
- *   T5: click en "Resoluciones" muestra el placeholder "Próximamente".
- *   T6: click en "Bitácora" muestra `<SucursalBitacoraTab />` scopeada
+ *   T5: click en "Bitácora" muestra `<SucursalBitacoraTab />` scopeada
  *       al uuid de la ruta.
- *   T7: click en "Documentos" muestra `<SucursalDocumentos />` scopeada
+ *   T6: click en "Documentos" muestra `<SucursalDocumentos />` scopeada
  *       al uuid de la ruta (HU-F15.4).
- *   T8: click en "Caja" embebe `<SucursalCaja />` (HU-F15.5) scopeada
- *       al uuid de la ruta -- ya NO es un placeholder.
+ *   T7: click en "Caja" embebe `<SucursalCaja />` (HU-F15.5) scopeada
+ *       al uuid de la ruta.
+ *   T8: click en "Resoluciones" embebe `<ResolucionesDIAN />` (HU-F15.3)
+ *       scopeada al uuid de la RUTA, no al de la sucursal activa del
+ *       topbar -- mismo prop pattern que `<SucursalBitacoraTab />` (T5).
+ *       Con esto, las 7 pestañas quedan completas -- ya no hay
+ *       placeholders "Próximamente" que probar.
  *
  * Child pages/components (`Tarifas`, `Cupos`, `SucursalGeneralForm`,
- * `SucursalBitacoraTab`, `SucursalDocumentos`, `SucursalCaja`) are mocked
- * as stubs: each already has its own test suite -- this file's job is
- * the SHELL (tab wiring, default tab, routing), not re-testing their
- * internals.
+ * `SucursalBitacoraTab`, `SucursalDocumentos`, `SucursalCaja`,
+ * `ResolucionesDIAN`) are mocked as stubs: each already has its own test
+ * suite -- this file's job is the SHELL (tab wiring, default tab,
+ * routing), not re-testing their internals.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -96,6 +100,12 @@ vi.mock('../components/SucursalCaja', () => ({
   ),
 }));
 
+vi.mock('../components/ResolucionesDIAN', () => ({
+  ResolucionesDIAN: ({ uuidSucursal }: { uuidSucursal: string }) => (
+    <div data-testid="resoluciones-dian-mock">Resoluciones mock para {uuidSucursal}</div>
+  ),
+}));
+
 import SucursalDetalle from './SucursalDetalle';
 
 function renderPage(): void {
@@ -144,22 +154,7 @@ describe('SucursalDetalle', () => {
     expect(screen.getByTestId('cupos-mock')).toBeInTheDocument();
   });
 
-  it.each(['resoluciones'])(
-    'T5: click en "%s" muestra el placeholder Próximamente',
-    async (tabValue) => {
-      const user = userEvent.setup();
-      renderPage();
-      await screen.findByTestId('sucursal-detalle-page');
-      await user.click(screen.getByTestId(`sucursal-tab-${tabValue}`));
-      expect(screen.getByTestId(`sucursal-tab-${tabValue}`)).toHaveAttribute(
-        'data-state',
-        'active',
-      );
-      expect(screen.getByTestId(`sucursal-placeholder-${tabValue}`)).toBeInTheDocument();
-    },
-  );
-
-  it('T6: click en "Bitácora" muestra SucursalBitacoraTab scopeada al uuid de la ruta', async () => {
+  it('T5: click en "Bitácora" muestra SucursalBitacoraTab scopeada al uuid de la ruta', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByTestId('sucursal-detalle-page');
@@ -168,7 +163,7 @@ describe('SucursalDetalle', () => {
     expect(screen.getByTestId('sucursal-bitacora-mock')).toHaveTextContent(SAMPLE_SUCURSAL.uuid);
   });
 
-  it('T7: click en "Documentos" muestra SucursalDocumentos scopeada al uuid de la ruta', async () => {
+  it('T6: click en "Documentos" muestra SucursalDocumentos scopeada al uuid de la ruta', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByTestId('sucursal-detalle-page');
@@ -177,12 +172,26 @@ describe('SucursalDetalle', () => {
     expect(screen.getByTestId('sucursal-documentos-mock')).toHaveTextContent(SAMPLE_SUCURSAL.uuid);
   });
 
-  it('T8: click en "Caja" embebe SucursalCaja (HU-F15.5) scopeada al uuid de la ruta', async () => {
+  it('T7: click en "Caja" embebe SucursalCaja (HU-F15.5) scopeada al uuid de la ruta', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByTestId('sucursal-detalle-page');
     await user.click(screen.getByTestId('sucursal-tab-caja'));
     expect(screen.getByTestId('sucursal-tab-caja')).toHaveAttribute('data-state', 'active');
     expect(screen.getByTestId('sucursal-caja-mock')).toHaveTextContent(SAMPLE_SUCURSAL.uuid);
+  });
+
+  it('T8: click en "Resoluciones" embebe ResolucionesDIAN scopeada al uuid de la ruta', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId('sucursal-detalle-page');
+    await user.click(screen.getByTestId('sucursal-tab-resoluciones'));
+    expect(screen.getByTestId('sucursal-tab-resoluciones')).toHaveAttribute(
+      'data-state',
+      'active',
+    );
+    expect(screen.getByTestId('resoluciones-dian-mock')).toHaveTextContent(
+      SAMPLE_SUCURSAL.uuid,
+    );
   });
 });

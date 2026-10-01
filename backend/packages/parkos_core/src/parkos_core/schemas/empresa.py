@@ -25,7 +25,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, model_validator
 
 from .common import FilterBase, ReadListBase, _Base
 
@@ -227,23 +227,68 @@ class ResolucionFacturacionRead(_Base):
 class ResolucionFacturacionCreate(_Base):
     """REQ-X3: server assigns ``prefijo``, ``rango_desde``, ``rango_hasta``.
     ``extra='forbid'`` (from :class:`_Base`) blocks client-supplied values
-    for those fields — that's T-PR4-08's test."""
+    for those fields — that's T-PR4-08's test.
+
+    HU-F15.3 drift note: the master spec (``plan.md`` HU-F15.3) describes two
+    extra 422 guards — ``rango_hasta > rango_desde`` and no two resoluciones
+    vigentes sharing ``prefijo`` for the same sucursal. Both are moot HERE:
+    neither field is client-writable (confirmed above, REQ-X3), so there is
+    nothing in this payload to validate against — those invariants belong to
+    whatever out-of-band process assigns ``prefijo``/``rango_*`` (not found
+    in this repo). Only the third guard, ``fecha_fin_vigencia >
+    fecha_inicio_vigencia``, applies to fields the client actually sends.
+    """
 
     uuid_sucursal: uuid_lib.UUID
     numero_resolucion: Annotated[str, StringConstraints(min_length=1, max_length=64)]
     fecha_resolucion: date
     fecha_inicio_vigencia: date
     fecha_fin_vigencia: date
+
+    @model_validator(mode="after")
+    def _validar_vigencia(self) -> ResolucionFacturacionCreate:
+        """HU-F15.3: ``fecha_fin_vigencia`` must be strictly after ``fecha_inicio_vigencia``."""
+        if self.fecha_fin_vigencia <= self.fecha_inicio_vigencia:
+            raise ValueError(
+                "fecha_fin_vigencia debe ser posterior a fecha_inicio_vigencia"
+            )
+        return self
 
 
 class ResolucionFacturacionUpdate(_Base):
-    """REQ-04-V-ACTUALIZACION. Same shape as Create."""
+    """REQ-04-V-ACTUALIZACION. Same shape as Create (see its docstring for the
+    HU-F15.3 drift note on why only the vigencia-date guard applies here)."""
 
     uuid_sucursal: uuid_lib.UUID
     numero_resolucion: Annotated[str, StringConstraints(min_length=1, max_length=64)]
     fecha_resolucion: date
     fecha_inicio_vigencia: date
     fecha_fin_vigencia: date
+
+    @model_validator(mode="after")
+    def _validar_vigencia(self) -> ResolucionFacturacionUpdate:
+        """HU-F15.3: ``fecha_fin_vigencia`` must be strictly after ``fecha_inicio_vigencia``."""
+        if self.fecha_fin_vigencia <= self.fecha_inicio_vigencia:
+            raise ValueError(
+                "fecha_fin_vigencia debe ser posterior a fecha_inicio_vigencia"
+            )
+        return self
+
+
+class ResolucionFacturacionConsecutivoActual(_Base):
+    """HU-F15.3 BR1/BR2 — read-only snapshot of the current consecutivo.
+
+    ``consecutivo_actual`` mirrors ``dian.cloud.atomic_next_consecutivo
+    .next_consecutivo``'s ``COALESCE(MAX(consecutivo), rango_desde - 1) + 1``
+    read (no lock: this is a read-only projection, never an allocation).
+    ``agotandose`` is ``True`` when fewer than 100 numbers remain before
+    ``rango_hasta`` — computed server-side (BR2), never in the client.
+    """
+
+    consecutivo_actual: int
+    rango_hasta: int | None
+    restantes: int | None
+    agotandose: bool
 
 
 class ResolucionFacturacionFilter(FilterBase):
