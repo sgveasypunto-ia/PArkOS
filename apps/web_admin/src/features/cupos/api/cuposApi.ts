@@ -11,7 +11,7 @@
  *
  * Three typed errors surfaced from the backend:
  *   - ``CantidadOverlapError`` (409 ``cantidad_overlap``)
- *   - ``CantidadBajoIngresosError`` (422 ``cantidad_bajo_ingresos_activos``)
+ *   - ``CantidadBajoIngresosError`` (422 ``capacidad_insuficiente``, BR2 HU-F14.4)
  *   - ``CantidadSucursalInmutableError`` (422 ``sucursal_inmutable``)
  *
  * The form layer uses ``instanceof`` to render an operator-readable
@@ -77,24 +77,27 @@ export class CantidadOverlapError extends Error {
 }
 
 export class CantidadBajoIngresosError extends Error {
-  readonly activos: number;
-  readonly solicitada: number;
+  readonly tipo: string | null;
+  readonly ocupadoActual: number;
+  readonly solicitado: number;
 
   constructor(body: unknown) {
     const parsed = cupoBajoIngresosErrorSchema.safeParse(body);
     if (!parsed.success) {
-      super('Cupo bajo ingresos activos (detalle no disponible)');
+      super('Capacidad insuficiente (detalle no disponible)');
       this.name = 'CantidadBajoIngresosError';
-      this.activos = 0;
-      this.solicitada = 0;
+      this.tipo = null;
+      this.ocupadoActual = 0;
+      this.solicitado = 0;
       return;
     }
     super(
-      `Hay ${parsed.data.detail.activos} ingreso(s) activo(s); no podés bajar el cupo a ${parsed.data.detail.solicitada}. Cerrá o anulá los ingresos primero.`,
+      `Hay ${parsed.data.detail.ocupado_actual} vehículo(s) ocupando el tipo ${parsed.data.detail.tipo ?? '?'}; no podés bajar el cupo a ${parsed.data.detail.solicitado}. Cerrá o anulá los ingresos primero.`,
     );
     this.name = 'CantidadBajoIngresosError';
-    this.activos = parsed.data.detail.activos;
-    this.solicitada = parsed.data.detail.solicitada;
+    this.tipo = parsed.data.detail.tipo;
+    this.ocupadoActual = parsed.data.detail.ocupado_actual;
+    this.solicitado = parsed.data.detail.solicitado;
   }
 }
 

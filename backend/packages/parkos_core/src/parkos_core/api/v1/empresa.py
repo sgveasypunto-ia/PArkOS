@@ -67,7 +67,7 @@ from ...models.V.empresa import Empresa
 from ...models.V.resolucion_facturacion import ResolucionFacturacion
 from ...models.V.sucursal import Sucursal
 from ...models.V.tarifas_sucursal import TarifasSucursal
-from ...repo.cantidad_vigencia import validar_cantidad_vigente
+from ...repo.ocupacion import get_ocupacion_puros_activos
 from ...repo.overlap import (
     OverlapError,
     SucursalInmutableError,
@@ -855,13 +855,22 @@ async def update_cantidad_pr_c(
     _claims: None = Depends(_cantidad_pr_c_issuer_dep),
 ) -> CantidadVehiculosSucursalRead:
     """PR-C PUT: close+insert with overlap, sucursal-inmutable, and
-    cantidad-bajo-ingresos-activos guards.
+    capacidad-insuficiente guards.
 
-    The third guard (the operator cannot lower ``cantidad`` below the
-    count of currently-active ``ingreso`` rows for the same
-    ``(uuid_sucursal, uuid_tipo_vehiculo)``) uses the MV
-    ``mv_ocupacion_diaria`` via :func:`validar_cantidad_vigente`. The
-    MV has a lag <= 10s accepted as live risk (KD-V8).
+    The third guard (BR2, HU-F14.4): the operator cannot lower
+    ``cantidad`` below the count of currently-active ``ingreso`` rows
+    for the same ``(uuid_sucursal, uuid_tipo_vehiculo)``. "Currently
+    active" is DERIVED (never persisted) by reusing
+    :func:`parkos_core.repo.ocupacion.get_ocupacion_puros_activos` --
+    the same HU-F1.5 ``mv_ocupacion_diaria`` breakdown the live
+    occupancy endpoint (HU-F4.3) and the ingreso V1/V2 cupo guard
+    (``validar_cupo_disponible``) already use. The MV has a lag <= 10s
+    accepted as live risk (KD-V8).
+
+    A ``uuid_tipo_vehiculo`` of ``None`` (undifferentiated/blanket
+    capacity -- a PR-C test convenience, not a catalog-backed cell) has
+    no corresponding breakdown row (the MV join is driven by the
+    ``tipos_vehiculo`` catalog), so the guard is a no-op for that cell.
     """
     current = await current_version(session, CantidadVehiculosSucursal, uuid)
     if current is None:
@@ -902,29 +911,34 @@ async def update_cantidad_pr_c(
     if (
         payload.cantidad is not None
         and payload.cantidad < (current.cantidad or 0)
+        and effective_tipo_vehiculo is not None
     ):
-        activos = await validar_cantidad_vigente(
+        ocupacion_rows = await get_ocupacion_puros_activos(
             session,
             uuid_sucursal=current.uuid_sucursal,  # type: ignore[arg-type]
-            uuid_tipo_vehiculo=effective_tipo_vehiculo,  # type: ignore[arg-type]
-            at=datetime.now(UTC),
         )
-        # ``activos`` is the count from the MV for that (sucursal,
-        # tipo_vehiculo) cell — 0 when the branch has no config for the
-        # cell. We use the SAME key the cupos row is on, not the row's
+        # We match on the SAME key the cupos row is on, not the row's
         # current tipo_vehiculo, because the operator may be moving the
         # capacity to a different tipo (PUT carrying the existing
         # cantidad onto a new cell) and we want the guard to apply to
-        # the destination cell's activos.
-        if activos.activos > payload.cantidad:
+        # the destination cell's occupancy.
+        ocupacion_match = next(
+            (
+                row
+                for row in ocupacion_rows
+                if row.uuid_tipo_vehiculo == effective_tipo_vehiculo
+            ),
+            None,
+        )
+        ocupado_actual = ocupacion_match.activos if ocupacion_match is not None else 0
+        if payload.cantidad < ocupado_actual:
             raise HTTPException(
                 status_code=422,
                 detail={
-                    "error": "cantidad_bajo_ingresos_activos",
-                    "activos": activos.activos,
-                    "solicitada": payload.cantidad,
-                    "uuid_sucursal": str(current.uuid_sucursal),
-                    "uuid_tipo_vehiculo": str(effective_tipo_vehiculo),
+                    "error": "capacidad_insuficiente",
+                    "tipo": ocupacion_match.tipo if ocupacion_match is not None else None,
+                    "ocupado_actual": ocupado_actual,
+                    "solicitado": payload.cantidad,
                 },
             )
     nueva_desde = _to_naive_utc(payload.vigente_desde) or datetime.now(UTC).replace(tzinfo=None)

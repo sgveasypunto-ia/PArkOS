@@ -8,9 +8,10 @@
  *
  *   - 409 ``cantidad_overlap`` — bi-temporal window collides with another
  *     open row for the same ``(uuid_sucursal, uuid_tipo_vehiculo)``.
- *   - 422 ``cantidad_bajo_ingresos_activos`` — the new ``cantidad`` is
- *     below the count of currently-active ``ingreso`` rows; the operator
- *     must close those ``ingreso`` first.
+ *   - 422 ``capacidad_insuficiente`` (BR2, HU-F14.4) — the new
+ *     ``cantidad`` is below ``ocupado_actual`` (currently-active
+ *     ``ingreso`` rows for the tipo); the operator must close those
+ *     ``ingreso`` first.
  *   - 422 ``sucursal_inmutable`` — same as tarifas.
  *
  * ``cantidad`` is an integer column; we validate as ``z.number().int()``
@@ -70,11 +71,10 @@ export const cupoOverlapErrorSchema = z.object({
 
 export const cupoBajoIngresosErrorSchema = z.object({
   detail: z.object({
-    error: z.literal('cantidad_bajo_ingresos_activos'),
-    activos: z.number().int(),
-    solicitada: z.number().int(),
-    uuid_sucursal: z.string().uuid(),
-    uuid_tipo_vehiculo: z.string().uuid(),
+    error: z.literal('capacidad_insuficiente'),
+    tipo: z.string().nullable(),
+    ocupado_actual: z.number().int(),
+    solicitado: z.number().int(),
   }),
 });
 

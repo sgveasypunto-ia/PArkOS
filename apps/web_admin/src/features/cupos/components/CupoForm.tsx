@@ -23,11 +23,11 @@
  *   - `vigente_desde` (datetime-local, optional). CREATE pre-fills
  *     with ``new Date()``; EDIT preserves the existing row's value.
  *
- * The error message for the ``cantidad_bajo_ingresos_activos`` guard
- * lives in the page (Cupos.tsx) — it carries the operator-readable
- * detail with ``activos`` and ``solicitada`` to make the rejection
- * actionable. The form only knows about the lower-level Zod
- * validation.
+ * The error message for the ``capacidad_insuficiente`` guard (BR2,
+ * HU-F14.4) lives in the page (Cupos.tsx) — it carries the
+ * operator-readable detail with ``tipo`` and ``ocupadoActual`` /
+ * ``solicitado`` to make the rejection actionable. The form only
+ * knows about the lower-level Zod validation.
  */
 import { useState } from 'react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
