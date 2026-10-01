@@ -91,7 +91,15 @@ export function CerrarTurno(): JSX.Element | null {
   // handler, which both breaks the `CerrarTurnoFormProps.onSubmit` contract
   // and would mean the values are validated/parsed twice.
   const onSubmit = async (values: CerrarTurnoInput): Promise<void> => {
-    if (!sesion || !uuidTipoArqueo) return;
+    if (!sesion) return;
+    if (!uuidTipoArqueo) {
+      // Bugfix (2026-10-01): this used to `return` silently, leaving
+      // the operator with a dead button and nothing in the console —
+      // the catalog lookup (`useTipoArqueoPorCodigo`) can still be
+      // loading, or have failed, when the operator clicks submit.
+      setErrorState({ kind: 'catalogo_no_disponible' });
+      return;
+    }
     setErrorState(null);
     setIsSubmitting(true);
 

@@ -128,6 +128,11 @@ vi.mock('../components/CerrarTurnoForm', () => ({
           No se pudo registrar el arqueo
         </div>
       )}
+      {error?.kind === 'catalogo_no_disponible' && (
+        <div data-testid="cerrar-turno-error-catalogo-no-disponible" role="alert">
+          Catálogo de tipos de arqueo no disponible
+        </div>
+      )}
       <button
         type="submit"
         data-testid="cerrar-turno-confirmar"
@@ -275,7 +280,7 @@ describe('<CerrarTurno /> container — T3', () => {
     expect(mockCerrarSesion).not.toHaveBeenCalled();
   });
 
-  it('uuid_tipo_arqueo aún no resuelto (catálogo cargando) → NO invoca arqueo ni cerrarSesion', async () => {
+  it('uuid_tipo_arqueo aún no resuelto (catálogo cargando) → NO invoca arqueo ni cerrarSesion, y muestra banner (Cambio 2 — ya no es un silent return)', async () => {
     mockUseTipoArqueoPorCodigo.mockReturnValue({
       data: undefined,
       uuid: undefined,
@@ -292,6 +297,11 @@ describe('<CerrarTurno /> container — T3', () => {
 
     expect(mockSubmitArqueo).not.toHaveBeenCalled();
     expect(mockCerrarSesion).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('cerrar-turno-error-catalogo-no-disponible'),
+      ).toBeInTheDocument();
+    });
   });
 
   it('sin sesion activa (useSesionActiva retorna sesion: null) → retorna null', () => {

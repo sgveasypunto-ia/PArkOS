@@ -69,6 +69,7 @@ import type { CerrarTurnoInput } from '../api/schemas/turnoSchema';
 import type { SesionRead } from '../api/sesionActivaApi';
 import { formatCOP, formatTiempoTranscurrido } from '../lib/format';
 import { useMiTurno } from '../../operacion/hooks/useMiTurno';
+import { useRequiereJustificacion } from '../hooks/useRequiereJustificacion';
 
 /**
  * Estado de error que `<CerrarTurno>` pasa a `<CerrarTurnoForm />`.
@@ -86,6 +87,7 @@ export type CerrarTurnoErrorState =
   | { kind: 'red_arqueo' }
   | { kind: 'cierre_ya_cerrado'; uuid_arqueo?: string }
   | { kind: 'cierre_fallido'; uuid_arqueo?: string }
+  | { kind: 'catalogo_no_disponible' }
   | null;
 
 export interface CerrarTurnoFormProps {
@@ -135,20 +137,32 @@ export function CerrarTurnoForm({
 
   // plan.md HU-F10.2 (línea 2273) + sequence diagram (líneas 2296-2326):
   // la justificación es obligatoria SOLO "si hay diferencia" — no
-  // incondicionalmente. `difTotal` se calcula client-side, igual que
-  // `ArqueoParcial.tsx` (`hasDifferenceError`), únicamente para decidir
-  // si el campo se muestra/exige — el monto NUNCA se renderiza (conteo
-  // ciego: el operador no debe ver esperado ni diferencia).
+  // incondicionalmente.
+  //
+  // REGRESSION fix (2026-10-01): este componente solía comparar
+  // client-side contra `sesion.valor_inicial_*` (igual que
+  // `ArqueoParcial.tsx` `hasDifferenceError`) — eso daba un falso
+  // negativo en cuanto el turno tenía CUALQUIER transacción, porque el
+  // esperado real es `inicial + SUM(factura_pagos)`, solo conocido
+  // server-side (DEC-ARQUEO-10). `useRequiereJustificacion` corre ese
+  // mismo cálculo en el backend y devuelve ÚNICAMENTE el veredicto
+  // booleano — el monto esperado NUNCA viaja al cliente (conteo ciego:
+  // ni se renderiza, ni se transmite).
   const watchEfectivoReportado = form.watch('valor_efectivo_reportado');
   const watchDatafonoReportado = form.watch('valor_datafono_reportado');
-  const difTotal =
-    Math.abs((watchEfectivoReportado ?? 0) - sesion.valor_inicial_efectivo) +
-    Math.abs((watchDatafonoReportado ?? 0) - sesion.valor_inicial_datafono);
-  // `forceRequireJustificacion` (set by `<CerrarTurno>` after a real
-  // backend `justificacion_requerida` rejection) ORs into the client's
-  // own guess — the backend's real expected total is never visible
-  // here (conteo ciego), so `hayDiferencia` alone can under-detect it.
-  const mostrarJustificacion = difTotal > 0 || forceRequireJustificacion;
+  const { requiereJustificacion: requiereJustificacionServer } = useRequiereJustificacion(
+    sesion.uuid,
+    watchEfectivoReportado ?? 0,
+    watchDatafonoReportado ?? 0,
+  );
+  // Conservador mientras el backend no respondió todavía (debounce +
+  // round-trip): asumir que SÍ hay diferencia, nunca `false` por
+  // default — lo contrario reintroduciría la misma ventana de falso
+  // negativo que este hook existe para cerrar. `forceRequireJustificacion`
+  // (seteado por `<CerrarTurno>` tras un rechazo real del backend) sigue
+  // OR-eado por las dudas de una condición de carrera entre este
+  // pre-flight y el POST real.
+  const mostrarJustificacion = (requiereJustificacionServer ?? true) || forceRequireJustificacion;
 
   // REQ-OPS-158 — strict-mode gate: button disabled while
   // justificacion is empty / below 3 chars, but ONLY when a difference
@@ -424,6 +438,17 @@ export function CerrarTurnoForm({
             {t('caja:sesionYaCerrada')}
           </FormMessage>
         )}
+        {error?.kind === 'catalogo_no_disponible' && (
+          <FormMessage
+            role="alert"
+            data-testid="cerrar-turno-error-catalogo-no-disponible"
+          >
+            {t('caja:cerrarTurno.errorCatalogoNoDisponible', {
+              defaultValue:
+                'Catálogo de tipos de arqueo no disponible — reintente en unos segundos.',
+            })}
+          </FormMessage>
+        )}
         {/* REQ-OPS-159 cases 5-7 — orphan uuid banner. The supervisor
             uses the `data-testid="cerrar-turno-orphan-uuid"` element to
             quote the uuid to the ABBC-F10.2-BE-1 reconciler. */}
@@ -457,6 +482,23 @@ export function CerrarTurnoForm({
               </p>
             </aside>
           )}
+
+        {/* Bugfix (2026-10-01): el botón quedaba disabled sin ninguna
+            pista visible de por qué — el operador tipeaba valores y
+            "no pasaba nada". Este banner SOLO explica la condición
+            genérica (coincidir con lo esperado, o justificar) — nunca
+            el monto esperado ni la diferencia (conteo ciego). */}
+        {strictModeButtonDisabled && (
+          <FormMessage
+            role="alert"
+            data-testid="cerrar-turno-boton-disabled-motivo"
+          >
+            {t('caja:cerrarTurno.botonDisabledMotivo', {
+              defaultValue:
+                'El botón se habilita cuando el valor contado coincide con lo esperado, o cuando completás una justificación de mínimo 3 caracteres.',
+            })}
+          </FormMessage>
+        )}
 
         {/* F31.3 rediseño: los 2 botones no tenían contenedor propio —
             `<Button>` es `inline-flex` (button.tsx), así que quedaban
