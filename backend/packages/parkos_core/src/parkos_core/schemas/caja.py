@@ -34,6 +34,7 @@ they are fixed at ``open_session`` time and never change afterwards.
 fast-fail assertion: any attempt to PATCH those fields returns
 ``ValidationError`` (HTTP 422) before the request hits the router.
 """
+
 from __future__ import annotations
 
 import uuid as uuid_lib
@@ -382,6 +383,35 @@ class CierreDiarioQueryParams(_Base):
     fecha: date
 
 
+class RequiereJustificacionQueryParams(_Base):
+    """HU-F10.2 follow-up: GET /arqueo/requiere-justificacion query params.
+
+    Carries the operator's in-progress counted values so the handler can
+    run the SAME Step 5/6 diferencia check ``post_arqueo`` will run on
+    submit, without the caller having to POST yet. ``extra='forbid'``
+    blocks client smuggling.
+    """
+
+    uuid_sesion: uuid_lib.UUID
+    valor_efectivo_reportado: Decimal
+    valor_datafono_reportado: Decimal
+
+
+class ArqueoRequiereJustificacionRead(_Base):
+    """HU-F10.2 follow-up: GET /arqueo/requiere-justificacion response.
+
+    Conteo ciego (plan.md HU-F10.2): the endpoint intentionally returns
+    ONLY the boolean verdict, never ``esperado_efectivo``/
+    ``esperado_datafono``/the signed diferencia -- those values MUST
+    NOT reach the client even over the wire (not just unrendered),
+    otherwise an operator could read them straight from the Network tab
+    and reverse-engineer the count the "conteo ciego" control exists to
+    prevent.
+    """
+
+    requiere_justificacion: bool
+
+
 # ---------------------------------------------------------------------------
 # Typed error schemas (Layer 5 -- mapped via HTTPException)
 # ---------------------------------------------------------------------------
@@ -434,6 +464,7 @@ __all__ = [
     "ArqueoRead",
     "ArqueoReadForHandler",
     "ArqueoReadList",
+    "ArqueoRequiereJustificacionRead",
     "ArqueoResumenItem",
     "ArqueoResumenRead",
     "ArqueoUpdate",
@@ -445,6 +476,7 @@ __all__ = [
     "CierreDiaNoAceptaSesionErrorRead",
     "CierreDiarioQueryParams",
     "JustificacionRequeridaErrorRead",
+    "RequiereJustificacionQueryParams",
     "SesionCreate",
     "SesionFilter",
     "SesionNoEncontradaErrorRead",

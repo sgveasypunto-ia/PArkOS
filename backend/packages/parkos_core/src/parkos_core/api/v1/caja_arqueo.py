@@ -38,10 +38,12 @@ from ...repo import arqueo as repo_arqueo
 from ...schemas.caja import (
     ArqueoCreateV2,
     ArqueoReadForHandler,
+    ArqueoRequiereJustificacionRead,
     ArqueoResumenRead,
     CierreDiaNoAceptaSesionErrorRead,
     CierreDiarioQueryParams,
     JustificacionRequeridaErrorRead,
+    RequiereJustificacionQueryParams,
     SesionNoEncontradaErrorRead,
     SesionYaCerradaErrorRead,
     TipoArqueoNoEncontradoErrorRead,
@@ -336,6 +338,99 @@ async def post_arqueo(
         descuadre_pct=descuadre_pct,
         alerta_generada=alerta_generada,
         alerta_uuid=alerta_uuid,
+    )
+
+
+# ---------------------------------------------------------------------------
+# HU-F10.2 follow-up -- GET /api/v1/caja/arqueo/requiere-justificacion
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/arqueo/requiere-justificacion",
+    response_model=ArqueoRequiereJustificacionRead,
+    status_code=200,
+    responses={
+        404: {"model": SesionNoEncontradaErrorRead},
+        409: {"model": SesionYaCerradaErrorRead},
+    },
+)
+async def get_arqueo_requiere_justificacion(
+    response: Response,
+    params: RequiereJustificacionQueryParams = Depends(),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_caja_arqueo_issuer_dep),
+) -> ArqueoRequiereJustificacionRead:
+    """GET /api/v1/caja/arqueo/requiere-justificacion -- conteo ciego pre-flight.
+
+    Bugfix (2026-10-01, cierre de turno): the FE used to guess whether a
+    justificacion would be required by comparing the operator's reported
+    count against ``sesion.valor_inicial_*`` -- a false negative whenever
+    the session had ANY transactions, since the real esperado is
+    ``inicial + SUM(factura_pagos)`` (server-side only, DEC-ARQUEO-10).
+    That false negative hid the Justificacion field until the real
+    ``POST /caja/arqueo`` rejected the submit with 400
+    ``justificacion_requerida``, leaving the operator stuck resubmitting
+    the identical payload.
+
+    This handler runs the SAME Step 5/6 diferencia check ``post_arqueo``
+    runs, scoped to ``tipo_arqueo='cierre_turno'`` semantics (diferencia
+    != 0 always requires justificacion here -- unlike ``auditoria``,
+    which never does), and returns ONLY the boolean verdict. The
+    computed ``esperado_efectivo``/``esperado_datafono``/signed
+    diferencia are intentionally NEVER serialized here -- conteo ciego
+    (plan.md HU-F10.2) requires the expected totals stay server-side
+    even over the wire, not just unrendered in the DOM.
+
+    Reuses ``validar_sesion_abierta_para_arqueo`` (V4) for tenant scope
+    + open/closed validation -- identical 404/409 semantics as the POST
+    handler's Step 4.
+    """
+    no_store = _helpers.no_store_headers()
+    target_sucursal = ctx.sucursal_uuid
+
+    try:
+        await repo_arqueo.validar_sesion_abierta_para_arqueo(
+            session,
+            uuid_sesion=params.uuid_sesion,
+            target_sucursal=target_sucursal,
+        )
+    except repo_arqueo.SesionNoEncontradaError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "sesion_no_encontrada",
+                "uuid_sesion": str(exc.uuid_sesion),
+            },
+            headers=no_store,
+        ) from exc
+    except repo_arqueo.SesionYaCerradaError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "sesion_ya_cerrada",
+                "uuid_sesion": str(exc.uuid_sesion),
+            },
+            headers=no_store,
+        ) from exc
+
+    esperado_efectivo, esperado_datafono = await repo_arqueo.calcular_esperado_sesion(
+        session,
+        uuid_sesion=params.uuid_sesion,
+    )
+    diferencia_efectivo = repo_arqueo.calcular_diferencia(
+        reportado=params.valor_efectivo_reportado,
+        esperado=esperado_efectivo,
+    )
+    diferencia_datafono = repo_arqueo.calcular_diferencia(
+        reportado=params.valor_datafono_reportado,
+        esperado=esperado_datafono,
+    )
+
+    _helpers.apply_no_store_header(response)
+    return ArqueoRequiereJustificacionRead(
+        requiere_justificacion=diferencia_efectivo != 0 or diferencia_datafono != 0,
     )
 
 

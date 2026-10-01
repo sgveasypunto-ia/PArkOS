@@ -194,7 +194,13 @@ export async function runCerrarTurnoChain(args: {
     }
   } catch (err) {
     // Cases 1-4: POST errors. NO sesion close attempted.
+    //
+    // Bugfix (2026-10-01): the user reported "en logs no se ve nada" —
+    // every branch below used to swallow `err` into the result
+    // envelope with zero trace. `console.error` here is the minimum
+    // observability so a failed cierre leaves SOMETHING in devtools.
     if (err instanceof TypeError) {
+      console.error('[cerrarTurnoChain] red_arqueo (network)', err);
       return { kind: 'red_arqueo' };
     }
     if (err instanceof ParkosHttpError) {
@@ -211,10 +217,13 @@ export async function runCerrarTurnoChain(args: {
       // lets the orchestrator force the field to render regardless of
       // the client's own guess.
       if (err.status === 400 && parseBackendErrorCode(err.body) === 'justificacion_requerida') {
+        console.error('[cerrarTurnoChain] justificacion_requerida', err);
         return { kind: 'justificacion_requerida' };
       }
+      console.error('[cerrarTurnoChain] arqueo_fallido', { status: err.status, err });
       return { kind: 'arqueo_fallido', status: err.status };
     }
+    console.error('[cerrarTurnoChain] arqueo_fallido (unknown error type)', err);
     return { kind: 'arqueo_fallido', status: 0 };
   }
 
@@ -246,18 +255,27 @@ export async function runCerrarTurnoChain(args: {
   // tests in `hooks/__tests__/useSesionActiva.cerrarSesion.test.ts`).
   if (result.status === 404) {
     // Case 5: SesionAlreadyClosedError (404) → navigate /login,
-    // no ?closed=true (DEC-F3.3-07).
+    // no ?closed=true (DEC-F3.3-07). Logged (not banner'd — this
+    // redirect is intentionally silent per DEC-F3.3-07) so the
+    // operator's devtools still show why the redirect happened.
+    console.error('[cerrarTurnoChain] redirect_login (cierre 404 sesion_not_found)', result);
     return { kind: 'redirect_login' };
   }
   if (result.status === 401) {
     // Case 8: 401 → F3.3 fallback handled inside helper. Operator
     // is already cleared; orchestrator only navigates.
+    console.error('[cerrarTurnoChain] redirect_login (cierre 401)', result);
     return { kind: 'redirect_login' };
   }
   // Cases 6-7: 409 / 5xx / network. Surface orphan uuid banner.
   // ABBC-F10.2-BE-1 (pending-fase-10.md item #4) is the future
   // automated reconciler — interim remediation is operator-driven
   // with the surfaced uuid.
+  console.error('[cerrarTurnoChain] cierre_ya_cerrado/cierre_fallido', {
+    status: result.status,
+    uuid_arqueo: arqueoUuid,
+    result,
+  });
   return {
     kind: result.status === 409 ? 'cierre_ya_cerrado' : 'cierre_fallido',
     uuid_arqueo: arqueoUuid,
