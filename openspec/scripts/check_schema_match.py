@@ -27,10 +27,40 @@ Checks performed:
       `<table>_inmutable` (or similar) that raises on mutation
   (g) Every `[L-S]`-class table has a `BEFORE UPDATE` session-guard trigger that
       requires a `log_transaccional` row in the same TX
-  (h) The 8 high-volume `[A]` tables have a `pg_partman` partition registered
-      (informational only for any OTHER registered partman parent — e.g.
-      `sync_queue_lw_buffer`'s own daily partition schedule, ADR-002 — extra
-      partman parents are never a failure, only the 8 listed ones are required)
+  (h) PARTITION COVERAGE (rewritten 2026-10-01, see below). Three
+      behavioural assertions, replacing the old registration-only check:
+      (h1) every `prod` parent with `relkind='p'` has a bounded partition
+           covering `CURRENT_DATE` — a partition that can actually receive
+           today's rows, not merely one registered somewhere
+      (h2) every `partman.part_config.parent_table` resolves to a real
+           relation — a registered name that pg_partman cannot look up is
+           silently skipped by the worker with only a WARNING
+      (h3) no `<parent>_default` partition holds rows beyond the
+           documented pre-0064 baseline in `DEFAULT_PARTITION_BASELINE`
+
+WHY (h) WAS REWRITTEN
+~~~~~~~~~~~~~~~~~~~~~
+The old check asserted that the 8 high-volume tables appeared in
+`partman.part_config`. It PASSED for months while the system was
+permanently broken, because the tables WERE registered — as
+`parkos.prod.<table>` instead of `prod.<table>`. pg_partman 5.x expects
+`schema.table`; with a database-qualified name the background worker
+logged
+
+    WARNING: pg_partman maintenance skipped partition set for parent
+              table parkos.prod.salidas: Given parent table not found
+              in system catalogs: parkos.prod.salidas
+
+and exited 0. No partition was ever created. On 2026-10-01 `sync_queue`
+had no DEFAULT partition, so `prod.login`'s `login_enqueue_sync` trigger
+raised `CheckViolationError: no partition of relation "sync_queue" found
+for row` and `POST /api/v1/auth/login` returned 500 for valid
+credentials. The other nine parents degraded silently into `*_default`.
+
+A gate that asserts bookkeeping instead of behaviour manufactures
+confidence. (h1) and (h2) assert behaviour; (h3) makes the safety net
+loud. Migration 0064 is the static patch; ADR-004 tracks wiring a real
+scheduler so pg_partman maintains these unattended.
 
 Usage:
   python openspec/scripts/check_schema_match.py \\
@@ -46,6 +76,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import datetime
 import re
 import sys
 from dataclasses import dataclass, field
@@ -118,6 +149,29 @@ EXPECTED_NON_ER_TABLES: frozenset[str] = frozenset(
         "revoked_sync_jwts",
         "ingreso_consecutivo_contador",
         "sync_cursor",
+    }
+)
+
+# DEFAULT partitions that are ALLOWED to hold rows, by partition name.
+# Migration 0064 added check (h3), which fails when any `*_default` partition
+# holds rows that were not written before 0064. These two legitimately do:
+#
+#   salidas_default        8 rows dated 2028-09 -- `salidas` still writes a
+#                          real DIAN retention date, and at the time the only
+#                          bounded partition was September 2026. Moving them
+#                          requires DELETE on prod.salidas, blocked by the
+#                          `salidas_inmutable` trigger + REVOKE.
+#   pairing_tokens_default 8 rows dated 2026-09-23/27, cloud only -- the
+#                          branch node never wrote pairing tokens into it.
+#
+# The counts differ per node, so this is an allowlist by name rather than a
+# per-name expected count. An empty default always passes. Adding an entry
+# here is a deliberate decision that needs a comment saying why -- "to make
+# CI green" is not a reason.
+DEFAULT_PARTITION_LEGACY: frozenset[str] = frozenset(
+    {
+        "salidas_default",
+        "pairing_tokens_default",
     }
 )
 
@@ -422,22 +476,138 @@ def diff_schema(tables: dict[str, Table], conn, schema: str = "prod") -> Diff:
         if tname not in ls_triggers:
             diff.fail(f"(g) {tname}: no session-guard BEFORE UPDATE trigger in DB")
 
-    # --- (h) the 8 high-volume [A] tables have a pg_partman partition registered ---
+    # --- (h) partition coverage -- behavioural, not bookkeeping ---
+    # Rewritten 2026-10-01. The previous version asserted the 8 high-volume
+    # tables were present in part_config; they were, as 'parkos.prod.*',
+    # which pg_partman silently skips with a WARNING. See module docstring.
+
+    # (h1) every partitioned parent can physically receive today's rows.
     cur.execute("""
-        SELECT parent_table FROM partman.part_config
-        WHERE parent_table LIKE '%.' || current_schema() || '.%'
-        ORDER BY parent_table;
+        SELECT c.relname, pg_get_partkeydef(c.oid)
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema()
+          AND c.relkind = 'p'
+        ORDER BY c.relname;
     """)
-    partman_parents = {row[0].split(".")[-1] for row in cur.fetchall()}
-    expected_partman = {"factura_detalle", "factura_pagos", "log_transaccional",
-                       "sync_log", "sync_queue", "caja", "arqueo", "salidas"}
-    missing_partman = expected_partman - partman_parents
-    extra_partman = partman_parents - expected_partman
-    if missing_partman:
-        diff.fail(f"(h) pg_partman missing partition parents: {sorted(missing_partman)}")
-    if extra_partman:
-        # Informational, not failure — extra partman parents are OK.
-        print(f"(h) info: pg_partman has additional parents: {sorted(extra_partman)}")
+    parents = cur.fetchall()
+    if not parents:
+        diff.fail(
+            "(h1) no partitioned parents found at all. If pg_partman or a "
+            "migration dropped them, every high-volume write is now "
+            "unpartitioned. See migration 0064."
+        )
+    for parent, partkey in parents:
+        key_col = partkey.split("(")[-1].rstrip(") ").strip()
+        # Find a bounded partition of <parent> whose range includes today.
+        # pg_get_expr on the child relpartbound yields e.g.
+        # FOR VALUES FROM ('2026-10-01') TO ('2026-11-01').
+        cur.execute(
+            """
+            SELECT c.relname, pg_get_expr(c.relpartbound, c.oid)
+            FROM pg_inherits i
+            JOIN pg_class c ON c.oid = i.inhrelid
+            JOIN pg_class p ON p.oid = i.inhparent
+            JOIN pg_namespace n ON n.oid = p.relnamespace
+            WHERE n.nspname = current_schema()
+              AND p.relname = %s
+              AND c.relpartbound IS NOT NULL
+            """,
+            (parent,),
+        )
+        covered = False
+        for _child, bound in cur.fetchall():
+            # A DEFAULT partition has relpartbound = 'DEFAULT'; skip it here,
+            # (h3) is what polices its contents.
+            if "DEFAULT" in bound.upper():
+                continue
+            try:
+                rng = bound.split("VALUES FROM", 1)[1]
+                lo_s, hi_s = rng.split("TO", 1)
+                lo = datetime.date.fromisoformat(
+                    lo_s.strip().strip("()").strip("'")[:10]
+                )
+                hi = datetime.date.fromisoformat(
+                    hi_s.strip().strip("()").strip("'")[:10]
+                )
+            except (IndexError, ValueError):
+                continue
+            if lo <= datetime.date.today() < hi:
+                covered = True
+                break
+        if not covered:
+            diff.fail(
+                f"(h1) {parent} ({key_col}): no bounded partition covers "
+                f"{datetime.date.today().isoformat()}. Writes landing outside "
+                f"every partition either raise CheckViolationError or silently "
+                f"degrade into {parent}_default. Run: SELECT "
+                f"prod.fn_ensure_partitions();  (migration 0064, ADR-004)"
+            )
+
+    # (h2) every part_config registration must resolve to a real relation.
+    # This is the check that would have caught 'parkos.prod.*'.
+    cur.execute("""
+        SELECT table_schema, table_name FROM information_schema.tables
+        WHERE table_type = 'BASE TABLE'
+    """)
+    existing_tables = {(r[0], r[1]) for r in cur.fetchall()}
+
+    cur.execute("SELECT parent_table FROM partman.part_config ORDER BY parent_table")
+    partman_rows = [r[0] for r in cur.fetchall()]
+    unresolvable = []
+    for ptable in partman_rows:
+        # Accept both 'prod.x' and a database-qualified 'parkos.prod.x', and
+        # resolve against the real catalog rather than string-matching.
+        schema_name, _, tbl = ptable.rpartition(".")
+        if not schema_name:
+            schema_name, tbl = current_schema(), ptable
+        if (schema_name, tbl) not in existing_tables:
+            unresolvable.append(ptable)
+    if unresolvable:
+        diff.fail(
+            f"(h2) part_config.parent_table does not resolve to a real "
+            f"relation: {unresolvable}. pg_partman SKIPS these with only a "
+            f"WARNING ('Given parent table not found in system catalogs'), "
+            f"so no partition is ever maintained and nothing alerts. Expected "
+            f"'schema.table', not a database-qualified name. See migration "
+            f"0064 REPAIR_PART_CONFIG."
+        )
+    print(f"(h2) info: {len(partman_rows)} part_config parent(s), all resolvable")
+
+    # (h3) the DEFAULT safety net must stay empty, except for rows that
+    # predate migration 0064. Those cannot be moved: doing so needs a
+    # DELETE on prod.salidas, which the `salidas_inmutable` trigger and
+    # the REVOKE block forbid. They are allowlisted per-name rather than
+    # baselined by count, because the counts legitimately differ between
+    # cloud and branch -- only cloud ever wrote pairing_tokens.
+    for parent, _partkey in parents:
+        default_part = f"{parent}_default"
+        cur.execute(
+            "SELECT to_regclass(%s)",
+            (f"{schema}.{default_part}",),
+        )
+        if cur.fetchone() is None:
+            continue
+        cur.execute(f'SELECT count(*) FROM "{schema}"."{default_part}"')  # noqa: S608
+        n_rows = cur.fetchone()[0]
+        if n_rows == 0:
+            continue
+        if default_part in DEFAULT_PARTITION_LEGACY:
+            print(
+                f"(h3) info: {default_part} holds {n_rows} pre-0064 row(s) "
+                f"(known legacy, allowlisted). Migrating them needs the "
+                f"immutability story resolved -- see migration 0064 docstring."
+            )
+            continue
+        diff.fail(
+            f"(h3) {default_part} holds {n_rows} row(s) and is not on the "
+            f"allowlist of known pre-0064 legacy partitions "
+            f"({sorted(DEFAULT_PARTITION_LEGACY)}). A row landed outside "
+            f"every bounded partition: either the forward window ran out "
+            f"(run prod.fn_ensure_partitions()) or a writer stamped an "
+            f"unexpected key value. Do NOT allowlist this to silence the "
+            f"failure -- find out which date it wrote first."
+        )
 
     # --- (i) MV canon guard — REQ-OPS-133 / Bug 3 of qa-2026-09-17 ---
     # The ``prod.mv_ocupacion_diaria`` materialized view is a hard

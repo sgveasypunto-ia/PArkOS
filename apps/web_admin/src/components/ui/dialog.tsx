@@ -17,6 +17,7 @@
  * the elevation scale, so dialogs sit above the page instead of on it.
  */
 import * as React from 'react';
+import { forwardRef } from 'react';
 
 import { cn } from '@/lib/utils';
 
@@ -68,6 +69,13 @@ export interface DialogProps {
    * Spread onto the `role="dialog"` element, so a consumer can attach its
    * own `data-testid` / `data-*` hooks without the ids drifting from the
    * generated `aria-labelledby` wiring.
+   *
+   * Typed exactly as `React.HTMLAttributes` on purpose. Widening it to
+   * admit bare `data-*` keys forces every existing call site (which
+   * passes `HTMLAttributes & { 'data-testid'?: string }`) to satisfy a
+   * required index signature they do not declare, which is a widening
+   * that buys nothing -- `data-testid` on `DialogContent` is the
+   * supported way to reach the body from a test.
    */
   contentProps?: React.HTMLAttributes<HTMLDivElement>;
   children: React.ReactNode;
@@ -214,3 +222,63 @@ export const DialogDescription = React.forwardRef<
   );
 });
 DialogDescription.displayName = 'DialogDescription';
+
+/**
+ * Presentational shell for the dialog body. Plain `<div>` — no ARIA
+ * wiring here, the parent `<Dialog>` already owns `role="dialog"`,
+ * `aria-modal`, `aria-labelledby`, `aria-describedby`, the focus trap
+ * and the Escape handler. Children are rendered verbatim.
+ *
+ * `forwardRef` so consumers can attach `data-testid` directly on
+ * the content element when needed (e.g. `nueva-version-dialog`).
+ */
+export const DialogContent = forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(
+      'rounded-lg border bg-background p-6 shadow-elevation-3',
+      'grid gap-4',
+      className,
+    )}
+    {...props}
+  />
+));
+DialogContent.displayName = 'DialogContent';
+
+/**
+ * Header block — vertical stack for `DialogTitle` + `DialogDescription`
+ * with the spacing the design system uses for the upper margin of the
+ * dialog. Plain `<div>`, no ARIA.
+ */
+export const DialogHeader = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>): JSX.Element => (
+  <div
+    className={cn('flex flex-col gap-1.5 text-left', className)}
+    {...props}
+  />
+);
+DialogHeader.displayName = 'DialogHeader';
+
+/**
+ * Footer block — action buttons. Stacks vertically on mobile and
+ * right-aligns horizontally on `sm+`, matching the rest of the
+ * app's button layouts.
+ */
+export const DialogFooter = ({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>): JSX.Element => (
+  <div
+    className={cn(
+      'flex flex-col-reverse gap-2 sm:flex-row sm:justify-end',
+      className,
+    )}
+    {...props}
+  />
+);
+DialogFooter.displayName = 'DialogFooter';

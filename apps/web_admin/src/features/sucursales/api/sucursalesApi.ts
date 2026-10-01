@@ -12,11 +12,8 @@
  *
  * - `GET  /api/v1/empresa/sucursal`                -- list
  * - `POST /api/v1/empresa/sucursal`                -- create
+ * - `PUT  /api/v1/empresa/sucursal/{uuid}`         -- update (bi-temporal close+insert)
  * - `GET  /api/v1/sucursal/{uuid}/pairing-token`   -- mint pairing token
- *
- * The PUT update endpoint is NOT exposed in this PR -- the IT-2 plan
- * scope is create + mint; actual updates land in a follow-up once
- * the form surfaces the full bi-temporal field set.
  */
 import { parkosFetchRaw, type ParkosFetchInit } from '@parkos/ui-kit/fetch';
 
@@ -24,10 +21,12 @@ import {
   type PairingTokenResponse,
   type Sucursal,
   type SucursalCreateInput,
+  type SucursalUpdateInput,
   pairingTokenResponseSchema,
   sucursalCreateSchema,
   sucursalReadListSchema,
   sucursalReadSchema,
+  sucursalUpdateSchema,
 } from './sucursalSchema';
 
 const jsonHeaders = {
@@ -65,6 +64,22 @@ export async function createSucursal(input: SucursalCreateInput): Promise<Sucurs
     headers: jsonHeaders,
     body: JSON.stringify(parsed),
   });
+  return sucursalReadSchema.parse(raw);
+}
+
+export async function updateSucursal(
+  uuid: string,
+  input: SucursalUpdateInput,
+): Promise<Sucursal> {
+  const parsed = sucursalUpdateSchema.parse(input);
+  const raw = await fetchJson<unknown>(
+    `/api/v1/empresa/sucursal/${uuid}`,
+    {
+      method: 'PUT',
+      headers: jsonHeaders,
+      body: JSON.stringify(parsed),
+    },
+  );
   return sucursalReadSchema.parse(raw);
 }
 

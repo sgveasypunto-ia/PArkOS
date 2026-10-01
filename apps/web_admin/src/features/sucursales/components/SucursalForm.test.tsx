@@ -20,6 +20,14 @@ describe('SucursalForm', () => {
     expect(screen.getByTestId('sucursal-submit')).toBeInTheDocument();
   });
 
+  it('uuid_tipo_sucursal and uuid_empresa inputs are readOnly (FK auto-managed)', () => {
+    render(<SucursalFormHarness onSubmit={vi.fn()} isSubmitting={false} />);
+    const tipo = screen.getByTestId('sucursal-field-uuid-tipo-sucursal') as HTMLInputElement;
+    const empresa = screen.getByTestId('sucursal-field-uuid-empresa') as HTMLInputElement;
+    expect(tipo.readOnly).toBe(true);
+    expect(empresa.readOnly).toBe(true);
+  });
+
   it('disables the submit button while submitting', () => {
     render(<SucursalFormHarness onSubmit={vi.fn()} isSubmitting />);
     expect((screen.getByTestId('sucursal-submit') as HTMLButtonElement).disabled).toBe(true);

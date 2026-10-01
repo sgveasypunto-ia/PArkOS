@@ -28,13 +28,39 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.permissions import require_permission
-from ...auth.tenancy import TenantContext
+
+
+def _to_naive_utc(value: datetime | None) -> datetime | None:
+    """Normalize a (possibly tz-aware) datetime to naive UTC.
+
+    Pydantic v2 ``datetime | None`` keeps ``tzinfo`` on the parsed value
+    when the wire payload carries an offset (e.g. ``2026-12-31T01:00:00+00:00``
+    from the admin ``<CupoForm>`` ``datetimeLocalToIso`` helper). All
+    ``[V]`` ``vigente_desde`` columns in this project are
+    ``DateTime(timezone=False)`` and asyncpg refuses to bind an aware
+    datetime into a tz-naive column for the overlap guard SQL
+    (``can't subtract offset-naive and offset-aware datetimes``,
+    DataError 500). Centralizing here means both POST/PUT of cupos AND
+    tarifas normalize the same way at the handler boundary, before any
+    SQL parameter binding or ``close_and_insert`` payload build.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+from ...auth.tenancy import TenantContext, requires_sucursal
+from ...db.tenancy import (
+    extract_sucursales_permitidas,
+    extract_sucursales_permitidas_fresh,
+)
 from ...models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
 from ...models.V.documentos import Documentos
 from ...models.V.empresa import Empresa
@@ -78,7 +104,7 @@ from ...schemas.empresa import (
     TarifasSucursalReadList,
     TarifasSucursalUpdate,
 )
-from ..deps import get_session, get_tenant_ctx, requires_issuer
+from ..deps import get_session, requires_issuer
 from ..router_factory import make_router
 
 router = APIRouter(prefix="/empresa", tags=["empresa"])
@@ -99,6 +125,213 @@ _ROUTER_CONFIG = {
 # values are the APIRouters returned by ``make_router``. Populated below by
 # ``_mount_empresa``.
 _SUB_ROUTERS: dict[str, APIRouter] = {}
+
+
+# ---------------------------------------------------------------------------
+# fix/catalog-sucursal-global-reads — ``GET /empresa/sucursal`` tenant-free
+# ---------------------------------------------------------------------------
+#
+# ``prod.sucursal`` is the BRANCH DIRECTORY: it carries ``uuid_sucursal``
+# (every row IS a branch), but the table itself is conceptually global —
+# admin-issued pairing tokens and the BranchSelector both need the list
+# before any branch is selected. The factory sub-router at
+# ``/empresa/sucursal`` injects ``get_tenant_ctx`` and therefore requires
+# ``X-Sucursal-Context`` for ``admin-`` tokens — which broke the
+# ``<SeleccionarSucursal>`` tab "Administrar" and the admin user-management
+# assignee dropdown (``features/admin/components/AdminUsuarioSucursalesManager.tsx:8``
+# and the related ``useSWR('/api/v1/empresa/sucursal?limit=200')`` calls in
+# cupos / tarifas / configuracion-* pages — all reachable before branch
+# selection).
+#
+# Carve-out: register a dedicated sub-router for the 3 read endpoints
+# (list, by-uuid, history) WITHOUT ``get_tenant_ctx``, BEFORE the factory
+# mount for the same resource. POST/PUT remain on the factory sub-router
+# (writes stay tenant-scoped — defence in depth).
+#
+# What the carve-out does NOT do: drop authorization. Only the HEADER
+# requirement goes away; the result set is still bounded to the caller's
+# own branches by :func:`_permitted_sucursal_uuids`. "Global" here means
+# "does not need a branch selected", never "sees every branch".
+#
+# Mirrors the HU-F1.4 dedicated-tarifas pattern: a separate APIRouter
+# registered ahead of the factory sub-router so FastAPI's first-match
+# resolver picks the dedicated handler for the read paths.
+_sucursal_global_reads_issuer_dep = requires_issuer("admin-", "operador-")
+_sucursal_global_reads_router = APIRouter(prefix="/sucursal", tags=["sucursal"])
+
+
+async def _permitted_sucursal_uuids(
+    session: AsyncSession,
+    claims: Any,
+) -> list[uuid_lib.UUID]:
+    """Resolve which branches the caller may read in the directory.
+
+    Dropping ``get_tenant_ctx`` from these handlers removes the HEADER
+    requirement, NOT the authorization requirement. The directory still
+    has to be bounded to the caller's own branches, otherwise any
+    ``admin-`` token could enumerate every branch in the installation
+    (name, NIT, address) — a cross-tenant leak. ``AGENTS.md`` lists
+    "Tenant scope leak in admin JWT" as a HIGH risk whose mitigation is
+    enforcing ``sucursales_permitidas`` on every call.
+
+    - ``admin-`` → read ``prod.usuarios_sucursal`` FRESH, mirroring
+      :func:`~parkos_core.api.v1.admin_views.list_sucursales`. The JWT
+      claim is a login-time snapshot, so a branch created since login
+      would be invisible in the picker and a revoked assignment would
+      linger until the token expires.
+    - ``operador-`` → the claim list, which the login handler pins to the
+      operator's own single branch. A ``usuarios_sucursal`` read would
+      fail closed for an operator with no admin assignment rows.
+
+    An empty result means the caller sees nothing (fail closed, per
+    ``db.tenancy.apply_admin_scope``).
+    """
+    if str(claims.get("iss", "")).startswith("admin-"):
+        return await extract_sucursales_permitidas_fresh(
+            session, actor_uuid=uuid_lib.UUID(str(claims["sub"]))
+        )
+    return extract_sucursales_permitidas(claims)
+
+
+@_sucursal_global_reads_router.get("", response_model=SucursalReadList)
+async def list_sucursal_global(
+    cursor: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    _claims: None = Depends(_sucursal_global_reads_issuer_dep),
+) -> SucursalReadList:
+    """Header-free directory of branches, bounded to the caller's scope.
+
+    Reads no longer require ``X-Sucursal-Context`` (the FE branch picker
+    and the assignee dropdowns run before any branch is selected), but the
+    result set is still restricted to the caller's permitted branches via
+    :func:`_permitted_sucursal_uuids`. Cursor pagination + limit mirror the
+    factory contract so the FE ``useSWR('/api/v1/empresa/sucursal?limit=200')``
+    callers (``SeleccionarSucursal``, ``Cupos``, ``Tarifas``,
+    ``ConfiguracionTolerancias``, ``AdminUsuarioSucursalesManager``)
+    can paginate as if it were the factory endpoint.
+    """
+    from ...repo.pagination import (
+        Cursor as _Cursor,
+    )
+    from ...repo.pagination import (
+        InvalidCursorError,
+    )
+    from ...repo.pagination import (
+        decode as _cursor_decode,
+    )
+    from ...repo.pagination import (
+        encode as _cursor_encode,
+    )
+
+    permitidas = await _permitted_sucursal_uuids(session, _claims)
+    if not permitidas:
+        # Fail closed: a caller with no permitted branch sees nothing.
+        return SucursalReadList(items=[], next_cursor=None)
+
+    try:
+        decoded = _cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(e)},
+        )
+    stmt = (
+        select(Sucursal)
+        .where(
+            Sucursal.vigente_hasta.is_(None),
+            Sucursal.uuid.in_(permitidas),
+        )
+        .order_by(Sucursal.vigente_desde.desc(), Sucursal.uuid.asc())
+    )
+    if decoded is not None:
+        cursor_ts = datetime.fromisoformat(decoded.vigente_desde)
+        if cursor_ts.tzinfo is not None:
+            cursor_ts = cursor_ts.replace(tzinfo=None)
+        stmt = stmt.where(
+            (Sucursal.vigente_desde < cursor_ts)
+            | (
+                (Sucursal.vigente_desde == cursor_ts)
+                & (Sucursal.uuid > uuid_lib.UUID(decoded.uuid))
+            )
+        )
+    stmt = stmt.limit(limit + 1)
+    rows = list((await session.execute(stmt)).scalars().all())
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = _cursor_encode(
+            _Cursor(
+                vigente_desde=last.vigente_desde.isoformat(),
+                created_at=None,
+                uuid=str(last.uuid),
+            )
+        )
+    items = [SucursalRead.model_validate(r) for r in rows]
+    return SucursalReadList(items=items, next_cursor=next_cursor)
+
+
+@_sucursal_global_reads_router.get(
+    "/{uuid}",
+    response_model=SucursalRead,
+    responses={404: {"description": "sucursal_no_encontrada"}},
+)
+async def get_sucursal_global(
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    _claims: None = Depends(_sucursal_global_reads_issuer_dep),
+) -> SucursalRead:
+    """Header-free read of a single branch by uuid (vigente version)."""
+    permitidas = await _permitted_sucursal_uuids(session, _claims)
+    if uuid not in permitidas:
+        # 404, not 403: a non-permitted branch must be indistinguishable
+        # from one that does not exist.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sucursal_no_encontrada", "uuid": str(uuid)},
+        )
+    row = await current_version(session, Sucursal, uuid)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sucursal_no_encontrada", "uuid": str(uuid)},
+        )
+    return SucursalRead.model_validate(row)
+
+
+@_sucursal_global_reads_router.get(
+    "/{uuid}/history",
+    response_model=list[SucursalRead],
+    responses={404: {"description": "sucursal_no_encontrada"}},
+)
+async def get_sucursal_history_global(
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    _claims: None = Depends(_sucursal_global_reads_issuer_dep),
+) -> list[SucursalRead]:
+    """Header-free bi-temporal history of a branch (all versions)."""
+    permitidas = await _permitted_sucursal_uuids(session, _claims)
+    if uuid not in permitidas:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sucursal_no_encontrada", "uuid": str(uuid)},
+        )
+    stmt = (
+        select(Sucursal)
+        .where(Sucursal.uuid == uuid)
+        .order_by(Sucursal.vigente_desde.desc())
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return [SucursalRead.model_validate(r) for r in rows]
+
+
+# Register the dedicated reads on the aggregated ``router`` (backward-compat
+# direct imports) AND in ``_SUB_ROUTERS`` so the v1 package picks them up.
+# Both insertions happen BEFORE the factory mount for ``sucursal`` below so
+# FastAPI's first-match resolver picks the dedicated handlers.
+router.include_router(_sucursal_global_reads_router)
+_SUB_ROUTERS["sucursal__dedicated_global_reads"] = _sucursal_global_reads_router
 
 
 def _mount_empresa(
@@ -204,7 +437,7 @@ async def list_tarifas_sucursal_vigente_en(
         ),
     ),
     session: AsyncSession = Depends(get_session),
-    _ctx: TenantContext = Depends(get_tenant_ctx),
+    _ctx: TenantContext = Depends(requires_sucursal),
     _claims: None = Depends(_tarifas_issuer_dep),
 ) -> TarifasSucursalReadList:
     """HU-F1.4 — bi-temporal ``GET /empresa/tarifas-sucursal``.
@@ -231,12 +464,12 @@ async def list_tarifas_sucursal_vigente_en(
     responses={404: {"description": "tarifa_no_encontrada"}},
 )
 async def get_tarifa_sucursal_by_uuid(
-    uuid: uuid_lib.UUID = Path(  # noqa: B008
+    uuid: uuid_lib.UUID = Path(
         ...,
         description="UUIDv4 de la fila de prod.tarifas_sucursal a leer.",
     ),
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
     _claims: None = Depends(_tarifas_issuer_dep),
 ) -> TarifasSucursalRead:
     """HU-F1.4 / CU-02 (operador, 2026-09-22): detalle de una tarifa específica.
@@ -333,9 +566,9 @@ _tarifas_pr_c_router = APIRouter(prefix="/tarifas-sucursal", tags=["tarifas-sucu
 )
 async def create_tarifa_pr_c(
     payload: TarifasSucursalCreate,
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
-    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),
 ) -> TarifasSucursalRead:
     """PR-C POST: opens a new version with overlap guard.
 
@@ -345,7 +578,8 @@ async def create_tarifa_pr_c(
     key. Adjacent windows (``new.vigente_desde == old.vigente_hasta``)
     are NOT overlaps — they are the close+insert Carril B contract.
     """
-    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    payload_vigente_desde = _to_naive_utc(payload.vigente_desde)
+    nueva_desde = payload_vigente_desde or datetime.now(UTC).replace(tzinfo=None)
     # POST opens at ``nueva_desde`` with no upper bound (open-ended).
     # We pass ``vigente_hasta = nueva_desde`` so the overlap test
     # collapses to "an open row whose vigente_desde < nueva_desde" —
@@ -384,6 +618,8 @@ async def create_tarifa_pr_c(
             },
         )
     payload_dict = payload.model_dump(exclude_none=True)
+    if payload_vigente_desde is not None:
+        payload_dict["vigente_desde"] = payload_vigente_desde
     new_row = await close_and_insert(
         session,
         TarifasSucursal,
@@ -404,10 +640,10 @@ async def create_tarifa_pr_c(
 )
 async def update_tarifa_pr_c(
     payload: TarifasSucursalUpdate,
-    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
-    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),
 ) -> TarifasSucursalRead:
     """PR-C PUT: close+insert with overlap guard and sucursal-inmutable.
 
@@ -447,7 +683,7 @@ async def update_tarifa_pr_c(
                 "attempted_sucursal": str(exc.attempted_sucursal),
             },
         )
-    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    nueva_desde = _to_naive_utc(payload.vigente_desde) or datetime.now(UTC).replace(tzinfo=None)
     try:
         await assert_no_overlap(
             session,
@@ -481,6 +717,8 @@ async def update_tarifa_pr_c(
             },
         )
     payload_dict = payload.model_dump(exclude_none=True)
+    if payload.vigente_desde is not None:
+        payload_dict["vigente_desde"] = _to_naive_utc(payload.vigente_desde)
     new_row = await close_and_insert(
         session,
         TarifasSucursal,
@@ -499,12 +737,12 @@ async def update_tarifa_pr_c(
     response_model=list[TarifasSucursalRead],
 )
 async def get_tarifa_by_key_history_pr_c(
-    sucursal: uuid_lib.UUID = Query(...),  # noqa: B008
-    tipo_vehiculo: uuid_lib.UUID | None = Query(None),  # noqa: B008
-    tipo_tarifa: uuid_lib.UUID | None = Query(None),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
-    _claims: None = Depends(_tarifas_pr_c_issuer_dep),  # noqa: B008
+    sucursal: uuid_lib.UUID = Query(...),
+    tipo_vehiculo: uuid_lib.UUID | None = Query(None),
+    tipo_tarifa: uuid_lib.UUID | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),
 ) -> list[TarifasSucursalRead]:
     """PR-C by-key / history: walk the bi-temporal version chain by business key.
 
@@ -548,12 +786,18 @@ _cantidad_pr_c_router = APIRouter(
 )
 async def create_cantidad_pr_c(
     payload: CantidadVehiculosSucursalCreate,
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
-    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),
 ) -> CantidadVehiculosSucursalRead:
     """PR-C POST: opens a new cantidad version with overlap guard."""
-    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    # Normalize the client-supplied valid-time to naive UTC so the
+    # overlap guard SQL parameter and the ``vigente_desde`` column bind
+    # safely (see ``_to_naive_utc`` docstring for the asyncpg DataError
+    # this prevents). Same for ``payload_dict`` so ``close_and_insert``
+    # does not stamp an aware datetime onto the new ``[V]`` row.
+    payload_vigente_desde = _to_naive_utc(payload.vigente_desde)
+    nueva_desde = payload_vigente_desde or datetime.now(UTC).replace(tzinfo=None)
     try:
         await assert_no_overlap(
             session,
@@ -583,6 +827,8 @@ async def create_cantidad_pr_c(
             },
         )
     payload_dict = payload.model_dump(exclude_none=True)
+    if payload_vigente_desde is not None:
+        payload_dict["vigente_desde"] = payload_vigente_desde
     new_row = await close_and_insert(
         session,
         CantidadVehiculosSucursal,
@@ -603,10 +849,10 @@ async def create_cantidad_pr_c(
 )
 async def update_cantidad_pr_c(
     payload: CantidadVehiculosSucursalUpdate,
-    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
-    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),
 ) -> CantidadVehiculosSucursalRead:
     """PR-C PUT: close+insert with overlap, sucursal-inmutable, and
     cantidad-bajo-ingresos-activos guards.
@@ -681,7 +927,7 @@ async def update_cantidad_pr_c(
                     "uuid_tipo_vehiculo": str(effective_tipo_vehiculo),
                 },
             )
-    nueva_desde = payload.vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+    nueva_desde = _to_naive_utc(payload.vigente_desde) or datetime.now(UTC).replace(tzinfo=None)
     try:
         await assert_no_overlap(
             session,
@@ -711,6 +957,11 @@ async def update_cantidad_pr_c(
             },
         )
     payload_dict = payload.model_dump(exclude_none=True)
+    # Strip tz from any tz-aware payload carry-forward (see ``_to_naive_utc``
+    # docstring). The ``close_and_insert`` helper would otherwise stamp an
+    # aware datetime onto a ``DateTime(timezone=False)`` column.
+    if payload.vigente_desde is not None:
+        payload_dict["vigente_desde"] = _to_naive_utc(payload.vigente_desde)
     new_row = await close_and_insert(
         session,
         CantidadVehiculosSucursal,
@@ -729,11 +980,11 @@ async def update_cantidad_pr_c(
     response_model=list[CantidadVehiculosSucursalRead],
 )
 async def get_cantidad_by_key_history_pr_c(
-    sucursal: uuid_lib.UUID = Query(...),  # noqa: B008
-    tipo_vehiculo: uuid_lib.UUID | None = Query(None),  # noqa: B008
-    session: AsyncSession = Depends(get_session),  # noqa: B008
-    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
-    _claims: None = Depends(_cantidad_pr_c_issuer_dep),  # noqa: B008
+    sucursal: uuid_lib.UUID = Query(...),
+    tipo_vehiculo: uuid_lib.UUID | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+    _ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_cantidad_pr_c_issuer_dep),
 ) -> list[CantidadVehiculosSucursalRead]:
     """PR-C by-key / history for cantidad."""
     stmt = (
@@ -771,6 +1022,12 @@ for _pr_c_key in (
     "tarifas-sucursal__dedicated_hu_f1_4",
     "tarifas-sucursal__dedicated_pr_c",
     "cantidad-vehiculos-sucursal__dedicated_pr_c",
+    # fix/catalog-sucursal-global-reads: the global-reads router was
+    # added to _SUB_ROUTERS above the factory mount, but list it here
+    # explicitly so the ordering stays correct if a future PR reorders
+    # the insertion block. POST/PUT keep flowing through the factory
+    # sub-router (tenant-scoped writes).
+    "sucursal__dedicated_global_reads",
 ):
     if _pr_c_key in _SUB_ROUTERS:
         _reordered[_pr_c_key] = _SUB_ROUTERS[_pr_c_key]
@@ -781,14 +1038,10 @@ _SUB_ROUTERS.clear()
 _SUB_ROUTERS.update(_reordered)
 
 
-_mount_empresa(
-    resource="tarifas-sucursal",
-    model_cls=TarifasSucursal,
-    read_schema=TarifasSucursalRead,
-    read_list_schema=TarifasSucursalReadList,
-    create_schema=TarifasSucursalCreate,
-    update_schema=TarifasSucursalUpdate,
-)
+# tarifas-sucursal: factory router removed — all endpoints are provided by
+# dedicated routers (_tarifas_dedicated_router for GET list/by-uuid,
+# _tarifas_pr_c_router for POST/PUT/by-key). The factory router was causing
+# route resolution conflicts with FastAPI's _IncludedRouter mechanism.
 _mount_empresa(
     resource="cantidad-vehiculos-sucursal",
     model_cls=CantidadVehiculosSucursal,

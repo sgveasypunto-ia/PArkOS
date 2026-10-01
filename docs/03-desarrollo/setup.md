@@ -10,7 +10,20 @@ Esta guía cubre la instalación y ejecución local real de easypunto_parkos: ba
 | [uv](https://docs.astral.sh/uv/) | 0.4+ | Gestor de paquetes y workspace del backend (`backend/pyproject.toml` → `[tool.uv.workspace]`) |
 | Node.js | 20+ (recomendado) | Requerido por Vite 5 / TypeScript 5.6 / ESLint 9 |
 | npm | el que trae Node | Gestor de paquetes del frontend — ver nota abajo |
-| Docker + Docker Compose v2 | — | Postgres (`pg_partman`) + APIs FastAPI |
+| Docker + Docker Compose v2 | — | Postgres 16 (`pg_partman` 5.5.0 instalado, pero **sin mantenimiento automático** — ver la nota de particionado más abajo) + APIs FastAPI |
+
+> **Aviso de particionado (2026-10-01).** `pg_partman` está instalado y `pg_partman_bgw` está en `shared_preload_libraries`, pero **nadie invoca `run_maintenance_proc()`**: no hay `pg_cron` en la imagen. Por eso las particiones las crea la migración `0064_ensure_forward_partitions` de forma explícita. Si borras el volumen y recreas el Postgres, corré `SELECT prod.fn_ensure_partitions();` (idempotente) y verificá que `python openspec/scripts/check_schema_match.py --database-url ...` no reporte fallos en (h). Detalle completo en [ADR-004](../02-arquitectura/decisiones-tecnicas.md#adr-004-particionado-sin-mantenimiento-automático-real).
+>
+> **El orden importa al levantar el stack**: `docker compose -f docker-compose.cloud.yml up -d --build` **no** aplica migraciones. Cada servicio sobrescribe el `ENTRYPOINT` del Dockerfile con su propio `command:`, así que el paso `alembic upgrade head` del entrypoint compartido nunca corre. Hay que correrlo a mano:
+>
+> ```powershell
+> docker exec -w /app/backend/packages/parkos_core `
+>   -e DATABASE_URL="postgresql+psycopg2://parkos:parkos@cloud-db:5432/parkos" `
+>   parkos-api-admin /app/backend/.venv/bin/alembic upgrade head
+> ```
+>
+> El usuario de la app no sirve para esto: `DATABASE_URL` del contenedor no tiene `CREATE` sobre el esquema `prod` y falla con `InsufficientPrivilege: permission denied for schema prod`. Usá el superusuario `parkos`. Para branch, cambiá `cloud-db` por `branch-db`.
+
 
 **Gestor de paquetes del frontend confirmado: npm.** `apps/package.json` usa `npm --workspace=web_admin run <script>` y `npm-run-all`; `apps/web_admin/README.md` documenta explícitamente `npm --workspace=web_admin run <script>` como forma de invocación desde la raíz. No se encontró `pnpm-lock.yaml` ni `yarn.lock` en el repo. **Hueco**: tampoco se encontró `package-lock.json` versionado en `apps/` ni `apps/web_admin/` — ver huecos al final.
 

@@ -765,3 +765,106 @@ async def test_c5_put_cantidad_cambia_sucursal_devuelve_422(
     assert detail["error"] == "sucursal_inmutable"
     assert detail["existing_sucursal"] == str(branch_a)
     assert detail["attempted_sucursal"] == str(branch_b)
+
+
+# ---------------------------------------------------------------------------
+# C6 — tz-aware ``vigente_desde`` no longer 500s
+# ---------------------------------------------------------------------------
+#
+# Regression for the cupos POST/PUT 500 reproduced 2026-09-29: the
+# admin ``<CupoForm>`` ``datetimeLocalToIso`` helper appends ``+00:00``
+# to the datetime-local string, so the wire payload arrives tz-aware.
+# Pydantic v2 keeps the tzinfo; ``assert_no_overlap`` binds it to a
+# ``DateTime(timezone=False)`` column and asyncpg rejects with
+# ``can't subtract offset-naive and offset-aware datetimes`` (DataError
+# 500). The handler now normalizes the payload via ``_to_naive_utc``
+# before binding. Same fix covers tarifas POST/PUT (latent).
+#
+# We hit POST and PUT with an explicit ``+00:00`` offset and assert
+# 201/200, not 500.
+
+
+@_HTTP_PYTESTMARK
+async def test_c6_post_cantidad_vigente_desde_tz_aware_no_500(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """POST with a tz-aware ``vigente_desde`` must NOT 500."""
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch_uuid),
+    }
+
+    futura = _now_naive() + timedelta(days=10)
+    # Wire payload mirrors the admin ``<CupoForm>`` format:
+    # ``datetimeLocalToIso`` appends ``+00:00`` to the datetime-local.
+    payload = {
+        "uuid_sucursal": str(branch_uuid),
+        "uuid_tipo_vehiculo": None,
+        "cantidad": 25,
+        "vigente_desde": futura.isoformat() + "+00:00",
+    }
+    resp = await client.post(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal",
+        json=payload,
+        headers=headers,
+    )
+    assert resp.status_code == 201, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["cantidad"] == 25
+    # The response ``vigente_desde`` is naive (matches DB column).
+    assert datetime.fromisoformat(body["vigente_desde"]) == futura
+
+
+@_HTTP_PYTESTMARK
+async def test_c7_put_cantidad_vigente_desde_tz_aware_no_500(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """PUT (edit) with a tz-aware ``vigente_desde`` must NOT 500."""
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch_uuid),
+    }
+
+    # Seed an open cupos.
+    seed = await client.post(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal",
+        json=_cantidad_payload(uuid_sucursal=branch_uuid, cantidad=50),
+        headers=headers,
+    )
+    assert seed.status_code == 201, seed.text
+    cupos_uuid = seed.json()["uuid"]
+
+    import asyncio
+
+    await asyncio.sleep(0.01)
+
+    # PUT with tz-aware vigente_desde. The handler must normalize and
+    # succeed (not 500). The "overlap guard" sees nueva_desde ==
+    # semilla.vigente_desde -> the new row opens at the same boundary
+    # the existing row closed at (Carril B: ``exclude_uuid``).
+    nueva = _now_naive() + timedelta(days=20)
+    payload = {
+        "uuid_sucursal": str(branch_uuid),
+        "uuid_tipo_vehiculo": None,
+        "cantidad": 75,
+        "vigente_desde": nueva.isoformat() + "+00:00",
+    }
+    put = await client.put(
+        f"/api/v1/empresa/cantidad-vehiculos-sucursal/{cupos_uuid}",
+        json=payload,
+        headers=headers,
+    )
+    assert put.status_code == 200, f"got {put.status_code}: {put.text}"
+    assert put.json()["cantidad"] == 75

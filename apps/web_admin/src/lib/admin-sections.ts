@@ -13,6 +13,8 @@
  *                      GET /admin/sucursales/{uuid}/dashboard    admin- issuer only
  *   Sucursales         GET /sucursales                          admin- issuer only
  *   Usuarios           * /admin/usuarios                        admin- issuer only
+ *   Reportería         GET /operacion/ingresos, /operacion/salidas,
+ *                            /operacion/ocupacion               admin-/operador- issuer + branch_scope (PR-A)
  *   Auditoría          * /audit/*                               admin- issuer + audit_read
  *
  * `admin_usuarios.py` and `admin_views.py` depend on
@@ -45,7 +47,19 @@ export type SectionPermission = string | null;
 
 export interface AdminSection {
   /** Stable key for testids + i18n lookup. */
-  key: 'dashboard' | 'sucursales' | 'usuarios' | 'auditoria';
+  key:
+    | 'dashboard'
+    | 'sucursales'
+    | 'catalogos'
+    | 'gestion-usuarios'
+    | 'tarifas'
+    | 'cupos'
+    | 'tipos-vehiculo'
+    | 'tipo-tarifa'
+    | 'configuracion-tolerancias'
+    | 'configuracion-seguridad'
+    | 'reporteria'
+    | 'auditoria';
   path: string;
   /** i18n key suffix under `home.section.*`. */
   labelKey: string;
@@ -69,10 +83,72 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     permission: null,
   },
   {
-    key: 'usuarios',
-    path: '/admin/usuarios',
-    labelKey: 'home.section.usuarios.label',
-    descriptionKey: 'home.section.usuarios.description',
+    key: 'catalogos',
+    path: '/catalogos',
+    labelKey: 'home.section.catalogos.label',
+    descriptionKey: 'home.section.catalogos.description',
+    permission: 'config_catalogo',
+  },
+  {
+    key: 'gestion-usuarios',
+    path: '/gestion-usuarios',
+    labelKey: 'home.section.gestionUsuarios.label',
+    descriptionKey: 'home.section.gestionUsuarios.description',
+    permission: null,
+  },
+  {
+    key: 'tarifas',
+    path: '/tarifas',
+    labelKey: 'home.section.tarifas.label',
+    descriptionKey: 'home.section.tarifas.description',
+    permission: 'config_tarifas',
+  },
+  {
+    key: 'cupos',
+    path: '/cupos',
+    labelKey: 'home.section.cupos.label',
+    descriptionKey: 'home.section.cupos.description',
+    permission: 'config_cupos',
+  },
+  {
+    key: 'tipos-vehiculo',
+    path: '/tipos-vehiculo',
+    labelKey: 'home.section.tiposVehiculo.label',
+    descriptionKey: 'home.section.tiposVehiculo.description',
+    permission: 'config_catalogo',
+  },
+  {
+    key: 'tipo-tarifa',
+    path: '/tipo-tarifa',
+    labelKey: 'home.section.tipoTarifa.label',
+    descriptionKey: 'home.section.tipoTarifa.description',
+    permission: 'config_catalogo',
+  },
+  {
+    key: 'configuracion-tolerancias',
+    path: '/configuracion-tolerancias',
+    labelKey: 'home.section.configuracionTolerancias.label',
+    descriptionKey: 'home.section.configuracionTolerancias.description',
+    permission: 'config_tolerancias',
+  },
+  {
+    key: 'configuracion-seguridad',
+    path: '/configuracion-seguridad',
+    labelKey: 'home.section.configuracionSeguridad.label',
+    descriptionKey: 'home.section.configuracionSeguridad.description',
+    permission: 'config_seguridad',
+  },
+  {
+    // HU-F17.1: operational report list views (HU-F17.1 includes the
+    // aggregate endpoints that ship in PR-C; this entry exposes the
+    // raw /operacion reads the current slice has data for).
+    key: 'reporteria',
+    path: '/reporteria',
+    labelKey: 'home.section.reporteria.label',
+    descriptionKey: 'home.section.reporteria.description',
+    // The /operacion read paths are gated by issuer + require_branch_scope
+    // (see auth/tenancy.py), with no permission dep. Mirrors the
+    // permission-null pattern of `sucursales` and `gestion-usuarios`.
     permission: null,
   },
   {

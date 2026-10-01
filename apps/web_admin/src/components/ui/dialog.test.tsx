@@ -12,7 +12,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 
-import { Dialog, DialogDescription, DialogTitle } from './dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './dialog';
 
 function Harness({ onOpenChange = vi.fn() }: { onOpenChange?: (open: boolean) => void }) {
   return (
@@ -141,5 +141,32 @@ describe('Dialog accessibility contract', () => {
 
     await user.click(dialog.parentElement!);
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('Dialog presentational subcomponents', () => {
+  it('DialogContent renders a child div inside the dialog and forwards data-testid', () => {
+    render(
+      <Dialog open onOpenChange={vi.fn()}>
+        <DialogTitle>x</DialogTitle>
+        <DialogContent data-testid="my-content">body</DialogContent>
+      </Dialog>,
+    );
+    const content = screen.getByTestId('my-content');
+    expect(content).toHaveTextContent('body');
+    // Content sits inside the role=dialog element (not the backdrop).
+    expect(screen.getByRole('dialog').contains(content)).toBe(true);
+  });
+
+  it('DialogHeader and DialogFooter render as plain grouping divs', () => {
+    render(
+      <Dialog open onOpenChange={vi.fn()}>
+        <DialogTitle>x</DialogTitle>
+        <DialogHeader data-testid="my-header">head</DialogHeader>
+        <DialogFooter data-testid="my-footer">foot</DialogFooter>
+      </Dialog>,
+    );
+    expect(screen.getByTestId('my-header')).toHaveTextContent('head');
+    expect(screen.getByTestId('my-footer')).toHaveTextContent('foot');
   });
 });

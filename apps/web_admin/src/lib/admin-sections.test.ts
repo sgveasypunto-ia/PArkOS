@@ -20,13 +20,17 @@ describe('visibleSections', () => {
     // The backend gates Panel/Sucursales/Usuarios on the `admin-` issuer
     // alone, so a stricter UI would under-report real access.
     const keys = visibleSections([]).map((s) => s.key);
-    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'sucursales', 'usuarios']));
+    expect(keys).toEqual(expect.arrayContaining(['dashboard', 'sucursales', 'gestion-usuarios']));
   });
 
-  it('A3: reveals Auditoría once audit_read is granted', () => {
+  it('A3: reveals Auditoría once audit_read is granted (4 issuer-only + 1)', () => {
+    // With just `audit_read`, the operator sees the 4 issuer-only
+    // surfaces (dashboard / sucursales / gestion-usuarios / reporteria)
+    // plus the audit surface. Tarifas, Cupos and the 4 catalog/config
+    // surfaces require their own codes which A3 does not grant.
     const keys = visibleSections(['audit_read']).map((s) => s.key);
     expect(keys).toContain('auditoria');
-    expect(keys).toHaveLength(4);
+    expect(keys).toHaveLength(5);
   });
 
   it('A4: an unrelated permission does not unlock Auditoría', () => {
@@ -44,14 +48,55 @@ describe('visibleSections', () => {
     }
   });
 
-  it('A6: the catalog advertises no route that does not exist yet', () => {
-    // Cupos, tarifas and reports are deliberately absent — a hub that
-    // links to unimplemented surfaces is worse than a smaller honest one.
+  it('A6: the catalog advertises every route the SPA can navigate to', () => {
+    // PR-D added /tarifas and /cupos; PR-D-ui-catalogos added the 4
+    // catalog/config surfaces; home-hub-2-cards added `/catalogos`
+    // (the unified 9-tab editor). The catalog must reflect all of
+    // them or the user navigates to a 404 from a card that exists
+    // in the UI.
     expect(ADMIN_SECTIONS.map((s) => s.key)).toEqual([
       'dashboard',
       'sucursales',
-      'usuarios',
+      'catalogos',
+      'gestion-usuarios',
+      'tarifas',
+      'cupos',
+      'tipos-vehiculo',
+      'tipo-tarifa',
+      'configuracion-tolerancias',
+      'configuracion-seguridad',
+      'reporteria',
       'auditoria',
     ]);
+  });
+
+  it('A7: reveals Tarifas once config_tarifas is granted', () => {
+    const keys = visibleSections(['config_tarifas']).map((s) => s.key);
+    expect(keys).toContain('tarifas');
+  });
+
+  it('A8: reveals Cupos once config_cupos is granted', () => {
+    const keys = visibleSections(['config_cupos']).map((s) => s.key);
+    expect(keys).toContain('cupos');
+  });
+
+  it('A9: reveals the catalog/config sections once their codes are granted', () => {
+    // The 4 catalog/config surfaces share ``config_catalogo`` (catalogos)
+    // or their own codes (config_tolerancias, config_seguridad).
+    // home-hub-2-cards adds a 5th: the unified `/catalogos` editor.
+    const allCatalog = visibleSections([
+      'config_catalogo',
+      'config_tolerancias',
+      'config_seguridad',
+    ]).map((s) => s.key);
+    expect(allCatalog).toEqual(
+      expect.arrayContaining([
+        'catalogos',
+        'tipos-vehiculo',
+        'tipo-tarifa',
+        'configuracion-tolerancias',
+        'configuracion-seguridad',
+      ]),
+    );
   });
 });

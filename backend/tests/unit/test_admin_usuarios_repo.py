@@ -242,6 +242,97 @@ class TestAsignarSucursal:
 
 
 # ---------------------------------------------------------------------------
+# list_branch_assignments_for_users
+# ---------------------------------------------------------------------------
+
+
+class TestListBranchAssignmentsForUsers:
+    async def test_empty_user_list_short_circuits_to_empty_dict(self) -> None:
+        session = AsyncMock()
+
+        async def _execute(stmt: object, *a: object, **kw: object):
+            raise AssertionError(
+                "session.execute must not be called when user_uuids is empty"
+            )
+
+        session.execute.side_effect = _execute
+
+        result = await admin_repo.list_branch_assignments_for_users(
+            session, user_uuids=[]
+        )
+        assert result == {}
+
+    async def test_no_assignments_returns_empty_lists_per_user(self) -> None:
+        session = AsyncMock()
+        user_a = uuid_lib.uuid4()
+        user_b = uuid_lib.uuid4()
+
+        async def _execute(stmt: object, *a: object, **kw: object):
+            mock_result = MagicMock()
+            mock_result.all = MagicMock(return_value=[])
+            return mock_result
+
+        session.execute.side_effect = _execute
+
+        result = await admin_repo.list_branch_assignments_for_users(
+            session, user_uuids=[user_a, user_b]
+        )
+        assert set(result.keys()) == {user_a, user_b}
+        assert result[user_a] == []
+        assert result[user_b] == []
+
+    async def test_stitches_assignments_with_open_branch_snapshot(self) -> None:
+        session = AsyncMock()
+        user_a = uuid_lib.uuid4()
+        user_b = uuid_lib.uuid4()
+        branch_p = uuid_lib.uuid4()
+        branch_q = uuid_lib.uuid4()
+        from datetime import UTC, datetime
+
+        ts = datetime.now(UTC).replace(tzinfo=None)
+
+        # First execute: SELECT usuarios_sucursal rows.
+        # Second execute: SELECT sucursal rows.
+        call_count = {"n": 0}
+
+        async def _execute(stmt: object, *a: object, **kw: object):
+            call_count["n"] += 1
+            mock_result = MagicMock()
+            if call_count["n"] == 1:
+                mock_result.all = MagicMock(
+                    return_value=[
+                        (uuid_lib.uuid4(), user_a, branch_p, ts),
+                        (uuid_lib.uuid4(), user_b, branch_q, ts),
+                    ]
+                )
+            else:
+                mock_result.all = MagicMock(
+                    return_value=[
+                        (branch_p, "Sucursal P", "P"),
+                        (branch_q, None, None),  # closed branch: still appears
+                    ]
+                )
+            return mock_result
+
+        session.execute.side_effect = _execute
+
+        result = await admin_repo.list_branch_assignments_for_users(
+            session, user_uuids=[user_a, user_b]
+        )
+        assert call_count["n"] == 2
+        assert len(result[user_a]) == 1
+        assert result[user_a][0].uuid_sucursal == branch_p
+        assert result[user_a][0].nombre == "Sucursal P"
+        assert result[user_a][0].prefijo_nombre == "P"
+        assert result[user_a][0].vigente_desde == ts
+        # Closed-branch assignment: row still appears with None name fields.
+        assert len(result[user_b]) == 1
+        assert result[user_b][0].uuid_sucursal == branch_q
+        assert result[user_b][0].nombre is None
+        assert result[user_b][0].prefijo_nombre is None
+
+
+# ---------------------------------------------------------------------------
 # desasignar_sucursal
 # ---------------------------------------------------------------------------
 

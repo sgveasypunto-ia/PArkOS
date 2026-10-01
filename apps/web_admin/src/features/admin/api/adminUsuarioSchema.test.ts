@@ -88,4 +88,66 @@ describe('adminUsuarioReadSchema', () => {
     });
     expect(r.success).toBe(true);
   });
+
+  it('parses the embedded sucursales array from the list payload', () => {
+    const r = adminUsuarioReadSchema.safeParse({
+      uuid: '00000000-0000-0000-0000-000000000001',
+      email: 'op@parkos.local',
+      nombre: null,
+      apellido: null,
+      cedula: null,
+      rol: 'operador',
+      vigente_desde: '2026-09-27T00:00:00',
+      vigente_hasta: null,
+      estado: 'activo',
+      created_at: '2026-09-27T00:00:00',
+      created_by: null,
+      sync_status: null,
+      sucursales: [
+        {
+          uuid_sucursal: '11111111-1111-4111-8111-111111111111',
+          nombre: 'Sucursal Norte',
+          prefijo_nombre: 'NOR',
+          vigente_desde: '2026-09-27T00:00:00',
+        },
+        {
+          uuid_sucursal: '22222222-2222-4222-8222-222222222222',
+          nombre: null,
+          prefijo_nombre: 'SUR',
+          vigente_desde: '2026-09-27T00:00:00',
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.sucursales).toHaveLength(2);
+      expect(r.data.sucursales[0]?.nombre).toBe('Sucursal Norte');
+      expect(r.data.sucursales[1]?.nombre).toBeNull();
+      expect(r.data.sucursales[1]?.prefijo_nombre).toBe('SUR');
+    }
+  });
+
+  it('defaults sucursales to [] when the backend omits the field', () => {
+    // Defense against stale responses from a deployment that predates
+    // the backend embedding the array: the parser must still succeed
+    // so the table renders "Sin sucursales" instead of crashing.
+    const r = adminUsuarioReadSchema.safeParse({
+      uuid: '00000000-0000-0000-0000-000000000001',
+      email: 'op@parkos.local',
+      nombre: null,
+      apellido: null,
+      cedula: null,
+      rol: 'operador',
+      vigente_desde: '2026-09-27T00:00:00',
+      vigente_hasta: null,
+      estado: 'activo',
+      created_at: '2026-09-27T00:00:00',
+      created_by: null,
+      sync_status: null,
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.sucursales).toEqual([]);
+    }
+  });
 });

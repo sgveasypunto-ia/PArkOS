@@ -23,12 +23,32 @@ The 9 catalogs (all ``[V]`` per design §2):
 9. ``costos-servicios``     — internal services (ticket reprint, etc.)
 
 NO DELETE endpoint at any layer — defense in depth (design §3, AGENTS.md §3).
+
+**Global reads carve-out (fix/catalog-sucursal-global-reads)** — none of the
+9 catalog tables carries a ``uuid_sucursal`` column; they are tenant-global
+reference data replicated cloud→branch. The frontend mounts ``CatalogPage``
+and ``TipoSucursal`` picker OUTSIDE ``<RequireSucursal>`` because reading
+or editing a catalog does not require a branch to be selected
+(``features/catalogos/CatalogPage.tsx:2-7``). To honour that invariant
+without touching ``make_router`` (CI gate ``factory_intact``), the 3 read
+routes (``GET /catalogos/{resource}``, ``GET /catalogos/{resource}/{uuid}``,
+``GET /catalogos/{resource}/{uuid}/history``) are registered FIRST on the
+main ``router`` via :func:`_register_global_catalog_reads`. FastAPI's
+order-of-registration resolver picks the global-reads handler over the
+factory sub-router for those paths; POST/PUT continue to flow through the
+factory sub-router and therefore still require ``X-Sucursal-Context`` for
+``admin-`` tokens (defense in depth on writes).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import uuid as uuid_lib
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...auth.permissions import require_permission
+from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
 from ...models.V.costos_servicios import CostosServicios
 from ...models.V.impuestos import Impuestos
@@ -39,7 +59,11 @@ from ...models.V.tipo_subscripciones import TipoSubscripciones
 from ...models.V.tipo_sucursal import TipoSucursal
 from ...models.V.tipo_tarifa import TipoTarifa
 from ...models.V.tipos_vehiculo import TiposVehiculo
+from ...repo.pagination import Cursor, InvalidCursorError
+from ...repo.pagination import decode as cursor_decode
+from ...repo.pagination import encode as cursor_encode
 from ...repo.tipos_vehiculo_subscripcion import get_tipos_vehiculo_con_subscripcion
+from ...repo.versioned import close_and_insert, current_version
 from ...schemas.costos_servicios import (
     CostosServiciosCreate,
     CostosServiciosRead,
@@ -94,6 +118,7 @@ from ...schemas.tipos_vehiculo import (
     TiposVehiculoReadList,
     TiposVehiculoUpdate,
 )
+from ..deps import requires_issuer
 from ..router_factory import make_router
 
 router = APIRouter(prefix="/catalogos", tags=["catalogos"])
@@ -104,6 +129,151 @@ _CATALOG_DEFAULTS = {
     "permission_required": "config_catalogo",
 }
 
+# Issuer for the global-reads endpoints. Same surface as the factory
+# (``admin-,operador-``) but NO ``get_tenant_ctx`` dependency — catalogs
+# are tenant-global reference data, so reading them does not require an
+# ``X-Sucursal-Context`` header. ``admin-`` JWTs without the header now
+# succeed; ``operador-`` JWTs are unaffected (header is already optional
+# for them; the JWT ``sucursal`` claim drives query scoping which is a
+# no-op for tables without a ``uuid_sucursal`` column).
+_catalog_reads_issuer_dep = requires_issuer("admin-", "operador-")
+
+
+def _order_key(model_cls: type) -> tuple:
+    """Mirror of ``api/router_factory.py::_order_key`` — duplicated here
+    intentionally to avoid touching ``router_factory.py`` (CI gate
+    ``factory_intact``). Returns ``(order_col_desc, cursor_field_name)``.
+
+    The 9 catalog tables all declare ``vigente_desde`` (they are ``[V]``),
+    so the order-by branch with ``vigente_desde.desc()`` is the live one.
+    The ``created_at`` fallback is a defense-in-depth copy of the
+    factory's helper for any future catalog that omits ``vigente_desde``.
+    """
+    if hasattr(model_cls, "vigente_desde"):
+        return (model_cls.vigente_desde.desc(), "vigente_desde")
+    return (model_cls.created_at.desc(), "created_at")
+
+
+def _register_global_catalog_reads(
+    *,
+    resource: str,
+    model_cls: type,
+    read_schema: type,
+    read_list_schema: type,
+) -> None:
+    """Register the 3 tenant-free read handlers on the main ``router``.
+
+    Mounted BEFORE the factory sub-router for the same resource so
+    FastAPI's order-of-registration resolver picks these handlers over
+    the factory's ``GET /{resource}`` / ``GET /{resource}/{uuid}`` /
+    ``GET /{resource}/{uuid}/history``. POST/PUT remain on the factory
+    sub-router (tenant-scoped — see module docstring).
+
+    The cursor pagination logic mirrors ``api/router_factory.py``
+    verbatim; only the dependencies differ (no ``get_tenant_ctx``).
+    """
+    order_col, cursor_field = _order_key(model_cls)
+
+    @router.get(
+        f"/{resource}",
+        response_model=read_list_schema,
+        tags=["catalogos"],
+    )
+    async def _catalog_list(
+        cursor: str | None = Query(None),
+        limit: int = Query(50, ge=1, le=200),
+        session: AsyncSession = Depends(get_session),
+        _claims: None = Depends(_catalog_reads_issuer_dep),
+    ):
+        try:
+            decoded = cursor_decode(cursor) if cursor else None
+        except InvalidCursorError as e:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_cursor", "detail": str(e)},
+            )
+        stmt = select(model_cls)
+        if hasattr(model_cls, "vigente_hasta"):
+            stmt = stmt.where(model_cls.vigente_hasta.is_(None))
+        stmt = stmt.order_by(order_col, model_cls.uuid.asc())
+        if decoded is not None:
+            from datetime import datetime
+
+            cursor_ts = datetime.fromisoformat(decoded.vigente_desde)
+            if cursor_ts.tzinfo is not None:
+                cursor_ts = cursor_ts.replace(tzinfo=None)
+            stmt = stmt.where(
+                (order_col.element < cursor_ts)
+                | (
+                    (order_col.element == cursor_ts)
+                    & (model_cls.uuid > uuid_lib.UUID(decoded.uuid))
+                )
+            )
+        stmt = stmt.limit(limit + 1)
+
+        result = await session.execute(stmt)
+        rows = list(result.scalars().all())
+        next_cursor: str | None = None
+        if len(rows) > limit:
+            rows = rows[:limit]
+            last = rows[-1]
+            next_cursor = cursor_encode(
+                Cursor(
+                    vigente_desde=(
+                        last.vigente_desde.isoformat()
+                        if cursor_field == "vigente_desde"
+                        else None
+                    ),
+                    created_at=(
+                        last.created_at.isoformat()
+                        if cursor_field == "created_at"
+                        else None
+                    ),
+                    uuid=str(last.uuid),
+                )
+            )
+        items = [read_schema.model_validate(row) for row in rows]
+        return read_list_schema(items=items, next_cursor=next_cursor)
+
+    @router.get(
+        f"/{resource}/{{uuid}}",
+        response_model=read_schema,
+        tags=["catalogos"],
+    )
+    async def _catalog_get(
+        uuid: uuid_lib.UUID = Path(...),
+        session: AsyncSession = Depends(get_session),
+        _claims: None = Depends(_catalog_reads_issuer_dep),
+    ):
+        row = await current_version(session, model_cls, uuid)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "uuid": str(uuid)},
+            )
+        return read_schema.model_validate(row)
+
+    if hasattr(model_cls, "vigente_hasta"):
+
+        @router.get(
+            f"/{resource}/{{uuid}}/history",
+            response_model=list[read_schema],
+            tags=["catalogos"],
+        )
+        async def _catalog_history(
+            uuid: uuid_lib.UUID = Path(...),
+            session: AsyncSession = Depends(get_session),
+            _claims: None = Depends(_catalog_reads_issuer_dep),
+        ):
+            stmt = (
+                select(model_cls)
+                .where(model_cls.uuid == uuid)
+                .order_by(model_cls.vigente_desde.desc())
+            )
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+            return [read_schema.model_validate(r) for r in rows]
+
 
 def _mount_catalog(
     *,
@@ -113,12 +283,30 @@ def _mount_catalog(
     read_list_schema: type,
     create_schema: type,
     update_schema: type,
+    tenant_free_reads: bool = False,
 ) -> None:
     """Mount one catalog C+Q+U router under ``/catalogos/{resource}``.
 
     Centralises the ``make_router`` defaults so all 9 catalogs share the same
     issuer/permission/repo policy (REQ-OP-13, SC-01-V-CATALOG-CRUD).
+
+    When ``tenant_free_reads=True`` the 3 read endpoints
+    (``GET /{resource}``, ``GET /{resource}/{uuid}``,
+    ``GET /{resource}/{uuid}/history``) are registered FIRST on the main
+    ``router`` WITHOUT ``get_tenant_ctx``, so ``admin-`` tokens without
+    ``X-Sucursal-Context`` can read catalogs before a branch is selected.
+    The factory sub-router is then ``include_router``'d for the same
+    resource — FastAPI's first-match resolver keeps the global-reads
+    handlers in front; only POST/PUT fall through to the factory
+    (tenant-scoped writes preserved).
     """
+    if tenant_free_reads:
+        _register_global_catalog_reads(
+            resource=resource,
+            model_cls=model_cls,
+            read_schema=read_schema,
+            read_list_schema=read_list_schema,
+        )
     router.include_router(
         make_router(
             resource=resource,
@@ -139,7 +327,114 @@ _mount_catalog(
     read_list_schema=TipoPersonaReadList,
     create_schema=TipoPersonaCreate,
     update_schema=TipoPersonaUpdate,
+    tenant_free_reads=True,
 )
+
+
+# ---------------------------------------------------------------------------
+# 5-type cap on ``tipos-vehiculo`` POST
+# ---------------------------------------------------------------------------
+#
+# The canonical vehicle-type catalog is exactly 5 entries: ``carro``,
+# ``moto``, ``bicicleta``, ``patineta``, ``otro`` (seeded by migration
+# 0062_canonical_tipos_vehiculo). Without a server-side cap, anyone
+# with ``config_catalogo`` could POST arbitrary strings (``"barco"``,
+# ``"motoo"`` typo, etc.) and the catalog would grow unbounded — and
+# since ``tipos_vehiculo`` is a level-0 sync catalog
+# (``sync_entries_v.py:118``), every garbage row replicates to every
+# branch. The placa detector hardcodes
+# ``["carro", "moto", "bicicleta", "patineta"]`` so typos silently
+# bypass it.
+#
+# Pattern mirrors ``empresa.py:_cantidad_pr_c_router`` (PR-C dedicated
+# POST with overlap guard) and the tarifas dedicated router — both
+# shadow the factory's POST with a more specialized handler. The
+# dedicated POST is mounted FIRST on ``catalogos.router`` so FastAPI's
+# order-of-registration resolver routes ``POST /tipos-vehiculo`` here.
+# The factory's GET/PUT are NOT shadowed (edits to existing canonical
+# tipos stay on the factory). The factory's POST is shadowed at the
+# router registration layer (FastAPI first-match wins).
+_TIPOS_VEHICULO_MAX_ACTIVE = 5
+_tipos_vehiculo_dedicated_perm_dep = require_permission("config_catalogo")
+_tipos_vehiculo_dedicated_issuer_dep = requires_issuer("admin-", "operador-")
+
+
+async def _count_active_tipos_vehiculo(session: AsyncSession) -> int:
+    """Return the count of currently-open tipos_vehiculo rows.
+
+    Mirrors the factory GET filter ``vigente_hasta IS NULL`` (line 199
+    of this file). Used by the dedicated POST to enforce the 5-type
+    cap before opening a new version.
+    """
+    stmt = select(func.count(TiposVehiculo.uuid)).where(
+        TiposVehiculo.vigente_hasta.is_(None)
+    )
+    result = await session.execute(stmt)
+    return int(result.scalar_one())
+
+
+_tipos_vehiculo_dedicated_router = APIRouter(
+    prefix="/tipos-vehiculo", tags=["tipos-vehiculo"]
+)
+
+
+@_tipos_vehiculo_dedicated_router.post(
+    "",
+    response_model=TiposVehiculoRead,
+    status_code=201,
+    dependencies=[
+        Depends(_tipos_vehiculo_dedicated_perm_dep),
+    ],
+)
+async def create_tipo_vehiculo_dedicated(
+    payload: TiposVehiculoCreate,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tipos_vehiculo_dedicated_issuer_dep),
+) -> TiposVehiculoRead:
+    """Shadow the factory's POST to enforce the canonical 5-type cap.
+
+    Mirrors ``make_router``'s create_endpoint at
+    ``api/router_factory.py:269-308`` (close+insert via
+    ``repo.versioned.close_and_insert`` + commit + refresh + read-back).
+    One addition: the **5-type cap** (409 ``tipos_vehiculo_max_reached``)
+    — if the count of currently-open tipos_vehiculo rows is already
+    ``_TIPOS_VEHICULO_MAX_ACTIVE``, reject the POST with the current
+    count in the detail so the UI can render an actionable message.
+
+    ``log_tx=True`` matches the factory so the audit chain (log_transaccional
+    + SHA-256 hash) keeps treating catalog writes uniformly with every
+    other versioned write.
+    """
+    current_count = await _count_active_tipos_vehiculo(session)
+    if current_count >= _TIPOS_VEHICULO_MAX_ACTIVE:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tipos_vehiculo_max_reached",
+                "limit": _TIPOS_VEHICULO_MAX_ACTIVE,
+                "current": current_count,
+            },
+        )
+    new_row = await close_and_insert(
+        session,
+        TiposVehiculo,
+        current_uuid=None,
+        new_attrs={"tipo": payload.tipo},
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TiposVehiculoRead.model_validate(new_row)
+
+
+# Mount the dedicated router BEFORE the factory mount for ``tipos-vehiculo``
+# so FastAPI's first-match resolver routes ``POST /tipos-vehiculo`` to the
+# cap-enforcing handler. GET/PUT keep flowing through the factory.
+router.include_router(_tipos_vehiculo_dedicated_router)
+
+
 _mount_catalog(
     resource="tipos-vehiculo",
     model_cls=TiposVehiculo,
@@ -147,6 +442,7 @@ _mount_catalog(
     read_list_schema=TiposVehiculoReadList,
     create_schema=TiposVehiculoCreate,
     update_schema=TiposVehiculoUpdate,
+    tenant_free_reads=True,
 )
 _mount_catalog(
     resource="tipo-subscripciones",
@@ -155,6 +451,7 @@ _mount_catalog(
     read_list_schema=TipoSubscripcionesReadList,
     create_schema=TipoSubscripcionesCreate,
     update_schema=TipoSubscripcionesUpdate,
+    tenant_free_reads=True,
 )
 _mount_catalog(
     resource="tipo-tarifa",
@@ -163,6 +460,7 @@ _mount_catalog(
     read_list_schema=TipoTarifaReadList,
     create_schema=TipoTarifaCreate,
     update_schema=TipoTarifaUpdate,
+    tenant_free_reads=True,
 )
 _mount_catalog(
     resource="tipo-sucursal",
@@ -171,6 +469,7 @@ _mount_catalog(
     read_list_schema=TipoSucursalReadList,
     create_schema=TipoSucursalCreate,
     update_schema=TipoSucursalUpdate,
+    tenant_free_reads=True,
 )
 _mount_catalog(
     resource="tipo-arqueo",
@@ -179,6 +478,7 @@ _mount_catalog(
     read_list_schema=TipoArqueoReadList,
     create_schema=TipoArqueoCreate,
     update_schema=TipoArqueoUpdate,
+    tenant_free_reads=True,
 )
 _mount_catalog(
     resource="impuestos",
@@ -187,6 +487,7 @@ _mount_catalog(
     read_list_schema=ImpuestosReadList,
     create_schema=ImpuestosCreate,
     update_schema=ImpuestosUpdate,
+    tenant_free_reads=True,
 )
 _mount_catalog(
     resource="otros-cobros",
@@ -195,6 +496,7 @@ _mount_catalog(
     read_list_schema=OtrosCobrosReadList,
     create_schema=OtrosCobrosCreate,
     update_schema=OtrosCobrosUpdate,
+    tenant_free_reads=True,
 )
 _mount_catalog(
     resource="costos-servicios",
@@ -203,6 +505,7 @@ _mount_catalog(
     read_list_schema=CostosServiciosReadList,
     create_schema=CostosServiciosCreate,
     update_schema=CostosServiciosUpdate,
+    tenant_free_reads=True,
 )
 
 

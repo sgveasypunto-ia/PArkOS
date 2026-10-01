@@ -24,6 +24,62 @@
     "noBranch": "Seleccioná una sucursal para ver el panel.",
     "loadError": "No se pudo cargar el panel de la sucursal."
   },
+  "reporteria": {
+    "title": "Reportería operacional",
+    "subtitle": "Ingresos, salidas y ocupación de la sucursal seleccionada.",
+    "noBranch": "Seleccioná una sucursal para ver la reportería.",
+    "loading": "Cargando...",
+    "empty": "No hay registros para la sucursal seleccionada.",
+    "tabsLabel": "Sección de reporte",
+    "tabs": {
+      "ingresos": "Ingresos",
+      "salidas": "Salidas",
+      "ocupacion": "Ocupación"
+    },
+    "totales": {
+      "label": "Totales del período",
+      "title": "Totales del período",
+      "rango": "Rango: {{desde}} → {{hasta}}",
+      "ingresos": "Ingresos",
+      "ingresosActivos": "Ingresos activos",
+      "salidas": "Salidas",
+      "facturas": "Facturas",
+      "facturado": "Monto facturado",
+      "cobrado": "Monto cobrado"
+    },
+    "dateRange": {
+      "desde": "Desde",
+      "hasta": "Hasta",
+      "error": "Rango inválido: la fecha de inicio debe ser anterior o igual a la de fin.",
+      "futureWarning": "La fecha de fin está en el futuro. Probablemente no hay datos para esos días.",
+      "tooOld": "El reporte cubre más de un año. La factura electrónica tiene retención DIAN de 5+ años pero el endpoint actual agrega solo las facturas vivas en el rango.",
+      "preset": {
+        "hoy": "Hoy",
+        "ayer": "Ayer",
+        "7d": "Últimos 7 días",
+        "mes": "Este mes"
+      }
+    },
+    "ingresos": {
+      "caption": "Ingresos de la sucursal",
+      "placa": "Placa",
+      "consecutivo": "Consecutivo",
+      "fechaIngreso": "Fecha de ingreso",
+      "observaciones": "Observaciones"
+    },
+    "salidas": {
+      "caption": "Salidas de la sucursal",
+      "placa": "Placa",
+      "consecutivo": "Consecutivo",
+      "fechaSalida": "Fecha de salida"
+    },
+    "ocupacion": {
+      "empty": "No hay tipos de vehículo configurados para esta sucursal.",
+      "na": "N/A",
+      "generadoEn": "Generado en {{ts}}",
+      "activosDe": "{{activos}} de {{cupo}} activos"
+    }
+  },
   "auth": {
     "email": "Correo electrónico",
     "password": "Contraseña",
@@ -48,13 +104,35 @@
     }
   },
   "common": {
-    "cancel": "Cancelar"
+    "cancel": "Cancelar",
+    "close": "Cerrar",
+    "loading": "Cargando…"
   },
   "chrome": {
     "navLabel": "Secciones",
     "logout": "Cerrar sesión",
     "signingOut": "Saliendo...",
-    "branches": "{{count}} sucursales"
+    "branches": "{{count}} sucursales",
+    "sucursalActive": "Sucursal activa: {{uuid}}",
+    "sucursalSelect": "Seleccionar sucursal",
+    "changeBranch": "Cambiar sucursal"
+  },
+  "sucursalPicker": {
+    "title": "Elegí una sucursal para empezar",
+    "subtitle": "Todas las métricas y configuraciones se filtran por la sucursal que elijas acá.",
+    "search": "Buscar por nombre o prefijo…",
+    "loading": "Cargando sucursales…",
+    "emptySystem": "No tenés sucursales autorizadas. Contactá al administrador.",
+    "emptyFilter": "Ningún resultado para esa búsqueda."
+  },
+  "sucursalAdmin": {
+    "tab": {
+      "seleccionar": "Seleccionar",
+      "admin": "Administrar"
+    },
+    "title": {
+      "admin": "Sucursales"
+    }
   },
   "home": {
     "title": "Todo el parqueo, en un solo lugar",
@@ -77,16 +155,310 @@
         "label": "Usuarios administradores",
         "description": "Crea usuarios admin u operador y asígnalos a una o varias sucursales."
       },
+      "gestionUsuarios": {
+        "label": "Gestión de usuarios",
+        "description": "Lista, crea y edita usuarios administradores y operadores, y asigna sucursales a cada uno."
+      },
+      "tarifas": {
+        "label": "Tarifas",
+        "description": "Crea, edita y programa tarifas por sucursal con histórico de versiones."
+      },
+      "cupos": {
+        "label": "Cupos por sucursal",
+        "description": "Configura la capacidad máxima de vehículos por sucursal y tipo."
+      },
+      "tiposVehiculo": {
+        "label": "Tipos de vehículo",
+        "description": "Catálogo de tipos de vehículo (carro, moto, bicicleta, patineta). Edita los registros vigentes."
+      },
+      "tipoTarifa": {
+        "label": "Modalidades de tarifa",
+        "description": "Catálogo de modalidades (hora, fraccion, plena, nocturna). Edita los registros vigentes."
+      },
+      "catalogos": {
+        "label": "Catálogos",
+        "description": "Editá los 9 catálogos globales (tipos de persona, vehículo, impuestos, etc.) en una sola pantalla."
+      },
+      "configuracionTolerancias": {
+        "label": "Tolerancias de caja",
+        "description": "Default global y overrides por sucursal para las tolerancias de efectivo y datáfono."
+      },
+      "configuracionSeguridad": {
+        "label": "Configuración de seguridad",
+        "description": "Default global y overrides por sucursal para lockout (intentos máximos, minutos de bloqueo)."
+      },
       "auditoria": {
         "label": "Auditoría",
         "description": "Log transaccional append-only con cadena hash verificable por sucursal."
+      },
+      "reporteria": {
+        "label": "Reportería operacional",
+        "description": "Ingresos, salidas y ocupación por sucursal. Totales agregados llegan en PR-C."
       }
+    }
+  },
+  "homeHub": {
+    "title": "Todo el parqueo, en un solo lugar",
+    "subtitle": "Elegí una sección para empezar.",
+    "open": "Abrir",
+    "sucursales": {
+      "label": "Sucursales",
+      "description": "Seleccioná una sucursal activa, o administrá el alta y los tokens de pairing."
+    },
+    "catalogos": {
+      "label": "Catálogos",
+      "description": "Editá los catálogos globales (tipos de vehículo, tarifas, impuestos, etc.) con histórico de versiones."
+    },
+    "empresa": {
+      "label": "Empresa",
+      "description": "Razón social, NIT, régimen tributario, mensajes de ticket y bitácora del singleton Empresa."
+    },
+    "usuarios": {
+      "label": "Usuarios",
+      "description": "Gestioná usuarios administradores y operadores, asigná sucursales y configurá permisos."
+    }
+  },
+  "catalogos": {
+    "title": "Catálogos",
+    "subtitle": "Editá los catálogos globales. \"Nueva versión\" publica un cambio sin perder la versión anterior.",
+    "tabsLabel": "Catálogos",
+    "newVersion": "Nueva versión",
+    "editAsNew": "Nueva versión",
+    "versioningNote": "Cada cambio publica una nueva versión; la anterior se cierra automáticamente.",
+    "loadError": "No se pudo cargar el catálogo.",
+    "loading": "Cargando…",
+    "empty": "Sin versiones vigentes.",
+    "submitError": "No se pudo guardar. Reintentá.",
+    "forbidden": "No tenés permiso para editar este catálogo.",
+    "errorUnknown": "Error desconocido",
+    "estado": "Estado",
+    "state": "Estado",
+    "vigente": "Vigente",
+    "noVigente": "No vigente",
+    "editRowAria": "Nueva versión basada en la fila {{uuid}}",
+    "dialogTitle": "Nueva versión",
+    "dialogCreateTitle": "Nueva {{label}}",
+    "dialogEditTitle": "Nueva versión de {{label}}",
+    "dialogDescription": "Creá una nueva versión. La actual se cierra automáticamente al guardar.",
+    "submit": "Nueva versión",
+    "required": "Requerido"
+  },
+  "tarifas": {
+    "title": "Tarifas",
+    "new": "Nueva tarifa",
+    "createTitle": "Crear nueva tarifa",
+    "editTitle": "Editar tarifa",
+    "modalDescription": "Cargá los datos. La tarifa pertenece a la sucursal elegida y entra en vigencia al instante seleccionado.",
+    "loading": "Cargando tarifas...",
+    "loadError": "No se pudieron cargar las tarifas.",
+    "loadSucursalesError": "No se pudieron cargar las sucursales.",
+    "empty": "Aún no hay tarifas configuradas.",
+    "withoutSucursal": "Sin sucursal",
+    "historyLabel": "Valor",
+    "tipoVehiculoAny": "Cualquiera",
+    "tipoTarifaAny": "Cualquiera",
+    "field": {
+      "sucursal": "Sucursal",
+      "sucursalHelp": "La tarifa pertenece a esta sucursal.",
+      "tipoVehiculo": "Tipo de vehículo",
+      "tipoTarifa": "Modalidad",
+      "valor": "Valor por hora",
+      "valorHelp": "Debe ser > 0. Cuatro decimales.",
+      "valorPlena": "Valor plena",
+      "valorPlenaHelp": "Debe ser >= 0. Cuatro decimales.",
+      "vigenteDesde": "Vigente desde",
+      "vigenteDesdeHelp": "Una fecha futura programa un cambio de tarifa.",
+      "sucursalHelp": "La tarifa pertenece a la sucursal activa seleccionada en el topbar.",
+      "tipoVehiculoLocked": "Tarifa fija — el tipo de vehículo no se puede cambiar después de creada.",
+      "tipoTarifaLocked": "Tarifa fija — la modalidad no se puede cambiar después de creada."
+    },
+    "form": {
+      "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar",
+      "history": "Ver histórico",
+      "hideHistory": "Ocultar histórico"
+    },
+    "tabs": {
+      "activeEmpty": "Elegí una sucursal en el selector del topbar para ver sus tarifas.",
+      "activeEmptyForBranch": "Esta sucursal no tiene tarifas configuradas."
+    }
+  },
+  "cupos": {
+    "title": "Cupos",
+    "new": "Nuevo cupo",
+    "createTitle": "Crear nuevo cupo",
+    "editTitle": "Editar cupo",
+    "modalDescription": "Cargá los datos. El cupo pertenece a la sucursal elegida y entra en vigencia al instante seleccionado.",
+    "loading": "Cargando cupos...",
+    "loadError": "No se pudieron cargar los cupos.",
+    "empty": "Aún no hay cupos configurados.",
+    "withoutSucursal": "Sin sucursal",
+    "historyLabel": "Cantidad",
+    "field": {
+      "sucursal": "Sucursal",
+      "sucursalHelp": "El cupo pertenece a esta sucursal.",
+      "cantidad": "Cantidad máxima de vehículos",
+      "cantidadHelp": "Debe ser >= 0. Una cantidad menor que los ingresos activos es rechazada.",
+      "vigenteDesde": "Vigente desde",
+      "vigenteDesdeHelp": "Una fecha futura programa un cambio de cupo."
+    },
+    "form": {
+      "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar",
+      "history": "Ver histórico",
+      "hideHistory": "Ocultar histórico"
+    },
+    "tabs": {
+      "all": "Todas las sucursales",
+      "active": "Mi sucursal activa",
+      "activeEmpty": "Elegí una sucursal en el selector del topbar para ver sus cupos.",
+      "activeEmptyForBranch": "Esta sucursal no tiene cupos configurados."
+    }
+  },
+  "tiposVehiculo": {
+    "title": "Tipos de vehículo",
+    "new": "Nuevo tipo de vehículo",
+    "createTitle": "Nuevo tipo de vehículo",
+    "editTitle": "Editar tipo de vehículo",
+    "modalDescription": "Ingresá el nombre. El seed canónico usa lowercase (carro, moto, bicicleta, patineta).",
+    "loading": "Cargando tipos de vehículo...",
+    "loadError": "No se pudieron cargar los tipos de vehículo.",
+    "empty": "Aún no hay tipos de vehículo configurados.",
+    "field": {
+      "tipo": "Nombre del tipo de vehículo",
+      "tipoHelp": "El seed canónico usa lowercase (carro, moto, bicicleta, patineta). 1..64 caracteres."
+    },
+    "form": {
+      "editingNotice": "Estás editando un tipo existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar"
+    }
+  },
+  "tipoTarifa": {
+    "title": "Modalidades de tarifa",
+    "new": "Nueva modalidad",
+    "createTitle": "Nueva modalidad",
+    "editTitle": "Editar modalidad",
+    "modalDescription": "Ingresá el nombre. El seed canónico usa lowercase (hora, fraccion, plena, nocturna).",
+    "loading": "Cargando modalidades...",
+    "loadError": "No se pudieron cargar las modalidades.",
+    "empty": "Aún no hay modalidades configuradas.",
+    "field": {
+      "tipo": "Nombre de la modalidad",
+      "tipoHelp": "El seed canónico usa lowercase (hora, fraccion, plena, nocturna). 1..64 caracteres."
+    },
+    "form": {
+      "editingNotice": "Estás editando una modalidad existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar"
+    }
+  },
+  "configuracionTolerancias": {
+    "title": "Tolerancias de caja",
+    "titleGlobal": "Default global",
+    "titleOverride": "Override · sucursal {{uuid}}",
+    "new": "Nueva tolerancia",
+    "createTitle": "Nueva tolerancia",
+    "editTitle": "Editar tolerancia",
+    "modalDescription": "Elegí el alcance (default global o override por sucursal) y cargá las tolerancias.",
+    "loading": "Cargando tolerancias...",
+    "loadError": "No se pudieron cargar las tolerancias.",
+    "empty": "Aún no hay tolerancias configuradas.",
+    "field": {
+      "alcanceGlobal": "Default global",
+      "alcanceOverride": "Override por sucursal",
+      "sucursal": "Sucursal",
+      "sucursalHelp": "Este override reemplaza el default global solo para esta sucursal.",
+      "toleranciaEfectivo": "Tolerancia de efectivo (COP)",
+      "toleranciaEfectivoHelp": "Diferencia máxima admisible en el conteo de efectivo. >= 0. Cuatro decimales.",
+      "toleranciaDatafono": "Tolerancia de datáfono (COP)",
+      "toleranciaDatafonoHelp": "Diferencia máxima admisible en el conteo de datáfono. >= 0. Cuatro decimales."
+    },
+    "form": {
+      "editingNotice": "Estás editando una configuración existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "action": {
+      "edit": "Editar"
+    },
+    "tabs": {
+      "all": "Global y overrides",
+      "active": "Efectiva en mi sucursal",
+      "activeEmpty": "Elegí una sucursal en el selector del topbar para ver la configuración efectiva.",
+      "activeNoGlobal": "No hay default global todavía. Creá uno en \"Global y overrides\".",
+      "activeNoOverride": "Esta sucursal no tiene un override. Creá uno desde \"Global y overrides\" o usá el botón \"Nueva tolerancia\".",
+      "activeFromGlobal": "Heredada del default global"
+    }
+  },
+  "configuracionSeguridad": {
+    "title": "Configuración de seguridad",
+    "titleGlobal": "Default global",
+    "titleOverride": "Override · sucursal {{uuid}}",
+    "new": "Nueva configuración",
+    "createTitle": "Nueva configuración de seguridad",
+    "editTitle": "Editar configuración de seguridad",
+    "modalDescription": "Elegí el alcance y cargá los valores. Al hacer click en \"Guardar\" te mostraremos un resumen antes de aplicar.",
+    "loading": "Cargando configuraciones...",
+    "loadError": "No se pudieron cargar las configuraciones.",
+    "empty": "Aún no hay configuraciones de seguridad.",
+    "field": {
+      "alcanceGlobal": "Default global",
+      "alcanceOverride": "Override por sucursal",
+      "sucursal": "Sucursal",
+      "maxIntentos": "Máx. intentos de login",
+      "maxIntentosHelp": "Entre 1 y 20. El default canónico es 5.",
+      "minutosBloqueo": "Minutos de bloqueo",
+      "minutosBloqueoHelp": "Entre 1 y 1440 (24h). El default canónico es 15."
+    },
+    "form": {
+      "editingNotice": "Estás editando una configuración existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "submitting": "Guardando…",
+      "create": "Crear",
+      "update": "Actualizar"
+    },
+    "confirm": {
+      "title": "¿Aplicar los cambios de seguridad?",
+      "description": "Cambiar las políticas de lockout invalida los intentos en curso. Los operadores actualmente bloqueados verán el nuevo tiempo al volver a intentar.",
+      "maxIntentos": "Máx. intentos: {{n}}",
+      "minutosBloqueo": "Minutos de bloqueo: {{n}}",
+      "ok": "Aplicar"
+    },
+    "action": {
+      "edit": "Editar"
+    },
+    "tabs": {
+      "all": "Global y overrides",
+      "active": "Efectiva en mi sucursal",
+      "activeEmpty": "Elegí una sucursal en el selector del topbar para ver su override.",
+      "activeNoOverride": "Esta sucursal no tiene un override. Creá uno desde \"Global y overrides\" o usá el botón \"Nueva tolerancia\".",
+      "activeFromGlobal": "Heredada del default global"
     }
   },
   "sucursal": {
     "title": "Sucursales",
     "new": "Nueva sucursal",
     "createTitle": "Crear nueva sucursal",
+    "editTitle": "Editar sucursal",
     "loading": "Cargando sucursales...",
     "loadError": "No se pudieron cargar las sucursales. Reintentá.",
     "empty": "Aún no hay sucursales.",
@@ -97,6 +469,7 @@
       "actions": "Acciones"
     },
     "action": {
+      "edit": "Editar",
       "pairing": "Token de pairing"
     },
     "field": {
@@ -106,12 +479,18 @@
       "prefijoHelp": "3-6 caracteres en mayúsculas, dígitos o guion (UK).",
       "ciudad": "Ciudad",
       "telefono": "Teléfono",
-      "direccion": "Dirección"
+      "direccion": "Dirección",
+      "horario": "Horario de atención",
+      "horarioHelp": "Ej: Lun-Vie 8:00-18:00 / Sáb 9:00-13:00",
+      "uuidTipoSucursal": "UUID tipo de sucursal",
+      "uuidEmpresa": "UUID empresa",
+      "uuidFkHelp": "Asignado automáticamente al crear. No editable."
     },
     "form": {
       "create": "Crear sucursal",
       "update": "Actualizar",
-      "submitting": "Creando..."
+      "submitting": "Creando...",
+      "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente."
     },
     "pairing": {
       "title": "Token de pairing",
@@ -142,7 +521,59 @@
     "hideOptional": "Ocultar campos opcionales",
     "submit": "Crear usuario",
     "submitting": "Creando...",
-    "created": "Usuario creado correctamente. UUID: {{uuid}}"
+    "created": "Usuario creado correctamente. UUID: {{uuid}}",
+    "resetPassword": "Resetear contraseña",
+    "resetPasswordConfirm": "¿Resetear la contraseña de este usuario?",
+    "resetPasswordSuccess": "Contraseña reseteada. El operador debe cambiarla en su próximo login.",
+    "resetPasswordError": "Error al resetear contraseña"
+  },
+  "sesiones": {
+    "title": "Sesiones activas",
+    "uuid": "UUID",
+    "creadoEn": "Creada en",
+    "estado": "Estado",
+    "cerrar": "Cerrar",
+    "empty": "No hay sesiones activas",
+    "loading": "Cargando sesiones...",
+    "cerrarConfirm": "¿Cerrar esta sesión?",
+    "cerrarSuccess": "Sesión cerrada",
+    "cerrarError": "Error al cerrar sesión"
+  },
+  "gestionUsuarios": {
+    "title": "Gestión de usuarios",
+    "subtitle": "Crea, lista y asigna sucursales a usuarios administradores y operadores.",
+    "newUser": "+ Nuevo usuario",
+    "loading": "Cargando usuarios…",
+    "empty": "Aún no hay usuarios administradores. Creá el primero con \"+ Nuevo usuario\".",
+    "error": "No se pudo cargar el listado. Reintentá.",
+    "tableCaption": "Listado de usuarios administradores y operadores",
+    "table": {
+      "email": "Correo",
+      "nombre": "Nombre",
+      "rol": "Rol",
+      "sucursales": "Sucursales",
+      "estado": "Estado",
+      "acciones": "Acciones",
+      "sinSucursales": "—"
+    },
+    "actions": {
+      "assignSucursales": "Asignar sucursales",
+      "detalle": "Detalle"
+    },
+    "modal": {
+      "create": "Crear nuevo usuario",
+      "createDescription": "Cargá los datos del usuario. La contraseña se cifra (bcrypt) en el servidor."
+    },
+    "sucursalesManager": {
+      "title": "Sucursales del usuario",
+      "subtitle": "Asigná o quitá sucursales. Los cambios se aplican al instante.",
+      "assigned": "Asignadas",
+      "empty": "Sin sucursales asignadas.",
+      "addLabel": "Agregar sucursal",
+      "addPlaceholder": "Elegí una sucursal…",
+      "add": "Agregar",
+      "noneAvailable": "No hay sucursales disponibles para asignar."
+    }
   },
   "audit": {
     "title": "Auditoría",
@@ -158,6 +589,69 @@
       "accion": "Acción",
       "tabla": "Tabla",
       "hashChain": "Hash chain"
+    }
+  },
+  "topnav": {
+    "brand": "Parkos Admin",
+    "userMenu": "Menú de usuario",
+    "profile": "Mi perfil",
+    "settings": "Configuración",
+    "settingsSoon": "Próximamente",
+    "logout": "Cerrar sesión",
+    "signingOut": "Saliendo…",
+    "switchBranch": "Cambiar sucursal"
+  },
+  "perfil": {
+    "title": "Mi perfil",
+    "subtitle": "Datos de tu cuenta.",
+    "identity": "Identidad",
+    "back": "Volver al inicio",
+    "row": {
+      "email": "Correo electrónico",
+      "rol": "Rol",
+      "uuid": "UUID",
+      "sucursales": "Sucursales autorizadas"
+    }
+  },
+  "empresa": {
+    "title": "Empresa",
+    "subtitle": "Datos tributarios, mensajes de ticket y bitácora del singleton Empresa.",
+    "tabsLabel": "Secciones de empresa",
+    "tabs": {
+      "datos": "Datos",
+      "mensajes": "Mensajes",
+      "bitacora": "Bitácora"
+    },
+    "datos": {
+      "nombre": "Razón social",
+      "nit": "NIT",
+      "nitHelp": "Con o sin DV. Se valida con el algoritmo módulo 11 de la DIAN.",
+      "regimen": "Régimen tributario",
+      "regimenComun": "Común",
+      "regimenSimplificado": "Simplificado",
+      "submit": "Guardar datos",
+      "submitting": "Guardando…",
+      "editingNotice": "Estás editando el singleton Empresa. El cambio publica una nueva versión bi-temporal; la anterior se cierra automáticamente.",
+      "empty": "Aún no se sembró el singleton Empresa. Pedile al equipo de plataforma que corra el seed correspondiente.",
+      "uuid": "UUID: {{uuid}}"
+    },
+    "mensajes": {
+      "bienvenida": "Mensaje de bienvenida",
+      "salida": "Mensaje de salida",
+      "previewBienvenida": "Preview ticket de entrada",
+      "previewSalida": "Preview ticket de salida",
+      "submit": "Guardar mensajes",
+      "submitting": "Guardando…",
+      "editingNotice": "Cambiar los mensajes publica una nueva versión bi-temporal. La reimpresión de tickets usa la versión vigente al momento del cierre del ingreso.",
+      "empty": "Aún no se sembró el singleton Empresa. Los mensajes no se pueden editar hasta entonces."
+    },
+    "bitacora": {
+      "pendingTitle": "Integración pendiente con la API de bitácora",
+      "pendingBody": "El endpoint /api/v1/admin/audit/log requiere uuid_sucursal y Empresa es un singleton tenant-global. La consulta por uuid_referencia + tabla_afectada se cablea en Fase 20.",
+      "sampleCaption": "Ejemplo visual del badge HashChainStatus",
+      "col": {
+        "estado": "Estado"
+      }
     }
   }
 }

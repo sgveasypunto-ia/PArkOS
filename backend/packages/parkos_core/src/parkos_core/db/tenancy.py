@@ -21,7 +21,8 @@ from contextvars import ContextVar
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import Select, event, text
+from sqlalchemy import Select, event, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 _ctx_sucursal: ContextVar[uuid_lib.UUID | None] = ContextVar(
@@ -64,25 +65,32 @@ def _is_hash_chain_table(column: Any) -> bool:
 
 
 def _iter_tenant_columns(state: Any, *, is_select: bool) -> list[Any]:
-    """Resolve the ``uuid_sucursal`` columns a statement reads or writes.
+    """Resolve the OWNING ``uuid_sucursal`` column for the statement.
 
     ``do_orm_execute`` receives an :class:`sqlalchemy.orm.ORMExecuteState`,
     which does **not** expose ``column_descriptions`` — that attribute lives
     on the statement itself (``Select.column_descriptions``). Reading it off
     the state silently yields ``[]`` and the tenant filter is never applied.
 
-    Two sources are combined, because neither is sufficient alone:
-
-    - Entity selects (``select(Model)``, and joins) carry the mapped class in
-      ``column_descriptions``; take ``Model.uuid_sucursal`` from there.
-    - Aggregates (``select(func.count()).select_from(Model)``) have no entity
-      in ``column_descriptions`` — their only column is the ``count()``
-      expression — so the ``uuid_sucursal`` column is read straight off the
-      FROM element. Without this an unfiltered aggregate would still read
-      every branch.
+    Heuristic: the listener scopes ONLY the first entity in
+    ``column_descriptions``. Joined tables (``outerjoin(Ingreso, ...)`` for
+    context columns like the plate) keep their tables intact — adding
+    ``joined.uuid_sucursal = ctx`` to the WHERE turns a LEFT JOIN into an
+    effective INNER JOIN and silently drops orphan rows. The PRE-PR-A bug
+    pinned by ``tests/integration/test_operacion_scope_lista.py::
+    test_salidas_scope_con_header_no_degradacion_no_changel_join``:
+    the listener added ``Ingreso.uuid_sucursal = ctx`` on top of the
+    handler's ``Salidas.uuid_sucursal = ctx``, and exits without an
+    ``ingreso`` row disappeared from the listing.
 
     UPDATE / DELETE have no ``column_descriptions`` at all; the target comes
-    from ``state.bind_mapper``.
+    from ``state.bind_mapper`` (single-table mutation, no joins).
+
+    Aggregates (``select(func.count()).select_from(Model)``) have no entity
+    in ``column_descriptions`` — their only column is the ``count()``
+    expression — so the ``uuid_sucursal`` column is read straight off the
+    FROM element. Without this an unfiltered aggregate would still read
+    every branch.
     """
     columns: list[Any] = []
     seen: set[int] = set()
@@ -94,13 +102,21 @@ def _iter_tenant_columns(state: Any, *, is_select: bool) -> list[Any]:
 
     if is_select:
         statement = state.statement
+        owner_resolved = False
         for desc in getattr(statement, "column_descriptions", None) or []:
             if isinstance(desc, dict):
-                _add(getattr(desc.get("entity"), "uuid_sucursal", None))
-        for from_element in getattr(statement, "get_final_froms", list)():
-            collection = getattr(from_element, "c", None)
-            if collection is not None:
-                _add(collection.get("uuid_sucursal"))
+                candidate = getattr(desc.get("entity"), "uuid_sucursal", None)
+                if candidate is not None:
+                    _add(candidate)
+                    owner_resolved = True
+                    break
+        if not owner_resolved:
+            # Aggregate: read the uuid_sucursal column off the FROM.
+            for from_element in getattr(statement, "get_final_froms", list)():
+                collection = getattr(from_element, "c", None)
+                if collection is not None:
+                    _add(collection.get("uuid_sucursal"))
+                    break
     else:
         mapper = getattr(state, "bind_mapper", None)
         _add(getattr(getattr(mapper, "class_", None), "uuid_sucursal", None))
@@ -159,6 +175,44 @@ def extract_sucursales_permitidas(claims: Any) -> list[uuid_lib.UUID]:
     return out
 
 
+async def extract_sucursales_permitidas_fresh(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+) -> list[uuid_lib.UUID]:
+    """Read the admin's currently-open ``usuarios_sucursal`` rows fresh
+    from the DB.
+
+    Replaces the JWT-claim path for ``admin-`` issuers. The JWT claim
+    ``sucursales_permitidas`` is a snapshot taken at login; the DB is the
+    source of truth for "which branches can this admin see RIGHT NOW".
+    Used by ``admin_views.list_sucursales`` so the picker reflects
+    newly-created branches (POST /empresa/sucursal + auto-assignment
+    via close_and_insert hook) without forcing a re-login.
+
+    Bonus: when an admin's assignment is revoked
+    (``DELETE /admin/usuarios/{uuid}/sucursales/{sucursal}``), the next
+    request loses the branch immediately -- no grace window until the
+    stale JWT expires.
+
+    Index plan: the existing UK on ``usuarios_sucursal`` (uuid_usuario,
+    uuid_sucursal, vigente_desde) covers the predicate. ~1ms per query.
+    No in-memory cache needed at admin-UI request volumes.
+    """
+    # Lazy import: keeps the import graph shallow so this module stays
+    # importable without pulling the [V] model registry. The handler
+    # that uses this helper is also the only caller, so the cost is
+    # only paid when ``list_sucursales`` is hit.
+    from ..models.V.usuarios_sucursal import UsuariosSucursal
+
+    stmt = select(UsuariosSucursal.uuid_sucursal).where(
+        UsuariosSucursal.uuid_usuario == actor_uuid,
+        UsuariosSucursal.vigente_hasta.is_(None),
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return list(rows)
+
+
 def apply_admin_scope(
     session: Any,  # AsyncSession | None — unused today, kept for a future hook
     statement: Select[Any],
@@ -212,6 +266,7 @@ __all__ = [
     "_ctx_sucursal",
     "apply_admin_scope",
     "extract_sucursales_permitidas",
+    "extract_sucursales_permitidas_fresh",
     "get_current_sucursal_uuid",
     "install_tenant_event_listener",
     "set_tenant_context",

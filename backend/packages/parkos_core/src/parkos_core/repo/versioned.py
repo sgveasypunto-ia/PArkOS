@@ -8,6 +8,32 @@ REQ-04, REQ-05:
 Both operations happen in the same transaction. The caller is responsible for
 ``session.commit()``.
 
+UUID REGENERATION (BIO-TEMPORAL GOTCHA)
+----------------------------------------
+The PK of every ``[V]`` table is single-column ``uuid``; step 2 INSERTs
+without specifying ``uuid`` so the server-default ``gen_random_uuid()``
+mints a NEW one. **The business UUID of a branch does NOT survive
+across edits.** This is consistent with the sync path
+(``sync.motor.apply_row``) but it has a sharp edge: every FK column
+pointing at the [V] row carries the OLD ``uuid``. After the first edit,
+those FKs reference a closed (``vigente_hasta IS NOT NULL``) row.
+
+Two callers suffer immediately:
+
+1. The picker (``admin_views.list_sucursales`` filters by
+   ``sucursales_permitidas`` which the JWT built from the OLD UUID).
+   The admin sees the branch disappear after editing it.
+2. Operational JOINs on the closed UUID that filter
+   ``s.vigente_hasta IS NULL`` silently drop rows.
+
+For ``Sucursal`` the helper repoints the admin-facing FK columns
+in the same TX right after the INSERT flush -- see the post-flush hook
+below. Migration 0061 (``0061_repair_sucursal_fk_chain.py``) repairs
+the pre-existing gap on already-edited branches. Other ``[V]`` tables
+are intentionally NOT propagated today because the user-facing cost
+hasn't surfaced; the hook is opt-in via ``model_cls.__tablename__`` so
+adding more tables is one line of work when needed.
+
 NOTE: This module is the ONLY allowed UPDATE writer on [V] tables. The AST
 test ``tests/static/test_no_raw_upsert_on_v_tables.py`` rejects
 ``session.execute(update(...))`` against [V] classes outside this module.
@@ -186,6 +212,53 @@ async def close_and_insert(
     # ``Usuarios``, whose ``uuid`` column re-declaration leaves no
     # ORM-visible default; discovered while wiring PR6's genesis bootstrap).
     await session.flush()
+
+    # FK propagation hook. The PK of every ``[V]`` table is single-column
+    # ``uuid``; bi-temporal close+insert regenerates it, leaving the 48
+    # FKs to that table pointing at the OLD closed version. The admin
+    # notices this as the picker dropping the branch (because
+    # ``sucursales_permitidas`` was built from the OLD UUID), and as
+    # JOIN queries on operational data silently missing rows.
+    # ``close_and_insert`` regenerates ``uuid`` by design (see the
+    # docstring at the top of this module); the FK propagation lives here
+    # so the symptom doesn't leak to the user. See migration 0061 for
+    # the data-repair counterpart and ``repo.sucursal`` for the rationale.
+    # The hook fires only for ``Sucursal`` -- the one ``[V]`` table where
+    # the PK regeneration is user-visible today. Other tables can opt in
+    # by registering here as their FK surface grows.
+    if current_uuid is not None and model_cls.__tablename__ == "sucursal":
+        # Lazy import: ``repo.sucursal`` itself depends on nothing
+        # model-side, but the dispatch table lives there to avoid growing
+        # the versioned module's surface.
+        from .sucursal import propagate_uuid_to_fks
+
+        await propagate_uuid_to_fks(
+            session,
+            old_uuid=current_uuid,
+            new_uuid=new_row.uuid,
+        )
+
+    # CREATE-side auto-assignment. Companion to the FK-propagation
+    # hook above: when an admin POSTs a brand-new Sucursal (the
+    # ``current_uuid is None`` branch), nothing repoints the creator's
+    # ``sucursales_permitidas`` because nothing pointed at the row before
+    # it existed. Without this, the picker drops the just-created branch
+    # for the admin who created it -- exactly the "invisible branch"
+    # reported 2026-09-29 on ``testTTTTTTTT``. The hook inserts an open
+    # ``usuarios_sucursal`` row in the same TX so the next login rebuilds
+    # ``sucursales_permitidas`` with the new UUID present. Idempotent on
+    # UK violation (see ``repo.sucursal.assign_creator_to_new_sucursal``).
+    # ``operador-`` issuers never reach here -- ``config_sucursal``
+    # permission check at the endpoint rejects them with 403 first.
+    if current_uuid is None and model_cls.__tablename__ == "sucursal":
+        from .sucursal import assign_creator_to_new_sucursal
+
+        await assign_creator_to_new_sucursal(
+            session,
+            admin_user_uuid=actor_uuid,
+            sucursal_uuid=new_row.uuid,
+            actor_uuid=actor_uuid,
+        )
 
     # 3. Log row — extends the SHA-256 hash chain (PR6, REQ-16 + REQ-X4).
     #    A plain ``LogTransaccional(...)`` + ``session.add()`` (the PR2-era

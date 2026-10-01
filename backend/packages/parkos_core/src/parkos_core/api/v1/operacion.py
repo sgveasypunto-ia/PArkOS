@@ -45,9 +45,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...api.deps import get_tenant_ctx, requires_issuer
+from ...api.deps import get_tenant_ctx, require_branch_scope, requires_issuer
 from ...auth.permissions import require_permission
-from ...auth.tenancy import TenantContext
+from ...auth.tenancy import BranchScope, TenantContext
 from ...db.engine import get_session
 from ...models.A.salidas import Salidas
 from ...models.L_E.ingreso import Ingreso
@@ -98,6 +98,7 @@ from ...schemas.operacion import (
     OcupacionItem,
     OcupacionResponse,
     SalidaCreateForzado,
+    SalidaListRead,
     SalidaRead,
     SalidaReadForzado,
 )
@@ -109,6 +110,26 @@ router = APIRouter(prefix="/operacion", tags=["operacion"])
 logger = logging.getLogger(__name__)
 
 _ingreso_issuer_dep = requires_issuer("operador-", "admin-")
+
+
+# ---------------------------------------------------------------------------
+# Branch-scope enforcement for the READ paths (HU-F17.1 / PR-A)
+# ---------------------------------------------------------------------------
+# ``get_tenant_ctx`` is NOT authorization on its own for a branch-scoped read:
+#   - for ``admin-`` the ``X-Sucursal-Context`` header is optional, and with no
+#     header ``set_tenant_context`` is never called so the ``do_orm_execute``
+#     listener applies no filter at all;
+#   - ``/operacion/ocupacion`` is raw ``text()`` SQL, which resolves zero
+#     tenant columns for the listener, so it is unguarded even WITH a header.
+# See :class:`parkos_core.auth.tenancy.BranchScope` for the full rationale.
+#
+# Two enforcement shapes, picked per handler:
+#   - LIST -> ``scope.narrow(requested)`` intersected into the WHERE clause.
+#     Omitting the filter means "all permitted branches", never "all branches".
+#   - SINGLE ROW -> post-read ``scope.allows(row.uuid_sucursal)`` check that
+#     raises 404. 404 rather than 403 so the response does not confirm that a
+#     row exists in a branch the caller cannot see.
+_scope_dep = Depends(require_branch_scope)
 # F8.1-b (HU-F8.1-anular-salida-no-pagada, 2026-09-23): the auto-annul
 # handler reuses the same issuer class as `create_salida` (operadores
 # own salidas). The semantically correct permission here would be
@@ -896,9 +917,10 @@ async def get_ingreso(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_ingreso_issuer_dep),
+    scope: BranchScope = _scope_dep,
 ) -> IngresoRead:
     row = (await session.execute(select(Ingreso).where(Ingreso.uuid == uuid))).scalar_one_or_none()
-    if row is None:
+    if row is None or not scope.allows(row.uuid_sucursal):
         raise HTTPException(status_code=404, detail={"error": "not_found", "uuid": str(uuid)})
     return IngresoRead.model_validate(row)
 
@@ -913,6 +935,7 @@ async def get_ingreso_estado(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_ingreso_issuer_dep),
+    scope: BranchScope = _scope_dep,
 ) -> IngresoEstadoResponse:
     """Compute the derived state of an ingreso.
 
@@ -928,8 +951,14 @@ async def get_ingreso_estado(
     unless we detect a closed chain via timestamps).
     """
     # 1. Read the ingreso row first (404 if not found).
+    #
+    # PR-A: the scope check is folded into the 404 so an ingreso belonging to a
+    # branch the caller cannot read is indistinguishable from one that does not
+    # exist. Steps 2+ run raw ``text()`` SQL, which the ``do_orm_execute``
+    # listener cannot scope, so the row MUST be authorized before anything
+    # derived from it is read.
     ingreso = (await session.execute(select(Ingreso).where(Ingreso.uuid == uuid))).scalar_one_or_none()
-    if ingreso is None:
+    if ingreso is None or not scope.allows(ingreso.uuid_sucursal):
         raise HTTPException(status_code=404, detail={"error": "not_found", "uuid": str(uuid)})
 
     # 2. Query the derived view V_INGRESO_ESTADO. The view is mounted by
@@ -982,6 +1011,7 @@ async def list_ingresos(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_ingreso_issuer_dep),
+    scope: BranchScope = _scope_dep,
 ) -> list[IngresoRead]:
     """List recent ingresos (filters: uuid_sucursal, placa, consecutivo, activo).
 
@@ -996,10 +1026,21 @@ async def list_ingresos(
     patron que ``placa`` -- exact match, SIN el filtro ``activo`` --
     para que la reimpresion de tiquete pueda encontrar el cupo de un
     vehiculo sin placa aunque el ingreso ya tenga salida registrada.
+
+    Branch scope (PR-A, HU-F17.1): ``uuid_sucursal`` is now intersected with
+    the caller's permitted set. Three previously-exploitable shapes, all closed:
+
+    - no ``uuid_sucursal`` and no header -> every branch's rows (the
+      ``do_orm_execute`` listener short-circuits when ``set_tenant_context`` was
+      never called);
+    - ``?uuid_sucursal=<other>`` as an ``admin-`` issuer permitted on another
+      branch -> 403 ``tenant_scope_violation``;
+    - ``?placa=X`` as an ``operador-`` issuer -> previously a GLOBAL lookup, now
+      pinned to the operator's branch. This one is a behaviour fix, not just a
+      hardening: the same query from ``web_admin`` keeps working because the
+      admin carries every permitted branch in its scope set.
     """
-    stmt = select(Ingreso)
-    if uuid_sucursal is not None:
-        stmt = stmt.where(Ingreso.uuid_sucursal == uuid_sucursal)
+    stmt = select(Ingreso).where(Ingreso.uuid_sucursal.in_(scope.narrow(uuid_sucursal)))
     if placa is not None:
         stmt = stmt.where(Ingreso.placa == placa)
     if consecutivo is not None:
@@ -1021,6 +1062,126 @@ async def list_ingresos(
     stmt = stmt.order_by(Ingreso.created_at.desc()).limit(min(limit, 200))
     result = await session.execute(stmt)
     return [IngresoRead.model_validate(r) for r in result.scalars().all()]
+
+
+# ``Ingreso.placa`` used to disambiguate the joined columns in the select
+# list below. Kept as a module constant so the two endpoints cannot drift.
+_SALIDAS_INGRESO_JOIN = (
+    select(
+        Salidas.uuid,
+        Salidas.created_at,
+        Salidas.created_by,
+        Salidas.sync_status,
+        Salidas.sync_timestamp,
+        Salidas.sync_attempts,
+        Salidas.uuid_sucursal,
+        Salidas.uuid_ingreso,
+        Salidas.fecha_salida,
+        Ingreso.placa,
+        Ingreso.uuid_tipo_vehiculo,
+        Ingreso.consecutivo,
+    )
+    .select_from(Salidas)
+    # LEFT JOIN, not INNER: ``uuid_ingreso`` is nullable on ``salidas``, and
+    # an exit whose ingreso row is absent still has to appear in the list.
+    # An INNER JOIN would silently hide it and make the UI under-report
+    # occupancy — the failure mode is invisible, which is what makes it
+    # dangerous.
+    .outerjoin(Ingreso, Ingreso.uuid == Salidas.uuid_ingreso)
+)
+
+
+@router.get(
+    "/salidas",
+    response_model=list[SalidaListRead],
+    summary="List salidas with simple pagination",
+)
+async def list_salidas(
+    uuid_sucursal: uuid_lib.UUID | None = None,
+    placa: str | None = None,
+    fecha_salida__gte: datetime | None = None,
+    fecha_salida__lte: datetime | None = None,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+    scope: BranchScope = _scope_dep,
+) -> list[SalidaListRead]:
+    """List vehicle exits (filters: uuid_sucursal, placa, fecha_salida range).
+
+    Read-only counterpart to ``GET /operacion/ingresos``: same issuer gate,
+    same ``limit`` cap of 200, same plain-list response shape. ``placa`` is
+    not a column of ``prod.salidas`` — it comes from the joined
+    ``prod.ingreso`` row, so filtering by plate is an exact match on
+    ``Ingreso.placa``.
+
+    Ordering is ``fecha_salida DESC NULLS LAST`` then ``created_at DESC``.
+    The NULLS LAST is explicit rather than incidental: ``fecha_salida`` is
+    nullable and Postgres sorts NULLs FIRST under ``DESC``, which would float
+    undated rows to the top of a list whose entire purpose is recency.
+
+    Branch scope (PR-A): same three shapes closed as ``list_ingresos``. The
+    scope is anchored on ``Salidas.uuid_sucursal`` — the branch that OWNS the
+    exit — rather than ``Ingreso.uuid_sucursal``, so the LEFT JOIN stays a LEFT
+    JOIN and an exit whose ingreso row is absent remains listable. Filtering on
+    the joined side would silently degrade it to an INNER JOIN under a branch
+    context, reintroducing the exact under-reporting the join was chosen to avoid.
+    """
+    stmt = _SALIDAS_INGRESO_JOIN.where(
+        Salidas.uuid_sucursal.in_(scope.narrow(uuid_sucursal))
+    )
+    if placa is not None:
+        stmt = stmt.where(Ingreso.placa == placa)
+    if fecha_salida__gte is not None:
+        stmt = stmt.where(Salidas.fecha_salida >= fecha_salida__gte)
+    if fecha_salida__lte is not None:
+        stmt = stmt.where(Salidas.fecha_salida <= fecha_salida__lte)
+    stmt = stmt.order_by(
+        Salidas.fecha_salida.desc().nullslast(),
+        Salidas.created_at.desc(),
+    ).limit(min(limit, 200))
+    result = await session.execute(stmt)
+    return [SalidaListRead.model_validate(row._mapping) for row in result.all()]
+
+
+@router.get(
+    "/salidas/{uuid}",
+    response_model=SalidaListRead,
+    summary="Read a single salida (events are append-only — no history)",
+)
+async def get_salida(
+    uuid: uuid_lib.UUID = Path(...),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+    scope: BranchScope = _scope_dep,
+) -> SalidaListRead:
+    """Read one exit event, with its ``prod.ingreso`` columns joined in.
+
+    PR-A overrides the earlier "intentionally NOT scoped here" decision. That
+    reasoning was sound as written — leaving one read path open while the write
+    path was equally open is not a net improvement — but the premise it rested
+    on no longer holds: this endpoint now scopes, so the write path is the
+    remaining gap and is tracked separately rather than used as a reason to keep
+    a known cross-tenant read open. Reading a guessed exit uuid is exactly the
+    shape an attacker probes, and this endpoint returns the joined plate, which
+    is PII.
+    """
+    row = (
+        await session.execute(_SALIDAS_INGRESO_JOIN.where(Salidas.uuid == uuid))
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "salida_no_encontrada", "uuid_salida": str(uuid)},
+        )
+    # Scoped on the owning branch, not the joined one — see ``list_salidas``.
+    if not scope.allows(row._mapping["uuid_sucursal"]):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "salida_no_encontrada", "uuid_salida": str(uuid)},
+        )
+    return SalidaListRead.model_validate(row._mapping)
 
 
 # ---------------------------------------------------------------------------
@@ -1232,12 +1393,13 @@ async def get_ocupacion(
         description=(
             "uuid_sucursal to query. Default = ctx.sucursal_uuid. "
             "Operador- sees only ctx.sucursal_uuid; admin- sees only "
-            "branches in claims['sucursales_permitidas']."
+            "branches it is currently permitted on."
         ),
     ),
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_ingreso_issuer_dep),
+    scope: BranchScope = _scope_dep,
 ) -> OcupacionResponse:
     """REQ-OPS-030 + REQ-OPS-031: ``GET /operacion/ocupacion``.
 
@@ -1248,10 +1410,10 @@ async def get_ocupacion(
 
     Body: thin pass-through to ``repo.ocupacion.get_ocupacion_puros_activos``,
     encapsulating the SQL JOIN (mv x tv LEFT JOIN cvs). KD-3 enforces
-    per-sucursal authz: ``operador-`` pinned to ``ctx.sucursal_uuid``
-    (cross-tenant -> ``403 tenant_scope_violation``); ``admin-`` bounded
-    by ``claims['sucursales_permitidas']`` (missing -> ``400
-    missing_sucursal_context``).
+    per-sucursal authz: ``operador-`` pinned to ``ctx.sucursal_uuid`` and
+    ``admin-`` bounded to its CURRENTLY permitted branches (no branch in
+    scope -> ``400 missing_sucursal_context``, out-of-scope branch -> ``403
+    tenant_scope_violation``).
 
     The endpoint is read-only by contract (REQ-OPS-030 + REQ-OPS-031);
     defense in depth enforced by
@@ -1262,28 +1424,28 @@ async def get_ocupacion(
     #    - else ctx.sucursal_uuid;
     #    - else 400 missing_sucursal_context.
     target = uuid_sucursal or ctx.sucursal_uuid
-    if target is None:
+
+    # 2. Authorization (KD-3, PR-A).
+    #
+    # PR-A replaces the previous hand-rolled issuer check, whose stated reason
+    # was "get_tenant_ctx already validated target". That was wrong in two ways:
+    # the header is OPTIONAL for admin-, so with no header get_tenant_ctx
+    # validates nothing; and the query param takes precedence over the header, so
+    # even WITH a validated header `?uuid_sucursal=<other>` selected a branch
+    # the header check never saw. On top of that this handler reads raw text()
+    # SQL, which the do_orm_execute listener cannot scope at all.
+    #
+    # Two-step so an admin with NO permitted branches reads 400 (consistent with
+    # the pre-existing ``missing_sucursal_context`` shape) instead of a 403 that
+    # implies "you named a branch you don't own", which is misleading when the
+    # caller has nothing at all.
+    if not scope.permitidas:
         raise HTTPException(
             status_code=400,
             detail={"error": "missing_sucursal_context"},
         )
-
-    # 2. Authorization (KD-3):
-    #    - operador- pinned to ctx.sucursal_uuid (cross-tenant -> 403
-    #      tenant_scope_violation);
-    #    - admin- bounded by claims['sucursales_permitidas'] enforced by
-    #      ``get_tenant_ctx`` itself, which already validated the
-    #      ``X-Sucursal-Context`` header before this handler runs. An
-    #      admin- token that reaches this handler has therefore already
-    #      been validated for ``target`` -- no further check needed.
-    if (
-        ctx.issuer_prefix == "operador-"
-        and (ctx.sucursal_uuid is None or target != ctx.sucursal_uuid)
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail={"error": "tenant_scope_violation"},
-        )
+    permitidas = scope.narrow(target)
+    target = next(iter(permitidas))
 
     # 3. Repo call (READ-ONLY; encapsulated JOIN).
     items = await get_ocupacion_puros_activos(session, uuid_sucursal=target)

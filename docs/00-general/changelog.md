@@ -12,6 +12,25 @@
 > línea con la regla explícita de `AGENTS.md` ("Conventional Commits (no
 > Co-Authored-By / AI attribution)").
 
+## Incidente 2026-10-01 — login 500 en los dos nodos
+
+**Síntoma**: `POST /api/v1/auth/login` devolvía **500 con credenciales válidas**, en cloud y en branch. El usuario existía, estaba activo y el hash era correcto.
+
+**Causa raíz (dos defectos encadenados)**:
+
+1. Las 11 tablas particionadas de `prod` tenían su partición del mes en curso sin crear. `0001_initial_schema.py` las creó con `date_trunc('month', CURRENT_DATE)`, que se evalúa **una sola vez** al correr la migración (septiembre 2026) y nunca más. `sync_queue` no tiene partición DEFAULT, así que el trigger `login_enqueue_sync` de `prod.login` lanzaba `CheckViolationError: no partition of relation "sync_queue" found for row` y el INSERT de auditoría no podía aterrizar. Las otras 9 tienen DEFAULT, así que degradaban en silencio a `*_default` — sin error y sin alerta.
+2. Nadie mantenía esas particiones. `pg_partman` 5.5.0 estaba instalado, `pg_partman_bgw` estaba precargado, y las 8 tablas estaban registradas en `partman.part_config` con `automatic_maintenance = 'on'` — pero como `parkos.prod.<tabla>` en vez de `prod.<tabla>`. El worker emitía `WARNING: pg_partman maintenance skipped partition set ... Given parent table not found in system catalogs` y salía con código **0**. `maintenance_last_run` era `NULL` en las 9 filas. Y aun corregidos los nombres, `pg_cron` no está en la imagen, así que nada invoca `run_maintenance_proc()`.
+
+**Por qué nadie lo detectó antes**: el check (h) de `openspec/scripts/check_schema_match.py` verificaba que las 8 tablas estuvieran *registradas* en `part_config`, y pasaba — estaban registradas. Comprobaba bookkeeping, no comportamiento. `RNF-PERF-01` estaba marcado "confirmado" por el mismo motivo: el DDL confirma que las tablas *están* particionadas, no que *alguien mantenga* esas particiones.
+
+**Arreglo**:
+
+- `0064_ensure_forward_partitions` repara los `parent_table` de `part_config` y crea 292 particiones explícitas (ventana cercana 2026-10..2028-01, ventana de retención DIAN 2031-10..2032-07, buffer diario 31 + DEFAULT). Verificado `CALL partman.run_maintenance_proc()` sin warnings y con `maintenance_last_run` poblado en las 9, en ambos nodos.
+- Check (h) reescrito a conductual: (h1) todo padre `relkind='p'` tiene partición acotada que cubre `CURRENT_DATE`; (h2) todo `parent_table` resuelve contra el catálogo; (h3) ningún `*_default` recibe filas nuevas.
+- Bug lateral del mismo diagnóstico: `api/v1/admin_usuarios.py` declaraba `response_model=list["LoginIntentoItem"]` con un import **dentro del cuerpo de la función**. Pydantic no resolvía el `ForwardRef` anidado al construir el OpenAPI, `GET /openapi.json` devolvía 500, y como ese endpoint **es** el `HEALTHCHECK` de `api-admin`, el contenedor se reportaba `unhealthy` mientras servía tráfico bien. El nombre `"parkos.prod.*"` del compose branch mapeaba `8000:8000` y chocaba con `api-admin`; ahora es `8100:8000`, que es lo que espera el proxy de Vite de `electron-sucursal`.
+
+**Pendiente**: la ventana cercana agota en 2028-01 y la de retención en 2032-07. Antes hay que ejecutar `SELECT prod.fn_ensure_partitions();` o cablear un planificador real ([ADR-004](../02-arquitectura/decisiones-tecnicas.md#adr-004-particionado-sin-mantenimiento-automático-real)).
+
 ## Resumen por época
 
 | Época | Rango de fechas | Tema | Commits |

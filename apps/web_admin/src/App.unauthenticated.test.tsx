@@ -4,7 +4,7 @@
  * auth states. This file mocks `useAdminAuth` as unauthenticated and
  * asserts that the route guard redirects `/dashboard` to `/login`.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { SWRConfig } from 'swr';
@@ -34,6 +34,12 @@ function Providers({ children }: { children: React.ReactNode }): JSX.Element {
 }
 
 describe('App (unauthenticated)', () => {
+  beforeEach(() => {
+    // Even with stale storage, the auth gate fires before the branch
+    // gate. Clearing the key keeps the test deterministic.
+    window.localStorage.removeItem('parkos.lastSelectedSucursal');
+  });
+
   it('redirects /dashboard to /login', () => {
     render(
       <Providers>
@@ -43,5 +49,45 @@ describe('App (unauthenticated)', () => {
       </Providers>,
     );
     expect(screen.getByTestId('page-login')).toBeInTheDocument();
+  });
+
+  it('redirects /seleccionar-sucursal to /login', () => {
+    render(
+      <Providers>
+        <MemoryRouter initialEntries={['/seleccionar-sucursal']}>
+          <App />
+        </MemoryRouter>
+      </Providers>,
+    );
+    expect(screen.getByTestId('page-login')).toBeInTheDocument();
+  });
+
+  it('redirects / to /login', () => {
+    render(
+      <Providers>
+        <MemoryRouter initialEntries={['/']}>
+          <App />
+        </MemoryRouter>
+      </Providers>,
+    );
+    expect(screen.getByTestId('page-login')).toBeInTheDocument();
+  });
+
+  it('does NOT mount the TopNav on /login (the auth guard fires first)', () => {
+    // Even though `/login` is the only route not wrapped in
+    // `<RequireAdmin>`, the TopNav is mounted ONLY inside the authed
+    // groups — `/login` is the explicit exception. Without an
+    // authenticated session there is no email to show and no session
+    // to log out of, so the bar must stay away.
+    render(
+      <Providers>
+        <MemoryRouter initialEntries={['/login']}>
+          <App />
+        </MemoryRouter>
+      </Providers>,
+    );
+    expect(screen.getByTestId('page-login')).toBeInTheDocument();
+    expect(screen.queryByTestId('topnav')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
   });
 });

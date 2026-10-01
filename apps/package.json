@@ -2,6 +2,7 @@
   "name": "@parkos/apps",
   "version": "0.0.0",
   "private": true,
+  "packageManager": "pnpm@10.0.0",
   "workspaces": [
     "ui-kit",
     "web_admin",

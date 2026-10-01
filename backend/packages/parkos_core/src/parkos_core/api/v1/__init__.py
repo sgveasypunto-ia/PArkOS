@@ -171,11 +171,14 @@ def _build_router() -> APIRouter:
     else:
         try:
             from . import admin_views as _admin_views
+            from . import reporteria as _reporteria
 
             r.include_router(_admin_views.router)
+            r.include_router(_reporteria.router)
             logger.info(
                 "Admin views mounted (cloud deploy): /sucursales + "
-                "/admin/sucursales/{uuid}/dashboard + /admin/me"
+                "/admin/sucursales/{uuid}/dashboard + /admin/me + "
+                "/admin/reporteria/operacional"
             )
         except ImportError as e:
             logger.error("Failed to import admin_views: %s", e)
@@ -214,9 +217,16 @@ def _build_router() -> APIRouter:
             from . import admin_usuarios as _admin_usuarios
 
             r.include_router(_admin_usuarios.router)
+            # Catalog sub-router (prefix ``/admin``) holds endpoints
+            # that are global to the admin surface but NOT scoped to a
+            # single user uuid -- e.g. ``GET /admin/permisos`` returns
+            # the permission catalog. Mounted separately so its literal
+            # ``/permisos`` path is not shadowed by the per-user
+            # ``/{uuid}/permisos`` route on the main router.
+            r.include_router(_admin_usuarios.catalog_router)
             logger.info(
                 "Admin user-management mounted (cloud deploy): "
-                "/admin/usuarios + /admin/usuarios/{uuid}/sucursales"
+                "/admin/usuarios + /admin/permisos + per-user routes"
             )
         except ImportError as e:
             logger.error("Failed to import admin_usuarios: %s", e)

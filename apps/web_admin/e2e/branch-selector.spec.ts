@@ -16,6 +16,8 @@
  */
 import { test, expect } from '@playwright/test';
 
+import { seedAuth, mockAuxiliaryEndpoints } from './helpers/seedAuth';
+
 const ADMIN_TOKEN = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0LWFkbWluIn0.fake';
 const BRANCH_NORTE = '22222222-2222-2222-2222-222222222222';
 const BRANCH_SUR = '33333333-3333-3333-3333-333333333333';
@@ -83,9 +85,12 @@ test.describe('BranchSelector integration', () => {
       });
     });
 
-    await context.addInitScript((token: string) => {
-      window.localStorage.setItem('parkos.auth.token', token);
-    }, ADMIN_TOKEN);
+    await mockAuxiliaryEndpoints(context);
+    await seedAuth(context, {
+      accessToken: ADMIN_TOKEN,
+      branchUuid: BRANCH_NORTE,
+      branchScope: 'transient',
+    });
   });
 
   test('renders both permitted branches', async ({ page }) => {
@@ -126,7 +131,29 @@ test.describe('BranchSelector integration', () => {
   });
 
   test('localStorage persists the selection across reload', async ({ page }) => {
+    // The default ``seedAuth(branchUuid=...)`` path uses
+    // ``addInitScript`` which re-plants the branch on EVERY navigation
+    // — including the ``page.reload()`` below, which would silently
+    // overwrite whatever the user just picked. So this test does the
+    // branch seed via a plain ``page.evaluate`` once the SPA is up,
+    // AFTER which the SPA's own SucursalProvider is the only writer
+    // for the rest of the test. Reload then reads whatever the
+    // BranchSelector persisted — which is what we're asserting.
     await page.goto('/dashboard');
+    await page.evaluate(
+      ({ uuid }) =>
+        window.localStorage.setItem('parkos.lastSelectedSucursal', uuid),
+      { uuid: BRANCH_NORTE },
+    );
+    // The Dashboard's ``useEffect`` reads admin/me + sucursales,
+    // auto-picks Norte, persists it. We don't reload here; we let
+    // the SPA settle, then drive the BranchSelector.
+    await expect
+      .poll(() =>
+        page.evaluate(() => window.localStorage.getItem('parkos.lastSelectedSucursal')),
+      )
+      .toBe(BRANCH_NORTE);
+
     await page.getByRole('combobox', { name: /sucursal/i }).click();
     await page.getByRole('option', { name: 'Sucursal Sur' }).click();
 
@@ -136,6 +163,10 @@ test.describe('BranchSelector integration', () => {
       )
       .toBe(BRANCH_SUR);
 
+    // Reload. The SPA's SucursalProvider reads ``Sur`` sync on mount,
+    // so ``selected`` is Sur before the Dashboard's auto-pick
+    // useEffect runs. The reload itself runs no ``addInitScript``
+    // because none was registered for the branch key.
     await page.reload();
 
     const persisted = await page.evaluate(() =>

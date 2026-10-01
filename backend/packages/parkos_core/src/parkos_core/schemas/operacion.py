@@ -595,6 +595,46 @@ class SalidaRead(_Base):
     fecha_salida: datetime | None
 
 
+class SalidaListRead(_Base):
+    """Response shape for the read-only ``GET /operacion/salidas`` views.
+
+    Additive delta to :class:`SalidaRead` (no field removed or renamed), plus
+    the three ``prod.ingreso`` columns an operator needs to read a list of
+    exits without a second round-trip.
+
+    ``prod.salidas`` is an ``[A]`` append-only EVENT table and deliberately
+    stores no vehicle identity: it records that a vehicle left and when, not
+    which one. ``placa``, ``uuid_tipo_vehiculo`` and ``consecutivo`` live on
+    the referenced ``prod.ingreso`` row, so the list query LEFT JOINs it.
+    They are all optional because ``uuid_ingreso`` is nullable on the table —
+    a salida whose ingreso is missing still has to appear in the list, and
+    hiding it would make the UI lie about occupancy.
+
+    ``tipo_vehiculo`` (the human label, "Auto"/"Moto") is deliberately NOT
+    denormalized here. It would require a third join to ``prod.tipos_vehiculo``
+    for a value the client already holds in its own catalog; the caller
+    resolves it from ``uuid_tipo_vehiculo``.
+    """
+
+    # Inherited from LifecycleEventBase (IdMixin + AuditMixin + SyncMixin)
+    uuid: uuid_lib.UUID
+    created_at: datetime
+    created_by: uuid_lib.UUID | None
+    sync_status: str | None
+    sync_timestamp: datetime | None
+    sync_attempts: int | None
+
+    # Business columns (from models/A/salidas.py)
+    uuid_sucursal: uuid_lib.UUID | None
+    uuid_ingreso: uuid_lib.UUID | None
+    fecha_salida: datetime | None
+
+    # Joined from prod.ingreso — all nullable, see class docstring
+    placa: str | None = None
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None
+    consecutivo: str | None = None
+
+
 class SalidaReadForzado(_Base):
     """Response shape for ``POST /operacion/salidas`` (HU-F1.7).
 
@@ -662,6 +702,19 @@ class IngresoNoEncontradoError(_Base):
 
     error: Literal["ingreso_no_encontrado"] = "ingreso_no_encontrado"
     uuid_ingreso: uuid_lib.UUID
+
+
+class SalidaNoEncontradaError(_Base):
+    """404 discriminator for ``GET /operacion/salidas/{uuid}``.
+
+    Mirrors :class:`IngresoNoEncontradoError` so a client can branch on the
+    ``error`` literal rather than on a message string. Distinct literal on
+    purpose: a missing salida and a missing ingreso are different operator
+    mistakes and must not collapse into one code.
+    """
+
+    error: Literal["salida_no_encontrada"] = "salida_no_encontrada"
+    uuid_salida: uuid_lib.UUID
 
 
 class SalidaDuplicadaError(_Base):
@@ -742,6 +795,8 @@ __all__ = [
     "PlacaNoCoincideConIngresoError",
     "SalidaCreateForzado",
     "SalidaDuplicadaError",
+    "SalidaListRead",
+    "SalidaNoEncontradaError",
     "SalidaRead",
     "SalidaReadForzado",
     "SubscripcionInactivaOVencidaError",

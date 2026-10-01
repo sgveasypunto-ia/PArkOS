@@ -2,7 +2,9 @@
 
 Three branches per issuer:
 - ``admin-`` — requires the ``X-Sucursal-Context`` header; validates the
-  uuid against ``claims["sucursales_permitidas"]``.
+  uuid against the actor's currently-open ``usuarios_sucursal`` rows read
+  FRESH from the DB, not against the ``claims["sucursales_permitidas"]``
+  snapshot captured at login.
 - ``operador-`` — JWT pins a single branch (``claims["sucursal"]``); the
   header is OPTIONAL and, if present, MUST match the JWT claim.
 - ``sync-agent-`` — JWT ``scope`` claim: ``branch`` pins one branch,
@@ -17,11 +19,13 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db.tenancy import set_tenant_context
+from ..db.engine import get_session
+from ..db.tenancy import extract_sucursales_permitidas_fresh, set_tenant_context
 from .jwt_issuer_guard import verify_jwt
 
 
@@ -59,7 +63,7 @@ class MissingSucursalContextError(HTTPException):
 
 
 class UnauthorizedSucursalContextError(HTTPException):
-    """403: header uuid not in admin's ``sucursales_permitidas`` claim."""
+    """403: header uuid not among the admin's currently-open assignments."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -78,8 +82,12 @@ class TenantScopeViolationError(HTTPException):
         )
 
 
+_DbSession = Annotated[AsyncSession, Depends(get_session)]
+
+
 async def get_tenant_ctx(
     request: Request,
+    session: _DbSession,
     x_sucursal_context: str | None = Header(None, alias="X-Sucursal-Context"),
 ) -> TenantContext:
     """FastAPI dependency: returns the per-request ``TenantContext``.
@@ -87,6 +95,11 @@ async def get_tenant_ctx(
     Reads the JWT (via :func:`verify_jwt`), enforces the issuer-specific
     tenant rule, and binds the resolved ``sucursal_uuid`` to the SQLAlchemy
     event listener for downstream query auto-filtering.
+
+    The ``session`` dependency is only *consumed* on the ``admin-`` branch.
+    For ``operador-``/``sync-agent-`` the ``AsyncSession`` is constructed
+    (cheap, connection is acquired lazily) but never queried, so their hot
+    path is unchanged.
     """
     claims: dict[str, Any] = await verify_jwt(request)
     iss = claims.get("iss", "")
@@ -141,14 +154,52 @@ async def get_tenant_ctx(
         )
 
     if issuer_prefix == "admin-":
+        # ``X-Sucursal-Context`` is OPTIONAL for admin-. When absent, the
+        # request runs in "global" mode: no tenant filter is applied, so
+        # endpoints that don't need a branch (``/empresa/empresa``,
+        # ``/catalogos/*``, ``/admin/usuarios``) work without the header.
+        #
+        # When present, the header is validated against the admin's
+        # currently-open ``usuarios_sucursal`` rows read FRESH from the DB
+        # (not the ``claims["sucursales_permitidas"]`` snapshot, which is
+        # stale after creating/editing a branch). This keeps the branch
+        # selector working without re-login.
+        #
+        # Endpoints that DO require a branch (``/empresa/tarifas-sucursal``,
+        # ``/empresa/cantidad-vehiculos-sucursal``, etc.) must validate
+        # ``ctx.sucursal_uuid is not None`` themselves — this function does
+        # NOT raise ``MissingSucursalContextError`` here because that would
+        # break the global endpoints.
         if x_sucursal_context is None:
-            raise MissingSucursalContextError()
+            # Global mode: no tenant filter, no scope check.
+            return TenantContext(
+                actor_uuid=actor_uuid,
+                actor_rol=actor_rol,
+                issuer_prefix=issuer_prefix,
+                sucursal_uuid=None,
+                uuid_sesion=None,
+            )
         try:
             header_uuid = uuid_lib.UUID(x_sucursal_context)
         except ValueError as e:
             raise UnauthorizedSucursalContextError() from e
-        permitidas = claims.get("sucursales_permitidas", []) or []
-        if str(header_uuid) not in {str(u) for u in permitidas}:
+        # Scope comes from the DB, not ``claims["sucursales_permitidas"]``.
+        # The claim is a login-time snapshot: an admin who creates a branch
+        # (the create hook inserts an open ``usuarios_sucursal`` row in the
+        # same transaction) would otherwise be locked out of the branch they
+        # just made until the token expired. Reading fresh also means a
+        # REVOKED assignment loses access on the next request instead of
+        # leaking for up to one token lifetime.
+        #
+        # The tenant event listener is a no-op here because the ContextVar is
+        # still unset at this point (``set_tenant_context`` runs below), and
+        # each request runs in its own asyncio task, so no value can leak in
+        # from a previous request. ``usuarios_sucursal`` is the scope-defining
+        # table: filtering it by the very scope it defines would be circular.
+        permitidas = await extract_sucursales_permitidas_fresh(
+            session, actor_uuid=actor_uuid
+        )
+        if header_uuid not in permitidas:
             raise UnauthorizedSucursalContextError()
         set_tenant_context(header_uuid)
         return TenantContext(
@@ -187,10 +238,139 @@ async def get_tenant_ctx(
     )
 
 
+async def requires_sucursal(
+    ctx: TenantContext = Depends(get_tenant_ctx),
+) -> TenantContext:
+    """Dependency that raises 400 if the request has no branch context.
+
+    Use this on endpoints that MUST operate on a specific branch (e.g.
+    ``/empresa/tarifas-sucursal``, ``/empresa/cantidad-vehiculos-sucursal``).
+    Global endpoints (``/empresa/empresa``, ``/catalogos/*``) do NOT use
+    this dependency — they accept ``ctx.sucursal_uuid=None``.
+
+    Implementation notes — FastAPI 0.141.1 route classification
+    -----------------------------------------------------------
+    MUST be ``async`` AND the ``ctx`` parameter MUST have a
+    ``= Depends(get_tenant_ctx)`` default. Without the default, FastAPI
+    0.141.1 cannot resolve ``TenantContext`` (a frozen ``@dataclass``,
+    not a Request/Header/Body type) and falls back to classifying the
+    *caller's* parameter as a body field. Every GET endpoint depending
+    on ``requires_sucursal`` then returns ``422 ``"Field required"``
+    with ``loc=["body"]`` on a request without a body.
+
+    Repro: ``body_field`` on ``/tarifas-sucursal`` GET was
+    ``ModelField(field_info=Body(PydanticUndefined), name='ctx', …)``
+    before this fix; afterwards it is ``None``. See
+    ``tests/unit/test_route_classification_requires_sucursal.py`` for
+    the regression test that guards this invariant.
+
+    Ordering note: this function is defined AFTER ``get_tenant_ctx``
+    because the default value ``Depends(get_tenant_ctx)`` is evaluated
+    at function-definition time. Defining ``requires_sucursal`` above
+    ``get_tenant_ctx`` would raise ``NameError`` at module load.
+    """
+    if ctx.sucursal_uuid is None:
+        raise MissingSucursalContextError()
+    return ctx
+
+
+@dataclass(frozen=True)
+class BranchScope:
+    """Resolved set of branches the caller may READ for this request.
+
+    Exists because ``get_tenant_ctx`` alone is not sufficient authorization
+    for a read path, for two independent reasons:
+
+    1. **Global mode.** For ``admin-``, ``X-Sucursal-Context`` is optional.
+       When the header is absent ``get_tenant_ctx`` returns ``sucursal_uuid=None``
+       and never calls ``set_tenant_context``, so the ``do_orm_execute``
+       listener in ``db/tenancy.py`` short-circuits on ``ctx_uuid is None`` and
+       applies NO tenant filter. A query param like ``?uuid_sucursal=B`` is then
+       applied verbatim and the admin reads branch B.
+    2. **Raw SQL bypasses the listener entirely.** ``/operacion/ocupacion``
+       goes through ``repo/ocupacion.py``'s ``text(...)``. ``do_orm_execute``
+       resolves zero tenant columns for a ``TextClause`` (``column_descriptions``
+       and ``get_final_froms`` are both absent), so the listener never fires —
+       even when the header IS present and validated. Its only guard was the
+       ``operador-``-specific check inside the handler, which an ``admin-``
+       issuer skips entirely.
+
+    So endpoints that read branch-scoped rows must intersect their filter with
+    ``scope.permitidas`` explicitly. Handlers MUST narrow, never widen: an
+    omitted filter means "every permitted branch", NOT "every branch".
+
+    ``permitidas`` is read FRESH from ``prod.usuarios_sucursal`` for ``admin-``,
+    matching :func:`db.tenancy.extract_sucursales_permitidas_fresh` and the
+    precedent in ``api/v1/admin_views.py``. A revoked assignment loses access on
+    the next request instead of leaking for one token lifetime.
+    """
+
+    actor_uuid: uuid_lib.UUID
+    issuer_prefix: str
+    permitidas: frozenset[uuid_lib.UUID]
+
+    def allows(self, uuid_sucursal: uuid_lib.UUID | None) -> bool:
+        """True when this branch is readable. ``None`` is never readable."""
+        return uuid_sucursal is not None and uuid_sucursal in self.permitidas
+
+    def narrow(self, requested: uuid_lib.UUID | None) -> frozenset[uuid_lib.UUID]:
+        """Resolve a caller-supplied ``uuid_sucursal`` filter to a safe set.
+
+        Raises 403 ``tenant_scope_violation`` when the caller explicitly names a
+        branch outside the scope — that is a client bug worth surfacing, not a
+        filter to silently swallow. Returns the single branch when it is allowed,
+        and the full permitted set when the caller named none.
+        """
+        if requested is None:
+            return self.permitidas
+        if not self.allows(requested):
+            raise TenantScopeViolationError()
+        return frozenset({requested})
+
+
+async def require_branch_scope(
+    session: _DbSession,
+    ctx: TenantContext = Depends(get_tenant_ctx),
+) -> BranchScope:
+    """Resolve the caller's readable-branch set. See :class:`BranchScope`.
+
+    Follows the ``requires_sucursal`` convention: ``async``, with the ``ctx``
+    parameter carrying an explicit ``Depends`` default so FastAPI 0.141.1 does
+    not classify it as a body field (see the route-classification note on
+    ``requires_sucursal``). ``session`` is declared first and without a default,
+    matching ``get_tenant_ctx`` — reversing that order is a ``SyntaxError``, and
+    this is not a stylistic preference.
+
+    ``operador-`` is pinned to its JWT branch and needs no DB read.
+    ``admin-`` reads the current ``usuarios_sucursal`` rows fresh — the same
+    source ``admin_views.list_sucursales`` and ``admin_views.branch_dashboard``
+    trust, so the branch selector, the scope check and the picker cannot drift.
+    """
+    if ctx.issuer_prefix == "operador-":
+        pinned = frozenset({ctx.sucursal_uuid}) if ctx.sucursal_uuid else frozenset()
+        return BranchScope(
+            actor_uuid=ctx.actor_uuid,
+            issuer_prefix=ctx.issuer_prefix,
+            permitidas=pinned,
+        )
+
+    permitidas = await extract_sucursales_permitidas_fresh(
+        session, actor_uuid=ctx.actor_uuid
+    )
+    return BranchScope(
+        actor_uuid=ctx.actor_uuid,
+        issuer_prefix=ctx.issuer_prefix,
+        permitidas=frozenset(permitidas),
+    )
+
+
 __all__ = [
     "TenantContext",
     "TenantScopeViolationError",
     "MissingSucursalContextError",
     "UnauthorizedSucursalContextError",
+    "BranchScope",
     "get_tenant_ctx",
+    "requires_sucursal",
+    "require_branch_scope",
 ]
