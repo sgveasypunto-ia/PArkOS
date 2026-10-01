@@ -27,6 +27,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput } from '@/components/ui/money-input';
 import {
   Form,
   FormControl,
@@ -308,27 +309,14 @@ export function CierreDiarioForm(props: {
                 })}
               </FormLabel>
               <FormControl>
-                <Input
-                  data-testid="cierre-diario-valor-efectivo"
-                  type="number"
-                  inputMode="decimal"
-                  step="0.01"
-                  min="0"
+                <MoneyInput
+                  inputTestId="cierre-diario-valor-efectivo"
                   aria-describedby="cierre-diario-valor-efectivo-msg"
-                  value={
-                    typeof field.value === 'number'
-                      ? String(field.value)
-                      : ''
-                  }
-                  onChange={(e) =>
-                    field.onChange(
-                      e.target.value === ''
-                        ? 0
-                        : Number.parseInt(e.target.value, 10) || 0,
-                    )
-                  }
+                  value={field.value}
+                  onChange={(raw) => field.onChange(raw === '' ? 0 : Number(raw))}
                   onBlur={field.onBlur}
                   name={field.name}
+                  ref={field.ref}
                 />
               </FormControl>
               <FormMessage
@@ -351,26 +339,13 @@ export function CierreDiarioForm(props: {
                 })}
               </FormLabel>
               <FormControl>
-                <Input
-                  data-testid="cierre-diario-valor-datafono"
-                  type="number"
-                  inputMode="decimal"
-                  step="0.01"
-                  min="0"
-                  value={
-                    typeof field.value === 'number'
-                      ? String(field.value)
-                      : ''
-                  }
-                  onChange={(e) =>
-                    field.onChange(
-                      e.target.value === ''
-                        ? 0
-                        : Number.parseInt(e.target.value, 10) || 0,
-                    )
-                  }
+                <MoneyInput
+                  inputTestId="cierre-diario-valor-datafono"
+                  value={field.value}
+                  onChange={(raw) => field.onChange(raw === '' ? 0 : Number(raw))}
                   onBlur={field.onBlur}
                   name={field.name}
+                  ref={field.ref}
                 />
               </FormControl>
               <FormMessage data-testid="cierre-diario-valor-datafono-error" />

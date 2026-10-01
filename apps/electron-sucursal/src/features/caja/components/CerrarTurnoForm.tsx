@@ -53,6 +53,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput } from '@/components/ui/money-input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Form,
@@ -278,18 +279,13 @@ export function CerrarTurnoForm({
                 })}
               </FormLabel>
               <FormControl>
-                <Input
-                  {...field}
-                  type="number"
-                  inputMode="decimal"
-                  step="0.01"
-                  min="0"
-                  data-testid="cerrar-turno-valor-efectivo-reportado"
-                  value={field.value ?? ''}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    field.onChange(raw === '' ? 0 : Number(raw));
-                  }}
+                <MoneyInput
+                  value={field.value}
+                  onChange={(raw) => field.onChange(raw === '' ? 0 : Number(raw))}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  ref={field.ref}
+                  inputTestId="cerrar-turno-valor-efectivo-reportado"
                 />
               </FormControl>
               <FormMessage />
@@ -308,18 +304,13 @@ export function CerrarTurnoForm({
                 })}
               </FormLabel>
               <FormControl>
-                <Input
-                  {...field}
-                  type="number"
-                  inputMode="decimal"
-                  step="0.01"
-                  min="0"
-                  data-testid="cerrar-turno-valor-datafono-reportado"
-                  value={field.value ?? ''}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    field.onChange(raw === '' ? 0 : Number(raw));
-                  }}
+                <MoneyInput
+                  value={field.value}
+                  onChange={(raw) => field.onChange(raw === '' ? 0 : Number(raw))}
+                  onBlur={field.onBlur}
+                  name={field.name}
+                  ref={field.ref}
+                  inputTestId="cerrar-turno-valor-datafono-reportado"
                 />
               </FormControl>
               <FormMessage />
