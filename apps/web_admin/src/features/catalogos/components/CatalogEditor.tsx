@@ -13,6 +13,12 @@
  *
  * Errores 403 (sin `config_catalogo`) se renderizan inline con el
  * motivo exacto — el operador ve por qué no puede escribir.
+ *
+ * Errores 409 caen a `mapConflictError`: mapeo mínimo del único código
+ * tipado que el backend devuelve hoy en este flujo
+ * (`tipo_vehiculo_con_subscripciones_vigentes`, HU-F14.1-T5/BR3 —
+ * `catalogos.py:update_tipo_vehiculo_dedicated`); cualquier otro 409 cae
+ * al mensaje genérico (no es una taxonomía de errores completa).
  */
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -30,6 +36,34 @@ import {
   type CatalogRow,
 } from '../api/catalogApi';
 import type { CatalogConfig } from '../lib/configTypes';
+
+/**
+ * Minimal 409 detail mapping (HU-F14.1-T5/BR3). The backend's typed
+ * `detail` shape is `{"error": "<code>", ...}` (see
+ * `catalogos.py:update_tipo_vehiculo_dedicated`). Only the one known
+ * code gets a readable message; anything else (unknown code, non-JSON
+ * body, no `.error` key) falls back to the existing generic copy so
+ * this stays a small mapping, not a full error taxonomy.
+ */
+function mapConflictError(
+  err: ParkosHttpError,
+  t: (key: string, fallback: string) => string,
+): string {
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(err.body) as { detail?: { error?: string } | string };
+    code = typeof parsed.detail === 'string' ? parsed.detail : parsed.detail?.error;
+  } catch {
+    code = undefined;
+  }
+  if (code === 'tipo_vehiculo_con_subscripciones_vigentes') {
+    return t(
+      'catalogos.tipoVehiculoConSubscripcionesVigentes',
+      'No se puede deshabilitar: hay vehículos con suscripciones vigentes que usan este tipo.',
+    );
+  }
+  return t('catalogos.submitError', 'No se pudo guardar. Reintentá.');
+}
 
 interface CatalogEditorProps {
   config: CatalogConfig;
@@ -66,6 +100,8 @@ export function CatalogEditor({ config }: CatalogEditorProps): JSX.Element {
         setSubmitError(
           t('catalogos.forbidden', 'No tenés permiso para editar este catálogo.'),
         );
+      } else if (err instanceof ParkosHttpError && err.status === 409) {
+        setSubmitError(mapConflictError(err, t));
       } else {
         setSubmitError(
           t('catalogos.submitError', 'No se pudo guardar. Reintentá.'),
