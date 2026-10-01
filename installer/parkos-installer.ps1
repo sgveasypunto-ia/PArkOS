@@ -210,7 +210,7 @@ function Test-Preflight {
     if ($alreadyInstalled) {
         Write-Host ''
         Write-Host 'Ya existe una instalacion de Parkos en este equipo.' -ForegroundColor Yellow
-        Write-Host 'Use Repair-ParkosInstall o Update-ParkosStack en vez de una instalacion limpia (Fases 25/26).' -ForegroundColor Yellow
+        Write-Host 'Use Repair-ParkosInstall o Invoke-ParkosUpdate en vez de una instalacion limpia (Fases 25/26).' -ForegroundColor Yellow
     }
 
     return -not ($results.Values -contains $false)
@@ -2666,12 +2666,14 @@ function Invoke-ParkosInstall {
         -SucursalUuid $SucursalUuid -CloudApiUrl $CloudApiUrl
     $stages = $definitions.Stages
 
-    # DEC-INST-41 (PR10): mapeo MINIMO de los 2 gates que YA tiran throw hoy
-    # dentro de Get-ParkosStageDefinitions (etapa 3 exige 'db' Ok, etapa 4
-    # exige 'migrate' Ok) - solo para que Get-ParkosStageMenuLines pueda
-    # mostrar [BLOQ] ANTES de que el operador intente y falle. No es un grafo
-    # de dependencias nuevo (item 7 del PR).
+    # DEC-INST-41 (PR10): mapeo MINIMO de los 3 gates que YA tiran throw hoy
+    # dentro de Get-ParkosStageDefinitions (etapa 2 exige 'db' Ok via
+    # $script:roles, etapa 3 exige 'db' Ok, etapa 4 exige 'migrate' Ok) -
+    # solo para que Get-ParkosStageMenuLines pueda mostrar [BLOQ] ANTES de
+    # que el operador intente y falle. No es un grafo de dependencias nuevo
+    # (item 7 del PR).
     $stagePrereqs = @{
+        '2' = @{ Key = 'db'; Number = '1' }
         '3' = @{ Key = 'db'; Number = '1' }
         '4' = @{ Key = 'migrate'; Number = '2' }
     }
@@ -2695,8 +2697,8 @@ function Invoke-ParkosInstall {
         }
         Write-Host '  [    ] A) Diagnosticar estado actual (Get-ParkosHealth)' -ForegroundColor White
         Write-Host '  [    ] R) Reparar instalacion rota (Repair-ParkosInstall)' -ForegroundColor White
-        Write-Host '  [    ] U) Actualizar stack completo (Update-ParkosStack)' -ForegroundColor White
-        Write-Host '  [    ] V) Restaurar version anterior (Restore-ParkosVersion)' -ForegroundColor White
+        Write-Host '  [    ] U) Actualizar stack completo (Invoke-ParkosUpdate)' -ForegroundColor White
+        Write-Host '  [    ] V) Restaurar version anterior (Invoke-ParkosRestore)' -ForegroundColor White
         Write-Host '  [    ] X) Desinstalar Parkos (Uninstall-Parkos)' -ForegroundColor White
         Write-Host '  [    ] D) Exportar diagnostico para soporte (Export-ParkosDiagnostics)' -ForegroundColor White
         Write-Host '  [    ] M) Configurar backup automatico (Register-ParkosBackupTask)' -ForegroundColor White

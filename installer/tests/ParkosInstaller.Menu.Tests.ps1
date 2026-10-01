@@ -25,7 +25,7 @@
 # deberia lanzar" se usa try/catch manual + `Should Be $true/$false`, nunca
 # `Should Not Throw`.
 #
-# Cobertura real (10 tests, por encima del minimo de 8 exigido):
+# Cobertura real (11 tests, por encima del minimo de 8 exigido):
 #   1. Trampa de truthiness del enum: una etapa en NotRun (no $false) SIGUE
 #      disparando el gate "Corre primero" de una etapa dependiente.
 #   2. Opcion R con instalacion incompleta pide confirmacion; 'N' -> nunca
@@ -47,6 +47,10 @@
 #      bucle del menu - verificado con el conteo de llamadas a Read-Host.
 #   7. Q con instalacion incompleta y 'N' -> vuelve al menu (no sale).
 #   8. Get-ParkosStageMenuLines: una etapa Failed renderiza "re-ejecutable".
+#   9. Get-ParkosStageMenuLines: la etapa 2 (migrate) renderiza [BLOQ]
+#      cuando la etapa 1 (db) NO esta Ok (el $stagePrereqs real de
+#      Invoke-ParkosInstall antes solo mapeaba las etapas 3/4 pese a que el
+#      Action real de la etapa 2 ya exige 'db' Ok via $script:roles).
 
 $installerScript = Join-Path $PSScriptRoot '..\parkos-installer.ps1'
 . $installerScript
@@ -369,6 +373,34 @@ Describe 'Get-ParkosStageMenuLines' {
 
         ($dbLine.Text -match '\[FAIL\]') | Should Be $true
         ($dbLine.Text -match 're-ejecutable') | Should Be $true
+    }
+
+    # DEC-INST-41 (PR10) corregido: el $stagePrereqs real de
+    # Invoke-ParkosInstall solo mapeaba las etapas 3 ('db') y 4 ('migrate'),
+    # pese a que el Action real de la etapa 2 (migrate, ver
+    # Get-ParkosStageDefinitions) YA exige `$script:roles` no-nulo (seteado
+    # por la etapa 1/db) - el operador nunca veia [BLOQ] para la etapa 2
+    # hasta que la intentaba y el throw la agarraba de sorpresa. Mismo
+    # $Prereqs que ahora arma Invoke-ParkosInstall (etapas 2 y 3 -> 'db'/1,
+    # etapa 4 -> 'migrate'/2).
+    It 'la etapa 2 (migrate) renderiza [BLOQ] cuando la etapa 1 (db) NO esta Ok' {
+        $fakeStages = (New-FakeMenuStageDefinitions).Stages
+        $status = [ordered]@{
+            build = [ParkosStageState]::Ok
+            db = [ParkosStageState]::NotRun; migrate = [ParkosStageState]::NotRun; sucursal = [ParkosStageState]::NotRun; seed = [ParkosStageState]::NotRun
+            api = [ParkosStageState]::NotRun; job = [ParkosStageState]::NotRun; electron = [ParkosStageState]::NotRun; verify = [ParkosStageState]::NotRun
+        }
+        $prereqs = @{
+            '2' = @{ Key = 'db'; Number = '1' }
+            '3' = @{ Key = 'db'; Number = '1' }
+            '4' = @{ Key = 'migrate'; Number = '2' }
+        }
+
+        $lines = Get-ParkosStageMenuLines -Stages $fakeStages -StageStatus $status -Prereqs $prereqs
+        $migrateLine = $lines[2]
+
+        ($migrateLine.Text -match '\[BLOQ\]') | Should Be $true
+        ($migrateLine.Text -match 'requiere que 1 este OK') | Should Be $true
     }
 }
 
