@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import bcrypt
+import pytest
+from parkos_core.auth.tokens import verify_token
 from parkos_core.models.V.sucursal import Sucursal
 from parkos_core.models.V.usuarios import Usuarios
 from parkos_core.models.V.usuarios_sucursal import UsuariosSucursal
@@ -108,3 +110,32 @@ async def test_login_rejects_unknown_email_with_same_error_shape(client) -> None
 
     assert resp.status_code == 401
     assert resp.json()["detail"]["error"] == "invalid_credentials"
+
+
+@pytest.mark.parametrize(
+    ("rol", "expected_issuer"),
+    [
+        # CU-08's 6 business roles (plan.md:3120, HU-F13.2).
+        ("Usuario", "operador-"),
+        ("Facturador", "admin-"),
+        ("Supervisor", "admin-"),
+        ("Administrador", "admin-"),
+        ("Auditor", "admin-"),
+        ("Desarrollo", "admin-"),
+        # Legacy literal kept for retro-compatibility with existing data/tests.
+        ("operador", "operador-"),
+    ],
+)
+async def test_login_issuer_matches_role(
+    client, pg_engine: AsyncEngine, rol: str, expected_issuer: str
+) -> None:
+    email = f"login-rol-{uuid_lib.uuid4().hex[:10]}@example.com"
+    await _seed_user_with_branch(
+        pg_engine, email=email, plaintext_password="Correcta123!", rol=rol
+    )
+
+    resp = await client.post(LOGIN_URL, json={"email": email, "password": "Correcta123!"})
+
+    assert resp.status_code == 200, resp.text
+    claims = verify_token(resp.json()["access_token"])
+    assert claims["iss"] == expected_issuer
