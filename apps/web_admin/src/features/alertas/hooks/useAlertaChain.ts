@@ -61,9 +61,8 @@ export function useAlertaChain(uuid: string | null): UseAlertaChainReturn {
         let cursor: string | null = uuid;
         let hops = 0;
         while (cursor !== null && hops < MAX_HOPS) {
-          // eslint-disable-next-line no-await-in-loop -- sequential by
-          // design: each hop's parent uuid is only known after the
-          // previous fetch resolves.
+          // Sequential by design: each hop's parent uuid is only known
+          // after the previous fetch resolves.
           const row = await fetchAlerta(cursor);
           collected.push(row);
           cursor = row.uuid_alerta_padre;
