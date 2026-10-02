@@ -26,6 +26,8 @@ import { useTranslation } from 'react-i18next';
 
 import { useSucursal } from '@/lib/sucursal-context';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
+import { exportToCsv } from '@/lib/export/csv';
 
 import {
   useReporteriaFacturas,
@@ -37,6 +39,11 @@ import { FeTable } from '../components/FeTable';
 import { PagosTable } from '../components/PagosTable';
 import { DateRangePicker, type DateRange } from '../components/DateRangePicker';
 import { defaultRange } from '../components/dateRange';
+import type {
+  ReporteFacturaItem,
+  ReporteFeItem,
+  ReportePagoMedioItem,
+} from '../api/reporteriaSchema';
 
 const ESTADO_DIAN_OPTIONS = [
   'pendiente',
@@ -138,12 +145,43 @@ export default function ReporteriaFinanciera() {
                   disabled={facturas.isLoading && !facturas.data}
                 />
                 {!rangeInvalid ? (
-                  <FacturasTable
-                    items={facturas.data?.items ?? []}
-                    isLoading={facturas.isLoading}
-                    error={facturas.error}
-                    caption={t('reporteriaFinanciera.facturas.caption', 'Facturas de la sucursal')}
-                  />
+                  <>
+                    <div className="flex justify-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          exportToCsv<ReporteFacturaItem>(
+                            `facturas-${range.fecha_desde}-a-${range.fecha_hasta}.csv`,
+                            [
+                              { header: 'Número', accessor: (r) => r.numero_completo ?? '' },
+                              { header: 'Fecha', accessor: (r) => r.created_at },
+                              { header: 'Subtotal', accessor: (r) => r.subtotal ?? '' },
+                              { header: 'Descuento', accessor: (r) => r.descuento ?? '' },
+                              { header: 'IVA', accessor: (r) => r.iva },
+                              { header: 'Total', accessor: (r) => r.total ?? '' },
+                              { header: 'Estado', accessor: (r) => r.estado },
+                            ],
+                            facturas.data?.items ?? [],
+                          )
+                        }
+                        disabled={(facturas.data?.items ?? []).length === 0}
+                        data-testid="reporteria-financiera-facturas-export-csv"
+                      >
+                        {t('reporteria.exportCsv', 'Exportar CSV')}
+                      </Button>
+                    </div>
+                    <FacturasTable
+                      items={facturas.data?.items ?? []}
+                      isLoading={facturas.isLoading}
+                      error={facturas.error}
+                      caption={t(
+                        'reporteriaFinanciera.facturas.caption',
+                        'Facturas de la sucursal',
+                      )}
+                    />
+                  </>
                 ) : null}
               </div>
             )}
@@ -151,26 +189,49 @@ export default function ReporteriaFinanciera() {
 
           <TabsContent value="fe">
             <div className="flex flex-col gap-3">
-              <label className="flex flex-col gap-1 text-xs">
-                <span className="font-medium text-muted-foreground">
-                  {t('reporteriaFinanciera.fe.estadoFilter', 'Filtrar por estado DIAN')}
-                </span>
-                <select
-                  className="w-56 rounded-md border bg-background px-2 py-1 text-sm"
-                  value={estadoDian}
-                  onChange={(e) => setEstadoDian(e.target.value)}
-                  data-testid="reporteria-financiera-fe-estado-filter"
-                >
-                  <option value="">
-                    {t('reporteriaFinanciera.fe.estadoFilterAll', 'Todos')}
-                  </option>
-                  {ESTADO_DIAN_OPTIONS.map((value) => (
-                    <option key={value} value={value}>
-                      {value}
+              <div className="flex items-end justify-between gap-2">
+                <label className="flex flex-col gap-1 text-xs">
+                  <span className="font-medium text-muted-foreground">
+                    {t('reporteriaFinanciera.fe.estadoFilter', 'Filtrar por estado DIAN')}
+                  </span>
+                  <select
+                    className="w-56 rounded-md border bg-background px-2 py-1 text-sm"
+                    value={estadoDian}
+                    onChange={(e) => setEstadoDian(e.target.value)}
+                    data-testid="reporteria-financiera-fe-estado-filter"
+                  >
+                    <option value="">
+                      {t('reporteriaFinanciera.fe.estadoFilterAll', 'Todos')}
                     </option>
-                  ))}
-                </select>
-              </label>
+                    {ESTADO_DIAN_OPTIONS.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    exportToCsv<ReporteFeItem>(
+                      'facturacion-electronica.csv',
+                      [
+                        { header: 'Número', accessor: (r) => r.numero_completo ?? '' },
+                        { header: 'CUFE', accessor: (r) => r.cufe ?? '' },
+                        { header: 'Estado DIAN', accessor: (r) => r.estado_dian ?? '' },
+                        { header: 'Último evento', accessor: (r) => r.timestamp_evento ?? '' },
+                      ],
+                      fe.data?.items ?? [],
+                    )
+                  }
+                  disabled={(fe.data?.items ?? []).length === 0}
+                  data-testid="reporteria-financiera-fe-export-csv"
+                >
+                  {t('reporteria.exportCsv', 'Exportar CSV')}
+                </Button>
+              </div>
               <FeTable
                 items={fe.data?.items ?? []}
                 isLoading={fe.isLoading}
@@ -199,12 +260,36 @@ export default function ReporteriaFinanciera() {
                   disabled={pagos.isLoading && !pagos.data}
                 />
                 {!rangeInvalid ? (
-                  <PagosTable
-                    items={pagos.data?.items ?? []}
-                    isLoading={pagos.isLoading}
-                    error={pagos.error}
-                    caption={t('reporteriaFinanciera.pagos.caption', 'Pagos de la sucursal')}
-                  />
+                  <>
+                    <div className="flex justify-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          exportToCsv<ReportePagoMedioItem>(
+                            `pagos-${range.fecha_desde}-a-${range.fecha_hasta}.csv`,
+                            [
+                              { header: 'Fecha', accessor: (r) => r.fecha },
+                              { header: 'Medio de pago', accessor: (r) => r.medio_pago },
+                              { header: 'Monto neto', accessor: (r) => r.monto_neto },
+                            ],
+                            pagos.data?.items ?? [],
+                          )
+                        }
+                        disabled={(pagos.data?.items ?? []).length === 0}
+                        data-testid="reporteria-financiera-pagos-export-csv"
+                      >
+                        {t('reporteria.exportCsv', 'Exportar CSV')}
+                      </Button>
+                    </div>
+                    <PagosTable
+                      items={pagos.data?.items ?? []}
+                      isLoading={pagos.isLoading}
+                      error={pagos.error}
+                      caption={t('reporteriaFinanciera.pagos.caption', 'Pagos de la sucursal')}
+                    />
+                  </>
                 ) : null}
               </div>
             )}

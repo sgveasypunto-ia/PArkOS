@@ -23,6 +23,7 @@ import ConfiguracionTolerancias from '@/features/configuracion-tolerancias/pages
 import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/ConfiguracionSeguridad';
 import Reporteria from '@/features/reporteria/pages/Reporteria';
 import ReporteriaFinanciera from '@/features/reporteria/pages/ReporteriaFinanciera';
+import ReporteriaSuscripciones from '@/features/reporteria/pages/ReporteriaSuscripciones';
 import { ArqueosPage } from '@/features/arqueos/pages/ArqueosPage';
 
 /**
@@ -153,6 +154,10 @@ export default function App() {
           <Route
             path="/reporteria/financiera"
             element={<ReporteriaFinanciera />}
+          />
+          <Route
+            path="/reporteria/suscripciones"
+            element={<ReporteriaSuscripciones />}
           />
           <Route path="/audit" element={<AuditDashboard />} />
         </Route>

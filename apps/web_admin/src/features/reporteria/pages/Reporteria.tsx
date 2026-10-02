@@ -49,7 +49,10 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
 import { HeatmapOcupacion } from '@/components/charts/HeatmapOcupacion';
+import { exportToCsv } from '@/lib/export/csv';
+import type { IngresoRead, SalidaListRead } from '../api/reporteriaSchema';
 
 import {
   useReporteriaIngresos,
@@ -225,21 +228,70 @@ export default function Reporteria() {
           </TabsList>
 
           <TabsContent value="ingresos">
-            <IngresosTable
-              items={ingresos.data ?? []}
-              isLoading={ingresos.isLoading}
-              error={ingresos.error}
-              caption={t('reporteria.ingresos.caption', 'Ingresos de la sucursal')}
-            />
+            <div className="flex flex-col gap-2">
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    exportToCsv<IngresoRead>(
+                      `ingresos-${selected}.csv`,
+                      [
+                        { header: 'Placa', accessor: (r) => r.placa ?? '' },
+                        { header: 'Fecha de ingreso', accessor: (r) => r.fecha_ingreso?.toISOString() ?? '' },
+                        { header: 'Consecutivo', accessor: (r) => r.consecutivo ?? '' },
+                        { header: 'Observaciones', accessor: (r) => r.observaciones ?? '' },
+                      ],
+                      ingresos.data ?? [],
+                    )
+                  }
+                  disabled={(ingresos.data ?? []).length === 0}
+                  data-testid="reporteria-ingresos-export-csv"
+                >
+                  {t('reporteria.exportCsv', 'Exportar CSV')}
+                </Button>
+              </div>
+              <IngresosTable
+                items={ingresos.data ?? []}
+                isLoading={ingresos.isLoading}
+                error={ingresos.error}
+                caption={t('reporteria.ingresos.caption', 'Ingresos de la sucursal')}
+              />
+            </div>
           </TabsContent>
 
           <TabsContent value="salidas">
-            <SalidasTable
-              items={salidas.data ?? []}
-              isLoading={salidas.isLoading}
-              error={salidas.error}
-              caption={t('reporteria.salidas.caption', 'Salidas de la sucursal')}
-            />
+            <div className="flex flex-col gap-2">
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    exportToCsv<SalidaListRead>(
+                      `salidas-${selected}.csv`,
+                      [
+                        { header: 'Placa', accessor: (r) => r.placa ?? '' },
+                        { header: 'Fecha de salida', accessor: (r) => r.fecha_salida?.toISOString() ?? '' },
+                        { header: 'Consecutivo', accessor: (r) => r.consecutivo ?? '' },
+                      ],
+                      salidas.data ?? [],
+                    )
+                  }
+                  disabled={(salidas.data ?? []).length === 0}
+                  data-testid="reporteria-salidas-export-csv"
+                >
+                  {t('reporteria.exportCsv', 'Exportar CSV')}
+                </Button>
+              </div>
+              <SalidasTable
+                items={salidas.data ?? []}
+                isLoading={salidas.isLoading}
+                error={salidas.error}
+                caption={t('reporteria.salidas.caption', 'Salidas de la sucursal')}
+              />
+            </div>
           </TabsContent>
 
           <TabsContent value="ocupacion">
