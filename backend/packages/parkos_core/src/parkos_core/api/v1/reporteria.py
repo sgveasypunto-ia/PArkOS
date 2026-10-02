@@ -55,7 +55,7 @@ from sqlalchemy import case, column, func, select, table
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_session, require_branch_scope, requires_issuer
-from ...auth.tenancy import BranchScope
+from ...auth.tenancy import BranchScope, TenantScopeViolationError
 from ...db.tenancy import extract_sucursales_permitidas_fresh
 from ...models.A.factura_impuestos import FacturaImpuestos
 from ...models.A.factura_pagos import FacturaPagos
@@ -680,15 +680,28 @@ async def reporte_ocupacion(
 @router.get(
     "/facturas",
     response_model=ReporteFacturasResponse,
-    summary="Paginated facturas resolved against real columns (HU-F17.3)",
+    summary=(
+        "Paginated facturas resolved against real columns (HU-F17.3); "
+        "optionally cross-branch by cliente (HU-F20.1)"
+    ),
 )
 async def reporte_facturas(
     session: DbSession,
-    _claims: Annotated[None, Depends(_admin_issuer_dep)],
-    scope: Annotated[BranchScope, Depends(require_branch_scope)],
-    uuid_sucursal: uuid_lib.UUID = Query(  # noqa: B008
-        ...,
-        description="Branch to report on. Must be in the actor's permitted set.",
+    claims: AdminClaims,
+    uuid_sucursal: uuid_lib.UUID | None = Query(  # noqa: B008
+        None,
+        description=(
+            "Branch to report on. Must be in the actor's permitted set. "
+            "Required unless uuid_cliente is given."
+        ),
+    ),
+    uuid_cliente: uuid_lib.UUID | None = Query(  # noqa: B008
+        None,
+        description=(
+            "HU-F20.1: filter to one cliente's facturas, across every "
+            "branch the actor can see. Required unless uuid_sucursal is "
+            "given."
+        ),
     ),
     desde: date | None = Query(  # noqa: B008
         None,
@@ -701,7 +714,8 @@ async def reporte_facturas(
     cursor: str | None = Query(None, description="Opaque cursor, created_at-keyed."),
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ReporteFacturasResponse:
-    """One branch's ``facturas`` rows, newest first, cursor-paginated.
+    """One branch's (or, since HU-F20.1, one cliente's cross-branch) ``facturas`` rows,
+    newest first, cursor-paginated.
 
     Every displayed column is resolved against the REAL schema (see
     ``ReporteFacturaItem``'s docstring for the full rationale):
@@ -715,7 +729,37 @@ async def reporte_facturas(
     ever ``ingreso``/``salida`` (never ``factura`` directly), so the
     derivation follows the factura's own ``uuid_ingreso``/``uuid_salida``
     pointers.
+
+    HU-F20.1 adds an optional ``uuid_cliente`` filter (``FacturaElectronica.
+    uuid_cliente`` -- ``Facturas`` itself has no cliente column, confirmed
+    against ``models/L_E/facturas.py``) so a client's detail page can list
+    their facturas across every branch, not just one. At least one of
+    ``uuid_sucursal``/``uuid_cliente`` is required (422 ``missing_filter``).
+
+    Deliberately does NOT depend on ``require_branch_scope``/
+    ``get_tenant_ctx`` -- same reasoning ``reporte_fe``/``reporte_ocupacion``
+    already document, and confirmed live here: ``parkosFetch`` (web_admin's
+    shared fetch wrapper) ALWAYS injects ``X-Sucursal-Context`` from the
+    topbar's globally-selected branch (``lib/sucursal-context.tsx``), so
+    binding this endpoint to that dependency would silently collapse the
+    HU-F20.1 cross-branch cliente read down to whichever branch happens to
+    be selected in the UI -- not a leak (the listener only ever narrows via
+    AND), but silently wrong data. Scope is instead resolved fresh from
+    ``usuarios_sucursal`` (:func:`extract_sucursales_permitidas_fresh`),
+    exactly like those two endpoints, and intersected explicitly with
+    whichever filter the caller asked for -- so every row is still
+    guaranteed to belong to a branch this actor is currently permitted to
+    see, in both modes.
     """
+    if uuid_sucursal is None and uuid_cliente is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "missing_filter",
+                "detail": "Debe especificar uuid_sucursal o uuid_cliente",
+            },
+        )
+
     today = datetime.now(UTC).date()
     if hasta is None:
         hasta = today
@@ -727,13 +771,21 @@ async def reporte_facturas(
             detail={"error": "rango_fecha_invalido"},
         )
 
-    if not scope.permitidas:
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    permitidas = await extract_sucursales_permitidas_fresh(session, actor_uuid=actor_uuid)
+    if not permitidas:
         raise HTTPException(
             status_code=400,
             detail={"error": "missing_sucursal_context"},
         )
-    permitidas = scope.narrow(uuid_sucursal)
-    target = next(iter(permitidas))
+    permitidas_set = frozenset(permitidas)
+
+    if uuid_sucursal is not None:
+        if uuid_sucursal not in permitidas_set:
+            raise TenantScopeViolationError()
+        target_sucursales = frozenset({uuid_sucursal})
+    else:
+        target_sucursales = permitidas_set
 
     try:
         decoded_cursor = cursor_decode(cursor) if cursor else None
@@ -786,11 +838,20 @@ async def reporte_facturas(
         )
         .select_from(Facturas)
         .outerjoin(FacturaElectronica, FacturaElectronica.uuid_factura == Facturas.uuid)
-        .where(Facturas.uuid_sucursal == target)
+        .where(Facturas.uuid_sucursal.in_(target_sucursales))
         .where(func.date(Facturas.created_at) >= desde)
         .where(func.date(Facturas.created_at) <= hasta)
-        .order_by(Facturas.created_at.desc(), Facturas.uuid.asc())
     )
+    if uuid_cliente is not None:
+        # The outerjoin above stays an outerjoin (shared with the
+        # numero_completo resolution above) -- adding this predicate on
+        # the joined side still only ever matches rows that DO have a
+        # FacturaElectronica for this cliente; a NULL-FE row can never
+        # satisfy ``== uuid_cliente``, so no restructuring is needed for
+        # this filter to apply (works identically whether uuid_sucursal
+        # is present or not).
+        stmt = stmt.where(FacturaElectronica.uuid_cliente == uuid_cliente)
+    stmt = stmt.order_by(Facturas.created_at.desc(), Facturas.uuid.asc())
     if decoded_cursor is not None:
         if decoded_cursor.created_at is None:
             raise HTTPException(
@@ -839,7 +900,10 @@ async def reporte_facturas(
     ]
 
     return ReporteFacturasResponse(
-        uuid_sucursal=target,
+        # None only in the HU-F20.1 cross-branch-by-cliente mode -- rows
+        # may legitimately span multiple branches, so there is no single
+        # branch to report here (see ReporteFacturasResponse docstring).
+        uuid_sucursal=uuid_sucursal,
         desde=desde,
         hasta=hasta,
         items=items,
