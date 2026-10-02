@@ -217,11 +217,20 @@ class ReporteFacturaItem(BaseModel):
 
 
 class ReporteFacturasResponse(BaseModel):
-    """``GET /admin/reporteria/facturas`` (HU-F17.3)."""
+    """``GET /admin/reporteria/facturas`` (HU-F17.3; HU-F20.1 cliente filter).
+
+    ``uuid_sucursal`` is ``None`` only in the HU-F20.1 cross-branch mode
+    (caller passed ``uuid_cliente`` without ``uuid_sucursal``) -- rows then
+    legitimately span multiple branches, so there is no single branch to
+    report at the top level. Every existing branch-scoped caller
+    (``uuid_sucursal`` given) keeps getting a concrete value here, exactly
+    as before; use each ``ReporteFacturaItem.uuid_sucursal`` to know which
+    branch a given row belongs to in cross-branch mode.
+    """
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
-    uuid_sucursal: uuid_lib.UUID
+    uuid_sucursal: uuid_lib.UUID | None
     desde: date
     hasta: date
     items: list[ReporteFacturaItem]

@@ -247,6 +247,7 @@ async def _seed_factura_electronica(
     prefijo: str,
     consecutivo: int,
     created_at: datetime,
+    uuid_cliente: uuid_lib.UUID | None = None,
 ) -> uuid_lib.UUID:
     fe_uuid = uuid_lib.uuid4()
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
@@ -256,7 +257,7 @@ async def _seed_factura_electronica(
                 uuid=fe_uuid,
                 uuid_sucursal=uuid_sucursal,
                 uuid_factura=uuid_factura,
-                uuid_cliente=None,
+                uuid_cliente=uuid_cliente,
                 uuid_resolucion_facturacion=None,
                 prefijo=prefijo,
                 consecutivo=consecutivo,
@@ -661,3 +662,123 @@ async def test_facturas_rango_fecha_invalido_422(pg_engine, pg_dsn) -> None:
     )
     assert resp.status_code == 422
     assert resp.json()["detail"]["error"] == "rango_fecha_invalido"
+
+
+@pytest.mark.asyncio
+async def test_facturas_uuid_cliente_lista_cruzando_sucursales(pg_engine, pg_dsn) -> None:
+    """HU-F20.1: ``uuid_cliente`` alone lists that cliente's facturas across
+    EVERY branch the admin can see -- proving the read is deliberately
+    cross-branch, not narrowed to a single ``uuid_sucursal`` (the filter is
+    ``FacturaElectronica.uuid_cliente``; ``Facturas`` itself has no cliente
+    column). A factura belonging to a DIFFERENT cliente in one of the same
+    branches must not leak into the result.
+    """
+    _truncate(pg_dsn)
+    uuid_sucursal_a = uuid_lib.uuid4()
+    uuid_sucursal_b = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, uuid_sucursal=uuid_sucursal_a)
+    await _seed_sucursal(pg_engine, uuid_sucursal=uuid_sucursal_b)
+    admin_actor = uuid_lib.uuid4()
+    await _assign_admin(
+        pg_engine, actor_uuid=admin_actor, sucursales=[uuid_sucursal_a, uuid_sucursal_b]
+    )
+
+    today = datetime.now(UTC).replace(tzinfo=None)
+    cliente_uuid = uuid_lib.uuid4()
+    otro_cliente_uuid = uuid_lib.uuid4()
+
+    # Factura 1: branch A, FE tied to the target cliente.
+    factura_a = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=uuid_sucursal_a,
+        created_at=today,
+        subtotal=Decimal("100000"),
+        descuento=Decimal("0"),
+        total=Decimal("119000"),
+    )
+    await _seed_factura_electronica(
+        pg_engine,
+        uuid_sucursal=uuid_sucursal_a,
+        uuid_factura=factura_a,
+        prefijo="SETA",
+        consecutivo=1,
+        created_at=today,
+        uuid_cliente=cliente_uuid,
+    )
+
+    # Factura 2: branch B, ALSO tied to the target cliente -- the whole
+    # point of HU-F20.1 is that this row must show up too.
+    factura_b = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=uuid_sucursal_b,
+        created_at=today,
+        subtotal=Decimal("50000"),
+        descuento=Decimal("0"),
+        total=Decimal("59500"),
+    )
+    await _seed_factura_electronica(
+        pg_engine,
+        uuid_sucursal=uuid_sucursal_b,
+        uuid_factura=factura_b,
+        prefijo="SETB",
+        consecutivo=2,
+        created_at=today,
+        uuid_cliente=cliente_uuid,
+    )
+
+    # Factura 3: branch A, tied to a DIFFERENT cliente -- must NOT show up.
+    factura_c = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=uuid_sucursal_a,
+        created_at=today,
+        subtotal=Decimal("10000"),
+        descuento=Decimal("0"),
+        total=Decimal("11900"),
+    )
+    await _seed_factura_electronica(
+        pg_engine,
+        uuid_sucursal=uuid_sucursal_a,
+        uuid_factura=factura_c,
+        prefijo="SETC",
+        consecutivo=3,
+        created_at=today,
+        uuid_cliente=otro_cliente_uuid,
+    )
+
+    fastapi_app, token = _setup_app_and_token(
+        pg_engine, admin_actor=admin_actor, permitidas=[uuid_sucursal_a, uuid_sucursal_b]
+    )
+    resp = await _get(
+        fastapi_app,
+        f"/api/v1/admin/reporteria/facturas?uuid_cliente={cliente_uuid}",
+        token=token,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Cross-branch mode: no single branch to report at the top level.
+    assert body["uuid_sucursal"] is None
+
+    by_uuid = {item["uuid"]: item for item in body["items"]}
+    assert set(by_uuid) == {str(factura_a), str(factura_b)}
+    assert by_uuid[str(factura_a)]["uuid_sucursal"] == str(uuid_sucursal_a)
+    assert by_uuid[str(factura_b)]["uuid_sucursal"] == str(uuid_sucursal_b)
+
+
+@pytest.mark.asyncio
+async def test_facturas_sin_uuid_sucursal_ni_uuid_cliente_422_missing_filter(
+    pg_engine, pg_dsn
+) -> None:
+    """HU-F20.1: neither filter given -> 422 ``missing_filter``."""
+    _truncate(pg_dsn)
+    uuid_sucursal = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, uuid_sucursal=uuid_sucursal)
+    admin_actor = uuid_lib.uuid4()
+    await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[uuid_sucursal])
+
+    fastapi_app, token = _setup_app_and_token(
+        pg_engine, admin_actor=admin_actor, permitidas=[uuid_sucursal]
+    )
+    resp = await _get(fastapi_app, "/api/v1/admin/reporteria/facturas", token=token)
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "missing_filter"

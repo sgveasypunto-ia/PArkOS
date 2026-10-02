@@ -15,6 +15,8 @@ import AuditDashboard from '@/features/audit/pages/AuditDashboard';
 import UsuariosList from '@/features/admin/pages/UsuariosList';
 import { UsuarioDetalle } from '@/features/usuarios/pages/UsuarioDetalle';
 import SucursalDetalle from '@/features/parametrizacion/pages/SucursalDetalle';
+import ClientesList from '@/features/clientes/pages/ClientesList';
+import ClienteDetalle from '@/features/clientes/pages/ClienteDetalle';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
 import Cupos from '@/features/cupos/pages/Cupos';
 import TiposVehiculo from '@/features/tipos-vehiculo/pages/TiposVehiculo';
@@ -112,6 +114,12 @@ export default function App() {
               modal de edición embebido) queda intacto: esta ruta es
               ADICIONAL, no un reemplazo. */}
           <Route path="/sucursales/:uuid" element={<SucursalDetalle />} />
+          {/* HU-F20.1: clientes directory + detail. Global like
+              `/usuarios` and `/sucursales/:uuid` -- gestionar clientes is
+              a tenant-wide, cross-branch surface, not branch-scoped, so
+              it sits outside `<RequireSucursal>` alongside them. */}
+          <Route path="/clientes" element={<ClientesList />} />
+          <Route path="/clientes/:uuid" element={<ClienteDetalle />} />
           <Route path="/arqueos" element={<ArqueosPage />} />
           {/* HU-F19.3: pairing-token issuance/revoke. Cross-branch list
               (all sucursales, not just the one active in the topbar),

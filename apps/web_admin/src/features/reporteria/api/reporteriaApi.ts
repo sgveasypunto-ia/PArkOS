@@ -164,14 +164,22 @@ const FE_PATH = '/api/v1/admin/reporteria/fe';
 const PAGOS_PATH = '/api/v1/admin/reporteria/pagos';
 
 export async function fetchReporteriaFacturas(query: {
-  uuid_sucursal: string;
+  // HU-F20.1: both now optional -- the backend 422s with
+  // `{"error":"missing_filter"}` if NEITHER is given. `uuid_sucursal`
+  // alone keeps the original branch-scoped report (HU-F17.3);
+  // `uuid_cliente` alone is the new cross-branch cliente view
+  // (`ClienteFacturasTab.tsx`), which can legitimately span branches
+  // (see `ReporteFacturasResponse.uuid_sucursal`'s nullable doc).
+  uuid_sucursal?: string;
+  uuid_cliente?: string;
   desde?: string;
   hasta?: string;
   cursor?: string;
   limit?: number;
 }): Promise<ReporteFacturasResponse> {
   const params = new URLSearchParams();
-  params.set('uuid_sucursal', query.uuid_sucursal);
+  if (query.uuid_sucursal) params.set('uuid_sucursal', query.uuid_sucursal);
+  if (query.uuid_cliente) params.set('uuid_cliente', query.uuid_cliente);
   if (query.desde) params.set('desde', query.desde);
   if (query.hasta) params.set('hasta', query.hasta);
   if (query.cursor) params.set('cursor', query.cursor);

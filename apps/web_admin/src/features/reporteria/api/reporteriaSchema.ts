@@ -212,7 +212,15 @@ export const reporteFacturaItemSchema = z.object({
 export type ReporteFacturaItem = z.infer<typeof reporteFacturaItemSchema>;
 
 export const reporteFacturasResponseSchema = z.object({
-  uuid_sucursal: z.string().uuid(),
+  // HU-F20.1: nullable since the cliente-only cross-branch query
+  // (`uuid_cliente` with no `uuid_sucursal`) has no single branch to
+  // echo back -- confirmed against the backend's updated
+  // `reporte_facturas` contract (``uuid_sucursal: uuid_lib.UUID | None``
+  // envelope field). Stays non-null for every existing branch-scoped
+  // call. Use the per-item `ReporteFacturaItem.uuid_sucursal` (already
+  // nullable above) to render each row's branch -- never this top-level
+  // field for per-row display.
+  uuid_sucursal: z.string().uuid().nullable(),
   desde: z.string(),
   hasta: z.string(),
   items: z.array(reporteFacturaItemSchema),
