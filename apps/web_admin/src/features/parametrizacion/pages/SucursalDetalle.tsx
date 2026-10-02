@@ -49,7 +49,7 @@
  * las HUs de Fase 15 que sí vayan a cablear el selector dentro de cada
  * pestaña, como anticipa el comentario de `ParametrizacionEfectivaSelector.tsx`).
  */
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -96,8 +96,9 @@ function ScopeMismatchNotice({ uuidRuta }: { uuidRuta: string }): JSX.Element | 
 
 export default function SucursalDetalle(): JSX.Element {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { uuid } = useParams<{ uuid: string }>();
-  const { sucursal, isLoading, error, refresh } = useSucursalDetalle(uuid);
+  const { sucursal, isLoading, error } = useSucursalDetalle(uuid);
   const { fecha, setFecha, resetAHoy, counts, isLoading: isLoadingEfectiva } =
     useParametrizacionEfectiva(uuid);
 
@@ -180,8 +181,17 @@ export default function SucursalDetalle(): JSX.Element {
         <TabsContent value="general" className="mt-4">
           <SucursalGeneralForm
             sucursal={sucursal}
-            onUpdated={refresh}
-            onDeshabilitada={refresh}
+            onUpdated={async (updated) => {
+              // Bi-temporal close+insert regenerates `uuid` on every save
+              // (see the prop docstring) -- navigate to the fresh uuid
+              // instead of refreshing the now-closed old one, which 404s.
+              navigate(`/sucursales/${updated.uuid}`, { replace: true });
+            }}
+            onDeshabilitada={async () => {
+              // `close_only`: no replacement version, the current uuid is
+              // gone too. Nothing left to show here -- back to the list.
+              navigate('/seleccionar-sucursal?tab=admin', { replace: true });
+            }}
           />
         </TabsContent>
 

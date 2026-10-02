@@ -70,9 +70,20 @@ const TELEFONO_CO_REGEX = /^(\+?57)?[\s-]?(3\d{9}|[1-8]\d{6,7})$/;
 
 export interface SucursalGeneralFormProps {
   sucursal: Sucursal;
-  onUpdated: () => Promise<unknown>;
-  /** Called after a successful disable (204) so the parent can refresh
-   * and/or redirect. */
+  /**
+   * Called after a successful save with the FRESH `Sucursal` row the PUT
+   * returned. Bi-temporal close+insert regenerates `uuid` on every update
+   * (same mechanism as the admin table's edit flow), so the caller MUST
+   * use `updated.uuid` -- re-fetching by the OLD route uuid 404s
+   * ("no existe o ya no está vigente") because that version is now
+   * closed. Live defect found QA-testing this tab: a plain successful
+   * save broke the whole page because the old `refresh()`-only callback
+   * re-queried the stale uuid.
+   */
+  onUpdated: (updated: Sucursal) => Promise<unknown>;
+  /** Called after a successful disable (204) so the parent can redirect
+   * -- `close_only` leaves no replacement version, so the current uuid
+   * is gone too; there is nothing left to refresh in place. */
   onDeshabilitada: () => Promise<unknown>;
 }
 
@@ -128,11 +139,11 @@ export function SucursalGeneralForm({
   async function onSubmit(values: SucursalUpdateInput): Promise<void> {
     setSaveError(null);
     try {
-      await updateSucursal(sucursal.uuid, {
+      const updated = await updateSucursal(sucursal.uuid, {
         ...values,
         uuid_empresa: values.uuid_empresa ?? empresa?.uuid ?? null,
       });
-      await onUpdated();
+      await onUpdated(updated);
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Error desconocido');
     }

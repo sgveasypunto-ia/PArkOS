@@ -81,22 +81,9 @@ _mount_config(
     create_schema=ConfiguracionToleranciasCreate,
     update_schema=ConfiguracionToleranciasUpdate,
 )
-_mount_config(
-    resource="configuracion-seguridad",
-    model_cls=ConfiguracionSeguridad,
-    read_schema=ConfiguracionSeguridadRead,
-    read_list_schema=ConfiguracionSeguridadReadList,
-    create_schema=ConfiguracionSeguridadCreate,
-    update_schema=ConfiguracionSeguridadUpdate,
-)
-_mount_config(
-    resource="configuracion-caja",
-    model_cls=ConfiguracionCaja,
-    read_schema=ConfiguracionCajaRead,
-    read_list_schema=ConfiguracionCajaReadList,
-    create_schema=ConfiguracionCajaCreate,
-    update_schema=ConfiguracionCajaUpdate,
-)
+# ``configuracion-seguridad`` and ``configuracion-caja`` are mounted AFTER
+# their own dedicated ``.../efectiva`` routes below (not here) -- see the
+# "ROUTE ORDER" note by those routes for why.
 
 
 # --- Custom: GET /configuracion/configuracion-seguridad/efectiva ------------
@@ -104,6 +91,19 @@ _mount_config(
 #
 # Query: per-branch first; if None, global (uuid_sucursal IS NULL).
 # Returns 404 if neither exists.
+#
+# ROUTE ORDER (live defect found QA-testing the Sucursal detail "Caja" tab,
+# 2026-10-02): this route and ``efectiva_caja`` below MUST be registered on
+# ``router`` BEFORE ``_mount_config(resource="configuracion-seguridad"/
+# "configuracion-caja", ...)`` is called (see the bottom of this file). The
+# factory mount adds a catch-all ``GET /configuracion-caja/{uuid}``; FastAPI
+# matches routes in registration order, so if that factory route is added
+# first, a request for the literal path ``/configuracion-caja/efectiva``
+# matches `{uuid}` with ``uuid="efectiva"`` first and 422s
+# (``uuid_parsing``, ``input: "efectiva"``) before this handler ever runs.
+# Same ordering fix `api/v1/empresa.py` already applies to its
+# ``tarifas-sucursal`` dedicated router (see that file's own "HU-F1.4"
+# comment) -- this file just hadn't applied it to these two resources yet.
 
 from ...api.deps import requires_issuer
 
@@ -180,5 +180,25 @@ async def efectiva_caja(
 
     return ConfiguracionCajaRead.model_validate(row)
 
+
+# Mounted here (AFTER the dedicated ``efectiva``/``efectiva_caja`` routes
+# above), not next to the ``configuracion-tolerancias`` mount near the top
+# of this file -- see the "ROUTE ORDER" note on ``efectiva`` for why.
+_mount_config(
+    resource="configuracion-seguridad",
+    model_cls=ConfiguracionSeguridad,
+    read_schema=ConfiguracionSeguridadRead,
+    read_list_schema=ConfiguracionSeguridadReadList,
+    create_schema=ConfiguracionSeguridadCreate,
+    update_schema=ConfiguracionSeguridadUpdate,
+)
+_mount_config(
+    resource="configuracion-caja",
+    model_cls=ConfiguracionCaja,
+    read_schema=ConfiguracionCajaRead,
+    read_list_schema=ConfiguracionCajaReadList,
+    create_schema=ConfiguracionCajaCreate,
+    update_schema=ConfiguracionCajaUpdate,
+)
 
 __all__ = ["router"]
