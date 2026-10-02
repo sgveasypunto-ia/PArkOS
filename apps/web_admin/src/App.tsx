@@ -35,6 +35,8 @@ import AnulacionDetalle from '@/features/workflows/pages/AnulacionDetalle';
 import ReclamosList from '@/features/workflows/pages/ReclamosList';
 import ReclamoDetalle from '@/features/workflows/pages/ReclamoDetalle';
 import SyncDashboard from '@/features/sync/pages/SyncDashboard';
+import DianCola from '@/features/dian/pages/DianCola';
+import DianDetalle from '@/features/dian/pages/DianDetalle';
 
 /**
  * Route tree.
@@ -152,6 +154,11 @@ export default function App() {
               sits here instead of inside the <RequireSucursal> group
               below. */}
           <Route path="/sync" element={<SyncDashboard />} />
+          {/* HU-F20.5: monitor de envíos DIAN (cola, reintento). Cross-branch
+              (sucursales permitidas del actor), same reasoning as /alertas
+              and /sync just above. */}
+          <Route path="/dian" element={<DianCola />} />
+          <Route path="/dian/:uuid" element={<DianDetalle />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 

@@ -256,6 +256,10 @@
     "alertas": {
       "label": "Alertas",
       "description": "Bandeja cross-branch de alertas de tus sucursales, con severidad y estado."
+    },
+    "dian": {
+      "label": "DIAN",
+      "description": "Monitor cross-branch de envíos a la DIAN: cola por estado y reintento de los rechazados."
     }
   },
   "catalogos": {
@@ -883,6 +887,60 @@
     },
     "badge": {
       "label": "{{count}} alertas abiertas o en revisión"
+    }
+  },
+  "dian": {
+    "title": "Monitor de envíos DIAN",
+    "subtitle": "Cola de envíos a la DIAN de todas tus sucursales, con reintento de los rechazados.",
+    "errorLoading": "No se pudieron cargar los envíos DIAN.",
+    "empty": "No hay envíos DIAN con esos filtros.",
+    "tabsLabel": "Estado del envío",
+    "tabs": {
+      "todos": "Todos"
+    },
+    "estado": {
+      "pendiente": "Pendiente",
+      "enviado": "Enviado",
+      "enProceso": "En proceso",
+      "ack": "Confirmado (ack)",
+      "aceptado": "Aceptado",
+      "rechazado": "Rechazado",
+      "timeout": "Timeout",
+      "error": "Error",
+      "none": "—"
+    },
+    "resumen": {
+      "title": "Resumen (ventana reciente)",
+      "label": "Resumen de estado",
+      "footnote": "Conteo sobre los {{limit}} envíos más recientes (no hay endpoint de agregado para esta tabla) -- no es un total histórico."
+    },
+    "table": {
+      "fecha": "Fecha",
+      "sucursal": "Sucursal",
+      "factura": "Factura electrónica",
+      "estado": "Estado",
+      "cufe": "CUFE",
+      "openButton": "Ver detalle",
+      "retryButton": "Reintentar",
+      "retrying": "Reintentando…",
+      "retryDisabledTitle": "Solo se puede reintentar un envío rechazado.",
+      "loadMore": "Cargar más"
+    },
+    "detalle": {
+      "title": "Detalle del envío DIAN",
+      "back": "Volver a la cola",
+      "noState": "Este envío no está disponible por acceso directo o recarga -- volvé a la cola y abrilo desde ahí.",
+      "dataTitle": "Datos",
+      "sucursal": "Sucursal",
+      "factura": "Factura electrónica",
+      "cufe": "CUFE",
+      "fecha": "Fecha del evento",
+      "retryTitle": "Reintentar envío",
+      "retrySuccess": "Reintento creado: nuevo envío {{uuid}} en estado pendiente.",
+      "payloadTitle": "Payload enviado",
+      "respuestaTitle": "Respuesta del proveedor",
+      "historyTitle": "Historial de reintentos",
+      "noData": "Sin datos."
     }
   },
   "workflowChain": {
