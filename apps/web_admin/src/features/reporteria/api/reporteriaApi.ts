@@ -1,21 +1,31 @@
 /**
- * `reporteriaApi.ts` — HTTP client for the HU-F17.1 operational reports
- * (web_admin).
+ * `reporteriaApi.ts` — HTTP client for the HU-F17.1/HU-F17.2 operational
+ * reports (web_admin).
  *
- * Endpoints consumed (branch API):
+ * Endpoints consumed (branch API, known drift -- see Reporteria.tsx):
  *   - GET /api/v1/operacion/ingresos?uuid_sucursal=&placa=&activo=&limit=
  *   - GET /api/v1/operacion/salidas?uuid_sucursal=&placa=&fecha_salida__gte=&fecha_salida__lte=&limit=
  *   - GET /api/v1/operacion/ocupacion?uuid_sucursal=
  *
- * All three are wrapped by ``auth/tenancy.py::require_branch_scope``
+ * Endpoints consumed (admin API, dedicated reporteria surface):
+ *   - GET /api/v1/admin/reporteria/operacional?uuid_sucursal=&fecha_desde=&fecha_hasta=
+ *     &uuid_tipo_vehiculo=&cursor=&limit= (HU-F17.1 totals + HU-F17.2
+ *     ``ingresos``/``tiempos_estancia`` additions)
+ *   - GET /api/v1/admin/reporteria/ocupacion?desde=&hasta= (HU-F17.2,
+ *     cross-branch heatmap + BR2 occupancy ratio)
+ *
+ * The first three are wrapped by ``auth/tenancy.py::require_branch_scope``
  * (PR-A): the response is already restricted to the caller's
  * permitted branches when the X-Sucursal-Context header is present,
- * which `parkosFetch` injects from `parkos.lastSelectedSucursal`.
+ * which `parkosFetch` injects from `parkos.lastSelectedSucursal`. The
+ * admin-reporteria endpoints resolve scope fresh server-side instead
+ * (see their own backend docstrings).
  *
  * This module is a thin transport. SWR caching lives in
- * `useReporteriaIngresos` / `useReporteriaSalidas` / `useReporteriaOcupacion`
- * so the keys, the revalidation policy and the per-tab activation live
- * in one place — the same split `features/audit` uses.
+ * `useReporteriaIngresos` / `useReporteriaSalidas` / `useReporteriaOcupacion` /
+ * `useReporteriaOperacional` / `useReporteriaOcupacionHeatmap` so the keys,
+ * the revalidation policy and the per-tab activation live in one place —
+ * the same split `features/audit` uses.
  */
 import { parkosFetchRaw, type ParkosFetchInit } from '@/lib/fetch';
 import { z } from 'zod';
@@ -25,10 +35,12 @@ import {
   salidaListReadSchema,
   ocupacionResponseSchema,
   reporteOperacionalResponseSchema,
+  reporteOcupacionHeatmapResponseSchema,
   type IngresoRead,
   type SalidaListRead,
   type OcupacionResponse,
   type ReporteOperacionalResponse,
+  type ReporteOcupacionHeatmapResponse,
   type ReporteriaQuery,
 } from './reporteriaSchema';
 
@@ -99,15 +111,41 @@ export async function fetchReporteriaOperacional(query: {
   uuid_sucursal: string;
   fecha_desde?: string;
   fecha_hasta?: string;
+  // HU-F17.2 additions -- all optional, additive to the existing
+  // "Totales del periodo" query (see reporteriaSchema.ts for the wire
+  // shape these unlock: `ingresos` + `tiempos_estancia`).
+  uuid_tipo_vehiculo?: string;
+  cursor?: string;
+  limit?: number;
 }): Promise<ReporteOperacionalResponse> {
   const params = new URLSearchParams();
   params.set('uuid_sucursal', query.uuid_sucursal);
   if (query.fecha_desde) params.set('fecha_desde', query.fecha_desde);
   if (query.fecha_hasta) params.set('fecha_hasta', query.fecha_hasta);
+  if (query.uuid_tipo_vehiculo) params.set('uuid_tipo_vehiculo', query.uuid_tipo_vehiculo);
+  if (query.cursor) params.set('cursor', query.cursor);
+  if (query.limit) params.set('limit', String(query.limit));
   const url = `${OPER_PATH}?${params.toString()}`;
   const raw = await fetchJson<unknown>(url, {
     method: 'GET',
     headers: { Accept: 'application/json' },
   });
   return reporteOperacionalResponseSchema.parse(raw);
+}
+
+const OCU_HEATMAP_PATH = '/api/v1/admin/reporteria/ocupacion';
+
+export async function fetchReporteriaOcupacionHeatmap(query: {
+  desde?: string;
+  hasta?: string;
+}): Promise<ReporteOcupacionHeatmapResponse> {
+  const params = new URLSearchParams();
+  if (query.desde) params.set('desde', query.desde);
+  if (query.hasta) params.set('hasta', query.hasta);
+  const url = `${OCU_HEATMAP_PATH}?${params.toString()}`;
+  const raw = await fetchJson<unknown>(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  return reporteOcupacionHeatmapResponseSchema.parse(raw);
 }
