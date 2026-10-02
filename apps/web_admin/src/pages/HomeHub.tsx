@@ -18,12 +18,13 @@
  */
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Banknote, Building2, FolderTree, Landmark, Users } from 'lucide-react';
+import { Banknote, Bell, Building2, FolderTree, Landmark, Users } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
+import { AlertasBadge } from '@/components/AlertasBadge';
 
 interface HubCard {
-  key: 'sucursales' | 'catalogos' | 'empresa' | 'usuarios' | 'arqueos';
+  key: 'sucursales' | 'catalogos' | 'empresa' | 'usuarios' | 'arqueos' | 'alertas';
   path: string;
   icon: typeof Building2;
   titleKey: string;
@@ -72,6 +73,16 @@ export const HUB_CARDS: readonly HubCard[] = [
     descriptionKey: 'homeHub.arqueos.description',
     testId: 'home-hub-card-arqueos',
   },
+  {
+    // HU-F19.5: bandeja de alertas (severidad + estado, cross-branch
+    // sobre las sucursales permitidas del actor).
+    key: 'alertas',
+    path: '/alertas',
+    icon: Bell,
+    titleKey: 'homeHub.alertas.label',
+    descriptionKey: 'homeHub.alertas.description',
+    testId: 'home-hub-card-alertas',
+  },
 ] as const;
 
 export default function HomeHub(): JSX.Element {
@@ -92,7 +103,7 @@ export default function HomeHub(): JSX.Element {
         {HUB_CARDS.map((card) => {
           const Icon = card.icon;
           return (
-            <li key={card.key}>
+            <li key={card.key} className="relative">
               <Link
                 to={card.path}
                 data-testid={card.testId}
@@ -122,6 +133,19 @@ export default function HomeHub(): JSX.Element {
                   </span>
                 </Card>
               </Link>
+              {card.key === 'alertas' && (
+                // Rendered as a SIBLING of the card's own `<Link>`, not
+                // nested inside it -- `<AlertasBadge />` is itself a
+                // `<Link to="/alertas">`, and nesting an anchor inside
+                // another anchor is invalid HTML. `pointer-events-none`
+                // on the positioning wrapper keeps the rest of the
+                // overlay from stealing clicks meant for the card.
+                <div className="pointer-events-none absolute right-3 top-3">
+                  <div className="pointer-events-auto">
+                    <AlertasBadge />
+                  </div>
+                </div>
+              )}
             </li>
           );
         })}

@@ -26,6 +26,8 @@ import ReporteriaFinanciera from '@/features/reporteria/pages/ReporteriaFinancie
 import ReporteriaSuscripciones from '@/features/reporteria/pages/ReporteriaSuscripciones';
 import { ArqueosPage } from '@/features/arqueos/pages/ArqueosPage';
 import Pairing from '@/features/pairing/pages/Pairing';
+import AlertasList from '@/features/alertas/pages/AlertasList';
+import AlertaDetalle from '@/features/alertas/pages/AlertaDetalle';
 
 /**
  * Route tree.
@@ -116,6 +118,12 @@ export default function App() {
               rather than inside the <RequireSucursal> branch-scoped
               group below. */}
           <Route path="/pairing" element={<Pairing />} />
+          {/* HU-F19.5: bandeja de alertas. Cross-branch (sucursales
+              permitidas del actor, no solo la sucursal activa en el
+              topbar) -- mismo motivo que /pairing y /arqueos para vivir
+              acá en vez de dentro del grupo <RequireSucursal>. */}
+          <Route path="/alertas" element={<AlertasList />} />
+          <Route path="/alertas/:uuid" element={<AlertaDetalle />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 

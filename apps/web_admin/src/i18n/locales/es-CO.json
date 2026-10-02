@@ -252,6 +252,10 @@
     "arqueos": {
       "label": "Arqueos",
       "description": "Listado cross-branch de arqueos con filtros por sucursal, fecha y tipo."
+    },
+    "alertas": {
+      "label": "Alertas",
+      "description": "Bandeja cross-branch de alertas de tus sucursales, con severidad y estado."
     }
   },
   "catalogos": {
@@ -810,5 +814,82 @@
     "resumen.exportPdf": "Exportar PDF firmado",
     "resumen.exportingPdf": "Generando…",
     "resumen.exportPdfError": "No se pudo generar el PDF. Intenta de nuevo."
+  },
+  "alertas": {
+    "title": "Alertas",
+    "subtitle": "Bandeja cross-branch de alertas de las sucursales a tu cargo, con severidad y estado.",
+    "listTitle": "Resultados",
+    "empty": "No hay alertas con esos filtros.",
+    "errorLoading": "No se pudieron cargar las alertas.",
+    "severity": {
+      "critical": "Crítica",
+      "warning": "Advertencia",
+      "info": "Informativa",
+      "none": "—"
+    },
+    "estado": {
+      "abierta": "Abierta",
+      "enRevision": "En revisión",
+      "resuelta": "Resuelta",
+      "none": "—"
+    },
+    "filters": {
+      "title": "Filtros",
+      "branch": "Sucursal",
+      "allBranches": "Todas mis sucursales",
+      "tipo": "Tipo de alerta",
+      "tipoPlaceholder": "descuadre_critico",
+      "estado": "Estado",
+      "allEstados": "Todos",
+      "severidad": "Severidad",
+      "allSeveridades": "Todas",
+      "dateFrom": "Desde",
+      "dateTo": "Hasta",
+      "reset": "Limpiar"
+    },
+    "table": {
+      "fecha": "Fecha",
+      "sucursal": "Sucursal",
+      "tipo": "Tipo",
+      "severidad": "Severidad",
+      "estado": "Estado",
+      "openButton": "Ver detalle",
+      "loadMore": "Cargar más"
+    },
+    "group": {
+      "count": "{{count}} alertas"
+    },
+    "descartar": {
+      "title": "Descartar alerta",
+      "description": "Esta acción resuelve la alerta de forma definitiva. Las observaciones quedan registradas en el historial.",
+      "observacionesLabel": "Observaciones",
+      "submit": "Descartar",
+      "submitting": "Descartando…"
+    },
+    "detalle": {
+      "title": "Detalle de la alerta",
+      "back": "Volver a la bandeja",
+      "loading": "Cargando alerta...",
+      "errorLoading": "No se pudo cargar la alerta.",
+      "missingUuid": "Falta el identificador de la alerta.",
+      "dataTitle": "Datos",
+      "tipo": "Tipo",
+      "sucursal": "Sucursal",
+      "fecha": "Fecha del evento",
+      "diferenciaEfectivo": "Diferencia efectivo",
+      "diferenciaDatafono": "Diferencia datáfono",
+      "historyTitle": "Historial de transiciones",
+      "yaResuelta": "Esta alerta ya está resuelta."
+    },
+    "badge": {
+      "label": "{{count}} alertas abiertas o en revisión"
+    }
+  },
+  "workflowChain": {
+    "loading": "Cargando historial…",
+    "error": "No se pudo cargar el historial de transiciones.",
+    "empty": "Sin transiciones registradas.",
+    "noTimestamp": "Sin fecha",
+    "actor": "Actor"
   }
 }
