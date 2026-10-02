@@ -190,3 +190,75 @@ export const reporteOcupacionHeatmapResponseSchema = z.object({
 export type ReporteOcupacionHeatmapResponse = z.infer<
   typeof reporteOcupacionHeatmapResponseSchema
 >;
+
+// HU-F17.3 -- reportería financiera (facturas, FE, pagos). ``estado``
+// is a closed 2-value enum (derived ad-hoc in the backend query);
+// ``estado_dian`` stays a plain string -- its real domain is 8 values
+// (pendiente|enviado|ack|error|aceptado|rechazado|timeout|en_proceso,
+// see the backend's ``_ESTADO_DIAN_VALUES`` comment), wider than a
+// prior spec's assumed 4 values, so this schema does not hardcode an enum.
+export const reporteFacturaItemSchema = z.object({
+  uuid: z.string().uuid(),
+  uuid_sucursal: z.string().uuid().nullable(),
+  created_at: z.string(),
+  numero_completo: z.string().nullable(),
+  subtotal: z.number().nullable(),
+  descuento: z.number().nullable(),
+  iva: z.number(),
+  total: z.number().nullable(),
+  estado: z.enum(['vigente', 'anulada']),
+});
+
+export type ReporteFacturaItem = z.infer<typeof reporteFacturaItemSchema>;
+
+export const reporteFacturasResponseSchema = z.object({
+  uuid_sucursal: z.string().uuid(),
+  desde: z.string(),
+  hasta: z.string(),
+  items: z.array(reporteFacturaItemSchema),
+  next_cursor: z.string().nullable(),
+  generado_en: z.string(),
+});
+
+export type ReporteFacturasResponse = z.infer<typeof reporteFacturasResponseSchema>;
+
+// ``estado_dian`` is the RAW ``v_factura_electronica_acuse.estado`` --
+// DISTINCT from ``ReporteFacturaItem.estado`` (BR1). Never conflate the
+// two in the UI (see ``FeTable.tsx``).
+export const reporteFeItemSchema = z.object({
+  uuid: z.string().uuid(),
+  uuid_sucursal: z.string().uuid().nullable(),
+  uuid_factura: z.string().uuid().nullable(),
+  numero_completo: z.string().nullable(),
+  cufe: z.string().nullable(),
+  estado_dian: z.string().nullable(),
+  timestamp_evento: z.string().nullable(),
+});
+
+export type ReporteFeItem = z.infer<typeof reporteFeItemSchema>;
+
+export const reporteFeResponseSchema = z.object({
+  items: z.array(reporteFeItemSchema),
+  next_cursor: z.string().nullable(),
+  generado_en: z.string(),
+});
+
+export type ReporteFeResponse = z.infer<typeof reporteFeResponseSchema>;
+
+export const reportePagoMedioItemSchema = z.object({
+  fecha: z.string(),
+  medio_pago: z.string(),
+  monto_neto: z.number(),
+});
+
+export type ReportePagoMedioItem = z.infer<typeof reportePagoMedioItemSchema>;
+
+export const reportePagosResponseSchema = z.object({
+  uuid_sucursal: z.string().uuid(),
+  desde: z.string(),
+  hasta: z.string(),
+  items: z.array(reportePagoMedioItemSchema),
+  generado_en: z.string(),
+});
+
+export type ReportePagosResponse = z.infer<typeof reportePagosResponseSchema>;

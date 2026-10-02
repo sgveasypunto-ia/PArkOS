@@ -1,9 +1,12 @@
-"""Operational reports (HU-F17.1/F17.2, PR-C).
+"""Operational + financial reports (HU-F17.1/F17.2/F17.3, PR-C).
 
-Cloud-friendly surfaces (can mount on ``api_admin`` and ``api_sucursal``).
-Only ``admin-`` issuers reach this surface, gated by
-``require_branch_scope`` so the report cannot leak across the actor's
-permitted branches.
+Module docstring says "can mount on ``api_admin`` and ``api_sucursal``"
+(aspirational/stale -- confirmed against ``api/v1/__init__.py::
+_build_router``: this router is actually mounted ONLY on cloud deploys,
+same ``if _IS_BRANCH: skip`` gate as ``admin_views.router``, found while
+building HU-F17.3). Only ``admin-`` issuers reach this surface; the
+single-branch endpoints are additionally gated by ``require_branch_scope``
+so the report cannot leak across the actor's permitted branches.
 
 Endpoints:
 
@@ -12,6 +15,20 @@ Endpoints:
   Returns per-day counts + monto_facturado/monto_cobrado for the branch
   over the date range, plus a grand-total rollup. No time series, no
   charts — explicit F17.1 user directive.
+
+- ``GET /api/v1/admin/reporteria/facturas?uuid_sucursal=&desde=&hasta=&cursor=&limit=``
+  (HU-F17.3) -- paginated ``facturas`` rows resolved against their REAL
+  columns (``numero_completo``/``iva``/``estado`` are NOT physical
+  ``facturas`` columns; see :func:`reporte_facturas`'s docstring).
+
+- ``GET /api/v1/admin/reporteria/fe?estado=&cursor=&limit=`` (HU-F17.3,
+  BR1) -- paginated ``factura_electronica`` + its latest DIAN ack from
+  ``prod.v_factura_electronica_acuse``. Cross-branch (every branch the
+  admin can see), same reasoning as ``reporte_ocupacion``.
+
+- ``GET /api/v1/admin/reporteria/pagos?uuid_sucursal=&desde=&hasta=``
+  (HU-F17.3, BR2) -- pagos netos (pago - reverso) agrupados por
+  ``medio_pago``/día.
 
 Notes on the SQL
 ----------------
@@ -34,14 +51,16 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import case, func, select
+from sqlalchemy import case, column, func, select, table
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_session, require_branch_scope, requires_issuer
 from ...auth.tenancy import BranchScope
 from ...db.tenancy import extract_sucursales_permitidas_fresh
+from ...models.A.factura_impuestos import FacturaImpuestos
 from ...models.A.factura_pagos import FacturaPagos
 from ...models.A.salidas import Salidas
+from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_E.facturas import Facturas
 from ...models.L_E.ingreso import Ingreso
 from ...models.L_W.anulaciones import Anulaciones
@@ -50,8 +69,13 @@ from ...models.V.sucursal import Sucursal
 from ...repo.pagination import Cursor, InvalidCursorError
 from ...repo.pagination import decode as cursor_decode
 from ...repo.pagination import encode as cursor_encode
+from ...repo.workflow import STATE_MACHINES
 from ...schemas.reporteria import (
     ReporteEstanciaItem,
+    ReporteFacturaItem,
+    ReporteFacturasResponse,
+    ReporteFeItem,
+    ReporteFeResponse,
     ReporteOcupacionAgregada,
     ReporteOcupacionHeatmapCell,
     ReporteOcupacionResponse,
@@ -59,6 +83,8 @@ from ...schemas.reporteria import (
     ReporteOperacionalIngresoItem,
     ReporteOperacionalItem,
     ReporteOperacionalResponse,
+    ReportePagoMedioItem,
+    ReportePagosResponse,
 )
 
 router = APIRouter(prefix="/admin/reporteria", tags=["admin", "reporteria"])
@@ -66,6 +92,55 @@ router = APIRouter(prefix="/admin/reporteria", tags=["admin", "reporteria"])
 _admin_issuer_dep = requires_issuer("admin-")
 AdminClaims = Annotated[dict[str, Any], Depends(_admin_issuer_dep)]
 DbSession = Annotated[AsyncSession, Depends(get_session)]
+
+# ``prod.v_factura_electronica_acuse`` (migration 0009_add_derived_read_
+# views.py) has no ORM model -- it is a derived read view (one row per
+# ``uuid_factura_electronica``, the latest ``envio_dian`` row by
+# ``timestamp_evento``) and HU-F17.3 is its first application-code
+# reader (confirmed: no prior ``repo/``/``api/`` module queries it). A
+# lightweight Core ``table()`` binding -- not a mapped class, the view
+# has no PK and is never written to -- is the idiomatic SQLAlchemy 2.0
+# way to SELECT/JOIN it alongside ORM entities in the same statement.
+v_factura_electronica_acuse = table(
+    "v_factura_electronica_acuse",
+    column("uuid_factura_electronica"),
+    column("cufe"),
+    column("estado"),
+    column("timestamp_evento"),
+    schema="prod",
+)
+
+# Real domain of ``envio_dian.estado`` / ``v_factura_electronica_acuse.
+# estado`` (HU-F17.3 BR1 -- "o el dominio real que encuentres"), confirmed
+# against EVERY writer of the column:
+#
+# - ``repo.workflow.STATE_MACHINES["envio_dian"]`` -- the ``POST
+#   /envio-dian`` transition endpoint's state machine: ``pendiente|
+#   enviado|ack|error``.
+# - ``dian.cloud.dispatcher``'s own ``ESTADO_*`` constants, which mutate
+#   ``envio.estado`` DIRECTLY, bypassing that state machine:
+#   ``aceptado|rechazado|timeout|en_proceso`` (``error`` overlaps the
+#   state-machine's own terminal value).
+#
+# The real domain is the UNION of both -- see ``dian/cloud_router.py``'s
+# ``_ENVIO_DIAN_ESTADOS`` module comment, which already documents this
+# EXACT same drift for HU-F13.4 (plan.md's assumed 4-value
+# ``pendiente|enviado|aceptado|rechazado`` is actually
+# ``schemas.facturacion.FacturaDisplayFE.estado_dian``'s simplified
+# display projection, not this column's raw domain).
+#
+# Duplicated here as plain string literals rather than importing
+# ``dian.cloud_router``/``dian.cloud.dispatcher``: both modules raise
+# ``ImportError`` under ``PARKOS_DEPLOY=branch`` (REQ-X3 belt-and-
+# suspenders) -- importing either here would coral this router's
+# importability to the dian boundary even though it is otherwise
+# unrelated to the DIAN cloud-dispatch write path.
+_ESTADO_DIAN_VALUES: frozenset[str] = frozenset(STATE_MACHINES["envio_dian"]) | {
+    "aceptado",
+    "rechazado",
+    "timeout",
+    "en_proceso",
+}
 
 
 @router.get(
@@ -593,6 +668,407 @@ async def reporte_ocupacion(
         ocupacion_agregada=ocupacion_agregada,
         desde=desde,
         hasta=hasta,
+        generado_en=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/facturas",
+    response_model=ReporteFacturasResponse,
+    summary="Paginated facturas resolved against real columns (HU-F17.3)",
+)
+async def reporte_facturas(
+    session: DbSession,
+    _claims: Annotated[None, Depends(_admin_issuer_dep)],
+    scope: Annotated[BranchScope, Depends(require_branch_scope)],
+    uuid_sucursal: uuid_lib.UUID = Query(  # noqa: B008
+        ...,
+        description="Branch to report on. Must be in the actor's permitted set.",
+    ),
+    desde: date | None = Query(  # noqa: B008
+        None,
+        description="Inclusive UTC start date. Defaults to 6 days back.",
+    ),
+    hasta: date | None = Query(  # noqa: B008
+        None,
+        description="Inclusive UTC end date. Defaults to today (UTC).",
+    ),
+    cursor: str | None = Query(None, description="Opaque cursor, created_at-keyed."),
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> ReporteFacturasResponse:
+    """One branch's ``facturas`` rows, newest first, cursor-paginated.
+
+    Every displayed column is resolved against the REAL schema (see
+    ``ReporteFacturaItem``'s docstring for the full rationale):
+    ``numero_completo`` via an outer join to ``factura_electronica``
+    (``NULL`` when absent -- not every factura has an FE), ``iva`` via a
+    correlated ``SUM(factura_impuestos.valor)`` scalar subquery (so the
+    row cardinality stays 1:1 with ``facturas``, no join fan-out), and
+    ``estado`` via the same ad-hoc "EXISTS a non-voided anulaciones row"
+    pattern already used by ``reporte_operacional``'s
+    ``ingresos_activos_subq`` -- ``anulaciones.tipo_anulable`` is only
+    ever ``ingreso``/``salida`` (never ``factura`` directly), so the
+    derivation follows the factura's own ``uuid_ingreso``/``uuid_salida``
+    pointers.
+    """
+    today = datetime.now(UTC).date()
+    if hasta is None:
+        hasta = today
+    if desde is None:
+        desde = hasta - timedelta(days=6)
+    if desde > hasta:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "rango_fecha_invalido"},
+        )
+
+    if not scope.permitidas:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+    permitidas = scope.narrow(uuid_sucursal)
+    target = next(iter(permitidas))
+
+    try:
+        decoded_cursor = cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    # BR: estado derivado -- EXISTS anulaciones ejecutada sobre el
+    # uuid_ingreso/uuid_salida de la factura -> 'anulada', si no -> 'vigente'.
+    anulada_exists = (
+        select(Anulaciones.uuid)
+        .where(Anulaciones.estado == "ejecutada")
+        .where(
+            (
+                Facturas.uuid_salida.is_not(None)
+                & (Anulaciones.tipo_anulable == "salida")
+                & (Anulaciones.uuid_salida == Facturas.uuid_salida)
+            )
+            | (
+                Facturas.uuid_ingreso.is_not(None)
+                & (Anulaciones.tipo_anulable == "ingreso")
+                & (Anulaciones.uuid_ingreso == Facturas.uuid_ingreso)
+            )
+        )
+        .exists()
+    )
+    estado_expr = case((anulada_exists, "anulada"), else_="vigente").label("estado")
+
+    iva_subq = (
+        select(func.coalesce(func.sum(FacturaImpuestos.valor), 0.0))
+        .where(FacturaImpuestos.uuid_factura == Facturas.uuid)
+        .correlate(Facturas)
+        .scalar_subquery()
+    )
+
+    stmt = (
+        select(
+            Facturas.uuid,
+            Facturas.uuid_sucursal,
+            Facturas.created_at,
+            FacturaElectronica.prefijo,
+            FacturaElectronica.consecutivo,
+            Facturas.subtotal,
+            Facturas.descuento,
+            iva_subq.label("iva"),
+            Facturas.total,
+            estado_expr,
+        )
+        .select_from(Facturas)
+        .outerjoin(FacturaElectronica, FacturaElectronica.uuid_factura == Facturas.uuid)
+        .where(Facturas.uuid_sucursal == target)
+        .where(func.date(Facturas.created_at) >= desde)
+        .where(func.date(Facturas.created_at) <= hasta)
+        .order_by(Facturas.created_at.desc(), Facturas.uuid.asc())
+    )
+    if decoded_cursor is not None:
+        if decoded_cursor.created_at is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_cursor",
+                    "detail": "cursor missing created_at (required for facturas listing)",
+                },
+            )
+        cursor_ts = datetime.fromisoformat(
+            decoded_cursor.created_at.replace("Z", "+00:00")  # noqa: FURB162
+        ).replace(tzinfo=None)
+        cursor_uuid = uuid_lib.UUID(decoded_cursor.uuid)
+        stmt = stmt.where(
+            (Facturas.created_at < cursor_ts)
+            | ((Facturas.created_at == cursor_ts) & (Facturas.uuid > cursor_uuid))
+        )
+    stmt = stmt.limit(limit + 1)
+
+    rows = (await session.execute(stmt)).all()
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = cursor_encode(
+            Cursor(created_at=last.created_at.isoformat(), uuid=str(last.uuid))
+        )
+
+    items = [
+        ReporteFacturaItem(
+            uuid=row.uuid,
+            uuid_sucursal=row.uuid_sucursal,
+            created_at=row.created_at,
+            numero_completo=(
+                f"{row.prefijo}{row.consecutivo}"
+                if row.prefijo is not None and row.consecutivo is not None
+                else None
+            ),
+            subtotal=float(row.subtotal) if row.subtotal is not None else None,
+            descuento=float(row.descuento) if row.descuento is not None else None,
+            iva=float(row.iva or 0.0),
+            total=float(row.total) if row.total is not None else None,
+            estado=row.estado,
+        )
+        for row in rows
+    ]
+
+    return ReporteFacturasResponse(
+        uuid_sucursal=target,
+        desde=desde,
+        hasta=hasta,
+        items=items,
+        next_cursor=next_cursor,
+        generado_en=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/fe",
+    response_model=ReporteFeResponse,
+    summary="Paginated factura_electronica + DIAN ack state (HU-F17.3, BR1)",
+)
+async def reporte_fe(
+    session: DbSession,
+    claims: AdminClaims,
+    estado: str | None = Query(
+        None,
+        description=(
+            "Raw v_factura_electronica_acuse.estado filter. 422 "
+            "invalid_estado if not a real value."
+        ),
+    ),
+    cursor: str | None = Query(None, description="Opaque cursor, created_at-keyed."),
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> ReporteFeResponse:
+    """Cross-branch ``factura_electronica`` listing + latest DIAN ack (BR1).
+
+    Cross-branch by nature -- same reasoning as ``reporte_ocupacion``:
+    deliberately does NOT depend on ``get_tenant_ctx``/
+    ``require_branch_scope`` (those bind a SINGLE
+    ``X-Sucursal-Context`` branch to the ``do_orm_execute`` listener,
+    which would silently narrow this endpoint to one branch). Scope is
+    resolved fresh from ``usuarios_sucursal``
+    (:func:`extract_sucursales_permitidas_fresh`) instead.
+
+    ``estado`` is the RAW ``v_factura_electronica_acuse.estado`` value
+    (BR1) -- see ``_ESTADO_DIAN_VALUES`` module comment for the real
+    (8-value) domain this filter validates against, confirmed drift vs.
+    plan.md's assumed 4 values.
+    """
+    if estado is not None and estado not in _ESTADO_DIAN_VALUES:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_estado",
+                "estado": estado,
+                "allowed": sorted(_ESTADO_DIAN_VALUES),
+            },
+        )
+
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    permitidas = await extract_sucursales_permitidas_fresh(session, actor_uuid=actor_uuid)
+    if not permitidas:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+
+    try:
+        decoded_cursor = cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    stmt = (
+        select(
+            FacturaElectronica.uuid,
+            FacturaElectronica.uuid_sucursal,
+            FacturaElectronica.uuid_factura,
+            FacturaElectronica.prefijo,
+            FacturaElectronica.consecutivo,
+            FacturaElectronica.created_at,
+            v_factura_electronica_acuse.c.cufe,
+            v_factura_electronica_acuse.c.estado,
+            v_factura_electronica_acuse.c.timestamp_evento,
+        )
+        .select_from(FacturaElectronica)
+        .outerjoin(
+            v_factura_electronica_acuse,
+            v_factura_electronica_acuse.c.uuid_factura_electronica == FacturaElectronica.uuid,
+        )
+        .where(FacturaElectronica.uuid_sucursal.in_(permitidas))
+    )
+    if estado is not None:
+        stmt = stmt.where(v_factura_electronica_acuse.c.estado == estado)
+    stmt = stmt.order_by(FacturaElectronica.created_at.desc(), FacturaElectronica.uuid.asc())
+    if decoded_cursor is not None:
+        if decoded_cursor.created_at is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_cursor",
+                    "detail": "cursor missing created_at (required for fe listing)",
+                },
+            )
+        cursor_ts = datetime.fromisoformat(
+            decoded_cursor.created_at.replace("Z", "+00:00")  # noqa: FURB162
+        ).replace(tzinfo=None)
+        cursor_uuid = uuid_lib.UUID(decoded_cursor.uuid)
+        stmt = stmt.where(
+            (FacturaElectronica.created_at < cursor_ts)
+            | ((FacturaElectronica.created_at == cursor_ts) & (FacturaElectronica.uuid > cursor_uuid))
+        )
+    stmt = stmt.limit(limit + 1)
+
+    rows = (await session.execute(stmt)).all()
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = cursor_encode(
+            Cursor(created_at=last.created_at.isoformat(), uuid=str(last.uuid))
+        )
+
+    items = [
+        ReporteFeItem(
+            uuid=row.uuid,
+            uuid_sucursal=row.uuid_sucursal,
+            uuid_factura=row.uuid_factura,
+            numero_completo=(
+                f"{row.prefijo}{row.consecutivo}"
+                if row.prefijo is not None and row.consecutivo is not None
+                else None
+            ),
+            cufe=row.cufe,
+            estado_dian=row.estado,
+            timestamp_evento=row.timestamp_evento,
+        )
+        for row in rows
+    ]
+
+    return ReporteFeResponse(
+        items=items,
+        next_cursor=next_cursor,
+        generado_en=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/pagos",
+    response_model=ReportePagosResponse,
+    summary="Pagos netos agrupados por medio_pago y dia (HU-F17.3, BR2)",
+)
+async def reporte_pagos(
+    session: DbSession,
+    _claims: Annotated[None, Depends(_admin_issuer_dep)],
+    scope: Annotated[BranchScope, Depends(require_branch_scope)],
+    uuid_sucursal: uuid_lib.UUID = Query(  # noqa: B008
+        ...,
+        description="Branch to report on. Must be in the actor's permitted set.",
+    ),
+    desde: date | None = Query(  # noqa: B008
+        None,
+        description="Inclusive UTC start date. Defaults to 6 days back.",
+    ),
+    hasta: date | None = Query(  # noqa: B008
+        None,
+        description="Inclusive UTC end date. Defaults to today (UTC).",
+    ),
+) -> ReportePagosResponse:
+    """One branch's pagos, netted (pago - reverso) and grouped by
+    ``(fecha, medio_pago)`` (BR2).
+
+    ``tipo_movimiento='reverso'`` rows are NEVER filtered out -- they
+    subtract from the same day/medio bucket, same ``CASE`` aggregate
+    shape as ``reporte_operacional``'s ``monto_cobrado_neto_expr``. Joins
+    through ``facturas`` (not ``factura_pagos.uuid_sucursal`` directly)
+    to scope by branch -- same join path ``reporte_operacional``'s
+    ``per_day_pagos`` subquery already uses, trusting ``facturas.
+    uuid_sucursal`` as the source of truth for which branch a payment
+    belongs to.
+    """
+    today = datetime.now(UTC).date()
+    if hasta is None:
+        hasta = today
+    if desde is None:
+        desde = hasta - timedelta(days=6)
+    if desde > hasta:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "rango_fecha_invalido"},
+        )
+
+    if not scope.permitidas:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+    permitidas = scope.narrow(uuid_sucursal)
+    target = next(iter(permitidas))
+
+    medio_pago_expr = func.coalesce(FacturaPagos.medio_pago, "sin_especificar")
+    monto_neto_expr = func.coalesce(
+        func.sum(
+            case(
+                (FacturaPagos.tipo_movimiento == "pago", FacturaPagos.valor),
+                (FacturaPagos.tipo_movimiento == "reverso", -FacturaPagos.valor),
+                else_=0,
+            )
+        ),
+        0.0,
+    )
+    stmt = (
+        select(
+            func.date(FacturaPagos.created_at).label("fecha"),
+            medio_pago_expr.label("medio_pago"),
+            monto_neto_expr.label("monto_neto"),
+        )
+        .select_from(FacturaPagos)
+        .join(Facturas, Facturas.uuid == FacturaPagos.uuid_factura)
+        .where(Facturas.uuid_sucursal == target)
+        .where(func.date(FacturaPagos.created_at) >= desde)
+        .where(func.date(FacturaPagos.created_at) <= hasta)
+        .group_by(func.date(FacturaPagos.created_at), medio_pago_expr)
+        .order_by(func.date(FacturaPagos.created_at), medio_pago_expr)
+    )
+    rows = (await session.execute(stmt)).all()
+    items = [
+        ReportePagoMedioItem(
+            fecha=row.fecha,
+            medio_pago=row.medio_pago,
+            monto_neto=float(row.monto_neto or 0.0),
+        )
+        for row in rows
+    ]
+
+    return ReportePagosResponse(
+        uuid_sucursal=target,
+        desde=desde,
+        hasta=hasta,
+        items=items,
         generado_en=datetime.now(UTC),
     )
 

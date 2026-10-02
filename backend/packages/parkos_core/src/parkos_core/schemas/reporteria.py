@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -176,8 +177,145 @@ class ReporteOcupacionResponse(BaseModel):
     generado_en: datetime
 
 
+class ReporteFacturaItem(BaseModel):
+    """One ``prod.facturas`` row resolved against its REAL columns (HU-F17.3).
+
+    A prior spec for this screen named ``numero_completo``/``iva``/``estado``
+    as if they were plain ``facturas`` columns -- they are not (the real
+    table is ``uuid, uuid_sucursal, subtotal, descuento, total,
+    uuid_ingreso, uuid_salida, fecha_retencion_hasta``; confirmed against
+    ``models/L_E/facturas.py``). Each is resolved here instead:
+
+    - ``numero_completo`` -- ``prefijo + consecutivo`` from the ``factura_
+      electronica`` row joined on ``uuid_factura`` (``None`` when this
+      factura has no FE associated -- not every factura is electronically
+      invoiced).
+    - ``iva`` -- ``SUM(factura_impuestos.valor)`` for this factura (``0``
+      when no tax rows exist yet).
+    - ``estado`` -- derived AD HOC in the query: EXISTS a ``anulaciones``
+      row (``estado='ejecutada'``) pointing at this factura's
+      ``uuid_ingreso``/``uuid_salida`` -> ``anulada``, else ``vigente``.
+      Same "EXISTS anulaciones ejecutada" pattern ``reporte_operacional``'s
+      ``ingresos_activos_subq`` already uses (``tipo_anulable`` is only
+      ever ``ingreso``/``salida`` -- confirmed against
+      ``models/L_W/anulaciones.py`` -- never ``factura`` directly, which
+      is why the derivation goes through the factura's own ingreso/salida
+      pointers rather than a direct FK).
+    """
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    uuid: uuid_lib.UUID
+    uuid_sucursal: uuid_lib.UUID | None
+    created_at: datetime
+    numero_completo: str | None
+    subtotal: float | None
+    descuento: float | None
+    iva: float
+    total: float | None
+    estado: Literal["vigente", "anulada"]
+
+
+class ReporteFacturasResponse(BaseModel):
+    """``GET /admin/reporteria/facturas`` (HU-F17.3)."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    uuid_sucursal: uuid_lib.UUID
+    desde: date
+    hasta: date
+    items: list[ReporteFacturaItem]
+    next_cursor: str | None
+    generado_en: datetime
+
+
+class ReporteFeItem(BaseModel):
+    """One ``factura_electronica`` row + its latest DIAN ack (HU-F17.3, BR1).
+
+    ``estado_dian`` is the RAW ``prod.v_factura_electronica_acuse.estado``
+    value (migration ``0009_add_derived_read_views.py``) -- deliberately
+    NOT the simplified 4-value
+    ``schemas.facturacion.FacturaDisplayFE.estado_dian`` display
+    projection a prior spec for this screen confused it with. The real
+    domain is the UNION of ``repo.workflow.STATE_MACHINES["envio_dian"]``
+    (``pendiente|enviado|ack|error``, the ``POST /envio-dian`` transition
+    endpoint's state machine) and ``dian.cloud.dispatcher``'s own
+    ``ESTADO_*`` constants that mutate ``envio_dian.estado`` directly,
+    bypassing that state machine (``aceptado|rechazado|timeout|
+    en_proceso``) -- confirmed against every writer of this column, see
+    ``dian/cloud_router.py``'s ``_ENVIO_DIAN_ESTADOS`` module comment
+    (same drift already found there for HU-F13.4). ``None`` when the FE
+    has no ``envio_dian`` row yet (never dispatched).
+
+    ``estado_dian`` is intentionally typed ``str | None`` (not a
+    ``Literal``): BR1 asks for "the raw state of the view", and a new
+    ``ESTADO_*`` constant added later to the dispatcher must not require
+    a schema migration here to keep showing up.
+    """
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    uuid: uuid_lib.UUID
+    uuid_sucursal: uuid_lib.UUID | None
+    uuid_factura: uuid_lib.UUID | None
+    numero_completo: str | None
+    cufe: str | None
+    estado_dian: str | None
+    timestamp_evento: datetime | None
+
+
+class ReporteFeResponse(BaseModel):
+    """``GET /admin/reporteria/fe`` (HU-F17.3, BR1). Cross-branch (every
+    branch the admin can see), same reasoning as ``reporte_ocupacion``.
+    """
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    items: list[ReporteFeItem]
+    next_cursor: str | None
+    generado_en: datetime
+
+
+class ReportePagoMedioItem(BaseModel):
+    """One ``(fecha, medio_pago)`` net-amount bucket (HU-F17.3, BR2).
+
+    ``monto_neto`` nets ``tipo_movimiento='reverso'`` rows against
+    ``'pago'`` rows for the same ``medio_pago``/day -- a reverso is NEVER
+    filtered out, only subtracted (BR2), mirroring
+    ``reporte_operacional``'s ``monto_cobrado_neto_expr``. ``medio_pago``
+    is a plain ``str`` (the column has no DB-level enum -- the real
+    values observed across writers are ``efectivo|tarjeta|datafono|
+    transferencia|mixto|suscripcion``, see ``repo/factura.py::
+    crear_factura_pago``); a row with no ``medio_pago`` recorded groups
+    under ``"sin_especificar"`` (same fallback label
+    ``admin_views.dashboard_resumen`` already uses).
+    """
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    fecha: date
+    medio_pago: str
+    monto_neto: float
+
+
+class ReportePagosResponse(BaseModel):
+    """``GET /admin/reporteria/pagos`` (HU-F17.3, BR2)."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    uuid_sucursal: uuid_lib.UUID
+    desde: date
+    hasta: date
+    items: list[ReportePagoMedioItem]
+    generado_en: datetime
+
+
 __all__ = [
     "ReporteEstanciaItem",
+    "ReporteFacturaItem",
+    "ReporteFacturasResponse",
+    "ReporteFeItem",
+    "ReporteFeResponse",
     "ReporteOcupacionAgregada",
     "ReporteOcupacionHeatmapCell",
     "ReporteOcupacionResponse",
@@ -185,4 +323,6 @@ __all__ = [
     "ReporteOperacionalIngresoItem",
     "ReporteOperacionalItem",
     "ReporteOperacionalResponse",
+    "ReportePagoMedioItem",
+    "ReportePagosResponse",
 ]
