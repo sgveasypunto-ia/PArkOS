@@ -25,7 +25,16 @@ import { z } from 'zod';
 const nullableDate = z
   .string()
   .nullable()
-  .transform((v) => (v === null || v === '' ? null : new Date(v)))
+  .transform((v) => {
+    if (v === null || v === '') return null;
+    // Backend serializes naive UTC datetimes (no trailing "Z"). A
+    // date-TIME string without a timezone designator is parsed by
+    // `Date` as LOCAL time per the ECMAScript spec, silently shifting
+    // a UTC instant by the browser's UTC offset. Force UTC parsing by
+    // appending "Z" when no timezone designator is present.
+    const hasTzDesignator = /[zZ]|[+-]\d{2}:?\d{2}$/.test(v);
+    return new Date(hasTzDesignator ? v : `${v}Z`);
+  })
   .refine((d) => d === null || !Number.isNaN(d.getTime()), {
     message: 'fecha inválida',
   });

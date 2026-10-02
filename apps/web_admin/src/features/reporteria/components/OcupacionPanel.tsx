@@ -17,6 +17,7 @@
 import { useTranslation } from 'react-i18next';
 
 import type { OcupacionResponse } from '../api/reporteriaSchema';
+import { formatBackendTimestampLocal } from './dateRange';
 
 export interface OcupacionPanelProps {
   data: OcupacionResponse | undefined;
@@ -24,12 +25,7 @@ export interface OcupacionPanelProps {
   error: Error | null | undefined;
 }
 
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? iso
-    : d.toISOString().replace('T', ' ').slice(0, 19);
-}
+const formatTimestamp = formatBackendTimestampLocal;
 
 export function OcupacionPanel({ data, isLoading, error }: OcupacionPanelProps) {
   const { t } = useTranslation();
