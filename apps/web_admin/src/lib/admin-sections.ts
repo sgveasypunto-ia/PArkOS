@@ -63,7 +63,8 @@ export interface AdminSection {
     | 'configuracion-seguridad'
     | 'reporteria'
     | 'auditoria'
-    | 'pairing';
+    | 'pairing'
+    | 'sync';
   path: string;
   /** i18n key suffix under `home.section.*`. */
   labelKey: string;
@@ -172,6 +173,17 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     labelKey: 'home.section.pairing.label',
     descriptionKey: 'home.section.pairing.description',
     permission: 'gestionar_dian',
+  },
+  {
+    // HU-F19.2: sync monitoring dashboard (heatmap + log + conflictos).
+    // The 3 endpoints it drives (`/admin/sync/log`, `/admin/sync/conflict`,
+    // `/admin/sync/estado`) depend on `requires_issuer("admin-")` only --
+    // no `require_permission(...)` dep, same as `reporteria` above.
+    key: 'sync',
+    path: '/sync',
+    labelKey: 'home.section.sync.label',
+    descriptionKey: 'home.section.sync.description',
+    permission: null,
   },
 ] as const;
 
