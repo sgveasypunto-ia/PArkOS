@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 from datetime import date
 
-from sqlalchemy import Date
+from sqlalchemy import Date, Integer
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,6 +42,15 @@ class SubscripcionesCliente(VersionedBase):
     )
     fecha_inicio_cobertura: Mapped[date | None] = mapped_column(Date, nullable=True)
     fecha_vencimiento: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # HU-F20.2 / CU-06 BR4 (migration 0067): per-subscripcion vencimiento
+    # alert window, editable, DB default 7. Declared ER extension -- same
+    # criterion as 0065's ``debe_cambiar_password`` / 0066's
+    # ``configuracion_caja``. Nullable (not NOT NULL) because NULL means
+    # "use the plan-wide default of 7" at the API edge (see
+    # ``schemas/clientes.py::SubscripcionesClienteCreate``).
+    dias_alerta_pre_vencimiento: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
 
     __table_args__ = (
         {

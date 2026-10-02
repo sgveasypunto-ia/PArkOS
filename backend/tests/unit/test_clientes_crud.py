@@ -311,6 +311,8 @@ class TestSubscripcionesCliente:
         )
         assert c.fecha_inicio_cobertura is None
         assert c.fecha_vencimiento is None
+        # HU-F20.2 / CU-06 BR4: default 7 when omitted on CREATE.
+        assert c.dias_alerta_pre_vencimiento == 7
 
     def test_create_full(self) -> None:
         c = SubscripcionesClienteCreate(
@@ -319,8 +321,31 @@ class TestSubscripcionesCliente:
             uuid_tipo_subscripcion=TIPO_SUBSCRIPCION_UUID,
             fecha_inicio_cobertura=date(2026, 1, 1),
             fecha_vencimiento=date(2027, 1, 1),
+            dias_alerta_pre_vencimiento=15,
         )
         assert c.fecha_vencimiento == date(2027, 1, 1)
+        assert c.dias_alerta_pre_vencimiento == 15
+
+    @pytest.mark.parametrize("valor", [0, -1, 91, 100])
+    def test_create_rejects_dias_alerta_out_of_bounds(self, valor: int) -> None:
+        """HU-F20.2: dias_alerta_pre_vencimiento must be 1-90."""
+        with pytest.raises(ValidationError):
+            SubscripcionesClienteCreate(
+                uuid_cliente=CLIENTE_UUID,
+                uuid_sucursal=SUCURSAL_UUID,
+                uuid_tipo_subscripcion=TIPO_SUBSCRIPCION_UUID,
+                dias_alerta_pre_vencimiento=valor,
+            )
+
+    @pytest.mark.parametrize("valor", [1, 7, 90])
+    def test_create_accepts_dias_alerta_boundary_values(self, valor: int) -> None:
+        c = SubscripcionesClienteCreate(
+            uuid_cliente=CLIENTE_UUID,
+            uuid_sucursal=SUCURSAL_UUID,
+            uuid_tipo_subscripcion=TIPO_SUBSCRIPCION_UUID,
+            dias_alerta_pre_vencimiento=valor,
+        )
+        assert c.dias_alerta_pre_vencimiento == valor
 
     @pytest.mark.parametrize("forbidden", ["vigente_desde", "vigente_hasta", "estado"])
     def test_create_rejects_versioning(self, forbidden: str) -> None:
@@ -340,6 +365,29 @@ class TestSubscripcionesCliente:
             fecha_vencimiento=date(2028, 1, 1),
         )
         assert u.fecha_vencimiento == date(2028, 1, 1)
+        # HU-F20.2: UPDATE defaults to None (not 7) when omitted, so
+        # `model_dump(exclude_none=True)` preserves the existing value via
+        # close_and_insert's carry-forward (not reset to 7 on every edit).
+        assert u.dias_alerta_pre_vencimiento is None
+
+    def test_update_accepts_dias_alerta_in_bounds(self) -> None:
+        u = SubscripcionesClienteUpdate(
+            uuid_cliente=CLIENTE_UUID,
+            uuid_sucursal=SUCURSAL_UUID,
+            uuid_tipo_subscripcion=TIPO_SUBSCRIPCION_UUID,
+            dias_alerta_pre_vencimiento=30,
+        )
+        assert u.dias_alerta_pre_vencimiento == 30
+
+    @pytest.mark.parametrize("valor", [0, -5, 91])
+    def test_update_rejects_dias_alerta_out_of_bounds(self, valor: int) -> None:
+        with pytest.raises(ValidationError):
+            SubscripcionesClienteUpdate(
+                uuid_cliente=CLIENTE_UUID,
+                uuid_sucursal=SUCURSAL_UUID,
+                uuid_tipo_subscripcion=TIPO_SUBSCRIPCION_UUID,
+                dias_alerta_pre_vencimiento=valor,
+            )
 
     def test_filter_defaults(self) -> None:
         f = SubscripcionesClienteFilter()

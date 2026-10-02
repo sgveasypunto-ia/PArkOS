@@ -220,6 +220,11 @@ class SubscripcionesClienteRead(_Base):
     uuid_tipo_subscripcion: uuid_lib.UUID | None
     fecha_inicio_cobertura: date | None
     fecha_vencimiento: date | None
+    # HU-F20.2 / migration 0067. Nullable read-back -- ``None`` means the
+    # row predates the column or was created without an explicit value;
+    # callers that need "the effective alert window" should treat ``None``
+    # as the DB-level default of 7 (CU-06 BR4), not re-derive their own.
+    dias_alerta_pre_vencimiento: int | None = None
     vigente_desde: datetime
     vigente_hasta: datetime | None
     estado: str
@@ -229,24 +234,39 @@ class SubscripcionesClienteRead(_Base):
 
 
 class SubscripcionesClienteCreate(_Base):
-    """REQ-03-V-INSERCION."""
+    """REQ-03-V-INSERCION.
+
+    HU-F20.2 / CU-06 BR4: ``dias_alerta_pre_vencimiento`` is editable per
+    subscripcion (1-90 days), default 7 when the caller omits it --
+    enforced here (API edge) rather than relying solely on the DB
+    ``DEFAULT 7`` (migration 0067), so every write path (including a
+    future sync/replication path that bypasses the DB default) gets the
+    same value.
+    """
 
     uuid_cliente: uuid_lib.UUID | None = None
     uuid_sucursal: uuid_lib.UUID | None = None
     uuid_tipo_subscripcion: uuid_lib.UUID | None = None
     fecha_inicio_cobertura: date | None = None
     fecha_vencimiento: date | None = None
+    dias_alerta_pre_vencimiento: Annotated[int, Field(ge=1, le=90)] | None = 7
 
 
 class SubscripcionesClienteUpdate(_Base):
     """REQ-04-V-ACTUALIZACION. Same shape as
-    :class:`SubscripcionesClienteCreate`."""
+    :class:`SubscripcionesClienteCreate`, except ``dias_alerta_pre_vencimiento``
+    defaults to ``None`` (not 7) on UPDATE -- omitting it on an edit must
+    preserve the existing value via ``close_and_insert``'s load-from-current-row
+    behavior (``repo/versioned.py``), not silently reset every edited
+    subscripcion back to 7.
+    """
 
     uuid_cliente: uuid_lib.UUID | None = None
     uuid_sucursal: uuid_lib.UUID | None = None
     uuid_tipo_subscripcion: uuid_lib.UUID | None = None
     fecha_inicio_cobertura: date | None = None
     fecha_vencimiento: date | None = None
+    dias_alerta_pre_vencimiento: Annotated[int, Field(ge=1, le=90)] | None = None
 
 
 class SubscripcionesClienteFilter(FilterBase):
@@ -332,14 +352,19 @@ class SubscripcionVehiculosCreate(_Base):
     """REQ-03-V-INSERCION.
 
     Both FK UUIDs are required — :meth:`_check_vehicle_count` raises 422
-    if either is ``None``. This is a fast-fail (request-layer) guard;
-    the authoritative count check
-    (``count(active vehiculos for this subscripcion) <=
-    cantidad_maxima_vehiculos of the plan``) runs in the endpoint
-    wrapped by T-PR5-06's ``api/v1/clientes.py`` with
-    ``pg_advisory_xact_lock(uuid_subscripcion_cliente)`` to serialize
-    concurrent inserts (DB-layer guard). See T-PR5-10's test for the
-    advisory-lock semantics.
+    if either is ``None``. This is a fast-fail (request-layer) guard only.
+
+    HU-F20.2 correction (the PR5-era docstring here previously claimed the
+    authoritative count check "runs in the endpoint wrapped by T-PR5-06's
+    ``api/v1/clientes.py`` with ``pg_advisory_xact_lock``" — verified
+    FALSE while building this HU: that endpoint never existed,
+    ``subscripcion-vehiculos`` was mounted 100% generically with zero
+    pre-insert validation). The REAL authoritative checks (cantidad
+    máxima, mismo tipo de vehículo, placa con suscripción vigente) now
+    run in the dedicated ``POST /clientes/subscripcion-vehiculos`` handler
+    at ``api/v1/clientes_subscripcion_vehiculos.py`` — see that module's
+    docstring for the full validation order and the real (not just
+    documented) ``pg_advisory_xact_lock(uuid_subscripcion_cliente)``.
     """
 
     uuid_subscripcion_cliente: uuid_lib.UUID | None = None
@@ -347,22 +372,13 @@ class SubscripcionVehiculosCreate(_Base):
 
     @model_validator(mode="after")
     def _check_vehicle_count(self) -> SubscripcionVehiculosCreate:
-        """REQ-OP-08: count(active vehiculos for this subscripcion) <= cantidad_maxima_vehiculos of the plan.
+        """Fast-fail (request-layer) shape guard: both FK UUIDs non-``None``.
 
-        Production uses ``pg_advisory_xact_lock(uuid_subscripcion_cliente)`` to
-        serialize concurrent inserts (DB-layer guard). The Pydantic validator
-        here is a fast-fail (request-layer guard) — counts from the loaded
-        subscripciones_cliente + tipo_subscripciones rows.
+        The authoritative business checks (cantidad máxima, mismo tipo,
+        placa con suscripción vigente) require DB round-trips (existing
+        vehiculos + plan), so they cannot live in a Pydantic validator —
+        see ``api/v1/clientes_subscripcion_vehiculos.py``.
         """
-        # The actual DB serialization happens in the endpoint via the advisory
-        # lock; this validator does a non-locking best-effort check using the
-        # Pydantic-level data only (no DB access — that's the architect's
-        # intent for PR5: the validator checks obvious overflow pre-DB).
-        #
-        # In PR5 scope, the validator simply enforces shape: requiere non-None
-        # UUID FKs, no emptiness. Real count enforcement is in the endpoint
-        # layer (T-PR5-06's api/v1/clientes.py wraps the make_router POST and
-        # does the actual advisory-lock + count).
         if self.uuid_subscripcion_cliente is None:
             raise ValueError("uuid_subscripcion_cliente is required")
         if self.uuid_vehiculo is None:

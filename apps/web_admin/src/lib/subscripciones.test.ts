@@ -1,7 +1,62 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 
-import { diasParaVencer, useProximasVencer } from './subscripciones';
+import { calcularMontoReferencia, diasParaVencer, useProximasVencer } from './subscripciones';
+
+describe('calcularMontoReferencia (HU-F20.2 BR2)', () => {
+  it('returns the full plan valor when fecha_inicio.day <= 15', () => {
+    const result = calcularMontoReferencia(
+      { valor: 30000, duracion_dias: 30 },
+      '2026-09-10',
+    );
+    expect(result).toBe(30000);
+  });
+
+  it('returns the full plan valor at the day-15 boundary (inclusive)', () => {
+    const result = calcularMontoReferencia(
+      { valor: 30000, duracion_dias: 30 },
+      '2026-09-15',
+    );
+    expect(result).toBe(30000);
+  });
+
+  it('returns the proportional amount when fecha_inicio.day > 15 -- mirrors the backend formula', () => {
+    // September has 30 days; day=20 -> dias_restantes = 10.
+    // valor_dia = 30000/30 = 1000; monto = 1000 * 10 = 10000.
+    const result = calcularMontoReferencia(
+      { valor: 30000, duracion_dias: 30 },
+      '2026-09-20',
+    );
+    expect(result).toBe(10000);
+  });
+
+  it('accepts a string valor (Decimal wire shape) and coerces it', () => {
+    const result = calcularMontoReferencia(
+      { valor: '30000', duracion_dias: 30 },
+      '2026-09-10',
+    );
+    expect(result).toBe(30000);
+  });
+
+  it('returns null when no plan is selected', () => {
+    expect(calcularMontoReferencia(null, '2026-09-10')).toBeNull();
+  });
+
+  it('returns null when fecha_inicio_cobertura is missing', () => {
+    expect(calcularMontoReferencia({ valor: 30000, duracion_dias: 30 }, null)).toBeNull();
+  });
+
+  it('returns null when duracion_dias is 0 or missing (mirrors PlanDuracionDiasInvalidoError)', () => {
+    expect(calcularMontoReferencia({ valor: 30000, duracion_dias: 0 }, '2026-09-20')).toBeNull();
+    expect(calcularMontoReferencia({ valor: 30000, duracion_dias: null }, '2026-09-20')).toBeNull();
+  });
+
+  it('returns null for an invalid fecha_inicio_cobertura string', () => {
+    expect(
+      calcularMontoReferencia({ valor: 30000, duracion_dias: 30 }, 'not-a-date'),
+    ).toBeNull();
+  });
+});
 
 const FIXED_TODAY = new Date('2026-06-15T12:00:00Z');
 
