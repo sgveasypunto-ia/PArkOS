@@ -160,8 +160,10 @@ def _build_router() -> APIRouter:
     # live on a dedicated router to keep the factory path reserved for C+Q.
     r.include_router(workflows_reimpresion.router)
     # HU-F19.4: POST /workflows/alerta/{uuid}/descartar lives on its own
-    # dedicated router (same DEC-TKT-06 rationale) — the factory mount for
-    # ``alerta`` in workflows.py stays write_enabled=False.
+    # dedicated router (same DEC-TKT-06 rationale). HU-F19.5 additionally
+    # moved ALL of alerta's GET routes (list/single/history) onto this
+    # same router -- ``alerta`` is no longer part of workflows.py's
+    # factory mount at all (see that module's docstring).
     r.include_router(workflows_alerta.router)
     # HU-F11.2 fix 2026-09-24: GET /workflows/alert-types (see module docstring
     # for the field-translation this dedicated router does over the generic factory).

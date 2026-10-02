@@ -411,6 +411,31 @@ class AlertaReadList(ReadListBase[AlertaRead]):
     """Cursor-paginated list of :class:`AlertaRead` items."""
 
 
+class AlertaListItem(AlertaRead):
+    """``GET /workflows/alerta`` list item (HU-F19.5, T1).
+
+    Extends :class:`AlertaRead` with ``severity`` -- the catalog
+    classification joined in from ``prod.alert_types`` on the business key
+    ``tipo_alerta`` (``LEFT JOIN``, never ``INNER JOIN``: BR4 requires
+    ``severity=null`` when ``tipo_alerta`` has no matching
+    ``alert_types`` row, rather than dropping the alert from the list).
+    One of ``info`` | ``warning`` | ``critical`` (``alert_types_severity_check``),
+    or ``None``.
+    """
+
+    severity: str | None
+
+
+class AlertaListResponse(ReadListBase[AlertaListItem]):
+    """Cursor-paginated ``GET /workflows/alerta`` response (HU-F19.5, T1).
+
+    Same ``{items, next_cursor}`` contract as :class:`AlertaReadList` (and
+    every other ``make_router``-built list) -- see
+    ``api/v1/workflows_alerta.py``'s module docstring for why this
+    resource's list endpoint is hand-built instead of factory-mounted.
+    """
+
+
 # ---------------------------------------------------------------------------
 # AlertType ([A] — out-of-catalog registry, GET /workflows/alert-types)
 #
@@ -725,6 +750,8 @@ __all__ = [
     "AlertTypeRead",
     "AlertaCreate",
     "AlertaFilter",
+    "AlertaListItem",
+    "AlertaListResponse",
     "AlertaRead",
     "AlertaReadList",
     "AlertaUpdate",
