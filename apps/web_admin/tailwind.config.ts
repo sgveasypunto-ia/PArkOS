@@ -11,16 +11,26 @@ export default {
       screens: { '2xl': '1400px' },
     },
     extend: {
+      /* Fase 1: Poppins es la tipografía de marca — referencia el
+         primitivo --font-family-sans (styles/tokens.css) en vez de
+         duplicar la lista de fallbacks acá. */
       fontFamily: {
-        sans: [
-          '-apple-system',
-          'BlinkMacSystemFont',
-          'SF Pro Text',
-          'Segoe UI',
-          'Inter',
-          'system-ui',
-          'sans-serif',
-        ],
+        sans: 'var(--font-family-sans)',
+      },
+      /* Fase 1: escala tipográfica modular fluida (clamp), definida en
+         styles/tokens.css. Se agrega SIN reemplazar la escala default de
+         Tailwind (text-sm, text-3xl, etc. siguen intactas). */
+      fontSize: {
+        label: ['var(--font-size-label)', { lineHeight: 'var(--line-height-normal)' }],
+        small: ['var(--font-size-small)', { lineHeight: 'var(--line-height-normal)' }],
+        body: ['var(--font-size-body)', { lineHeight: 'var(--line-height-normal)' }],
+        h6: ['var(--font-size-h6)', { lineHeight: 'var(--line-height-snug)' }],
+        h5: ['var(--font-size-h5)', { lineHeight: 'var(--line-height-snug)' }],
+        h4: ['var(--font-size-h4)', { lineHeight: 'var(--line-height-snug)' }],
+        h3: ['var(--font-size-h3)', { lineHeight: 'var(--line-height-tight)' }],
+        h2: ['var(--font-size-h2)', { lineHeight: 'var(--line-height-tight)' }],
+        h1: ['var(--font-size-h1)', { lineHeight: 'var(--line-height-tight)' }],
+        display: ['var(--font-size-display)', { lineHeight: 'var(--line-height-tight)' }],
       },
       colors: {
         border: 'hsl(var(--border))',
@@ -56,17 +66,33 @@ export default {
           DEFAULT: 'hsl(var(--warning))',
           foreground: 'hsl(var(--warning-foreground))',
         },
+        /* Fase 1: tercer estado que faltaba (alineación con
+           electron-sucursal). Mismo patrón que success/warning de arriba. */
+        info: {
+          DEFAULT: 'hsl(var(--info))',
+          foreground: 'hsl(var(--info-foreground))',
+        },
         card: {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        /* Fase 1: faltaba en el tema de Tailwind — sin esto, `bg-popover`
+           / `text-popover-foreground` (ya usados en HeatmapOcupacion,
+           ChartLine y BranchSelector) no generan utilidad y el popover
+           queda transparente. Pair con --popover/--popover-foreground en
+           index.css. */
+        popover: {
+          DEFAULT: 'hsl(var(--popover))',
+          foreground: 'hsl(var(--popover-foreground))',
+        },
       },
       borderRadius: {
         lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
-        xl: 'calc(var(--radius) + 4px)',
+        md: 'calc(var(--radius) - 4px)',
+        sm: 'calc(var(--radius) - 6px)',
+        xl: 'calc(var(--radius) + 6px)',
         '2xl': 'calc(var(--radius) + 8px)',
+        pill: 'var(--radius-pill)',
       },
       /* Many faint layers read as a lifted surface; one dark drop shadow
          reads as a smudge. */

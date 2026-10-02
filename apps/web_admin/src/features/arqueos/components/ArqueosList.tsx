@@ -57,87 +57,86 @@ export function ArqueosList({
 
   return (
     <div className="space-y-3">
-      <table
-        data-testid="arqueos-list-table"
-        className="w-full overflow-x-auto rounded-lg border bg-card text-sm"
-      >
-        <thead className="bg-muted/40 text-left">
-          <tr>
-            <th scope="col" className="px-3 py-2 font-medium">
-              {t('arqueos.table.createdAt')}
-            </th>
-            <th scope="col" className="px-3 py-2 font-medium">
-              {t('arqueos.table.sucursal')}
-            </th>
-            <th scope="col" className="px-3 py-2 font-medium">
-              {t('arqueos.table.tipo')}
-            </th>
-            <th scope="col" className="px-3 py-2 font-medium">
-              {t('arqueos.table.sesion')}
-            </th>
-            <th scope="col" className="px-3 py-2 font-medium">
-              {t('arqueos.table.efectivo')}
-            </th>
-            <th scope="col" className="px-3 py-2 font-medium">
-              {t('arqueos.table.datafono')}
-            </th>
-            <th scope="col" className="px-3 py-2 font-medium">
-              {t('arqueos.table.hashChain')}
-            </th>
-            <th scope="col" className="px-3 py-2" />
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((row) => (
-            <tr
-              key={row.uuid}
-              data-testid={`arqueos-list-row-${row.uuid}`}
-              className="border-t hover:bg-muted/20"
-            >
-              <td className="px-3 py-2 font-mono text-xs">{row.created_at}</td>
-              <td className="px-3 py-2 font-mono text-xs">
-                {row.uuid_sucursal ?? '—'}
-              </td>
-              <td className="px-3 py-2 font-mono text-xs">
-                {row.uuid_tipo_arqueo ?? '—'}
-              </td>
-              <td className="px-3 py-2 font-mono text-xs">
-                {row.uuid_sesion ?? '—'}
-              </td>
-              <td className="px-3 py-2 font-mono text-xs">
-                {row.valor_efectivo_reportado ?? '—'}
-              </td>
-              <td className="px-3 py-2 font-mono text-xs">
-                {row.valor_datafono_reportado ?? '—'}
-              </td>
-              <td className="px-3 py-2">
-                {/* HashChainStatus requires the previous-row hash,
-                    which the current list response doesn't carry. The
-                    detail panel renders the full chain once the row
-                    is opened. Here we show a placeholder until the BE
-                    adds ``hash_anterior`` to ArqueoRead (F18.2 follow-up). */}
-                <span
-                  data-testid="arqueos-list-row-hash"
-                  className="text-xs text-muted-foreground"
-                >
-                  —
-                </span>
-              </td>
-              <td className="px-3 py-2 text-right">
-                <Button
-                  data-testid={`arqueos-list-row-open-${row.uuid}`}
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onSelect(row)}
-                >
-                  {t('arqueos.table.openButton')}
-                </Button>
-              </td>
+      <div className="relative w-full overflow-auto rounded-lg border bg-card">
+        <table data-testid="arqueos-list-table" className="w-full text-sm">
+          <thead className="bg-muted/40 text-left">
+            <tr>
+              <th scope="col" className="px-3 py-2 font-medium">
+                {t('arqueos.table.createdAt')}
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                {t('arqueos.table.sucursal')}
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                {t('arqueos.table.tipo')}
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                {t('arqueos.table.sesion')}
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                {t('arqueos.table.efectivo')}
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                {t('arqueos.table.datafono')}
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                {t('arqueos.table.hashChain')}
+              </th>
+              <th scope="col" className="px-3 py-2" />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {items.map((row) => (
+              <tr
+                key={row.uuid}
+                data-testid={`arqueos-list-row-${row.uuid}`}
+                className="border-t hover:bg-muted/20"
+              >
+                <td className="px-3 py-2 font-mono text-xs">{row.created_at}</td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {row.uuid_sucursal ?? '—'}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {row.uuid_tipo_arqueo ?? '—'}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {row.uuid_sesion ?? '—'}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {row.valor_efectivo_reportado ?? '—'}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {row.valor_datafono_reportado ?? '—'}
+                </td>
+                <td className="px-3 py-2">
+                  {/* HashChainStatus requires the previous-row hash,
+                      which the current list response doesn't carry. The
+                      detail panel renders the full chain once the row
+                      is opened. Here we show a placeholder until the BE
+                      adds ``hash_anterior`` to ArqueoRead (F18.2 follow-up). */}
+                  <span
+                    data-testid="arqueos-list-row-hash"
+                    className="text-xs text-muted-foreground"
+                  >
+                    —
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <Button
+                    data-testid={`arqueos-list-row-open-${row.uuid}`}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onSelect(row)}
+                  >
+                    {t('arqueos.table.openButton')}
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {hasMore && (
         <div className="flex justify-center">
