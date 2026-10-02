@@ -647,6 +647,24 @@ class ReimpresionTicketAnularEndpoint(_Base):
     motivo_anulacion: Annotated[str, StringConstraints(min_length=10, max_length=500)]
 
 
+class AlertaDescartarEndpoint(_Base):
+    """V2 POST ``/api/v1/workflows/alerta/{uuid}/descartar`` request body (HU-F19.4).
+
+    * :attr:`observaciones` is mandatory and non-blank (``min_length=1`` +
+      ``strip_whitespace=True`` rejects whitespace-only strings) per the
+      HU's "observaciones no vacío en la transición" validation.
+      ``prod.alerta`` has NO dedicated ``observaciones`` column (unlike
+      ``validacion_evento``) — the endpoint persists it into the existing
+      ``datos_nuevos`` JSONB column (see ``api/v1/workflows_alerta.py``
+      module docstring for the rationale).
+    * The ``uuid`` (chain root) is supplied via the URL path, NOT the body.
+    * ``extra='forbid'`` (inherited from ``_Base``) rejects client
+      smuggling of ``estado`` / ``uuid_alerta_padre`` etc.
+    """
+
+    observaciones: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
+
+
 # Typed error schemas — discriminator-driven HTTP-status mapping. The
 # handler raises one of these as a Pydantic-validated 4xx body in a
 # ``HTTPException(detail=...)`` envelope. The closed ``Literal`` on

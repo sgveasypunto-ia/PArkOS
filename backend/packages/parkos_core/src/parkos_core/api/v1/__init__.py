@@ -112,6 +112,7 @@ from . import (
     usuarios_login,  # HU-F1.15: GET /usuarios/{uuid}/login (DEC-LOGIN-01.A)
     workflows,
     workflows_alert_types,  # HU-F11.2 fix 2026-09-24: GET /workflows/alert-types
+    workflows_alerta,  # HU-F19.4: POST /workflows/alerta/{uuid}/descartar
     workflows_reimpresion,  # HU-F1.11: POST /workflows/reimpresion-ticket + .../{uuid}/anular
 )
 
@@ -158,6 +159,10 @@ def _build_router() -> APIRouter:
     # HU-F1.11 / DEC-TKT-06: POST /workflows/reimpresion-ticket + /{uuid}/anular
     # live on a dedicated router to keep the factory path reserved for C+Q.
     r.include_router(workflows_reimpresion.router)
+    # HU-F19.4: POST /workflows/alerta/{uuid}/descartar lives on its own
+    # dedicated router (same DEC-TKT-06 rationale) — the factory mount for
+    # ``alerta`` in workflows.py stays write_enabled=False.
+    r.include_router(workflows_alerta.router)
     # HU-F11.2 fix 2026-09-24: GET /workflows/alert-types (see module docstring
     # for the field-translation this dedicated router does over the generic factory).
     r.include_router(workflows_alert_types.router)
