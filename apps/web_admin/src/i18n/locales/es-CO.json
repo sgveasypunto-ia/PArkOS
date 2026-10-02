@@ -13,8 +13,8 @@
     "loadError": "No se pudieron cargar las sucursales. Reintentá."
   },
   "dashboard": {
-    "title": "Panel de sucursal",
-    "subtitle": "Métricas en vivo de la sucursal seleccionada.",
+    "title": "Panel ejecutivo",
+    "subtitle": "Métricas de la sucursal seleccionada + resumen ejecutivo multi-sucursal.",
     "ingresos": "Ingresos",
     "facturas": "Facturas",
     "alertas": "Alertas abiertas",
@@ -172,8 +172,8 @@
     "scope": "Alcance: {{count}} sucursal(es) autorizada(s). Las métricas y el log de auditoría se filtran por la sucursal seleccionada.",
     "section": {
       "dashboard": {
-        "label": "Panel de sucursal",
-        "description": "Ingresos, facturas emitidas y alertas abiertas de la sucursal seleccionada."
+        "label": "Panel ejecutivo",
+        "description": "Ingresos, facturas y alertas de la sucursal seleccionada + resumen ejecutivo multi-sucursal."
       },
       "sucursales": {
         "label": "Sucursales",
