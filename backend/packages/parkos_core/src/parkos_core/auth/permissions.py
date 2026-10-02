@@ -22,11 +22,21 @@ from ..models.V.permisos_usuario import PermisosUsuario
 from .jwt_issuer_guard import verify_jwt
 
 
-def require_permission(codigo: str):
-    """FastAPI dependency factory. 403 if the actor lacks the permission code.
+async def actor_has_permission(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    codigo: str,
+) -> bool:
+    """Core existence check: does ``actor_uuid`` hold an OPEN grant for ``codigo``?
 
-    Args:
-        codigo: The permission code (e.g. ``"config_catalogo"``).
+    Extracted from :func:`require_permission` (HU-F20.3) so a handler that
+    must pick the permission code to check AT RUNTIME — e.g. the
+    ``anulaciones`` transition endpoint, whose required code depends on the
+    chain's CURRENT ``estado`` (``aprobar_anulacion`` from ``iniciada``,
+    ``ejecutar_anulacion`` from ``autorizada``) — can reuse the exact same
+    audited query instead of re-deriving it. ``require_permission`` below is
+    now a thin wrapper around this function; behavior is unchanged.
 
     WHY THIS IS AN EXISTENCE CHECK, NOT A UNIQUENESS CHECK
     ------------------------------------------------------
@@ -61,6 +71,29 @@ def require_permission(codigo: str):
     keeps authorizing closed codes, and the filter alone still explodes
     the moment an actor is granted both open rows of a duplicated code.
     """
+    result = await session.execute(
+        select(PermisosUsuario)
+        .join(Permisos, Permisos.uuid == PermisosUsuario.uuid_permiso)
+        .where(
+            PermisosUsuario.uuid_usuario == actor_uuid,
+            PermisosUsuario.vigente_hasta.is_(None),
+            Permisos.permiso == codigo,
+            Permisos.vigente_hasta.is_(None),
+        )
+    )
+    return result.scalars().first() is not None
+
+
+def require_permission(codigo: str):
+    """FastAPI dependency factory. 403 if the actor lacks the permission code.
+
+    Args:
+        codigo: The permission code (e.g. ``"config_catalogo"``).
+
+    Thin wrapper around :func:`actor_has_permission` — see that function's
+    docstring for why the check is an existence check (``scalars().first()``)
+    rather than a uniqueness check (``scalar_one_or_none()``).
+    """
 
     async def _dep(
         request: Request,
@@ -69,17 +102,7 @@ def require_permission(codigo: str):
         claims = getattr(request.state, "jwt_claims", None) or await verify_jwt(request)
         actor_uuid = uuid_lib.UUID(claims["sub"])
 
-        result = await session.execute(
-            select(PermisosUsuario)
-            .join(Permisos, Permisos.uuid == PermisosUsuario.uuid_permiso)
-            .where(
-                PermisosUsuario.uuid_usuario == actor_uuid,
-                PermisosUsuario.vigente_hasta.is_(None),
-                Permisos.permiso == codigo,
-                Permisos.vigente_hasta.is_(None),
-            )
-        )
-        if result.scalars().first() is None:
+        if not await actor_has_permission(session, actor_uuid=actor_uuid, codigo=codigo):
             raise HTTPException(
                 status_code=403,
                 detail={"error": "permission_denied", "detail": codigo},
@@ -89,4 +112,4 @@ def require_permission(codigo: str):
     return _dep
 
 
-__all__ = ["require_permission"]
+__all__ = ["actor_has_permission", "require_permission"]

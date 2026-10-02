@@ -30,6 +30,10 @@ import { ArqueosPage } from '@/features/arqueos/pages/ArqueosPage';
 import Pairing from '@/features/pairing/pages/Pairing';
 import AlertasList from '@/features/alertas/pages/AlertasList';
 import AlertaDetalle from '@/features/alertas/pages/AlertaDetalle';
+import AnulacionesList from '@/features/workflows/pages/AnulacionesList';
+import AnulacionDetalle from '@/features/workflows/pages/AnulacionDetalle';
+import ReclamosList from '@/features/workflows/pages/ReclamosList';
+import ReclamoDetalle from '@/features/workflows/pages/ReclamoDetalle';
 import SyncDashboard from '@/features/sync/pages/SyncDashboard';
 
 /**
@@ -133,6 +137,15 @@ export default function App() {
               acá en vez de dentro del grupo <RequireSucursal>. */}
           <Route path="/alertas" element={<AlertasList />} />
           <Route path="/alertas/:uuid" element={<AlertaDetalle />} />
+          {/* HU-F20.3: anulaciones y reclamos -- transiciones reales
+              sobre el mismo `[L-W]` workflow chain que alerta (HU-F19.5).
+              Cross-branch cursor-paginated inbox -- mismo motivo que
+              /alertas, /pairing y /arqueos para vivir acá en vez de
+              dentro del grupo <RequireSucursal>. */}
+          <Route path="/anulaciones" element={<AnulacionesList />} />
+          <Route path="/anulaciones/:uuid" element={<AnulacionDetalle />} />
+          <Route path="/reclamos" element={<ReclamosList />} />
+          <Route path="/reclamos/:uuid" element={<ReclamoDetalle />} />
           {/* HU-F19.2: cross-branch sync monitoring dashboard (heatmap +
               resumen verde/amarillo/rojo, log, conflictos). Cross-branch
               by nature (same reasoning as /pairing just above), so it
