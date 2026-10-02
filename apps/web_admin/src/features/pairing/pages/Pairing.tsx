@@ -2,8 +2,16 @@
  * `<Pairing />` — HU-F19.3 "Pairing de sucursales" admin screen.
  *
  * Lists every sucursal with a derived pairing-status badge and two row
- * actions: "Generar token" (always enabled) and "Revocar" (enabled
- * only when there is something actionable to revoke).
+ * actions, both ALWAYS enabled: "Generar token", and "Revocar" (opens
+ * `<RevocarPairingModal />`, whose own two independent sections each
+ * gate their own actionability — Section A disables itself when there
+ * is no locally-known token to revoke; Section B, the advanced
+ * sync-credential revoke, needs no local record at all. The row button
+ * itself must stay unconditionally enabled or Section B becomes
+ * unreachable for exactly the common case it exists for: a sucursal
+ * with no locally-known pairing token, e.g. a different browser/
+ * session, or after this one revoked/expired — bugfix, QA batch
+ * pairing).
  *
  * BR4 (real-world gap, no clean backend answer — documented workaround,
  * do not re-derive a different one): `GET /api/v1/sucursales` hardcodes
@@ -109,7 +117,6 @@ function PairingRow({ sucursal, localVersion, onGenerar, onRevocar }: PairingRow
     read: data,
   });
   const badge = STATUS_BADGE[status];
-  const canRevoke = status === 'pendiente' || status === 'pareada';
 
   return (
     <TableRow data-testid={`pairing-row-${sucursal.uuid}`}>
@@ -136,7 +143,6 @@ function PairingRow({ sucursal, localVersion, onGenerar, onRevocar }: PairingRow
             type="button"
             variant="ghost"
             size="sm"
-            disabled={!canRevoke}
             onClick={() => onRevocar(sucursal, pairingTokenUuid)}
             data-testid={`pairing-revocar-${sucursal.uuid}`}
           >

@@ -57,6 +57,7 @@ from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...auth.tokens import JWT_OVERLAP_HOURS
 from ...models.A.pairing_tokens import PairingToken
+from ...models.A.revoked_sync_jwts import RevokedSyncJwt
 from ...repo.pairing import (
     DEFAULT_TTL_HOURS,
     generate_pairing_token,
@@ -176,6 +177,9 @@ async def issue_pairing_token(
     """Mint a fresh pairing token. Returns the plaintext ONCE.
 
     - 429 on the 6th request in a 60-min window per ``actor_uuid``.
+    - 403 if ``uuid_sucursal`` is outside the admin's tenant scope (the
+      row would otherwise be INSERTed but never readable back — see
+      the bugfix note below).
     - The response's ``token`` field carries the plaintext; the DB
       stores only the SHA-256 hash. The admin MUST capture the
       plaintext before the response is consumed.
@@ -189,6 +193,25 @@ async def issue_pairing_token(
                 "error": "invalid_ttl_hours",
                 "detail": f"ttl_hours must be 1..{MAX_TTL_HOURS}",
             },
+        )
+
+    # Tenant scope check — same guard as `read_pairing_token` /
+    # `revoke_pairing_token` below, but performed BEFORE the insert
+    # this time (bugfix, QA batch pairing): row-level security scopes
+    # the post-insert `session.refresh()` SELECT to the admin's
+    # `sucursales_permitidas`, so issuing for an out-of-scope
+    # `uuid_sucursal` used to INSERT an orphaned, never-readable row
+    # and then crash with an unhandled 500 (`Could not refresh
+    # instance`) instead of a clean 403 — losing the rate-limit budget
+    # and leaving a dead row behind. Reject up front instead.
+    if (
+        payload.uuid_sucursal is not None
+        and ctx.sucursal_uuid is not None
+        and payload.uuid_sucursal != ctx.sucursal_uuid
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "tenant_scope_violation"},
         )
 
     # Rate limit — 5 issuances per hour per admin (T-PR8-13).
@@ -251,6 +274,17 @@ async def read_pairing_token(
     This public endpoint drops the hash at the serialization boundary
     (defense in depth — the schema permits the field, the endpoint
     filters it).
+
+    Bugfix (QA batch pairing): ``row.revoked_at`` / ``row.revoked_by``
+    are ALWAYS NULL on the ``pairing_tokens`` row itself — the [A]
+    inmutable trigger blocks UPDATE, so ``revoke_pairing_token`` below
+    records the revocation as a sibling row in ``revoked_sync_jwts``
+    instead (see that endpoint's docstring). Reading only the
+    ``pairing_tokens`` row therefore used to report a revoked token as
+    still "pendiente"/"pareada" forever — the admin UI's "Revocado"
+    badge was unreachable even though the revocation was real and
+    already enforced at consume-time via ``is_revoked``. Overlay the
+    revocation here so the read-back matches consume-time truth.
     """
     row = await _load_pairing_token(session, pairing_token_uuid)
     if row is None:
@@ -270,6 +304,8 @@ async def read_pairing_token(
             detail={"error": "tenant_scope_violation"},
         )
 
+    revocation = await _load_pairing_token_revocation(session, row.uuid)
+
     # Build the response manually to strip ``pairing_token_hash``.
     # ``PairingTokenReadPublic`` is the public shape; the ORM row is
     # 1:1 minus the hash column.
@@ -282,8 +318,8 @@ async def read_pairing_token(
         expires_at=row.expires_at,
         used=row.used,
         used_at=row.used_at,
-        revoked_at=row.revoked_at,
-        revoked_by=row.revoked_by,
+        revoked_at=revocation.vigente_desde if revocation is not None else None,
+        revoked_by=revocation.revoked_by if revocation is not None else None,
     )
 
 
@@ -445,6 +481,32 @@ async def _load_pairing_token(
         select(PairingToken)
         .where(PairingToken.uuid == pairing_token_uuid)
         .order_by(PairingToken.fecha_retencion_hasta.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def _load_pairing_token_revocation(
+    session: AsyncSession,
+    pairing_token_uuid: uuid_lib.UUID,
+) -> RevokedSyncJwt | None:
+    """Look up this pairing token's revocation row, if any.
+
+    Mirrors the ``kid="pairing_token:<uuid>"`` / ``jwt_uuid=str(uuid)``
+    convention from :func:`revoke_pairing_token` above. Ordered by
+    ``vigente_desde DESC`` so the most recent revocation wins (there
+    should only ever be one per the UK, but defensive ordering costs
+    nothing). Returns ``None`` when the token was never revoked.
+    """
+    kid = f"pairing_token:{pairing_token_uuid}"
+    stmt = (
+        select(RevokedSyncJwt)
+        .where(
+            RevokedSyncJwt.jwt_kid == kid,
+            RevokedSyncJwt.jwt_uuid == str(pairing_token_uuid),
+        )
+        .order_by(RevokedSyncJwt.vigente_desde.desc())
         .limit(1)
     )
     result = await session.execute(stmt)

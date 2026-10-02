@@ -208,6 +208,23 @@ class TestIssuePairingToken:
         )
         assert resp.status_code == 422
 
+    def test_rejects_out_of_scope_sucursal_before_insert(
+        self, client: TestClient, fake_session: MagicMock
+    ):
+        """Regression (QA batch pairing): issuing for a `uuid_sucursal`
+        outside the admin's tenant scope must 403 BEFORE inserting —
+        not INSERT an orphaned, never-readable row and then crash the
+        post-insert `session.refresh()` with an unhandled 500."""
+        other_sucursal = uuid_lib.UUID("00000000-0000-0000-0000-0000000000b2")
+        resp = client.post(
+            "/admin/pairing-tokens",
+            json={"uuid_sucursal": str(other_sucursal), "ttl_hours": 24},
+            headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+        )
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "tenant_scope_violation"
+        assert len(fake_session.added) == 0
+
     def test_rate_limit_6th_returns_429(self, client: TestClient):
         """6th request within the hour returns 429."""
         for _ in range(5):
@@ -237,8 +254,10 @@ class TestReadPairingToken:
         self, client: TestClient, fake_session: MagicMock
     ):
         row = _make_row(uuid=TOKEN_UUID, used=False)
+        # 1st execute() = the pairing_tokens lookup, 2nd = the
+        # revoked_sync_jwts revocation lookup (no revocation here).
         fake_session.execute = AsyncMock(
-            return_value=_result_with_scalar(row)
+            side_effect=[_result_with_scalar(row), _result_with_scalar(None)]
         )
 
         resp = client.get(
@@ -252,8 +271,35 @@ class TestReadPairingToken:
         assert body["uuid"] == str(TOKEN_UUID)
         assert body["uuid_sucursal"] == str(SUCURSAL_UUID)
         assert body["used"] is False
+        assert body["revoked_at"] is None
         # pairing_token_hash is NOT in the public shape.
         assert "pairing_token_hash" not in body
+
+    def test_revoked_token_surfaces_revoked_at_from_sibling_table(
+        self, client: TestClient, fake_session: MagicMock
+    ):
+        """Regression (QA batch pairing): `pairing_tokens.revoked_at` is
+        ALWAYS NULL (the [A] inmutable trigger blocks UPDATE) — the
+        real revocation timestamp/actor live in `revoked_sync_jwts`.
+        The read endpoint must overlay it so the admin UI's "Revocado"
+        badge is reachable."""
+        row = _make_row(uuid=TOKEN_UUID, used=False)
+        revoked_at = _now_naive()
+        revocation = MagicMock(name="RevokedSyncJwt")
+        revocation.vigente_desde = revoked_at
+        revocation.revoked_by = ACTOR_UUID
+        fake_session.execute = AsyncMock(
+            side_effect=[_result_with_scalar(row), _result_with_scalar(revocation)]
+        )
+
+        resp = client.get(
+            f"/admin/pairing-tokens/{TOKEN_UUID}",
+            headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["revoked_at"] is not None
+        assert body["revoked_by"] == str(ACTOR_UUID)
 
     def test_404_when_not_found(self, client: TestClient, fake_session: MagicMock):
         fake_session.execute = AsyncMock(

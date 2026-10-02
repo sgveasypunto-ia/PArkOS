@@ -223,7 +223,12 @@ describe('Pairing page', () => {
         screen.getByTestId(`pairing-status-${SUC_REVOCADA.uuid as string}`),
       ).toHaveTextContent('Revocado');
     });
-    expect(screen.getByTestId(`pairing-revocar-${SUC_REVOCADA.uuid as string}`)).toBeDisabled();
+    // Bugfix (QA batch pairing): the row button must stay enabled
+    // regardless of the derived status — `<RevocarPairingModal />`'s
+    // Section B (advanced sync-credential revoke) needs no locally-
+    // known token at all, so gating the row button on "something
+    // actionable in Section A" made Section B unreachable here.
+    expect(screen.getByTestId(`pairing-revocar-${SUC_REVOCADA.uuid as string}`)).toBeEnabled();
   });
 
   it('derives "Expirado" from a local record whose token is unused and past expires_at', async () => {
@@ -244,7 +249,9 @@ describe('Pairing page', () => {
         screen.getByTestId(`pairing-status-${SUC_EXPIRADA.uuid as string}`),
       ).toHaveTextContent('Expirado');
     });
-    expect(screen.getByTestId(`pairing-revocar-${SUC_EXPIRADA.uuid as string}`)).toBeDisabled();
+    // Bugfix (QA batch pairing): see the "Revocado" case above — the
+    // row button stays enabled so Section B stays reachable.
+    expect(screen.getByTestId(`pairing-revocar-${SUC_EXPIRADA.uuid as string}`)).toBeEnabled();
   });
 
   it('treats a local record whose GET 404s the same as "Sin información"', async () => {
