@@ -323,6 +323,125 @@ def _mount_catalog(
     )
 
 
+async def _assert_no_vigente_duplicate(
+    session: AsyncSession,
+    model_cls: type,
+    *,
+    field_name: str,
+    value: str,
+    exclude_uuid: uuid_lib.UUID | None = None,
+) -> None:
+    """Reject a write that would leave two vigente rows with the same
+    business-key value on a ``[V]`` catalog table.
+
+    Discovered live via manual QA (2026-10-02, batch ``qa/batch-catalogos``):
+    ``router_factory.make_router``'s generic POST (``current_uuid=None``)
+    never checks for an existing vigente row before inserting — the only
+    DB-level guard is ``UniqueConstraint(tipo, vigente_desde)``, which never
+    fires because ``vigente_desde`` is a fresh ``NOW()`` on every insert.
+    Submitting "natural" via "Nueva versión" while a "natural" row was
+    already vigente silently produced TWO vigente rows with the same
+    ``tipo`` — both rendered as "Vigente" in the UI with no way to tell
+    which one is authoritative. Each catalog config already documents its
+    own business-key field (see ``configs/*.config.ts`` comments); this
+    helper is the server-side guard for it.
+
+    Mirrors the style of the ``tipos_vehiculo`` 409 guards below —
+    check-before-write, typed detail, no change to ``router_factory.py``
+    (CI gate ``factory_intact``). ``exclude_uuid`` lets PUT exclude the row
+    being edited itself (renaming a row to its own current value is not a
+    duplicate).
+    """
+    column = getattr(model_cls, field_name)
+    stmt = select(func.count()).select_from(model_cls).where(
+        model_cls.vigente_hasta.is_(None),
+        column == value,
+    )
+    if exclude_uuid is not None:
+        stmt = stmt.where(model_cls.uuid != exclude_uuid)
+    result = await session.execute(stmt)
+    if int(result.scalar_one()) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "catalogo_duplicado_vigente",
+                "field": field_name,
+                "value": value,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-vigente guard on ``tipo-persona`` POST/PUT (business key ``tipo``)
+# ---------------------------------------------------------------------------
+#
+# Same shadow-the-factory pattern as the ``tipos_vehiculo`` dedicated router
+# below: the dedicated router is mounted FIRST on ``catalogos.router`` so
+# FastAPI's order-of-registration resolver routes POST/PUT here instead of
+# to the factory. GET stays on the factory / ``_register_global_catalog_reads``.
+_tipo_persona_dedicated_router = APIRouter(prefix="/tipo-persona", tags=["tipo-persona"])
+_tipo_persona_dedicated_perm_dep = require_permission("config_catalogo")
+_tipo_persona_dedicated_issuer_dep = requires_issuer("admin-", "operador-")
+
+
+@_tipo_persona_dedicated_router.post(
+    "",
+    response_model=TipoPersonaRead,
+    status_code=201,
+    dependencies=[Depends(_tipo_persona_dedicated_perm_dep)],
+)
+async def create_tipo_persona_dedicated(
+    payload: TipoPersonaCreate,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tipo_persona_dedicated_issuer_dep),
+) -> TipoPersonaRead:
+    await _assert_no_vigente_duplicate(
+        session, TipoPersona, field_name="tipo", value=payload.tipo
+    )
+    new_row = await close_and_insert(
+        session,
+        TipoPersona,
+        current_uuid=None,
+        new_attrs={"tipo": payload.tipo},
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TipoPersonaRead.model_validate(new_row)
+
+
+@_tipo_persona_dedicated_router.put(
+    "/{uuid}",
+    response_model=TipoPersonaRead,
+    dependencies=[Depends(_tipo_persona_dedicated_perm_dep)],
+)
+async def update_tipo_persona_dedicated(
+    payload: TipoPersonaUpdate,
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tipo_persona_dedicated_issuer_dep),
+) -> TipoPersonaRead:
+    await _assert_no_vigente_duplicate(
+        session, TipoPersona, field_name="tipo", value=payload.tipo, exclude_uuid=uuid
+    )
+    new_row = await close_and_insert(
+        session,
+        TipoPersona,
+        current_uuid=uuid,
+        new_attrs={"tipo": payload.tipo},
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TipoPersonaRead.model_validate(new_row)
+
+
+router.include_router(_tipo_persona_dedicated_router)
+
 _mount_catalog(
     resource="tipo-persona",
     model_cls=TipoPersona,
@@ -555,6 +674,73 @@ _mount_catalog(
     update_schema=TipoSubscripcionesUpdate,
     tenant_free_reads=True,
 )
+# ---------------------------------------------------------------------------
+# Duplicate-vigente guard on ``tipo-tarifa`` POST/PUT (business key ``tipo``)
+# ---------------------------------------------------------------------------
+# Same rationale/pattern as the ``tipo-persona`` dedicated router above.
+_tipo_tarifa_dedicated_router = APIRouter(prefix="/tipo-tarifa", tags=["tipo-tarifa"])
+_tipo_tarifa_dedicated_perm_dep = require_permission("config_catalogo")
+_tipo_tarifa_dedicated_issuer_dep = requires_issuer("admin-", "operador-")
+
+
+@_tipo_tarifa_dedicated_router.post(
+    "",
+    response_model=TipoTarifaRead,
+    status_code=201,
+    dependencies=[Depends(_tipo_tarifa_dedicated_perm_dep)],
+)
+async def create_tipo_tarifa_dedicated(
+    payload: TipoTarifaCreate,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tipo_tarifa_dedicated_issuer_dep),
+) -> TipoTarifaRead:
+    await _assert_no_vigente_duplicate(
+        session, TipoTarifa, field_name="tipo", value=payload.tipo
+    )
+    new_row = await close_and_insert(
+        session,
+        TipoTarifa,
+        current_uuid=None,
+        new_attrs={"tipo": payload.tipo},
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TipoTarifaRead.model_validate(new_row)
+
+
+@_tipo_tarifa_dedicated_router.put(
+    "/{uuid}",
+    response_model=TipoTarifaRead,
+    dependencies=[Depends(_tipo_tarifa_dedicated_perm_dep)],
+)
+async def update_tipo_tarifa_dedicated(
+    payload: TipoTarifaUpdate,
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_tipo_tarifa_dedicated_issuer_dep),
+) -> TipoTarifaRead:
+    await _assert_no_vigente_duplicate(
+        session, TipoTarifa, field_name="tipo", value=payload.tipo, exclude_uuid=uuid
+    )
+    new_row = await close_and_insert(
+        session,
+        TipoTarifa,
+        current_uuid=uuid,
+        new_attrs={"tipo": payload.tipo},
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return TipoTarifaRead.model_validate(new_row)
+
+
+router.include_router(_tipo_tarifa_dedicated_router)
+
 _mount_catalog(
     resource="tipo-tarifa",
     model_cls=TipoTarifa,
