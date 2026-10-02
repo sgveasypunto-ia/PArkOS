@@ -62,6 +62,12 @@ function mapConflictError(
       'No se puede deshabilitar: hay vehículos con suscripciones vigentes que usan este tipo.',
     );
   }
+  if (code === 'catalogo_duplicado_vigente') {
+    return t(
+      'catalogos.duplicadoVigente',
+      'Ya existe una versión vigente con ese mismo valor.',
+    );
+  }
   return t('catalogos.submitError', 'No se pudo guardar. Reintentá.');
 }
 
