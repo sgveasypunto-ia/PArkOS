@@ -43,6 +43,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useSucursal } from '@/lib/sucursal-context';
+import { ThemeToggle } from '@/components/chrome/ThemeToggle';
 
 function avatarLabel(email: string | null, uuid: string): string {
   if (email && email.length > 0) {
@@ -124,6 +125,8 @@ export function TopNav(): JSX.Element {
             </span>
           </button>
         )}
+
+        <ThemeToggle />
 
         <DropdownMenu>
           <DropdownMenuTrigger

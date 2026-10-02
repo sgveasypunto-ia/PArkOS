@@ -1,0 +1,115 @@
+/**
+ * Design tokens — primitivos (Fase 1, alineación al estándar de
+ * electron-sucursal — ver fix/web-admin-design-tokens).
+ *
+ * Puerto 1:1 desde `apps/electron-sucursal/src/renderer/styles/tokens.css`,
+ * que es la fuente de verdad de marca (naranja EasyPunto + grises). Los
+ * valores y su procedencia (marca vs. interpolación propia) se documentan
+ * igual que en el original para no perder esa trazabilidad.
+ *
+ * Capas de este sistema:
+ *   1. PRIMITIVOS (este archivo)      → valores crudos, sin significado de uso.
+ *   2. SEMÁNTICOS shadcn (index.css)  → --background/--foreground/--primary/...
+ *      Son los que Tailwind ya envuelve como hsl(var(--x)) en tailwind.config.ts
+ *      y los que consumen los componentes shadcn existentes (bg-primary,
+ *      text-muted-foreground, etc.). NO renombrar estos nombres.
+ *
+ * Formato: los primitivos de color usan tripleta HSL sin el wrapper hsl()
+ * ("H S% L%"), igual que ya hacía este proyecto en index.css — así
+ * Tailwind los sigue pudiendo envolver como hsl(var(--token)).
+ *
+ * No se tocan --success, --warning, --chart-N, --shadow-elevation-N,
+ * --surface-translucent (y su alpha/border), --ease-macos, --duration-fast
+ * ni --duration-base: son tokens propios de web_admin ya consumidos por
+ * componentes existentes (ChartPie, dropdown-menu, HeatmapOcupacion, etc.)
+ * y fuera del alcance de esta fase.
+ */
+
+:root {
+  /* ============================================================
+     COLOR — primitivos de marca (naranja EasyPunto + grises)
+     ============================================================ */
+
+  /* Naranja de marca (EasyPunto). 500 y 300 son los ÚNICOS valores
+     extraídos tal cual de la marca confirmada (#E85F24 y #FFBC7D).
+     El resto de la rampa (50-200, 400, 600-900) es interpolación
+     propia sobre el mismo matiz, para tener una escala usable. */
+  --orange-50: 24 100% 96%;
+  --orange-100: 24 100% 91%;
+  --orange-200: 25 100% 83%;
+  --orange-300: 29 100% 75%; /* #FFBC7D — marca (color de transición/loading) */
+  --orange-400: 21 90% 64%; /* interpolación propia */
+  --orange-500: 18 81% 53%; /* #E85F24 — marca (primario/acento), SIN ajustar */
+  --orange-600: 17 78% 45%; /* interpolación propia */
+  --orange-700: 16 75% 37%; /* interpolación propia */
+  --orange-800: 15 72% 29%; /* interpolación propia */
+  --orange-900: 14 70% 22%; /* interpolación propia */
+
+  /* Neutros. 50, 400, 500, 800 y 900 son valores confirmados de
+     marca; el resto (0, 100, 200, 300, 600, 700) es interpolación
+     propia para completar la rampa. 800 y 900 quedan invertidos en
+     "oscuridad" a propósito: #222222 (900) es más oscuro que
+     #323133 (800), lo que permite usar 900 como fondo y 800 como
+     superficie de tarjeta en modo oscuro (superficie MÁS CLARA que
+     el fondo = principio de elevación en oscuro). */
+  --gray-0: 0 0% 100%;
+  --gray-50: 240 13% 97%; /* #F6F6F8 — marca (neutro claro) */
+  --gray-100: 220 14% 93%; /* interpolación propia */
+  --gray-200: 220 13% 91%; /* interpolación propia */
+  --gray-300: 220 9% 80%; /* interpolación propia */
+  --gray-400: 0 0% 41%; /* #696969 — marca (gris adicional, uso: iconografía/dividers) */
+  --gray-500: 0 0% 39%; /* #636363 — marca (texto) */
+  --gray-600: 0 0% 33%; /* interpolación propia */
+  --gray-700: 0 0% 24%; /* interpolación propia */
+  --gray-800: 270 2% 20%; /* #323133 — marca (secundario/oscuro) */
+  --gray-900: 0 0% 13%; /* #222222 — marca (neutro oscuro adicional) */
+
+  /* Interpolación propia: gris claro reservado ÚNICAMENTE para
+     texto secundario legible en modo oscuro — los grises de marca
+     (#636363/#696969, ~39-41% L) son ilegibles como texto secundario
+     sobre fondo oscuro (dan <3:1). */
+  --gray-dark-secondary: 0 0% 65%;
+
+  /* ============================================================
+     TIPOGRAFÍA — escala modular fluida (clamp), Poppins
+     ============================================================ */
+
+  /* Poppins es la tipografía de marca (pesos 400/500/600/700,
+     instalada vía @fontsource/poppins). El resto de la escala
+     (tamaños concretos) es decisión propia, portada sin cambios desde
+     electron-sucursal para mantener paridad visual entre ambas apps. */
+  --font-family-sans: 'Poppins', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+
+  --font-size-label: clamp(0.75rem, 0.72rem + 0.1vw, 0.8125rem); /* 12→13px */
+  --font-size-small: clamp(0.8125rem, 0.78rem + 0.15vw, 0.875rem); /* 13→14px */
+  --font-size-body: clamp(0.9375rem, 0.9rem + 0.2vw, 1rem); /* 15→16px */
+  --font-size-h6: clamp(1rem, 0.95rem + 0.25vw, 1.125rem); /* 16→18px */
+  --font-size-h5: clamp(1.125rem, 1.05rem + 0.35vw, 1.25rem); /* 18→20px */
+  --font-size-h4: clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem); /* 20→24px */
+  --font-size-h3: clamp(1.5rem, 1.3rem + 0.8vw, 1.875rem); /* 24→30px */
+  --font-size-h2: clamp(1.875rem, 1.6rem + 1.2vw, 2.25rem); /* 30→36px */
+  --font-size-h1: clamp(2.25rem, 1.9rem + 1.6vw, 3rem); /* 36→48px */
+  --font-size-display: clamp(2.75rem, 2.2rem + 2.5vw, 4rem); /* 44→64px */
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.15;
+  --line-height-snug: 1.3;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.65;
+
+  /* ============================================================
+     RADIOS — extremos que faltaban
+     ============================================================ */
+
+  /* sm/md/lg ya viven en index.css, derivados de --radius (0.875rem,
+     estilo "Apple sobrio", igual que electron-sucursal). Acá solo se
+     agregan los extremos que faltaban para tener sm/md/lg/xl/pill
+     completos, igual que en la app de referencia. */
+  --radius-xs: 0.25rem; /* 4px — chips pequeños */
+  --radius-pill: 9999px; /* full-round puntual (chips/badges), no el default de los botones */
+}

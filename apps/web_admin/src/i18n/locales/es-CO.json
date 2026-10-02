@@ -704,7 +704,14 @@
     "settingsSoon": "Próximamente",
     "logout": "Cerrar sesión",
     "signingOut": "Saliendo…",
-    "switchBranch": "Cambiar sucursal"
+    "switchBranch": "Cambiar sucursal",
+    "themeToggle": "Cambiar tema",
+    "moreActions": "Más acciones"
+  },
+  "theme": {
+    "light": "Claro",
+    "dark": "Oscuro",
+    "system": "Sistema"
   },
   "perfil": {
     "title": "Mi perfil",

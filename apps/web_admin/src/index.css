@@ -1,28 +1,47 @@
+@import '@fontsource/poppins/400.css';
+@import '@fontsource/poppins/500.css';
+@import '@fontsource/poppins/600.css';
+@import '@fontsource/poppins/700.css';
+@import './styles/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * Theme — Fase 1 (alineación de tokens al estándar de electron-sucursal,
+ * ver fix/web-admin-design-tokens). Reemplaza la paleta "macOS blue"
+ * placeholder por la paleta real de marca (naranja EasyPunto + grises),
+ * ya portada en `./styles/tokens.css`. --destructive, --success, --warning,
+ * --chart-*, --shadow-elevation-*, --surface-translucent* y --ease-macos /
+ * --duration-fast / --duration-base NO se tocan: son tokens propios de
+ * web_admin ya consumidos por componentes existentes (ChartPie,
+ * dropdown-menu, HeatmapOcupacion) y fuera del alcance de esta fase.
+ */
 @layer base {
   :root {
-    /* Surfaces: chrome is a cool off-white, cards float above it in pure white. */
-    --background: 220 20% 98%;
-    --foreground: 220 15% 12%;
-    --card: 0 0% 100%;
-    --card-foreground: 220 15% 12%;
+    /* Surfaces: paleta de marca (naranja EasyPunto + grises), igual que
+       electron-sucursal. En claro la elevación es por sombra
+       (.shadow-apple-*), no por color de superficie. */
+    --background: var(--gray-50); /* #F6F6F8 marca */
+    --foreground: var(--gray-800); /* #323133 marca */
+    --card: var(--gray-0);
+    --card-foreground: var(--gray-800);
+    --popover: var(--gray-0);
+    --popover-foreground: var(--gray-800);
 
-    /* macOS system blue is #007AFF, but that is 4.02:1 against white and
-       button.tsx paints 14px white text on this fill, so it misses AA.
-       45% lightness holds the same hue at 4.76:1. --ring keeps the true
-       system blue because a focus ring only needs 3:1. */
-    --primary: 211 100% 45%;
-    --primary-foreground: 0 0% 100%;
+    /* Marca — primario/acento. --primary-foreground usa el neutro oscuro
+       de marca (no blanco): blanco sobre #E85F24 da 3.45:1 y falla AA
+       texto normal; #222222 sobre #E85F24 da 4.62:1 y pasa. */
+    --primary: var(--orange-500); /* #E85F24 marca, SIN ajustar */
+    --primary-foreground: var(--gray-900);
 
-    --secondary: 220 16% 94%;
-    --secondary-foreground: 220 15% 20%;
-    --muted: 220 16% 95%;
-    --muted-foreground: 220 9% 42%;
-    --accent: 220 16% 92%;
-    --accent-foreground: 220 15% 18%;
+    --secondary: var(--gray-100);
+    --secondary-foreground: var(--gray-800);
+    --muted: var(--gray-100);
+    --muted-foreground: var(--gray-500); /* #636363 marca ("texto") — 5.57:1 sobre --background, PASA AA */
+    --accent: var(--gray-100);
+    --accent-foreground: var(--gray-800);
 
     /* Deepened past #FF3B30 so white button text clears AA; the stock
        macOS red is only 3.3:1 on white and fails for 14px text. */
@@ -35,13 +54,17 @@
     --success-foreground: 0 0% 100%;
     --warning: 36 100% 33%;
     --warning-foreground: 0 0% 100%;
+    /* Fase 1: tercer estado que faltaba (alineación con electron-sucursal).
+       Mismo criterio AA-driven que success/warning de arriba. */
+    --info: 211 100% 50%;
+    --info-foreground: 0 0% 100%;
 
-    /* Separators in macOS are far softer than the default slate. */
-    --border: 220 13% 87%;
-    --input: 220 13% 87%;
-    --ring: 211 100% 50%;
+    --border: var(--gray-200);
+    --input: var(--gray-200);
+    --ring: var(--orange-500);
 
-    --radius: 0.75rem;
+    /* Radio base — 0.875rem, igual que electron-sucursal (antes 0.75rem). */
+    --radius: 0.875rem;
 
     /* Chart categorical palette (dataviz skill reference instance, slots
        1-5 of its validated 8-hue default order -- re-ordered-July-2026
@@ -81,22 +104,28 @@
   }
 
   .dark {
-    --background: 240 5% 10%;
-    --foreground: 220 15% 95%;
-    --card: 240 5% 13%;
-    --card-foreground: 220 15% 95%;
+    --background: var(--gray-900); /* #222222 marca */
+    --foreground: var(--gray-50); /* #F6F6F8 marca, reutilizado como texto claro */
+    --card: var(--gray-800); /* #323133 marca — más claro que --background: elevación por superficie */
+    --card-foreground: var(--gray-50);
+    --popover: var(--gray-700); /* un paso más claro que --card: capa flotante más "elevada" */
+    --popover-foreground: var(--gray-50);
 
-    --primary: 210 100% 52%;
-    /* Dark text on the lighter dark-mode blue: #0A84FF with white is
-       3.1:1 and fails AA at button sizes. */
-    --primary-foreground: 240 6% 9%;
+    /* --primary más claro que el naranja de marca para que, combinado con
+       --primary-foreground oscuro, siga pasando AA sobre fondo oscuro:
+       #222222 sobre --orange-400 → 6.57:1 (PASA AA). */
+    --primary: var(--orange-400);
+    --primary-foreground: var(--gray-900);
 
-    --secondary: 240 4% 18%;
-    --secondary-foreground: 220 15% 92%;
-    --muted: 240 4% 17%;
-    --muted-foreground: 220 8% 65%;
-    --accent: 240 4% 20%;
-    --accent-foreground: 220 15% 95%;
+    --secondary: var(--gray-700);
+    --secondary-foreground: var(--gray-50);
+    --muted: var(--gray-700);
+    /* Los grises de marca (#636363/#696969, ~39-41% L) dan <3:1 como texto
+       secundario sobre este fondo oscuro — NO pasan AA. --gray-dark-secondary
+       (65% L) sí pasa: 6.52:1 sobre --background. */
+    --muted-foreground: var(--gray-dark-secondary);
+    --accent: var(--gray-700);
+    --accent-foreground: var(--gray-50);
 
     --destructive: 4 80% 50%;
     --destructive-foreground: 0 0% 100%;
@@ -105,10 +134,12 @@
     --success-foreground: 240 6% 9%;
     --warning: 36 90% 58%;
     --warning-foreground: 240 6% 9%;
+    --info: 211 100% 70%;
+    --info-foreground: 240 6% 9%;
 
-    --border: 240 4% 20%;
-    --input: 240 4% 20%;
-    --ring: 210 100% 52%;
+    --border: var(--gray-700);
+    --input: var(--gray-700);
+    --ring: var(--orange-400);
 
     --chart-1: #3987e5;
     --chart-2: #d95926;
@@ -139,10 +170,8 @@
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
 
-    /* The system stack is the loudest macOS tell there is. */
-    font-family:
-      -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter,
-      system-ui, sans-serif;
+    /* Fase 1: Poppins es la tipografía de marca (antes stack system-ui). */
+    font-family: var(--font-family-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "rlig" 1, "calt" 1;
@@ -184,5 +213,45 @@
   /* Consistent, visible keyboard focus across every primitive. */
   .focus-ring {
     @apply outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+}
+
+/**
+ * Fase 1: utilidades portadas de electron-sucursal (shadow-apple-* +
+ * focus-ring-apple). No reemplazan `.shadow-elevation-*` / `.focus-ring`
+ * (siguen en uso por componentes existentes) — son un nombre nuevo para
+ * mantener paridad de clases con la app de referencia.
+ */
+@layer utilities {
+  .shadow-apple-sm {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.06);
+  }
+  .shadow-apple {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.06);
+  }
+  .shadow-apple-md {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.08);
+  }
+  .shadow-apple-lg {
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.06), 0 16px 40px rgba(0, 0, 0, 0.1);
+  }
+  .focus-ring-apple:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 4px hsl(var(--ring) / 0.25);
+  }
+}
+
+@layer utilities {
+  .dark .shadow-apple-sm {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px hsl(var(--border));
+  }
+  .dark .shadow-apple {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px hsl(var(--border));
+  }
+  .dark .shadow-apple-md {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5), 0 0 0 1px hsl(var(--border));
+  }
+  .dark .shadow-apple-lg {
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.55), 0 0 0 1px hsl(var(--border));
   }
 }

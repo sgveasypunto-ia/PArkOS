@@ -4,12 +4,49 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/icon-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#1f2937" />
+    <meta name="theme-color" content="#e85f24" />
     <meta
       name="description"
       content="Parkos multi-tenant admin PWA"
     />
     <title>Parkos Admin</title>
+    <!--
+      Theme anti-flash (Fase 1, alineación con electron-sucursal). Debe
+      ser un script SIN type="module", inline y ubicado en <head> para
+      correr de forma síncrona antes de que se pinte cualquier cosa — así
+      evita el "flash" de tema incorrecto (ej.: usuario prefiere oscuro,
+      pero se ve claro por un instante hasta que React monta).
+
+      Duplica a propósito la lógica mínima de `src/lib/theme.ts` (misma
+      clave de localStorage, mismo criterio de resolución) porque no
+      puede depender de un bundle JS en este punto. Si cambia la clave o
+      el criterio allá, actualizar también acá.
+    -->
+    <script>
+      (function () {
+        var KEY = 'parkos.admin.theme';
+        var pref = 'system';
+        try {
+          var stored = window.localStorage.getItem(KEY);
+          if (stored === 'light' || stored === 'dark' || stored === 'system') {
+            pref = stored;
+          }
+        } catch (e) {
+          // localStorage no disponible (modo privado, cuota) — sigue con 'system'.
+        }
+        var resolved = pref;
+        if (pref === 'system') {
+          resolved =
+            window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light';
+        }
+        var root = document.documentElement;
+        root.classList.add(resolved);
+        root.setAttribute('data-theme', resolved);
+        root.style.colorScheme = resolved;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

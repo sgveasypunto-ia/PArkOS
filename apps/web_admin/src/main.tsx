@@ -6,6 +6,15 @@ import './index.css';
 import App from './App';
 import { SucursalProvider } from '@/lib/sucursal-context';
 import { useInvalidateOnBranchSwitch } from '@/lib/swr-mutate-on-switch';
+import { initTheme } from '@/lib/theme';
+
+/**
+ * `initTheme()` here is a cheap, idempotent re-apply (the anti-flash
+ * script in `index.html` already set the right class before this module
+ * even loads) plus it subscribes to live `prefers-color-scheme` changes
+ * while the preference is 'system'.
+ */
+initTheme();
 
 /**
  * AdminShell — root of the admin tree.
