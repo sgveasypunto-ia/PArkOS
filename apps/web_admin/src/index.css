@@ -43,6 +43,22 @@
 
     --radius: 0.75rem;
 
+    /* Chart categorical palette (dataviz skill reference instance, slots
+       1-5 of its validated 8-hue default order -- re-ordered-July-2026
+       variant). Validated via scripts/validate_palette.js: adjacent CVD
+       Delta E >= 8.4, normal-vision >= 19.3 in both modes (see HU-F17.1
+       dashboard charts). Bar/line/stacked forms use the adjacent pairlist,
+       not all-pairs, so all 5 slots are safe for the top-5-sucursales bar
+       chart. Status colors (severity, FE send-state) intentionally reuse
+       --destructive/--warning/--success/--muted-foreground above instead
+       of a parallel status ramp -- this design system already has an
+       AA-validated status set. */
+    --chart-1: #2a78d6; /* blue */
+    --chart-2: #eb6834; /* orange */
+    --chart-3: #1baf7a; /* aqua */
+    --chart-4: #eda100; /* yellow */
+    --chart-5: #e87ba4; /* magenta */
+
     /* Vibrancy: translucent chrome that samples what is behind it. */
     --surface-translucent: 255 255 255;
     --surface-translucent-alpha: 0.72;
@@ -93,6 +109,12 @@
     --border: 240 4% 20%;
     --input: 240 4% 20%;
     --ring: 210 100% 52%;
+
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+    --chart-5: #d55181;
 
     --surface-translucent: 28 28 30;
     --surface-translucent-alpha: 0.72;
