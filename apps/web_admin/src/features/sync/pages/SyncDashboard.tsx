@@ -28,10 +28,13 @@ import { SyncMissingSucursalContextError } from '../api/syncApi';
 import type { SyncEstadoColor } from '../api/syncSchema';
 import SyncLog from './SyncLog';
 import SyncConflict from './SyncConflict';
+import ValidacionEventos from './ValidacionEventos';
 
 export default function SyncDashboard(): JSX.Element {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<'dashboard' | 'log' | 'conflictos'>('dashboard');
+  const [tab, setTab] = useState<'dashboard' | 'log' | 'conflictos' | 'validacion-eventos'>(
+    'dashboard',
+  );
   const [selectedSucursal, setSelectedSucursal] = useState<string | null>(null);
 
   const estado = useSyncEstado();
@@ -79,6 +82,9 @@ export default function SyncDashboard(): JSX.Element {
             </TabsTrigger>
             <TabsTrigger value="conflictos" data-testid="sync-tab-conflictos">
               {t('sync.tabs.conflictos', 'Conflictos')}
+            </TabsTrigger>
+            <TabsTrigger value="validacion-eventos" data-testid="sync-tab-validacion-eventos">
+              {t('sync.tabs.validacionEventos', 'Validación de eventos')}
             </TabsTrigger>
           </TabsList>
 
@@ -152,6 +158,10 @@ export default function SyncDashboard(): JSX.Element {
 
           <TabsContent value="conflictos">
             <SyncConflict initialUuidSucursal={selectedSucursal} />
+          </TabsContent>
+
+          <TabsContent value="validacion-eventos">
+            <ValidacionEventos initialUuidSucursal={selectedSucursal} />
           </TabsContent>
         </Tabs>
       </div>

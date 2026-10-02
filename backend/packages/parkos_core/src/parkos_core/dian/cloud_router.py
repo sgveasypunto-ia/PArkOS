@@ -69,7 +69,7 @@ from ..repo.event import record_event
 from ..repo.pagination import Cursor, InvalidCursorError
 from ..repo.pagination import decode as cursor_decode
 from ..repo.pagination import encode as cursor_encode
-from ..repo.workflow import STATE_MACHINES, append_transition
+from ..repo.workflow import STATE_MACHINES, IllegalTransitionError, append_transition
 from ..schemas.dian import (
     EnvioDianCreate,
     EnvioDianRead,
@@ -278,6 +278,15 @@ async def create_envio_dian(
     "/validacion-evento",
     status_code=201,
     summary="Admin validation of a received event (REQ-25)",
+    responses={
+        409: {"description": "validacion_evento_transicion_ilegal"},
+        422: {
+            "description": (
+                "Pydantic validation (estado on a root payload, or "
+                "estado='rechazado' with missing/blank observaciones)"
+            )
+        },
+    },
 )
 async def create_validacion_evento(
     payload: ValidacionEventoCreate,
@@ -290,7 +299,15 @@ async def create_validacion_evento(
     Cloud-only. State machine
     (``repo.workflow.STATE_MACHINES['validacion_evento']``):
     ``pendiente -> validado|rechazado``. Root insertions default to
-    ``pendiente``.
+    ``pendiente``. The client may explicitly pass ``estado`` on a
+    transition (``uuid_validacion_padre`` present) to reach
+    ``'rechazado'``; omitting it on a transition still defaults to
+    ``'validado'`` (backward-compatible). An illegal transition (e.g. out
+    of an already-terminal ``'validado'``/``'rechazado'`` tip) raises
+    :class:`~parkos_core.repo.workflow.IllegalTransitionError`, mapped
+    here to 409 -- mirrors
+    ``api.v1.workflows_alerta.descartar_alerta``'s 409 shape (there is no
+    shared FastAPI exception handler in this codebase).
 
     Returns:
         ``{"uuid": new_row.uuid}``.
@@ -300,15 +317,21 @@ async def create_validacion_evento(
     if "estado" not in new_attrs:
         new_attrs["estado"] = "pendiente" if parent_uuid is None else "validado"
 
-    new_row = await append_transition(
-        session,
-        ValidacionEvento,
-        actor_uuid=ctx.actor_uuid,
-        new_attrs=new_attrs,
-        parent_uuid=parent_uuid,
-        parent_fk_column="uuid_validacion_padre",
-        log_tx=True,
-    )
+    try:
+        new_row = await append_transition(
+            session,
+            ValidacionEvento,
+            actor_uuid=ctx.actor_uuid,
+            new_attrs=new_attrs,
+            parent_uuid=parent_uuid,
+            parent_fk_column="uuid_validacion_padre",
+            log_tx=True,
+        )
+    except IllegalTransitionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "validacion_evento_transicion_ilegal", "detail": str(exc)},
+        ) from exc
     await session.commit()
     await session.refresh(new_row)
     return {"uuid": new_row.uuid}

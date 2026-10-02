@@ -42,7 +42,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import StringConstraints
+from pydantic import StringConstraints, model_validator
 
 from .common import FilterBase, ReadListBase, _Base
 
@@ -579,6 +579,17 @@ class ValidacionEventoCreate(_Base):
     """INSERT payload for ``prod.validacion_evento`` (cloud-only).
 
     ``hash_evento`` constrained to exactly 64 chars (SHA-256 hex).
+
+    ``estado`` is ONLY meaningful on a transition (``uuid_validacion_padre``
+    present): ``"validado"`` | ``"rechazado"``. A root creation
+    (``uuid_validacion_padre is None``) always starts at ``"pendiente"``
+    (server-forced in the endpoint) and MUST NOT carry ``estado`` -- sending
+    it on a root payload is rejected with 422 rather than silently ignored,
+    to fail loud on a malformed/confused client request. When the
+    transition targets ``"rechazado"``, ``observaciones`` is mandatory and
+    non-blank (CU-14 E1 criterion, same rule already enforced by
+    ``AlertaDescartarEndpoint`` for ``alerta``); ``"validado"`` has no such
+    requirement (unchanged from today).
     """
 
     uuid_sucursal: uuid_lib.UUID | None = None
@@ -589,6 +600,20 @@ class ValidacionEventoCreate(_Base):
     observaciones: str | None = None
     uuid_validacion_padre: uuid_lib.UUID | None = None
     timestamp_evento: datetime | None = None
+    estado: Literal["validado", "rechazado"] | None = None
+
+    @model_validator(mode="after")
+    def _validar_estado_transicion(self) -> ValidacionEventoCreate:
+        if self.uuid_validacion_padre is None and self.estado is not None:
+            raise ValueError(
+                "estado solo es valido en una transicion (uuid_validacion_padre "
+                "requerido); una creacion raiz siempre inicia en 'pendiente'"
+            )
+        if self.estado == "rechazado" and not (self.observaciones and self.observaciones.strip()):
+            raise ValueError(
+                "observaciones es obligatorio y no puede estar vacio cuando estado='rechazado'"
+            )
+        return self
 
 
 class ValidacionEventoUpdate(_Base):
