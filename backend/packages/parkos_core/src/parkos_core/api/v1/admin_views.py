@@ -28,7 +28,7 @@ Actualización only).
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -41,6 +41,7 @@ from ...db.tenancy import extract_sucursales_permitidas_fresh
 from ...models.A.alert_types import AlertTypes
 from ...models.A.factura_pagos import FacturaPagos
 from ...models.A.salidas import Salidas
+from ...models.A.sync_conflict import SyncConflict
 from ...models.A.sync_log import SyncLog
 from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_E.facturas import Facturas
@@ -54,6 +55,10 @@ from ...models.V.permisos_usuario import PermisosUsuario
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.sucursal import Sucursal
 from ...models.V.usuarios import Usuarios
+from ...repo.pagination import Cursor, InvalidCursorError
+from ...repo.pagination import decode as cursor_decode
+from ...repo.pagination import encode as cursor_encode
+from ...schemas.sync_infra import SyncConflictRead, SyncLogRead
 
 router = APIRouter(prefix="", tags=["admin"])
 
@@ -253,6 +258,46 @@ class AdminMeResponse(BaseModel):
     rol: str | None
     sucursales_permitidas: list[uuid_lib.UUID]
     permissions: list[str]
+
+
+class SyncLogListResponse(BaseModel):
+    """``GET /admin/sync/log`` (HU-F19.1, T1). Cursor-paginated, ``created_at``-keyed."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    items: list[SyncLogRead]
+    next_cursor: str | None
+
+
+class SyncConflictListResponse(BaseModel):
+    """``GET /admin/sync/conflict`` (HU-F19.1, T2). Cursor-paginated, ``created_at``-keyed."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    items: list[SyncConflictRead]
+    next_cursor: str | None
+
+
+class SyncEstadoSucursalItem(BaseModel):
+    """One row of the ``/admin/sync/estado`` aggregate (HU-F19.1, T3, BR1)."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    uuid_sucursal: uuid_lib.UUID
+    nombre: str | None
+    estado: str  # "verde" | "amarillo" | "rojo"
+    last_sync_at: datetime | None
+    lag_seconds: int | None
+    queue_depth: int
+
+
+class SyncEstadoAgregadoResponse(BaseModel):
+    """``GET /admin/sync/estado`` (HU-F19.1, T3). One row per permitted branch."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    items: list[SyncEstadoSucursalItem]
+    generado_en: datetime
 
 
 # ============================================================================
@@ -828,6 +873,311 @@ async def dashboard_resumen(
 
 
 @router.get(
+    "/admin/sync/log",
+    response_model=SyncLogListResponse,
+    summary="Historico de ciclos de sincronizacion, cursor-paginado (HU-F19.1, T1)",
+)
+async def sync_log_list(
+    session: DbSession,
+    claims: AdminClaims,
+    uuid_sucursal: Annotated[
+        uuid_lib.UUID | None,
+        Query(description="Branch filter. Defaults to every permitted branch."),
+    ] = None,
+    desde: Annotated[
+        date | None,
+        Query(description="Inclusive UTC start date, filtered on timestamp_evento."),
+    ] = None,
+    hasta: Annotated[
+        date | None,
+        Query(description="Inclusive UTC end date, filtered on timestamp_evento."),
+    ] = None,
+    cursor: Annotated[
+        str | None, Query(description="Opaque cursor, created_at-keyed.")
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> SyncLogListResponse:
+    """Cross-branch ``sync_log`` history (HU-F19.1, T1).
+
+    Same cross-branch authorization pattern as :func:`dashboard_resumen`
+    and ``reporte_fe`` (``extract_sucursales_permitidas_fresh``, never
+    ``get_tenant_ctx``/``require_branch_scope``): this endpoint can return
+    rows from every branch the actor is permitted to see at once.
+
+    ``uuid_sucursal`` narrows to a single branch (403
+    ``unauthorized_sucursal_context`` if not permitted); omitted, it scopes
+    to every permitted branch. ``desde``/``hasta`` filter on
+    ``timestamp_evento`` (the business event time, not the audit
+    ``created_at``); 422 ``rango_fecha_invalido`` when both are given and
+    ``desde > hasta``.
+    """
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    permitidas = await extract_sucursales_permitidas_fresh(
+        session, actor_uuid=actor_uuid
+    )
+    if not permitidas:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+
+    if uuid_sucursal is not None:
+        if uuid_sucursal not in permitidas:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "unauthorized_sucursal_context"},
+            )
+        target: set[uuid_lib.UUID] = {uuid_sucursal}
+    else:
+        target = set(permitidas)
+
+    if desde is not None and hasta is not None and desde > hasta:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "rango_fecha_invalido"},
+        )
+
+    try:
+        decoded_cursor = cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    stmt = select(SyncLog).where(SyncLog.uuid_sucursal.in_(target))
+    if desde is not None:
+        stmt = stmt.where(func.date(SyncLog.timestamp_evento) >= desde)
+    if hasta is not None:
+        stmt = stmt.where(func.date(SyncLog.timestamp_evento) <= hasta)
+    stmt = stmt.order_by(SyncLog.created_at.desc(), SyncLog.uuid.asc())
+    if decoded_cursor is not None:
+        if decoded_cursor.created_at is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_cursor",
+                    "detail": "cursor missing created_at (required for sync_log listing)",
+                },
+            )
+        cursor_ts = datetime.fromisoformat(
+            decoded_cursor.created_at.replace("Z", "+00:00")  # noqa: FURB162
+        ).replace(tzinfo=None)
+        cursor_uuid = uuid_lib.UUID(decoded_cursor.uuid)
+        stmt = stmt.where(
+            (SyncLog.created_at < cursor_ts)
+            | ((SyncLog.created_at == cursor_ts) & (SyncLog.uuid > cursor_uuid))
+        )
+    stmt = stmt.limit(limit + 1)
+
+    rows = (await session.execute(stmt)).scalars().all()
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = cursor_encode(
+            Cursor(created_at=last.created_at.isoformat(), uuid=str(last.uuid))
+        )
+
+    items = [SyncLogRead.model_validate(row) for row in rows]
+    return SyncLogListResponse(items=items, next_cursor=next_cursor)
+
+
+@router.get(
+    "/admin/sync/conflict",
+    response_model=SyncConflictListResponse,
+    summary="Conflictos de sincronizacion detectados, cursor-paginado (HU-F19.1, T2)",
+)
+async def sync_conflict_list(
+    session: DbSession,
+    claims: AdminClaims,
+    uuid_sucursal: Annotated[
+        uuid_lib.UUID | None,
+        Query(description="Branch filter. Defaults to every permitted branch."),
+    ] = None,
+    cursor: Annotated[
+        str | None, Query(description="Opaque cursor, created_at-keyed.")
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> SyncConflictListResponse:
+    """Cross-branch ``sync_conflict`` listing (HU-F19.1, T2, BR2).
+
+    Shows ``datos_local`` vs ``datos_cloud`` side by side plus the real
+    ``resolucion`` column (the policy the sync worker already applied).
+    This endpoint does NOT add a manual-resolution mechanism (BR2) --
+    it is read-only, same as the rest of this module.
+
+    Same cross-branch authorization + cursor-pagination contract as
+    :func:`sync_log_list`.
+    """
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    permitidas = await extract_sucursales_permitidas_fresh(
+        session, actor_uuid=actor_uuid
+    )
+    if not permitidas:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+
+    if uuid_sucursal is not None:
+        if uuid_sucursal not in permitidas:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "unauthorized_sucursal_context"},
+            )
+        target: set[uuid_lib.UUID] = {uuid_sucursal}
+    else:
+        target = set(permitidas)
+
+    try:
+        decoded_cursor = cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    stmt = select(SyncConflict).where(SyncConflict.uuid_sucursal.in_(target))
+    stmt = stmt.order_by(SyncConflict.created_at.desc(), SyncConflict.uuid.asc())
+    if decoded_cursor is not None:
+        if decoded_cursor.created_at is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_cursor",
+                    "detail": "cursor missing created_at (required for sync_conflict listing)",
+                },
+            )
+        cursor_ts = datetime.fromisoformat(
+            decoded_cursor.created_at.replace("Z", "+00:00")  # noqa: FURB162
+        ).replace(tzinfo=None)
+        cursor_uuid = uuid_lib.UUID(decoded_cursor.uuid)
+        stmt = stmt.where(
+            (SyncConflict.created_at < cursor_ts)
+            | ((SyncConflict.created_at == cursor_ts) & (SyncConflict.uuid > cursor_uuid))
+        )
+    stmt = stmt.limit(limit + 1)
+
+    rows = (await session.execute(stmt)).scalars().all()
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = cursor_encode(
+            Cursor(created_at=last.created_at.isoformat(), uuid=str(last.uuid))
+        )
+
+    items = [SyncConflictRead.model_validate(row) for row in rows]
+    return SyncConflictListResponse(items=items, next_cursor=next_cursor)
+
+
+_SYNC_ESTADO_VERDE_MAX_SECONDS = 60  # lag < 60s -- verde (HU-F19.1, BR1)
+_SYNC_ESTADO_AMARILLO_MAX_SECONDS = 300  # 60-300s -- amarillo; > 300s -- rojo (BR1)
+
+
+def _clasificar_sync_estado(
+    last_sync: SyncLog | None, now: datetime
+) -> tuple[str, int | None]:
+    """Classify one branch's sync health into verde/amarillo/rojo (BR1).
+
+    Computed at query time, never persisted. Generalizes
+    :func:`branch_dashboard`'s ``lag_seconds`` math (``now -
+    timestamp_evento``) with the 3-level BR1 thresholds:
+
+    - rojo: no ``sync_log`` row at all (never synced), the latest cycle
+      recorded a failure (``operaciones_fallidas > 0``), or lag > 300s
+      without a successful cycle.
+    - amarillo: 60s <= lag <= 300s.
+    - verde: lag < 60s.
+    """
+    if last_sync is None or last_sync.timestamp_evento is None:
+        return "rojo", None
+    lag = max(int((now - last_sync.timestamp_evento).total_seconds()), 0)
+    fallidas = last_sync.operaciones_fallidas or 0
+    if fallidas > 0:
+        return "rojo", lag
+    if lag < _SYNC_ESTADO_VERDE_MAX_SECONDS:
+        return "verde", lag
+    if lag <= _SYNC_ESTADO_AMARILLO_MAX_SECONDS:
+        return "amarillo", lag
+    return "rojo", lag
+
+
+@router.get(
+    "/admin/sync/estado",
+    response_model=SyncEstadoAgregadoResponse,
+    summary="Estado agregado de sync por sucursal, verde/amarillo/rojo (HU-F19.1, T3, BR1)",
+)
+async def sync_estado_agregado(
+    session: DbSession,
+    claims: AdminClaims,
+) -> SyncEstadoAgregadoResponse:
+    """One row per permitted branch, classified verde/amarillo/rojo (BR1).
+
+    Generalizes :func:`branch_dashboard`'s per-branch ``lag_seconds``/
+    ``queue_depth`` computation -- and the latest-row-per-branch
+    ``DISTINCT ON`` query already proven in :func:`dashboard_resumen`'s
+    sync-aggregate section -- to every branch the actor can see, in one
+    query. Not reinvented, not an N+1 loop (BR1).
+    """
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    permitidas = await extract_sucursales_permitidas_fresh(
+        session, actor_uuid=actor_uuid
+    )
+    if not permitidas:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+
+    vigentes_rows = (
+        await session.execute(
+            select(Sucursal.uuid, Sucursal.nombre).where(
+                Sucursal.uuid.in_(permitidas),
+                Sucursal.vigente_hasta.is_(None),
+            )
+        )
+    ).all()
+    nombre_by_uuid: dict[uuid_lib.UUID, str | None] = {
+        row.uuid: row.nombre for row in vigentes_rows
+    }
+    target = set(nombre_by_uuid)
+    if not target:
+        return SyncEstadoAgregadoResponse(items=[], generado_en=datetime.now(UTC))
+
+    latest_sync_rows = (
+        await session.execute(
+            select(SyncLog)
+            .where(SyncLog.uuid_sucursal.in_(target))
+            .distinct(SyncLog.uuid_sucursal)
+            .order_by(SyncLog.uuid_sucursal, SyncLog.timestamp_evento.desc())
+        )
+    ).scalars().all()
+    last_by_uuid: dict[uuid_lib.UUID, SyncLog] = {
+        row.uuid_sucursal: row for row in latest_sync_rows if row.uuid_sucursal is not None
+    }
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    items: list[SyncEstadoSucursalItem] = []
+    for uuid_sucursal_item in sorted(target, key=str):
+        last_sync = last_by_uuid.get(uuid_sucursal_item)
+        estado, lag_seconds = _clasificar_sync_estado(last_sync, now)
+        items.append(
+            SyncEstadoSucursalItem(
+                uuid_sucursal=uuid_sucursal_item,
+                nombre=nombre_by_uuid.get(uuid_sucursal_item),
+                estado=estado,
+                last_sync_at=last_sync.timestamp_evento if last_sync else None,
+                lag_seconds=lag_seconds,
+                queue_depth=_queue_depth(last_sync),
+            )
+        )
+
+    return SyncEstadoAgregadoResponse(items=items, generado_en=datetime.now(UTC))
+
+
+@router.get(
     "/admin/me",
     response_model=AdminMeResponse,
     summary="Actor identity + permissions + permitted branches (T-PR10-03)",
@@ -907,5 +1257,9 @@ __all__ = [
     "SucursalListItem",
     "SucursalListResponse",
     "SucursalSyncStatus",
+    "SyncConflictListResponse",
+    "SyncEstadoAgregadoResponse",
+    "SyncEstadoSucursalItem",
+    "SyncLogListResponse",
     "router",
 ]
