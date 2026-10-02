@@ -18,13 +18,13 @@
  */
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Banknote, Bell, Building2, FolderTree, Landmark, Users } from 'lucide-react';
+import { Banknote, Bell, Building2, FolderTree, Landmark, Send, Users } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { AlertasBadge } from '@/components/AlertasBadge';
 
 interface HubCard {
-  key: 'sucursales' | 'catalogos' | 'empresa' | 'usuarios' | 'arqueos' | 'alertas';
+  key: 'sucursales' | 'catalogos' | 'empresa' | 'usuarios' | 'arqueos' | 'alertas' | 'dian';
   path: string;
   icon: typeof Building2;
   titleKey: string;
@@ -82,6 +82,17 @@ export const HUB_CARDS: readonly HubCard[] = [
     titleKey: 'homeHub.alertas.label',
     descriptionKey: 'homeHub.alertas.description',
     testId: 'home-hub-card-alertas',
+  },
+  {
+    // HU-F20.5: monitor de envíos DIAN (cola, reintento), cross-branch
+    // sobre las sucursales permitidas del actor -- mismo patrón que la
+    // card "alertas".
+    key: 'dian',
+    path: '/dian',
+    icon: Send,
+    titleKey: 'homeHub.dian.label',
+    descriptionKey: 'homeHub.dian.description',
+    testId: 'home-hub-card-dian',
   },
 ] as const;
 
