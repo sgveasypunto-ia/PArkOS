@@ -289,6 +289,49 @@ async def test_crear_subscripcion_cliente_delegates_to_close_and_insert() -> Non
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# HU-F20.2 BR3/E1 (NEW) -- validar_vehiculo_sin_suscripcion_vigente_distinta
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_validar_vehiculo_sin_suscripcion_vigente_distinta_raises_when_found() -> None:
+    """Another ACTIVE subscripcion already covers this vehiculo -> raise."""
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = uuid_lib.uuid4()  # a matching row uuid
+    session.execute = AsyncMock(return_value=result)
+
+    uuid_vehiculo = uuid_lib.uuid4()
+    with pytest.raises(repo_venta.PlacaConSuscripcionVigenteError) as excinfo:
+        await repo_venta.validar_vehiculo_sin_suscripcion_vigente_distinta(
+            session,
+            uuid_vehiculo=uuid_vehiculo,
+            excluir_uuid_subscripcion_cliente=uuid_lib.uuid4(),
+        )
+    assert excinfo.value.uuid_vehiculo == uuid_vehiculo
+    assert "placa_con_suscripcion_vigente" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_validar_vehiculo_sin_suscripcion_vigente_distinta_ok_when_none_found() -> None:
+    """No OTHER active subscripcion covers this vehiculo -> no raise."""
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session.execute = AsyncMock(return_value=result)
+
+    await repo_venta.validar_vehiculo_sin_suscripcion_vigente_distinta(
+        session,
+        uuid_vehiculo=uuid_lib.uuid4(),
+        excluir_uuid_subscripcion_cliente=uuid_lib.uuid4(),
+    )
+
+
 @pytest.mark.asyncio
 async def test_crear_subscripcion_vehiculos_bulk_advisory_lock_and_bulk_insert() -> None:
     """V9b: pg_advisory_xact_lock emitted + one SubscripcionVehiculos row per UUID."""

@@ -27,18 +27,33 @@
  * the same single row as "Vigentes" until that backend gap closes --
  * flagged here and in the HU-F20.1 report, not fixed in this change
  * (`router_factory.py` is explicitly shared/out-of-scope).
+ *
+ * HU-F20.2 adds the "Nueva suscripción" / "Editar" flow: a `<Dialog>`
+ * hosting `<SuscripcionForm />`. The `onSubmit` closures here own the
+ * actual API call (`createSubscripcionCliente` / `updateSubscripcionCliente`)
+ * and inject `uuid_cliente` (from this component's own prop) +
+ * `uuid_sucursal` (from the global sucursal-context selector) -- the form
+ * itself only knows about subscripcion-shaped fields, same separation
+ * `<ClienteDatosTab />` already uses for `onSubmit`.
  */
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { diasParaVencer } from '@/lib/subscripciones';
+import { useSucursal } from '@/lib/sucursal-context';
 
 import {
+  createSubscripcionCliente,
   getSubscripcionClienteHistory,
   listSubscripcionesClienteByCliente,
+  updateSubscripcionCliente,
   type SubscripcionCliente,
 } from '../api/clientesApi';
+import { SuscripcionForm, type SuscripcionFormSubmitValues } from './SuscripcionForm';
 
 export interface ClienteSuscripcionesProps {
   uuidCliente: string;
@@ -50,8 +65,11 @@ function ordenarDescendente(items: SubscripcionCliente[]): SubscripcionCliente[]
 
 export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps): JSX.Element {
   const { t } = useTranslation();
+  const { selected: uuidSucursal } = useSucursal();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<SubscripcionCliente | null>(null);
 
-  const { data, error, isLoading } = useSWR<{
+  const { data, error, isLoading, mutate } = useSWR<{
     vigentes: SubscripcionCliente[];
     historicas: SubscripcionCliente[];
   }>(
@@ -68,6 +86,39 @@ export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps)
     },
     { revalidateOnFocus: false },
   );
+
+  function abrirNueva(): void {
+    setEditTarget(null);
+    setDialogOpen(true);
+  }
+
+  function abrirEditar(subscripcion: SubscripcionCliente): void {
+    setEditTarget(subscripcion);
+    setDialogOpen(true);
+  }
+
+  async function handleFormSubmit(
+    values: SuscripcionFormSubmitValues,
+  ): Promise<SubscripcionCliente> {
+    if (editTarget) {
+      return updateSubscripcionCliente(editTarget.uuid, {
+        uuid_cliente: uuidCliente,
+        uuid_sucursal: editTarget.uuid_sucursal ?? uuidSucursal ?? '',
+        ...values,
+      });
+    }
+    return createSubscripcionCliente({
+      uuid_cliente: uuidCliente,
+      uuid_sucursal: uuidSucursal ?? '',
+      ...values,
+    });
+  }
+
+  async function handleFormDone(): Promise<void> {
+    setDialogOpen(false);
+    setEditTarget(null);
+    await mutate();
+  }
 
   if (isLoading) {
     return (
@@ -100,6 +151,30 @@ export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps)
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-end">
+        <Button onClick={abrirNueva} data-testid="cliente-suscripcion-nueva">
+          {t('clienteSuscripciones.nueva', 'Nueva suscripción')}
+        </Button>
+      </div>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent data-testid="suscripcion-form-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              {editTarget
+                ? t('clienteSuscripciones.editarTitulo', 'Editar suscripción')
+                : t('clienteSuscripciones.nuevaTitulo', 'Nueva suscripción')}
+            </DialogTitle>
+          </DialogHeader>
+          <SuscripcionForm
+            subscripcion={editTarget ?? undefined}
+            onSubmit={handleFormSubmit}
+            onDone={handleFormDone}
+            onCancel={() => setDialogOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
+
       <section
         aria-label={t('clienteSuscripciones.vigentesLabel', 'Suscripciones vigentes')}
         data-testid="cliente-suscripciones-vigentes"
@@ -132,18 +207,28 @@ export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps)
                         vencimiento: s.fecha_vencimiento ?? '—',
                       })}
                     </span>
-                    {dias !== null && (
-                      <Badge
-                        variant={dias < 0 ? 'destructive' : 'secondary'}
-                        data-testid={`cliente-suscripcion-dias-${s.uuid}`}
+                    <div className="flex items-center gap-2">
+                      {dias !== null && (
+                        <Badge
+                          variant={dias < 0 ? 'destructive' : 'secondary'}
+                          data-testid={`cliente-suscripcion-dias-${s.uuid}`}
+                        >
+                          {dias >= 0
+                            ? t('clienteSuscripciones.venceEn', 'vence en {{dias}} días', { dias })
+                            : t('clienteSuscripciones.vencidaHace', 'vencida hace {{dias}} días', {
+                                dias: Math.abs(dias),
+                              })}
+                        </Badge>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => abrirEditar(s)}
+                        data-testid={`cliente-suscripcion-editar-${s.uuid}`}
                       >
-                        {dias >= 0
-                          ? t('clienteSuscripciones.venceEn', 'vence en {{dias}} días', { dias })
-                          : t('clienteSuscripciones.vencidaHace', 'vencida hace {{dias}} días', {
-                              dias: Math.abs(dias),
-                            })}
-                      </Badge>
-                    )}
+                        {t('common.edit', 'Editar')}
+                      </Button>
+                    </div>
                   </div>
                   <p className="text-muted-foreground text-xs">{s.estado}</p>
                 </li>

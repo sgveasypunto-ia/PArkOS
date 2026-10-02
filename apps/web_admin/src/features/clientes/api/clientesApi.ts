@@ -151,6 +151,11 @@ export const subscripcionClienteSchema = z.object({
   uuid_tipo_subscripcion: z.string().uuid().nullable(),
   fecha_inicio_cobertura: z.string().nullable(),
   fecha_vencimiento: z.string().nullable(),
+  // HU-F20.2 / migration 0067. `null` means "not set" -- callers that
+  // need the EFFECTIVE alert window should treat `null` as the DB
+  // default of 7 (CU-06 BR4), mirroring `SubscripcionesClienteRead`'s
+  // own docstring server-side.
+  dias_alerta_pre_vencimiento: z.number().int().nullable(),
   vigente_desde: z.string(),
   vigente_hasta: z.string().nullable(),
   estado: z.string(),
@@ -159,6 +164,21 @@ export const subscripcionClienteSchema = z.object({
   sync_status: z.string().nullable(),
 });
 export type SubscripcionCliente = z.infer<typeof subscripcionClienteSchema>;
+
+// HU-F20.2: mirrors `SubscripcionesClienteCreate` (`schemas/clientes.py`).
+export const subscripcionClienteCreateSchema = z.object({
+  uuid_cliente: z.string().uuid(),
+  uuid_sucursal: z.string().uuid(),
+  uuid_tipo_subscripcion: z.string().uuid(),
+  fecha_inicio_cobertura: z.string(),
+  fecha_vencimiento: z.string(),
+  dias_alerta_pre_vencimiento: z.number().int().min(1).max(90),
+});
+export type SubscripcionClienteCreateInput = z.infer<typeof subscripcionClienteCreateSchema>;
+
+// HU-F20.2: mirrors `SubscripcionesClienteUpdate` -- same shape as Create.
+export const subscripcionClienteUpdateSchema = subscripcionClienteCreateSchema;
+export type SubscripcionClienteUpdateInput = z.infer<typeof subscripcionClienteUpdateSchema>;
 
 const subscripcionClienteListSchema = z.object({
   items: z.array(subscripcionClienteSchema),
@@ -204,6 +224,38 @@ export async function getSubscripcionClienteHistory(uuid: string): Promise<Subsc
   return z.array(subscripcionClienteSchema).parse(raw);
 }
 
+/**
+ * HU-F20.2 -- `POST /subscripciones-cliente` (generic C+Q+U mount, write
+ * path unchanged by this HU: only the payload grows with
+ * `dias_alerta_pre_vencimiento`, per plan.md HU-F20.2's own "Endpoints"
+ * note).
+ */
+export async function createSubscripcionCliente(
+  input: SubscripcionClienteCreateInput,
+): Promise<SubscripcionCliente> {
+  const parsed = subscripcionClienteCreateSchema.parse(input);
+  const raw = await fetchJson<unknown>(SUBSCRIPCIONES_CLIENTE_PATH, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(parsed),
+  });
+  return subscripcionClienteSchema.parse(raw);
+}
+
+/** HU-F20.2 -- `PUT /subscripciones-cliente/{uuid}` (bi-temporal close+insert). */
+export async function updateSubscripcionCliente(
+  uuid: string,
+  input: SubscripcionClienteUpdateInput,
+): Promise<SubscripcionCliente> {
+  const parsed = subscripcionClienteUpdateSchema.parse(input);
+  const raw = await fetchJson<unknown>(`${SUBSCRIPCIONES_CLIENTE_PATH}/${uuid}`, {
+    method: 'PUT',
+    headers: jsonHeaders,
+    body: JSON.stringify(parsed),
+  });
+  return subscripcionClienteSchema.parse(raw);
+}
+
 // ---------------------------------------------------------------------------
 // SubscripcionVehiculos
 // ---------------------------------------------------------------------------
@@ -237,6 +289,35 @@ export async function listSubscripcionVehiculos(
     headers: getHeaders,
   });
   return subscripcionVehiculoListSchema.parse(raw);
+}
+
+/**
+ * HU-F20.2 -- `POST /subscripcion-vehiculos`. IMPORTANT: this no longer
+ * hits the generic `make_router` mount -- the backend pulled
+ * `subscripcion-vehiculos` writes into a DEDICATED endpoint
+ * (`api/v1/clientes_subscripcion_vehiculos.py`) that validates
+ * `cantidad_vehiculos_excede_plan` / `tipo_vehiculo_mixto_no_permitido` /
+ * `placa_con_suscripcion_vigente` BEFORE insert (the generic mount had
+ * zero pre-insert validation -- see that module's docstring). Same URL,
+ * same request/response shape (`SubscripcionVehiculosCreate`/`Read`
+ * reused verbatim), so this client function is unaffected by the move.
+ */
+export const subscripcionVehiculoCreateSchema = z.object({
+  uuid_subscripcion_cliente: z.string().uuid(),
+  uuid_vehiculo: z.string().uuid(),
+});
+export type SubscripcionVehiculoCreateInput = z.infer<typeof subscripcionVehiculoCreateSchema>;
+
+export async function createSubscripcionVehiculo(
+  input: SubscripcionVehiculoCreateInput,
+): Promise<SubscripcionVehiculo> {
+  const parsed = subscripcionVehiculoCreateSchema.parse(input);
+  const raw = await fetchJson<unknown>(SUBSCRIPCION_VEHICULOS_PATH, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(parsed),
+  });
+  return subscripcionVehiculoSchema.parse(raw);
 }
 
 // ---------------------------------------------------------------------------

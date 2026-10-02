@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import calendar
 import uuid as uuid_lib
-from datetime import UTC
+from datetime import UTC, datetime
 from datetime import date as date_cls
 from decimal import Decimal
 from typing import Any
@@ -58,6 +58,7 @@ from .tipo_persona import resolve_uuid_tipo_persona
 __all__ = [
     "CantidadMaximaExcedidaError",
     "ClienteNoEncontradoError",
+    "PlacaConSuscripcionVigenteError",
     "PlanDuracionDiasInvalidoError",
     "SubscripcionDuplicadaPlacaError",
     "TipoSubscripcionNoEncontradoError",
@@ -74,6 +75,7 @@ __all__ = [
     "validar_cantidad_maxima_vehiculos",
     "validar_placa_duplicada_subscripcion",
     "validar_placas_mismo_tipo_vehiculo",
+    "validar_vehiculo_sin_suscripcion_vigente_distinta",
 ]
 
 
@@ -155,6 +157,32 @@ class PlanDuracionDiasInvalidoError(Exception):
 
     def __init__(self) -> None:
         super().__init__("plan_duracion_dias_invalido: duracion_dias must be > 0")
+
+
+class PlacaConSuscripcionVigenteError(Exception):
+    """HU-F20.2 / CU-06 BR3+E1 -- 422 discriminator: ``uuid_vehiculo`` already
+    covered by an active subscripcion OTHER than the target one.
+
+    Distinct from :class:`SubscripcionDuplicadaPlacaError` (V4,
+    REQ-OPS-089): that one is branch-scoped and keyed by ``placa`` string
+    (venta-at-the-counter flow -- blocks a NEW sale when the placa already
+    has an active sub AT THIS BRANCH, before a target subscripcion even
+    exists). This one is keyed by ``uuid_vehiculo``, branch-AGNOSTIC, and
+    excludes one specific subscripcion (the mantenimiento/admin flow --
+    adding a vehiculo to an EXISTING subscripcion must not let the same
+    car be simultaneously active on a DIFFERENT subscripcion, regardless
+    of branch). Two different error codes by design (plan.md HU-F20.2
+    names ``placa_con_suscripcion_vigente`` explicitly, distinct from the
+    venta flow's ``suscripcion_duplicada_placa``) -- see
+    ``api/v1/clientes_subscripcion_vehiculos.py`` module docstring for the
+    full rationale.
+    """
+
+    def __init__(self, *, uuid_vehiculo: uuid_lib.UUID) -> None:
+        self.uuid_vehiculo = uuid_vehiculo
+        super().__init__(
+            f"placa_con_suscripcion_vigente: uuid_vehiculo={uuid_vehiculo}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +430,46 @@ async def validar_placa_duplicada_subscripcion(
             placa=placa,
             uuid_sucursal=uuid_sucursal,
         )
+
+
+async def validar_vehiculo_sin_suscripcion_vigente_distinta(
+    session: AsyncSession,
+    *,
+    uuid_vehiculo: uuid_lib.UUID,
+    excluir_uuid_subscripcion_cliente: uuid_lib.UUID,
+) -> None:
+    """HU-F20.2 / CU-06 BR3+E1: block adding a vehiculo already covered by
+    a DIFFERENT active subscripcion (branch-agnostic).
+
+    Raises :class:`PlacaConSuscripcionVigenteError` when ``uuid_vehiculo``
+    has a vigente+activo ``subscripcion_vehiculos`` row whose parent
+    ``subscripciones_cliente`` is ALSO vigente+activo+not-yet-expired AND
+    is not ``excluir_uuid_subscripcion_cliente`` (the subscripcion the
+    caller is currently inserting into -- re-adding the same vehiculo to
+    its OWN subscripcion is a different, already-handled concern, see
+    ``repo.cupos_subscripcion.VehiculoYaInscritoError``).
+    """
+    hoy = datetime.now(UTC).date()
+    stmt = (
+        select(SubscripcionVehiculos.uuid)
+        .join(
+            SubscripcionesCliente,
+            SubscripcionesCliente.uuid == SubscripcionVehiculos.uuid_subscripcion_cliente,
+        )
+        .where(
+            SubscripcionVehiculos.uuid_vehiculo == uuid_vehiculo,
+            SubscripcionVehiculos.vigente_hasta.is_(None),
+            SubscripcionVehiculos.estado == "activo",
+            SubscripcionesCliente.uuid != excluir_uuid_subscripcion_cliente,
+            SubscripcionesCliente.vigente_hasta.is_(None),
+            SubscripcionesCliente.estado == "activo",
+            SubscripcionesCliente.fecha_vencimiento >= hoy,
+        )
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is not None:
+        raise PlacaConSuscripcionVigenteError(uuid_vehiculo=uuid_vehiculo)
 
 
 def calcular_prorrateo(

@@ -67,6 +67,7 @@ def _mount_cliente(
     read_list_schema: type,
     create_schema: type,
     update_schema: type,
+    write_enabled: bool = True,
 ) -> None:
     issuer, perm = _ROUTER_CONFIG[resource]
     router.include_router(
@@ -80,6 +81,7 @@ def _mount_cliente(
             repo_kind="versioned",
             issuer_required=issuer,
             permission_required=perm,
+            write_enabled=write_enabled,
         )
     )
 
@@ -116,6 +118,14 @@ _mount_cliente(
     create_schema=VehiculosCreate,
     update_schema=VehiculosUpdate,
 )
+# HU-F20.2 -- GET list/detail/history stay generic (write_enabled=False);
+# the real cantidad/tipo/placa-vigente validations the
+# SubscripcionVehiculosCreate docstring used to (falsely) claim lived
+# "in the endpoint" now actually do, via the dedicated POST router
+# mounted below (clientes_subscripcion_vehiculos.py) -- same
+# write_enabled=False + dedicated-endpoint criterion already applied to
+# anulaciones/reclamos (HU-F20.3) and alerta (HU-F19.5). See that
+# module's docstring for the full investigation + rationale.
 _mount_cliente(
     resource="subscripcion-vehiculos",
     model_cls=SubscripcionVehiculos,
@@ -123,6 +133,7 @@ _mount_cliente(
     read_list_schema=SubscripcionVehiculosReadList,
     create_schema=SubscripcionVehiculosCreate,
     update_schema=SubscripcionVehiculosUpdate,
+    write_enabled=False,
 )
 
 # HU-F1.12 -- mount POST /clientes/venta-suscripcion dedicated router
@@ -136,6 +147,12 @@ router.include_router(venta_suscripcion_router)
 from .clientes_cupos import router as cupos_router
 
 router.include_router(cupos_router)
+
+# HU-F20.2 -- mount the dedicated POST /clientes/subscripcion-vehiculos
+# router (real cantidad/tipo/placa-vigente validations before INSERT).
+from .clientes_subscripcion_vehiculos import router as subscripcion_vehiculos_router
+
+router.include_router(subscripcion_vehiculos_router)
 
 
 __all__ = ["router"]
