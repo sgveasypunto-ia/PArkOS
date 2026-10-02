@@ -891,5 +891,47 @@
     "empty": "Sin transiciones registradas.",
     "noTimestamp": "Sin fecha",
     "actor": "Actor"
+  },
+  "sync": {
+    "tabs": {
+      "validacionEventos": "Validación de eventos"
+    },
+    "validacionEventos": {
+      "filterSucursal": "Sucursal",
+      "filterSucursalAll": "Todas",
+      "filterEstado": "Estado",
+      "filterEstadoAll": "Todos",
+      "loading": "Cargando...",
+      "empty": "No hay eventos para el filtro seleccionado.",
+      "caption": "Eventos recibidos pendientes de validación",
+      "viewHistory": "Ver historial",
+      "hideHistory": "Ocultar historial",
+      "resolver": "Validar / Rechazar",
+      "yaResuelto": "Este evento ya fue validado o rechazado.",
+      "loadMore": "Cargar más",
+      "col": {
+        "sucursal": "Sucursal",
+        "tabla": "Tabla origen",
+        "fecha": "Fecha del evento",
+        "estado": "Estado",
+        "acciones": "Acciones"
+      },
+      "estado": {
+        "pendiente": "Pendiente",
+        "validado": "Validado",
+        "rechazado": "Rechazado",
+        "none": "—"
+      },
+      "modal": {
+        "title": "Validar evento",
+        "description": "Aprobá o rechazá este evento recibido. La decisión queda registrada en el historial.",
+        "decisionLabel": "Decisión",
+        "validar": "Validar",
+        "rechazar": "Rechazar",
+        "observacionesLabel": "Observaciones",
+        "submit": "Confirmar",
+        "submitting": "Guardando…"
+      }
+    }
   }
 }
