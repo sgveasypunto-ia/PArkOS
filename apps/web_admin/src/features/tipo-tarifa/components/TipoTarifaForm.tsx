@@ -127,7 +127,7 @@ export function TipoTarifaFormHarness(
   const form = useForm<TipoTarifaCreateInput>({
     resolver: zodResolver(tipoTarifaCreateSchema) as never,
     defaultValues: {
-      tipo: '',
+      tipo: props.initialTipoTarifa?.tipo ?? '',
     },
   });
   return <TipoTarifaForm {...props} form={form} />;

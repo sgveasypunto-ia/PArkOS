@@ -18,10 +18,7 @@ import {
   type TipoTarifa,
   type TipoTarifaCreateInput,
 } from '../api/tipoTarifaApi';
-import {
-  TipoTarifaForm,
-  TipoTarifaFormHarness,
-} from '../components/TipoTarifaForm';
+import { TipoTarifaFormHarness } from '../components/TipoTarifaForm';
 
 type ErrorState = { message: string } | null;
 
@@ -112,8 +109,7 @@ export default function TipoTarifa(): JSX.Element {
           contentProps={{ 'data-testid': 'tipo-tarifa-form-modal' }}
         >
           {editing !== null ? (
-            <TipoTarifaForm
-              form={undefined as never}
+            <TipoTarifaFormHarness
               onSubmit={onSubmit}
               isSubmitting={submitting}
               isUpdate

@@ -20,6 +20,7 @@ import { parkosFetchRaw, type ParkosFetchInit } from '@parkos/ui-kit/fetch';
 import {
   tarifaBackendCreateSchema,
   tarifaOverlapErrorSchema,
+  tarifaReadArraySchema,
   tarifaReadListEnvelopeSchema,
   tarifaReadSchema,
   tarifaSucursalInmutableErrorSchema,
@@ -170,7 +171,12 @@ export async function listTarifasByKey(opts: ByKeyOpts): Promise<Tarifa[]> {
   }
   const url = `/api/v1/empresa/tarifas-sucursal/by-key?${params.toString()}`;
   const raw = await fetchJson<unknown>(url, { method: 'GET', headers: getHeaders });
-  return tarifaReadListEnvelopeSchema.parse(raw).items;
+  // `by-key` returns a bare array, not the `{items, next_cursor}`
+  // envelope the plain list endpoint uses (QA batch tarifas/cupos:
+  // parsing it with the envelope schema threw on every call, silently
+  // swallowed by SWR into `versiones: []` -- "Ver histórico" always
+  // showed "Sin versiones registradas." even with real version rows).
+  return tarifaReadArraySchema.parse(raw);
 }
 
 export async function getTarifa(uuid: string): Promise<Tarifa> {

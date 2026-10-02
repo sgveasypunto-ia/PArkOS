@@ -141,4 +141,22 @@ describe('TiposVehiculo page', () => {
     expect(newBtn).not.toBeDisabled();
     expect(screen.queryByTestId('tipo-vehiculo-cap-notice')).not.toBeInTheDocument();
   });
+
+  it('TV6: "Editar" opens the modal pre-filled without crashing (regression)', async () => {
+    // QA batch tarifas/cupos: the EDIT branch used to render
+    // `<TipoVehiculoForm form={undefined as never} .../>` directly
+    // (never built via `useForm`), which threw
+    // "Cannot read properties of undefined (reading 'handleSubmit')"
+    // and crashed the whole page to a blank screen. Both branches
+    // must now go through `TipoVehiculoFormHarness`.
+    const user = userEvent.setup();
+    mockedList.mockResolvedValue([SAMPLE]);
+    render(<TiposVehiculo />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      screen.getByTestId(`tipo-vehiculo-row-${SAMPLE.uuid}`),
+    );
+    await user.click(screen.getByTestId(`tipo-vehiculo-edit-${SAMPLE.uuid}`));
+    expect(screen.getByTestId('tipo-vehiculo-form-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('tipo-vehiculo-field-tipo')).toHaveValue(SAMPLE.tipo);
+  });
 });

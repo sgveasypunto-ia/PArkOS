@@ -56,9 +56,21 @@ export function useParametrizacionEfectiva(
     [uuidSucursal, fecha],
   );
 
-  const { data, error, isLoading } = useSWR(key, () =>
-    getParametrizacionEfectiva(uuidSucursal!, fecha),
-  );
+  const { data, error, isLoading } = useSWR(key, () => {
+    // BUGFIX (QA batch tarifas/cupos, 2026-10-02): the backend's
+    // `vigente_en` is a `datetime` -- sending the bare `YYYY-MM-DD`
+    // `fecha` made FastAPI/pydantic parse it as MIDNIGHT (naive = UTC),
+    // not "now". Selecting "Hoy" therefore asked "what was vigente at
+    // 00:00 today" instead of "what is vigente right now", undercounting
+    // (or omitting entirely) any row whose `vigente_desde` falls later
+    // today but before the real current instant. For "hoy" specifically
+    // we must send the actual current timestamp; a past/future date
+    // keeps its existing midnight-of-that-day semantics (unaffected by
+    // this bug report, out of scope to redefine here).
+    const vigenteEn =
+      fecha === formatFechaEfectiva(new Date()) ? new Date().toISOString() : fecha;
+    return getParametrizacionEfectiva(uuidSucursal!, vigenteEn);
+  });
 
   return {
     fecha,

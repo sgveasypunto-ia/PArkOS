@@ -685,6 +685,29 @@ async def update_tarifa_pr_c(
             },
         )
     nueva_desde = _to_naive_utc(payload.vigente_desde) or datetime.now(UTC).replace(tzinfo=None)
+    # QA batch tarifas/cupos (2026-10-02): ``assert_no_overlap`` only
+    # queries rows where ``vigente_hasta IS NULL`` (the single
+    # currently-open row for this business key) and we pass
+    # ``exclude_uuid=uuid`` below -- ``current`` IS that one open row,
+    # so after excluding it there is NEVER an "other" open row left to
+    # conflict with. The helper can therefore never catch a
+    # backward-dated ``vigente_desde`` on PUT (confirmed live: a PUT
+    # with ``vigente_desde`` inside an already-CLOSED historical window
+    # returned 200, silently producing two overlapping bi-temporal
+    # windows for the same key). The chain's windows are constructed
+    # monotonically increasing, so comparing against the CURRENT row's
+    # own ``vigente_desde`` is sufficient to block going back into any
+    # prior window, open or closed -- no SQL round-trip needed.
+    if nueva_desde < current.vigente_desde:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tarifa_overlap",
+                "conflicting_uuid": str(current.uuid),
+                "conflicting_vigente_desde": current.vigente_desde.isoformat(),
+                "conflicting_vigente_hasta": None,
+            },
+        )
     try:
         await assert_no_overlap(
             session,
@@ -1432,8 +1455,14 @@ _SUB_ROUTERS["sucursal__dedicated_deshabilitar"] = _sucursal_actions_router
 # Reorder so the dedicated handlers come first.
 _reordered: dict[str, APIRouter] = {}
 for _pr_c_key in (
-    "tarifas-sucursal__dedicated_hu_f1_4",
+    # QA batch tarifas/cupos (2026-10-02): "pr_c" (owns the literal
+    # ``GET /by-key``) MUST precede "hu_f1_4" (owns the catch-all
+    # ``GET /{uuid}``) -- the earlier order let ``{uuid}`` swallow the
+    # literal ``by-key`` path segment first, producing a permanent 422
+    # ``uuid_parsing`` and making "ver histórico" unreachable. See
+    # ``test_tarifas_by_key_router_ordering.py``.
     "tarifas-sucursal__dedicated_pr_c",
+    "tarifas-sucursal__dedicated_hu_f1_4",
     "cantidad-vehiculos-sucursal__dedicated_pr_c",
     # HU-F15.1: new dedicated GET must precede the factory's plain
     # "resolucion-facturacion" mount the same way the tarifas/cantidad

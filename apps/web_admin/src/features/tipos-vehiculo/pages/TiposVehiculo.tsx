@@ -20,10 +20,7 @@ import {
   updateTipoVehiculo,
   type TipoVehiculoCreateInput,
 } from '../api/tiposVehiculoApi';
-import {
-  TipoVehiculoForm,
-  TipoVehiculoFormHarness,
-} from '../components/TipoVehiculoForm';
+import { TipoVehiculoFormHarness } from '../components/TipoVehiculoForm';
 
 type ErrorState = { message: string } | null;
 
@@ -138,8 +135,7 @@ export default function TiposVehiculo(): JSX.Element {
           contentProps={{ 'data-testid': 'tipo-vehiculo-form-modal' }}
         >
           {editing !== null ? (
-            <TipoVehiculoForm
-              form={undefined as never}
+            <TipoVehiculoFormHarness
               onSubmit={onSubmit}
               isSubmitting={submitting}
               isUpdate
