@@ -113,3 +113,46 @@ export const adminSucursalAsignadaReadSchema = z.object({
 });
 
 export type AdminSucursalAsignadaRead = z.infer<typeof adminSucursalAsignadaReadSchema>;
+
+/**
+ * Possible values of `AdminUsuarioRead.estado`. Mirrors the bi-temporal
+ * close+insert states written by `repo.versioned.close_and_insert`:
+ * the row being closed gets `estado='inactivo'`, the new open row gets
+ * `estado='activo'`. In practice `GET /admin/usuarios` only returns rows
+ * with `vigente_hasta IS NULL`, which `close_and_insert` always stamps
+ * `estado='activo'` -- so every row the list endpoint returns today has
+ * `estado === 'activo'`. `'inactivo'` is kept in the filter domain for
+ * forward-compat with a future "incluir inactivos" query param; the
+ * table-level "Estado" filter is a documented no-op against today's data.
+ */
+export const ESTADOS = ['activo', 'inactivo'] as const;
+export type Estado = (typeof ESTADOS)[number];
+
+/**
+ * Per-step schemas for the 3-step creation wizard (HU-F16.2:
+ * `DatosPersonalesStep` -> `RolStep` -> `SucursalesStep`).
+ *
+ * Each one `.pick()`s its fields straight off `adminUsuarioCreateSchema`
+ * instead of re-declaring the validation rules -- the wizard therefore
+ * can never drift out of sync with the single-shot payload the backend
+ * actually accepts (`AdminUsuarioCreateRequest` in
+ * `backend/.../schemas/admin.py`). The final submit still merges all
+ * three step payloads into one object validated by
+ * `adminUsuarioCreateSchema` before the HTTP call.
+ */
+export const datosPersonalesStepSchema = adminUsuarioCreateSchema.pick({
+  email: true,
+  password: true,
+  nombre: true,
+  apellido: true,
+  cedula: true,
+});
+export type DatosPersonalesStepInput = z.infer<typeof datosPersonalesStepSchema>;
+
+export const rolStepSchema = adminUsuarioCreateSchema.pick({ rol: true });
+export type RolStepInput = z.infer<typeof rolStepSchema>;
+
+export const sucursalesStepSchema = adminUsuarioCreateSchema.pick({
+  sucursales_asignadas: true,
+});
+export type SucursalesStepInput = z.infer<typeof sucursalesStepSchema>;

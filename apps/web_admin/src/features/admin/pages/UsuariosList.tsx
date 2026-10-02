@@ -1,73 +1,53 @@
 /**
- * `<UsuariosList />` — IT-1.4 + PR3 of the web_admin redesign.
+ * `<UsuariosList />` — IT-1.4 + PR3 of the web_admin redesign, filter
+ * bar + create-wizard added by HU-F16.2.
  *
  * Container that:
  *   - Lists every active admin/operator user via SWR.
- *   - Lets the admin create a new user (modal with the original
- *     AdminUsuarioForm, unchanged contract).
+ *   - Filters that list client-side by rol / sucursal / estado
+ *     (HU-F16.2) -- `GET /admin/usuarios` takes no query params and the
+ *     endpoint is already bounded to 100 rows (see
+ *     `AdminUsuarioTable.tsx`'s docblock), so filtering the already-
+ *     fetched page is the right shape here, not a server round-trip.
+ *   - Lets the admin create a new user via the 3-step `<UsuarioCrear />`
+ *     wizard (HU-F16.2 -- replaces the old single-shot
+ *     `AdminUsuarioForm`/`CreateUserForm` for the CREATE flow only).
  *   - Lets the admin assign/unassign branches per user via the
  *     AdminUsuarioSucursalesManager modal.
  *
  * Field editing lives on the detail screen (`/usuarios/{uuid}`), which
- * the table links to from the email and the "Detalle" button. The PUT
- * endpoint does exist and is wired -- an earlier revision of this
- * docblock claimed it did not, which is what kept the detail screen
- * unreachable for so long. This page owns creation plus branch
- * assignment; it deliberately does not duplicate the edit form.
+ * the table links to from the email and the "Detalle" button. That
+ * screen (`features/usuarios/pages/UsuarioDetalle.tsx`) uses a totally
+ * separate component tree (`UsuarioForm.tsx` under `features/usuarios/`)
+ * and its own Zod schemas (`features/usuarios/api/usuariosSchema.ts`) --
+ * it is NOT touched by the HU-F16.2 wizard, which only replaces the
+ * CREATE flow on this page.
  *
  * Cross-branch scope: the list is global by design (IT-1.4 admin
  * user management is admin-wide, not per-sucursal). The picker
  * switch does NOT invalidate this list.
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import * as React from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
 
-import type { BranchOption } from '@/components/branch-selector/BranchSelector';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 
 import { useSucursalOptions } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 
-import { AdminUsuarioForm } from '../components/AdminUsuarioForm';
 import { AdminUsuarioTable } from '../components/AdminUsuarioTable';
 import { AdminUsuarioSucursalesManager } from '../components/AdminUsuarioSucursalesManager';
 import {
-  adminUsuarioCreateSchema,
+  ESTADOS,
+  ROLES,
   type AdminUsuarioCreateInput,
   type AdminUsuarioRead,
 } from '../api/adminUsuarioSchema';
 import { useAdminUsuarios } from '../hooks/useAdminUsuarios';
-
-function CreateUserForm(props: {
-  onSubmit: (values: AdminUsuarioCreateInput) => void;
-  isSubmitting: boolean;
-  availableBranches: BranchOption[];
-}): JSX.Element {
-  const form = useForm<AdminUsuarioCreateInput>({
-    resolver: zodResolver(adminUsuarioCreateSchema),
-    defaultValues: {
-      email: '',
-      password: '',
-      rol: 'operador',
-      nombre: '',
-      apellido: '',
-      cedula: '',
-      sucursales_asignadas: [],
-    },
-  });
-  return (
-    <AdminUsuarioForm
-      form={form}
-      onSubmit={props.onSubmit}
-      isSubmitting={props.isSubmitting}
-      availableBranches={props.availableBranches}
-    />
-  );
-}
+import { UsuarioCrear } from './UsuarioCrear';
+import { FILTROS_VACIOS, filterUsuarios, type UsuariosFiltros } from './usuariosListFilters';
 
 export default function UsuariosList(): JSX.Element {
   const { t } = useTranslation();
@@ -79,8 +59,14 @@ export default function UsuariosList(): JSX.Element {
   const [assignTarget, setAssignTarget] = useState<AdminUsuarioRead | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [filtros, setFiltros] = useState<UsuariosFiltros>(FILTROS_VACIOS);
 
   const branchDirectory = useSucursalOptions();
+
+  const filteredUsuarios = useMemo(
+    () => filterUsuarios(usuarios ?? [], filtros),
+    [usuarios, filtros],
+  );
 
   // Branch assignments are rendered INLINE in the table from
   // `user.sucursales` (embedded by the backend on the list payload),
@@ -145,8 +131,61 @@ export default function UsuariosList(): JSX.Element {
         </p>
       )}
 
+      <div className="flex flex-wrap items-end gap-3" data-testid="admin-filtros">
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          {t('gestionUsuarios.filtros.rolLabel', 'Rol')}
+          <select
+            data-testid="admin-filter-rol"
+            value={filtros.rol}
+            onChange={(e) => setFiltros((f) => ({ ...f, rol: e.target.value }))}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <option value="">{t('gestionUsuarios.filtros.todos', 'Todos')}</option>
+            {ROLES.map((r) => (
+              <option key={r} value={r}>
+                {t(`admin.rol.${r}`)}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          {t('gestionUsuarios.filtros.sucursalLabel', 'Sucursal')}
+          <select
+            data-testid="admin-filter-sucursal"
+            value={filtros.sucursal}
+            onChange={(e) => setFiltros((f) => ({ ...f, sucursal: e.target.value }))}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <option value="">{t('gestionUsuarios.filtros.todas', 'Todas')}</option>
+            {branchDirectory.options.map((s) => (
+              <option key={s.uuid} value={s.uuid}>
+                {s.nombre ?? s.uuid}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          {t('gestionUsuarios.filtros.estadoLabel', 'Estado')}
+          <select
+            data-testid="admin-filter-estado"
+            value={filtros.estado}
+            onChange={(e) => setFiltros((f) => ({ ...f, estado: e.target.value }))}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <option value="">{t('gestionUsuarios.filtros.todos', 'Todos')}</option>
+            {ESTADOS.map((e) => (
+              <option key={e} value={e}>
+                {e}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       <AdminUsuarioTable
-        rows={usuarios ?? []}
+        rows={filteredUsuarios}
         isLoading={isLoading}
         onAssignSucursales={(u) => setAssignTarget(u)}
       />
@@ -177,22 +216,12 @@ export default function UsuariosList(): JSX.Element {
               )}
             </DialogDescription>
 
-            {createError !== null && (
-              <p
-                role="alert"
-                aria-live="assertive"
-                className="mt-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-                data-testid="admin-create-error"
-              >
-                {createError}
-              </p>
-            )}
-
             <div className="mt-4">
-              <CreateUserForm
+              <UsuarioCrear
                 onSubmit={onCreate}
                 isSubmitting={submitting}
                 availableBranches={branchDirectory.options}
+                submitError={createError}
               />
             </div>
           </CardContent>
