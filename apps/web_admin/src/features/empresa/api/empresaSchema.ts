@@ -20,18 +20,27 @@ export const regimenSchema = z.enum(['comun', 'simplificado']);
 export type Regimen = z.infer<typeof regimenSchema>;
 
 export const empresaUpdateSchema = z.object({
-  nombre: z.string().min(1, 'El nombre es obligatorio').max(255),
+  nombre: z
+    .string()
+    .min(1, 'El nombre es obligatorio')
+    .max(255, 'La razón social no puede superar los 255 caracteres'),
   nit: z
     .string()
     .min(6, 'El NIT es obligatorio (mínimo cuerpo + DV)')
-    .max(32),
+    .max(32, 'El NIT no puede superar los 32 caracteres'),
   regimen: regimenSchema,
 });
 export type EmpresaUpdateInput = z.infer<typeof empresaUpdateSchema>;
 
 export const empresaMensajesUpdateSchema = z.object({
-  mensaje_bienvenida: z.string().max(2000).nullable(),
-  mensaje_salida: z.string().max(2000).nullable(),
+  mensaje_bienvenida: z
+    .string()
+    .max(2000, 'El mensaje no puede superar los 2000 caracteres')
+    .nullable(),
+  mensaje_salida: z
+    .string()
+    .max(2000, 'El mensaje no puede superar los 2000 caracteres')
+    .nullable(),
 });
 export type EmpresaMensajesUpdateInput = z.infer<typeof empresaMensajesUpdateSchema>;
 
