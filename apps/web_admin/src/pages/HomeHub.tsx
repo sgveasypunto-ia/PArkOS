@@ -18,13 +18,21 @@
  */
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { Banknote, Bell, Building2, FolderTree, Landmark, Send, Users } from 'lucide-react';
+import { Banknote, Bell, BookOpen, Building2, FolderTree, Landmark, Send, Users } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { AlertasBadge } from '@/components/AlertasBadge';
 
 interface HubCard {
-  key: 'sucursales' | 'catalogos' | 'empresa' | 'usuarios' | 'arqueos' | 'alertas' | 'dian';
+  key:
+    | 'sucursales'
+    | 'catalogos'
+    | 'empresa'
+    | 'usuarios'
+    | 'arqueos'
+    | 'alertas'
+    | 'dian'
+    | 'auditoria';
   path: string;
   icon: typeof Building2;
   titleKey: string;
@@ -93,6 +101,16 @@ export const HUB_CARDS: readonly HubCard[] = [
     titleKey: 'homeHub.dian.label',
     descriptionKey: 'homeHub.dian.description',
     testId: 'home-hub-card-dian',
+  },
+  {
+    // HU-F20.4: bitácora cross-branch (log_transaccional), verificación
+    // de cadena de hashes y búsqueda global por prefijo.
+    key: 'auditoria',
+    path: '/auditoria/log',
+    icon: BookOpen,
+    titleKey: 'homeHub.auditoria.label',
+    descriptionKey: 'homeHub.auditoria.description',
+    testId: 'home-hub-card-auditoria',
   },
 ] as const;
 

@@ -47,7 +47,7 @@ Filter + pagination:
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import Field
@@ -116,3 +116,105 @@ class AuditLogItem(_Base):
 
 class AuditLogListResponse(ReadListBase[AuditLogItem]):
     """Cursor-paginated list envelope (mirror of F1.15 DEC-LOGIN-07)."""
+
+
+# ============================================================================
+# HU-F20.4 — Bitácora: cross-branch read, hash-chain verification, typeahead
+# ============================================================================
+#
+# New read-only surface under ``api/v1/auditoria.py`` (``GET
+# /admin/log-transaccional`` + ``.../verify-chain`` + ``.../buscar``),
+# deliberately NOT mounted on ``audit.py`` (IT-12's single/ambient-tenant
+# endpoint, which stays untouched). ``AuditLogItem`` already mirrors
+# ``log_transaccional``'s full business-column shape 1:1, so the list
+# endpoint reuses it (and ``AuditLogListResponse``) directly rather than
+# declaring a near-duplicate Pydantic model.
+
+
+class LogTransaccionalListQueryParams(_Base):
+    """Query params for ``GET /admin/log-transaccional`` (HU-F20.4).
+
+    Unlike IT-12's ``AuditLogQueryParams``, there is no "at least one
+    selector required" rule here: omitting ``uuid_sucursal`` means
+    "every branch the admin is permitted to see" (cross-branch sweep,
+    mirrors ``admin_views.sync_log_list``'s convention), not "reject the
+    request". ``uuid_sucursal`` narrows to exactly one branch and the
+    route 403s ``unauthorized_sucursal_context`` when it is not in the
+    admin's permitted set.
+    """
+
+    tabla: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Optional table filter, maps to tabla_afectada.",
+    )
+    uuid_registro: uuid_lib.UUID | None = Field(
+        default=None,
+        description="Optional affected-record uuid filter, maps to uuid_registro_afectado.",
+    )
+    uuid_sucursal: uuid_lib.UUID | None = Field(
+        default=None,
+        description=(
+            "Optional single-branch selector. Must be one of the admin's "
+            "permitted branches (extract_sucursales_permitidas_fresh); "
+            "omitted, the query scopes to every permitted branch."
+        ),
+    )
+    uuid_usuario: uuid_lib.UUID | None = Field(
+        default=None,
+        description="Optional acting-user uuid filter.",
+    )
+    desde: date | None = Field(
+        default=None,
+        description="Inclusive start date, filtered on timestamp_evento.",
+    )
+    hasta: date | None = Field(
+        default=None,
+        description="Inclusive end date, filtered on timestamp_evento.",
+    )
+    cursor: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class ChainAnomalyItem(_Base):
+    """One ``ChainAnomaly`` (``sync.motor.verify_chain``), wire shape.
+
+    1:1 field mirror of ``parkos_core.sync.motor.verify_chain.ChainAnomaly``
+    -- see that module for the detection semantics.
+    """
+
+    tabla: str
+    uuid_sucursal: uuid_lib.UUID | None
+    uuid: uuid_lib.UUID
+    expected: str
+    actual: str | None
+    seq: int | None
+    reason: str
+
+
+class VerifyChainResponse(_Base):
+    """``GET /admin/log-transaccional/verify-chain`` response envelope."""
+
+    ok: bool
+    anomalias: list[ChainAnomalyItem]
+
+
+class BuscarPrefijoItem(_Base):
+    """One typeahead match (``GET /admin/log-transaccional/buscar``).
+
+    Deliberately thinner than ``AuditLogItem`` -- just enough for a
+    typeahead to disambiguate candidates (table + affected record +
+    branch + when), not the full audit payload diff.
+    """
+
+    uuid: uuid_lib.UUID
+    tabla_afectada: str | None
+    uuid_registro_afectado: uuid_lib.UUID | None
+    uuid_sucursal: uuid_lib.UUID | None
+    timestamp_evento: datetime
+
+
+class BuscarPrefijoResponse(_Base):
+    """``GET /admin/log-transaccional/buscar`` response envelope. No cursor."""
+
+    items: list[BuscarPrefijoItem]
