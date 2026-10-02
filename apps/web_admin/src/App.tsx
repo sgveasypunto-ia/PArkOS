@@ -28,6 +28,7 @@ import { ArqueosPage } from '@/features/arqueos/pages/ArqueosPage';
 import Pairing from '@/features/pairing/pages/Pairing';
 import AlertasList from '@/features/alertas/pages/AlertasList';
 import AlertaDetalle from '@/features/alertas/pages/AlertaDetalle';
+import SyncDashboard from '@/features/sync/pages/SyncDashboard';
 
 /**
  * Route tree.
@@ -124,6 +125,12 @@ export default function App() {
               acá en vez de dentro del grupo <RequireSucursal>. */}
           <Route path="/alertas" element={<AlertasList />} />
           <Route path="/alertas/:uuid" element={<AlertaDetalle />} />
+          {/* HU-F19.2: cross-branch sync monitoring dashboard (heatmap +
+              resumen verde/amarillo/rojo, log, conflictos). Cross-branch
+              by nature (same reasoning as /pairing just above), so it
+              sits here instead of inside the <RequireSucursal> group
+              below. */}
+          <Route path="/sync" element={<SyncDashboard />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 

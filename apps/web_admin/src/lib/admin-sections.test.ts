@@ -23,14 +23,14 @@ describe('visibleSections', () => {
     expect(keys).toEqual(expect.arrayContaining(['dashboard', 'sucursales', 'gestion-usuarios']));
   });
 
-  it('A3: reveals Auditoría once audit_read is granted (4 issuer-only + 1)', () => {
-    // With just `audit_read`, the operator sees the 4 issuer-only
-    // surfaces (dashboard / sucursales / gestion-usuarios / reporteria)
-    // plus the audit surface. Tarifas, Cupos and the 4 catalog/config
-    // surfaces require their own codes which A3 does not grant.
+  it('A3: reveals Auditoría once audit_read is granted (5 issuer-only + 1)', () => {
+    // With just `audit_read`, the operator sees the 5 issuer-only
+    // surfaces (dashboard / sucursales / gestion-usuarios / reporteria /
+    // sync) plus the audit surface. Tarifas, Cupos and the 4 catalog/
+    // config surfaces require their own codes which A3 does not grant.
     const keys = visibleSections(['audit_read']).map((s) => s.key);
     expect(keys).toContain('auditoria');
-    expect(keys).toHaveLength(5);
+    expect(keys).toHaveLength(6);
   });
 
   it('A4: an unrelated permission does not unlock Auditoría', () => {
@@ -51,9 +51,9 @@ describe('visibleSections', () => {
   it('A6: the catalog advertises every route the SPA can navigate to', () => {
     // PR-D added /tarifas and /cupos; PR-D-ui-catalogos added the 4
     // catalog/config surfaces; home-hub-2-cards added `/catalogos`
-    // (the unified 9-tab editor). The catalog must reflect all of
-    // them or the user navigates to a 404 from a card that exists
-    // in the UI.
+    // (the unified 9-tab editor); HU-F19.2 added `/sync`. The catalog
+    // must reflect all of them or the user navigates to a 404 from a
+    // card that exists in the UI.
     expect(ADMIN_SECTIONS.map((s) => s.key)).toEqual([
       'dashboard',
       'sucursales',
@@ -68,6 +68,7 @@ describe('visibleSections', () => {
       'reporteria',
       'auditoria',
       'pairing',
+      'sync',
     ]);
   });
 

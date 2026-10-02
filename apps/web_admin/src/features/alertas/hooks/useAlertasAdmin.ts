@@ -44,6 +44,10 @@ export function useAlertasAdmin(
   const { swrSalt } = options;
   const swrKey = useMemo(
     () => buildKey(query, swrSalt),
+    // Deliberately narrowed to the query's primitive fields (mirrors
+    // useArqueosAdmin.ts): depending on `query` itself would recompute on
+    // every render, since callers typically pass a fresh object literal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       query.uuid_sucursal,
       query.tipo_alerta,
@@ -81,7 +85,6 @@ export function useAlertasAdmin(
     } catch (err) {
       // Best-effort, mirrors useArqueosAdmin.loadMore: the caller can
       // `refresh()` to retry; we don't throw into the render path.
-      // eslint-disable-next-line no-console
       console.error('useAlertasAdmin.loadMore failed:', err);
     }
   };

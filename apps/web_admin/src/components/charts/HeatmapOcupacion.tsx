@@ -14,6 +14,16 @@
  * Bundled (with its 3 sibling charts) inside `ChartsSection.tsx`, which
  * `Dashboard.tsx` loads via `React.lazy` (dynamic import) -- see that
  * file for why all 4 charts share one lazy boundary.
+ *
+ * HU-F19.2 generalization: this component is also reused by
+ * `features/sync/pages/SyncDashboard.tsx` to render a 24h x N sucursales
+ * sync-lag heatmap instead of an ingresos-activity one. The magnitude
+ * field name (`ingresos_count`) is kept as-is for backward compatibility
+ * (existing callers/tests pass it unchanged); four NEW optional props
+ * let a caller override the unit label, the bottom disclaimer, the
+ * empty-state copy, and add a row-click (drill-down) -- all default to
+ * the exact original ingresos copy/behavior, so `ChartsSection.tsx` and
+ * `Reporteria.tsx` need no changes.
  */
 import { useId, useMemo, useState } from 'react';
 
@@ -32,16 +42,36 @@ export interface HeatmapOcupacionProps {
   data: HeatmapCell[];
   sucursales: HeatmapBranch[];
   title: string;
+  /** Unit label appended to the hover tooltip value (default: `'ingresos'`). */
+  valueUnitLabel?: string;
+  /** Bottom disclaimer under the SVG grid (default: the original ingresos-proxy caption). */
+  footerNote?: string;
+  /** Empty-state copy when `sucursales.length === 0` (default: the original ingresos copy). */
+  emptyMessage?: string;
+  /**
+   * Optional drill-down: called with a branch's `uuid` when its row
+   * label is activated (click or Enter/Space). Absent by default --
+   * existing callers get no interactive row affordance, unchanged.
+   */
+  onRowClick?: (uuid: string) => void;
 }
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const CELL = 18;
 const LABEL_WIDTH = 120;
+const DEFAULT_VALUE_UNIT_LABEL = 'ingresos';
+const DEFAULT_FOOTER_NOTE =
+  'Intensidad de actividad (ingresos por hora, UTC) -- no es ocupación concurrente real.';
+const DEFAULT_EMPTY_MESSAGE = 'Sin sucursales en el rango.';
 
 export function HeatmapOcupacion({
   data,
   sucursales,
   title,
+  valueUnitLabel = DEFAULT_VALUE_UNIT_LABEL,
+  footerNote = DEFAULT_FOOTER_NOTE,
+  emptyMessage = DEFAULT_EMPTY_MESSAGE,
+  onRowClick,
 }: HeatmapOcupacionProps): JSX.Element {
   const titleId = useId();
   const [asTable, setAsTable] = useState(false);
@@ -66,7 +96,7 @@ export function HeatmapOcupacion({
         className="flex h-[120px] items-center justify-center text-sm text-muted-foreground"
         data-testid="heatmap-ocupacion-empty"
       >
-        Sin sucursales en el rango.
+        {emptyMessage}
       </div>
     );
   }
@@ -109,7 +139,28 @@ export function HeatmapOcupacion({
             <tbody>
               {sucursales.map((s) => (
                 <tr key={s.uuid}>
-                  <th scope="row" className="p-1 text-left font-normal">
+                  <th
+                    scope="row"
+                    className={
+                      onRowClick
+                        ? 'cursor-pointer p-1 text-left font-normal underline-offset-2 hover:underline'
+                        : 'p-1 text-left font-normal'
+                    }
+                    tabIndex={onRowClick ? 0 : undefined}
+                    role={onRowClick ? 'button' : undefined}
+                    onClick={onRowClick ? () => onRowClick(s.uuid) : undefined}
+                    onKeyDown={
+                      onRowClick
+                        ? (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              onRowClick(s.uuid);
+                            }
+                          }
+                        : undefined
+                    }
+                    data-testid={`heatmap-ocupacion-row-${s.uuid}`}
+                  >
                     {s.nombre ?? s.uuid.slice(0, 8)}
                   </th>
                   {HOURS.map((h) => (
@@ -136,7 +187,13 @@ export function HeatmapOcupacion({
                   x={LABEL_WIDTH - 6}
                   y={row * CELL + CELL / 2 + 4}
                   textAnchor="end"
-                  className="fill-muted-foreground text-[10px]"
+                  className={
+                    onRowClick
+                      ? 'cursor-pointer fill-muted-foreground text-[10px] underline-offset-2 hover:fill-foreground hover:underline'
+                      : 'fill-muted-foreground text-[10px]'
+                  }
+                  onClick={onRowClick ? () => onRowClick(s.uuid) : undefined}
+                  data-testid={`heatmap-ocupacion-row-${s.uuid}`}
                 >
                   {s.nombre ?? s.uuid.slice(0, 8)}
                 </text>
@@ -176,12 +233,10 @@ export function HeatmapOcupacion({
                 transform: 'translate(-50%, -120%)',
               }}
             >
-              {hover.hora}h: {byKey.get(`${hover.uuid}:${hover.hora}`) ?? 0} ingresos
+              {hover.hora}h: {byKey.get(`${hover.uuid}:${hover.hora}`) ?? 0} {valueUnitLabel}
             </div>
           )}
-          <p className="mt-1 text-[10px] text-muted-foreground">
-            Intensidad de actividad (ingresos por hora, UTC) -- no es ocupación concurrente real.
-          </p>
+          <p className="mt-1 text-[10px] text-muted-foreground">{footerNote}</p>
         </div>
       )}
     </figure>
