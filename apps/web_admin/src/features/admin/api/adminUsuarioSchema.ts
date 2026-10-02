@@ -51,13 +51,16 @@ export const sucursalAsignadaResumenSchema = z.object({
 export type SucursalAsignadaResumen = z.infer<typeof sucursalAsignadaResumenSchema>;
 
 export const adminUsuarioCreateSchema = z.object({
-  email: z.string().min(1, 'validation.required').email('validation.email.invalid'),
+  email: z
+    .string()
+    .min(1, 'Este campo es obligatorio.')
+    .email('Ingresá un correo electrónico válido.'),
   password: z
     .string()
-    .min(8, 'validation.password.minLength')
-    .max(128, 'validation.password.maxLength'),
+    .min(8, 'La contraseña debe tener al menos 8 caracteres.')
+    .max(128, 'La contraseña no puede superar los 128 caracteres.'),
   rol: z.enum(ROLES, {
-    errorMap: () => ({ message: 'validation.rol.invalid' }),
+    errorMap: () => ({ message: 'Seleccioná un rol válido.' }),
   }),
   nombre: z.string().max(255).nullish(),
   apellido: z.string().max(255).nullish(),

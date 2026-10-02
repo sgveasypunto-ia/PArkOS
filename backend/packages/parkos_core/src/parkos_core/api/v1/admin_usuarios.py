@@ -15,7 +15,8 @@ Endpoints
   ``password_hash`` never crosses the HTTP edge in either direction.
   Body accepts an optional ``sucursales_asignadas`` list; if present
   one ``prod.usuarios_sucursal`` row + one ``prod.sync_queue`` row
-  per UUID is written.
+  per UUID is written. 409 if an active user already holds the same
+  email.
 - ``GET /api/v1/admin/usuarios`` -- list active users. Read-only.
 - ``GET /api/v1/admin/usuarios/{uuid}`` -- single user. Read-only.
 - ``POST /api/v1/admin/usuarios/{uuid}/sucursales`` -- open a new
@@ -153,6 +154,11 @@ async def create_usuario(
             sucursales_asignadas=payload.sucursales_asignadas,
         )
     except admin_repo.UsuarioYaAsignadoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except admin_repo.EmailYaRegistradoError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
@@ -457,6 +463,11 @@ async def update_usuario(
     except admin_repo.UsuarioNoEncontradoError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except admin_repo.EmailYaRegistradoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
     if user is None:

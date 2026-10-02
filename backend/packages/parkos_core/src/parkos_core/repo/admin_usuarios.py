@@ -54,6 +54,7 @@ from datetime import UTC, datetime
 
 import bcrypt
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.V.permisos import Permisos
@@ -89,6 +90,61 @@ def _bcrypt_hash(plaintext_password: str) -> str:
     ).decode("ascii")
 
 
+# Admin-facing FK tables keyed by ``uuid_usuario`` whose CURRENT state
+# must keep pointing at the user after a bi-temporal close+insert.
+# Mirrors ``repo.sucursal._FK_TABLES`` / ``propagate_uuid_to_fks`` --
+# see ``repo.versioned`` module docstring for the general "UUID
+# regeneration" gotcha. ``login_historico`` / ``log_transaccional`` are
+# intentionally EXCLUDED: those record "who did X at the time", so
+# repointing them would rewrite audit history rather than preserve it.
+_USUARIO_FK_TABLES: tuple[tuple[str, str], ...] = (
+    ("prod", "usuarios_sucursal"),
+    ("prod", "permisos_usuario"),
+)
+
+
+async def propagate_usuario_uuid_to_fks(
+    session: AsyncSession,
+    *,
+    old_uuid: uuid_lib.UUID,
+    new_uuid: uuid_lib.UUID,
+) -> None:
+    """Repoint ``uuid_usuario = old_uuid`` to ``new_uuid`` in the FK
+    tables backing the Usuario detail page's own tabs.
+
+    Called from ``repo.versioned.close_and_insert`` right after it
+    mints the successor ``Usuarios`` row (same TX, no commit here).
+
+    Without this, every ``update_admin_usuario`` (Datos tab save) or
+    ``reset_admin_password`` call silently orphans the user's open
+    ``usuarios_sucursal`` / ``permisos_usuario`` rows: those rows keep
+    pointing at the now-closed OLD uuid, so the Sucursales/Permisos
+    tabs read back empty for a user who still has active assignments.
+    Confirmed live (qa/batch-usuarios, 2026-10-02): a user with one
+    open ``usuarios_sucursal`` row showed "Sin sucursales asignadas"
+    in the admin UI after two Datos-tab edits + one password reset,
+    because the assignment row still carried the user's very first
+    (three edits ago) closed uuid.
+
+    Idempotent: when no FK row references ``old_uuid`` the UPDATE
+    matches 0 rows and this is a no-op.
+    """
+    if old_uuid == new_uuid:
+        return
+    from sqlalchemy import text
+
+    for schema, table in _USUARIO_FK_TABLES:
+        qualified = f"{schema}.{table}"
+        await session.execute(
+            text(
+                f"UPDATE {qualified} "
+                f"SET uuid_usuario = :new_uuid "
+                f"WHERE uuid_usuario = :old_uuid"
+            ),
+            {"new_uuid": new_uuid, "old_uuid": old_uuid},
+        )
+
+
 async def create_admin_usuario(
     session: AsyncSession,
     *,
@@ -119,25 +175,62 @@ async def create_admin_usuario(
     ``job_sync_cloud._apply_pending_loop`` will drain the queue and
     apply locally; the cloud-to-branch push is the responsibility of
     a downstream worker (deferred PR).
+
+    Raises :class:`EmailYaRegistradoError` if an active user already
+    holds ``email`` (exact match, same convention as ``auth.py::login``'s
+    lookup). Without this guard two active rows could share an email --
+    ``login`` would then match whichever row its ``WHERE`` clause
+    returns first, silently logging the admin into an unrelated account.
+
+    The SELECT-then-INSERT above is a fast-path UX guard only -- it is
+    NOT race-free by itself: two concurrent calls with the same ``email``
+    can both read "no active row" before either commits. The backstop is
+    the partial UNIQUE index ``prod.usuarios_email_uk01`` (migration
+    ``0068_usuarios_email_activo_uk``, ``UNIQUE (email) WHERE
+    vigente_hasta IS NULL``); the ``except IntegrityError`` below catches
+    the loser of that race and re-raises the same
+    :class:`EmailYaRegistradoError` the pre-check raises, so the HTTP
+    handler's 409 mapping covers both paths identically.
     """
+    if email is not None:
+        existing = await session.execute(
+            select(Usuarios.uuid).where(
+                Usuarios.email == email,
+                Usuarios.vigente_hasta.is_(None),
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise EmailYaRegistradoError(
+                f"ya existe un usuario activo con email={email}"
+            )
+
     password_hash = _bcrypt_hash(password)
 
-    # 1) Insert the user.
-    user = await close_and_insert(
-        session,
-        Usuarios,
-        current_uuid=None,
-        new_attrs={
-            "nombre": nombre,
-            "apellido": apellido,
-            "cedula": cedula,
-            "email": email,
-            "password_hash": password_hash,
-            "rol": rol,
-        },
-        actor_uuid=actor_uuid,
-        log_tx=False,  # user creation isn't a bi-temporal state event
-    )
+    # 1) Insert the user. ``close_and_insert`` flushes internally, so the
+    #    partial-unique-index violation (concurrent duplicate email that
+    #    slipped past the pre-check above) surfaces here as
+    #    ``IntegrityError`` wrapping asyncpg's ``UniqueViolationError``.
+    try:
+        user = await close_and_insert(
+            session,
+            Usuarios,
+            current_uuid=None,
+            new_attrs={
+                "nombre": nombre,
+                "apellido": apellido,
+                "cedula": cedula,
+                "email": email,
+                "password_hash": password_hash,
+                "rol": rol,
+            },
+            actor_uuid=actor_uuid,
+            log_tx=False,  # user creation isn't a bi-temporal state event
+        )
+    except IntegrityError as exc:
+        await session.rollback()
+        raise EmailYaRegistradoError(
+            f"ya existe un usuario activo con email={email}"
+        ) from exc
     await session.flush()  # populate user.uuid
 
     # 2) Fan-out to the branch assignments + queue.
@@ -453,6 +546,14 @@ class UsuarioYaAsignadoError(Exception):
     """
 
 
+class EmailYaRegistradoError(Exception):
+    """Raised by :func:`create_admin_usuario` when the email is already in use
+    by another active user.
+
+    The handler maps this to HTTP 409 (Conflict).
+    """
+
+
 async def revocar_permiso(
     session: AsyncSession,
     *,
@@ -593,6 +694,13 @@ async def update_admin_usuario(
     wants to change -- we do NOT touch a field whose value is ``None``.
 
     Returns the new open version, or ``None`` if no open row exists.
+
+    Raises :class:`EmailYaRegistradoError` if ``email`` is being changed
+    to a value another active user already holds -- same guard as
+    :func:`create_admin_usuario`, so editing a user's email can't
+    silently recreate the duplicate-email bug the create path already
+    closes. See that function's docstring for the ``IntegrityError``
+    backstop this mirrors (partial UNIQUE index ``prod.usuarios_email_uk01``).
     """
     # Fetch the open row first -- close+insert needs its current_uuid
     # so the FK history chain stays intact.
@@ -604,6 +712,23 @@ async def update_admin_usuario(
     current = result.scalar_one_or_none()
     if current is None:
         return None
+
+    # Email-uniqueness pre-check -- only when the patch actually changes
+    # the value (a no-op resubmit of the user's own current email must
+    # not self-conflict). ``Usuarios.uuid != current.uuid`` excludes the
+    # row being edited from the active-row scan.
+    if email is not None and email != current.email:
+        existing = await session.execute(
+            select(Usuarios.uuid).where(
+                Usuarios.email == email,
+                Usuarios.vigente_hasta.is_(None),
+                Usuarios.uuid != current.uuid,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise EmailYaRegistradoError(
+                f"ya existe un usuario activo con email={email}"
+            )
 
     # Build the new_attrs dict from non-None inputs. ``getattr`` lets
     # the caller pass a sparse payload without us having to know the
@@ -625,14 +750,20 @@ async def update_admin_usuario(
     if not overrides:
         return current
 
-    new_row = await close_and_insert(
-        session,
-        Usuarios,
-        current_uuid=current.uuid,
-        new_attrs=overrides,
-        actor_uuid=actor_uuid,
-        log_tx=False,
-    )
+    try:
+        new_row = await close_and_insert(
+            session,
+            Usuarios,
+            current_uuid=current.uuid,
+            new_attrs=overrides,
+            actor_uuid=actor_uuid,
+            log_tx=False,
+        )
+    except IntegrityError as exc:
+        await session.rollback()
+        raise EmailYaRegistradoError(
+            f"ya existe un usuario activo con email={email}"
+        ) from exc
 
     # Enqueue the patch so branches that already have a copy of the
     # user pick up the new version on their next sync drain.

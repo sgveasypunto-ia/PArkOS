@@ -87,13 +87,23 @@ class TestCreateAdminUsuario:
         assignment_row_2 = MagicMock()
         assignment_row_2.uuid = uuid_lib.uuid4()
 
-        # SELECT returns the user for the snapshot fetch.
-        # ``close_and_insert`` runs ONE select during the user create
-        # (for ``await session.flush`` to populate server-side columns)
-        # and the helper then runs ONE more select to snapshot the user
-        # payload for ``datos``. Both return the user_row.
+        # First SELECT is ``create_admin_usuario``'s own email-uniqueness
+        # pre-check (``EmailYaRegistradoError`` guard) -- it must report
+        # "no existing active user" or the call raises before reaching
+        # ``close_and_insert`` at all. Every SELECT after that is the
+        # snapshot fetch inside ``_asignar_sucursal_helper`` (one per
+        # branch assignment), which reads via ``scalar_one()``.
+        call_count = {"n": 0}
+
         async def _execute_scalar(stmt: object, *a: object, **kw: object):
-            return user_row
+            call_count["n"] += 1
+            result = MagicMock()
+            if call_count["n"] == 1:
+                result.scalar_one_or_none.return_value = None
+            else:
+                result.scalar_one.return_value = user_row
+                result.scalar_one_or_none.return_value = user_row
+            return result
 
         session.execute.side_effect = _execute_scalar
 
@@ -153,8 +163,19 @@ class TestCreateAdminUsuario:
         user_row.password_hash = "$2b$12$" + "x" * 53
         user_row.rol = "admin"
 
+        # First SELECT is the email-uniqueness pre-check -- must report
+        # "no existing active user" (see the sibling test above for why).
+        call_count = {"n": 0}
+
         async def _execute_scalar(stmt: object, *a: object, **kw: object):
-            return user_row
+            call_count["n"] += 1
+            result = MagicMock()
+            if call_count["n"] == 1:
+                result.scalar_one_or_none.return_value = None
+            else:
+                result.scalar_one.return_value = user_row
+                result.scalar_one_or_none.return_value = user_row
+            return result
 
         session.execute.side_effect = _execute_scalar
 
@@ -183,6 +204,295 @@ class TestCreateAdminUsuario:
             sucursales_asignadas=[],
         )
         assert call_log == ["Usuarios"]
+
+    async def test_raises_email_ya_registrado_on_duplicate_precheck(self) -> None:
+        """INP-001 (Alto): the SELECT-then-INSERT pre-check must still
+        reject a duplicate email on the common (non-concurrent) path."""
+        session = AsyncMock()
+
+        async def _execute_scalar(stmt: object, *a: object, **kw: object):
+            result = MagicMock()
+            # An active user already holds this email.
+            result.scalar_one_or_none.return_value = uuid_lib.uuid4()
+            return result
+
+        session.execute.side_effect = _execute_scalar
+
+        with pytest.raises(admin_repo.EmailYaRegistradoError):
+            await admin_repo.create_admin_usuario(
+                session,
+                actor_uuid=_actor_uuid(),
+                nombre=None,
+                apellido=None,
+                cedula=None,
+                email="dup@parkos.local",
+                password="Pass1234word",
+                rol="operador",
+                sucursales_asignadas=[],
+            )
+
+    async def test_raises_email_ya_registrado_on_integrity_error_race(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """INP-001 (Alto) race-condition backstop: two concurrent creates
+        both pass the SELECT pre-check (neither has committed yet); the
+        loser must surface the partial-unique-index violation
+        (``IntegrityError`` wrapping asyncpg's ``UniqueViolationError``)
+        as ``EmailYaRegistradoError``, not a raw 500."""
+        session = AsyncMock()
+        session.rollback = AsyncMock()
+
+        async def _execute_scalar(stmt: object, *a: object, **kw: object):
+            result = MagicMock()
+            # Pre-check reports "no active row" -- the race: the other
+            # concurrent request hasn't committed yet.
+            result.scalar_one_or_none.return_value = None
+            return result
+
+        session.execute.side_effect = _execute_scalar
+
+        async def _fake_close_and_insert(*args: object, **kwargs: object):
+            from sqlalchemy.exc import IntegrityError
+
+            raise IntegrityError(
+                "INSERT INTO prod.usuarios ...",
+                {},
+                Exception(
+                    'duplicate key value violates unique constraint '
+                    '"usuarios_email_uk01"'
+                ),
+            )
+
+        monkeypatch.setattr(admin_repo, "close_and_insert", _fake_close_and_insert)
+
+        with pytest.raises(admin_repo.EmailYaRegistradoError):
+            await admin_repo.create_admin_usuario(
+                session,
+                actor_uuid=_actor_uuid(),
+                nombre=None,
+                apellido=None,
+                cedula=None,
+                email="race@parkos.local",
+                password="Pass1234word",
+                rol="operador",
+                sucursales_asignadas=[],
+            )
+        session.rollback.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# update_admin_usuario
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateAdminUsuario:
+    @staticmethod
+    def _current_row(*, uuid: uuid_lib.UUID, email: str | None) -> MagicMock:
+        row = MagicMock()
+        row.uuid = uuid
+        row.email = email
+        return row
+
+    async def test_returns_none_when_no_open_row(self) -> None:
+        session = AsyncMock()
+
+        async def _execute(stmt: object, *a: object, **kw: object):
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = None
+            return result
+
+        session.execute.side_effect = _execute
+
+        result = await admin_repo.update_admin_usuario(
+            session,
+            actor_uuid=_actor_uuid(),
+            usuario_uuid=uuid_lib.uuid4(),
+            nombre=None,
+            apellido=None,
+            cedula=None,
+            email=None,
+            rol=None,
+        )
+        assert result is None
+
+    async def test_does_not_raise_when_email_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resubmitting the user's own current email (e.g. an edit form
+        that re-sends every field) must NOT self-conflict with the
+        uniqueness guard."""
+        user_uuid = uuid_lib.uuid4()
+        current = self._current_row(uuid=user_uuid, email="same@parkos.local")
+        session = AsyncMock()
+
+        async def _execute(stmt: object, *a: object, **kw: object):
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = current
+            return result
+
+        session.execute.side_effect = _execute
+
+        new_row = MagicMock()
+
+        async def _fake_close_and_insert(*a: object, **kw: object):
+            return new_row
+
+        async def _fake_enqueue(*a: object, **kw: object):
+            return MagicMock()
+
+        monkeypatch.setattr(admin_repo, "close_and_insert", _fake_close_and_insert)
+        monkeypatch.setattr(admin_repo, "enqueue", _fake_enqueue)
+
+        result = await admin_repo.update_admin_usuario(
+            session,
+            actor_uuid=_actor_uuid(),
+            usuario_uuid=user_uuid,
+            nombre="Nuevo Nombre",
+            apellido=None,
+            cedula=None,
+            email="same@parkos.local",
+            rol=None,
+        )
+        assert result is new_row
+        # Only the initial SELECT for the open row -- the email pre-check
+        # must be skipped entirely because ``email == current.email``.
+        assert session.execute.await_count == 1
+
+    async def test_raises_email_ya_registrado_on_duplicate_precheck(self) -> None:
+        user_uuid = uuid_lib.uuid4()
+        current = self._current_row(uuid=user_uuid, email="old@parkos.local")
+        session = AsyncMock()
+        call_count = {"n": 0}
+
+        async def _execute(stmt: object, *a: object, **kw: object):
+            call_count["n"] += 1
+            result = MagicMock()
+            if call_count["n"] == 1:
+                result.scalar_one_or_none.return_value = current
+            else:
+                # Another ACTIVE user already holds the new email.
+                result.scalar_one_or_none.return_value = uuid_lib.uuid4()
+            return result
+
+        session.execute.side_effect = _execute
+
+        with pytest.raises(admin_repo.EmailYaRegistradoError):
+            await admin_repo.update_admin_usuario(
+                session,
+                actor_uuid=_actor_uuid(),
+                usuario_uuid=user_uuid,
+                nombre=None,
+                apellido=None,
+                cedula=None,
+                email="taken@parkos.local",
+                rol=None,
+            )
+
+    async def test_raises_email_ya_registrado_on_integrity_error_race(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """INP-001 (Alto): editing a user's email had NO guard at all
+        before this fix -- neither a pre-check nor an IntegrityError
+        backstop. Both must now be in place."""
+        user_uuid = uuid_lib.uuid4()
+        current = self._current_row(uuid=user_uuid, email="old@parkos.local")
+        session = AsyncMock()
+        session.rollback = AsyncMock()
+        call_count = {"n": 0}
+
+        async def _execute(stmt: object, *a: object, **kw: object):
+            call_count["n"] += 1
+            result = MagicMock()
+            if call_count["n"] == 1:
+                result.scalar_one_or_none.return_value = current
+            else:
+                # Pre-check passes -- race: concurrent writer not
+                # committed yet.
+                result.scalar_one_or_none.return_value = None
+            return result
+
+        session.execute.side_effect = _execute
+
+        async def _fake_close_and_insert(*a: object, **kw: object):
+            from sqlalchemy.exc import IntegrityError
+
+            raise IntegrityError(
+                "UPDATE prod.usuarios ...",
+                {},
+                Exception(
+                    'duplicate key value violates unique constraint '
+                    '"usuarios_email_uk01"'
+                ),
+            )
+
+        monkeypatch.setattr(admin_repo, "close_and_insert", _fake_close_and_insert)
+
+        with pytest.raises(admin_repo.EmailYaRegistradoError):
+            await admin_repo.update_admin_usuario(
+                session,
+                actor_uuid=_actor_uuid(),
+                usuario_uuid=user_uuid,
+                nombre=None,
+                apellido=None,
+                cedula=None,
+                email="race@parkos.local",
+                rol=None,
+            )
+        session.rollback.assert_awaited_once()
+
+    async def test_updates_fields_and_enqueues_patch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        user_uuid = uuid_lib.uuid4()
+        current = self._current_row(uuid=user_uuid, email="old@parkos.local")
+        session = AsyncMock()
+        call_count = {"n": 0}
+
+        async def _execute(stmt: object, *a: object, **kw: object):
+            call_count["n"] += 1
+            result = MagicMock()
+            if call_count["n"] == 1:
+                result.scalar_one_or_none.return_value = current
+            else:
+                result.scalar_one_or_none.return_value = None  # no dup
+            return result
+
+        session.execute.side_effect = _execute
+
+        new_row = MagicMock()
+        new_row.uuid = uuid_lib.uuid4()
+
+        captured_overrides: dict[str, object] = {}
+
+        async def _fake_close_and_insert(*args: object, **kwargs: object):
+            captured_overrides.update(kwargs.get("new_attrs", {}))
+            return new_row
+
+        enqueued: list[dict] = []
+
+        async def _fake_enqueue(*args: object, **kwargs: object):
+            enqueued.append(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(admin_repo, "close_and_insert", _fake_close_and_insert)
+        monkeypatch.setattr(admin_repo, "enqueue", _fake_enqueue)
+
+        result = await admin_repo.update_admin_usuario(
+            session,
+            actor_uuid=_actor_uuid(),
+            usuario_uuid=user_uuid,
+            nombre="Nuevo",
+            apellido=None,
+            cedula=None,
+            email="new@parkos.local",
+            rol=None,
+        )
+
+        assert result is new_row
+        assert captured_overrides == {"nombre": "Nuevo", "email": "new@parkos.local"}
+        assert len(enqueued) == 1
+        assert enqueued[0]["operacion"] == "update"
+        assert enqueued[0]["tabla"] == "usuarios"
 
 
 # ---------------------------------------------------------------------------

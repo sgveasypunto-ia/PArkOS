@@ -238,6 +238,21 @@ async def close_and_insert(
             new_uuid=new_row.uuid,
         )
 
+    # Same gotcha, ``usuarios`` side: the admin Usuario detail page's
+    # Sucursales/Permisos tabs filter ``usuarios_sucursal`` /
+    # ``permisos_usuario`` by ``uuid_usuario``, so those rows must
+    # follow the user across every close+insert (Datos tab save,
+    # password reset). See ``repo.admin_usuarios.
+    # propagate_usuario_uuid_to_fks`` for the live defect this fixes.
+    if current_uuid is not None and model_cls.__tablename__ == "usuarios":
+        from .admin_usuarios import propagate_usuario_uuid_to_fks
+
+        await propagate_usuario_uuid_to_fks(
+            session,
+            old_uuid=current_uuid,
+            new_uuid=new_row.uuid,
+        )
+
     # CREATE-side auto-assignment. Companion to the FK-propagation
     # hook above: when an admin POSTs a brand-new Sucursal (the
     # ``current_uuid is None`` branch), nothing repoints the creator's
