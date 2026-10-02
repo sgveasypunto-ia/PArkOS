@@ -310,7 +310,101 @@ class ReportePagosResponse(BaseModel):
     generado_en: datetime
 
 
+class CohorteSuscripcionItem(BaseModel):
+    """One cohort's membership size (HU-F17.4, BR1).
+
+    A cohort is every CURRENT-version ``subscripciones_cliente`` row
+    (``vigente_hasta IS NULL``) whose ``fecha_inicio_cobertura`` falls
+    in the same UTC calendar month (``mes_cohorte``, always the first
+    day of that month). "Current version" matters here: a renewal or an
+    early cancellation both go through ``repo.versioned.close_and_insert``
+    (REQ-04/05), so this is always each logical subscription's LATEST
+    state -- an early cancellation's adjusted (earlier)
+    ``fecha_vencimiento`` is what the retention math in
+    :class:`CohorteRetencionCell` sees, never a stale superseded value.
+    """
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    mes_cohorte: date
+    cohorte_size: int
+
+
+class CohorteRetencionCell(BaseModel):
+    """One (cohort-month, months-after-start) retention cell (HU-F17.4, BR1).
+
+    ``porcentaje_retencion`` = % of ``mes_cohorte``'s members whose
+    ``fecha_vencimiento`` reaches at least ``mes_cohorte + mes_offset``
+    months -- an AGE-based approximation, exactly as BR1 names it
+    ("aproximación por antigüedad"): each row is its own cohort member,
+    including a renewal row (a renewal is a NEW ``subscripciones_cliente``
+    row with its own ``fecha_inicio_cobertura`` -- see
+    ``models/V/subscripciones_cliente.py``'s docstring), so this is NOT a
+    true behavioral retention curve that follows the same customer across
+    renewals. A ``None`` ``fecha_vencimiento`` (no expiry recorded) counts
+    as retained at every offset. Only cells where enough calendar time has
+    actually elapsed (``mes_offset <= months_between(mes_cohorte, hoy)``)
+    are emitted at all -- a MISSING cell (no entry in the response's
+    ``data`` list for a given ``mes_cohorte``/``mes_offset`` pair) means
+    "not measurable yet", which is deliberately distinct from a present
+    cell reporting ``porcentaje_retencion == 0`` (measured, and nobody
+    made it) -- the frontend heatmap keeps that distinction visible
+    (dataviz skill consulted for this HU; see
+    ``SuscripcionesCohorte.tsx``'s docstring).
+    """
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    mes_cohorte: date
+    mes_offset: int
+    cohorte_size: int
+    retenidos: int
+    porcentaje_retencion: float
+
+
+class SuscripcionPorVencerItem(BaseModel):
+    """One subscription nearing expiry (HU-F17.4).
+
+    Reuses the EXACT ``dias_para_vencer`` criterion already established
+    by HU-F9.2 / REQ-OPS-181 (``apps/electron-sucursal``'s
+    ``useSuscripcionesProximasVencer.ts``, ``computeProximasVencer``):
+    ``floor((fecha_vencimiento - hoy) / 1 día)``, only non-negative values
+    (vencidas excluded), ascending by ``fecha_vencimiento``. That prior
+    art is single-branch (``uuid_sucursal`` required by its endpoint,
+    which does not exist in this backend yet); this is the cross-branch
+    admin equivalent (every branch the admin can see), same reasoning
+    ``reporte_fe``/``reporte_ocupacion`` already use for this router. No
+    day-window upper bound is applied (REQ-OPS-181 has none either) --
+    the top-20 cap (closest-``fecha_vencimiento``-first) is the only
+    limiter.
+    """
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    uuid: uuid_lib.UUID
+    uuid_cliente: uuid_lib.UUID | None
+    uuid_sucursal: uuid_lib.UUID | None
+    fecha_vencimiento: date
+    dias_para_vencer: int
+
+
+class ReporteSuscripcionesCohorteResponse(BaseModel):
+    """``GET /admin/reporteria/suscripciones/cohorte`` (HU-F17.4)."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    desde: date
+    hasta: date
+    cohortes: list[CohorteSuscripcionItem]
+    data: list[CohorteRetencionCell]
+    max_offset_meses: int
+    proximas_a_vencer: list[SuscripcionPorVencerItem]
+    generado_en: datetime
+
+
 __all__ = [
+    "CohorteRetencionCell",
+    "CohorteSuscripcionItem",
     "ReporteEstanciaItem",
     "ReporteFacturaItem",
     "ReporteFacturasResponse",
@@ -325,4 +419,6 @@ __all__ = [
     "ReporteOperacionalResponse",
     "ReportePagoMedioItem",
     "ReportePagosResponse",
+    "ReporteSuscripcionesCohorteResponse",
+    "SuscripcionPorVencerItem",
 ]

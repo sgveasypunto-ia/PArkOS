@@ -26,6 +26,7 @@ import {
   fetchReporteriaFacturas,
   fetchReporteriaFe,
   fetchReporteriaPagos,
+  fetchReporteriaSuscripcionesCohorte,
 } from '../api/reporteriaApi';
 import type {
   IngresoRead,
@@ -37,6 +38,7 @@ import type {
   ReporteFacturasResponse,
   ReporteFeResponse,
   ReportePagosResponse,
+  ReporteSuscripcionesCohorteResponse,
 } from '../api/reporteriaSchema';
 
 const STALE = { revalidateOnFocus: false, dedupingInterval: 30_000 };
@@ -204,4 +206,29 @@ export function reporteriaPagosKey(q: ReporteriaPagosQuery): string {
   return ['/api/v1/admin/reporteria/pagos', q.uuid_sucursal, q.desde ?? '', q.hasta ?? ''].join(
     '::',
   );
+}
+
+// HU-F17.4 -- subscription cohort retention heatmap + próximas a vencer.
+// Cross-branch by nature (no uuid_sucursal query param), same reasoning
+// as useReporteriaOcupacionHeatmap/useReporteriaFe above.
+export function useReporteriaSuscripcionesCohorte(
+  range: { desde?: string; hasta?: string } | null,
+) {
+  return useSWR<ReporteSuscripcionesCohorteResponse>(
+    range ? reporteriaSuscripcionesCohorteKey(range) : null,
+    () =>
+      fetchReporteriaSuscripcionesCohorte(range as { desde?: string; hasta?: string }),
+    STALE,
+  );
+}
+
+export function reporteriaSuscripcionesCohorteKey(r: {
+  desde?: string;
+  hasta?: string;
+}): string {
+  return [
+    '/api/v1/admin/reporteria/suscripciones/cohorte',
+    r.desde ?? '',
+    r.hasta ?? '',
+  ].join('::');
 }

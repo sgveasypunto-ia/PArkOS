@@ -39,6 +39,7 @@ import {
   reporteFacturasResponseSchema,
   reporteFeResponseSchema,
   reportePagosResponseSchema,
+  reporteSuscripcionesCohorteResponseSchema,
   type IngresoRead,
   type SalidaListRead,
   type OcupacionResponse,
@@ -48,6 +49,7 @@ import {
   type ReporteFacturasResponse,
   type ReporteFeResponse,
   type ReportePagosResponse,
+  type ReporteSuscripcionesCohorteResponse,
 } from './reporteriaSchema';
 
 const ING_PATH = '/api/v1/operacion/ingresos';
@@ -214,4 +216,24 @@ export async function fetchReporteriaPagos(query: {
     headers: { Accept: 'application/json' },
   });
   return reportePagosResponseSchema.parse(raw);
+}
+
+// HU-F17.4 -- subscription cohort retention heatmap + próximas a vencer.
+// Cross-branch (no uuid_sucursal param), same reasoning as the HU-F17.2
+// occupancy heatmap / HU-F17.3 FE endpoints.
+const SUSCRIPCIONES_COHORTE_PATH = '/api/v1/admin/reporteria/suscripciones/cohorte';
+
+export async function fetchReporteriaSuscripcionesCohorte(query: {
+  desde?: string;
+  hasta?: string;
+}): Promise<ReporteSuscripcionesCohorteResponse> {
+  const params = new URLSearchParams();
+  if (query.desde) params.set('desde', query.desde);
+  if (query.hasta) params.set('hasta', query.hasta);
+  const url = `${SUSCRIPCIONES_COHORTE_PATH}?${params.toString()}`;
+  const raw = await fetchJson<unknown>(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  return reporteSuscripcionesCohorteResponseSchema.parse(raw);
 }

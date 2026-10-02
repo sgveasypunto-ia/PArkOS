@@ -262,3 +262,48 @@ export const reportePagosResponseSchema = z.object({
 });
 
 export type ReportePagosResponse = z.infer<typeof reportePagosResponseSchema>;
+
+// HU-F17.4 -- subscription cohort retention heatmap + próximas a vencer
+// (`/admin/reporteria/suscripciones/cohorte`). Date-only fields travel as
+// plain ISO strings (``YYYY-MM-DD``), same convention the rest of this
+// file uses -- components format them where displayed.
+export const cohorteSuscripcionItemSchema = z.object({
+  mes_cohorte: z.string(),
+  cohorte_size: z.number().int(),
+});
+
+export type CohorteSuscripcionItem = z.infer<typeof cohorteSuscripcionItemSchema>;
+
+export const cohorteRetencionCellSchema = z.object({
+  mes_cohorte: z.string(),
+  mes_offset: z.number().int(),
+  cohorte_size: z.number().int(),
+  retenidos: z.number().int(),
+  porcentaje_retencion: z.number(),
+});
+
+export type CohorteRetencionCell = z.infer<typeof cohorteRetencionCellSchema>;
+
+export const suscripcionPorVencerItemSchema = z.object({
+  uuid: z.string().uuid(),
+  uuid_cliente: z.string().uuid().nullable(),
+  uuid_sucursal: z.string().uuid().nullable(),
+  fecha_vencimiento: z.string(),
+  dias_para_vencer: z.number().int(),
+});
+
+export type SuscripcionPorVencerItem = z.infer<typeof suscripcionPorVencerItemSchema>;
+
+export const reporteSuscripcionesCohorteResponseSchema = z.object({
+  desde: z.string(),
+  hasta: z.string(),
+  cohortes: z.array(cohorteSuscripcionItemSchema),
+  data: z.array(cohorteRetencionCellSchema),
+  max_offset_meses: z.number().int(),
+  proximas_a_vencer: z.array(suscripcionPorVencerItemSchema),
+  generado_en: z.string(),
+});
+
+export type ReporteSuscripcionesCohorteResponse = z.infer<
+  typeof reporteSuscripcionesCohorteResponseSchema
+>;

@@ -65,12 +65,15 @@ from ...models.L_E.facturas import Facturas
 from ...models.L_E.ingreso import Ingreso
 from ...models.L_W.anulaciones import Anulaciones
 from ...models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
+from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.sucursal import Sucursal
 from ...repo.pagination import Cursor, InvalidCursorError
 from ...repo.pagination import decode as cursor_decode
 from ...repo.pagination import encode as cursor_encode
 from ...repo.workflow import STATE_MACHINES
 from ...schemas.reporteria import (
+    CohorteRetencionCell,
+    CohorteSuscripcionItem,
     ReporteEstanciaItem,
     ReporteFacturaItem,
     ReporteFacturasResponse,
@@ -85,6 +88,8 @@ from ...schemas.reporteria import (
     ReporteOperacionalResponse,
     ReportePagoMedioItem,
     ReportePagosResponse,
+    ReporteSuscripcionesCohorteResponse,
+    SuscripcionPorVencerItem,
 )
 
 router = APIRouter(prefix="/admin/reporteria", tags=["admin", "reporteria"])
@@ -1069,6 +1074,190 @@ async def reporte_pagos(
         desde=desde,
         hasta=hasta,
         items=items,
+        generado_en=datetime.now(UTC),
+    )
+
+
+# HU-F17.4 -- subscription cohort retention heatmap + próximas a vencer.
+#
+# ``subscripciones_cliente``'s real columns (confirmed against
+# ``models/V/subscripciones_cliente.py`` -- NO drift vs. plan.md's BR1,
+# despite BR1's "CONFIRMÁ el nombre real" caution): ``fecha_inicio_cobertura``
+# and ``fecha_vencimiento`` are exactly the names plan.md assumed.
+_MAX_OFFSET_MESES = 12
+_PROXIMAS_A_VENCER_LIMIT = 20
+
+
+def _month_floor(d: date) -> date:
+    """First day of ``d``'s UTC calendar month."""
+    return d.replace(day=1)
+
+
+def _add_months(d: date, months: int) -> date:
+    """``d`` (month-floored semantics) shifted by ``months`` calendar months."""
+    total = d.month - 1 + months
+    year = d.year + total // 12
+    month = total % 12 + 1
+    return date(year, month, 1)
+
+
+def _months_between(start: date, end: date) -> int:
+    """Whole calendar months from ``start`` to ``end`` (both month-floored)."""
+    return (end.year - start.year) * 12 + (end.month - start.month)
+
+
+@router.get(
+    "/suscripciones/cohorte",
+    response_model=ReporteSuscripcionesCohorteResponse,
+    summary="Subscription cohort retention heatmap + próximas a vencer (HU-F17.4)",
+)
+async def reporte_suscripciones_cohorte(
+    session: DbSession,
+    claims: AdminClaims,
+    desde: Annotated[
+        date | None,
+        Query(
+            description=(
+                "Inclusive UTC lower bound on the cohort month "
+                "(fecha_inicio_cobertura). Defaults to 11 months back "
+                "from `hasta`'s month (a 12-cohort-month window)."
+            )
+        ),
+    ] = None,
+    hasta: Annotated[
+        date | None,
+        Query(description="Inclusive UTC upper bound on the cohort month. Defaults to today (UTC)."),
+    ] = None,
+) -> ReporteSuscripcionesCohorteResponse:
+    """Cohort retention heatmap (BR1) + próximas-a-vencer alert list (HU-F17.4).
+
+    Cross-branch by nature (every branch the admin can see, no
+    ``uuid_sucursal`` query param) -- same reasoning ``reporte_ocupacion``/
+    ``reporte_fe`` already document for this router: those dependencies
+    bind a SINGLE ``X-Sucursal-Context`` branch, which would silently
+    narrow an endpoint meant to span every branch the actor can see.
+    Scope is resolved fresh from ``usuarios_sucursal``
+    (:func:`extract_sucursales_permitidas_fresh`) instead.
+
+    BR1 cohort math (see :class:`CohorteRetencionCell` for the full
+    rationale) is computed APPLICATION-SIDE, not in SQL: the matrix's
+    column count (``mes_offset``) is dynamic per cohort (how many whole
+    months have elapsed since that cohort's start, capped at
+    ``_MAX_OFFSET_MESES``), which is awkward to express as a single SQL
+    aggregate without either a recursive CTE or a fixed-width CROSS JOIN
+    that would compute (and discard) not-yet-measurable future cells.
+    Fetching the raw (``fecha_inicio_cobertura``, ``fecha_vencimiento``)
+    rows once and reducing them in Python keeps the logic simple,
+    testable, and correct for the dataset sizes a subscription cohort
+    report deals with (one row per customer per subscription period).
+
+    Both queries filter ``vigente_hasta IS NULL`` -- each logical
+    subscription's CURRENT version (a renewal or an early cancellation
+    both go through ``close_and_insert``, REQ-04/05 -- see
+    :class:`CohorteSuscripcionItem`'s docstring).
+    """
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    permitidas = await extract_sucursales_permitidas_fresh(session, actor_uuid=actor_uuid)
+    if not permitidas:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+
+    today = datetime.now(UTC).date()
+    if hasta is None:
+        hasta = today
+    if desde is None:
+        desde = _add_months(_month_floor(hasta), -(_MAX_OFFSET_MESES - 1))
+    if desde > hasta:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "rango_fecha_invalido"},
+        )
+
+    cohort_rows = (
+        await session.execute(
+            select(
+                SubscripcionesCliente.fecha_inicio_cobertura,
+                SubscripcionesCliente.fecha_vencimiento,
+            )
+            .where(SubscripcionesCliente.uuid_sucursal.in_(permitidas))
+            .where(SubscripcionesCliente.vigente_hasta.is_(None))
+            .where(SubscripcionesCliente.fecha_inicio_cobertura.is_not(None))
+            .where(SubscripcionesCliente.fecha_inicio_cobertura >= desde)
+            .where(SubscripcionesCliente.fecha_inicio_cobertura <= hasta)
+        )
+    ).all()
+
+    members_by_month: dict[date, list[date | None]] = {}
+    for row in cohort_rows:
+        mes = _month_floor(row.fecha_inicio_cobertura)
+        members_by_month.setdefault(mes, []).append(row.fecha_vencimiento)
+
+    cohortes: list[CohorteSuscripcionItem] = []
+    data: list[CohorteRetencionCell] = []
+    for mes in sorted(members_by_month):
+        vencimientos = members_by_month[mes]
+        size = len(vencimientos)
+        cohortes.append(CohorteSuscripcionItem(mes_cohorte=mes, cohorte_size=size))
+        max_offset = min(_MAX_OFFSET_MESES, _months_between(mes, today))
+        for offset in range(max_offset + 1):
+            threshold = _add_months(mes, offset)
+            retenidos = sum(1 for v in vencimientos if v is None or v >= threshold)
+            data.append(
+                CohorteRetencionCell(
+                    mes_cohorte=mes,
+                    mes_offset=offset,
+                    cohorte_size=size,
+                    retenidos=retenidos,
+                    porcentaje_retencion=(retenidos / size * 100.0) if size else 0.0,
+                )
+            )
+
+    # Próximas a vencer -- reuses the exact REQ-OPS-181 criterion (see
+    # SuscripcionPorVencerItem's docstring): dias_para_vencer >= 0
+    # (vencidas excluded), ascending by fecha_vencimiento, top 20. Also
+    # excludes administratively deactivated subscriptions
+    # (``estado == 'inactivo'``, VersionedMixin's generic flag) -- those
+    # are no longer a live expiry concern for the admin's alert list,
+    # unlike the cohort math above which deliberately does NOT apply
+    # this filter (a cohort's retention denominator must include every
+    # historical member regardless of its current administrative state).
+    por_vencer_rows = (
+        await session.execute(
+            select(
+                SubscripcionesCliente.uuid,
+                SubscripcionesCliente.uuid_cliente,
+                SubscripcionesCliente.uuid_sucursal,
+                SubscripcionesCliente.fecha_vencimiento,
+            )
+            .where(SubscripcionesCliente.uuid_sucursal.in_(permitidas))
+            .where(SubscripcionesCliente.vigente_hasta.is_(None))
+            .where(SubscripcionesCliente.estado == "activo")
+            .where(SubscripcionesCliente.fecha_vencimiento.is_not(None))
+            .where(SubscripcionesCliente.fecha_vencimiento >= today)
+            .order_by(SubscripcionesCliente.fecha_vencimiento.asc())
+            .limit(_PROXIMAS_A_VENCER_LIMIT)
+        )
+    ).all()
+    proximas_a_vencer = [
+        SuscripcionPorVencerItem(
+            uuid=row.uuid,
+            uuid_cliente=row.uuid_cliente,
+            uuid_sucursal=row.uuid_sucursal,
+            fecha_vencimiento=row.fecha_vencimiento,
+            dias_para_vencer=(row.fecha_vencimiento - today).days,
+        )
+        for row in por_vencer_rows
+    ]
+
+    return ReporteSuscripcionesCohorteResponse(
+        desde=desde,
+        hasta=hasta,
+        cohortes=cohortes,
+        data=data,
+        max_offset_meses=_MAX_OFFSET_MESES,
+        proximas_a_vencer=proximas_a_vencer,
         generado_en=datetime.now(UTC),
     )
 
