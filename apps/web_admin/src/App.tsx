@@ -25,6 +25,7 @@ import Reporteria from '@/features/reporteria/pages/Reporteria';
 import ReporteriaFinanciera from '@/features/reporteria/pages/ReporteriaFinanciera';
 import ReporteriaSuscripciones from '@/features/reporteria/pages/ReporteriaSuscripciones';
 import { ArqueosPage } from '@/features/arqueos/pages/ArqueosPage';
+import Pairing from '@/features/pairing/pages/Pairing';
 
 /**
  * Route tree.
@@ -109,6 +110,12 @@ export default function App() {
               ADICIONAL, no un reemplazo. */}
           <Route path="/sucursales/:uuid" element={<SucursalDetalle />} />
           <Route path="/arqueos" element={<ArqueosPage />} />
+          {/* HU-F19.3: pairing-token issuance/revoke. Cross-branch list
+              (all sucursales, not just the one active in the topbar),
+              so it sits here alongside /sucursales/:uuid and /arqueos
+              rather than inside the <RequireSucursal> branch-scoped
+              group below. */}
+          <Route path="/pairing" element={<Pairing />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 

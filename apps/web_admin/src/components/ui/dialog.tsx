@@ -93,6 +93,25 @@ export function Dialog({
   const restoreFocusRef = React.useRef<HTMLElement | null>(null);
   const ids = useDialogIds();
 
+  // Bug fix (found while building HU-F19.3's revoke-sync form, a 2-field
+  // form inside this Dialog): most call sites pass `onOpenChange` as an
+  // inline arrow function, which gets a NEW reference on every render of
+  // the consumer. With `onOpenChange` in the effect's dependency array,
+  // every keystroke in a controlled input re-renders the consumer ->
+  // tears down this effect -> re-runs its setup -> calls `first.focus()`
+  // again, yanking focus back to the dialog's FIRST focusable control.
+  // The practical symptom: typing into any field other than the first one
+  // is impossible, because every keystroke snaps focus back to field one.
+  // A `ref` holding the latest callback, read only from the keydown
+  // handler, decouples "the effect's identity" from "which callback it
+  // happens to call" -- the effect now depends on `open` alone, so it
+  // only re-runs when the dialog actually opens/closes, never on an
+  // unrelated re-render of the consumer.
+  const onOpenChangeRef = React.useRef(onOpenChange);
+  React.useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  }, [onOpenChange]);
+
   React.useEffect(() => {
     if (!open) return;
     const content = contentRef.current;
@@ -110,7 +129,7 @@ export function Dialog({
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         event.stopPropagation();
-        onOpenChange(false);
+        onOpenChangeRef.current(false);
         return;
       }
       if (event.key !== 'Tab') return;
@@ -142,7 +161,8 @@ export function Dialog({
       document.body.style.overflow = previousOverflow;
       restoreFocusRef.current?.focus();
     };
-  }, [open, onOpenChange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onOpenChange is read via onOpenChangeRef on purpose (see comment above).
+  }, [open]);
 
   if (!open) return null;
 

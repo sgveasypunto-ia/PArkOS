@@ -67,6 +67,7 @@ describe('visibleSections', () => {
       'configuracion-seguridad',
       'reporteria',
       'auditoria',
+      'pairing',
     ]);
   });
 
@@ -78,6 +79,11 @@ describe('visibleSections', () => {
   it('A8: reveals Cupos once config_cupos is granted', () => {
     const keys = visibleSections(['config_cupos']).map((s) => s.key);
     expect(keys).toContain('cupos');
+  });
+
+  it('A10: reveals Pairing once gestionar_dian is granted (HU-F19.3)', () => {
+    expect(visibleSections([]).map((s) => s.key)).not.toContain('pairing');
+    expect(visibleSections(['gestionar_dian']).map((s) => s.key)).toContain('pairing');
   });
 
   it('A9: reveals the catalog/config sections once their codes are granted', () => {

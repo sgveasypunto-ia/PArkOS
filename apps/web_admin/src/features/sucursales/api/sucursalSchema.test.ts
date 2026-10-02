@@ -11,7 +11,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  pairingTokenResponseSchema,
   sucursalCreateSchema,
   sucursalReadListSchema,
   sucursalReadSchema,
@@ -121,22 +120,6 @@ describe('sucursalReadSchema', () => {
   });
 });
 
-describe('pairingTokenResponseSchema', () => {
-  it('parses a real response', () => {
-    const r = pairingTokenResponseSchema.safeParse({
-      token: 'header.payload.sig',
-      expires_at: '2026-09-26T22:00:00',
-      sucursal_uuid: '00000000-0000-0000-0000-0000000000a1',
-    });
-    expect(r.success).toBe(true);
-  });
-
-  it('rejects an empty token', () => {
-    const r = pairingTokenResponseSchema.safeParse({
-      token: '',
-      expires_at: '2026-09-26T22:00:00',
-      sucursal_uuid: '00000000-0000-0000-0000-0000000000a1',
-    });
-    expect(r.success).toBe(false);
-  });
-});
+// `pairingTokenResponseSchema` moved to
+// `@/features/pairing/api/pairingSchema.ts` (HU-F19.3) — see
+// `pairingSchema.test.ts` for its coverage.

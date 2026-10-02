@@ -45,16 +45,13 @@ import {
 } from '@/components/ui/tabs';
 
 import { SucursalFormHarness } from '@/features/sucursales/components/SucursalForm';
-import { PairingTokenDialog } from '@/features/sucursales/components/PairingTokenDialog';
 import { useTipoSucursal } from '@/features/tipo-sucursal/hooks/useTipoSucursal';
 import {
   createSucursal,
-  mintPairingToken,
   updateSucursal,
 } from '@/features/sucursales/api/sucursalesApi';
 import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 import {
-  type PairingTokenResponse,
   type Sucursal,
   type SucursalCreateInput,
 } from '@/features/sucursales/api/sucursalSchema';
@@ -62,7 +59,7 @@ import {
 type TabValue = 'seleccionar' | 'admin';
 
 type ErrorState =
-  | { kind: 'create' | 'edit' | 'pairing' | 'load'; message: string }
+  | { kind: 'create' | 'edit' | 'load'; message: string }
   | null;
 
 function mapTab(value: string | null): TabValue {
@@ -146,7 +143,6 @@ export default function SeleccionarSucursal(): JSX.Element {
 
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<Sucursal | null>(null);
-  const [pairingToken, setPairingToken] = useState<PairingTokenResponse | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<ErrorState>(null);
 
@@ -186,16 +182,6 @@ export default function SeleccionarSucursal(): JSX.Element {
       setErrorState({ kind: editing !== null ? 'edit' : 'create', message });
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function onPairingClick(sucursalUuid: string): Promise<void> {
-    try {
-      const token = await mintPairingToken(sucursalUuid);
-      setPairingToken(token);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error desconocido';
-      setErrorState({ kind: 'pairing', message });
     }
   }
 
@@ -389,7 +375,7 @@ export default function SeleccionarSucursal(): JSX.Element {
                             type="button"
                             variant="ghost"
                             size="sm"
-                            onClick={() => void onPairingClick(s.uuid)}
+                            onClick={() => navigate(`/pairing?sucursal=${s.uuid}`)}
                             data-testid={`sucursal-pairing-${s.uuid}`}
                           >
                             {t('sucursal.action.pairing', 'Token de pairing')}
@@ -404,11 +390,6 @@ export default function SeleccionarSucursal(): JSX.Element {
           )}
         </TabsContent>
       </Tabs>
-
-      <PairingTokenDialog
-        token={pairingToken}
-        onClose={() => setPairingToken(null)}
-      />
     </main>
   );
 }

@@ -1,6 +1,6 @@
 /**
- * `sucursalesApi.ts` — HTTP client for the admin Sucursal CRUD + pairing
- * token (IT-2.1, IT-2.7).
+ * `sucursalesApi.ts` — HTTP client for the admin Sucursal CRUD
+ * (IT-2.1, IT-2.7).
  *
  * Uses the canonical `@/lib/fetch` `parkosFetchRaw` (which handles the
  * `Authorization: Bearer <jwt>` + `X-Sucursal-Context` headers via the
@@ -15,16 +15,19 @@
  * - `POST /api/v1/empresa/sucursal`                -- create
  * - `PUT  /api/v1/empresa/sucursal/{uuid}`         -- update (bi-temporal close+insert)
  * - `POST /api/v1/empresa/sucursal/{uuid}/deshabilitar` -- close-only disable (HU-F15.1 BR2/BR3)
- * - `GET  /api/v1/sucursal/{uuid}/pairing-token`   -- mint pairing token
+ *
+ * Pairing-token minting used to live here too (`GET /api/v1/sucursal/
+ * {uuid}/pairing-token`), but that endpoint is OUTDATED (GET-mints-as-
+ * side-effect, no ttl_hours, no rate limit, no revoke) and has been
+ * replaced by the real admin pairing-token surface (HU-F19.3) — see
+ * `@/features/pairing/api/pairingApi.ts`.
  */
 import { parkosFetchRaw, type ParkosFetchInit } from '@parkos/ui-kit/fetch';
 
 import {
-  type PairingTokenResponse,
   type Sucursal,
   type SucursalCreateInput,
   type SucursalUpdateInput,
-  pairingTokenResponseSchema,
   sucursalCreateSchema,
   sucursalReadListSchema,
   sucursalReadSchema,
@@ -135,14 +138,6 @@ export async function updateSucursal(
     },
   );
   return sucursalReadSchema.parse(raw);
-}
-
-export async function mintPairingToken(sucursalUuid: string): Promise<PairingTokenResponse> {
-  const raw = await fetchJson<unknown>(`/api/v1/sucursal/${sucursalUuid}/pairing-token`, {
-    method: 'GET',
-    headers: jsonHeaders,
-  });
-  return pairingTokenResponseSchema.parse(raw);
 }
 
 /**
