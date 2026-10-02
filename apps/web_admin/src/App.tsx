@@ -6,7 +6,7 @@ import { WaitForAuth } from '@/components/WaitForAuth';
 import { AdminChrome } from '@/components/chrome/AdminChrome';
 import { TopNav } from '@/components/chrome/TopNav';
 import HomeHub from '@/pages/HomeHub';
-import Dashboard from '@/pages/Dashboard';
+import Dashboard from '@/features/dashboard/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
 import Perfil from '@/pages/Perfil';
 import CatalogPage from '@/features/catalogos/CatalogPage';
