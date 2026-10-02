@@ -222,6 +222,10 @@
       "reporteria": {
         "label": "Reportería operacional",
         "description": "Ingresos, salidas y ocupación por sucursal. Totales agregados llegan en PR-C."
+      },
+      "pairing": {
+        "label": "Pairing de sucursales",
+        "description": "Generá y revocá tokens de pairing para el agente de sincronización de cada sucursal."
       }
     }
   },
@@ -523,15 +527,58 @@
       "update": "Actualizar",
       "submitting": "Creando...",
       "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente."
+    }
+  },
+  "pairing": {
+    "title": "Pairing de sucursales",
+    "subtitle": "Generá y revocá tokens de pairing para conectar el agente de sincronización de cada sucursal.",
+    "browserScopeCaption": "Esta vista solo refleja los tokens emitidos desde este navegador. Un token emitido desde otra sesión no aparece acá.",
+    "loadError": "No se pudieron cargar las sucursales.",
+    "listTitle": "Sucursales",
+    "loading": "Cargando sucursales...",
+    "empty": "Aún no hay sucursales configuradas.",
+    "col": {
+      "nombre": "Nombre",
+      "prefijo": "Prefijo",
+      "ciudad": "Ciudad",
+      "estado": "Estado",
+      "acciones": "Acciones"
     },
-    "pairing": {
-      "title": "Token de pairing",
-      "expiresIn": "Expira en {{remaining}}",
-      "expired": "El token expiró. Generá uno nuevo.",
-      "copy": "Copiar token",
-      "copied": "Token copiado al portapapeles.",
+    "action": {
+      "generar": "Generar token",
+      "revocar": "Revocar"
+    },
+    "status": {
+      "sinInformacion": "Sin información",
+      "pendiente": "Pendiente",
+      "pareada": "Pareada",
+      "revocado": "Revocado",
+      "expirado": "Expirado"
+    },
+    "generar": {
+      "title": "Generar token de pairing",
+      "description": "Definí cuánto tiempo será válido el token.",
+      "revealDescription": "Copiá el token antes de cerrar — no podrás volver a verlo.",
+      "ttlLabel": "Horas de validez (1-168)",
+      "submit": "Generar token",
+      "submitting": "Generando…",
+      "copy": "Copiar",
       "copiedShort": "Copiado",
-      "close": "Cerrar"
+      "copied": "Token copiado al portapapeles.",
+      "copyWarning": "Copiá el token antes de cerrar — no podrás volver a verlo."
+    },
+    "revocar": {
+      "title": "Revocar pairing",
+      "tokenTitle": "Revocar token de pairing",
+      "tokenUnknown": "No hay un token conocido para esta sucursal desde este navegador.",
+      "tokenConfirm": "Revocar token",
+      "tokenSubmitting": "Revocando…",
+      "syncTitle": "Revocar sincronización activa (avanzado)",
+      "syncHelp": "No existe una forma automática de descubrir las credenciales activas de una sucursal pareada. Pegá el jwt_kid y el jwt_uuid (por ejemplo, desde los logs de auditoría) para revocar esa sincronización.",
+      "jwtKidLabel": "jwt_kid",
+      "jwtUuidLabel": "jwt_uuid",
+      "syncConfirm": "Revocar sincronización",
+      "syncSubmitting": "Revocando…"
     }
   },
   "admin": {

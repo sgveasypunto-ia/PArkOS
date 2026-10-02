@@ -16,12 +16,15 @@
  *   Reportería         GET /operacion/ingresos, /operacion/salidas,
  *                            /operacion/ocupacion               admin-/operador- issuer + branch_scope (PR-A)
  *   Auditoría          * /audit/*                               admin- issuer + audit_read
+ *   Pairing            * /admin/pairing-tokens*,
+ *                            /admin/sucursales/{uuid}/revoke-sync admin- issuer + gestionar_dian (HU-F19.3)
  *
  * `admin_usuarios.py` and `admin_views.py` depend on
  * `requires_issuer("admin-")` and nothing else — there is no
  * `require_permission(...)` on any of those endpoints. Only
  * `audit.py` carries a permission dep (`require_permission("audit_read")`,
- * line 59).
+ * line 59); the pairing-token router carries its own
+ * (`require_permission("gestionar_dian")`, HU-F19.3).
  *
  * So three of the four sections are reachable by ANY admin-issued JWT
  * regardless of the `permissions` array. This catalog encodes that
@@ -59,7 +62,8 @@ export interface AdminSection {
     | 'configuracion-tolerancias'
     | 'configuracion-seguridad'
     | 'reporteria'
-    | 'auditoria';
+    | 'auditoria'
+    | 'pairing';
   path: string;
   /** i18n key suffix under `home.section.*`. */
   labelKey: string;
@@ -157,6 +161,17 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     labelKey: 'home.section.auditoria.label',
     descriptionKey: 'home.section.auditoria.description',
     permission: 'audit_read',
+  },
+  {
+    // HU-F19.3: admin pairing-token issuance/revoke surface. All four
+    // endpoints it drives require `require_permission("gestionar_dian")`
+    // server-side (already seeded), so this is a REAL permission gate,
+    // not a `null` issuer-only entry like most of the catalog above.
+    key: 'pairing',
+    path: '/pairing',
+    labelKey: 'home.section.pairing.label',
+    descriptionKey: 'home.section.pairing.description',
+    permission: 'gestionar_dian',
   },
 ] as const;
 

@@ -7,14 +7,16 @@
  *  - T3: switching to "Administrar" tab shows the table.
  *  - T4: "Nueva sucursal" opens an empty form.
  *  - T5: clicking "Editar" opens the form pre-filled from the row.
- *  - T6: clicking "Token de pairing" opens the PairingTokenDialog.
+ *  - T6: clicking "Token de pairing" navigates to
+ *    `/pairing?sucursal=<uuid>` (HU-F19.3 -- replaces the old
+ *    PairingTokenDialog flow).
  *  - T7: ?tab=admin query param lands directly on the admin tab.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createElement, type ReactNode } from 'react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useSearchParams } from 'react-router-dom';
 import { SWRConfig } from 'swr';
 
 import { SucursalProvider } from '@/lib/sucursal-context';
@@ -23,7 +25,6 @@ vi.mock('@/features/sucursales/api/sucursalesApi', () => ({
   listSucursales: vi.fn(),
   createSucursal: vi.fn(),
   updateSucursal: vi.fn(),
-  mintPairingToken: vi.fn(),
 }));
 
 // The mock exposes ``refreshAdminAuth`` (the ``refresh`` field on the
@@ -51,14 +52,24 @@ import {
   listSucursales,
   createSucursal,
   updateSucursal,
-  mintPairingToken,
 } from '@/features/sucursales/api/sucursalesApi';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
 
 const mockedList = listSucursales as ReturnType<typeof vi.fn>;
 const mockedCreate = createSucursal as ReturnType<typeof vi.fn>;
 const mockedUpdate = updateSucursal as ReturnType<typeof vi.fn>;
-const mockedPairing = mintPairingToken as ReturnType<typeof vi.fn>;
+
+/**
+ * Stand-in for the real `/pairing` route (HU-F19.3) -- renders the
+ * `?sucursal=` query param as text so T6 can assert the navigation
+ * target without pulling in the whole Pairing feature module.
+ */
+function PairingTarget(): JSX.Element {
+  const [searchParams] = useSearchParams();
+  return (
+    <div data-testid="pairing-target">{searchParams.get('sucursal') ?? ''}</div>
+  );
+}
 
 function wrapper({ children }: { children: ReactNode }): JSX.Element {
   return createElement(
@@ -84,6 +95,10 @@ function renderAt(initialEntries: string[]): void {
           Routes,
           null,
           createElement(Route, { path: '/dashboard', element: createElement('div', { 'data-testid': 'dashboard-target' }) }),
+          createElement(Route, {
+            path: '/pairing',
+            element: createElement(PairingTarget),
+          }),
           createElement(Route, { path: '/seleccionar-sucursal', element: createElement(SeleccionarSucursal) }),
         ),
       ),
@@ -113,7 +128,6 @@ beforeEach(() => {
   mockedList.mockReset();
   mockedCreate.mockReset();
   mockedUpdate.mockReset();
-  mockedPairing.mockReset();
   // Default fetch OK for picker (admin_views endpoint); tests can override.
   globalThis.fetch = vi.fn(async () =>
     new Response(JSON.stringify({ items: [SUC_NORTE] }), { status: 200 }),
@@ -222,14 +236,9 @@ describe('SeleccionarSucursal unified page', () => {
     expect(empresa.readOnly).toBe(true);
   });
 
-  it('T6: clicking "Token de pairing" opens the PairingTokenDialog', async () => {
+  it('T6: clicking "Token de pairing" navigates to /pairing?sucursal=<uuid>', async () => {
     const user = userEvent.setup();
     mockedList.mockResolvedValue([SUC_NORTE]);
-    mockedPairing.mockResolvedValue({
-      token: 'tk-test',
-      expires_at: '2099-01-01T00:00:00',
-      sucursal_uuid: SUC_NORTE.uuid,
-    });
     renderAt(['/seleccionar-sucursal?tab=admin']);
     await waitFor(() =>
       expect(
@@ -240,9 +249,11 @@ describe('SeleccionarSucursal unified page', () => {
       screen.getByTestId('sucursal-pairing-11111111-1111-1111-1111-111111111111'),
     );
     await waitFor(() => {
-      expect(screen.getByTestId('pairing-token-dialog')).toBeInTheDocument();
+      expect(screen.getByTestId('pairing-target')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('pairing-token-value').textContent).toBe('tk-test');
+    expect(screen.getByTestId('pairing-target').textContent).toBe(
+      '11111111-1111-1111-1111-111111111111',
+    );
   });
 
   it('T7: ?tab=admin query param lands directly on the Administrar tab', async () => {

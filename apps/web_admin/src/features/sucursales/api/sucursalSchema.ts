@@ -3,18 +3,20 @@
  * (IT-2.1, IT-2.7 of `openspec/_meta/iteration-plan.md`).
  *
  * Mirrors the backend `schemas/empresa.py::SucursalCreate` /
- * `SucursalRead` shape, plus the read-side payload needed by the
- * PairingTokenDialog.
+ * `SucursalRead` shape.
  *
  * The backend already exposes:
  *   - `GET  /api/v1/empresa/sucursal`         (list, paginated)
  *   - `POST /api/v1/empresa/sucursal`         (create, admin only)
  *   - `PUT  /api/v1/empresa/sucursal/{uuid}`  (update, admin only)
- *   - `GET  /api/v1/sucursal/{uuid}/pairing-token` (admin only,
- *     24h single-use)
  *
  * so this file is THIN -- just the zod shape + TS types the UI needs.
  * No HTTP client lives here; that lives in `sucursalesApi.ts`.
+ *
+ * The pairing-token read-side schema used to live here too; it has
+ * moved to `@/features/pairing/api/pairingSchema.ts` (HU-F19.3), which
+ * targets the real admin pairing-token endpoints instead of the
+ * outdated `GET /api/v1/sucursal/{uuid}/pairing-token`.
  */
 import { z } from 'zod';
 
@@ -82,11 +84,3 @@ export const sucursalReadListSchema = z.object({
   items: z.array(sucursalReadSchema),
   next_cursor: z.string().nullable(),
 });
-
-export const pairingTokenResponseSchema = z.object({
-  token: z.string().min(1),
-  expires_at: z.string(),
-  sucursal_uuid: z.string().uuid(),
-});
-
-export type PairingTokenResponse = z.infer<typeof pairingTokenResponseSchema>;
