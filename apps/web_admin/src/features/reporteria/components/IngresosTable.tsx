@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/table';
 
 import type { IngresoRead } from '../api/reporteriaSchema';
+import { formatBackendTimestampLocal } from './dateRange';
 
 export interface IngresosTableProps {
   items: IngresoRead[];
@@ -35,14 +36,7 @@ export interface IngresosTableProps {
   caption: string;
 }
 
-function formatDate(value: string | Date | null): string {
-  if (value === null) return '—';
-  const d = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return typeof value === 'string' ? value : '—';
-  }
-  return d.toISOString().replace('T', ' ').slice(0, 19);
-}
+const formatDate = formatBackendTimestampLocal;
 
 export function IngresosTable({ items, isLoading, error, caption }: IngresosTableProps) {
   const { t } = useTranslation();

@@ -70,7 +70,7 @@ import {
   DateRangePicker,
   type DateRange,
 } from '../components/DateRangePicker';
-import { defaultRange } from '../components/dateRange';
+import { defaultRange, formatBackendTimestampLocal } from '../components/dateRange';
 
 interface BranchSummary {
   uuid: string;
@@ -239,7 +239,7 @@ export default function Reporteria() {
                       `ingresos-${selected}.csv`,
                       [
                         { header: 'Placa', accessor: (r) => r.placa ?? '' },
-                        { header: 'Fecha de ingreso', accessor: (r) => r.fecha_ingreso?.toISOString() ?? '' },
+                        { header: 'Fecha de ingreso', accessor: (r) => formatBackendTimestampLocal(r.fecha_ingreso) },
                         { header: 'Consecutivo', accessor: (r) => r.consecutivo ?? '' },
                         { header: 'Observaciones', accessor: (r) => r.observaciones ?? '' },
                       ],
@@ -273,7 +273,7 @@ export default function Reporteria() {
                       `salidas-${selected}.csv`,
                       [
                         { header: 'Placa', accessor: (r) => r.placa ?? '' },
-                        { header: 'Fecha de salida', accessor: (r) => r.fecha_salida?.toISOString() ?? '' },
+                        { header: 'Fecha de salida', accessor: (r) => formatBackendTimestampLocal(r.fecha_salida) },
                         { header: 'Consecutivo', accessor: (r) => r.consecutivo ?? '' },
                       ],
                       salidas.data ?? [],

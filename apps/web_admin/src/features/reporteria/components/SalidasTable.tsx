@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/table';
 
 import type { SalidaListRead } from '../api/reporteriaSchema';
+import { formatBackendTimestampLocal } from './dateRange';
 
 export interface SalidasTableProps {
   items: SalidaListRead[];
@@ -30,14 +31,7 @@ export interface SalidasTableProps {
   caption: string;
 }
 
-function formatDate(value: string | Date | null): string {
-  if (value === null) return '—';
-  const d = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(d.getTime())) {
-    return typeof value === 'string' ? value : '—';
-  }
-  return d.toISOString().replace('T', ' ').slice(0, 19);
-}
+const formatDate = formatBackendTimestampLocal;
 
 export function SalidasTable({ items, isLoading, error, caption }: SalidasTableProps) {
   const { t } = useTranslation();
