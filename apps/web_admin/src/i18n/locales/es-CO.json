@@ -585,6 +585,24 @@
       "create": "Crear nuevo usuario",
       "createDescription": "Cargá los datos del usuario. La contraseña se cifra (bcrypt) en el servidor."
     },
+    "filtros": {
+      "rolLabel": "Rol",
+      "sucursalLabel": "Sucursal",
+      "estadoLabel": "Estado",
+      "todos": "Todos",
+      "todas": "Todas"
+    },
+    "wizard": {
+      "progressLabel": "Progreso del asistente",
+      "step1Title": "Datos personales",
+      "step2Title": "Rol",
+      "step3Title": "Sucursales",
+      "next": "Siguiente",
+      "back": "Atrás",
+      "submit": "Crear usuario",
+      "submitting": "Creando...",
+      "sucursalesHelp": "Opcional. Podés asignar sucursales después desde \"Asignar sucursales\"."
+    },
     "sucursalesManager": {
       "title": "Sucursales del usuario",
       "subtitle": "Asigná o quitá sucursales. Los cambios se aplican al instante.",
