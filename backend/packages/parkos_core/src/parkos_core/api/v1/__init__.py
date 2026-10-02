@@ -269,6 +269,24 @@ def _build_router() -> APIRouter:
             logger.error("Failed to import audit: %s", e)
             raise
 
+        # HU-F20.4: bitácora cross-branch read + hash-chain verification +
+        # typeahead search (GET /admin/log-transaccional[, /verify-chain,
+        # /buscar]). Cloud-only (REQ-X2), same reasoning as IT-12's audit
+        # log -- a SEPARATE router from ``audit.py`` (that one stays the
+        # single/ambient-tenant surface; this one is the cross-branch
+        # admin surface over the SAME ``log_transaccional`` table).
+        try:
+            from . import auditoria as _auditoria
+
+            r.include_router(_auditoria.router)
+            logger.info(
+                "Admin bitácora mounted (cloud deploy): "
+                "/admin/log-transaccional[/verify-chain,/buscar]"
+            )
+        except ImportError as e:
+            logger.error("Failed to import auditoria: %s", e)
+            raise
+
     # T-PR6-11: lazy-import the DIAN cloud router ONLY on cloud deploy.
     # Branch images physically lack ``parkos_core/dian/`` (Layer 1) AND
     # the import-time guard inside ``cloud_router`` would raise

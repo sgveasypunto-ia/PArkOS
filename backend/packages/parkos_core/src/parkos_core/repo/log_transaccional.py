@@ -38,10 +38,10 @@ import base64
 import json
 import uuid as uuid_lib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import cast
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import String, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.A.log_transaccional import LogTransaccional
@@ -127,6 +127,15 @@ async def listar_eventos_paginados(
     tabla_afectada: str | None,
     cursor: AuditCursor | None,
     limit: int,
+    # --- HU-F20.4: cross-branch bitácora filters (additive, keyword-only,
+    # all defaulted so the IT-12 call sites above -- audit.py + the
+    # pre-existing TestListarEventosPaginados tests -- keep compiling and
+    # behaving unchanged). ---
+    uuid_sucursales: list[uuid_lib.UUID] | None = None,
+    uuid_registro_afectado: uuid_lib.UUID | None = None,
+    uuid_usuario: uuid_lib.UUID | None = None,
+    desde: date | None = None,
+    hasta: date | None = None,
 ) -> list[LogTransaccional]:
     """Return one page of ``prod.log_transaccional`` rows.
 
@@ -135,6 +144,27 @@ async def listar_eventos_paginados(
     (``tabla_afectada``). At least one must be provided -- the schema
     validator rejects the no-selector case with 422. Filters compose
     with AND.
+
+    HU-F20.4 (bitácora cross-branch read + search): five additive filters,
+    all optional and AND-composed with everything above:
+
+      - ``uuid_sucursales``: an IN-clause over MULTIPLE branches, used by
+        the new cross-branch ``GET /admin/log-transaccional`` endpoint
+        INSTEAD of the singular ``uuid_sucursal`` equality filter. The two
+        are mutually exclusive in practice -- when ``uuid_sucursales`` is
+        given it takes precedence over ``uuid_sucursal`` (the legacy IT-12
+        caller never passes the new kwarg, so this branch is dead code for
+        ``audit.py``).
+      - ``uuid_registro_afectado`` / ``uuid_usuario``: plain equality
+        filters on the affected-record uuid and the acting user uuid.
+      - ``desde`` / ``hasta``: inclusive date-range filter on
+        ``timestamp_evento``, mirroring ``admin_views.sync_log_list``'s
+        exact convention (``func.date(col) >= desde`` / ``<= hasta`` --
+        naive UTC column, DATE-truncated comparison so a ``desde`` of
+        "today" includes every row from 00:00:00 that day). The 422
+        ``rango_fecha_invalido`` check for ``desde > hasta`` lives in the
+        route handler (``api/v1/auditoria.py``), same split IT-12 already
+        uses for ``missing_selector``.
 
     Pagination (DEC-AUDIT-01):
       - ORDER BY ``(timestamp_evento DESC, uuid ASC)``.
@@ -147,10 +177,20 @@ async def listar_eventos_paginados(
     limit = min(limit, _LIMIT_CEILING)
 
     stmt = select(LogTransaccional)
-    if uuid_sucursal is not None:
+    if uuid_sucursales is not None:
+        stmt = stmt.where(LogTransaccional.uuid_sucursal.in_(uuid_sucursales))
+    elif uuid_sucursal is not None:
         stmt = stmt.where(LogTransaccional.uuid_sucursal == uuid_sucursal)
     if tabla_afectada is not None:
         stmt = stmt.where(LogTransaccional.tabla_afectada == tabla_afectada)
+    if uuid_registro_afectado is not None:
+        stmt = stmt.where(LogTransaccional.uuid_registro_afectado == uuid_registro_afectado)
+    if uuid_usuario is not None:
+        stmt = stmt.where(LogTransaccional.uuid_usuario == uuid_usuario)
+    if desde is not None:
+        stmt = stmt.where(func.date(LogTransaccional.timestamp_evento) >= desde)
+    if hasta is not None:
+        stmt = stmt.where(func.date(LogTransaccional.timestamp_evento) <= hasta)
     stmt = stmt.order_by(
         LogTransaccional.timestamp_evento.desc(),
         LogTransaccional.uuid.asc(),
@@ -167,6 +207,49 @@ async def listar_eventos_paginados(
             ),
         )
         stmt = stmt.where(cursor_clause)
+
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def buscar_prefijo(
+    session: AsyncSession,
+    *,
+    prefijo: str,
+    uuid_sucursales: list[uuid_lib.UUID] | None,
+    limit: int,
+) -> list[LogTransaccional]:
+    """Typeahead search over ``prod.log_transaccional`` (HU-F20.4).
+
+    Matches rows whose ``tabla_afectada`` OR ``uuid_registro_afectado``
+    (cast to text) starts with ``prefijo`` (case-insensitive prefix match,
+    ``ILIKE 'prefijo%'``). No cursor -- this is a bounded typeahead, not a
+    paginated listing; the caller (``api/v1/auditoria.py``) caps ``limit``
+    at 10 (literal spec: "límite 10 resultados").
+
+    ``uuid_sucursales`` applies the SAME cross-branch tenant scoping as
+    :func:`listar_eventos_paginados` -- a typeahead must not leak another
+    tenant's ``tabla_afectada``/``uuid_registro_afectado`` combinations
+    either, so an admin only ever searches within their own permitted
+    branches. ``None`` means "no branch scoping" (not used by the route,
+    which always resolves a concrete permitted-branch list first, but kept
+    optional so the helper is independently testable/reusable).
+
+    Ordering: ``timestamp_evento DESC`` (newest first) is a reasonable,
+    documented tiebreak for a typeahead -- there is no natural ordering
+    for "which of N matching rows to show first", and newest-first matches
+    every other bitácora surface in this module.
+    """
+    pattern = f"{prefijo}%"
+    stmt = select(LogTransaccional).where(
+        or_(
+            LogTransaccional.tabla_afectada.ilike(pattern),
+            LogTransaccional.uuid_registro_afectado.cast(String).ilike(pattern),
+        )
+    )
+    if uuid_sucursales is not None:
+        stmt = stmt.where(LogTransaccional.uuid_sucursal.in_(uuid_sucursales))
+    stmt = stmt.order_by(LogTransaccional.timestamp_evento.desc()).limit(limit)
 
     result = await session.execute(stmt)
     return list(result.scalars().all())

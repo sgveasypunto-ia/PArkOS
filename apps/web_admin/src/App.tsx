@@ -37,6 +37,10 @@ import ReclamoDetalle from '@/features/workflows/pages/ReclamoDetalle';
 import SyncDashboard from '@/features/sync/pages/SyncDashboard';
 import DianCola from '@/features/dian/pages/DianCola';
 import DianDetalle from '@/features/dian/pages/DianDetalle';
+import LogTransaccional from '@/features/auditoria/pages/LogTransaccional';
+import LogDetalle from '@/features/auditoria/pages/LogDetalle';
+import HashChainVerify from '@/features/auditoria/pages/HashChainVerify';
+import BuscarGlobal from '@/features/auditoria/pages/BuscarGlobal';
 
 /**
  * Route tree.
@@ -159,6 +163,17 @@ export default function App() {
               and /sync just above. */}
           <Route path="/dian" element={<DianCola />} />
           <Route path="/dian/:uuid" element={<DianDetalle />} />
+          {/* HU-F20.4: bitácora cross-branch (log_transaccional), chain
+              verification + global typeahead. Cross-branch by nature
+              (same reasoning as /sync just above), so it sits here
+              instead of inside the <RequireSucursal> group below. Not
+              to be confused with /audit (IT-12, single-branch, ambient
+              tenant context) below in the branch-scoped group -- that
+              one stays untouched. */}
+          <Route path="/auditoria/log" element={<LogTransaccional />} />
+          <Route path="/auditoria/log/:uuid" element={<LogDetalle />} />
+          <Route path="/auditoria/verify-chain" element={<HashChainVerify />} />
+          <Route path="/auditoria/buscar" element={<BuscarGlobal />} />
           <Route path="/perfil" element={<Perfil />} />
         </Route>
 
