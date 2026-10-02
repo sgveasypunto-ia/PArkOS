@@ -60,6 +60,12 @@ export const cupoReadListEnvelopeSchema = z.object({
 
 export type CupoReadListEnvelope = z.infer<typeof cupoReadListEnvelopeSchema>;
 
+/** `GET /cantidad-vehiculos-sucursal/by-key` returns a bare JSON array
+ * (`response_model=list[CantidadVehiculosSucursalRead]`, not the
+ * paginated `{items, next_cursor}` envelope the plain list endpoint
+ * uses). Same shape bug as tarifas's by-key -- see tarifaSchema.ts. */
+export const cupoReadArraySchema = z.array(cupoReadSchema);
+
 export const cupoOverlapErrorSchema = z.object({
   detail: z.object({
     error: z.literal('cantidad_overlap'),

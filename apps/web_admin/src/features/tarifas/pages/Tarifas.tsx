@@ -78,8 +78,8 @@ interface ListContentProps {
   sucursales: Array<{ uuid: string; nombre: string | null }> | undefined;
   tiposVehiculo: Array<{ uuid: string; tipo: string | null }>;
   onEdit: (g: TarifaAgrupada) => void;
-  onToggleHistory: (sucursalKey: string) => void;
-  historyOpenFor: string | null;
+  onToggleHistory: (sucursal: string, tipoVehiculo: string | null) => void;
+  historyOpenFor: { sucursal: string; tipoVehiculo: string | null } | null;
   historyVersiones: Tarifa[];
   emptyMessage: string;
 }
@@ -121,6 +121,11 @@ function ListContent({
             t('tarifas.unknownTipoVehiculo', 'Desconocido'))
           : t('tarifas.tipoVehiculoAny', 'Cualquiera');
         const grupoKey = `${g.uuid_sucursal}|${g.uuid_tipo_vehiculo}|${g.vigente_desde}`;
+        const tipoVehiculoKey = g.uuid_tipo_vehiculo ?? null;
+        const isHistoryOpen =
+          historyOpenFor !== null &&
+          historyOpenFor.sucursal === sucursalKey &&
+          historyOpenFor.tipoVehiculo === tipoVehiculoKey;
         return (
           <Card
             key={grupoKey}
@@ -192,10 +197,10 @@ function ListContent({
                           type="button"
                           variant="ghost"
                           size="sm"
-                          onClick={() => onToggleHistory(sucursalKey)}
+                          onClick={() => onToggleHistory(sucursalKey, tipoVehiculoKey)}
                           data-testid={`tarifa-history-${grupoKey}`}
                         >
-                          {historyOpenFor === sucursalKey
+                          {isHistoryOpen
                             ? t('tarifas.action.hideHistory', 'Ocultar histórico')
                             : t('tarifas.action.history', 'Ver histórico')}
                         </Button>
@@ -204,7 +209,7 @@ function ListContent({
                   </tr>
                 </tbody>
               </table>
-              {historyOpenFor === sucursalKey && (
+              {isHistoryOpen && (
                 <div className="border-t p-4">
                   <VersionHistoryPanel
                     versions={historyVersiones.map(toHistoryItem)}
@@ -246,7 +251,9 @@ export default function Tarifas(): JSX.Element {
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<ErrorState>(null);
-  const [historyOpenFor, setHistoryOpenFor] = useState<string | null>(null);
+  const [historyOpenFor, setHistoryOpenFor] = useState<
+    { sucursal: string; tipoVehiculo: string | null } | null
+  >(null);
 
   const allFiltered = useMemo(() => {
     if (!selectedSucursal) return [];
@@ -266,8 +273,46 @@ export default function Tarifas(): JSX.Element {
     return used;
   }, [grupos]);
 
-  const { versiones: historyVersiones } = useTarifasByKey(
-    historyOpenFor === 'sin-sucursal' ? null : historyOpenFor,
+  // Ver histórico: the grouped list shows one row per (sucursal,
+  // tipo_vehiculo) with 4 modalidad columns, but the by-key endpoint's
+  // business key is (sucursal, tipo_vehiculo, tipo_tarifa) -- omitting
+  // tipo_tarifa does NOT mean "any modalidad", it means "match the rows
+  // where tipo_tarifa IS NULL" (`is_not_distinct_from`, same NULL-is-a-
+  // valid-business-value semantics `tipo_vehiculo` uses for the
+  // "Cualquiera" case). So showing the full timeline for a grouped row
+  // means querying each of the 4 canonical modalidades explicitly and
+  // merging, not a single call with tipo_tarifa omitted.
+  const historySucursal =
+    historyOpenFor === null || historyOpenFor.sucursal === 'sin-sucursal'
+      ? null
+      : historyOpenFor.sucursal;
+  const historyTipoVehiculo = historyOpenFor?.tipoVehiculo ?? null;
+  const { versiones: historyHora } = useTarifasByKey(
+    historySucursal,
+    historyTipoVehiculo,
+    TIPO_TARIFA_UUIDS.hora,
+  );
+  const { versiones: historyFraccion } = useTarifasByKey(
+    historySucursal,
+    historyTipoVehiculo,
+    TIPO_TARIFA_UUIDS.fraccion,
+  );
+  const { versiones: historyPlena } = useTarifasByKey(
+    historySucursal,
+    historyTipoVehiculo,
+    TIPO_TARIFA_UUIDS.plena,
+  );
+  const { versiones: historyNocturna } = useTarifasByKey(
+    historySucursal,
+    historyTipoVehiculo,
+    TIPO_TARIFA_UUIDS.nocturna,
+  );
+  const historyVersiones = useMemo(
+    () =>
+      [...historyHora, ...historyFraccion, ...historyPlena, ...historyNocturna].sort(
+        (a, b) => b.vigente_desde.localeCompare(a.vigente_desde),
+      ),
+    [historyHora, historyFraccion, historyPlena, historyNocturna],
   );
 
   function closeModal(): void {
@@ -432,8 +477,14 @@ export default function Tarifas(): JSX.Element {
     setErrorState(null);
   }
 
-  function handleToggleHistory(sucursalKey: string): void {
-    setHistoryOpenFor((current) => (current === sucursalKey ? null : sucursalKey));
+  function handleToggleHistory(sucursal: string, tipoVehiculo: string | null): void {
+    setHistoryOpenFor((current) =>
+      current !== null &&
+      current.sucursal === sucursal &&
+      current.tipoVehiculo === tipoVehiculo
+        ? null
+        : { sucursal, tipoVehiculo },
+    );
   }
 
   const activeSucursalLabel =

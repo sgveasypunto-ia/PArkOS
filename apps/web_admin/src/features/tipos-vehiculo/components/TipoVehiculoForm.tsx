@@ -135,7 +135,7 @@ export function TipoVehiculoFormHarness(
   const form = useForm<TipoVehiculoCreateInput>({
     resolver: zodResolver(tipoVehiculoCreateSchema) as never,
     defaultValues: {
-      tipo: '',
+      tipo: props.initialTipoVehiculo?.tipo ?? '',
     },
   });
   return <TipoVehiculoForm {...props} form={form} />;

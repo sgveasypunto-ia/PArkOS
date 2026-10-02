@@ -24,6 +24,7 @@ import {
   cupoBajoIngresosErrorSchema,
   cupoCreateSchema,
   cupoOverlapErrorSchema,
+  cupoReadArraySchema,
   cupoReadListEnvelopeSchema,
   cupoReadSchema,
   cupoSucursalInmutableErrorSchema,
@@ -188,7 +189,10 @@ export async function listCuposByKey(opts: ByKeyCuposOpts): Promise<Cupo[]> {
   }
   const url = `/api/v1/empresa/cantidad-vehiculos-sucursal/by-key?${params.toString()}`;
   const raw = await fetchJson<unknown>(url, { method: 'GET', headers: jsonHeaders });
-  return cupoReadListEnvelopeSchema.parse(raw).items;
+  // `by-key` returns a bare array, not the `{items, next_cursor}`
+  // envelope the plain list endpoint uses (same bug class as tarifas's
+  // by-key -- see tarifasApi.ts::listTarifasByKey).
+  return cupoReadArraySchema.parse(raw);
 }
 
 export async function getCupo(uuid: string): Promise<Cupo> {

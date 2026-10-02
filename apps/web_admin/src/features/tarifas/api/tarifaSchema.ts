@@ -123,6 +123,11 @@ export const tarifaReadListEnvelopeSchema = z.object({
 
 export type TarifaReadListEnvelope = z.infer<typeof tarifaReadListEnvelopeSchema>;
 
+/** `GET /tarifas-sucursal/by-key` returns a bare JSON array
+ * (`response_model=list[TarifasSucursalRead]`, not the paginated
+ * `{items, next_cursor}` envelope the plain list endpoint uses). */
+export const tarifaReadArraySchema = z.array(tarifaReadSchema);
+
 export const tarifaOverlapErrorSchema = z.object({
   detail: z.object({
     error: z.literal('tarifa_overlap'),

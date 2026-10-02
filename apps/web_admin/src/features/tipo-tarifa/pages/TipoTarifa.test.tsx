@@ -108,4 +108,22 @@ describe('TipoTarifa page', () => {
     expect(screen.getByTestId('tipo-tarifa-form-modal')).toBeInTheDocument();
     expect(screen.getByTestId('tipo-tarifa-form')).toBeInTheDocument();
   });
+
+  it('TT4: "Editar" opens the modal pre-filled without crashing (regression)', async () => {
+    // QA batch tarifas/cupos: the EDIT branch used to render
+    // `<TipoTarifaForm form={undefined as never} .../>` directly
+    // (never built via `useForm`), which threw
+    // "Cannot read properties of undefined (reading 'handleSubmit')"
+    // and crashed the whole page to a blank screen. Both branches
+    // must now go through `TipoTarifaFormHarness`.
+    const user = userEvent.setup();
+    mockedList.mockResolvedValue([SAMPLE]);
+    render(<TipoTarifa />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      screen.getByTestId(`tipo-tarifa-row-${SAMPLE.uuid}`),
+    );
+    await user.click(screen.getByTestId(`tipo-tarifa-edit-${SAMPLE.uuid}`));
+    expect(screen.getByTestId('tipo-tarifa-form-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('tipo-tarifa-field-tipo')).toHaveValue(SAMPLE.tipo);
+  });
 });

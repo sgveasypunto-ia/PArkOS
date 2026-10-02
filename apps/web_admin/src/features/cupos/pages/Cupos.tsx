@@ -82,8 +82,8 @@ interface ListContentProps {
   sucursales: Array<{ uuid: string; nombre: string | null }> | undefined;
   tiposVehiculo: Array<{ uuid: string; tipo: string | null }>;
   onEdit: (c: Cupo) => void;
-  onToggleHistory: (sucursalKey: string) => void;
-  historyOpenFor: string | null;
+  onToggleHistory: (sucursal: string, tipoVehiculo: string | null) => void;
+  historyOpenFor: { sucursal: string; tipoVehiculo: string | null } | null;
   historyVersiones: Cupo[];
   emptyMessage: string;
 }
@@ -125,6 +125,11 @@ function ListContent({
             ? (tiposVehiculo.find((tv) => tv.uuid === cupo.uuid_tipo_vehiculo)?.tipo ??
               t('cupos.unknownTipo', 'Desconocido'))
             : t('cupos.anyTipo', 'Cualquiera');
+        const tipoVehiculoKey = cupo.uuid_tipo_vehiculo ?? null;
+        const isHistoryOpen =
+          historyOpenFor !== null &&
+          historyOpenFor.sucursal === sucursalKey &&
+          historyOpenFor.tipoVehiculo === tipoVehiculoKey;
         return (
           <Card
             key={cupo.uuid}
@@ -178,10 +183,10 @@ function ListContent({
                           type="button"
                           variant="ghost"
                           size="sm"
-                          onClick={() => onToggleHistory(sucursalKey)}
+                          onClick={() => onToggleHistory(sucursalKey, tipoVehiculoKey)}
                           data-testid={`cupo-history-${cupo.uuid}`}
                         >
-                          {historyOpenFor === sucursalKey
+                          {isHistoryOpen
                             ? t('cupos.action.hideHistory', 'Ocultar histórico')
                             : t('cupos.action.history', 'Ver histórico')}
                         </Button>
@@ -190,7 +195,7 @@ function ListContent({
                   </tr>
                 </tbody>
               </table>
-              {historyOpenFor === sucursalKey && (
+              {isHistoryOpen && (
                 <div className="border-t p-4">
                   <VersionHistoryPanel
                     versions={historyVersiones.map(toHistoryItem)}
@@ -223,7 +228,9 @@ export default function Cupos(): JSX.Element {
   const [submitting, setSubmitting] = useState(false);
   const [isCreatingTipo, setIsCreatingTipo] = useState(false);
   const [errorState, setErrorState] = useState<ErrorState>(null);
-  const [historyOpenFor, setHistoryOpenFor] = useState<string | null>(null);
+  const [historyOpenFor, setHistoryOpenFor] = useState<
+    { sucursal: string; tipoVehiculo: string | null } | null
+  >(null);
 
   const activeFiltered = useMemo(() => {
     if (!selectedSucursal) return cupos;
@@ -247,8 +254,19 @@ export default function Cupos(): JSX.Element {
     return used;
   }, [activeFiltered]);
 
+  // Ver histórico: pass the specific (sucursal, tipo_vehiculo) business
+  // key the "Ver histórico" button was clicked for -- omitting
+  // tipo_vehiculo (as this used to) means "match rows where
+  // uuid_tipo_vehiculo IS NULL" (`is_not_distinct_from`, same NULL-is-a
+  // -valid-business-value semantics as the "Cualquiera" cell), not "any
+  // tipo", so every real cupo's history always came back empty.
+  const historySucursal =
+    historyOpenFor === null || historyOpenFor.sucursal === 'sin-sucursal'
+      ? null
+      : historyOpenFor.sucursal;
   const { versiones: historyVersiones } = useCantidadByKey(
-    historyOpenFor === 'sin-sucursal' ? null : historyOpenFor,
+    historySucursal,
+    historyOpenFor?.tipoVehiculo ?? null,
   );
 
   function closeModal(): void {
@@ -293,8 +311,14 @@ export default function Cupos(): JSX.Element {
     setErrorState(null);
   }
 
-  function handleToggleHistory(sucursalKey: string): void {
-    setHistoryOpenFor((current) => (current === sucursalKey ? null : sucursalKey));
+  function handleToggleHistory(sucursal: string, tipoVehiculo: string | null): void {
+    setHistoryOpenFor((current) =>
+      current !== null &&
+      current.sucursal === sucursal &&
+      current.tipoVehiculo === tipoVehiculo
+        ? null
+        : { sucursal, tipoVehiculo },
+    );
   }
 
   const activeSucursalLabel =
