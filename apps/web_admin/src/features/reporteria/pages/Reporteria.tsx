@@ -1,12 +1,15 @@
 /**
- * `<Reporteria />` — operational report container (HU-F17.1, web_admin).
+ * `<Reporteria />` — operational report container (HU-F17.1/HU-F17.2,
+ * web_admin).
  *
  * Top section: the "Totales del período" panel (KPIs from
- * ``GET /admin/reporteria/operacional``) with a date-range picker
- * (default = current month) and four preset shortcuts (hoy, ayer,
- * últimos 7 días, este mes). The picker drives the operacional
- * endpoint's SWR key — branch switch and range switch both invalidate
- * the cache.
+ * ``GET /admin/reporteria/operacional``), the HU-F17.2 stay-time rollup
+ * (``<EstanciaPanel />``, same response's ``tiempos_estancia`` field,
+ * BR1), and a date-range picker (default = current month) with four
+ * preset shortcuts (hoy, ayer, últimos 7 días, este mes). The picker
+ * drives BOTH the operacional endpoint's SWR key AND the HU-F17.2
+ * cross-branch heatmap below — branch switch and range switch
+ * invalidate both caches.
  *
  * Bottom section: a Radix-Tabs drill-down with three tabs (Ingresos
  * | Salidas | Ocupación) showing the raw rows for the active branch.
@@ -15,7 +18,12 @@
  * covers the same range at aggregate level. Wiring the drill-down
  * to the range would require backend support for ``fecha_ingreso__gte``
  * and ``fecha_salida__gte`` on the existing endpoints, which is out of
- * scope for this PR.
+ * scope here (known drift vs. plan.md, deliberately not retrofitted by
+ * HU-F17.2 — see that HU's apply report). The Ocupación tab additionally
+ * renders the HU-F17.2 heatmap (``GET /admin/reporteria/ocupacion``,
+ * reusing ``<HeatmapOcupacion />`` from HU-F17.1) below the existing
+ * per-tipo cupo/activos cards — cross-branch (every branch the admin can
+ * see), unlike the rest of this page which is scoped to ``selected``.
  *
  * Branch context comes from ``useSucursal()``; this page lives inside
  * the branch-scoped route group (gated by ``<RequireSucursal>`` in
@@ -41,17 +49,20 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
+import { HeatmapOcupacion } from '@/components/charts/HeatmapOcupacion';
 
 import {
   useReporteriaIngresos,
   useReporteriaSalidas,
   useReporteriaOcupacion,
   useReporteriaOperacional,
+  useReporteriaOcupacionHeatmap,
 } from '../hooks/useReporteria';
 import { IngresosTable } from '../components/IngresosTable';
 import { SalidasTable } from '../components/SalidasTable';
 import { OcupacionPanel } from '../components/OcupacionPanel';
 import { ReporteOperacionalPanel } from '../components/ReporteOperacionalPanel';
+import { EstanciaPanel } from '../components/EstanciaPanel';
 import {
   DateRangePicker,
   type DateRange,
@@ -108,6 +119,14 @@ export default function Reporteria() {
     };
   }, [selected, range]);
   const operacional = useReporteriaOperacional(operacionalQuery);
+
+  // HU-F17.2 -- cross-branch heatmap, same date range as the KPI panel
+  // above (one picker drives both). Cross-branch by design: every
+  // branch the admin can see, not just the one currently selected.
+  const heatmap = useReporteriaOcupacionHeatmap({
+    desde: range.fecha_desde,
+    hasta: range.fecha_hasta,
+  });
 
   if (!selected) {
     return (
@@ -172,11 +191,18 @@ export default function Reporteria() {
             disabled={operacional.isLoading && !operacional.data}
           />
           {!rangeInvalid ? (
-            <ReporteOperacionalPanel
-              data={operacional.data}
-              isLoading={operacional.isLoading}
-              error={operacional.error}
-            />
+            <>
+              <ReporteOperacionalPanel
+                data={operacional.data}
+                isLoading={operacional.isLoading}
+                error={operacional.error}
+              />
+              <EstanciaPanel
+                items={operacional.data?.tiempos_estancia ?? []}
+                isLoading={operacional.isLoading}
+                error={operacional.error}
+              />
+            </>
           ) : null}
         </section>
 
@@ -217,11 +243,35 @@ export default function Reporteria() {
           </TabsContent>
 
           <TabsContent value="ocupacion">
-            <OcupacionPanel
-              data={ocupacion.data}
-              isLoading={ocupacion.isLoading}
-              error={ocupacion.error}
-            />
+            <div className="flex flex-col gap-6">
+              <OcupacionPanel
+                data={ocupacion.data}
+                isLoading={ocupacion.isLoading}
+                error={ocupacion.error}
+              />
+              <div className="rounded-lg border bg-card p-4" data-testid="reporteria-heatmap-section">
+                {heatmap.error ? (
+                  <p
+                    role="alert"
+                    aria-live="assertive"
+                    data-testid="reporteria-heatmap-error"
+                    className="text-sm text-destructive"
+                  >
+                    {heatmap.error.message}
+                  </p>
+                ) : (
+                  <HeatmapOcupacion
+                    data={heatmap.data?.data ?? []}
+                    sucursales={heatmap.data?.sucursales ?? []}
+                    title={t(
+                      'reporteria.ocupacion.heatmapTitle',
+                      'Actividad por hora ({{desde}} → {{hasta}})',
+                      { desde: range.fecha_desde, hasta: range.fecha_hasta },
+                    )}
+                  />
+                )}
+              </div>
+            </div>
           </TabsContent>
         </Tabs>
       </div>

@@ -22,12 +22,14 @@ import {
   fetchReporteriaSalidas,
   fetchReporteriaOcupacion,
   fetchReporteriaOperacional,
+  fetchReporteriaOcupacionHeatmap,
 } from '../api/reporteriaApi';
 import type {
   IngresoRead,
   SalidaListRead,
   OcupacionResponse,
   ReporteOperacionalResponse,
+  ReporteOcupacionHeatmapResponse,
   ReporteriaQuery,
 } from '../api/reporteriaSchema';
 
@@ -109,4 +111,24 @@ export function reporteriaOperacionalKey(q: {
     q.fecha_desde ?? '',
     q.fecha_hasta ?? '',
   ].join('::');
+}
+
+// HU-F17.2 -- cross-branch occupancy heatmap. Keyed on the date range
+// only (no uuid_sucursal -- the endpoint is cross-branch by nature, same
+// reasoning as the executive dashboard's `dashboard/resumen`).
+export function useReporteriaOcupacionHeatmap(
+  range: { desde?: string; hasta?: string } | null,
+) {
+  return useSWR<ReporteOcupacionHeatmapResponse>(
+    range ? reporteriaOcupacionHeatmapKey(range) : null,
+    () => fetchReporteriaOcupacionHeatmap(range as { desde?: string; hasta?: string }),
+    STALE,
+  );
+}
+
+export function reporteriaOcupacionHeatmapKey(r: {
+  desde?: string;
+  hasta?: string;
+}): string {
+  return ['/api/v1/admin/reporteria/ocupacion', r.desde ?? '', r.hasta ?? ''].join('::');
 }

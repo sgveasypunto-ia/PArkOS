@@ -104,6 +104,35 @@ export const reporteOperacionalItemSchema = z.object({
 
 export type ReporteOperacionalItem = z.infer<typeof reporteOperacionalItemSchema>;
 
+// HU-F17.2 additions -- ingresos filtrados (sucursal/fecha/tipo) con
+// paginacion cursor estandar, y tiempos de estancia (BR1). Additive on
+// the wire (backend keeps `items`/`totales` unchanged for the existing
+// "Totales del periodo" panel + the dashboard's `ChartsSection`).
+export const reporteOperacionalIngresoItemSchema = z.object({
+  uuid: z.string().uuid(),
+  uuid_sucursal: z.string().uuid().nullable(),
+  uuid_tipo_vehiculo: z.string().uuid().nullable(),
+  placa: z.string().nullable(),
+  consecutivo: z.string().nullable(),
+  fecha_ingreso: z.string().nullable(),
+  fecha_salida: z.string().nullable(),
+  tiempo_estancia_segundos: z.number().nullable(),
+});
+
+export type ReporteOperacionalIngresoItem = z.infer<
+  typeof reporteOperacionalIngresoItemSchema
+>;
+
+export const reporteEstanciaItemSchema = z.object({
+  fecha: z.string(),
+  muestras: z.number().int(),
+  promedio_segundos: z.number(),
+  maximo_segundos: z.number(),
+  minimo_segundos: z.number(),
+});
+
+export type ReporteEstanciaItem = z.infer<typeof reporteEstanciaItemSchema>;
+
 export const reporteOperacionalResponseSchema = z.object({
   uuid_sucursal: z.string().uuid(),
   fecha_desde: z.string(),
@@ -111,6 +140,53 @@ export const reporteOperacionalResponseSchema = z.object({
   items: z.array(reporteOperacionalItemSchema),
   totales: reporteOperacionalItemSchema,
   generado_en: z.string(),
+  ingresos: z.array(reporteOperacionalIngresoItemSchema).default([]),
+  ingresos_next_cursor: z.string().nullable().default(null),
+  tiempos_estancia: z.array(reporteEstanciaItemSchema).default([]),
 });
 
 export type ReporteOperacionalResponse = z.infer<typeof reporteOperacionalResponseSchema>;
+
+// HU-F17.2 -- cross-branch occupancy heatmap (`/admin/reporteria/ocupacion`).
+// Named distinctly from `ocupacionResponseSchema` above (the per-tipo
+// cupo/activos snapshot from `/operacion/ocupacion`) -- same word,
+// different endpoint and shape.
+export const reporteOcupacionSucursalItemSchema = z.object({
+  uuid: z.string().uuid(),
+  nombre: z.string().nullable(),
+});
+
+export type ReporteOcupacionSucursalItem = z.infer<
+  typeof reporteOcupacionSucursalItemSchema
+>;
+
+export const reporteOcupacionHeatmapCellSchema = z.object({
+  uuid_sucursal: z.string().uuid(),
+  hora: z.number().int(),
+  ingresos_count: z.number().int(),
+});
+
+export type ReporteOcupacionHeatmapCell = z.infer<
+  typeof reporteOcupacionHeatmapCellSchema
+>;
+
+export const reporteOcupacionAgregadaSchema = z.object({
+  ocupados: z.number().int(),
+  capacidad: z.number().int(),
+  porcentaje: z.number().nullable(),
+});
+
+export type ReporteOcupacionAgregada = z.infer<typeof reporteOcupacionAgregadaSchema>;
+
+export const reporteOcupacionHeatmapResponseSchema = z.object({
+  sucursales: z.array(reporteOcupacionSucursalItemSchema),
+  data: z.array(reporteOcupacionHeatmapCellSchema),
+  ocupacion_agregada: reporteOcupacionAgregadaSchema,
+  desde: z.string(),
+  hasta: z.string(),
+  generado_en: z.string(),
+});
+
+export type ReporteOcupacionHeatmapResponse = z.infer<
+  typeof reporteOcupacionHeatmapResponseSchema
+>;

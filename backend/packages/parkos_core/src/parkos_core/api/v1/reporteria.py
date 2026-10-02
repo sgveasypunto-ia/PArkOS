@@ -30,7 +30,7 @@ Notes on the SQL
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -39,12 +39,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_session, require_branch_scope, requires_issuer
 from ...auth.tenancy import BranchScope
+from ...db.tenancy import extract_sucursales_permitidas_fresh
 from ...models.A.factura_pagos import FacturaPagos
 from ...models.A.salidas import Salidas
 from ...models.L_E.facturas import Facturas
 from ...models.L_E.ingreso import Ingreso
 from ...models.L_W.anulaciones import Anulaciones
+from ...models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
+from ...models.V.sucursal import Sucursal
+from ...repo.pagination import Cursor, InvalidCursorError
+from ...repo.pagination import decode as cursor_decode
+from ...repo.pagination import encode as cursor_encode
 from ...schemas.reporteria import (
+    ReporteEstanciaItem,
+    ReporteOcupacionAgregada,
+    ReporteOcupacionHeatmapCell,
+    ReporteOcupacionResponse,
+    ReporteOcupacionSucursalItem,
+    ReporteOperacionalIngresoItem,
     ReporteOperacionalItem,
     ReporteOperacionalResponse,
 )
@@ -77,6 +89,18 @@ async def reporte_operacional(
         None,
         description="Inclusive UTC end date. If absent, defaults to today (UTC).",
     ),
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = Query(  # noqa: B008
+        None,
+        description=(
+            "HU-F17.2: optional vehicle-type filter, applied to both the "
+            "``ingresos`` list and ``tiempos_estancia`` (BR1)."
+        ),
+    ),
+    cursor: str | None = Query(
+        None,
+        description="HU-F17.2: opaque cursor for the ``ingresos`` list only.",
+    ),
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ReporteOperacionalResponse:
     """Per-day + grand-total operational aggregates.
 
@@ -262,12 +286,313 @@ async def reporte_operacional(
         monto_cobrado_total=sum(item.monto_cobrado_total for item in items),
     )
 
+    # 4. HU-F17.2 -- ingresos filtrados (sucursal/fecha/tipo) con
+    # paginacion cursor estandar, y tiempos de estancia (BR1).
+    #
+    # ``salida_no_anulada_subq`` is the mirror image of
+    # ``ingresos_activos_subq`` above: instead of "no salida (or only an
+    # anulada one)", this picks the salida that IS valid (not anulada)
+    # for an ingreso -- i.e. a COMPLETED stay, the only case a stay time
+    # can be computed for. Filtering here is on ``fecha_ingreso`` (the
+    # business timestamp BR1 names), deliberately NOT ``created_at`` --
+    # that keeps this slice's date semantics distinct from the per-day
+    # KPI rollup above (which filters on ``created_at`` and predates
+    # this HU).
+    salida_no_anulada_subq = (
+        select(
+            Salidas.uuid_ingreso.label("uuid_ingreso"),
+            Salidas.fecha_salida.label("fecha_salida"),
+        )
+        .outerjoin(
+            Anulaciones,
+            (Anulaciones.uuid_salida == Salidas.uuid)
+            & (Anulaciones.tipo_anulable == "salida")
+            & (Anulaciones.estado == "ejecutada"),
+        )
+        .where(Anulaciones.uuid.is_(None))
+        .subquery()
+    )
+
+    try:
+        decoded_cursor = cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    ingresos_stmt = (
+        select(
+            Ingreso.uuid,
+            Ingreso.uuid_sucursal,
+            Ingreso.uuid_tipo_vehiculo,
+            Ingreso.placa,
+            Ingreso.consecutivo,
+            Ingreso.fecha_ingreso,
+            Ingreso.created_at,
+            salida_no_anulada_subq.c.fecha_salida,
+        )
+        .select_from(Ingreso)
+        .outerjoin(
+            salida_no_anulada_subq,
+            salida_no_anulada_subq.c.uuid_ingreso == Ingreso.uuid,
+        )
+        .where(Ingreso.uuid_sucursal == target)
+        .where(Ingreso.fecha_ingreso.is_not(None))
+        .where(func.date(Ingreso.fecha_ingreso) >= fecha_desde)
+        .where(func.date(Ingreso.fecha_ingreso) <= fecha_hasta)
+    )
+    if uuid_tipo_vehiculo is not None:
+        ingresos_stmt = ingresos_stmt.where(
+            Ingreso.uuid_tipo_vehiculo == uuid_tipo_vehiculo
+        )
+    ingresos_stmt = ingresos_stmt.order_by(Ingreso.created_at.desc(), Ingreso.uuid.asc())
+    if decoded_cursor is not None:
+        if decoded_cursor.created_at is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_cursor",
+                    "detail": "cursor missing created_at (required for ingreso listings)",
+                },
+            )
+        cursor_ts = datetime.fromisoformat(
+            decoded_cursor.created_at.replace("Z", "+00:00")  # noqa: FURB162
+        ).replace(tzinfo=None)
+        cursor_uuid = uuid_lib.UUID(decoded_cursor.uuid)
+        ingresos_stmt = ingresos_stmt.where(
+            (Ingreso.created_at < cursor_ts)
+            | ((Ingreso.created_at == cursor_ts) & (Ingreso.uuid > cursor_uuid))
+        )
+    ingresos_stmt = ingresos_stmt.limit(limit + 1)
+
+    ingreso_rows = (await session.execute(ingresos_stmt)).all()
+    ingresos_next_cursor: str | None = None
+    if len(ingreso_rows) > limit:
+        ingreso_rows = ingreso_rows[:limit]
+        last = ingreso_rows[-1]
+        ingresos_next_cursor = cursor_encode(
+            Cursor(created_at=last.created_at.isoformat(), uuid=str(last.uuid))
+        )
+
+    ingresos_items = [
+        ReporteOperacionalIngresoItem(
+            uuid=row.uuid,
+            uuid_sucursal=row.uuid_sucursal,
+            uuid_tipo_vehiculo=row.uuid_tipo_vehiculo,
+            placa=row.placa,
+            consecutivo=row.consecutivo,
+            fecha_ingreso=row.fecha_ingreso,
+            fecha_salida=row.fecha_salida,
+            tiempo_estancia_segundos=(
+                (row.fecha_salida - row.fecha_ingreso).total_seconds()
+                if row.fecha_salida is not None and row.fecha_ingreso is not None
+                else None
+            ),
+        )
+        for row in ingreso_rows
+    ]
+
+    # Tiempos de estancia (BR1): promedio/maximo/minimo agrupado por dia,
+    # sobre TODO el rango filtrado (no paginado -- ya esta acotado por
+    # fecha_desde/fecha_hasta, misma logica que ``totales`` arriba). Solo
+    # cuentan las estancias completas (INNER JOIN con una salida valida).
+    duracion_expr = func.extract(
+        "epoch", salida_no_anulada_subq.c.fecha_salida - Ingreso.fecha_ingreso
+    )
+    estancia_stmt = (
+        select(
+            func.date(Ingreso.fecha_ingreso).label("fecha"),
+            func.count().label("muestras"),
+            func.avg(duracion_expr).label("promedio_segundos"),
+            func.max(duracion_expr).label("maximo_segundos"),
+            func.min(duracion_expr).label("minimo_segundos"),
+        )
+        .select_from(Ingreso)
+        .join(
+            salida_no_anulada_subq,
+            salida_no_anulada_subq.c.uuid_ingreso == Ingreso.uuid,
+        )
+        .where(Ingreso.uuid_sucursal == target)
+        .where(Ingreso.fecha_ingreso.is_not(None))
+        .where(func.date(Ingreso.fecha_ingreso) >= fecha_desde)
+        .where(func.date(Ingreso.fecha_ingreso) <= fecha_hasta)
+    )
+    if uuid_tipo_vehiculo is not None:
+        estancia_stmt = estancia_stmt.where(
+            Ingreso.uuid_tipo_vehiculo == uuid_tipo_vehiculo
+        )
+    estancia_stmt = estancia_stmt.group_by(func.date(Ingreso.fecha_ingreso)).order_by(
+        func.date(Ingreso.fecha_ingreso)
+    )
+    estancia_rows = (await session.execute(estancia_stmt)).all()
+    tiempos_estancia = [
+        ReporteEstanciaItem(
+            fecha=row.fecha,
+            muestras=int(row.muestras or 0),
+            promedio_segundos=float(row.promedio_segundos or 0.0),
+            maximo_segundos=float(row.maximo_segundos or 0.0),
+            minimo_segundos=float(row.minimo_segundos or 0.0),
+        )
+        for row in estancia_rows
+    ]
+
     return ReporteOperacionalResponse(
         uuid_sucursal=target,
         fecha_desde=fecha_desde,
         fecha_hasta=fecha_hasta,
         items=items,
         totales=totales,
+        generado_en=datetime.now(UTC),
+        ingresos=ingresos_items,
+        ingresos_next_cursor=ingresos_next_cursor,
+        tiempos_estancia=tiempos_estancia,
+    )
+
+
+@router.get(
+    "/ocupacion",
+    response_model=ReporteOcupacionResponse,
+    summary="Cross-branch occupancy heatmap, multi-day (HU-F17.2)",
+)
+async def reporte_ocupacion(
+    session: DbSession,
+    claims: AdminClaims,
+    desde: Annotated[
+        date | None,
+        Query(description="Inclusive UTC start date. Defaults to 6 days back."),
+    ] = None,
+    hasta: Annotated[
+        date | None,
+        Query(description="Inclusive UTC end date. Defaults to today (UTC)."),
+    ] = None,
+) -> ReporteOcupacionResponse:
+    """24h x N-sucursales heatmap over ``[desde, hasta]`` (HU-F17.2).
+
+    Cross-branch by nature (every branch the actor can see, same as
+    ``admin_views.dashboard_resumen``) -- deliberately does NOT depend on
+    ``get_tenant_ctx``/``require_branch_scope`` for the same reason that
+    module documents: those dependencies bind a SINGLE
+    ``X-Sucursal-Context`` branch to the SQLAlchemy ``do_orm_execute``
+    listener, which would silently narrow this endpoint to one branch.
+    Scope is resolved fresh from ``usuarios_sucursal``
+    (:func:`extract_sucursales_permitidas_fresh`) instead.
+
+    Two numbers ship together:
+
+    - ``data``/``sucursales`` -- the heatmap itself. Same shape and same
+      activity-intensity-proxy semantics as
+      ``admin_views.DashboardOcupacionHorariaItem`` (HU-F17.1); the only
+      difference is the window (``[desde, hasta]``, multi-day) instead
+      of a fixed last-24h/today-only lookback -- see
+      ``ReporteOcupacionHeatmapCell`` docstring.
+    - ``ocupacion_agregada`` -- BR2's ratio (ingresos activos / capacidad
+      vigente), reusing the exact "sin salida no-anulada" criterion
+      ``admin_views.dashboard_resumen`` already proved out. This is
+      necessarily a CURRENT snapshot (active-right-now), not historical,
+      so it ignores ``desde``/``hasta`` -- there is no stored history of
+      past occupancy to recompute it against.
+    """
+    actor_uuid = uuid_lib.UUID(claims["sub"])
+    permitidas = await extract_sucursales_permitidas_fresh(session, actor_uuid=actor_uuid)
+    if not permitidas:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+
+    today = datetime.now(UTC).date()
+    if hasta is None:
+        hasta = today
+    if desde is None:
+        desde = hasta - timedelta(days=6)
+    if desde > hasta:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "rango_fecha_invalido"},
+        )
+
+    sucursal_rows = (
+        await session.execute(
+            select(Sucursal.uuid, Sucursal.nombre).where(
+                Sucursal.uuid.in_(permitidas),
+                Sucursal.vigente_hasta.is_(None),
+            )
+        )
+    ).all()
+    sucursales = [
+        ReporteOcupacionSucursalItem(uuid=row.uuid, nombre=row.nombre)
+        for row in sucursal_rows
+    ]
+    target = {row.uuid for row in sucursal_rows}
+
+    hora_expr = func.extract("hour", Ingreso.created_at)
+    heatmap_rows = (
+        await session.execute(
+            select(
+                Ingreso.uuid_sucursal,
+                hora_expr.label("hora"),
+                func.count().label("ingresos_count"),
+            )
+            .where(
+                Ingreso.uuid_sucursal.in_(target),
+                func.date(Ingreso.created_at) >= desde,
+                func.date(Ingreso.created_at) <= hasta,
+            )
+            .group_by(Ingreso.uuid_sucursal, hora_expr)
+        )
+    ).all()
+    data = [
+        ReporteOcupacionHeatmapCell(
+            uuid_sucursal=row.uuid_sucursal,
+            hora=int(row.hora),
+            ingresos_count=int(row.ingresos_count),
+        )
+        for row in heatmap_rows
+        if row.uuid_sucursal is not None
+    ]
+
+    # BR2: ingresos activos (sin salida no-anulada) / capacidad vigente.
+    # Exact same subquery shape as ``admin_views.dashboard_resumen`` (BR2:
+    # "reusalo tal cual").
+    ingresos_activos_subq = (
+        select(Ingreso.uuid.label("uuid"))
+        .outerjoin(Salidas, Salidas.uuid_ingreso == Ingreso.uuid)
+        .outerjoin(
+            Anulaciones,
+            (Anulaciones.uuid_salida == Salidas.uuid)
+            & (Anulaciones.tipo_anulable == "salida")
+            & (Anulaciones.estado == "ejecutada"),
+        )
+        .where(Ingreso.uuid_sucursal.in_(target))
+        .where(Salidas.uuid.is_(None) | (Anulaciones.uuid.is_not(None)))
+        .subquery()
+    )
+    ocupados = (
+        await session.execute(
+            select(func.count(func.distinct(ingresos_activos_subq.c.uuid)))
+        )
+    ).scalar() or 0
+    capacidad = (
+        await session.execute(
+            select(func.coalesce(func.sum(CantidadVehiculosSucursal.cantidad), 0)).where(
+                CantidadVehiculosSucursal.uuid_sucursal.in_(target),
+                CantidadVehiculosSucursal.vigente_hasta.is_(None),
+            )
+        )
+    ).scalar() or 0
+    ocupacion_agregada = ReporteOcupacionAgregada(
+        ocupados=int(ocupados),
+        capacidad=int(capacidad),
+        porcentaje=(float(ocupados) / float(capacidad) * 100.0) if capacidad else None,
+    )
+
+    return ReporteOcupacionResponse(
+        sucursales=sucursales,
+        data=data,
+        ocupacion_agregada=ocupacion_agregada,
+        desde=desde,
+        hasta=hasta,
         generado_en=datetime.now(UTC),
     )
 
