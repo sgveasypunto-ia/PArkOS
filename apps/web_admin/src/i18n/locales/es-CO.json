@@ -933,5 +933,124 @@
         "submitting": "Guardando…"
       }
     }
+  },
+  "anulaciones": {
+    "title": "Anulaciones",
+    "subtitle": "Bandeja cross-branch de anulaciones de ingresos y salidas, con su estado actual.",
+    "listTitle": "Resultados",
+    "empty": "No hay anulaciones registradas.",
+    "errorLoading": "No se pudieron cargar las anulaciones.",
+    "estado": {
+      "iniciada": "Iniciada",
+      "autorizada": "Autorizada",
+      "ejecutada": "Ejecutada",
+      "rechazada": "Rechazada",
+      "none": "—"
+    },
+    "table": {
+      "fecha": "Fecha",
+      "sucursal": "Sucursal",
+      "tipo": "Tipo",
+      "estado": "Estado",
+      "openButton": "Ver detalle",
+      "loadMore": "Cargar más"
+    },
+    "transicion": {
+      "motivoLabel": "Motivo",
+      "submitting": "Guardando…",
+      "autorizada": {
+        "title": "Aprobar anulación",
+        "description": "Esta acción aprueba la anulación y la deja lista para ejecutarse.",
+        "submit": "Aprobar"
+      },
+      "ejecutada": {
+        "title": "Ejecutar anulación",
+        "description": "Esta acción ejecuta la anulación de forma definitiva.",
+        "submit": "Ejecutar"
+      },
+      "rechazada": {
+        "title": "Rechazar anulación",
+        "description": "Esta acción rechaza la anulación de forma definitiva.",
+        "submit": "Rechazar"
+      }
+    },
+    "detalle": {
+      "title": "Detalle de la anulación",
+      "back": "Volver a la bandeja",
+      "loading": "Cargando anulación...",
+      "errorLoading": "No se pudo cargar la anulación.",
+      "missingUuid": "Falta el identificador de la anulación.",
+      "dataTitle": "Datos",
+      "tipo": "Tipo anulable",
+      "sucursal": "Sucursal",
+      "ingreso": "Ingreso anulado",
+      "salida": "Salida anulada",
+      "fecha": "Fecha del evento",
+      "motivo": "Motivo",
+      "historyTitle": "Historial de transiciones",
+      "terminal": "Esta anulación ya está en un estado terminal.",
+      "aprobar": "Aprobar",
+      "ejecutar": "Ejecutar",
+      "rechazar": "Rechazar"
+    }
+  },
+  "reclamos": {
+    "title": "Reclamos",
+    "subtitle": "Bandeja cross-branch de reclamos sobre ingresos, salidas y facturas, con su estado actual.",
+    "listTitle": "Resultados",
+    "empty": "No hay reclamos registrados.",
+    "errorLoading": "No se pudieron cargar los reclamos.",
+    "estado": {
+      "recibido": "Recibido",
+      "enInvestigacion": "En investigación",
+      "resuelto": "Resuelto",
+      "rechazado": "Rechazado",
+      "none": "—"
+    },
+    "table": {
+      "fecha": "Fecha",
+      "sucursal": "Sucursal",
+      "tipo": "Tipo",
+      "estado": "Estado",
+      "openButton": "Ver detalle",
+      "loadMore": "Cargar más"
+    },
+    "transicion": {
+      "motivoLabel": "Motivo",
+      "submitting": "Guardando…",
+      "enInvestigacion": {
+        "title": "Tomar reclamo en revisión",
+        "description": "Pasa el reclamo a investigación.",
+        "submit": "Tomar en revisión"
+      },
+      "resuelto": {
+        "title": "Resolver reclamo",
+        "description": "Marca el reclamo como resuelto de forma definitiva.",
+        "submit": "Resolver"
+      },
+      "rechazado": {
+        "title": "Rechazar reclamo",
+        "description": "Rechaza el reclamo de forma definitiva.",
+        "submit": "Rechazar"
+      }
+    },
+    "detalle": {
+      "title": "Detalle del reclamo",
+      "back": "Volver a la bandeja",
+      "loading": "Cargando reclamo...",
+      "errorLoading": "No se pudo cargar el reclamo.",
+      "missingUuid": "Falta el identificador del reclamo.",
+      "dataTitle": "Datos",
+      "tipo": "Tipo reclamable",
+      "sucursal": "Sucursal",
+      "reclamable": "Elemento reclamado",
+      "fecha": "Fecha del evento",
+      "motivo": "Motivo",
+      "historyTitle": "Historial de transiciones",
+      "terminal": "Este reclamo ya está en un estado terminal.",
+      "tomarEnRevision": "Tomar en revisión",
+      "resolver": "Resolver",
+      "rechazar": "Rechazar"
+    }
   }
 }

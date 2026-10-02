@@ -715,6 +715,103 @@ class AlertaDescartarEndpoint(_Base):
     observaciones: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
 
 
+# ---------------------------------------------------------------------------
+# HU-F20.3 — anulaciones / reclamos transition endpoints (REQ-21, REQ-22,
+# REQ-23-W-POLYMORPHIC-FK). Same DEC-TKT-06 pattern as reimpresion-ticket /
+# alerta: a dedicated POST request body per custom endpoint, ``motivo``
+# mandatory + non-blank (mirrors ``AlertaDescartarEndpoint.observaciones``),
+# ``extra='forbid'`` (inherited from ``_Base``) rejects client smuggling of
+# ``estado`` / the self-FK padre column.
+# ---------------------------------------------------------------------------
+
+
+class AnulacionesSolicitarEndpoint(_Base):
+    """POST ``/api/v1/workflows/anulaciones`` request body (HU-F20.3).
+
+    INSERT chain root with ``estado='iniciada'`` (``STATE_MACHINES['anulaciones']``,
+    ``repo/workflow.py``). The polymorphic FK discriminator (``tipo_anulable``
+    + ``uuid_ingreso``/``uuid_salida``) mirrors ``AnulacionesCreate`` but adds
+    a cross-field guard: exactly one of ``uuid_ingreso``/``uuid_salida`` MUST
+    be set, and it MUST be the one named by ``tipo_anulable`` — a fast-fail
+    422 before any DB hit (no DB existence check on the referenced row; out
+    of scope for HU-F20.3).
+
+    Server-set fields (``uuid_sucursal``, ``uuid_usuario``, ``vigente_desde``,
+    ``vigente_hasta``, ``estado``, ``uuid_anulacion_padre``) are EXCLUDED —
+    ``uuid_sucursal``/``uuid_usuario`` come from the JWT/tenant context.
+    """
+
+    tipo_anulable: Literal["ingreso", "salida"]
+    uuid_ingreso: uuid_lib.UUID | None = None
+    uuid_salida: uuid_lib.UUID | None = None
+    motivo: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
+
+    @model_validator(mode="after")
+    def _check_polymorphic_pair(self) -> AnulacionesSolicitarEndpoint:
+        if self.tipo_anulable == "ingreso":
+            if self.uuid_ingreso is None or self.uuid_salida is not None:
+                raise ValueError(
+                    "tipo_anulable='ingreso' requires uuid_ingreso and forbids uuid_salida"
+                )
+        elif self.tipo_anulable == "salida" and (
+            self.uuid_salida is None or self.uuid_ingreso is not None
+        ):
+            raise ValueError(
+                "tipo_anulable='salida' requires uuid_salida and forbids uuid_ingreso"
+            )
+        return self
+
+
+class AnulacionesTransicionEndpoint(_Base):
+    """POST ``/api/v1/workflows/anulaciones/{uuid}/transicion`` request body.
+
+    ``estado`` is the CLIENT-REQUESTED destination state. ``repo.workflow.
+    append_transition`` validates ``tip.estado -> estado`` against
+    ``STATE_MACHINES['anulaciones']`` (``iniciada -> {autorizada, rechazada}``,
+    ``autorizada -> {ejecutada, rechazada}``) and raises
+    ``IllegalTransitionError`` (mapped to 409) otherwise — this schema does
+    NOT re-validate the transition itself, only the closed set of states
+    ``append_transition`` could ever legally reach.
+
+    The ``uuid`` (chain root) is supplied via the URL path, NOT the body.
+    """
+
+    estado: Literal["autorizada", "ejecutada", "rechazada"]
+    motivo: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
+
+
+class ReclamosSolicitarEndpoint(_Base):
+    """POST ``/api/v1/workflows/reclamos`` request body (HU-F20.3).
+
+    INSERT chain root with ``estado='recibido'`` (``STATE_MACHINES['reclamos']``,
+    ``repo/workflow.py``). Mirrors ``ReclamosCreate``'s polymorphic
+    discriminator but makes ``motivo`` mandatory (``ReclamosCreate.motivo``
+    stays optional for the read/update-side schema; the HU-F20.3 creation
+    endpoint requires it per the HU's "motivo obligatorio" rule).
+    """
+
+    tipo_reclamable: Literal["ingreso", "salida", "factura"]
+    uuid_reclamable: uuid_lib.UUID
+    motivo: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
+
+
+class ReclamosTransicionEndpoint(_Base):
+    """POST ``/api/v1/workflows/reclamos/{uuid}/transicion`` request body.
+
+    ``estado`` is the CLIENT-REQUESTED destination state.
+    ``STATE_MACHINES['reclamos']``: ``recibido -> {en_investigacion,
+    rechazado}``, ``en_investigacion -> {resuelto, rechazado}`` — both
+    transitions are gated by the SAME ``resolver_reclamo`` permission
+    (migration ``0053_seed_resolver_reclamo_permiso.py``'s HU-R04 describes
+    one admin responsibility covering both steps). An illegal combination
+    (e.g. ``resuelto`` requested while the tip is still ``recibido``) is
+    rejected by ``append_transition`` via ``IllegalTransitionError`` (409).
+    """
+
+    estado: Literal["en_investigacion", "resuelto", "rechazado"]
+    motivo: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
+
+
 # Typed error schemas — discriminator-driven HTTP-status mapping. The
 # handler raises one of these as a Pydantic-validated 4xx body in a
 # ``HTTPException(detail=...)`` envelope. The closed ``Literal`` on
@@ -785,6 +882,8 @@ __all__ = [
     "AnulacionesFilter",
     "AnulacionesRead",
     "AnulacionesReadList",
+    "AnulacionesSolicitarEndpoint",
+    "AnulacionesTransicionEndpoint",
     "AnulacionesUpdate",
     "EnvioDianCreate",
     "EnvioDianFilter",
@@ -798,6 +897,8 @@ __all__ = [
     "ReclamosFilter",
     "ReclamosRead",
     "ReclamosReadList",
+    "ReclamosSolicitarEndpoint",
+    "ReclamosTransicionEndpoint",
     "ReclamosUpdate",
     "ReimpresionAlreadyPendingError",
     "ReimpresionNotFoundError",

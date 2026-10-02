@@ -113,6 +113,8 @@ from . import (
     workflows,
     workflows_alert_types,  # HU-F11.2 fix 2026-09-24: GET /workflows/alert-types
     workflows_alerta,  # HU-F19.4: POST /workflows/alerta/{uuid}/descartar
+    workflows_anulaciones,  # HU-F20.3: POST /workflows/anulaciones + .../{uuid}/transicion
+    workflows_reclamos,  # HU-F20.3: POST /workflows/reclamos + .../{uuid}/transicion
     workflows_reimpresion,  # HU-F1.11: POST /workflows/reimpresion-ticket + .../{uuid}/anular
 )
 
@@ -159,6 +161,12 @@ def _build_router() -> APIRouter:
     # HU-F1.11 / DEC-TKT-06: POST /workflows/reimpresion-ticket + /{uuid}/anular
     # live on a dedicated router to keep the factory path reserved for C+Q.
     r.include_router(workflows_reimpresion.router)
+    # HU-F20.3: POST /workflows/anulaciones + /{uuid}/transicion and POST
+    # /workflows/reclamos + /{uuid}/transicion live on their own dedicated
+    # routers (same DEC-TKT-06 rationale) -- the factory mount in
+    # workflows.py keeps serving GET for both resources unchanged.
+    r.include_router(workflows_anulaciones.router)
+    r.include_router(workflows_reclamos.router)
     # HU-F19.4: POST /workflows/alerta/{uuid}/descartar lives on its own
     # dedicated router (same DEC-TKT-06 rationale). HU-F19.5 additionally
     # moved ALL of alerta's GET routes (list/single/history) onto this
