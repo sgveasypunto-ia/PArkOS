@@ -22,6 +22,7 @@ import TipoTarifa from '@/features/tipo-tarifa/pages/TipoTarifa';
 import ConfiguracionTolerancias from '@/features/configuracion-tolerancias/pages/ConfiguracionTolerancias';
 import ConfiguracionSeguridad from '@/features/configuracion-seguridad/pages/ConfiguracionSeguridad';
 import Reporteria from '@/features/reporteria/pages/Reporteria';
+import ReporteriaFinanciera from '@/features/reporteria/pages/ReporteriaFinanciera';
 import { ArqueosPage } from '@/features/arqueos/pages/ArqueosPage';
 
 /**
@@ -149,6 +150,10 @@ export default function App() {
             element={<ConfiguracionSeguridad />}
           />
           <Route path="/reporteria" element={<Reporteria />} />
+          <Route
+            path="/reporteria/financiera"
+            element={<ReporteriaFinanciera />}
+          />
           <Route path="/audit" element={<AuditDashboard />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

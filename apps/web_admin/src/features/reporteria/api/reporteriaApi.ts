@@ -36,12 +36,18 @@ import {
   ocupacionResponseSchema,
   reporteOperacionalResponseSchema,
   reporteOcupacionHeatmapResponseSchema,
+  reporteFacturasResponseSchema,
+  reporteFeResponseSchema,
+  reportePagosResponseSchema,
   type IngresoRead,
   type SalidaListRead,
   type OcupacionResponse,
   type ReporteOperacionalResponse,
   type ReporteOcupacionHeatmapResponse,
   type ReporteriaQuery,
+  type ReporteFacturasResponse,
+  type ReporteFeResponse,
+  type ReportePagosResponse,
 } from './reporteriaSchema';
 
 const ING_PATH = '/api/v1/operacion/ingresos';
@@ -148,4 +154,64 @@ export async function fetchReporteriaOcupacionHeatmap(query: {
     headers: { Accept: 'application/json' },
   });
   return reporteOcupacionHeatmapResponseSchema.parse(raw);
+}
+
+// HU-F17.3 -- reportería financiera (facturas, FE, pagos).
+const FACTURAS_PATH = '/api/v1/admin/reporteria/facturas';
+const FE_PATH = '/api/v1/admin/reporteria/fe';
+const PAGOS_PATH = '/api/v1/admin/reporteria/pagos';
+
+export async function fetchReporteriaFacturas(query: {
+  uuid_sucursal: string;
+  desde?: string;
+  hasta?: string;
+  cursor?: string;
+  limit?: number;
+}): Promise<ReporteFacturasResponse> {
+  const params = new URLSearchParams();
+  params.set('uuid_sucursal', query.uuid_sucursal);
+  if (query.desde) params.set('desde', query.desde);
+  if (query.hasta) params.set('hasta', query.hasta);
+  if (query.cursor) params.set('cursor', query.cursor);
+  if (query.limit) params.set('limit', String(query.limit));
+  const url = `${FACTURAS_PATH}?${params.toString()}`;
+  const raw = await fetchJson<unknown>(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  return reporteFacturasResponseSchema.parse(raw);
+}
+
+export async function fetchReporteriaFe(query: {
+  estado?: string;
+  cursor?: string;
+  limit?: number;
+}): Promise<ReporteFeResponse> {
+  const params = new URLSearchParams();
+  if (query.estado) params.set('estado', query.estado);
+  if (query.cursor) params.set('cursor', query.cursor);
+  if (query.limit) params.set('limit', String(query.limit));
+  const url = `${FE_PATH}?${params.toString()}`;
+  const raw = await fetchJson<unknown>(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  return reporteFeResponseSchema.parse(raw);
+}
+
+export async function fetchReporteriaPagos(query: {
+  uuid_sucursal: string;
+  desde?: string;
+  hasta?: string;
+}): Promise<ReportePagosResponse> {
+  const params = new URLSearchParams();
+  params.set('uuid_sucursal', query.uuid_sucursal);
+  if (query.desde) params.set('desde', query.desde);
+  if (query.hasta) params.set('hasta', query.hasta);
+  const url = `${PAGOS_PATH}?${params.toString()}`;
+  const raw = await fetchJson<unknown>(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  return reportePagosResponseSchema.parse(raw);
 }

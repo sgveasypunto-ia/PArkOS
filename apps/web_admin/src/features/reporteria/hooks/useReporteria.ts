@@ -23,6 +23,9 @@ import {
   fetchReporteriaOcupacion,
   fetchReporteriaOperacional,
   fetchReporteriaOcupacionHeatmap,
+  fetchReporteriaFacturas,
+  fetchReporteriaFe,
+  fetchReporteriaPagos,
 } from '../api/reporteriaApi';
 import type {
   IngresoRead,
@@ -31,6 +34,9 @@ import type {
   ReporteOperacionalResponse,
   ReporteOcupacionHeatmapResponse,
   ReporteriaQuery,
+  ReporteFacturasResponse,
+  ReporteFeResponse,
+  ReportePagosResponse,
 } from '../api/reporteriaSchema';
 
 const STALE = { revalidateOnFocus: false, dedupingInterval: 30_000 };
@@ -131,4 +137,71 @@ export function reporteriaOcupacionHeatmapKey(r: {
   hasta?: string;
 }): string {
   return ['/api/v1/admin/reporteria/ocupacion', r.desde ?? '', r.hasta ?? ''].join('::');
+}
+
+// HU-F17.3 -- reportería financiera (facturas, FE, pagos).
+
+export interface ReporteriaFacturasQuery {
+  uuid_sucursal: string;
+  desde?: string;
+  hasta?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export function useReporteriaFacturas(query: ReporteriaFacturasQuery | null) {
+  return useSWR<ReporteFacturasResponse>(
+    query ? reporteriaFacturasKey(query) : null,
+    () => fetchReporteriaFacturas(query as ReporteriaFacturasQuery),
+    STALE,
+  );
+}
+
+export function reporteriaFacturasKey(q: ReporteriaFacturasQuery): string {
+  return [
+    '/api/v1/admin/reporteria/facturas',
+    q.uuid_sucursal,
+    q.desde ?? '',
+    q.hasta ?? '',
+    q.cursor ?? '',
+    q.limit ?? 50,
+  ].join('::');
+}
+
+export interface ReporteriaFeQuery {
+  estado?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export function useReporteriaFe(query: ReporteriaFeQuery | null) {
+  return useSWR<ReporteFeResponse>(
+    query ? reporteriaFeKey(query) : null,
+    () => fetchReporteriaFe(query as ReporteriaFeQuery),
+    STALE,
+  );
+}
+
+export function reporteriaFeKey(q: ReporteriaFeQuery): string {
+  return ['/api/v1/admin/reporteria/fe', q.estado ?? '', q.cursor ?? '', q.limit ?? 50].join('::');
+}
+
+export interface ReporteriaPagosQuery {
+  uuid_sucursal: string;
+  desde?: string;
+  hasta?: string;
+}
+
+export function useReporteriaPagos(query: ReporteriaPagosQuery | null) {
+  return useSWR<ReportePagosResponse>(
+    query ? reporteriaPagosKey(query) : null,
+    () => fetchReporteriaPagos(query as ReporteriaPagosQuery),
+    STALE,
+  );
+}
+
+export function reporteriaPagosKey(q: ReporteriaPagosQuery): string {
+  return ['/api/v1/admin/reporteria/pagos', q.uuid_sucursal, q.desde ?? '', q.hasta ?? ''].join(
+    '::',
+  );
 }
