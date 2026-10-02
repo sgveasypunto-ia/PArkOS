@@ -302,6 +302,31 @@ describe('parkosFetch — typed wrapper error mapping', () => {
   });
 });
 
+describe('parkosFetch — empty-body success responses', () => {
+  // Regression: found live via qa/batch-usuarios (2026-10-02).
+  // `res.json()` on a 204 (or any empty-body 2xx) throws
+  // `SyntaxError: Unexpected end of JSON input`, which every
+  // void-returning mutation (revocarPermiso, desasignarSucursal,
+  // cerrarSesion, ...) hit on every SUCCESSFUL call -- a false
+  // negative shown to the admin even though the backend write
+  // committed correctly.
+  it('204 No Content resolves to undefined instead of throwing', async () => {
+    // The Fetch spec forbids a non-null body on a 204 Response (Node's
+    // `Response` constructor throws "Invalid response status code 204"
+    // otherwise), so this needs an explicit `null` body instead of the
+    // `emptyResponse` helper's `''` default.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await expect(parkosFetch('/api/usuarios/x/sucursales/y/revocar')).resolves.toBeUndefined();
+  });
+
+  it('200 with an empty body also resolves to undefined instead of throwing', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(emptyResponse(200));
+
+    await expect(parkosFetch('/api/whatever')).resolves.toBeUndefined();
+  });
+});
+
 describe('parkosFetch — pre-flight gate F3.2 (DEC-F3.2-03 + DEC-F3.2-07)', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

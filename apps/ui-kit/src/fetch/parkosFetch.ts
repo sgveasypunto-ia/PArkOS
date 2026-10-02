@@ -287,6 +287,20 @@ export async function parkosFetch<T>(
   if (!res.ok) {
     throw new ParkosHttpError(res.status, await res.text(), String(input));
   }
-  const json = await res.json();
+  // 204 No Content (and any other genuinely empty 2xx body) has nothing
+  // to parse. `res.json()` throws `SyntaxError: Unexpected end of JSON
+  // input` on an empty string, which every void-returning mutation
+  // (e.g. `revocarPermiso`, `desasignarSucursal`, `cerrarSesion`) hit on
+  // every SUCCESSFUL call, not just failures. Found live via
+  // qa/batch-usuarios (2026-10-02): desasignar-sucursal closed the row
+  // correctly server-side but the admin UI alerted "Error al desasignar
+  // sucursal: Failed to execute 'json' on 'Response': Unexpected end of
+  // JSON input" -- a false negative on every success. `res.text()` first
+  // (readable once) lets empty bodies short-circuit before `JSON.parse`.
+  const text = await res.text();
+  if (text.length === 0) {
+    return undefined as T;
+  }
+  const json = JSON.parse(text) as unknown;
   return schema ? schema.parse(json) : (json as T);
 }

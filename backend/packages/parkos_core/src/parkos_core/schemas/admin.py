@@ -139,9 +139,19 @@ class AdminSucursalAsignadaRead(_Base):
 
     Returns the currently-open (``vigente_hasta IS NULL``) branch
     assignments for the user.
+
+    ``uuid_usuario`` is required here because the frontend's
+    ``sucursalUsuarioSchema`` (Zod) requires it too -- without this
+    field the wire payload fails that Zod parse for EVERY user with
+    at least one assignment, and ``SucursalesAsignadas.tsx`` swallows
+    the resulting SWR error silently (no error branch), rendering
+    "No hay sucursales asignadas" even when assignments exist. Found
+    live via qa/batch-usuarios (2026-10-02): the detail page's
+    Sucursales tab never worked for ANY user before this fix.
     """
 
     uuid: uuid_lib.UUID
+    uuid_usuario: uuid_lib.UUID
     uuid_sucursal: uuid_lib.UUID
     vigente_desde: datetime
     vigente_hasta: datetime | None
