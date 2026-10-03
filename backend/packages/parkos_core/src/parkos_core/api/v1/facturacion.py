@@ -432,15 +432,30 @@ async def create_factura(
         session, uuid_factura=new_factura.uuid, base=base_bruta, iva=iva_porcentaje
     )
     assert target_sucursal is not None  # salida.uuid_sucursal, persisted row
-    await repo_factura.crear_factura_pago(
-        session,
-        uuid_factura=new_factura.uuid,
-        uuid_sucursal=target_sucursal,
-        medio_pago=payload.medio_pago,
-        valor=payload.total,
-        referencia=payload.referencia,
-        uuid_sesion=ctx.uuid_sesion,
-    )
+    try:
+        await repo_factura.crear_factura_pago(
+            session,
+            uuid_factura=new_factura.uuid,
+            uuid_sucursal=target_sucursal,
+            medio_pago=payload.medio_pago,
+            valor=payload.total,
+            referencia=payload.referencia,
+            uuid_sesion=payload.uuid_sesion or ctx.uuid_sesion,
+        )
+    except repo_factura.PagoDuplicadoError as exc:
+        # Defense in depth (QA backlog cleanup, 2026-10-02): same unmanaged
+        # 500 class as ``create_factura_pago`` below. Unreachable in the
+        # normal flow (``new_factura.uuid`` is always fresh here), but a
+        # future caller mutating this handler must not reintroduce the
+        # raw-500 regression.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "pago_duplicado",
+                "uuid_factura": str(exc.uuid_factura),
+            },
+            headers=no_store,
+        ) from exc
 
     # --- Step 11: KD-FACT-01 single commit. ---------------------------
     await session.commit()  # UN solo commit (lock release, KD-FACT-02)
@@ -526,15 +541,32 @@ async def create_factura_pago(
     # auth/tenancy.py) -- the same invariant create_factura/
     # create_factura_servicio rely on via target_sucursal.
     assert ctx.sucursal_uuid is not None  # operador- issuer always carries one
-    new_pago = await repo_factura.crear_factura_pago(
-        session,
-        uuid_factura=payload.uuid_factura,
-        uuid_sucursal=ctx.sucursal_uuid,
-        medio_pago=payload.medio_pago,
-        valor=payload.valor,
-        referencia=payload.referencia,
-        uuid_sesion=payload.uuid_sesion or ctx.uuid_sesion,
-    )
+    try:
+        new_pago = await repo_factura.crear_factura_pago(
+            session,
+            uuid_factura=payload.uuid_factura,
+            uuid_sucursal=ctx.sucursal_uuid,
+            medio_pago=payload.medio_pago,
+            valor=payload.valor,
+            referencia=payload.referencia,
+            uuid_sesion=payload.uuid_sesion or ctx.uuid_sesion,
+        )
+    except repo_factura.PagoDuplicadoError as exc:
+        # This handler's own ``responses`` doc already advertised 409
+        # ``pago_duplicado`` (BEFORE INSERT trigger
+        # ``fn_factura_pagos_init_pago_uniqueness``), but nothing actually
+        # caught it -- a retried/duplicate factura-pagos POST bubbled the
+        # raw ``IntegrityError``-derived ``PagoDuplicadoError`` up to
+        # FastAPI's default handler as an unmanaged 500 (QA backlog
+        # cleanup, 2026-10-02).
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "pago_duplicado",
+                "uuid_factura": str(exc.uuid_factura),
+            },
+            headers=no_store,
+        ) from exc
 
     # --- Step 4: single commit. ----------------------------------------
     await session.commit()
@@ -769,15 +801,27 @@ async def create_factura_servicio(
         session, uuid_factura=new_factura.uuid, base=base_bruta, iva=iva_porcentaje
     )
     assert target_sucursal is not None  # ingreso.uuid_sucursal, persisted row
-    await repo_factura.crear_factura_pago(
-        session,
-        uuid_factura=new_factura.uuid,
-        uuid_sucursal=target_sucursal,
-        medio_pago=payload.medio_pago,
-        valor=payload.total,
-        referencia=payload.referencia,
-        uuid_sesion=ctx.uuid_sesion,
-    )
+    try:
+        await repo_factura.crear_factura_pago(
+            session,
+            uuid_factura=new_factura.uuid,
+            uuid_sucursal=target_sucursal,
+            medio_pago=payload.medio_pago,
+            valor=payload.total,
+            referencia=payload.referencia,
+            uuid_sesion=payload.uuid_sesion or ctx.uuid_sesion,
+        )
+    except repo_factura.PagoDuplicadoError as exc:
+        # Same unmanaged-500 class fixed on create_factura/
+        # create_factura_pago above (QA backlog cleanup, 2026-10-02).
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "pago_duplicado",
+                "uuid_factura": str(exc.uuid_factura),
+            },
+            headers=no_store,
+        ) from exc
 
     # --- Step 12: KD-FACT-01 single commit. -----------------------------
     await session.commit()  # UN solo commit (lock release, KD-FACT-02)

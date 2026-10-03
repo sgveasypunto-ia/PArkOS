@@ -253,6 +253,10 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
       items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 5000 }],
       subtotal: 4200,
       total: 5000,
+      // QA backlog cleanup (2026-10-02): the live active session is now
+      // forwarded so the backend can use it as an override when the JWT
+      // claim is stale/absent — see `useSesionActiva` mock above.
+      uuid_sesion: '00000000-0000-0000-0000-00000000se01',
     });
   });
 

@@ -604,6 +604,19 @@ class FacturaCreate(_Base):
     referencia: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
     fe_con_datos: bool = False
     fe_datos_cliente: FacturaItemConDatosPropios | None = None
+    # QA backlog cleanup (2026-10-02): optional client-supplied override,
+    # same fallback contract as ``FacturaPagoAdicionalCreate.uuid_sesion``
+    # below. ``TenantContext.uuid_sesion`` is sourced from the JWT
+    # ``sesion`` claim, which is only as fresh as the token the FE is
+    # holding (set once at ``POST /caja-sesion/sesiones``, never
+    # refreshed mid-turno). The caller (``<PagoSheet>``,
+    # ``useSesionActiva()``) already resolves the live active session
+    # client-side at pago time; letting it override a stale/absent claim
+    # here closes the gap where the exit payment landed with
+    # ``uuid_sesion IS NULL`` and was silently excluded from
+    # ``calcular_esperado_sesion`` (Arqueos) even though a real session
+    # was open.
+    uuid_sesion: uuid_lib.UUID | None = None
 
 
 class FacturaServicioCreate(_Base):
@@ -627,6 +640,8 @@ class FacturaServicioCreate(_Base):
     referencia: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
     fe_con_datos: bool = False
     fe_datos_cliente: FacturaItemConDatosPropios | None = None
+    # Same client-supplied override as ``FacturaCreate.uuid_sesion`` above.
+    uuid_sesion: uuid_lib.UUID | None = None
 
 
 class FacturaItemRead(_Base):
