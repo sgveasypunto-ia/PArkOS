@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { HashChainStatus } from '@/components/HashChainStatus';
+import { formatBackendTimestampLocal } from '@/features/reporteria/components/dateRange';
 
 import type { AuditLogItem } from '../api/auditoriaSchema';
 
@@ -84,7 +85,9 @@ export function LogTransaccionalTable({
               data-testid={`log-transaccional-row-${row.uuid}`}
               className="border-t hover:bg-muted/20"
             >
-              <td className="px-3 py-2 tabular-nums text-xs">{row.timestamp_evento}</td>
+              <td className="px-3 py-2 tabular-nums text-xs">
+                {formatBackendTimestampLocal(row.timestamp_evento)}
+              </td>
               <td className="px-3 py-2 font-mono text-xs">{row.tabla_afectada ?? '—'}</td>
               <td className="px-3 py-2 text-xs">{row.accion ?? '—'}</td>
               <td className="px-3 py-2 font-mono text-xs">{short(row.uuid_sucursal)}</td>

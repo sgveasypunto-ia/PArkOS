@@ -260,6 +260,10 @@
     "dian": {
       "label": "DIAN",
       "description": "Monitor cross-branch de envíos a la DIAN: cola por estado y reintento de los rechazados."
+    },
+    "auditoria": {
+      "label": "Auditoría",
+      "description": "Bitácora cross-branch de eventos del sistema, con filtros por tabla, registro, sucursal, usuario y fecha."
     }
   },
   "catalogos": {
