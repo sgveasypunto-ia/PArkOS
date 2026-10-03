@@ -443,6 +443,30 @@ def ensure_default_partitions(cloud_dsn: str) -> None:
     those tables fails with ``no partition of relation ... found for row``.
     Production runs ``partman.run_maintenance`` on a schedule; for the
     local smoke we just add DEFAULT catch-all partitions.
+
+    Idempotency note (found while verifying the 0064/0075 migration fix):
+    the existence check used to look for a child literally named
+    ``<parent>_default``. That name is NOT the only one in use --
+    ``0018_add_default_partitions_pairing_revoked_jwts.py`` named its
+    partitions ``<parent>_p_default`` (``pairing_tokens_p_default``,
+    ``revoked_sync_jwts_p_default``), and 0064/0075's
+    ``fn_ensure_partitions()`` now guarantees a default partition on
+    EVERY one of these parents regardless of its name. The old
+    name-literal check missed those, so this function tried to attach a
+    SECOND default partition on an already-complete parent and
+    PostgreSQL rejected it outright (one DEFAULT partition per parent,
+    regardless of name):
+
+        psycopg.errors.InvalidObjectDefinition: partition
+        "pairing_tokens_default" conflicts with existing default
+        partition "pairing_tokens_p_default"
+
+    This reproduced on EVERY run (not just the first) once 0064/0075
+    were applied, confirmed against the disposable test container used
+    to verify this file's ordering fix. The check now looks for ANY
+    existing default child of the parent (via its partition bound, not
+    its name), so this function stays a harmless no-op once migrations
+    already provide the default partition.
     """
     PARTITIONED = (
         "salidas", "factura_detalle", "factura_impuestos", "factura_otros_cobros",
@@ -461,10 +485,13 @@ def ensure_default_partitions(cloud_dsn: str) -> None:
                     DO $$
                     BEGIN
                         IF NOT EXISTS (
-                            SELECT 1 FROM pg_class c
-                            JOIN pg_namespace n ON n.oid = c.relnamespace
-                            WHERE c.relname = '{parent}_default'
-                            AND n.nspname = 'prod'
+                            SELECT 1
+                            FROM pg_inherits i
+                            JOIN pg_class c ON c.oid = i.inhrelid
+                            JOIN pg_class p ON p.oid = i.inhparent
+                            JOIN pg_namespace n ON n.oid = p.relnamespace
+                            WHERE n.nspname = 'prod' AND p.relname = '{parent}'
+                              AND pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT'
                         ) AND EXISTS (
                             SELECT 1 FROM pg_class c
                             JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -499,18 +526,46 @@ def main() -> int:
     print(f"== Step 1: ensure DEFAULT partitions on cloud-db ==")
     ensure_default_partitions(args.cloud_dsn)
 
-    print(f"== Step 2: ensure admin user in cloud-db ==")
+    # ORDER BUG FIXED HERE (found verifying a completely empty DB, single
+    # pass): ``ensure_sucursal`` MUST run before ``ensure_admin_user``.
+    #
+    # ``ensure_admin_user`` grants branch scope with a ONE-TIME backfill:
+    # ``INSERT INTO prod.usuarios_sucursal ... SELECT ... FROM prod.sucursal
+    # s WHERE ... NOT EXISTS (...)`` — it only scopes the admin to branches
+    # that ALREADY exist in ``prod.sucursal`` at the moment it runs. On a
+    # genuinely empty DB, ``prod.sucursal`` has zero rows until
+    # ``ensure_sucursal`` creates this branch's row. With the old order
+    # (admin first, branch second), the backfill scoped the admin to
+    # nothing, and ``POST /admin/pairing-tokens`` below then failed with
+    # 403 ``unauthorized_sucursal_context`` — ``auth/tenancy.py::
+    # get_tenant_ctx`` validates the ``X-Sucursal-Context`` header against
+    # ``usuarios_sucursal`` rows read FRESH FROM THE DB (never from the
+    # JWT's ``sucursales_permitidas`` claim, which is a login-time
+    # snapshot), so an empty table is an empty permitted set. A second run
+    # "worked" only because the branch row from the first run's
+    # ``ensure_sucursal`` call already existed, so admin's re-run of
+    # ``ensure_admin_user`` found it and backfilled the missing
+    # ``usuarios_sucursal`` row that time.
+    #
+    # Confirmed end-to-end against a disposable, fully-migrated
+    # (0001->head) throwaway Postgres container + a local ``api-admin``:
+    # with the OLD order, pass 1 failed at ``POST /admin/pairing-tokens``
+    # with exactly that 403; with ``ensure_sucursal`` moved here (before
+    # ``ensure_admin_user``), the whole script completes in a single pass
+    # from a fully empty database.
+    print("== Step 2: ensure branch row in prod.sucursal ==")
+    ensure_sucursal(args.cloud_dsn, branch_uuid)
+
+    print("== Step 2b: ensure admin user in cloud-db ==")
     admin_uuid = ensure_admin_user(args.cloud_dsn)
     print(f"   admin user uuid = {admin_uuid}")
 
-    print(f"== Step 2b: ensure branch row in prod.sucursal ==")
-    ensure_sucursal(args.cloud_dsn, branch_uuid)
-
     # NOTE: order matters — the log_transaccional INSERT below fires the
     # ``fn_enqueue_sync`` trigger, which INSERTs into ``prod.sync_queue``
-    # with the branch uuid as FK. The branch row must exist first.
+    # with the branch uuid as FK. The branch row must exist first
+    # (guaranteed above, now that ``ensure_sucursal`` runs before this).
 
-    print(f"== Step 2: mint admin JWT (key: {jwt_key_path}) ==")
+    print(f"== Step 2c: mint admin JWT (key: {jwt_key_path}) ==")
     admin_jwt = mint_admin_jwt(admin_uuid, jwt_key_path, branch_uuid)
     print(f"   admin JWT length = {len(admin_jwt)}")
 
@@ -524,7 +579,7 @@ def main() -> int:
     # pairs BEFORE any login, so pairing is the first write on its chain and
     # fails without this step. Ordering also matters against step 2b:
     # log_transaccional has an FK to prod.sucursal.
-    print("== Step 2c: ensure genesis hash-chain row ==")
+    print("== Step 2d: ensure genesis hash-chain row ==")
     ensure_genesis_hash_chain(args.cloud_dsn, branch_uuid)
 
     print("== Step 3: POST /admin/pairing-tokens ==")

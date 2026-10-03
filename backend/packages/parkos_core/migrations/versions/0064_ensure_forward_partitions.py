@@ -173,6 +173,58 @@ where they are and are documented; migrating them needs the immutability
 story resolved first.
 
 References: docs/02-arquitectura/decisiones-tecnicas.md (ADR-004)
+
+IN-PLACE FIX (2026-10-02) -- WHY THIS REVISION, NOT A NEW ONE
+----------------------------------------------------------------
+Found during Fase 0 QA bootstrap: on ANY fresh database migrated
+0001->head in a single run (the only way this revision is ever reached
+from genesis), this function's near-window ``v_i = 0`` slot computes the
+SAME bounds as the ``<table>_p_current`` partition ``0001_initial_schema``
+just created seconds earlier in the SAME migration session (both use
+``date_trunc('month', CURRENT_DATE)`` and CURRENT_DATE does not change
+between consecutive statements of one run). PostgreSQL rejects attaching a
+second, differently-named partition over bounds an existing partition
+already covers::
+
+    ERROR:  partition "arqueo_p_2026_10" would overlap partition
+            "arqueo_p_current"          -- SQLSTATE 42P17
+
+This is NOT a narrow edge case: it reproduces on every single fresh
+bootstrap, on any calendar day, 100% of the time -- confirmed against a
+disposable ``parkos-postgres:16-pgpartman`` container migrated 0001->0064.
+It only went unnoticed because every existing environment (including this
+project's own QA ``cloud-db``/``branch-db``) bootstrapped around it with a
+manual, undocumented, data-level workaround rather than via a clean
+``alembic upgrade head``.
+
+This repo's migration chain is append-only for revisions that completed
+successfully (see ``migrations/versions/README.md`` and the precedent
+corrective migrations 0043/0052/0057/0069/0070, each fixing a GAP left by
+an earlier, SUCCESSFULLY-APPLIED migration for environments that already
+ran it). That precedent does not cover this case: no environment has ever
+successfully completed THIS function body via a clean ``alembic upgrade
+head`` -- it always crashes first. A later corrective migration can never
+even be reached, because Alembic aborts the whole run on this exception
+before advancing past 0064. The fix has to live where the crash is, or
+`alembic upgrade head` from genesis never succeeds for anyone. Because
+Alembic only executes a revision once per environment (tracked in
+``alembic_version``), this in-place change is inert for every environment
+that already recorded 0064 as applied (via the manual workaround) -- it
+only changes behavior for NEW environments that have not run it yet.
+
+The fix: each ``CREATE TABLE ... PARTITION OF`` call below is wrapped in a
+``BEGIN/EXCEPTION WHEN invalid_object_definition`` block -- on a 42P17
+overlap it logs a ``NOTICE`` and treats the slot as already covered
+instead of aborting. Any other error still propagates unchanged.
+
+The two OTHER defects found in the same bootstrap session -- missing
+``rol_app``/``rol_admin_auditor`` grants on partitions this function
+creates (and on the pre-existing ``_p_current``/``_default`` ones), and
+``pairing_tokens`` missing ``UPDATE`` for its ``FOR UPDATE SKIP LOCKED``
+lock -- do NOT block the chain (this function still returns successfully
+without them), so those follow the normal forward-fix convention: see
+``0075_fix_ensure_partitions_overlap_and_grants.py``, which also upgrades
+this function to add automatic grant-sync on every call.
 """
 
 from alembic import op
@@ -217,14 +269,25 @@ BEGIN
             v_end   := (v_start + interval '1 month')::date;
             v_part  := format('%s_p_%s', v_parent, to_char(v_start, 'YYYY_MM'));
             IF to_regclass('prod.' || v_part) IS NULL THEN
-                EXECUTE format(
-                    'CREATE TABLE prod.%I PARTITION OF prod.%I '
-                    'FOR VALUES FROM (%L) TO (%L)',
-                    v_part, v_parent, v_start, v_end);
-                parent_name := v_parent;
-                partition_name := v_part;
-                bounds := format('%s..%s', v_start, v_end);
-                RETURN NEXT;
+                BEGIN
+                    EXECUTE format(
+                        'CREATE TABLE prod.%I PARTITION OF prod.%I '
+                        'FOR VALUES FROM (%L) TO (%L)',
+                        v_part, v_parent, v_start, v_end);
+                    parent_name := v_parent;
+                    partition_name := v_part;
+                    bounds := format('%s..%s', v_start, v_end);
+                    RETURN NEXT;
+                EXCEPTION WHEN invalid_object_definition THEN
+                    -- 42P17: bounds already covered by a differently-named
+                    -- partition (e.g. 0001's "<table>_p_current" on a
+                    -- same-day fresh bootstrap). See the in-place-fix note
+                    -- in this file's module docstring.
+                    RAISE NOTICE
+                        '0064: % bounds %..% already covered by an '
+                        'existing partition (overlap on %); skipping',
+                        v_parent, v_start, v_end, v_part;
+                END;
             END IF;
         END LOOP;
 
@@ -234,14 +297,21 @@ BEGIN
             v_end   := (v_start + interval '1 month')::date;
             v_part  := format('%s_p_%s', v_parent, to_char(v_start, 'YYYY_MM'));
             IF to_regclass('prod.' || v_part) IS NULL THEN
-                EXECUTE format(
-                    'CREATE TABLE prod.%I PARTITION OF prod.%I '
-                    'FOR VALUES FROM (%L) TO (%L)',
-                    v_part, v_parent, v_start, v_end);
-                parent_name := v_parent;
-                partition_name := v_part;
-                bounds := format('%s..%s', v_start, v_end);
-                RETURN NEXT;
+                BEGIN
+                    EXECUTE format(
+                        'CREATE TABLE prod.%I PARTITION OF prod.%I '
+                        'FOR VALUES FROM (%L) TO (%L)',
+                        v_part, v_parent, v_start, v_end);
+                    parent_name := v_parent;
+                    partition_name := v_part;
+                    bounds := format('%s..%s', v_start, v_end);
+                    RETURN NEXT;
+                EXCEPTION WHEN invalid_object_definition THEN
+                    RAISE NOTICE
+                        '0064: % bounds %..% already covered by an '
+                        'existing partition (overlap on %); skipping',
+                        v_parent, v_start, v_end, v_part;
+                END;
             END IF;
         END LOOP;
 
@@ -254,13 +324,19 @@ BEGIN
         -- right way round for an operational queue.
         v_part := v_parent || '_default';
         IF to_regclass('prod.' || v_part) IS NULL THEN
-            EXECUTE format(
-                'CREATE TABLE prod.%I PARTITION OF prod.%I DEFAULT',
-                v_part, v_parent);
-            parent_name := v_parent;
-            partition_name := v_part;
-            bounds := 'DEFAULT (safety net -- must stay empty)';
-            RETURN NEXT;
+            BEGIN
+                EXECUTE format(
+                    'CREATE TABLE prod.%I PARTITION OF prod.%I DEFAULT',
+                    v_part, v_parent);
+                parent_name := v_parent;
+                partition_name := v_part;
+                bounds := 'DEFAULT (safety net -- must stay empty)';
+                RETURN NEXT;
+            EXCEPTION WHEN invalid_object_definition THEN
+                RAISE NOTICE
+                    '0064: % DEFAULT partition already covered '
+                    '(overlap on %); skipping', v_parent, v_part;
+            END;
         END IF;
     END LOOP;
 
@@ -279,26 +355,39 @@ BEGIN
             v_end   := (v_start + 1)::date;
             v_part  := format('%s_p_%s', v_parent, to_char(v_start, 'YYYY_MM_DD'));
             IF to_regclass('prod.' || v_part) IS NULL THEN
-                EXECUTE format(
-                    'CREATE TABLE prod.%I PARTITION OF prod.%I '
-                    'FOR VALUES FROM (%L) TO (%L)',
-                    v_part, v_parent, v_start, v_end);
-                parent_name := v_parent;
-                partition_name := v_part;
-                bounds := format('%s..%s', v_start, v_end);
-                RETURN NEXT;
+                BEGIN
+                    EXECUTE format(
+                        'CREATE TABLE prod.%I PARTITION OF prod.%I '
+                        'FOR VALUES FROM (%L) TO (%L)',
+                        v_part, v_parent, v_start, v_end);
+                    parent_name := v_parent;
+                    partition_name := v_part;
+                    bounds := format('%s..%s', v_start, v_end);
+                    RETURN NEXT;
+                EXCEPTION WHEN invalid_object_definition THEN
+                    RAISE NOTICE
+                        '0064: % bounds %..% already covered by an '
+                        'existing partition (overlap on %); skipping',
+                        v_parent, v_start, v_end, v_part;
+                END;
             END IF;
         END LOOP;
 
         v_part := v_parent || '_default';
         IF to_regclass('prod.' || v_part) IS NULL THEN
-            EXECUTE format(
-                'CREATE TABLE prod.%I PARTITION OF prod.%I DEFAULT',
-                v_part, v_parent);
-            parent_name := v_parent;
-            partition_name := v_part;
-            bounds := 'DEFAULT (safety net -- must stay empty)';
-            RETURN NEXT;
+            BEGIN
+                EXECUTE format(
+                    'CREATE TABLE prod.%I PARTITION OF prod.%I DEFAULT',
+                    v_part, v_parent);
+                parent_name := v_parent;
+                partition_name := v_part;
+                bounds := 'DEFAULT (safety net -- must stay empty)';
+                RETURN NEXT;
+            EXCEPTION WHEN invalid_object_definition THEN
+                RAISE NOTICE
+                    '0064: % DEFAULT partition already covered '
+                    '(overlap on %); skipping', v_parent, v_part;
+            END;
         END IF;
     END LOOP;
 END;
@@ -340,15 +429,15 @@ def upgrade() -> None:
     # scheduler is present, the worker stops skipping these parents from
     # this point forward. Then create the partitions explicitly, because
     # defect 2 (no scheduler) means pg_partman still may not run today.
-    bind.execute(text(REPAIR_PART_CONFIG))  # noqa: S608 - static DDL literal
+    bind.execute(text(REPAIR_PART_CONFIG))
 
-    bind.execute(text(CREATE_FN))  # noqa: S608 - static DDL literal
+    bind.execute(text(CREATE_FN))
 
     created = bind.execute(
         text("SELECT count(*) FROM prod.fn_ensure_partitions()")
     ).scalar_one()
     # Loud in the migration log: how many partitions this run produced.
-    print(f"0064: fn_ensure_partitions() created {created} partitions")  # noqa: T201
+    print(f"0064: fn_ensure_partitions() created {created} partitions")
 
 
 def downgrade() -> None:
@@ -388,4 +477,4 @@ def downgrade() -> None:
             """
         )
     )
-    bind.execute(text(DROP_FN))  # noqa: S608 - static DDL literal
+    bind.execute(text(DROP_FN))
