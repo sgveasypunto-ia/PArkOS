@@ -19,6 +19,7 @@ import { Link, useLocation, useParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { HashChainStatus } from '@/components/HashChainStatus';
+import { formatBackendTimestampLocal } from '@/features/reporteria/components/dateRange';
 
 import type { AuditLogItem } from '../api/auditoriaSchema';
 import { diffAuditFields, stringifyAuditValue } from '../lib/diffAuditLog';
@@ -61,7 +62,8 @@ export default function LogDetalle(): JSX.Element {
             {t('auditoria.detail.title', 'Detalle de evento')}
           </h1>
           <p data-testid="log-detalle-meta" className="font-mono text-xs text-muted-foreground">
-            {item.timestamp_evento} · {item.tabla_afectada ?? '—'} · {item.accion ?? '—'}
+            {formatBackendTimestampLocal(item.timestamp_evento)} · {item.tabla_afectada ?? '—'} ·{' '}
+            {item.accion ?? '—'}
           </p>
         </div>
         <Button asChild variant="outline" size="sm">
