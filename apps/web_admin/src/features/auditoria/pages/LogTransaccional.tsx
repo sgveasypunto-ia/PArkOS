@@ -15,6 +15,17 @@
  * `uuid_registro` can be pre-filled from `?uuid_registro=` in the URL --
  * `BuscarGlobal.tsx` navigates here with that query param set when an
  * admin picks a typeahead result.
+ *
+ * `?uuid_alerta=` (QA backlog cleanup, 2026-10-02) is the entry point for
+ * `<AlertaLink>` (`features/arqueos/components/AlertaLink.tsx`): an
+ * arqueo's descuadre-crítico alerta is logged as its own
+ * `log_transaccional` row (`tabla_afectada='alerta'`,
+ * `uuid_registro_afectado=<alerta.uuid>` -- see
+ * `repo/workflow.py::append_transition`), so pre-seeding
+ * `tabla='alerta'` + `uuid_registro=<uuid_alerta>` lands the admin
+ * directly on that alert's bitácora entry. Takes precedence over
+ * `?uuid_registro=` when both are present (mutually exclusive in
+ * practice -- different callers).
  */
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -32,9 +43,12 @@ import { LogTransaccionalTable } from '../components/LogTransaccionalTable';
 import { useLogTransaccional } from '../hooks/useLogTransaccional';
 import type { AuditLogItem, LogTransaccionalListQuery } from '../api/auditoriaSchema';
 
-function emptyFilters(uuidRegistro: string): LogTransaccionalFiltersValue {
+function emptyFilters(
+  uuidRegistro: string,
+  tabla: string = '',
+): LogTransaccionalFiltersValue {
   return {
-    tabla: '',
+    tabla,
     uuid_registro: uuidRegistro,
     uuid_sucursal: '',
     uuid_usuario: '',
@@ -65,9 +79,11 @@ export default function LogTransaccional({ swrSalt }: LogTransaccionalProps): JS
   const navigate = useNavigate();
   const { sucursales } = useSucursalesDirectorio();
 
-  const [filters, setFilters] = useState<LogTransaccionalFiltersValue>(() =>
-    emptyFilters(searchParams.get('uuid_registro') ?? ''),
-  );
+  const [filters, setFilters] = useState<LogTransaccionalFiltersValue>(() => {
+    const uuidAlerta = searchParams.get('uuid_alerta');
+    if (uuidAlerta) return emptyFilters(uuidAlerta, 'alerta');
+    return emptyFilters(searchParams.get('uuid_registro') ?? '');
+  });
 
   const query = useMemo(() => buildQuery(filters), [filters]);
   const { items, isLoading, error, hasMore, loadMore } = useLogTransaccional(query, { swrSalt });
