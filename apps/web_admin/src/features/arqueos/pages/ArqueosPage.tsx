@@ -24,6 +24,8 @@ import { useQueries } from '@tanstack/react-query';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
+import { listCatalog } from '@/features/catalogos/api/catalogApi';
 
 import {
   ArqueosFilters,
@@ -79,37 +81,38 @@ export function ArqueosPage(): JSX.Element {
     useArqueoDetalle(selectedArqueo?.uuid ?? null);
 
   // Filter options for the dropdowns. The two reference catalogs
-  // (``sucursales`` and ``tipo_arqueo``) have their own hooks in the
-  // shared layer; we use ``useQueries`` here for the cache isolation
-  // rules. The shape of the result maps into our dropdowns.
+  // (``sucursales`` and ``tipo_arqueo``) have their own authenticated
+  // API clients in the shared layer (``parkosFetchRaw`` -- Bearer JWT +
+  // X-Sucursal-Context); we use ``useQueries`` here for the cache
+  // isolation rules. The shape of the result maps into our dropdowns.
+  //
+  // Bugfix (QA batch Arqueos, 2026-10-02): both dropdowns used to be
+  // permanently empty. The sucursal query called the raw unauthenticated
+  // ``fetch('/api/v1/sucursales', { credentials: 'include' })`` -- this
+  // app authenticates via a Bearer JWT from the Zustand auth store, NOT
+  // cookies, so the request always 401'd and silently swallowed the
+  // error (`if (!res.ok) return []`). The tipo_arqueo query hit
+  // ``/api/v1/admin/caja``, which does not exist (404) -- the real
+  // catalog is ``GET /api/v1/catalogos/tipo-arqueo`` (mirrors
+  // electron-sucursal's ``useTipoArqueoPorCodigo`` hook). Both now reuse
+  // the same authenticated API clients the rest of web_admin uses.
   const [sucursalesQ, tiposQ] = useQueries({
     queries: [
       {
         queryKey: ['arqueo-filter-sucursales'],
         queryFn: async (): Promise<Array<{ uuid: string; nombre: string | null }>> => {
-          const res = await fetch('/api/v1/sucursales', {
-            headers: { Accept: 'application/json' },
-            credentials: 'include',
-          });
-          if (!res.ok) return [];
-          const body = (await res.json()) as { items?: Array<{ uuid: string; nombre: string | null }> };
-          return body.items ?? [];
+          const rows = await listSucursales({ limit: 200 });
+          return rows.map((s) => ({ uuid: s.uuid, nombre: s.nombre }));
         },
       },
       {
         queryKey: ['arqueo-filter-tipos'],
         queryFn: async (): Promise<Array<{ uuid: string; codigo: string | null }>> => {
-          const res = await fetch('/api/v1/admin/caja', {
-            headers: { Accept: 'application/json' },
-            credentials: 'include',
-          });
-          if (!res.ok) return [];
-          // The ``tipo_arqueo`` rows are read off the per-sucursal caja
-          // payload (mirror of how the operator-side arqueo form fetches
-          // them). For the admin page we accept either an empty list
-          // (no rows seeded) or a flat array under ``items``.
-          const body = (await res.json()) as { items?: Array<{ uuid: string; codigo: string | null }> };
-          return body.items ?? [];
+          const rows = await listCatalog('tipo-arqueo');
+          return rows.map((r) => ({
+            uuid: r.uuid,
+            codigo: typeof r.codigo === 'string' ? r.codigo : null,
+          }));
         },
       },
     ],
