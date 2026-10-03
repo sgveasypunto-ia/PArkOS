@@ -431,9 +431,11 @@ async def create_factura(
     await repo_factura.crear_factura_impuesto_iva(
         session, uuid_factura=new_factura.uuid, base=base_bruta, iva=iva_porcentaje
     )
+    assert target_sucursal is not None  # salida.uuid_sucursal, persisted row
     await repo_factura.crear_factura_pago(
         session,
         uuid_factura=new_factura.uuid,
+        uuid_sucursal=target_sucursal,
         medio_pago=payload.medio_pago,
         valor=payload.total,
         referencia=payload.referencia,
@@ -520,9 +522,14 @@ async def create_factura_pago(
         )
 
     # --- Step 3: INSERT prod.factura_pagos [A]. -----------------------
+    # operador- is pinned to its own JWT branch (BranchScope docstring,
+    # auth/tenancy.py) -- the same invariant create_factura/
+    # create_factura_servicio rely on via target_sucursal.
+    assert ctx.sucursal_uuid is not None  # operador- issuer always carries one
     new_pago = await repo_factura.crear_factura_pago(
         session,
         uuid_factura=payload.uuid_factura,
+        uuid_sucursal=ctx.sucursal_uuid,
         medio_pago=payload.medio_pago,
         valor=payload.valor,
         referencia=payload.referencia,
@@ -761,9 +768,11 @@ async def create_factura_servicio(
     await repo_factura.crear_factura_impuesto_iva(
         session, uuid_factura=new_factura.uuid, base=base_bruta, iva=iva_porcentaje
     )
+    assert target_sucursal is not None  # ingreso.uuid_sucursal, persisted row
     await repo_factura.crear_factura_pago(
         session,
         uuid_factura=new_factura.uuid,
+        uuid_sucursal=target_sucursal,
         medio_pago=payload.medio_pago,
         valor=payload.total,
         referencia=payload.referencia,

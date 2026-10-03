@@ -387,9 +387,11 @@ async def venta_suscripcion(
         # (sourced from JWT ``sesion`` claim). May be None when the
         # operator is between turnos; ``prod.factura_pagos.uuid_sesion``
         # is nullable so the INSERT is valid either way.
+        assert ctx.sucursal_uuid is not None  # operador- issuer always carries one
         await repo_factura.crear_factura_pago(
             session,
             uuid_factura=uuid_factura,
+            uuid_sucursal=ctx.sucursal_uuid,
             medio_pago=payload.medio_pago,
             valor=total_con_iva,
             referencia=payload.referencia,

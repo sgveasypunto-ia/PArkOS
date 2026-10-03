@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/table';
 
 import type { ReporteFeItem } from '../api/reporteriaSchema';
+import { formatBackendTimestampLocal } from './dateRange';
 
 export interface FeTableProps {
   items: ReporteFeItem[];
@@ -37,12 +38,7 @@ export interface FeTableProps {
   caption: string;
 }
 
-function formatDate(value: string | null): string {
-  if (value === null) return '—';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toISOString().replace('T', ' ').slice(0, 19);
-}
+const formatDate = formatBackendTimestampLocal;
 
 export function FeTable({ items, isLoading, error, caption }: FeTableProps) {
   const { t } = useTranslation();
