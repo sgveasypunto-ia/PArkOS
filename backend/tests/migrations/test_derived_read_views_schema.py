@@ -209,3 +209,28 @@ async def test_v_factura_electronica_acuse_resolves_latest_envio_dian_row(
 
     assert row.cufe == "CUFE-NEW"
     assert row.estado == "aceptado"
+
+
+async def test_rol_app_can_select_v_factura_electronica_acuse(
+    pg_dsn: str, alembic_upgrade
+) -> None:
+    """Regression for migration ``0072`` -- ``0009`` created this view but
+    never granted ``rol_app`` SELECT on it (views do NOT inherit a
+    non-owner role's access from the underlying tables; only the owner's
+    access to those tables is inherited). Every
+    ``GET /api/v1/admin/reporteria/fe`` call runs under the
+    ``rol_app``-constrained connection and 500'd with
+    ``InsufficientPrivilegeError`` until ``0072`` added this grant.
+    """
+    import psycopg
+
+    async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT has_table_privilege('rol_app', %s, 'SELECT')",
+            ("prod.v_factura_electronica_acuse",),
+        )
+        can_select = (await cur.fetchone())[0]
+        assert can_select is True, (
+            "v_factura_electronica_acuse: rol_app is missing SELECT — "
+            "migration 0072's GRANT did not apply"
+        )

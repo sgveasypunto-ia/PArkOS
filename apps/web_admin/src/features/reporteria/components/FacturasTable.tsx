@@ -32,6 +32,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 
 import type { ReporteFacturaItem } from '../api/reporteriaSchema';
+import { formatBackendTimestampLocal } from './dateRange';
 
 export interface FacturasTableProps {
   items: ReporteFacturaItem[];
@@ -45,11 +46,7 @@ function formatMoney(value: number | null): string {
   return value.toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
-function formatDate(value: string): string {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toISOString().replace('T', ' ').slice(0, 19);
-}
+const formatDate = formatBackendTimestampLocal;
 
 export function FacturasTable({ items, isLoading, error, caption }: FacturasTableProps) {
   const { t } = useTranslation();

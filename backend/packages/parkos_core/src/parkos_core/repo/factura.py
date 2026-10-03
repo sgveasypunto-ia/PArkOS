@@ -413,6 +413,7 @@ async def crear_factura_pago(
     session: AsyncSession,
     *,
     uuid_factura: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID,
     medio_pago: Literal[
         "efectivo", "tarjeta", "transferencia", "datafono", "mixto", "suscripcion"
     ],
@@ -429,9 +430,20 @@ async def crear_factura_pago(
     Defense-in-depth: BEFORE INSERT trigger
     ``fn_factura_pagos_init_pago_uniqueness`` (MIGRATION 0027 Op 3)
     rejects a second pago row for the same ``uuid_factura``.
+
+    ``uuid_sucursal`` is MANDATORY (live QA defect, 2026-10-02): this
+    column was never populated before, and the global ``do_orm_execute``
+    tenant listener (``db/tenancy.py``) injects ``WHERE uuid_sucursal =
+    :ctx`` on ANY ORM read of this table regardless of how the caller
+    scopes it -- a NULL value here silently drops every row from every
+    admin-scoped read (``GET /reporteria/pagos`` returned ``items: []``
+    despite real rows existing). Callers MUST pass the real branch the
+    payment belongs to (the owning factura's ``uuid_sucursal`` / the
+    operator's ``ctx.sucursal_uuid`` -- see call sites).
     """
     new_row = FacturaPagos(
         uuid_factura=uuid_factura,
+        uuid_sucursal=uuid_sucursal,
         medio_pago=medio_pago,
         valor=valor,
         referencia=referencia,
