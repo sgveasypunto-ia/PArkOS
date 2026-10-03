@@ -224,12 +224,26 @@ async def append_transition(  # noqa: UP047 (TypeVar style — matches repo/vers
         # Lazy import: avoids module-load-time circulars.
         from ..models.A.log_transaccional import LogTransaccional
 
+        # QA backlog cleanup (2026-10-02, AlertaLink): real defect confirmed
+        # live -- ``new_row.uuid`` is server-generated (``gen_random_uuid()``
+        # default) and NOT populated until the row is actually sent to the
+        # DB. Reading it here, before any flush, always returned ``None``,
+        # so EVERY ``[L-W]`` table's log_transaccional row (not just
+        # ``alerta``) was written with ``uuid_registro_afectado=NULL`` --
+        # the bitácora could never be filtered to a specific alerta/
+        # reimpresion/anulacion/etc. row by uuid. Mirrors the identical
+        # fix already applied in ``repo.versioned.close_and_insert``
+        # (flush before building its own log row) and the caller-side
+        # flush ``insertar_alerta_descuadre_critico`` already needed to add
+        # just to read ``new_row.uuid`` back for its OWN response shape.
+        await session.flush()
+
         log_row = LogTransaccional(
             uuid_usuario=actor_uuid,
             uuid_sucursal=new_attrs.get("uuid_sucursal"),
             accion="crear",
             tabla_afectada=table,
-            uuid_registro_afectado=getattr(new_row, "uuid", None),
+            uuid_registro_afectado=new_row.uuid,
             timestamp_evento=_now_naive(),
         )
         session.add(log_row)

@@ -236,6 +236,10 @@ describe('<SalidaMensualidad /> — discount-factura + print envelope wiring (mi
       ],
       subtotal: 8100,
       total: 0,
+      // QA backlog cleanup (2026-10-02): this IS the "pago automático"
+      // flow — the live active session is now forwarded so the backend
+      // can use it as an override when the JWT claim is stale/absent.
+      uuid_sesion: '00000000-0000-0000-0000-00000000se01',
     });
   });
 

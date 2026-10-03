@@ -35,6 +35,9 @@ export const arqueoReadSchema = z.object({
   valor_datafono_esperado: z.string().nullable(),
   valor_efectivo_reportado: z.string().nullable(),
   valor_datafono_reportado: z.string().nullable(),
+  /** QA backlog cleanup (2026-10-02, AlertaLink) — populated by a batched
+   * lookup server-side; null when the arqueo had no descuadre crítico. */
+  alerta_uuid: z.string().uuid().nullable().optional(),
 });
 
 export type ArqueoRead = z.infer<typeof arqueoReadSchema>;

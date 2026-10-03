@@ -24,8 +24,31 @@ import { TipoVehiculoFormHarness } from '../components/TipoVehiculoForm';
 
 type ErrorState = { message: string } | null;
 
+/**
+ * Minimal 409 detail mapping, mirroring `CatalogEditor.tsx::mapConflictError`
+ * for the same backend codes (`catalogos.py`'s tipos-vehiculo dedicated
+ * router). This page's `tiposVehiculoApi.ts` throws a plain `Error` whose
+ * `.message` embeds the raw response body (`"... -> 409: {json}"`), so the
+ * code is extracted from that tail instead of a typed `ParkosHttpError`.
+ */
 function mapError(err: unknown): ErrorState {
   const message = err instanceof Error ? err.message : 'Error desconocido';
+  const bodyStart = message.indexOf('{');
+  if (bodyStart !== -1) {
+    try {
+      const parsed = JSON.parse(message.slice(bodyStart)) as {
+        detail?: { error?: string };
+      };
+      if (parsed.detail?.error === 'catalogo_duplicado_vigente') {
+        return { message: 'Ya existe una versión vigente con ese mismo valor.' };
+      }
+      if (parsed.detail?.error === 'tipos_vehiculo_max_reached') {
+        return { message: 'Ya se alcanzó el máximo de 5 tipos de vehículo activos.' };
+      }
+    } catch {
+      // Not JSON (or unknown shape) — fall through to the raw message.
+    }
+  }
   return { message };
 }
 

@@ -156,22 +156,34 @@ async def list_arqueos(
         limit=params.limit,
     )
 
+    page_rows = rows[: params.limit]
     next_cursor = repo_arqueo.encode_arqueo_cursor(rows, params.limit)
+
+    # QA backlog cleanup (2026-10-02, AlertaLink): one batched lookup for
+    # the whole page instead of N+1 per-row queries.
+    alerta_uuids = await repo_arqueo.get_alerta_uuids_for_arqueos(
+        session, [r.uuid for r in page_rows]
+    )
 
     _helpers.apply_no_store_header(response)
     return ArqueoReadList(
-        items=[_to_arqueo_read(r) for r in rows[: params.limit]],
+        items=[_to_arqueo_read(r, alerta_uuids.get(r.uuid)) for r in page_rows],
         next_cursor=next_cursor,
     )
 
 
-def _to_arqueo_read(row: repo_arqueo.Arqueo) -> "ArqueoRead":
+def _to_arqueo_read(
+    row: repo_arqueo.Arqueo, alerta_uuid: uuid_lib.UUID | None = None
+) -> "ArqueoRead":
     """Shrink an ``Arqueo`` ORM row to the wire schema ``ArqueoRead``.
 
     The repo hands ``Arqueo`` with composite PK (``uuid`` +
     ``fecha_retencion_hasta``); the wire schema mirrors the column set
     1:1 (see ``schemas/caja.py::ArqueoRead``). Single-row mapper; the
     list endpoint wraps it inside ``items=[...]`` of the envelope.
+    ``alerta_uuid`` is NOT an ``Arqueo`` column (see
+    ``repo.arqueo.get_alerta_uuids_for_arqueos``) -- the caller resolves
+    it separately and passes it in.
     """
     from ...schemas.caja import ArqueoRead
 
@@ -190,6 +202,7 @@ def _to_arqueo_read(row: repo_arqueo.Arqueo) -> "ArqueoRead":
         valor_datafono_esperado=row.valor_datafono_esperado,
         valor_efectivo_reportado=row.valor_efectivo_reportado,
         valor_datafono_reportado=row.valor_datafono_reportado,
+        alerta_uuid=alerta_uuid,
     )
 
 # KD-3 issuer chain + ``realizar_arqueo`` permission gate (DEC-ARQUEO-05).

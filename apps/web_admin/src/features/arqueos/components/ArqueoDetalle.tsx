@@ -8,10 +8,9 @@
  *   - The row's metadata (timestamp, branch, tipo, sesion).
  *   - The ``DiferenciasPanel`` rendered from
  *     ``useArqueoDetalle().diferencias``.
- *   - The ``AlertaLink`` if the BE's ``alerta_uuid`` is present (the
- *     current list response doesn't carry ``alerta_uuid``; the
- *     container passes it once the row comes from the summary
- *     endpoint in F18.3). Today the link is hidden.
+ *   - The ``AlertaLink`` when ``arqueo.alerta_uuid`` is present (QA
+ *     backlog cleanup, 2026-10-02: ``GET /api/v1/caja/arqueo`` now
+ *     populates it — see ``repo.arqueo.get_alerta_uuids_for_arqueos``).
  *
  * HU-F18.4 adds the "Exportar PDF firmado" action: the same two rows
  * ``DiferenciasPanel`` renders (Efectivo / Datáfono -- esperado,
@@ -22,19 +21,17 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { HashChainStatus } from '@/components/HashChainStatus';
 import { Button } from '@/components/ui/button';
 import { exportSignedPdf } from '@/lib/export/pdf';
 import type { CsvColumn } from '@/lib/export/csv';
 
 import type { ArqueoRead, DiferenciasRead } from '../api/arqueosSchema';
 import { fetchSucursalLogoDataUrl } from '../lib/sucursalLogo';
+import { AlertaLink } from './AlertaLink';
 import { DiferenciasPanel } from './DiferenciasPanel';
 
 export interface ArqueoDetalleProps {
   arqueo: ArqueoRead | null;
-  /** Optional pre-loaded alerta uuid (F18.3 will surface this). */
-  uuidAlerta: string | null;
   diferenciasLoading: boolean;
   diferenciasError: Error | undefined;
   diferencias: DiferenciasRead | null;
@@ -83,7 +80,6 @@ function buildExportRows(diferencias: DiferenciasRead): DiferenciaExportRow[] {
 
 export function ArqueoDetalle({
   arqueo,
-  uuidAlerta: _uuidAlerta,
   diferenciasLoading,
   diferenciasError,
   diferencias,
@@ -151,6 +147,7 @@ export function ArqueoDetalle({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <AlertaLink uuidAlerta={arqueo.alerta_uuid ?? null} />
           <Button
             type="button"
             variant="outline"
@@ -184,15 +181,16 @@ export function ArqueoDetalle({
         </p>
       )}
 
-      <div
-        data-testid="arqueo-detail-hash"
-        className="rounded-md border bg-card px-4 py-2"
-      >
-        <HashChainStatus
-          hashAnterior={null}
-          hashActual={null}
-        />
-      </div>
+      {/* QA backlog cleanup (2026-10-02, Bug 7 "HashChainStatus cosmético"):
+          this panel used to mount <HashChainStatus hashAnterior={null}
+          hashActual={null} /> unconditionally, which ALWAYS rendered
+          "Cadena rota" for every arqueo. `prod.arqueo` never had hash
+          chain columns (`HashChainMixin` only applies to
+          `log_transaccional`/`revocacion_factura` by design) -- there is
+          no chain here to be broken or intact, so the badge was just
+          factually wrong, not a real status. Removed rather than wired
+          up, since wiring it up would require fabricating hash columns
+          this table was never meant to have. */}
 
       <DiferenciasPanel
         diferencias={diferencias}

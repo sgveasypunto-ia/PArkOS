@@ -219,6 +219,16 @@ export interface PostFacturaEfectivo {
   total: number;
   fe_con_datos?: boolean;
   fe_datos_cliente?: FacturaClienteDatosPost;
+  /**
+   * QA backlog cleanup (2026-10-02): the active caja-turno session,
+   * client-resolved via `useSesionActiva()`. The backend's
+   * `TenantContext.uuid_sesion` (sourced from the JWT `sesion` claim,
+   * set once at `POST /caja-sesion/sesiones`) overrides to this value
+   * when present — closes the gap where a real exit payment landed with
+   * `factura_pagos.uuid_sesion IS NULL` and was silently excluded from
+   * the session's arqueo even though a turno was genuinely open.
+   */
+  uuid_sesion?: string | null;
 }
 
 export interface PostFacturaDatafono {
@@ -230,6 +240,7 @@ export interface PostFacturaDatafono {
   referencia: string;
   fe_con_datos?: boolean;
   fe_datos_cliente?: FacturaClienteDatosPost;
+  uuid_sesion?: string | null;
 }
 
 /**
@@ -248,6 +259,7 @@ export interface PostFacturaSuscripcion {
   total: number;
   fe_con_datos?: boolean;
   fe_datos_cliente?: FacturaClienteDatosPost;
+  uuid_sesion?: string | null;
 }
 
 export type PostFacturaPayload =
@@ -282,6 +294,7 @@ export const PostFacturaSchema = z.discriminatedUnion('medio_pago', [
     total: z.number().nonnegative(),
     fe_con_datos: z.boolean().optional(),
     fe_datos_cliente: facturaClienteDatosPostSchema.optional(),
+    uuid_sesion: z.string().uuid().nullable().optional(),
   }),
   z.object({
     uuid_salida: z.string().uuid(),
@@ -292,6 +305,7 @@ export const PostFacturaSchema = z.discriminatedUnion('medio_pago', [
     referencia: z.string().min(1, 'voucher_requerido'),
     fe_con_datos: z.boolean().optional(),
     fe_datos_cliente: facturaClienteDatosPostSchema.optional(),
+    uuid_sesion: z.string().uuid().nullable().optional(),
   }),
   z.object({
     uuid_salida: z.string().uuid(),
@@ -301,6 +315,7 @@ export const PostFacturaSchema = z.discriminatedUnion('medio_pago', [
     total: z.number().nonnegative(),
     fe_con_datos: z.boolean().optional(),
     fe_datos_cliente: facturaClienteDatosPostSchema.optional(),
+    uuid_sesion: z.string().uuid().nullable().optional(),
   }),
 ]);
 

@@ -128,6 +128,15 @@ class ArqueoRead(_Base):
     valor_datafono_esperado: Decimal | None
     valor_efectivo_reportado: Decimal | None
     valor_datafono_reportado: Decimal | None
+    # QA backlog cleanup (2026-10-02, AlertaLink): ``prod.arqueo`` itself
+    # has no ``alerta_uuid`` column -- ``prod.alerta`` is a separate
+    # ``[L-W]`` table FK'd by ``uuid_arqueo``. The POST handler's response
+    # (``ArqueoReadForHandler``) already surfaces ``alerta_uuid`` at
+    # creation time, but the admin LIST endpoint (this schema) never did,
+    # so ``<AlertaLink>`` had nothing to point to once the admin revisited
+    # an arqueo in the Listado tab. ``list_arqueos`` populates this via a
+    # batched lookup (``repo.arqueo.get_alerta_uuids_for_arqueos``).
+    alerta_uuid: uuid_lib.UUID | None = None
 
 
 class ArqueoCreate(_Base):

@@ -181,6 +181,13 @@ export function SalidaMensualidad({
           ],
           subtotal: cotizacion.subtotal,
           total: 0,
+          // QA backlog cleanup (2026-10-02): this IS the "pago
+          // automático" flow (no operator interaction, no PagoSheet) —
+          // without this, the factura_pagos row landed with
+          // `uuid_sesion IS NULL` even though a real turno was open,
+          // silently excluding it from that session's arqueo. See
+          // `facturaApi.ts::PostFacturaSuscripcion.uuid_sesion`.
+          uuid_sesion: sesion?.uuid ?? null,
         };
         const facturaResult = await triggerPago(payload);
         setPendingPrint({ uuid_salida: result.uuid });

@@ -256,6 +256,10 @@ export function PagoSheet({
         },
       ];
       const feDatos = buildClienteFePayload(values);
+      // QA backlog cleanup (2026-10-02): forward the live active session
+      // (already resolved above via `useSesionActiva()`) so the backend
+      // can use it as an override when the JWT `sesion` claim is stale
+      // or absent — see `facturaApi.ts::PostFacturaEfectivo.uuid_sesion`.
       const post = values.medio_pago === 'efectivo'
         ? {
             uuid_salida,
@@ -263,6 +267,7 @@ export function PagoSheet({
             items,
             subtotal: subtotal_cop,
             total: total_cop,
+            uuid_sesion: sesion?.uuid ?? null,
             ...feDatos,
           }
         : {
@@ -272,6 +277,7 @@ export function PagoSheet({
             subtotal: subtotal_cop,
             total: total_cop,
             referencia: values.voucher,
+            uuid_sesion: sesion?.uuid ?? null,
             ...feDatos,
           };
       const result = await trigger(post);

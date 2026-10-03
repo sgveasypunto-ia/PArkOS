@@ -883,6 +883,45 @@ async def listar_arqueos_admin(
     return list(result.scalars().all())
 
 
+async def get_alerta_uuids_for_arqueos(
+    session: AsyncSession,
+    uuid_arqueos: list[uuid_lib.UUID],
+) -> dict[uuid_lib.UUID, uuid_lib.UUID]:
+    """Batched ``uuid_arqueo`` -> ``alerta.uuid`` lookup for the admin list.
+
+    QA backlog cleanup (2026-10-02, AlertaLink): ``GET /api/v1/caja/arqueo``
+    (the admin Listado tab) never surfaced ``alerta_uuid`` per row -- only
+    the POST handler's response (Step 10, same transaction the alerta was
+    created in) did. Revisiting an arqueo later in the Listado tab had no
+    way to recover its alerta's uuid, so ``<AlertaLink>`` always received
+    ``null``. One ``uuid_arqueo IN (...)`` query per page (<= ``limit+1``
+    rows) is batched here instead of N+1 per-row lookups.
+
+    At most one ``descuadre_critico`` alerta exists per arqueo
+    (``insertar_alerta_descuadre_critico`` fires once, in the same POST
+    transaction that created the arqueo); an empty input list short-circuits
+    to avoid an always-false ``IN ()`` round-trip.
+    """
+    if not uuid_arqueos:
+        return {}
+    # Ordered oldest -> newest so the dict comprehension below keeps the
+    # LAST (most recent) row per ``uuid_arqueo`` -- if the alerta was ever
+    # transitioned (``append_transition`` with a ``parent_uuid``, e.g. an
+    # admin moving it to ``en_revision``), that inserts an ADDITIONAL row
+    # rather than closing the original (workflow tables chain via
+    # ``uuid_alerta_padre`` self-FK, unlike ``[V]``'s vigente_hasta
+    # close+insert), so more than one row can share the same
+    # ``uuid_arqueo``. The admin should land on the current head of the
+    # chain, not the stale root.
+    stmt = (
+        select(Alerta.uuid_arqueo, Alerta.uuid)
+        .where(Alerta.uuid_arqueo.in_(uuid_arqueos))
+        .order_by(Alerta.created_at.asc())
+    )
+    result = await session.execute(stmt)
+    return {row.uuid_arqueo: row.uuid for row in result if row.uuid_arqueo is not None}
+
+
 # ---------------------------------------------------------------------------
 # HU-F18.3 admin cross-branch resumen (REQ-OPS-153)
 # ---------------------------------------------------------------------------

@@ -204,7 +204,6 @@ export function ArqueosPage(): JSX.Element {
 
       <ArqueoDetalle
         arqueo={selectedArqueo}
-        uuidAlerta={null}
         diferenciasLoading={diferenciasLoading}
         diferenciasError={diferenciasError}
         diferencias={diferencias}
