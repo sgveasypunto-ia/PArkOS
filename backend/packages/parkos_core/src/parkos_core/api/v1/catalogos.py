@@ -521,10 +521,15 @@ async def create_tipo_vehiculo_dedicated(
     Mirrors ``make_router``'s create_endpoint at
     ``api/router_factory.py:269-308`` (close+insert via
     ``repo.versioned.close_and_insert`` + commit + refresh + read-back).
-    One addition: the **5-type cap** (409 ``tipos_vehiculo_max_reached``)
+    Two additions: the **5-type cap** (409 ``tipos_vehiculo_max_reached``)
     — if the count of currently-open tipos_vehiculo rows is already
     ``_TIPOS_VEHICULO_MAX_ACTIVE``, reject the POST with the current
-    count in the detail so the UI can render an actionable message.
+    count in the detail so the UI can render an actionable message — and
+    the same **duplicate-vigente guard** (409 ``catalogo_duplicado_vigente``)
+    already applied to ``tipo-persona``/``tipo-tarifa`` above: without it,
+    creating "carro" while a "carro" row is already vigente silently opens
+    a second vigente row with the same ``tipo`` (QA backlog cleanup,
+    2026-10-02).
 
     ``log_tx=True`` matches the factory so the audit chain (log_transaccional
     + SHA-256 hash) keeps treating catalog writes uniformly with every
@@ -540,6 +545,9 @@ async def create_tipo_vehiculo_dedicated(
                 "current": current_count,
             },
         )
+    await _assert_no_vigente_duplicate(
+        session, TiposVehiculo, field_name="tipo", value=payload.tipo
+    )
     new_row = await close_and_insert(
         session,
         TiposVehiculo,
@@ -622,9 +630,11 @@ async def update_tipo_vehiculo_dedicated(
     Mirrors ``make_router``'s update_endpoint at
     ``api/router_factory.py:312-338`` (close+insert via
     ``repo.versioned.close_and_insert`` + commit + refresh + read-back).
-    One addition: a 409 ``tipo_vehiculo_con_subscripciones_vigentes`` guard
+    Two additions: a 409 ``tipo_vehiculo_con_subscripciones_vigentes`` guard
     — see the module comment above — runs BEFORE ``close_and_insert`` so
-    the current version is never closed when the dependency exists.
+    the current version is never closed when the dependency exists; and the
+    same duplicate-vigente guard (409 ``catalogo_duplicado_vigente``) as
+    ``tipo-persona``/``tipo-tarifa`` (QA backlog cleanup, 2026-10-02).
     """
     dependientes = await _count_subscripciones_vigentes_dependientes(session, uuid)
     if dependientes > 0:
@@ -636,6 +646,9 @@ async def update_tipo_vehiculo_dedicated(
                 "subscripciones_vigentes": dependientes,
             },
         )
+    await _assert_no_vigente_duplicate(
+        session, TiposVehiculo, field_name="tipo", value=payload.tipo, exclude_uuid=uuid
+    )
     new_row = await close_and_insert(
         session,
         TiposVehiculo,
