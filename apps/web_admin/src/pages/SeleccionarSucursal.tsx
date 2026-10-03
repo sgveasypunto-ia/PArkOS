@@ -178,7 +178,24 @@ export default function SeleccionarSucursal(): JSX.Element {
         refreshAdminAuth(),
       ]);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error desconocido';
+      let message = err instanceof Error ? err.message : 'Error desconocido';
+      // 409 `sucursal_prefijo_duplicado` (empresa.py's sucursal dedicated
+      // router) — `sucursalesApi.ts`'s `fetchJson` throws a plain `Error`
+      // whose `.message` embeds the raw response body, same shape as
+      // `tiposVehiculoApi.ts`; extract the typed code for a readable copy.
+      const bodyStart = message.indexOf('{');
+      if (bodyStart !== -1) {
+        try {
+          const parsed = JSON.parse(message.slice(bodyStart)) as {
+            detail?: { error?: string };
+          };
+          if (parsed.detail?.error === 'sucursal_prefijo_duplicado') {
+            message = 'Ya existe una sucursal vigente con ese mismo prefijo.';
+          }
+        } catch {
+          // Not JSON (or unknown shape) — keep the raw message.
+        }
+      }
       setErrorState({ kind: editing !== null ? 'edit' : 'create', message });
     } finally {
       setSubmitting(false);

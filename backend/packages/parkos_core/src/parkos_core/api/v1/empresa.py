@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.permissions import require_permission
@@ -378,6 +378,136 @@ _mount_empresa(
     create_schema=EmpresaCreate,
     update_schema=EmpresaUpdate,
 )
+
+# ---------------------------------------------------------------------------
+# Duplicate-prefix guard on ``sucursal`` POST/PUT (business key ``prefijo_nombre``)
+# ---------------------------------------------------------------------------
+#
+# ``models/V/sucursal.py`` documents ``prefijo_nombre`` as "(UK)" but the
+# only real ``UniqueConstraint`` is composite with ``vigente_desde``
+# (``sucursal_uk01``), which in practice never fires between two distinct
+# branches created at different instants. Confirmed live via QA (batch
+# `qa/batch-sucursales`, 2026-10-02): creating a second branch with an
+# already-vigente ``prefijo_nombre`` succeeds silently, no error client or
+# server side. Same shadow-the-factory pattern as
+# ``catalogos.py::_assert_no_vigente_duplicate`` / the tipo-persona /
+# tipo-tarifa dedicated routers — GET stays on the factory / the
+# tenant-free global-reads router above; POST/PUT are shadowed. UNLIKE
+# ``catalogos.router`` (mounted directly by ``api/v1/__init__.py``),
+# ``empresa.router``'s own include-order here has NO effect on the real
+# app: the v1 aggregator rebuilds from ``_SUB_ROUTERS`` only
+# (``_build_empresa_router()``). The actual precedence is set further
+# down this file, where this router is registered into ``_SUB_ROUTERS``
+# under a synthetic key placed before the bare ``"sucursal"`` factory key
+# in the reorder block (same convention as the tarifas/cantidad/
+# resolucion-facturacion dedicated routers).
+_sucursal_dedicated_router = APIRouter(prefix="/sucursal", tags=["sucursal"])
+_sucursal_dedicated_issuer, _sucursal_dedicated_perm = _ROUTER_CONFIG["sucursal"]
+_sucursal_dedicated_issuer_dep = requires_issuer(
+    *(s.strip() for s in _sucursal_dedicated_issuer.split(","))
+)
+_sucursal_dedicated_perm_dep = require_permission(_sucursal_dedicated_perm)
+
+
+async def _assert_no_sucursal_prefijo_duplicado(
+    session: AsyncSession,
+    *,
+    prefijo_nombre: str | None,
+    exclude_uuid: uuid_lib.UUID | None = None,
+) -> None:
+    """Reject a write that would leave two vigente sucursales with the
+    same ``prefijo_nombre``. ``None``/blank prefixes are already rejected
+    client-side (``sucursalSchema.ts`` requires it) and schema-side
+    (``SucursalCreate``/``Update``), so this is a defense-in-depth no-op
+    for that case rather than a false-positive duplicate.
+    """
+    if not prefijo_nombre:
+        return
+    stmt = select(func.count()).select_from(Sucursal).where(
+        Sucursal.vigente_hasta.is_(None),
+        Sucursal.prefijo_nombre == prefijo_nombre,
+    )
+    if exclude_uuid is not None:
+        stmt = stmt.where(Sucursal.uuid != exclude_uuid)
+    result = await session.execute(stmt)
+    if int(result.scalar_one()) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "sucursal_prefijo_duplicado",
+                "field": "prefijo_nombre",
+                "value": prefijo_nombre,
+            },
+        )
+
+
+@_sucursal_dedicated_router.post(
+    "",
+    response_model=SucursalRead,
+    status_code=201,
+    dependencies=[Depends(_sucursal_dedicated_perm_dep)],
+)
+async def create_sucursal_dedicated(
+    payload: SucursalCreate,
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(get_tenant_ctx),
+    _claims: None = Depends(_sucursal_dedicated_issuer_dep),
+) -> SucursalRead:
+    """Shadow the factory's POST to enforce the ``prefijo_nombre`` guard.
+
+    Mirrors ``make_router``'s ``create_endpoint`` (close+insert via
+    ``repo.versioned.close_and_insert`` + commit + refresh + read-back,
+    including the creator-assignment hook that fires for ``sucursal``).
+    """
+    await _assert_no_sucursal_prefijo_duplicado(
+        session, prefijo_nombre=payload.prefijo_nombre
+    )
+    payload_dict = payload.model_dump(exclude_none=True)
+    new_row = await close_and_insert(
+        session,
+        Sucursal,
+        current_uuid=None,
+        new_attrs=payload_dict,
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return SucursalRead.model_validate(new_row)
+
+
+@_sucursal_dedicated_router.put(
+    "/{uuid}",
+    response_model=SucursalRead,
+    dependencies=[Depends(_sucursal_dedicated_perm_dep)],
+)
+async def update_sucursal_dedicated(
+    payload: SucursalUpdate,
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(get_tenant_ctx),
+    _claims: None = Depends(_sucursal_dedicated_issuer_dep),
+) -> SucursalRead:
+    """Shadow the factory's PUT to enforce the ``prefijo_nombre`` guard."""
+    await _assert_no_sucursal_prefijo_duplicado(
+        session, prefijo_nombre=payload.prefijo_nombre, exclude_uuid=uuid
+    )
+    payload_dict = payload.model_dump(exclude_none=True)
+    new_row = await close_and_insert(
+        session,
+        Sucursal,
+        current_uuid=uuid,
+        new_attrs=payload_dict,
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    await session.refresh(new_row)
+    return SucursalRead.model_validate(new_row)
+
+
+router.include_router(_sucursal_dedicated_router)
+
 _mount_empresa(
     resource="sucursal",
     model_cls=Sucursal,
@@ -966,6 +1096,25 @@ async def update_cantidad_pr_c(
                 },
             )
     nueva_desde = _to_naive_utc(payload.vigente_desde) or datetime.now(UTC).replace(tzinfo=None)
+    # Same retroactive-vigencia gap as tarifas (QA backlog cleanup,
+    # 2026-10-02 — see the identical comment on ``update_tarifa_pr_c``
+    # above): ``assert_no_overlap`` only queries the currently-open row,
+    # which here IS ``current`` (excluded via ``exclude_uuid=uuid``
+    # below), so it can never catch a backward-dated ``vigente_desde``.
+    # The chain's windows are monotonically increasing, so comparing
+    # against ``current.vigente_desde`` is sufficient to block going back
+    # into any prior (open or closed) window for this business key.
+    assert current.vigente_desde is not None  # current_version() guarantees an open row
+    if nueva_desde < current.vigente_desde:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "cantidad_overlap",
+                "conflicting_uuid": str(current.uuid),
+                "conflicting_vigente_desde": current.vigente_desde.isoformat(),
+                "conflicting_vigente_hasta": None,
+            },
+        )
     try:
         await assert_no_overlap(
             session,
@@ -1446,6 +1595,19 @@ _SUB_ROUTERS["tarifas-sucursal__dedicated_hu_f1_4"] = _tarifas_dedicated_router
 _SUB_ROUTERS["tarifas-sucursal__dedicated_pr_c"] = _tarifas_pr_c_router
 _SUB_ROUTERS["cantidad-vehiculos-sucursal__dedicated_pr_c"] = _cantidad_pr_c_router
 _SUB_ROUTERS["resolucion-facturacion__dedicated_vigente_en"] = _resolucion_dedicated_router
+# QA backlog cleanup (2026-10-02): real defect confirmed live -- registering
+# ``_sucursal_dedicated_router`` on the module-level ``router`` object
+# (above, near its definition) has NO effect on the real running app.
+# ``api/v1/__init__.py::_build_empresa_router()`` does NOT mount
+# ``empresa.router`` directly; it rebuilds a FRESH router from
+# ``empresa._SUB_ROUTERS`` only (see that function's docstring). A
+# dedicated router that is never registered into ``_SUB_ROUTERS`` under
+# its own key is simply invisible to the live app -- the factory's plain
+# POST/PUT (registered under the bare ``"sucursal"`` key) kept answering
+# every request, so the prefijo-duplicado guard silently never ran.
+# Same synthetic-key + reorder pattern as every sibling dedicated router
+# above.
+_SUB_ROUTERS["sucursal__dedicated_prefijo_duplicado"] = _sucursal_dedicated_router
 # ``/sucursal/{uuid}/deshabilitar`` is a brand-new path (no factory
 # equivalent to shadow) so registration order does not matter for
 # correctness, but it is tracked here for consistency with every other
@@ -1468,6 +1630,10 @@ for _pr_c_key in (
     # "resolucion-facturacion" mount the same way the tarifas/cantidad
     # dedicated handlers precede theirs.
     "resolucion-facturacion__dedicated_vigente_en",
+    # QA backlog cleanup (2026-10-02): must precede the bare "sucursal"
+    # factory key (POST/PUT) so the prefijo-duplicado guard actually
+    # shadows it -- see the registration comment above.
+    "sucursal__dedicated_prefijo_duplicado",
     "sucursal__dedicated_deshabilitar",
     # fix/catalog-sucursal-global-reads: the global-reads router was
     # added to _SUB_ROUTERS above the factory mount, but list it here
