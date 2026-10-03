@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import uuid as uuid_lib
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.tenancy import TenantContext
 from ..db.engine import get_session
+from ..db.tenancy import suspend_tenant_context
 from ..repo.pagination import Cursor, InvalidCursorError
 from ..repo.pagination import decode as cursor_decode
 from ..repo.pagination import encode as cursor_encode
@@ -127,6 +129,7 @@ def make_router(
     permission_required: str | None = None,
     write_enabled: bool = True,
     transition_states: list[str] | None = None,
+    tenant_scoped: bool = True,
 ) -> APIRouter:
     """Build the C+Q+U router for ``model_cls``.
 
@@ -146,11 +149,30 @@ def make_router(
         permission_required: Optional permission code (REQ-OP-13).
         write_enabled: Whether to mount POST + PUT endpoints.
         transition_states: Reserved for [L-W] tables (later PRs).
+        tenant_scoped: Whether ``do_orm_execute`` should auto-filter this
+            resource's queries by the admin's active ``X-Sucursal-Context``
+            (the default, correct for genuinely per-branch operational
+            tables). Set ``False`` for a resource whose ``uuid_sucursal``
+            column is a nullable GLOBAL-default/per-branch-OVERRIDE marker
+            meant for cross-branch admin management (``configuracion_
+            tolerancias``/``_seguridad``/``_caja``): its list/detail/history
+            reads and its update's close-then-reopen lookup must see every
+            branch's override AND the NULL global row regardless of which
+            branch happens to be active, not just the admin's current one.
+            Real defect confirmed via live QA (2026-10-02): with the default
+            ``True``, ``GET`` on these resources silently returned only the
+            rows matching the active branch (dropping the global row and
+            every other branch's override), and editing a row outside that
+            branch raised ``RowNotFoundError`` -> 500.
     """
     router = APIRouter(prefix=f"/{resource}", tags=[resource])
 
     issuers = [s.strip() for s in issuer_required.split(",")]
     issuer_dep = requires_issuer(*issuers)
+
+    def _scope() -> AbstractContextManager[None]:
+        """Suspend tenant auto-scoping for this resource's queries, if opted out."""
+        return nullcontext() if tenant_scoped else suspend_tenant_context()
 
     # Lazy import to avoid the dependency cycle with permissions.py at module
     # load time.
@@ -200,7 +222,8 @@ def make_router(
             )
         stmt = stmt.limit(limit + 1)
 
-        result = await session.execute(stmt)
+        with _scope():
+            result = await session.execute(stmt)
         rows = list(result.scalars().all())
 
         next_cursor: str | None = None
@@ -234,7 +257,8 @@ def make_router(
         _ctx: TenantContext = Depends(get_tenant_ctx),
         _claims: None = Depends(issuer_dep),
     ):
-        row = await current_version(session, model_cls, uuid)
+        with _scope():
+            row = await current_version(session, model_cls, uuid)
         if row is None:
             raise HTTPException(
                 status_code=404,
@@ -257,7 +281,8 @@ def make_router(
                 .where(model_cls.uuid == uuid)
                 .order_by(model_cls.vigente_desde.desc())
             )
-            result = await session.execute(stmt)
+            with _scope():
+                result = await session.execute(stmt)
             rows = list(result.scalars().all())
             return [read_schema.model_validate(r) for r in rows]
 
@@ -282,7 +307,12 @@ def make_router(
                 log_tx=True,
             )
             await session.commit()
-            await session.refresh(new_row)
+            # suspend_tenant_context: re-reading our own just-written row by
+            # PK, same session/transaction — see that helper's docstring for
+            # the "Could not refresh instance" 500 this avoids on a NULL
+            # (global) or cross-branch ``uuid_sucursal``.
+            with suspend_tenant_context():
+                await session.refresh(new_row)
             return read_schema.model_validate(new_row)
 
         # Real defect confirmed via manual QA + HTTP-level regression test
@@ -317,16 +347,24 @@ def make_router(
                 _claims: None = Depends(issuer_dep),
             ):
                 payload_dict = payload.model_dump(exclude_none=True)
-                new_row = await close_and_insert(
-                    session,
-                    model_cls,
-                    current_uuid=uuid,
-                    new_attrs=payload_dict,
-                    actor_uuid=ctx.actor_uuid,
-                    log_tx=True,
-                )
-                await session.commit()
-                await session.refresh(new_row)
+                # ``_scope()`` also covers ``close_and_insert``'s own
+                # pre-update SELECT/UPDATE of the row being closed: for a
+                # ``tenant_scoped=False`` resource that row may be the NULL
+                # global default or an override for a branch other than the
+                # admin's active one, and the tenant-scoping listener would
+                # otherwise make that lookup find nothing (-> RowNotFoundError
+                # -> 500) rather than a true 404.
+                with _scope():
+                    new_row = await close_and_insert(
+                        session,
+                        model_cls,
+                        current_uuid=uuid,
+                        new_attrs=payload_dict,
+                        actor_uuid=ctx.actor_uuid,
+                        log_tx=True,
+                    )
+                    await session.commit()
+                    await session.refresh(new_row)
                 return read_schema.model_validate(new_row)
 
             # Same PEP-563 fix as create_endpoint above.

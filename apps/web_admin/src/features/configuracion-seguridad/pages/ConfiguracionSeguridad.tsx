@@ -36,7 +36,7 @@ import {
   type ConfiguracionSeguridadCreateInput,
 } from '../api/configuracionSeguridadApi';
 import {
-  ConfiguracionSeguridadForm,
+  ConfiguracionSeguridadEditHarness,
   ConfiguracionSeguridadFormHarness,
 } from '../components/ConfiguracionSeguridadForm';
 
@@ -118,7 +118,11 @@ export default function ConfiguracionSeguridad(): JSX.Element {
   const effectiveKey = selectedSucursal
     ? `/api/v1/configuracion/configuracion-seguridad/efectiva?uuid_sucursal=${encodeURIComponent(selectedSucursal)}`
     : null;
-  const { data: effectiveRow, isLoading: effectiveLoading } = useSWR<ConfiguracionSeguridad | null | undefined>(
+  const {
+    data: effectiveRow,
+    isLoading: effectiveLoading,
+    mutate: refreshEffective,
+  } = useSWR<ConfiguracionSeguridad | null | undefined>(
     effectiveKey,
     async (key: string) => {
       const params = new URLSearchParams(key.split('?')[1] ?? '');
@@ -169,7 +173,15 @@ export default function ConfiguracionSeguridad(): JSX.Element {
       setConfirming(false);
       setPendingValues(null);
       closeModal();
-      await refresh();
+      // Real defect confirmed via live QA (2026-10-02): `refresh()` only
+      // revalidates the LIST query key
+      // (`/configuracion-seguridad?limit=200`); the "Efectiva en mi
+      // sucursal" tab reads a SEPARATE SWR key
+      // (`.../efectiva?uuid_sucursal=...`) that `refresh()` never touched,
+      // so right after creating/editing an override the tab kept showing
+      // the stale pre-write value (e.g. the global default) until an
+      // unrelated reload. Both caches must be revalidated together.
+      await Promise.all([refresh(), refreshEffective()]);
     } catch (err) {
       setErrorState(mapError(err));
     } finally {
@@ -224,8 +236,8 @@ export default function ConfiguracionSeguridad(): JSX.Element {
           contentProps={{ 'data-testid': 'seguridad-form-modal' }}
         >
           {editing !== null ? (
-            <ConfiguracionSeguridadForm
-              form={undefined as never}
+            <ConfiguracionSeguridadEditHarness
+              key={editing.uuid}
               onSubmit={(values) => {
                 setPendingValues(values);
                 onRequestSubmit();

@@ -254,3 +254,30 @@ export function ConfiguracionToleranciasFormHarness(
   });
   return <ConfiguracionToleranciasForm {...props} form={form} />;
 }
+
+/**
+ * Edit-mode harness — real defect confirmed via live QA (2026-10-02): the
+ * page used to render `<ConfiguracionToleranciasForm form={undefined as
+ * never} .../>` directly for the edit path (no `useForm()` instance was ever
+ * created), so `form.watch('uuid_sucursal')` crashed with "Cannot read
+ * properties of undefined (reading 'watch')" the instant "Editar" was
+ * clicked — an uncaught render error that blanked the whole page (no error
+ * boundary). This harness seeds `useForm` from the row being edited, mirror
+ * of `ConfiguracionToleranciasFormHarness` above for create.
+ */
+export function ConfiguracionToleranciasEditHarness(
+  props: Omit<ConfiguracionToleranciasFormProps, 'form' | 'initialTolerancia'> & {
+    initialTolerancia: ConfiguracionTolerancias;
+  },
+): JSX.Element {
+  const { initialTolerancia } = props;
+  const form = useForm<ConfiguracionToleranciasCreateInput>({
+    resolver: zodResolver(configuracionToleranciasCreateSchema) as never,
+    defaultValues: {
+      uuid_sucursal: initialTolerancia.uuid_sucursal,
+      tolerancia_efectivo: initialTolerancia.tolerancia_efectivo,
+      tolerancia_datafono: initialTolerancia.tolerancia_datafono,
+    },
+  });
+  return <ConfiguracionToleranciasForm {...props} form={form} />;
+}

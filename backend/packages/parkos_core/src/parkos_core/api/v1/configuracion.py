@@ -69,6 +69,15 @@ def _mount_config(
             repo_kind="versioned",
             issuer_required=issuer,
             permission_required=perm,
+            # These 3 resources are the GLOBAL-default + per-branch-OVERRIDE
+            # pattern (REQ-OP-12, SC-OP-06): ``uuid_sucursal IS NULL`` is a
+            # real, intentional row (the global default), and the "Global y
+            # overrides" admin view must show every branch's override plus
+            # that NULL row regardless of which branch is currently active
+            # -- the opposite of the default per-branch scoping. See
+            # ``tenant_scoped``'s docstring on ``make_router`` for the live
+            # defect (500s + silently-empty lists) this avoids.
+            tenant_scoped=False,
         )
     )
 

@@ -52,7 +52,7 @@ export interface ConfiguracionSeguridadFormProps {
 
 export function ConfiguracionSeguridadForm({
   form,
-  onRequestSubmit,
+  onSubmit,
   isSubmitting,
   isUpdate = false,
   initialSeguridad = null,
@@ -67,13 +67,18 @@ export function ConfiguracionSeguridadForm({
   return (
     <Form {...form}>
       <form
-        onSubmit={(event) => {
-          // Intercept the submit: trigger the page's confirmation
-          // modal instead of letting the form submit directly. The
-          // modal calls onSubmit(values) if the operator confirms.
-          event.preventDefault();
-          onRequestSubmit();
-        }}
+        // Real defect confirmed via live QA (2026-10-02): this used to call
+        // `onRequestSubmit()` directly here, bypassing react-hook-form's
+        // `handleSubmit` entirely — the page's `onSubmit` prop (the one that
+        // actually stashes the validated values as `pendingValues` and opens
+        // the confirmation dialog) was NEVER invoked, so `pendingValues`
+        // stayed `null` forever: the confirm dialog opened with no values
+        // to show, and clicking "Aplicar" silently no-opped (`if
+        // (pendingValues === null) return;`) — no validation, no network
+        // call, ever. `form.handleSubmit(onSubmit)` validates first and
+        // only then calls the page's `onSubmit`, which itself opens the
+        // confirmation step (see `ConfiguracionSeguridad.tsx`).
+        onSubmit={form.handleSubmit(onSubmit)}
         className="space-y-4"
         noValidate
         aria-busy={isSubmitting}
@@ -257,6 +262,31 @@ export function ConfiguracionSeguridadFormHarness(
       dias_expiracion_password: null,
       max_intentos_login: null,
       minutos_bloqueo_login: null,
+    },
+  });
+  return <ConfiguracionSeguridadForm {...props} form={form} />;
+}
+
+/**
+ * Edit-mode harness — same defect and fix as
+ * `ConfiguracionToleranciasEditHarness` (confirmed via live QA,
+ * 2026-10-02): the page used to render `<ConfiguracionSeguridadForm
+ * form={undefined as never} .../>` for the edit path, crashing on
+ * `form.watch('uuid_sucursal')` the instant "Editar" was clicked.
+ */
+export function ConfiguracionSeguridadEditHarness(
+  props: Omit<ConfiguracionSeguridadFormProps, 'form' | 'initialSeguridad'> & {
+    initialSeguridad: ConfiguracionSeguridad;
+  },
+): JSX.Element {
+  const { initialSeguridad } = props;
+  const form = useForm<ConfiguracionSeguridadCreateInput>({
+    resolver: zodResolver(configuracionSeguridadCreateSchema) as never,
+    defaultValues: {
+      uuid_sucursal: initialSeguridad.uuid_sucursal,
+      dias_expiracion_password: initialSeguridad.dias_expiracion_password,
+      max_intentos_login: initialSeguridad.max_intentos_login,
+      minutos_bloqueo_login: initialSeguridad.minutos_bloqueo_login,
     },
   });
   return <ConfiguracionSeguridadForm {...props} form={form} />;
