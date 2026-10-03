@@ -15,6 +15,7 @@ import uuid as uuid_lib
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..db.tenancy import suspend_tenant_context
 from ..models.V.configuracion_caja import ConfiguracionCaja
 from ..models.V.configuracion_seguridad import ConfiguracionSeguridad
 
@@ -38,29 +39,40 @@ async def resolve_efectiva_seguridad(
         The matching ORM row, or ``None`` if neither per-branch nor global
         default is configured.
     """
-    # 1. Per-branch row first.
-    stmt_branch = (
-        select(ConfiguracionSeguridad)
-        .where(
-            ConfiguracionSeguridad.uuid_sucursal == uuid_sucursal,
-            ConfiguracionSeguridad.vigente_hasta.is_(None),
+    # Real defect confirmed via live QA (2026-10-02): this resolver takes an
+    # explicit ``uuid_sucursal`` target, which may legitimately differ from
+    # the ADMIN'S currently active branch (``X-Sucursal-Context``). Without
+    # suspending tenant auto-scoping here, the ``do_orm_execute`` listener
+    # appends ``AND uuid_sucursal = <active ctx>`` to BOTH statements below:
+    # the per-branch lookup then only ever matches when the requested branch
+    # happens to equal the active one, and the global-default fallback
+    # (``uuid_sucursal IS NULL``) never matches a bound, non-null ctx at
+    # all -- so a branch with no override (the "falls back to global" case
+    # this function exists for) incorrectly 404s instead of resolving.
+    with suspend_tenant_context():
+        # 1. Per-branch row first.
+        stmt_branch = (
+            select(ConfiguracionSeguridad)
+            .where(
+                ConfiguracionSeguridad.uuid_sucursal == uuid_sucursal,
+                ConfiguracionSeguridad.vigente_hasta.is_(None),
+            )
+            .limit(1)
         )
-        .limit(1)
-    )
-    row = (await session.execute(stmt_branch)).scalar_one_or_none()
-    if row is not None:
-        return row
+        row = (await session.execute(stmt_branch)).scalar_one_or_none()
+        if row is not None:
+            return row
 
-    # 2. Fall back to global default.
-    stmt_global = (
-        select(ConfiguracionSeguridad)
-        .where(
-            ConfiguracionSeguridad.uuid_sucursal.is_(None),
-            ConfiguracionSeguridad.vigente_hasta.is_(None),
+        # 2. Fall back to global default.
+        stmt_global = (
+            select(ConfiguracionSeguridad)
+            .where(
+                ConfiguracionSeguridad.uuid_sucursal.is_(None),
+                ConfiguracionSeguridad.vigente_hasta.is_(None),
+            )
+            .limit(1)
         )
-        .limit(1)
-    )
-    return (await session.execute(stmt_global)).scalar_one_or_none()
+        return (await session.execute(stmt_global)).scalar_one_or_none()
 
 
 async def resolve_efectiva_caja(
@@ -82,29 +94,32 @@ async def resolve_efectiva_caja(
         The matching ORM row, or ``None`` if neither per-branch nor global
         default is configured.
     """
-    # 1. Per-branch row first.
-    stmt_branch = (
-        select(ConfiguracionCaja)
-        .where(
-            ConfiguracionCaja.uuid_sucursal == uuid_sucursal,
-            ConfiguracionCaja.vigente_hasta.is_(None),
+    # Same tenant-scoping defect as ``resolve_efectiva_seguridad`` above --
+    # see that function's comment.
+    with suspend_tenant_context():
+        # 1. Per-branch row first.
+        stmt_branch = (
+            select(ConfiguracionCaja)
+            .where(
+                ConfiguracionCaja.uuid_sucursal == uuid_sucursal,
+                ConfiguracionCaja.vigente_hasta.is_(None),
+            )
+            .limit(1)
         )
-        .limit(1)
-    )
-    row = (await session.execute(stmt_branch)).scalar_one_or_none()
-    if row is not None:
-        return row
+        row = (await session.execute(stmt_branch)).scalar_one_or_none()
+        if row is not None:
+            return row
 
-    # 2. Fall back to global default.
-    stmt_global = (
-        select(ConfiguracionCaja)
-        .where(
-            ConfiguracionCaja.uuid_sucursal.is_(None),
-            ConfiguracionCaja.vigente_hasta.is_(None),
+        # 2. Fall back to global default.
+        stmt_global = (
+            select(ConfiguracionCaja)
+            .where(
+                ConfiguracionCaja.uuid_sucursal.is_(None),
+                ConfiguracionCaja.vigente_hasta.is_(None),
+            )
+            .limit(1)
         )
-        .limit(1)
-    )
-    return (await session.execute(stmt_global)).scalar_one_or_none()
+        return (await session.execute(stmt_global)).scalar_one_or_none()
 
 
 __all__ = ["resolve_efectiva_caja", "resolve_efectiva_seguridad"]

@@ -17,6 +17,8 @@ both sync and async paths.
 from __future__ import annotations
 
 import uuid as uuid_lib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -46,6 +48,47 @@ def set_tenant_context(sucursal_uuid: uuid_lib.UUID) -> None:
 def get_current_sucursal_uuid() -> uuid_lib.UUID | None:
     """Return the bound ``sucursal_uuid`` (or ``None`` for cloud-scope sync)."""
     return _ctx_sucursal.get()
+
+
+@contextmanager
+def suspend_tenant_context() -> Iterator[None]:
+    """Temporarily unbind the tenant ContextVar for one block.
+
+    Real defect confirmed via live QA (configuracion-tolerancias /
+    configuracion-seguridad batch, 2026-10-02): ``router_factory``'s
+    generic ``create_endpoint``/``update_endpoint`` call
+    ``session.refresh(new_row)`` right after ``close_and_insert`` commits.
+    The ``do_orm_execute`` listener below scopes THAT refresh SELECT too
+    (it is just another SELECT on a ``uuid_sucursal``-bearing table), so
+    for any table with a nullable ``uuid_sucursal`` (the global-default +
+    per-branch-override pattern used by ``configuracion_tolerancias``,
+    ``configuracion_seguridad`` and ``configuracion_caja``):
+
+    - Creating/editing the GLOBAL row (``uuid_sucursal IS NULL``) while an
+      admin has ANY active sucursal bound (``X-Sucursal-Context`` header —
+      the normal state once a branch is selected in the UI) adds
+      ``uuid_sucursal = :ctx`` to the refresh SELECT, which a NULL column
+      never satisfies.
+    - Creating/editing an OVERRIDE for a branch OTHER than the admin's
+      currently active one has the same mismatch.
+
+    Either way the refresh SELECT returns 0 rows and SQLAlchemy raises
+    ``InvalidRequestError: Could not refresh instance`` — a bare 500 on an
+    otherwise-successful write (the INSERT/UPDATE committed fine; only the
+    post-commit re-read crashes).
+
+    Safe to suspend here specifically: the caller already holds the exact
+    ORM object it just wrote, in the SAME transaction, under a session
+    whose write permission was already checked by the endpoint's own
+    issuer/permission dependencies. Re-reading our own just-written row by
+    primary key carries no cross-tenant leak risk — nothing new becomes
+    reachable that this request didn't just create itself.
+    """
+    token = _ctx_sucursal.set(None)
+    try:
+        yield
+    finally:
+        _ctx_sucursal.reset(token)
 
 
 # Compliance tables whose ``uuid_sucursal`` NULL marks a GLOBAL chain rather
@@ -270,4 +313,5 @@ __all__ = [
     "get_current_sucursal_uuid",
     "install_tenant_event_listener",
     "set_tenant_context",
+    "suspend_tenant_context",
 ]

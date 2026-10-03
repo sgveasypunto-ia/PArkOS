@@ -29,7 +29,7 @@ import {
   type ConfiguracionToleranciasCreateInput,
 } from '../api/configuracionToleranciasApi';
 import {
-  ConfiguracionToleranciasForm,
+  ConfiguracionToleranciasEditHarness,
   ConfiguracionToleranciasFormHarness,
 } from '../components/ConfiguracionToleranciasForm';
 
@@ -189,8 +189,8 @@ export default function ConfiguracionTolerancias(): JSX.Element {
           contentProps={{ 'data-testid': 'tolerancia-form-modal' }}
         >
           {editing !== null ? (
-            <ConfiguracionToleranciasForm
-              form={undefined as never}
+            <ConfiguracionToleranciasEditHarness
+              key={editing.uuid}
               onSubmit={onSubmit}
               isSubmitting={submitting}
               isUpdate
