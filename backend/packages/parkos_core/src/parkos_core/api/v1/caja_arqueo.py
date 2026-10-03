@@ -384,6 +384,7 @@ async def post_arqueo(
         await repo_arqueo.insertar_arqueo(
             session,
             actor_uuid=ctx.actor_uuid,
+            uuid_sucursal=target_sucursal,
             uuid_tipo_arqueo=tipo_arqueo.uuid,
             uuid_sesion=payload.uuid_sesion,
             valor_efectivo_esperado=esperado_efectivo,

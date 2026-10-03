@@ -47,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.A.arqueo import Arqueo
 from ..models.A.factura_pagos import FacturaPagos
 from ..models.L_S.sesion import Sesion
+from ..models.L_W.alerta import Alerta
 from ..models.V.configuracion_tolerancias import ConfiguracionTolerancias
 from ..models.V.sucursal import Sucursal
 from ..models.V.tipo_arqueo import TipoArqueo
@@ -443,6 +444,7 @@ async def insertar_arqueo(
     session: AsyncSession,
     *,
     actor_uuid: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID | None,
     uuid_tipo_arqueo: uuid_lib.UUID,
     uuid_sesion: uuid_lib.UUID | None,
     valor_efectivo_esperado: Decimal,
@@ -464,8 +466,20 @@ async def insertar_arqueo(
     NOTE: ``Arqueo`` carries composite PK ``uuid + fecha_retencion_hasta``;
     ``fecha_retencion_hasta`` defaults to ``current_date()`` server-side
     (the ORM model declares ``server_default=func.current_date()``).
+
+    QA batch Arqueos (2026-10-02): ``uuid_sucursal`` used to be left out of
+    ``attrs`` entirely -- same bug class as ``factura_pagos`` (migration
+    0073): the global tenant listener (``db/tenancy.py``) only auto-filters
+    SELECT/UPDATE/DELETE, never INSERT, so a write path that forgets the
+    column leaves it permanently NULL. Every ``prod.arqueo`` row ever
+    created (both ``admin-`` and ``operador-`` issuers -- this one is not
+    issuer-specific) silently dropped out of ANY branch-scoped read
+    (``GET /api/v1/caja/arqueo?uuid_sucursal=...``, the admin list in
+    ``/arqueos``). The handler already computes ``target_sucursal`` at
+    Step 2a; it is now threaded through to this INSERT.
     """
     attrs: dict[str, Any] = {
+        "uuid_sucursal": uuid_sucursal,
         "uuid_tipo_arqueo": uuid_tipo_arqueo,
         "uuid_sesion": uuid_sesion,
         "valor_efectivo_esperado": valor_efectivo_esperado,
