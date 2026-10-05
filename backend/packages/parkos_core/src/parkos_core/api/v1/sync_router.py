@@ -74,6 +74,7 @@ from ...repo.pairing import (
 from ...repo.revoked_sync_jwt import is_revoked
 from ...runtime import engine_flag
 from ...runtime.clock import ClockSkewError
+from ...sync.catalog.schema import SyncCatalogEntry
 from ...sync.catalog.sync_catalog import (
     SYNC_CATALOG,
     SYNC_CATALOG_BY_NAME,
@@ -84,7 +85,12 @@ from ...sync.motor import apply_guard
 from ...sync.motor.apply_result import ApplyResult
 from ...sync.motor.broadcast_resolver import BroadcastPolicyError, resolve_broadcast_targets
 from ...sync.motor.dependency_orderer import order_batch
-from ...sync.motor.sync_motor import SyncMotor
+from ...sync.motor.sync_motor import (
+    SyncMotor,
+    describe_apply_error,
+    remap_foreign_keys,
+    resolve_identity_aliases,
+)
 from ...sync.router_helpers import (
     RateLimit,
     SyncIdempotencyCache,
@@ -290,6 +296,10 @@ class _EventResponseRow(_Base):
     event_type: str
     # "delivered" (legacy, no tabla) | "unknown_table" (tabla not in
     # SYNC_CATALOG_BY_NAME) | "applied" | "conflict" | "retry_parent_missing"
+    # | "apply_error" (the row's own per-row SAVEPOINT rolled back — a real
+    # exception isolated to this row alone, e.g. a foreign-key violation
+    # against a dependency this batch does not carry; never a silent drop,
+    # REQ-CUT-015, and never takes any OTHER row in the batch down with it)
     # (REQ-MOT-005 / REQ-CUT-015 wire vocabulary for a catalog-driven row).
     status: str
 
@@ -1172,21 +1182,80 @@ async def sync_events(
     # branch worker and pushed together in the SAME ``/sync/events`` call)
     # could apply the child before the parent — confirmed via a real
     # ``ForeignKeyViolationError`` on ``factura_electronica.uuid_factura``
-    # wiring the post-testcontainers Docker exercise. Worse, because the
-    # whole loop shares one transaction with a single
-    # ``except Exception: rollback(); raise``, one ordering violation
-    # aborted the ENTIRE batch (every other, perfectly valid row in it too)
-    # — and since the sender retries the exact same ``list_pending`` batch
-    # verbatim, this reproduced deterministically on every retry.
-    # ``order_batch`` (the same dependency-orderer ``apply_batch``/
-    # ``run_backfill`` already use elsewhere) only needs each event's
-    # ``.tabla`` — reordering PROCESSING here while keeping every response
-    # in the caller's ORIGINAL request order preserves
-    # ``_push_and_handle_catalog``'s
+    # wiring the post-testcontainers Docker exercise. ``order_batch`` (the
+    # same dependency-orderer ``apply_batch``/``run_backfill`` already use
+    # elsewhere) only needs each event's ``.tabla`` — reordering PROCESSING
+    # here while keeping every response in the caller's ORIGINAL request
+    # order preserves ``_push_and_handle_catalog``'s
     # ``zip(resolved_rows, results, strict=True)`` index-correspondence
     # contract unchanged.
+    #
+    # Real bug found + fixed (live qa/integracion-admin-sucursal incident,
+    # 2026-10-05): correct ordering alone was NOT enough. The whole loop
+    # shared one transaction with a single top-level
+    # ``except Exception: rollback(); raise`` and NO per-row savepoint —
+    # unlike ``SyncMotor.apply_batch`` (sync/motor/sync_motor.py), which
+    # already wraps each row in its own ``session.begin_nested()`` for
+    # exactly this reason (see that method's docstring: "the first row that
+    # violates a foreign key aborts the enclosing transaction and every
+    # OTHER row in the batch is lost with it"). Confirmed live: a real
+    # ``ingreso`` row was flushed successfully on EVERY retry cycle (its own
+    # dependencies were fine), yet ``prod.ingreso`` on the cloud DB stayed
+    # permanently empty for that branch — an UNRELATED row later in the
+    # SAME batch (blocked on its own, separate issue — e.g. a referenced
+    # catalog row that never reconciled to cloud) kept failing, and the
+    # single rollback below discarded ``ingreso``'s already-flushed insert
+    # right along with it, every single cycle, forever. The reported
+    # foreign-key constraint even "rotated" across cycles (whichever row
+    # ``order_batch`` happened to reach and fail on first), which is exactly
+    # the signature of one shared, unsaved transaction rather than a single
+    # bad row. Each row now gets its own SAVEPOINT: a row that fails is
+    # isolated, reported (never a silent drop, REQ-CUT-015), and left
+    # ``pendiente`` for the sender to retry — every OTHER row in the batch
+    # still applies and commits.
     results_by_index: list[_EventResponseRow | None] = [None] * len(payload.events)
     index_by_event: dict[int, int] = {id(ev): i for i, ev in enumerate(payload.events)}
+
+    # Real bug found + fixed (qa/integracion-admin-sucursal, confirmed live
+    # 2026-10-05): ``SyncMotor.apply_batch`` (the PULL path) resolves durable
+    # ``prod.sync_identity_alias`` rows and remaps a row's FK columns onto the
+    # locally-reconciled parent before calling ``apply_row`` — but this PUSH
+    # receiver never did, so a ``branch_to_cloud`` row whose FK column still
+    # named a catalog uuid ``identity_reconciler`` had already collapsed onto
+    # a DIFFERENT local row (exactly what migration 0081's alias table closed
+    # for the pull direction) ALWAYS raised its FK violation here, forever —
+    # three real rows (an ``ingreso``, a ``factura``, a related ``arqueo``)
+    # were stuck ``pendiente`` in ``prod.sync_queue`` because of this exact
+    # gap. Resolve the SAME durable aliases ``apply_batch`` does, ONCE for
+    # this whole request's catalog-driven rows (never one query per row —
+    # same bounded posture ``resolve_identity_aliases`` already documents),
+    # then remap each row's payload before it reaches ``apply_row`` below.
+    catalog_rows: list[tuple[SyncCatalogEntry, dict[str, Any]]] = []
+    catalog_events: list[_CatalogPushEvent] = []
+    for push_ev in payload.events:
+        if push_ev.tabla is None:
+            continue
+        # Wrap in resolve_catalog_name so pg_partman partition suffixes
+        # (salidas_default, factura_detalle_p_2026_10, ...) collapse onto
+        # the parent catalog entry instead of unknown_table.
+        spec = SYNC_CATALOG_BY_NAME.get(resolve_catalog_name(push_ev.tabla))
+        if spec is None:
+            continue
+        catalog_rows.append((spec, push_ev.payload))
+        catalog_events.append(push_ev)
+
+    aliases = await resolve_identity_aliases(session, catalog_rows)
+    # Always populated for every catalog-driven event (never a ``.get(...,
+    # default)`` fallback onto the main loop's own ``ev.payload`` below) —
+    # ``ev`` there is only known to satisfy ``dependency_orderer.
+    # QueueRowLike`` (``.tabla`` alone), so indexing this dict directly is
+    # what lets the main loop reach the already-resolved payload without
+    # depending on an attribute that protocol does not promise.
+    apply_payload_by_event_id: dict[int, dict[str, Any]] = {
+        id(push_ev): (remap_foreign_keys(spec, raw_payload, aliases) if aliases else raw_payload)
+        for push_ev, (spec, raw_payload) in zip(catalog_events, catalog_rows, strict=True)
+    }
+
     try:
         # Echo-amplification fix (post-PR14 real-Docker closing exercise,
         # real defect #3; migration 0016_add_sync_apply_guard). This
@@ -1197,7 +1266,9 @@ async def sync_events(
         # suppression GUC ONCE for this whole request's transaction
         # (ended by the single `session.commit()`/`rollback()` below;
         # never per-event) before any `motor.apply_row` call. See
-        # sync.motor.apply_guard's own docstring.
+        # sync.motor.apply_guard's own docstring. ``SET LOCAL`` scopes to
+        # the OUTER transaction, so it is unaffected by the per-row
+        # SAVEPOINTs started below.
         await apply_guard.enable_echo_suppression(session)
         for ev in order_batch(list(payload.events)):
             idx = index_by_event[id(ev)]
@@ -1208,7 +1279,12 @@ async def sync_events(
                 )
                 continue
 
-            spec = SYNC_CATALOG_BY_NAME.get(ev.tabla)
+            # Normalize the trigger-sourced ``tabla`` BEFORE the catalog
+            # lookup. ``prod.fn_enqueue_sync()`` stamps ``TG_TABLE_NAME``
+            # with the PHYSICAL partition name; the catalog is keyed on
+            # the parent only. Without this, every row from the 8
+            # partitioned tables fails ``unknown_table`` forever.
+            spec = SYNC_CATALOG_BY_NAME.get(resolve_catalog_name(ev.tabla))
             if spec is None:
                 # Never a silent drop: an event naming an unrecognized table
                 # is reported, not swallowed. (Out-of-catalog infra tables
@@ -1222,7 +1298,26 @@ async def sync_events(
 
             if motor is None:
                 motor = SyncMotor(engine=engine_flag.get_engine())
-            apply_result = await motor.apply_row(session, spec, ev.payload, actor_uuid=actor_uuid)
+            try:
+                # Per-row SAVEPOINT (mirrors SyncMotor.apply_batch). Without
+                # it, one row blocked on its OWN, unrelated issue aborts the
+                # entire shared transaction and every other — perfectly
+                # valid — row in this batch is lost with it.
+                apply_payload = apply_payload_by_event_id[id(ev)]
+                async with session.begin_nested():
+                    apply_result = await motor.apply_row(
+                        session, spec, apply_payload, actor_uuid=actor_uuid
+                    )
+            except Exception as exc:  # noqa: BLE001 — isolate the row, keep the batch
+                logger.warning(
+                    "sync_events.apply_row_failed",
+                    extra={"tabla": ev.tabla, "reason": describe_apply_error(exc)},
+                )
+                results_by_index[idx] = _EventResponseRow(
+                    event_type=ev.event_type, status="apply_error"
+                )
+                continue
+
             wire_status = wire_status_for_apply_result(apply_result)
             results_by_index[idx] = _EventResponseRow(event_type=ev.event_type, status=wire_status)
 
