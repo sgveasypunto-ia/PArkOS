@@ -100,11 +100,37 @@ def _coerce_wire_payload(model_cls: type, payload: dict[str, Any]) -> dict[str, 
     from its batch siblings). Fixing the ONE real drift at its actual
     source (the ORM model) instead of papering over ALL possible drift
     generically here is the correct scope for this function.
+
+    EXCEPTION: a small, EXPLICIT set of ``prod.sync_queue`` metadata keys
+    that the DB trigger ``prod.fn_enqueue_sync()`` (and its catalog sibling
+    ``prod.fn_enqueue_sync_catalog()``) injects into the ``datos`` JSONB
+    and which NEVER correspond to a real column on any target table
+    (``ingreso`` has no ``seq``, neither does ``salidas``/``facturas``/
+    ``factura_pagos``/etc.). These keys are sync-queue bookkeeping — the
+    FIFO watermark by ``uuid_sucursal`` and the dispatch hints used by
+    the apply hooks — and must be stripped before the INSERT, otherwise
+    every apply raises ``asyncpg.exceptions.UndefinedColumnError`` with
+    SQLSTATE 42703 and the whole pull comes to a halt. (See PR comment
+    "fix(sync): strip sync-queue metadata keys before INSERT" for the
+    live repro: 13 pending ops from the qa/integracion-admin-sucursal
+    session of 2026-10-05, all of them ``events_apply_error`` with the
+    same root cause.) The whitelist is small and explicit so a
+    genuinely-intentional extra key in a poisoned-row fixture still
+    raises (the test above is the contract); only KNOWN metadata
+    keys are stripped.
     """
     mapper = sa_inspect(model_cls)
     mapped_columns = {column.name: column for column in mapper.columns}
     coerced: dict[str, Any] = {}
     for key, value in payload.items():
+        if key in _SYNC_QUEUE_METADATA_KEYS:
+            # sync-queue bookkeeping, not a target-table column — see the
+            # docstring above. Without this branch the apply raises 42703
+            # because the target table has no `seq`/`current_uuid`/
+            # `parent_uuid` column. The whitelist is the minimal carve-out
+            # from the "drop nothing" contract; a poisoned row with any
+            # OTHER unmapped key still raises loud.
+            continue
         column = mapped_columns.get(key)
         if column is not None and isinstance(value, str):
             # DateTime must be checked before Date — DateTime does not
@@ -116,6 +142,12 @@ def _coerce_wire_payload(model_cls: type, payload: dict[str, Any]) -> dict[str, 
                 value = dt_lib.date.fromisoformat(value)
         coerced[key] = value
     return coerced
+
+
+# Keys injected by prod.fn_enqueue_sync() / prod.fn_enqueue_sync_catalog()
+# into prod.sync_queue.datos (JSONB) that are SYNC-QUEUE bookkeeping, not
+# columns of any target table. See the _coerce_wire_payload docstring.
+_SYNC_QUEUE_METADATA_KEYS = frozenset({"seq", "current_uuid", "parent_uuid"})
 
 
 async def _invoke_hook(hook: registry.HookFn, ctx: HookContext) -> HookResult:
