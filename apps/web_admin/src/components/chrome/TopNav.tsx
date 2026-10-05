@@ -3,14 +3,18 @@
  * en TODAS las rutas autenticadas de `web_admin` excepto `/login`.
  *
  * RESPONSABILIDADES:
- *   - Brand "Parkos Admin" como link a `/`.
+ *   - Brand "EasyPunto" (logo real, swap light/dark) como link a `/`.
+ *   - Operador + sucursal visibles (md+) con la misma forma visual que
+ *     `apps/electron-sucursal/src/features/caja/pages/Dashboard.tsx`.
  *   - Avatar del usuario con la inicial del email.
  *   - Email del usuario, truncado en pantallas chicas.
- *   - Dropdown (primitivo propio) con:
+ *   - Dropdown (Radix via shadcn) con:
  *       * Cabecera: avatar + email + rol.
  *       * "Mi perfil" -> navega a `/perfil`.
  *       * "Configuración" -> disabled con tooltip "Próximamente".
  *       * "Cerrar sesión" -> `logout()` + `navigate('/login')`.
+ *   - Branch-switch shortcut (admin only) -> `/seleccionar-sucursal`.
+ *   - Theme toggle (Radix via shadcn).
  *
  * POR QUE NO SE MONTA EN /login:
  *   El `Login` es la unica ruta que no esta envuelta en
@@ -24,6 +28,15 @@
  *   - `user.email` puede ser `null` segun `AdminMeResponse.email:
  *     string | null`. Cuando lo es, mostramos el UUID acortado como
  *     fallback para que el top bar nunca quede con el avatar solo.
+ *   - `useAdminAuth` NUNCA expone `nombre`/`apellido` del usuario
+ *     (siempre `null`, ver `apps/ui-kit/src/hooks/useAdminAuth.ts`
+ *     linea 119) y el `useSucursal()` del admin solo guarda el UUID
+ *     seleccionado, no la ficha completa de la sucursal. Por eso el
+ *     bloque operador/sucursal cae a fallbacks (`email-prefix` y
+ *     `uuid.slice(0, 8)`) en vez de mostrar el nombre real. La
+ *     estructura visual sigue siendo 1:1 con el Dashboard de la
+ *     sucursal — el shell, el divider, el `flex-1` que absorbe el
+ *     espacio vacio, y el `ml-auto` que ancla el cluster derecho.
  *   - `logout()` desde `useAdminAuth` ya hace `clear()` local en
  *     `finally`; lo envolvemos para que la navegacion a `/login` sea
  *     siempre local, jamas delegada al backend.
@@ -44,6 +57,9 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useSucursal } from '@/lib/sucursal-context';
 import { ThemeToggle } from '@/components/chrome/ThemeToggle';
+
+import logoLight from '@/assets/brand/logos/logo-horizontal-light.svg';
+import logoDark from '@/assets/brand/logos/logo-horizontal-dark--REQUIERE-VECTOR.png';
 
 function avatarLabel(email: string | null, uuid: string): string {
   if (email && email.length > 0) {
@@ -71,6 +87,27 @@ export function TopNav(): JSX.Element {
   const initial = avatarLabel(email, uuid);
   const displayed = displayEmail(email, uuid);
 
+  // Operador — la API admin no expone `nombre`/`apellido` del actor
+  // (ver docblock arriba), asi que el email-prefix es el mejor
+  // fallback disponible. Si no hay email tampoco, "Administrador".
+  const emailLocal =
+    email && email.length > 0
+      ? (email.split('@')[0] ?? '').trim()
+      : '';
+  const operadorLabel =
+    emailLocal !== ''
+      ? emailLocal
+      : t('common:administrador', { defaultValue: 'Administrador' });
+
+  // Sucursal — `useSucursal()` solo guarda el UUID seleccionado, no
+  // la ficha con `prefijo_nombre`/`nombre`. Replicamos la forma del
+  // Dashboard (`<uuid corto>…` cuando hay algo, i18n fallback cuando
+  // no) sin inventar un fetch que exceda el scope de este cambio.
+  const sucursalLabel =
+    selected && selected.length > 0
+      ? `${selected.slice(0, 8)}…`
+      : t('common:sucursal', { defaultValue: 'Sucursal' });
+
   const handleLogout = async (): Promise<void> => {
     setSigningOut(true);
     try {
@@ -86,23 +123,66 @@ export function TopNav(): JSX.Element {
   };
 
   return (
-    <header data-testid="topnav">
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4">
-        <Link
-          to="/"
-          className="focus-ring flex shrink-0 items-center gap-2 rounded-md text-sm font-semibold tracking-tight"
-          data-testid="topnav-brand"
-          aria-label={t('topnav.brand', 'Parkos Admin')}
+    <header
+      data-testid="topnav"
+      className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/40 bg-card/80 px-4 py-2.5 backdrop-blur-md shadow-apple-sm md:gap-3 md:px-5 xl:px-6"
+    >
+      {/* Brand — EasyPunto logo (light/dark swap via `.dark` en
+          `<html>`, igual que el Dashboard de la sucursal). El
+          `<span className="sr-only">` mantiene un nombre accesible
+          razonable para screen readers y para la traduccion
+          `topnav.brand` que ya esta en uso. */}
+      <Link
+        to="/"
+        data-testid="topnav-brand"
+        className="focus-ring flex shrink-0 items-center gap-2 rounded-md"
+        aria-label={t('topnav.brand', 'Parkos Admin')}
+      >
+        <img
+          src={logoLight}
+          alt=""
+          aria-hidden="true"
+          className="h-9 w-auto shrink-0 dark:hidden"
+        />
+        <img
+          src={logoDark}
+          alt=""
+          aria-hidden="true"
+          className="hidden h-9 w-auto shrink-0 dark:block"
+        />
+        <span className="sr-only">{t('topnav.brand', 'Parkos Admin')}</span>
+      </Link>
+
+      {/* Divisor vertical logo ↔ bloque operador/sucursal. Mismo
+          patron que Dashboard.tsx:283. Solo md+ porque el bloque
+          tampoco se renderiza en mobile. */}
+      <div className="hidden h-8 w-px shrink-0 bg-border mx-5 md:block" />
+
+      {/* Operador + sucursal — `hidden md:flex` para no inflar el
+          header en mobile/phablet. `flex-1` absorbe el espacio vacio
+          entre el divisor y el cluster derecho (que vive en `ml-auto`
+          mas abajo), igual que Dashboard.tsx:307-312. */}
+      <div className="hidden min-w-0 flex-1 flex-col leading-tight md:flex">
+        <strong
+          className="truncate text-base"
+          data-testid="topnav-operador-name"
         >
-          <span
-            aria-hidden="true"
-            className="bg-primary inline-block size-2.5 rounded-full"
-          />
-          {t('app.name', 'Parkos Admin')}
-        </Link>
+          {operadorLabel}
+        </strong>
+        <span
+          className="truncate text-sm text-muted-foreground"
+          data-testid="topnav-operador-sucursal"
+        >
+          {sucursalLabel}
+        </span>
+      </div>
 
-        <div className="min-w-0 flex-1" aria-hidden="true" />
-
+      {/* Cluster derecho — `ml-auto` lo ancla al borde derecho del
+          header; el `flex-1` del bloque operador-sucursal se come
+          el espacio sobrante. `flex-wrap` + `justify-end` son la
+          red de seguridad si en 320px algo no cabe junto. Mismo
+          shell que Dashboard.tsx:330-356. */}
+      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
         {/*
           Branch-switch shortcut. Only renders once the operator has
           actually picked a branch — before that the picker in
