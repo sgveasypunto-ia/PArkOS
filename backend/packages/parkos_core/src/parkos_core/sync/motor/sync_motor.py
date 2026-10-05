@@ -37,6 +37,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...runtime import engine_flag
@@ -91,6 +92,107 @@ def describe_apply_error(exc: BaseException) -> str:
     if sqlstate:
         return f"{type(orig).__name__}:{sqlstate}"
     return type(exc).__name__
+
+
+# ---------------------------------------------------------------------------
+# ``resolve_identity_aliases`` + ``remap_foreign_keys`` — durable
+# cross-cycle identity-alias remap for the catalog-driven push path.
+#
+# Restored in 2026-10-05 (commit missing in git history — last live in the
+# qa/integracion-admin-sucursal session's container only). Without these
+# two symbols the import in ``api/v1/sync_router.py`` (line 88) and the
+# call at line 1255 raise ``ImportError`` at module load, which is the
+# only thing preventing every service from booting at ``dev`` HEAD today.
+#
+# Why a single bounded query (not one per row): the callsite documents
+# "ONCE for this whole request's catalog-driven rows (never one query per
+# row — same bounded posture ``resolve_identity_aliases`` already
+# documents)". All candidate uuids are collected up front, then one
+# ``WHERE uuid_origen = ANY(:candidates)`` returns the whole map.
+#
+# KNOWN LIMIT (D17 follow-up, session 2026-10-05 09:01). ``prod.
+# sync_identity_alias`` is registered in ``OUT_OF_CATALOG`` — it is NEVER
+# replicated between branch and cloud by design. The remap therefore
+# works correctly for the LOCAL pull path (the node that did the
+# pull-side reconciliation has the alias row) and for the LOCAL push
+# path (the push receiver reads its own local table). It does NOT help
+# cross-node push where the receiver's local alias table is empty or
+# doesn't contain the sender's ``uuid_origen`` — those events still
+# raise FK violations on the parent. The architectural fix (option 1:
+# receiver resolves catalog uuid by natural_key at push-apply time, or
+# option 2: bidirectionally replicate ``sync_identity_alias`` with
+# per-node direction handling) is a pending user decision; this
+# restoration closes the IMPORT gap and the local-pull gap, not the
+# cross-node push gap.
+# ---------------------------------------------------------------------------
+async def resolve_identity_aliases(
+    session: AsyncSession,
+    catalog_rows: Sequence[tuple[SyncCatalogEntry, dict[str, Any]]],
+) -> dict[uuid_lib.UUID, uuid_lib.UUID]:
+    """Resolve durable ``prod.sync_identity_alias`` rows for every candidate
+    uuid present in the request's catalog-driven rows — once, in one query.
+
+    Returns an empty dict when ``catalog_rows`` is empty or no payload
+    contains a uuid value (the common path for non-aliased tables).
+    """
+    candidates: set[uuid_lib.UUID] = set()
+    for _spec, payload in catalog_rows:
+        for value in payload.values():
+            if isinstance(value, uuid_lib.UUID):
+                candidates.add(value)
+            elif isinstance(value, str):
+                try:
+                    candidates.add(uuid_lib.UUID(value))
+                except ValueError:
+                    continue
+    if not candidates:
+        return {}
+
+    # ``prod.sync_identity_alias`` is intentionally NOT modeled as an
+    # ORM class (it lives in ``OUT_OF_CATALOG`` and is never replicated,
+    # so adding a model would force a migration registration that the
+    # table never needs). Raw ``text()`` with one ``ANY()`` is the
+    # minimal-surface access path.
+    stmt = text(
+        "SELECT uuid_origen, uuid_resuelto "
+        "FROM prod.sync_identity_alias "
+        "WHERE uuid_origen = ANY(:candidates)"
+    )
+    result = await session.execute(stmt, {"candidates": list(candidates)})
+    return {row.uuid_origen: row.uuid_resuelto for row in result.all()}
+
+
+def remap_foreign_keys(
+    spec: SyncCatalogEntry,
+    raw_payload: dict[str, Any],
+    aliases: dict[uuid_lib.UUID, uuid_lib.UUID],
+) -> dict[str, Any]:
+    """Return a (possibly new) copy of ``raw_payload`` with any FK uuid
+    value repointed to its locally-resolved sibling recorded in
+    ``aliases``.
+
+    The mapping is conservative: only values that ARE present in
+    ``aliases`` are rewritten. A field whose value is not a uuid, or
+    whose uuid is not in the alias map, is left untouched (returns a
+    shallow copy of the dict, never the input itself, so the caller
+    can safely pass it to ``apply_row`` without aliasing the original
+    payload).
+    """
+    if not aliases:
+        return dict(raw_payload)
+    out = dict(raw_payload)
+    for key, value in list(out.items()):
+        candidate: uuid_lib.UUID | None = None
+        if isinstance(value, uuid_lib.UUID):
+            candidate = value
+        elif isinstance(value, str):
+            try:
+                candidate = uuid_lib.UUID(value)
+            except ValueError:
+                continue
+        if candidate is not None and candidate in aliases:
+            out[key] = aliases[candidate]
+    return out
 
 
 @dataclass
@@ -334,4 +436,10 @@ class SyncMotor:
         )
 
 
-__all__ = ["BatchResult", "ConflictResolution", "SyncMotor"]
+__all__ = [
+    "BatchResult",
+    "ConflictResolution",
+    "SyncMotor",
+    "remap_foreign_keys",
+    "resolve_identity_aliases",
+]
