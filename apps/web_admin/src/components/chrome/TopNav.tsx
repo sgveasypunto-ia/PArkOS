@@ -127,11 +127,19 @@ export function TopNav(): JSX.Element {
       data-testid="topnav"
       className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/40 bg-card/80 px-4 py-2.5 backdrop-blur-md shadow-apple-sm md:gap-3 md:px-5 xl:px-6"
     >
-      {/* Brand — EasyPunto logo (light/dark swap via `.dark` en
-          `<html>`, igual que el Dashboard de la sucursal). El
-          `<span className="sr-only">` mantiene un nombre accesible
-          razonable para screen readers y para la traduccion
-          `topnav.brand` que ya esta en uso. */}
+      {/*
+        Brand — EasyPunto logo real. Dos variantes con swap via
+        `.dark` en `<html>`, mismo patrón que
+        `apps/electron-sucursal/src/features/caja/pages/Dashboard.tsx`
+        (líneas 266-275):
+          - `logoDark`  (PNG, pin naranja + wordmark gris oscuro) →
+            modo claro (`dark:hidden`).
+          - `logoLight` (SVG, todo `#fff`) → modo oscuro
+            (`hidden dark:block`).
+        El `aria-label` del Link mantiene "Parkos Admin" como nombre
+        accesible (diferencia el contexto admin de la marca, igual
+        que la `t('topnav.brand', 'Parkos Admin')` histórica).
+      */}
       <Link
         to="/"
         data-testid="topnav-brand"
@@ -139,18 +147,17 @@ export function TopNav(): JSX.Element {
         aria-label={t('topnav.brand', 'Parkos Admin')}
       >
         <img
-          src={logoLight}
+          src={logoDark}
           alt=""
           aria-hidden="true"
           className="h-9 w-auto shrink-0 dark:hidden"
         />
         <img
-          src={logoDark}
+          src={logoLight}
           alt=""
           aria-hidden="true"
           className="hidden h-9 w-auto shrink-0 dark:block"
         />
-        <span className="sr-only">{t('topnav.brand', 'Parkos Admin')}</span>
       </Link>
 
       {/* Divisor vertical logo ↔ bloque operador/sucursal. Mismo
