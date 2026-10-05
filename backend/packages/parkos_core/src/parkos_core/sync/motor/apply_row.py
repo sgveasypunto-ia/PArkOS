@@ -104,20 +104,41 @@ def _coerce_wire_payload(model_cls: type, payload: dict[str, Any]) -> dict[str, 
     EXCEPTION: a small, EXPLICIT set of ``prod.sync_queue`` metadata keys
     that the DB trigger ``prod.fn_enqueue_sync()`` (and its catalog sibling
     ``prod.fn_enqueue_sync_catalog()``) injects into the ``datos`` JSONB
-    and which NEVER correspond to a real column on any target table
-    (``ingreso`` has no ``seq``, neither does ``salidas``/``facturas``/
-    ``factura_pagos``/etc.). These keys are sync-queue bookkeeping — the
-    FIFO watermark by ``uuid_sucursal`` and the dispatch hints used by
-    the apply hooks — and must be stripped before the INSERT, otherwise
-    every apply raises ``asyncpg.exceptions.UndefinedColumnError`` with
-    SQLSTATE 42703 and the whole pull comes to a halt. (See PR comment
-    "fix(sync): strip sync-queue metadata keys before INSERT" for the
-    live repro: 13 pending ops from the qa/integracion-admin-sucursal
-    session of 2026-10-05, all of them ``events_apply_error`` with the
-    same root cause.) The whitelist is small and explicit so a
-    genuinely-intentional extra key in a poisoned-row fixture still
-    raises (the test above is the contract); only KNOWN metadata
-    keys are stripped.
+    and which must NEVER be passed through to the ``repo/*`` helpers as
+    business attributes. They split into two classes that BOTH have to
+    be stripped for the apply to land:
+
+      1. **Sync-queue bookkeeping** (``seq``, ``current_uuid``,
+         ``parent_uuid``): the FIFO watermark by ``uuid_sucursal`` and the
+         dispatch hints the apply hooks use. ``seq`` and ``current_uuid``
+         / ``parent_uuid`` are NOT columns on any target table — the
+         first fix on this path was stripping them to avoid 42703
+         (``column "seq" of relation "ingreso" does not exist``, commit
+         ``9b311bb7`` of 2026-10-05).
+      2. **Server-side audit metadata** (``created_at``, ``created_by``,
+         ``sync_status``, ``sync_attempts``, ``sync_timestamp``): the
+         origin stamps ``created_at``/``created_by`` at INSERT time
+         (Carril B: transaction time is per-node, must NOT cross the
+         wire — see ``jobs/sync_cloud.py::docstring` block comment
+         above ``_QUEUE_METADATA_KEYS``), and ``sync_status``/``sync_at
+         tempts``/``sync_timestamp`` are the sync-queue's own per-row
+         lifecycle columns that the receiving node has to recompute as
+         it processes the row. ALL four ``repo/*`` apply helpers
+         (``versioned.close_and_insert``, ``event.record_event``,
+         ``append_only.append_event``, ``workflow.append_transition``)
+         explicitly set ``created_at=now``/``created_by=actor_uuid``
+         server-side; passing the origin's copy in ``**attrs`` collides
+         with that explicit set on every helper and raises
+         ``TypeError: ... got multiple values for keyword argument
+         'created_at'`` — the bug fixed in this commit
+         (14 pending ops from the qa/integracion-admin-sucursal session
+         of 2026-10-05 stuck on ``apply_error`` for the same root cause).
+
+    The whitelist is small and explicit so a genuinely-intentional extra
+    key in a poisoned-row fixture still raises (the per-row
+    fallback isolation test in
+    ``tests/integration/test_sync_cloud_catalog_driven.py`` is the
+    contract); only KNOWN metadata keys are stripped.
     """
     mapper = sa_inspect(model_cls)
     mapped_columns = {column.name: column for column in mapper.columns}
@@ -145,9 +166,32 @@ def _coerce_wire_payload(model_cls: type, payload: dict[str, Any]) -> dict[str, 
 
 
 # Keys injected by prod.fn_enqueue_sync() / prod.fn_enqueue_sync_catalog()
-# into prod.sync_queue.datos (JSONB) that are SYNC-QUEUE bookkeeping, not
-# columns of any target table. See the _coerce_wire_payload docstring.
-_SYNC_QUEUE_METADATA_KEYS = frozenset({"seq", "current_uuid", "parent_uuid"})
+# into prod.sync_queue.datos (JSONB) that the apply helpers must NOT see as
+# business attributes. See the _coerce_wire_payload docstring.
+#
+# Aligned with the OTHER two filter sets in the project:
+#   - jobs/sync_cloud.py::_QUEUE_METADATA_KEYS (pull path, cloud-side)
+#   - api/v1/sync_router.py::_PULL_WIRE_METADATA_KEYS (wire serializer)
+# Both also drop created_at/created_by/sync_status/sync_attempts/sync_timestamp
+# as "queue/audit metadata never a real business attribute" — this
+# module's whitelist was the missing third copy of that contract, and is
+# the one that actually fires on the apply path (which is why Bug #2
+# surfaced here and not on the wire). The union is kept here as the
+# canonical 8-key set so all three sites drift in lockstep.
+_SYNC_QUEUE_METADATA_KEYS = frozenset(
+    {
+        # sync-queue bookkeeping (not real columns on any target table)
+        "seq",
+        "current_uuid",  # consumed by close_and_insert dispatch
+        "parent_uuid",   # consumed by append_transition dispatch
+        # server-side audit metadata (origin stamps, receiver recomputes)
+        "created_at",
+        "created_by",
+        "sync_status",
+        "sync_attempts",
+        "sync_timestamp",
+    }
+)
 
 
 async def _invoke_hook(hook: registry.HookFn, ctx: HookContext) -> HookResult:
