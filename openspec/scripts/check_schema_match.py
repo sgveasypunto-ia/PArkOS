@@ -195,6 +195,7 @@ MERMAID_TO_POSTGRES: dict[str, str] = {
     "decimal": "numeric",
     "bool": "boolean",
     "timestamp": "timestamp without time zone",
+    "timestamptz": "timestamp with time zone",  # sync_catalog uses TIMESTAMPTZ for created_at
     "date": "date",
     "text": "text",
     "json": "jsonb",

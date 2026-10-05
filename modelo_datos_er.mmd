@@ -407,7 +407,7 @@
         %% [V] Precio por sede x tipo de vehículo x modalidad; el histórico reconstruye con qué tarifa se cobró; vigente_desde admite fecha futura (tarifa programada)
         %% Business
         uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
-        uuid uuid_sucursal FK "UK01 (uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa, vigente_desde)"
+        uuid uuid_sucursal FK "UK01 filtrada (uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa, vigente_desde) WHERE vigente_hasta IS NULL - índice único PARCIAL para bi-temporalidad (migración 0063); permite close+insert de la misma combinación sin violar la UK"
         uuid uuid_tipo_vehiculo FK "UK01"
         uuid uuid_tipo_tarifa FK "UK01 - modalidad tarifada (hora, fracción, plena)"
         decimal valor "precio de la modalidad para la combinación"
@@ -432,6 +432,28 @@
         uuid uuid_sucursal FK "UK01 (uuid_sucursal, uuid_tipo_vehiculo, vigente_desde) - sede con cupo"
         uuid uuid_tipo_vehiculo FK "UK01 - tipo de vehículo con cupo asignado"
         int cantidad "número máximo de celdas/espacios para ese tipo"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Versioning
+        timestamp vigente_desde "inicio de vigencia de esta versión (parte de la UK)"
+        timestamp vigente_hasta "fin de vigencia (NULL = vigente); el momento de sistema del cierre queda en log_transaccional"
+        string estado "estado de la versión: activo | inactivo (hecho escrito al insertar)"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
+
+    configuracion_caja {
+        %% [V] Configuración operativa de caja por sede: base inicial sugerida, redondeo, denominaciones permitidas; close+insert para cambios de política (migración 0066)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        uuid uuid_sucursal FK "sede dueña de la configuración"
+        decimal base_inicial_sugerida "monto sugerido para apertura de turno (en COP)"
+        string redondeo "política de redondeo: ninguno | centena | decena"
+        json denominaciones_permitidas "denominaciones de billetes/monedas aceptadas (lista de enteros en COP)"
         %% Audit
         timestamp created_at "cuándo la DB registró la fila (UTC)"
         uuid created_by "usuario que originó la inserción"
@@ -1024,6 +1046,35 @@
         timestamp sync_timestamp "última sincronización exitosa"
         int sync_attempts "reintentos de sync consumidos"
     }
+
+    sync_catalog {
+        %% [A] Catálogo seed-driven de la tabla->clase de auditoría para sync (migración 0029b); permite al motor despachar filas sin knowledge hardcodeado de cada entidad
+        %% Business
+        string entity_name PK "nombre de la tabla (coincide con la entry de information_schema)"
+        string audit_class "V | L-E | L-W | L-S | A - determina la política de conflicto del motor de sync"
+        %% Audit
+        timestamptz created_at "cuándo la DB registró la fila (UTC, timestamptz para que NOW() no dependa de timezone del servidor)"
+    }
+
+
+    sync_identity_alias {
+        %% [A] Resolución de identidad entre sucursal y cloud: uuid_origen (asignado offline) → uuid_resuelto (UUID real en cloud); permite reconciliación sin colisiones (migración reciente de sync overhaul)
+        %% Business
+        uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
+        string tabla "tabla a la que pertenece el uuid origen (polimórfico)"
+        uuid uuid_origen "uuid asignado por la sucursal en offline (parte de UK conceptual)"
+        uuid uuid_resuelto "uuid real en cloud,FK al registro final tras la reconciliación"
+        %% Retention (operacional — hasta la maduración completa; default 2 años)
+        date fecha_retencion_hasta "límite de retención para archivado/particiones (nunca DELETE de negocio)"
+        %% Audit
+        timestamp created_at "cuándo la DB registró la fila (UTC)"
+        uuid created_by "usuario que originó la inserción"
+        %% Sync
+        string sync_status "replicación: pendiente | sincronizado | error"
+        timestamp sync_timestamp "última sincronización exitosa"
+        int sync_attempts "reintentos de sync consumidos"
+    }
+
 
     sync_log {
         %% [A] Métrica por ciclo de sincronización de cada sucursal; alimenta alertas sync_failure y branch_offline
