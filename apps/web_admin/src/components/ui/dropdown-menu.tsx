@@ -73,7 +73,20 @@ export function DropdownMenu({ children }: DropdownMenuProps): JSX.Element {
     <DropdownContext.Provider
       value={{ open, setOpen, triggerRef, contentId, triggerId, labelId }}
     >
-      {children}
+      {/*
+        Anchoring wrapper — `position: relative` is required so the
+        `DropdownMenuContent`'s `absolute top-full` lands on the trigger,
+        not on the initial containing block (the viewport). Without this
+        every dropdown flies to the bottom-right corner of the screen
+        regardless of where the trigger is — see bug audit
+        2026-10-02 (Engram #2269). `inline-flex shrink-0` keeps the
+        trigger's intrinsic size inside flex parents and prevents the
+        wrapper from collapsing the trigger when the parent has
+        `flex-wrap` and tight space (e.g. the new admin TopNav header).
+      */}
+      <div className="relative inline-flex shrink-0">
+        {children}
+      </div>
     </DropdownContext.Provider>
   );
 }
