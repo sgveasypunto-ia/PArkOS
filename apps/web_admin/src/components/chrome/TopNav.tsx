@@ -203,7 +203,7 @@ export function TopNav(): JSX.Element {
             type="button"
             onClick={() => navigate('/seleccionar-sucursal')}
             data-testid="chrome-sucursal-selector"
-            className="focus-ring inline-flex shrink-0 items-center gap-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent/60"
+            className="focus-ring inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-sm font-medium hover:bg-accent/60"
             aria-label={t('topnav.switchBranch', 'Cambiar sucursal')}
           >
             <Building2 className="size-4" aria-hidden="true" />
@@ -217,20 +217,20 @@ export function TopNav(): JSX.Element {
 
         <DropdownMenu>
           <DropdownMenuTrigger
-            className="focus-ring flex shrink-0 items-center gap-2 rounded-full p-1 pr-3 text-sm hover:bg-accent/60"
+            className="focus-ring flex h-9 shrink-0 items-center gap-2 rounded-full pl-1 pr-2.5 text-xs hover:bg-accent/60"
             data-testid="topnav-user-menu"
             aria-label={t('topnav.userMenu', 'Menú de usuario')}
           >
             <span
               aria-hidden="true"
               data-testid="topnav-avatar"
-              className="bg-primary/10 text-primary inline-flex size-8 items-center justify-center rounded-full text-sm font-semibold"
+              className="bg-primary/10 text-primary inline-flex size-7 items-center justify-center rounded-full text-xs font-semibold"
             >
               {initial}
             </span>
             <span
               data-testid="topnav-email"
-              className="hidden max-w-[180px] truncate font-medium md:inline"
+              className="hidden max-w-[160px] truncate font-medium md:inline"
             >
               {displayed}
             </span>

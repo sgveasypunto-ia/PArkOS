@@ -106,7 +106,7 @@ export function ThemeToggle(): JSX.Element {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'shrink-0')}
+        className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), '!h-9 !w-9 shrink-0')}
         aria-label={t('topnav.themeToggle', 'Cambiar tema')}
         data-testid="theme-toggle-trigger"
       >
