@@ -381,8 +381,13 @@ function Show-Eula {
         throw "EULA file not found at $EulaPath - a real EULA (with PostgreSQL/NSSM/Electron third-party attributions) must be staged there before this installer ships."
     }
 
-    Get-Content $EulaPath | Out-Host -Paging
-
+    # Mostrar el EULA de una sola vez (sin paginador) y leer ACEPTO
+    # inmediatamente. Out-Host -Paging se elimino porque el paginador
+    # agrega una capa de interaccion extra (espera de tecla por pagina)
+    # entre el contenido y el prompt, sin beneficio real para un
+    # EULA de tamano razonable.
+    Get-Content $EulaPath
+    Write-Host ''
     $answer = Read-Host 'Escriba ACEPTO para continuar (cualquier otra respuesta cancela la instalacion)'
     if ($answer -ne 'ACEPTO') {
         Write-Host 'EULA no aceptada. Saliendo sin cambios.' -ForegroundColor Yellow

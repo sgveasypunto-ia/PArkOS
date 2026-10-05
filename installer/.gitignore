@@ -3,8 +3,12 @@
 # Exception: payload/management/ (Parkos.psd1/.psm1/about_Parkos.help.txt) is
 # first-party, versioned source, NOT a downloaded/build artifact - Get-ManagementModulePayload
 # in build-release.ps1 validates it exists in the repo instead of fetching it.
+# Exception: payload/README-EULA.txt is the End-User License Agreement - first-party
+# legal document, not a build artifact. Show-Eula in parkos-installer.ps1 requires
+# it to be present at install time (resolves via $script:PayloadRoot/README-EULA.txt).
 payload/*
 !payload/management/
+!payload/README-EULA.txt
 .pyinstaller-work/
 __pycache__/
 *.spec
