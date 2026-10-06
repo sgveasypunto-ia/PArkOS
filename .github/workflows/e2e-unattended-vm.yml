@@ -23,15 +23,15 @@ name: installer E2E unattended lifecycle
 # 2025-04-15) - ya no es seleccionable, de ahi la sustitucion.
 
 #
-# SECRETO REQUERIDO: PARKOS_MASTER_KEY_B64 = base64 del archivo
-# parkos-master.key (>= 32 bytes; secreto de la empresa, DEC-INST-42).
-# Generar el valor en una maquina de soporte con:
+# SECRETO OPCIONAL: PARKOS_MASTER_KEY_B64 = base64 de la clave maestra REAL
+# (>= 32 bytes; DEC-INST-42). Generar el valor en una maquina de soporte con:
 #   [Convert]::ToBase64String([IO.File]::ReadAllBytes('parkos-master.key'))
-# El job lo escribe en installer\payload\security\parkos-master.key (que
-# build-release.ps1 -> Get-MasterKeyPayload exige) sin imprimirlo nunca. Si el
-# secreto no existe (forks, repos sin configurar) el job NO falla: emite un
-# aviso y salta todos los pasos. Solo workflow_dispatch: los secretos no se
-# exponen a pull_request desde forks y este workflow nunca corre en PR.
+# Si existe, el job lo escribe (sin imprimirlo nunca, enmascarado) sobre
+# installer\payload\security\parkos-master.key del checkout y lo restaura al
+# final. Si NO existe (forks, repos sin configurar) el job NO se salta: corre
+# con la clave maestra VERSIONADA en el repositorio (solo pruebas) y emite un
+# aviso. Solo workflow_dispatch: los secretos no se exponen a pull_request
+# desde forks y este workflow nunca corre en PR.
 #
 # Postgres: el instalador descarga su propio ZIP (installer/shared/
 # ParkosPostgresDownload.ps1) a C:\ProgramData\Parkos\downloads; esa carpeta
@@ -70,17 +70,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Provision de la clave maestra desde el secreto. NUNCA se imprime: sin
-      # Write-Host del valor, sin trazas, y se enmascara por si acaso. Sin
-      # secreto -> aviso y se saltan los pasos siguientes (no falla).
-      - name: Provision master key from secret
+      # Provision OPCIONAL de la clave maestra real desde el secreto. NUNCA se
+      # imprime: sin Write-Host del valor, sin trazas, y se enmascara por si
+      # acaso. Sin secreto -> el job NO se salta: corre con la clave maestra
+      # versionada en el repositorio (installer/payload/security/parkos-master.key).
+      - name: Provision master key from secret (optional)
         id: key
         env:
           PARKOS_MASTER_KEY_B64: ${{ secrets.PARKOS_MASTER_KEY_B64 }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ([string]::IsNullOrWhiteSpace($env:PARKOS_MASTER_KEY_B64)) {
-            Write-Host '::notice title=e2e omitido::El secreto PARKOS_MASTER_KEY_B64 no esta disponible (fork o repo sin configurar); se omite el e2e.'
+            Write-Host '::notice title=clave maestra del repositorio::El secreto opcional PARKOS_MASTER_KEY_B64 no esta configurado; el e2e corre con la clave maestra versionada en el repositorio (solo pruebas).'
             'present=false' >> $env:GITHUB_OUTPUT
             exit 0
           }
@@ -103,7 +104,6 @@ jobs:
       # Cache del ZIP de Postgres que el instalador descarga (cache dir del
       # instalador: <DataPath>\downloads; DataPath por defecto C:\ProgramData\Parkos).
       - name: Cache installer download dir (Postgres ZIP)
-        if: steps.key.outputs.present == 'true'
         uses: actions/cache@v4
         with:
           path: C:\ProgramData\Parkos\downloads
@@ -126,7 +126,6 @@ jobs:
       # primer stage, en vez de fallar en silencio mas adelante - no se pudo
       # verificar esto lanzando un runner real desde esta sesion.
       - uses: actions/setup-node@v4
-        if: steps.key.outputs.present == 'true'
         with:
           node-version: 'lts/*'
 
@@ -137,7 +136,6 @@ jobs:
       # apps/package.json no fija un campo "packageManager", de ahi el
       # `prepare pnpm@latest --activate` explicito.
       - name: Enable pnpm via Corepack
-        if: steps.key.outputs.present == 'true'
         run: |
           corepack enable
           corepack prepare pnpm@latest --activate
@@ -151,7 +149,6 @@ jobs:
       # no es una preocupacion PRE-EXISTENTE de build-release.ps1 (que este
       # PR tiene prohibido modificar), no de este workflow.
       - name: Install web_sucursal workspace dependencies (pnpm)
-        if: steps.key.outputs.present == 'true'
         working-directory: apps
         run: pnpm install --frozen-lockfile
 
@@ -163,7 +160,6 @@ jobs:
       # `echo ... >> $env:GITHUB_PATH`. La action oficial ya resuelve el
       # PATH y el cache correctamente y mantiene consistencia con ci.yml.
       - uses: astral-sh/setup-uv@v3
-        if: steps.key.outputs.present == 'true'
 
       # Build de release completo (Electron MSI + los 4 exes congelados por
       # PyInstaller + el payload offline de Postgres/pg_partman/NSSM/PS7) -
@@ -171,11 +167,9 @@ jobs:
       # switch" como -All). Build pesado (~10+ min); necesita pnpm y uv ya
       # en PATH (pasos de arriba).
       - name: Build release payload
-        if: steps.key.outputs.present == 'true'
         run: pwsh -File installer/build-release.ps1
 
       - name: Generate a disposable sucursal UUID for this run
-        if: steps.key.outputs.present == 'true'
         id: sucursal
         run: |
           $uuid = [guid]::NewGuid().ToString()
@@ -186,7 +180,6 @@ jobs:
       # installer/tests/e2e/Invoke-UnattendedE2E.ps1, reproducible a mano por
       # un ingeniero en una VM real sin leer este YAML.
       - name: Run unattended install -> health -> update -> restore -> health cycle
-        if: steps.key.outputs.present == 'true'
         run: >-
           pwsh -File installer/tests/e2e/Invoke-UnattendedE2E.ps1
           -SucursalUuid '${{ steps.sucursal.outputs.uuid }}'
@@ -194,7 +187,7 @@ jobs:
           -VersionTag '${{ inputs.version_tag }}'
 
       - name: Upload installer logs
-        if: always() && steps.key.outputs.present == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: parkos-installer-e2e-logs
@@ -203,7 +196,8 @@ jobs:
             C:\ProgramData\Parkos\logs\*
           if-no-files-found: warn
 
-      # Higiene: no dejar la clave en el workspace (VM desechable, pero igual).
-      - name: Remove provisioned master key
+      # Higiene: la clave real (si se aprovisiono) no debe quedar en el
+      # workspace (VM desechable, pero igual): se restaura la copia versionada.
+      - name: Restore repository master key (drop provisioned real key)
         if: always() && steps.key.outputs.present == 'true'
-        run: Remove-Item -Force -ErrorAction SilentlyContinue installer\payload\security\parkos-master.key
+        run: git checkout -- installer/payload/security/parkos-master.key
