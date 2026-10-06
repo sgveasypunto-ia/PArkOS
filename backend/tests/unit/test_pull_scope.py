@@ -4,14 +4,16 @@ Pure compile-time coverage: each ``broadcast_policy`` is compiled against the
 PostgreSQL dialect with literal binds and the resulting WHERE clause is
 asserted. No database needed.
 """
+
 from __future__ import annotations
 
 import dataclasses
 import uuid as uuid_lib
+from datetime import datetime
 
 import pytest
 from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
-from parkos_core.sync.motor.pull_scope import build_scope_predicate
+from parkos_core.sync.motor.pull_scope import build_scope_entry_predicate, build_scope_predicate
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
@@ -24,9 +26,7 @@ def _sql(table: str, branch: uuid_lib.UUID = BRANCH) -> str | None:
     if predicate is None:
         return None
     stmt = select(spec.model_cls.uuid).where(predicate)
-    compiled = stmt.compile(
-        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
-    )
+    compiled = stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
     # Keep only the WHERE clause so assertions don't depend on the SELECT list.
     return " ".join(str(compiled).split("WHERE", 1)[1].split())
 
@@ -301,3 +301,108 @@ def test_key_guard_does_not_wrap_the_indexed_expression_in_nullif() -> None:
     ``ix_clientes_nk_open`` / ``ix_clientes_nk`` / ``ix_vehiculos_nk_open``."""
     for table in ("clientes", "clientes_b2b", "vehiculos"):
         assert "nullif" not in (_sql(table) or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# F1 — scope-entry predicate: the scope rule with a window on the bridge rows
+# ---------------------------------------------------------------------------
+
+FLOOR = datetime(2026, 10, 5, 12, 0, 0)
+CEILING = datetime(2026, 10, 5, 13, 0, 0)
+_GE = "created_at >= '2026-10-05 12:00:00'"
+_LT = "created_at < '2026-10-05 13:00:00'"
+
+
+def _entry(table: str, floor: datetime | None = FLOOR, ceiling: datetime | None = None) -> str:
+    spec = SYNC_CATALOG_BY_NAME[table]
+    predicate = build_scope_entry_predicate(spec, BRANCH, floor, ceiling)
+    assert predicate is not None
+    compiled = (
+        select(spec.model_cls.uuid)
+        .where(predicate)
+        .compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    return " ".join(str(compiled).split("WHERE", 1)[1].split())
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "tipos_vehiculo",
+        "resolucion_facturacion",
+        "sucursal",
+        "configuracion_tolerancias",
+        "subscripciones_cliente",
+        "subscripcion_vehiculos",
+    ],
+)
+def test_entry_predicate_is_none_for_non_derived_policies(table: str) -> None:
+    assert build_scope_entry_predicate(SYNC_CATALOG_BY_NAME[table], BRANCH, FLOOR) is None
+
+
+def test_scope_predicates_carry_no_created_at_window() -> None:
+    for table in (
+        "usuarios",
+        "permisos_usuario",
+        "clientes",
+        "clientes_b2b",
+        "vehiculos",
+        "empresa",
+    ):
+        assert "created_at" not in (_sql(table) or "")
+
+
+def test_usuarios_entry_is_the_membership_subselect_windowed() -> None:
+    assert _entry("usuarios") == (
+        "prod.usuarios.uuid IN (SELECT prod.usuarios_sucursal.uuid_usuario "
+        "FROM prod.usuarios_sucursal "
+        f"WHERE prod.usuarios_sucursal.uuid_sucursal = '{BRANCH}' "
+        "AND prod.usuarios_sucursal.vigente_hasta IS NULL "
+        f"AND prod.usuarios_sucursal.{_GE})"
+    )
+
+
+def test_permisos_usuario_entry_follows_the_same_newly_assigned_users() -> None:
+    where = _entry("permisos_usuario", ceiling=CEILING)
+    assert where.startswith("prod.permisos_usuario.uuid_usuario IN (SELECT")
+    assert f"prod.usuarios_sucursal.{_GE} AND prod.usuarios_sucursal.{_LT}" in where
+
+
+def test_ceiling_is_optional_and_floor_only_window_has_no_upper_bound() -> None:
+    assert "created_at <" not in _entry("usuarios")
+    assert _LT in _entry("usuarios", ceiling=CEILING)
+
+
+def test_clientes_entry_windows_both_the_subscription_and_the_invoice() -> None:
+    where = _entry("clientes")
+    assert f"prod.subscripciones_cliente.{_GE}" in where
+    assert f"prod.factura_electronica.{_GE}" in where
+    # the empty-key guard survives in the entry rule
+    assert f"{_NK_NUMERO.format(t='prod.clientes')} != ''" in where
+
+
+def test_clientes_b2b_entry_follows_newly_scoped_clientes_by_natural_key() -> None:
+    where = _entry("clientes_b2b")
+    assert where.startswith("prod.clientes_b2b.uuid_cliente IN (")
+    assert where.count(f"prod.subscripciones_cliente.{_GE}") == 2
+    assert where.count(f"prod.factura_electronica.{_GE}") == 2
+
+
+def test_vehiculos_entry_is_new_when_either_the_subscription_or_the_link_is_new() -> None:
+    where = _entry("vehiculos")
+    assert f"prod.subscripciones_cliente.{_GE}" in where
+    assert f"prod.subscripcion_vehiculos.{_GE}" in where
+    assert " OR " in where
+
+
+def test_empresa_entry_is_a_branch_row_created_in_the_window() -> None:
+    assert _entry("empresa") == (
+        "EXISTS (SELECT prod.sucursal.uuid FROM prod.sucursal "
+        f"WHERE prod.sucursal.uuid = '{BRANCH}' AND prod.sucursal.{_GE})"
+    )
+
+
+def test_entry_predicate_for_derived_without_rule_raises() -> None:
+    spec = dataclasses.replace(SYNC_CATALOG_BY_NAME["tipos_vehiculo"], broadcast_policy="derived")
+    with pytest.raises(ValueError, match="no registered scope rule"):
+        build_scope_entry_predicate(spec, BRANCH, FLOOR)

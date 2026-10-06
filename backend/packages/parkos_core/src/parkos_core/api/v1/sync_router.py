@@ -86,7 +86,7 @@ from ...sync.motor import apply_guard
 from ...sync.motor.apply_result import ApplyResult
 from ...sync.motor.broadcast_resolver import BroadcastPolicyError, resolve_broadcast_targets
 from ...sync.motor.dependency_orderer import order_batch
-from ...sync.motor.pull_scope import build_scope_predicate
+from ...sync.motor.pull_scope import build_scope_entry_predicate, build_scope_predicate
 from ...sync.motor.sync_motor import (
     SyncMotor,
     describe_apply_error,
@@ -866,6 +866,22 @@ async def _fetch_pull_rows(
     resnapshot rather than missing rows — safe specifically BECAUSE
     :func:`apply_guard.row_already_present` (branch-side) now makes
     re-delivery a no-op instead of a duplicate-key crash.
+
+    **Scope-entry delivery (``derived`` tables).** The page above is selected by each
+    row's OWN ``created_at``. A ``derived`` row (usuarios, permisos_usuario, clientes,
+    clientes_b2b, vehiculos, empresa) can enter the branch's scope long after it was
+    created -- when a bridge row (membership, subscription, invoice, link, sucursal)
+    appears -- so its ``created_at`` would never cross an incremental cursor. After the
+    page is cut, the rows brought into scope by a bridge row created in the cursor
+    window ``[since_seq + 1, max_seq_seen]`` (:func:`build_scope_entry_predicate`) are
+    delivered too, listed BEFORE the page (parents before the children that reference
+    them). The window is the one the cursor just crossed, so the page, its LIMIT cut and
+    ``next_seq`` are untouched: extras never advance the cursor (it cannot regress or
+    stall) and a bridge row cut by the LIMIT brings its parents on the page that
+    delivers it, not before. A parent can be re-delivered while its bridge row is still
+    ahead of the cursor (e.g. an invoice at the branch, which is not itself a pulled
+    table) or when it has several bridge rows; that is idempotent (``apply_guard.
+    row_already_present``). ``since_seq <= 0`` skips it: every row already qualifies.
     """
     floor = _created_at_floor_for_seq(since_seq)
     if floor is None:
@@ -891,6 +907,7 @@ async def _fetch_pull_rows(
 
     pushed_rows: list[_PushedRow] = []
     max_seq_seen = since_seq
+    truncated = False
     # Stable sort: seq ties keep catalog order, then (created_at, uuid) order.
     for spec, row, seq in sorted(candidates, key=lambda item: item[2]):
         payload = _wire_payload(spec, row)
@@ -909,7 +926,40 @@ async def _fetch_pull_rows(
         )
         max_seq_seen = max(max_seq_seen, seq)
         if len(pushed_rows) >= limit:
+            truncated = True
             break
+
+    if since_seq > 0:
+        # With a LIMIT cut the window ends where the cursor ends; otherwise it is open.
+        ceiling = _created_at_floor_for_seq(max_seq_seen) if truncated else None
+        delivered = {(row.tabla, row.uuid_registro) for row in pushed_rows}
+        entered: list[_PushedRow] = []
+        for spec in SYNC_CATALOG:
+            if spec.direction not in _PULL_DIRECTIONS or spec.broadcast_policy != "derived":
+                continue
+            model = spec.model_cls
+            scope = build_scope_predicate(spec, uuid_sucursal)
+            entry = build_scope_entry_predicate(spec, uuid_sucursal, floor, ceiling)
+            if scope is None or entry is None:
+                continue
+            stmt = select(model).where(scope, entry)
+            if spec.audit_class == "V":
+                stmt = stmt.where(model.vigente_hasta.is_(None))
+            stmt = stmt.order_by(model.created_at.asc(), model.uuid.asc())
+            for row in (await session.execute(stmt)).scalars().all():
+                if (spec.name, row.uuid) in delivered:
+                    continue
+                delivered.add((spec.name, row.uuid))
+                entered.append(
+                    _PushedRow(
+                        tabla=spec.name,
+                        uuid_registro=row.uuid,
+                        seq=_row_seq(row),
+                        datos=_wire_payload(spec, row),
+                    )
+                )
+        # Parents first; ``next_seq`` is still the page's cursor, never an extra's.
+        pushed_rows = entered + pushed_rows
 
     return pushed_rows, max_seq_seen
 
