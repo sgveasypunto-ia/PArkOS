@@ -93,6 +93,7 @@ from ...sync.motor.sync_motor import (
     remap_foreign_keys,
     resolve_identity_aliases,
 )
+from ...sync.observability.logs import get_logger, log_sync_event
 from ...sync.router_helpers import (
     RateLimit,
     SyncIdempotencyCache,
@@ -968,28 +969,40 @@ async def _fetch_pull_rows(
 def _log_pull(
     *,
     uuid_sucursal: uuid_lib.UUID,
+    actor_uuid: str | None,
+    correlation_id: str | None,
     rows: list[_PushedRow],
     since_seq: int,
     next_seq: int,
     duration_ms: float,
 ) -> None:
     """One structured record per pull. Counts only: never a row payload
-    (``usuarios`` rows carry ``password_hash``)."""
+    (``usuarios`` rows carry ``password_hash``).
+
+    Emitted through the REQ-OPS-007 sink (structlog JSON on stdout) and not
+    through the stdlib ``logger``: the API process configures no handler for
+    ``parkos_core`` loggers, so an INFO record there is silently dropped.
+    ``tabla`` is the constant ``"sync_pull"`` because a pull spans many tables;
+    the per-table breakdown lives in ``rows_por_tabla``. ``payload`` is
+    deliberately not passed.
+    """
     rows_por_tabla: dict[str, int] = {}
     for row in rows:
         rows_por_tabla[row.tabla] = rows_por_tabla.get(row.tabla, 0) + 1
     slow = duration_ms > _PULL_SLOW_THRESHOLD_MS
-    logger.log(
-        logging.WARNING if slow else logging.INFO,
+    log_sync_event(
+        get_logger(),
         "sync_pull.slow" if slow else "sync_pull.completed",
-        extra={
-            "uuid_sucursal": str(uuid_sucursal),
-            "rows_por_tabla": rows_por_tabla,
-            "total_rows": len(rows),
-            "duration_ms": duration_ms,
-            "since_seq": since_seq,
-            "next_seq": next_seq,
-        },
+        tabla="sync_pull",
+        uuid_sucursal=uuid_sucursal,
+        actor_uuid=actor_uuid,
+        correlation_id=correlation_id,
+        level="warning" if slow else "info",
+        rows_total=len(rows),
+        rows_por_tabla=rows_por_tabla,
+        duration_ms=duration_ms,
+        since_seq=since_seq,
+        next_seq=next_seq,
     )
 
 
@@ -1067,6 +1080,8 @@ async def sync_pull(
     duration_ms = round((time.perf_counter() - started) * 1000, 1)
     _log_pull(
         uuid_sucursal=uuid_sucursal,
+        actor_uuid=subject,
+        correlation_id=x_request_id,
         rows=rows,
         since_seq=payload.since_seq,
         next_seq=next_seq,
