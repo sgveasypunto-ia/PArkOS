@@ -84,9 +84,11 @@ if os.environ.get("PARKOS_DEPLOY", "cloud").lower() == "branch":
     )
 
 from ...models.A.revocacion_factura import RevocacionFactura
+from ...constants import CLIENTE_ESTANDAR_UUID
 from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_W.alerta import Alerta
 from ...models.L_W.envio_dian import EnvioDian
+from ...models.V.clientes import Clientes
 from ...models.V.resolucion_facturacion import ResolucionFacturacion
 from ...repo import alert_types
 from ...repo.append_only import append_event
@@ -306,6 +308,10 @@ async def _record_terminal(
     return envio
 
 
+class ClienteNoDisponibleError(RuntimeError):
+    """The invoice's customer row is not in this node yet; retry later."""
+
+
 class ConsecutivoRangeError(RuntimeError):
     """Raised when a ``factura_electronica``'s ``consecutivo`` falls
     outside its ``resolucion_facturacion``'s authorized range (T-PR9-003).
@@ -422,7 +428,28 @@ async def dispatch_factura_electronica(
 
     await validate_consecutivo_range(session, factura=row)
 
-    xml_bytes = serialize(row)
+    # The FE always references a customer (the payer's or the seeded standard
+    # customer). Missing row (e.g. not yet synced) -> serializer falls back
+    # to the standard customer identity.
+    cliente_row = (
+        await session.get(Clientes, row.uuid_cliente)
+        if row.uuid_cliente is not None
+        else None
+    )
+    if (
+        row.uuid_cliente is not None
+        and row.uuid_cliente != CLIENTE_ESTANDAR_UUID
+        and cliente_row is None
+    ):
+        # The payer asked to be invoiced in their own name and that customer
+        # has not reached the cloud yet (derived/async sync). Never fall back
+        # to the standard customer here: a wrong recipient on a DIAN document
+        # can only be fixed with a credit note. No HTTP call has been made.
+        raise ClienteNoDisponibleError(
+            f"cliente {row.uuid_cliente} of factura_electronica "
+            f"{uuid_factura_electronica} is not available yet"
+        )
+    xml_bytes = serialize(row, cliente_row)
     xml_sha256 = hashlib.sha256(xml_bytes).hexdigest()
     provider: DianProvider = FactusProvider(
         base_url=dian_provider_url, token_path=dian_token_path
@@ -791,6 +818,7 @@ async def dispatch_revocacion_with_backoff(
 
 
 __all__ = [
+    "ClienteNoDisponibleError",
     "ConsecutivoRangeError",
     "DianProvider",
     "EnvioDian",

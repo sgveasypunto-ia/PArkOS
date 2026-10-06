@@ -65,7 +65,30 @@ export interface UseSesionActivaReturn {
   cerrarSesion: (
     uuid: string,
     payload: SesionCerrarRequest,
+    options?: CerrarSesionOptions,
   ) => Promise<CerrarSesionResult>;
+}
+
+/**
+ * PT-5 — `deferLogout: true` keeps the auth store intact on a 200 so the
+ * caller can show the read-only post-close summary (which still needs the
+ * bearer token) and run {@link logoutAfterClose} itself when the operator
+ * dismisses it. Default (`false`) keeps the historical logout-on-success
+ * behavior bit-identical.
+ */
+export interface CerrarSesionOptions {
+  deferLogout?: boolean;
+}
+
+/**
+ * The F3.3 logout trifecta (`useAuthStore.clear()` + `parkos:auth:cleared`
+ * event), shared by the immediate path and the deferred (PT-5) path.
+ */
+export function logoutAfterClose(): void {
+  useAuthStore.getState().clear();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('parkos:auth:cleared'));
+  }
 }
 
 /**
@@ -125,16 +148,14 @@ export function useSesionActiva(): UseSesionActivaReturn {
     async (
       uuid: string,
       payload: SesionCerrarRequest,
+      options?: CerrarSesionOptions,
     ): Promise<CerrarSesionResult> => {
-      const doLogout = (): void => {
-        useAuthStore.getState().clear();
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new Event('parkos:auth:cleared'));
-        }
-      };
+      const doLogout = logoutAfterClose;
       try {
         const sesion = await sesionActivaCerrarSesion(uuid, payload);
-        doLogout();
+        if (options?.deferLogout !== true) {
+          doLogout();
+        }
         return { ok: true, status: 200, sesion };
       } catch (err) {
         // F3.3 DEC-F3.3-03 fallback: 401 mid-flow (refresh failed)

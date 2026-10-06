@@ -32,22 +32,44 @@ async function fetchResumen(uuid_sucursal: string, fecha: string): Promise<Arque
   return ArqueoResumenSchema.parse(raw);
 }
 
+/** Backend `Decimal` fields arrive as JSON strings; absent/null -> undefined. */
+const optionalAmount = z.preprocess(
+  (v) => (v === undefined || v === null ? undefined : Number(v)),
+  z.number().finite().optional(),
+);
+
+/**
+ * `POST /caja/arqueo` 201 body. Only `uuid` is required (older callers and
+ * mocks only know it); the efectivo reconciliation fields are surfaced so the
+ * post-close summary (PT-5) can show esperado vs contado AFTER submission —
+ * the blind count is respected because nothing is read before the POST.
+ * The datáfono dimension is not part of the response (REQ-OPS-192).
+ */
+const ArqueoSubmitResponseSchema = z.object({
+  uuid: z.string().uuid(),
+  valor_efectivo_esperado: optionalAmount,
+  valor_efectivo_reportado: optionalAmount,
+  diferencia_efectivo: optionalAmount,
+  alerta_generada: z.boolean().optional(),
+});
+export type ArqueoSubmitResult = z.infer<typeof ArqueoSubmitResponseSchema>;
+
 export function useArqueo() {
   return {
     async submit(payload: {
       uuid_sesion: string;
       uuid_tipo_arqueo: string;  // F11.3: UUID, not codigo string
       valor_efectivo_reportado: number;
-      valor_datafono_reportado: number;
+      /** Legacy/nullable on the wire; callers no longer count datáfono (PT-6). */
+      valor_datafono_reportado?: number;
       justificacion?: string;
-    }): Promise<{ uuid: string }> {
+    }): Promise<ArqueoSubmitResult> {
       const { parkosFetch } = await import('@parkos/ui-kit/fetch');
       const raw = await parkosFetch<unknown>(
         '/api/v1/caja/arqueo',
         { method: 'POST', body: JSON.stringify(payload) },
       );
-      const parsed = z.object({ uuid: z.string().uuid() }).parse(raw);
-      return parsed;
+      return ArqueoSubmitResponseSchema.parse(raw);
     },
     fetchResumen,
   };

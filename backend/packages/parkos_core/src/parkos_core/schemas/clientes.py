@@ -445,6 +445,9 @@ class VentaSuscripcionCreate(_Base):
     uuid_tipo_subscripcion: uuid_lib.UUID
     fecha_inicio_cobertura: date
     cobrar_ahora: bool = False
+    # FE is ALWAYS emitted now. This flag only chooses the invoice
+    # recipient: true -> the subscriber's own data; false/omitted -> the
+    # standard customer ("consumidor final"). It no longer gates emission.
     emitir_factura_electronica: bool = False
     medio_pago: Literal["efectivo", "tarjeta", "datafono", "transferencia"] = (
         "efectivo"
@@ -500,8 +503,8 @@ class VentaSuscripcionResponse(_Base):
     factura: FacturaRead | None = None
     # KD-VENTA-03b (operator directive, 2026-09-25): FE emission is
     # best-effort and runs AFTER the payment/factura commit above, in
-    # its own transaction (see `_intentar_emitir_factura_electronica` in
-    # `api/v1/clientes_venta.py`). A 201 response can carry this
+    # its own transaction (see `repo/fe_emision.py::emitir_fe_para_pago`).
+    # On failure the invoice stays pending and is retried automatically. A 201 response can carry this
     # non-null while `uuid_factura`/`factura` are populated -- that is
     # the sale succeeding with FE degraded, not a partial failure. One
     # of: ``missing_sucursal_context``, ``resolucion_facturacion_no_encontrada``,

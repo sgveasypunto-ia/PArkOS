@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from lxml import etree
 
@@ -32,6 +33,11 @@ if os.environ.get("PARKOS_DEPLOY", "cloud").lower() == "branch":
         "dian_cloud_unavailable_on_branch (T-PR11-07, REQ-X3, design section 10 Layer 2)"
     )
 
+from ...constants import (
+    CLIENTE_ESTANDAR_NOMBRE,
+    CLIENTE_ESTANDAR_NUMERO_IDENTIFICACION,
+    CLIENTE_ESTANDAR_TIPO_IDENTIFICADOR,
+)
 from ...models.L_E.factura_electronica import FacturaElectronica
 
 # UBL 2.1 namespaces (OASIS canonical URIs).
@@ -55,13 +61,13 @@ _DIAN_INVOICE_TYPE_CODE = "01"
 
 _CURRENCY_CODE = "COP"
 
-# Supplier / customer placeholders. The cloud router resolves the real
-# party data from ``prod.empresa`` and ``prod.clientes`` before this
-# serializer is called; the PR11c minimal emission carries only the
-# XSD-required ``cac:PartyName/cbc:Name`` child. PR12+ expands to the
-# full DIAN party block (NIT, address, contact, tax scheme).
+# Supplier placeholder. The customer is NOT a placeholder anymore: the FE
+# always references a real ``prod.clientes`` row (the payer's, or the seeded
+# standard customer "consumidor final", ``parkos_core.constants``); the
+# caller passes it to :func:`serialize`. The minimal emission carries the
+# customer identification + ``cac:PartyName``. PR12+ expands to the full DIAN
+# party block (address, contact, tax scheme).
 _SUPPLIER_NAME = "parkos"
-_CUSTOMER_NAME = "consumidor_final"
 
 # Line / total placeholders. Same scope story as the parties: the line
 # iteration lands with the ``factura_detalle`` router work (PR12).
@@ -100,10 +106,34 @@ def _build_supplier_party(name: str) -> etree._Element:
     return supplier
 
 
-def _build_customer_party(name: str) -> etree._Element:
+def _customer_identity(cliente: Any | None) -> tuple[str, str, str]:
+    """Return ``(tipo_identificador, numero_identificacion, nombre)``.
+
+    ``cliente`` is a ``prod.clientes`` row (duck-typed). ``None`` -- or a row
+    with no identification -- falls back to the standard customer.
+    """
+    numero = getattr(cliente, "numero_identificacion", None)
+    if not numero:
+        return (
+            CLIENTE_ESTANDAR_TIPO_IDENTIFICADOR,
+            CLIENTE_ESTANDAR_NUMERO_IDENTIFICACION,
+            CLIENTE_ESTANDAR_NOMBRE,
+        )
+    tipo = getattr(cliente, "tipo_identificador", None) or CLIENTE_ESTANDAR_TIPO_IDENTIFICADOR
+    partes = [getattr(cliente, "nombre", None), getattr(cliente, "apellido", None)]
+    nombre = " ".join(p for p in partes if p) or CLIENTE_ESTANDAR_NOMBRE
+    return str(tipo), str(numero), nombre
+
+
+def _build_customer_party(cliente: Any | None) -> etree._Element:
     """Build ``cac:AccountingCustomerParty`` wrapping a ``cac:Party``."""
+    tipo, numero, name = _customer_identity(cliente)
     customer = etree.Element(f"{{{NS_CAC}}}AccountingCustomerParty")
     customer_party = etree.SubElement(customer, f"{{{NS_CAC}}}Party")
+    party_id = etree.SubElement(customer_party, f"{{{NS_CAC}}}PartyIdentification")
+    id_el = etree.SubElement(party_id, f"{{{NS_CBC}}}ID")
+    id_el.set("schemeName", tipo)
+    id_el.text = numero
     party_name = etree.SubElement(customer_party, f"{{{NS_CAC}}}PartyName")
     name_el = etree.SubElement(party_name, f"{{{NS_CBC}}}Name")
     name_el.text = name
@@ -186,13 +216,15 @@ def _build_invoice_line(
     return inv_line
 
 
-def serialize(factura: FacturaElectronica) -> bytes:
+def serialize(factura: FacturaElectronica, cliente: Any | None = None) -> bytes:
     """Build a UBL 2.1 XML payload from a ``factura_electronica`` row.
 
     Args:
         factura: The ``[L-E]`` row to serialize. Only header fields are
             read (``uuid``, ``prefijo``, ``consecutivo``, ``created_at``);
             the row is never mutated.
+        cliente: The ``prod.clientes`` row referenced by
+            ``factura.uuid_cliente`` (``None`` -> standard customer).
 
     Returns:
         UTF-8 encoded XML bytes, ready to POST to the DIAN provider.
@@ -231,7 +263,7 @@ def serialize(factura: FacturaElectronica) -> bytes:
 
     # Parties (both minOccurs=1).
     invoice.append(_build_supplier_party(_SUPPLIER_NAME))
-    invoice.append(_build_customer_party(_CUSTOMER_NAME))
+    invoice.append(_build_customer_party(cliente))
 
     # Totals (minOccurs=1 for LegalMonetaryTotal; TaxTotal optional).
     invoice.append(_build_tax_total(_TAX_AMOUNT, _CURRENCY_CODE))

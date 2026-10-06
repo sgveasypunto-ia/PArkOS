@@ -405,3 +405,36 @@ async def test_dispatcher_poll_timeout_after_trackId_writes_timeout(
     # 1 POST + 1 initial-window GET + 2 retry-window GETs = 4.
     assert [r.method for r in seen] == ["POST", "GET", "GET", "GET"]
     assert seen[1].url.path == "/api/ubl2.1/track-timeout"
+
+
+async def test_dispatcher_does_not_fall_back_to_standard_customer_when_cliente_missing(
+    token_path: Path,
+) -> None:
+    """The FE names a real customer that has not synced to the cloud yet:
+    raise BEFORE any HTTP call instead of sending the document to the
+    standard customer (a wrong recipient needs a credit note to fix)."""
+    import uuid as uuid_lib
+
+    row = factura_row()
+    row.uuid_cliente = uuid_lib.uuid4()
+    session = mock_session_with_factura(row)  # session.get -> None
+    with pytest.raises(dispatcher.ClienteNoDisponibleError):
+        await _dispatch(session, token_path)
+    assert session.added == []  # nothing persisted, no envio row
+
+
+async def test_dispatcher_standard_customer_missing_row_uses_constants(
+    monkeypatch: pytest.MonkeyPatch, token_path: Path
+) -> None:
+    """The standard customer itself may legitimately be absent from the
+    cloud DB: the UBL falls back to the constants, dispatch proceeds."""
+    from parkos_core.constants import CLIENTE_ESTANDAR_UUID
+
+    _install_transport(
+        monkeypatch, track_id="t-1", poll_body={"estado": "aceptado", "cufe": "c"}
+    )
+    monkeypatch.setattr(dispatcher, "append_event", AsyncMock(name="append_event"))
+    row = factura_row()
+    row.uuid_cliente = CLIENTE_ESTANDAR_UUID
+    envio = await _dispatch(mock_session_with_factura(row), token_path)
+    assert envio is not None

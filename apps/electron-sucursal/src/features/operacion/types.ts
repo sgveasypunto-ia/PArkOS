@@ -21,13 +21,13 @@ export interface MiTurnoRead {
 }
 
 /**
- * Convenience: the SUM of the two medio_pago buckets. The panel renders
- * this as the `totalCobrado` KPI cell (informational; the canonical
- * wire values live on ``total_cobrado_efectivo_cop`` and
- * ``total_cobrado_datafono_cop``).
+ * Convenience: the cash collected in the turn. PT-6: the cuadre is
+ * efectivo-only — electronic payments (``total_cobrado_datafono_cop``,
+ * kept on the wire for BI/back-compat and hard-coded to 0 by the BE) never
+ * count toward it.
  */
 export function totalCobradoFromMiTurno(read: MiTurnoRead): number {
-  return read.total_cobrado_efectivo_cop + read.total_cobrado_datafono_cop;
+  return read.total_cobrado_efectivo_cop;
 }
 
 /**

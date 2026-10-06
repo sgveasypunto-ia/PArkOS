@@ -39,6 +39,7 @@ import pytest  # noqa: E402,I001
 def _make_plan(*, mismo_tipo_vehiculo: bool) -> MagicMock:
     plan = MagicMock()
     plan.mismo_tipo_vehiculo = mismo_tipo_vehiculo
+    plan.uuid_tipo_vehiculo = None  # plan sin tipo: cualquier vehiculo (PT-2)
     return plan
 
 
@@ -232,34 +233,34 @@ def test_vencimiento_semantics_covers_exactly_duration_calendar_days(
 # ---------------------------------------------------------------------------
 
 
+def _session_returning(conflicto):
+    """``session.execute`` -> result whose ``scalars().first()`` is ``conflicto``."""
+    session = MagicMock()
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = conflicto
+    session.execute = AsyncMock(return_value=result)
+    return session
+
+
 @pytest.mark.asyncio
 async def test_validar_placa_duplicada_subscripcion_raises_when_active_found() -> None:
-    """V4 T1: existing active sub for placa -> raises SubscripcionDuplicadaPlacaError."""
+    """V4/PT-2: existing ACTIVE sub for the placa at this branch -> raises."""
     from parkos_core.repo import venta_suscripcion as repo_venta
 
-    session = MagicMock()
+    conflicto = uuid_lib.uuid4()
+    session = _session_returning(conflicto)
+    sucursal = uuid_lib.uuid4()
 
-    class _FakeResult:
-        found = True
-
-    async def fake_resolve(*_args: object, **_kwargs: object) -> _FakeResult:
-        return _FakeResult()
-
-    # Patch the SOURCE module -- the import is inside the function so
-    # the helper module's binding is updated by the patch.
-    with patch(
-        "parkos_core.repo.subscripcion_activa.resolve_active_subscription_for_exit",
-        new=fake_resolve,
-    ):
-        with pytest.raises(repo_venta.SubscripcionDuplicadaPlacaError) as excinfo:
-            await repo_venta.validar_placa_duplicada_subscripcion(
-                session,
-                placa="ABC123",
-                uuid_sucursal=uuid_lib.uuid4(),
-                fecha_inicio_cobertura=date(2026, 9, 20),
-            )
-        assert excinfo.value.placa == "ABC123"
-        assert "suscripcion_duplicada_placa" in str(excinfo.value)
+    with pytest.raises(repo_venta.SubscripcionDuplicadaPlacaError) as excinfo:
+        await repo_venta.validar_placa_duplicada_subscripcion(
+            session,
+            placa="ABC123",
+            uuid_sucursal=sucursal,
+            fecha_inicio_cobertura=date(2026, 9, 20),
+        )
+    assert excinfo.value.placa == "ABC123"
+    assert excinfo.value.uuid_subscripcion_cliente == conflicto
+    assert "suscripcion_duplicada_placa" in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -267,25 +268,96 @@ async def test_validar_placa_duplicada_subscripcion_ok_when_no_active() -> None:
     """V4 edge: no active sub -> no raise."""
     from parkos_core.repo import venta_suscripcion as repo_venta
 
-    session = MagicMock()
+    await repo_venta.validar_placa_duplicada_subscripcion(
+        _session_returning(None),
+        placa="XYZ999",
+        uuid_sucursal=uuid_lib.uuid4(),
+        fecha_inicio_cobertura=date(2026, 9, 20),
+    )
 
-    class _FakeResult:
-        found = False
 
-    async def fake_resolve(*_args: object, **_kwargs: object) -> _FakeResult:
-        return _FakeResult()
+@pytest.mark.asyncio
+async def test_buscar_subscripcion_activa_de_placa_sql_scope() -> None:
+    """PT-2: the predicate is branch-scoped and ACTIVE-only (compiled SQL)."""
+    from sqlalchemy.dialects import postgresql
 
-    with patch(
-        "parkos_core.repo.subscripcion_activa.resolve_active_subscription_for_exit",
-        new=fake_resolve,
-    ):
-        # Should NOT raise.
-        await repo_venta.validar_placa_duplicada_subscripcion(
-            session,
-            placa="XYZ999",
-            uuid_sucursal=uuid_lib.uuid4(),
-            fecha_inicio_cobertura=date(2026, 9, 20),
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    session = _session_returning(None)
+    sucursal = uuid_lib.uuid4()
+    excluir = uuid_lib.uuid4()
+    await repo_venta.buscar_subscripcion_activa_de_placa(
+        session,
+        placa="ABC123",
+        uuid_sucursal=sucursal,
+        fecha_referencia=date(2026, 9, 20),
+        excluir_uuid_subscripcion_cliente=excluir,
+    )
+    stmt = session.execute.await_args.args[0]
+    sql = str(
+        stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert f"subscripciones_cliente.uuid_sucursal = '{sucursal}'" in sql
+    assert "subscripciones_cliente.vigente_hasta IS NULL" in sql
+    assert "subscripciones_cliente.estado = 'activo'" in sql
+    assert "subscripciones_cliente.fecha_vencimiento >= '2026-09-20'" in sql
+    assert "subscripcion_vehiculos.vigente_hasta IS NULL" in sql
+    assert "subscripcion_vehiculos.estado = 'activo'" in sql
+    assert f"subscripciones_cliente.uuid != '{excluir}'" in sql
+
+
+# ---------------------------------------------------------------------------
+# PT-2 -- plan <-> tipo de vehiculo
+# ---------------------------------------------------------------------------
+
+
+def _plan(tipo=None, mismo=False):
+    plan = MagicMock()
+    plan.uuid_tipo_vehiculo = tipo
+    plan.mismo_tipo_vehiculo = mismo
+    return plan
+
+
+def _veh(tipo):
+    v = MagicMock()
+    v.uuid_tipo_vehiculo = tipo
+    return v
+
+
+def test_plan_tipado_rechaza_vehiculo_de_otro_tipo() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    moto, carro = uuid_lib.uuid4(), uuid_lib.uuid4()
+    with pytest.raises(repo_venta.TipoVehiculoPlanIncompatibleError) as excinfo:
+        repo_venta.validar_placas_mismo_tipo_vehiculo(plan=_plan(moto), vehiculos=[_veh(carro)])
+    assert excinfo.value.tipo_plan == moto
+    # Subclase de V5: el call-site de la venta (que solo atrapa V5) sigue mapeando 422.
+    assert isinstance(excinfo.value, repo_venta.TipoVehiculoIncompatibleError)
+
+
+def test_plan_tipado_rechaza_vehiculo_sin_tipo_detectado() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    with pytest.raises(repo_venta.TipoVehiculoPlanIncompatibleError):
+        repo_venta.validar_placas_mismo_tipo_vehiculo(
+            plan=_plan(uuid_lib.uuid4()), vehiculos=[_veh(None)]
         )
+
+
+def test_plan_tipado_acepta_vehiculo_del_mismo_tipo() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    moto = uuid_lib.uuid4()
+    repo_venta.validar_placas_mismo_tipo_vehiculo(plan=_plan(moto), vehiculos=[_veh(moto)])
+
+
+def test_plan_sin_tipo_acepta_cualquier_vehiculo() -> None:
+    """Plan empresarial: uuid_tipo_vehiculo NULL = cualquier tipo."""
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    repo_venta.validar_placas_mismo_tipo_vehiculo(
+        plan=_plan(None), vehiculos=[_veh(uuid_lib.uuid4()), _veh(uuid_lib.uuid4())]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -333,49 +405,6 @@ async def test_crear_subscripcion_cliente_delegates_to_close_and_insert() -> Non
 # ---------------------------------------------------------------------------
 # V9b -- crear_subscripcion_vehiculos_bulk (advisory lock + bulk INSERT)
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# HU-F20.2 BR3/E1 (NEW) -- validar_vehiculo_sin_suscripcion_vigente_distinta
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_validar_vehiculo_sin_suscripcion_vigente_distinta_raises_when_found() -> None:
-    """Another ACTIVE subscripcion already covers this vehiculo -> raise."""
-    from parkos_core.repo import venta_suscripcion as repo_venta
-
-    session = MagicMock()
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = uuid_lib.uuid4()  # a matching row uuid
-    session.execute = AsyncMock(return_value=result)
-
-    uuid_vehiculo = uuid_lib.uuid4()
-    with pytest.raises(repo_venta.PlacaConSuscripcionVigenteError) as excinfo:
-        await repo_venta.validar_vehiculo_sin_suscripcion_vigente_distinta(
-            session,
-            uuid_vehiculo=uuid_vehiculo,
-            excluir_uuid_subscripcion_cliente=uuid_lib.uuid4(),
-        )
-    assert excinfo.value.uuid_vehiculo == uuid_vehiculo
-    assert "placa_con_suscripcion_vigente" in str(excinfo.value)
-
-
-@pytest.mark.asyncio
-async def test_validar_vehiculo_sin_suscripcion_vigente_distinta_ok_when_none_found() -> None:
-    """No OTHER active subscripcion covers this vehiculo -> no raise."""
-    from parkos_core.repo import venta_suscripcion as repo_venta
-
-    session = MagicMock()
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = None
-    session.execute = AsyncMock(return_value=result)
-
-    await repo_venta.validar_vehiculo_sin_suscripcion_vigente_distinta(
-        session,
-        uuid_vehiculo=uuid_lib.uuid4(),
-        excluir_uuid_subscripcion_cliente=uuid_lib.uuid4(),
-    )
 
 
 @pytest.mark.asyncio

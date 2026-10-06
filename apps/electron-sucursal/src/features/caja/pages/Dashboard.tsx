@@ -65,7 +65,7 @@
  * del operador ("si no hay no deben aparecer"). Cuando se wire-ee el
  * endpoint, queda en follow-up (1 línea: agregar al response shape).
  */
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -83,6 +83,7 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 
 import logoLight from '../../../assets/brand/logos/logo-horizontal-light.svg';
 import logoDark from '../../../assets/brand/logos/logo-horizontal-dark--REQUIERE-VECTOR.png';
+import { useResumenCierrePendiente } from '../hooks/useResumenCierrePendiente';
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { CuposLibresStrip } from '../../operacion/components/CuposLibresStrip';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
@@ -144,7 +145,14 @@ const DRAWER_BY_HOTKEY: Record<string, NonNullDrawerKind> = {
 };
 
 export function Dashboard(): JSX.Element | null {
-  const { sesion, isLoading, error, refresh } = useSesionActiva();
+  const { sesion: sesionLive, isLoading, error, refresh } = useSesionActiva();
+  // PT-5: keep rendering the dashboard (and the drawer that hosts the
+  // post-close summary) with the last known sesion while the summary is
+  // pending, even after /sesion/me starts answering 404 for the closed turn.
+  const resumenCierrePendiente = useResumenCierrePendiente((s) => s.pendiente);
+  const ultimaSesionRef = useRef<typeof sesionLive>(null);
+  if (sesionLive) ultimaSesionRef.current = sesionLive;
+  const sesion = sesionLive ?? (resumenCierrePendiente ? ultimaSesionRef.current : null);
   const { isAuthenticated, isLoading: isAuthLoading, sucursal, user } = useAuth();
   const navigate = useNavigate();
   const { t } = useTranslation(['caja', 'common', 'operacion', 'suscripciones', 'sync']);
@@ -188,10 +196,13 @@ export function Dashboard(): JSX.Element | null {
       navigate('/login', { replace: true });
       return;
     }
-    if (!sesion && !isLoading && !error) {
+    // PT-5: while the post-close summary is on screen the sesion is already
+    // closed server-side (404 on /sesion/me) but the operator is still
+    // reading/downloading the summary — do not tear the dashboard down.
+    if (!sesion && !isLoading && !error && !resumenCierrePendiente) {
       navigate('/caja/abrir-turno', { replace: true });
     }
-  }, [isAuthenticated, isAuthLoading, sesion, isLoading, error, navigate]);
+  }, [isAuthenticated, isAuthLoading, sesion, isLoading, error, navigate, resumenCierrePendiente]);
 
   if (isLoading) {
     return <Skeleton className="h-screen w-full" data-testid="dashboard-skeleton" />;

@@ -40,6 +40,7 @@ import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 from decimal import Decimal
+import hashlib
 from typing import Any
 
 from sqlalchemy import select, text
@@ -58,16 +59,17 @@ from .tipo_persona import resolve_uuid_tipo_persona
 __all__ = [
     "CantidadMaximaExcedidaError",
     "ClienteNoEncontradoError",
-    "PlacaConSuscripcionVigenteError",
     "PlanDuracionDiasInvalidoError",
     "SubscripcionDuplicadaPlacaError",
     "TipoSubscripcionNoEncontradoError",
     "TipoSubscripcionNoVigenteError",
     "TipoVehiculoIncompatibleError",
+    "TipoVehiculoPlanIncompatibleError",
     "buscar_cliente_por_uuid_o_crear",
     "buscar_cliente_por_uuid_o_crear_existente",
     "buscar_cliente_por_uuid_o_crear_nuevo",
     "buscar_o_crear_vehiculo_por_placa",
+    "buscar_subscripcion_activa_de_placa",
     "buscar_tipo_subscripcion_vigente_por_uuid",
     "calcular_fecha_vencimiento",
     "calcular_monto_suscripcion",
@@ -75,8 +77,9 @@ __all__ = [
     "crear_subscripcion_vehiculos_bulk",
     "validar_cantidad_maxima_vehiculos",
     "validar_placa_duplicada_subscripcion",
+    "validar_mismo_tipo_vehiculos",
     "validar_placas_mismo_tipo_vehiculo",
-    "validar_vehiculo_sin_suscripcion_vigente_distinta",
+    "validar_tipo_vehiculo_del_plan",
 ]
 
 
@@ -121,9 +124,16 @@ class TipoSubscripcionNoVigenteError(Exception):
 class SubscripcionDuplicadaPlacaError(Exception):
     """V4 422 discriminator -- placa already has an active subscription at this branch."""
 
-    def __init__(self, *, placa: str, uuid_sucursal: uuid_lib.UUID) -> None:
+    def __init__(
+        self,
+        *,
+        placa: str,
+        uuid_sucursal: uuid_lib.UUID,
+        uuid_subscripcion_cliente: uuid_lib.UUID | None = None,
+    ) -> None:
         self.placa = placa
         self.uuid_sucursal = uuid_sucursal
+        self.uuid_subscripcion_cliente = uuid_subscripcion_cliente
         super().__init__(
             f"suscripcion_duplicada_placa: placa={placa}, uuid_sucursal={uuid_sucursal}"
         )
@@ -160,30 +170,24 @@ class PlanDuracionDiasInvalidoError(Exception):
         super().__init__("plan_duracion_dias_invalido: duracion_dias must be > 0")
 
 
-class PlacaConSuscripcionVigenteError(Exception):
-    """HU-F20.2 / CU-06 BR3+E1 -- 422 discriminator: ``uuid_vehiculo`` already
-    covered by an active subscripcion OTHER than the target one.
+class TipoVehiculoPlanIncompatibleError(TipoVehiculoIncompatibleError):
+    """PT-2 -- the vehicle type does not match ``plan.uuid_tipo_vehiculo``.
 
-    Distinct from :class:`SubscripcionDuplicadaPlacaError` (V4,
-    REQ-OPS-089): that one is branch-scoped and keyed by ``placa`` string
-    (venta-at-the-counter flow -- blocks a NEW sale when the placa already
-    has an active sub AT THIS BRANCH, before a target subscripcion even
-    exists). This one is keyed by ``uuid_vehiculo``, branch-AGNOSTIC, and
-    excludes one specific subscripcion (the mantenimiento/admin flow --
-    adding a vehiculo to an EXISTING subscripcion must not let the same
-    car be simultaneously active on a DIFFERENT subscripcion, regardless
-    of branch). Two different error codes by design (plan.md HU-F20.2
-    names ``placa_con_suscripcion_vigente`` explicitly, distinct from the
-    venta flow's ``suscripcion_duplicada_placa``) -- see
-    ``api/v1/clientes_subscripcion_vehiculos.py`` module docstring for the
-    full rationale.
+    Subclass of :class:`TipoVehiculoIncompatibleError` on purpose: call
+    sites that only catch the V5 error (e.g. the venta flow) keep mapping
+    it to 422 ``tipo_vehiculo_incompatible`` without changes, while the
+    PT-2 endpoints catch the subclass first and answer the more specific
+    ``tipo_vehiculo_plan_incompatible``.
     """
 
-    def __init__(self, *, uuid_vehiculo: uuid_lib.UUID) -> None:
-        self.uuid_vehiculo = uuid_vehiculo
-        super().__init__(
-            f"placa_con_suscripcion_vigente: uuid_vehiculo={uuid_vehiculo}"
-        )
+    def __init__(
+        self,
+        *,
+        tipo_plan: uuid_lib.UUID,
+        tipos_encontrados: list[str],
+    ) -> None:
+        self.tipo_plan = tipo_plan
+        super().__init__(tipos_encontrados=tipos_encontrados)
 
 
 # ---------------------------------------------------------------------------
@@ -358,19 +362,52 @@ async def buscar_o_crear_vehiculo_por_placa(
 # ---------------------------------------------------------------------------
 
 
+def validar_tipo_vehiculo_del_plan(
+    *, plan: TipoSubscripciones, vehiculos: list[Vehiculos]
+) -> None:
+    """PT-2: every vehicle must match ``plan.uuid_tipo_vehiculo``.
+
+    ``plan.uuid_tipo_vehiculo IS NULL`` means "any vehicle type" (e.g. the
+    corporate plan) and the check is skipped. Otherwise a vehicle whose
+    ``uuid_tipo_vehiculo`` differs (including an undetected, NULL type)
+    raises :class:`TipoVehiculoPlanIncompatibleError`.
+    """
+    tipo_plan = getattr(plan, "uuid_tipo_vehiculo", None)
+    if tipo_plan is None:
+        return
+    tipos = {v.uuid_tipo_vehiculo for v in vehiculos}
+    if tipos - {tipo_plan}:
+        raise TipoVehiculoPlanIncompatibleError(
+            tipo_plan=tipo_plan,
+            tipos_encontrados=sorted(str(t) for t in tipos),
+        )
+
+
 def validar_placas_mismo_tipo_vehiculo(
     *, plan: TipoSubscripciones, vehiculos: list[Vehiculos]
 ) -> None:
-    """V5 (REQ-OPS-087): same-tipo validation when ``plan.mismo_tipo_vehiculo``.
+    """V5 (REQ-OPS-087): vehicle-type validations of a plan (venta flow).
 
-    When ``plan.mismo_tipo_vehiculo`` is ``True``, all provided
-    ``vehiculos`` MUST share the same ``uuid_tipo_vehiculo``. Otherwise
-    raises :class:`TipoVehiculoIncompatibleError` BEFORE any INSERT
-    (the handler maps to 422 ``tipo_vehiculo_incompatible`` via Layer 5).
+    1. PT-2: the vehicles must match ``plan.uuid_tipo_vehiculo`` when the
+       plan is typed (see :func:`validar_tipo_vehiculo_del_plan`).
+    2. :func:`validar_mismo_tipo_vehiculos`.
 
-    When ``plan.mismo_tipo_vehiculo`` is ``False`` (or ``None``), the
-    check is SKIPPED -- heterogeneous types are allowed (the plan
-    permits them).
+    The add-plate endpoints validate an EXISTING subscription: there the
+    plan type is checked on the NEW plate only (legacy plates already
+    enrolled must not block adding another one), so they call the two
+    functions separately.
+    """
+    validar_tipo_vehiculo_del_plan(plan=plan, vehiculos=vehiculos)
+    validar_mismo_tipo_vehiculos(plan=plan, vehiculos=vehiculos)
+
+
+def validar_mismo_tipo_vehiculos(
+    *, plan: TipoSubscripciones, vehiculos: list[Vehiculos]
+) -> None:
+    """V5: when ``plan.mismo_tipo_vehiculo`` is ``True`` all ``vehiculos`` MUST
+    share the same ``uuid_tipo_vehiculo``; otherwise
+    :class:`TipoVehiculoIncompatibleError` BEFORE any INSERT (422). When it is
+    ``False``/``None`` the check is SKIPPED -- heterogeneous types allowed.
     """
     if not plan.mismo_tipo_vehiculo:
         return
@@ -397,80 +434,92 @@ def validar_cantidad_maxima_vehiculos(
         )
 
 
+async def buscar_subscripcion_activa_de_placa(
+    session: AsyncSession,
+    *,
+    placa: str,
+    uuid_sucursal: uuid_lib.UUID,
+    fecha_referencia: date_cls | None = None,
+    excluir_uuid_subscripcion_cliente: uuid_lib.UUID | None = None,
+) -> uuid_lib.UUID | None:
+    """Uuid of the ACTIVE subscripcion of ``placa`` at ``uuid_sucursal``.
+
+    Single definition of "this plate is already covered" shared by the
+    sale flow and the three add-plate paths (PT-2). A subscripcion counts
+    only when ALL hold: the subscripcion row is open
+    (``vigente_hasta IS NULL``) with ``estado='activo'`` at THIS branch and
+    ``fecha_vencimiento >= fecha_referencia`` (default: today), and the
+    junction row + the vehicle row are open (the junction ``estado`` is
+    ``'activo'``). An expired subscripcion, one closed by a renewal, or
+    one at ANOTHER branch does not block.
+    """
+    referencia = fecha_referencia or hoy_bogota()
+    stmt = (
+        select(SubscripcionesCliente.uuid)
+        .join(
+            SubscripcionVehiculos,
+            SubscripcionVehiculos.uuid_subscripcion_cliente == SubscripcionesCliente.uuid,
+        )
+        .join(Vehiculos, Vehiculos.uuid == SubscripcionVehiculos.uuid_vehiculo)
+        .where(
+            Vehiculos.placa == placa,
+            Vehiculos.vigente_hasta.is_(None),
+            SubscripcionVehiculos.vigente_hasta.is_(None),
+            SubscripcionVehiculos.estado == "activo",
+            SubscripcionesCliente.uuid_sucursal == uuid_sucursal,
+            SubscripcionesCliente.vigente_hasta.is_(None),
+            SubscripcionesCliente.estado == "activo",
+            SubscripcionesCliente.fecha_vencimiento >= referencia,
+        )
+        .limit(1)
+    )
+    if excluir_uuid_subscripcion_cliente is not None:
+        stmt = stmt.where(SubscripcionesCliente.uuid != excluir_uuid_subscripcion_cliente)
+    return (await session.execute(stmt)).scalars().first()
+
+
+def _placa_lock_key(uuid_sucursal: uuid_lib.UUID, placa: str) -> int:
+    """Stable signed-int64 advisory-lock key for ``(sucursal, placa)``."""
+    digest = hashlib.sha256(f"placa-sucursal:{uuid_sucursal}:{placa}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
 async def validar_placa_duplicada_subscripcion(
     session: AsyncSession,
     *,
     placa: str,
     uuid_sucursal: uuid_lib.UUID,
-    fecha_inicio_cobertura: date_cls,
+    fecha_inicio_cobertura: date_cls | None = None,
+    excluir_uuid_subscripcion_cliente: uuid_lib.UUID | None = None,
 ) -> None:
-    """V4 (REQ-OPS-089): per-placa reverse-direction active-sub lookup.
+    """V4 (REQ-OPS-089) / PT-2: reject a plate with an ACTIVE subscripcion at
+    this branch (see :func:`buscar_subscripcion_activa_de_placa`).
 
-    Reuses ``repo.subscripcion_activa.resolve_active_subscription_for_exit``
-    (F1.7, lifted from F1.5 commit ``bb99e18``). The lookup joins
-    ``prod.subscripciones_cliente`` x ``prod.subscripcion_vehiculos``
-    x ``prod.vehiculos`` filtering by ``placa`` + branch + vigente +
-    estado='activo'. If a matching ACTIVE subscription exists,
-    raises :class:`SubscripcionDuplicadaPlacaError` (the handler maps
-    to 422 ``suscripcion_duplicada_placa``).
-
-    The ``fecha_inicio_cobertura`` arg is reserved for a future
-    date-window predicate (out-of-scope for F1.12 -- the current
-    implementation only checks for any vigente sub for the placa).
+    Raises :class:`SubscripcionDuplicadaPlacaError`. Same-branch only: an
+    active subscripcion at ANOTHER branch is allowed. The venta flow keeps
+    its own wire mapping; the PT-2 endpoints answer 409
+    ``placa_con_suscripcion_activa``.
     """
-    from .subscripcion_activa import resolve_active_subscription_for_exit
-
-    result = await resolve_active_subscription_for_exit(
+    # Serialise "check then insert" for the same (sucursal, placa): without
+    # this two concurrent adds of one plate to two subscriptions both see no
+    # conflict. Transaction-scoped: released at the handler's single commit.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": _placa_lock_key(uuid_sucursal, placa)},
+    )
+    conflicto = await buscar_subscripcion_activa_de_placa(
         session,
         placa=placa,
         uuid_sucursal=uuid_sucursal,
-        as_of=fecha_inicio_cobertura,
+        fecha_referencia=fecha_inicio_cobertura,
+        excluir_uuid_subscripcion_cliente=excluir_uuid_subscripcion_cliente,
     )
-    if result.found:
+    if conflicto is not None:
         raise SubscripcionDuplicadaPlacaError(
             placa=placa,
             uuid_sucursal=uuid_sucursal,
+            uuid_subscripcion_cliente=conflicto,
         )
-
-
-async def validar_vehiculo_sin_suscripcion_vigente_distinta(
-    session: AsyncSession,
-    *,
-    uuid_vehiculo: uuid_lib.UUID,
-    excluir_uuid_subscripcion_cliente: uuid_lib.UUID,
-) -> None:
-    """HU-F20.2 / CU-06 BR3+E1: block adding a vehiculo already covered by
-    a DIFFERENT active subscripcion (branch-agnostic).
-
-    Raises :class:`PlacaConSuscripcionVigenteError` when ``uuid_vehiculo``
-    has a vigente+activo ``subscripcion_vehiculos`` row whose parent
-    ``subscripciones_cliente`` is ALSO vigente+activo+not-yet-expired AND
-    is not ``excluir_uuid_subscripcion_cliente`` (the subscripcion the
-    caller is currently inserting into -- re-adding the same vehiculo to
-    its OWN subscripcion is a different, already-handled concern, see
-    ``repo.cupos_subscripcion.VehiculoYaInscritoError``).
-    """
-    hoy = hoy_bogota()
-    stmt = (
-        select(SubscripcionVehiculos.uuid)
-        .join(
-            SubscripcionesCliente,
-            SubscripcionesCliente.uuid == SubscripcionVehiculos.uuid_subscripcion_cliente,
-        )
-        .where(
-            SubscripcionVehiculos.uuid_vehiculo == uuid_vehiculo,
-            SubscripcionVehiculos.vigente_hasta.is_(None),
-            SubscripcionVehiculos.estado == "activo",
-            SubscripcionesCliente.uuid != excluir_uuid_subscripcion_cliente,
-            SubscripcionesCliente.vigente_hasta.is_(None),
-            SubscripcionesCliente.estado == "activo",
-            SubscripcionesCliente.fecha_vencimiento >= hoy,
-        )
-        .limit(1)
-    )
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    if row is not None:
-        raise PlacaConSuscripcionVigenteError(uuid_vehiculo=uuid_vehiculo)
 
 
 def _duracion_dias_valida(plan: TipoSubscripciones) -> int:

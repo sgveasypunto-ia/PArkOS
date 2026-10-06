@@ -357,6 +357,11 @@ class AlertaRead(_Base):
     vigente_desde: datetime | None
     vigente_hasta: datetime | None
     estado: str | None
+    # PT-2: JSONB detail of the alert (e.g. placa / accion / uuid_subscripcion
+    # for ``suscripcion_placa_agregada|quitada``). Additive + optional so
+    # existing consumers are unaffected; the admin UI reads it to show the
+    # novelty to the administrator.
+    datos_nuevos: dict | None = None
 
 
 class AlertaCreate(_Base):

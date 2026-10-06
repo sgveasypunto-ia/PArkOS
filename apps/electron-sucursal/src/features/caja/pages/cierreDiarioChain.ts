@@ -54,7 +54,6 @@ export interface ArqueoSubmitFn {
     uuid_sesion: null;
     tipo_arqueo: 'cierre_dia';
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     justificacion?: string;
   }): Promise<{ uuid: string }>;
 }
@@ -79,14 +78,12 @@ export type CierreDiarioChainResult =
  */
 function buildArqueoBody(values: {
   valor_efectivo_reportado: number;
-  valor_datafono_reportado: number;
   justificacion?: string;
 }): Parameters<ArqueoSubmitFn>[0] {
   const body: Parameters<ArqueoSubmitFn>[0] = {
     uuid_sesion: null,
     tipo_arqueo: 'cierre_dia',
     valor_efectivo_reportado: values.valor_efectivo_reportado,
-    valor_datafono_reportado: values.valor_datafono_reportado,
   };
   if (values.justificacion && values.justificacion.trim() !== '') {
     body.justificacion = values.justificacion.trim();
@@ -111,7 +108,6 @@ export async function runCierreDiarioChain(args: {
   bridge: CierreDiarioBridge | null;
   values: {
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     justificacion?: string;
   };
 }): Promise<CierreDiarioChainResult> {

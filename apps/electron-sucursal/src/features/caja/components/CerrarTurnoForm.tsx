@@ -7,12 +7,13 @@
  *
  * HU-F10.2 (REQ-OPS-157, REQ-OPS-158) — el form extiende el F3.3 stub
  * con los campos del `POST /caja/arqueo` (HU-F1.13):
- *   - `valor_efectivo_reportado`, `valor_datafono_reportado`,
- *     `justificacion` — SOLO aparece en el DOM (y es REQUERIDA, min(3),
- *     en strict-mode) cuando el conteo del operador difiere de
- *     `sesion.valor_inicial_*` (plan.md HU-F10.2 línea 2273: "obligatoria
- *     SI HAY diferencia", no incondicional). El monto esperado y la
- *     diferencia NUNCA se renderizan — conteo ciego.
+ *   - `valor_efectivo_reportado` y `observaciones_cierre`. PT-4: no hay
+ *     campo "Justificación" en la UI; el motivo del descuadre va en
+ *     Observaciones y es REQUERIDO (min(3), en strict-mode) solo cuando el
+ *     pre-flight del backend indica diferencia de efectivo (plan.md HU-F10.2
+ *     línea 2273: "obligatoria SI HAY diferencia", no incondicional).
+ *     PT-6: sin campo de datáfono. El monto esperado y la diferencia NUNCA
+ *     se renderizan antes del envío — conteo ciego.
  *
  * El strict-mode del form (top-level `min(3)`) se activa cuando el
  * padre pasa `requiredMode` con uno de los discriminadores estrictos.
@@ -23,11 +24,8 @@
  *   - Resumen del turno arriba del form (uuid, timestamp apertura vía
  *     `formatTiempoTranscurrido`, valores iniciales vía `formatCOP`,
  *     observaciones si truthy).
- *   - 3 inputs para los campos del `POST /caja/arqueo` (REPORTADO):
- *     efectivo, datafono, justificacion (con `data-testid="cerrar-turno-required-justificacion"`
- *     en strict-mode).
- *   - 3 inputs F3.3 stub para los campos del `PUT /caja-sesion/{uuid}/cerrar`
- *     (FINAL): efectivo, datafono, observaciones_cierre.
+ *   - 2 inputs: efectivo contado + observaciones (`cerrar-turno-observaciones`),
+ *     que alimentan `POST /caja/arqueo` y `PUT /caja-sesion/{uuid}/cerrar`.
  *   - Banner HU-F10.2 (REQ-OPS-159 cases 5-7): `data-testid="cerrar-turno-orphan-uuid"`
  *     con `Ref: <uuid_arqueo>` literal cuando el POST 201 succeedió
  *     pero el PUT falló.
@@ -65,11 +63,17 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 
-import type { CerrarTurnoInput } from '../api/schemas/turnoSchema';
+import {
+  OBSERVACIONES_CIERRE_MAX,
+  type CerrarTurnoInput,
+} from '../api/schemas/turnoSchema';
 import type { SesionRead } from '../api/sesionActivaApi';
 import { formatCOP, formatTiempoTranscurrido } from '../lib/format';
 import { useMiTurno } from '../../operacion/hooks/useMiTurno';
 import { useRequiereJustificacion } from '../hooks/useRequiereJustificacion';
+
+/** Mínimo de caracteres del motivo del descuadre (REQ-OPS-158). */
+const MOTIVO_MIN_CHARS = 3;
 
 /**
  * Estado de error que `<CerrarTurno>` pasa a `<CerrarTurnoForm />`.
@@ -99,20 +103,21 @@ export interface CerrarTurnoFormProps {
   onCancel: () => void;
   /**
    * HU-F10.2 (REQ-OPS-158) — strict-mode discriminator. When
-   * `'cierre_turno'` or `'cierre_dia'`, `justificacion` is required
-   * at the top level (`min(3)`) and the Confirmar button stays
-   * disabled on initial render while `justificacion.length < 3`.
-   * F10.1 ArqueoParcial-style lenient path uses `undefined`.
+   * `'cierre_turno'` or `'cierre_dia'`, the motivo in Observaciones is
+   * required (`min(3)`) whenever the backend pre-flight reports a cash
+   * difference, and the Confirmar button stays disabled while it is
+   * shorter than that. F10.1 ArqueoParcial-style lenient path uses
+   * `undefined`.
    */
   requiredMode?: 'parcial' | 'cierre_turno' | 'cierre_dia';
   /**
    * Sticky flag set by `<CerrarTurno>` when the backend rejected a prior
    * attempt with `justificacion_requerida` (HU-F10.2 "conteo ciego" —
-   * the real expected total is server-side only, so the client's own
-   * `hayDiferencia` guess below can miss a real difference). Forces the
-   * field to render + be required regardless of that guess.
+   * the real expected total is server-side only, so the pre-flight can
+   * race with the POST). Forces Observaciones to be required regardless
+   * of the pre-flight verdict.
    */
-  forceRequireJustificacion?: boolean;
+  forceRequireMotivo?: boolean;
 }
 
 export function CerrarTurnoForm({
@@ -123,7 +128,7 @@ export function CerrarTurnoForm({
   sesion,
   onCancel,
   requiredMode,
-  forceRequireJustificacion = false,
+  forceRequireMotivo = false,
 }: CerrarTurnoFormProps): JSX.Element {
   const { t } = useTranslation(['caja', 'common', 'operacion']);
   // Resumen visual del turno (directiva operador — Sheet más gráfico):
@@ -136,46 +141,64 @@ export function CerrarTurnoForm({
     requiredMode === 'cierre_turno' || requiredMode === 'cierre_dia';
 
   // plan.md HU-F10.2 (línea 2273) + sequence diagram (líneas 2296-2326):
-  // la justificación es obligatoria SOLO "si hay diferencia" — no
+  // el motivo del descuadre es obligatorio SOLO "si hay diferencia" — no
   // incondicionalmente.
   //
-  // REGRESSION fix (2026-10-01): este componente solía comparar
-  // client-side contra `sesion.valor_inicial_*` (igual que
-  // `ArqueoParcial.tsx` `hasDifferenceError`) — eso daba un falso
-  // negativo en cuanto el turno tenía CUALQUIER transacción, porque el
-  // esperado real es `inicial + SUM(factura_pagos)`, solo conocido
-  // server-side (DEC-ARQUEO-10). `useRequiereJustificacion` corre ese
-  // mismo cálculo en el backend y devuelve ÚNICAMENTE el veredicto
-  // booleano — el monto esperado NUNCA viaja al cliente (conteo ciego:
-  // ni se renderiza, ni se transmite).
+  // PT-4: la UI ya no tiene un campo "Justificación" aparte. El motivo del
+  // descuadre se escribe en "Observaciones" (mín. 3 caracteres cuando hay
+  // diferencia); `cerrarTurnoChain.ts` lo reenvía como `justificacion` del
+  // POST /caja/arqueo para satisfacer el gate del backend sin tocarlo.
+  // PT-6: el datáfono no se cuenta ni participa del pre-flight.
+  //
+  // REGRESSION fix (2026-10-01): el pre-flight corre en el backend
+  // (`useRequiereJustificacion`) porque el esperado real es
+  // `inicial + SUM(factura_pagos)`, solo conocido server-side
+  // (DEC-ARQUEO-10). Devuelve ÚNICAMENTE el veredicto booleano — el monto
+  // esperado NUNCA viaja al cliente (conteo ciego: ni se renderiza, ni se
+  // transmite).
   const watchEfectivoReportado = form.watch('valor_efectivo_reportado');
-  const watchDatafonoReportado = form.watch('valor_datafono_reportado');
-  const { requiereJustificacion: requiereJustificacionServer } = useRequiereJustificacion(
+  const { requiereJustificacion: requiereMotivoServer } = useRequiereJustificacion(
     sesion.uuid,
     watchEfectivoReportado ?? 0,
-    watchDatafonoReportado ?? 0,
   );
   // Conservador mientras el backend no respondió todavía (debounce +
   // round-trip): asumir que SÍ hay diferencia, nunca `false` por
   // default — lo contrario reintroduciría la misma ventana de falso
-  // negativo que este hook existe para cerrar. `forceRequireJustificacion`
+  // negativo que este hook existe para cerrar. `forceRequireMotivo`
   // (seteado por `<CerrarTurno>` tras un rechazo real del backend) sigue
   // OR-eado por las dudas de una condición de carrera entre este
   // pre-flight y el POST real.
-  const mostrarJustificacion = (requiereJustificacionServer ?? true) || forceRequireJustificacion;
+  const requiereMotivo = (requiereMotivoServer ?? true) || forceRequireMotivo;
 
-  // REQ-OPS-158 — strict-mode gate: button disabled while
-  // justificacion is empty / below 3 chars, but ONLY when a difference
-  // actually requires it. The Zod schema (via the resolver) is
-  // enforced at submit time; the visual gate is here.
-  const watchJustificacion = form.watch('justificacion') ?? '';
-  const strictModeButtonDisabled =
-    isStrictMode && mostrarJustificacion && (watchJustificacion ?? '').trim().length < 3;
+  // REQ-OPS-158 — strict-mode gate: botón deshabilitado mientras el motivo
+  // (Observaciones) tenga < 3 caracteres, pero SOLO cuando una diferencia
+  // realmente lo exige. Además `handleValid` re-chequea al enviar, porque
+  // con `zodResolver` las `rules` de RHF no se ejecutan.
+  const watchObservaciones = form.watch('observaciones_cierre') ?? '';
+  const motivoMuyCorto = watchObservaciones.trim().length < MOTIVO_MIN_CHARS;
+  const strictModeButtonDisabled = isStrictMode && requiereMotivo && motivoMuyCorto;
+
+  const handleValid = async (data: CerrarTurnoInput): Promise<void> => {
+    if (
+      isStrictMode &&
+      requiereMotivo &&
+      (data.observaciones_cierre ?? '').trim().length < MOTIVO_MIN_CHARS
+    ) {
+      form.setError('observaciones_cierre', {
+        type: 'validate',
+        message: t('caja:cerrarTurno.observacionesRequeridas', {
+          defaultValue: 'Escribe el motivo del descuadre (mínimo 3 caracteres).',
+        }),
+      });
+      return;
+    }
+    await onSubmit(data);
+  };
 
   return (
     <Form {...form}>
       <form
-        onSubmit={form.handleSubmit(onSubmit)}
+        onSubmit={form.handleSubmit(handleValid)}
         noValidate
         data-testid="cerrar-turno-form"
         // F31.3 rediseño: el form no tenía NINGÚN spacing entre el Card
@@ -299,97 +322,49 @@ export function CerrarTurnoForm({
           )}
         />
 
-        <FormField
-          control={form.control}
-          name="valor_datafono_reportado"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>
-                {t('caja:valorDatafonoReportado', {
-                  defaultValue: 'Datáfono contado',
-                })}
-              </FormLabel>
-              <FormControl>
-                <MoneyInput
-                  value={field.value}
-                  onChange={(raw) => field.onChange(raw === '' ? 0 : Number(raw))}
-                  onBlur={field.onBlur}
-                  name={field.name}
-                  ref={field.ref}
-                  inputTestId="cerrar-turno-valor-datafono-reportado"
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        {/* Conteo ciego (HU-F10.2): este campo solo existe en el DOM
-            cuando `mostrarJustificacion` es true (guess del cliente O
-            el backend ya rechazó el intento anterior) — nunca se
-            expone el monto esperado ni la diferencia, ni siquiera
-            oculto. */}
-        {mostrarJustificacion && (
-          <FormField
-            control={form.control}
-            name="justificacion"
-            rules={
-              isStrictMode
-                ? {
-                    validate: (value: unknown) => {
-                      const v = typeof value === 'string' ? value.trim() : '';
-                      return v.length >= 3 || 'justificacion_requerida';
-                    },
-                  }
-                : undefined
-            }
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>
-                  {t('caja:justificacion', { defaultValue: 'Justificación' })}
-                </FormLabel>
-                <FormControl>
-                  <Input
-                    {...field}
-                    type="text"
-                    data-testid={
-                      isStrictMode
-                        ? 'cerrar-turno-required-justificacion'
-                        : 'cerrar-turno-justificacion'
-                    }
-                    placeholder={t('caja:justificacionPlaceholder', {
-                      defaultValue: 'Describí brevemente el motivo (mín. 3 caracteres).',
-                    })}
-                    value={field.value ?? ''}
-                  />
-                </FormControl>
-                <FormDescription>
-                  {t('caja:justificacionDescripcion', {
-                    defaultValue:
-                      'Hay una diferencia respecto a lo esperado. Por favor justificá.',
-                  })}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        )}
-
+        {/* PT-4: único campo de texto libre del cierre. Cuando hay
+            diferencia de efectivo (conteo ciego: el veredicto viene del
+            backend, nunca el monto) aquí va el motivo del descuadre y es
+            obligatorio; sin diferencia es opcional. */}
         <FormField
           control={form.control}
           name="observaciones_cierre"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>{t('caja:observaciones')}</FormLabel>
+              <FormLabel>
+                {requiereMotivo
+                  ? t('caja:cerrarTurno.observacionesLabelMotivo', {
+                      defaultValue: 'Observaciones (motivo del descuadre)',
+                    })
+                  : t('caja:observaciones')}
+              </FormLabel>
               <FormControl>
                 <Input
                   {...field}
                   type="text"
+                  maxLength={OBSERVACIONES_CIERRE_MAX}
                   data-testid="cerrar-turno-observaciones"
+                  aria-required={isStrictMode && requiereMotivo}
+                  placeholder={
+                    requiereMotivo
+                      ? t('caja:cerrarTurno.observacionesPlaceholderMotivo', {
+                          defaultValue: 'Describe brevemente el motivo (mín. 3 caracteres).',
+                        })
+                      : undefined
+                  }
                   value={field.value ?? ''}
                 />
               </FormControl>
-              <FormDescription>Opcional</FormDescription>
+              <FormDescription data-testid="cerrar-turno-observaciones-ayuda">
+                {requiereMotivo
+                  ? t('caja:cerrarTurno.observacionesDescripcionMotivo', {
+                      defaultValue:
+                        'Si hay diferencia entre el efectivo contado y lo esperado, escribe aquí el motivo del descuadre (obligatorio, mínimo 3 caracteres).',
+                    })
+                  : t('caja:cerrarTurno.observacionesDescripcionOpcional', {
+                      defaultValue: 'Opcional',
+                    })}
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}
@@ -487,7 +462,7 @@ export function CerrarTurnoForm({
           >
             {t('caja:cerrarTurno.botonDisabledMotivo', {
               defaultValue:
-                'El botón se habilita cuando el valor contado coincide con lo esperado, o cuando completás una justificación de mínimo 3 caracteres.',
+                'El botón se habilita cuando el valor contado coincide con lo esperado, o cuando escribes el motivo del descuadre en Observaciones (mínimo 3 caracteres).',
             })}
           </FormMessage>
         )}

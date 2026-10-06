@@ -31,6 +31,7 @@ if str(_PARKOS_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_PARKOS_CORE_SRC))
 
 import pytest  # noqa: E402
+from parkos_core.repo.fe_emision import FeEmisionResultado  # noqa: E402
 from fastapi import HTTPException, Request  # noqa: E402
 
 
@@ -495,6 +496,11 @@ async def test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_aho
         # `MagicMock` session.
         handler_mod, "build_display_factura",
         new=AsyncMock(return_value=None),
+    ), patch.object(
+        # FE is always emitted after the payment commit with its own commit
+        # (covered by test_fe_emision.py + test_venta_suscripcion.py).
+        handler_mod.repo_fe_emision, "emitir_fe_para_pago",
+        new=AsyncMock(return_value=FeEmisionResultado(uuid_factura_electronica=uuid_lib.uuid4())),
     ):
         result = await handler_mod.venta_suscripcion(
             response=response,
