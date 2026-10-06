@@ -251,12 +251,12 @@ function Set-ParkosLiteStepState {
 
 function Get-ParkosLiteSteps {
     return @(
-        [PSCustomObject]@{ Number = '1'; Key = 'env';     Name = 'Preparar entorno' }
-        [PSCustomObject]@{ Number = '2'; Key = 'db';      Name = 'Instalar base de datos' }
-        [PSCustomObject]@{ Number = '3'; Key = 'api';     Name = 'Construir API (.exe)' }
-        [PSCustomObject]@{ Number = '4'; Key = 'migrate'; Name = 'Migrar base de datos' }
-        [PSCustomObject]@{ Number = '5'; Key = 'seed';    Name = 'Cargar datos de demo' }
-        [PSCustomObject]@{ Number = '6'; Key = 'front';   Name = 'Instalar dependencias del front' }
+        [PSCustomObject]@{ Number = '10'; Key = 'env';     Name = 'Preparar entorno' }
+        [PSCustomObject]@{ Number = '11'; Key = 'db';      Name = 'Instalar base de datos' }
+        [PSCustomObject]@{ Number = '12'; Key = 'api';     Name = 'Construir API (.exe)' }
+        [PSCustomObject]@{ Number = '13'; Key = 'migrate'; Name = 'Migrar base de datos' }
+        [PSCustomObject]@{ Number = '14'; Key = 'seed';    Name = 'Cargar datos de demo' }
+        [PSCustomObject]@{ Number = '15'; Key = 'front';   Name = 'Instalar dependencias del front' }
     )
 }
 
@@ -289,18 +289,72 @@ function Get-ParkosLiteBlockReason {
     return $null
 }
 
+# Menu unico, secuencial y agrupado. Action es la clave que despacha el TUI:
+# las de los pasos de instalacion son las Key de Get-ParkosLiteSteps (el estado
+# persistente y el gating siguen usando esas keys, no los numeros visibles).
+function Get-ParkosLiteMenuItems {
+    $items = @(
+        @{ Group = 'PRIMERA VEZ'; Action = 'installall'; Name = 'Instalar todo (guiado)' }
+        @{ Group = 'USO DIARIO'; Action = 'start'; Name = 'Iniciar todo (DB + API + front)' }
+        @{ Group = 'USO DIARIO'; Action = 'stop'; Name = 'Detener todo' }
+        @{ Group = 'USO DIARIO'; Action = 'restart'; Name = 'Reiniciar' }
+        @{ Group = 'USO DIARIO'; Action = 'status'; Name = 'Estado' }
+        @{ Group = 'USO DIARIO'; Action = 'browser'; Name = 'Abrir el navegador' }
+        @{ Group = 'USO DIARIO'; Action = 'refresh'; Name = 'Bajar cambios de dev y reiniciar' }
+        @{ Group = 'USO DIARIO'; Action = 'logs'; Name = 'Ver logs' }
+        @{ Group = 'USO DIARIO'; Action = 'autostart'; Name = 'Arranque automatico de la base de datos' }
+    )
+    foreach ($s in (Get-ParkosLiteSteps)) {
+        $items += @{ Group = 'AVANZADO'; Action = $s.Key; Name = $s.Name }
+    }
+    $n = 0
+    $result = @()
+    foreach ($i in $items) {
+        $n++
+        $result += [PSCustomObject]@{ Number = $n; Group = $i.Group; Action = $i.Action; Name = $i.Name }
+    }
+    return $result
+}
+
+# Entrada del usuario -> clave de accion ('exit' para 0/Q), o $null si no es valida.
+function Resolve-ParkosLiteMenuChoice {
+    param([AllowNull()][AllowEmptyString()][string]$Choice)
+    if ($null -eq $Choice) { return $null }
+    $c = $Choice.Trim()
+    if ($c -eq '0' -or $c -ieq 'q') { return 'exit' }
+    if ($c -notmatch '^[1-9][0-9]*$') { return $null }
+    foreach ($i in (Get-ParkosLiteMenuItems)) {
+        if ([string]$i.Number -eq $c) { return $i.Action }
+    }
+    return $null
+}
+
+# Lineas del menu (Kind: header | item | exit). Los pasos de instalacion y
+# "Iniciar todo" llevan etiqueta de estado [ OK ]/[FAIL]/[BLOQ]/[....].
 function Get-ParkosLiteMenuLines {
     param([Parameter(Mandatory)]$Status)
     $lines = @()
-    foreach ($s in (Get-ParkosLiteSteps)) {
-        $reason = Get-ParkosLiteBlockReason -Key $s.Key -Status $Status
-        $suffix = ''
-        if ($reason) { $tag = '[BLOQ]'; $color = 'DarkYellow'; $suffix = " ($reason)" }
-        elseif ($Status[$s.Key] -eq 'ok') { $tag = '[ OK ]'; $color = 'Green' }
-        elseif ($Status[$s.Key] -eq 'fail') { $tag = '[FAIL]'; $color = 'Red'; $suffix = ' (re-ejecutable)' }
-        else { $tag = '[....]'; $color = 'White' }
-        $lines += [PSCustomObject]@{ Text = ('  {0} {1}) {2}{3}' -f $tag, $s.Number, $s.Name, $suffix); Color = $color }
+    $group = ''
+    foreach ($i in (Get-ParkosLiteMenuItems)) {
+        if ($i.Group -ne $group) {
+            $group = $i.Group
+            $title = $group
+            if ($group -eq 'AVANZADO') { $title = 'AVANZADO (paso a paso, en este orden)' }
+            $lines += [PSCustomObject]@{ Kind = 'header'; Number = $null; Text = " $title"; Color = 'Cyan' }
+        }
+        $tag = '      '; $color = 'White'; $suffix = ''
+        $isStatusItem = ($i.Action -eq 'start') -or ($i.Group -eq 'AVANZADO')
+        if ($isStatusItem) {
+            $reason = Get-ParkosLiteBlockReason -Key $i.Action -Status $Status
+            if ($reason) { $tag = '[BLOQ]'; $color = 'DarkYellow'; $suffix = " ($reason)" }
+            elseif ($Status[$i.Action] -eq 'ok') { $tag = '[ OK ]'; $color = 'Green' }
+            elseif ($Status[$i.Action] -eq 'fail') { $tag = '[FAIL]'; $color = 'Red'; $suffix = ' (re-ejecutable)' }
+            else { $tag = '[....]' }
+        }
+        if ($i.Action -eq 'installall') { $suffix = '   <- recomendado: hace los pasos 10 a 15 solo y luego inicia todo'; $color = 'Green' }
+        $lines += [PSCustomObject]@{ Kind = 'item'; Number = $i.Number; Text = ('  {0} {1}) {2}{3}' -f $tag, $i.Number, $i.Name, $suffix); Color = $color }
     }
+    $lines += [PSCustomObject]@{ Kind = 'exit'; Number = 0; Text = '         0) Salir'; Color = 'White' }
     return $lines
 }
 

@@ -155,8 +155,8 @@ function Invoke-ParkosLiteInstallAll {
         if (-not (Invoke-ParkosLiteTuiStep -Ctx $Ctx -Key $s.Key)) {
             Write-Host ''
             Write-Host "La instalacion se detuvo en el paso $($s.Number)) $($s.Name)." -ForegroundColor Yellow
-            Write-Host "  Que hacer: lee el mensaje rojo de arriba, corrige lo que indica (internet, herramienta faltante, espacio en disco) y pulsa G otra vez: retoma donde quedo." -ForegroundColor Yellow
-            Write-Host "  Detalle tecnico: opcion L (logs) o la carpeta $($Ctx.Paths.Logs)" -ForegroundColor Yellow
+            Write-Host "  Que hacer: lee el mensaje rojo de arriba, corrige lo que indica (internet, herramienta faltante, espacio en disco) y elige la opcion 1 otra vez: retoma donde quedo." -ForegroundColor Yellow
+            Write-Host "  Detalle tecnico: opcion 8 (Ver logs) o la carpeta $($Ctx.Paths.Logs)" -ForegroundColor Yellow
             return $false
         }
     }
@@ -178,9 +178,9 @@ function Show-ParkosLiteSummary {
     Write-Host ("  Clave                : {0}" -f $script:DemoUsers[0].Password)
     Write-Host ("  Segundo usuario      : {0}  (misma clave)" -f $script:DemoUsers[1].Email)
     Write-Host ("  API (para soporte)   : {0}   docs: {1}" -f $u.ApiHealth, $u.ApiDocs)
-    Write-Host '  Para detener         : opcion 8 de este menu (o -Action StopAll)'
-    Write-Host '  Para ver el estado   : opcion 9.   Si algo falla: opcion L (logs).'
-    Write-Host '  Al reiniciar el PC   : la base de datos arranca sola; para el resto usa la opcion 7.'
+    Write-Host '  Para detener         : opcion 3 de este menu (o -Action StopAll)'
+    Write-Host '  Para ver el estado   : opcion 5.   Si algo falla: opcion 8 (Ver logs).'
+    Write-Host '  Al reiniciar el PC   : la base de datos arranca sola; para el resto usa la opcion 2 (Iniciar todo).'
     Write-Host $line -ForegroundColor Green
 }
 
@@ -197,7 +197,7 @@ function Invoke-ParkosLiteStart {
     } catch {
         & $Ctx.Logger "[FAIL] iniciar: $($_.Exception.Message)"
         Write-Host $_.Exception.Message -ForegroundColor Red
-        Write-Host '  Que hacer: opcion L para ver los logs, o opcion 8 (detener) y 7 (iniciar) otra vez.' -ForegroundColor Yellow
+        Write-Host '  Que hacer: opcion 8 para ver los logs, o opcion 4 (Reiniciar) otra vez.' -ForegroundColor Yellow
         return $false
     }
 }
@@ -279,29 +279,23 @@ function Invoke-ParkosLiteMenu {
         Write-Host ''
         Write-Host '=============== PARKOS LITE (demo) ===============' -ForegroundColor Cyan
         foreach ($l in (Get-ParkosLiteMenuLines -Status $status)) { Write-Host $l.Text -ForegroundColor $l.Color }
-        $startReason = Get-ParkosLiteBlockReason -Key 'start' -Status $status
-        $startTag = '[....]'; if ($startReason) { $startTag = '[BLOQ]' }
-        Write-Host ("  {0} 7) Iniciar todo (DB + API + front){1}" -f $startTag, $(if ($startReason) { " ($startReason)" } else { '' }))
-        Write-Host '         8) Detener todo        9) Estado'
-        Write-Host '  G) Instalar todo (guiado, pasos 1-7)   B) Bajar cambios de dev y reiniciar'
-        Write-Host '  R) Reiniciar   L) Ver logs   O) Abrir navegador   A) Arranque automatico   Q) Salir'
-        $choice = (Read-Host 'Opcion').Trim().ToUpperInvariant()
-        switch ($choice) {
-            { $_ -in '1', '2', '3', '4', '5', '6' } { Invoke-ParkosLiteTuiStep -Ctx $Ctx -Key (Get-ParkosLiteSteps | Where-Object { $_.Number -eq $choice }).Key | Out-Null }
-            '7' { Invoke-ParkosLiteStart -Ctx $Ctx | Out-Null }
-            '8' { Stop-ParkosLiteAll -Ctx $Ctx; Write-Host 'Detenido.' -ForegroundColor Green }
-            '9' { Show-ParkosLiteStatus -Ctx $Ctx }
-            'G' { Invoke-ParkosLiteInstallAll -Ctx $Ctx | Out-Null }
-            'B' {
+        $action = Resolve-ParkosLiteMenuChoice -Choice (Read-Host 'Opcion (numero)')
+        switch ($action) {
+            'exit' { return }
+            'installall' { Invoke-ParkosLiteInstallAll -Ctx $Ctx | Out-Null }
+            'start' { Invoke-ParkosLiteStart -Ctx $Ctx | Out-Null }
+            'stop' { Stop-ParkosLiteAll -Ctx $Ctx; Write-Host 'Detenido.' -ForegroundColor Green }
+            'restart' { Stop-ParkosLiteAll -Ctx $Ctx; Invoke-ParkosLiteStart -Ctx $Ctx | Out-Null }
+            'status' { Show-ParkosLiteStatus -Ctx $Ctx }
+            'browser' { $u = Get-ParkosLiteUrls -ApiPort $Ctx.State.api_port -FrontPort $Ctx.State.front_port; Start-Process $u.Front }
+            'refresh' {
                 try { Invoke-ParkosLiteRefresh -Ctx $Ctx; Write-Host 'Cambios aplicados.' -ForegroundColor Green }
                 catch { & $Ctx.Logger "[FAIL] refresh: $($_.Exception.Message)"; Write-Host $_.Exception.Message -ForegroundColor Red }
             }
-            'R' { Stop-ParkosLiteAll -Ctx $Ctx; Invoke-ParkosLiteStart -Ctx $Ctx | Out-Null }
-            'L' { Show-ParkosLiteLogs -Ctx $Ctx }
-            'O' { $u = Get-ParkosLiteUrls -ApiPort $Ctx.State.api_port -FrontPort $Ctx.State.front_port; Start-Process $u.Front }
-            'A' { Invoke-ParkosLiteAutostartMenu -Ctx $Ctx }
-            'Q' { return }
-            default { Write-Host 'Opcion no valida.' -ForegroundColor Yellow }
+            'logs' { Show-ParkosLiteLogs -Ctx $Ctx }
+            'autostart' { Invoke-ParkosLiteAutostartMenu -Ctx $Ctx }
+            { $_ -in 'env', 'db', 'api', 'migrate', 'seed', 'front' } { Invoke-ParkosLiteTuiStep -Ctx $Ctx -Key $action | Out-Null }
+            default { Write-Host 'Opcion no valida, elige un numero de la lista' -ForegroundColor Yellow }
         }
     }
 }
