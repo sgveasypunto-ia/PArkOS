@@ -11,3 +11,7 @@
 # being wrong about a corrupted icon.
 *.png binary
 *.ico binary
+
+# Postgres binaries split in parts (installer/payload/postgres): raw bytes, never
+# converted or diffed. The hash of the reassembled zip is verified by the installers.
+installer/payload/postgres/*.part* binary
