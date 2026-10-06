@@ -5,7 +5,8 @@
 # Solo funciones. Todo binario externo (initdb, pg_ctl, psql, pg_isready,
 # migrate.exe) pasa por Invoke-ParkosLiteNative, que los tests mockean.
 # Compatible con PowerShell 5.1. Requiere (dot-source previo) los helpers de
-# installer\shared\ParkosPostgresDownload.ps1 solo en Install-ParkosLiteDatabase.
+# installer\shared\ParkosPostgresDownload.ps1 y ParkosPayloadParts.ps1 solo en
+# Install-ParkosLiteDatabase.
 
 $script:ParkosLiteConfBegin = '# --- parkos-lite (gestionado) ---'
 $script:ParkosLiteConfEnd = '# --- /parkos-lite ---'
@@ -288,7 +289,33 @@ function Enable-ParkosLitePartman {
     }
 }
 
-# Paso 2 completo: binarios (descarga/cache), extension, initdb, arranque, roles.
+# pg_partman SQL-only desde las partes del repo (artefacto 'pg_partman-extension')
+# a <Downloads>\pg_partman\extension (la cache que ya mira Get-ParkosPgPartmanExtension).
+# $true si la extension queda lista; $false si no hay partes o no sirven (el
+# llamador cae al ensamblado por descarga). Nunca lanza.
+function Restore-ParkosLitePartmanFromParts {
+    param([Parameter(Mandatory)]$Paths, [scriptblock]$Logger)
+    $extDir = Join-Path $Paths.Downloads 'pg_partman\extension'
+    if (Test-ParkosPgPartmanExtensionDir -Dir $extDir) { return $true }
+    $entry = $null
+    try {
+        if (Test-Path -LiteralPath $Paths.PartsDir) { $entry = Find-ParkosPayloadEntry -PartsDir $Paths.PartsDir -Id 'pg_partman-extension' }
+    } catch { $entry = $null }
+    if (-not $entry) { return $false }
+    try {
+        [void](Restore-ParkosPayloadArtifact -Id 'pg_partman-extension' -PartsDir $Paths.PartsDir -PayloadRoot $Paths.Downloads -CacheDir (Join-Path $Paths.Downloads 'tmp') -Force -Logger $Logger)
+        if (-not (Test-ParkosPgPartmanExtensionDir -Dir $extDir)) { throw 'la extension restaurada no trae pg_partman--*.sql y pg_partman.control' }
+        Write-ParkosDownloadLog $Logger 'pg_partman restaurado desde el repositorio (partes), sin descargar.'
+        return $true
+    } catch {
+        Write-ParkosDownloadLog $Logger "Las partes del repo de pg_partman no sirven ($($_.Exception.Message)): se descarga."
+        return $false
+    }
+}
+
+# Paso 2 completo. Orden de origen: partes del repo (Postgres: installer\payload\parts\postgres,
+# pg_partman: artefacto pg_partman-extension) -> cache -> descarga. Luego initdb,
+# arranque y roles.
 function Install-ParkosLiteDatabase {
     param(
         [Parameter(Mandatory)]$Paths,
@@ -298,6 +325,7 @@ function Install-ParkosLiteDatabase {
     )
     $zip = Get-ParkosPostgresZip -CacheDir $Paths.Downloads -PayloadDir $Paths.PgPayload -Logger $Logger
     Expand-ParkosPostgresZip -ZipPath $zip -PgRoot $Paths.PgRoot -Logger $Logger | Out-Null
+    [void](Restore-ParkosLitePartmanFromParts -Paths $Paths -Logger $Logger)
     $ext = Get-ParkosPgPartmanExtension -ExtensionDir (Join-Path $Paths.Downloads 'pg_partman\extension') -TempDir (Join-Path $Paths.Downloads 'tmp') -PayloadDir $Paths.PartmanPayload -Logger $Logger
     Install-ParkosPgPartmanExtension -PgRoot $Paths.PgRoot -ExtensionDir $ext
     Initialize-ParkosLitePgData -PgRoot $Paths.PgRoot -PgData $Paths.PgData -Port $Port -PostgresPassword $Secrets.PostgresPassword | Out-Null

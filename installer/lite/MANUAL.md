@@ -48,7 +48,7 @@ Parkos LITE levanta **una sucursal completa en una sola máquina Windows** para 
 
 Características de diseño (verificadas en `parkos-lite.ps1` y `README.md`):
 
-- **Sin conectividad en ejecución**: internet solo se necesita al instalar o al bajar cambios. Ya instalado, todo corre sin red.
+- **Sin conectividad en ejecución**: ya instalado, todo corre sin red. Al instalar, casi todo sale del propio repositorio (`installer\payload\parts`: Postgres, pg_partman, la API y las herramientas portátiles); internet solo se necesita para `pnpm install` del front, `git pull` y recompilar la API si `backend/` cambió.
 - **Sin job de sync**: no se envía nada a la nube ni a la DIAN; la cola de sincronización (`sync_queue`) simplemente crece.
 - **Sin Electron**: se usa el navegador. La impresión es un no-op (ver [sección 21](#21-limitaciones-conocidas)).
 - **Sin Docker, sin servicios de Windows obligatorios y sin permisos de administrador** (el servicio de Windows es opcional y solo si el TUI se abre como administrador).
@@ -74,20 +74,20 @@ Nota: los ejecutables y `node_modules` se generan **dentro del repositorio** (`i
 
 ## 3. Requisitos previos
 
-Necesita **Windows e internet mientras instala**. No necesita ser administrador ni instalar nada antes: si el equipo no tiene `git`, `uv`, `node` o `pnpm` (o tiene versiones viejas), el paso "Preparar entorno" (opción 10, parte de la opción 1) descarga copias **portátiles** dentro de `<LITE>\tools` y las usa solo el instalador. Si ya hay una versión compatible en el PATH (node 20 o superior, pnpm 10 o superior, uv y git recientes), se usa esa y no se descarga nada.
+Necesita **Windows**. No necesita ser administrador ni instalar nada antes. **Internet solo para las dependencias del front** (`pnpm install`, registro npm; 1 a 5 minutos la primera vez): Postgres, pg_partman, la API y las herramientas vienen en el repositorio. Si el equipo no tiene `git`, `uv`, `node` o `pnpm` (o tiene versiones viejas), el paso "Preparar entorno" (opción 10, parte de la opción 1) las toma de las **partes versionadas en el repo** (`installer\payload\parts\tools-*`, verificadas contra el SHA-256 fijado en la tabla de versiones) y deja copias **portátiles** dentro de `<LITE>\tools`, que usa solo el instalador. Si ya hay una versión compatible en el PATH (node 20 o superior, pnpm 10 o superior, uv y git recientes), se usa esa y no se restaura ni se descarga nada. Orden: **PATH compatible → partes del repo → descarga**.
 
 ### Herramientas portátiles
 
-| Herramienta | Versión fijada | Origen (URL) | Dónde se instala | Verificación de integridad |
+| Herramienta | Versión fijada | Origen de respaldo (URL; solo si no están las partes del repo) | Dónde se instala | Verificación de integridad |
 |---|---|---|---|---|
 | Node.js | 22.23.3 (LTS; se acepta 20 o superior del sistema) | `https://nodejs.org/dist/v22.23.3/node-v22.23.3-win-x64.zip` (~30 MB) | `<LITE>\tools\node` | SHA-256 fijado y contrastado con `SHASUMS256.txt` del mismo `dist` |
 | pnpm | 10.0.0 (el `packageManager` de `apps\package.json`; se acepta 10 o superior) | `npm install -g pnpm@10.0.0 --prefix <LITE>\tools\pnpm` con el npm del Node anterior (registro npm) | `<LITE>\tools\pnpm` | Lo verifica npm (integridad del registro) |
 | uv | 0.12.23 (se acepta 0.5 o superior) | `https://github.com/astral-sh/uv/releases/download/0.12.23/uv-x86_64-pc-windows-msvc.zip` (~18 MB) | `<LITE>\tools\uv` | SHA-256 fijado y contrastado con el asset `.sha256` del release |
 | Git (MinGit) | 2.56.0.2 (se acepta 2.20 o superior) | `https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/MinGit-2.56.0.2-64-bit.zip` (~40 MB) | `<LITE>\tools\git` | SHA-256 fijado = digest que publica GitHub para ese asset (Git for Windows no publica un `.sha256` aparte) |
 
-Los zip se guardan en `<LITE>\downloads` (caché). Las cachés de uv (incluido el Python 3.13 que uv baja solo), de npm y el almacén de pnpm viven en `<LITE>\tools\cache`. Todo se define en un solo lugar: la tabla de versiones de `installer\lite\ParkosLite.Tools.ps1`.
+Id de cada una en las partes del repo: `tools-node` (35,6 MB), `tools-pnpm` (carpeta portátil, 5,1 MB), `tools-uv` (18,0 MB) y `tools-mingit` (39,8 MB). Si las partes faltan, son de otra versión, están dañadas o su hash no coincide con el fijado, el instalador lo avisa y descarga. Python 3.13 (que baja uv) **no** está versionado: solo se necesita para compilar los exe. Los zip se guardan en `<LITE>\downloads` (caché). Las cachés de uv (incluido el Python 3.13 que uv baja solo), de npm y el almacén de pnpm viven en `<LITE>\tools\cache`. Todo se define en un solo lugar: la tabla de versiones de `installer\lite\ParkosLite.Tools.ps1`.
 
-- **Qué verá**: por cada herramienta `[YA ESTA]` (ya existía, del sistema o de `tools\`), `[INSTALADO]` (la descargó ahora) y al final un resumen con versión y origen (`sistema` o `portatil`). La opción 5 (Estado) muestra lo mismo.
+- **Qué verá**: por cada herramienta `[YA ESTA]` (ya existía, del sistema o de `tools\`), `[INSTALADO]` (la restauró del repo o la descargó ahora; la línea `... restaurado desde el repositorio (partes), sin descargar.` lo confirma) y al final un resumen con versión y origen (`sistema` o `portatil`). La opción 5 (Estado) muestra lo mismo.
 - **Alcance**: las carpetas de `tools\` se anteponen al PATH **solo del proceso del instalador y de sus hijos** (build, uv, pnpm, node/Vite, git). No se modifica el PATH de Máquina ni de Usuario, ni el registro. Por eso `node --version` en su consola puede seguir fallando: es normal, las herramientas no son visibles fuera del lite.
 - **Sin internet / descarga fallida**: el mensaje indica la URL, la carpeta exacta (`<LITE>\downloads`) y el nombre del archivo donde dejarlo a mano; luego vuelva a correr la opción 10 (o la 1), que es re-ejecutable y reutiliza el zip si su hash coincide.
 - **Verificar**: `& "<LITE>\tools\node\node.exe" --version`, `& "<LITE>\tools\uv\uv.exe" --version`, `& "<LITE>\tools\git\cmd\git.exe" --version`, `& "<LITE>\tools\pnpm\pnpm.cmd" --version`.
@@ -166,19 +166,19 @@ Los puertos pedidos con `-PgPort`, `-ApiPort` o `-FrontPort` se aplican cuando c
 
    ```text
    INSTALACION GUIADA: deja esta ventana abierta, no necesitas hacer nada mas.
-   Necesita internet solo ahora. Total estimado: 5 a 25 minutos la primera vez (segundos si ya estaba instalado).
+   Internet solo hace falta para las dependencias del front (pnpm install). Total estimado: 3 a 10 minutos la primera vez (segundos si ya estaba instalado).
    ```
 
 3. **No cierre la ventana.** Verá siete pasos, con este formato `Paso n de 7: <nombre>  (<tiempo>)`:
 
    | Paso | Qué hace | Tiempo que indica el instalador |
    |---|---|---|
-   | Paso 1 de 7: Preparar entorno | Comprueba herramientas, crea la identidad de la sucursal demo, elige puertos y genera claves descartables | unos segundos |
-   | Paso 2 de 7: Instalar base de datos | Descarga Postgres, lo prepara y lo arranca; deja el arranque automático activado | descarga ~300 MB la primera vez: 2 a 8 minutos según su internet |
-   | Paso 3 de 7: Construir API (.exe) | Compila el programa de la API | 3 a 10 minutos la primera vez (se omite si ya está hecho) |
+   | Paso 1 de 7: Preparar entorno | Comprueba herramientas (las restaura de las partes del repo si faltan), crea la identidad de la sucursal demo, elige puertos y genera claves descartables | unos segundos a 1 minuto |
+   | Paso 2 de 7: Instalar base de datos | Rearma Postgres y pg_partman desde las partes del repo (sin Internet), lo prepara y lo arranca; deja el arranque automático activado | 1 a 3 minutos la primera vez |
+   | Paso 3 de 7: Construir API (.exe) | Restaura `api-sucursal.exe` y `migrate.exe` de las partes del repo (`API restaurada desde el repositorio (commit xxxxxxx)`); solo compila si `backend/` cambió desde ese commit | segundos (3 a 10 minutos y necesita Internet solo si hay que compilar) |
    | Paso 4 de 7: Migrar base de datos | Crea las tablas | menos de 1 minuto |
    | Paso 5 de 7: Cargar datos de demo | Carga sucursal, usuarios y tarifas | unos segundos |
-   | Paso 6 de 7: Instalar dependencias del front | Descarga las librerías de la pantalla | 1 a 5 minutos la primera vez |
+   | Paso 6 de 7: Instalar dependencias del front | Descarga las librerías de la pantalla (**único paso que siempre necesita Internet**) | 1 a 5 minutos la primera vez |
    | Paso 7 de 7: Iniciar base de datos, API y front | Enciende todo | 1 a 2 minutos |
 
    Cada paso termina con una línea verde `[ OK ] <nombre>`. Los pasos de base de datos, API y front que ya estaban hechos se omiten con el texto `ya estaba hecho, se omite.`
@@ -268,7 +268,7 @@ Actualiza el código del repositorio donde está el instalador. Pasos (verificad
 3. **Comprueba el árbol de trabajo**: si hay cambios locales en archivos versionados (`git status --porcelain --untracked-files=no`), se niega. Los archivos nuevos sin versionar no cuentan.
 4. `git fetch origin <rama>`; si la rama actual no es esa, `git checkout <rama>`; luego **`git pull --ff-only origin <rama>`**.
 5. Calcula qué archivos cambiaron (`git diff --name-only`) y decide:
-   - **Reconstruye el `.exe` solo si cambió algo bajo `backend/` o `installer/bootstrap/`** (o si el `.exe` no existe). Además, el paso de construcción compara fechas de los fuentes con las de los `.exe` y se omite si están al día.
+   - **Reconstruye el `.exe` solo si cambió algo bajo `backend/` o `installer/bootstrap/`** (o si el `.exe` no existe). El paso de la API recalcula antes la decisión de partes (`Get-ParkosPartsArtifactDecision`: `builtFromCommit` de `payload-parts.json` contra el árbol de trabajo): si nada cambió desde ese commit **restaura** las partes del repo (sin uv ni Python); si cambió, dice `No se restaura la API desde el repositorio: ...` y **compila** (necesita uv/Python e Internet; si el pull trajo además partes nuevas empaquetadas con ese código, las restaura). Una carpeta restaurada (marcador `.parts-sha256`) siempre se recompila si hay que construir; una compilada aquí se compara por fechas con los fuentes y se omite si está al día.
    - **Migra siempre** (`alembic upgrade head`).
    - **`pnpm install` solo si cambió** `apps/pnpm-lock.yaml`, `apps/pnpm-workspace.yaml` o algún `package.json` de `apps/`.
    - **Vuelve a sembrar siempre** (idempotente: solo agrega lo que falta).
@@ -412,17 +412,17 @@ Implementado en `ParkosLite.Autostart.ps1`. Nombre global del mecanismo: **`Park
 
 Comprobación manual de la tarea (PowerShell): `Get-ScheduledTask -TaskName ParkosLiteDb`.
 
-## 15. Descarga de Postgres y pg_partman
+## 15. Postgres y pg_partman: de dónde salen
 
-Lógica en `installer\shared\ParkosPostgresDownload.ps1` (compartida con el instalador completo).
+Lógica en `installer\shared\ParkosPostgresDownload.ps1` y `installer\shared\ParkosPayloadParts.ps1` (compartidas con el instalador completo). Regla: **primero el repo (`installer\payload\parts`), después la caché, al final la red.**
 
-- **Versión fijada**: Postgres `16.15-1`. Archivo: `postgresql-16.15-1-windows-x64-binaries.zip`. URL: `https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64-binaries.zip`.
-- **Orden de búsqueda del ZIP**: (1) caché `<LITE>\downloads`; (2) payload del instalador `<REPO>\installer\payload\postgres\` (acepta el nombre fijado o `postgresql-16-windows-x64-binaries.zip`); (3) descarga nueva.
-- **Descarga**: a un archivo `.part`, con reanudación por `Range` si existe, TLS 1.2 y barra de progreso; **3 intentos** con espera creciente (5 s y 10 s; máximo 60 s). Valida que el ZIP traiga `pg_ctl`, `initdb` y `psql`; luego renombra al nombre final.
-- **Hash**: EnterpriseDB no publica SHA-256 oficial, por eso no hay hash fijado. El hash calculado en la primera descarga se guarda en `<zip>.sha256` y se compara en cada reutilización; si no coincide el paso falla (`El hash SHA-256 de ... no coincide con el registrado ...`). Un ZIP en caché inválido se aparta como `.bad` y se vuelve a descargar. Un ZIP puesto a mano sin `.sha256` queda registrado en su primer uso (no se compara contra una referencia externa).
+- **Versión fijada**: Postgres `16.15-1`. Archivo: `postgresql-16.15-1-windows-x64-binaries.zip`.
+- **Orden de búsqueda del ZIP**: (1) ZIP completo válido en `<REPO>\installer\payload\parts\postgres\` (acepta el nombre fijado o `postgresql-16-windows-x64-binaries.zip`); (2) **partes versionadas** `postgresql-16.15-1-windows-x64-binaries.zip.part01..04` en esa misma carpeta: se unen por streaming en `<LITE>\downloads`, se verifican contra el `.sha256` versionado y se valida que traiga `pg_ctl/initdb/psql` (un ZIP ya rearmado en la caché se reutiliza); (3) caché de descargas; (4) descarga de `https://get.enterprisedb.com/...` (último recurso). Unas partes defectuosas dan un error claro (`git checkout -- installer/payload/parts/postgres`), no una descarga silenciosa. (Antes de este cambio el lite buscaba en `installer\payload\postgres\`, ruta que ya no existe tras mover las partes a `payload\parts\postgres`: se corrigió `PgPayload` en `Get-ParkosLitePaths`.)
+- **Descarga (respaldo)**: a un archivo `.part`, con reanudación por `Range` si existe, TLS 1.2 y barra de progreso; **3 intentos** con espera creciente (5 s y 10 s; máximo 60 s). Valida que el ZIP traiga `pg_ctl`, `initdb` y `psql`; luego renombra al nombre final.
+- **Hash**: el `.sha256` versionado junto a las partes. En la descarga, EnterpriseDB no publica SHA-256 oficial: el hash calculado en la primera descarga se guarda en `<zip>.sha256` y se compara en cada reutilización; si no coincide el paso falla (`El hash SHA-256 de ... no coincide con el registrado ...`). Un ZIP en caché inválido se aparta como `.bad` y se vuelve a descargar.
 - **Extracción**: a `<LITE>\pgsql.extracting` y luego se mueve a `<LITE>\pgsql` (una extracción interrumpida no deja un `pgsql` a medias). Si `bin\pg_ctl.exe` ya existe, se omite.
-- **pg_partman `5.1.0`**: se baja de GitHub (`https://github.com/pgpartman/pg_partman/archive/refs/tags/v5.1.0.zip`) y se ensambla SQL-only (igual que `build-release.ps1`) en `<LITE>\downloads\pg_partman\extension`, salvo que exista `<REPO>\installer\payload\pg_partman\extension` con los archivos `pg_partman--*.sql` y `pg_partman.control`. Luego se copia a `<LITE>\pgsql\share\extension`.
-- **Sin red**: el paso falla con este mensaje (con la URL y la carpeta destino):
+- **pg_partman `5.1.0`** (SQL-only): (1) se **restaura** del artefacto `pg_partman-extension` de las partes (`parts\pg_partman-extension\pg_partman-extension.zip`, 46 KB) a `<LITE>\downloads\pg_partman\extension`; (2) si ya existe esa carpeta o `<REPO>\installer\payload\pg_partman\extension` con `pg_partman--*.sql` y `pg_partman.control`, se usa; (3) respaldo: se baja de GitHub (`https://github.com/pgpartman/pg_partman/archive/refs/tags/v5.1.0.zip`) y se ensambla SQL-only. Luego se copia a `<LITE>\pgsql\share\extension`.
+- **Sin partes y sin red** (clon sin `installer\payload\parts`): el paso falla con este mensaje (con la URL y la carpeta destino):
 
   ```text
   No se pudo obtener los binarios de Postgres 16.15-1 (se necesita Internet SOLO en este paso).
@@ -433,7 +433,14 @@ Lógica en `installer\shared\ParkosPostgresDownload.ps1` (compartida con el inst
               luego vuelve a ejecutar este paso (es re-ejecutable).
   ```
 
-  Para trabajar offline deje el ZIP en `<LITE>\downloads\postgresql-16.15-1-windows-x64-binaries.zip` y vuelva a ejecutar la opción 1 u 11. Para pg_partman, el mensaje equivalente indica `<LITE>\downloads\tmp\pg_partman-5.1.0.zip`, pero el código siempre intenta descargar ese archivo (si ya existe, lo trata como descarga parcial y lo descarta); para trabajar offline con pg_partman deje la extensión ya ensamblada en `<LITE>\downloads\pg_partman\extension` o en `<REPO>\installer\payload\pg_partman\extension` (deducción del código, no probada).
+  Restaure las partes con `git checkout -- installer/payload/parts` (o deje el ZIP en `<LITE>\downloads\postgresql-16.15-1-windows-x64-binaries.zip`) y vuelva a ejecutar la opción 1 u 11.
+
+### API y herramientas desde el repo
+
+- **API** (`api-sucursal.exe` + `migrate.exe`): artefactos `api-sucursal` y `migrate` de `payload-parts.json` (zips de PyInstaller onedir, ~42 MB cada uno). Se restauran a `<REPO>\installer\payload\services\` solo si `backend/` e `installer/bootstrap/` no cambiaron desde `builtFromCommit` (`git diff` contra el árbol de trabajo + archivos no versionados). Sin git, sin el commit en el clon o sin partes: se compila como antes. El lite **nunca** restaura `doctor`, `seed`, `job-sync-sucursal`, `powershell7-msi`, `nssm` ni `web-sucursal-msi`.
+- **Herramientas**: ver sección 3 (ids `tools-*`).
+- **Qué sigue necesitando Internet**: `pnpm install` del front (`node_modules` no se versiona), recompilar la API tras un cambio de `backend/` (uv baja Python 3.13 y las dependencias) y `git pull`.
+- **Refrescar las partes del repo** (mantenedor): `pwsh -File installer\build-release.ps1 -ApiSucursal -Migrate` y `pwsh -File installer\tools\Pack-ParkosPayload.ps1 -Ids api-sucursal,migrate`; para herramientas, empaquetar con `Pack-ParkosPayloadArtifact` (ver `installer\MANUAL.md` sección 5.4). Versionar `installer\payload\parts`.
 
 ## 16. Arquitectura y flujo (diagramas)
 
@@ -442,12 +449,12 @@ Lógica en `installer\shared\ParkosPostgresDownload.ps1` (compartida con el inst
 ```mermaid
 flowchart TD
     A["Opción 1: Instalar todo"] --> B["Paso 1 de 7: Preparar entorno (opción 10)"]
-    B -->|"faltan herramientas"| F["Descarga portátiles a tools\ (sin admin)"]
+    B -->|"faltan herramientas"| F["Restaura portátiles de parts\tools-* a tools\ (sin admin; descarga solo como respaldo)"]
     B --> C["Paso 2 de 7: Instalar base de datos (opción 11)"]
-    C --> C1["ZIP: caché, payload o descarga"]
+    C --> C1["Postgres y pg_partman: partes del repo, caché o descarga"]
     C1 --> C2["Extraer, pg_partman, initdb, arrancar, roles y base parkos"]
     C2 --> D["Paso 3 de 7: Construir API (opción 12)"]
-    D --> D1["build-release.ps1 -ApiSucursal -Migrate"]
+    D --> D1["Restaura api-sucursal y migrate de parts\ (o build-release.ps1 si backend/ cambió)"]
     D1 --> E["Paso 4 de 7: Migrar (opción 13)"]
     E --> E1["alembic upgrade head con migrate.exe"]
     E1 --> G["Paso 5 de 7: Datos de demo (opción 14)"]
@@ -560,9 +567,9 @@ El instalador completo (`installer\parkos-installer.ps1`, ver `installer\MANUAL.
 | Postgres | ZIP en `<LITE>\pgsql`, proceso de usuario | Instalado por el instalador completo (binarios en payload, registro con NSSM) |
 | Secretos (`.env`) | Sin cifrar, contraseñas descartables | Cifrado con clave maestra |
 | Datos | Seed de demo (`seed_demo.sql`) | Siembra de catálogo contra la API real |
-| Internet | Solo para instalar o bajar cambios | Se instala desde un payload ya preparado |
+| Internet | Solo para `pnpm install` del front, `git pull` y recompilar la API si `backend/` cambió (el resto sale de `installer\payload\parts`) | Se instala desde un payload ya preparado |
 | Código fuente | Se ejecuta desde el repositorio (`git pull` con la opción 7) | Se distribuye empaquetado |
-| Reutilizado | `installer\shared\ParkosPostgresDownload.ps1` y `build-release.ps1` | Mismos componentes |
+| Reutilizado | `installer\shared\ParkosPostgresDownload.ps1`, `installer\shared\ParkosPayloadParts.ps1` (partes) y `build-release.ps1` | Mismos componentes |
 
 Las celdas de la columna "Instalador completo" se basan en el encabezado de `parkos-installer.ps1` y en `Request-Elevation`; no se revisó el instalador completo de punta a punta.
 
@@ -581,9 +588,9 @@ Las celdas de la columna "Instalador completo" se basan en el encabezado de `par
 
 ## 22. Limitaciones / no verificado
 
-Este manual se escribió leyendo el código y los tests; **no se ejecutó el instalador** durante su redacción. Queda sin verificar:
+Este manual se escribió leyendo el código y los tests; las secciones de partes (3, 8 y 15) se contrastaron además con una instalación limpia real (PATH sin git/node/pnpm/uv, caché de descargas vacía). Queda sin verificar:
 
-- Que los tiempos indicados (5 a 25 minutos en total, 2 a 8 minutos de descarga, etc.) correspondan a una máquina real; son los textos que imprime el instalador.
+- Que los tiempos indicados correspondan a todas las máquinas: se midieron en una instalación limpia real (ver el informe de verificación del cambio de partes), pero dependen del disco, el antivirus y la red del `pnpm install`.
 - Espacio en disco mínimo: el código no lo declara ni lo comprueba; solo aparece "~300 MB" para el ZIP. La recomendación de "varios GB" es una estimación.
 - Versión mínima de Node: ningún archivo la fija; "20 o superior" se infiere de que el bundler del proceso principal de Electron apunta a `node20` (comentario de `vite.config.ts`). `pnpm` 10 se infiere de `packageManager: pnpm@10.0.0` en `apps\package.json`.
 - Que `api-sucursal.exe` escuche solo en `127.0.0.1`: el lite solo le pasa `PORT`; el enlace lo decide el código del backend (no revisado).

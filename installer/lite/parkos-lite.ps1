@@ -9,8 +9,10 @@
       - api-sucursal como .exe (PyInstaller, build-release.ps1),
       - el front React de la sucursal servido por Vite en el navegador,
       - sin job de sync, con datos de demo (tarifas, config, usuarios).
-    Internet solo hace falta al instalar / bajar cambios (descarga de Postgres,
-    pg_partman, herramientas portatiles git/uv/node/pnpm, git pull, pnpm/uv). Compatible con Windows PowerShell 5.1 y pwsh 7.
+    Postgres, pg_partman, la API (api-sucursal/migrate) y las herramientas
+    portatiles git/uv/node/pnpm salen de installer\payload\parts (versionado en
+    git): se descarga/compila solo si faltan o si backend/ cambio. Internet solo
+    hace falta para pnpm install del front, git pull y reconstruir la API. Compatible con Windows PowerShell 5.1 y pwsh 7.
 
 .PARAMETER LitePath
     Carpeta de trabajo del lite (binarios de Postgres, datos, logs, estado).
@@ -38,6 +40,7 @@ $script:LiteScriptPath = $MyInvocation.MyCommand.Path
 $script:LiteRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 . (Join-Path $PSScriptRoot '..\shared\ParkosPostgresDownload.ps1')
+. (Join-Path $PSScriptRoot '..\shared\ParkosPayloadParts.ps1')
 . (Join-Path $PSScriptRoot 'ParkosLite.Core.ps1')
 . (Join-Path $PSScriptRoot 'ParkosLite.Db.ps1')
 . (Join-Path $PSScriptRoot 'ParkosLite.Tools.ps1')
@@ -131,19 +134,19 @@ function Invoke-ParkosLiteTuiStep {
 # sembrar si corren siempre: son baratos e idempotentes).
 $script:LiteSkipWhenOk = @('db', 'api', 'front')
 $script:LiteStepHints = @{
-    env     = 'unos segundos; si no tienes git/uv/node/pnpm los descarga portatiles (~100 MB, 1 a 3 minutos), sin admin'
-    db      = 'descarga ~300 MB la primera vez: 2 a 8 minutos segun tu internet'
-    api     = 'compila el programa: 3 a 10 minutos la primera vez (omite si ya esta hecho)'
+    env     = 'unos segundos a 1 minuto; git/uv/node/pnpm portatiles salen del repositorio (sin Internet, sin admin)'
+    db      = 'rearma Postgres y pg_partman desde el repositorio (sin Internet): 1 a 3 minutos la primera vez'
+    api     = 'restaura la API del repositorio (segundos); solo compila si backend/ cambio (3 a 10 minutos, necesita Internet)'
     migrate = 'menos de 1 minuto'
     seed    = 'unos segundos'
-    front   = 'descarga dependencias: 1 a 5 minutos la primera vez'
+    front   = 'descarga dependencias del front (unico paso que necesita Internet): 1 a 5 minutos la primera vez'
 }
 
 function Invoke-ParkosLiteInstallAll {
     param([Parameter(Mandatory)]$Ctx)
     Write-Host ''
     Write-Host 'INSTALACION GUIADA: deja esta ventana abierta, no necesitas hacer nada mas.' -ForegroundColor Cyan
-    Write-Host 'Necesita internet solo ahora. Total estimado: 5 a 25 minutos la primera vez (segundos si ya estaba instalado).'
+    Write-Host 'Internet solo hace falta para las dependencias del front (pnpm install). Total estimado: 3 a 10 minutos la primera vez (segundos si ya estaba instalado).'
     $steps = @(Get-ParkosLiteSteps)
     $n = 0
     foreach ($s in $steps) {

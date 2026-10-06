@@ -3,6 +3,8 @@
 # migraciones y seed. Todo binario externo (initdb/pg_ctl/psql/pg_isready/
 # migrate.exe) pasa por Invoke-ParkosLiteNative, que se mockea aqui.
 
+. (Join-Path $PSScriptRoot '..\shared\ParkosPostgresDownload.ps1')
+. (Join-Path $PSScriptRoot '..\shared\ParkosPayloadParts.ps1')
 . (Join-Path $PSScriptRoot '..\lite\ParkosLite.Db.ps1')
 
 $script:paths = @{
@@ -258,5 +260,76 @@ Describe 'Get-ParkosLiteDbFacts' {
         $f.DbReady | Should Be $true
         $f.SchemaMigrated | Should Be $true
         $f.Seeded | Should Be $true
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Paso 11: Postgres y pg_partman salen de las partes del repo (sin descargar)
+# ---------------------------------------------------------------------------
+
+function New-PartmanPartsFixture {
+    param([string]$Root)
+    $src = Join-Path $Root 'src'
+    New-Item -ItemType Directory -Force -Path $src | Out-Null
+    Set-Content (Join-Path $src 'pg_partman.control') "default_version = '5.1.0'"
+    Set-Content (Join-Path $src 'pg_partman--5.1.0.sql') 'select 1;'
+    $parts = Join-Path $Root 'parts'
+    [void](Pack-ParkosPayloadArtifact -Source $src -Id 'pg_partman-extension' -PartsDir $parts -Target 'pg_partman\extension' -Logger { param($m) })
+    return $parts
+}
+
+Describe 'Restore-ParkosLitePartmanFromParts' {
+    It 'restaura la extension a <Downloads>\pg_partman\extension desde las partes (sin red)' {
+        $root = Join-Path $TestDrive 'pm1'
+        $parts = New-PartmanPartsFixture -Root $root
+        $paths = @{ Downloads = (Join-Path $root 'dl'); PartsDir = $parts }
+        (Restore-ParkosLitePartmanFromParts -Paths $paths -Logger { param($m) }) | Should Be $true
+        (Test-ParkosPgPartmanExtensionDir -Dir (Join-Path $root 'dl\pg_partman\extension')) | Should Be $true
+    }
+    It 'si la extension ya esta en la cache no vuelve a restaurar' {
+        $root = Join-Path $TestDrive 'pm2'
+        $ext = Join-Path $root 'dl\pg_partman\extension'
+        New-Item -ItemType Directory -Force -Path $ext | Out-Null
+        Set-Content (Join-Path $ext 'pg_partman.control') 'x'
+        Set-Content (Join-Path $ext 'pg_partman--5.1.0.sql') 'x'
+        Mock Restore-ParkosPayloadArtifact { throw 'no deberia restaurar' }
+        (Restore-ParkosLitePartmanFromParts -Paths @{ Downloads = (Join-Path $root 'dl'); PartsDir = (Join-Path $root 'parts') } -Logger { param($m) }) | Should Be $true
+        Assert-MockCalled Restore-ParkosPayloadArtifact -Times 0 -Scope It
+    }
+    It 'sin partes en el repo devuelve $false (el llamador descarga)' {
+        $root = Join-Path $TestDrive 'pm3'
+        (Restore-ParkosLitePartmanFromParts -Paths @{ Downloads = (Join-Path $root 'dl'); PartsDir = (Join-Path $root 'nada') } -Logger { param($m) }) | Should Be $false
+    }
+    It 'partes danadas: devuelve $false y avisa (no rompe la instalacion)' {
+        $root = Join-Path $TestDrive 'pm4'
+        $parts = New-PartmanPartsFixture -Root $root
+        $zip = Get-ChildItem (Join-Path $parts 'pg_partman-extension') -File | Select-Object -First 1
+        [IO.File]::WriteAllBytes($zip.FullName, [byte[]](1..40))
+        $script:msgs = @()
+        (Restore-ParkosLitePartmanFromParts -Paths @{ Downloads = (Join-Path $root 'dl'); PartsDir = $parts } -Logger { param($m) $script:msgs += $m }) | Should Be $false
+        ($script:msgs -join ' ') | Should Match 'se descarga'
+    }
+}
+
+Describe 'Install-ParkosLiteDatabase: orden de origen' {
+    BeforeEach {
+        $script:order = @()
+        $script:paths2 = @{ Downloads = 'C:\lite\downloads'; PgRoot = 'C:\lite\pgsql'; PgData = 'C:\lite\data\pg'; Logs = 'C:\lite\logs'
+            PgPayload = 'C:\repo\installer\payload\parts\postgres'; PartmanPayload = 'C:\repo\installer\payload\pg_partman\extension'
+            PartsDir = 'C:\repo\installer\payload\parts' }
+        Mock Get-ParkosPostgresZip { $script:order += 'pgzip'; 'C:\lite\downloads\pg.zip' }
+        Mock Expand-ParkosPostgresZip { $script:order += 'expand' }
+        Mock Restore-ParkosLitePartmanFromParts { $script:order += 'partman-parts'; $true }
+        Mock Get-ParkosPgPartmanExtension { $script:order += 'partman-ext'; 'C:\lite\downloads\pg_partman\extension' }
+        Mock Install-ParkosPgPartmanExtension { }
+        Mock Initialize-ParkosLitePgData { $true }
+        Mock Start-ParkosLitePg { $true }
+        Mock Initialize-ParkosLiteRoles { }
+        Mock Enable-ParkosLitePartman { }
+    }
+    It 'Postgres se pide a las partes del repo (PgPayload) y pg_partman se restaura de partes antes de buscar/descargar' {
+        Install-ParkosLiteDatabase -Paths $script:paths2 -Port 5433 -Secrets $script:secrets -Logger { param($m) }
+        Assert-MockCalled Get-ParkosPostgresZip -ParameterFilter { $PayloadDir -eq 'C:\repo\installer\payload\parts\postgres' -and $CacheDir -eq 'C:\lite\downloads' } -Times 1 -Scope It
+        ($script:order -join ',') | Should Be 'pgzip,expand,partman-parts,partman-ext'
     }
 }

@@ -3,8 +3,11 @@
 # 'Iniciar todo', 'Detener todo' y el refresh desde dev. Procesos, git, red y
 # builds pasan por wrappers que se mockean aqui; nada real se ejecuta.
 
+. (Join-Path $PSScriptRoot '..\shared\ParkosPostgresDownload.ps1')
+. (Join-Path $PSScriptRoot '..\shared\ParkosPayloadParts.ps1')
 . (Join-Path $PSScriptRoot '..\lite\ParkosLite.Core.ps1')
 . (Join-Path $PSScriptRoot '..\lite\ParkosLite.Db.ps1')
+. (Join-Path $PSScriptRoot '..\lite\ParkosLite.Tools.ps1')
 . (Join-Path $PSScriptRoot '..\lite\ParkosLite.Autostart.ps1')
 . (Join-Path $PSScriptRoot '..\lite\ParkosLite.Run.ps1')
 
@@ -387,5 +390,196 @@ Describe 'Invoke-ParkosLiteMenu (menu unico numerado)' {
         ($global:menuOut | Where-Object { $_ -eq 'Opcion no valida, elige un numero de la lista' }).Count | Should Be 2
         ($global:menuOut | Where-Object { $_ -match '1\) Instalar todo' }).Count | Should Be 3
         $global:menuCalls.Count | Should Be 0
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Paso 12 parts-first: restaurar api-sucursal/migrate del repo o construir
+# ---------------------------------------------------------------------------
+
+function New-ApiPartsFixture {
+    # Empaqueta de verdad api-sucursal y migrate (carpetas minimas) y un 'doctor'
+    # que el lite jamas debe restaurar. Devuelve el directorio de partes.
+    param([string]$Root)
+    $parts = Join-Path $Root 'parts'
+    foreach ($id in 'api-sucursal', 'migrate', 'doctor') {
+        $src = Join-Path $Root "src\$id\$id"
+        New-Item -ItemType Directory -Force -Path $src | Out-Null
+        Set-Content (Join-Path $src "$id.exe") "exe-$id"
+        [void](Pack-ParkosPayloadArtifact -Source (Join-Path $Root "src\$id") -Id $id -PartsDir $parts -Target "services\$id" -SourceDependent -Logger { param($m) })
+    }
+    return $parts
+}
+
+function New-FakeApiEntry {
+    param([string]$Id, [string]$Commit = 'abcdef1234567890')
+    return [PSCustomObject]@{ id = $Id; parts = @(@{ name = "$Id.zip" }); sourceDependent = $true; builtFromCommit = $Commit }
+}
+
+Describe 'Get-ParkosLiteApiSourcePlan' {
+    BeforeEach {
+        $script:ctx = New-TestCtx 'pl'
+        New-Item -ItemType Directory -Force -Path $script:ctx.Paths.PartsDir | Out-Null
+        Mock Find-ParkosPayloadEntry { New-FakeApiEntry -Id $Id }
+        Mock Get-ParkosLiteChangedSinceCommit { , @() }
+    }
+    It 'sin cambios en backend/ ni installer/bootstrap/ desde el commit de las partes: restore (con el commit)' {
+        $p = Get-ParkosLiteApiSourcePlan -Paths $script:ctx.Paths
+        $p.Action | Should Be 'restore'
+        $p.Commit | Should Be 'abcdef1234567890'
+        Assert-MockCalled Get-ParkosLiteChangedSinceCommit -ParameterFilter { $Commit -eq 'abcdef1234567890' } -Times 2 -Scope It
+    }
+    It 'pregunta solo por api-sucursal y migrate (nunca seed, doctor, job-sync, msi)' {
+        Get-ParkosLiteApiSourcePlan -Paths $script:ctx.Paths | Out-Null
+        Assert-MockCalled Find-ParkosPayloadEntry -ParameterFilter { $Id -eq 'api-sucursal' -or $Id -eq 'migrate' } -Times 2 -Scope It
+        Assert-MockCalled Find-ParkosPayloadEntry -ParameterFilter { $Id -ne 'api-sucursal' -and $Id -ne 'migrate' } -Times 0 -Scope It
+    }
+    It 'si backend/ cambio desde el commit: build y lo explica' {
+        Mock Get-ParkosLiteChangedSinceCommit { , @('backend/packages/parkos_core/x.py') }
+        $p = Get-ParkosLiteApiSourcePlan -Paths $script:ctx.Paths
+        $p.Action | Should Be 'build'
+        $p.Reason | Should Match 'backend/'
+        $p.Reason | Should Match 'abcdef1'
+    }
+    It 'si git no puede saberlo ($null): build' {
+        Mock Get-ParkosLiteChangedSinceCommit { $null }
+        $p = Get-ParkosLiteApiSourcePlan -Paths $script:ctx.Paths
+        $p.Action | Should Be 'build'
+        $p.Reason | Should Match 'git'
+    }
+    It 'si falta la entrada del manifest (api o migrate): build' {
+        Mock Find-ParkosPayloadEntry { if ($Id -eq 'migrate') { $null } else { New-FakeApiEntry -Id $Id } }
+        $p = Get-ParkosLiteApiSourcePlan -Paths $script:ctx.Paths
+        $p.Action | Should Be 'build'
+        $p.Reason | Should Match 'migrate'
+    }
+    It 'si el repo no tiene carpeta de partes: build sin error' {
+        $ctx2 = New-TestCtx 'pl2'
+        $p = Get-ParkosLiteApiSourcePlan -Paths $ctx2.Paths
+        $p.Action | Should Be 'build'
+    }
+}
+
+Describe 'Restore-ParkosLiteApiFromParts (real, con partes de prueba)' {
+    It 'restaura api-sucursal y migrate a payload\services y NO restaura doctor' {
+        $ctx = New-TestCtx 'rf'
+        $root = Join-Path $TestDrive 'rf-fixture'
+        $ctx.Paths.PartsDir = New-ApiPartsFixture -Root $root
+        Restore-ParkosLiteApiFromParts -Paths $ctx.Paths -Logger $script:quiet
+        (Test-Path (Join-Path $ctx.Paths.PayloadRoot 'services\api-sucursal\api-sucursal\api-sucursal.exe')) | Should Be $true
+        (Test-Path (Join-Path $ctx.Paths.PayloadRoot 'services\migrate\migrate\migrate.exe')) | Should Be $true
+        (Test-Path (Join-Path $ctx.Paths.PayloadRoot 'services\doctor')) | Should Be $false
+        (Test-Path $ctx.Paths.ApiExe) | Should Be $true
+        (Test-Path $ctx.Paths.MigrateExe) | Should Be $true
+    }
+    It 'es idempotente: la segunda vez no vuelve a expandir (marcador al dia)' {
+        $ctx = New-TestCtx 'rf2'
+        $ctx.Paths.PartsDir = New-ApiPartsFixture -Root (Join-Path $TestDrive 'rf2-fixture')
+        Restore-ParkosLiteApiFromParts -Paths $ctx.Paths -Logger $script:quiet
+        $script:msgs = @()
+        Restore-ParkosLiteApiFromParts -Paths $ctx.Paths -Logger { param($m) $script:msgs += $m }
+        ($script:msgs -join ' ') | Should Match 'ya restaurado y al dia'
+    }
+}
+
+Describe 'Invoke-ParkosLiteStep api (parts-first)' {
+    BeforeEach {
+        $script:ctx = New-TestCtx 'ps'
+        $script:logs = @()
+        $script:ctx.Logger = { param($m) $script:logs += $m }
+        Mock Stop-ParkosLiteService { $true }
+        Mock Invoke-ParkosLiteBuildScript { 0 }
+        Mock Invoke-ParkosLiteGit { @{ ExitCode = 0; Output = @('headhead') } }
+        Mock Test-ParkosLiteApiBuildNeeded { $false }
+    }
+    It 'restore: restaura, NO compila (ni mira el mtime), loguea el commit y guarda api_built_commit' {
+        Mock Get-ParkosLiteApiSourcePlan { @{ Action = 'restore'; Commit = 'abcdef1234567890'; Reason = '' } }
+        Mock Restore-ParkosLiteApiFromParts {
+            foreach ($e in @($script:ctx.Paths.ApiExe, $script:ctx.Paths.MigrateExe)) { New-Item -ItemType Directory -Force -Path (Split-Path $e) | Out-Null; Set-Content $e 'x' }
+        }
+        Invoke-ParkosLiteStep -Ctx $script:ctx -Key 'api'
+        Assert-MockCalled Restore-ParkosLiteApiFromParts -Times 1 -Scope It
+        Assert-MockCalled Invoke-ParkosLiteBuildScript -Times 0 -Scope It
+        Assert-MockCalled Test-ParkosLiteApiBuildNeeded -Times 0 -Scope It
+        Assert-MockCalled Stop-ParkosLiteService -Times 1 -Scope It
+        ($script:logs -join "`n") | Should Match 'API restaurada desde el repositorio \(commit abcdef1\)'
+        $script:ctx.State.api_built_commit | Should Be 'abcdef1234567890'
+    }
+    It 'restore que falla (partes danadas): avisa y cae al build como antes' {
+        Mock Get-ParkosLiteApiSourcePlan { @{ Action = 'restore'; Commit = 'abcdef1234567890'; Reason = '' } }
+        Mock Restore-ParkosLiteApiFromParts { throw 'la parte 01 esta danada' }
+        Mock Test-ParkosLiteApiBuildNeeded { $true }
+        Mock Invoke-ParkosLiteBuildScript { foreach ($e in @($script:ctx.Paths.ApiExe, $script:ctx.Paths.MigrateExe)) { New-Item -ItemType Directory -Force -Path (Split-Path $e) | Out-Null; Set-Content $e 'x' }; 0 }
+        Invoke-ParkosLiteStep -Ctx $script:ctx -Key 'api'
+        Assert-MockCalled Invoke-ParkosLiteBuildScript -Times 1 -Scope It
+        ($script:logs -join "`n") | Should Match 'no sirven'
+    }
+    It 'build por codigo cambiado: lo dice y avisa que necesita uv/Python e Internet' {
+        Mock Get-ParkosLiteApiSourcePlan { @{ Action = 'build'; Commit = ''; Reason = 'backend/ o installer/bootstrap/ cambio desde el commit abcdef1 de las partes (3 archivos)' } }
+        Mock Restore-ParkosLiteApiFromParts { throw 'no deberia restaurar' }
+        Mock Test-ParkosLiteApiBuildNeeded { $true }
+        # El build "fabrica" los exe
+        Mock Invoke-ParkosLiteBuildScript { foreach ($e in @($script:ctx.Paths.ApiExe, $script:ctx.Paths.MigrateExe)) { New-Item -ItemType Directory -Force -Path (Split-Path $e) | Out-Null; Set-Content $e 'x' }; 0 }
+        Invoke-ParkosLiteStep -Ctx $script:ctx -Key 'api'
+        Assert-MockCalled Invoke-ParkosLiteBuildScript -Times 1 -Scope It
+        Assert-MockCalled Restore-ParkosLiteApiFromParts -Times 0 -Scope It
+        ($script:logs -join "`n") | Should Match 'cambio desde el commit abcdef1'
+        ($script:logs -join "`n") | Should Match 'uv/Python e Internet'
+    }
+    It 'build forzado si la carpeta es la restaurada del repo (marcador) aunque el mtime diga que esta al dia' {
+        Mock Get-ParkosLiteApiSourcePlan { @{ Action = 'build'; Commit = ''; Reason = 'backend/ cambio' } }
+        Mock Test-ParkosLiteApiBuildNeeded { $false }
+        $markers = @(Get-ParkosLiteApiRestoreMarkers -Paths $script:ctx.Paths)
+        foreach ($m in $markers) { New-Item -ItemType Directory -Force -Path (Split-Path $m) | Out-Null; Set-Content $m 'sha' }
+        Mock Invoke-ParkosLiteBuildScript { foreach ($e in @($script:ctx.Paths.ApiExe, $script:ctx.Paths.MigrateExe)) { New-Item -ItemType Directory -Force -Path (Split-Path $e) | Out-Null; Set-Content $e 'x' }; 0 }
+        Invoke-ParkosLiteStep -Ctx $script:ctx -Key 'api'
+        Assert-MockCalled Invoke-ParkosLiteBuildScript -Times 1 -Scope It
+        foreach ($m in $markers) { (Test-Path $m) | Should Be $false }
+    }
+    It 'sin partes y con exe al dia (construidos aqui): omite el build como siempre' {
+        Mock Get-ParkosLiteApiSourcePlan { @{ Action = 'build'; Commit = ''; Reason = 'sin partes' } }
+        Mock Test-ParkosLiteApiBuildNeeded { $false }
+        Invoke-ParkosLiteStep -Ctx $script:ctx -Key 'api'
+        Assert-MockCalled Invoke-ParkosLiteBuildScript -Times 0 -Scope It
+        ($script:logs -join "`n") | Should Match 'ya esta construida'
+    }
+}
+
+Describe 'Invoke-ParkosLiteStep env pasa las partes del repo a las herramientas' {
+    It 'Install-ParkosLiteToolchain recibe PartsDir del repo' {
+        $ctx = New-TestCtx 'pe'
+        $ctx.Requested = @{ Db = 0; Api = 0; Front = 0 }
+        Mock Install-ParkosLiteToolchain { }
+        Mock Initialize-ParkosLiteConfig { }
+        Invoke-ParkosLiteStep -Ctx $ctx -Key 'env'
+        Assert-MockCalled Install-ParkosLiteToolchain -ParameterFilter { $PartsDir -eq $ctx.Paths.PartsDir } -Times 1 -Scope It
+    }
+}
+
+Describe 'Get-ParkosLiteChangedSinceCommit' {
+    It 'con archivos cambiados los devuelve' {
+        Mock Get-ParkosPartsChangedFiles { @('backend/a.py', 'backend/b.py') }
+        $r = Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit 'abc'
+        @($r).Count | Should Be 2
+    }
+    It 'sin cambios y commit conocido: arreglo vacio (NO $null)' {
+        Mock Get-ParkosPartsChangedFiles { @() }
+        Mock Invoke-ParkosLiteGit { @{ ExitCode = 0; Output = @('abc') } }
+        $r = Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit 'abc'
+        ($null -eq $r) | Should Be $false
+        @($r).Count | Should Be 0
+    }
+    It 'commit desconocido para git (clon superficial): $null' {
+        Mock Get-ParkosPartsChangedFiles { $null }
+        Mock Invoke-ParkosLiteGit { @{ ExitCode = 1; Output = @('fatal') } }
+        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit 'abc')) | Should Be $true
+    }
+    It 'sin commit en el manifest: $null' {
+        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit '')) | Should Be $true
+    }
+    It 'git no instalado (el comando lanza): $null' {
+        Mock Get-ParkosPartsChangedFiles { $null }
+        Mock Invoke-ParkosLiteGit { throw 'git: no se reconoce' }
+        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit 'abc')) | Should Be $true
     }
 }

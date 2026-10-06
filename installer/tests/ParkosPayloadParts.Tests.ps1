@@ -329,6 +329,27 @@ Describe 'Get-ParkosPayloadArtifactTable' {
         }
         ($t | Where-Object { $_.Id -eq 'postgres' }).RestoreToPayload | Should Be $false
     }
+    It 'herramientas portatiles del lite (tools-*): bajo pedido, no van a payload y no dependen del codigo' {
+        $t = Get-ParkosPayloadArtifactTable
+        $kinds = @{ 'tools-node' = 'file'; 'tools-uv' = 'file'; 'tools-mingit' = 'file'; 'tools-pnpm' = 'dir' }
+        foreach ($id in $kinds.Keys) {
+            $row = $t | Where-Object { $_.Id -eq $id }
+            $row | Should Not BeNullOrEmpty
+            $row.Kind | Should Be $kinds[$id]
+            $row.Default | Should Be $false
+            $row.SourceDependent | Should Be $false
+            $row.RestoreToPayload | Should Be $false
+            $row.Path | Should Match '^tools\\'
+            $row.Source | Should Match 'third-party'
+        }
+        ($t | Where-Object { $_.Id -eq 'tools-node' }).Path | Should Match 'node-v.*-win-x64\.zip$'
+        ($t | Where-Object { $_.Id -eq 'tools-mingit' }).Path | Should Match 'MinGit-.*-64-bit\.zip$'
+        ($t | Where-Object { $_.Id -eq 'tools-uv' }).Path | Should Match 'uv-.*-x86_64-pc-windows-msvc\.zip$'
+    }
+    It 'las herramientas del lite no se restauran con Restore-All sin -Ids' {
+        $t = Get-ParkosPayloadArtifactTable
+        @($t | Where-Object { $_.RestoreToPayload -and $_.Id -like 'tools-*' }).Count | Should Be 0
+    }
 }
 
 Describe 'Invoke-ParkosPackPayload (tabla de artefactos)' {

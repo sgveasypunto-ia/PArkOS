@@ -12,6 +12,10 @@
 #   shared\ParkosPostgresDownload.ps1 (descarga, sha256, zip, backoff, mensaje)
 #   ParkosLite.Db.ps1 (Invoke-ParkosLiteNative)
 #
+# Orden de origen de cada herramienta: PATH (compatible) -> partes versionadas en
+# el repo (installer\payload\parts\tools-*, verificadas contra el sha256 FIJADO
+# de esta tabla) -> descarga. Requiere tambien shared\ParkosPayloadParts.ps1.
+#
 # Cache de descargas: <LitePath>\downloads (los zip sobreviven a limpiar tools\).
 
 # ---------------------------------------------------------------------------
@@ -295,20 +299,99 @@ function Get-ParkosLiteExpectedHash {
     return $pinned
 }
 
-# Descarga a <Downloads>\<FileName> (via .part + rename) y verifica sha256.
-# Reutiliza una copia valida; 3 intentos con backoff; borra copias corruptas.
+# ---------------------------------------------------------------------------
+# Partes versionadas en el repo (installer\payload\parts\tools-*)
+# ---------------------------------------------------------------------------
+
+# Id del artefacto en el manifest de partes (git viaja como MinGit).
+function Get-ParkosLiteToolPartsId {
+    param([Parameter(Mandatory)][string]$Name)
+    if ($Name -eq 'git') { return 'tools-mingit' }
+    return "tools-$Name"
+}
+
+# Entrada del manifest para la herramienta, o $null (sin carpeta, sin manifest,
+# JSON roto o sin la entrada). Nunca lanza: un repo sin partes simplemente
+# obliga a descargar.
+function Get-ParkosLiteToolPartsEntry {
+    param([string]$PartsDir, [Parameter(Mandatory)][string]$Name)
+    if (-not $PartsDir -or -not (Test-Path -LiteralPath $PartsDir)) { return $null }
+    try { return (Find-ParkosPayloadEntry -PartsDir $PartsDir -Id (Get-ParkosLiteToolPartsId -Name $Name)) } catch { return $null }
+}
+
+# Rearma el zip pinneado de la herramienta desde las partes del repo, dentro de
+# <Downloads>\_parts (se borra siempre), lo verifica contra el sha256 FIJADO de
+# la tabla del lite y lo deja en <Downloads>\<FileName>. Devuelve la ruta o
+# $null (sin partes / otra version / hash distinto / partes danadas: se avisa y
+# el llamador descarga).
+function Restore-ParkosLiteToolZipFromParts {
+    param([Parameter(Mandatory)]$Spec, [Parameter(Mandatory)][string]$DownloadsDir, [string]$PartsDir, [scriptblock]$Logger)
+    $entry = Get-ParkosLiteToolPartsEntry -PartsDir $PartsDir -Name $Spec.Name
+    if (-not $entry) { return $null }
+    if ($entry.archive -ne $Spec.FileName) {
+        Write-ParkosDownloadLog -Logger $Logger -Message "  Las partes del repo de $($Spec.Label) son de otra version ($($entry.archive), el lite fija $($Spec.FileName)): se descarga."
+        return $null
+    }
+    $staging = Join-Path $DownloadsDir '_parts'
+    try {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $staging | Out-Null
+        $restored = Restore-ParkosPayloadArtifact -Id $entry.id -PartsDir $PartsDir -PayloadRoot $staging -CacheDir $staging -Force -Logger $Logger
+        $actual = Get-ParkosFileSha256 -Path $restored
+        if ($actual -ne $Spec.Sha256.ToLowerInvariant()) {
+            Write-ParkosDownloadLog -Logger $Logger -Message "  El zip de $($Spec.Label) rearmado desde el repo ($actual) no coincide con el sha256 fijado en el lite ($($Spec.Sha256)): se descarga."
+            return $null
+        }
+        $target = Join-Path $DownloadsDir $Spec.FileName
+        Move-Item -LiteralPath $restored -Destination $target -Force
+        Write-ParkosDownloadLog -Logger $Logger -Message "  $($Spec.Label) $($Spec.Version) restaurado desde el repositorio (partes), sin descargar."
+        return $target
+    } catch {
+        Write-ParkosDownloadLog -Logger $Logger -Message "  Las partes del repo de $($Spec.Label) no sirven ($($_.Exception.Message)): se descarga."
+        return $null
+    } finally {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# pnpm: restaura la carpeta portatil (tools\pnpm) desde las partes directamente
+# bajo <LitePath> (el target del manifest es tools\pnpm). $true si quedo
+# restaurada; $false si no hay partes o no sirven (se instala con npm).
+function Restore-ParkosLitePnpmFromParts {
+    param([Parameter(Mandatory)][string]$LitePath, [string]$PartsDir, [scriptblock]$Logger)
+    $entry = Get-ParkosLiteToolPartsEntry -PartsDir $PartsDir -Name 'pnpm'
+    if (-not $entry) { return $false }
+    try {
+        $tp = Get-ParkosLiteToolPaths -LitePath $LitePath
+        [void](Restore-ParkosPayloadArtifact -Id $entry.id -PartsDir $PartsDir -PayloadRoot $LitePath -CacheDir $tp.Downloads -Force -Logger $Logger)
+        Write-ParkosDownloadLog -Logger $Logger -Message '  pnpm restaurado desde el repositorio (partes), sin npm ni Internet.'
+        return $true
+    } catch {
+        Write-ParkosDownloadLog -Logger $Logger -Message "  Las partes del repo de pnpm no sirven ($($_.Exception.Message)): se instala con npm."
+        return $false
+    }
+}
+
+# Orden: copia valida en la cache -> partes del repo -> descarga (.part + rename)
+# y verifica sha256. 3 intentos con backoff; borra copias corruptas. El hash
+# oficial (red) solo se consulta si hay que descargar.
 function Get-ParkosLiteToolZip {
-    param([Parameter(Mandatory)]$Spec, [Parameter(Mandatory)][string]$DownloadsDir, [scriptblock]$Logger, [int]$MaxAttempts = 3)
+    param([Parameter(Mandatory)]$Spec, [Parameter(Mandatory)][string]$DownloadsDir, [string]$PartsDir, [scriptblock]$Logger, [int]$MaxAttempts = 3)
     New-Item -ItemType Directory -Force -Path $DownloadsDir | Out-Null
     $target = Join-Path $DownloadsDir $Spec.FileName
     $part = "$target.part"
-    $expected = Get-ParkosLiteExpectedHash -Spec $Spec
+    $pinned = $Spec.Sha256.ToLowerInvariant()
 
     if (Test-Path -LiteralPath $target) {
-        if ((Get-ParkosFileSha256 -Path $target) -eq $expected) { return $target }
+        if ((Get-ParkosFileSha256 -Path $target) -eq $pinned) { return $target }
         Write-ParkosDownloadLog -Logger $Logger -Message "  La copia en cache de $($Spec.FileName) no coincide con el hash esperado: se descarga de nuevo."
         Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
     }
+    if ($PartsDir) {
+        $fromParts = Restore-ParkosLiteToolZipFromParts -Spec $Spec -DownloadsDir $DownloadsDir -PartsDir $PartsDir -Logger $Logger
+        if ($fromParts) { return $fromParts }
+    }
+    $expected = Get-ParkosLiteExpectedHash -Spec $Spec
     $lastError = ''
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {
@@ -349,9 +432,11 @@ function Install-ParkosLitePnpmPackage {
 }
 
 # Instala UNA herramienta portatil. Devuelve 'YA ESTA' (valida en tools\) o
-# 'INSTALADO'. Idempotente: valida con '<tool> --version' antes de descargar.
+# 'INSTALADO'. Idempotente: valida con '<tool> --version' antes de nada.
+# Orden de origen (con -PartsDir): partes del repo -> descarga/npm. Lo restaurado
+# de las partes que no responda '--version' se descarta y se cae a la descarga.
 function Install-ParkosLiteTool {
-    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$LitePath, [scriptblock]$Logger)
+    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$LitePath, [string]$PartsDir, [scriptblock]$Logger)
     $spec = (Get-ParkosLiteToolSpecs)[$Name]
     $tp = Get-ParkosLiteToolPaths -LitePath $LitePath
     $loc = Get-ParkosLiteToolLocation -ToolsDir $tp.Tools -Spec $spec
@@ -364,23 +449,34 @@ function Install-ParkosLiteTool {
     }
     New-Item -ItemType Directory -Force -Path $tp.Tools | Out-Null
 
-    if ($spec.Kind -eq 'npm') {
-        $nodePath = (Get-ParkosLiteToolStatus -LitePath $LitePath -Refresh)['node'].Path
-        if (-not $nodePath) { throw 'No se puede instalar pnpm sin node (el paso de Node.js debe completarse primero).' }
-        Install-ParkosLitePnpmPackage -Spec $spec -LitePath $LitePath -NodePath $nodePath -Logger $Logger
-    } else {
-        $zip = Get-ParkosLiteToolZip -Spec $spec -DownloadsDir $tp.Downloads -Logger $Logger
-        $tmp = Join-Path $tp.Tools "_extract-$Name"
-        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
-        Expand-ParkosZipArchive -ZipPath $zip -Destination $tmp
-        Move-ParkosLiteExtractedContent -Source $tmp -Destination $loc.Root
-    }
+    $tryParts = [bool]$PartsDir
+    while ($true) {
+        $fromParts = $false
+        if ($spec.Kind -eq 'npm') {
+            if ($tryParts) { $fromParts = Restore-ParkosLitePnpmFromParts -LitePath $LitePath -PartsDir $PartsDir -Logger $Logger }
+            if (-not $fromParts) {
+                $nodePath = (Get-ParkosLiteToolStatus -LitePath $LitePath -Refresh)['node'].Path
+                if (-not $nodePath) { throw 'No se puede instalar pnpm sin node (el paso de Node.js debe completarse primero).' }
+                Install-ParkosLitePnpmPackage -Spec $spec -LitePath $LitePath -NodePath $nodePath -Logger $Logger
+            }
+        } else {
+            $zip = Get-ParkosLiteToolZip -Spec $spec -DownloadsDir $tp.Downloads -PartsDir $PartsDir -Logger $Logger
+            $tmp = Join-Path $tp.Tools "_extract-$Name"
+            if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+            Expand-ParkosZipArchive -ZipPath $zip -Destination $tmp
+            Move-ParkosLiteExtractedContent -Source $tmp -Destination $loc.Root
+        }
 
-    $txt = Get-ParkosLiteToolVersionText -Path $loc.Exe -Env (Get-ParkosLiteToolEnv -LitePath $LitePath)
-    if (-not (Test-ParkosLiteToolVersionCompatible -Tool $Name -VersionText $txt)) {
+        $txt = Get-ParkosLiteToolVersionText -Path $loc.Exe -Env (Get-ParkosLiteToolEnv -LitePath $LitePath)
+        if (Test-ParkosLiteToolVersionCompatible -Tool $Name -VersionText $txt) { return 'INSTALADO' }
+        if ($fromParts) {
+            # Lo restaurado de las partes no responde: se reintenta una vez con npm.
+            Write-ParkosDownloadLog -Logger $Logger -Message "  El pnpm restaurado del repo no responde '--version': se instala con npm."
+            $tryParts = $false
+            continue
+        }
         throw "$($spec.Label) se extrajo en $($loc.Root) pero '$($loc.Exe) --version' no responde una version valida (antivirus o descarga corrupta). Borra $($loc.Root) y el zip de $($tp.Downloads), y reintenta la opcion 10."
     }
-    return 'INSTALADO'
 }
 
 # ---------------------------------------------------------------------------
@@ -422,10 +518,11 @@ function Get-ParkosLiteMissingTools {
     return $missing
 }
 
-# Garantiza las 4 herramientas (sistema compatible o portatil), activa el PATH
+# Garantiza las 4 herramientas (sistema compatible o portatil; esta ultima sale de
+# las partes del repo si hay, si no se descarga), activa el PATH
 # del proceso y devuelve el estado final. Orden: git, uv, node, pnpm (pnpm usa npm).
 function Install-ParkosLiteToolchain {
-    param([Parameter(Mandatory)][string]$LitePath, [scriptblock]$Logger)
+    param([Parameter(Mandatory)][string]$LitePath, [string]$PartsDir, [scriptblock]$Logger)
     $specs = Get-ParkosLiteToolSpecs
     $outcome = @{}
     foreach ($name in (Get-ParkosLiteToolNames)) {
@@ -435,7 +532,7 @@ function Install-ParkosLiteToolchain {
             continue
         }
         Write-ParkosDownloadLog -Logger $Logger -Message (Get-ParkosLiteToolInstallMessage -Spec $specs[$name])
-        $outcome[$name] = Install-ParkosLiteTool -Name $name -LitePath $LitePath -Logger $Logger
+        $outcome[$name] = Install-ParkosLiteTool -Name $name -LitePath $LitePath -PartsDir $PartsDir -Logger $Logger
         Enable-ParkosLiteToolchainEnv -LitePath $LitePath -Refresh | Out-Null
     }
     $final = Enable-ParkosLiteToolchainEnv -LitePath $LitePath -Refresh
