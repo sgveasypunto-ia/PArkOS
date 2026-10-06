@@ -1,10 +1,11 @@
 /**
- * `CerrarTurnoForm.test.tsx` — cobertura dedicada (no existía) para el
- * fix de justificación condicional + conteo ciego (directiva operador,
- * plan.md HU-F10.2 línea 2273: "justificación obligatoria SI HAY
- * diferencia", no incondicional) y para el resumen del turno con
- * ingresos/salidas (HU-F12.1, mismo KPI que `<MiTurnoPanel>` /
- * `<ResumenTurno>`).
+ * `CerrarTurnoForm.test.tsx` — cobertura dedicada para:
+ *   - PT-4: el motivo del descuadre se escribe en "Observaciones" (no hay
+ *     campo "Justificación") y es obligatorio (min 3) SOLO si hay
+ *     diferencia (plan.md HU-F10.2 línea 2273) + conteo ciego.
+ *   - PT-6: no hay campo de datáfono en el cierre.
+ *   - el resumen del turno con ingresos/salidas (HU-F12.1, mismo KPI que
+ *     `<MiTurnoPanel>` / `<ResumenTurno>`).
  *
  * NOTA: NO usar `.toBeInTheDocument()` — hay un bug preexistente de
  * infra (dos instalaciones de `vitest` en el monorepo) que rompe el
@@ -13,7 +14,7 @@
  * (`toBeNull`, `toBe`, etc.) que no dependen de esa extensión.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 
@@ -32,15 +33,12 @@ vi.mock('../../operacion/hooks/useMiTurno', () => ({
 // longer guesses `hayDiferencia` client-side against
 // `sesion.valor_inicial_*` — it asks the backend via
 // `useRequiereJustificacion` (conteo ciego: only the boolean verdict
-// crosses the wire). Tests drive that verdict directly instead of via
-// `efectivoReportado`/`datafonoReportado` props.
+// crosses the wire). Tests drive that verdict directly. PT-6: the hook
+// takes (uuid, efectivo) only — no datáfono.
 const useRequiereJustificacionMock = vi.fn();
 vi.mock('../hooks/useRequiereJustificacion', () => ({
-  useRequiereJustificacion: (
-    uuid_sesion: string | null,
-    efectivo: number,
-    datafono: number,
-  ) => useRequiereJustificacionMock(uuid_sesion, efectivo, datafono),
+  useRequiereJustificacion: (uuid_sesion: string | null, efectivo: number) =>
+    useRequiereJustificacionMock(uuid_sesion, efectivo),
 }));
 
 const SESION: SesionRead = {
@@ -48,7 +46,7 @@ const SESION: SesionRead = {
   uuid_sucursal: 'suc-uuid-1',
   uuid_usuario: 'usr-uuid-1',
   valor_inicial_efectivo: 733_000,
-  valor_inicial_datafono: 211_000,
+  valor_inicial_datafono: 0,
   timestamp_apertura: '2026-09-21T08:00:00Z',
   timestamp_cierre: null,
 };
@@ -56,45 +54,39 @@ const SESION: SesionRead = {
 function Harness({
   sesion = SESION,
   efectivoReportado = sesion.valor_inicial_efectivo,
-  // El campo `valor_inicial_datafono` sigue en `SesionRead` (mock línea 51)
-  // aunque la UI no muestre el datafono inicial en el resumen
-  // (fix/electron-sucursal-datafono-display). El form de cierre sigue
-  // aceptando un `valor_datafono_reportado` que el operador tipea al
-  // cerrar — por eso el default de `datafonoReportado` se mantiene.
-  datafonoReportado = sesion.valor_inicial_datafono,
-  forceRequireJustificacion = false,
+  forceRequireMotivo = false,
   error = null,
+  onSubmit = async () => {},
 }: {
   sesion?: SesionRead;
   efectivoReportado?: number;
-  datafonoReportado?: number;
-  forceRequireJustificacion?: boolean;
+  forceRequireMotivo?: boolean;
   error?: Parameters<typeof CerrarTurnoForm>[0]['error'];
+  onSubmit?: (data: CerrarTurnoInput) => Promise<void>;
 }): JSX.Element {
   const form = useForm<CerrarTurnoInput>({
     resolver: zodResolver(cerrarTurnoSchema),
     defaultValues: {
       valor_efectivo_reportado: efectivoReportado,
-      valor_datafono_reportado: datafonoReportado,
-      justificacion: '',
       observaciones_cierre: '',
     },
   });
   return (
     <CerrarTurnoForm
       form={form}
-      onSubmit={async () => {}}
+      onSubmit={onSubmit}
       isSubmitting={false}
       error={error}
       sesion={sesion}
       onCancel={() => {}}
       requiredMode="cierre_turno"
-      forceRequireJustificacion={forceRequireJustificacion}
+      forceRequireMotivo={forceRequireMotivo}
     />
   );
 }
 
 beforeEach(() => {
+  useRequiereJustificacionMock.mockReset();
   useMiTurnoMock.mockReturnValue({
     data: { ingresos_count: 7, salidas_count: 4 },
     error: undefined,
@@ -109,79 +101,131 @@ beforeEach(() => {
   });
 });
 
-describe('<CerrarTurnoForm /> — justificación condicional (conteo ciego)', () => {
-  it('sin diferencia (reportado === inicial) → el campo justificación NO existe en el DOM', () => {
+describe('<CerrarTurnoForm /> — PT-4/PT-6: sin campos de justificación ni datáfono', () => {
+  it.each([false, true, undefined])(
+    'pre-flight=%s → nunca hay campo de justificación ni de datáfono en el DOM',
+    (verdict) => {
+      useRequiereJustificacionMock.mockReturnValue({
+        requiereJustificacion: verdict,
+        error: undefined,
+      });
+      render(<Harness />);
+
+      expect(screen.queryByTestId('cerrar-turno-required-justificacion')).toBeNull();
+      expect(screen.queryByTestId('cerrar-turno-justificacion')).toBeNull();
+      expect(screen.queryByTestId('cerrar-turno-valor-datafono-reportado')).toBeNull();
+      expect(document.body.textContent ?? '').not.toMatch(/datáfono contado/i);
+      expect(document.body.textContent ?? '').not.toMatch(/justificación/i);
+    },
+  );
+
+  it('el pre-flight se consulta solo con el efectivo (sin datáfono)', () => {
+    render(<Harness efectivoReportado={500_000} />);
+    expect(useRequiereJustificacionMock).toHaveBeenCalledWith(SESION.uuid, 500_000);
+  });
+});
+
+describe('<CerrarTurnoForm /> — motivo del descuadre en Observaciones (conteo ciego)', () => {
+  it('sin diferencia → Observaciones es opcional y el botón queda habilitado', () => {
     render(<Harness />);
 
-    expect(screen.queryByTestId('cerrar-turno-required-justificacion')).toBeNull();
-    expect(screen.queryByTestId('cerrar-turno-justificacion')).toBeNull();
+    const obs = screen.getByTestId('cerrar-turno-observaciones');
+    expect(obs).not.toBeNull();
+    expect(screen.getByTestId('cerrar-turno-observaciones-ayuda').textContent).toContain(
+      'Opcional',
+    );
+    expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(screen.queryByTestId('cerrar-turno-boton-disabled-motivo')).toBeNull();
   });
 
-  it('con diferencia → el campo aparece, es obligatorio (min 3), y no expone ningún monto de esperado/diferencia', () => {
-    // El backend (useRequiereJustificacion) confirma que hay diferencia
-    // — el componente ya NO decide esto comparando contra valor_inicial_*.
+  it('con diferencia → Observaciones pasa a ser obligatoria (min 3) y no expone ningún monto esperado/diferencia', () => {
     useRequiereJustificacionMock.mockReturnValue({
       requiereJustificacion: true,
       error: undefined,
     });
-    render(<Harness efectivoReportado={900_000} datafonoReportado={211_000} />);
+    render(<Harness efectivoReportado={900_000} />);
 
-    const justificacionInput = screen.queryByTestId('cerrar-turno-required-justificacion');
-    expect(justificacionInput).not.toBeNull();
+    const obs = screen.getByTestId('cerrar-turno-observaciones') as HTMLInputElement;
+    expect(obs.getAttribute('aria-required')).toBe('true');
+    expect(screen.getByTestId('cerrar-turno-observaciones-ayuda').textContent).toContain(
+      'motivo del descuadre',
+    );
+    expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
+      true,
+    );
 
-    const confirmarBtn = screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement;
-    expect(confirmarBtn.disabled).toBe(true);
+    fireEvent.change(obs, { target: { value: 'ab' } });
+    expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
+      true,
+    );
 
-    fireEvent.change(justificacionInput as HTMLElement, {
-      target: { value: 'Faltante en caja' },
-    });
+    fireEvent.change(obs, { target: { value: 'Faltante en caja' } });
     expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
       false,
     );
 
     // Conteo ciego: el MONTO de la diferencia (167.000 / 167000) NUNCA
-    // debe aparecer en el DOM, ni siquiera oculto. El texto genérico
-    // ("hay una diferencia respecto a lo esperado") SÍ es esperable —
-    // lo prohibido es el número, no la palabra.
+    // debe aparecer en el DOM, ni siquiera oculto.
     const html = document.body.innerHTML;
     expect(html).not.toContain('167000');
     expect(html).not.toContain('167.000');
   });
 
-  it('con diferencia solo en datáfono → también exige justificación', () => {
+  it('Observaciones limita el texto al máximo del backend (500)', () => {
+    render(<Harness />);
+    const obs = screen.getByTestId('cerrar-turno-observaciones') as HTMLInputElement;
+    expect(obs.maxLength).toBe(500);
+  });
+
+  it('con diferencia y motivo válido → submit entrega observaciones_cierre al padre', async () => {
     useRequiereJustificacionMock.mockReturnValue({
       requiereJustificacion: true,
       error: undefined,
     });
-    render(<Harness efectivoReportado={733_000} datafonoReportado={180_000} />);
-    expect(screen.queryByTestId('cerrar-turno-required-justificacion')).not.toBeNull();
+    const onSubmit = vi.fn(async () => {});
+    render(<Harness efectivoReportado={900_000} onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByTestId('cerrar-turno-observaciones'), {
+      target: { value: 'Billete roto' },
+    });
+    fireEvent.submit(screen.getByTestId('cerrar-turno-form'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const firstCall = onSubmit.mock.calls[0] as unknown as [CerrarTurnoInput];
+    expect(firstCall[0]).toMatchObject({
+      valor_efectivo_reportado: 900_000,
+      observaciones_cierre: 'Billete roto',
+    });
   });
 
-  // REGRESSION (2026-09-25, bug real encontrado en vivo; fix 2026-10-01):
-  // el backend calcula el esperado real (inicial + transacciones del
-  // turno) SOLO server-side (conteo ciego). El heurístico `difTotal`
-  // original comparaba contra `valor_inicial_*` client-side y daba falso
-  // negativo en cuanto el turno tenía CUALQUIER transacción — reemplazado
-  // por `useRequiereJustificacion` (ver arriba), que corre el mismo
-  // cálculo en el backend. Este test ahora cubre el caso residual: una
-  // condición de carrera entre el pre-flight (debounced) y el POST real
-  // — `forceRequireJustificacion` sigue siendo la red de seguridad para
-  // ese caso, incluso si el pre-flight responde `requiereJustificacion:
-  // false` (stale).
-  it('useRequiereJustificacion responde false (stale) pero forceRequireJustificacion=true (backend ya rechazó el POST real) → el campo aparece igual y es obligatorio', () => {
+  it('con diferencia y motivo vacío → el submit NO llega al padre (red de seguridad del handler)', async () => {
     useRequiereJustificacionMock.mockReturnValue({
-      requiereJustificacion: false,
+      requiereJustificacion: true,
       error: undefined,
     });
-    render(<Harness forceRequireJustificacion />);
+    const onSubmit = vi.fn(async () => {});
+    render(<Harness efectivoReportado={900_000} onSubmit={onSubmit} />);
 
-    const justificacionInput = screen.queryByTestId('cerrar-turno-required-justificacion');
-    expect(justificacionInput).not.toBeNull();
+    fireEvent.submit(screen.getByTestId('cerrar-turno-form'));
+    await waitFor(() => {
+      expect(screen.queryByText(/motivo del descuadre \(mínimo 3/i)).not.toBeNull();
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 
-    const confirmarBtn = screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement;
-    expect(confirmarBtn.disabled).toBe(true);
+  // REGRESSION (2026-09-25, fix 2026-10-01): el backend calcula el esperado
+  // real SOLO server-side. `forceRequireMotivo` es la red de seguridad ante
+  // una condición de carrera entre el pre-flight (debounced) y el POST real,
+  // incluso si el pre-flight responde `false` (stale).
+  it('pre-flight false (stale) pero forceRequireMotivo=true (el backend ya rechazó el POST) → Observaciones obligatoria', () => {
+    render(<Harness forceRequireMotivo />);
 
-    fireEvent.change(justificacionInput as HTMLElement, {
+    expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.change(screen.getByTestId('cerrar-turno-observaciones'), {
       target: { value: 'Descuadre reportado por el backend' },
     });
     expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
@@ -189,14 +233,18 @@ describe('<CerrarTurnoForm /> — justificación condicional (conteo ciego)', ()
     );
   });
 
-  it('mientras useRequiereJustificacion está cargando (undefined) → conservador: campo visible y botón disabled, nunca asume "sin diferencia"', () => {
+  it('mientras el pre-flight carga (undefined) → conservador: motivo exigido y botón disabled, nunca asume "sin diferencia"', () => {
     useRequiereJustificacionMock.mockReturnValue({
       requiereJustificacion: undefined,
       error: undefined,
     });
     render(<Harness />);
 
-    expect(screen.queryByTestId('cerrar-turno-required-justificacion')).not.toBeNull();
+    expect(
+      (screen.getByTestId('cerrar-turno-observaciones') as HTMLInputElement).getAttribute(
+        'aria-required',
+      ),
+    ).toBe('true');
     expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -204,7 +252,7 @@ describe('<CerrarTurnoForm /> — justificación condicional (conteo ciego)', ()
 });
 
 describe('<CerrarTurnoForm /> — banner explicativo del botón disabled (Cambio 1)', () => {
-  it('aparece cuando el botón está disabled por falta de justificación', () => {
+  it('aparece cuando el botón está disabled por falta del motivo en Observaciones', () => {
     useRequiereJustificacionMock.mockReturnValue({
       requiereJustificacion: true,
       error: undefined,
@@ -214,21 +262,21 @@ describe('<CerrarTurnoForm /> — banner explicativo del botón disabled (Cambio
     expect(screen.queryByTestId('cerrar-turno-boton-disabled-motivo')).not.toBeNull();
   });
 
-  it('desaparece en cuanto se completa una justificación válida (botón habilitado)', () => {
+  it('desaparece en cuanto se escribe un motivo válido (botón habilitado)', () => {
     useRequiereJustificacionMock.mockReturnValue({
       requiereJustificacion: true,
       error: undefined,
     });
     render(<Harness />);
 
-    fireEvent.change(screen.getByTestId('cerrar-turno-required-justificacion'), {
+    fireEvent.change(screen.getByTestId('cerrar-turno-observaciones'), {
       target: { value: 'Motivo válido' },
     });
 
     expect(screen.queryByTestId('cerrar-turno-boton-disabled-motivo')).toBeNull();
   });
 
-  it('no aparece cuando el backend confirma que no hace falta justificación', () => {
+  it('no aparece cuando el backend confirma que no hace falta motivo', () => {
     useRequiereJustificacionMock.mockReturnValue({
       requiereJustificacion: false,
       error: undefined,

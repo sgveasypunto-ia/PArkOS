@@ -36,7 +36,7 @@ const DEBOUNCE_MS = 400;
 /**
  * @param uuid_sesion Active sesion uuid, or `null` to disable the fetch.
  * @param valorEfectivoReportado Operator's in-progress efectivo count.
- * @param valorDatafonoReportado Operator's in-progress datáfono count.
+ *   (PT-6: the datáfono dimension no longer takes part in the check.)
  *
  * @returns `requiereJustificacion`: `true`/`false` once the backend has
  *   answered for the current (debounced) counts, `undefined` while
@@ -47,27 +47,23 @@ const DEBOUNCE_MS = 400;
 export function useRequiereJustificacion(
   uuid_sesion: string | null,
   valorEfectivoReportado: number,
-  valorDatafonoReportado: number,
 ): {
   requiereJustificacion: boolean | undefined;
   error: Error | undefined;
 } {
   const accessToken = useAuthStore((s) => s.accessToken);
 
-  const [debounced, setDebounced] = useState({
-    efectivo: valorEfectivoReportado,
-    datafono: valorDatafonoReportado,
-  });
+  const [debounced, setDebounced] = useState({ efectivo: valorEfectivoReportado });
   useEffect(() => {
     const id = setTimeout(() => {
-      setDebounced({ efectivo: valorEfectivoReportado, datafono: valorDatafonoReportado });
+      setDebounced({ efectivo: valorEfectivoReportado });
     }, DEBOUNCE_MS);
     return () => clearTimeout(id);
-  }, [valorEfectivoReportado, valorDatafonoReportado]);
+  }, [valorEfectivoReportado]);
 
   const key =
     uuid_sesion && accessToken
-      ? `/caja/arqueo/requiere-justificacion?uuid_sesion=${encodeURIComponent(uuid_sesion)}&valor_efectivo_reportado=${debounced.efectivo}&valor_datafono_reportado=${debounced.datafono}`
+      ? `/caja/arqueo/requiere-justificacion?uuid_sesion=${encodeURIComponent(uuid_sesion)}&valor_efectivo_reportado=${debounced.efectivo}`
       : null;
 
   const { data, error } = useSWR<{ requiere_justificacion: boolean }>(

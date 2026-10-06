@@ -20,6 +20,7 @@
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 import type { SesionRead } from '../api/sesionActivaApi';
+import type { ArqueoSubmitResult } from '../hooks/useArqueo';
 
 /**
  * Bridge signature: `window.bridge.imprimir(kind, payload)` per F2.2
@@ -40,9 +41,9 @@ export interface CerrarSesionHelper {
     uuid: string,
     payload: {
       valor_final_efectivo: number;
-      valor_final_datafono: number;
       observaciones_cierre?: string;
     },
+    options?: { deferLogout?: boolean },
   ): Promise<
     | { ok: true; status: 200; sesion: SesionRead }
     | { ok: false; status: number; error: unknown }
@@ -63,18 +64,28 @@ export interface ArqueoSubmitFn {
     uuid_sesion: string;
     uuid_tipo_arqueo: string;
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     justificacion?: string;
-  }): Promise<{ uuid: string }>;
+  }): Promise<ArqueoSubmitResult>;
 }
 
 /**
  * Result envelope returned by the chain. The orchestrator renders one
  * banner per kind + may call `navigate(...)` for the `redirect` kinds.
+ *
+ * PT-5: `cierre_completado` replaces the old `success` /
+ * `redirect_login_closed` pair. The chain no longer logs the operator out
+ * on success — it hands back what the read-only post-close summary needs
+ * (the arqueo reconciliation, the closed sesion and the operator's note)
+ * and the orchestrator runs the deferred logout when the summary is
+ * dismissed.
  */
 export type CerrarTurnoChainResult =
-  | { kind: 'success'; sesion: SesionRead }
-  | { kind: 'redirect_login_closed'; sesion: SesionRead }
+  | {
+      kind: 'cierre_completado';
+      sesion: SesionRead;
+      arqueo: ArqueoSubmitResult;
+      observaciones: string | undefined;
+    }
   | { kind: 'redirect_login' }
   | { kind: 'arqueo_fallido'; status: number }
   | { kind: 'justificacion_requerida' }
@@ -98,25 +109,28 @@ function parseBackendErrorCode(body: string): string | undefined {
 }
 
 /**
- * Build the POST /caja/arqueo body, dropping `justificacion` when
- * empty so the wire-level body does NOT carry the field (REQ-OPS-157:
- * `|diferencia|=0` MUST NOT send a justificacion).
+ * Build the POST /caja/arqueo body. PT-4: the operator no longer sees a
+ * "justificación" field — the reason for a cash difference is typed in
+ * "Observaciones". It is forwarded as `justificacion` ONLY on the retry that
+ * follows a `400 justificacion_requerida` (see `runCerrarTurnoChain`), so the
+ * backend gate is satisfied WITHOUT changing the backend while a balanced
+ * close never persists a justification in the immutable arqueo row
+ * (REQ-OPS-157: `|diferencia|=0` MUST NOT send a justificacion).
+ * PT-6: no datáfono count is sent (the backend column is nullable).
  */
 function buildArqueoBody(args: {
   sesion: SesionRead;
   uuid_tipo_arqueo: string;
   valor_efectivo_reportado: number;
-  valor_datafono_reportado: number;
-  justificacion?: string;
+  observaciones?: string;
 }): Parameters<ArqueoSubmitFn>[0] {
   const body: Parameters<ArqueoSubmitFn>[0] = {
     uuid_sesion: args.sesion.uuid,
     uuid_tipo_arqueo: args.uuid_tipo_arqueo,
     valor_efectivo_reportado: args.valor_efectivo_reportado,
-    valor_datafono_reportado: args.valor_datafono_reportado,
   };
-  if (args.justificacion && args.justificacion.trim() !== '') {
-    body.justificacion = args.justificacion.trim();
+  if (args.observaciones && args.observaciones.trim() !== '') {
+    body.justificacion = args.observaciones.trim();
   }
   return body;
 }
@@ -127,12 +141,10 @@ function buildArqueoBody(args: {
  */
 function buildCerrarSesionBody(args: {
   valor_final_efectivo: number;
-  valor_final_datafono: number;
   observaciones_cierre?: string;
 }): Parameters<CerrarSesionHelper>[1] {
   const body: Parameters<CerrarSesionHelper>[1] = {
     valor_final_efectivo: args.valor_final_efectivo,
-    valor_final_datafono: args.valor_final_datafono,
   };
   if (
     args.observaciones_cierre !== undefined &&
@@ -163,24 +175,42 @@ export async function runCerrarTurnoChain(args: {
   bridge: CerrarTurnoBridge | null;
   values: {
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
-    justificacion?: string;
     observaciones_cierre?: string;
   };
 }): Promise<CerrarTurnoChainResult> {
   // 1. POST /caja/arqueo FIRST (REQ-OPS-157). On ANY error here we
   // ABORT — no PUT call, no bridge.imprimir.
   let arqueoUuid: string | undefined;
+  let arqueoResult: ArqueoSubmitResult;
   try {
-    const arqueoResult = await args.submitArqueo(
-      buildArqueoBody({
-        sesion: args.sesion,
-        uuid_tipo_arqueo: args.uuidTipoArqueo,
-        valor_efectivo_reportado: args.values.valor_efectivo_reportado,
-        valor_datafono_reportado: args.values.valor_datafono_reportado,
-        justificacion: args.values.justificacion,
-      }),
-    );
+    const submitWith = (withMotivo: boolean): Promise<ArqueoSubmitResult> =>
+      args.submitArqueo(
+        buildArqueoBody({
+          sesion: args.sesion,
+          uuid_tipo_arqueo: args.uuidTipoArqueo,
+          valor_efectivo_reportado: args.values.valor_efectivo_reportado,
+          observaciones: withMotivo ? args.values.observaciones_cierre : undefined,
+        }),
+      );
+    const motivo = (args.values.observaciones_cierre ?? '').trim();
+    try {
+      // First attempt carries NO justificacion: a balanced close must not
+      // store one. A difference makes the backend answer 400 and we retry
+      // ONCE with the operator's Observaciones as the motivo (the body
+      // differs, so the Idempotency-Key does too).
+      arqueoResult = await submitWith(false);
+    } catch (firstErr) {
+      if (
+        motivo !== '' &&
+        firstErr instanceof ParkosHttpError &&
+        firstErr.status === 400 &&
+        parseBackendErrorCode(firstErr.body) === 'justificacion_requerida'
+      ) {
+        arqueoResult = await submitWith(true);
+      } else {
+        throw firstErr;
+      }
+    }
     arqueoUuid = arqueoResult.uuid;
 
     // 2. ESC/POS print (BEFORE the PUT). DA-F10.2-5 RESOLVED — the
@@ -188,7 +218,7 @@ export async function runCerrarTurnoChain(args: {
     // escpos changes (F10.1 `'arqueo'` union extension).
     if (args.bridge !== null) {
       await args.bridge.imprimir('arqueo', {
-        ...arqueoResult,
+        uuid: arqueoResult.uuid,
         auditoria_codigo: 'cierre_turno',
       });
     }
@@ -233,21 +263,31 @@ export async function runCerrarTurnoChain(args: {
   // REQ-OPS-160 + AD-4. The orchestrator only has to `navigate` on
   // `ok: true`.
   //
-  // `valor_final_*` are DERIVED from the arqueo's `valor_*_reportado`
-  // (fix: the operator physically counts the cash/datáfono ONCE — the
-  // form no longer asks for the same count twice under a different
-  // field name, which had no consistency guarantee between the two).
+  // `valor_final_efectivo` is DERIVED from the arqueo's
+  // `valor_efectivo_reportado` (fix: the operator physically counts the
+  // cash ONCE — the form no longer asks for the same count twice under a
+  // different field name). PT-6: no datáfono is sent.
+  //
+  // PT-5: `deferLogout` keeps the bearer token alive so the orchestrator
+  // can fetch + show the read-only post-close summary; it runs the
+  // logout itself when the operator dismisses the summary. Failure
+  // branches below are unchanged (the helper still logs out on 401).
   const result = await args.cerrarSesion(
     args.sesion.uuid,
     buildCerrarSesionBody({
       valor_final_efectivo: args.values.valor_efectivo_reportado,
-      valor_final_datafono: args.values.valor_datafono_reportado,
       observaciones_cierre: args.values.observaciones_cierre,
     }),
+    { deferLogout: true },
   );
 
   if (result.ok) {
-    return { kind: 'redirect_login_closed', sesion: result.sesion };
+    return {
+      kind: 'cierre_completado',
+      sesion: result.sesion,
+      arqueo: arqueoResult,
+      observaciones: args.values.observaciones_cierre?.trim() || undefined,
+    };
   }
 
   // Cases 5-8: PUT errors. The helper did NOT clear (except 401,

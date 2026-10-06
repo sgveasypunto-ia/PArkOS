@@ -19,12 +19,12 @@
  *      - axe-core on `/login` MUST report zero violations (no leftover
  *        focus traps from the cerrar-turno form).
  *
- *   2. strict-mode `|diferencia|>0` requires justificacion inline
+ *   2. strict-mode `|diferencia|>0` requires the motivo in Observaciones (PT-4)
  *      - `valor_efectivo_reportado=97000` with `valor_esperado=100000`
  *        (diferencia = -3000)
  *      - `<ArqueoSheet requiredMode='cierre_turno'>` (or inline
  *        CerrarTurnoArqueoForm shim) keeps the Confirmar button
- *        disabled while `justificacion.length < 3`
+ *        disabled while the Observaciones motivo is shorter than 3 chars
  *      - After typing >= 3 chars, button re-enables, POST carries the
  *        justificacion field
  *
@@ -179,9 +179,7 @@ test.describe('HU-F10.2 — Cierre de turno (e2e)', () => {
 
     // Type the EXACT expected values (diferencia === 0).
     await page.getByTestId('cerrar-turno-valor-efectivo-reportado').fill('100000');
-    await page.getByTestId('cerrar-turno-valor-datafono-reportado').fill('0');
     await page.getByTestId('cerrar-turno-valor-efectivo').fill('100000');
-    await page.getByTestId('cerrar-turno-valor-datafono').fill('0');
     await page.getByTestId('cerrar-turno-confirmar').click();
 
     // Wire-level assertion: cierre_turno discriminator + cierre PUT body.
@@ -190,7 +188,6 @@ test.describe('HU-F10.2 — Cierre de turno (e2e)', () => {
       uuid_sesion: TEST_SESION_UUID,
       tipo_arqueo: 'cierre_turno',
       valor_efectivo_reportado: 100_000,
-      valor_datafono_reportado: 0,
     });
     // diferencia === 0 → justificacion MUST be absent.
     expect(arqueoBody).not.toHaveProperty('justificacion');
@@ -211,7 +208,9 @@ test.describe('HU-F10.2 — Cierre de turno (e2e)', () => {
     expect(calls[0]?.kind).toBe('arqueo');
     expect(calls[0]?.payload.auditoria_codigo).toBe('cierre_turno');
 
-    // Redirect to /login?closed=true.
+    // PT-5: read-only summary FIRST (logout deferred), THEN /login?closed=true.
+    await expect(page.getByTestId('resumen-cierre-turno')).toBeVisible({ timeout: 10_000 });
+    await page.getByTestId('resumen-cierre-finalizar').click();
     await page.waitForURL(/\/login\?closed=true$/, { timeout: 10_000 });
 
     // axe-core WCAG 2.1 AA on the post-redirect /login page.
@@ -282,18 +281,15 @@ test.describe('HU-F10.2 — Cierre de turno (e2e)', () => {
 
     // diferencia = -3000 (> tolerancia_efectivo=1000).
     await page.getByTestId('cerrar-turno-valor-efectivo-reportado').fill('97000');
-    await page.getByTestId('cerrar-turno-valor-datafono-reportado').fill('0');
 
-    // Submit button MUST be disabled while justificacion is empty (REQ-OPS-158 strict-mode).
+    // Submit button MUST be disabled while the motivo (Observaciones) is empty (REQ-OPS-158 strict-mode).
     await expect(page.getByTestId('cerrar-turno-confirmar')).toBeDisabled();
 
     // Type a justificacion of >= 3 chars → button re-enables.
-    await page
-      .getByTestId('cerrar-turno-required-justificacion')
-      .fill('Diferencia menor en caja');
+    // PT-4: no separate "Justificación" field — the motivo goes in Observaciones.
+    await page.getByTestId('cerrar-turno-observaciones').fill('Diferencia menor en caja');
     await expect(page.getByTestId('cerrar-turno-confirmar')).toBeEnabled();
     await page.getByTestId('cerrar-turno-valor-efectivo').fill('97000');
-    await page.getByTestId('cerrar-turno-valor-datafono').fill('0');
     await page.getByTestId('cerrar-turno-confirmar').click();
 
     // POST body MUST include justificacion verbatim.
@@ -304,6 +300,9 @@ test.describe('HU-F10.2 — Cierre de turno (e2e)', () => {
       justificacion: 'Diferencia menor en caja',
     });
 
+    // PT-5: summary first, logout when the operator dismisses it.
+    await expect(page.getByTestId('resumen-cierre-turno')).toBeVisible({ timeout: 10_000 });
+    await page.getByTestId('resumen-cierre-finalizar').click();
     await page.waitForURL(/\/login\?closed=true$/, { timeout: 10_000 });
   });
 
@@ -357,9 +356,7 @@ test.describe('HU-F10.2 — Cierre de turno (e2e)', () => {
     await page.goto('/caja/cerrar-turno');
 
     await page.getByTestId('cerrar-turno-valor-efectivo-reportado').fill('100000');
-    await page.getByTestId('cerrar-turno-valor-datafono-reportado').fill('0');
     await page.getByTestId('cerrar-turno-valor-efectivo').fill('100000');
-    await page.getByTestId('cerrar-turno-valor-datafono').fill('0');
     await page.getByTestId('cerrar-turno-confirmar').click();
 
     // Orphan uuid banner MUST surface the arqueo uuid.

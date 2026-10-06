@@ -8,9 +8,9 @@
  * (which is unavailable in this sandbox, per F9.x precedent).
  *
  * Coverage (10):
- *   1. happy path POST 201 + bridge.imprimir fires once + PUT 200 + redirect /login?closed=true.
+ *   1. happy path POST 201 + bridge.imprimir fires once + PUT 200 (logout DEFERRED) → cierre_completado.
  *   2. happy path |diferencia|=0: justificacion dropped from POST body.
- *   3. happy path |diferencia|>0: justificacion included in POST body.
+ *   3. happy path |diferencia|>0: observaciones forwarded as `justificacion` (PT-4).
  *   4. POST 5xx → arqueo_fallido, NO bridge.imprimir, NO PUT call.
  *   5. POST network → red_arqueo, NO bridge.imprimir, NO PUT call.
  *   6. POST 400 arqueo_invalid → arqueo_fallido (terminal).
@@ -42,7 +42,6 @@ const SESION: SesionRead = {
 
 const BASE_VALUES = {
   valor_efectivo_reportado: 100_000,
-  valor_datafono_reportado: 0,
 };
 
 let submitArqueo: ReturnType<typeof vi.fn>;
@@ -71,7 +70,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
   // ────────────────────────────────────────────────────────────────────
   // seq-1-happy-path — POST 201 → bridge.imprimir → PUT 200 → redirect
   // ────────────────────────────────────────────────────────────────────
-  it('seq-1: happy path POST 201 + bridge.imprimir once + PUT 200 → redirect /login?closed=true', async () => {
+  it('seq-1: happy path POST 201 + bridge.imprimir once + PUT 200 → cierre_completado (logout deferred, PT-5)', async () => {
     submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-1' });
     cerrarSesion.mockResolvedValueOnce({
       ok: true,
@@ -87,7 +86,6 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
       uuid_sesion: 'sess-uuid-1',
       uuid_tipo_arqueo: UUID_TIPO_CIERRE_TURNO,
       valor_efectivo_reportado: 100_000,
-      valor_datafono_reportado: 0,
     });
 
     // 2. bridge.imprimir fired exactly once with auditoria_codigo='cierre_turno'.
@@ -102,17 +100,20 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
 
     // 3. THEN the helper is invoked (after POST + bridge.imprimir).
     expect(cerrarSesion).toHaveBeenCalledTimes(1);
-    expect(cerrarSesion).toHaveBeenCalledWith('sess-uuid-1', {
-      valor_final_efectivo: 100_000,
-      valor_final_datafono: 0,
-    });
+    expect(cerrarSesion).toHaveBeenCalledWith(
+      'sess-uuid-1',
+      { valor_final_efectivo: 100_000 },
+      { deferLogout: true },
+    );
 
     expect(result).toEqual({
-      kind: 'redirect_login_closed',
+      kind: 'cierre_completado',
       sesion: expect.objectContaining({
         uuid: 'sess-uuid-1',
         timestamp_cierre: '2026-09-21T18:00:00Z',
       }),
+      arqueo: { uuid: 'arqueo-uuid-1' },
+      observaciones: undefined,
     });
   });
 
@@ -121,7 +122,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
   // reportado fields, never asked as separate input (fix: cierre de
   // turno ya no pide el mismo conteo físico dos veces).
   // ────────────────────────────────────────────────────────────────────
-  it('seq-1b: valor_final_* is derived from valor_*_reportado (no duplicate input)', async () => {
+  it('seq-1b: valor_final_efectivo is derived from valor_efectivo_reportado (no duplicate input)', async () => {
     submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-1b' });
     cerrarSesion.mockResolvedValueOnce({
       ok: true,
@@ -131,13 +132,13 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
 
     await chain({
       valor_efectivo_reportado: 97_500,
-      valor_datafono_reportado: 3_200,
     });
 
-    expect(cerrarSesion).toHaveBeenCalledWith('sess-uuid-1', {
-      valor_final_efectivo: 97_500,
-      valor_final_datafono: 3_200,
-    });
+    expect(cerrarSesion).toHaveBeenCalledWith(
+      'sess-uuid-1',
+      { valor_final_efectivo: 97_500 },
+      { deferLogout: true },
+    );
   });
 
   // ────────────────────────────────────────────────────────────────────
@@ -154,8 +155,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
     await chain({
       ...BASE_VALUES,
       valor_efectivo_reportado: 100_000,
-      valor_datafono_reportado: 0,
-      justificacion: '',
+      observaciones_cierre: '',
     });
 
     const callArg = submitArqueo.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -165,7 +165,14 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
   // ────────────────────────────────────────────────────────────────────
   // seq-3-diferencia-fuera-tolerancia — justificacion REQUIRED + included
   // ────────────────────────────────────────────────────────────────────
-  it('seq-3: justificacion non-empty → included in POST body + trim applied', async () => {
+  it('seq-3: difference → 400 justificacion_requerida → retry carries observaciones as `justificacion` + trim applied (PT-4)', async () => {
+    submitArqueo.mockRejectedValueOnce(
+      new ParkosHttpError(
+        400,
+        JSON.stringify({ detail: { error: 'justificacion_requerida' } }),
+        '/api/v1/caja/arqueo',
+      ),
+    );
     submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-3' });
     cerrarSesion.mockResolvedValueOnce({
       ok: true,
@@ -176,8 +183,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
     await chain({
       ...BASE_VALUES,
       valor_efectivo_reportado: 97_000,
-      valor_datafono_reportado: 0,
-      justificacion: '  Faltante menor en caja  ',
+      observaciones_cierre: '  Faltante menor en caja  ',
     });
 
     expect(submitArqueo).toHaveBeenCalledWith(

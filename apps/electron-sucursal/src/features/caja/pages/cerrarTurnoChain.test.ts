@@ -29,8 +29,6 @@ const SESION: SesionRead = {
 
 const BASE_VALUES = {
   valor_efectivo_reportado: 100_000,
-  valor_datafono_reportado: 0,
-  justificacion: '',
   observaciones_cierre: '',
 };
 
@@ -171,21 +169,149 @@ describe('runCerrarTurnoChain — logging (Cambio 4)', () => {
     expect(consoleErrorSpy).toHaveBeenCalled();
   });
 
-  it('success path → no console.error at all', async () => {
-    const submitArqueo = vi.fn().mockResolvedValue({ uuid: 'arqueo-uuid-1' });
+  it('success path → no console.error at all, hands back data for the summary (PT-5)', async () => {
+    const arqueo = {
+      uuid: 'arqueo-uuid-1',
+      valor_efectivo_esperado: 120_000,
+      valor_efectivo_reportado: 100_000,
+      diferencia_efectivo: -20_000,
+    };
+    const submitArqueo = vi.fn().mockResolvedValue(arqueo);
+    const closed = { ...SESION, timestamp_cierre: '2026-09-21T18:00:00Z' };
     const cerrarSesion = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      sesion: { ...SESION, timestamp_cierre: '2026-09-21T18:00:00Z' },
+      sesion: closed,
     });
 
     const result = await runCerrarTurnoChain({
       ...baseArgs(),
+      values: { ...BASE_VALUES, observaciones_cierre: '  Faltante  ' },
       submitArqueo,
       cerrarSesion,
     });
 
-    expect(result.kind).toBe('redirect_login_closed');
+    expect(result).toEqual({
+      kind: 'cierre_completado',
+      sesion: closed,
+      arqueo,
+      observaciones: 'Faltante',
+    });
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('PT-5: the PUT defers the logout so the summary can be shown first', async () => {
+    const submitArqueo = vi.fn().mockResolvedValue({ uuid: 'arqueo-uuid-1' });
+    const cerrarSesion = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, sesion: { ...SESION } });
+
+    await runCerrarTurnoChain({ ...baseArgs(), submitArqueo, cerrarSesion });
+
+    expect(cerrarSesion).toHaveBeenCalledWith(
+      SESION.uuid,
+      { valor_final_efectivo: 100_000 },
+      { deferLogout: true },
+    );
+  });
+
+  it('PT-4/PT-6: with a difference the backend 400s and the chain retries ONCE with Observaciones as `justificacion`; no datáfono on the wire', async () => {
+    consoleErrorSpy.mockClear();
+    const submitArqueo = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ParkosHttpError(
+          400,
+          JSON.stringify({ detail: { error: 'justificacion_requerida' } }),
+          '/caja/arqueo',
+        ),
+      )
+      .mockResolvedValueOnce({ uuid: 'arqueo-uuid-1' });
+    const cerrarSesion = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, sesion: { ...SESION } });
+
+    const result = await runCerrarTurnoChain({
+      ...baseArgs(),
+      values: { valor_efectivo_reportado: 90_000, observaciones_cierre: '  Billete falso ' },
+      submitArqueo,
+      cerrarSesion,
+    });
+
+    expect(result.kind).toBe('cierre_completado');
+    expect(submitArqueo).toHaveBeenCalledTimes(2);
+    expect(submitArqueo.mock.calls[0]?.[0]).toEqual({
+      uuid_sesion: SESION.uuid,
+      uuid_tipo_arqueo: 'tipo-arqueo-uuid-1',
+      valor_efectivo_reportado: 90_000,
+    });
+    expect(submitArqueo.mock.calls[1]?.[0]).toEqual({
+      uuid_sesion: SESION.uuid,
+      uuid_tipo_arqueo: 'tipo-arqueo-uuid-1',
+      valor_efectivo_reportado: 90_000,
+      justificacion: 'Billete falso',
+    });
+    expect(cerrarSesion).toHaveBeenCalledWith(
+      SESION.uuid,
+      { valor_final_efectivo: 90_000, observaciones_cierre: '  Billete falso ' },
+      { deferLogout: true },
+    );
+  });
+
+  it('PT-4: balanced close sends NO `justificacion` even when Observaciones has a note (REQ-OPS-157), in a single POST', async () => {
+    const submitArqueo = vi.fn().mockResolvedValue({ uuid: 'arqueo-uuid-1' });
+    const cerrarSesion = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, sesion: { ...SESION } });
+
+    await runCerrarTurnoChain({
+      ...baseArgs(),
+      values: { valor_efectivo_reportado: 100_000, observaciones_cierre: 'Nota de relevo' },
+      submitArqueo,
+      cerrarSesion,
+    });
+
+    expect(submitArqueo).toHaveBeenCalledTimes(1);
+    const body = submitArqueo.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('justificacion' in body).toBe(false);
+    expect('valor_datafono_reportado' in body).toBe(false);
+  });
+
+  it('PT-4: 400 justificacion_requerida with NO Observaciones → no retry, kind justificacion_requerida', async () => {
+    const submitArqueo = vi.fn().mockRejectedValue(
+      new ParkosHttpError(
+        400,
+        JSON.stringify({ detail: { error: 'justificacion_requerida' } }),
+        '/caja/arqueo',
+      ),
+    );
+    const cerrarSesion = vi.fn();
+
+    const result = await runCerrarTurnoChain({ ...baseArgs(), submitArqueo, cerrarSesion });
+
+    expect(result).toEqual({ kind: 'justificacion_requerida' });
+    expect(submitArqueo).toHaveBeenCalledTimes(1);
+    expect(cerrarSesion).not.toHaveBeenCalled();
+  });
+
+  it('PT-4: a second 400 after the retry is surfaced, never looped', async () => {
+    const err = () =>
+      new ParkosHttpError(
+        400,
+        JSON.stringify({ detail: { error: 'justificacion_requerida' } }),
+        '/caja/arqueo',
+      );
+    const submitArqueo = vi.fn().mockRejectedValueOnce(err()).mockRejectedValueOnce(err());
+    const cerrarSesion = vi.fn();
+
+    const result = await runCerrarTurnoChain({
+      ...baseArgs(),
+      values: { valor_efectivo_reportado: 1, observaciones_cierre: 'motivo' },
+      submitArqueo,
+      cerrarSesion,
+    });
+
+    expect(result).toEqual({ kind: 'justificacion_requerida' });
+    expect(submitArqueo).toHaveBeenCalledTimes(2);
   });
 });
