@@ -68,6 +68,21 @@ describe('alertasSchema', () => {
     expect(parsed.severity).toBeUndefined();
   });
 
+  it('T6: reads legacy `estado: "activo"` rows as `abierta` instead of failing the inbox', () => {
+    const parsed = alertasListResponseSchema.parse({
+      items: [baseWire({ estado: 'activo', severity: 'critical' })],
+      next_cursor: null,
+    });
+    expect(parsed.items[0]?.estado).toBe('abierta');
+  });
+
+  it('T7: parses an item without `valor_diferencia_datafono` (cash-only backend)', () => {
+    const wire = baseWire({ severity: 'critical' });
+    delete wire.valor_diferencia_datafono;
+    const parsed = alertaReadSchema.parse(wire);
+    expect(parsed.valor_diferencia_datafono).toBeUndefined();
+  });
+
   it('T5: rejects an unknown estado value', () => {
     expect(() => alertaReadSchema.parse(baseWire({ severity: null, estado: 'cancelada' }))).toThrow();
   });
