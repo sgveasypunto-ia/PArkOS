@@ -35,6 +35,7 @@ from pydantic import Field, StringConstraints, model_validator
 from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
 from .common import FilterBase, ReadListBase, _Base
 from .facturacion import FacturaRead
+from .renovacion import ConRenovacion
 
 # ---------------------------------------------------------------------------
 # Clientes
@@ -208,7 +209,7 @@ class ClientesB2BReadList(ReadListBase[ClientesB2BRead]):
 # ---------------------------------------------------------------------------
 
 
-class SubscripcionesClienteRead(_Base):
+class SubscripcionesClienteRead(ConRenovacion):
     """Read-back for ``prod.subscripciones_cliente``. No DB-level UK —
     the bi-temporal ``vigente_desde`` discriminator keeps each version
     unique and the business key (the 3 FKs + dates) is enforced at the
@@ -546,7 +547,7 @@ class VehiculoInscrito(_Base):
     placa: str | None
 
 
-class SubscripcionActivaItem(_Base):
+class SubscripcionActivaItem(ConRenovacion):
     """Una fila del listado de suscripciones activas (paso 1 del Sheet)."""
 
     uuid: uuid_lib.UUID
@@ -564,7 +565,7 @@ class SubscripcionesActivasResponse(_Base):
     items: list[SubscripcionActivaItem]
 
 
-class SubscripcionCupoDetalle(_Base):
+class SubscripcionCupoDetalle(ConRenovacion):
     """Detalle de una suscripción para el paso de gestión de cupos.
 
     Devuelto tanto por la búsqueda por identificación como por

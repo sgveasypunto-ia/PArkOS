@@ -154,5 +154,11 @@ from .clientes_subscripcion_vehiculos import router as subscripcion_vehiculos_ro
 
 router.include_router(subscripcion_vehiculos_router)
 
+# PT-3 -- mount the renewal + expiry-warning dedicated router
+# (POST /clientes/subscripciones/{uuid}/renovar, GET .../proximas-vencer).
+from .clientes_renovacion import router as renovacion_router
+
+router.include_router(renovacion_router)
+
 
 __all__ = ["router"]

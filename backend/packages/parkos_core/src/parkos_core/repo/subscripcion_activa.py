@@ -16,15 +16,23 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.V.clientes import Clientes
 from ..models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ..models.V.subscripciones_cliente import SubscripcionesCliente
+from ..models.V.tipo_subscripciones import TipoSubscripciones
 from ..models.V.vehiculos import Vehiculos
+from ..runtime.renovacion import dias_restantes, renovacion_permitida
 from ..runtime.tiempo import hoy_bogota
+
+#: Default per-subscription warning window (NULL column value == 7).
+DIAS_ALERTA_POR_DEFECTO = 7
+#: Upper bound of ``dias_alerta_pre_vencimiento`` (schema: 1..90).
+_DIAS_ALERTA_MAX = 90
 
 
 @dataclass(frozen=True)
@@ -142,9 +150,99 @@ async def resolve_active_subscription_for_exit(
     return SubscriptionLookupResult(found=True, subscripcion=subscripcion)
 
 
+async def listar_proximas_a_vencer(
+    session: AsyncSession,
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    hoy: date | None = None,
+) -> list[dict]:
+    """Expiry-warning feed: valid subscriptions inside THEIR OWN alert window.
+
+    * Valid = open row, ``estado='activo'``, ``fecha_vencimiento >= hoy``
+      (Bogota). Expired rows are not listed (they show as "vencida" in the
+      general listing).
+    * Window = ``dias_restantes <= dias_alerta_pre_vencimiento`` of each row
+      (NULL -> 7), with ``dias_restantes = fecha_vencimiento - hoy + 1``.
+    * Ascending by ``fecha_vencimiento``.
+    """
+    referencia = hoy if hoy is not None else hoy_bogota()
+    limite = referencia + timedelta(days=_DIAS_ALERTA_MAX)
+    stmt = (
+        select(SubscripcionesCliente, Clientes, TipoSubscripciones)
+        .join(Clientes, Clientes.uuid == SubscripcionesCliente.uuid_cliente, isouter=True)
+        .join(
+            TipoSubscripciones,
+            TipoSubscripciones.uuid == SubscripcionesCliente.uuid_tipo_subscripcion,
+            isouter=True,
+        )
+        .where(
+            SubscripcionesCliente.uuid_sucursal == uuid_sucursal,
+            SubscripcionesCliente.vigente_hasta.is_(None),
+            SubscripcionesCliente.estado == "activo",
+            SubscripcionesCliente.fecha_vencimiento.is_not(None),
+            SubscripcionesCliente.fecha_vencimiento >= referencia,
+            SubscripcionesCliente.fecha_vencimiento <= limite,
+        )
+        .order_by(SubscripcionesCliente.fecha_vencimiento.asc())
+    )
+    filas = (await session.execute(stmt)).all()
+
+    seleccion = []
+    for sub, cliente, plan in filas:
+        restantes = dias_restantes(sub.fecha_vencimiento, hoy=referencia)
+        alerta = sub.dias_alerta_pre_vencimiento or DIAS_ALERTA_POR_DEFECTO
+        if restantes is not None and restantes <= alerta:
+            seleccion.append((sub, cliente, plan, restantes, alerta))
+    return await armar_items_vencimiento(session, seleccion)
+
+
+async def armar_items_vencimiento(session: AsyncSession, seleccion: list[tuple]) -> list[dict]:
+    """Shape ``(sub, cliente, plan, restantes, alerta)`` tuples into feed items
+    (adds the active plates of each subscription in ONE extra query)."""
+    if not seleccion:
+        return []
+
+    placas_stmt = (
+        select(SubscripcionVehiculos.uuid_subscripcion_cliente, Vehiculos.placa)
+        .join(Vehiculos, Vehiculos.uuid == SubscripcionVehiculos.uuid_vehiculo)
+        .where(
+            SubscripcionVehiculos.uuid_subscripcion_cliente.in_([s[0].uuid for s in seleccion]),
+            SubscripcionVehiculos.vigente_hasta.is_(None),
+            SubscripcionVehiculos.estado == "activo",
+        )
+        .order_by(SubscripcionVehiculos.created_at.asc())
+    )
+    placas: dict[uuid_lib.UUID, list[str]] = {}
+    for uuid_sub, placa in (await session.execute(placas_stmt)).all():
+        if placa is not None:
+            placas.setdefault(uuid_sub, []).append(placa)
+
+    items: list[dict] = []
+    for sub, cliente, plan, restantes, alerta in seleccion:
+        nombre = " ".join(
+            p for p in (getattr(cliente, "nombre", None), getattr(cliente, "apellido", None)) if p
+        )
+        items.append(
+            {
+                "uuid": sub.uuid,
+                "cliente_nombre": nombre,
+                "plan_nombre": (plan.tipo if plan is not None and plan.tipo else ""),
+                "placas": placas.get(sub.uuid, []),
+                "fecha_vencimiento": sub.fecha_vencimiento,
+                "dias_restantes": restantes,
+                "dias_alerta_pre_vencimiento": alerta,
+                "puede_renovar": renovacion_permitida(restantes),
+            }
+        )
+    return items
+
+
 __all__ = [
+    "DIAS_ALERTA_POR_DEFECTO",
     "SubscripcionValidationResult",
     "SubscriptionLookupResult",
+    "armar_items_vencimiento",
+    "listar_proximas_a_vencer",
     "resolve_active_subscription_for_exit",
     "validar_subscripcion_vigente",
 ]
