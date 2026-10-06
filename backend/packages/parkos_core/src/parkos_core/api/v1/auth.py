@@ -32,7 +32,7 @@ import uuid as uuid_lib
 from datetime import UTC, datetime
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,6 +89,14 @@ REFRESH_TOKEN_TTL = 7 * 24 * 3600  # 7 days
 # (Facturador, Supervisor, Administrador, Auditor, Desarrollo) emits
 # ``admin-``.
 ROLES_OPERADOR = {"operador", "Usuario"}
+
+# PT-2 -- roles that emit an ``admin-`` JWT but are ALSO allowed to use the
+# BRANCH app with their own user (``GET /auth/me`` answers them). Deliberately
+# narrow: only the supervisor profile. Every other ``admin-`` role keeps the
+# anti-enumeration 404 on ``/auth/me``. This grants NO permission: the app only
+# READS the permissions the user already holds (``permisos_usuario``), and
+# every write is still guarded by ``require_permission`` + tenancy.
+ROLES_ADMIN_EN_SUCURSAL = frozenset({"Supervisor"})
 
 # HU-F1.2 defaults (KD-3, plan.md:609) — used when
 # ``resolve_efectiva_seguridad`` returns ``None`` (no per-branch override
@@ -731,6 +739,7 @@ def _decode_exp_iso(jwt_token: str) -> str | None:
 async def me(
     request: Request,
     session: AsyncSession = Depends(get_session),
+    x_sucursal_context: str | None = Header(None, alias="X-Sucursal-Context"),
 ) -> AuthMeResponse:
     """Operator session profile (HU-F1.2, R-F1.2-5..9).
 
@@ -772,12 +781,30 @@ async def me(
     # on /auth/me. Keep parity with get_tenant_ctx's operador branch
     # while sidestepping the Header default sentinel.
     iss = claims.get("iss", "")
-    if not iss.startswith("operador-"):
+    es_admin_token = iss.startswith("admin-")
+    if not (iss.startswith("operador-") or es_admin_token):
         raise HTTPException(
             status_code=404,
             detail={"error": "not_found"},
         )
-    sucursal_str = claims.get("sucursal")
+    if es_admin_token and (
+        claims.get("purpose") or claims.get("type") == "refresh" or not claims.get("rol")
+    ):
+        # Temporary (must-change) and refresh tokens never open a session
+        # profile; an access token always carries ``rol``.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found"},
+        )
+    # ``admin-`` (supervisor in the branch app): the branch comes from the
+    # ``X-Sucursal-Context`` header (same contract as every other admin-
+    # call), falling back to the login-pinned ``sucursal`` claim. Membership
+    # is verified against the DB below, never trusted from the header/claim.
+    sucursal_str = (
+        (x_sucursal_context or claims.get("sucursal"))
+        if es_admin_token
+        else claims.get("sucursal")
+    )
     if not sucursal_str:
         raise HTTPException(
             status_code=404,
@@ -795,7 +822,7 @@ async def me(
     ctx = TenantContext(
         actor_uuid=actor_uuid,
         actor_rol=actor_rol,
-        issuer_prefix="operador-",
+        issuer_prefix="admin-" if es_admin_token else "operador-",
         sucursal_uuid=sucursal_uuid,
     )
 
@@ -820,6 +847,21 @@ async def me(
             status_code=404,
             detail={"error": "not_found"},
         )
+    if es_admin_token:
+        # Authority is the DB role (not the claim snapshot) and the branch
+        # must be one of the user's CURRENT assignments (fresh read, like
+        # ``get_tenant_ctx``). Anything else collapses to the same 404.
+        permitidas_uuids = {
+            s.uuid
+            for s in (await _select_sucursales_permitidas(session, ctx.actor_uuid))
+            .scalars()
+            .all()
+        }
+        if user.rol not in ROLES_ADMIN_EN_SUCURSAL or sucursal_uuid not in permitidas_uuids:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found"},
+            )
     user_item = UserItem(
         uuid=user.uuid,
         email=user.email,

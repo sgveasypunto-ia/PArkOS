@@ -52,8 +52,9 @@ Layer-5 style 422/404/409 mapping)
 2. 404 ``vehiculo_no_encontrado`` -- ``uuid_vehiculo`` must be vigente.
 3. 409 ``vehiculo_ya_inscrito`` -- cheapest check, no cross-subscripcion
    query: is this exact vehiculo already active on THIS subscripcion.
-4. 422 ``placa_con_suscripcion_vigente`` (BR3/E1, NEW) -- is this vehiculo
-   already active on a DIFFERENT subscripcion (branch-agnostic).
+4. 409 ``placa_con_suscripcion_activa`` (PT-2) -- is this placa already
+   active on a DIFFERENT active subscripcion of the SAME branch (an active
+   one at another branch is allowed).
 5. 422 ``cantidad_vehiculos_excede_plan`` (V6, reusing
    ``repo.venta_suscripcion.validar_cantidad_maxima_vehiculos`` --
    SAME pure check the venta-at-the-counter flow already uses, just a
@@ -78,7 +79,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.permissions import require_permission
-from ...auth.tenancy import TenantContext, get_tenant_ctx
+from ...auth.tenancy import TenantContext, requires_sucursal
 from ...db.engine import get_session
 from ...models.V.vehiculos import Vehiculos
 from ...repo import cupos_subscripcion as repo_cupos
@@ -100,7 +101,11 @@ router = APIRouter(prefix="/subscripcion-vehiculos", tags=["clientes"])
 # factory's POST route, not the issuer/permission contract callers
 # already depend on.
 _issuer_dep = requires_issuer("operador-", "admin-")
-_permission_dep = require_permission("gestionar_clientes")
+# PT-2: reemplaza ``gestionar_clientes`` por ``gestionar_placas_suscripcion``
+# (solo Supervisor). Agregar una placa a una suscripcion es una operacion
+# de placas, no de CRUD de clientes; un operador con gestionar_clientes
+# recibe 403.
+_permission_dep = require_permission("gestionar_placas_suscripcion")
 
 
 @router.post(
@@ -108,12 +113,18 @@ _permission_dep = require_permission("gestionar_clientes")
     response_model=SubscripcionVehiculosRead,
     status_code=201,
     responses={
+        403: {"description": "permission_denied (gestionar_placas_suscripcion)"},
         404: {"description": "subscripcion_no_encontrada / vehiculo_no_encontrado"},
-        409: {"description": "vehiculo_ya_inscrito"},
+        409: {
+            "description": (
+                "vehiculo_ya_inscrito / placa_con_suscripcion_activa "
+                "(activa en otra suscripcion de la MISMA sucursal)"
+            )
+        },
         422: {
             "description": (
-                "placa_con_suscripcion_vigente / cantidad_vehiculos_excede_plan / "
-                "tipo_vehiculo_mixto_no_permitido"
+                "cantidad_vehiculos_excede_plan / tipo_vehiculo_mixto_no_permitido / "
+                "tipo_vehiculo_plan_incompatible"
             )
         },
     },
@@ -122,9 +133,9 @@ async def crear_subscripcion_vehiculo(
     response: Response,
     payload: SubscripcionVehiculosCreate,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_issuer_dep),
     _perm: dict = Depends(_permission_dep),  # noqa: B008
+    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
 ) -> SubscripcionVehiculosRead:
     """``POST /clientes/subscripcion-vehiculos`` -- validated INSERT.
 
@@ -145,6 +156,14 @@ async def crear_subscripcion_vehiculo(
             detail={"error": "subscripcion_no_encontrada"},
             headers=no_store,
         ) from exc
+
+    # Defensa en profundidad (modo global de admin-): misma sucursal.
+    if detalle.subscripcion.uuid_sucursal != ctx.sucursal_uuid:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "subscripcion_no_encontrada"},
+            headers=no_store,
+        )
 
     # --- 2: vehiculo must exist (vigente). -------------------------------
     vehiculo_stmt = select(Vehiculos).where(
@@ -168,19 +187,26 @@ async def crear_subscripcion_vehiculo(
             headers=no_store,
         )
 
-    # --- 4: BR3/E1 (NEW) -- not already active on a DIFFERENT subscripcion.
+    # --- 4: PT-2 -- not active on a DIFFERENT active subscripcion of the
+    # SAME branch (an active one at ANOTHER branch is allowed). 409.
     try:
-        await repo_venta.validar_vehiculo_sin_suscripcion_vigente_distinta(
+        await repo_venta.validar_placa_duplicada_subscripcion(
             session,
-            uuid_vehiculo=vehiculo.uuid,
+            placa=vehiculo.placa,
+            uuid_sucursal=detalle.subscripcion.uuid_sucursal,
             excluir_uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente,
         )
-    except repo_venta.PlacaConSuscripcionVigenteError as exc:
+    except repo_venta.SubscripcionDuplicadaPlacaError as exc:
         raise HTTPException(
-            status_code=422,
+            status_code=409,
             detail={
-                "error": "placa_con_suscripcion_vigente",
+                "error": "placa_con_suscripcion_activa",
                 "placa": vehiculo.placa,
+                "uuid_subscripcion_cliente": (
+                    str(exc.uuid_subscripcion_cliente)
+                    if exc.uuid_subscripcion_cliente
+                    else None
+                ),
             },
             headers=no_store,
         ) from exc
@@ -203,10 +229,23 @@ async def crear_subscripcion_vehiculo(
 
     # --- 6: V5 mismo_tipo_vehiculo (reused pure check). ------------------
     try:
-        repo_venta.validar_placas_mismo_tipo_vehiculo(
+        # Plan type vs the NEW plate only (legacy enrolled plates must not
+        # block); V5 same-type across all.
+        repo_venta.validar_tipo_vehiculo_del_plan(plan=detalle.plan, vehiculos=[vehiculo])
+        repo_venta.validar_mismo_tipo_vehiculos(
             plan=detalle.plan,
             vehiculos=[v.vehiculo for v in detalle.vehiculos] + [vehiculo],
         )
+    except repo_venta.TipoVehiculoPlanIncompatibleError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "tipo_vehiculo_plan_incompatible",
+                "tipo_plan": str(exc.tipo_plan),
+                "tipos_encontrados": exc.tipos_encontrados,
+            },
+            headers=no_store,
+        ) from exc
     except repo_venta.TipoVehiculoIncompatibleError as exc:
         raise HTTPException(
             status_code=422,
@@ -219,14 +258,17 @@ async def crear_subscripcion_vehiculo(
 
     # --- INSERT -- real pg_advisory_xact_lock (REQ-OP-08 mirror), single
     # commit (KD-VENTA-01-style invariant: exactly one commit per handler).
-    nuevas = await repo_venta.crear_subscripcion_vehiculos_bulk(
+    # PT-2: INSERT + auditoria (log_transaccional con la placa) + alerta info
+    # al admin, todo en la misma transaccion y por el unico helper de alta.
+    # Sin cobro ni factura.
+    nuevo = await repo_cupos.inscribir_vehiculo_con_auditoria(
         session,
-        actor_uuid=ctx.actor_uuid,
         uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente,
-        uuid_vehiculos=[vehiculo.uuid],
+        uuid_sucursal=detalle.subscripcion.uuid_sucursal,
+        vehiculo=vehiculo,
+        actor_uuid=ctx.actor_uuid,
     )
     await session.commit()
-    nuevo = nuevas[0]
     await session.refresh(nuevo)
 
     _helpers.apply_no_store_header(response)

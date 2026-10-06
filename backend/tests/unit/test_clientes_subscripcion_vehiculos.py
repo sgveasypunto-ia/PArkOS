@@ -31,10 +31,13 @@ import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 
-def _make_ctx() -> MagicMock:
+SUCURSAL = uuid_lib.uuid4()
+
+
+def _make_ctx(sucursal_uuid=SUCURSAL) -> MagicMock:
     ctx = MagicMock()
     ctx.actor_uuid = uuid_lib.uuid4()
-    ctx.sucursal_uuid = uuid_lib.uuid4()
+    ctx.sucursal_uuid = sucursal_uuid
     return ctx
 
 
@@ -49,6 +52,7 @@ def _make_plan(**overrides) -> MagicMock:
     p.uuid = overrides.get("uuid", uuid_lib.uuid4())
     p.cantidad_maxima_vehiculos = overrides.get("cantidad_maxima_vehiculos", 2)
     p.mismo_tipo_vehiculo = overrides.get("mismo_tipo_vehiculo", False)
+    p.uuid_tipo_vehiculo = overrides.get("uuid_tipo_vehiculo")
     return p
 
 
@@ -63,6 +67,7 @@ def _make_vehiculo(**overrides) -> MagicMock:
 def _make_subscripcion(**overrides) -> MagicMock:
     s = MagicMock()
     s.uuid = overrides.get("uuid", uuid_lib.uuid4())
+    s.uuid_sucursal = overrides.get("uuid_sucursal", SUCURSAL)
     return s
 
 
@@ -139,6 +144,7 @@ async def test_crear_subscripcion_vehiculo_happy_path_single_commit() -> None:
     session = _session_with_vehiculo(nuevo_vehiculo)
     m_lookup = AsyncMock(return_value=detalle)
     m_validar_vigente = AsyncMock(return_value=None)
+    m_audit = AsyncMock(return_value=None)
 
     with (
         patch.object(
@@ -146,9 +152,10 @@ async def test_crear_subscripcion_vehiculo_happy_path_single_commit() -> None:
         ),
         patch.object(
             handler_mod.repo_venta,
-            "validar_vehiculo_sin_suscripcion_vigente_distinta",
+            "validar_placa_duplicada_subscripcion",
             new=m_validar_vigente,
         ),
+        patch.object(handler_mod.repo_cupos, "registrar_cambio_placa", new=m_audit),
     ):
         result = await handler_mod.crear_subscripcion_vehiculo(
             response=_new_response(),
@@ -162,6 +169,16 @@ async def test_crear_subscripcion_vehiculo_happy_path_single_commit() -> None:
     session.commit.assert_awaited_once()
     assert result.uuid_vehiculo == nuevo_vehiculo.uuid
     assert result.uuid_subscripcion_cliente == subscripcion.uuid
+    # PT-2: auditoria (placa + accion) + alerta se registran en la misma TX.
+    m_audit.assert_awaited_once()
+    kwargs = m_audit.await_args.kwargs
+    assert kwargs["accion"] == "agregar"
+    assert kwargs["placa"] == "NEW123"
+    assert kwargs["uuid_sucursal"] == SUCURSAL
+    # ... y la duplicidad se valida por sucursal, excluyendo la propia suscripcion.
+    dup_kwargs = m_validar_vigente.await_args.kwargs
+    assert dup_kwargs["uuid_sucursal"] == SUCURSAL
+    assert dup_kwargs["excluir_uuid_subscripcion_cliente"] == subscripcion.uuid
 
 
 @pytest.mark.asyncio
@@ -271,8 +288,8 @@ async def test_crear_subscripcion_vehiculo_ya_inscrito_409() -> None:
 
 
 @pytest.mark.asyncio
-async def test_crear_subscripcion_vehiculo_placa_con_suscripcion_vigente_422() -> None:
-    """BR3/E1 (NEW): vehiculo already active on a DIFFERENT subscripcion."""
+async def test_crear_subscripcion_vehiculo_placa_con_suscripcion_activa_409() -> None:
+    """PT-2: placa activa en OTRA suscripcion activa de la misma sucursal -> 409."""
     from parkos_core.api.v1 import clientes_subscripcion_vehiculos as handler_mod
     from parkos_core.repo import venta_suscripcion as repo_venta
 
@@ -287,8 +304,10 @@ async def test_crear_subscripcion_vehiculo_placa_con_suscripcion_vigente_422() -
     session = _session_with_vehiculo(nuevo_vehiculo)
     m_lookup = AsyncMock(return_value=detalle)
     m_validar_vigente = AsyncMock(
-        side_effect=repo_venta.PlacaConSuscripcionVigenteError(
-            uuid_vehiculo=nuevo_vehiculo.uuid
+        side_effect=repo_venta.SubscripcionDuplicadaPlacaError(
+            placa="OTRO456",
+            uuid_sucursal=SUCURSAL,
+            uuid_subscripcion_cliente=uuid_lib.uuid4(),
         )
     )
 
@@ -298,7 +317,7 @@ async def test_crear_subscripcion_vehiculo_placa_con_suscripcion_vigente_422() -
         ),
         patch.object(
             handler_mod.repo_venta,
-            "validar_vehiculo_sin_suscripcion_vigente_distinta",
+            "validar_placa_duplicada_subscripcion",
             new=m_validar_vigente,
         ),
         pytest.raises(HTTPException) as exc_info,
@@ -312,8 +331,8 @@ async def test_crear_subscripcion_vehiculo_placa_con_suscripcion_vigente_422() -
             _perm=None,
         )
 
-    assert exc_info.value.status_code == 422
-    assert exc_info.value.detail["error"] == "placa_con_suscripcion_vigente"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"] == "placa_con_suscripcion_activa"
     session.commit.assert_not_awaited()
 
 
@@ -345,7 +364,7 @@ async def test_crear_subscripcion_vehiculo_cantidad_vehiculos_excede_plan_422() 
         ),
         patch.object(
             handler_mod.repo_venta,
-            "validar_vehiculo_sin_suscripcion_vigente_distinta",
+            "validar_placa_duplicada_subscripcion",
             new=m_validar_vigente,
         ),
         pytest.raises(HTTPException) as exc_info,
@@ -394,7 +413,7 @@ async def test_crear_subscripcion_vehiculo_tipo_vehiculo_mixto_no_permitido_422(
         ),
         patch.object(
             handler_mod.repo_venta,
-            "validar_vehiculo_sin_suscripcion_vigente_distinta",
+            "validar_placa_duplicada_subscripcion",
             new=m_validar_vigente,
         ),
         pytest.raises(HTTPException) as exc_info,
@@ -410,4 +429,81 @@ async def test_crear_subscripcion_vehiculo_tipo_vehiculo_mixto_no_permitido_422(
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail["error"] == "tipo_vehiculo_mixto_no_permitido"
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_crear_subscripcion_vehiculo_tipo_vehiculo_plan_incompatible_422() -> None:
+    """PT-2: plan de moto + placa de carro -> 422 tipo_vehiculo_plan_incompatible."""
+    from parkos_core.api.v1 import clientes_subscripcion_vehiculos as handler_mod
+
+    tipo_carro = uuid_lib.uuid4()
+    tipo_moto = uuid_lib.uuid4()
+    plan = _make_plan(cantidad_maxima_vehiculos=5, uuid_tipo_vehiculo=tipo_moto)
+    subscripcion = _make_subscripcion()
+    detalle = _make_detalle(plan=plan, subscripcion=subscripcion, vehiculos_inscritos=[])
+    nuevo_vehiculo = _make_vehiculo(placa="CAR123", uuid_tipo_vehiculo=tipo_carro)
+    payload = _make_payload(
+        uuid_subscripcion_cliente=subscripcion.uuid, uuid_vehiculo=nuevo_vehiculo.uuid
+    )
+    session = _session_with_vehiculo(nuevo_vehiculo)
+
+    with (
+        patch.object(
+            handler_mod.repo_cupos,
+            "buscar_subscripcion_con_vehiculos_por_uuid",
+            new=AsyncMock(return_value=detalle),
+        ),
+        patch.object(
+            handler_mod.repo_venta,
+            "validar_placa_duplicada_subscripcion",
+            new=AsyncMock(return_value=None),
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await handler_mod.crear_subscripcion_vehiculo(
+            response=_new_response(),
+            payload=payload,
+            session=session,
+            ctx=_make_ctx(),
+            _claims=None,
+            _perm=None,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["error"] == "tipo_vehiculo_plan_incompatible"
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_crear_subscripcion_vehiculo_otra_sucursal_404() -> None:
+    """Defensa en profundidad: la suscripcion debe ser de la sucursal del contexto."""
+    from parkos_core.api.v1 import clientes_subscripcion_vehiculos as handler_mod
+
+    subscripcion = _make_subscripcion(uuid_sucursal=uuid_lib.uuid4())
+    detalle = _make_detalle(plan=_make_plan(), subscripcion=subscripcion, vehiculos_inscritos=[])
+    payload = _make_payload(
+        uuid_subscripcion_cliente=subscripcion.uuid, uuid_vehiculo=uuid_lib.uuid4()
+    )
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    with (
+        patch.object(
+            handler_mod.repo_cupos,
+            "buscar_subscripcion_con_vehiculos_por_uuid",
+            new=AsyncMock(return_value=detalle),
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await handler_mod.crear_subscripcion_vehiculo(
+            response=_new_response(),
+            payload=payload,
+            session=session,
+            ctx=_make_ctx(),
+            _claims=None,
+            _perm=None,
+        )
+
+    assert exc_info.value.status_code == 404
     session.commit.assert_not_awaited()
