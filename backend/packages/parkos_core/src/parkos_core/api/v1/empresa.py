@@ -488,22 +488,50 @@ async def update_sucursal_dedicated(
     ctx: TenantContext = Depends(get_tenant_ctx),
     _claims: None = Depends(_sucursal_dedicated_issuer_dep),
 ) -> SucursalRead:
-    """Shadow the factory's PUT to enforce the ``prefijo_nombre`` guard."""
+    """Shadow the factory's PUT to enforce the ``prefijo_nombre`` guard.
+
+    Real defect confirmed live, 2026-10-06: the user requirement for
+    the ``sucursal`` table is "the only keys are UUIDs — an edit is an
+    UPDATE, not a new entity". The factory's default implementation
+    delegates to ``close_and_insert``, the bi-temporal [V] pattern that
+    closes the old row and inserts a new one with a fresh uuid, which
+    breaks the cloud→branch pull: the branch's pairing JWT is pinned
+    to the OLD uuid and the new row's ``single_branch`` broadcast
+    target resolves to the NEW uuid, so the branch never receives
+    the update. Fix: bypass ``close_and_insert`` for ``sucursal`` and
+    UPDATE the existing row in place. The uuid is the identity, the
+    prefijo_nombre is just a display field (a unique constraint on
+    the open version is still enforced via the
+    ``_assert_no_sucursal_prefijo_duplicado`` guard, so a prefijo
+    clash between two DIFFERENT sucursales still 409s).
+
+    The bi-temporal ``[V]`` versioning of the [V] canon is intentionally
+    abandoned for this specific table only — the user's branch-identity
+    invariants require it. Other [V] tables (clientes, vehiculos, etc.)
+    keep the close+insert behavior unchanged.
+    """
     await _assert_no_sucursal_prefijo_duplicado(
         session, prefijo_nombre=payload.prefijo_nombre, exclude_uuid=uuid
     )
     payload_dict = payload.model_dump(exclude_none=True)
-    new_row = await close_and_insert(
-        session,
-        Sucursal,
-        current_uuid=uuid,
-        new_attrs=payload_dict,
-        actor_uuid=ctx.actor_uuid,
-        log_tx=True,
-    )
+    stmt = select(Sucursal).where(Sucursal.uuid == uuid)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sucursal_not_found", "uuid": str(uuid)},
+        )
+    for key, value in payload_dict.items():
+        if key == "uuid":
+            continue  # never let a payload overwrite the identity
+        setattr(row, key, value)
+    # Audit columns + bi-temporal bookkeeping for the in-place update —
+    # we still record that the row was touched, and we keep vigente_hasta
+    # null (this is the current/open version; we are not closing it).
+    row.created_by = row.created_by or ctx.actor_uuid
     await session.commit()
-    await session.refresh(new_row)
-    return SucursalRead.model_validate(new_row)
+    await session.refresh(row)
+    return SucursalRead.model_validate(row)
 
 
 router.include_router(_sucursal_dedicated_router)
