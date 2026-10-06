@@ -231,6 +231,98 @@
       "restoreToPayload": true
     },
     {
+      "id": "tools-mingit",
+      "kind": "file",
+      "target": "tools\\MinGit-2.56.0.2-64-bit.zip",
+      "archive": "MinGit-2.56.0.2-64-bit.zip",
+      "uncompressedSize": 39806486,
+      "archiveSize": 39806486,
+      "sha256": "da35e72aa21c005a5a0d298cfbae110bc1609a815730ea0dde84b01a1b3cd3be",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "MinGit-2.56.0.2-64-bit.zip",
+          "size": 39806486,
+          "sha256": "da35e72aa21c005a5a0d298cfbae110bc1609a815730ea0dde84b01a1b3cd3be"
+        }
+      ],
+      "builtFromCommit": "a291d8de66573e7cc579ac9a108808df0856ea66",
+      "packedAtUtc": "2026-10-06T21:20:37Z",
+      "source": "third-party download (MinGit 2.56.0.2, lite portable tool)",
+      "note": "",
+      "sourceDependent": false,
+      "restoreToPayload": false
+    },
+    {
+      "id": "tools-node",
+      "kind": "file",
+      "target": "tools\\node-v22.23.3-win-x64.zip",
+      "archive": "node-v22.23.3-win-x64.zip",
+      "uncompressedSize": 35574076,
+      "archiveSize": 35574076,
+      "sha256": "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "node-v22.23.3-win-x64.zip",
+          "size": 35574076,
+          "sha256": "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71"
+        }
+      ],
+      "builtFromCommit": "a291d8de66573e7cc579ac9a108808df0856ea66",
+      "packedAtUtc": "2026-10-06T21:20:36Z",
+      "source": "third-party download (Node.js 22.23.3, lite portable tool)",
+      "note": "",
+      "sourceDependent": false,
+      "restoreToPayload": false
+    },
+    {
+      "id": "tools-pnpm",
+      "kind": "dir",
+      "target": "tools\\pnpm",
+      "archive": "tools-pnpm.zip",
+      "uncompressedSize": 18859293,
+      "archiveSize": 5101854,
+      "sha256": "753c5e4bfd29c97fa94f7e8e84b602f15978fca28d7fa9ea0b18bc0160299ea8",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "tools-pnpm.zip",
+          "size": 5101854,
+          "sha256": "753c5e4bfd29c97fa94f7e8e84b602f15978fca28d7fa9ea0b18bc0160299ea8"
+        }
+      ],
+      "builtFromCommit": "a291d8de66573e7cc579ac9a108808df0856ea66",
+      "packedAtUtc": "2026-10-06T21:20:38Z",
+      "source": "third-party download (pnpm 10.0.0 via npm install -g --prefix, lite portable tool)",
+      "note": "",
+      "sourceDependent": false,
+      "restoreToPayload": false
+    },
+    {
+      "id": "tools-uv",
+      "kind": "file",
+      "target": "tools\\uv-0.12.23-x86_64-pc-windows-msvc.zip",
+      "archive": "uv-0.12.23-x86_64-pc-windows-msvc.zip",
+      "uncompressedSize": 18043715,
+      "archiveSize": 18043715,
+      "sha256": "75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "uv-0.12.23-x86_64-pc-windows-msvc.zip",
+          "size": 18043715,
+          "sha256": "75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90"
+        }
+      ],
+      "builtFromCommit": "a291d8de66573e7cc579ac9a108808df0856ea66",
+      "packedAtUtc": "2026-10-06T21:20:36Z",
+      "source": "third-party download (uv 0.12.23, lite portable tool)",
+      "note": "",
+      "sourceDependent": false,
+      "restoreToPayload": false
+    },
+    {
       "id": "web-sucursal-msi",
       "kind": "file",
       "target": "apps\\web_sucursal-0.1.0-x64.msi",

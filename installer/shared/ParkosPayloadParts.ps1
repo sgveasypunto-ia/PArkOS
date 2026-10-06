@@ -337,7 +337,14 @@ function Get-ParkosPayloadArtifactTable {
         @('job-sync-sucursal', 'services\job-sync-sucursal', 'dir', $false, $true, $true, 'built from backend (PyInstaller onedir)'),
         @('migrate', 'services\migrate', 'dir', $false, $true, $true, 'built from backend (PyInstaller onedir)'),
         @('seed', 'services\seed', 'dir', $false, $true, $true, 'built from backend (PyInstaller onedir)'),
-        @('doctor', 'services\doctor', 'dir', $false, $true, $true, 'built from backend (PyInstaller onedir)')
+        @('doctor', 'services\doctor', 'dir', $false, $true, $true, 'built from backend (PyInstaller onedir)'),
+        # Herramientas portatiles del LITE (version/hash fijados en ParkosLite.Tools.ps1).
+        # Solo bajo pedido (-Ids) y nunca a payload\: el lite las restaura por id a su
+        # cache. Si sube la version de la tabla del lite hay que re-empaquetar.
+        @('tools-node', 'tools\node-v22.23.3-win-x64.zip', 'file', $false, $false, $false, 'third-party download (Node.js 22.23.3, lite portable tool)'),
+        @('tools-uv', 'tools\uv-0.12.23-x86_64-pc-windows-msvc.zip', 'file', $false, $false, $false, 'third-party download (uv 0.12.23, lite portable tool)'),
+        @('tools-mingit', 'tools\MinGit-2.56.0.2-64-bit.zip', 'file', $false, $false, $false, 'third-party download (MinGit 2.56.0.2, lite portable tool)'),
+        @('tools-pnpm', 'tools\pnpm', 'dir', $false, $false, $false, 'third-party download (pnpm 10.0.0 via npm install -g --prefix, lite portable tool)')
     )
     return @($rows | ForEach-Object {
             [PSCustomObject]@{
