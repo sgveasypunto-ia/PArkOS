@@ -82,7 +82,6 @@ export function AbrirTurno(): JSX.Element {
       // operador escribe el monto desde cero, sin pre-relleno.
       // El placeholder provee la pista visual.
       valor_inicial_efectivo: '',
-      valor_inicial_datafono: '',
       observaciones: '',
     },
   });
@@ -98,7 +97,11 @@ export function AbrirTurno(): JSX.Element {
         uuid_sucursal: values.uuid_sucursal,
         uuid_usuario: values.uuid_usuario,
         valor_inicial_efectivo: values.valor_inicial_efectivo,
-        valor_inicial_datafono: values.valor_inicial_datafono,
+        // El operador ya no tipea el valor inicial del datáfono: el form
+        // no expone el campo. La API sigue recibiendo el campo con default
+        // 0 para preservar el contrato backend (SesionCreate Pydantic
+        // requiere `valor_inicial_datafono: number`).
+        valor_inicial_datafono: 0,
         ...(values.observaciones !== undefined && values.observaciones !== ''
           ? { observaciones: values.observaciones }
           : {}),

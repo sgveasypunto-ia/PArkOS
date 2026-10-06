@@ -55,7 +55,6 @@ export type AbrirTurnoFormValues = Omit<
   'valor_inicial_efectivo' | 'valor_inicial_datafono'
 > & {
   valor_inicial_efectivo: string;
-  valor_inicial_datafono: string;
 };
 
 /**
@@ -144,30 +143,6 @@ export function AbrirTurnoForm({
                   ref={field.ref}
                   inputTestId="abrir-turno-valor-efectivo"
                   placeholder={t('caja:valorInicialEfectivoPlaceholder', {
-                    defaultValue: 'Ingrese aquí el valor…',
-                  })}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={control}
-          name="valor_inicial_datafono"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>{t('caja:valorInicialDatafono')}</FormLabel>
-              <FormControl>
-                <MoneyInput
-                  value={field.value === '' ? undefined : Number(field.value)}
-                  onChange={field.onChange}
-                  onBlur={field.onBlur}
-                  name={field.name}
-                  ref={field.ref}
-                  inputTestId="abrir-turno-valor-datafono"
-                  placeholder={t('caja:valorInicialDatafonoPlaceholder', {
                     defaultValue: 'Ingrese aquí el valor…',
                   })}
                 />
