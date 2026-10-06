@@ -721,7 +721,7 @@
     "title": "Mi perfil",
     "subtitle": "Datos de tu cuenta.",
     "identity": "Identidad",
-    "back": "Volver al inicio",
+    "back": "Volver",
     "row": {
       "email": "Correo electrónico",
       "rol": "Rol",

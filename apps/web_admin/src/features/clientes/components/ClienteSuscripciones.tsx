@@ -53,6 +53,8 @@ import {
   updateSubscripcionCliente,
   type SubscripcionCliente,
 } from '../api/clientesApi';
+import { soloHistoricas } from '../lib/historicas';
+import { RenovarSuscripcionDialog } from './RenovarSuscripcionDialog';
 import { SuscripcionForm, type SuscripcionFormSubmitValues } from './SuscripcionForm';
 
 export interface ClienteSuscripcionesProps {
@@ -68,6 +70,8 @@ export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps)
   const { selected: uuidSucursal } = useSucursal();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<SubscripcionCliente | null>(null);
+  const [renovarTarget, setRenovarTarget] = useState<SubscripcionCliente | null>(null);
+  const [renovarOpen, setRenovarOpen] = useState(false);
 
   const { data, error, isLoading, mutate } = useSWR<{
     vigentes: SubscripcionCliente[];
@@ -81,7 +85,9 @@ export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps)
       );
       return {
         vigentes: ordenarDescendente(vigentes),
-        historicas: ordenarDescendente(historicasPorSuscripcion.flat()),
+        historicas: ordenarDescendente(
+          soloHistoricas(historicasPorSuscripcion.flat(), vigentes),
+        ),
       };
     },
     { revalidateOnFocus: false },
@@ -95,6 +101,15 @@ export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps)
   function abrirEditar(subscripcion: SubscripcionCliente): void {
     setEditTarget(subscripcion);
     setDialogOpen(true);
+  }
+
+  function abrirRenovar(subscripcion: SubscripcionCliente): void {
+    setRenovarTarget(subscripcion);
+    setRenovarOpen(true);
+  }
+
+  async function handleRenovada(): Promise<void> {
+    await mutate();
   }
 
   async function handleFormSubmit(
@@ -175,6 +190,18 @@ export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps)
         </DialogContent>
       </Dialog>
 
+      <RenovarSuscripcionDialog
+        subscripcion={renovarTarget}
+        open={renovarOpen}
+        onOpenChange={(open) => {
+          setRenovarOpen(open);
+          // Always refresh on close: after an ambiguous failure the renewal may
+          // have been processed, and the list must reflect the real state.
+          if (!open) void mutate();
+        }}
+        onRenewed={handleRenovada}
+      />
+
       <section
         aria-label={t('clienteSuscripciones.vigentesLabel', 'Suscripciones vigentes')}
         data-testid="cliente-suscripciones-vigentes"
@@ -219,6 +246,16 @@ export function ClienteSuscripciones({ uuidCliente }: ClienteSuscripcionesProps)
                                 dias: Math.abs(dias),
                               })}
                         </Badge>
+                      )}
+                      {s.puede_renovar === true && (
+                        <Button
+                          variant="default"
+                          size="sm"
+                          onClick={() => abrirRenovar(s)}
+                          data-testid={`cliente-suscripcion-renovar-${s.uuid}`}
+                        >
+                          {t('clienteSuscripciones.renovar', 'Renovar')}
+                        </Button>
                       )}
                       <Button
                         variant="outline"

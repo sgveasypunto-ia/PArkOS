@@ -13,10 +13,11 @@
  *   - `ejecutada`/`rechazada` -> terminal, no buttons.
  */
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { useGoBack } from '@/lib/useGoBack';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 import { WorkflowChain, type WorkflowTransition } from '@/features/workflows/components/WorkflowChain';
@@ -35,7 +36,8 @@ const BUTTON_LABEL: Record<Exclude<AnulacionEstado, 'iniciada'>, { key: string; 
 
 export default function AnulacionDetalle(): JSX.Element {
   const { t } = useTranslation();
-  const navigate = useNavigate();
+  // PT-1: back to the previous screen, fallback to the list on a deep link.
+  const goBack = useGoBack('/anulaciones');
   const { uuid } = useParams<{ uuid: string }>();
 
   const { anulacion, isLoading, error, setAnulacion } = useAnulacionDetalle(uuid ?? null);
@@ -78,7 +80,7 @@ export default function AnulacionDetalle(): JSX.Element {
         <Button
           type="button"
           variant="outline"
-          onClick={() => navigate('/anulaciones')}
+          onClick={() => goBack()}
           data-testid="anulacion-detalle-back"
         >
           {t('anulaciones.detalle.back', 'Volver a la bandeja')}

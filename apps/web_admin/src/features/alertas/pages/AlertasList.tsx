@@ -16,7 +16,7 @@
  * outside the actor's permitted branches, this screen still won't show
  * it.
  */
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
@@ -27,7 +27,9 @@ import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursal
 import { AlertasFilters, type AlertasFiltersValue } from '../components/AlertasFilters';
 import { AlertasTable } from '../components/AlertasTable';
 import { useAlertasAdmin } from '../hooks/useAlertasAdmin';
+import { ALERTA_ESTADOS, ALERTA_SEVERITIES } from '../api/alertasSchema';
 import type { AlertaRead, AlertasListQuery } from '../api/alertasSchema';
+import { useUrlFilters } from '@/lib/useUrlFilters';
 
 const EMPTY_FILTERS: AlertasFiltersValue = {
   uuid_sucursal: '',
@@ -60,7 +62,14 @@ export default function AlertasList({ swrSalt }: AlertasListPageProps): JSX.Elem
   const { sucursalUuids } = useAdminAuth();
   const { sucursales } = useSucursalesDirectorio();
 
-  const [filters, setFilters] = useState<AlertasFiltersValue>(EMPTY_FILTERS);
+  // Filters live in the querystring so "Volver" from a detail restores them.
+  const [filters, setFilters] = useUrlFilters<AlertasFiltersValue>(EMPTY_FILTERS, {
+    sanitize: (v) => ({
+      ...v,
+      estado: (ALERTA_ESTADOS as readonly string[]).includes(v.estado) ? v.estado : '',
+      severidad: (ALERTA_SEVERITIES as readonly string[]).includes(v.severidad) ? v.severidad : '',
+    }),
+  });
   const query = useMemo(() => buildQuery(filters), [filters]);
   const { items, isLoading, error, hasMore, loadMore } = useAlertasAdmin(query, { swrSalt });
 

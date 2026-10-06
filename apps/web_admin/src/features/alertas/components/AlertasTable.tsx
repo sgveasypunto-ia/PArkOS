@@ -23,6 +23,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 import type { AlertaRead } from '../api/alertasSchema';
+import { alertaTipoLabel } from '../lib/alertaTipos';
 import { buildAlertaGroups } from '../lib/groupAlertas';
 import { SeverityBadge } from './SeverityBadge';
 import { EstadoAlertaBadge } from './EstadoAlertaBadge';
@@ -53,7 +54,7 @@ function AlertaRow({
         {alerta.timestamp_evento ?? alerta.created_at}
       </td>
       <td className="px-3 py-2 font-mono text-xs">{alerta.uuid_sucursal ?? '—'}</td>
-      <td className="px-3 py-2 text-xs">{alerta.tipo_alerta ?? '—'}</td>
+      <td className="px-3 py-2 text-xs">{alertaTipoLabel(alerta.tipo_alerta, t)}</td>
       <td className="px-3 py-2">
         <SeverityBadge severity={alerta.severity} />
       </td>

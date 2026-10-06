@@ -36,14 +36,17 @@ import {
 } from '@/components/ui/table';
 
 import { useClientes } from '../hooks/useClientes';
-import type { Cliente } from '../api/clientesApi';
+import { isConsumidorFinal, type Cliente } from '../api/clientesApi';
 
 const DEBOUNCE_MS = 300;
 
-function filterClientes(items: Cliente[], query: string): Cliente[] {
+function filterClientes(items: Cliente[], query: string, mostrarConsumidorFinal: boolean): Cliente[] {
+  // The billing placeholder ("Consumidor final") is hidden from the directory
+  // and search by default; it is not a real customer.
+  const visibles = mostrarConsumidorFinal ? items : items.filter((c) => !isConsumidorFinal(c));
   const q = query.trim().toLowerCase();
-  if (q === '') return items;
-  return items.filter((c) => {
+  if (q === '') return visibles;
+  return visibles.filter((c) => {
     const numero = (c.numero_identificacion ?? '').toLowerCase();
     const nombreCompleto = `${c.nombre ?? ''} ${c.apellido ?? ''}`.toLowerCase();
     return numero.includes(q) || nombreCompleto.includes(q);
@@ -63,9 +66,11 @@ export default function ClientesList(): JSX.Element {
     return () => clearTimeout(id);
   }, [search]);
 
+  const [mostrarConsumidorFinal, setMostrarConsumidorFinal] = useState(false);
+
   const filtered = useMemo(
-    () => filterClientes(clientes, debouncedSearch),
-    [clientes, debouncedSearch],
+    () => filterClientes(clientes, debouncedSearch, mostrarConsumidorFinal),
+    [clientes, debouncedSearch, mostrarConsumidorFinal],
   );
 
   return (
@@ -88,6 +93,17 @@ export default function ClientesList(): JSX.Element {
         data-testid="clientes-search"
         aria-label={t('clientes.searchLabel', 'Buscar clientes')}
       />
+
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={mostrarConsumidorFinal}
+          onChange={(e) => setMostrarConsumidorFinal(e.target.checked)}
+          data-testid="clientes-mostrar-consumidor-final"
+          className="size-4 rounded border-input"
+        />
+        {t('clientes.mostrarConsumidorFinal', 'Mostrar cliente estándar «Consumidor final»')}
+      </label>
 
       {error !== undefined && (
         <p

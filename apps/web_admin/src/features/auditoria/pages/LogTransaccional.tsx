@@ -27,9 +27,11 @@
  * `?uuid_registro=` when both are present (mutually exclusive in
  * practice -- different callers).
  */
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+
+import { useUrlFilters } from '@/lib/useUrlFilters';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -75,14 +77,18 @@ export interface LogTransaccionalProps {
 
 export default function LogTransaccional({ swrSalt }: LogTransaccionalProps): JSX.Element {
   const { t } = useTranslation();
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { sucursales } = useSucursalesDirectorio();
 
-  const [filters, setFilters] = useState<LogTransaccionalFiltersValue>(() => {
-    const uuidAlerta = searchParams.get('uuid_alerta');
-    if (uuidAlerta) return emptyFilters(uuidAlerta, 'alerta');
-    return emptyFilters(searchParams.get('uuid_registro') ?? '');
+  // Filters live in the querystring (`?tabla=&uuid_registro=&...`) so the
+  // detail's "Volver" (history back) restores them (PT-1). `?uuid_alerta=` is a
+  // deep-link seed (tabla='alerta' + uuid_registro) dropped on the first edit.
+  const [filters, setFilters] = useUrlFilters<LogTransaccionalFiltersValue>(emptyFilters(''), {
+    seed: (params) => {
+      const uuidAlerta = params.get('uuid_alerta');
+      return uuidAlerta ? { tabla: 'alerta', uuid_registro: uuidAlerta } : null;
+    },
+    seedKeys: ['uuid_alerta'],
   });
 
   const query = useMemo(() => buildQuery(filters), [filters]);

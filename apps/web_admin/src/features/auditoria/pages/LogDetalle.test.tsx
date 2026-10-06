@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 
 import LogDetalle from './LogDetalle';
 import type { AuditLogItem } from '../api/auditoriaSchema';
@@ -66,4 +67,43 @@ describe('LogDetalle', () => {
     renderWithState(makeItem({ uuid: 'other' }), 'a');
     expect(screen.getByTestId('log-detalle-not-found')).toBeInTheDocument();
   });
+
+  it('PT-1: "Volver" returns to the previous list URL keeping its querystring (filters)', async () => {
+    render(
+      <MemoryRouter
+        initialEntries={[
+          '/auditoria/log?tabla=arqueo&desde=2026-09-01',
+          { pathname: '/auditoria/log/a', state: { item: makeItem() } },
+        ]}
+        initialIndex={1}
+      >
+        <Routes>
+          <Route path="/auditoria/log/:uuid" element={<LogDetalle />} />
+          <Route path="/auditoria/log" element={<ListProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(screen.getByTestId('log-detalle-back'));
+    expect(screen.getByTestId('list-probe')).toHaveTextContent('?tabla=arqueo&desde=2026-09-01');
+  });
+
+  it('PT-1: with no previous screen "Volver" falls back to the list', async () => {
+    render(
+      <MemoryRouter initialEntries={[{ pathname: '/auditoria/log/a', state: { item: makeItem() } }]}>
+        <Routes>
+          <Route path="/auditoria/log/:uuid" element={<LogDetalle />} />
+          <Route path="/auditoria/log" element={<ListProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(screen.getByTestId('log-detalle-back'));
+    expect(screen.getByTestId('list-probe')).toBeInTheDocument();
+  });
 });
+
+function ListProbe(): JSX.Element {
+  const location = useLocation();
+  return <div data-testid="list-probe">{location.search}</div>;
+}

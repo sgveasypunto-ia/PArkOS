@@ -23,8 +23,8 @@
  * true total, and labeled as such in the UI copy so it never overstates
  * its own precision.
  */
-import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useMemo } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -49,7 +49,20 @@ export interface DianColaPageProps {
 export default function DianCola({ swrSalt }: DianColaPageProps): JSX.Element {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<DianTab>('todos');
+  // The active tab lives in the querystring so "Volver" from the detail
+  // (history back) lands on the same tab (PT-1).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('estado');
+  const tab: DianTab =
+    rawTab !== null && (ENVIO_DIAN_ESTADOS as readonly string[]).includes(rawTab)
+      ? (rawTab as EnvioDianEstado)
+      : 'todos';
+  const setTab = (next: DianTab): void => {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'todos') params.delete('estado');
+    else params.set('estado', next);
+    setSearchParams(params, { replace: true });
+  };
 
   const resumenQuery = useMemo(() => ({ limit: RESUMEN_WINDOW_LIMIT }), []);
   const resumen = useEnvioDianAdmin(resumenQuery, { swrSalt: swrSalt ? `${swrSalt}-resumen` : undefined });

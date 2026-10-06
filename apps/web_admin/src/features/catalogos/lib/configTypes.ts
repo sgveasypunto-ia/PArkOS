@@ -18,13 +18,21 @@
 import type { z } from 'zod';
 import type { CatalogResource } from '../api/catalogApi';
 
-export type CatalogFieldType = 'text' | 'number' | 'checkbox';
+export type CatalogFieldType = 'text' | 'number' | 'checkbox' | 'select';
 
 export interface CatalogField {
   name: string;
   label: string;
   type?: CatalogFieldType;
   required?: boolean;
+  /** `select` only: catalog whose vigente rows feed the options (value = row uuid). */
+  optionsResource?: CatalogResource;
+  /** `select` only: row key used as the option label. */
+  optionsLabelKey?: string;
+  /** `select` only: label of the empty option (value ''). */
+  emptyOptionLabel?: string;
+  /** Helper text rendered under the control (referenced by aria-describedby). */
+  hint?: string;
 }
 
 export interface CatalogColumn {
@@ -48,4 +56,12 @@ export interface CatalogConfig {
    */
   toCreatePayload: (form: Record<string, unknown>) => Record<string, unknown>;
   schema?: z.ZodTypeAny;
+  /**
+   * Optional pre-flight check when saving a new version over an existing row.
+   * Return a message to block the submit, or `null` to continue.
+   */
+  validateUpdate?: (
+    previous: Record<string, unknown>,
+    next: Record<string, unknown>,
+  ) => string | null;
 }

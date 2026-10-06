@@ -20,13 +20,18 @@
  * backend as a charge; `SubscripcionesClienteCreate`/`Update` have no
  * such field.
  *
- * Error mapping: the 3 new 422 codes this HU introduces
- * (`placa_con_suscripcion_vigente`, `cantidad_vehiculos_excede_plan`,
- * `tipo_vehiculo_mixto_no_permitido`) are vehiculo-level errors (they can
- * only come back from the per-vehiculo `POST /subscripcion-vehiculos`
- * call), so they're surfaced inline on the specific vehiculo row that
- * failed -- the subscripcion itself was already saved successfully by
- * that point.
+ * Error mapping (`../lib/errorMessages.ts`): vehiculo-level errors
+ * (`placa_con_suscripcion_activa` 409 -- legacy alias
+ * `placa_con_suscripcion_vigente` --, `cantidad_vehiculos_excede_plan`,
+ * `tipo_vehiculo_mixto_no_permitido`, `tipo_vehiculo_plan_incompatible`,
+ * `permission_denied`, ...) can only come back from the per-vehiculo
+ * `POST /subscripcion-vehiculos` call, so they're surfaced inline on the
+ * specific vehiculo row that failed -- the subscripcion itself was already
+ * saved successfully by that point.
+ *
+ * PT-2: the plan selector only offers plans compatible with the vehicle
+ * types already added (plan.uuid_tipo_vehiculo NULL = any), and the
+ * plan<->type match is validated BEFORE the subscription is created.
  */
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useEffect, useRef, useState } from 'react';
@@ -53,6 +58,8 @@ import {
   listVehiculos,
   type SubscripcionCliente,
 } from '../api/clientesApi';
+import { mapVehiculoError } from '../lib/errorMessages';
+import { planAceptaTipos, planesCompatibles, tiposDistintos } from '../lib/planes';
 
 const suscripcionFormSchema = z.object({
   uuid_tipo_subscripcion: z.string().uuid(),
@@ -125,7 +132,23 @@ export function SuscripcionForm({
 
   const uuidTipoSubscripcion = form.watch('uuid_tipo_subscripcion');
   const fechaInicio = form.watch('fecha_inicio_cobertura');
+  const vehiculosSeleccionados = form.watch('vehiculos');
   const planSeleccionado = (planes ?? []).find((p) => p.uuid === uuidTipoSubscripcion) ?? null;
+
+  // PT-2: plans are filtered by the type of the vehicles already added (a plan
+  // with a vehicle type only admits that type; NULL admits any). With no
+  // vehicle added yet every plan is offered and the check runs on submit.
+  // Not memoized on purpose: `form.watch('vehiculos')` returns the same
+  // (mutated-in-place) array reference, so a memo keyed on it would go stale.
+  const tipoPorVehiculo = new Map(
+    (vehiculosDisponibles ?? []).map((v) => [v.uuid, v.uuid_tipo_vehiculo]),
+  );
+  const tiposSeleccionados = tiposDistintos(
+    (vehiculosSeleccionados ?? []).map((v) => tipoPorVehiculo.get(v.uuid_vehiculo) ?? null),
+  );
+  const planesVisibles = planesCompatibles(planes ?? [], tiposSeleccionados);
+  const planIncompatible =
+    planSeleccionado !== null && !planAceptaTipos(planSeleccionado, tiposSeleccionados);
 
   // CREATE mode only: suggest fecha_vencimiento from the plan's
   // duracion_dias, without clobbering a value the admin already edited
@@ -152,35 +175,6 @@ export function SuscripcionForm({
       : Number.NaN;
   const montoReferencia = Number.isFinite(valorPlan) ? valorPlan : null;
 
-  function mapVehiculoError(e: unknown): string {
-    const message = e instanceof Error ? e.message : '';
-    if (/placa_con_suscripcion_vigente/.test(message)) {
-      return t(
-        'suscripcionForm.errorPlacaVigente',
-        'Ese vehículo ya tiene una suscripción vigente activa.',
-      );
-    }
-    if (/cantidad_vehiculos_excede_plan/.test(message)) {
-      return t(
-        'suscripcionForm.errorCantidadExcede',
-        'Se superó la cantidad máxima de vehículos permitida por el plan.',
-      );
-    }
-    if (/tipo_vehiculo_mixto_no_permitido/.test(message)) {
-      return t(
-        'suscripcionForm.errorTipoMixto',
-        'Este plan exige que todos los vehículos sean del mismo tipo.',
-      );
-    }
-    if (/vehiculo_ya_inscrito/.test(message)) {
-      return t(
-        'suscripcionForm.errorYaInscrito',
-        'Ese vehículo ya está inscrito en esta suscripción.',
-      );
-    }
-    return t('suscripcionForm.errorVehiculoGenerico', 'No se pudo agregar el vehículo.');
-  }
-
   function mapSubscripcionError(e: unknown): string {
     const message = e instanceof Error ? e.message : '';
     if (/numero_identificacion_duplicado/i.test(message)) {
@@ -193,6 +187,16 @@ export function SuscripcionForm({
     setIsSubmitting(true);
     setSubmitError(null);
     setVehiculoErrors({});
+    if (planIncompatible) {
+      setSubmitError(
+        t(
+          'suscripcionForm.errorPlanTipoIncompatible',
+          'El plan seleccionado no es compatible con el tipo de los vehículos agregados. Elija otro plan o cambie los vehículos.',
+        ),
+      );
+      setIsSubmitting(false);
+      return;
+    }
     try {
       const saved = await onSubmit({
         uuid_tipo_subscripcion: values.uuid_tipo_subscripcion,
@@ -211,7 +215,7 @@ export function SuscripcionForm({
             uuid_vehiculo: uuidVehiculo,
           });
         } catch (e) {
-          errors[i] = mapVehiculoError(e);
+          errors[i] = mapVehiculoError(e, t);
         }
       }
 
@@ -282,13 +286,25 @@ export function SuscripcionForm({
                   {...field}
                 >
                   <option value="">{t('suscripcionForm.planPlaceholder', 'Seleccioná un plan')}</option>
-                  {(planes ?? []).map((p) => (
+                  {planesVisibles.map((p) => (
                     <option key={p.uuid} value={p.uuid}>
                       {String(p.tipo ?? p.uuid)}
                     </option>
                   ))}
                 </select>
               </FormControl>
+              {planIncompatible && (
+                <p
+                  role="alert"
+                  data-testid="suscripcion-plan-incompatible"
+                  className="text-destructive text-xs"
+                >
+                  {t(
+                    'suscripcionForm.planIncompatible',
+                    'Este plan no es compatible con el tipo de los vehículos agregados.',
+                  )}
+                </p>
+              )}
               <FormMessage />
             </FormItem>
           )}
