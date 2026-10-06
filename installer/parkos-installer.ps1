@@ -13,7 +13,7 @@
 
     DEC-INST-17/18/19/20 (2026-09-27): Invoke-ParkosInstall is a MENU, not a
     forced linear wizard - the operator runs/re-runs any of 9 stages
-    independently (0: descargar main + compilar, 1: Postgres+roles+pg_partman,
+    independently (0: descargar fuente (dev por defecto) + compilar, 1: Postgres+roles+pg_partman,
     2: migraciones, 3: configurar UUID de sucursal, 4: seed de catalogos,
     5: servicio api-sucursal, 6: job de sync, 7: app de escritorio,
     8: verificacion final). Each stage keeps its own hard gate (throws on
@@ -30,7 +30,7 @@
     api-sucursal/job-sync-sucursal know which sucursal they belong to; the
     row itself reaches this machine's Postgres later via job-sync-sucursal's
     own sync cycle, never via a direct SQL INSERT from this installer. Menu
-    item 0 (descargar main + compilar) is DEC-INST-20. Stage 8 (verify) also
+    item 0 (descargar fuente (dev por defecto) + compilar) is DEC-INST-20. Stage 8 (verify) also
     installs the separate Parkos management module (Install-ManagementModule)
     after Test-PostInstallation passes - DEC-INST-21.
 
@@ -149,10 +149,14 @@ param(
     # tipea el UUID de la sucursal. -Menu abre el menu interactivo de 9
     # etapas (uso tecnico); no se combina con -Unattended.
     [switch]$Menu,
-    # Flujo guiado: la etapa 0 (descargar main + compilar, git/pnpm/uv) NO
+    # Flujo guiado: la etapa 0 (descargar fuente + compilar, git/pnpm/uv) NO
     # corre salvo con este switch - en una sucursal el payload llega ya
     # compilado (DEC-INST-20). El menu y -Unattended no lo necesitan.
-    [switch]$IncludeBuild
+    [switch]$IncludeBuild,
+    # Rama de la que la etapa 0 descarga el fuente. Default dev (gitflow:
+    # main solo recibe releases certificados); pasar release/vX.Y.Z o main
+    # para compilar un release.
+    [string]$SourceBranch = 'dev'
 )
 
 Set-StrictMode -Version Latest
@@ -443,7 +447,7 @@ function Request-Elevation {
 }
 
 # ---------------------------------------------------------------------------
-# DEC-INST-20: descargar main + compilar (menu item 0)
+# DEC-INST-20: descargar fuente (dev por defecto) + compilar (menu item 0)
 # ---------------------------------------------------------------------------
 # Corre en la maquina del TECNICO (con toolchain de desarrollo completo -
 # git/pnpm/uv), NUNCA en el PC final de la sucursal - confirmado
@@ -462,9 +466,45 @@ function Test-BuildToolchain {
     return $missing
 }
 
+# Wrapper de git para poder mockearlo en tests sin tocar el repo real.
+function Invoke-Git {
+    & git @args
+}
+
+# Trae el fuente de la rama indicada (default dev: gitflow del proyecto, main
+# solo recibe releases certificados). El nombre se valida porque llega por
+# parametro y se pasa a git.
+function Update-SourceFromBranch {
+    [CmdletBinding()]
+    param(
+        [string]$Branch = 'dev'
+    )
+
+    if ($Branch -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$') {
+        throw "nombre de rama invalido: '$Branch'. Usa solo letras, numeros, '.', '_', '-' y '/'."
+    }
+
+    # installer/ es hijo directo de la raiz del repo (mismo calculo que
+    # build-release.ps1's propio $RepoRoot).
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+    Push-Location $repoRoot
+    try {
+        Invoke-Git fetch origin $Branch
+        if ($LASTEXITCODE -ne 0) { throw "git fetch origin $Branch fallo." }
+        Invoke-Git checkout $Branch
+        if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch fallo." }
+        Invoke-Git pull --ff-only origin $Branch
+        if ($LASTEXITCODE -ne 0) { throw "git pull --ff-only fallo (la rama local diverge de origin/$Branch - resolvelo manualmente antes de reintentar)." }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Invoke-SourceUpdateAndBuild {
     [CmdletBinding()]
-    param()
+    param(
+        [string]$Branch = 'dev'
+    )
 
     # @() fuerza array: una funcion que retorna @() desenrolla a $null y
     # $null.Count revienta bajo Set-StrictMode -Version Latest.
@@ -473,20 +513,7 @@ function Invoke-SourceUpdateAndBuild {
         throw "Falta instalar: $($missing -join ', '). Alternativa: corre build-release.ps1 a mano en una maquina con el toolchain completo y copia installer\payload\ aca."
     }
 
-    # installer/ es hijo directo de la raiz del repo (mismo calculo que
-    # build-release.ps1's propio $RepoRoot).
-    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-    Push-Location $repoRoot
-    try {
-        & git fetch origin main
-        if ($LASTEXITCODE -ne 0) { throw 'git fetch origin main fallo.' }
-        & git checkout main
-        if ($LASTEXITCODE -ne 0) { throw 'git checkout main fallo.' }
-        & git pull --ff-only
-        if ($LASTEXITCODE -ne 0) { throw 'git pull --ff-only fallo (la rama local diverge de origin/main - resolvelo manualmente antes de reintentar).' }
-    } finally {
-        Pop-Location
-    }
+    Update-SourceFromBranch -Branch $Branch
 
     # Sin switches -> build-release.ps1 corre TODAS las etapas (confirmado
     # en su propio param block: "$anySwitch = ...; No switch passed at all
@@ -2683,9 +2710,9 @@ function Get-ParkosStageDefinitions {
     $stages = [ordered]@{
         '0' = @{
             Key      = 'build'
-            Name     = 'Descargar ultima version de main y compilar artefactos'
+            Name     = "Descargar ultima version de $SourceBranch y compilar artefactos"
             Action   = {
-                Invoke-SourceUpdateAndBuild
+                Invoke-SourceUpdateAndBuild -Branch $SourceBranch
             }
             # De solo lectura sobre la maquina destino - este build corre en
             # la maquina del TECNICO (DEC-INST-20), nunca en el equipo final;

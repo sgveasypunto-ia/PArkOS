@@ -164,7 +164,7 @@ Cada etapa es un ítem del menú que el operador puede correr o re-correr de for
 
 | # | Nombre (texto del menú) | Qué hace | Prerequisito (gate real) | Rollback (solo en cascada, nunca en el menú) |
 |---|---|---|---|---|
-| 0 | Descargar ultima version de main y compilar artefactos | `git fetch/checkout main/pull --ff-only` + `build-release.ps1` sin switches (build completo) en la máquina del **técnico** (DEC-INST-20), nunca en el equipo final | Requiere `git`, `pnpm`, `uv` en PATH | `$null` (de solo lectura sobre la máquina destino) |
+| 0 | Descargar ultima version de `dev` (o de `-SourceBranch`) y compilar artefactos | `git fetch/checkout/pull --ff-only` de la rama `-SourceBranch` (default `dev`) + `build-release.ps1` sin switches (build completo) en la máquina del **técnico** (DEC-INST-20), nunca en el equipo final | Requiere `git`, `pnpm`, `uv` en PATH | `$null` (de solo lectura sobre la máquina destino) |
 | 1 | Instalar base de datos (Postgres + roles + pg_partman) | Detecta puertos libres, instala Postgres, crea roles `parkos`/`parkos_app` con passwords derivadas, genera `jwt.key`, cifra el `.env`, instala `pg_partman`, registra el mantenimiento programado | Ninguno (primera etapa real) | Desinstala Postgres con el mismo método que lo instaló (`winget uninstall` o borrar ZIP) + borra `pg-data` |
 | 2 | Ejecutar migraciones de base de datos | Corre `migrate.exe -c alembic.ini upgrade head` | Gate interno: `if ($null -eq $script:roles) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }` — **no está en el mapa de prerequisitos visual del menú** (ver nota abajo) | `migrate.exe -c alembic.ini downgrade base`; si falla, solo `WARN`, nunca revienta el rollback |
 | 3 | Confirmar UUID de sucursal (creada desde el panel admin) | Reescribe la línea `PARKOS_SUCURSAL_UUID=` del `.env` | `if ($script:StageStatus.db -ne [ParkosStageState]::Ok) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }` | `$null` (solo reescribe una línea; DEC-INST-22 ya no inserta nada en `prod.sucursal`) |
@@ -468,7 +468,7 @@ Cada entrada cita el mensaje **exacto** (interpolaciones de PowerShell tal como 
 | Mensaje | Función |
 |---|---|
 | `"Falta instalar: $($missing -join ', '). Alternativa: corre build-release.ps1 a mano en una maquina con el toolchain completo y copia installer\payload\ aca."` | `Invoke-SourceUpdateAndBuild` |
-| `'git fetch origin main fallo.'` / `'git checkout main fallo.'` / `'git pull --ff-only fallo (la rama local diverge de origin/main - resolvelo manualmente antes de reintentar).'` | `Invoke-SourceUpdateAndBuild` |
+| `'git fetch origin <rama> fallo.'` / `'git checkout <rama> fallo.'` / `'git pull --ff-only fallo (la rama local diverge de origin/<rama> - resolvelo manualmente antes de reintentar).'` / `nombre de rama invalido` | `Update-SourceFromBranch` (via `Invoke-SourceUpdateAndBuild`) |
 | `"build-release.ps1 fallo (exit $LASTEXITCODE)."` | `Invoke-SourceUpdateAndBuild` |
 | `"Build termino sin error pero falta el artefacto esperado: $rel"` | `Invoke-SourceUpdateAndBuild` |
 | `'Build termino sin error pero no se encontro el MSI de web_sucursal en installer\payload\apps.'` | `Invoke-SourceUpdateAndBuild` |
