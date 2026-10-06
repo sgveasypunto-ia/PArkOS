@@ -11,7 +11,7 @@ Este documento cubre las decisiones arquitectónicas del motor de sincronizació
 - ADR-002: el canon ER crece de 49 a 51 entidades (54 tablas físicas)
 - ADR-003: `depends_on` y un único camino de escalación
 - ADR-004: particionado sin mantenimiento automático (real)
-- ADR-005: red de seguridad en base de datos para `/sync/pull` (propuesta)
+- ADR-005: red de seguridad en base de datos para `/sync/pull` (aceptada e implementada, 2026-10-06)
 - Concurrencia y condiciones de carrera
 
 ---
@@ -236,7 +236,7 @@ Y el gate: `python openspec/scripts/check_schema_match.py --database-url postgre
 
 ## ADR-005: red de seguridad en base de datos para `/sync/pull`
 
-**Estado**: Propuesta (2026-10-05) — spike de solo documentación. **Decisión pendiente con el responsable del producto**; no se implementa nada hasta que se apruebe.
+**Estado**: Aceptada e implementada (2026-10-06) — migración `0085_pull_rls`. El spike del 2026-10-05 recomendaba una etapa mínima; el responsable aprobó la versión completa con rol dedicado, descrita en «Decisión implementada».
 **Alcance**: `POST /sync/pull` (cloud → sucursal). No cubre `/sync/push` ni la API de administración.
 
 ### Contexto
@@ -284,17 +284,23 @@ No ofrece ninguna garantía que el predicado SQL actual no dé ya, y rompe los d
 - **Ventajas**: sin cambios de esquema ni de roles; el alcance es legible en un único módulo, se prueba con la matriz de integración y la compuerta estática falla si se agrega una tabla sin decidir su alcance.
 - **Límite**: la barrera es de aplicación. Una consulta nueva que no pase por `build_scope_predicate` no está cubierta; solo la revisión de código y las pruebas lo detectan.
 
-### Recomendación
+### Decisión implementada (2026-10-06)
 
-Mantener **(c)** como control vigente y no activar **(b)**. Si el responsable quiere una barrera adicional, hacer **(a) por etapas**: primero solo las tablas `owned`/`override` con `uuid_sucursal`, en modo observación o con política *fail-open* documentada, y **no** intentar cubrir las derivadas con RLS. Antes de empezar, decidir cómo se separan los flujos cross-sucursal (`job_sync_cloud`, administración) del pull, idealmente con un rol propio para el pull.
+Se eligió **(a) con rol dedicado**, que resuelve el «Riesgo 1» (mismo rol para flujos cross-sucursal) sin política *fail-open*, y se cubren también las tablas derivadas («Riesgo 2»). **(b) sigue rechazada** (el listener ORM no ofrece garantía de base de datos y excluye los `NULL` de los defaults de override). **(c) se mantiene** como control primario: la RLS es la segunda barrera, no la sustituye.
 
-### Decisión pendiente con el responsable
+**Diseño** (migración `0085_pull_rls`, `down_revision = 0084_clientes_nk_all_index`):
 
-- ¿Se requiere una barrera en base de datos, o el control de aplicación con compuerta estática es suficiente?
-- Si se requiere: ¿se acepta una política *fail-open* o se crea un rol dedicado para el pull?
-- ¿Se acepta que las tablas derivadas queden fuera de la barrera de base de datos?
+- Rol `rol_sync_pull`: `NOLOGIN NOSUPERUSER NOBYPASSRLS`, solo `SELECT` sobre las 26 tablas que lee el pull y `USAGE` sobre el esquema `prod`. `GRANT rol_sync_pull TO rol_app`: `parkos_app` hereda la pertenencia y puede hacer `SET LOCAL ROLE`.
+- En `sync_pull` (`api/v1/sync_router.py::_pull_rls_scope`) la lectura corre con `SET LOCAL ROLE rol_sync_pull` y `set_config('parkos.pull_sucursal', <uuid del JWT>, true)`, ambos locales a la transacción (no contaminan el pool; además se restablecen al salir). Sin el ajuste, `prod.fn_pull_branch()` devuelve `NULL` y las tablas con alcance no devuelven filas (*fail closed*).
+- `ENABLE ROW LEVEL SECURITY` (sin `FORCE`) en 16 tablas con alcance más el puente `factura_electronica`: el dueño y `rol_admin_auditor` (`BYPASSRLS`) no se ven afectados. Los 10 catálogos de `ALL_BRANCHES_ALLOWLIST` solo reciben el `GRANT` (sin datos personales, no llevan RLS).
+- Por tabla, dos políticas: `pull_rls_<t>` (`FOR SELECT TO rol_sync_pull`, que replica `pull_scope.py`: propia, override con `NULL`, suscripción directa/transitiva, derivadas por membresía, llave natural o NIT) y `pull_rls_app_<t>` (`FOR ALL TO rol_app USING (true) WITH CHECK (true)`).
+- **Por qué existe la política permisiva de `rol_app`**: con RLS activa y sin ninguna política aplicable el acceso es *deny-all*; `parkos_app` también atiende push, `job_sync_cloud`, administración y login, que leen y escriben todas las sucursales. La política mantiene su comportamiento idéntico (regresión cubierta por `test_rol_app_still_sees_every_row_of_every_rls_table`).
+- Las reglas que necesitarían leer su propia tabla (`clientes` → `clientes`, recursión infinita en la política) o una tabla sin acceso para el rol se resuelven con funciones `prod.fn_pull_*` `STABLE`, `SECURITY DEFINER`, con `search_path = pg_catalog, prod, pg_temp`, `EXECUTE` revocado a `PUBLIC` y concedido solo a `rol_sync_pull`, que solo devuelven uuids o llaves normalizadas del alcance de la propia sucursal. Las políticas pueden ser más gruesas que el predicado SQL pero nunca más estrechas; hoy son equivalentes (verificado tabla por tabla con `test_rls_alone_equals_the_scope_predicate`).
+- **Desviación hallada al implementar**: el predicado de `clientes` lee `factura_electronica` directamente en la consulta del pull, de modo que una función `SECURITY DEFINER` no bastaba. `rol_sync_pull` tiene `SELECT` sobre esa tabla `[L-E]`, con RLS `uuid_sucursal = rama`. No cambia ningún `REVOKE` ni trigger de `[A]`/`[L-E]`; la RLS solo añade un filtro de lectura.
+- Interruptor `PARKOS_PULL_RLS` (`on` por defecto; `off`/`0`/`false`/`no` desactiva): con `off` el pull se comporta como antes de la migración. Se lee por petición; basta recrear `api-admin` con la variable, sin tocar la base.
+- Reversible: `alembic downgrade 0084_clientes_nk_all_index` deshabilita la RLS, elimina políticas y funciones, revoca los grants y borra el rol si nada más lo usa. Sin `DELETE` de filas.
 
-Hasta que se responda, esta ADR queda en estado **Propuesta** y no hay trabajo de implementación asociado.
+**Riesgos residuales**: la política de `clientes`/`vehiculos` se suma al predicado de la consulta (doble evaluación; ver `sync-pull-alcance.md`); quien tenga `rol_sync_pull` puede fijar el parámetro, igual que hoy confía en el `uuid_sucursal` del JWT; las tablas nuevas deben decidir su política (compuerta en `tests/migrations/test_0085_pull_rls.py`).
 
 ---
 

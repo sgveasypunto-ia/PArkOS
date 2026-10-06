@@ -51,14 +51,17 @@ Architecture notes:
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid as uuid_lib
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.jwt_issuer_guard import verify_jwt
@@ -839,6 +842,47 @@ async def _passes_scope_recheck(
     return targets.all_branches or uuid_sucursal in targets.branch_uuids
 
 
+_PULL_RLS_ENV = "PARKOS_PULL_RLS"
+_PULL_RLS_ROLE = "rol_sync_pull"
+_PULL_RLS_GUC = "parkos.pull_sucursal"
+
+
+def _pull_rls_enabled() -> bool:
+    """``PARKOS_PULL_RLS`` switch (``on`` by default); read per request so a
+    redeploy of the DB is never needed, only of the API environment."""
+    return os.environ.get(_PULL_RLS_ENV, "on").strip().lower() not in {"off", "0", "false", "no"}
+
+
+@asynccontextmanager
+async def _pull_rls_scope(session: AsyncSession, uuid_sucursal: uuid_lib.UUID) -> AsyncIterator[None]:
+    """Run the pull reads as the read-only ``rol_sync_pull`` role (ADR-005).
+
+    ``SET LOCAL ROLE`` + a transaction-local ``parkos.pull_sucursal`` make PostgreSQL
+    itself refuse another branch's rows (row-level security, migration 0085), even if
+    a query forgets its scope predicate. Both settings die with the transaction, so
+    they cannot leak into the pool; they are also reset explicitly on exit. With
+    ``PARKOS_PULL_RLS=off`` this is a no-op (the pre-RLS behaviour).
+    """
+    if not _pull_rls_enabled():
+        yield
+        return
+    await session.execute(text(f"SET LOCAL ROLE {_PULL_RLS_ROLE}"))
+    await session.execute(
+        text("SELECT set_config(:name, :value, true)"),
+        {"name": _PULL_RLS_GUC, "value": str(uuid_sucursal)},
+    )
+    try:
+        yield
+    finally:
+        try:
+            await session.execute(text("RESET ROLE"))
+            await session.execute(
+                text("SELECT set_config(:name, '', true)"), {"name": _PULL_RLS_GUC}
+            )
+        except Exception:  # noqa: BLE001 -- aborted transaction: it ends (rolls back) anyway
+            logger.debug("sync_pull.rls_reset_skipped")
+
+
 async def _fetch_pull_rows(
     session: AsyncSession,
     *,
@@ -972,6 +1016,7 @@ def _log_pull(
     since_seq: int,
     next_seq: int,
     duration_ms: float,
+    rls: bool = False,
 ) -> None:
     """One structured record per pull. Counts only: never a row payload
     (``usuarios`` rows carry ``password_hash``).
@@ -1000,6 +1045,7 @@ def _log_pull(
         duration_ms=duration_ms,
         since_seq=since_seq,
         next_seq=next_seq,
+        rls=rls,
     )
 
 
@@ -1071,9 +1117,10 @@ async def sync_pull(
         ) from e
 
     started = time.perf_counter()
-    rows, next_seq = await _fetch_pull_rows(
-        session, uuid_sucursal=uuid_sucursal, since_seq=payload.since_seq
-    )
+    async with _pull_rls_scope(session, uuid_sucursal):
+        rows, next_seq = await _fetch_pull_rows(
+            session, uuid_sucursal=uuid_sucursal, since_seq=payload.since_seq
+        )
     duration_ms = round((time.perf_counter() - started) * 1000, 1)
     _log_pull(
         uuid_sucursal=uuid_sucursal,
@@ -1083,6 +1130,7 @@ async def sync_pull(
         since_seq=payload.since_seq,
         next_seq=next_seq,
         duration_ms=duration_ms,
+        rls=_pull_rls_enabled(),
     )
 
     response_body = {

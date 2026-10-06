@@ -106,7 +106,14 @@ uv run pytest tests/static/test_pull_scope_guardrails.py tests/unit/test_pull_sc
 | 7 | **Datos ya sobre-entregados** | Las bases de sucursal pueden conservar filas de otras sucursales recibidas antes del cambio. El diagnóstico es `backend/scripts/report_pull_scope_overdelivery.py` (solo lectura, solo conteos). La limpieza (dejarlas o un cierre lógico **no propagable**) la decide el responsable: un cierre lógico local normal sobre `clientes`/`vehiculos` (bidireccionales) se encola en `sync_queue` y viaja al cloud, donde cerraría la fila canónica para las demás sucursales. |
 | 8 | **`sync/cutover/backfill.py` sin filtro por sucursal** | No tiene llamador en producción. Si se conecta a una ruta real debe aplicar `build_scope_predicate`. |
 
-La barrera adicional en base de datos está propuesta en [ADR-005](./decisiones-tecnicas.md#adr-005-red-de-seguridad-en-base-de-datos-para-syncpull), pendiente de decisión.
+## Segunda barrera: RLS en PostgreSQL
+
+Desde la migración `0085_pull_rls` ([ADR-005](./decisiones-tecnicas.md#adr-005-red-de-seguridad-en-base-de-datos-para-syncpull)) el pull lee como `rol_sync_pull` (solo `SELECT`) con `parkos.pull_sucursal` fijado a la sucursal del JWT, y las políticas RLS replican este alcance: aunque una consulta olvide su predicado, la base no entrega filas de otra sucursal. Sin la variable, las tablas con alcance devuelven 0 filas.
+
+- **Interruptor**: `PARKOS_PULL_RLS=on|off` (por defecto `on`) en el entorno de `api-admin`. Para desactivarlo al instante, sin tocar la base: `docker compose -f infra/deploy/docker-compose.cloud.yml --env-file infra/deploy/.env.cloud -p parkos-cloud up -d --force-recreate api-admin` con `PARKOS_PULL_RLS=off` en el entorno. Cada `sync_pull.completed` registra `rls=true|false`.
+- **Agregar una tabla al pull** (además del runbook de arriba): la tabla necesita su política en una migración nueva: `GRANT SELECT ... TO rol_sync_pull`; si no es un catálogo global, `ENABLE ROW LEVEL SECURITY`, la política `FOR SELECT TO rol_sync_pull` que replica la regla de `pull_scope.py` y la permisiva `FOR ALL TO rol_app USING (true) WITH CHECK (true)` (sin ella `parkos_app` pierde la tabla). Las reglas que lean su propia tabla o una tabla sin acceso para el rol van en una función `SECURITY DEFINER` con `search_path` fijo. Sin esto el pull falla con `permission denied` (cierra en falso) y `tests/migrations/test_0085_pull_rls.py` falla.
+- **Costo**: la política se evalúa además del predicado de la consulta. Las de `clientes`, `clientes_b2b` y `vehiculos` llaman funciones que recorren la tabla (equivalentes a la limitación 5); medir `duration_ms` del `sync_pull.completed` con y sin RLS antes de crecer el volumen.
+- **Alcance**: no cubre `/sync/push`, la API de administración ni la sucursal. `rol_app` y el dueño no cambian de comportamiento.
 
 ## Propuesta: comentarios del ER por reformular
 
