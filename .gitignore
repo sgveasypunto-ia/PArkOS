@@ -68,3 +68,6 @@ infra/deploy/secrets*/factus_token
 
 # Agent workspace (aranda-agent-workspace)
 .agent-generated/
+
+# Parkos LITE working dir if placed inside the repo
+.lite/
