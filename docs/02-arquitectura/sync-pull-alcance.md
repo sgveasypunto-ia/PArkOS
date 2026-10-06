@@ -38,7 +38,7 @@ Tablas por clase:
 | `clientes` | tiene suscripción **o** factura electrónica en la sucursal, resuelto por **llave natural** `(tipo_identificador, numero_identificacion normalizado)` de *cualquier* versión referenciada |
 | `clientes_b2b` | su `uuid_cliente` es una versión de un cliente en alcance (misma llave natural) |
 | `vehiculos` | está ligado por `subscripcion_vehiculos` a una suscripción de la sucursal, por `placa` normalizada de cualquier versión ligada |
-| `empresa` | es la empresa de `sucursal.uuid_empresa` (por NIT entre versiones); si es `NULL` o desconocida, las empresas abiertas |
+| `empresa` | es la empresa de `sucursal.uuid_empresa` (por NIT entre versiones); si es `NULL` o desconocida, las empresas abiertas; también las abiertas si la versión referenciada está cerrada y ninguna empresa abierta comparte su NIT (corrección de NIT: la llave natural cambió). Nunca cero filas |
 
 Por qué la llave natural: un cambio de versión `[V]` (`close_and_insert`) crea un `uuid` nuevo, mientras que suscripciones y facturas (tabla `[A]`) siguen apuntando al `uuid` viejo y cerrado. Las suscripciones **no** se filtran por vigencia (una renovación inserta una fila nueva). No hay rama por `sync_identity_alias`: esa tabla no tiene sucursal, es local al nodo y nadie la escribe.
 
