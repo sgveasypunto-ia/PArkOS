@@ -183,3 +183,20 @@ async def test_empresa_version_bump_still_reaches_the_branch(world, app) -> None
     got = await pull(ids["branch:a"])
     assert str(ids["new"]) in got
     assert str(ids["other"]) not in got
+
+
+async def test_nit_corrected_bump_falls_back_to_the_open_empresa(world, app) -> None:
+    """Regression: the branch points at a CLOSED version whose NIT differs from the
+    open one (a NIT correction). The NIT match is empty, but a branch must never end
+    up with zero empresa rows: it gets the open row, like the NULL-reference case."""
+    build, pull = world
+    ids = await build(
+        empresas={
+            "old": {"nit": "900100", "closed": True},
+            "new": {"nit": "900109"},
+        },
+        branches={"a": "old"},
+    )
+    got = await pull(ids["branch:a"])
+    assert str(ids["new"]) in got
+    assert str(ids["old"]) not in got, "closed versions are never delivered"

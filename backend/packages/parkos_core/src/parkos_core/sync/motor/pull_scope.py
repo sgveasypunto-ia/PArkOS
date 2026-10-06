@@ -320,7 +320,9 @@ def _empresa_rule(
     delivered (the same natural-key approach as ``clientes``). A branch with NULL
     ``uuid_empresa`` (a real case) -- or an unknown one -- falls back to the open
     empresa row(s): returning zero rows would strip it of NIT, regimen and ticket
-    messages. The open-version filter lives in the caller. An empty NIT is not a
+    messages. The same fallback applies when the referenced version is closed and
+    no open empresa shares its NIT (a NIT correction: the natural key changed, so
+    the NIT match is empty). The open-version filter lives in the caller. An empty NIT is not a
     key (see :func:`_has_nk`).
 
     Scope entry (window given): the branch's own ``sucursal`` row created inside
@@ -348,7 +350,23 @@ def _empresa_rule(
             Sucursal.uuid == uuid_sucursal, Sucursal.uuid_empresa.is_not(None)
         )
     )
-    return or_(~has_reference, model.uuid == referenced, and_(model.nit.in_(nits), _has_nk(model.nit)))
+    # Orphaned reference: the referenced version is closed and NO open empresa carries
+    # its NIT (a NIT correction done by close_and_insert changes the natural key, so
+    # the match above finds nothing). Same fallback as the NULL case: never zero rows.
+    open_with_nit = aliased(Empresa)
+    no_open_match = ~exists(
+        select(open_with_nit.uuid).where(
+            open_with_nit.vigente_hasta.is_(None),
+            open_with_nit.nit.in_(nits),
+            _has_nk(open_with_nit.nit),
+        )
+    )
+    return or_(
+        ~has_reference,
+        model.uuid == referenced,
+        and_(model.nit.in_(nits), _has_nk(model.nit)),
+        no_open_match,
+    )
 
 
 _DERIVED_RULES["empresa"] = _empresa_rule

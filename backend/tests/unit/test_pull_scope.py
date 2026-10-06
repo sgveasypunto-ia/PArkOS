@@ -406,6 +406,20 @@ def test_empresa_entry_is_a_branch_row_created_in_the_window() -> None:
     assert "prod.empresa.nit IN" in where
 
 
+def test_empresa_scope_falls_back_when_no_open_empresa_shares_the_referenced_nit() -> None:
+    where = _sql("empresa") or ""
+    # NULL reference fallback ...
+    assert where.startswith("NOT (EXISTS (SELECT prod.sucursal.uuid FROM prod.sucursal")
+    # ... and the orphaned-reference fallback (NIT-corrected bump): the LAST disjunct
+    # is "no OPEN empresa carries the referenced NIT".
+    tail = where.rsplit(" OR ", 1)[-1]
+    assert tail.startswith("NOT (EXISTS (SELECT empresa_2.uuid FROM prod.empresa AS empresa_2")
+    assert "empresa_2.vigente_hasta IS NULL" in tail
+    assert "empresa_2.nit IN" in tail
+    # the entry predicate (incremental path) carries the same condition
+    assert "empresa_2.vigente_hasta IS NULL" in _entry("empresa")
+
+
 def test_entry_predicate_for_derived_without_rule_raises() -> None:
     spec = dataclasses.replace(SYNC_CATALOG_BY_NAME["tipos_vehiculo"], broadcast_policy="derived")
     with pytest.raises(ValueError, match="no registered scope rule"):
