@@ -370,16 +370,15 @@ class SyncMotor:
         # one path every non-LEGACY engine mode already trusts to
         # do the real INSERT, so a kill-switch flip to LEGACY now
         # preserves behavior instead of silently dropping data.
-        log_tx = False  # PR7-era conflict resolver already wrote the
-                        # log_transaccional row in the old code; the
-                        # catalog applier's own log_tx is a no-op
-                        # duplicate on a legacy-engine run today.
+        # log_tx=True so the cloud writes its own audit log entry
+        # for the applied row (the post-PR7 shim writes nothing,
+        # so the catalog applier is the single log writer today).
         return await _catalog_apply_row(
             session,
             spec,
             payload,
             actor_uuid=actor_uuid,
-            log_tx=log_tx,
+            log_tx=True,
         )
 
     async def apply_batch(
