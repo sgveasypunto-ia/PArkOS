@@ -1,712 +1,1208 @@
 # Manual del instalador Parkos (sucursal)
 
-Este documento describe, con fidelidad al código fuente actual del repositorio, el funcionamiento del instalador de la sucursal Parkos: `installer/parkos-installer.ps1`, el módulo de ciclo de vida `installer/payload/management/Parkos.psm1`, el orquestador de build `installer/build-release.ps1` y la herramienta de soporte `installer/tools/Get-ParkosSupportPassword.ps1`.
+Manual completo de la instalación de una sucursal Parkos en Windows, sin Docker: qué debe existir, dónde y en qué momento. Describe, con fidelidad al código de `origin/dev`, `installer/parkos-installer.ps1`, el módulo de gestión `installer/payload/management/Parkos.psm1`, el orquestador `installer/build-release.ps1`, los puntos de entrada `installer/bootstrap/*.py`, la herramienta de soporte `installer/tools/Get-ParkosSupportPassword.ps1`, las pruebas `installer/tests/*` y el workflow `.github/workflows/e2e-unattended-vm.yml`.
 
-Convenciones usadas en este documento:
+**Convenciones de este documento**
 
-- Los bloques de código con mensajes de error son **copias literales** del texto que lanza el código (interpolaciones de variables como `$Port` se muestran tal cual aparecen en la fuente).
-- Las referencias `DEC-INST-NN` citan decisiones de arquitectura documentadas en `plan.md`, sección "0.2 Decisiones de arquitectura del instalador" — no se repite aquí el contenido completo de cada una, solo la decisión relevante al punto que se describe.
-- Donde el comportamiento no pudo confirmarse leyendo el código de este repositorio, se marca explícitamente como **comportamiento no verificado**.
+- Los bloques de código con mensajes de error son **copias literales** del texto que lanza el código (las interpolaciones, como `$Port`, se muestran tal cual aparecen en la fuente). El código no usa tildes en sus mensajes; el resto del manual sí.
+- Las referencias `DEC-INST-NN` citan decisiones documentadas en `plan.md`, sección "0.2 Decisiones de arquitectura del instalador". Aquí solo se resume la decisión relevante.
+- Los valores sensibles se muestran siempre como marcadores: `<UUID_SUCURSAL>`, `<RUTA_CLAVE>`, `<URL_CLOUD>`. Nunca se documenta una clave, contraseña o UUID real.
+- Lo que no se pudo confirmar leyendo el código se marca como **no verificado** y se concentra en la sección [16](#16-limitaciones-conocidas--no-verificado).
+
+**A quién va dirigido cada parte**
+
+| Parte | Lectores | Secciones |
+|---|---|---|
+| **I. Operador de sucursal** | Persona no técnica que ejecuta la instalación: solo pasos, qué escribir, qué verá y qué hacer si falla | 1 a 4 |
+| **II. Técnico / soporte** | Quien prepara el payload, compila, entrega la clave maestra, diagnostica y mantiene | 5 a 17 |
 
 ---
 
-## 1. Visión general
+## Índice
 
-El instalador despliega, en una máquina Windows de una sucursal (sin Docker), el stack completo de Parkos:
+**Parte I — Operador de sucursal**
 
-- **PostgreSQL 16** (vía `winget`, con fallback a un ZIP oficial de EDB — DEC-INST-03).
-- **`pg_partman`** como extensión SQL-only (sin background worker compilado), con mantenimiento de particiones disparado por una tarea programada de Windows (DEC-INST-13/14).
-- **`api-sucursal`** y **`job-sync-sucursal`**: dos binarios Python congelados (PyInstaller `--onedir`), registrados como servicios de Windows vía **NSSM** (DEC-INST-09).
-- **`web_sucursal`**: app de escritorio Electron, instalada vía MSI silencioso.
-- **Módulo de gestión `Parkos`**: paquete PowerShell separado para operación post-instalación (diagnóstico, reparación, backups, desinstalación).
+1. [Resumen: qué instala y qué no hace](#1-resumen-qué-instala-y-qué-no-hace)
+2. [Antes de empezar: checklist de prerrequisitos](#2-antes-de-empezar-checklist-de-prerrequisitos)
+3. [Instalación guiada paso a paso (operador)](#3-instalación-guiada-paso-a-paso-operador)
+4. [Si algo falla (operador)](#4-si-algo-falla-operador)
 
-### Rutas por defecto
+**Parte II — Técnico / soporte**
 
-| Variable | Valor por defecto | Contenido |
+5. [El payload: qué debe existir en `installer/payload/`](#5-el-payload-qué-debe-existir-en-installerpayload)
+6. [La clave maestra a fondo](#6-la-clave-maestra-a-fondo)
+7. [Línea de tiempo y etapas 0 a 8](#7-línea-de-tiempo-y-etapas-0-a-8)
+8. [Modos de ejecución y referencia de parámetros](#8-modos-de-ejecución-y-referencia-de-parámetros)
+9. [Mapa de directorios, archivos, permisos y secretos](#9-mapa-de-directorios-archivos-permisos-y-secretos)
+10. [Variables de entorno y configuración](#10-variables-de-entorno-y-configuración)
+11. [Verificación post-instalación](#11-verificación-post-instalación)
+12. [Operación y mantenimiento](#12-operación-y-mantenimiento)
+13. [Preparar un release, pruebas y CI](#13-preparar-un-release-pruebas-y-ci)
+14. [Solución de problemas: catálogo de mensajes](#14-solución-de-problemas-catálogo-de-mensajes)
+15. [Seguridad y cumplimiento](#15-seguridad-y-cumplimiento)
+16. [Limitaciones conocidas / no verificado](#16-limitaciones-conocidas--no-verificado)
+17. [Glosario](#17-glosario)
+
+---
+
+# Parte I — Operador de sucursal
+
+## 1. Resumen: qué instala y qué no hace
+
+### 1.1 Para quién es y qué hace
+
+El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo lo necesario para operar Parkos en esa sucursal. Está pensado para que el operador solo ejecute pasos y escriba **un único dato**: el código (UUID) de la sucursal, que se obtiene en el panel de administración.
+
+### 1.2 Qué instala exactamente
+
+| Componente | Detalle |
+|---|---|
+| **PostgreSQL 16** | Vía `winget` (preferente) o, si `winget` no está disponible o falla, desde un ZIP de EDB incluido en el payload. Se crean los roles `postgres` (bootstrap), `parkos` (superusuario de migración) y `parkos_app` (runtime, sin privilegios de superusuario) y la base `parkos` |
+| **`pg_partman`** | Extensión SQL-only (sin background worker). El mantenimiento de particiones lo dispara la tarea programada `ParkosPgPartmanMaintenance` (diaria, 02:00) |
+| **`api-sucursal`** | Servicio de Windows `ParkosApiSucursal` (binario Python congelado con PyInstaller, registrado con NSSM) |
+| **`job-sync-sucursal`** | Servicio de Windows `ParkosJobSyncSucursal` (mismo mecanismo) |
+| **App de escritorio `web_sucursal`** | Aplicación Electron instalada con un MSI en modo silencioso |
+| **Módulo de gestión `Parkos`** | Módulo PowerShell para diagnóstico, reparación, actualización, backups y desinstalación (instalado en la etapa 8) |
+| **Cuenta local `svc-parkos`** | Cuenta de Windows sin sesión interactiva, usada como identidad de las tareas programadas |
+| **Certificado `CN=ParkosEnvProtection`** | Certificado de máquina que cifra el archivo `.env` en reposo |
+| **Tareas programadas** | `ParkosPgPartmanMaintenance` (siempre) y `ParkosBackupDiario` (solo si se configura con la opción `M` del menú) |
+
+### 1.3 Qué NO hace
+
+- **No empareja la sucursal con la nube (pairing).** Ningún código del instalador escribe `sync-agent.jwt` ni `pairing.json` (verificado: la ruta `$DataPath\secrets\sync-agent.jwt` solo se escribe en el `.env` como `PARKOS_SYNC_JWT_PATH`; el archivo lo crearía el comando `parkos_core.cli.pair` del backend, que **no** está congelado ni incluido en el payload). Tras la instalación, el servicio de sincronización queda activo pero registrará `cycle_error ... branch must pair first` hasta que la sucursal se empareje por otra vía (ver [16](#16-limitaciones-conocidas--no-verificado)).
+- **No crea la sucursal.** La sucursal se crea en el panel de administración; el instalador solo recibe su UUID y lo escribe en la configuración (DEC-INST-22). La fila llega a la base local por el ciclo de sincronización, nunca por un `INSERT` del instalador.
+- **No genera la clave maestra** ni la descarga: debe entregarla soporte (ver [6](#6-la-clave-maestra-a-fondo)).
+- **No compila nada en el equipo de la sucursal** (salvo `-IncludeBuild`, uso técnico): el payload debe llegar ya compilado.
+- **No configura el backup automático** durante la instalación (es la opción `M` del menú o el cmdlet `Register-ParkosBackupTask`).
+- **No instala herramientas de desarrollo** (git, pnpm, uv) ni las exige en el equipo de la sucursal.
+
+### 1.4 Qué queda corriendo al terminar
+
+- Servicios de Windows: `ParkosApiSucursal`, `ParkosJobSyncSucursal` (inicio automático) y el servicio nativo de PostgreSQL.
+- Tarea programada `ParkosPgPartmanMaintenance`.
+- La app de escritorio instalada.
+- El módulo PowerShell `Parkos` disponible (`C:\Program Files\PowerShell\Modules\Parkos\1.0.0\`).
+
+---
+
+## 2. Antes de empezar: checklist de prerrequisitos
+
+### 2.1 Checklist con responsable y momento
+
+| # | Requisito | Detalle | Quién lo aporta | Cuándo se necesita | Si falta |
+|---|---|---|---|---|---|
+| 1 | Windows 10 21H2 o superior | Build `>= 19044` | Sucursal / TI | Pre-flight (`Windows >= 10 21H2`) | `[FALLO] Windows >= 10 21H2` y la instalación no empieza |
+| 2 | Espacio libre | Más de **5 GB** en la unidad donde se instala (por defecto `C:`) | Sucursal / TI | Pre-flight (`Espacio en disco (>=5GB)`) | `[FALLO]` y no empieza |
+| 3 | Permisos de administrador | Usuario administrador local; se acepta el aviso UAC | Sucursal / TI | Al arrancar (elevación automática) | `Se requieren permisos de administrador para instalar Parkos.` (termina, sin cambios) |
+| 4 | PowerShell 7 | Si el equipo solo tiene Windows PowerShell 5.1, el instalador **descarga e instala PowerShell 7.4.6** (verifica su SHA256) y se relanza solo. Requiere internet en ese momento (`github.com`) | Automático | Al arrancar, antes de la elevación | `Hash de PowerShell 7 no coincide; instalacion abortada por seguridad.` o error de descarga |
+| 5 | Ejecución de scripts permitida | Si Windows bloquea la ejecución del `.ps1`, abrir PowerShell y ejecutar con `-ExecutionPolicy Bypass` (ver 3.1). **No verificado**: depende de la política del equipo | Soporte / TI | Al arrancar | Mensaje de Windows sobre la política de ejecución |
+| 6 | Instalador y payload completos | Carpeta `installer\` con `parkos-installer.ps1` **y** la carpeta `payload\` ya compilada (ver [5](#5-el-payload-qué-debe-existir-en-installerpayload)) | Soporte | Antes de empezar | `Este instalador no trae los programas ya preparados ...` (exit 2) |
+| 7 | **Clave maestra** `parkos-master.key` | Archivo de 32 bytes o más. Soporte la entrega por canal seguro (ver 3.2) | Soporte | Pre-flight de la instalación guiada | `[FALLO] Clave maestra de Parkos` y no empieza |
+| 8 | **UUID de la sucursal** | Código `8-4-4-4-12` (letras y números separados por guiones). Está en la ficha de la sucursal del panel de administración | Administrador del panel admin | Cuando el instalador lo pide (es lo único que se escribe) | Hasta 5 intentos; luego `Demasiados intentos con un codigo de sucursal invalido ...` |
+| 9 | Dirección del servidor (nube) | Variable `PARKOS_CLOUD_API_URL` (`http://` o `https://`). **Opcional**: si no existe se usa `http://localhost:8000`. Se prueba la conexión a su `host:puerto` | Soporte / TI | Pre-flight | Servidor remoto sin respuesta: `[FALLO] Conexion con el servidor Parkos`. En `localhost`: solo `[AVISO]` y continúa |
+| 10 | Internet para Postgres | `winget` descarga PostgreSQL 16. Si no hay `winget`/internet, el payload debe traer el ZIP de EDB (ver [5](#5-el-payload-qué-debe-existir-en-installerpayload)) | Sucursal / soporte | Etapa 1 (Paso 1 de 8) | `Ni winget ni el ZIP de fallback (...) estan disponibles; no se puede instalar Postgres.` |
+| 11 | Puertos libres | Uno de `5432` o `5433` (Postgres) y uno de `8000`, `8001` o `8002` (API); el instalador los prueba contra `127.0.0.1` | Sucursal / TI | Etapa 1 | `Puertos 5432 y 5433 ambos ocupados; ...` / `Puertos 8000, 8001, 8002 todos ocupados; ...` |
+| 12 | Sin instalación previa de Parkos | Que no exista `C:\ProgramData\Parkos\pairing.json` | — | Pre-flight (`Sin instalacion previa`) | `[FALLO]` y el aviso `Ya existe una instalacion de Parkos en este equipo.` |
+
+### 2.2 Qué debe existir y cuándo (resumen cronológico)
+
+| Momento | Debe existir |
+|---|---|
+| Antes de ejecutar nada | Carpeta `installer\` con `parkos-installer.ps1` y `payload\` compilado; archivo `parkos-master.key` (en `payload\security\` o en otra ruta para `-MasterKeyPath`); el UUID de la sucursal a mano |
+| Al arrancar | Internet a `github.com` solo si falta PowerShell 7; usuario administrador |
+| Pre-flight | Windows 10 21H2+, 5 GB libres, administrador, conexión al servidor (`host:puerto`), clave maestra válida, sin `pairing.json` |
+| EULA | `payload\README-EULA.txt` (salvo `-EulaAccepted`) |
+| Etapa 1 (Paso 1 de 8) | `winget` + internet, o `payload\postgres\postgresql-16-windows-x64-binaries.zip`; puertos libres; `payload\pg_partman\extension\`; clave maestra |
+| Etapa 2 | `payload\services\migrate\migrate\migrate.exe` |
+| Etapa 4 | `payload\services\api-sucursal\...` y `payload\services\seed\seed\seed.exe` |
+| Etapas 5 y 6 | `payload\nssm.exe`, bundles `api-sucursal` y `job-sync-sucursal` |
+| Etapa 7 | Un `.msi` en `payload\apps\` |
+| Etapa 8 | `payload\services\doctor\doctor\doctor.exe`, `payload\nssm.exe`, `payload\management\*` |
+
+---
+
+## 3. Instalación guiada paso a paso (operador)
+
+### 3.1 Abrir el instalador
+
+1. Abre PowerShell (mejor como administrador) y ve a la carpeta del instalador (la que contiene `parkos-installer.ps1` y `payload\`).
+2. Ejecuta, **sin ninguna opción**:
+
+   ```powershell
+   ./parkos-installer.ps1
+   ```
+
+   Si Windows bloquea la ejecución de scripts, usa:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\parkos-installer.ps1
+   ```
+
+3. Si no eres administrador, Windows mostrará el aviso de permisos (UAC): **acéptalo**. Se abrirá una ventana nueva con permisos elevados y la ventana original esperará. En esa ventana nueva ocurre todo lo demás. Si el equipo solo tiene PowerShell 5.1, primero verás `Instalando PowerShell 7 (requerido)...`.
+4. Si entregaste la clave con una ruta propia, agrégala: `./parkos-installer.ps1 -MasterKeyPath "<RUTA_CLAVE>"` (ver 3.2).
+
+### 3.2 Clave maestra: guía para quien instala o prueba
+
+**Qué es.** Un archivo llamado `parkos-master.key`, que es un secreto de la empresa. El instalador lo usa para calcular las contraseñas de la base de datos de cada sucursal; con él, soporte puede volver a calcularlas si hace falta. No se descarga, no está en el repositorio y el instalador no puede crearlo: hay que pedirlo.
+
+**Cómo conseguirlo.**
+
+1. Pídele a soporte el archivo `parkos-master.key`. Debe llegar por un canal seguro de la compañía, **no** por chat abierto, correo ni el repositorio.
+2. Guárdalo en tu equipo en una carpeta que solo uses tú.
+
+**Cómo dárselo al instalador (elige una).**
+
+- **Opción A, la más simple:** ejecuta el instalador con la ruta del archivo. El instalador comprueba el tamaño y lo copia donde corresponde:
+  `./parkos-installer.ps1 -MasterKeyPath "<RUTA_CLAVE>"`
+- **Opción B:** copia el archivo a mano a la carpeta `installer\payload\security\` (créala si no existe) y ejecuta el instalador normalmente.
+
+**Cómo comprobar que está bien.** Debe llamarse exactamente `parkos-master.key` y pesar **32 bytes o más**. En PowerShell: `(Get-Item "<RUTA_CLAVE>").Length`. Si es menor de 32, el archivo está truncado o es incorrecto: pide otra copia a soporte.
+
+**Reglas.**
+
+- Usa la **misma clave** que te dio soporte para todas las pruebas de ese release. Si generas otra por tu cuenta, soporte no podrá reconstruir las contraseñas de ese equipo.
+- No la subas a git, no la pegues en tickets ni la compartas por chat.
+- Si un mensaje dice que falta o es demasiado corta, no la inventes: vuelve al paso 1.
+- Para saber si ya está bien puesta, el pre-flight muestra `[OK] Clave maestra de Parkos`.
+
+Más detalle técnico (derivación, seguridad, qué hacer después): sección [6](#6-la-clave-maestra-a-fondo).
+
+### 3.3 Qué verás, en orden
+
+| Orden | Qué verás en pantalla | Qué debes hacer |
 |---|---|---|
-| `-InstallPath` | `C:\Program Files\Parkos` | Binarios de los servicios, `releases\` archivadas, `nssm.exe`, `doctor\` |
-| `-DataPath` | `C:\ProgramData\Parkos` | Datos de Postgres (solo instalación vía ZIP), secretos, logs, backups, scripts generados |
-| (fijo, no parametrizable) | `C:\Program Files\PostgreSQL\16` | Instalación de PostgreSQL (winget o ZIP convergen en esta misma ruta) |
-| (fijo) | `C:\Program Files\PowerShell\Modules\Parkos\1.0.0\` | Módulo de gestión `Parkos` instalado al final de la etapa 8 |
+| 1 | `=== Instalacion de Parkos ===` y la frase "Solo se le pedira un dato: el codigo (UUID) de la sucursal." | Nada. No cierres la ventana |
+| 2 | `Revisando que este equipo este listo para instalar Parkos...` y una lista de verificaciones: `[OK] Windows >= 10 21H2`, `[OK] PowerShell >= 7`, `[OK] Permisos de administrador`, `[OK] Espacio en disco (>=5GB)`, `[OK] Sin instalacion previa`, `[OK] Conexion con el servidor Parkos`, `[OK] Clave maestra de Parkos` | Si alguna dice `[FALLO]`, la instalación se detiene sin cambios: ve a la sección 4 |
+| 3 | El texto del acuerdo de licencia (EULA) y: `Presione Enter para ACEPTAR los terminos y continuar (o escriba N y Enter para cancelar)` | Lee y pulsa **Enter** para aceptar. Si escribes `N`, se cancela sin cambios |
+| 4 | `Este es el unico dato que debe escribir: el codigo (UUID) de esta sucursal.` y `Codigo (UUID) de la sucursal:` | Pega el UUID de la ficha de la sucursal en el panel de administración, con el aspecto `11111111-2222-3333-4444-555555555555`. Se aceptan mayúsculas y espacios alrededor. Tienes **5 intentos** |
+| 5 | `Paso 1 de 8: Instalando la base de datos... (puede tardar unos minutos, no cierre esta ventana)`, y así sucesivamente | Espera. Cada paso termina con `Paso N de 8 terminado.` |
+| 6 | `Listo: Parkos quedo instalado y funcionando en este equipo.` | Pulsa Enter para cerrar la ventana |
 
-### Qué queda corriendo al final de una instalación completa
+### 3.4 Los 8 pasos que verás
 
-- Servicios Windows (NSSM): `ParkosApiSucursal`, `ParkosJobSyncSucursal` (más el servicio nativo de PostgreSQL, nombre resuelto dinámicamente por patrón `*postgresql*`).
-- Tareas programadas: `ParkosPgPartmanMaintenance` (diaria, 2:00 a.m.) y, si el operador ejecutó la opción `M` del menú, `ParkosBackupDiario` (diaria, por defecto 03:00).
-- Cuenta local de Windows `svc-parkos` (sin privilegios interactivos, usada como `ServiceAccount` de las tareas programadas).
-- Certificado de máquina `CN=ParkosEnvProtection` en `Cert:\LocalMachine\My` (cifra el `.env` en reposo).
-- App de escritorio `web_sucursal` instalada vía MSI.
-- Módulo PowerShell `Parkos` instalado para gestión posterior.
+| Paso | Mensaje | Qué está haciendo |
+|---|---|---|
+| 1 de 8 | Instalando la base de datos | Instala PostgreSQL y crea usuarios y datos de acceso |
+| 2 de 8 | Preparando las tablas de la base de datos | Crea la estructura de tablas |
+| 3 de 8 | Configurando esta sucursal | Guarda el código de la sucursal en la configuración |
+| 4 de 8 | Cargando los datos iniciales | Siembra catálogos (p. ej. tipos de vehículo) |
+| 5 de 8 | Instalando el servicio principal de Parkos | Instala y arranca el servicio de la API |
+| 6 de 8 | Instalando el servicio de sincronización | Instala y arranca el servicio de sincronización |
+| 7 de 8 | Instalando la aplicación de escritorio | Instala la aplicación que usa el personal |
+| 8 de 8 | Verificando que todo funcione | Comprueba todo e instala las herramientas de gestión |
 
-### Diagrama de carpetas (texto)
+El tiempo total depende del equipo y de la descarga de PostgreSQL; el código no fija una duración (los pasos 5, 6 y 4 esperan hasta 30 segundos a que el servicio responda). Los mensajes dicen "puede tardar unos minutos".
+
+### 3.5 Al terminar
+
+- Verás `Listo: Parkos quedo instalado y funcionando en este equipo.`
+- La ventana pide `Presione Enter para cerrar esta ventana`.
+- Se guardó un registro en `C:\ProgramData\Parkos\installer-runs\<fecha-hora>.log`.
+- El paso de **emparejamiento con la nube no forma parte de este instalador** (sección 1.3): avisa a soporte para completarlo.
+
+---
+
+## 4. Si algo falla (operador)
+
+**Regla general.** Si el instalador falla en un paso, **se detiene**, deshace los cambios de ese paso y te lo explica. No lo repitas una y otra vez: toma una **foto o copia de los mensajes de la ventana** y envíala a soporte **junto con el archivo de registro** (`C:\ProgramData\Parkos\installer-runs\<fecha-hora>.log`). Si el mensaje dice "No fue posible deshacer automaticamente los cambios de ese paso", avísalo a soporte y no sigas.
+
+| Qué ves | Qué significa | Qué hacer |
+|---|---|---|
+| `Este instalador no trae los programas ya preparados ...` | El paquete está incompleto (falta la carpeta `payload` compilada) | Pide a soporte un instalador completo |
+| `[FALLO] Clave maestra de Parkos` | Falta `parkos-master.key` o pesa menos de 32 bytes | Pide la clave a soporte y colócala como se indica en 3.2 |
+| `[FALLO] Conexion con el servidor Parkos` | El servidor remoto no responde | Revisa red e internet; confirma con soporte la dirección `PARKOS_CLOUD_API_URL`; vuelve a ejecutar |
+| `[AVISO] No se pudo contactar al servidor Parkos en localhost:8000 ...` | El servidor es este mismo equipo y aún no está encendido | No bloquea. Si el servidor está en otro equipo, pide a soporte definir `PARKOS_CLOUD_API_URL` |
+| `[FALLO] Permisos de administrador` o `Se requieren permisos de administrador para instalar Parkos.` | No se aceptó el aviso UAC o la cuenta no es administradora | Vuelve a ejecutar y acepta el aviso con una cuenta administradora |
+| `[FALLO] Espacio en disco (>=5GB)` | Hay 5 GB o menos libres | Libera espacio y repite |
+| `[FALLO] Windows >= 10 21H2` | Windows demasiado antiguo | Actualiza Windows o usa otro equipo |
+| `[FALLO] Sin instalacion previa` + `Ya existe una instalacion de Parkos en este equipo.` | Existe `pairing.json` de una instalación previa | No reinstales: consulta a soporte (se usa actualización o reparación) |
+| `Demasiados intentos con un codigo de sucursal invalido` | El UUID se escribió mal 5 veces | Copia el UUID desde el panel de administración y vuelve a ejecutar |
+| `La direccion del servidor Parkos (...) no es valida` | `PARKOS_CLOUD_API_URL` mal escrita | Pide a soporte corregirla (debe empezar con `http://` o `https://`) |
+| `Puertos 5432 y 5433 ambos ocupados ...` | Otro programa usa los puertos de la base de datos | Avisa a soporte |
+| `No se pudo completar el paso N de M ...` | Falló una etapa; ya se deshizo | Envía foto de la ventana y el archivo de registro a soporte |
+| La ventana se cierra sola al inicio | La elevación (UAC) se rechazó o el equipo reinició PowerShell | Vuelve a abrir PowerShell como administrador y ejecuta de nuevo |
+
+Los mensajes técnicos completos están en la sección [14](#14-solución-de-problemas-catálogo-de-mensajes).
+
+---
+
+# Parte II — Técnico / soporte
+
+## 5. El payload: qué debe existir en `installer/payload/`
+
+El instalador resuelve el payload como `<carpeta de parkos-installer.ps1>\payload` (`$script:PayloadRoot`). **Entregar al equipo de la sucursal la carpeta `installer\` con `parkos-installer.ps1` y `payload\`** (la carpeta `tools\`, `tests\` y `bootstrap\` no se usan en la instalación).
+
+### 5.1 Qué va en git y qué no
+
+`installer/.gitignore` ignora todo `payload/*` **salvo** `payload/management/` y `payload/README-EULA.txt` (verificado con `git check-ignore`). En git solo hay: `README-EULA.txt`, `management/Parkos.psd1`, `management/Parkos.psm1` y `management/about_Parkos.help.txt`. Todo lo demás es **artefacto de build o aporte de soporte** y nunca se versiona (también `.pyinstaller-work/`, `__pycache__/` y `*.spec`).
+
+### 5.2 Tabla del payload
+
+| Ruta bajo `installer/payload/` | Qué es | Quién lo produce | En git | Se consume en | Si falta |
+|---|---|---|---|---|---|
+| `README-EULA.txt` | Texto del acuerdo de licencia | Repo (documento legal) | **Sí** | EULA (guiado y menú; no se lee con `-EulaAccepted` ni en `-Unattended`) | `EULA file not found at $EulaPath - a real EULA (...) must be staged there before this installer ships.` |
+| `management\Parkos.psd1`, `Parkos.psm1`, `about_Parkos.help.txt` | Módulo de gestión `Parkos` | Repo | **Sí** | Etapa 8 (`Install-ManagementModule`); opciones `A/R/U/V/X/D/M/C` del menú (importa desde aquí); `build-release.ps1` etapa Payload valida su existencia | `Falta $src en el payload - no se puede instalar el modulo de gestion Parkos.` / en build: `Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga).` |
+| `security\parkos-master.key` | Clave maestra (secreto de la empresa, ≥ 32 bytes) | **Soporte** (entrega manual, canal seguro) | No | Pre-flight guiado (bloquea) y etapa 1 (`New-ParkosDerivedPassword`) | Ver mensajes en la sección [6.5](#65-validación-y-mensajes) |
+| `postgres\postgresql-16-windows-x64-binaries.zip` | ZIP de binarios de PostgreSQL 16 (EDB) para instalación sin `winget` | **Soporte** (descarga manual de EDB; `build-release.ps1` solo avisa con `Write-Warning`) | No | Etapa 1, **solo** si `winget` falla | `Ni winget ni el ZIP de fallback ($zipPath) estan disponibles; no se puede instalar Postgres.` |
+| `nssm.exe` | NSSM 2.24 (x64) | `build-release.ps1` (descarga `nssm-2.24.zip` de `nssm.cc`) | No | Etapas 5 y 6 (registro de servicios); etapa 8 lo copia a `InstallPath\nssm.exe` | Etapas 5/6: error crudo de PowerShell al invocar `nssm.exe` (sin mensaje propio); etapa 8: `Falta $nssmSrc en el payload - no se puede instalar nssm.exe para el modulo de gestion Parkos.` |
+| `pg_partman\extension\pg_partman--5.1.0.sql` y `pg_partman.control` | Extensión `pg_partman` 5.1.0 SQL-only | `build-release.ps1` (descarga el fuente v5.1.0 y concatena `types`+`tables`+`functions`+`procedures`) | No | Etapa 1 (`Install-PgPartman`: copia a `share\extension\` de Postgres) | Error crudo de `Copy-Item` (sin mensaje propio) |
+| `services\api-sucursal\api-sucursal\` (`api-sucursal.exe` + onedir + `migrations\` + `alembic.ini`) | Servicio API congelado (PyInstaller `--onedir`) | `build-release.ps1 -ApiSucursal` | No | `Test-ParkosPayloadReady`; etapa 4 (arranque temporal); etapa 5 (copia a `InstallPath\api-sucursal\`) | Guiado: `Este instalador no trae los programas ya preparados ...`. Menú/etapa: `Falta el bundle del servicio 'api-sucursal' en el payload (...). Ejecute la opcion 0 ...` |
+| `services\job-sync-sucursal\job-sync-sucursal\` | Worker de sincronización congelado | `build-release.ps1 -JobSync` | No | `Test-ParkosPayloadReady`; etapa 6 | Igual que el anterior (`el bundle del servicio 'job-sync-sucursal'`) |
+| `services\migrate\migrate\migrate.exe` (+ `migrations\`, `alembic.ini`) | Alembic congelado (`entry_migrate.py`) | `build-release.ps1 -Migrate` | No | `Test-ParkosPayloadReady`; etapa 2; `-Command Update` (usa el de **payload nuevo**) | `Falta el bundle del servicio 'migrate' en el payload (...)` |
+| `services\seed\seed\seed.exe` | Siembra de catálogos vía API (`entry_seed.py`) | `build-release.ps1 -Seed` | No | `Test-ParkosPayloadReady`; etapa 4 | Error al invocar `seed.exe` / `Build termino sin error pero falta el artefacto esperado: ...` (solo etapa 0) |
+| `services\doctor\doctor\doctor.exe` | Diagnóstico (`parkos_core.cli.doctor`) | `build-release.ps1 -Doctor` | No | `Test-ParkosPayloadReady`; etapa 8 (`Test-PostInstallation` y copia a `InstallPath\doctor\`) | `Falta $doctorSrc en el payload - no se puede instalar doctor.exe para el modulo de gestion Parkos.` |
+| `apps\web_sucursal-<version>-x64.msi` | Instalador de la app Electron | `build-release.ps1 -WebSucursal` (electron-builder) | No | Etapa 7 (se usa el **primer** `*.msi` de la carpeta) | `Falta el MSI de web_sucursal en el payload ($appsDir). Ejecute la opcion 0 ...` |
+| `manifest.sha256.json` | Hashes SHA256 (clave = ruta relativa) de los 4 `.exe` y el `.msi` | `build-release.ps1` (solo si se construyen `-ApiSucursal -JobSync -Migrate -Doctor -WebSucursal` en la misma corrida) | No | **Solo** `-Command Update` (paso VERIFY BINARIES sobre el payload **nuevo**). La instalación limpia no lo lee | `Falta el manifest de integridad del payload en $manifestPath - no se puede verificar el payload nuevo.` |
+| `PowerShell-7.4.6-win-x64.msi` | MSI de PowerShell 7 con SHA256 verificado | `build-release.ps1` (descarga y verifica) | No | **No lo consume el instalador**: `Ensure-PowerShell7` descarga su propia copia a `%TEMP%` desde GitHub | — |
+| `parkos-installer.exe` | Instalador compilado con `ps2exe` (`-requireAdmin`) | `build-release.ps1 -Installer` (se omite con aviso si no existe el módulo `ps2exe`) | No | Opcional (distribución alternativa al `.ps1`). **No verificado** su comportamiento | — |
+
+### 5.3 Qué comprueba el instalador antes de empezar
+
+`Test-ParkosPayloadReady` solo verifica la existencia de **5 ejecutables**: `api-sucursal`, `job-sync-sucursal`, `migrate`, `seed` y `doctor`. No comprueba el `.msi`, `nssm.exe`, `pg_partman`, la clave ni `management\`; esos faltantes aparecen más tarde, en la etapa que los consume. Por eso conviene validar el payload completo con la checklist de la sección [13.4](#134-checklist-de-entrega-antes-de-enviar-a-la-sucursal).
+
+---
+
+## 6. La clave maestra a fondo
+
+### 6.1 Qué es
+
+`installer/payload/security/parkos-master.key` es un secreto **de la empresa**, no de cada instalación. No se versiona, no se descarga y el instalador **nunca la genera** (ni imprime sus bytes). Existe porque el UUID de la sucursal **no es secreto** (se teclea a mano, aparece sin redactar en el diagnóstico `env-redacted.txt` y en el panel admin): derivar las contraseñas solo del UUID permitiría reconstruirlas a quien lo vea (DEC-INST-42).
+
+### 6.2 Cómo se usa
+
+Las 3 contraseñas de PostgreSQL se derivan de forma determinista (`New-ParkosDerivedPassword`):
 
 ```
-C:\Program Files\Parkos\                        (InstallPath)
-├── api-sucursal\                               (bundle onedir + api-sucursal.exe)
-├── job-sync-sucursal\                          (bundle onedir + job-sync-sucursal.exe)
-├── doctor\                                     (bundle onedir; copiado por Install-ManagementModule)
-├── nssm.exe                                    (copiado por Install-ManagementModule)
-└── releases\<version>\                         (escrito por Invoke-ParkosUpdate/REPLACE)
-    ├── api-sucursal\
-    ├── job-sync-sucursal\
-    └── apps\<nombre-original>.msi               (solo versiones archivadas después de DEC-INST-28)
+password = Base64( HMAC-SHA256( bytes_de_la_clave_maestra, UTF8("<UUID_SUCURSAL>:<propósito>") ) )   con '+', '/', '=' reemplazados por 'x'
+```
 
-C:\Program Files\PostgreSQL\16\                 (ruta fija, independiente de -InstallPath)
+| Propósito (`Purpose`) | Rol de PostgreSQL | Uso |
+|---|---|---|
+| `postgres-bootstrap` | `postgres` | Contraseña del superusuario nativo al instalar (vía `--optionfile` de `winget` o `initdb --pwfile`) |
+| `parkos-superuser` | `parkos` | Superusuario de migración (`CREATE ROLE ... SUPERUSER`); lo usan `migrate.exe` y `seed.exe` |
+| `parkos-app` | `parkos_app` | Rol de runtime (lo fija la migración `0021` desde `PARKOS_APP_DB_PASSWORD`); va en `PARKOS_DB_URL`/`DATABASE_URL` del `.env` |
+
+El propósito distinto garantiza que las 3 nunca coincidan. El UUID usado es el normalizado por `Read-SucursalUuid` (minúsculas). La contraseña de la cuenta de Windows `svc-parkos` **no** deriva de la clave maestra (es aleatoria de 32 caracteres, se usa solo en el momento de crear la cuenta y no se guarda).
+
+```mermaid
+flowchart LR
+    UUID["UUID de la sucursal (no secreto)"] --> HMAC["HMAC-SHA256"]
+    KEY["parkos-master.key (secreto, 32 bytes o mas)"] --> HMAC
+    PUR["Proposito: postgres-bootstrap, parkos-superuser, parkos-app"] --> HMAC
+    HMAC --> PW["3 contrasenas de PostgreSQL"]
+    PW --> ROLES["Roles postgres, parkos, parkos_app"]
+    PW --> FILES["pgpass.conf (texto plano, ACL restringida) y .env (cifrado CMS)"]
+```
+
+### 6.3 Dónde debe estar y cómo obtenerla/entregarla
+
+| Aspecto | Regla |
+|---|---|
+| Ruta esperada en el equipo | `<carpeta del instalador>\payload\security\parkos-master.key` |
+| Origen | Equipo de soporte, por un **canal seguro de la compañía** (nunca chat abierto, correo ni repositorio) |
+| Entrega 1 (recomendada) | `-MasterKeyPath "<RUTA_CLAVE>"`: `Import-ParkosMasterKey` valida el tamaño, crea `payload\security\` si hace falta y **copia** el archivo (imprime `Clave maestra copiada a <ruta>`); se ejecuta antes del pre-flight (en guiado, desatendido y menú) |
+| Entrega 2 | Copia manual a `payload\security\parkos-master.key` |
+| Para compilar (etapa 0 / `build-release.ps1`) | Debe existir **antes** del build: `Get-MasterKeyPayload` hace `throw` si falta |
+
+### 6.4 Validación
+
+Solo se valida que el archivo exista y mida **≥ 32 bytes** (`$script:MasterKeyMinBytes`); no se valida contenido ni entropía. La validación se repite sobre los bytes realmente leídos.
+
+### 6.5 Validación y mensajes
+
+| Situación | Dónde | Mensaje |
+|---|---|---|
+| Falta el archivo | Pre-flight guiado (bloquea) / menú y desatendido (solo avisa) / etapa 1 (falla) | `No se encontro la clave maestra de Parkos en $MasterKeyPath - es un secreto de la compania que NO se genera automaticamente ni vive en el repo. Solicitela al equipo de soporte por un canal seguro y copiela a esa ruta (o reintente con -MasterKeyPath <archivo>).` |
+| Demasiado corta | Idem | `La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($length bytes; minimo 32) - parece truncada o incorrecta. Solicite una copia valida al equipo de soporte por un canal seguro y reemplace ese archivo.` |
+| `-MasterKeyPath` apunta a un archivo inexistente | Antes del pre-flight | `No se encontro el archivo indicado en -MasterKeyPath ($SourcePath) - solicite la clave maestra al equipo de soporte por un canal seguro.` |
+| Correcta | Pre-flight | `[OK]    Clave maestra de Parkos` |
+| Falta al compilar | `build-release.ps1` | `Falta $masterKeyPath - la clave maestra debe ser provista por el equipo de soporte antes de un build real, nunca se genera automaticamente.` |
+
+### 6.6 Reglas de seguridad y qué NO hacer
+
+- **No** subir la clave a git, tickets, chat ni correo. **No** generar una distinta por equipo: soporte no podría reconstruir las contraseñas.
+- **Una sola clave por release/flota**; si se pierde o se cambia, las contraseñas de las instalaciones existentes ya no son reproducibles (no existe rotación; ver [16](#16-limitaciones-conocidas--no-verificado)).
+- **Después de instalar**: el instalador **no borra** la clave de `payload\security\` (ni la copia hecha con `-MasterKeyPath`). La herramienta de soporte establece que la clave "nunca debe vivir en la maquina de un cliente/sucursal". **Recomendación operativa** (no implementada por el instalador): retirar el archivo de `payload\security\` del equipo de la sucursal y del medio de entrega una vez completada la instalación.
+- La clave no aparece en logs ni en `Export-ParkosDiagnostics`; los mensajes solo muestran la ruta y la longitud.
+
+### 6.7 Cómo reconstruye soporte las contraseñas
+
+`installer/tools/Get-ParkosSupportPassword.ps1`, **solo en la máquina propia de soporte** (nunca en la de un cliente):
+
+```powershell
+.\Get-ParkosSupportPassword.ps1 -SucursalUuid <UUID_SUCURSAL> -MasterKeyPath <RUTA_CLAVE> [-Purpose postgres-bootstrap|parkos-superuser|parkos-app|all] [-Reveal]
+```
+
+- `-MasterKeyPath` es obligatorio y no tiene valor por defecto (a propósito).
+- Sin `-Reveal`: cada contraseña se copia al portapapeles y **no se imprime**. Con `-Purpose all` (default) pide Enter entre cada una (excepto la última).
+- Con `-Reveal`: imprime `Purpose | Password` en texto plano (advierte que queda en el historial de la consola); para sesiones sin portapapeles (p. ej. SSH).
+- Ninguna contraseña se escribe a disco. Reutiliza `New-ParkosDerivedPassword` por *dot-source* de `parkos-installer.ps1` (el guard `$MyInvocation.InvocationName -ne '.'` evita que arranque el instalador).
+- Valida el UUID (`[guid]::TryParse`) y que exista el archivo de clave (mensajes en [14.12](#1412-get-parkossupportpasswordps1)).
+
+---
+
+## 7. Línea de tiempo y etapas 0 a 8
+
+### 7.1 Línea de tiempo de la instalación guiada
+
+Orden exacto desde `./parkos-installer.ps1` (sin switches, modo `Guided`):
+
+| # | Momento | Qué ocurre |
+|---|---|---|
+| 1 | Despacho | El bloque final del script reconstruye `$script:OriginalArgs` desde `$PSBoundParameters` y resuelve el modo (`Resolve-ParkosInstallMode`: `Guided` por defecto; `-Menu` + `-Unattended` → error, `exit 2`) |
+| 2 | `Invoke-ParkosGuidedInstall` → `Ensure-PowerShell7` | Si el motor es 5.1: descarga `PowerShell-7.4.6-win-x64.msi` a `%TEMP%` desde GitHub, verifica SHA256, `msiexec /i ... /qn` y relanza con `pwsh -ExecutionPolicy Bypass -EncodedCommand ...` (el proceso original termina con el código del hijo). Se usa `-EncodedCommand` porque con `-File` los arreglos como `-SkipStage 2,7` se aplanaban a `27` |
+| 3 | `Request-Elevation` | Si no es administrador: `Se requieren permisos de administrador; solicitando elevacion (UAC)...` y `Start-Process pwsh -Verb RunAs -Wait` con los mismos parámetros (`-MasterKeyPath` y `-PayloadPath` se convierten a rutas absolutas). Si se rechaza: `Se requieren permisos de administrador para instalar Parkos.` y `exit 2` |
+| 4 | Banner | `=== Instalacion de Parkos ===` (el script ya está elevado y en PowerShell 7) |
+| 5 | `Invoke-ParkosUnattendedCascade -Guided` arranca | Crea `$DataPath\installer-runs\<yyyyMMdd-HHmmss>.log` (aunque el pre-flight falle después) y escribe `[INIT] parkos-installer iniciando (modo=Guided)` |
+| 6 | URL y parámetros | `Resolve-ParkosCloudApiUrl` y `Assert-ParkosCascadeParamsValid`. Un error aquí: log `[FAIL] Configuracion invalida: ...`, `Exit code: 2` |
+| 7 | Payload listo | Sin `-IncludeBuild`, comprueba los 5 `.exe` (`Test-ParkosPayloadReady`); si faltan, error "Este instalador no trae los programas ya preparados..." **antes de pedir nada** (`exit 2`) |
+| 8 | Clave maestra por parámetro | Si hay `-MasterKeyPath`, `Import-ParkosMasterKey` |
+| 9 | Pre-flight | `Revisando que este equipo este listo para instalar Parkos...` y `Test-Preflight -RequireMasterKey`. Si falla: `El equipo todavia no cumple los requisitos para instalar ...` (`exit 2`, sin cambios en el sistema) |
+| 10 | EULA | `Show-Eula`: muestra `README-EULA.txt` y espera **Enter** (`-EulaAccepted` lo omite). Otra respuesta distinta de Enter/`ACEPTO`/`s`/`si`: `EULA no aceptada. Saliendo sin cambios.` y `exit 0` |
+| 11 | Rutas | `Read-InstallPaths`: nunca pregunta; usa `-InstallPath`/`-DataPath` o los defaults, y rechaza `C:\Windows`, `Program Files (x86)` y rutas UNC |
+| 12 | UUID | `Read-SucursalUuid`: único dato tipeado (hasta 5 intentos). Normaliza a minúsculas |
+| 13 | Etapas | Prepara el estado y las definiciones (`Get-ParkosStageDefinitions`) y ejecuta las etapas **1 a 8** con `Paso N de M: <descripción>... (puede tardar unos minutos, no cierre esta ventana)` y `Paso N de M terminado.` (M = 8, o 9 con `-IncludeBuild`). La etapa 0 se omite; cuenta como `Ok` porque el payload ya está compilado |
+| 14 | Falla de una etapa | Se detiene, ejecuta el `Rollback` de esa etapa (si existe), informa el motivo técnico y la ruta del log, `Exit code: 1` |
+| 15 | Fin | `Listo: Parkos quedo instalado y funcionando en este equipo.` o `La instalacion NO se completo.` + qué hacer; luego `Presione Enter para cerrar esta ventana`; `exit` con el código resultante |
+
+```mermaid
+flowchart TD
+    A["./parkos-installer.ps1 (sin switches)"] --> B{"Motor PowerShell 7?"}
+    B -- "No" --> B1["Descarga PS7 MSI, verifica SHA256, instala y relanza"]
+    B1 --> C
+    B -- "Si" --> C{"Es administrador?"}
+    C -- "No" --> C1["UAC: relanza elevado con -EncodedCommand"]
+    C1 --> D
+    C -- "Si" --> D["Log en installer-runs, valida URL y parametros"]
+    D --> E{"Payload compilado (5 exe)?"}
+    E -- "No" --> X2["exit 2: pedir instalador completo"]
+    E -- "Si" --> F["Importa clave si hay -MasterKeyPath"]
+    F --> G{"Pre-flight OK (incluye clave maestra)?"}
+    G -- "No" --> X2
+    G -- "Si" --> H["EULA: Enter acepta"]
+    H --> I["Rutas por defecto o parametros"]
+    I --> J["Pregunta UUID (5 intentos)"]
+    J --> K["Etapas 1 a 8: Paso N de M"]
+    K -- "Etapa falla" --> R["Rollback de esa etapa, exit 1"]
+    K -- "Todas OK" --> Z["Listo, Enter, exit 0"]
+```
+
+### 7.2 Dependencias entre etapas
+
+Hay **dos** mecanismos distintos:
+
+1. **Prerrequisitos del menú** (`Get-ParkosStagePrerequisites`): muestran `[BLOQ]` y rechazan la etapa en `-Menu`. En la cascada (`-Unattended`/guiado) **no** se evalúan: las etapas corren 0 → 8 en orden.
+2. **Gates internos** (dentro de cada `Action`): se aplican **siempre** (menú, guiado y desatendido).
+
+```mermaid
+flowchart LR
+    S0["0 Fuente y build"] --> S1["1 Postgres, roles, pg_partman"]
+    S0 --> S7["7 App de escritorio"]
+    S1 --> S2["2 Migraciones"]
+    S1 --> S3["3 UUID en .env"]
+    S2 --> S4["4 Seed de catalogos"]
+    S4 --> S5["5 Servicio api-sucursal"]
+    S5 --> S6["6 Servicio job-sync"]
+    S5 --> S8["8 Verificacion y modulo"]
+    S6 --> S8
+```
+
+| Etapa | Prerrequisito del menú (`[BLOQ]`) | Gate interno (todos los modos) |
+|---|---|---|
+| 0 | Ninguno | Requiere `git`, `pnpm` y `uv` en el PATH |
+| 1 | 0 en `Ok` (en campo, el payload compilado cuenta como 0 `Ok`) | Clave maestra válida (la lanza `New-ParkosDerivedPassword`) |
+| 2 | 1 | `$script:roles` en memoria: `Corre primero "Instalar base de datos" (opcion 1).` |
+| 3 | 1 | `StageStatus.db -eq Ok`: `Corre primero "Instalar base de datos" (opcion 1).` |
+| 4 | 2 | `StageStatus.migrate -eq Ok`: `Corre primero "Ejecutar migraciones" (opcion 2).` |
+| 5 | 4 | (ninguno explícito) |
+| 6 | 5 | (ninguno explícito) |
+| 7 | 0 | (ninguno explícito) |
+| 8 | 5 y 6 | (ninguno explícito) |
+
+> El estado de las etapas y las contraseñas derivadas viven **solo en memoria** de la sesión. Consecuencia: `-SkipStage 1 -Force` o `-SkipStage 2` hacen fallar las etapas 2/3/4 por sus gates internos, y reanudar tras una falla en una sesión nueva exige repetir desde la etapa 1 (ver [16](#16-limitaciones-conocidas--no-verificado)).
+
+### 7.3 Etapa 0 — Descargar el fuente y compilar (solo técnico)
+
+| Aspecto | Detalle |
+|---|---|
+| Qué hace | `Invoke-SourceUpdateAndBuild`: verifica `git`, `pnpm`, `uv` (`Test-BuildToolchain`); en la raíz del repo (carpeta padre de `installer\`) ejecuta `git fetch origin <rama>`, `git checkout <rama>`, `git pull --ff-only origin <rama>`; corre `build-release.ps1` sin switches (build completo) y comprueba los 5 `.exe` y el `.msi` |
+| Cuándo corre | Menú: opción 0. Guiado: **solo con `-IncludeBuild`**. Desatendido: **siempre** salvo `-SkipStage 0` (por eso en un equipo sin toolchain `-Unattended` requiere `-SkipStage 0`) |
+| Rama | `-SourceBranch` (default `dev`; para un release, `release/vX.Y.Z` o `main`). Se valida con `^[A-Za-z0-9][A-Za-z0-9._/-]*$` |
+| Prerrequisitos | `git`, `pnpm`, `uv` en PATH; **la clave maestra ya en `payload\security\`** (`build-release.ps1` falla sin ella); dependencias de `apps\` instaladas (`pnpm install`; el script no lo hace) |
+| Crea / modifica | El árbol del repo (cambia de rama y hace pull); `installer\payload\` (artefactos), `installer\.pyinstaller-work\`. **Nada** en el sistema (sin servicios, sin registro) |
+| Duración | No fija el código; el workflow de CI la estima en "~10+ min" |
+| Rollback | Ninguno (`$null`) |
+| Verificar | Que existan los 5 `.exe`, el `.msi`, `nssm.exe` y `manifest.sha256.json` (13.4) |
+
+> **Advertencia:** la etapa 0 hace `checkout` y `pull --ff-only` en el repositorio donde está el instalador. No ejecutarla con trabajo sin confirmar.
+
+### 7.4 Etapa 1 — Postgres, roles, secretos y `pg_partman`
+
+| Aspecto | Detalle |
+|---|---|
+| Orden interno | (1) `Test-PostgresPorts` (5432, si no 5433) y `Test-ApiPort` (8000, 8001, 8002); (2) contraseña `postgres-bootstrap`; (3) `Install-Postgres`; (4) `Initialize-DatabaseRoles`; (5) `Ensure-ServiceAccount`; (6) `New-JwtSigningKey` + `Test-JwtSecretGate`; (7) `Get-OrCreateParkosEnvCert`; (8) `Write-RuntimeEnvFile`; (9) `Set-MachineApiOrigin`; (10) `Install-PgPartman`; (11) `Register-PgPartmanMaintenance` |
+| Postgres vía winget | `winget install --id PostgreSQL.PostgreSQL.16 --silent --accept-package-agreements --accept-source-agreements --override "--mode unattended --unattendedmodeui none --optionfile <tmp>"`. El archivo temporal (ASCII) lleva `superpassword`, `serverport`, `disable-components=stackbuilder` y se borra al terminar; así la contraseña no viaja en la línea de comandos |
+| Postgres vía ZIP | Solo si `winget` falla: `Expand-Archive` a `C:\Program Files\PostgreSQL\16`, `initdb -D $DataPath\pg-data --locale=es-CO --encoding=UTF8 -U postgres --pwfile=<tmp> --auth=scram-sha-256` y agrega `port = <puerto>` a `postgresql.conf`. **El código no registra ni arranca el servicio** (ver [16](#16-limitaciones-conocidas--no-verificado)) |
+| Roles y base | Por `psql` (contraseña vía `.pgpass`, SQL por stdin): rol `parkos` `LOGIN SUPERUSER` (crea o altera) y `CREATE DATABASE parkos OWNER parkos` |
+| Cuenta local | `svc-parkos` (`New-LocalUser`; contraseña aleatoria de 32 caracteres, no se guarda; no expira; no puede cambiarla); se agrega a `SeBatchLogonRight` con `secedit`. Idempotente |
+| Certificado | `CN=ParkosEnvProtection` en `Cert:\LocalMachine\My` (`New-SelfSignedCertificate -Type DocumentEncryptionCert`), idempotente por *Subject*. Thumbprint en `secrets\env-cert-thumbprint.txt`. Lectura de la clave privada para `svc-parkos` (best-effort, solo avisa si falla) |
+| `.env` | Cifrado CMS (`Protect-CmsMessage`) en `secrets\.env`; claves en la sección [10](#10-variables-de-entorno-y-configuración) |
+| Variables de máquina | `PGPASSFILE` (ruta de `pgpass.conf`) y `PARKOS_API_ORIGIN=http://127.0.0.1:<puerto API>` |
+| `pg_partman` | Copia `pg_partman\extension\*` a `C:\Program Files\PostgreSQL\16\share\extension\`; `CREATE SCHEMA IF NOT EXISTS partman` y `CREATE EXTENSION IF NOT EXISTS pg_partman WITH SCHEMA partman`; verifica en `pg_extension` |
+| Tarea programada | `ParkosPgPartmanMaintenance`: diaria 02:00, ejecuta `psql.exe -w -p <puerto> -h 127.0.0.1 -U parkos_app -d parkos -c "CALL partman.run_maintenance_proc();"` como `svc-parkos` (`LogonType ServiceAccount`) |
+| Puertos | Postgres `5432` o `5433` (probados contra `127.0.0.1`); el puerto de la API se decide aquí (8000–8002) |
+| Rollback (cascada) | `winget uninstall --id PostgreSQL.PostgreSQL.16 --silent` si el método fue `winget`; borra `C:\Program Files\PostgreSQL\16` si fue `zip`; borra `$DataPath\pg-data`. **No** revierte la cuenta `svc-parkos`, el certificado, `secrets\` (`.env`, `jwt.key`, `pgpass.conf`), `PGPASSFILE`, `PARKOS_API_ORIGIN`, los archivos de `share\extension` ni la tarea programada |
+| Verificar | `Get-Service *postgres*`; conexión `psql -w -h 127.0.0.1 -p <puerto> -U parkos -d parkos -c "SELECT 1"`; `Get-ScheduledTask ParkosPgPartmanMaintenance` |
+
+> Las contraseñas **no** viajan por argumentos: `winget` usa `--optionfile`, `psql` recibe el SQL por stdin, `migrate.exe` y `seed.exe` reciben la conexión por variable de entorno de proceso (evita Event ID 4688/Sysmon/EDR).
+
+### 7.5 Etapa 2 — Migraciones
+
+| Aspecto | Detalle |
+|---|---|
+| Qué hace | `Invoke-MigrationsAndSeed`: desde `payload\services\migrate\migrate\` (porque `alembic.ini` usa rutas relativas al directorio actual) ejecuta `migrate.exe -c alembic.ini upgrade head` con `DATABASE_URL=postgresql://parkos:<pw>@127.0.0.1:<puerto>/parkos` y `PARKOS_APP_DB_PASSWORD=<pw app>` (variables de proceso, se eliminan en `finally`) |
+| Después | Agrega `parkos_app` a `pgpass.conf` (`Set-PgPassFile`) |
+| Gate / prerrequisito | Ver 7.2 |
+| Crea | Esquema `prod` y tablas; rol `parkos_app` (migración `0021`) |
+| Rollback (cascada) | `migrate.exe -c alembic.ini downgrade base`; si falla, solo `WARN` |
+| Verificar | `alembic upgrade head` terminó sin error; `psql -U parkos_app` conecta |
+
+### 7.6 Etapa 3 — UUID de sucursal
+
+| Aspecto | Detalle |
+|---|---|
+| Qué hace | `Update-SucursalUuidInEnvFile`: descifra `.env`, elimina la línea `PARKOS_SUCURSAL_UUID=` (la reescribe al final) y vuelve a cifrar. En el flujo guiado el UUID es el mismo ya escrito en la etapa 1; la etapa sirve para **corregir** un UUID mal tipeado en el menú sin reinstalar Postgres |
+| Mensajes | `UUID de sucursal confirmado: <UUID>` y la advertencia de que la fila de la sucursal llega por el sync (el instalador nunca la crea) |
+| Rollback | Ninguno |
+
+### 7.7 Etapa 4 — Seed de catálogos
+
+| Aspecto | Detalle |
+|---|---|
+| Qué hace | `Invoke-CatalogSeed`: carga el `.env` en variables de proceso del instalador; arranca `api-sucursal.exe` **del payload** como proceso oculto temporal (`logs\seed-api.out.log`, `logs\seed-api.err.log`); espera `GET /health` 200 (30 intentos × 1 s); ejecuta `seed.exe --api-base-url http://127.0.0.1:<puerto> --jwt-key-path <jwt.key> --sucursal-uuid <UUID>` con `DATABASE_URL` de proceso; detiene el temporal |
+| Qué siembra | Usuario administrador técnico `installer-seed@parkos.local` (rol `admin`, sin contraseña, con permiso `config_catalogo`) y los tipos de vehículo `carro`, `moto`, `bicicleta`, `patineta` (vía API, idempotente por consulta previa). `tipo_arqueo` e `impuestos` ya los siembran las migraciones |
+| Gate | Ver 7.2 |
+| Rollback | Ninguno (limitación documentada: no hay tracking de las filas creadas) |
+
+### 7.8 Etapa 5 — Servicio `ParkosApiSucursal`
+
+| Aspecto | Detalle |
+|---|---|
+| Qué hace | Copia `payload\services\api-sucursal\api-sucursal\*` a `InstallPath\api-sucursal\`; con `nssm.exe` del payload: `install`, `AppDirectory`, `AppStdout`/`AppStderr` (`logs\api-sucursal.out.log` / `.err.log`), rotación (`AppRotateFiles 1`, `AppRotateBytes 10485760`, `AppRotateOnline 1`), `Start SERVICE_AUTO_START`, `AppRestartDelay 1000`, `AppEnvironmentExtra` = líneas del `.env` descifrado; `Start-Service`; espera `/health` 200 hasta 30 s |
+| Cuenta del servicio | No se configura `ObjectName`: el servicio corre con la cuenta por defecto de NSSM (LocalSystem). `svc-parkos` **no** es la cuenta de los servicios |
+| Puerto | `PORT` del `.env` (8000, 8001 u 8002) |
+| Rollback (cascada) | `nssm stop ParkosApiSucursal` + `nssm remove ParkosApiSucursal confirm` |
+| Verificar | `Get-Service ParkosApiSucursal`; `Invoke-WebRequest http://127.0.0.1:<PORT>/health` → 200 |
+
+### 7.9 Etapa 6 — Servicio `ParkosJobSyncSucursal`
+
+| Aspecto | Detalle |
+|---|---|
+| Qué hace | Igual que la 5 para `job-sync-sucursal` (sin `AppRotateOnline`); **solo** `AppStdout` (`logs\job-sync.out.log`), sin `AppStderr`; agrega a `AppEnvironmentExtra` `PARKOS_SYNC_POLL_INTERVAL_S=10` y `PARKOS_SYNC_BATCH_SIZE=100`; espera hasta 30 s que el log contenga `sync_sucursal.`, `cycle_error` o `worker_started` |
+| Nota | `cycle_error` es **esperado** en una instalación sin emparejar (`PARKOS_SYNC_JWT_PATH ... missing - branch must pair first`): el chequeo solo confirma que el worker está vivo y en bucle |
+| Rollback (cascada) | `nssm stop` + `nssm remove ParkosJobSyncSucursal confirm` |
+
+### 7.10 Etapa 7 — App de escritorio
+
+| Aspecto | Detalle |
+|---|---|
+| Qué hace | Toma el primer `*.msi` de `payload\apps\` y ejecuta `msiexec /i "<msi>" /qn /l*v "<DataPath>\logs\electron-install.log"`. Si el código de salida no es 0, desinstala (`msiexec /x`) y falla; después verifica que exista en `HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*` un `DisplayName` que contenga `Parkos` |
+| Variables | La app lee `PARKOS_API_ORIGIN` de la variable de **máquina** (definida en la etapa 1) |
+| Rollback (cascada) | `msiexec /x "<msi>" /qn` |
+| No verificado | Carpeta de instalación y nombre exacto del acceso directo (los define el MSI) |
+
+### 7.11 Etapa 8 — Verificación final y módulo de gestión
+
+| Aspecto | Detalle |
+|---|---|
+| Qué hace | `Test-PostInstallation` (4 comprobaciones, ver [11](#11-verificación-post-instalación)) e `Install-ManagementModule`: copia `Parkos.psd1`, `Parkos.psm1` y `about_Parkos.help.txt` a `C:\Program Files\PowerShell\Modules\Parkos\1.0.0\`; copia `payload\services\doctor\doctor\*` a `InstallPath\doctor\` y `payload\nssm.exe` a `InstallPath\nssm.exe`; genera `$DataPath\manifest.sha256.json` (SHA256 de `api-sucursal.exe`, `job-sync-sucursal.exe`, `doctor.exe` instalados) |
+| Idempotencia | Si ya existe la versión `1.0.0` con el mismo `Parkos.psm1` (hash), no reinstala; si difiere, falla (sin versionado automático) |
+| Rollback | Ninguno (solo lectura salvo la copia del módulo) |
+
+### 7.12 Resumen de efectos del sistema por etapa
+
+| Etapa | Servicios | Cuentas | Variables de máquina | Tareas | Certificados | Logs |
+|---|---|---|---|---|---|---|
+| 1 | Postgres (nativo) | `svc-parkos` (local) | `PGPASSFILE`, `PARKOS_API_ORIGIN` | `ParkosPgPartmanMaintenance` | `CN=ParkosEnvProtection` | `installer-runs\*.log` |
+| 4 | (proceso temporal) | — | — | — | — | `seed-api.out.log`, `seed-api.err.log` |
+| 5 | `ParkosApiSucursal` | LocalSystem (default NSSM) | — | — | — | `api-sucursal.out.log`, `api-sucursal.err.log` |
+| 6 | `ParkosJobSyncSucursal` | LocalSystem | — | — | — | `job-sync.out.log` |
+| 7 | — | — | — | — | — | `electron-install.log` |
+| 8 | — | — | — | — | — | — |
+
+---
+
+## 8. Modos de ejecución y referencia de parámetros
+
+### 8.1 Modos
+
+| Modo | Cómo se activa | Qué hace |
+|---|---|---|
+| **Guiado** (default) | Sin switches | Flujo para el operador: pide solo el UUID; etapas 1–8 con "Paso N de M" |
+| **Menú** | `-Menu` | Menú de 9 etapas (0–8) más opciones `A/R/U/V/X/D/M/C/Q`; uso técnico. Sin rollback automático (el operador decide). Incompatible con `-Unattended` (`exit 2`) |
+| **Desatendido** | `-Unattended` | Cascada 0→8 sin ningún `Read-Host`, con rollback automático por etapa y log estructurado |
+| **Actualización** | `-Command Update` | `Invoke-ParkosUpdate` (sección [12.2](#122-actualización--command-update)) |
+| **Restauración** | `-Command Restore` | `Invoke-ParkosRestore` (sección [12.3](#123-restauración--command-restore)) |
+
+> `-Command Update` y `-Command Restore` **no** elevan ni relanzan en PowerShell 7: ejecútalos desde una consola de PowerShell 7 **ya elevada**.
+
+### 8.2 Parámetros (bloque `param` real de `parkos-installer.ps1`)
+
+El script usa `[CmdletBinding(SupportsShouldProcess)]`: aceptan también `-WhatIf` y `-Confirm` (solo `Update` y `Restore` consultan `-WhatIf`).
+
+| Parámetro | Tipo / default | Aplica a | Efecto |
+|---|---|---|---|
+| `-Command` | `Install` (default), `Update`, `Restore` | Todos | Selecciona el flujo |
+| `-InstallPath` | `C:\Program Files\Parkos` | Todos | Binarios, `releases\`, `nssm.exe`, `doctor\`. Se rechazan `C:\Windows`, `Program Files (x86)` y rutas UNC. **El módulo `Parkos` ignora este valor** (usa siempre los defaults) |
+| `-DataPath` | `C:\ProgramData\Parkos` | Todos | Secretos, logs, backups, `pg-data`, logs del instalador (mismas restricciones) |
+| `-SucursalUuid` | vacío | Install | UUID `8-4-4-4-12`. En guiado/menú, si falta o es inválido se pregunta; en `-Unattended` es **obligatorio** |
+| `-CloudApiUrl` | vacío → `PARKOS_CLOUD_API_URL` → `http://localhost:8000` | Install | URL del servidor cloud. Debe ser `http://` o `https://`; se quita la barra final. Nunca se pregunta |
+| `-Unattended` | switch | Install, Restore | Cascada sin prompts; en Restore exige `-UnattendedRestoreConfirmed` |
+| `-EulaAccepted` | switch | Install | Omite el prompt del EULA (guiado/menú); **obligatorio** con `-Unattended` |
+| `-MasterKeyPath` | vacío | Install | Archivo de la clave maestra a copiar a `payload\security\parkos-master.key` antes del pre-flight |
+| `-Menu` | switch | Install | Abre el menú de etapas |
+| `-IncludeBuild` | switch | Guiado | Ejecuta también la etapa 0 (descarga fuente y compila) |
+| `-SourceBranch` | `dev` | Etapa 0 | Rama de la que se descarga el fuente |
+| `-SkipStage` | `int[]`, vacío | Cascada (`-Unattended` y guiado) | Etapas 0–8 a omitir. Incluir `1` exige `-Force` |
+| `-StopAfterStage` | `int`, `-1` | Cascada | `-1` = todas; 0–8 corta después de esa etapa con `exit 0` |
+| `-Force` | switch | Update; cascada | En Update: omite solo el pre-check de salud. En cascada: permite `-SkipStage 1` |
+| `-PayloadPath` | vacío | Update | Carpeta con el payload **nuevo** (misma forma que `installer\payload\`) |
+| `-RollbackOnly` | switch | Update | Revierte a la release más reciente de `releases\` sin backup nuevo |
+| `-Version` | vacío | Restore | Nombre de carpeta bajo `$InstallPath\releases\` |
+| `-UnattendedRestoreConfirmed` | switch | Restore | Confirmación explícita de un restore desatendido |
+| `-RestoreDatabase` | switch | Restore | Además restaura la base desde `pre-update-<Version>-*.dump` |
+
+Nota: `-InstallPath`, `-DataPath`, `-SucursalUuid`, `-CloudApiUrl`, `-MasterKeyPath`, `-PayloadPath` se conservan en la elevación/relanzo en PowerShell 7 (se reconstruyen desde `$PSBoundParameters`).
+
+### 8.3 Parámetros obligatorios por modo
+
+| Modo | Obligatorios |
+|---|---|
+| Guiado | Ninguno (la clave maestra debe existir; el UUID se pregunta) |
+| Menú | Ninguno |
+| `-Unattended` | `-EulaAccepted`, `-SucursalUuid <UUID_SUCURSAL>`; clave maestra en su lugar (o `-MasterKeyPath`); en equipo sin toolchain, `-SkipStage 0`. `-CloudApiUrl` es opcional |
+| Update | `-PayloadPath` (salvo `-RollbackOnly`) |
+| Restore | `-Version`; con `-Unattended`, `-UnattendedRestoreConfirmed` |
+
+Ejemplo de instalación desatendida:
+
+```powershell
+pwsh -File .\parkos-installer.ps1 -Command Install -Unattended -EulaAccepted `
+    -SucursalUuid <UUID_SUCURSAL> -CloudApiUrl <URL_CLOUD> -MasterKeyPath <RUTA_CLAVE> -SkipStage 0
+```
+
+### 8.4 Códigos de salida
+
+| Flujo | Código | Significado |
+|---|---|---|
+| Guiado / `-Unattended` | `0` | Todas las etapas corrieron (u omitidas con `-SkipStage`), o corte deliberado con `-StopAfterStage` |
+| | `1` | Falló una etapa (rollback intentado); las siguientes no corren |
+| | `2` | Parámetros, URL o pre-flight inválidos: no se ejecutó nada |
+| Cualquier flujo | `2` | Elevación rechazada; `-Menu` con `-Unattended`; pre-flight fallido en menú |
+| EULA | `0` | Respuesta distinta de aceptar: `EULA no aceptada. Saliendo sin cambios.` |
+| `-Command Update` / `Restore` | `0` / `1` | `exit $result.ExitCode`. Un `throw` no capturado (p. ej. `-PayloadPath` inexistente) termina el proceso con el código de error por defecto de PowerShell (no definido por el instalador) |
+
+`Invoke-ParkosUnattendedCascade` nunca llama `exit`: devuelve el objeto y el bloque final del script lo traduce (para poder probarla con Pester).
+
+### 8.5 Formato del log de la cascada
+
+`$DataPath\installer-runs\<yyyyMMdd-HHmmss>.log` (uno por corrida), cada línea también a consola: `[yyyy-MM-ddTHH:mm:ss] [Nivel] Mensaje`. Niveles: `INIT`, `STAGE <n>`, `ROLLBACK`, `INSTALL`, `FAIL`. Secuencia típica: `[STAGE 1] Iniciando` → `[STAGE 1] [OK] <nombre>` → `[STAGE 1] Estado: Ok (Ns)`; falla: `[STAGE 2] [FAIL] <mensaje>` → `[ROLLBACK] [OK]` / `[FAIL]` → `[INSTALL] Exit code: 1`. El log no contiene contraseñas.
+
+---
+
+## 9. Mapa de directorios, archivos, permisos y secretos
+
+### 9.1 Árbol resultante (rutas por defecto)
+
+```
+<carpeta del instalador>\                          (medio de entrega; NO se instala)
+├── parkos-installer.ps1
+└── payload\                                       (ver sección 5)
+    └── security\parkos-master.key                 (el instalador no la borra)
+
+C:\Program Files\Parkos\                           (InstallPath)
+├── api-sucursal\                                  (bundle onedir + api-sucursal.exe)      [etapa 5]
+├── job-sync-sucursal\                             (bundle onedir + job-sync-sucursal.exe) [etapa 6]
+├── doctor\                                        (bundle onedir + doctor.exe)            [etapa 8]
+├── nssm.exe                                       (copia de payload\nssm.exe)             [etapa 8]
+└── releases\<yyyyMMdd-HHmmss>\                    (solo tras -Command Update)
+    ├── api-sucursal\   job-sync-sucursal\
+    └── apps\<nombre-original>.msi                 (MSI de la versión que arranca en esa actualización)
+
+C:\Program Files\PostgreSQL\16\                    (ruta fija; independiente de -InstallPath)
 ├── bin\ (psql.exe, pg_dump.exe, pg_restore.exe, initdb.exe)
-├── share\extension\                            (pg_partman--5.1.0.sql + .control)
-└── data\ (o la que decida el instalador de EDB/winget — ver Limitaciones, §10.9)
+├── share\extension\                               (pg_partman--5.1.0.sql + pg_partman.control)
+└── data\ ...                                      (si winget: la ubicación la decide el instalador de EDB; no verificado)
 
-C:\ProgramData\Parkos\                          (DataPath)
-├── pg-data\                                    (datos de Postgres — SOLO si se instaló vía ZIP; ver §10.9)
-├── secrets\                                    (ACL restringida a Administrators+SYSTEM)
-│   ├── .env                                    (cifrado CMS, certificado CN=ParkosEnvProtection)
-│   ├── jwt.key                                 (64 bytes aleatorios, firma JWT)
-│   ├── sync-agent.jwt                          (no la crea este instalador — la escribe el flujo de pairing, Fase 29)
-│   ├── pgpass.conf                              (credenciales formato .pgpass, ACL propia)
-│   └── env-cert-thumbprint.txt                 (thumbprint del certificado, solo diagnóstico)
+C:\Program Files\PowerShell\Modules\Parkos\1.0.0\  (Parkos.psd1, Parkos.psm1, about_Parkos.help.txt)  [etapa 8]
+
+C:\ProgramData\Parkos\                             (DataPath)
+├── pg-data\                                       (solo si Postgres se instaló por ZIP)
+├── secrets\
+│   ├── .env                                       (cifrado CMS, certificado CN=ParkosEnvProtection)
+│   ├── jwt.key                                    (64 bytes aleatorios; firma JWT)
+│   ├── pgpass.conf                                (formato .pgpass, 127.0.0.1:<puerto>:*:<rol>:<contraseña>, texto plano)
+│   ├── env-cert-thumbprint.txt                    (thumbprint del certificado; solo diagnóstico)
+│   └── sync-agent.jwt                             (NO lo crea el instalador; lo escribiría el pairing)
 ├── logs\
 │   ├── api-sucursal.out.log / api-sucursal.err.log
-│   ├── job-sync.out.log                        (job-sync-sucursal NUNCA tiene .err.log — ver §10)
-│   ├── seed-api.out.log / seed-api.err.log     (proceso temporal de la etapa 4)
-│   ├── electron-install.log
-│   └── module.log                              (log del módulo Parkos, best-effort)
+│   ├── job-sync.out.log                           (job-sync no tiene .err.log)
+│   ├── seed-api.out.log / seed-api.err.log        (proceso temporal de la etapa 4)
+│   ├── electron-install.log                       (log de msiexec)
+│   ├── module.log                                 (log del módulo Parkos, best-effort)
+│   └── backup.log                                 (backup diario)
 ├── backups\
 │   ├── pre-update-<versionSaliente>-<versionNueva>.dump
 │   ├── pre-restore-<Version>-<timestamp>.dump
-│   └── daily\backup-<timestamp>.dump           (retención abuelo-padre-hijo 7+4+1)
-├── scripts\Invoke-DailyBackup.ps1              (generado por Register-ParkosBackupTask)
-├── installer-runs\<timestamp>.log              (log estructurado de la cascada -Unattended)
-├── manifest.sha256.json                        (hashes SHA256 de los binarios instalados)
-├── current-version.txt                         (una línea, timestamp de la última actualización exitosa)
-├── auto-update-paused.flag                     (informacional; nada lo lee hoy — ver §10)
-└── pairing.json                                (leído por Test-Preflight y por el módulo al importarse;
-                                                  no lo escribe ningún código de este repositorio — ver §10)
+│   └── daily\backup-<timestamp>.dump              (retención abuelo-padre-hijo 7+4+1)
+├── scripts\Invoke-DailyBackup.ps1                 (generado por Register-ParkosBackupTask)
+├── installer-runs\<yyyyMMdd-HHmmss>.log          (log de la cascada guiada/desatendida)
+├── manifest.sha256.json                           (hashes de los binarios instalados; lo regenera Update/Restore)
+├── current-version.txt                            (SOLO tras el primer Update/Restore; la instalación no lo escribe)
+├── auto-update-paused.flag                        (informativo; lo escribe Restore, nadie lo lee)
+└── pairing.json                                   (no lo escribe ningún código de este repo; el pre-flight lo busca)
 ```
 
----
+### 9.2 Otros efectos fuera de las carpetas
 
-## 1bis. Flujo guiado (por defecto)
+| Elemento | Detalle |
+|---|---|
+| Servicios | `ParkosApiSucursal`, `ParkosJobSyncSucursal` (NSSM, auto-inicio); servicio nativo de PostgreSQL (si `winget`) |
+| Parámetros NSSM | Bajo `HKLM\SYSTEM\CurrentControlSet\Services\<servicio>\Parameters`, incluido `AppEnvironmentExtra` (el contenido del `.env` en texto plano; ver [15](#15-seguridad-y-cumplimiento)) |
+| Tareas programadas | `ParkosPgPartmanMaintenance` (02:00), `ParkosBackupDiario` (por defecto 03:00, opcional) |
+| Cuenta local | `svc-parkos` |
+| Certificado | `Cert:\LocalMachine\My`, `CN=ParkosEnvProtection` |
+| Variables de máquina | `PGPASSFILE`, `PARKOS_API_ORIGIN` |
+| Derecho de inicio de sesión | `SeBatchLogonRight` para `svc-parkos` (vía `secedit`) |
+| Registro de desinstalación | Entrada del MSI de `web_sucursal` (`DisplayName` contiene `Parkos`) |
+| Event Log | Origen `ParkosInstaller` en `Application` (EventId 9001, solo tras un `Update` exitoso, best-effort) |
+| Temporales | `%TEMP%\PowerShell-7.4.6-win-x64.msi` (no se elimina), `svc-parkos-rights.inf/.sdb` (se eliminan) |
 
-Ejecutar el instalador **sin ningún switch** (`parkos-installer.exe` o `pwsh .\parkos-installer.ps1`) inicia el flujo guiado, pensado para el operador de la sucursal: solo ejecuta pasos y escribe un único dato, el **UUID de la sucursal**. El menú de 9 etapas ya no es el comportamiento por defecto: se abre únicamente con `-Menu` (uso técnico). `-Menu` y `-Unattended` son incompatibles (`exit 2`).
+### 9.3 Puertos
 
-### Qué hace el flujo guiado, en orden
-
-1. `Invoke-ParkosGuidedInstall`: `Ensure-PowerShell7` + `Request-Elevation`. El relanzo (PowerShell 7 / administrador) **conserva todos los parámetros con nombre**: se reconstruyen desde `$PSBoundParameters` y se reenvían con `-EncodedCommand` (con `-File` los arreglos como `-SkipStage 2,7` llegaban aplanados como `27`). Las rutas `-MasterKeyPath` y `-PayloadPath` se convierten a absolutas porque el proceso elevado arranca en otro directorio.
-2. `Invoke-ParkosUnattendedCascade -Guided`:
-   - Verifica que el **payload esté compilado** (`Test-ParkosPayloadReady`). Si no, termina con `exit 2` **antes de pedir nada** y pide un instalador completo a soporte.
-   - **Pre-flight** (ver abajo), con la clave maestra como requisito duro.
-   - **EULA**: se muestra y se acepta con **Enter** (`-EulaAccepted` lo omite). Escribir `N` cancela sin cambios.
-   - **Rutas**: nunca se preguntan. Se usan `C:\Program Files\Parkos` y `C:\ProgramData\Parkos`, o `-InstallPath` / `-DataPath` si se pasaron (se siguen rechazando `C:\Windows`, `Program Files (x86)` y rutas UNC).
-   - **UUID de la sucursal**: único dato que se escribe. Forma estricta 8-4-4-4-12 hexadecimal; se toleran espacios alrededor y mayúsculas (se normaliza a minúsculas). Se vuelve a preguntar hasta **5 veces**; luego falla con `Demasiados intentos ...`. También puede venir por `-SucursalUuid`.
-   - Corre las etapas **1 a 8** mostrando `Paso N de M: <descripción en lenguaje llano>`. La **etapa 0** (git/pnpm/uv + build) **no corre** salvo `-IncludeBuild`; como el payload ya está compilado, la etapa 0 cuenta como `Ok` (los prerequisitos de las etapas 1 y 7 se cumplen).
-   - Si una etapa falla: se detiene, hace **rollback automático de esa etapa** y explica qué hacer (enviar el archivo de registro a soporte). Exit codes: `0` completo, `1` etapa fallida, `2` configuración/pre-flight inválidos.
-3. Al terminar, la ventana espera Enter para que el operador pueda leer el resultado.
-
-El registro de cada corrida queda en `$DataPath\installer-runs\<timestamp>.log`.
-
-### URL del servidor (cloud)
-
-Nunca se pregunta. Orden de resolución (`Resolve-ParkosCloudApiUrl`): parámetro `-CloudApiUrl` > variable de entorno `PARKOS_CLOUD_API_URL` (proceso, luego máquina, luego usuario) > `http://localhost:8000`. Debe ser `http://` o `https://`; si no, el instalador falla (`exit 2`) nombrando `PARKOS_CLOUD_API_URL`. La barra final se elimina.
-
-### Pre-flight del flujo guiado
-
-Además de las verificaciones de la sección 2:
-
-- **Conectividad**: se mide `host:puerto` de la URL del cloud (`Test-NetConnection`), **no** `github.com:443`. Si el servidor es el propio equipo (`localhost`/`127.0.0.1`) y no responde, solo se imprime `[AVISO]` (puede no estar encendido todavía) y la instalación continúa; si es remoto y no responde, **bloquea** con `[FALLO] Conexion con el servidor Parkos`.
-- **Clave maestra** (`payload\security\parkos-master.key`, >= 32 bytes): es el **único requisito duro** del flujo guiado. Sin ella el pre-flight **bloquea** con `[FALLO] Clave maestra de Parkos` y el mensaje accionable (pedirla a soporte por un canal seguro y copiarla a esa ruta, o usar `-MasterKeyPath`). En `-Menu` solo avisa. El instalador **nunca genera** claves.
-
-### Tabla de errores frecuentes (lo que ve el operador)
-
-| Qué ve el operador | Qué significa | Qué hacer |
+| Puerto | Uso | Origen |
 |---|---|---|
-| `Este instalador no trae los programas ya preparados ...` (exit 2) | El payload no está compilado | Pedir un instalador completo a soporte (o, en la máquina del técnico, correr con `-IncludeBuild`) |
-| `[FALLO] Clave maestra de Parkos` | Falta `parkos-master.key` o es demasiado corta | Pedir la clave a soporte y copiarla a la ruta indicada |
-| `[FALLO] Conexion con el servidor Parkos` | El servidor remoto no responde | Revisar red/internet y la variable `PARKOS_CLOUD_API_URL`; reintentar |
-| `[AVISO] No se pudo contactar al servidor Parkos en localhost:8000` | El servidor local no está encendido o es otro equipo | No bloquea; si el servidor está en otro equipo, definir `PARKOS_CLOUD_API_URL` |
-| `[FALLO] Permisos de administrador` | No se concedió el UAC | Volver a ejecutar y aceptar el aviso de permisos |
-| `Demasiados intentos con un codigo de sucursal invalido` | El UUID se escribió mal 5 veces | Copiar el UUID desde el panel de administración y reejecutar |
-| `No se pudo completar el paso N de M ...` (exit 1) | Falló una etapa; ya se deshizo | Enviar los mensajes y el archivo de registro a soporte |
-| `La direccion del servidor Parkos (...) no es valida` | `PARKOS_CLOUD_API_URL` mal escrita | Corregirla (debe empezar con `http://` o `https://`) |
+| `5432` o `5433` | PostgreSQL. El instalador no define `listen_addresses` (queda el valor por defecto del paquete; no verificado) | `Test-PostgresPorts`: el primero libre (probado en `127.0.0.1`) |
+| `8000`, `8001` o `8002` | `api-sucursal`. El código del servicio hace `uvicorn.run(host="0.0.0.0")` (`api_sucursal_main/app.py`): escucha en todas las interfaces; el instalador no configura el enlace ni el firewall | `Test-ApiPort`: el primero libre (probado en `127.0.0.1`) |
+| `<host>:<puerto>` de `PARKOS_CLOUD_API_URL` | Conexión saliente al servidor (pre-flight y sync) | Configuración |
 
----
+### 9.4 Permisos y manejo de secretos
 
-## 2. Modo interactivo (menú, `-Menu`)
-
-`Invoke-ParkosInstall` (invocado con `-Menu`; ya no es el comportamiento por defecto) ejecuta, en orden, antes de mostrar el menú:
-
-1. `Ensure-PowerShell7` — si corre bajo PowerShell 5.1, descarga el MSI de PowerShell 7.4.6, verifica su SHA256 (`ED331A04679B83D4C013705282D1F3F8D8300485EB04C081F36E11EAF1148BD0`), lo instala silenciosamente y relanza el script bajo `pwsh`.
-2. `Request-Elevation` — si no corre como administrador, se relanza con `Start-Process pwsh -Verb RunAs`. Si el usuario rechaza el UAC: `'Se requieren permisos de administrador para instalar Parkos.'` y `exit 2`.
-3. `Test-Preflight` — verificaciones bloqueantes (detalladas abajo). La clave maestra solo avisa en el menú.
-4. `Show-Eula` (Enter acepta).
-5. `Read-InstallPaths` (nunca pregunta: valores por defecto o parámetros).
-6. `Read-SucursalUuid` (único prompt de datos). La URL del cloud no se pregunta (ver sección 1bis).
-7. El bucle del menú (9 etapas numeradas + 8 opciones de letra + `Q`).
-
-### Pre-flight (`Test-Preflight`)
-
-| Verificación | Criterio |
-|---|---|
-| `Windows >= 10 21H2` | `[Environment]::OSVersion.Version.Build -ge 19044` |
-| `PowerShell >= 7` | `$PSVersionTable.PSVersion.Major -ge 7` |
-| `Permisos de administrador` | Rol `Administrator` del usuario actual |
-| `Espacio en disco (>=5GB)` | Espacio libre en la unidad de `-InstallPath` |
-| `Conexion con el servidor Parkos` | `Test-NetConnection` a `host:puerto` de la URL del cloud (`PARKOS_CLOUD_API_URL`, default `http://localhost:8000`), no a github.com. En `localhost` solo avisa; en un host remoto bloquea |
-| `Sin instalacion previa` | Ausencia de `$DataPath\pairing.json` |
-| `Clave maestra de Parkos` (**no bloqueante en `-Menu`; bloqueante en el flujo guiado**) | `payload\security\parkos-master.key` existe y mide >= 32 bytes. Si no, imprime `[AVISO]` con la ruta exacta y la remediación, pero **no** aborta el pre-flight (la etapa 0 no la necesita); la etapa 1 fallará sin ella. Se puede pasar `-MasterKeyPath <archivo>` para copiarla (validando el tamaño) antes del pre-flight |
-
-Si falla cualquiera, el modo interactivo imprime `'Pre-flight fallo. Instalacion abortada, sin cambios en el sistema.'` y hace `exit 2`. Si ya existe `pairing.json`, además imprime: `'Ya existe una instalacion de Parkos en este equipo.'` y `'Use Repair-ParkosInstall o Update-ParkosStack en vez de una instalacion limpia (Fases 25/26).'`.
-
-> **Comportamiento no verificado**: ningún código de `parkos-installer.ps1` ni de `Parkos.psm1` escribe `pairing.json`. Se lee (acá y al importar el módulo), pero su creación no está en este repositorio — presumiblemente la escribe `job-sync-sucursal` durante el flujo de pairing (Fase 29), fuera del alcance de estos archivos.
-
-### Las 9 etapas numeradas (0–8)
-
-Cada etapa es un ítem del menú que el operador puede correr o re-correr de forma independiente (DEC-INST-17): **el menú interactivo nunca hace rollback automático de una etapa fallida** — un `throw` dentro de una etapa se captura a nivel de menú, se marca la etapa como `Failed` y el operador decide si reintenta o resuelve el problema a mano. Esto es, textualmente, la decisión DEC-INST-17: *"Cada etapa mantiene su propio gate duro (lanza excepción en falla), capturado a nivel de menú para que una etapa fallida no mate toda la sesión."* La cascada `-Unattended` (§3) sí ejecuta rollback automático; el menú interactivo, nunca.
-
-| # | Nombre (texto del menú) | Qué hace | Prerequisito (gate real) | Rollback (solo en cascada, nunca en el menú) |
-|---|---|---|---|---|
-| 0 | Descargar ultima version de `dev` (o de `-SourceBranch`) y compilar artefactos | `git fetch/checkout/pull --ff-only` de la rama `-SourceBranch` (default `dev`) + `build-release.ps1` sin switches (build completo) en la máquina del **técnico** (DEC-INST-20), nunca en el equipo final | Requiere `git`, `pnpm`, `uv` en PATH | `$null` (de solo lectura sobre la máquina destino) |
-| 1 | Instalar base de datos (Postgres + roles + pg_partman) | Detecta puertos libres, instala Postgres, crea roles `parkos`/`parkos_app` con passwords derivadas, genera `jwt.key`, cifra el `.env`, instala `pg_partman`, registra el mantenimiento programado | Ninguno (primera etapa real) | Desinstala Postgres con el mismo método que lo instaló (`winget uninstall` o borrar ZIP) + borra `pg-data` |
-| 2 | Ejecutar migraciones de base de datos | Corre `migrate.exe -c alembic.ini upgrade head` | Gate interno: `if ($null -eq $script:roles) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }` — **no está en el mapa de prerequisitos visual del menú** (ver nota abajo) | `migrate.exe -c alembic.ini downgrade base`; si falla, solo `WARN`, nunca revienta el rollback |
-| 3 | Confirmar UUID de sucursal (creada desde el panel admin) | Reescribe la línea `PARKOS_SUCURSAL_UUID=` del `.env` | `if ($script:StageStatus.db -ne [ParkosStageState]::Ok) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }` | `$null` (solo reescribe una línea; DEC-INST-22 ya no inserta nada en `prod.sucursal`) |
-| 4 | Sembrar catalogos iniciales (arranca api-sucursal temporalmente) | Levanta `api-sucursal.exe` como proceso temporal (loopback), corre `seed.exe` contra la API real, lo detiene | `if ($script:StageStatus.migrate -ne [ParkosStageState]::Ok) { throw 'Corre primero "Ejecutar migraciones" (opcion 2).' }` | `$null` — **limitación documentada**: no existe tracking de qué filas creó esta corrida; un `DELETE` genérico sería peligroso |
-| 5 | Instalar servicio api-sucursal (NSSM) | Copia el bundle, registra `ParkosApiSucursal` con NSSM, arranca el servicio, espera `/health` 200 | Ninguno explícito (asume que el `.env` ya existe) | `nssm stop` + `nssm remove ParkosApiSucursal confirm` |
-| 6 | Instalar job de sincronizacion (NSSM) | Igual que la 5, para `ParkosJobSyncSucursal`, espera un ciclo de sondeo en el log | Ninguno explícito | `nssm stop` + `nssm remove ParkosJobSyncSucursal confirm` |
-| 7 | Instalar aplicacion de escritorio (web_sucursal) | Instala el MSI de `web_sucursal` silenciosamente | Ninguno explícito | `msiexec /x <msi> /qn` (recalcula la ruta del MSI de forma autónoma) |
-| 8 | Verificacion final (Postgres, JWT, servicios) | Corre `Test-PostInstallation` (4 checks) + `Install-ManagementModule` | Ninguno explícito | `$null` (de solo lectura) |
-
-**Nota verificada sobre el indicador `[BLOQ]`**: `Get-ParkosStageMenuLines` solo muestra la etiqueta `[BLOQ]` para las etapas 3 y 4 (mapeadas en `$stagePrereqs` dentro de `Invoke-ParkosInstall`), aunque la etapa 2 también tiene un gate real (`$script:roles -eq $null`). Esto significa que el menú **no advierte visualmente** que la etapa 2 va a fallar si se corre antes de la etapa 1 — el `throw` sí ocurre igual al intentarlo, solo falta el indicador previo. Confirmado comparando `Get-ParkosStageDefinitions` (etapa 2) contra el hashtable `$stagePrereqs` de `Invoke-ParkosInstall`.
-
-### Opciones de letra (A/R/U/V/X/D/M/C) y Q
-
-El módulo `Parkos` se importa perezosamente (lazy) la primera vez que se usa cualquiera de estas opciones, siempre desde el payload local (`$script:PayloadRoot\management\Parkos.psd1`), nunca desde la copia bajo `Program Files\PowerShell\Modules\Parkos\` (que recién existe al terminar la etapa 8).
-
-Gate de "instalación incompleta": si no las 9 etapas están en `Ok`, se pregunta `'La instalacion no esta completa. Continuar? (s/N)'` antes de ejecutar la opción — **excepto** `A`, `D` y `X`, que están **exentas** de este gate (funcionan siempre, incluso con una instalación incompleta o rota).
-
-| Letra | Acción real invocada | Confirmación interactiva | Exenta del gate de incompletitud |
-|---|---|---|---|
-| `A` | `Get-ParkosHealth -Detailed` | Ninguna | Sí |
-| `R` | `Repair-ParkosInstall` | `'Forzar sin confirmacion interactiva? (s/N)'` → `-Force` o sin él | No |
-| `U` | `Invoke-ParkosUpdate` (etiqueta del menú: "Update-ParkosStack" — **no existe ninguna función con ese nombre**; se invoca `Invoke-ParkosUpdate` seteando `$script:PayloadPath` antes, porque esa función es `param()`) | Pide `'Ruta del nuevo payload (-PayloadPath)'`; vacío cancela sin invocar nada | No |
-| `V` | `Invoke-ParkosRestore` (etiqueta del menú: "Restore-ParkosVersion" — mismo caso, no existe esa función) | Lista versiones en `$InstallPath\releases\`, pide `'Version a restaurar'`; vacío cancela | No |
-| `X` | `Uninstall-Parkos` (con o sin `-PurgeData` según `'Purgar tambien los datos? (s/N)'`) | La confirmación de doble palabra vive dentro de `Uninstall-Parkos` (ver §6) | Sí |
-| `D` | `Export-ParkosDiagnostics` | Ninguna | Sí |
-| `M` | `Register-ParkosBackupTask -DailyAt <hora>` (`'Hora diaria del backup [03:00]'`) | Ninguna | No |
-| `C` | `Test-CrashRecovery` | `'Esto reinicia Postgres a la fuerza. Continuar? (s/N)'` | No |
-| `Q` | Sale del bucle | Si la instalación está incompleta: `'La instalacion NO esta completa. Etapas pendientes: ... Salir de todos modos? (s/N)'` | — |
-
----
-
-## 3. Modo desatendido (`-Unattended`)
-
-`-Unattended -Command Install` **nunca** cae en `Invoke-ParkosInstall` (el menú interactivo, que siempre termina bloqueado en un `Read-Host`) — ejecuta `Invoke-ParkosUnattendedCascade`: las mismas 9 etapas definidas en `Get-ParkosStageDefinitions`, corridas automáticamente 0→8, sin ningún `Read-Host`.
-
-### Parámetros requeridos y validaciones (`Assert-ParkosCascadeParamsValid`)
-
-| Parámetro | Validación | Mensaje exacto si falla |
+| Archivo / objeto | ACL aplicada **por el instalador** | Notas |
 |---|---|---|
-| `-SkipStage` | Cada valor entre 0 y 8 | `"-SkipStage contiene un valor invalido ($stageNumber) - cada etapa debe estar entre 0 y 8."` |
-| `-StopAfterStage` | `-1` o entre 0 y 8 | `"-StopAfterStage invalido ($StopAfterStage) - debe ser -1 (correr todas las etapas) o un valor entre 0 y 8."` |
-| `-SkipStage` conteniendo `1` (Postgres) | Requiere `-Force` | `'Saltar la etapa 1 (Postgres) puede dejar el resto de las etapas sin base de datos - si estas seguro, agrega -Force.'` (con `-Force`: solo advierte, no bloquea) |
-| `-Unattended` sin `-EulaAccepted` | — | `'-Unattended requiere -EulaAccepted (ver Show-Eula).'` |
-| `-Unattended` sin `-CloudApiUrl` | Ya no es obligatorio | Se toma de `PARKOS_CLOUD_API_URL` o `http://localhost:8000` |
+| `secrets\pgpass.conf` | `icacls /inheritance:r /grant:r Administrators:F SYSTEM:F` | Contiene las contraseñas de `postgres`, `parkos` y `parkos_app` en texto plano |
+| `secrets\` (directorio), `.env`, `jwt.key` | **Ninguna explícita**: heredan la ACL de `C:\ProgramData` | El endurecimiento del directorio (`Set-ParkosSecretsAcl`) solo lo aplica `Repair-ParkosInstall` (E4) y únicamente cuando el diagnóstico de salud no es 0. Verificar con `Test-ParkosSecretsAcl`. Ver [16](#16-limitaciones-conocidas--no-verificado) |
+| `.env` | Cifrado CMS contra `CN=ParkosEnvProtection` | Se detecta por contenido (`-----BEGIN CMS-----`), no por nombre |
+| Clave privada del certificado | `icacls <clave> /grant svc-parkos:(R)` (best-effort) | Permite al backup diario descifrar el `.env` |
+| `scripts\Invoke-DailyBackup.ps1` | `Administrators:F SYSTEM:F svc-parkos:RX` | Lo genera `Register-ParkosBackupTask` |
 
-`-SucursalUuid` **no** se revalida en `Assert-ParkosCascadeParamsValid` — `Read-SucursalUuid` ya lanza su propia excepción (`'-SucursalUuid es obligatorio en modo -Unattended (la sucursal se crea desde el panel admin, no desde este instalador).'`) para evitar duplicar la misma validación en dos lugares.
-
-### Qué pasa si falla una etapa: rollback automático por etapa
-
-A diferencia del menú interactivo, la cascada sí ejecuta el `Rollback` de la etapa fallida (si existe) antes de abortar. Tabla de lo que hace cada `Rollback` real (ver también la tabla de §2):
-
-| Etapa | Rollback real |
-|---|---|
-| 0 (build) | Ninguno (`$null`) |
-| 1 (db) | `winget uninstall --id PostgreSQL.PostgreSQL.16 --silent` (si se instaló por winget) o borrar el directorio del ZIP (si se instaló por ZIP) — decidido por `$script:PostgresInstallMethod`; siempre borra `pg-data` |
-| 2 (migrate) | `migrate.exe -c alembic.ini downgrade base`; si falla, solo `WARN`, nunca revienta el rollback de la cascada |
-| 3 (sucursal) | Ninguno |
-| 4 (seed) | Ninguno (limitación documentada, ver §10) |
-| 5 (api) | `nssm stop` + `nssm remove ParkosApiSucursal confirm` |
-| 6 (job) | `nssm stop` + `nssm remove ParkosJobSyncSucursal confirm` |
-| 7 (electron) | `msiexec /x <msi> /qn` (recalcula la ruta del MSI de forma autónoma — un `Rollback` corre en su propio scope hijo, no ve variables locales de su `Action` sibling) |
-| 8 (verify) | Ninguno |
-
-Si el propio `Rollback` falla, se registra como `[FAIL]` en el log pero **no** interrumpe el reporte final de la etapa que falló originalmente.
-
-### Exit codes
-
-| Código | Significado |
-|---|---|
-| `0` | Las 9 etapas corrieron u omitieron explícitamente (`-SkipStage`) sin fallos, o la cascada se cortó deliberadamente por `-StopAfterStage` |
-| `1` | Una etapa falló a mitad de la cascada (con su `Rollback` ya intentado, haya tenido éxito o no); las etapas siguientes nunca corren |
-| `2` | Validación de parámetros o pre-flight fallidos — nada se ejecutó todavía |
-
-El wrapper delgado del dispatcher final (`if ($MyInvocation.InvocationName -ne '.') { ... }`) es el único lugar del archivo que traduce el `ExitCode` devuelto a un `exit` real de proceso — `Invoke-ParkosUnattendedCascade` en sí nunca llama `exit` (para seguir siendo testeable bajo Pester, que no intercepta un `exit` real de forma confiable).
-
-### Formato del log (`$DataPath\installer-runs\<timestamp>.log`)
-
-Un solo archivo por corrida completa (el timestamp se fija una vez, al arrancar la cascada). Cada línea, escrita a consola y a archivo simultáneamente:
-
-```
-[yyyy-MM-ddTHH:mm:ss] [Level] Message
-```
-
-Niveles usados: `INIT`, `STAGE <n>`, `ROLLBACK`, `INSTALL`. Ejemplo de secuencia para una etapa exitosa: `[STAGE 1] Iniciando` → `[STAGE 1] [OK] Instalar base de datos...` → `[STAGE 1] Estado: Ok (Ns)`. Para una etapa fallida: `[STAGE 2] [FAIL] <mensaje>` → `[ROLLBACK] [OK]`/`[FAIL] <mensaje>` → `[INSTALL] Exit code: 1`.
+`Test-ParkosSecretsAcl` considera correcta la ACL de `secrets\` cuando solo `BUILTIN\Administrators` y principales `NT AUTHORITY\*` tienen acceso.
 
 ---
 
-## 4. `-Command Update`
+## 10. Variables de entorno y configuración
 
-`Invoke-ParkosUpdate` reemplaza binarios ya instalados por un payload nuevo (compilado en otra máquina con `build-release.ps1`), con backup obligatorio y rollback automático ante cualquier falla posterior al reemplazo.
+### 10.1 Cómo se resuelve la URL del servidor
 
-### Secuencia completa
+Orden (`Resolve-ParkosCloudApiUrl`): `-CloudApiUrl` > `PARKOS_CLOUD_API_URL` (se lee del proceso, luego de la máquina y luego del usuario) > `http://localhost:8000`. Debe ser `http://` o `https://`. Nunca se pregunta.
 
-| Paso | Qué hace | Se puede omitir? |
-|---|---|---|
-| **PRE-CHECK** | Valida `-PayloadPath`; si no hay `-Force`, importa el módulo `Parkos` y corre `Get-ParkosHealth` — si `ExitCode -eq 2`, aborta (ver mensaje abajo) | `-Force` omite solo este pre-check, nunca el backup ni la verificación de integridad |
-| **BACKUP** | `pg_dump -Fc` del esquema completo a `$DataPath\backups\pre-update-<versionSaliente>-<versionNueva>.dump`; verifica con `pg_restore --list` que tenga al menos un objeto | Nunca (corre incluso con `-Force`) |
-| **STOP** | `Stop-ParkosServicesInOrder` (job de sync primero, luego api) | No |
-| **VERIFY BINARIES** | Valida cada archivo del payload nuevo contra `manifest.sha256.json` (claves = rutas relativas, DEC-INST-26) | No |
-| **REPLACE** | Mueve los binarios actuales a `releases\<versionSaliente>\`, copia los nuevos, rota a conservar solo las 2 releases más recientes, regenera `manifest.sha256.json`, archiva el MSI nuevo bajo `releases\<versionNueva>\apps\` | No |
-| **MIGRATE** | `migrate.exe -c alembic.ini upgrade head` del payload **nuevo**, recuperando la password del superusuario `parkos` desde `pgpass.conf` (DEC-INST-25) | No |
-| **RESTART** | `Start-ParkosServicesInOrder` (api primero, luego job de sync) | No |
-| **SMOKE TEST** | `GET /health` (200 esperado) + `GET /api/v1/sync/hello` (público, sin auth — DEC-INST-27) | No |
-| **SUCCESS** | Escribe el Event Log (`ParkosInstaller`, EventId 9001, best-effort) y sobreescribe `current-version.txt` con la versión nueva | — |
+### 10.2 Contenido del `.env` (`Write-RuntimeEnvFile`, orden exacto)
 
-### Rollback tier-1 vs tier-2
-
-- **Tier-1** (solo si falla **VERIFY BINARIES**): REPLACE todavía no corrió — nada cambió en disco ni en la base de datos. La única recuperación es reiniciar los servicios que STOP acababa de detener (`Start-ParkosServicesInOrder`). **Nunca** se llama al rollback completo acá.
-- **Tier-2** (si falla **MIGRATE**, **RESTART** o **SMOKE TEST**): REPLACE ya corrió. Se ejecuta `Invoke-ParkosUpdateFullRollback`: `pg_restore --clean --if-exists` del dump de backup, mueve los binarios desde `releases\<versionSaliente>\` de vuelta a su lugar, regenera el manifest y reinicia los servicios.
-
-### `-WhatIf` / `-RollbackOnly` / `-Force`
-
-- **`-WhatIf`**: imprime los 9 nombres de paso con `[WHATIF]` y retorna `{ExitCode=0; Detail='WhatIf: ningun paso se ejecuto realmente.'}` sin tocar nada.
-- **`-RollbackOnly`**: ignora todo lo anterior — mueve los binarios desde la release más reciente bajo `releases\` de vuelta a su lugar (sin backup nuevo, sin verificar un payload nuevo), regenera el manifest y reinicia servicios. Si no hay releases previas: `"No hay releases previas en $releasesPath - no hay nada a lo cual revertir."`
-- **`-Force`**: omite únicamente el pre-check de salud (`Get-ParkosHealth`); nunca omite el backup ni la verificación de integridad del payload.
-
-### Exit codes
-
-`Invoke-ParkosUpdate` solo devuelve `0` (éxito) o `1` (fallo, vía el objeto `{ExitCode;Detail}`) por su ruta estructurada. Una falla en **PRE-CHECK** (p. ej. `-PayloadPath` vacío/inexistente, o `Get-ParkosHealth` crítico sin `-Force`) es un `throw` **no capturado** dentro de la función — el proceso termina con el exit code por defecto de PowerShell ante una excepción no manejada, no con un código 0/1/2 documentado explícitamente (a diferencia de la cascada de instalación, que sí define 0/1/2).
-
----
-
-## 5. `-Command Restore`
-
-`Invoke-ParkosRestore` revierte la instalación a una versión previa archivada bajo `$InstallPath\releases\<Version>\` — el mismo árbol que REPLACE de `Invoke-ParkosUpdate` ya escribe (DEC-INST-30; **nunca** bajo `$DataPath`).
-
-### Flujo completo
-
-1. Valida `-Version` (obligatorio): `'-Version es obligatorio para -Command Restore (ejemplo: -Version 20250101-000000).'`
-2. Valida que `releases\<Version>\` exista: `"No existe la version '$Version' en $releasesPath. Versiones disponibles: $availableText."`
-3. **Confirmación de doble paso**: interactivamente, la palabra exacta `RESTAURAR` (`"Esto va a restaurar Parkos a la version '$Version'. Escriba RESTAURAR para continuar (cualquier otra respuesta cancela sin tocar nada)"`); en modo `-Unattended`, el switch explícito `-UnattendedRestoreConfirmed` (sin él: `'-UnattendedRestoreConfirmed es obligatorio junto con -Unattended para -Command Restore (evita que un flag copiado por error dispare un restore desatendido).'`).
-4. `-WhatIf`: retorna sin ejecutar nada real.
-5. Escribe `$DataPath\auto-update-paused.flag` (timestamp + versión restaurada — **puramente informacional**, nada lo lee hoy).
-6. **STOP**: `Stop-ParkosServicesInOrder`.
-7. **BACKUP**: `pg_dump` previo al restore (`pre-restore-<Version>-<timestamp>.dump`).
-8. **REPLACE BINARIES**: copia `api-sucursal`/`job-sync-sucursal` desde `releases\<Version>\` — **siempre** se revierten; si falta alguno: `"Falta $releaseBundle - la version '$Version' archivada no tiene este binario disponible."` Regenera el manifest y sobreescribe `current-version.txt`.
-9. **RESTORE DATABASE** (solo con `-RestoreDatabase`, default `$false`): busca en `$DataPath\backups\` el dump cuyo nombre empiece **exactamente** con `pre-update-<Version>-`. Si hay varios, usa el más reciente por nombre. Si no hay ninguno que matchee, **nunca adivina** con otro dump — advierte y continúa sin tocar la base de datos.
-10. **REINSTALL MSI** (best-effort): si existe `releases\<Version>\apps\*.msi`, desinstala la versión actual (`Uninstall-ParkosElectron`) e instala la archivada. Si no existe el MSI archivado (caso del §siguiente), advierte y continúa sin revertir la app de escritorio.
-11. **RESTART**: `Start-ParkosServicesInOrder`.
-
-### Heurística real de `-RestoreDatabase`
-
-El dump debe matchear el patrón `pre-update-<Version>-*.dump` **exactamente** — ese es el dump que `Invoke-ParkosUpdate` tomó justo *antes* de actualizar *desde* esa versión, representando su estado real. No existe una heurística de "usar el dump más reciente que sea" como fallback.
-
-### El caso del MSI no archivado
-
-Solo las versiones archivadas **después** de DEC-INST-28 tienen un MSI bajo `releases\<version>\apps\`. Para una versión archivada antes de ese cambio, `Invoke-ParkosRestore` advierte (`Write-Host -ForegroundColor Yellow`) y continúa sin revertir la app de escritorio — no es un aborto, es una limitación conocida y documentada en el propio código.
-
-### Exit codes
-
-Igual que `Invoke-ParkosUpdate`: `0` éxito, `1` fallo (vía `{ExitCode;Detail}`, capturado por un único `try/catch` que envuelve todo el cuerpo posterior a la confirmación). Una cancelación por el operador (respuesta distinta de `RESTAURAR`) devuelve `{ExitCode=0; Detail='Restore cancelado por el operador antes de cualquier cambio.'}` — no es un fallo.
-
----
-
-## 6. Módulo `Parkos` (ciclo de vida post-instalación)
-
-Manifiesto (`Parkos.psd1`): `ModuleVersion = '1.0.0'`, `PowerShellVersion = '7.0'`, 8 funciones exportadas. Instalado en `C:\Program Files\PowerShell\Modules\Parkos\1.0.0\`.
-
-### `Get-ParkosHealth [-Detailed]`
-
-Corre 6 checks (Postgres alcanzable, servicio `ParkosApiSucursal`, servicio `ParkosJobSyncSucursal`, `/health` 200, `doctor.exe`, espacio en disco: `FAIL` bajo 5 GB libres, `WARN` si queda <=10%). El servicio de sync es el **único no crítico**: detenido es `WARN`, no `FAIL`. Si no hay instalación ni `.env`, reporta una sola línea `[FAIL] Parkos no esta instalado` (ExitCode 2, `NotInstalled=$true`). Devuelve `{ExitCode; Checks}` y además setea `$global:LASTEXITCODE`.
-
-Regla de exit code: `0` si los 6 checks están OK, `1` si hay al menos un `WARN` y cero `FAIL`, `2` si hay al menos un `FAIL`.
-
-### `Repair-ParkosInstall [-Force] [-WhatIf]`
-
-Requiere administrador (`throw 'Repair-ParkosInstall requiere permisos de administrador.'`). Si `Get-ParkosHealth` ya reporta `ExitCode -eq 0`: `'[Parkos] Instalacion saludable, nada que reparar.'`, retorna `ExitCode=0`.
-
-La detección de los 7 escenarios corre siempre (incluso bajo `-WhatIf`); el auto-fix de cada uno corre en orden E1→E7, salvo `-WhatIf` (solo reporta) o que el operador decline el prompt `'Reparar? (s/N)'` (salvo `-Force`).
-
-| Escenario | Qué detecta | Auto-fix aplicado | ¿Aborta el resto de la reparación? |
-|---|---|---|---|
-| **E1** | Registro NSSM faltante para `ParkosApiSucursal` y/o `ParkosJobSyncSucursal` | Re-registra con `nssm.exe` (mismos parámetros que la instalación original, leídos del `.env` existente) | No |
-| **E2** | Un servicio registrado existe pero no está `Running` (corre para CUALQUIER servicio detenido, incluidos los que E1 acaba de registrar) | `Start-Service` con 3 reintentos, backoff 1/5/30s; para `ParkosApiSucursal` valida `/health` 200, para el de sync solo el estado del servicio | No (si tiene éxito) — si los 3 reintentos se agotan, **escala a E7** |
-| **E3** | Hash SHA256 de un binario instalado no coincide con `manifest.sha256.json` | Busca en `releases\` (más reciente primero) una copia que coincida y la restaura | No — si no hay release disponible, queda como `WARN` no reparado, continúa con el resto |
-| **E4** | ACL de `secrets\` expone un principal distinto de `BUILTIN\Administrators` o `NT AUTHORITY\*` | `Set-ParkosSecretsAcl` (re-aplica `icacls /inheritance:r /grant:r Administrators:F SYSTEM:F /T`) | No |
-| **E5** | `.env` ausente o no parseable | Busca el backup `*.env*` más reciente en `backups\` y lo restaura | No — si no hay backup, queda como `WARN` no reparado, continúa con el resto |
-| **E6** | La base de datos falla la verificación SQL de integridad (`SELECT 1` / `SELECT current_user = 'parkos_app'`) | Ninguno — **aborta** el resto de la reparación, llama `Export-ParkosDiagnostics` | **Sí** — `ExitCode=3` |
-| **E7** | Los 3 reintentos de E2 se agotaron sin que el servicio arrancara | Ninguno — **aborta** el resto, llama `Export-ParkosDiagnostics` | **Sí** — `ExitCode=3` |
-
-Si `Get-ParkosHealth` reportó fallas pero ningún escenario E1-E6 aplica: `'[Parkos] Get-ParkosHealth reporto fallas pero ningun escenario E1-E6 conocido aplica; no hay auto-fix disponible.'`, `ExitCode=3`.
-
-### `Uninstall-Parkos [-PurgeData] [-UnattendedPurgeConfirmed] [-Unattended]`
-
-Requiere administrador **siempre**, con o sin `-PurgeData` (DEC-INST-36 — desregistrar servicios NSSM y la tarea programada ya exigen admin de por sí). Confirmación de doble palabra: `DESINSTALAR` (sin purga) o `CONFIRMAR` (con `-PurgeData`); en `-Unattended` con `-PurgeData` exige además `-UnattendedPurgeConfirmed`.
-
-Siempre borra (con o sin `-PurgeData`): servicios NSSM, tarea `ParkosPgPartmanMaintenance`, MSI de `web_sucursal`, `InstallPath` completo (binarios + `releases\` — DEC-INST-37: `releases\` vive bajo `InstallPath`, no se puede preservar por separado) y, al final, el propio directorio del módulo.
-
-Solo con `-PurgeData` borra además: `logs\`, `pg-data\` (bajo `DataPath`), `backups\`, `secrets\`, `installer-runs\`, la tarea `ParkosBackupDiario` (si existe), el usuario local `svc-parkos`, y el servicio + carpeta de instalación de Postgres.
-
-Cada paso corre en su propio `try/catch`: un paso que falla se registra como advertencia y no frena el resto. `ExitCode=1` si hubo alguna advertencia, `0` si todo se limpió sin errores.
-
-### `Export-ParkosDiagnostics [-OutputPath]`
-
-**No** exige administrador (el plan lo pide así explícitamente); sin esos permisos, `secrets\` queda inaccesible por su propia ACL y los archivos que dependen de leerlo (`doctor.json`, `pgsql-roles.txt`, `pgsql-databases.txt`, `env-redacted.txt`) se omiten con advertencia, nunca con `throw`.
-
-Genera un ZIP (default: `<Escritorio>\parkos-diag-<timestamp>.zip`) con 12 artefactos: `versions.txt`, `health.txt`, `doctor.json`, `services.txt`, `postgres-config.txt`, `pgsql-roles.txt`, `pgsql-databases.txt`, `logs\` (3 archivos), `nssm-dump-api.txt`, `nssm-dump-job.txt`, `env-redacted.txt`, `eventlog.csv`. Cualquier fuente individual ausente se omite con advertencia, nunca aborta el export completo.
-
-La única razón real de aborto es el **gate de seguridad final** (`Test-ParkosDiagnosticsContainSecrets`): si algún archivo "ya redactado" todavía contiene un valor sin forma de placeholder `<redactado, N caracteres>`, hace `throw` explícito **antes** de `Compress-Archive` — nunca se genera un ZIP con un posible secreto adentro.
-
-### `Register-ParkosBackupTask [-DailyAt '03:00']`
-
-Requiere administrador. Precondiciones, en orden (cualquiera no cumplida hace `throw`, nunca continúa en silencio):
-
-1. Postgres corriendo + `parkos_app` con acceso real (`SELECT 1`).
-2. Espacio libre en el disco de `DataPath` superior al doble del tamaño estimado de la base (`pg_database_size('parkos')`).
-3. El usuario `svc-parkos` ya debe existir (lo crea `Ensure-ServiceAccount` del instalador — este cmdlet nunca lo crea).
-
-Genera `$DataPath\scripts\Invoke-DailyBackup.ps1` (script standalone, ACL `Administrators:F SYSTEM:F svc-parkos:RX`), registra la tarea `ParkosBackupDiario` (`ServiceAccount` = `svc-parkos`, `RunOnlyIfNetworkAvailable=$false`), y corre un **backup de prueba inmediato** — si falla, desregistra la tarea (best-effort) y hace `throw`, nunca deja `ParkosBackupDiario` apuntando a un script sin validar.
-
-El script generado aplica la retención abuelo-padre-hijo (7+4+1) **antes** de generar el dump nuevo de cada corrida.
-
-### `Test-CrashRecovery [-TimeoutSeconds 30]`
-
-Requiere administrador. **Gate bloqueante** (antes de tocar cualquier proceso): exige `fsync` y `full_page_writes` efectivamente en `on` (línea sin comentar, valor `on`) en `postgresql.conf`; si no, `throw "Configuracion insegura, abortando: ..."` — nunca llega a matar el proceso de Postgres.
-
-Simula un corte abrupto: abre una transacción de prueba en segundo plano (`pg_sleep(2)`), espera ~1s, mata el proceso de Postgres a la fuerza (`Stop-Process -Force`, PID resuelto vía `Get-CimInstance Win32_Service`), reinicia el servicio, espera hasta `-TimeoutSeconds` a que vuelva a aceptar conexiones, y verifica que la fila de prueba sobrevivió (recuperación WAL). `ExitCode=0` si la fila sobrevivió, `1` si el puerto no respondió a tiempo o la fila no coincide.
-
-### `Get-ParkosVersion`
-
-**Sigue siendo un placeholder de PR1, no implementado.** El cuerpo real es:
-
-```powershell
-Write-Host '[Parkos] Get-ParkosVersion aun no esta implementado (placeholder PR1).' -ForegroundColor Yellow
-return
-```
-
-No reporta ninguna versión real hoy, pese a estar exportado en el manifiesto y a que `Export-ParkosDiagnostics` lo invoca para `versions.txt` (donde termina escribiendo ese mismo texto de placeholder).
-
-### `Test-ParkosSecretsAcl`
-
-Verifica que el ACL de `DataPath\secrets` solo otorgue acceso a `BUILTIN\Administrators` o cualquier principal `NT AUTHORITY\*`. `ExitCode=0` si es así, `1` si hay un principal adicional (usuario interactivo, dominio, `Everyone`, `BUILTIN\Users`, etc.).
-
----
-
-## 7. Seguridad
-
-### Cifrado CMS del `.env`
-
-El `.env` de runtime se cifra con **CMS** (Cryptographic Message Syntax) contra un certificado de máquina `CN=ParkosEnvProtection` (`Protect-CmsMessage`/`Unprotect-CmsMessage`), no con DPAPI (no existe una API DPAPI de alcance de máquina expuesta por ningún cmdlet nativo — `ConvertTo-SecureString` solo cifra con alcance de usuario, inútil para un archivo que `svc-parkos` necesita leer).
-
-`Get-OrCreateParkosEnvCert` es idempotente por `Subject` exacto (nunca por thumbprint): busca primero en `Cert:\LocalMachine\My` antes de crear uno nuevo con `New-SelfSignedCertificate -Type DocumentEncryptionCert` (el único tipo que `Protect-CmsMessage` acepta como destinatario válido). Si el certificado no existe al momento de escribir el `.env`:
-
-```
-No se encontro el certificado 'CN=ParkosEnvProtection' en Cert:\LocalMachine\My - corre Get-OrCreateParkosEnvCert antes de escribir el .env (el cifrado CMS del runtime env depende de el).
-```
-
-`Grant-ParkosEnvCertKeyAccess` intenta otorgar lectura de la clave privada a `svc-parkos` (necesaria para que el backup diario, corriendo bajo esa cuenta, pueda descifrar el `.env`) — es **best-effort**: si falla, solo advierte, nunca bloquea la instalación.
-
-`Read-ParkosEnvLines` (instalador) / `Import-ParkosEnvFile` (módulo) detectan CMS vs. texto plano **por contenido** (encabezado `-----BEGIN CMS-----`), nunca por convención de nombre — así un `.env` en texto plano de una instalación anterior sigue siendo legible.
-
-### Gate de fortaleza/denylist del JWT
-
-`Test-JwtSecretGate` exige: (a) archivo de al menos 32 bytes, (b) hash SHA256 fuera de una denylist de 6 secretos de desarrollo/placeholder conocidos (`_DEFAULT_DEV_SECRET` real del backend, `dev-secret-change-me`, `changeme`, `insecure-default-key`, `test-secret-key`, `secret`). Mensajes exactos: `'Secreto JWT demasiado corto. Regenerar.'` / `'Secreto JWT es uno de desarrollo conocido. Regenerar.'`. Deliberadamente **no** implementa la allowlist de secretos buenos que pedía el plan original (HU-F27.3-T3): lógicamente incoherente para un secreto que `New-JwtSigningKey` genera aleatorio (64 bytes) en cada instalación.
-
-### Passwords derivadas (HMAC)
-
-Las 3 passwords de Postgres (`postgres` bootstrap, superusuario `parkos`, runtime `parkos_app`) ya **no** son aleatorias — se derivan determinísticamente (DEC-INST-42):
-
-```
-password = Base64(HMAC-SHA256(clave_maestra, "<uuid_sucursal>:<purpose>")) con '+','/','=' reemplazados por 'x'
-```
-
-`Purpose` ∈ `{'postgres-bootstrap', 'parkos-superuser', 'parkos-app'}` — distinto por rol, garantizando que las 3 nunca coincidan entre sí aunque compartan UUID y clave maestra. La clave maestra (`installer/payload/security/parkos-master.key`, ≥32 bytes) es un secreto de la **empresa**, no de la instalación: nunca se genera automáticamente ni se versiona en git; `build-release.ps1` hace `throw` si falta antes de un build real. Motivo: el UUID de sucursal no es secreto (aparece sin redactar en `env-redacted.txt` y en el panel admin) — derivar solo del UUID permitiría a cualquiera con el UUID reconstruir la password real.
-
-### ACL de `secrets\`
-
-`icacls $Path /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F' /T` — rompe la herencia y deja acceso exclusivo a Administradores + SYSTEM sobre todo el árbol `secrets\`. Verificable con `Test-ParkosSecretsAcl` y auto-reparable con `Repair-ParkosInstall` (escenario E4).
-
-### Herramienta de soporte `Get-ParkosSupportPassword.ps1`
-
-Uso **exclusivo** del equipo de soporte, ejecutada en la máquina **propia** de soporte — nunca en la máquina de un cliente. Reconstruye las 3 passwords derivadas a partir de `-SucursalUuid` (no secreto) y `-MasterKeyPath` (obligatorio, sin default — copia propia de soporte de la clave maestra, obtenida por un canal seguro de la compañía, fuera del alcance del script).
-
-Reusa `New-ParkosDerivedPassword` vía **dot-source** de `parkos-installer.ps1` (`. (Join-Path $PSScriptRoot '..\parkos-installer.ps1')`) — el guard `if ($MyInvocation.InvocationName -ne '.')` al final de ese archivo evita que el dot-source dispare el menú real.
-
-Modelo de amenaza / comportamiento:
-
-- Por defecto (**sin** `-Reveal`): cada password se copia al portapapeles, una a la vez — **nunca se imprime en pantalla**. Con `-Purpose all` (default), pide confirmar con Enter entre cada password (salvo la última) para no perder una que el operador de soporte todavía no pegó.
-- Con `-Reveal`: imprime la tabla completa en texto plano (advirtiendo que queda en el historial de la consola) — pensado para sesiones sin portapapeles disponible (ej. SSH headless).
-- Ninguna password se escribe jamás a disco, ni siquiera temporalmente.
-
----
-
-## 8. Catálogo de errores/excepciones
-
-Cada entrada cita el mensaje **exacto** (interpolaciones de PowerShell tal como aparecen en el código) y la función donde ocurre.
-
-### 8.1 Elevación, PowerShell 7, pre-flight, EULA, rutas
-
-| Mensaje | Función |
-|---|---|
-| `'Se requieren permisos de administrador para instalar Parkos.'` (+ `exit 2`) | `Request-Elevation` |
-| `'Hash de PowerShell 7 no coincide; instalacion abortada por seguridad.'` | `Ensure-PowerShell7` |
-| `'EULA no aceptada explicitamente - modo -Unattended requiere -EulaAccepted.'` | `Show-Eula` |
-| `"EULA file not found at $EulaPath - a real EULA (with PostgreSQL/NSSM/Electron third-party attributions) must be staged there before this installer ships."` | `Show-Eula` |
-| `"Ruta de instalacion invalida: $installPath (no se permite C:\Windows, Program Files (x86), ni rutas de red UNC)."` | `Read-InstallPaths` |
-| `"Ruta de datos invalida: $dataPath (no se permite C:\Windows, Program Files (x86), ni rutas de red UNC)."` | `Read-InstallPaths` |
-
-### 8.2 Etapa 0 — build en la máquina del técnico
-
-| Mensaje | Función |
-|---|---|
-| `"Falta instalar: $($missing -join ', '). Alternativa: corre build-release.ps1 a mano en una maquina con el toolchain completo y copia installer\payload\ aca."` | `Invoke-SourceUpdateAndBuild` |
-| `'git fetch origin <rama> fallo.'` / `'git checkout <rama> fallo.'` / `'git pull --ff-only fallo (la rama local diverge de origin/<rama> - resolvelo manualmente antes de reintentar).'` / `nombre de rama invalido` | `Update-SourceFromBranch` (via `Invoke-SourceUpdateAndBuild`) |
-| `"build-release.ps1 fallo (exit $LASTEXITCODE)."` | `Invoke-SourceUpdateAndBuild` |
-| `"Build termino sin error pero falta el artefacto esperado: $rel"` | `Invoke-SourceUpdateAndBuild` |
-| `'Build termino sin error pero no se encontro el MSI de web_sucursal en installer\payload\apps.'` | `Invoke-SourceUpdateAndBuild` |
-
-### 8.3 Etapa 1 — Postgres, roles, passwords, pg_partman
-
-| Mensaje | Función |
-|---|---|
-| `'Puertos 5432 y 5433 ambos ocupados; no se puede instalar Postgres de Parkos.'` | `Test-PostgresPorts` |
-| `"Puertos $($CandidatePorts -join ', ') todos ocupados; no se puede instalar el servicio api-sucursal."` | `Test-ApiPort` |
-| `'initdb fallo al inicializar el data directory de Postgres.'` | `Install-PostgresViaZip` |
-| `"Ni winget ni el ZIP de fallback ($zipPath) estan disponibles; no se puede instalar Postgres."` | `Install-Postgres` |
-| `"No se encontro la clave maestra de Parkos en $MasterKeyPath - es un secreto de la compania que NO se genera automaticamente ni vive en el repo. Solicitela al equipo de soporte por un canal seguro y copiela a esa ruta (o reintente con -MasterKeyPath <archivo>)."` | `Get-ParkosMasterKeyBytes` / `Get-ParkosMasterKeyProblem` |
-| `"La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($length bytes; minimo 32) - parece truncada o incorrecta. Solicite una copia valida al equipo de soporte por un canal seguro y reemplace ese archivo."` | `Get-ParkosMasterKeyBytes` / `Import-ParkosMasterKey` |
-| `"No se encontro el archivo indicado en -MasterKeyPath ($SourcePath) - solicite la clave maestra al equipo de soporte por un canal seguro."` | `Import-ParkosMasterKey` |
-| `'No se pudo configurar el superusuario parkos.'` | `Initialize-DatabaseRoles` |
-| `'No se pudo crear la base de datos parkos.'` | `Initialize-DatabaseRoles` |
-| `"No se pudo crear el schema partman (psql exit $LASTEXITCODE) - revisar .pgpass/autenticacion de 'parkos'."` | `Install-PgPartman` |
-| `"CREATE EXTENSION pg_partman fallo (psql exit $LASTEXITCODE)."` | `Install-PgPartman` |
-| `'pg_partman no quedo activo tras CREATE EXTENSION.'` | `Install-PgPartman` |
-| `"No se encontro el certificado 'CN=ParkosEnvProtection' en Cert:\LocalMachine\My - corre Get-OrCreateParkosEnvCert antes de escribir el .env (el cifrado CMS del runtime env depende de el)."` | `Protect-ParkosEnvContent` |
-| `"No se encontro el archivo de secreto JWT en $Path."` | `Test-JwtSecretGate` |
-| `'Secreto JWT demasiado corto. Regenerar.'` | `Test-JwtSecretGate` |
-| `'Secreto JWT es uno de desarrollo conocido. Regenerar.'` | `Test-JwtSecretGate` |
-
-### 8.4 Etapa 2 — migraciones
-
-| Mensaje | Función |
-|---|---|
-| `"alembic upgrade head fallo (exit $LASTEXITCODE)."` | `Invoke-MigrationsAndSeed` |
-| `'Corre primero "Instalar base de datos" (opcion 1).'` | Gate inline de la etapa 2 (`$script:roles -eq $null`) |
-
-### 8.5 Etapa 3 — UUID de sucursal
-
-| Mensaje | Función |
-|---|---|
-| `'-SucursalUuid es obligatorio en modo -Unattended (la sucursal se crea desde el panel admin, no desde este instalador).'` | `Read-SucursalUuid` |
-| `"El UUID de sucursal '$Uuid' no tiene formato valido (UUIDv4 esperado). Verificalo en el panel admin antes de reintentar."` | `Read-SucursalUuid` |
-| `"No existe el archivo .env en $EnvFilePath - corre primero 'Instalar base de datos' (opcion 1)."` | `Update-SucursalUuidInEnvFile` |
-| `'Corre primero "Instalar base de datos" (opcion 1).'` | Gate de la etapa 3 (`$script:StageStatus.db`) |
-
-### 8.6 Etapa 4 — seed de catálogos
-
-| Mensaje | Función |
-|---|---|
-| `'api-sucursal.exe (temporal, para seed) no respondio /health a tiempo.'` | `Invoke-CatalogSeed` |
-| `"seed.exe fallo (exit $LASTEXITCODE)."` | `Invoke-CatalogSeed` |
-| `'Corre primero "Ejecutar migraciones" (opcion 2).'` | Gate de la etapa 4 (`$script:StageStatus.migrate`) |
-
-### 8.7 Etapas 5/6 — servicios NSSM
-
-| Mensaje | Función |
-|---|---|
-| `'ParkosApiSucursal no respondio /health a tiempo tras el registro NSSM.'` | Acción de la etapa 5 |
-| `'ParkosJobSyncSucursal no mostro un ciclo de sondeo en el log a tiempo.'` | Acción de la etapa 6 |
-
-### 8.8 Etapa 7 — app de escritorio
-
-| Mensaje | Función |
-|---|---|
-| `'No se encontro el MSI de web_sucursal en el payload.'` | Acción de la etapa 7 |
-| `"Instalacion de web_sucursal fallo (exit $($proc.ExitCode)); ver $logPath"` | `Install-Electron` |
-| `'MSI reporto exito pero web_sucursal no aparece en el registro de desinstalacion.'` | `Install-Electron` |
-
-### 8.9 Etapa 8 — verificación final y módulo de gestión
-
-| Mensaje | Función |
-|---|---|
-| `'Verificacion post-instalacion fallo; ver detalle arriba. La instalacion NO se considera exitosa.'` | `Test-PostInstallation` |
-| `"Falta $src en el payload - no se puede instalar el modulo de gestion Parkos."` | `Install-ManagementModule` |
-| `"Ya existe una version $moduleVersion del modulo Parkos en $destDir con contenido DISTINTO al del payload actual. Esto no se resuelve automaticamente (sin versionado automatico en PR1) - revisa manualmente cual version debe prevalecer antes de continuar."` | `Install-ManagementModule` |
-| `"Falta $doctorSrc en el payload - no se puede instalar doctor.exe para el modulo de gestion Parkos."` | `Install-ManagementModule` |
-| `"Falta $nssmSrc en el payload - no se puede instalar nssm.exe para el modulo de gestion Parkos."` | `Install-ManagementModule` |
-
-### 8.10 Cascada `-Unattended` (validación)
-
-| Mensaje | Función |
-|---|---|
-| `"-SkipStage contiene un valor invalido ($stageNumber) - cada etapa debe estar entre 0 y 8."` | `Assert-ParkosCascadeParamsValid` |
-| `"-StopAfterStage invalido ($StopAfterStage) - debe ser -1 (correr todas las etapas) o un valor entre 0 y 8."` | `Assert-ParkosCascadeParamsValid` |
-| `'Saltar la etapa 1 (Postgres) puede dejar el resto de las etapas sin base de datos - si estas seguro, agrega -Force.'` | `Assert-ParkosCascadeParamsValid` |
-| `'-Unattended requiere -EulaAccepted (ver Show-Eula).'` | `Assert-ParkosCascadeParamsValid` |
-| `'Pre-flight fallo - instalacion abortada, sin cambios en el sistema.'` | `Invoke-ParkosUnattendedCascade` |
-| `"La direccion del servidor Parkos ('$value', tomada de $source) no es valida: ..."` | `Resolve-ParkosCloudApiUrl` |
-| `'-Menu y -Unattended son incompatibles: ...'` | `Resolve-ParkosInstallMode` (`exit 2`) |
-| `"Demasiados intentos con un codigo de sucursal invalido ($maxAttempts). ..."` | `Read-SucursalUuid` |
-
-### 8.11 `-Command Update`
-
-| Mensaje | Función |
-|---|---|
-| `"No se encontro el archivo .env en $EnvFilePath - corre primero una instalacion (Invoke-ParkosInstall) antes de actualizar."` | `Get-EnvFilePostgresPort` |
-| `'No se pudo determinar el puerto de Postgres desde PARKOS_DB_URL ni DATABASE_URL en el .env.'` | `Get-EnvFilePostgresPort` |
-| `"No se encontro pgpass.conf en $pgpassPath - no se puede recuperar la credencial de '$User'."` | `Get-PgPassPassword` |
-| `"No se encontro una credencial para el usuario '$User' en el puerto $Port dentro de pgpass.conf."` | `Get-PgPassPassword` |
-| `"pg_dump.exe fallo (exit $LASTEXITCODE) generando el backup en $DumpPath."` | `Invoke-ParkosPgDump` |
-| `"pg_restore --clean --if-exists fallo (exit $LASTEXITCODE) restaurando $DumpPath durante el rollback."` | `Invoke-ParkosPgRestoreClean` |
-| `'ParkosApiSucursal no respondio /health a tiempo tras el reinicio.'` | `Start-ParkosServicesInOrder` |
-| `'ParkosJobSyncSucursal no mostro un ciclo de sondeo en el log tras el reinicio.'` | `Start-ParkosServicesInOrder` |
-| `"No hay releases previas en $releasesPath - no hay nada a lo cual revertir."` | `Invoke-ParkosUpdate` (`-RollbackOnly`) |
-| `"-PayloadPath vacio o inexistente ('$PayloadPath') - se requiere la carpeta con el payload nuevo (misma forma que installer\payload\)."` | `Invoke-ParkosUpdate` |
-| `'Get-ParkosHealth reporto ExitCode 2 (critico) - corre Repair-ParkosInstall antes de actualizar, o usa -Force para omitir este pre-check (el backup y la verificacion de integridad del payload NUNCA se omiten).'` | `Invoke-ParkosUpdate` (PRE-CHECK) |
-| `"El backup en $dumpPath quedo vacio o invalido (pg_restore --list no reporto objetos) - actualizacion abortada ANTES de detener servicios; nada mas se ejecuto."` | `Invoke-ParkosUpdate` (BACKUP) |
-| `"Falta el manifest de integridad del payload en $manifestPath - no se puede verificar el payload nuevo."` | `Invoke-ParkosUpdate` (VERIFY BINARIES) |
-| `"El payload nuevo no tiene el archivo esperado por el manifest: $relativePath."` | `Invoke-ParkosUpdate` (VERIFY BINARIES) |
-| `"Hash SHA256 no coincide para $relativePath - el payload puede estar corrupto o alterado."` | `Invoke-ParkosUpdate` (VERIFY BINARIES) |
-| `"alembic upgrade head fallo (exit $exitCode) durante la actualizacion."` | `Invoke-ParkosUpdate` (MIGRATE, dispara rollback tier-2) |
-| `"/health respondio $($healthResp.StatusCode), se esperaba 200."` | `Invoke-ParkosUpdate` (SMOKE TEST, dispara rollback tier-2) |
-| `"/api/v1/sync/hello respondio $($helloResp.StatusCode), se esperaba 200."` | `Invoke-ParkosUpdate` (SMOKE TEST, dispara rollback tier-2) |
-
-### 8.12 `-Command Restore`
-
-| Mensaje | Función |
-|---|---|
-| `'-Version es obligatorio para -Command Restore (ejemplo: -Version 20250101-000000).'` | `Invoke-ParkosRestore` |
-| `"No existe la version '$Version' en $releasesPath. Versiones disponibles: $availableText."` | `Invoke-ParkosRestore` |
-| `'-UnattendedRestoreConfirmed es obligatorio junto con -Unattended para -Command Restore (evita que un flag copiado por error dispare un restore desatendido).'` | `Invoke-ParkosRestore` |
-| `"Falta $releaseBundle - la version '$Version' archivada no tiene este binario disponible."` | `Invoke-ParkosRestore` (REPLACE BINARIES) |
-
-### 8.13 `Parkos.psm1` — helpers compartidos
-
-| Mensaje | Función |
-|---|---|
-| `"No se encontro el archivo .env en $Path."` | `Import-ParkosEnvFile` |
-| `'No se pudo determinar el puerto de Postgres desde PARKOS_DB_URL ni DATABASE_URL en el .env.'` | `Get-ParkosPostgresPort` |
-| `"Falta el binario doctor.exe en $DoctorExePath - la instalacion no incluye el modulo de diagnostico."` | `Invoke-ParkosDoctorExe` |
-
-### 8.14 `Get-ParkosHealth` / `Repair-ParkosInstall`
-
-| Mensaje | Función |
-|---|---|
-| `'Repair-ParkosInstall requiere permisos de administrador.'` | `Repair-ParkosInstall` |
-| `"No se encontro nssm.exe en $nssmPath - no se puede re-registrar el servicio NSSM faltante (E1)."` | `Repair-ParkosInstall` (E1) |
-
-### 8.15 `Uninstall-Parkos`
-
-| Mensaje | Función |
-|---|---|
-| `'Uninstall-Parkos requiere permisos de administrador.'` | `Uninstall-Parkos` |
-| `'Uninstall-Parkos -PurgeData en modo -Unattended requiere -UnattendedPurgeConfirmed explicito, como confirmacion no interactiva de que el borrado de datos fue intencional.'` | `Uninstall-Parkos` |
-
-### 8.16 `Export-ParkosDiagnostics`
-
-| Mensaje | Función |
-|---|---|
-| `"Export-ParkosDiagnostics aborto antes de empaquetar: se detecto redaccion incompleta en: $findingsJoined. No se genero ningun ZIP."` (gate de secretos — `throw`, nunca `ExitCode`) | `Export-ParkosDiagnostics` |
-
-### 8.17 `Register-ParkosBackupTask`
-
-| Mensaje | Función |
-|---|---|
-| `'Register-ParkosBackupTask requiere permisos de administrador.'` | `Register-ParkosBackupTask` |
-| `"Formato de hora invalido en -DailyAt: '$DailyAt' (use HH:mm, ejemplo: 03:00)."` | `Register-ParkosBackupTask` |
-| `'Register-ParkosBackupTask requiere que Postgres este corriendo y que parkos_app tenga acceso (SELECT 1 fallo) - verificalo con Get-ParkosHealth antes de reintentar.'` | `Register-ParkosBackupTask` |
-| `'No se pudo estimar el tamano de la base de datos parkos (pg_database_size no devolvio un valor numerico).'` | `Register-ParkosBackupTask` |
-| `('Espacio insuficiente para backup: se necesitan al menos {0} MB, hay {1} MB libres en {2}:.' -f $requiredMb, $freeMb, $driveLetter)` | `Register-ParkosBackupTask` |
-| `"El usuario de servicio 'svc-parkos' no existe todavia - corre el instalador (parkos-installer.ps1, Ensure-ServiceAccount) antes de registrar la tarea de backup."` | `Register-ParkosBackupTask` |
-| `"El backup de prueba fallo (pwsh.exe exit $($testRun.ExitCode)) al ejecutar $scriptPath - la tarea ParkosBackupDiario NO quedo registrada. Revisar $(Join-Path $paths.LogsPath 'backup.log')."` | `Register-ParkosBackupTask` |
-| (dentro del script generado `Invoke-DailyBackup.ps1`) `"No se encontro el .env en $envFilePath."` / `'No se pudo determinar el puerto de Postgres desde el .env.'` / `"pg_dump.exe fallo (exit $LASTEXITCODE) generando $dumpPath."` / `"El backup generado en $dumpPath no paso la verificacion de pg_restore --list (vacio o corrupto)."` | Script standalone generado |
-
-### 8.18 `Test-CrashRecovery`
-
-| Mensaje | Función |
-|---|---|
-| `'Test-CrashRecovery requiere permisos de administrador.'` | `Test-CrashRecovery` |
-| `"No se encontro postgresql.conf en $confPath - no se puede verificar la configuracion de seguridad antes de la prueba de crash."` | `Test-CrashRecovery` |
-| `"Configuracion insegura, abortando: $($detalle -join '; ')"` | `Test-CrashRecovery` (gate bloqueante, `fsync`/`full_page_writes`) |
-| `"No se encontro el servicio de Windows de Postgres (patron '*postgresql*') - no se puede continuar con la prueba de crash recovery."` | `Test-CrashRecovery` |
-| `"No se pudo resolver el PID del servicio '$pgServiceName'."` | `Test-CrashRecovery` |
-
-### 8.19 `build-release.ps1`
-
-| Mensaje | Función |
-|---|---|
-| `"Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga)."` | `Get-ManagementModulePayload` |
-| `"Falta $modulePath - el modulo Parkos.psm1 debe existir versionado en el repo (no se descarga)."` | `Get-ManagementModulePayload` |
-| `"Falta $masterKeyPath - la clave maestra debe ser provista por el equipo de soporte antes de un build real, nunca se genera automaticamente."` | `Get-MasterKeyPayload` |
-| `"PowerShell 7 MSI hash mismatch for $msiName. Expected $expectedSha256, got $actual. Aborting - do not ship an unverified binary."` | `Get-PowerShell7Msi` |
-| `'pnpm build (electron-sucursal) failed.'` | `Build-WebSucursal` |
-| `'electron-builder (build:packager) failed.'` | `Build-WebSucursal` |
-| `"No .msi found under $distDir - check electron-builder.yml's win.target includes 'msi'."` | `Build-WebSucursal` |
-| `"PyInstaller failed for $Name."` | `Invoke-ServiceFreeze` |
-
-### 8.20 `Get-ParkosSupportPassword.ps1`
-
-| Mensaje | Función |
-|---|---|
-| `"El UUID de sucursal '$SucursalUuid' no tiene formato valido (UUIDv4 esperado). Verificalo en el panel admin antes de reintentar."` | Validación de `-SucursalUuid` |
-| `"No se encontro la clave maestra de Parkos en $MasterKeyPath - debe ser la copia propia de soporte, obtenida por un canal seguro de la compania (nunca debe vivir en una maquina de cliente/sucursal ni en este repositorio)."` | Validación de `-MasterKeyPath` |
-
----
-
-## 9. Variables de entorno que escribe el `.env`
-
-`Write-RuntimeEnvFile` escribe, en este orden exacto, las siguientes líneas (luego cifradas con CMS por `Protect-ParkosEnvContent`):
+Lo crea la **etapa 1** (cifrado CMS); la etapa 3 reescribe solo la línea del UUID.
 
 | Línea | Origen del valor |
 |---|---|
-| `PARKOS_DEPLOY=branch` | Fijo (literal) |
-| `PARKOS_SYNC_ENGINE=catalog_branch` | Fijo (literal) — único valor ratificado (D22/ADR-001) para "branch workers"; obligatorio, sin default en `engine_flag.py::_parse()` (DEC-INST-43) |
-| `PARKOS_SUCURSAL_UUID=$SucursalUuid` | Input del operador (o `-SucursalUuid`), validado como UUID por `Read-SucursalUuid` |
-| `PARKOS_DB_URL=postgresql+psycopg://parkos_app:$AppPassword@127.0.0.1:$Port/parkos` | Compuesto: password derivada (HMAC, DEC-INST-42) + puerto detectado por `Test-PostgresPorts` |
-| `DATABASE_URL=postgresql+asyncpg://parkos_app:$AppPassword@127.0.0.1:$Port/parkos` | Igual que la anterior, otro esquema/driver (leído por `db/engine.py`, no por el mismo gate que `PARKOS_DB_URL`) |
-| `PARKOS_CLOUD_API_URL=$CloudApiUrl` | Input del operador (o `-CloudApiUrl`) |
-| `PARKOS_JWT_KEY_PATH=$JwtKeyPath` | Generado: ruta fija `$DataPath\secrets\jwt.key`, contenido generado por `New-JwtSigningKey` (64 bytes aleatorios) |
-| `PARKOS_SYNC_JWT_PATH=$SyncJwtPath` | Ruta fija `$DataPath\secrets\sync-agent.jwt` — el **archivo** no lo crea este instalador; lo escribe el flujo de pairing (Fase 29) |
-| `PORT=$ApiPort` | Generado: puerto libre detectado por `Test-ApiPort` (candidatos 8000, 8001, 8002) |
-| `PARKOS_API_ORIGIN=http://127.0.0.1:$ApiPort` | Derivado del mismo puerto; también se fija como variable de entorno de **máquina** vía `Set-MachineApiOrigin` (consumida por el bridge preload de Electron, no por `api-sucursal.exe`) |
+| `PARKOS_DEPLOY=branch` | Fijo |
+| `PARKOS_SYNC_ENGINE=catalog_branch` | Fijo. Obligatorio (sin default en `engine_flag.py::_parse()`; DEC-INST-43); único valor ratificado para workers de sucursal (D22/ADR-001) |
+| `PARKOS_SUCURSAL_UUID=<UUID_SUCURSAL>` | Lo escrito por el operador (o `-SucursalUuid`), en minúsculas |
+| `PARKOS_DB_URL=postgresql+psycopg://parkos_app:<pw>@127.0.0.1:<puerto>/parkos` | Contraseña derivada `parkos-app` + puerto detectado |
+| `DATABASE_URL=postgresql+asyncpg://parkos_app:<pw>@127.0.0.1:<puerto>/parkos` | Igual, con driver asíncrono (lo lee `db/engine.py`; `PARKOS_DB_URL` solo lo valida el gate de `runtime/env.py`). Ambas deben mantenerse sincronizadas y nunca apuntar al superusuario |
+| `PARKOS_CLOUD_API_URL=<URL_CLOUD>` | Resolución de 10.1 |
+| `PARKOS_JWT_KEY_PATH=<DataPath>\secrets\jwt.key` | Ruta fija; contenido generado por `New-JwtSigningKey` (64 bytes) |
+| `PARKOS_SYNC_JWT_PATH=<DataPath>\secrets\sync-agent.jwt` | Ruta fija; el **archivo** no lo crea el instalador |
+| `PORT=<puerto API>` | `Test-ApiPort` (8000, 8001 u 8002) |
+| `PARKOS_API_ORIGIN=http://127.0.0.1:<puerto API>` | Derivado del mismo puerto (referencia de diagnóstico; ver 10.3) |
 
-No forman parte del `.env` (se agregan solo al `AppEnvironmentExtra` de NSSM al registrar el servicio de sync, en `Install-JobService`):
+Se agregan solo a `AppEnvironmentExtra` del servicio de sync (no al `.env`): `PARKOS_SYNC_POLL_INTERVAL_S=10`, `PARKOS_SYNC_BATCH_SIZE=100`.
 
-| Línea | Origen |
+### 10.3 Otras variables
+
+| Variable | Alcance | Quién la crea / cuándo | Quién la consume |
+|---|---|---|---|
+| `PARKOS_CLOUD_API_URL` | Proceso/máquina/usuario (aporte previo opcional) | Soporte/TI antes de instalar | Instalador (pre-flight y `.env`) |
+| `PGPASSFILE` | **Máquina** | Etapa 1 (`Set-PgPassFile`) | Todo `psql`/`pg_dump` (incluidas las tareas programadas) |
+| `PARKOS_API_ORIGIN` | **Máquina** (y proceso) | Etapa 1 (`Set-MachineApiOrigin`) | App Electron (puente de preload); `api-sucursal.exe` solo lee `PORT` |
+| `DATABASE_URL` (`postgresql://parkos:...`) | Solo proceso, temporal | Etapas 2 y 4 | `migrate.exe` / `seed.exe`; se elimina en `finally` |
+| `PARKOS_APP_DB_PASSWORD` | Solo proceso, temporal | Etapa 2 | Migración `0021`; se elimina en `finally` |
+| Variables del `.env` | Solo proceso del instalador | Etapas 4 y 8 | `api-sucursal.exe` temporal y `doctor.exe` |
+| `PARKOS_PAIRING_TOKEN` | Proceso | Pairing (fuera del instalador) | `parkos_core.cli.pair` |
+
+---
+
+## 11. Verificación post-instalación
+
+### 11.1 Etapa 8 (automática)
+
+`Test-PostInstallation` carga el `.env` en el proceso, ejecuta `doctor.exe` del payload y evalúa 4 comprobaciones; imprime una tabla (`Format-Table`) con `True`/`False`:
+
+| Comprobación | Criterio |
 |---|---|
-| `PARKOS_SYNC_POLL_INTERVAL_S=10` | Fijo (literal) |
-| `PARKOS_SYNC_BATCH_SIZE=100` | Fijo (literal) |
+| `Diagnostico general (doctor)` | `env_status = ok`, `db_connectivity` empieza con `ok` y `jwt_key_path_exists` verdadero |
+| `Runtime conecta como parkos_app` | `SELECT current_user` devuelve `parkos_app` **y** el intento de `CREATE ROLE` es denegado |
+| `parkos_app no puede CREATE ROLE` | El `CREATE ROLE test_should_fail_<n> LOGIN` falla |
+| `Secreto JWT pasa el gate (longitud + denylist)` | `jwt.key` ≥ 32 bytes y su SHA256 fuera de la denylist de 6 secretos de desarrollo |
+
+Salida esperada: las 4 en `True`. Si alguna es `False`: `Verificacion post-instalacion fallo; ver detalle arriba. La instalacion NO se considera exitosa.` Después `Install-ManagementModule` imprime `Modulo de gestion Parkos <versión> instalado en: ...`, `doctor.exe instalado en: ...`, `nssm.exe instalado en: ...` y `Manifest de binarios generado en: ...`.
+
+`doctor.exe` también informa `sync_jwt_path_readable` y `cloud_api_url_reachable`; **no** forman parte del criterio: `sync_jwt_path_readable=false` es esperado hasta emparejar la sucursal.
+
+### 11.2 Verificación manual (técnico)
+
+```powershell
+Import-Module Parkos                       # PowerShell 7, como administrador
+Get-ParkosHealth -Detailed                 # equivale a la opción A del menú
+```
+
+Salida esperada en una instalación sana (6 comprobaciones):
+
+```
+[OK] Postgres alcanzable
+[OK] Servicio api-sucursal
+[OK] Servicio job-sync-sucursal
+[OK] API /health
+[OK] Doctor
+[OK] Espacio en disco
+```
+
+Reglas: `ExitCode 0` todo OK; `1` si hay algún `WARN` y ningún `FAIL`; `2` si hay algún `FAIL` (también se asigna a `$LASTEXITCODE`). El servicio de sync detenido es `WARN`, no `FAIL`. Espacio: `FAIL` si quedan ≤ 5 GB; `WARN` si ≤ 10 % libre. Sin instalación ni `.env`: una sola línea `[FAIL] Parkos no esta instalado` (`ExitCode 2`, `NotInstalled=$true`).
+
+Comprobaciones puntuales:
+
+| Qué | Comando |
+|---|---|
+| API | `Invoke-WebRequest http://127.0.0.1:<PORT>/health -UseBasicParsing` (200). `<PORT>` está en el `.env` (8000 por defecto) |
+| Servicios | `Get-Service ParkosApiSucursal, ParkosJobSyncSucursal` (ambos `Running`) |
+| Log de sync | `Get-Content C:\ProgramData\Parkos\logs\job-sync.out.log -Tail 20` (esperable `cycle_error` hasta el pairing) |
+| Tarea | `Get-ScheduledTask ParkosPgPartmanMaintenance` |
+| ACL de secretos | `Test-ParkosSecretsAcl` |
 
 ---
 
-## 10. Limitaciones conocidas
+## 12. Operación y mantenimiento
 
-Documentadas explícitamente en comentarios del código (no inferidas):
+### 12.1 Menú (`-Menu`): opciones de letra
 
-1. **Rollback de catálogos sembrados (etapa 4) no implementado.** Un rollback real necesitaría trackear qué filas exactas creó la corrida; ese tracking no existe. Un `DELETE` genérico sería peligroso (podría borrar datos legítimos de una corrida anterior) — se prefiere documentar la limitación antes que inventar un `DELETE` amplio.
-2. **MSI no archivado para versiones anteriores a DEC-INST-28.** `Invoke-ParkosRestore` advierte y continúa sin revertir la app de escritorio si la versión no tiene `releases\<version>\apps\*.msi`.
-3. **Smoke test de `Invoke-ParkosUpdate` sin login autenticado real.** No existe un usuario `smoke-test@parkos.local` sembrado (solo `installer-seed@parkos.local`, rol admin) — el smoke test real es `/health` + `GET /api/v1/sync/hello` (público, sin auth). Un smoke test con login real queda pendiente de un usuario de solo lectura dedicado.
-4. **Sin versionado automático del módulo de gestión.** `Install-ManagementModule` hace `throw` si ya existe una versión `1.0.0` con contenido distinto — exige resolución manual, no hay lógica de versionado incremental todavía.
-5. **`releases\` no se puede preservar por separado en `Uninstall-Parkos` sin `-PurgeData`.** Vive bajo `InstallPath` (no bajo `DataPath`), que se borra siempre — DEC-INST-37 documenta esto como una limitación de layout, no un bug a corregir retroactivamente.
-6. **`auto-update-paused.flag` es puramente informacional.** Lo escribe `Invoke-ParkosRestore`; ningún componente de este repositorio lo lee todavía.
-7. **`current-version.txt` no existía antes de DEC-INST-24.** La primera actualización de una instalación previa a ese cambio sintetiza `unknown-<timestamp>` como nombre de versión saliente, con advertencia explícita de que no es un identificador de release real.
-8. **`Get-ParkosVersion` sigue siendo un placeholder (PR1), no implementado.** No reporta ninguna versión real pese a estar exportado y ser invocado por `Export-ParkosDiagnostics`.
-9. **Ruta del data directory de Postgres inconsistente según el método de instalación.** `Install-PostgresViaZip` fija el data directory en `$DataPath\pg-data`; `Install-PostgresViaWinget` **no** recibe ni fija ningún `PgDataPath` — el paquete winget/EDB decide su propia ubicación por defecto (típicamente bajo `C:\Program Files\PostgreSQL\16\data`, aunque esta ruta exacta depende del instalador EDB/BitRock y no está verificada contra este repositorio). Sin embargo, `Test-CrashRecovery` y la lectura de `postgres-config.txt` en `Export-ParkosDiagnostics` asumen siempre `$DataPath\pg-data\postgresql.conf` — con la instalación vía winget (el método preferente, DEC-INST-03), `Test-CrashRecovery` fallaría con `"No se encontro postgresql.conf en $confPath..."` salvo que ese archivo exista ahí por coincidencia.
-10. **`pairing.json` se lee pero no se escribe en este repositorio.** Ver nota en §2 — presumiblemente lo escribe `job-sync-sucursal` durante el pairing (Fase 29); no verificado en estos archivos.
-11. **El indicador visual `[BLOQ]` del menú no cubre el gate real de la etapa 2.** Ver nota en §2 — el `$stagePrereqs` de `Invoke-ParkosInstall` solo mapea las etapas 3 y 4.
-12. **Etiquetas de menú que no corresponden a nombres de función reales.** "Update-ParkosStack" (opción `U`) y "Restore-ParkosVersion" (opción `V`) son solo texto descriptivo — las funciones reales son `Invoke-ParkosUpdate` e `Invoke-ParkosRestore`.
-13. **ACL de la clave privada del certificado CMS para `svc-parkos` es best-effort.** Si `Grant-ParkosEnvCertKeyAccess` falla silenciosamente, el backup diario (que corre bajo `svc-parkos`) podría fallar más adelante al intentar descifrar el `.env` — sin que la instalación lo detecte en el momento.
-14. **Sin allowlist de secretos JWT conocidos buenos.** Pedida por el plan original (HU-F27.3-T3); deliberadamente no implementada por ser lógicamente incoherente para un secreto aleatorio de 64 bytes.
-15. **Sin canal piloto/beta real.** Canal único `latest` (DEC-INST-06); una versión candidata (`-rc.N`) se instala manualmente con `Repair-ParkosInstall -Version <rc>`, nunca vía un segundo feed de auto-update.
+El módulo `Parkos` se importa de forma perezosa la primera vez que se usa una letra, **siempre desde el payload local** (`payload\management\Parkos.psd1`). Si no están las 9 etapas en `Ok` se pregunta `La instalacion no esta completa. Continuar? (s/N)` antes de ejecutar, **excepto** `A`, `D` y `X`. Salir con `Q` con la instalación incompleta pide confirmación (`Salir de todos modos? (s/N)`).
+
+| Letra | Etiqueta del menú | Acción real | Confirmación |
+|---|---|---|---|
+| `A` | Diagnosticar estado actual | `Get-ParkosHealth -Detailed` | — |
+| `R` | Reparar instalación rota | `Repair-ParkosInstall` (o `-Force`) | `Forzar sin confirmacion interactiva? (s/N)` |
+| `U` | Actualizar stack completo | `Invoke-ParkosUpdate` (ruta de payload nuevo) | `Ruta del nuevo payload (-PayloadPath)`; vacío cancela |
+| `V` | Restaurar versión anterior | `Invoke-ParkosRestore` (lista versiones y pide una) | `Version a restaurar`; vacío cancela |
+| `X` | Desinstalar Parkos | `Uninstall-Parkos` (con o sin `-PurgeData`) | `Purgar tambien los datos? (s/N)` y la palabra de doble paso |
+| `D` | Exportar diagnóstico para soporte | `Export-ParkosDiagnostics` | — |
+| `M` | Configurar backup automático | `Register-ParkosBackupTask -DailyAt <hora>` | `Hora diaria del backup [03:00]` |
+| `C` | Verificar recuperación ante corte | `Test-CrashRecovery` | `Esto reinicia Postgres a la fuerza. Continuar? (s/N)` |
+| `Q` | Salir | — | Ver arriba |
+
+En el menú las etapas se pueden correr y re-correr de forma independiente (DEC-INST-17): un `throw` se captura, la etapa queda `Failed` (`[FAIL] ... (re-ejecutable)`) y no hay rollback automático. Estados mostrados: `[ OK ]`, `[FAIL]`, `[ROLL]`, `[BLOQ] (requiere que N este OK)`, `[....]`. El estado es solo de la sesión.
+
+### 12.2 Actualización (`-Command Update`)
+
+`Invoke-ParkosUpdate` reemplaza los binarios `api-sucursal` y `job-sync-sucursal` por los de un payload nuevo (compilado en otra máquina), con backup obligatorio y rollback automático.
+
+| Paso | Qué hace | Se puede omitir |
+|---|---|---|
+| **PRE-CHECK** | Valida `-PayloadPath`; sin `-Force`, importa el módulo instalado y corre `Get-ParkosHealth`: si `ExitCode -eq 2`, aborta | `-Force` omite solo este paso |
+| **BACKUP** | `pg_dump -Fc -U parkos_app` a `$DataPath\backups\pre-update-<versionSaliente>-<versionNueva>.dump`; verifica con `pg_restore --list` | Nunca |
+| **STOP** | Detiene `ParkosJobSyncSucursal` y luego `ParkosApiSucursal` | No |
+| **VERIFY BINARIES** | Valida cada archivo del payload nuevo contra su `manifest.sha256.json` (claves = rutas relativas, DEC-INST-26) | No |
+| **REPLACE** | Mueve los bundles actuales a `releases\<versionSaliente>\`, copia los nuevos, conserva solo las 2 releases más recientes, regenera `manifest.sha256.json` y archiva el MSI nuevo en `releases\<versionNueva>\apps\` (solo copia; **no reinstala** la app) | No |
+| **MIGRATE** | `migrate.exe upgrade head` del payload **nuevo** con la contraseña de `parkos` leída de `pgpass.conf` (DEC-INST-25) | No |
+| **RESTART** | Arranca API y luego sync, esperando `/health` y un ciclo de sondeo | No |
+| **SMOKE TEST** | `GET /health` y `GET /api/v1/sync/hello`, ambos 200 (DEC-INST-27) | No |
+| **SUCCESS** | Event Log (best-effort) y escribe `current-version.txt` | — |
+
+- **Rollback tier-1** (falla VERIFY BINARIES): nada cambió; solo se reinician los servicios detenidos.
+- **Rollback tier-2** (falla MIGRATE, RESTART o SMOKE TEST): `pg_restore --clean --if-exists` del backup, devuelve los binarios desde `releases\<versionSaliente>\`, regenera el manifest y reinicia.
+- `-WhatIf`: imprime los 9 pasos con `[WHATIF]` y no toca nada. `-RollbackOnly`: restaura la release más reciente sin backup nuevo.
+- Versión: `<versionNueva>` es un timestamp `yyyyMMdd-HHmmss`; la primera vez (sin `current-version.txt`) la saliente se llama `unknown-<timestamp>`.
+- La actualización **no** actualiza `doctor\`, `nssm.exe`, la app de escritorio ni el módulo `Parkos`.
+- Ejemplo: `pwsh -File .\parkos-installer.ps1 -Command Update -PayloadPath <RUTA_PAYLOAD_NUEVO>`.
+
+### 12.3 Restauración (`-Command Restore`)
+
+`Invoke-ParkosRestore` revierte a una versión archivada en `$InstallPath\releases\<Version>\` (DEC-INST-30).
+
+1. `-Version` obligatorio y la carpeta debe existir.
+2. Confirmación: interactiva, escribir `RESTAURAR`; con `-Unattended`, `-UnattendedRestoreConfirmed`. Una cancelación devuelve `ExitCode 0`.
+3. `-WhatIf` retorna sin cambios.
+4. Escribe `auto-update-paused.flag` (informativo).
+5. **STOP**, **BACKUP** (`pre-restore-<Version>-<timestamp>.dump`), **REPLACE BINARIES** (siempre; regenera manifest y `current-version.txt`), **RESTORE DATABASE** (solo `-RestoreDatabase`: dump `pre-update-<Version>-*.dump` exacto, el más reciente por nombre; si no hay, advierte y sigue sin tocar la base), **REINSTALL MSI** (best-effort si existe `releases\<Version>\apps\*.msi`), **RESTART**.
+
+Ejemplo: `pwsh -File .\parkos-installer.ps1 -Command Restore -Version <yyyyMMdd-HHmmss> -RestoreDatabase`.
+
+### 12.4 Módulo `Parkos` (8 funciones exportadas, versión `1.0.0`, requiere PowerShell 7)
+
+El módulo usa **siempre** las rutas por defecto (`C:\Program Files\Parkos`, `C:\ProgramData\Parkos`): ignora `-InstallPath`/`-DataPath` personalizados.
+
+| Cmdlet | Qué hace | ¿Admin? |
+|---|---|---|
+| `Get-ParkosHealth [-Detailed]` | 6 comprobaciones (ver 11.2) | No |
+| `Repair-ParkosInstall [-Force] [-WhatIf]` | Si la salud es 0: "nada que reparar". Si no, detecta y corrige E1–E7 (ver tabla) | Sí |
+| `Uninstall-Parkos [-PurgeData] [-UnattendedPurgeConfirmed] [-Unattended]` | Desinstala (ver 12.6) | Sí |
+| `Export-ParkosDiagnostics [-OutputPath]` | ZIP de diagnóstico con secretos redactados | No |
+| `Register-ParkosBackupTask [-DailyAt '03:00']` | Registra `ParkosBackupDiario` (ver 12.5) | Sí |
+| `Test-CrashRecovery [-TimeoutSeconds 30]` | Mata Postgres y verifica recuperación WAL | Sí |
+| `Test-ParkosSecretsAcl` | Verifica la ACL de `secrets\` | No |
+| `Get-ParkosVersion` | **Placeholder**: imprime que no está implementado | No |
+
+| Escenario de `Repair-ParkosInstall` | Detecta | Auto-fix |
+|---|---|---|
+| **E1** | Registro NSSM ausente (`ParkosApiSucursal`/`ParkosJobSyncSucursal`) | Re-registra con `nssm.exe` de `InstallPath` |
+| **E2** | Servicio registrado y no `Running` | `Start-Service` con 3 reintentos (1/5/30 s); si se agotan → E7 |
+| **E3** | Hash de un binario ≠ `manifest.sha256.json` | Restaura desde `releases\` (la más reciente primero) |
+| **E4** | ACL de `secrets\` expone principales no permitidos | `icacls /inheritance:r /grant:r Administrators:F SYSTEM:F /T` |
+| **E5** | `.env` ausente o ilegible | Restaura el backup `*.env*` más reciente de `backups\` |
+| **E6** | Falla la verificación SQL de integridad | Ninguno; aborta, `ExitCode=3`, exporta diagnóstico |
+| **E7** | Se agotaron los reintentos de E2 | Ninguno; aborta, `ExitCode=3`, exporta diagnóstico |
+
+`Repair-ParkosInstall` **solo** acepta `-Force` (y `-WhatIf`); no tiene `-Version`.
+
+### 12.5 Copias de seguridad
+
+- **Diario:** opción `M` o `Register-ParkosBackupTask -DailyAt HH:mm`. Precondiciones (cualquiera incumplida = `throw`): Postgres corriendo y `parkos_app` conecta; espacio libre > 2× el tamaño de la base; existe el usuario `svc-parkos`. Genera `scripts\Invoke-DailyBackup.ps1`, registra `ParkosBackupDiario` (`svc-parkos`, `LogonType ServiceAccount`) y ejecuta un **backup de prueba**: si falla, desregistra la tarea y lanza error. Los dumps van a `backups\daily\backup-<timestamp>.dump` con retención 7+4+1 y log en `logs\backup.log`.
+- **Antes de actualizar/restaurar:** `pre-update-*.dump` y `pre-restore-*.dump` en `backups\`.
+- **Diagnóstico (D):** `Export-ParkosDiagnostics` genera `<Escritorio>\parkos-diag-<fecha>.zip` con `versions.txt`, `health.txt`, `doctor.json`, `services.txt`, `postgres-config.txt`, `pgsql-roles.txt`, `pgsql-databases.txt`, `logs\`, `nssm-dump-api.txt`, `nssm-dump-job.txt`, `env-redacted.txt` y `eventlog.csv`. Si algún archivo ya "redactado" aún contiene un posible secreto, aborta **sin** crear el ZIP.
+
+### 12.6 Desinstalación y purga
+
+`Uninstall-Parkos` exige administrador siempre. Confirmación de doble palabra: `DESINSTALAR` (sin purga) o `CONFIRMAR` (con `-PurgeData`); en `-Unattended` con `-PurgeData` exige además `-UnattendedPurgeConfirmed`.
+
+| Siempre borra | Solo con `-PurgeData` |
+|---|---|
+| Servicios NSSM `ParkosApiSucursal`/`ParkosJobSyncSucursal`; tarea `ParkosPgPartmanMaintenance`; MSI de `web_sucursal`; `InstallPath` completo (incluye `releases\`); carpeta del módulo | `logs\`, `pg-data\`, `backups\`, `secrets\`, `installer-runs\`; tarea `ParkosBackupDiario`; usuario `svc-parkos`; detiene el servicio de Postgres y borra `C:\Program Files\PostgreSQL\16` |
+
+Cada paso va en su propio `try/catch`: un fallo suma una advertencia y no frena el resto (`ExitCode 1` si hubo alguna). **No** elimina: el certificado `CN=ParkosEnvProtection`, las variables de máquina `PGPASSFILE` y `PARKOS_API_ORIGIN`, ni el registro del paquete de `winget` de PostgreSQL; tampoco `current-version.txt`, `manifest.sha256.json` ni `auto-update-paused.flag` si no se usa `-PurgeData` (los datos permanecen en `DataPath`).
 
 ---
 
-*Generado a partir del código en `installer/` — si el código cambia, este manual puede quedar desactualizado; revisarlo junto con cualquier cambio futuro al instalador.*
+## 13. Preparar un release, pruebas y CI
+
+### 13.1 Qué debe tener el técnico
+
+`git`, `pnpm` (el CI lo activa con Corepack), `uv`, Node (LTS), y opcionalmente el módulo `ps2exe` (`Install-Module ps2exe -Scope CurrentUser`). Las dependencias de la app se instalan antes con `pnpm install` en `apps\` (el único `pnpm-workspace.yaml` está allí); `build-release.ps1` no lo hace.
+
+### 13.2 `build-release.ps1`
+
+```powershell
+pwsh -File installer/build-release.ps1                 # sin switches = -All
+pwsh -File installer/build-release.ps1 -Payload        # solo terceros (PS7 MSI, Postgres ZIP, NSSM, pg_partman, valida módulo y clave)
+pwsh -File installer/build-release.ps1 -ApiSucursal -JobSync -Migrate -Seed -Doctor
+```
+
+| Switch | Etapa | Resultado en `installer\payload\` |
+|---|---|---|
+| `-All` (o ninguno) | Todas | Todo lo siguiente + manifest |
+| `-Payload` | Terceros | `PowerShell-7.4.6-win-x64.msi` (SHA256 verificado), `postgres\...zip` (solo aviso si falta), `nssm.exe`, `pg_partman\extension\*`; **valida** `management\Parkos.psd1/.psm1` y `security\parkos-master.key` (si faltan: `throw`) |
+| `-WebSucursal` | Electron | `pnpm --filter '@parkos/electron-sucursal' build` y `build:packager`; copia el `.msi` a `apps\web_sucursal-<Version>-x64.msi` |
+| `-ApiSucursal`, `-JobSync`, `-Migrate`, `-Seed`, `-Doctor` | PyInstaller (`uv run pyinstaller --onedir ...` en `backend\`) | `services\<nombre>\<nombre>\<nombre>.exe` (+ `migrations\` y `alembic.ini` copiados junto al `.exe`) |
+| `-Installer` | `ps2exe` | `parkos-installer.exe` (se omite con aviso si falta `ps2exe`) |
+| `-Version <v>` | — | Solo cambia el nombre del `.msi`; default = versión de `apps\electron-sucursal\package.json` |
+
+El **manifest de integridad** (`manifest.sha256.json`) se genera solo si en la misma corrida se construyen `-ApiSucursal -JobSync -Migrate -Doctor -WebSucursal`. La corrida termina con un resumen (`Build summary`) por etapa (`OK` / `FAILED: ...`).
+
+### 13.3 Qué debe incluir soporte antes de entregar
+
+1. `payload\security\parkos-master.key` (≥ 32 bytes) **antes** del build (si se entrega aparte, usar `-MasterKeyPath` en el equipo y no incluirla en el medio).
+2. `payload\postgres\postgresql-16-windows-x64-binaries.zip` si el equipo puede no tener `winget`/internet (descarga manual desde EDB; ver también las limitaciones del camino ZIP).
+3. El resto lo produce `build-release.ps1`.
+4. Rama: `-SourceBranch dev` (default) para integración; para un release certificado, `release/vX.Y.Z` o `main` (gitflow: `main` solo recibe releases).
+
+### 13.4 Checklist de entrega antes de enviar a la sucursal
+
+| ✔ | Ruta bajo `payload\` |
+|---|---|
+| ☐ | `README-EULA.txt`, `management\Parkos.psd1`, `Parkos.psm1`, `about_Parkos.help.txt` |
+| ☐ | `security\parkos-master.key` (o entrega separada acordada) |
+| ☐ | `nssm.exe`, `pg_partman\extension\pg_partman--5.1.0.sql`, `pg_partman.control` |
+| ☐ | `services\api-sucursal\api-sucursal\api-sucursal.exe`, `services\job-sync-sucursal\job-sync-sucursal\job-sync-sucursal.exe`, `services\migrate\migrate\migrate.exe`, `services\seed\seed\seed.exe`, `services\doctor\doctor\doctor.exe` |
+| ☐ | `apps\*.msi` (uno solo, el instalador toma el primero) |
+| ☐ | `manifest.sha256.json` (solo necesario para `-Command Update`) |
+| ☐ | `postgres\postgresql-16-windows-x64-binaries.zip` (si no hay `winget`) |
+
+### 13.5 Pruebas
+
+- **Pester 3.4.0, un archivo por corrida** (cada uno hace *dot-source* del instalador; el guard final evita el auto-arranque): `Invoke-Pester -Path installer/tests/<archivo>.Tests.ps1`. Pester 3.4.0 no evalúa `Should Throw` sin texto de mensaje: los tests llevan siempre un fragmento del mensaje.
+
+| Archivo | Cubre |
+|---|---|
+| `ParkosInstaller.Guided.Tests.ps1` | URL cloud, pre-flight, EULA con Enter, rutas, UUID, relanzo, modos, cascada guiada |
+| `ParkosInstaller.Menu.Tests.ps1` | Menú, estados de etapa, prerrequisitos y `[BLOQ]` |
+| `ParkosInstaller.Unattended.Tests.ps1` | Validaciones de la cascada, rollback, exit codes |
+| `ParkosInstaller.Update.Tests.ps1` | `-Command Update` y `Restore` |
+| `ParkosInstaller.Security.Tests.ps1` | CMS del `.env`, derivación de contraseñas, gates de seguridad |
+| `ParkosInstaller.StageScope.Tests.ps1` | Que ningún `Action`/`Rollback` falle por variables no establecidas bajo `StrictMode` |
+| `ParkosInstaller.PayloadPreflight.Tests.ps1` | Mensajes claros cuando falta el payload (etapas 5/6/7) |
+| `ParkosInstaller.BuildToolchain.Tests.ps1`, `ParkosInstaller.SourceBranch.Tests.ps1` | Toolchain de la etapa 0 y `-SourceBranch` |
+| `Parkos.Module.Tests.ps1` | Módulo de gestión (12 `Describe`) |
+| `Get-ParkosSupportPassword.Tests.ps1` | Herramienta de soporte |
+
+- **Python:** `installer/bootstrap/test_entry_seed.py` (pruebas de `entry_seed.py`).
+- Las pruebas de Pester **no** se ejecutan en `ci.yml` (verificado: no menciona `installer`).
+
+### 13.6 CI e2e (`e2e-unattended-vm.yml`)
+
+Solo `workflow_dispatch` (nunca en push/PR), `windows-2022`, `pwsh`: instala Node/pnpm/uv, `pnpm install --frozen-lockfile` en `apps`, ejecuta `build-release.ps1` completo, genera un UUID descartable y corre `installer/tests/e2e/Invoke-UnattendedE2E.ps1` (instalación `-Unattended` → salud → `-Command Update` contra el mismo payload → `-Command Restore` → salud) y sube logs (`installer-runs\*.log`, `logs\*`). Instala Postgres, servicios y cuenta reales: solo para VM desechable.
+
+**No verificado / posible fallo:** el workflow no provisiona `payload\security\parkos-master.key` y `build-release.ps1` falla sin ella; además la instalación e2e no pasa `-SkipStage 0`. No se pudo ejecutar el workflow para confirmarlo.
+
+---
+
+## 14. Solución de problemas: catálogo de mensajes
+
+Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cual.
+
+### 14.1 Arranque, elevación, PowerShell 7, pre-flight, EULA y rutas
+
+| Mensaje | Causa | Acción |
+|---|---|---|
+| `Se requieren permisos de administrador para instalar Parkos.` (`exit 2`) | UAC rechazado | Reintentar y aceptar |
+| `Hash de PowerShell 7 no coincide; instalacion abortada por seguridad.` | MSI descargado alterado/corrupto | Reintentar con buena red; no continuar si persiste |
+| `-Menu y -Unattended son incompatibles: ...` (`exit 2`) | Ambos switches | Elegir uno |
+| `Pre-flight fallo. Instalacion abortada, sin cambios en el sistema.` (menú, `exit 2`) | Alguna verificación `[FALLO]` | Corregir la línea `[FALLO]` |
+| `Pre-flight fallo - instalacion abortada, sin cambios en el sistema.` (desatendido) | Ídem | Ídem |
+| `El equipo todavia no cumple los requisitos para instalar (...)` (guiado) | Ídem | Ídem |
+| `Este instalador no trae los programas ya preparados ...` | Falta alguno de los 5 `.exe` del payload | Entregar payload completo (o `-IncludeBuild` en máquina técnica) |
+| `[FALLO] Conexion con el servidor Parkos` + `No se pudo contactar a <host>:<puerto>. ...` | Servidor remoto inalcanzable | Revisar red/`PARKOS_CLOUD_API_URL` |
+| `[AVISO] No se pudo contactar al servidor Parkos en <host>:<puerto> (este mismo equipo). ...` | Servidor local apagado | No bloquea |
+| `[AVISO] Clave maestra de Parkos ausente o invalida (la etapa 1 fallara sin ella)` | Menú/desatendido sin clave | Colocar la clave (6.3) |
+| `La direccion del servidor Parkos ('$value', tomada de $source) no es valida: ...` | URL sin `http(s)://` | Corregir variable/parámetro |
+| `EULA no aceptada explicitamente - modo -Unattended requiere -EulaAccepted.` / `-Unattended requiere -EulaAccepted (ver Show-Eula).` | Falta `-EulaAccepted` | Agregarlo |
+| `EULA file not found at $EulaPath - ...` | Falta `README-EULA.txt` | Restaurar el archivo del repo |
+| `EULA no aceptada. Saliendo sin cambios.` (`exit 0`) | Respuesta distinta de Enter | Reejecutar |
+| `Ruta de instalacion invalida: $installPath (...)` / `Ruta de datos invalida: $dataPath (...)` | Ruta en `C:\Windows`, `Program Files (x86)` o UNC | Usar otra ruta |
+| `-SkipStage contiene un valor invalido ($stageNumber) ...` / `-StopAfterStage invalido ($StopAfterStage) ...` | Fuera de 0–8 | Corregir |
+| `Saltar la etapa 1 (Postgres) puede dejar el resto de las etapas sin base de datos - si estas seguro, agrega -Force.` | `-SkipStage 1` sin `-Force` | Agregar `-Force` (y ver 7.2) |
+| `-SucursalUuid es obligatorio en modo -Unattended (...)` | Falta el UUID | Pasar `-SucursalUuid` |
+| `El UUID de sucursal '$Uuid' no tiene formato valido (UUIDv4 esperado). ...` | UUID mal formado | Copiar del panel admin |
+| `Demasiados intentos con un codigo de sucursal invalido ($maxAttempts). ...` | 5 intentos fallidos | Verificar el UUID |
+
+### 14.2 Etapa 0 (build en la máquina del técnico)
+
+| Mensaje | Causa | Acción |
+|---|---|---|
+| `Falta instalar: $($missing -join ', '). Alternativa: corre build-release.ps1 a mano ...` | Falta `git`, `pnpm` o `uv` | Instalar o compilar en otra máquina y copiar `installer\payload\` |
+| `nombre de rama invalido: '$Branch'. ...` | `-SourceBranch` con caracteres no permitidos | Corregir |
+| `git fetch origin $Branch fallo.` / `git checkout $Branch fallo.` | Red, rama inexistente, cambios locales | Revisar el repo |
+| `git pull --ff-only fallo (la rama local diverge de origin/$Branch - ...)` | Rama local divergente | Resolver a mano |
+| `build-release.ps1 fallo (exit $LASTEXITCODE).` | Falló una etapa del build | Ver el resumen `Build summary` |
+| `Build termino sin error pero falta el artefacto esperado: $rel` / `... no se encontro el MSI de web_sucursal en installer\payload\apps.` | Payload incompleto tras el build | Reconstruir la etapa faltante |
+
+### 14.3 Etapa 1 (Postgres, roles, secretos, `pg_partman`)
+
+| Mensaje | Causa | Acción |
+|---|---|---|
+| `Puertos 5432 y 5433 ambos ocupados; no se puede instalar Postgres de Parkos.` | Ambos en uso | Liberar uno |
+| `Puertos 8000, 8001, 8002 todos ocupados; no se puede instalar el servicio api-sucursal.` | Los 3 en uso | Liberar uno |
+| `Ni winget ni el ZIP de fallback ($zipPath) estan disponibles; no se puede instalar Postgres.` | Sin `winget`/internet y sin ZIP | Instalar `winget` o agregar el ZIP al payload |
+| `initdb fallo al inicializar el data directory de Postgres.` | Falla del camino ZIP | Revisar el ZIP y la configuración regional |
+| Mensajes de clave maestra (`No se encontro la clave maestra ...`, `... demasiado corta ...`, `No se encontro el archivo indicado en -MasterKeyPath ...`) | Ver 6.5 | Ver 6.5 |
+| `No se pudo configurar el superusuario parkos.` | `psql` como `postgres` falló (contraseña/servicio no iniciado) | Verificar servicio y `pgpass.conf` |
+| `No se pudo crear la base de datos parkos.` | Ídem | Ídem |
+| `No se encontro el certificado 'CN=ParkosEnvProtection' en Cert:\LocalMachine\My - ...` | No se creó el certificado | Reintentar la etapa 1 |
+| `No se pudo crear el schema partman (psql exit $LASTEXITCODE) - revisar .pgpass/autenticacion de 'parkos'.` | Autenticación | Revisar `pgpass.conf` y `PGPASSFILE` |
+| `CREATE EXTENSION pg_partman fallo (psql exit $LASTEXITCODE).` / `pg_partman no quedo activo tras CREATE EXTENSION.` | Archivos de extensión ausentes o incompatibles | Verificar `share\extension\` y el payload |
+| `No se encontro el archivo de secreto JWT en $Path.` / `Secreto JWT demasiado corto. Regenerar.` / `Secreto JWT es uno de desarrollo conocido. Regenerar.` | `jwt.key` inválido | Reejecutar la etapa 1 |
+
+### 14.4 Etapas 2 a 4
+
+| Mensaje | Causa | Acción |
+|---|---|---|
+| `Corre primero "Instalar base de datos" (opcion 1).` | Etapa 2/3 sin etapa 1 en la sesión | Correr la etapa 1 |
+| `Corre primero "Ejecutar migraciones" (opcion 2).` | Etapa 4 sin etapa 2 `Ok` | Correr la etapa 2 |
+| `Falta el bundle del servicio 'migrate' en el payload ($migrateDir). Ejecute la opcion 0 ...` | Falta `migrate` | Completar el payload |
+| `alembic upgrade head fallo (exit $LASTEXITCODE).` | Error de migración | Ver la salida de `migrate.exe` |
+| `No existe el archivo .env en $EnvFilePath - corre primero 'Instalar base de datos' (opcion 1).` | Etapa 3 sin `.env` | Correr etapa 1 |
+| `api-sucursal.exe (temporal, para seed) no respondio /health a tiempo.` | La API temporal no arranca | Ver `logs\seed-api.err.log` |
+| `seed.exe fallo (exit $LASTEXITCODE).` | Falló la siembra | Ver la salida |
+
+### 14.5 Etapas 5 a 8
+
+| Mensaje | Causa | Acción |
+|---|---|---|
+| `Falta $What en el payload ($Path). Ejecute la opcion 0 (descarga y compilacion del payload) o copie el payload completo junto al instalador y reintente.` | Falta un bundle/exe (`Assert-PayloadPath`) | Completar el payload |
+| `ParkosApiSucursal no respondio /health a tiempo tras el registro NSSM.` | La API no levanta | `logs\api-sucursal.err.log` |
+| `ParkosJobSyncSucursal no mostro un ciclo de sondeo en el log a tiempo.` | El worker no arranca | `logs\job-sync.out.log` |
+| `Falta el MSI de web_sucursal en el payload ($appsDir). ...` | Sin `.msi` | Agregarlo |
+| `Instalacion de web_sucursal fallo (exit $($proc.ExitCode)); ver $logPath` | Falla de `msiexec` | `logs\electron-install.log` |
+| `MSI reporto exito pero web_sucursal no aparece en el registro de desinstalacion.` | El `DisplayName` no contiene `Parkos` | Revisar el MSI |
+| `Verificacion post-instalacion fallo; ver detalle arriba. La instalacion NO se considera exitosa.` | Alguna de las 4 comprobaciones en `False` | Ver 11.1 |
+| `Falta $src en el payload - no se puede instalar el modulo de gestion Parkos.` / `Falta $doctorSrc en el payload - ...` / `Falta $nssmSrc en el payload - ...` | Faltan `management\`, `doctor` o `nssm.exe` | Completar el payload |
+| `Ya existe una version $moduleVersion del modulo Parkos en $destDir con contenido DISTINTO ...` | Módulo `1.0.0` distinto ya instalado | Resolver a mano (borrar la carpeta o igualar contenido) |
+
+### 14.6 Cascada, relanzo y log
+
+| Mensaje | Causa | Acción |
+|---|---|---|
+| `No se pudo completar el paso N de M (<descripción>).` + `Motivo tecnico (para soporte): ...` + `Registro de esta instalacion: <log>` | Falló una etapa | Enviar log a soporte |
+| `El instalador deshizo automaticamente los cambios de ese paso.` / `No fue posible deshacer automaticamente los cambios de ese paso: informelo al equipo de soporte.` | Resultado del rollback | Ver 7.4 sobre lo que el rollback **no** revierte |
+| `La instalacion NO se completo.` | Resultado final no exitoso | Idem |
+
+### 14.7 `-Command Update`
+
+| Mensaje | Causa |
+|---|---|
+| `No se encontro el archivo .env en $EnvFilePath - corre primero una instalacion (Invoke-ParkosInstall) antes de actualizar.` | No hay instalación |
+| `No se pudo determinar el puerto de Postgres desde PARKOS_DB_URL ni DATABASE_URL en el .env.` | `.env` ilegible |
+| `-PayloadPath vacio o inexistente ('$PayloadPath') - se requiere la carpeta con el payload nuevo (...)` | Ruta inválida |
+| `Get-ParkosHealth reporto ExitCode 2 (critico) - corre Repair-ParkosInstall antes de actualizar, o usa -Force ...` | Salud crítica |
+| `El backup en $dumpPath quedo vacio o invalido (...) - actualizacion abortada ANTES de detener servicios; nada mas se ejecuto.` | Backup inválido |
+| `pg_dump.exe fallo (exit $LASTEXITCODE) generando el backup en $DumpPath.` | `pg_dump` falló |
+| `Falta el manifest de integridad del payload en $manifestPath - no se puede verificar el payload nuevo.` / `El payload nuevo no tiene el archivo esperado por el manifest: $relativePath.` / `Hash SHA256 no coincide para $relativePath - el payload puede estar corrupto o alterado.` | VERIFY BINARIES (tier-1: se reinician los servicios) |
+| `No se encontro pgpass.conf en $pgpassPath - ...` / `No se encontro una credencial para el usuario '$User' en el puerto $Port dentro de pgpass.conf.` | MIGRATE sin credencial |
+| `alembic upgrade head fallo (exit $exitCode) durante la actualizacion.` | MIGRATE (tier-2) |
+| `ParkosApiSucursal no respondio /health a tiempo tras el reinicio.` / `ParkosJobSyncSucursal no mostro un ciclo de sondeo en el log tras el reinicio.` | RESTART (tier-2) |
+| `/health respondio $($healthResp.StatusCode), se esperaba 200.` / `/api/v1/sync/hello respondio $($helloResp.StatusCode), se esperaba 200.` | SMOKE TEST (tier-2) |
+| `pg_restore --clean --if-exists fallo (exit $LASTEXITCODE) restaurando $DumpPath durante el rollback.` | Falló el propio rollback |
+| `No hay releases previas en $releasesPath - no hay nada a lo cual revertir.` | `-RollbackOnly` sin releases |
+
+### 14.8 `-Command Restore`
+
+| Mensaje | Causa |
+|---|---|
+| `-Version es obligatorio para -Command Restore (ejemplo: -Version 20250101-000000).` | Falta `-Version` |
+| `No existe la version '$Version' en $releasesPath. Versiones disponibles: $availableText.` | Versión inexistente |
+| `-UnattendedRestoreConfirmed es obligatorio junto con -Unattended para -Command Restore (...)` | Falta la confirmación |
+| `Falta $releaseBundle - la version '$Version' archivada no tiene este binario disponible.` | Release incompleta |
+| `Restore cancelado por el operador. Nada fue modificado.` | Respuesta distinta de `RESTAURAR` (no es fallo) |
+
+### 14.9 Módulo `Parkos` — comunes, salud, reparación, desinstalación
+
+| Mensaje | Función |
+|---|---|
+| `No se encontro el archivo .env en $Path.` | `Import-ParkosEnvFile` |
+| `Falta el binario doctor.exe en $DoctorExePath - la instalacion no incluye el modulo de diagnostico.` | `Invoke-ParkosDoctorExe` |
+| `[FAIL] Parkos no esta instalado` | `Get-ParkosHealth` |
+| `Repair-ParkosInstall requiere permisos de administrador.` | `Repair-ParkosInstall` |
+| `No se encontro nssm.exe en $nssmPath - no se puede re-registrar el servicio NSSM faltante (E1).` | `Repair-ParkosInstall` |
+| `[Parkos] Get-ParkosHealth reporto fallas pero ningun escenario E1-E6 conocido aplica; no hay auto-fix disponible.` (`ExitCode=3`) | `Repair-ParkosInstall` |
+| `Uninstall-Parkos requiere permisos de administrador.` | `Uninstall-Parkos` |
+| `Uninstall-Parkos -PurgeData en modo -Unattended requiere -UnattendedPurgeConfirmed explicito, ...` | `Uninstall-Parkos` |
+
+### 14.10 Diagnóstico, backup y recuperación
+
+| Mensaje | Función |
+|---|---|
+| `Export-ParkosDiagnostics aborto antes de empaquetar: se detecto redaccion incompleta en: $findingsJoined. No se genero ningun ZIP.` | `Export-ParkosDiagnostics` |
+| `Register-ParkosBackupTask requiere permisos de administrador.` | `Register-ParkosBackupTask` |
+| `Formato de hora invalido en -DailyAt: '$DailyAt' (use HH:mm, ejemplo: 03:00).` | Ídem |
+| `Register-ParkosBackupTask requiere que Postgres este corriendo y que parkos_app tenga acceso (SELECT 1 fallo) - ...` | Ídem |
+| `No se pudo estimar el tamano de la base de datos parkos (...)` / `Espacio insuficiente para backup: se necesitan al menos {0} MB, hay {1} MB libres en {2}:.` | Ídem |
+| `El usuario de servicio 'svc-parkos' no existe todavia - corre el instalador (parkos-installer.ps1, Ensure-ServiceAccount) antes de registrar la tarea de backup.` | Ídem |
+| `El backup de prueba fallo (pwsh.exe exit $($testRun.ExitCode)) al ejecutar $scriptPath - la tarea ParkosBackupDiario NO quedo registrada. Revisar ...\backup.log.` | Ídem |
+| `Test-CrashRecovery requiere permisos de administrador.` | `Test-CrashRecovery` |
+| `No se encontro postgresql.conf en $confPath - ...` | Ídem (asume `$DataPath\pg-data\postgresql.conf`; ver 16) |
+| `Configuracion insegura, abortando: $($detalle -join '; ')` | Ídem (`fsync`/`full_page_writes` deben estar en `on`) |
+| `No se encontro el servicio de Windows de Postgres (patron '*postgresql*') - ...` / `No se pudo resolver el PID del servicio '$pgServiceName'.` | Ídem |
+
+### 14.11 `build-release.ps1`
+
+| Mensaje | Causa |
+|---|---|
+| `Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga).` / `Falta $modulePath - el modulo Parkos.psm1 ...` | Falta el módulo del repo |
+| `Falta $masterKeyPath - la clave maestra debe ser provista por el equipo de soporte antes de un build real, nunca se genera automaticamente.` | Falta la clave |
+| `PowerShell 7 MSI hash mismatch for $msiName. Expected $expectedSha256, got $actual. Aborting - do not ship an unverified binary.` | MSI alterado |
+| `pnpm build (electron-sucursal) failed.` / `electron-builder (build:packager) failed.` | Falla del build de la app |
+| `No .msi found under $distDir  - check electron-builder.yml's win.target includes 'msi'.` | Sin MSI |
+| `PyInstaller failed for $Name.` | Falla de congelado |
+| `[payload] Postgres 16 EDB ZIP not staged at $dest ...` (aviso) | Falta el ZIP (no es error) |
+
+### 14.12 `Get-ParkosSupportPassword.ps1`
+
+| Mensaje | Causa |
+|---|---|
+| `El UUID de sucursal '$SucursalUuid' no tiene formato valido (UUIDv4 esperado). Verificalo en el panel admin antes de reintentar.` | UUID inválido |
+| `No se encontro la clave maestra de Parkos en $MasterKeyPath - debe ser la copia propia de soporte, ...` | Falta la clave |
+| `No se pudo copiar [<Purpose>] al portapapeles (...). Reintenta con -Reveal ...` | Sin portapapeles |
+
+---
+
+## 15. Seguridad y cumplimiento
+
+| Tema | Implementación / estado |
+|---|---|
+| **Sin generación de claves de empresa** | La clave maestra no se genera, no se descarga y no se versiona; solo se valida su tamaño (6) |
+| **Contraseñas de PostgreSQL** | Derivadas con HMAC-SHA256 (DEC-INST-42); las 3 distintas; reproducibles por soporte con UUID + clave |
+| **Cifrado del `.env`** | CMS contra `CN=ParkosEnvProtection` (no DPAPI: no hay API DPAPI de alcance de máquina; `ConvertTo-SecureString` es de alcance de usuario, inútil para una cuenta distinta). Detección por contenido |
+| **Secreto JWT** | 64 bytes aleatorios (`RandomNumberGenerator`) por instalación; gate de ≥ 32 bytes y denylist de 6 secretos de desarrollo/placeholder (SHA256). No hay allowlist de secretos buenos (incoherente para un secreto aleatorio) |
+| **Secretos fuera de la línea de comandos** | `winget --optionfile`, `psql` por stdin, `migrate.exe`/`seed.exe` por variable de entorno de proceso (evita Event ID 4688/Sysmon/EDR) |
+| **Ámbito de cuentas** | `svc-parkos`: cuenta local sin sesión interactiva con `SeBatchLogonRight`, usada por las tareas programadas; lectura de la clave privada del certificado (best-effort). Los servicios NSSM **no** usan `svc-parkos` (cuenta por defecto de NSSM). Rol `parkos_app`: sin `CREATE ROLE` (se comprueba en la etapa 8); el runtime nunca usa el superusuario |
+| **Red** | `api-sucursal` escucha en `0.0.0.0` (código de `app.py`) y el instalador no restringe el enlace ni crea reglas de firewall; restringir el acceso externo al puerto de la API queda a cargo de TI. Para PostgreSQL no se define `listen_addresses` (no verificado) |
+| **Logs sin secretos** | El log de la cascada no contiene contraseñas; `Export-ParkosDiagnostics` redacta secretos y aborta sin ZIP ante redacción incompleta; los mensajes de la clave muestran solo ruta y longitud |
+| **Autenticidad de binarios** | SHA256 del MSI de PowerShell 7; `manifest.sha256.json` para actualizaciones; `Repair` E3 compara contra el manifest. No hay firma Authenticode (no verificado) |
+| **Retención y cumplimiento (DIAN)** | El instalador no toca el modelo de datos de cumplimiento: las migraciones del backend crean el esquema (REVOKE/triggers en tablas `[A]`) y `pg_partman` mantiene particiones por `fecha_retencion_hasta`. Un `PurgeData` borra datos locales: es una acción destructiva con doble confirmación |
+| **Puntos débiles conocidos** | ACL de `secrets\` no endurecida por el instalador; `AppEnvironmentExtra` de NSSM guarda el `.env` en texto plano en el registro; clave maestra permanece en `payload\security\`. Ver [16](#16-limitaciones-conocidas--no-verificado) |
+
+---
+
+## 16. Limitaciones conocidas / no verificado
+
+### 16.1 Funcionalidad no implementada o con huecos (verificado en el código)
+
+1. **Pairing/`sync-agent.jwt`/`pairing.json`:** ningún código del instalador ni del módulo los escribe. El comando `parkos_core.cli.pair` (variables `PARKOS_PAIRING_TOKEN`, `PARKOS_CLOUD_API_URL`, `PARKOS_SYNC_JWT_PATH`, `PARKOS_SUCURSAL_UUID`) existe en el backend, pero **no hay un `.exe` congelado ni paso del instalador** que lo ejecute; cómo se empareja una sucursal instalada así **no está verificado**. Además `pairing.json` no lo crea `pair.py` (la búsqueda en el repo solo lo encuentra en el pre-flight y en el módulo), por lo que la verificación `Sin instalacion previa` hoy prácticamente nunca bloquea y **no impide reinstalar sobre una instalación existente** (reinstalar regeneraría `jwt.key`).
+2. **Camino ZIP de PostgreSQL incompleto:** `Install-PostgresViaZip` solo extrae, ejecuta `initdb` y agrega `port`; no registra ni arranca el servicio, por lo que `Initialize-DatabaseRoles` no podría conectar. Tampoco está verificado que la estructura del ZIP de EDB deje `bin\initdb.exe` bajo `C:\Program Files\PostgreSQL\16` ni que `--locale=es-CO` esté disponible.
+3. **Ruta de datos de PostgreSQL inconsistente:** con `winget` el data directory lo decide EDB; `Test-CrashRecovery` y `postgres-config.txt` del diagnóstico asumen `$DataPath\pg-data\postgresql.conf` y el rollback de la etapa 1 borra `$DataPath\pg-data`, no el directorio real de `winget`.
+4. **Rollback parcial de la etapa 1:** no revierte `svc-parkos`, el certificado, `secrets\`, `PGPASSFILE`, `PARKOS_API_ORIGIN`, los archivos de `share\extension` ni la tarea programada. La etapa 4 (seed) no tiene rollback.
+5. **Estado en memoria:** el estado de las etapas y las contraseñas derivadas no persisten; reanudar en una sesión nueva exige repetir desde la etapa 1 (reejecutar la 1 vuelve a instalar/configurar Postgres y **regenera `jwt.key`**).
+6. **ACL de `secrets\`:** solo `pgpass.conf` se restringe en la instalación; el directorio, `.env` y `jwt.key` heredan la ACL de `C:\ProgramData` hasta que `Repair-ParkosInstall` (E4, solo si la salud no es 0) o una acción manual la endurece. Si se endurece a Administrators+SYSTEM, **no verificado** si `svc-parkos` (tareas `ParkosBackupDiario` y `ParkosPgPartmanMaintenance`, que dependen de `PGPASSFILE`/`.env`) conserva el acceso necesario.
+7. **Secretos en NSSM:** `AppEnvironmentExtra` guarda las variables del `.env` (incluida la URL de la base con la contraseña de `parkos_app`) en texto plano en el registro de cada servicio; la ACL de esas claves no se verificó.
+8. **Clave maestra residual:** el instalador no la elimina de `payload\security\`.
+9. **Módulo con rutas fijas:** `Parkos.psm1` ignora `-InstallPath`/`-DataPath` personalizados.
+10. **Update parcial:** `-Command Update` solo reemplaza los bundles `api-sucursal` y `job-sync-sucursal` (no `doctor\`, `nssm.exe`, la app de escritorio ni el módulo); archiva el MSI nuevo pero no lo instala. El smoke test no usa login autenticado (no existe usuario de solo lectura; DEC-INST-27).
+11. **Sin rotación de la clave maestra:** cambiarla impide reconstruir las contraseñas de instalaciones existentes.
+12. **`Get-ParkosVersion` es un placeholder** (PR1): no reporta versión pese a estar exportado y ser invocado por `Export-ParkosDiagnostics`.
+13. **`auto-update-paused.flag` es informativo:** nadie lo lee.
+14. **`releases\` no se puede preservar por separado** al desinstalar sin `-PurgeData` (vive bajo `InstallPath`, DEC-INST-37).
+15. **`Uninstall-Parkos` no limpia** el certificado, `PGPASSFILE`, `PARKOS_API_ORIGIN` ni el paquete de `winget`.
+16. **`current-version.txt` no se crea en la instalación:** la primera actualización sintetiza `unknown-<timestamp>` como versión saliente.
+17. **Sin canal piloto/beta:** canal único `latest` (DEC-INST-06); `Repair-ParkosInstall` no admite `-Version`.
+18. **Sin tracking de filas del seed**, por lo que no existe un `DELETE` de catálogos sembrados (decisión deliberada).
+19. **Certificado:** `New-SelfSignedCertificate` se invoca sin `-NotAfter`; su vigencia por defecto y el efecto de su vencimiento sobre `Protect-CmsMessage` no están verificados. `Grant-ParkosEnvCertKeyAccess` es best-effort (el backup diario podría fallar luego sin que la instalación lo detecte).
+20. **`api-sucursal` escucha en `0.0.0.0`** (`uvicorn.run(host="0.0.0.0")` en `api_sucursal_main/app.py`) aunque el instalador solo prueba y usa `127.0.0.1`; no se configura firewall ni enlace restringido.
+
+### 16.2 No verificado en este análisis (solo lectura de código)
+
+- Ejecución real de cualquier etapa, del MSI, de `winget` o de `ps2exe`/`parkos-installer.exe`.
+- Duración de cada etapa (el código solo fija esperas máximas de 30 s en `/health` y en el ciclo de sondeo).
+- Instalación de PowerShell 7 desde un PowerShell 5.1 **no elevado** (el MSI se instala antes de pedir la elevación).
+- Políticas de ejecución de scripts del equipo; nombre del servicio nativo de PostgreSQL, carpeta de instalación y acceso directo de la app (los definen EDB/MSI).
+- Que `LogonType ServiceAccount` con la cuenta local `svc-parkos` ejecute las tareas programadas correctamente.
+- CI e2e: no provisiona la clave maestra y no pasa `-SkipStage 0` (ver 13.6); su cabecera también afirma que `Update`/`Restore` no propagan el código de salida, pero el despachador actual sí hace `exit $result.ExitCode`.
+- Ruta de verificación del firewall, y firma de binarios.
+
+---
+
+## 17. Glosario
+
+| Término | Significado |
+|---|---|
+| **Payload** | Carpeta `installer\payload\` con todo lo que el instalador consume (binarios, MSI, NSSM, módulo, clave) |
+| **Etapa** | Cada uno de los 9 pasos (0–8) definidos una sola vez en `Get-ParkosStageDefinitions`; el menú y la cascada comparten las mismas definiciones |
+| **Guiado / Menú / Desatendido** | Los tres modos de instalación (ver 8.1) |
+| **Cascada** | Ejecución automática 0→8 con rollback por etapa (`Invoke-ParkosUnattendedCascade`) |
+| **Clave maestra** | `parkos-master.key`, secreto de la empresa para derivar contraseñas de PostgreSQL |
+| **UUID de sucursal** | Identificador creado en el panel de administración; único dato que se teclea |
+| **NSSM** | *Non-Sucking Service Manager*: registra los `.exe` como servicios de Windows |
+| **CMS** | *Cryptographic Message Syntax*: formato con el que se cifra el `.env` |
+| **pg_partman** | Extensión de PostgreSQL para particionar tablas; aquí sin background worker |
+| **Pairing** | Emparejamiento de la sucursal con la nube (genera `sync-agent.jwt`); fuera del alcance del instalador |
+| **Pre-flight** | Verificaciones previas bloqueantes de `Test-Preflight` |
+| **Tier-1 / Tier-2** | Niveles de rollback de `Update`: antes de reemplazar binarios / después |
+| **DEC-INST-NN** | Decisión de arquitectura del instalador documentada en `plan.md` |
+| **Release (carpeta)** | `InstallPath\releases\<yyyyMMdd-HHmmss>\`, binarios archivados por `Update` |
+
+---
+
+*Documento escrito a partir del código de `installer/` en `origin/dev`. Si el instalador cambia, revisar este manual junto con el cambio.*
