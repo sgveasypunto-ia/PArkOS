@@ -819,11 +819,12 @@ async def _passes_scope_recheck(
     resolver is consulted again ONLY where that costs no query: ``all_branches``
     (it would enumerate branches), a NULL-``uuid_sucursal`` override default,
     and the transitive ``subscription`` (it would fetch the parent) are
-    guaranteed by SQL and skipped. A resolver rejection of a row SQL returned
+    guaranteed by SQL and skipped; ``derived`` has no per-row resolver at all
+    (its scope is bridge-table SQL), so it is trusted as selected. A resolver rejection of a row SQL returned
     means the two scoping rules disagree: the caller logs and drops it.
     """
     policy = spec.broadcast_policy
-    if policy == "all_branches":
+    if policy in ("all_branches", "derived"):
         return True
     if policy == "all_branches_with_override" and payload.get("uuid_sucursal") is None:
         return True
@@ -927,8 +928,8 @@ async def sync_pull(
     supplied uuid — so this is generic across every paired sucursal, not
     just whichever one exercised it first. Per-table ``broadcast_policy``
     (``all_branches`` / ``all_branches_with_override`` / ``single_branch`` /
-    ``subscription``) is honored via :func:`resolve_broadcast_targets`
-    (T-PR12-003) — see :func:`_fetch_pull_rows`.
+    ``subscription`` / ``derived``) is enforced in SQL by
+    :func:`build_scope_predicate` — see :func:`_fetch_pull_rows`.
     """
     issuer = claims.get("iss", "")
     subject = extract_subject_from_jwt(claims)

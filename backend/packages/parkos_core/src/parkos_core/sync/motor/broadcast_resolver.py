@@ -69,7 +69,8 @@ class BroadcastPolicyError(Exception):
     """Raised when a broadcast target cannot be resolved.
 
     Covers: ``broadcast_policy=None`` (no broadcast scope — single
-    destination, cloud; never call this resolver for it), a
+    destination, cloud; never call this resolver for it), ``derived`` (scope
+    is decided in SQL by ``pull_scope``, never per row), a
     ``single_branch``/``subscription`` payload missing the field it needs, an
     unregistered transitive-parent mapping, or a parent row with no
     ``uuid_sucursal``. Never silently falls back to ``all_branches``.
@@ -160,6 +161,13 @@ async def resolve_broadcast_targets(
         raise BroadcastPolicyError(
             f"{spec.name}: broadcast_policy=None has no broadcast scope (single "
             "destination is the cloud) — never call resolve_broadcast_targets for it"
+        )
+
+    if policy == "derived":
+        raise BroadcastPolicyError(
+            f"{spec.name}: derived broadcast_policy has no per-row scope — it is decided "
+            "in SQL by sync.motor.pull_scope.build_scope_predicate (bridge tables); the "
+            "resolver must never be called for it"
         )
 
     if policy == "all_branches":

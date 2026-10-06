@@ -19,18 +19,29 @@ that keeps exactly the rows the resolver would deliver to ``uuid_sucursal``.
                                     inserts a new parent row and the link must
                                     survive it.
 
+  - ``derived``                   — a per-entry rule over bridge tables
+                                    (membership / subscription / invoice); see
+                                    ``_DERIVED_RULES``.
+
 An unsupported policy raises :class:`ValueError`; it never degrades to an
 unscoped (leaking) query.
 """
 from __future__ import annotations
 
 import uuid as uuid_lib
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import ColumnElement, or_, select
 
 from ..catalog.schema import SyncCatalogEntry
 from .broadcast_resolver import _TRANSITIVE_SUBSCRIPTION_PARENT
+
+# ``derived`` scope rules, registered per catalog entry name. A rule receives the
+# entry's ORM model and the pulling branch and returns the WHERE clause. An entry
+# declared ``derived`` with no rule here is refused, never pulled unscoped.
+_DerivedRule = Callable[[Any, uuid_lib.UUID], ColumnElement[bool]]
+_DERIVED_RULES: dict[str, _DerivedRule] = {}
 
 
 def build_scope_predicate(
@@ -80,6 +91,15 @@ def build_scope_predicate(
             parent_model.uuid_sucursal == uuid_sucursal
         )
         return getattr(model, fk_column).in_(parent_uuids)
+
+    if policy == "derived":
+        rule = _DERIVED_RULES.get(spec.name)
+        if rule is None:
+            raise ValueError(
+                f"{spec.name}: derived broadcast_policy has no registered scope rule — "
+                "refusing to pull unscoped"
+            )
+        return rule(model, uuid_sucursal)
 
     raise ValueError(f"{spec.name}: unsupported broadcast_policy {policy!r} for pull scoping")
 

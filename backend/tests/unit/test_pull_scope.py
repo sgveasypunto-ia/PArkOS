@@ -109,3 +109,9 @@ def test_transitive_subscription_without_mapping_raises() -> None:
     object.__setattr__(spec, "name", "unmapped_subscription")
     with pytest.raises(ValueError, match="transitive"):
         build_scope_predicate(spec, BRANCH)
+
+
+def test_derived_without_registered_rule_raises_instead_of_going_unscoped() -> None:
+    spec = dataclasses.replace(SYNC_CATALOG_BY_NAME["tipos_vehiculo"], broadcast_policy="derived")
+    with pytest.raises(ValueError, match="no registered scope rule"):
+        build_scope_predicate(spec, BRANCH)
