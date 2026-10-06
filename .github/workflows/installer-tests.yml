@@ -1,0 +1,120 @@
+name: installer tests
+
+# Suite Pester del instalador (installer/tests/*.Tests.ps1) + chequeo de
+# parseo de todos los .ps1 de installer/ (incluye lite/ y shared/).
+#
+# Las pruebas son estilo Pester 3.4.0 (Should Be, Assert-MockCalled, ...). En
+# Pester 3 los mocks se filtran entre archivos dentro de una misma sesion y
+# producen falsos fallos, asi que CADA archivo corre en su propio proceso
+# pwsh hijo. Un archivo que no carga (0 pruebas) cuenta como fallo.
+#
+# Sin secretos: solo lectura del repo (permissions: contents: read).
+
+on:
+  pull_request:
+    paths:
+      - 'installer/**'
+      - '.github/workflows/installer-tests.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'installer/**'
+      - '.github/workflows/installer-tests.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pester:
+    name: parse check + pester (one process per file)
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse-check every installer .ps1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Path installer -Recurse -File -Filter *.ps1 |
+            Where-Object { $_.FullName -notmatch '[\\/]payload[\\/]' } |
+            Sort-Object FullName
+          if (-not $files) { throw 'No se encontro ningun .ps1 bajo installer/.' }
+          $bad = 0
+          foreach ($f in $files) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $bad++
+              foreach ($e in $errors) {
+                $rel = Resolve-Path -Relative $f.FullName
+                Write-Host "::error file=$($rel -replace '^\.[\\/]',''),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            }
+          }
+          "Parseados: $($files.Count) archivos, con errores: $bad" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          if ($bad -gt 0) { throw "$bad archivo(s) con errores de parseo." }
+
+      - name: Pin Pester 3.4.0
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable -Name Pester | Where-Object { $_.Version -eq [version]'3.4.0' })) {
+            Install-Module Pester -RequiredVersion 3.4.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          }
+          Import-Module Pester -RequiredVersion 3.4.0 -Force
+          $v = (Get-Module Pester).Version
+          Write-Host "Pester cargado: $v"
+          if ($v -ne [version]'3.4.0') { throw "Se esperaba Pester 3.4.0 y se cargo $v." }
+
+      - name: Run Pester (one pwsh process per test file)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Path installer/tests -File -Filter *.Tests.ps1 | Sort-Object Name
+          if (-not $files) { throw 'No se encontro ningun *.Tests.ps1 en installer/tests.' }
+
+          $child = @'
+          Import-Module Pester -RequiredVersion 3.4.0 -Force
+          $r = Invoke-Pester -Path $env:T_FILE -PassThru
+          [pscustomobject]@{ Passed = [int]$r.PassedCount; Failed = [int]$r.FailedCount; Total = [int]$r.TotalCount } |
+            ConvertTo-Json -Compress | Set-Content -Path $env:T_OUT -Encoding UTF8
+          '@
+
+          $rows = @()
+          $failedFiles = 0
+          foreach ($f in $files) {
+            $out = Join-Path $env:RUNNER_TEMP ("pester-" + $f.BaseName + ".json")
+            Remove-Item $out -ErrorAction SilentlyContinue
+            $env:T_FILE = $f.FullName
+            $env:T_OUT = $out
+            Write-Host "::group::$($f.Name)"
+            & pwsh -NoProfile -NonInteractive -Command $child
+            $code = $LASTEXITCODE
+            Write-Host '::endgroup::'
+
+            $passed = 0; $failed = 0; $total = 0; $status = 'OK'
+            if (Test-Path $out) {
+              $j = Get-Content $out -Raw | ConvertFrom-Json
+              $passed = $j.Passed; $failed = $j.Failed; $total = $j.Total
+            } else {
+              $status = 'NO CARGO'
+            }
+            if ($status -eq 'OK' -and $total -eq 0) { $status = 'NO CARGO (0 pruebas)' }
+            elseif ($status -eq 'OK' -and ($failed -gt 0)) { $status = 'FALLA' }
+            elseif ($status -eq 'OK' -and $code -ne 0) { $status = "FALLA (exit $code)" }
+            if ($status -ne 'OK') {
+              $failedFiles++
+              Write-Host "::error file=installer/tests/$($f.Name)::$status (passed=$passed failed=$failed total=$total)"
+            }
+            $rows += "| $($f.Name) | $passed | $failed | $total | $status |"
+          }
+
+          $summary = @('## Installer Pester (3.4.0, un proceso por archivo)', '',
+            '| Archivo | Passed | Failed | Total | Estado |', '|---|---:|---:|---:|---|') + $rows
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($failedFiles -gt 0) { throw "$failedFiles archivo(s) de prueba con fallos o que no cargaron." }
