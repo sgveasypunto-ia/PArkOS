@@ -32,9 +32,14 @@ the correct form for every target; none of them is a pg_partman parent.
 
 **Idempotent.** ``CREATE INDEX IF NOT EXISTS`` with explicit names in schema
 ``prod``; the downgrade is ``DROP INDEX IF EXISTS`` for exactly these names.
-Plain (non-CONCURRENT) builds: Alembic runs this inside a transaction, and the
-tables involved are small catalog/configuration tables, so the brief
-write-lock is acceptable.
+Plain (non-CONCURRENT) builds: Alembic runs this inside a transaction, so
+``CREATE INDEX CONCURRENTLY`` is not an option. A plain build holds a SHARE lock
+(blocks writes) on the table for the duration of the build. Several targets are
+NOT small -- ``factura_electronica`` and ``usuarios_sucursal`` are busy tables
+that grow with operation -- so ``upgrade`` starts with ``SET LOCAL lock_timeout =
+'5s'`` (the pattern of 0008): if a long transaction holds a conflicting lock the
+migration fails fast and can be retried, instead of queueing behind it and
+stalling every writer queued after it. Run it in a low-traffic window.
 """
 from __future__ import annotations
 
@@ -91,6 +96,7 @@ _INDEXES: tuple[tuple[str, str, str], ...] = (
 
 def upgrade() -> None:
     """Create the pull-scope indexes (idempotent)."""
+    op.execute("SET LOCAL lock_timeout = '5s'")
     for name, table, columns in _INDEXES:
         op.execute(f"CREATE INDEX IF NOT EXISTS {name} ON prod.{table} ({columns});")
 

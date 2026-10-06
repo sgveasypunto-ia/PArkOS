@@ -25,8 +25,11 @@ pg_partman parent, so a plain ``CREATE INDEX`` is the correct form.
 
 **Idempotent.** ``CREATE INDEX IF NOT EXISTS`` with an explicit name in schema
 ``prod``; the downgrade is ``DROP INDEX IF EXISTS``. Plain (non-CONCURRENT)
-build: Alembic runs this inside a transaction; ``clientes`` is a master table of
-modest size, so the brief write-lock is acceptable.
+build: Alembic runs this inside a transaction, so the build holds a SHARE lock
+(blocks writes to ``clientes``) while it runs. ``clientes`` is written at the
+counter, so ``upgrade`` starts with ``SET LOCAL lock_timeout = '5s'`` (pattern of
+0008): a conflicting long transaction makes the migration fail fast and be
+retried rather than queue writers behind it. Run it in a low-traffic window.
 """
 from __future__ import annotations
 
@@ -41,6 +44,7 @@ depends_on = None
 
 def upgrade() -> None:
     """Create the full natural-key index on clientes (idempotent)."""
+    op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_clientes_nk
