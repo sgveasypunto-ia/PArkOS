@@ -622,12 +622,6 @@ async def get_arqueo_resumen(
         resumen_dict = await repo_arqueo.construir_resumen_sesion(
             session, sesion=sesion
         )
-        # F12.1.1 / REQ-OPS-192: strip datafono keys (still emitted by
-        # the repo for backward-compat until Phase 5 drops them
-        # entirely). ``ArqueoResumenItem`` is ``extra='forbid'`` so we
-        # MUST drop unknown keys before ``**resumen_dict`` expansion.
-        resumen_dict.pop("valor_datafono_esperado", None)
-        resumen_dict.pop("valor_datafono_reportado", None)
         items.append(ArqueoResumenItem(**resumen_dict))
 
     # --- Step 5 (G5): cierre_dia aggregate (if exists for fecha+sucursal) ---
@@ -636,10 +630,6 @@ async def get_arqueo_resumen(
         uuid_sucursal=params.uuid_sucursal,
         fecha=params.fecha,
     )
-    if cierre_dia_dict is not None:
-        # F12.1.1 / REQ-OPS-192: strip datafono keys (see comment above).
-        cierre_dia_dict.pop("valor_datafono_esperado", None)
-        cierre_dia_dict.pop("valor_datafono_reportado", None)
     cierre_dia_item: ArqueoResumenItem | None = (
         ArqueoResumenItem(**cierre_dia_dict) if cierre_dia_dict is not None else None
     )

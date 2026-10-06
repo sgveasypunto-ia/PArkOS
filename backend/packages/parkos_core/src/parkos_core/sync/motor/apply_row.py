@@ -297,7 +297,13 @@ async def _dispatch_repo_call(
                     actor_uuid=actor_uuid,
                     sesion_uuid=payload["uuid"],
                     valor_final_efectivo=payload.get("valor_final_efectivo"),
-                    valor_final_datafono=payload.get("valor_final_datafono"),
+                    # F12.1.1 / REQ-MOT-001 / D2: the datafono dimension
+                    # is dropped at the sync boundary. The wire payload
+                    # may carry ``valor_final_datafono`` from a queue row
+                    # replicated pre-F12.1.1; we pass ``None`` explicitly
+                    # (defense against future positional-arg signatures;
+                    # semantically documents intent).
+                    valor_final_datafono=None,
                 )
             return await session_cycle.open_session(
                 session,

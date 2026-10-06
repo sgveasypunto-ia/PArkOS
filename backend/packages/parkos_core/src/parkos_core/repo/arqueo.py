@@ -712,9 +712,7 @@ async def construir_resumen_sesion(
         "timestamp_cierre": sesion.timestamp_cierre,
         "estado": estado_derivado,
         "valor_efectivo_esperado": esperado_efectivo,
-        "valor_datafono_esperado": _to_decimal(arqueo_row.valor_datafono_esperado) if arqueo_row else None,
         "valor_efectivo_reportado": _to_decimal(arqueo_row.valor_efectivo_reportado) if arqueo_row else None,
-        "valor_datafono_reportado": _to_decimal(arqueo_row.valor_datafono_reportado) if arqueo_row else None,
         "uuid_arqueo": arqueo_row.uuid if arqueo_row else None,
     }
 
@@ -750,9 +748,7 @@ async def obtener_cierre_dia_del_dia(
         "timestamp_cierre": None,
         "estado": None,
         "valor_efectivo_esperado": _to_decimal(arqueo_row.valor_efectivo_esperado),
-        "valor_datafono_esperado": _to_decimal(arqueo_row.valor_datafono_esperado),
         "valor_efectivo_reportado": _to_decimal(arqueo_row.valor_efectivo_reportado),
-        "valor_datafono_reportado": _to_decimal(arqueo_row.valor_datafono_reportado),
         "uuid_arqueo": arqueo_row.uuid,
     }
 
@@ -1001,7 +997,6 @@ async def resumen_admin_del_dia(
                 "uuid_sucursal": s.uuid,
                 "nombre": s.nombre,
                 "esperado_efectivo": esperado_e,
-                "esperado_datafono": Decimal("0"),
                 "cierre_dia": cierre_dia_dict,
                 "total_arqueos": total,
             }
