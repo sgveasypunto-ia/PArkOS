@@ -169,4 +169,41 @@ describe('<ClientesList />', () => {
       expect(screen.getByTestId('clientes-empty')).toBeInTheDocument();
     });
   });
+
+  it('hides the standard billing client "Consumidor final" by default and can show it on demand', async () => {
+    const CONSUMIDOR_FINAL = makeCliente({
+      uuid: '33333333-3333-4333-8333-333333333333',
+      numero_identificacion: '222222222222',
+      nombre: 'Consumidor',
+      apellido: 'Final',
+    });
+    mockedRaw.mockImplementation(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [CLIENTE_ADA, CONSUMIDOR_FINAL], next_cursor: null }),
+          text: async () => '',
+        }) as Response,
+    );
+    const user = userEvent.setup();
+    render(<ClientesList />, { wrapper: isolatedCache });
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`clientes-row-${CLIENTE_ADA.uuid}`)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId(`clientes-row-${CONSUMIDOR_FINAL.uuid}`)).not.toBeInTheDocument();
+
+    // Search does not surface it either by default.
+    await user.type(screen.getByTestId('clientes-search'), 'Consumidor');
+    await waitFor(() => {
+      expect(screen.getByTestId('clientes-empty')).toBeInTheDocument();
+    });
+    await user.clear(screen.getByTestId('clientes-search'));
+
+    await user.click(screen.getByTestId('clientes-mostrar-consumidor-final'));
+    await waitFor(() => {
+      expect(screen.getByTestId(`clientes-row-${CONSUMIDOR_FINAL.uuid}`)).toBeInTheDocument();
+    });
+  });
 });

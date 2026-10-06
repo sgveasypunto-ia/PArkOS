@@ -21,11 +21,11 @@
  *   as `Dashboard`, `HomeHub`, `SeleccionarSucursal`.
  */
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
 import { ArrowLeft } from 'lucide-react';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useGoBack } from '@/lib/useGoBack';
 
 interface ProfileRow {
   labelKey: string;
@@ -37,6 +37,8 @@ interface ProfileRow {
 export default function Perfil(): JSX.Element {
   const { t } = useTranslation();
   const { user, rol, sucursalUuids } = useAdminAuth();
+  // PT-1: back to the screen the user came from; '/' only as a deep-link fallback.
+  const goBack = useGoBack('/');
 
   const email = user?.email ?? '';
   const uuid = user?.uuid ?? '';
@@ -71,14 +73,15 @@ export default function Perfil(): JSX.Element {
   return (
     <div className="mx-auto max-w-2xl px-4 py-10" data-testid="page-perfil">
       <header className="mb-6">
-        <Link
-          to="/"
+        <button
+          type="button"
+          onClick={goBack}
           className="text-muted-foreground focus-ring inline-flex items-center gap-1.5 text-sm hover:text-foreground"
           data-testid="perfil-back"
         >
           <ArrowLeft className="size-4" aria-hidden="true" />
-          {t('perfil.back', 'Volver al inicio')}
-        </Link>
+          {t('perfil.back', 'Volver')}
+        </button>
         <h1 className="mt-4 text-2xl font-semibold tracking-tight">
           {t('perfil.title', 'Mi perfil')}
         </h1>

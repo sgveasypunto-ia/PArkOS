@@ -23,10 +23,11 @@
  * never admin-initiated (ABIERTO-55, already documented, out of scope).
  */
 import { useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { useGoBack } from '@/lib/useGoBack';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 import { useRetryEnvioDian } from '../hooks/useRetryEnvioDian';
@@ -54,7 +55,8 @@ function JsonPane({ value }: { value: Record<string, unknown> | null }): JSX.Ele
 
 export default function DianDetalle(): JSX.Element {
   const { t } = useTranslation();
-  const navigate = useNavigate();
+  // PT-1: back to the previous screen, fallback to the queue on a deep link.
+  const goBack = useGoBack('/dian');
   const { uuid } = useParams<{ uuid: string }>();
   const location = useLocation();
   const envio = (location.state as LocationState | null)?.envio;
@@ -73,7 +75,7 @@ export default function DianDetalle(): JSX.Element {
       <main className="space-y-4 p-4 md:p-6" data-testid="dian-detalle-page">
         <header className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-bold tracking-tight">{t('dian.detalle.title', 'Detalle del envío DIAN')}</h1>
-          <Button type="button" variant="outline" onClick={() => navigate('/dian')} data-testid="dian-detalle-back">
+          <Button type="button" variant="outline" onClick={() => goBack()} data-testid="dian-detalle-back">
             {t('dian.detalle.back', 'Volver a la cola')}
           </Button>
         </header>
@@ -103,7 +105,7 @@ export default function DianDetalle(): JSX.Element {
           <h1 className="text-2xl font-bold tracking-tight">{t('dian.detalle.title', 'Detalle del envío DIAN')}</h1>
           <p className="text-muted-foreground font-mono text-xs">{envio.uuid}</p>
         </div>
-        <Button type="button" variant="outline" onClick={() => navigate('/dian')} data-testid="dian-detalle-back">
+        <Button type="button" variant="outline" onClick={() => goBack()} data-testid="dian-detalle-back">
           {t('dian.detalle.back', 'Volver a la cola')}
         </Button>
       </header>

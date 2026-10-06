@@ -15,9 +15,10 @@
  * instead of fetching -- there is nothing to fetch BY.
  */
 import { useTranslation } from 'react-i18next';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { useGoBack } from '@/lib/useGoBack';
 import { HashChainStatus } from '@/components/HashChainStatus';
 import { formatBackendTimestampLocal } from '@/features/reporteria/components/dateRange';
 
@@ -32,6 +33,8 @@ export default function LogDetalle(): JSX.Element {
   const { t } = useTranslation();
   const { uuid } = useParams<{ uuid: string }>();
   const location = useLocation();
+  // PT-1: back to the previous screen (list with its filters), not a fixed route.
+  const goBack = useGoBack('/auditoria/log');
   const item = (location.state as LogDetalleLocationState | null)?.item ?? null;
 
   if (!item || item.uuid !== uuid) {
@@ -43,10 +46,8 @@ export default function LogDetalle(): JSX.Element {
             'No se encontró el detalle de este evento (volvé al listado para abrirlo de nuevo).',
           )}
         </p>
-        <Button asChild variant="outline" size="sm">
-          <Link to="/auditoria/log" data-testid="log-detalle-back">
-            {t('auditoria.detail.backToList', 'Volver al listado')}
-          </Link>
+        <Button type="button" variant="outline" size="sm" onClick={goBack} data-testid="log-detalle-back">
+          {t('auditoria.detail.backToList', 'Volver al listado')}
         </Button>
       </main>
     );
@@ -66,10 +67,8 @@ export default function LogDetalle(): JSX.Element {
             {item.accion ?? '—'}
           </p>
         </div>
-        <Button asChild variant="outline" size="sm">
-          <Link to="/auditoria/log" data-testid="log-detalle-back">
-            {t('auditoria.detail.backToList', 'Volver al listado')}
-          </Link>
+        <Button type="button" variant="outline" size="sm" onClick={goBack} data-testid="log-detalle-back">
+          {t('auditoria.detail.backToList', 'Volver al listado')}
         </Button>
       </header>
 

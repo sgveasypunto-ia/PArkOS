@@ -66,6 +66,10 @@ const alertaBaseShape = {
   vigente_desde: z.string().nullable(),
   vigente_hasta: z.string().nullable(),
   estado: z.enum(ALERTA_ESTADOS).nullable(),
+  // Free-form event payload. For `suscripcion_placa_agregada|quitada` it is
+  // {placa, accion, uuid_subscripcion, uuid_vehiculo, uuid_sucursal, actor}.
+  // Optional/nullable: older servers do not expose it.
+  datos_nuevos: z.record(z.unknown()).nullable().optional(),
 };
 
 /** `GET /api/v1/workflows/alerta` list item — carries `severity` (BR4). */

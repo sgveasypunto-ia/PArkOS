@@ -3,13 +3,15 @@
  * reads from `useAdminAuth()` and renders the immutable identity. The
  * test pins:
  *   - P1: each row is populated from the hook.
- *   - P2: the back link points at `/`.
+ *   - P2: "Volver" goes back to the previous screen (PT-1); `/` is only
+ *         the fallback when there is no in-app history.
  *   - P3: empty fields fall back to the em-dash instead of rendering
  *         an empty cell.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 const useAdminAuthMock = vi.fn();
 vi.mock('@parkos/ui-kit/hooks', () => ({
@@ -55,13 +57,36 @@ describe('Perfil', () => {
     expect(screen.getByTestId('perfil-row-sucursales')).toHaveTextContent('1');
   });
 
-  it('P2: the back link points at /', () => {
+  it('P2: "Volver" returns to the screen the user came from (PT-1), not a fixed route', async () => {
     useAdminAuthMock.mockReturnValue(authState());
-    renderPerfil();
+    render(
+      <MemoryRouter initialEntries={['/clientes?q=abc', '/perfil']} initialIndex={1}>
+        <Routes>
+          <Route path="/perfil" element={<Perfil />} />
+          <Route path="/clientes" element={<div data-testid="prev-screen" />} />
+          <Route path="/" element={<div data-testid="home" />} />
+        </Routes>
+      </MemoryRouter>,
+    );
 
-    const back = screen.getByTestId('perfil-back');
-    expect(back.tagName).toBe('A');
-    expect(back).toHaveAttribute('href', '/');
+    await userEvent.click(screen.getByTestId('perfil-back'));
+    expect(screen.getByTestId('prev-screen')).toBeInTheDocument();
+    expect(screen.queryByTestId('home')).not.toBeInTheDocument();
+  });
+
+  it('P2b: with no previous screen (deep link) "Volver" falls back to /', async () => {
+    useAdminAuthMock.mockReturnValue(authState());
+    render(
+      <MemoryRouter initialEntries={['/perfil']}>
+        <Routes>
+          <Route path="/perfil" element={<Perfil />} />
+          <Route path="/" element={<div data-testid="home" />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(screen.getByTestId('perfil-back'));
+    expect(screen.getByTestId('home')).toBeInTheDocument();
   });
 
   it('P3: missing email and rol fall back to em-dash', () => {

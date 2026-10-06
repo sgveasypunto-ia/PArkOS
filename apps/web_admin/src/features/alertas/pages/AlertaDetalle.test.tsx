@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createElement, type ReactNode } from 'react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { SWRConfig } from 'swr';
 import type * as AlertasApiModule from '../api/alertasApi';
 
@@ -118,4 +118,71 @@ describe('AlertaDetalle', () => {
 
     expect(await screen.findByTestId('alerta-detalle-descartar-button')).toBeDisabled();
   });
+
+  it('T4: a placa-agregada alert shows a readable type and its placa/acción/suscripción (no raw uuids)', async () => {
+    mockedFetchAlerta.mockResolvedValue(
+      baseAlerta({
+        tipo_alerta: 'suscripcion_placa_agregada',
+        datos_nuevos: {
+          placa: 'ABC123',
+          accion: 'agregada',
+          uuid_subscripcion: 'aaaaaaaa-bbbb-cccc-dddd-0123456789ab',
+          uuid_vehiculo: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+          uuid_sucursal: '22222222-2222-2222-2222-222222222222',
+          actor: '33333333-3333-3333-3333-333333333333',
+        },
+      }),
+    );
+    renderDetalle();
+
+    expect(await screen.findByTestId('alerta-detalle-tipo')).toHaveTextContent('Placa agregada a suscripción');
+    expect(screen.getByTestId('alerta-detalle-placa')).toHaveTextContent('ABC123');
+    expect(screen.getByTestId('alerta-detalle-accion')).toHaveTextContent('Agregada');
+    expect(screen.getByTestId('alerta-detalle-suscripcion')).toHaveTextContent('…456789ab');
+    // The vehicle / actor uuids are never printed.
+    const page = screen.getByTestId('alerta-detalle-page');
+    expect(page).not.toHaveTextContent('ffffffff-ffff-ffff-ffff-ffffffffffff');
+    expect(page).not.toHaveTextContent('aaaaaaaa-bbbb-cccc-dddd-0123456789ab');
+  });
+
+  it('T5: fe_emision_fallida and placa_quitada get readable labels; unknown types fall back to the raw code', async () => {
+    mockedFetchAlerta.mockResolvedValue(baseAlerta({ tipo_alerta: 'fe_emision_fallida' }));
+    const { unmount } = renderDetalle();
+    expect(await screen.findByTestId('alerta-detalle-tipo')).toHaveTextContent(
+      'Falló la emisión de factura electrónica',
+    );
+    // No datos_nuevos => no placa/acción rows.
+    expect(screen.queryByTestId('alerta-detalle-placa')).not.toBeInTheDocument();
+    unmount();
+
+    mockedFetchAlerta.mockResolvedValue(baseAlerta({ tipo_alerta: 'suscripcion_placa_quitada' }));
+    renderDetalle();
+    expect(await screen.findByTestId('alerta-detalle-tipo')).toHaveTextContent('Placa quitada de suscripción');
+  });
+
+  it('T6 (PT-1): "Volver" returns to the previous inbox URL keeping its filters', async () => {
+    const user = userEvent.setup();
+    mockedFetchAlerta.mockResolvedValue(baseAlerta());
+    render(
+      createElement(
+        MemoryRouter,
+        { initialEntries: ['/alertas?estado=abierta&severidad=info', `/alertas/${UUID}`], initialIndex: 1 },
+        createElement(
+          Routes,
+          null,
+          createElement(Route, { path: '/alertas/:uuid', element: createElement(AlertaDetalle) }),
+          createElement(Route, { path: '/alertas', element: createElement(SearchProbe) }),
+        ),
+      ),
+      { wrapper },
+    );
+
+    await user.click(await screen.findByTestId('alerta-detalle-back'));
+    expect(screen.getByTestId('search-probe')).toHaveTextContent('?estado=abierta&severidad=info');
+  });
 });
+
+function SearchProbe(): JSX.Element {
+  const location = useLocation();
+  return createElement('div', { 'data-testid': 'search-probe' }, location.search);
+}

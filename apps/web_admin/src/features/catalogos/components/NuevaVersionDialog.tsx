@@ -11,7 +11,7 @@
  * catálogo específico.
  */
 import { useEffect } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, type UseFormRegisterReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
 import { z } from 'zod';
@@ -28,6 +28,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
+import { useCatalogList } from '../hooks/useCatalogList';
 import type { CatalogField } from '../lib/configTypes';
 
 interface NuevaVersionDialogProps {
@@ -39,6 +40,52 @@ interface NuevaVersionDialogProps {
   defaults: Record<string, unknown>;
   onSubmit: (values: Record<string, unknown>) => Promise<void>;
   isSubmitting: boolean;
+}
+
+/**
+ * `select` field: options are the vigente rows of `field.optionsResource`
+ * (cached by SWR through `useCatalogList`); the empty option maps to "no value".
+ */
+function CatalogSelect({
+  field,
+  register,
+  invalid,
+  currentValue,
+}: {
+  field: CatalogField;
+  register: UseFormRegisterReturn;
+  invalid: boolean;
+  /** Value stored on the row being edited (may point at a no-longer-vigente version). */
+  currentValue: string;
+}): JSX.Element {
+  const { rows } = useCatalogList(field.optionsResource ?? 'tipos-vehiculo');
+  const labelKey = field.optionsLabelKey ?? 'tipo';
+  const vigentes = rows.filter((r) => r.vigente_hasta === null && r.estado === 'activo');
+  // A row can reference an older version of the option (references keep the
+  // uuid they had when saved): keep it selectable instead of silently
+  // resetting the field to "no value".
+  const stale =
+    currentValue !== '' && !vigentes.some((r) => r.uuid === currentValue)
+      ? (rows.find((r) => r.uuid === currentValue) ?? null)
+      : null;
+  const options = stale ? [...vigentes, stale] : vigentes;
+  return (
+    <select
+      id={`field-${field.name}`}
+      {...register}
+      data-testid={`field-${field.name}`}
+      aria-invalid={invalid ? 'true' : 'false'}
+      aria-describedby={field.hint ? `field-${field.name}-hint` : undefined}
+      className="border-input bg-transparent flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <option value="">{field.emptyOptionLabel ?? ''}</option>
+      {options.map((r) => (
+        <option key={r.uuid} value={r.uuid}>
+          {String(r[labelKey] ?? r.uuid)}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 export function NuevaVersionDialog({
@@ -136,7 +183,22 @@ export function NuevaVersionDialog({
                     </>
                   )}
                 </Label>
-                {!isCheckbox && (
+                {field.type === 'select' && (
+                  <>
+                    <CatalogSelect
+                      field={field}
+                      register={form.register(field.name)}
+                      invalid={Boolean(error)}
+                      currentValue={String(defaults[field.name] ?? '')}
+                    />
+                    {field.hint && (
+                      <p id={`field-${field.name}-hint`} className="text-muted-foreground text-xs">
+                        {field.hint}
+                      </p>
+                    )}
+                  </>
+                )}
+                {!isCheckbox && field.type !== 'select' && (
                   <>
                     <Input
                       id={`field-${field.name}`}

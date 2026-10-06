@@ -93,10 +93,25 @@ export function CatalogEditor({ config }: CatalogEditorProps): JSX.Element {
     setSubmitting(true);
     setSubmitError(null);
     try {
+      if (editing && config.validateUpdate) {
+        const blocked = config.validateUpdate(editing, values);
+        if (blocked !== null) {
+          setSubmitError(blocked);
+          return;
+        }
+      }
+      // An empty `select` ("Cualquiera") is "no value": omit it instead of
+      // sending '' (the backend expects a UUID or an absent key).
+      const payload = { ...values };
+      for (const f of config.fields) {
+        if (f.type === 'select' && (payload[f.name] === '' || payload[f.name] === undefined)) {
+          delete payload[f.name];
+        }
+      }
       if (editing) {
-        await updateCatalogVersion(config.resource, editing.uuid, values);
+        await updateCatalogVersion(config.resource, editing.uuid, payload);
       } else {
-        await createCatalogVersion(config.resource, values);
+        await createCatalogVersion(config.resource, payload);
       }
       await mutate();
       setDialogOpen(false);

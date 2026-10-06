@@ -104,4 +104,20 @@ describe('<ClienteDatosTab />', () => {
       );
     });
   });
+
+  it('is read-only for the standard billing client "Consumidor final" (no edit, no save)', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <ClienteDatosTab
+        cliente={{ ...BASE_CLIENTE, numero_identificacion: '222222222222', nombre: 'Consumidor' }}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByTestId('cliente-datos-readonly')).toBeInTheDocument();
+    expect(screen.queryByTestId('cliente-datos-submit')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cliente-field-nombre')).toBeDisabled();
+    expect(screen.getByTestId('cliente-field-numero')).toBeDisabled();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 });

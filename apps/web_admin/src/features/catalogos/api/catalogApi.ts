@@ -51,9 +51,23 @@ const JSON_HEADERS = {
   Accept: 'application/json',
 } as const;
 
-export async function listCatalog(resource: CatalogResource): Promise<CatalogRow[]> {
+export interface ListCatalogOptions {
+  /**
+   * Solo `tipo-subscripciones` (PT-2): devuelve los planes de ese tipo de
+   * vehículo MÁS los planes sin tipo (NULL = cualquier tipo).
+   */
+  uuidTipoVehiculo?: string;
+}
+
+export async function listCatalog(
+  resource: CatalogResource,
+  options: ListCatalogOptions = {},
+): Promise<CatalogRow[]> {
+  const qs = options.uuidTipoVehiculo
+    ? `?uuid_tipo_vehiculo=${encodeURIComponent(options.uuidTipoVehiculo)}`
+    : '';
   const envelope = await parkosFetch<ListEnvelope>(
-    `/api/v1/catalogos/${resource}`,
+    `/api/v1/catalogos/${resource}${qs}`,
     { method: 'GET' },
   );
   return envelope.items;

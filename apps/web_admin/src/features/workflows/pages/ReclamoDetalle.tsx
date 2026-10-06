@@ -26,10 +26,11 @@
  * (confirmed against the real ORM model) -- do not invent one.
  */
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { useGoBack } from '@/lib/useGoBack';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 import { WorkflowChain, type WorkflowTransition } from '@/features/workflows/components/WorkflowChain';
@@ -48,7 +49,8 @@ const BUTTON_LABEL: Record<Exclude<ReclamoEstado, 'recibido'>, { key: string; fa
 
 export default function ReclamoDetalle(): JSX.Element {
   const { t } = useTranslation();
-  const navigate = useNavigate();
+  // PT-1: back to the previous screen, fallback to the list on a deep link.
+  const goBack = useGoBack('/reclamos');
   const { uuid } = useParams<{ uuid: string }>();
 
   const { reclamo, isLoading, error, setReclamo } = useReclamoDetalle(uuid ?? null);
@@ -92,7 +94,7 @@ export default function ReclamoDetalle(): JSX.Element {
         <Button
           type="button"
           variant="outline"
-          onClick={() => navigate('/reclamos')}
+          onClick={() => goBack()}
           data-testid="reclamo-detalle-back"
         >
           {t('reclamos.detalle.back', 'Volver a la bandeja')}

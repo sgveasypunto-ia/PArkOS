@@ -14,11 +14,13 @@
  * simply renders "—", per BR4's own "—" convention for "don't know").
  */
 import { useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
+import { useGoBack } from '@/lib/useGoBack';
 
 import { WorkflowChain, type WorkflowTransition } from '@/features/workflows/components/WorkflowChain';
 
@@ -28,6 +30,7 @@ import { DescartarAlertaModal } from '../components/DescartarAlertaModal';
 import { useAlertaDetalle } from '../hooks/useAlertaDetalle';
 import { useAlertaChain } from '../hooks/useAlertaChain';
 import type { AlertaSeverity } from '../api/alertasSchema';
+import { alertaTipoLabel, extraerDatosRelevantes } from '../lib/alertaTipos';
 
 interface LocationState {
   severity?: AlertaSeverity | null;
@@ -35,7 +38,6 @@ interface LocationState {
 
 export default function AlertaDetalle(): JSX.Element {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { uuid } = useParams<{ uuid: string }>();
   const location = useLocation();
   const forwardedSeverity = (location.state as LocationState | null)?.severity ?? undefined;
@@ -44,6 +46,9 @@ export default function AlertaDetalle(): JSX.Element {
   const { chain, isLoading: chainLoading, error: chainError } = useAlertaChain(uuid ?? null);
 
   const [descartarOpen, setDescartarOpen] = useState(false);
+  const { sucursales } = useSucursalesDirectorio();
+  // PT-1: back to the previous screen (the inbox with its filters).
+  const goBack = useGoBack('/alertas');
 
   const transitions: WorkflowTransition[] = chain.map((row) => ({
     id: row.uuid,
@@ -65,6 +70,16 @@ export default function AlertaDetalle(): JSX.Element {
   }
 
   const canDescartar = alerta !== undefined && alerta.estado !== 'resuelta';
+  const datosRelevantes = extraerDatosRelevantes(alerta?.datos_nuevos);
+  const sucursalUuid = alerta?.uuid_sucursal ?? datosRelevantes?.uuidSucursal ?? null;
+  const sucursalNombre =
+    sucursalUuid === null ? null : (sucursales.find((s) => s.uuid === sucursalUuid)?.nombre ?? null);
+
+  function accionLabel(accion: string): string {
+    if (accion === 'agregada' || accion === 'agregar') return t('alertas.accion.agregada', 'Agregada');
+    if (accion === 'quitada' || accion === 'quitar') return t('alertas.accion.quitada', 'Quitada');
+    return accion;
+  }
 
   return (
     <main className="space-y-4 p-4 md:p-6" data-testid="alerta-detalle-page">
@@ -75,7 +90,7 @@ export default function AlertaDetalle(): JSX.Element {
           </h1>
           <p className="text-muted-foreground font-mono text-xs">{uuid}</p>
         </div>
-        <Button type="button" variant="outline" onClick={() => navigate('/alertas')} data-testid="alerta-detalle-back">
+        <Button type="button" variant="outline" onClick={goBack} data-testid="alerta-detalle-back">
           {t('alertas.detalle.back', 'Volver a la bandeja')}
         </Button>
       </header>
@@ -108,14 +123,44 @@ export default function AlertaDetalle(): JSX.Element {
               </div>
             </CardHeader>
             <CardContent className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
-              <div>
+              <div data-testid="alerta-detalle-tipo">
                 <span className="text-muted-foreground">{t('alertas.detalle.tipo', 'Tipo')}: </span>
-                {alerta.tipo_alerta ?? '—'}
+                {alertaTipoLabel(alerta.tipo_alerta, t)}
               </div>
               <div>
                 <span className="text-muted-foreground">{t('alertas.detalle.sucursal', 'Sucursal')}: </span>
-                <span className="font-mono text-xs">{alerta.uuid_sucursal ?? '—'}</span>
+                {sucursalNombre !== null ? (
+                  <span data-testid="alerta-detalle-sucursal">{sucursalNombre}</span>
+                ) : (
+                  <span className="font-mono text-xs" data-testid="alerta-detalle-sucursal">
+                    {alerta.uuid_sucursal ?? '—'}
+                  </span>
+                )}
               </div>
+              {datosRelevantes !== null && (
+                <>
+                  {datosRelevantes.placa !== null && (
+                    <div data-testid="alerta-detalle-placa">
+                      <span className="text-muted-foreground">{t('alertas.detalle.placa', 'Placa')}: </span>
+                      <span className="font-mono">{datosRelevantes.placa}</span>
+                    </div>
+                  )}
+                  {datosRelevantes.accion !== null && (
+                    <div data-testid="alerta-detalle-accion">
+                      <span className="text-muted-foreground">{t('alertas.detalle.accion', 'Acción')}: </span>
+                      {accionLabel(datosRelevantes.accion)}
+                    </div>
+                  )}
+                  {datosRelevantes.suscripcionRef !== null && (
+                    <div data-testid="alerta-detalle-suscripcion">
+                      <span className="text-muted-foreground">
+                        {t('alertas.detalle.suscripcion', 'Suscripción')}:{' '}
+                      </span>
+                      <span className="font-mono text-xs">…{datosRelevantes.suscripcionRef}</span>
+                    </div>
+                  )}
+                </>
+              )}
               <div>
                 <span className="text-muted-foreground">{t('alertas.detalle.fecha', 'Fecha del evento')}: </span>
                 {alerta.timestamp_evento ?? '—'}

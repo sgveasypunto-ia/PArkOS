@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 
-import type { Cliente, ClienteUpdateInput } from '../api/clientesApi';
+import { isConsumidorFinal, type Cliente, type ClienteUpdateInput } from '../api/clientesApi';
 
 // Closed set for the UI only -- `schemas/clientes.py::ClientesRead/Update`
 // types `tipo_identificador` as a plain unenforced `str | None`
@@ -65,6 +65,8 @@ export function ClienteDatosTab({ cliente, onSubmit }: ClienteDatosTabProps): JS
   const { t } = useTranslation();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // The billing placeholder client ("Consumidor final") is system-owned.
+  const readOnly = isConsumidorFinal(cliente);
 
   const form = useForm<ClienteDatosFormValues>({
     resolver: zodResolver(clienteDatosSchema),
@@ -83,6 +85,7 @@ export function ClienteDatosTab({ cliente, onSubmit }: ClienteDatosTabProps): JS
   });
 
   async function handleSubmit(values: ClienteDatosFormValues): Promise<void> {
+    if (readOnly) return;
     setIsSubmitting(true);
     setSubmitError(null);
     try {
@@ -124,130 +127,145 @@ export function ClienteDatosTab({ cliente, onSubmit }: ClienteDatosTabProps): JS
         noValidate
         data-testid="cliente-datos-form"
       >
-        {submitError !== null && (
-          <p
-            role="alert"
-            aria-live="assertive"
-            data-testid="cliente-datos-submit-error"
-            className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
-            {submitError}
-          </p>
-        )}
-
-        <FormField
-          control={form.control}
-          name="tipo_identificador"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel htmlFor="cliente-tipo-identificador">
-                {t('clienteDatos.tipoIdentificador', 'Tipo de identificación')}
-              </FormLabel>
-              <FormControl>
-                <select
-                  id="cliente-tipo-identificador"
-                  data-testid="cliente-field-tipo-identificador"
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  {...field}
-                >
-                  {TIPOS_IDENTIFICADOR.map((tipo) => (
-                    <option key={tipo} value={tipo}>
-                      {tipo}
-                    </option>
-                  ))}
-                </select>
-              </FormControl>
-              <FormMessage />
-            </FormItem>
+        <fieldset disabled={readOnly} className="m-0 min-w-0 space-y-4 border-0 p-0">
+          {submitError !== null && (
+            <p
+              role="alert"
+              aria-live="assertive"
+              data-testid="cliente-datos-submit-error"
+              className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {submitError}
+            </p>
           )}
-        />
 
-        <FormField
-          control={form.control}
-          name="numero_identificacion"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel htmlFor="cliente-numero">
-                {t('clienteDatos.numero', 'Número de identificación')}
-              </FormLabel>
-              <FormControl>
-                <Input id="cliente-numero" data-testid="cliente-field-numero" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
+          <FormField
+            control={form.control}
+            name="tipo_identificador"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="cliente-tipo-identificador">
+                  {t('clienteDatos.tipoIdentificador', 'Tipo de identificación')}
+                </FormLabel>
+                <FormControl>
+                  <select
+                    id="cliente-tipo-identificador"
+                    data-testid="cliente-field-tipo-identificador"
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    {...field}
+                  >
+                    {TIPOS_IDENTIFICADOR.map((tipo) => (
+                      <option key={tipo} value={tipo}>
+                        {tipo}
+                      </option>
+                    ))}
+                  </select>
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="numero_identificacion"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="cliente-numero">
+                  {t('clienteDatos.numero', 'Número de identificación')}
+                </FormLabel>
+                <FormControl>
+                  <Input id="cliente-numero" data-testid="cliente-field-numero" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="nombre"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="cliente-nombre">{t('clienteDatos.nombre', 'Nombre')}</FormLabel>
+                <FormControl>
+                  <Input id="cliente-nombre" data-testid="cliente-field-nombre" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="apellido"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="cliente-apellido">
+                  {t('clienteDatos.apellido', 'Apellido')}
+                </FormLabel>
+                <FormControl>
+                  <Input id="cliente-apellido" data-testid="cliente-field-apellido" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="telefono"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="cliente-telefono">
+                  {t('clienteDatos.telefono', 'Teléfono')}
+                </FormLabel>
+                <FormControl>
+                  <Input id="cliente-telefono" data-testid="cliente-field-telefono" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="email"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="cliente-email">{t('clienteDatos.email', 'Email')}</FormLabel>
+                <FormControl>
+                  <Input
+                    id="cliente-email"
+                    type="email"
+                    data-testid="cliente-field-email"
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {readOnly ? (
+            <p
+              role="note"
+              data-testid="cliente-datos-readonly"
+              className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+            >
+              {t(
+                'clienteDatos.soloLectura',
+                'Cliente estándar de facturación (Consumidor final): no se puede editar ni inactivar.',
+              )}
+            </p>
+          ) : (
+            <div className="flex justify-end">
+              <Button type="submit" disabled={isSubmitting} data-testid="cliente-datos-submit">
+                {isSubmitting ? t('common.saving', 'Guardando…') : t('common.save', 'Guardar')}
+              </Button>
+            </div>
           )}
-        />
-
-        <FormField
-          control={form.control}
-          name="nombre"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel htmlFor="cliente-nombre">{t('clienteDatos.nombre', 'Nombre')}</FormLabel>
-              <FormControl>
-                <Input id="cliente-nombre" data-testid="cliente-field-nombre" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="apellido"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel htmlFor="cliente-apellido">
-                {t('clienteDatos.apellido', 'Apellido')}
-              </FormLabel>
-              <FormControl>
-                <Input id="cliente-apellido" data-testid="cliente-field-apellido" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="telefono"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel htmlFor="cliente-telefono">
-                {t('clienteDatos.telefono', 'Teléfono')}
-              </FormLabel>
-              <FormControl>
-                <Input id="cliente-telefono" data-testid="cliente-field-telefono" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="email"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel htmlFor="cliente-email">{t('clienteDatos.email', 'Email')}</FormLabel>
-              <FormControl>
-                <Input
-                  id="cliente-email"
-                  type="email"
-                  data-testid="cliente-field-email"
-                  {...field}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <div className="flex justify-end">
-          <Button type="submit" disabled={isSubmitting} data-testid="cliente-datos-submit">
-            {isSubmitting ? t('common.saving', 'Guardando…') : t('common.save', 'Guardar')}
-          </Button>
-        </div>
+        </fieldset>
       </form>
     </Form>
   );

@@ -46,12 +46,51 @@ const VEHICULOS_PATH = '/api/v1/clientes/vehiculos';
 const SUBSCRIPCIONES_CLIENTE_PATH = '/api/v1/clientes/subscripciones-cliente';
 const SUBSCRIPCION_VEHICULOS_PATH = '/api/v1/clientes/subscripcion-vehiculos';
 
+/**
+ * HTTP error carrying the parsed backend `detail`. The message keeps the
+ * historical `clientesApi: <METHOD> <url> -> <status>: <body[:200]>` shape so
+ * callers matching error codes with a regex keep working; new callers should
+ * read `code` / `detail` instead.
+ */
+export class ClientesApiError extends Error {
+  readonly status: number;
+  /** Backend error code (`detail.error`, or `detail` when it is a string). */
+  readonly code: string | null;
+  /** Extra fields of the typed detail (e.g. `placa`, `dias_restantes`). */
+  readonly detail: Record<string, unknown>;
+
+  constructor(message: string, status: number, body: string) {
+    super(message);
+    this.name = 'ClientesApiError';
+    this.status = status;
+    let code: string | null = null;
+    let detail: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown };
+      const d = parsed.detail;
+      if (typeof d === 'string') {
+        code = d;
+      } else if (d !== null && typeof d === 'object' && !Array.isArray(d)) {
+        detail = d as Record<string, unknown>;
+        const err = detail.error ?? detail.code;
+        code = typeof err === 'string' ? err : null;
+      }
+    } catch {
+      /* non-JSON body: keep code null */
+    }
+    this.code = code;
+    this.detail = detail;
+  }
+}
+
 async function fetchJson<T>(input: string, init: ParkosFetchInit): Promise<T> {
   const res = await parkosFetchRaw(input, init);
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(
+    throw new ClientesApiError(
       `clientesApi: ${init.method ?? 'GET'} ${input} -> ${res.status}: ${body.slice(0, 200)}`,
+      res.status,
+      body,
     );
   }
   return (await res.json()) as T;
@@ -162,6 +201,11 @@ export const subscripcionClienteSchema = z.object({
   created_at: z.string(),
   created_by: z.string().uuid().nullable(),
   sync_status: z.string().nullable(),
+  // Server-computed (PT-3 renovación). `puede_renovar` is true only when the
+  // plan has <= 10 days left (expired included); the UI must not recompute it.
+  // Optional/nullable so older servers (and list rows without it) still parse.
+  dias_restantes: z.number().int().nullable().optional(),
+  puede_renovar: z.boolean().nullable().optional(),
 });
 export type SubscripcionCliente = z.infer<typeof subscripcionClienteSchema>;
 
@@ -418,4 +462,103 @@ export async function listVehiculosByIds(
   if (vehiculoUuids.size === 0) return [];
   const all = await fetchAllPages((p) => listVehiculos(p), opts);
   return all.filter((row) => vehiculoUuids.has(row.uuid));
+}
+
+// ---------------------------------------------------------------------------
+// Cliente estándar de facturación ("Consumidor final")
+// ---------------------------------------------------------------------------
+
+/** Número de identificación del cliente estándar de facturación (CC). */
+export const CONSUMIDOR_FINAL_IDENTIFICACION = '222222222222';
+
+/** True for the system-owned billing placeholder client (not a real customer). */
+export function isConsumidorFinal(
+  cliente: Pick<Cliente, 'numero_identificacion'>,
+): boolean {
+  return (cliente.numero_identificacion ?? '').trim() === CONSUMIDOR_FINAL_IDENTIFICACION;
+}
+
+// ---------------------------------------------------------------------------
+// Renovación (PT-3)
+// ---------------------------------------------------------------------------
+
+export const MEDIOS_PAGO_RENOVACION = ['efectivo', 'tarjeta', 'datafono', 'transferencia'] as const;
+export type MedioPagoRenovacion = (typeof MEDIOS_PAGO_RENOVACION)[number];
+
+export const renovacionInputSchema = z
+  .object({
+    medio_pago: z.enum(MEDIOS_PAGO_RENOVACION).default('efectivo'),
+    referencia: z.string().trim().nullable().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.medio_pago === 'datafono' && !(v.referencia ?? '').trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['referencia'],
+        message: 'referencia_requerida',
+      });
+    }
+  });
+export type RenovacionInput = z.input<typeof renovacionInputSchema>;
+
+// Mirrors `schemas/renovacion.py` (backend). Lenient on optional/nullable
+// fields so a small server-side drift does not break the success path.
+export const renovacionResponseSchema = z.object({
+  uuid_subscripcion_anterior: z.string().uuid(),
+  uuid_subscripcion: z.string().uuid(),
+  uuid_cliente: z.string().uuid().nullable().optional(),
+  uuid_sucursal: z.string().uuid().nullable().optional(),
+  uuid_tipo_subscripcion: z.string().uuid().nullable().optional(),
+  uuid_vehiculos: z.array(z.string()).default([]),
+  placas: z.array(z.string()).default([]),
+  fecha_inicio_cobertura: z.string().nullable().optional(),
+  fecha_vencimiento: z.string().nullable().optional(),
+  dias_restantes: z.number().nullable().optional(),
+  renovacion_anticipada: z.boolean().nullable().optional(),
+  ventana_renovacion_dias: z.number().nullable().optional(),
+  valor_total_plan: z.union([z.number(), z.string()]).nullable().optional(),
+  total_con_iva: z.union([z.number(), z.string()]).nullable().optional(),
+  uuid_factura: z.string().nullable().optional(),
+  uuid_factura_electronica: z.string().nullable().optional(),
+  factura_electronica_error: z.string().nullable().optional(),
+  // True when the failed FE was queued for the automatic retry.
+  factura_electronica_pendiente: z.boolean().optional(),
+  factura: z.unknown().optional(),
+});
+export type RenovacionResponse = z.infer<typeof renovacionResponseSchema>;
+
+/** Fresh key per renewal attempt (the backend replays the response on a retry with the same key). */
+export function newIdempotencyKey(): string {
+  // `randomUUID` only exists in secure contexts (HTTPS/localhost).
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * `POST /clientes/subscripciones/{uuid}/renovar` (201). Requires an
+ * `Idempotency-Key` per attempt (pass the SAME key when retrying the same
+ * attempt, a new one for a new attempt). The shared fetch wrapper derives a
+ * deterministic hash key from method+url+body, which would make two
+ * legitimate renewals of the same subscription look like a replay, so it is
+ * skipped here (`skipIdempotencyKey`) and the caller-supplied key is sent.
+ * With an `admin-` token the `X-Sucursal-Context` header is injected by the
+ * shared fetch wrapper from the active sucursal.
+ */
+export async function renovarSubscripcion(
+  uuidSubscripcion: string,
+  input: RenovacionInput,
+  idempotencyKey: string,
+): Promise<RenovacionResponse> {
+  const parsed = renovacionInputSchema.parse(input);
+  const raw = await fetchJson<unknown>(`/api/v1/clientes/subscripciones/${uuidSubscripcion}/renovar`, {
+    method: 'POST',
+    headers: { ...jsonHeaders, 'Idempotency-Key': idempotencyKey },
+    skipIdempotencyKey: true,
+    body: JSON.stringify({
+      medio_pago: parsed.medio_pago,
+      referencia: parsed.medio_pago === 'efectivo' ? null : (parsed.referencia?.trim() || null),
+    }),
+  });
+  return renovacionResponseSchema.parse(raw);
 }
