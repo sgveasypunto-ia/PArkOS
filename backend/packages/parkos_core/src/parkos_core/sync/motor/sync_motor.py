@@ -294,8 +294,25 @@ class SyncMotor:
         # via the real ``/sync/events`` receiver — which, lacking this
         # check, blindly inserted a THIRD, fresh-uuid duplicate on each
         # side instead of recognizing the incoming uuid already existed.
-        if spec.audit_class == "V" and await apply_guard.row_already_present(
-            session, spec.model_cls, payload.get("uuid")
+        # Real defect confirmed live, 2026-10-06: the user requirement
+        # for the ``sucursal`` table is "the only keys are UUIDs — an
+        # edit is an UPDATE, not a new entity". The apply_guard
+        # ``row_already_present`` check is the duplicate-prevention
+        # mechanism for [V] re-applies, but it also blocks the
+        # admin's UPDATE-in-place from reaching an already-known
+        # branch uuid. The pull already bypasses this guard for
+        # ``sucursal`` (see jobs/sync_sucursal.py::_pull_and_apply*),
+        # so the catalog apply_row must let the apply through too.
+        # Without this, the pull's resolved list includes the
+        # sucursal row but apply_row returns "APPLIED" without
+        # re-running the dispatch — the local copy keeps the OLD
+        # field values forever.
+        if (
+            spec.audit_class == "V"
+            and spec.name != "sucursal"
+            and await apply_guard.row_already_present(
+                session, spec.model_cls, payload.get("uuid")
+            )
         ):
             return ApplyResult(status="APPLIED", row_uuid=payload.get("uuid"), reason=None)
 
