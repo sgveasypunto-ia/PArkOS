@@ -224,14 +224,6 @@ export function CerrarTurnoForm({
                   {formatCOP(sesion.valor_inicial_efectivo)}
                 </span>
               </li>
-              <li className="flex items-center justify-between py-1.5">
-                <span className="text-muted-foreground/90">
-                  {t('caja:valorInicialDatafono')}
-                </span>
-                <span className="font-mono font-semibold tabular-nums">
-                  {formatCOP(sesion.valor_inicial_datafono)}
-                </span>
-              </li>
               <li
                 className="flex items-center justify-between py-1.5"
                 data-testid="cerrar-turno-apertura"

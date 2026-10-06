@@ -76,10 +76,12 @@ export function TurnoActivoToggle({
   }
 
   const uuidCorto = sesion.uuid.slice(0, 8);
-  const valores =
-    formatCOP(sesion.valor_inicial_efectivo) +
-    ' / ' +
-    formatCOP(sesion.valor_inicial_datafono);
+  // El datafono ya no se muestra en la UI (fix/electron-sucursal-datafono-display):
+  // el campo `valor_inicial_datafono` sigue presente en `SesionRead` y la API
+  // lo acepta con default 0 al abrir el turno, pero no se renderiza ni en el
+  // chip del navbar ni en los detalles del popover. Solo el efectivo inicial
+  // es visible para el operador.
+  const valores = formatCOP(sesion.valor_inicial_efectivo);
 
   // F11.x fix — el panel de detalles era un `<div absolute top-full>`
   // hecho a mano, sin portal ni collision detection: quedaba flotando
@@ -256,17 +258,6 @@ function SesionDetails({ sesion }: { sesion: SesionRead }): JSX.Element {
           data-testid="turno-activo-details-valor-efectivo"
         >
           {formatCOP(sesion.valor_inicial_efectivo)}
-        </dd>
-      </div>
-      <div className="flex justify-between gap-2">
-        <dt className="text-sm text-muted-foreground">
-          {t('caja:valorInicialDatafono', { defaultValue: 'Valor inicial datáfono' })}
-        </dt>
-        <dd
-          className="font-mono text-sm"
-          data-testid="turno-activo-details-valor-datafono"
-        >
-          {formatCOP(sesion.valor_inicial_datafono)}
         </dd>
       </div>
       <div className="flex justify-between gap-2">

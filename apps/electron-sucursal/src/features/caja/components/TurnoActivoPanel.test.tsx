@@ -42,7 +42,10 @@ describe('<TurnoActivoPanel /> organism — T4', () => {
     expect(screen.getByTestId('turno-activo-panel')).toBeInTheDocument();
     expect(screen.getByTestId('turno-activo-uuid')).toHaveTextContent('sess-uuid-123');
     expect(screen.getByTestId('turno-activo-valor-efectivo')).toHaveTextContent(/50\.000/);
-    expect(screen.getByTestId('turno-activo-valor-datafono')).toHaveTextContent(/\$ 0/);
+    // El datafono se removió de la UI en fix/electron-sucursal-datafono-display;
+    // el campo `valor_inicial_datafono` sigue presente en el modelo `SesionRead`
+    // (mock legítimo en `baseSesion` línea 32) y en `SesionCreate`, pero no
+    // se renderiza en el panel del turno activo.
     expect(screen.getByTestId('turno-activo-apertura')).toHaveTextContent(/hace 2 horas/);
     expect(screen.getByTestId('turno-activo-cerrar')).toBeInTheDocument();
   });

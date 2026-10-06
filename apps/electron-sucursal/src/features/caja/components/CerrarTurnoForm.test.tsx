@@ -56,6 +56,11 @@ const SESION: SesionRead = {
 function Harness({
   sesion = SESION,
   efectivoReportado = sesion.valor_inicial_efectivo,
+  // El campo `valor_inicial_datafono` sigue en `SesionRead` (mock línea 51)
+  // aunque la UI no muestre el datafono inicial en el resumen
+  // (fix/electron-sucursal-datafono-display). El form de cierre sigue
+  // aceptando un `valor_datafono_reportado` que el operador tipea al
+  // cerrar — por eso el default de `datafonoReportado` se mantiene.
   datafonoReportado = sesion.valor_inicial_datafono,
   forceRequireJustificacion = false,
   error = null,

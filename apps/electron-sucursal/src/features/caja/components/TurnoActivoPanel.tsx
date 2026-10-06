@@ -47,7 +47,7 @@ export function TurnoActivoPanel({
       <CardHeader>
         <CardTitle>{t('turnoActivo')}</CardTitle>
       </CardHeader>
-      {/* F31.3 rediseño: `space-y-1` agregado — los 5 `<p>` eran hijos
+      {/* F31.3 rediseño: `space-y-1` agregado — los 4 `<p>` eran hijos
           directos de CardContent sin spacing, quedaban pegados. */}
       <CardContent className="space-y-1">
         <p data-testid="turno-activo-uuid">
@@ -56,10 +56,6 @@ export function TurnoActivoPanel({
         <p data-testid="turno-activo-valor-efectivo">
           <strong>{t('valorInicialEfectivo')}:</strong>{' '}
           {formatCOP(sesion.valor_inicial_efectivo)}
-        </p>
-        <p data-testid="turno-activo-valor-datafono">
-          <strong>{t('valorInicialDatafono')}:</strong>{' '}
-          {formatCOP(sesion.valor_inicial_datafono)}
         </p>
         <p data-testid="turno-activo-apertura">
           <strong>Apertura:</strong>{' '}
