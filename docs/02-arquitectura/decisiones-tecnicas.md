@@ -11,6 +11,7 @@ Este documento cubre las decisiones arquitectónicas del motor de sincronizació
 - ADR-002: el canon ER crece de 49 a 51 entidades (54 tablas físicas)
 - ADR-003: `depends_on` y un único camino de escalación
 - ADR-004: particionado sin mantenimiento automático (real)
+- ADR-005: red de seguridad en base de datos para `/sync/pull` (propuesta)
 - Concurrencia y condiciones de carrera
 
 ---
@@ -230,6 +231,70 @@ WHERE parent_table NOT IN (
 ```
 
 Y el gate: `python openspec/scripts/check_schema_match.py --database-url postgresql://...` debe imprimir `(h1)` sin fallos, `(h2) info: 9 part_config parent(s), all resolvable`, y solo mensajes `info` en `(h3)`.
+
+---
+
+## ADR-005: red de seguridad en base de datos para `/sync/pull`
+
+**Estado**: Propuesta (2026-10-05) — spike de solo documentación. **Decisión pendiente con el responsable del producto**; no se implementa nada hasta que se apruebe.
+**Alcance**: `POST /sync/pull` (cloud → sucursal). No cubre `/sync/push` ni la API de administración.
+
+### Contexto
+
+El alcance del pull se decide hoy en SQL por `sync/motor/pull_scope.py::build_scope_predicate`, con el resolver Python como segunda verificación y una compuerta estática (`tests/static/test_pull_scope_guardrails.py` + `tests/pull_scope_expected.py`) que impide registrar una tabla sin decidir su alcance. Ese control vive **en la capa de aplicación**: si una consulta nueva olvida el predicado, la base de datos entrega todo. La pregunta del spike es si conviene una segunda barrera dentro de PostgreSQL.
+
+Hechos verificados en el código:
+
+- El API cloud se conecta como `parkos_app`, un rol `LOGIN INHERIT` miembro de `rol_app` (migración `0021`; `docker-compose.cloud.yml`, variable `DATABASE_URL`). No es superusuario ni propietario de las tablas, por lo que **las políticas RLS se le aplicarían**.
+- `rol_admin_auditor` es el único rol con `BYPASSRLS` (migración `0001`, `NOLOGIN`). Ningún servicio se conecta con él.
+- No existe ninguna política RLS ni `ENABLE ROW LEVEL SECURITY` en el repositorio.
+- El mismo rol `parkos_app` lo usan el pull, el push, `job_sync_cloud` y la API de administración. Estos dos últimos leen y escriben filas de **todas** las sucursales.
+
+### Opciones evaluadas
+
+#### (a) RLS de PostgreSQL con `SET LOCAL parkos.sucursal`
+
+Dentro de la transacción del pull se ejecutaría `SET LOCAL parkos.sucursal = '<uuid>'` y las tablas `owned` y `override` llevarían una política:
+
+```sql
+USING (uuid_sucursal = current_setting('parkos.sucursal', true)::uuid
+       OR uuid_sucursal IS NULL)
+```
+
+- **Ventajas**: la barrera es independiente del código Python; una consulta que olvide el predicado sigue sin filtrar filas de otra sucursal. `SET LOCAL` expira con la transacción, así que no contamina el pool.
+- **Riesgo 1 — el mismo rol sirve otros flujos.** Como `parkos_app` también atiende `job_sync_cloud` y la API de administración, la política debe permitir el acceso cuando la variable no está definida. Eso es *fail-open*: olvidar el `SET LOCAL` desactiva la barrera en silencio, que es justo el error que se quiere cubrir. La alternativa *fail-closed* obliga a que cada flujo cross-sucursal fije un valor especial o use otro rol, y es un cambio transversal.
+- **Riesgo 2 — las tablas derivadas no admiten una política simple.** `usuarios`, `permisos_usuario`, `clientes`, `clientes_b2b`, `vehiculos` y `empresa` no tienen `uuid_sucursal`. Su alcance depende de subconsultas (membresía, suscripción, factura, clave natural). Una política equivalente repetiría esa lógica en SQL de migración, duplicaría `pull_scope.py` y se evaluaría en **cada** consulta de esas tablas, también las del login y la operación de la sucursal. Son justo las tablas con datos personales, las que más interesa proteger.
+- **Riesgo 3 — costo.** Las políticas con subconsultas se evalúan por fila y se suman al predicado ya empujado a SQL; hay que medirlo con las tablas de 20 000 filas o más (ver los límites conocidos en [`sync-pull-alcance.md`](./sync-pull-alcance.md)).
+- **Riesgo 4 — operación.** `FORCE ROW LEVEL SECURITY` es necesario si el rol fuera propietario; las migraciones (superusuario) y `check_schema_match.py` deberían entender las nuevas políticas; el test de integración necesita un rol sin `BYPASSRLS`.
+- **Costo estimado**: una migración con políticas para ~8 tablas `owned`/`override` (cobertura simple) más un cambio en `get_session` o en el pull para fijar la variable. Cubrir las derivadas es trabajo aparte y de mayor riesgo.
+
+#### (b) Activar el listener ORM de `db/tenancy.py` — rechazada
+
+Se evaluó llamar a `set_tenant_context` en `_sync_agent_claims`. **Se rechaza** porque, verificado en la Fase 0:
+
+- Excluye las filas con `uuid_sucursal` NULL: el listener añade `column == ctx_uuid` (`tenancy.py` líneas 189-194), y un NULL nunca cumple esa igualdad. Eso elimina los **valores por defecto globales** de `configuracion_tolerancias` y `configuracion_seguridad`; la propia documentación de `suspend_tenant_context` (líneas 57-78) describe esa misma consecuencia.
+- Solo filtra la **primera entidad** de la consulta (`_iter_tenant_columns`, líneas 146-155, con `break`), por lo que un `join` o una subconsulta queda sin filtrar.
+- Las tablas **sin `uuid_sucursal`** quedan sin filtro: el `getattr(..., "uuid_sucursal", None)` devuelve `None` y no se agrega nada (líneas 151-153 y 158-161). Son exactamente las derivadas.
+- Está exento para `log_transaccional` y `revocacion_factura` (línea 102), y su efecto depende de un `ContextVar` por tarea: es otra barrera de aplicación, no de base de datos.
+
+No ofrece ninguna garantía que el predicado SQL actual no dé ya, y rompe los defaults de override.
+
+#### (c) Mantener predicados SQL + compuerta estática — control vigente
+
+- **Ventajas**: sin cambios de esquema ni de roles; el alcance es legible en un único módulo, se prueba con la matriz de integración y la compuerta estática falla si se agrega una tabla sin decidir su alcance.
+- **Límite**: la barrera es de aplicación. Una consulta nueva que no pase por `build_scope_predicate` no está cubierta; solo la revisión de código y las pruebas lo detectan.
+
+### Recomendación
+
+Mantener **(c)** como control vigente y no activar **(b)**. Si el responsable quiere una barrera adicional, hacer **(a) por etapas**: primero solo las tablas `owned`/`override` con `uuid_sucursal`, en modo observación o con política *fail-open* documentada, y **no** intentar cubrir las derivadas con RLS. Antes de empezar, decidir cómo se separan los flujos cross-sucursal (`job_sync_cloud`, administración) del pull, idealmente con un rol propio para el pull.
+
+### Decisión pendiente con el responsable
+
+- ¿Se requiere una barrera en base de datos, o el control de aplicación con compuerta estática es suficiente?
+- Si se requiere: ¿se acepta una política *fail-open* o se crea un rol dedicado para el pull?
+- ¿Se acepta que las tablas derivadas queden fuera de la barrera de base de datos?
+
+Hasta que se responda, esta ADR queda en estado **Propuesta** y no hay trabajo de implementación asociado.
 
 ---
 
