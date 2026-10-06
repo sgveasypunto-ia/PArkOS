@@ -211,7 +211,9 @@ async def test_renovacion_anticipada_conserva_placas_cobra_completo_y_emite_fe(
     # factura + pago + FE (same mechanism as the venta)
     assert body["uuid_factura"]
     assert body["factura_electronica_error"] is None
+    assert body["factura_electronica_pendiente"] is False
     assert body["uuid_factura_electronica"]
+    assert body["factura"]["factura_electronica"] is not None
 
     nueva = uuid_lib.UUID(body["uuid_subscripcion"])
     vieja_row = await _fila(pg_engine, SubscripcionesCliente, sub)
@@ -295,6 +297,9 @@ async def test_renovacion_vencida_inicia_hoy_bogota(
     # no resolution configured: payment succeeded, only the FE degrades
     assert body["uuid_factura"] and body["uuid_factura_electronica"] is None
     assert body["factura_electronica_error"] == "resolucion_facturacion_no_encontrada"
+    assert body["factura_electronica_pendiente"] is True  # queued for the worker retry
+    assert body["factura"]["factura_electronica"] is None
+    assert body["factura"]["factura_electronica_pendiente"] is True
 
 
 async def test_dia_exacto_del_vencimiento_es_anticipada_y_arranca_manana(

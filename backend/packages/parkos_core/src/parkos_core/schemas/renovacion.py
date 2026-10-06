@@ -85,6 +85,8 @@ class RenovarSuscripcionResponse(_Base):
     # ``resolucion_sin_prefijo``). Non-null = the renewal and the payment
     # succeeded and only the electronic invoice must be retried.
     factura_electronica_error: str | None = None
+    # True when the failed FE was queued for the automatic retry.
+    factura_electronica_pendiente: bool = False
     factura: FacturaRead | None = None
 
 

@@ -27,10 +27,10 @@ Renewal flow (one transaction for subscription + payment, FE afterwards):
      for the FULL plan value (no proration).
   5. SINGLE ``await session.commit()`` (payment atomicity).
   6. Electronic invoice via the SAME best-effort mechanism the venta uses
-     (``_intentar_emitir_factura_electronica``, its own commit). Per the
+     (``repo.fe_emision.emitir_fe_para_pago``, its own commit). Per the
      transversal policy it is always attempted -- there is no opt-out flag.
 
-This module deliberately imports (never edits) ``clientes_venta``.
+The FE helper is the one the venta uses (``repo/fe_emision.py``).
 """
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
 from ...models.L_E.factura_electronica import FacturaElectronica
+from ...repo import fe_emision as repo_fe_emision
 from ...repo import idempotency as repo_idempotency
 from ...repo import renovacion as repo_renovacion
 from ...repo import subscripcion_activa as repo_activa
@@ -59,7 +60,6 @@ from ...schemas.renovacion import (
 from ..deps import requires_issuer
 from . import _helpers
 from ._factura_display import build_display_factura
-from .clientes_venta import _intentar_emitir_factura_electronica
 
 # No "/clientes" prefix: api/v1/clientes.py includes this router into its own
 # router (already prefixed) -- see the note in clientes_venta.py.
@@ -269,18 +269,40 @@ async def renovar_subscripcion(
     )
     await session.commit()
 
-    # Best-effort FE (own commit), always attempted -- same mechanism as venta.
-    uuid_fe, fe_error = await _intentar_emitir_factura_electronica(
+    # ALWAYS-ON best-effort FE (own commit, AFTER the payment is durable),
+    # same helper and pattern as the venta: the recipient is the subscriber;
+    # a failure keeps the payment, leaves the pending marker and the branch
+    # worker retries automatically. Snapshots first: the helper may roll back
+    # and expire the ORM objects.
+    uuid_cliente_sub = respuesta.uuid_cliente
+    uuid_nueva = respuesta.uuid_subscripcion
+    fe_res = await repo_fe_emision.emitir_fe_para_pago(
         session,
         actor_uuid=ctx.actor_uuid,
         uuid_sucursal=ctx.sucursal_uuid,
-        uuid_factura=cobro.factura.uuid,
-        uuid_subscripcion_cliente=resultado.nueva.uuid,
+        uuid_factura=respuesta.uuid_factura,
+        uuid_cliente=uuid_cliente_sub,
+        payload_extra={"uuid_subscripcion_cliente": str(uuid_nueva)},
     )
 
     _helpers.apply_no_store_header(response)
+    await session.refresh(cobro.factura)
+    factura_display = await build_display_factura(
+        session,
+        new_factura=cobro.factura,
+        detalles_creados=cobro.detalles,
+        payload=payload,  # type: ignore[arg-type]  # only medio_pago is read
+        total_server=cobro.total_con_iva,
+        cliente_uuid=uuid_cliente_sub,
+        fe_resultado=fe_res,
+    )
     return respuesta.model_copy(
-        update={"uuid_factura_electronica": uuid_fe, "factura_electronica_error": fe_error}
+        update={
+            "uuid_factura_electronica": fe_res.uuid_factura_electronica,
+            "factura_electronica_error": fe_res.error,
+            "factura_electronica_pendiente": fe_res.pendiente,
+            "factura": factura_display,
+        }
     )
 
 
