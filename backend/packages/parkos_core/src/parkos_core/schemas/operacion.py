@@ -774,6 +774,39 @@ class MiTurnoRead(_Base):
     total_cobrado_datafono_cop: Decimal = Decimal(0)
 
 
+class ResumenCierreMedioPagoRead(_Base):
+    """One payment-method line of :class:`ResumenCierreTurnoRead`."""
+
+    medio_pago: str
+    pagos_count: int = 0
+    total_cop: Decimal = Decimal(0)
+
+
+class ResumenCierreTurnoRead(_Base):
+    """Read-only post-close turn summary for ``GET /operacion/mi-turno/resumen-cierre``.
+
+    Additive sibling of :class:`MiTurnoRead` (which stays frozen, 7 fields,
+    mirrored by the FE strict Zod schema). Totals are informational: the
+    cash reconciliation (esperado/diferencia) keeps coming from
+    ``POST /caja/arqueo`` and counts efectivo only.
+
+    ``transacciones_count`` is the number of ``factura_pagos`` rows with
+    ``tipo_movimiento='pago'`` for the sesion. Reversals are reported on
+    their own line (``reversos_*``) and are NOT netted out of
+    ``medios_pago``.
+    """
+
+    uuid_sesion: uuid_lib.UUID
+    uuid_sucursal: uuid_lib.UUID
+    timestamp_calculo: datetime
+    ingresos_count: int = 0
+    salidas_count: int = 0
+    transacciones_count: int = 0
+    medios_pago: list[ResumenCierreMedioPagoRead] = Field(default_factory=list)
+    reversos_count: int = 0
+    reversos_total_cop: Decimal = Decimal(0)
+
+
 __all__ = [
     "CotizarFacturacion",
     "CotizarMensualidad",
@@ -793,6 +826,8 @@ __all__ = [
     "OcupacionResponse",
     "PlacaFormatoInvalidoError",
     "PlacaNoCoincideConIngresoError",
+    "ResumenCierreMedioPagoRead",
+    "ResumenCierreTurnoRead",
     "SalidaCreateForzado",
     "SalidaDuplicadaError",
     "SalidaListRead",

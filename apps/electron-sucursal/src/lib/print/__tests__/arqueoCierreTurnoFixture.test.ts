@@ -35,13 +35,9 @@ const VALID_PAYLOAD: ArqueoPayload = {
   uuid_sesion: 'abc12345-6789-0abc-1234-56789abcdef0',
   base_efectivo_cop: 50_000,
   valor_esperado_efectivo: 100_000,
-  valor_esperado_datafono: 0,
   valor_reportado_efectivo: 100_000,
-  valor_reportado_datafono: 0,
   diferencia_efectivo: 0,
-  diferencia_datafono: 0,
   tolerancia_efectivo: 1_000,
-  tolerancia_datafono: 500,
   justificacion: '',
   auditoria_codigo: 'cierre_turno',
   fecha: '2026-09-21T14:30:00.000Z',
@@ -72,7 +68,8 @@ describe('HU-F10.2 — escposBuilder.build("arqueo", { auditoria_codigo: "cierre
     expect(utf8).toContain(`Base: ${formatCOP(50_000)}`);
     // diferencia=0 → `+` sign per spec (NEVER `±`).
     expect(utf8).toContain(`Diferencia efectivo: +${formatCOP(0)}`);
-    expect(utf8).toContain(`Diferencia datafono: +${formatCOP(0)}`);
+    // PT-6: the efectivo-only cuadre prints NO datafono block at all.
+    expect(utf8).not.toContain('datafono');
     // justificacion empty → NO "Justificacion:" line.
     expect(utf8).not.toContain('Justificacion:');
   });

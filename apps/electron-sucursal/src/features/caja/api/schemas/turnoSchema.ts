@@ -104,33 +104,33 @@ export type AbrirTurnoInput = z.infer<typeof abrirTurnoSchema>;
  * Campos (HU-F1.13 arqueo + F3.3 PUT cierre, fusionados en un único
  * conteo físico — REQ-OPS-157, REQ-OPS-158):
  *   - valor_efectivo_reportado: number ≥ 0 (cuerpo del POST arqueo).
- *   - valor_datafono_reportado: number ≥ 0 (cuerpo del POST arqueo).
- *   - justificacion: string opcional (F10.1 lenient; F10.2 strict-mode
- *     cuando `requiredMode='cierre_turno'` lo promueve a top-level
- *     `min(3)` en el presentational component).
- *   - observaciones_cierre: string opcional (F3.3 — cuerpo del PUT).
+ *   - observaciones_cierre: string opcional, máx. 500 (límite del backend).
+ *     PT-4: es el ÚNICO campo de texto libre del cierre. Cuando hay
+ *     diferencia de efectivo, el motivo del descuadre se escribe aquí y el
+ *     formulario lo exige (mín. 3 caracteres, regla condicional que vive en
+ *     `<CerrarTurnoForm>` porque depende del pre-flight del backend);
+ *     `cerrarTurnoChain.ts` lo reenvía además como `justificacion` del
+ *     `POST /caja/arqueo` para satisfacer el gate del backend, sin tocarlo.
  *
- * Fix (revisión post-F10.2): `valor_final_efectivo` / `valor_final_datafono`
- * dejaron de ser campos de este schema — el operador contaba el mismo
- * efectivo/datáfono físico DOS VECES en el mismo formulario (una vez
- * para el arqueo, otra para el cierre de sesión), sin garantía de que
- * ambos números coincidieran. `cerrarTurnoChain.ts` ahora deriva
- * `valor_final_*` directamente de `valor_*_reportado` al armar el PUT.
+ * PT-6: el datáfono ya no se cuenta ni se concilia en el cierre (el
+ * cuadre considera solo efectivo); `valor_datafono_reportado` y la UI de
+ * "justificación" salieron del form. La columna/contrato del backend no
+ * cambia (nullable).
  *
- * La validación strict-mode (top-level `min(3)` cuando `requiredMode`
- * es `'cierre_turno'` / `'cierre_dia'`) vive en el schema LOCAL del
- * componente que consume este input — el shared schema acepta
- * `justificacion.optional()` para mantener el F3.3 contrato.
+ * Fix (revisión post-F10.2): `valor_final_efectivo` dejó de ser campo de
+ * este schema — `cerrarTurnoChain.ts` lo deriva de `valor_efectivo_reportado`
+ * al armar el PUT (un solo conteo físico).
  */
+export const OBSERVACIONES_CIERRE_MAX = 500;
+
 export const cerrarTurnoSchema = z.object({
   valor_efectivo_reportado: z
     .number({ invalid_type_error: 'validation.number.required' })
     .min(0, { message: 'validation.number.minZero' }),
-  valor_datafono_reportado: z
-    .number({ invalid_type_error: 'validation.number.required' })
-    .min(0, { message: 'validation.number.minZero' }),
-  justificacion: z.string().optional(),
-  observaciones_cierre: z.string().optional(),
+  observaciones_cierre: z
+    .string()
+    .max(OBSERVACIONES_CIERRE_MAX, { message: 'validation.text.tooLong' })
+    .optional(),
 });
 
 export type CerrarTurnoInput = z.infer<typeof cerrarTurnoSchema>;

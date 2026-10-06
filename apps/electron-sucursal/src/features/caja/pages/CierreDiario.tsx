@@ -58,7 +58,6 @@ import {
  */
 const cierreDiarioSchema = z.object({
   valor_efectivo_reportado: z.coerce.number().int().nonnegative(),
-  valor_datafono_reportado: z.coerce.number().int().nonnegative(),
   justificacion: z.string().trim().optional(),
 });
 type CierreDiarioInput = z.infer<typeof cierreDiarioSchema>;
@@ -69,28 +68,22 @@ type CierreDiarioInput = z.infer<typeof cierreDiarioSchema>;
  */
 function computeTotals(sesiones: ArqueoResumenPorSesion['sesiones']): {
   valor_efectivo_reportado: number;
-  valor_datafono_reportado: number;
   diferencia: number;
 } {
   let efectivo = 0;
-  let datafono = 0;
   let diferencia = 0;
   for (const s of sesiones) {
     if (s.estado !== 'cerrado') continue;
     efectivo += s.valor_efectivo_reportado ?? 0;
-    datafono += s.valor_datafono_reportado ?? 0;
     // Per-session diferencia: (reported - expected) summed in abs.
     const efDiff = Math.abs(
       (s.valor_efectivo_reportado ?? 0) - (s.valor_efectivo_esperado ?? 0),
     );
-    const dtDiff = Math.abs(
-      (s.valor_datafono_reportado ?? 0) - (s.valor_datafono_esperado ?? 0),
-    );
-    diferencia += efDiff + dtDiff;
+    // PT-6: efectivo-only cuadre — datáfono never contributes.
+    diferencia += efDiff;
   }
   return {
     valor_efectivo_reportado: efectivo,
-    valor_datafono_reportado: datafono,
     diferencia,
   };
 }
@@ -129,7 +122,6 @@ export function CierreDiario(): JSX.Element {
   // Aggregate totals + cierreDiarioExists from the hook response.
   const totals = data ? computeTotals(data.sesiones) : {
     valor_efectivo_reportado: 0,
-    valor_datafono_reportado: 0,
     diferencia: 0,
   };
   const cierreDiaExists = data?.cierre_dia !== null && data?.cierre_dia !== undefined;
@@ -140,7 +132,6 @@ export function CierreDiario(): JSX.Element {
     mode: 'onBlur',
     defaultValues: {
       valor_efectivo_reportado: 0,
-      valor_datafono_reportado: 0,
       justificacion: '',
     },
   });
@@ -181,7 +172,6 @@ export function CierreDiario(): JSX.Element {
       bridge,
       values: {
         valor_efectivo_reportado: values.valor_efectivo_reportado,
-        valor_datafono_reportado: values.valor_datafono_reportado,
         justificacion: values.justificacion,
       },
     });

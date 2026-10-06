@@ -92,7 +92,7 @@ afterEach(() => {
 });
 
 // Re-import AFTER mocks are registered.
-import { useSesionActiva } from '../useSesionActiva';
+import { logoutAfterClose, useSesionActiva } from '../useSesionActiva';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)', () => {
@@ -131,6 +131,48 @@ describe('HU-F10.2 — useSesionActiva().cerrarSesion helper (REQ-OPS-160, AD-4)
 
     // Result is the typed `ok: true` envelope.
     expect(resolved).toEqual({ ok: true, status: 200, sesion: sesionCerrada });
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // helper-1b (PT-5) — deferLogout keeps the token for the summary; the
+  // caller runs `logoutAfterClose()` later.
+  // ────────────────────────────────────────────────────────────────────
+  it('helper-1b: { deferLogout: true } + 200 → NO clear / NO event; logoutAfterClose() runs the trifecta later', async () => {
+    const sesionCerrada = { uuid: 'sess-uuid-1', timestamp_cierre: '2026-09-21T18:00:00Z' };
+    cerrarSesionApiMock.mockResolvedValueOnce(sesionCerrada);
+
+    const { result } = renderHook(() => useSesionActiva());
+    let resolved: unknown;
+    await act(async () => {
+      resolved = await result.current.cerrarSesion(
+        'sess-uuid-1',
+        { valor_final_efectivo: 75_000 },
+        { deferLogout: true },
+      );
+    });
+
+    expect(resolved).toEqual({ ok: true, status: 200, sesion: sesionCerrada });
+    expect(clearMock).not.toHaveBeenCalled();
+    expect(dispatchEventSpy).not.toHaveBeenCalled();
+
+    logoutAfterClose();
+    expect(clearMock).toHaveBeenCalledTimes(1);
+    expect((dispatchEventSpy.mock.calls[0]?.[0] as Event).type).toBe('parkos:auth:cleared');
+  });
+
+  it('helper-1c: { deferLogout: true } does NOT defer the 401 fallback (refresh failed → still logs out)', async () => {
+    cerrarSesionApiMock.mockRejectedValueOnce(new ParkosHttpError(401, '{}', '/api/v1/x'));
+
+    const { result } = renderHook(() => useSesionActiva());
+    await act(async () => {
+      await result.current.cerrarSesion(
+        'sess-uuid-1',
+        { valor_final_efectivo: 1 },
+        { deferLogout: true },
+      );
+    });
+
+    expect(clearMock).toHaveBeenCalledTimes(1);
   });
 
   // ────────────────────────────────────────────────────────────────────

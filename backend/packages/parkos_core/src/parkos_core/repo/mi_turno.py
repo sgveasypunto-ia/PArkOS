@@ -25,12 +25,17 @@ import uuid as uuid_lib
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..app.sql.mi_turno_query import build_mi_turno_counts_sql
+from ..models.A.factura_pagos import FacturaPagos
 from ..models.L_S.sesion import Sesion
-from ..schemas.operacion import MiTurnoRead
+from ..schemas.operacion import (
+    MiTurnoRead,
+    ResumenCierreMedioPagoRead,
+    ResumenCierreTurnoRead,
+)
 
 
 class SesionNotFoundError(Exception):
@@ -172,4 +177,77 @@ async def calcular_resumen_mi_turno(
     )
 
 
-__all__ = ["SesionNotFoundError", "calcular_resumen_mi_turno"]
+async def calcular_resumen_cierre_turno(
+    session: AsyncSession,
+    *,
+    uuid_sesion: uuid_lib.UUID,
+    timestamp_calculo: datetime,
+) -> ResumenCierreTurnoRead:
+    """Read-only post-close summary: payments grouped by medio de pago.
+
+    Reuses :func:`calcular_resumen_mi_turno` for the ingresos/salidas
+    counts (same open-window JOIN) and adds ONE grouped SELECT over
+    ``prod.factura_pagos`` for the sesion. ``pago`` rows are listed per
+    medio_pago; ``reverso`` rows are folded into a single separate line.
+    No INSERT/UPDATE/DELETE.
+
+    Raises:
+        SesionNotFoundError: when ``prod.sesion.uuid`` does not resolve.
+    """
+    base = await calcular_resumen_mi_turno(
+        session,
+        uuid_sesion=uuid_sesion,
+        timestamp_calculo=timestamp_calculo,
+    )
+
+    stmt = (
+        select(
+            FacturaPagos.tipo_movimiento,
+            FacturaPagos.medio_pago,
+            func.count(),
+            func.coalesce(func.sum(FacturaPagos.valor), 0),
+        )
+        .where(
+            FacturaPagos.uuid_sesion == uuid_sesion,
+            FacturaPagos.tipo_movimiento.in_(("pago", "reverso")),
+        )
+        .group_by(FacturaPagos.tipo_movimiento, FacturaPagos.medio_pago)
+    )
+    rows = (await session.execute(stmt)).all()
+
+    medios: dict[str, tuple[int, Decimal]] = {}
+    reversos_count = 0
+    reversos_total = Decimal(0)
+    for tipo, medio, count, total in rows:
+        count_i = int(count or 0)
+        total_d = Decimal(str(total or 0))
+        if tipo == "reverso":
+            reversos_count += count_i
+            reversos_total += total_d
+            continue
+        key = medio or "sin_especificar"
+        prev_count, prev_total = medios.get(key, (0, Decimal(0)))
+        medios[key] = (prev_count + count_i, prev_total + total_d)
+
+    medios_pago = [
+        ResumenCierreMedioPagoRead(medio_pago=k, pagos_count=c, total_cop=t)
+        for k, (c, t) in sorted(medios.items())
+    ]
+    return ResumenCierreTurnoRead(
+        uuid_sesion=base.uuid_sesion,
+        uuid_sucursal=base.uuid_sucursal,
+        timestamp_calculo=timestamp_calculo,
+        ingresos_count=base.ingresos_count,
+        salidas_count=base.salidas_count,
+        transacciones_count=sum(m.pagos_count for m in medios_pago),
+        medios_pago=medios_pago,
+        reversos_count=reversos_count,
+        reversos_total_cop=reversos_total,
+    )
+
+
+__all__ = [
+    "SesionNotFoundError",
+    "calcular_resumen_cierre_turno",
+    "calcular_resumen_mi_turno",
+]

@@ -76,9 +76,9 @@ export function CerrarTurnoSheet(): JSX.Element {
         <SheetHeader>
           <SheetTitle>Cerrar turno</SheetTitle>
           <SheetDescription>
-            Conteo final de caja + cierre de la sesión activa. Después
-            de confirmar el arqueo la sesión queda cerrada y la app
-            vuelve al login.
+            Conteo final de efectivo + cierre de la sesión activa. Al
+            confirmar, la sesión queda cerrada, verás un resumen de solo
+            lectura (descargable en PDF) y después la app vuelve al login.
           </SheetDescription>
         </SheetHeader>
         {/* Ajuste 2026-09-25 (directiva del operador): el sheet pasó a

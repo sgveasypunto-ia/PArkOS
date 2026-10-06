@@ -4,7 +4,8 @@
  *
  * Cobertura U12..U14 (cross-ref tasks.md §2):
  *   U12: submit OK → useArqueo().submit() → useSesionActiva().cerrarSesion()
- *         → navigate('/login?closed=true', {replace:true}).
+ *         (logout DEFERRED, PT-5) → read-only summary → "Finalizar y salir"
+ *         → logout trifecta + navigate('/login?closed=true', {replace:true}).
  *   U13: PUT 404 (sesión ya cerrada) → navigate('/login') sin ?closed=true,
  *         sin banner (case 5 en `cerrarTurnoChain.ts` — redirect silencioso).
  *   U14: Cancel button → navigate('/') sin invocar arqueo ni cierre.
@@ -33,8 +34,14 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import type * as ReactRouterDom from 'react-router-dom';
 
+import '@/i18n';
+
+import { ParkosHttpError } from '@parkos/ui-kit/fetch';
+
 const mockNavigate = vi.fn();
 const mockCerrarSesion = vi.fn();
+const mockLogoutAfterClose = vi.fn();
+const mockGetResumenCierreTurno = vi.fn();
 const mockSubmitArqueo = vi.fn();
 
 const mockUseSesionActiva = vi.fn();
@@ -47,6 +54,12 @@ vi.mock('react-router-dom', async () => {
 
 vi.mock('../hooks/useSesionActiva', () => ({
   useSesionActiva: () => mockUseSesionActiva(),
+  logoutAfterClose: () => mockLogoutAfterClose(),
+}));
+
+// PT-5: new read-only endpoint behind the post-close summary.
+vi.mock('../api/resumenCierreTurnoApi', () => ({
+  getResumenCierreTurno: (uuid: string) => mockGetResumenCierreTurno(uuid),
 }));
 
 // F11.3: the arqueo POST requires `uuid_tipo_arqueo` (UUID), resolved
@@ -94,7 +107,7 @@ vi.mock('../components/CerrarTurnoForm', () => ({
       <div data-testid="cerrar-turno-resumen">
         <p>UUID: {sesion.uuid}</p>
       </div>
-      {/* `cerrarTurnoSchema` types these 4 fields as `z.number()` (not
+      {/* `cerrarTurnoSchema` types the efectivo field as `z.number()` (not
           string+transform like `abrirTurnoSchema`) — `valueAsNumber`
           makes RHF coerce the native input string to a number before
           Zod validates it. */}
@@ -102,16 +115,6 @@ vi.mock('../components/CerrarTurnoForm', () => ({
         data-testid="cerrar-turno-valor-efectivo-reportado"
         type="text"
         {...form.register('valor_efectivo_reportado', { valueAsNumber: true })}
-      />
-      <input
-        data-testid="cerrar-turno-valor-datafono-reportado"
-        type="text"
-        {...form.register('valor_datafono_reportado', { valueAsNumber: true })}
-      />
-      <input
-        data-testid="cerrar-turno-justificacion"
-        type="text"
-        {...form.register('justificacion')}
       />
       <input
         data-testid="cerrar-turno-observaciones"
@@ -165,15 +168,12 @@ const baseSesion = {
   observaciones: 'Apertura',
 };
 
-// `cerrarTurnoSchema` requires all 5 numeric/justificacion fields as
-// real values before `form.handleSubmit` reaches the real async
+// `cerrarTurnoSchema` requires the efectivo field as a
+// real value before `form.handleSubmit` reaches the real async
 // handler — fill them so the arqueo+cierre chain actually runs.
 function fillValidForm(): void {
   fireEvent.change(screen.getByTestId('cerrar-turno-valor-efectivo-reportado'), {
     target: { value: '75000' },
-  });
-  fireEvent.change(screen.getByTestId('cerrar-turno-valor-datafono-reportado'), {
-    target: { value: '25000' },
   });
   fireEvent.change(screen.getByTestId('cerrar-turno-observaciones'), {
     target: { value: 'Cierre turno tarde' },
@@ -198,21 +198,53 @@ afterEach(() => {
 });
 
 describe('<CerrarTurno /> container — T3', () => {
-  it('U12: submit OK → arqueo + cerrarSesion → navigate("/login?closed=true")', async () => {
-    mockSubmitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-1' });
+  const RESUMEN_OK = {
+    uuid_sesion: 'sess-uuid-1',
+    uuid_sucursal: 'suc-uuid-1',
+    timestamp_calculo: '2026-09-15T18:00:00',
+    ingresos_count: 9,
+    salidas_count: 8,
+    transacciones_count: 6,
+    medios_pago: [
+      { medio_pago: 'efectivo', pagos_count: 4, total_cop: 40000 },
+      { medio_pago: 'datafono', pagos_count: 2, total_cop: 30000 },
+    ],
+    reversos_count: 1,
+    reversos_total_cop: 5000,
+  };
+  const ARQUEO_OK = {
+    uuid: 'arqueo-uuid-1',
+    valor_efectivo_esperado: 90000,
+    valor_efectivo_reportado: 75000,
+    diferencia_efectivo: -15000,
+  };
+
+  async function submitOk(): Promise<ReturnType<typeof userEvent.setup>> {
+    mockSubmitArqueo.mockResolvedValueOnce(ARQUEO_OK);
     mockCerrarSesion.mockResolvedValueOnce({
       ok: true,
       status: 200,
       sesion: { ...baseSesion, timestamp_cierre: '2026-09-15T18:00:00Z' },
     });
     const user = userEvent.setup();
+    fillValidForm();
+    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
+    return user;
+  }
+
+  it('U12: submit OK → arqueo + cerrarSesion (logout diferido) → resumen de solo lectura, SIN navegar ni cerrar sesión todavía', async () => {
+    mockGetResumenCierreTurno.mockResolvedValueOnce(RESUMEN_OK);
     render(
       <MemoryRouter>
         <CerrarTurno />
       </MemoryRouter>,
     );
-    fillValidForm();
-    await user.click(screen.getByTestId('cerrar-turno-confirmar'));
+
+    // Conteo ciego: antes de enviar NO hay esperado/diferencia en pantalla.
+    expect(screen.queryByTestId('resumen-cierre-turno')).toBeNull();
+    expect(document.body.textContent ?? '').not.toContain('90.000');
+
+    await submitOk();
 
     await waitFor(() => {
       expect(mockSubmitArqueo).toHaveBeenCalledWith(
@@ -220,20 +252,144 @@ describe('<CerrarTurno /> container — T3', () => {
           uuid_sesion: 'sess-uuid-1',
           uuid_tipo_arqueo: 'tipo-arqueo-uuid-cierre-turno',
           valor_efectivo_reportado: 75000,
-          valor_datafono_reportado: 25000,
         }),
       );
     });
+    // Balanced-close rule: the first POST carries no justificacion.
+    expect(
+      'justificacion' in (mockSubmitArqueo.mock.calls[0]?.[0] as Record<string, unknown>),
+    ).toBe(false);
+    // PT-6: ningún datáfono viaja en el arqueo ni en el cierre.
+    const arqueoBody = mockSubmitArqueo.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('valor_datafono_reportado' in arqueoBody).toBe(false);
     await waitFor(() => {
-      expect(mockCerrarSesion).toHaveBeenCalledWith('sess-uuid-1', {
-        valor_final_efectivo: 75000,
-        valor_final_datafono: 25000,
-        observaciones_cierre: 'Cierre turno tarde',
-      });
+      expect(mockCerrarSesion).toHaveBeenCalledWith(
+        'sess-uuid-1',
+        { valor_final_efectivo: 75000, observaciones_cierre: 'Cierre turno tarde' },
+        { deferLogout: true },
+      );
     });
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/login?closed=true', { replace: true });
+
+    // PT-5: resumen visible con TODOS los datos.
+    const resumen = await screen.findByTestId('resumen-cierre-turno');
+    const text = resumen.textContent ?? '';
+    expect(text).toContain('Turno cerrado');
+    expect(text).toContain('Hora de cierre');
+    expect(text).toContain('Base (efectivo inicial)');
+    expect(text).toContain('Efectivo esperado');
+    expect(text).toContain('Efectivo contado');
+    expect(text).toContain('Diferencia');
+    expect(text).toContain('Transacciones (pagos)');
+    expect(text).toContain('Efectivo (4)');
+    expect(text).toContain('Datáfono (2)');
+    expect(text).toContain('Reversos (1)');
+    expect(text).toContain('Cierre turno tarde');
+    expect(mockGetResumenCierreTurno).toHaveBeenCalledWith('sess-uuid-1');
+
+    // El logout NO ocurrió aún: el operador sigue leyendo el resumen.
+    expect(mockLogoutAfterClose).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('U12g: con diferencia el backend responde 400 y el reintento lleva Observaciones como justificacion', async () => {
+    mockGetResumenCierreTurno.mockResolvedValueOnce(RESUMEN_OK);
+    mockSubmitArqueo.mockRejectedValueOnce(
+      new ParkosHttpError(
+        400,
+        JSON.stringify({ detail: { error: 'justificacion_requerida' } }),
+        '/api/v1/caja/arqueo',
+      ),
+    );
+    render(
+      <MemoryRouter>
+        <CerrarTurno />
+      </MemoryRouter>,
+    );
+    await submitOk();
+
+    await screen.findByTestId('resumen-cierre-turno');
+    expect(mockSubmitArqueo).toHaveBeenCalledTimes(2);
+    expect(mockSubmitArqueo.mock.calls[1]?.[0]).toMatchObject({
+      justificacion: 'Cierre turno tarde',
     });
+  });
+
+  it('U12b: "Finalizar y salir" → recién ahí corre el logout y navega a /login?closed=true', async () => {
+    mockGetResumenCierreTurno.mockResolvedValueOnce(RESUMEN_OK);
+    render(
+      <MemoryRouter>
+        <CerrarTurno />
+      </MemoryRouter>,
+    );
+    const user = await submitOk();
+
+    await user.click(await screen.findByTestId('resumen-cierre-finalizar'));
+
+    expect(mockLogoutAfterClose).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('/login?closed=true', { replace: true });
+  });
+
+  it('U12c: si el endpoint del resumen falla, el cierre igual muestra esperado/contado/diferencia y avisa que el detalle no está disponible', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockGetResumenCierreTurno.mockRejectedValueOnce(new Error('boom'));
+    render(
+      <MemoryRouter>
+        <CerrarTurno />
+      </MemoryRouter>,
+    );
+    await submitOk();
+
+    const resumen = await screen.findByTestId('resumen-cierre-turno');
+    const text = resumen.textContent ?? '';
+    expect(text).toContain('Efectivo esperado');
+    expect(text).toContain('No disponible');
+    expect(text).not.toContain('Totales por medio de pago');
+    expect(mockLogoutAfterClose).not.toHaveBeenCalled();
+  });
+
+  it('U12d: el resumen sobrevive a que useSesionActiva pase a null tras el cierre (404 en /sesion/me)', async () => {
+    mockGetResumenCierreTurno.mockResolvedValueOnce(RESUMEN_OK);
+    const { rerender } = render(
+      <MemoryRouter>
+        <CerrarTurno />
+      </MemoryRouter>,
+    );
+    await submitOk();
+    await screen.findByTestId('resumen-cierre-turno');
+
+    mockUseSesionActiva.mockReturnValue({ sesion: null, cerrarSesion: mockCerrarSesion });
+    rerender(
+      <MemoryRouter>
+        <CerrarTurno />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId('resumen-cierre-turno')).not.toBeNull();
+  });
+
+  it('U12e: si el drawer se descarta con el resumen pendiente (unmount) → red de seguridad: se cierra la sesión de auth', async () => {
+    mockGetResumenCierreTurno.mockResolvedValueOnce(RESUMEN_OK);
+    const { unmount } = render(
+      <MemoryRouter>
+        <CerrarTurno />
+      </MemoryRouter>,
+    );
+    await submitOk();
+    await screen.findByTestId('resumen-cierre-turno');
+    expect(mockLogoutAfterClose).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(mockLogoutAfterClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('U12f: el unmount SIN cierre completado no cierra la sesión de auth', () => {
+    const { unmount } = render(
+      <MemoryRouter>
+        <CerrarTurno />
+      </MemoryRouter>,
+    );
+    unmount();
+    expect(mockLogoutAfterClose).not.toHaveBeenCalled();
   });
 
   it('U13: PUT 404 (sesión ya cerrada) → navigate("/login") sin ?closed=true, sin banner', async () => {

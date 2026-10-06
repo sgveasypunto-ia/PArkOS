@@ -97,6 +97,7 @@ from ...schemas.operacion import (
     MiTurnoRead,
     OcupacionItem,
     OcupacionResponse,
+    ResumenCierreTurnoRead,
     SalidaCreateForzado,
     SalidaListRead,
     SalidaRead,
@@ -1565,11 +1566,107 @@ async def get_mi_turno(
     return resumen
 
 
+# ---------------------------------------------------------------------------
+# Post-close turn summary -- GET /operacion/mi-turno/resumen-cierre
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/mi-turno/resumen-cierre",
+    response_model=ResumenCierreTurnoRead,
+    response_model_by_alias=False,
+    summary=(
+        "Read-only post-close turn summary: payments grouped by medio de "
+        "pago, transaction count, ingresos/salidas and reversals. Additive "
+        "sibling of /mi-turno (MiTurnoRead stays frozen). Cache-Control: "
+        "no-store."
+    ),
+    responses={
+        403: {"description": "sesion_cross_branch_forbidden / sesion_ajena"},
+        404: {"description": "sesion_not_found"},
+    },
+)
+async def get_resumen_cierre_turno(
+    response: Response,
+    uuid_sesion: uuid_lib.UUID = Query(  # noqa: B008
+        ...,
+        description="uuid_sesion of the turno the operator just closed.",
+    ),
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_ingreso_issuer_dep),
+) -> ResumenCierreTurnoRead:
+    """Aggregate the sesion's payments for the post-close read-only summary.
+
+    Security (``get_mi_turno`` posture plus ownership and blind count):
+
+      1. The sesion is resolved server-side; unknown -> 404.
+      2. ``operador-`` tokens are pinned to ``ctx.sucursal_uuid`` AND may
+         only read their OWN sesion (the summary is "visible for the
+         operator that closes the turn"); both violations answer the same
+         404 as an unknown uuid so existence cannot be probed.
+      3. Only CLOSED sesiones (409 ``sesion_abierta`` otherwise): the totals
+         per medio de pago must not be readable before the blind count.
+      4. Read-only: no write to any ``[A]``/``[V]`` table, no commit.
+    """
+    from ...repo.mi_turno import SesionNotFoundError, calcular_resumen_cierre_turno
+    from ...repo.session_cycle import _now_naive
+
+    no_store = no_store_headers()
+
+    sesion_row = (
+        await session.execute(select(Sesion).where(Sesion.uuid == uuid_sesion))
+    ).scalar_one_or_none()
+    if sesion_row is None or sesion_row.uuid_sucursal is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sesion_not_found", "uuid_sesion": str(uuid_sesion)},
+            headers=no_store,
+        )
+    if ctx.issuer_prefix == "operador-" and (
+        ctx.sucursal_uuid is None
+        or sesion_row.uuid_sucursal != ctx.sucursal_uuid
+        or sesion_row.uuid_usuario != ctx.actor_uuid
+    ):
+        # Uniform 404 for "other branch" AND "other operator's sesion":
+        # a distinct 403 would let a caller probe which uuids exist.
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sesion_not_found", "uuid_sesion": str(uuid_sesion)},
+            headers=no_store,
+        )
+    if sesion_row.timestamp_cierre is None:
+        # Conteo ciego: per-medio totals must not be readable before the
+        # operator's blind count is submitted and the turno closed.
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "sesion_abierta", "uuid_sesion": str(uuid_sesion)},
+            headers=no_store,
+        )
+
+    try:
+        resumen = await calcular_resumen_cierre_turno(
+            session,
+            uuid_sesion=uuid_sesion,
+            timestamp_calculo=_now_naive(),
+        )
+    except SesionNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sesion_not_found", "uuid_sesion": str(exc.uuid_sesion)},
+            headers=no_store,
+        ) from exc
+
+    apply_no_store_header(response)
+    return resumen
+
+
 __all__ = [
     "SubscriptionLookupResult",
     "cotizar_ingreso_handler",
     "get_mi_turno",
     "get_ocupacion",
+    "get_resumen_cierre_turno",
     "resolve_active_subscription_for_exit",
     "router",
 ]

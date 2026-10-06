@@ -43,6 +43,7 @@ import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 // query (`@typescript-eslint/consistent-type-imports` forbids the latter).
 import type * as IngresoActivoApiModule from '../../operacion/api/ingresoActivoApi';
 import type { SesionRead } from '../api/sesionActivaApi';
+import { useResumenCierrePendiente } from '../hooks/useResumenCierrePendiente';
 
 const mockNavigate = vi.fn();
 // Safe baseline (not a bare `vi.fn()`) so `Dashboard`'s unconditional
@@ -176,6 +177,7 @@ beforeEach(() => {
   mockUseIngresosActivos.mockReturnValue([]);
   mockGetIngresosByPlaca.mockResolvedValue([]);
   useDashboardDrawerStore.getState().close();
+  useResumenCierrePendiente.getState().setPendiente(false);
 });
 
 afterEach(() => {
@@ -191,6 +193,49 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
       refresh: mockRefresh,
     });
     render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/caja/abrir-turno', { replace: true });
+    });
+  });
+
+  it('U15b (PT-5): con el resumen de cierre pendiente, /sesion/me=404 NO redirige a abrir-turno y el hub (que aloja el resumen) sigue montado', async () => {
+    // 1) turno activo → el dashboard recuerda la última sesión.
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    const { rerender } = render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+    // 2) el turno se cierra en el backend, el resumen queda pendiente y
+    //    SWR revalida: /sesion/me ya responde 404 → sesion=null.
+    useResumenCierrePendiente.getState().setPendiente(true);
+    mockUseSesionActiva.mockReturnValue({
+      sesion: null,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    rerender(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('dashboard-hub')).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalledWith('/caja/abrir-turno', expect.anything());
+
+    // 3) al descartar el resumen (flag en false) vuelve el comportamiento normal.
+    useResumenCierrePendiente.getState().setPendiente(false);
+    rerender(
       <MemoryRouter>
         <Dashboard />
       </MemoryRouter>,

@@ -730,13 +730,16 @@ export const arqueoPayloadSchema = z.object({
   uuid_sesion: z.string().uuid(),
   base_efectivo_cop: z.number().int().nonnegative(),
   valor_esperado_efectivo: z.number().int().nonnegative(),
-  valor_esperado_datafono: z.number().int().nonnegative(),
+  // PT-6: the datáfono dimension is OPTIONAL — the cuadre is efectivo-only
+  // and the cierre/arqueo flows no longer send it. The builder prints the
+  // datáfono block only when all four fields are present (legacy payloads).
+  valor_esperado_datafono: z.number().int().nonnegative().optional(),
   valor_reportado_efectivo: z.number().int().nonnegative(),
-  valor_reportado_datafono: z.number().int().nonnegative(),
+  valor_reportado_datafono: z.number().int().nonnegative().optional(),
   diferencia_efectivo: z.number().int(),
-  diferencia_datafono: z.number().int(),
+  diferencia_datafono: z.number().int().optional(),
   tolerancia_efectivo: z.number().int().nonnegative(),
-  tolerancia_datafono: z.number().int().nonnegative(),
+  tolerancia_datafono: z.number().int().nonnegative().optional(),
   justificacion: z.string().optional(),
   auditoria_codigo: z.string().regex(
     /^(?:AUD-\d{8}-\d{6}|auditoria|cierre_turno|cierre_dia)$/,

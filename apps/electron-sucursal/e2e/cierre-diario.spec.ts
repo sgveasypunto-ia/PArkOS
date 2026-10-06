@@ -89,8 +89,7 @@ const ARQUEO_RESUMEN_POR_SESION_FIXTURE = {
       valor_efectivo_esperado: 100_000,
       valor_datafono_esperado: 30_000,
       valor_efectivo_reportado: 100_000,
-      valor_datafono_reportado: 30_000,
-      uuid_arqueo: 'cccccccc-dddd-4eee-8fff-222222222222',
+        uuid_arqueo: 'cccccccc-dddd-4eee-8fff-222222222222',
     },
     {
       uuid_sesion: '44444444-5555-4666-8777-888888888888',
@@ -221,7 +220,6 @@ test.skip('e2e-1: happy multi-session cierre_diario → POST body has cierre_dia
   // Fill the aggregate values; Σ|diferencia|=0 → no justificacion
   // required (REQ-OPS-164 scenario 1 + AD-4).
   await page.getByTestId('cierre-diario-valor-efectivo').fill('150000');
-  await page.getByTestId('cierre-diario-valor-datafono').fill('30000');
   await page.getByTestId('cierre-diario-confirmar').click();
 
   // POST body MUST carry cierre_dia discriminator + uuid_sesion:null
@@ -230,7 +228,6 @@ test.skip('e2e-1: happy multi-session cierre_diario → POST body has cierre_dia
     uuid_sesion: null,
     tipo_arqueo: 'cierre_dia',
     valor_efectivo_reportado: 150_000,
-    valor_datafono_reportado: 30_000,
   });
   expect(capturedArqueoBody).not.toHaveProperty('justificacion');
 
@@ -300,7 +297,6 @@ test.skip('e2e-3: Σ|diferencia|>0 requires global justificacion.min(3) — POST
 
   // After typing ≥3 chars, button re-enables; POST carries the field.
   await page.getByTestId('cierre-diario-valor-efectivo').fill('147000');
-  await page.getByTestId('cierre-diario-valor-datafono').fill('30000');
   await page.getByTestId('cierre-diario-justificacion').fill('Faltante en caja menor');
   await expect(page.getByTestId('cierre-diario-confirmar')).toBeEnabled();
   await page.getByTestId('cierre-diario-confirmar').click();
@@ -309,7 +305,6 @@ test.skip('e2e-3: Σ|diferencia|>0 requires global justificacion.min(3) — POST
     uuid_sesion: null,
     tipo_arqueo: 'cierre_dia',
     valor_efectivo_reportado: 147_000,
-    valor_datafono_reportado: 30_000,
     justificacion: 'Faltante en caja menor',
   });
 });
