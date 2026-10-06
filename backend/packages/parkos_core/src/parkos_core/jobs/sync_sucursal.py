@@ -1203,21 +1203,36 @@ class SyncSucursalWorker(WorkerRunner):
 def _wire_shape(row: Any) -> dict[str, Any]:
     """Serialize a :class:`SyncQueue` row for the wire.
 
-    The cloud expects ``{tabla, uuid_registro, datos, uuid_sucursal,
-    timestamp_evento, operacion, prioridad}`` — see
-    :class:`parkos_core.sync.transport.PushResponse`. We pass the
-    minimum needed to route + apply the row on the cloud side.
+    The cloud's ``_PushedRow`` schema (``api/v1/sync_router.py:181``) is a
+    Pydantic v2 model with ``extra='forbid'`` inherited from ``_Base``
+    (``api/v1/sync_router.py:133``). ONLY ``{tabla, uuid_registro, seq,
+    datos}`` is accepted; every other field returns 422
+    ``"Extra inputs are not permitted"``.
+
+    Real defect confirmed live, 2026-10-05: the branch was sending
+    ``uuid_sucursal``, ``operacion`` and ``prioridad`` on the wire (per
+    an older contract) and was ALSO missing ``seq`` (which lives only
+    in the row's ``datos`` JSONB, not as a sync_queue column). The 422
+    from the cloud dropped the batch into 4xx backoff (60s/300s/1800s/
+    7200s/...) so a single stuck ``sesion`` event sat retrying for 2h
+    with ``ultimo_error='http_422'`` and the cloud's
+    ``log_transaccional`` was 8 rows short of the branch's.
+
+    Fix: drop the three forbidden extras AND add ``seq`` extracted
+    from ``datos``. Defensive: a row whose ``datos`` has no parseable
+    ``seq`` falls back to ``0`` rather than crashing the whole batch.
     """
+    datos = getattr(row, "datos", None) or {}
+    raw_seq = datos.get("seq") if isinstance(datos, dict) else None
+    try:
+        seq = int(raw_seq) if raw_seq is not None else 0
+    except (TypeError, ValueError):
+        seq = 0
     return {
         "tabla": getattr(row, "tabla", None),
-        # Bug 9 fix: ``str(None)`` is the literal ``'None'`` — the legacy
-        # receiver parses these columns as UUIDs and a string ``'None'``
-        # would crash it. Coerce a missing uuid to real JSON null.
         "uuid_registro": _str_or_none(getattr(row, "uuid_registro", None)),
-        "uuid_sucursal": _str_or_none(getattr(row, "uuid_sucursal", None)),
-        "operacion": getattr(row, "operacion", None),
-        "prioridad": getattr(row, "prioridad", None),
-        "datos": getattr(row, "datos", None) or {},
+        "seq": seq,
+        "datos": datos,
     }
 
 
