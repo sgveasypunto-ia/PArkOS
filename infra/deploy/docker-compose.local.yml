@@ -32,8 +32,8 @@ services:
     container_name: parkos-branch-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: parkos
-      POSTGRES_PASSWORD: parkos
+      POSTGRES_USER: ${PARKOS_DB_SUPER_USER:-parkos}
+      POSTGRES_PASSWORD: ${PARKOS_DB_SUPER_PASSWORD:-parkos}
       POSTGRES_DB: parkos
     volumes:
       - branch-db-data:/var/lib/postgresql/data
@@ -42,11 +42,37 @@ services:
     ports:
       - "5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U parkos -d parkos"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # migrate — one-shot `alembic upgrade head` as the Postgres superuser
+  # before the branch services start (see docker-compose.branch.yml for the
+  # full rationale). Failure blocks api-sucursal / job-sync-sucursal;
+  # inspect with `docker compose -f <this file> logs migrate`.
+  # -------------------------------------------------------------------------
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.branch
+      args:
+        BUILD_TARGET: api_sucursal
+    image: parkos:api-sucursal-test
+    restart: "no"
+    working_dir: /app/backend/packages/parkos_core
+    command: ["/app/backend/.venv/bin/alembic", "upgrade", "head"]
+    environment:
+      PARKOS_DEPLOY: branch
+      DATABASE_URL: postgresql+psycopg2://${PARKOS_DB_SUPER_USER:-parkos}:${PARKOS_DB_SUPER_PASSWORD:-parkos}@branch-db:5432/parkos
+      PARKOS_APP_DB_PASSWORD: ${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}
+    depends_on:
+      branch-db:
+        condition: service_healthy
+    networks:
+      - parkos-cloud-net
 
   # -------------------------------------------------------------------------
   # api-sucursal — branch FastAPI.
@@ -78,6 +104,8 @@ services:
     depends_on:
       branch-db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - parkos-cloud-net
     ports:
@@ -124,6 +152,8 @@ services:
         condition: service_healthy
       api-sucursal:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - parkos-cloud-net
     volumes:

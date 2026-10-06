@@ -54,8 +54,11 @@ services:
     container_name: parkos-branch-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: parkos
-      POSTGRES_PASSWORD: parkos
+      # Superuser of this node. The `migrate` service below connects with
+      # the same pair, so both read the same variables (dev defaults only;
+      # override both via env / .env for a real deployment).
+      POSTGRES_USER: ${PARKOS_DB_SUPER_USER:-parkos}
+      POSTGRES_PASSWORD: ${PARKOS_DB_SUPER_PASSWORD:-parkos}
       POSTGRES_DB: parkos
     volumes:
       - branch-db-data:/var/lib/postgresql/data
@@ -64,11 +67,50 @@ services:
     ports:
       - "5433:5432"  # host 5433 → container 5432 to avoid clash with cloud on same host
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U parkos -d parkos"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # migrate — one-shot `alembic upgrade head` BEFORE any app service starts.
+  #
+  # Every long-running service overrides the Dockerfile ENTRYPOINT/CMD with
+  # its own `command:`, so nothing else ever runs alembic. This service does
+  # it once per `up`:
+  #   - Same image as api-sucursal (venv + alembic.ini + migrations ship in
+  #     it). Built from the same Dockerfile target, so layers are cached.
+  #   - Connects as the Postgres SUPERUSER: the app login role has no CREATE
+  #     on schema `prod` (InsufficientPrivilege). The superuser credentials
+  #     live ONLY in this service; the apps keep their own DB credentials.
+  #   - alembic is idempotent: at head it is a no-op. There is exactly one
+  #     `migrate` per node and job-sync-sucursal runs a single replica, so
+  #     there are no concurrent upgrades from this stack.
+  #   - restart "no": it exits 0 on success. If it fails, api-sucursal and
+  #     job-sync-sucursal never start (service_completed_successfully) and
+  #     the error is in `docker compose -f <this file> logs migrate`.
+  # -------------------------------------------------------------------------
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.branch
+      args:
+        BUILD_TARGET: api_sucursal
+    image: parkos:api-sucursal-test
+    restart: "no"
+    working_dir: /app/backend/packages/parkos_core
+    command: ["/app/backend/.venv/bin/alembic", "upgrade", "head"]
+    environment:
+      PARKOS_DEPLOY: branch
+      DATABASE_URL: postgresql+psycopg2://${PARKOS_DB_SUPER_USER:-parkos}:${PARKOS_DB_SUPER_PASSWORD:-parkos}@branch-db:5432/parkos
+      # Read by migration 0021 to set the password of the app login role.
+      PARKOS_APP_DB_PASSWORD: ${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}
+    depends_on:
+      branch-db:
+        condition: service_healthy
+    networks:
+      - parkos-branch-net
 
   # -------------------------------------------------------------------------
   # api-sucursal — the FastAPI branch API. Same multi-stage image as
@@ -91,14 +133,16 @@ services:
       # test the legacy path. Never inlines a real deploy value.
       PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}
       PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
-      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
-      DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_DB_SUPER_USER:-parkos}:${PARKOS_DB_SUPER_PASSWORD:-parkos}@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_DB_SUPER_USER:-parkos}:${PARKOS_DB_SUPER_PASSWORD:-parkos}@branch-db:5432/parkos
       PARKOS_CLOUD_API_URL: ${PARKOS_CLOUD_API_URL:?PARKOS_CLOUD_API_URL required}
       PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
     depends_on:
       branch-db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - parkos-branch-net
     ports:
@@ -137,8 +181,8 @@ services:
       # after stage 4 — see api-sucursal's identical env var above.
       PARKOS_SYNC_ENGINE: ${PARKOS_SYNC_ENGINE:-catalog_branch}
       PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
-      PARKOS_DB_URL: postgresql+psycopg://parkos:parkos@branch-db:5432/parkos
-      DATABASE_URL: postgresql+asyncpg://parkos:parkos@branch-db:5432/parkos
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_DB_SUPER_USER:-parkos}:${PARKOS_DB_SUPER_PASSWORD:-parkos}@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_DB_SUPER_USER:-parkos}:${PARKOS_DB_SUPER_PASSWORD:-parkos}@branch-db:5432/parkos
       PARKOS_CLOUD_API_URL: ${PARKOS_CLOUD_API_URL:?PARKOS_CLOUD_API_URL required}
       PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
       PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
@@ -149,6 +193,8 @@ services:
         condition: service_healthy
       api-sucursal:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - parkos-branch-net
     volumes:
