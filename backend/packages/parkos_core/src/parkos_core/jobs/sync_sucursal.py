@@ -930,12 +930,27 @@ class SyncSucursalWorker(WorkerRunner):
                 )
             except ValueError:
                 uuid_registro = None
-            if uuid_registro is not None and await apply_guard.row_already_present(
-                self._session, spec.model_cls, uuid_registro
+            if (
+                uuid_registro is not None
+                and spec.name != "sucursal"
+                and await apply_guard.row_already_present(
+                    self._session, spec.model_cls, uuid_registro
+                )
             ):
                 already_applied += 1
                 continue
 
+            # Real defect confirmed live, 2026-10-06: the user
+            # requirement for the ``sucursal`` table is "the only keys
+            # are UUIDs — an edit is an UPDATE, not a new entity". The
+            # default ``row_already_present`` guard prevents the branch
+            # from re-applying a row that is already locally present by
+            # uuid, which means an admin-side UPDATE in place (the new
+            # update_sucursal_dedicated path) is silently skipped: the
+            # local copy keeps the OLD field values forever. Special-case
+            # the sucursal pull to always fall through to the apply,
+            # which then either creates the local row on first pull or
+            # updates its fields on subsequent pulls.
             resolved.append((spec, row.get("datos") or {}))
 
         if unresolved:
@@ -1056,12 +1071,27 @@ class SyncSucursalWorker(WorkerRunner):
                 )
             except ValueError:
                 uuid_registro = None
-            if uuid_registro is not None and await apply_guard.row_already_present(
-                self._session, spec.model_cls, uuid_registro
+            if (
+                uuid_registro is not None
+                and spec.name != "sucursal"
+                and await apply_guard.row_already_present(
+                    self._session, spec.model_cls, uuid_registro
+                )
             ):
                 already_applied += 1
                 continue
 
+            # Real defect confirmed live, 2026-10-06: the user
+            # requirement for the ``sucursal`` table is "the only keys
+            # are UUIDs — an edit is an UPDATE, not a new entity". The
+            # default ``row_already_present`` guard prevents the branch
+            # from re-applying a row that is already locally present by
+            # uuid, which means an admin-side UPDATE in place (the new
+            # update_sucursal_dedicated path) is silently skipped: the
+            # local copy keeps the OLD field values forever. Special-case
+            # the sucursal pull to always fall through to the apply,
+            # which then either creates the local row on first pull or
+            # updates its fields on subsequent pulls.
             resolved.append((spec, row.get("datos") or {}))
 
         if unresolved:
