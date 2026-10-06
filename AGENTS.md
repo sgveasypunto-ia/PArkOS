@@ -34,7 +34,7 @@ it. The only seeded account is `admin@parkos.local` (`infra/scripts/bootstrap_pa
 currently active in the branch DB; login verified against `api-sucursal` (`:8100`).
 
 **WARNING**: password is plaintext in this repo. Compromise of this file =
-compromise of the dev DB. Rotate by re-running the local seed (`backend/scripts/`).
+compromise of the dev DB. No local seed creates a branch operator (the only seeded account is `admin@parkos.local`, via `infra/scripts/bootstrap_pairing.py`); the operator was created ad hoc for QA, so to recreate or rotate it, create the user with an admin token via `POST /admin/usuarios` (rol `operador`, `sucursales_asignadas`).
 The email TLD `.local` is intentionally permitted by
 `parkos_core/schemas/_email.py::_parkos_email_lenient` (RFC 6762 mDNS reserved)
 so the bootstrap login flow works against Pydantic's strict default validator.
