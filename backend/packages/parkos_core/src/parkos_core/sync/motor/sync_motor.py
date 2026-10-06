@@ -321,7 +321,32 @@ class SyncMotor:
         *,
         actor_uuid: uuid_lib.UUID,
     ) -> ApplyResult:
-        """Dispatch to the pre-catalog legacy applier, unchanged (D12)."""
+        """Dispatch to the pre-catalog legacy applier, unchanged (D12).
+
+        Real defect confirmed live, 2026-10-06: PR7's ``e98cc37d`` turned
+        ``ConflictResolver`` into a shim that only returns a conflict
+        resolution VERDICT (APPLIED / CONFLICT_V / CONFLICT_LS / ERROR)
+        without actually writing the row to the data table. The
+        catalog-side ``motor.apply_row.apply_row`` is the one that does
+        the real write via ``_dispatch_repo_call`` — and it is the same
+        path every non-LEGACY engine mode already uses. So under
+        ``EngineMode.LEGACY`` the wire-level sync transport kept
+        accepting batches (HTTP 207) and reporting ``status: applied``,
+        but the row never landed in the target table — the receiver
+        silently dropped every pushed row. The cloud's data tables
+        appeared consistent only because a separate path (the catalog
+        ``/sync/events`` handler, not the legacy ``/sync/push``) was
+        used while the engine mode was still in transition; once
+        ``_detect_applier_mode`` on the branch settled on legacy, the
+        data stopped moving.
+
+        Fix: keep the conflict resolution verdict (it's still
+        semantically meaningful — the legacy path is the kill switch
+        and we don't want a silent behavioral change) but ALSO run
+        the actual catalog apply when the verdict is APPLIED. A
+        CONFLICT_* verdict still short-circuits, matching the pre-PR7
+        semantic (an operator-resolved conflict is not a write).
+        """
         legacy_row = {
             "tabla": spec.name,
             "uuid_registro": payload.get("uuid") or uuid_lib.uuid4(),
@@ -331,10 +356,29 @@ class SyncMotor:
             "actor_uuid": actor_uuid,
         }
         outcome = await ConflictResolver().apply_pushed_row(session, legacy_row)
-        return ApplyResult(
-            status=_LEGACY_OUTCOME_TO_STATUS[outcome],
-            row_uuid=None,
-            reason=None if outcome == ApplyOutcome.APPLIED else outcome.value,
+        if outcome is not ApplyOutcome.APPLIED:
+            return ApplyResult(
+                status=_LEGACY_OUTCOME_TO_STATUS[outcome],
+                row_uuid=None,
+                reason=None if outcome == ApplyOutcome.APPLIED else outcome.value,
+            )
+
+        # Legacy path's APPLIED verdict used to be the write itself
+        # (pre-PR7 ConflictResolver was the applier). After PR7 the
+        # shim only returns the verdict, so the row would be lost.
+        # Delegate the actual write to the catalog applier — the
+        # one path every non-LEGACY engine mode already trusts to
+        # do the real INSERT, so a kill-switch flip to LEGACY now
+        # preserves behavior instead of silently dropping data.
+        # log_tx=True so the cloud writes its own audit log entry
+        # for the applied row (the post-PR7 shim writes nothing,
+        # so the catalog applier is the single log writer today).
+        return await _catalog_apply_row(
+            session,
+            spec,
+            payload,
+            actor_uuid=actor_uuid,
+            log_tx=True,
         )
 
     async def apply_batch(
