@@ -139,7 +139,9 @@ def _clientes_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bo
 
 def _clientes_b2b_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
     """A b2b row follows its cliente by natural key: ``uuid_cliente`` may point at a
-    closed version of a cliente whose key the branch knows."""
+    closed version of a cliente whose key the branch knows. Resolving those versions
+    by key needs the full (non-partial) ``ix_clientes_nk`` of migration 0084; the
+    partial ``ix_clientes_nk_open`` does not cover closed versions."""
     version = aliased(Clientes)
     versions_in_scope = select(version.uuid).where(
         tuple_(version.tipo_identificador, _nk_numero(version.numero_identificacion)).in_(
