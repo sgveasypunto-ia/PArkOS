@@ -230,7 +230,7 @@ function Get-ParkosPostgresPartsStatus {
     for ($i = 0; $i -lt $found.Count; $i++) {
         if ($found[$i].Number -ne ($i + 1)) {
             $missing = '{0:D2}' -f ($i + 1)
-            return [PSCustomObject]@{ Parts = @(); Problem = "Falta la parte $missing de $FileName en ${Dir} (se encontraron $($found.Count) partes no contiguas). Restaure las partes con git (git checkout -- installer/payload/postgres) o copie de nuevo el paquete completo." }
+            return [PSCustomObject]@{ Parts = @(); Problem = "Falta la parte $missing de $FileName en ${Dir} (se encontraron $($found.Count) partes no contiguas). Restaure las partes con git (git checkout -- installer/payload/parts/postgres) o copie de nuevo el paquete completo." }
         }
     }
     $sidecar = Join-Path $Dir "$FileName.sha256"
@@ -284,7 +284,7 @@ function Restore-ParkosPostgresZipFromParts {
         Join-ParkosFileParts -PartPaths $PartPaths -Destination $tmp
         $actual = Get-ParkosFileSha256 -Path $tmp
         if ($actual -ne $expected) {
-            throw "El ZIP de Postgres rearmado desde las partes tiene hash SHA-256 $actual y se esperaba $expected ($FileName.sha256). Alguna parte esta danada o es de otra version: restaure las partes con git (git checkout -- installer/payload/postgres) o copie de nuevo el paquete."
+            throw "El ZIP de Postgres rearmado desde las partes tiene hash SHA-256 $actual y se esperaba $expected ($FileName.sha256). Alguna parte esta danada o es de otra version: restaure las partes con git (git checkout -- installer/payload/parts/postgres) o copie de nuevo el paquete."
         }
         if (-not (Test-ParkosPostgresZip -Path $tmp)) {
             throw 'El ZIP rearmado coincide con el hash pero no contiene pg_ctl/initdb/psql: el paquete esta mal armado.'

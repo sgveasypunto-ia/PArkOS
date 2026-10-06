@@ -100,7 +100,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 | 7 | **Clave maestra** `parkos-master.key` | Archivo de 32 bytes o más. Soporte la entrega por canal seguro (ver 3.2) | Soporte | Pre-flight de la instalación guiada | `[FALLO] Clave maestra de Parkos` y no empieza |
 | 8 | **UUID de la sucursal** | Código `8-4-4-4-12` (letras y números separados por guiones). Está en la ficha de la sucursal del panel de administración | Administrador del panel admin | Cuando el instalador lo pide (es lo único que se escribe) | Hasta 5 intentos; luego `Demasiados intentos con un codigo de sucursal invalido ...` |
 | 9 | Dirección del servidor (nube) | Variable `PARKOS_CLOUD_API_URL` (`http://` o `https://`). **Opcional**: si no existe se usa `http://localhost:8000`. Se prueba la conexión a su `host:puerto` | Soporte / TI | Pre-flight | Servidor remoto sin respuesta: `[FALLO] Conexion con el servidor Parkos`. En `localhost`: solo `[AVISO]` y continúa |
-| 10 | Binarios de PostgreSQL | **Vienen en el repositorio** como partes (`payload\postgres\*.zip.part01..NN` + `.sha256`, ver [5.4](#54-postgresql-en-git-partes-del-zip)): la etapa 1 las rearma en `<DataPath>\downloads\` y verifica el SHA-256; **no hace falta Internet ni bajar nada a mano**. Orden de búsqueda: ZIP completo en `payload\postgres\` → partes → cache → descarga desde `get.enterprisedb.com` (último recurso, ~330 MB, 3 intentos) | Soporte (ya versionado) | Etapa 1 | Partes con un hueco o hash distinto: error claro con el comando `git checkout -- installer/payload/postgres` (no cae en silencio a una descarga). Sin partes ni Internet: `No se pudo obtener los binarios de Postgres 16.15-1 ...` |
+| 10 | Binarios de PostgreSQL | **Vienen en el repositorio** como partes (`payload\parts\postgres\*.zip.part01..NN` + `.sha256`, ver [5.4](#54-payload-en-partes-payloadparts)): la etapa 1 las rearma en `<DataPath>\downloads\` y verifica el SHA-256; **no hace falta Internet ni bajar nada a mano**. Orden de búsqueda: ZIP completo en `payload\postgres\` → partes (`payload\parts\postgres\`) → cache → descarga desde `get.enterprisedb.com` (último recurso, ~330 MB, 3 intentos) | Soporte (ya versionado) | Etapa 1 | Partes con un hueco o hash distinto: error claro con el comando `git checkout -- installer/payload/parts` (no cae en silencio a una descarga). Sin partes ni Internet: `No se pudo obtener los binarios de Postgres 16.15-1 ...` |
 | 11 | Puertos libres | Uno de `5432`–`5439` (Postgres) y uno de `8000`–`8009` (API). Se eligen consultando los **listeners TCP reales** del sistema (`GetActiveTcpListeners`): un connect/bind de prueba informaba como libres puertos retenidos por Docker/WSL (error del lite) | Sucursal / TI | Etapa 1 | `Los puertos 5432 a 5439 estan todos ocupados; ...` / `Puertos 8000, ... todos ocupados; ...` |
 | 12 | Sin instalación previa de Parkos | Que no exista `C:\ProgramData\Parkos\pairing.json` | — | Pre-flight (`Sin instalacion previa`) | `[FALLO]` y el aviso `Ya existe una instalacion de Parkos en este equipo.` |
 
@@ -112,7 +112,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 | Al arrancar | Internet a `github.com` solo si falta PowerShell 7; usuario administrador |
 | Pre-flight | Windows 10 21H2+, 5 GB libres, administrador, conexión al servidor (`host:puerto`), clave maestra válida, sin `pairing.json` |
 | EULA | `payload\README-EULA.txt` (salvo `-EulaAccepted`) |
-| Etapa 1 (Paso 1 de 8) | Las partes de Postgres versionadas en `payload\postgres\` (sin Internet; la descarga solo es el último recurso); puertos libres; `ParkosPostgresDownload.ps1` junto al instalador; clave maestra. `payload\pg_partman\extension\` (si falta, se descarga y ensambla) |
+| Etapa 1 (Paso 1 de 8) | Las partes de Postgres versionadas en `payload\parts\postgres\` (sin Internet; la descarga solo es el último recurso); puertos libres; `ParkosPostgresDownload.ps1` junto al instalador; clave maestra. `payload\pg_partman\extension\` (si falta, se descarga y ensambla) |
 | Etapa 2 | `payload\services\migrate\migrate\migrate.exe` |
 | Etapa 4 | `payload\services\api-sucursal\...` y `payload\services\seed\seed\seed.exe` |
 | Etapas 5 y 6 | `payload\nssm.exe`, bundles `api-sucursal` y `job-sync-sucursal` |
@@ -243,8 +243,9 @@ El instalador resuelve el payload como `<carpeta de parkos-installer.ps1>\payloa
 
 ### 5.1 Qué va en git y qué no
 
-`installer/.gitignore` ignora todo `payload/*` **salvo** `payload/management/`, `payload/README-EULA.txt` y `payload/postgres/` (donde el ZIP completo `*.zip` sigue ignorado: solo se versionan sus partes y el `.sha256`). En git hay: `README-EULA.txt`, `management/*` y `postgres/*.zip.part01..NN` + `postgres/*.zip.sha256`. La clave maestra **nunca** va en git. Todo lo demás es **artefacto de build o aporte de soporte** y nunca se versiona (también `.pyinstaller-work/`, `__pycache__/` y `*.spec`).
+Regla del repositorio: **GitHub rechaza cualquier archivo de más de 100 MB** (no se usa LFS), así que todo instalador/artefacto que lo supere se **comprime y se corta en partes de ≤ 90 MiB** que se versionan, y el instalador las **rearma igual** al usarlas. El peso del repositorio no es un problema; sí lo es que falte algo para una instalación LITE o COMPLETA.
 
+`installer/.gitignore` ignora todo `payload/*` **salvo** `payload/management/`, `payload/README-EULA.txt` y `payload/parts/`. En git hay: `README-EULA.txt`, `management/*` y **`parts/`** (las partes de los artefactos de terceros: Postgres, PowerShell 7, nssm, pg_partman, y —solo al publicar una versión— MSI de web_sucursal y servicios congelados, más `parts/payload-parts.json`). Las formas **crudas/desempaquetadas** (`services\`, `apps\`, `*.msi` y `nssm.exe` en la raíz del payload, `pg_partman\`, `postgres\*.zip`, los marcadores `*.parts-sha256`) siguen ignoradas: lo versionado es lo empaquetado. La clave maestra `payload\security\parkos-master.key` **nunca** va en git (ni se genera). También se ignoran `.pyinstaller-work/`, `__pycache__/` y `*.spec`.
 ### 5.2 Tabla del payload
 
 | Ruta bajo `installer/payload/` | Qué es | Quién lo produce | En git | Se consume en | Si falta |
@@ -252,42 +253,84 @@ El instalador resuelve el payload como `<carpeta de parkos-installer.ps1>\payloa
 | `README-EULA.txt` | Texto del acuerdo de licencia | Repo (documento legal) | **Sí** | EULA (guiado y menú; no se lee con `-EulaAccepted` ni en `-Unattended`) | `EULA file not found at $EulaPath - a real EULA (...) must be staged there before this installer ships.` |
 | `management\Parkos.psd1`, `Parkos.psm1`, `about_Parkos.help.txt` | Módulo de gestión `Parkos` | Repo | **Sí** | Etapa 8 (`Install-ManagementModule`); opciones `A/R/U/V/X/D/M/C` del menú (importa desde aquí); `build-release.ps1` etapa Payload valida su existencia | `Falta $src en el payload - no se puede instalar el modulo de gestion Parkos.` / en build: `Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga).` |
 | `security\parkos-master.key` | Clave maestra (secreto de la empresa, ≥ 32 bytes) | **Soporte** (entrega manual, canal seguro) | No | Pre-flight guiado (bloquea) y etapa 1 (`New-ParkosDerivedPassword`) | Ver mensajes en la sección [6.5](#65-validación-y-mensajes) |
-| `postgres\postgresql-16.15-1-windows-x64-binaries.zip.part01..NN` + `.sha256` | ZIP de PostgreSQL 16 (EDB) **partido** (GitHub rechaza archivos > 100 MB) y SHA-256 del ZIP completo | Repo (ver [5.4](#54-postgresql-en-git-partes-del-zip)) | **Sí** | Etapa 1: rearma el ZIP en `<DataPath>\downloads\` (nunca dentro de `payload\`), verifica el hash y lo usa | Hueco / hash distinto / falta el `.sha256`: error claro con `git checkout -- installer/payload/postgres`; sin partes: descarga desde EDB |
-| `postgres\postgresql-16-windows-x64-binaries.zip` (ZIP completo) | Alternativa manual a las partes; gitignored | Soporte (opcional) | No | Etapa 1 (tiene prioridad sobre las partes) | Se usan las partes |
+| `parts\postgres\postgresql-16.15-1-windows-x64-binaries.zip.part01..NN` + `.sha256` | ZIP de PostgreSQL 16 (EDB) **partido** (GitHub rechaza archivos > 100 MB) y SHA-256 del ZIP completo | Repo (ver [5.4](#54-payload-en-partes-payloadparts)) | **Sí** | Etapa 1: rearma el ZIP en `<DataPath>\downloads\` (nunca dentro de `payload\`), verifica el hash y lo usa | Hueco / hash distinto / falta el `.sha256`: error claro con `git checkout -- installer/payload/parts`; sin partes: descarga desde EDB |
+| `postgres\postgresql-16-windows-x64-binaries.zip` (ZIP completo) | Alternativa manual a las partes; gitignored (también vale en `parts\postgres\`) | Soporte (opcional) | No | Etapa 1 (tiene prioridad sobre las partes) | Se usan las partes |
 | `ParkosPostgresDownload.ps1` (junto a `parkos-installer.exe`; en el repo: `installer\shared\`) | Código compartido de descarga/instalación de Postgres y `pg_partman` (lo carga el instalador con dot-source) | `build-release.ps1` (lo copia a `payload\` en la etapa del instalador y lo incluye en `manifest.sha256.json`) | **Sí** (en `installer\shared\`) | Etapa 1 | `Falta ParkosPostgresDownload.ps1 junto al instalador ...` |
-| `nssm.exe` | NSSM 2.24 (x64) | `build-release.ps1` (descarga `nssm-2.24.zip` de `nssm.cc`) | No | Etapas 5 y 6 (registro de servicios); etapa 8 lo copia a `InstallPath\nssm.exe` | Etapas 5/6: error crudo de PowerShell al invocar `nssm.exe` (sin mensaje propio); etapa 8: `Falta $nssmSrc en el payload - no se puede instalar nssm.exe para el modulo de gestion Parkos.` |
-| `pg_partman\extension\pg_partman--5.1.0.sql` y `pg_partman.control` | Extensión `pg_partman` 5.1.0 SQL-only | `build-release.ps1` (descarga el fuente v5.1.0 y concatena `types`+`tables`+`functions`+`procedures`) | No | Etapa 1 (`Install-PgPartman`: copia a `share\extension\` de Postgres) | Error crudo de `Copy-Item` (sin mensaje propio) |
+| `ParkosPayloadParts.ps1` (junto a `parkos-installer.exe`; en el repo: `installer\shared\`) | Código compartido de empaquetar/restaurar el payload en partes (lo carga el instalador con dot-source; también lo usa el instalador lite) | `build-release.ps1` (lo copia a `payload\` y lo incluye en `manifest.sha256.json`) | **Sí** (en `installer\shared\`) | Restauración de partes (etapa 0 guiada, `Assert-PayloadPath`, `-Command Prepare`) | Sin él no se restaura de partes (los terceros se descargan como antes); `Prepare` lo exige |
+| `parts\payload-parts.json` + `parts\<id>\<archivo>.partNN` | Manifest y partes de cada artefacto empaquetado (ver [5.4](#54-payload-en-partes-payloadparts)) | `tools\Pack-ParkosPayload.ps1` / `build-release.ps1 -Pack` | **Sí** | Restauración (`Restore-ParkosPayloadAll`), CI y `-Command Prepare` (`Test-ParkosPayloadParts`) | `No se puede restaurar '<id>': falta la parte ...` / `... esta danada: hash ...` |
+| `nssm.exe` | NSSM 2.24 (x64) | Se **restaura** de `parts\nssm\` (id `nssm`); si no está, `build-release.ps1` lo descarga de `nssm.cc` | Solo como parte (`parts\nssm\`) | Etapas 5 y 6 (registro de servicios); etapa 8 lo copia a `InstallPath\nssm.exe` | Se restaura de `parts\` antes de fallar; etapas 5/6: error crudo de PowerShell al invocar `nssm.exe`; etapa 8: `Falta $nssmSrc en el payload - no se puede instalar nssm.exe para el modulo de gestion Parkos.` |
+| `pg_partman\extension\pg_partman--5.1.0.sql` y `pg_partman.control` | Extensión `pg_partman` 5.1.0 SQL-only | Se **restaura** de `parts\pg_partman-extension\` (id `pg_partman-extension`); si no, `build-release.ps1` descarga el fuente v5.1.0 y concatena `types`+`tables`+`functions`+`procedures` | Solo como parte (`parts\pg_partman-extension\`) | Etapa 1 (`Install-PgPartman`: copia a `share\extension\` de Postgres) | Se restaura de `parts\`; si no hay partes, se descarga y ensambla |
 | `services\api-sucursal\api-sucursal\` (`api-sucursal.exe` + onedir + `migrations\` + `alembic.ini`) | Servicio API congelado (PyInstaller `--onedir`) | `build-release.ps1 -ApiSucursal` | No | `Test-ParkosPayloadReady`; etapa 4 (arranque temporal); etapa 5 (copia a `InstallPath\api-sucursal\`) | Guiado: `Este instalador no trae los programas ya preparados ...`. Menú/etapa: `Falta el bundle del servicio 'api-sucursal' en el payload (...). Ejecute la opcion 0 ...` |
 | `services\job-sync-sucursal\job-sync-sucursal\` | Worker de sincronización congelado | `build-release.ps1 -JobSync` | No | `Test-ParkosPayloadReady`; etapa 6 | Igual que el anterior (`el bundle del servicio 'job-sync-sucursal'`) |
 | `services\migrate\migrate\migrate.exe` (+ `migrations\`, `alembic.ini`) | Alembic congelado (`entry_migrate.py`) | `build-release.ps1 -Migrate` | No | `Test-ParkosPayloadReady`; etapa 2; `-Command Update` (usa el de **payload nuevo**) | `Falta el bundle del servicio 'migrate' en el payload (...)` |
 | `services\seed\seed\seed.exe` | Siembra de catálogos vía API (`entry_seed.py`) | `build-release.ps1 -Seed` | No | `Test-ParkosPayloadReady`; etapa 4 | Error al invocar `seed.exe` / `Build termino sin error pero falta el artefacto esperado: ...` (solo etapa 0) |
 | `services\doctor\doctor\doctor.exe` | Diagnóstico (`parkos_core.cli.doctor`) | `build-release.ps1 -Doctor` | No | `Test-ParkosPayloadReady`; etapa 8 (`Test-PostInstallation` y copia a `InstallPath\doctor\`) | `Falta $doctorSrc en el payload - no se puede instalar doctor.exe para el modulo de gestion Parkos.` |
 | `apps\web_sucursal-<version>-x64.msi` | Instalador de la app Electron | `build-release.ps1 -WebSucursal` (electron-builder) | No | Etapa 7 (se usa el **primer** `*.msi` de la carpeta) | `Falta el MSI de web_sucursal en el payload ($appsDir). Ejecute la opcion 0 ...` |
-| `manifest.sha256.json` | Hashes SHA256 (clave = ruta relativa) de los 4 `.exe`, el `.msi`, `ParkosPostgresDownload.ps1` y las **partes de Postgres + su `.sha256`** | `build-release.ps1` (con `-Manifest`, con `-All`, o si se construyen `-ApiSucursal -JobSync -Migrate -Doctor -WebSucursal` en la misma corrida) | No | **Solo** `-Command Update` (paso VERIFY BINARIES sobre el payload **nuevo**). La instalación limpia no lo lee | `Falta el manifest de integridad del payload en $manifestPath - no se puede verificar el payload nuevo.` |
-| `PowerShell-7.4.6-win-x64.msi` | MSI de PowerShell 7 con SHA256 verificado | `build-release.ps1` (descarga y verifica) | No | **No lo consume el instalador**: `Ensure-PowerShell7` descarga su propia copia a `%TEMP%` desde GitHub | — |
+| `manifest.sha256.json` | Hashes SHA256 (clave = ruta relativa) de los 4 `.exe`, el `.msi`, `ParkosPostgresDownload.ps1`, `ParkosPayloadParts.ps1` y **todas las partes de `parts\` (incluido `payload-parts.json`)** | `build-release.ps1` (con `-Manifest`, con `-All`, o si se construyen `-ApiSucursal -JobSync -Migrate -Doctor -WebSucursal` en la misma corrida) | No | **Solo** `-Command Update` (paso VERIFY BINARIES sobre el payload **nuevo**). La instalación limpia no lo lee | `Falta el manifest de integridad del payload en $manifestPath - no se puede verificar el payload nuevo.` |
+| `PowerShell-7.4.6-win-x64.msi` | MSI de PowerShell 7 (104 MB: **supera el límite**, va en 2 partes) con SHA256 verificado | `build-release.ps1` (restaura de `parts\powershell7-msi\` o descarga y verifica) | Solo como partes (`parts\powershell7-msi\`) | **No lo consume el instalador completo**: `Ensure-PowerShell7` descarga su propia copia a `%TEMP%` desde GitHub. Queda en git para poder armar el instalador LITE sin Internet | — |
 | `parkos-installer.exe` | Instalador compilado con `ps2exe` (`-requireAdmin`) | `build-release.ps1 -Installer` (se omite con aviso si no existe el módulo `ps2exe`) | No | Opcional (distribución alternativa al `.ps1`). **No verificado** su comportamiento | — |
 
 ### 5.3 Qué comprueba el instalador antes de empezar
 
-En el flujo guiado, `Get-ParkosPayloadBuildPlan` decide si hay que (re)construir: **no** hace falta cuando existen los 5 exe, el MSI, `nssm.exe` y `pg_partman`, y **ningún archivo bajo `backend/` ni `installer\bootstrap\` es más nuevo que el exe más viejo** (se listan con `git ls-files -co --exclude-standard`, incluye cambios sin commit; si git falla se compila por seguridad). Si hay que construir y falta el toolchain, el pre-flight lo informa junto con el resto de problemas. Además, `Test-ParkosPayloadReady` verifica la existencia de **5 ejecutables**: `api-sucursal`, `job-sync-sucursal`, `migrate`, `seed` y `doctor`. No comprueba el `.msi`, `nssm.exe`, `pg_partman`, la clave ni `management\`; esos faltantes aparecen más tarde, en la etapa que los consume. Por eso conviene validar el payload completo con la checklist de la sección [13.4](#134-checklist-de-entrega-antes-de-enviar-a-la-sucursal).
+En el flujo guiado, **antes de decidir construir** se restaura de `payload\parts\` lo que falte en el payload crudo (log `Restaurando <id> n de m`): terceros siempre; servicios y MSI solo si no hay git o ningún archivo bajo `backend/` ni `installer\bootstrap\` cambió desde el `builtFromCommit` del manifest (`Get-ParkosPartsArtifactDecision`); si cambió, se construye. Lo restaurable cuenta como presente. Luego `Get-ParkosPayloadBuildPlan` decide si hay que (re)construir el resto: **no** hace falta cuando existen los 5 exe, el MSI, `nssm.exe` y `pg_partman`, y **ningún archivo bajo `backend/` ni `installer\bootstrap\` es más nuevo que el exe más viejo** (se listan con `git ls-files -co --exclude-standard`, incluye cambios sin commit; si git falla se compila por seguridad). Si hay que construir y falta el toolchain, el pre-flight lo informa junto con el resto de problemas. Además, `Test-ParkosPayloadReady` verifica la existencia de **5 ejecutables**: `api-sucursal`, `job-sync-sucursal`, `migrate`, `seed` y `doctor`. No comprueba el `.msi`, `nssm.exe`, `pg_partman`, la clave ni `management\`; esos faltantes aparecen más tarde, en la etapa que los consume. Por eso conviene validar el payload completo con la checklist de la sección [13.4](#134-checklist-de-entrega-antes-de-enviar-a-la-sucursal).
 
-### 5.4 PostgreSQL en git: partes del ZIP
+### 5.4 Payload en partes (`payload\parts`)
 
-El ZIP de EDB (~332 MB) supera el límite de 100 MB de GitHub, por eso el repo versiona `installer/payload/postgres/postgresql-<ver>-windows-x64-binaries.zip.part01..NN` (cada una < 100 MB) y `...zip.sha256` (SHA-256 hexadecimal, 64 caracteres, sin salto de línea, **del ZIP completo**). `Get-ParkosPostgresZip` (en `installer\shared\ParkosPostgresDownload.ps1`, compartido con el instalador lite) busca en este orden: (1) ZIP completo válido en el payload, (2) partes: concatena por streaming (buffer de 4 MB) **en la cache** (`<DataPath>\downloads`), verifica contra el `.sha256` y valida con `Test-ParkosPostgresZip`; si ya hay un ZIP rearmado válido con ese hash lo reutiliza, (3) cache de descargas, (4) descarga desde EDB. Si hay partes con problema (hueco en la numeración, hash distinto) falla con mensaje claro y borra el archivo rearmado defectuoso: **no se cae en silencio a descargar**. El modo Prepare solo verifica que las partes estén completas; nunca crea el ZIP completo dentro del payload.
+**Diseño.** Todo artefacto del payload que no deba rehacerse en cada instalación viaja en git como *partes*: un archivo (o un `.zip` de una carpeta) cortado en trozos de **≤ 90 MiB** (`<archivo>.part01..NN`), más un manifest con hashes. El código es `installer\shared\ParkosPayloadParts.ps1` (compartido por el instalador completo, `build-release.ps1`, `tools\Pack-ParkosPayload.ps1` y el lite).
 
-**Cómo refrescarlas** (al cambiar la versión fijada en `Get-ParkosPostgresDownloadInfo`):
+**Disposición:**
 
-```bash
-# 1) bajar el ZIP nuevo (fuera de payload\) y partirlo en N trozos < 100 MB (aquí 4)
-split -n 4 -d -a 2 --numeric-suffixes=1 postgresql-<ver>-windows-x64-binaries.zip postgresql-<ver>-windows-x64-binaries.zip.part
-# 2) sidecar: hash del ZIP COMPLETO, sin salto de línea
-pwsh -NoProfile -Command "(Get-FileHash -Algorithm SHA256 postgresql-<ver>-windows-x64-binaries.zip).Hash.ToLower() | Set-Content -NoNewline postgresql-<ver>-windows-x64-binaries.zip.sha256"
-# 3) borrar las partes/sidecar de la versión vieja, copiar las nuevas a installer/payload/postgres/ y regenerar el manifest
-pwsh -File installer/build-release.ps1 -Manifest
+```
+installer/payload/parts/
+  payload-parts.json                          manifest (version, generator, artifacts[])
+  postgres/postgresql-16.15-1-windows-x64-binaries.zip.part01..04  + .sha256 (sidecar)
+  powershell7-msi/PowerShell-7.4.6-win-x64.msi.part01..02
+  nssm/nssm.exe                               (<= 90 MiB: se guarda tal cual, una sola parte)
+  pg_partman-extension/pg_partman-extension.zip
+  [web-sucursal-msi/, api-sucursal/, job-sync-sucursal/, migrate/, seed/, doctor/   solo al publicar]
 ```
 
-Verificación: reensamblar en una carpeta temporal con `Get-ParkosPostgresZip -CacheDir <tmp> -PayloadDir installer\payload\postgres` y comprobar que el hash coincide con el `.sha256`.
+**Campos del manifest** (por artefacto): `id`, `kind` (`file`|`dir`), `target` (ruta relativa bajo `payload\` donde se restaura), `archive` (nombre del archivo o `<id>.zip`), `uncompressedSize`, `archiveSize`, `sha256` (del archivo final), `partCount`, `parts[]` (`name`, `size`, `sha256`), `builtFromCommit` (commit del repo al empaquetar), `packedAtUtc`, `source` (p. ej. `third-party download (...)` o `built from backend (PyInstaller onedir) @ <commit>`), `note`, `sourceDependent` (su contenido sale de `backend/` o `installer\bootstrap\`) y `restoreToPayload` (`false` para Postgres: se rearma en la cache al instalar, no en `payload\`).
 
+**Artefactos y tabla** (`Get-ParkosPayloadArtifactTable`): `postgres`, `powershell7-msi`, `nssm`, `pg_partman-extension` se empaquetan por defecto; `web-sucursal-msi`, `api-sucursal`, `job-sync-sucursal`, `migrate`, `seed` y `doctor` están definidos pero **solo se empaquetan con `-Ids`**.
+
+**Empaquetar** (desde el repo, con el payload crudo presente):
+
+```powershell
+# terceros estables (los que haya crudos en installer\payload)
+pwsh -File installer\tools\Pack-ParkosPayload.ps1
+# equivalente desde el orquestador
+pwsh -File installer\build-release.ps1 -Pack
+# servicios / MSI: SOLO al publicar una version (ver politica de peso)
+pwsh -File installer\tools\Pack-ParkosPayload.ps1 -Ids api-sucursal,job-sync-sucursal,migrate,seed,doctor,web-sucursal-msi
+```
+
+Si el contenido no cambió (mismo sha256 del archivo final) las partes existentes **no se reescriben** (sin ruido en git); `-Force` las reescribe. El empaquetador **rechaza escribir cualquier archivo de más de 95 MiB** en `parts\` y falla si `-MaxPartBytes` supera ese límite. Las carpetas se comprimen con zip determinista (orden ordinal, fecha fija 2020-01-01, `Optimal`).
+
+**Restaurar** (rearma por streaming, verifica tamaño y hash de cada parte y el sha256 final, y expande con comprobación anti zip-slip):
+
+```powershell
+pwsh -File installer\build-release.ps1 -Restore                 # todo lo que va a payload\
+pwsh -File installer\build-release.ps1 -Restore -Ids nssm       # solo uno
+```
+
+La restauración es **idempotente**: deja `<destino>.parts-sha256` y una segunda llamada no hace nada si coincide. El instalador restaura solo, sin comandos: etapa 0 guiada (`Restaurando <id> n de m`), `Assert-PayloadPath` (antes de fallar por un archivo faltante) y `build-release.ps1 -Payload` (antes de descargar). Una parte faltante o con hash distinto es un **error claro** (`git checkout -- installer/payload/parts`), nunca un salto silencioso a otra fuente. Los archivos restaurados llevan la fecha de la restauración (no la del zip), para que no parezcan "viejos" frente al código.
+
+**Verificar** (`Test-ParkosPayloadParts`, usado por CI y `-Command Prepare`): todas las partes presentes, tamaños y hashes, ninguna > 90 MiB y ningún archivo desconocido en `parts\`. El workflow `installer-tests.yml` además falla si algún archivo versionado pesa más de 95 MiB.
+
+**Postgres.** `Get-ParkosPostgresZip` (en `installer\shared\ParkosPostgresDownload.ps1`) busca en este orden: (1) ZIP completo válido en el payload, (2) partes de `payload\parts\postgres\`: concatena por streaming **en la cache** (`<DataPath>\downloads`), verifica contra el `.sha256` y valida con `Test-ParkosPostgresZip`; reutiliza el ZIP ya rearmado, (3) cache de descargas, (4) descarga desde EDB. Con partes defectuosas falla con mensaje claro. Prepare nunca crea el ZIP completo dentro del payload. Para refrescar Postgres (nueva versión fijada en `Get-ParkosPostgresDownloadInfo`): borrar `parts\postgres\`, dejar el ZIP nuevo en `payload\postgres\`, actualizar el nombre en la tabla (`Get-ParkosPayloadArtifactTable`) y correr `Pack-ParkosPayload.ps1 -Ids postgres -Force`; escribir además `parts\postgres\<zip>.sha256` si se quiere conservar el sidecar.
+
+**Refrescar cada artefacto:**
+
+| Artefacto | Cuándo | Comando |
+|---|---|---|
+| `powershell7-msi`, `nssm`, `pg_partman-extension` | Al cambiar la versión fijada en `build-release.ps1` | Dejar el crudo en `payload\` (`build-release.ps1 -Payload` lo descarga) y `Pack-ParkosPayload.ps1 -Ids <id> -Force` |
+| `postgres` | Al cambiar la versión de EDB | Ver arriba |
+| `web-sucursal-msi`, servicios | **Solo al publicar una versión** | `build-release.ps1 -All` y luego `Pack-ParkosPayload.ps1 -Ids ...` |
+
+**Política de tamaño / historial.** La salida de PyInstaller **no es reproducible byte a byte** (cambian marcas de tiempo y orden), así que cada reempaquetado de servicios o MSI genera partes nuevas y **suma su tamaño al historial de git para siempre** (cientos de MB por juego completo). Empaquételos solo al publicar una versión, no en cada cambio. Los terceros (versión fijada) no cambian y no generan ruido. El peso del repositorio no es una restricción; el límite duro es el archivo de 100 MB.
+
+**Limitaciones.** (1) Los servicios y el MSI **no están todavía en git**: hasta que se empaqueten, el instalador los construye (flujo guiado con toolchain) como antes. (2) La decisión restaurar-vs-construir de servicios compara `builtFromCommit` con el árbol de trabajo (`git diff` + no rastreados bajo `backend/` e `installer\bootstrap\`); si git no responde se restaura. (3) El manifest se serializa con `ConvertTo-Json`: Windows PowerShell 5.1 y pwsh 7 formatean distinto, solo cambia el espaciado. (4) La clave maestra **nunca** va en partes ni en git.
 ---
 
 ## 6. La clave maestra a fondo
@@ -957,7 +1000,7 @@ pwsh -File installer\parkos-installer.ps1 -Command Prepare -MasterKeyPath <RUTA_
 ### 13.3 Qué debe incluir soporte antes de entregar
 
 1. `payload\security\parkos-master.key` (≥ 32 bytes) **antes** del build (si se entrega aparte, usar `-MasterKeyPath` en el equipo y no incluirla en el medio).
-2. Postgres: ya viene en git como partes (ver [5.4](#54-postgresql-en-git-partes-del-zip)); no hay que descargar ni copiar nada. (Opcional) un ZIP completo en `payload\postgres\` tiene prioridad sobre las partes.
+2. Postgres: ya viene en git como partes (ver [5.4](#54-payload-en-partes-payloadparts)); no hay que descargar ni copiar nada. (Opcional) un ZIP completo en `payload\postgres\` tiene prioridad sobre las partes.
 3. El resto lo produce `build-release.ps1`.
 4. Rama: `-SourceBranch dev` (default) para integración; para un release certificado, `release/vX.Y.Z` o `main` (gitflow: `main` solo recibe releases).
 
