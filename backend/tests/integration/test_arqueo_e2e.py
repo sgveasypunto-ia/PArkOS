@@ -51,7 +51,7 @@ def _build_payload(*, uuid_sesion: uuid_lib.UUID | None = None) -> MagicMock:
     payload.uuid_tipo_arqueo = uuid_lib.uuid4()
     payload.uuid_sesion = uuid_sesion
     payload.valor_efectivo_reportado = Decimal("148000")
-    payload.valor_datafono_reportado = Decimal("320000")
+    payload.valor_datafono_reportado = Decimal("320000")  # legacy field; ignored at handler (REQ-OPS-191)
     payload.justificacion = None  # auditoria does NOT require justificacion
     return payload
 
@@ -106,7 +106,7 @@ async def test_arqueo_e2e_auditoria_sin_diferencia_single_commit() -> None:
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
     m_calcular_esperado_sesion = AsyncMock(
-        return_value=(Decimal("148000"), Decimal("320000"))
+        return_value=Decimal("148000")  # F12.1.1 / REQ-OPS-194: single Decimal (effective only)
     )
     m_insertar_arqueo = AsyncMock(return_value=arqueo_row)
     m_cerrar_bulk = AsyncMock(return_value=0)
@@ -193,4 +193,4 @@ async def test_arqueo_e2e_auditoria_sin_diferencia_single_commit() -> None:
     assert result.alerta_generada is False
     assert result.alerta_uuid is None
     assert result.diferencia_efectivo == Decimal("0")
-    assert result.diferencia_datafono == Decimal("0")
+    # REQ-OPS-192: datafono fields are REMOVED from ArqueoReadForHandler.

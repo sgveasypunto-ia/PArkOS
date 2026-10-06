@@ -440,11 +440,8 @@ async def insertar_arqueo(
     uuid_tipo_arqueo: uuid_lib.UUID,
     uuid_sesion: uuid_lib.UUID | None,
     valor_efectivo_esperado: Decimal,
-    valor_datafono_esperado: Decimal,
     valor_efectivo_reportado: Decimal,
-    valor_datafono_reportado: Decimal,
     diferencia_efectivo: Decimal,
-    diferencia_datafono: Decimal,
     descuadre_pct: Decimal | None,
     justificacion: str | None,
 ) -> Arqueo:
@@ -454,6 +451,14 @@ async def insertar_arqueo(
     writer) -- the ``fn_arqueo_inmutable`` DB trigger blocks raw
     UPDATE/DELETE outside this helper. The handler commits at Step 12
     (KD-ARQUEO-01 single-commit).
+
+    F12.1.1 (REQ-OPS-091 modified): the datafono columns are NO LONGER
+    populated by the handler. The DB columns
+    (``valor_datafono_esperado``, ``valor_datafono_reportado``,
+    ``diferencia_datafono``) are preserved for historical rows
+    (compliance + D3 bitácora) but receive the column default (server /
+    arithmetic, ``NULL`` or ``0``) for new rows. The handler computes only
+    the effective difference.
 
     NOTE: ``Arqueo`` carries composite PK ``uuid + fecha_retencion_hasta``;
     ``fecha_retencion_hasta`` defaults to ``current_date()`` server-side
@@ -475,9 +480,7 @@ async def insertar_arqueo(
         "uuid_tipo_arqueo": uuid_tipo_arqueo,
         "uuid_sesion": uuid_sesion,
         "valor_efectivo_esperado": valor_efectivo_esperado,
-        "valor_datafono_esperado": valor_datafono_esperado,
         "valor_efectivo_reportado": valor_efectivo_reportado,
-        "valor_datafono_reportado": valor_datafono_reportado,
         # The Arqueo ORM does NOT carry diferencia_* columns directly --
         # the deltas are computed by GET /arqueos/{uuid}/diferencias
         # from the expected vs reported values. Stored verbatim here
@@ -519,7 +522,6 @@ async def insertar_alerta_descuadre_critico(
     uuid_arqueo: uuid_lib.UUID,
     uuid_sucursal: uuid_lib.UUID | None,
     diferencia_efectivo: Decimal,
-    diferencia_datafono: Decimal,
     payload_json: dict[str, Any],
 ) -> Alerta:
     """V10 (REQ-OPS-095 + KD-ARQUEO-05 + DEC-ARQUEO-05): conditional alerta INSERT.
@@ -530,6 +532,13 @@ async def insertar_alerta_descuadre_critico(
     MIGRATION 0031 Op 2 seeded the ``alert_types`` registry row
     idempotently.
 
+    F12.1.1 (REQ-OPS-094 modified / REQ-OPS-196): the alerta payload
+    no longer carries ``diferencia_datafono`` (the datafono dimension
+    is excluded from the alerta decision). The DB column
+    ``prod.alerta.valor_diferencia_datafono`` is preserved + nullable
+    for the historical bitácora (D3 drill-down); new alertas
+    materialize it as ``NULL``.
+
     The handler commits at Step 12 (KD-ARQUEO-01 single-commit).
     """
     new_attrs: dict[str, Any] = {
@@ -537,7 +546,6 @@ async def insertar_alerta_descuadre_critico(
         "uuid_sucursal": uuid_sucursal,
         "tipo_alerta": "descuadre_critico",
         "valor_diferencia_efectivo": diferencia_efectivo,
-        "valor_diferencia_datafono": diferencia_datafono,
         "datos_nuevos": payload_json,
         "timestamp_evento": _now_naive(),
         "estado": "abierta",

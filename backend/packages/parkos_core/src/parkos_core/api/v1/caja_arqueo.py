@@ -344,6 +344,9 @@ async def post_arqueo(
             ) from exc
 
     # --- Step 5 (V5 + DEC-ARQUEO-04 + DEC-ARQUEO-10): compute esperado + diferencia.
+    # F12.1.1 / REQ-OPS-194: ``calcular_esperado_*`` returns a single
+    # ``Decimal`` (effective only) -- the datafono dimension is no
+    # longer in the calculation.
     if tipo_arqueo.codigo == "cierre_dia":
         esperado_efectivo = (
             await repo_arqueo.calcular_esperado_cierre_dia(
@@ -359,40 +362,39 @@ async def post_arqueo(
                 uuid_sesion=payload.uuid_sesion,  # type: ignore[arg-type]
             )
         )
-    # datafono dimension is ignored (REQ-OPS-194 / F12.1.1). The
-    # expected / difference for datafono is forced to 0 -- Phase 3 will
-    # drop these placeholders + the INSERT kwargs + the alerta keys.
-    esperado_datafono: Decimal = Decimal(0)
     diferencia_efectivo = repo_arqueo.calcular_diferencia(
         reportado=payload.valor_efectivo_reportado,
         esperado=esperado_efectivo,
     )
-    diferencia_datafono: Decimal = Decimal(0)
 
-    # --- Step 6 (DEC-ARQUEO-07): justificacion required on cierre_turno / cierre_dia + diferencia != 0.
-    if tipo_arqueo.codigo != "auditoria" and (
-        diferencia_efectivo != 0 or diferencia_datafono != 0
+    # --- Step 6 (DEC-ARQUEO-07 + REQ-OPS-094 modified): justificacion
+    # required on cierre_turno / cierre_dia + diferencia_efectivo != 0.
+    # The datafono dimension MUST NOT gate the justificacion requirement.
+    if (
+        tipo_arqueo.codigo != "auditoria"
+        and diferencia_efectivo != 0
+        and not payload.justificacion
     ):
-        if not payload.justificacion:
-            raise HTTPException(
-                status_code=400,
-                detail={"error": "justificacion_requerida"},
-                headers=no_store,
-            )
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "justificacion_requerida"},
+            headers=no_store,
+        )
 
-    # --- Step 7 (DEC-ARQUEO-04 + KD-ARQUEO-04): descuadre decision (effective only per REQ-OPS-195).
+    # --- Step 7 (DEC-ARQUEO-04 + KD-ARQUEO-04 + REQ-OPS-195): descuadre
+    # decision (effective only per F12.1.1).
     es_critico = repo_arqueo.es_descuadre_critico(
         diferencia_efectivo=diferencia_efectivo,
         tolerancia_efectivo=tolerancia.tolerancia_efectivo,
     )
 
-    # --- Step 8 (KD-ARQUEO-02 + DEC-ARQUEO-02): INSERT prod.arqueo via append_event.
+    # --- Step 8 (KD-ARQUEO-02 + DEC-ARQUEO-02 + REQ-OPS-093 modified):
+    # INSERT prod.arqueo via append_event. ``descuadre_pct`` is
+    # informational only (DEC-ARQUEO-04), now computed on the effective
+    # dimension only (datafono removed from the formula).
     descuadre_pct = None  # informational only (DEC-ARQUEO-04)
-    esperado_total = esperado_efectivo + esperado_datafono
-    if esperado_total > 0:
-        descuadre_pct = (
-            ((diferencia_efectivo + diferencia_datafono) / esperado_total) * 100
-        )
+    if esperado_efectivo > 0:
+        descuadre_pct = (diferencia_efectivo / esperado_efectivo) * 100
     uuid_arqueo = (
         await repo_arqueo.insertar_arqueo(
             session,
@@ -401,11 +403,8 @@ async def post_arqueo(
             uuid_tipo_arqueo=tipo_arqueo.uuid,
             uuid_sesion=payload.uuid_sesion,
             valor_efectivo_esperado=esperado_efectivo,
-            valor_datafono_esperado=esperado_datafono,
             valor_efectivo_reportado=payload.valor_efectivo_reportado,
-            valor_datafono_reportado=payload.valor_datafono_reportado or Decimal(0),
             diferencia_efectivo=diferencia_efectivo,
-            diferencia_datafono=diferencia_datafono,
             descuadre_pct=descuadre_pct,
             justificacion=payload.justificacion,
         )
@@ -420,7 +419,10 @@ async def post_arqueo(
             fecha=date_cls.today(),
         )
 
-    # --- Step 10 (KD-ARQUEO-05 + DEC-ARQUEO-05): conditional alerta INSERT via append_transition.
+    # --- Step 10 (KD-ARQUEO-05 + DEC-ARQUEO-05 + REQ-OPS-094 modified):
+    # conditional alerta INSERT via append_transition. The datafono keys
+    # are REMOVED from the payload (REQ-OPS-094); historical alertas with
+    # the field populated stay in the bitácora (D3 drill-down).
     alerta_uuid: uuid_lib.UUID | None = None
     alerta_generada = False
     if es_critico:
@@ -430,18 +432,11 @@ async def post_arqueo(
             uuid_arqueo=uuid_arqueo,
             uuid_sucursal=target_sucursal,
             diferencia_efectivo=diferencia_efectivo,
-            diferencia_datafono=diferencia_datafono,
             payload_json={
                 "diferencia_efectivo": str(diferencia_efectivo),
-                "diferencia_datafono": str(diferencia_datafono),
                 "tolerancia_efectivo": (
                     str(tolerancia.tolerancia_efectivo)
                     if tolerancia.tolerancia_efectivo is not None
-                    else None
-                ),
-                "tolerancia_datafono": (
-                    str(tolerancia.tolerancia_datafono)
-                    if tolerancia.tolerancia_datafono is not None
                     else None
                 ),
                 "descuadre_pct": (
@@ -460,6 +455,7 @@ async def post_arqueo(
     await session.commit()
 
     # --- Step 13: DEC-ARQUEO-06 -- Cache-Control: no-store + response shape.
+    # REQ-OPS-192: datafono fields are NOT serialized in this response.
     _helpers.apply_no_store_header(response)
     return ArqueoReadForHandler(
         uuid=uuid_arqueo,
