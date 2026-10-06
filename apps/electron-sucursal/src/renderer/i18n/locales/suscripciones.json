@@ -65,10 +65,6 @@
       "tipo_vehiculo_incompatible": "Este plan exige que todas las placas sean del mismo tipo",
       "cantidad_maxima_excedida": "Cantidad máxima de vehículos excedida",
       "placa_formato_invalido": "Formato de placa inválido"
-    },
-    "prorrateo": {
-      "label": "Monto prorrateado",
-      "dia15_aviso": "Aplica prorrateo desde el día 16"
     }
   }
 }
