@@ -138,3 +138,47 @@ def test_permisos_usuario_scope_reuses_the_membership_subselect() -> None:
     spec = SYNC_CATALOG_BY_NAME["permisos_usuario"]
     assert spec.broadcast_policy == "derived"
     assert _sql("permisos_usuario") == f"prod.permisos_usuario.uuid_usuario IN {_MEMBERS_SUBSELECT}"
+
+
+# ---------------------------------------------------------------------------
+# derived — clientes / clientes_b2b follow a subscription or an invoice
+# ---------------------------------------------------------------------------
+
+_CLIENTES_FROM_SUBSCRIPTION = (
+    "(SELECT prod.subscripciones_cliente.uuid_cliente FROM prod.subscripciones_cliente "
+    f"WHERE prod.subscripciones_cliente.uuid_sucursal = '{BRANCH}')"
+)
+_CLIENTES_FROM_INVOICE = (
+    "(SELECT prod.factura_electronica.uuid_cliente FROM prod.factura_electronica "
+    f"WHERE prod.factura_electronica.uuid_sucursal = '{BRANCH}')"
+)
+
+
+def test_clientes_scope_is_subscription_or_invoice_at_the_branch() -> None:
+    spec = SYNC_CATALOG_BY_NAME["clientes"]
+    assert spec.broadcast_policy == "derived"
+    assert spec.direction == "bidirectional"
+    assert _sql("clientes") == (
+        f"prod.clientes.uuid IN {_CLIENTES_FROM_SUBSCRIPTION} "
+        f"OR prod.clientes.uuid IN {_CLIENTES_FROM_INVOICE}"
+    )
+
+
+def test_clientes_scope_has_no_vigencia_filter_nor_alias_branch() -> None:
+    """A closed subscription still covers its cliente (a renewal inserts a new row and
+    an invoice branch covers the rest); ``sync_identity_alias`` has no sucursal column
+    and is local-only, so it is not a scope source."""
+    where = _sql("clientes")
+    assert where is not None
+    assert "vigente_hasta" not in where
+    assert "sync_identity_alias" not in where
+
+
+def test_clientes_b2b_scope_follows_its_cliente() -> None:
+    spec = SYNC_CATALOG_BY_NAME["clientes_b2b"]
+    assert spec.broadcast_policy == "derived"
+    assert spec.direction == "bidirectional"
+    assert _sql("clientes_b2b") == (
+        f"prod.clientes_b2b.uuid_cliente IN {_CLIENTES_FROM_SUBSCRIPTION} "
+        f"OR prod.clientes_b2b.uuid_cliente IN {_CLIENTES_FROM_INVOICE}"
+    )

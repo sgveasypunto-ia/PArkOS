@@ -34,6 +34,8 @@ from typing import Any
 
 from sqlalchemy import ColumnElement, Select, or_, select
 
+from ...models.L_E.factura_electronica import FacturaElectronica
+from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.usuarios_sucursal import UsuariosSucursal
 from ..catalog.schema import SyncCatalogEntry
 from .broadcast_resolver import _TRANSITIVE_SUBSCRIPTION_PARENT
@@ -66,8 +68,42 @@ def _permisos_usuario_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnEl
     return model.uuid_usuario.in_(_branch_member_usuarios(uuid_sucursal))
 
 
+def _cliente_in_branch_scope(cliente_column: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
+    """``cliente_column`` references a cliente known to ``uuid_sucursal``.
+
+    A cliente is known to a branch when it holds a ``subscripciones_cliente`` row
+    there OR an emitted ``factura_electronica`` there. Defined once: ``clientes``
+    (own ``uuid``) and ``clientes_b2b`` (``uuid_cliente``) share it.
+
+    Subscriptions are NOT filtered by ``vigente_hasta``: a renewal inserts a new
+    row, and a client whose subscription closed but who was invoiced at the branch
+    stays covered by the invoice branch, so a vigencia filter would add no rows
+    and would make the rule depend on subscription lifecycle. There is no
+    ``sync_identity_alias`` branch: that table has no sucursal column, is
+    local-only and has no writer. Indexes: ``ix_subscripciones_cliente_sucursal_cliente``
+    and ``ix_factura_electronica_sucursal_cliente`` (migration 0083).
+    """
+    from_subscription = select(SubscripcionesCliente.uuid_cliente).where(
+        SubscripcionesCliente.uuid_sucursal == uuid_sucursal
+    )
+    from_invoice = select(FacturaElectronica.uuid_cliente).where(
+        FacturaElectronica.uuid_sucursal == uuid_sucursal
+    )
+    return or_(cliente_column.in_(from_subscription), cliente_column.in_(from_invoice))
+
+
+def _clientes_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
+    return _cliente_in_branch_scope(model.uuid, uuid_sucursal)
+
+
+def _clientes_b2b_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
+    return _cliente_in_branch_scope(model.uuid_cliente, uuid_sucursal)
+
+
 _DERIVED_RULES["usuarios"] = _usuarios_rule
 _DERIVED_RULES["permisos_usuario"] = _permisos_usuario_rule
+_DERIVED_RULES["clientes"] = _clientes_rule
+_DERIVED_RULES["clientes_b2b"] = _clientes_b2b_rule
 
 
 def build_scope_predicate(

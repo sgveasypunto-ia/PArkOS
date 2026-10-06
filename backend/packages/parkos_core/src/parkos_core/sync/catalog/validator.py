@@ -66,7 +66,9 @@ _BIDIRECTIONAL_ALL_BRANCHES: frozenset[str] = frozenset({"clientes", "clientes_b
 # tables (membership / subscription / invoice) instead of broadcast to every
 # branch. ER-derived as ``all_branches`` before D3; now ``derived``. The
 # direction keeps following ``_BIDIRECTIONAL_ALL_BRANCHES``.
-_DERIVED_SCOPE: frozenset[str] = frozenset({"usuarios", "permisos_usuario"})
+_DERIVED_SCOPE: frozenset[str] = frozenset(
+    {"usuarios", "permisos_usuario", "clientes", "clientes_b2b"}
+)
 _BIDIRECTIONAL_SUBSCRIPTION: frozenset[str] = frozenset(
     {"subscripciones_cliente", "subscripcion_vehiculos"}
 )
