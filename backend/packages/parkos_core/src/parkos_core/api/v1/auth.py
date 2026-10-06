@@ -27,6 +27,7 @@ derived from rows already in ``prod.login`` (KD-1).
 from __future__ import annotations
 
 import logging
+import os
 import uuid as uuid_lib
 from datetime import UTC, datetime
 
@@ -187,6 +188,29 @@ async def _select_sucursales_permitidas(
     )
 
 
+def _branch_scope_uuid() -> uuid_lib.UUID | None:
+    """This node's own branch uuid when serving the BRANCH API, else ``None``.
+
+    ``PARKOS_DEPLOY=branch`` + ``PARKOS_SUCURSAL_UUID`` pin the node to one
+    sucursal; the cloud admin API (``PARKOS_DEPLOY=cloud``) is multi-tenant
+    and returns ``None`` (no membership enforcement). Read at call time, not
+    import time. A branch node whose uuid is malformed fails closed (503); an
+    UNSET uuid is skipped with a warning because ``api_sucursal`` already
+    refuses to boot without it (``runtime.env.load_config``).
+    """
+    if os.environ.get("PARKOS_DEPLOY") != "branch":
+        return None
+    raw = os.environ.get("PARKOS_SUCURSAL_UUID")
+    if not raw:
+        logger.warning("branch_login_scope_unset_membership_not_enforced")
+        return None
+    try:
+        return uuid_lib.UUID(raw)
+    except ValueError:
+        logger.error("branch_login_scope_invalid_uuid")
+        raise HTTPException(status_code=503, detail={"error": "branch_misconfigured"}) from None
+
+
 @router.post("/login", response_model=TokenPair, status_code=status.HTTP_200_OK)
 async def login(
     payload: LoginRequest,
@@ -241,20 +265,23 @@ async def login(
     #    POLICY (configuracion_seguridad override) can resolve per-branch
     #    before bcrypt. The success path also uses ``limit(1)`` on the
     #    same SELECT — keeping the two paths aligned.
-    asg = await session.execute(
-        select(UsuariosSucursal)
-        .where(
-            UsuariosSucursal.uuid_usuario == user.uuid,
-            UsuariosSucursal.vigente_hasta.is_(None),
-        )
-        .limit(1)
+    #
+    #    On the BRANCH API the membership is looked up for THIS branch only
+    #    (never "the first branch of any"): see ``_branch_scope_uuid``.
+    branch_scope = _branch_scope_uuid()
+    asg_stmt = select(UsuariosSucursal).where(
+        UsuariosSucursal.uuid_usuario == user.uuid,
+        UsuariosSucursal.vigente_hasta.is_(None),
     )
+    if branch_scope is not None:
+        asg_stmt = asg_stmt.where(UsuariosSucursal.uuid_sucursal == branch_scope)
+    asg = await session.execute(asg_stmt.limit(1))
     branch_assignment = asg.scalar_one_or_none()
     branch_uuid = branch_assignment.uuid_sucursal if branch_assignment else None
 
     max_intentos, minutos = await _resolve_lockout_params(
         session,
-        sucursal_uuid=branch_uuid,
+        sucursal_uuid=branch_scope or branch_uuid,
         actor_uuid=user.uuid,
     )
     failed_count = await _count_failed_logins_in_window(
@@ -287,6 +314,32 @@ async def login(
             actor_uuid=user.uuid,
             success=False,
             motivo="bad_password",
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_credentials"},
+        )
+
+    # 3b. Branch membership (defense in depth). A valid password is not
+    #     enough on the branch API: the usuario needs a vigente
+    #     ``usuarios_sucursal`` row for THIS branch. Checked AFTER bcrypt so
+    #     cost/shape match a bad password, answered with the SAME generic
+    #     401, and recorded as ``fallido`` (so it counts toward lockout: a
+    #     non-counting path would be a "valid password" oracle). The reason
+    #     code ``no_branch_membership`` is internal (log line only).
+    if branch_scope is not None and branch_assignment is None:
+        logger.warning(
+            "branch_login_rejected_no_membership",
+            extra={"uuid_usuario": str(user.uuid), "uuid_sucursal": str(branch_scope)},
+        )
+        await record_login(
+            session,
+            usuario_uuid=user.uuid,
+            sucursal_uuid=branch_scope,
+            actor_uuid=user.uuid,
+            success=False,
+            motivo="no_branch_membership",
         )
         await session.commit()
         raise HTTPException(

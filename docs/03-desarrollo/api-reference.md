@@ -20,7 +20,7 @@ Nunca hay `DELETE` (ver `estandares.md` — contrato Consulta/Inserción/Actuali
 
 | Método | Ruta | Propósito |
 |---|---|---|
-| POST | `/api/v1/auth/login` | Autentica `email` + `password`, emite par de JWT (access 1h / refresh 7d) |
+| POST | `/api/v1/auth/login` | Autentica `email` + `password`, emite par de JWT (access 1h / refresh 7d); en la API de sucursal exige membresía vigente en esa sucursal (si no, 401 genérico) |
 | POST | `/api/v1/auth/refresh` | Canjea un refresh token vigente por un nuevo access token |
 | POST | `/api/v1/auth/logout` | Cierra la fila `login` activa del usuario autenticado |
 
