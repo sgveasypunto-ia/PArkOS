@@ -26,7 +26,7 @@ function New-ParkosLiteJwtKey {
 
 function Get-ParkosLiteNodePath {
     $c = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $c) { throw 'No se encontro node en el PATH (paso 1: Preparar entorno).' }
+    if (-not $c) { throw 'No se encontro node en el PATH (opcion 10: Preparar entorno).' }
     return $c.Source
 }
 
@@ -205,7 +205,7 @@ function Start-ParkosLiteApi {
     $paths = $Ctx.Paths
     $existing = Get-ParkosLiteLivePid -Paths $paths -Name 'api' -ExpectedProcess 'api-sucursal'
     if ($existing) { return $existing }
-    if (-not (Test-Path $paths.EnvFile)) { throw 'Falta el archivo de configuracion de la API: corre el paso 1) Preparar entorno.' }
+    if (-not (Test-Path $paths.EnvFile)) { throw 'Falta el archivo de configuracion de la API: corre la opcion 10) Preparar entorno.' }
     $envMap = Read-ParkosLiteEnvFile -Path $paths.EnvFile
     $p = Start-ParkosLiteProcess -FilePath $paths.ApiExe -WorkingDirectory (Split-Path $paths.ApiExe) -Env $envMap -StdOut (Join-Path $paths.Logs 'api.out.log') -StdErr (Join-Path $paths.Logs 'api.err.log')
     Save-ParkosLitePid -Paths $paths -Name 'api' -ProcessId $p
@@ -218,7 +218,7 @@ function Start-ParkosLiteFront {
     $existing = Get-ParkosLiteLivePid -Paths $paths -Name 'front' -ExpectedProcess 'node'
     if ($existing) { return $existing }
     $viteJs = Join-Path $paths.FrontDir 'node_modules\vite\bin\vite.js'
-    if (-not (Test-Path $viteJs)) { throw 'Vite no esta instalado: corre el paso 6) Instalar dependencias del front.' }
+    if (-not (Test-Path $viteJs)) { throw 'Vite no esta instalado: corre la opcion 15) Instalar dependencias del front.' }
     $node = Get-ParkosLiteNodePath
     $p = Start-ParkosLiteProcess -FilePath $node -Arguments (Get-ParkosLiteViteArguments -ViteJs $viteJs -Port $Ctx.State.front_port) -WorkingDirectory $paths.FrontDir -Env @{ PARKOS_API_PORT = "$($Ctx.State.api_port)" } -StdOut (Join-Path $paths.Logs 'front.out.log') -StdErr (Join-Path $paths.Logs 'front.err.log')
     Save-ParkosLitePid -Paths $paths -Name 'front' -ProcessId $p
@@ -298,7 +298,7 @@ function Invoke-ParkosLiteStep {
             Install-ParkosLiteDatabase -Paths $paths -Port $state.db_port -Secrets $Ctx.Secrets -Logger $Ctx.Logger
             try {
                 $r = Enable-ParkosLiteAutostart -Paths $paths -ScriptPath $Ctx.ScriptPath
-                Write-ParkosLiteLog $Ctx "Arranque automatico de la base de datos activado ($($r.Method)). Se puede quitar con la opcion A."
+                Write-ParkosLiteLog $Ctx "Arranque automatico de la base de datos activado ($($r.Method)). Se puede quitar con la opcion 9 del menu."
             } catch {
                 Write-ParkosLiteLog $Ctx "No se pudo activar el arranque automatico (no es critico): $($_.Exception.Message)"
             }

@@ -133,8 +133,8 @@ Describe 'Pasos, gating y menu' {
     It 'define los 6 pasos de instalacion en orden' {
         $steps = Get-ParkosLiteSteps
         (($steps | ForEach-Object { $_.Key }) -join ',') | Should Be 'env,db,api,migrate,seed,front'
-        $steps[0].Number | Should Be '1'
-        $steps[5].Number | Should Be '6'
+        $steps[0].Number | Should Be '10'
+        $steps[5].Number | Should Be '15'
     }
     It 'sin nada hecho, solo el paso 1 esta libre' {
         $st = @{ env = 'pending'; db = 'pending'; api = 'pending'; migrate = 'pending'; seed = 'pending'; front = 'pending' }
@@ -154,15 +154,92 @@ Describe 'Pasos, gating y menu' {
         $st.front = 'ok'
         (Get-ParkosLiteBlockReason -Key 'start' -Status $st) | Should Be $null
     }
-    It 'Get-ParkosLiteMenuLines marca OK/FAIL/BLOQ/pendiente' {
+    It 'Get-ParkosLiteMenuLines marca OK/FAIL/BLOQ/pendiente en los pasos avanzados' {
         $st = @{ env = 'ok'; db = 'fail'; api = 'pending'; migrate = 'pending'; seed = 'pending'; front = 'pending' }
-        $lines = Get-ParkosLiteMenuLines -Status $st
-        ($lines[0].Text) | Should Match '\[ OK \] 1\) Preparar entorno'
-        ($lines[1].Text) | Should Match '\[FAIL\] 2\)'
-        ($lines[2].Text) | Should Match '\[\.\.\.\.\] 3\)'
-        ($lines[3].Text) | Should Match '\[BLOQ\] 4\).*corre primero: 2\)'
-        $lines[0].Color | Should Be 'Green'
-        $lines[1].Color | Should Be 'Red'
+        $lines = @(Get-ParkosLiteMenuLines -Status $st | Where-Object { $_.Kind -eq 'item' })
+        $env = $lines | Where-Object { $_.Number -eq 10 }
+        $db = $lines | Where-Object { $_.Number -eq 11 }
+        $api = $lines | Where-Object { $_.Number -eq 12 }
+        $mig = $lines | Where-Object { $_.Number -eq 13 }
+        $env.Text | Should Match '\[ OK \] 10\) Preparar entorno'
+        $db.Text | Should Match '\[FAIL\] 11\)'
+        $api.Text | Should Match '\[\.\.\.\.\] 12\)'
+        $mig.Text | Should Match '\[BLOQ\] 13\).*corre primero: 11\)'
+        $env.Color | Should Be 'Green'
+        $db.Color | Should Be 'Red'
+    }
+}
+
+Describe 'Menu unico secuencial' {
+    $allPending = @{ env = 'pending'; db = 'pending'; api = 'pending'; migrate = 'pending'; seed = 'pending'; front = 'pending' }
+    It 'la numeracion es estrictamente secuencial 1..15 y sin repetidos' {
+        $items = @(Get-ParkosLiteMenuItems)
+        $items.Count | Should Be 15
+        (($items | ForEach-Object { $_.Number }) -join ',') | Should Be '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15'
+    }
+    It 'Instalar todo es la opcion 1' {
+        $items = @(Get-ParkosLiteMenuItems)
+        $items[0].Action | Should Be 'installall'
+        $items[0].Name | Should Match 'Instalar todo'
+    }
+    It 'los pasos avanzados conservan sus keys y van en el orden de instalacion (10..15)' {
+        $adv = @(Get-ParkosLiteMenuItems | Where-Object { $_.Group -eq 'AVANZADO' })
+        (($adv | ForEach-Object { $_.Action }) -join ',') | Should Be 'env,db,api,migrate,seed,front'
+        $adv[0].Number | Should Be 10
+    }
+    It 'el orden de las lineas: PRIMERA VEZ, USO DIARIO, AVANZADO y 0) Salir al final' {
+        $lines = @(Get-ParkosLiteMenuLines -Status $allPending)
+        $headers = @($lines | Where-Object { $_.Kind -eq 'header' } | ForEach-Object { $_.Text.Trim() })
+        ($headers -join '|') | Should Match '^PRIMERA VEZ\|USO DIARIO\|AVANZADO'
+        $lines[0].Text.Trim() | Should Be 'PRIMERA VEZ'
+        $lines[1].Text | Should Match '1\) Instalar todo \(guiado\)'
+        $lines[1].Text | Should Match 'recomendado'
+        $lines[$lines.Count - 1].Text | Should Match '0\) Salir'
+    }
+    It 'Iniciar todo es la 2 y muestra BLOQ con el motivo cuando falta algo' {
+        $lines = @(Get-ParkosLiteMenuLines -Status $allPending)
+        $start = $lines | Where-Object { $_.Kind -eq 'item' -and $_.Text -match '2\) Iniciar todo' }
+        $start.Text | Should Match '\[BLOQ\]'
+        $start.Text | Should Match 'corre primero'
+        $ok = @{ env = 'ok'; db = 'ok'; api = 'ok'; migrate = 'ok'; seed = 'ok'; front = 'ok' }
+        $start2 = Get-ParkosLiteMenuLines -Status $ok | Where-Object { $_.Kind -eq 'item' -and $_.Text -match '2\) Iniciar todo' }
+        $start2.Text | Should Match '\[\.\.\.\.\]'
+    }
+    It 'los numeros visibles aparecen en orden estrictamente creciente' {
+        $nums = @(Get-ParkosLiteMenuLines -Status $allPending | Where-Object { $_.Kind -ne 'header' } | ForEach-Object { if ($_.Text -match '(\d+)\) ') { [int]$Matches[1] } })
+        $nums.Count | Should Be 16
+        (($nums | Select-Object -First 15) -join ',') | Should Be '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15'
+        $nums[15] | Should Be 0
+    }
+    It 'no queda ningun comando de letra en el menu visible' {
+        $text = (Get-ParkosLiteMenuLines -Status $allPending | ForEach-Object { $_.Text }) -join "`n"
+        $text | Should Not Match '(?m)(^|\s)[A-Za-z]\) '
+        $text | Should Not Match '\bQ\)'
+    }
+    It 'Resolve-ParkosLiteMenuChoice mapea cada numero a su accion' {
+        $map = @{ '1' = 'installall'; '2' = 'start'; '3' = 'stop'; '4' = 'restart'; '5' = 'status'; '6' = 'browser'; '7' = 'refresh'; '8' = 'logs'; '9' = 'autostart'
+            '10' = 'env'; '11' = 'db'; '12' = 'api'; '13' = 'migrate'; '14' = 'seed'; '15' = 'front'; '0' = 'exit' }
+        foreach ($k in $map.Keys) { (Resolve-ParkosLiteMenuChoice -Choice $k) | Should Be $map[$k] }
+    }
+    It 'Resolve-ParkosLiteMenuChoice acepta espacios y Q/q como Salir' {
+        (Resolve-ParkosLiteMenuChoice -Choice ' 3 ') | Should Be 'stop'
+        (Resolve-ParkosLiteMenuChoice -Choice 'q') | Should Be 'exit'
+        (Resolve-ParkosLiteMenuChoice -Choice 'Q') | Should Be 'exit'
+    }
+    It 'Resolve-ParkosLiteMenuChoice devuelve null con entradas invalidas' {
+        foreach ($bad in @('', '   ', 'G', 'b', '16', '-1', '99', 'abc', '1 2', '01')) {
+            (Resolve-ParkosLiteMenuChoice -Choice $bad) | Should Be $null
+        }
+        (Resolve-ParkosLiteMenuChoice -Choice $null) | Should Be $null
+    }
+    It 'un state.json de la version anterior (sin cambios de formato) se carga sin error' {
+        $f = Join-Path $TestDrive 'old\state.json'
+        New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+        Set-Content $f '{"sucursal_uuid":"11111111-2222-4333-8444-555555555555","db_port":5433,"api_port":8100,"front_port":5173,"source_branch":"dev","api_built_commit":"abc","steps":{"env":"ok","db":"ok","api":"fail"}}'
+        $s = Read-ParkosLiteState -Path $f
+        $s.db_port | Should Be 5433
+        $s.steps['env'] | Should Be 'ok'
+        $s.steps['api'] | Should Be 'fail'
     }
 }
 
@@ -272,5 +349,19 @@ Describe 'Get-ParkosLiteStartOrderUrls' {
         $u = Get-ParkosLiteUrls -ApiPort 8101 -FrontPort 5173
         $u.Front | Should Be 'http://127.0.0.1:5173/'
         $u.ApiHealth | Should Be 'http://127.0.0.1:8101/health'
+    }
+}
+
+Describe 'Mensajes del lite: numeracion vigente del menu' {
+
+    It 'ningun script del lite cita pasos con la numeracion antigua ("paso N)")' {
+        $viejos = @()
+        foreach ($f in (Get-ChildItem (Join-Path $PSScriptRoot '..\lite') -Filter '*.ps1')) {
+            $lineas = Get-Content -LiteralPath $f.FullName
+            for ($i = 0; $i -lt $lineas.Count; $i++) {
+                if ($lineas[$i] -match '(?i)\bpaso [0-9]\)') { $viejos += ('{0}:{1}' -f $f.Name, ($i + 1)) }
+            }
+        }
+        ($viejos -join ', ') | Should Be ''
     }
 }

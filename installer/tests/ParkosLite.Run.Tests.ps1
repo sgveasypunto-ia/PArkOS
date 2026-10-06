@@ -343,3 +343,49 @@ Describe 'Invoke-ParkosLiteStep api' {
         Assert-MockCalled Stop-ParkosLiteService -Times 1
     }
 }
+
+Describe 'Invoke-ParkosLiteMenu (menu unico numerado)' {
+    . (Join-Path $PSScriptRoot '..\lite\parkos-lite.ps1')
+    $pending = @{ env = 'pending'; db = 'pending'; api = 'pending'; migrate = 'pending'; seed = 'pending'; front = 'pending' }
+    function Start-MenuRun {
+        param([string[]]$Inputs)
+        $global:menuInputs = New-Object System.Collections.Queue
+        foreach ($i in $Inputs) { $global:menuInputs.Enqueue($i) }
+        $global:menuOut = @()
+        $global:menuCalls = @()
+        Invoke-ParkosLiteMenu -Ctx @{ State = @{ api_port = 8100; front_port = 5173 }; Logger = $script:quiet }
+    }
+    Mock Get-ParkosLiteCurrentStatus { $pending }
+    Mock Read-Host { $global:menuInputs.Dequeue() }
+    Mock Write-Host { $global:menuOut += [string]$Object }
+    Mock Invoke-ParkosLiteInstallAll { $global:menuCalls += 'installall'; $true }
+    Mock Invoke-ParkosLiteStart { $global:menuCalls += 'start'; $true }
+    Mock Stop-ParkosLiteAll { $global:menuCalls += 'stop' }
+    Mock Show-ParkosLiteStatus { $global:menuCalls += 'status' }
+    Mock Show-ParkosLiteLogs { $global:menuCalls += 'logs' }
+    Mock Invoke-ParkosLiteRefresh { $global:menuCalls += 'refresh' }
+    Mock Invoke-ParkosLiteAutostartMenu { $global:menuCalls += 'autostart' }
+    Mock Start-Process { $global:menuCalls += 'browser' }
+    Mock Invoke-ParkosLiteTuiStep { $global:menuCalls += "step:$Key"; $true }
+
+    It 'muestra el menu con Instalar todo como 1) y sale con 0' {
+        Start-MenuRun -Inputs @('0')
+        $global:menuOut -join "`n" | Should Match '1\) Instalar todo \(guiado\)'
+        ($global:menuOut | Where-Object { $_ -match '0\) Salir' }).Count | Should Be 1
+        $global:menuCalls.Count | Should Be 0
+    }
+    It 'cada numero despacha su accion' {
+        Start-MenuRun -Inputs @('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '0')
+        ($global:menuCalls -join ',') | Should Be 'installall,start,stop,stop,start,status,browser,refresh,logs,autostart,step:env,step:db,step:api,step:migrate,step:seed,step:front'
+    }
+    It 'Q/q sale (alias oculto)' {
+        Start-MenuRun -Inputs @('q')
+        $global:menuCalls.Count | Should Be 0
+    }
+    It 'entrada invalida muestra el mensaje claro y vuelve a mostrar el menu' {
+        Start-MenuRun -Inputs @('G', '99', '0')
+        ($global:menuOut | Where-Object { $_ -eq 'Opcion no valida, elige un numero de la lista' }).Count | Should Be 2
+        ($global:menuOut | Where-Object { $_ -match '1\) Instalar todo' }).Count | Should Be 3
+        $global:menuCalls.Count | Should Be 0
+    }
+}
