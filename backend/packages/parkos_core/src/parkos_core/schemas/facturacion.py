@@ -817,7 +817,14 @@ class FacturaRead(_Base):
     datos_vehiculo: FacturaDisplayVehiculo | None
     impuestos: list[FacturaDisplayImpuesto]
     pagos: list[FacturaDisplayPago]  # typically 1 element (init pago)
-    factura_electronica: FacturaDisplayFE | None  # NULL until cloud numbers it
+    factura_electronica: FacturaDisplayFE | None  # NULL only if emission failed
+    # FE is always emitted after the payment (standard customer when the
+    # payer gave no data). If the emission failed the payment stays, the
+    # invoice is pending and retried automatically:
+    # ``factura_electronica`` is NULL, ``factura_electronica_error`` carries
+    # the reason code and ``factura_electronica_pendiente`` is true.
+    factura_electronica_error: str | None = None
+    factura_electronica_pendiente: bool = False
 
 
 class FacturaPagoAdicionalCreate(_Base):

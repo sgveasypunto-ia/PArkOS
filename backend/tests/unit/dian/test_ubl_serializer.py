@@ -167,3 +167,55 @@ def test_ubl_serialize_validates_against_xsd() -> None:
         f"UBL XML does not validate against UBL-Invoice-2.1.xsd. "
         f"Errors:\n{schema.error_log}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 3. Customer party: real ``prod.clientes`` row, or the standard customer.
+# ---------------------------------------------------------------------------
+
+_CAC = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+_CBC = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+
+
+def _customer_party(xml_bytes: bytes) -> tuple[str, str | None, str]:
+    doc = etree.fromstring(xml_bytes)
+    party = doc.find(f"{{{_CAC}}}AccountingCustomerParty/{{{_CAC}}}Party")
+    ident = party.find(f"{{{_CAC}}}PartyIdentification/{{{_CBC}}}ID")
+    name = party.find(f"{{{_CAC}}}PartyName/{{{_CBC}}}Name")
+    return ident.text, ident.get("schemeName"), name.text
+
+
+def test_ubl_customer_defaults_to_standard_customer() -> None:
+    """No ``prod.clientes`` row -> the seeded standard customer, not the
+    old ``consumidor_final`` placeholder."""
+    from parkos_core.constants import (
+        CLIENTE_ESTANDAR_NOMBRE,
+        CLIENTE_ESTANDAR_NUMERO_IDENTIFICACION,
+        CLIENTE_ESTANDAR_TIPO_IDENTIFICADOR,
+    )
+
+    numero, scheme, nombre = _customer_party(serialize(_build_factura_mock()))
+    assert numero == CLIENTE_ESTANDAR_NUMERO_IDENTIFICACION
+    assert scheme == CLIENTE_ESTANDAR_TIPO_IDENTIFICADOR
+    assert nombre == CLIENTE_ESTANDAR_NOMBRE
+
+
+def test_ubl_customer_uses_real_cliente_and_stays_xsd_valid() -> None:
+    from types import SimpleNamespace
+
+    cliente = SimpleNamespace(
+        tipo_identificador="NIT",
+        numero_identificacion="900111222",
+        nombre="Acme",
+        apellido="SAS",
+    )
+    xml_bytes = serialize(_build_factura_mock(), cliente)
+    assert _customer_party(xml_bytes) == ("900111222", "NIT", "Acme SAS")
+
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(etree.fromstring(xml_bytes)), schema.error_log
+
+
+def test_ubl_standard_customer_is_xsd_valid() -> None:
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(etree.fromstring(serialize(_build_factura_mock())))

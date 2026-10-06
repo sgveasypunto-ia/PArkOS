@@ -161,6 +161,7 @@ def factura_row() -> MagicMock:
     row.created_at = datetime(2026, 1, 15, tzinfo=UTC).replace(tzinfo=None)
     row.prefijo = "SETP"
     row.consecutivo = 990000001
+    row.uuid_cliente = None  # FE falls back to the standard customer in the UBL
     return row
 
 
@@ -247,5 +248,6 @@ def mock_session_with_factura(
     session.flush = AsyncMock(side_effect=_flush)
     session.commit = AsyncMock(return_value=None)
     session.refresh = AsyncMock(return_value=None)
+    session.get = AsyncMock(return_value=None)  # Clientes lookup (UBL customer)
     session.added = added
     return session

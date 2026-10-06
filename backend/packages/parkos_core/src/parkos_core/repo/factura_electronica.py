@@ -185,6 +185,7 @@ async def crear_factura_electronica_inicial(
     prefijo: str | None,
     consecutivo: int,
     descuento: Decimal = Decimal(0),
+    uuid_cliente: uuid_lib.UUID | None = None,
 ) -> FacturaElectronica:
     """Step 7 INSERT: single ``prod.factura_electronica`` row.
 
@@ -220,6 +221,7 @@ async def crear_factura_electronica_inicial(
         prefijo=prefijo,
         consecutivo=consecutivo,
         descuento=descuento,
+        uuid_cliente=uuid_cliente,
         created_by=actor_uuid,
     )
     session.add(fe_row)

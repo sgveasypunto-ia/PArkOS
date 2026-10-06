@@ -17,10 +17,10 @@ KD-VENTA-01 mirror of F1.11 KD-TKT-01):
   8a. Optional V8 F1.9 cobro sub-chain (when ``cobrar_ahora=true``).
   9. V9 INSERT subscription + junction (pg_advisory_xact_lock) + SINGLE
      COMMIT + response shape + ``Cache-Control: no-store``.
-  9b. Optional V8b F1.10 FE sub-chain (when
-      ``emitir_factura_electronica=true``) -- runs AFTER the Step 9
-      commit, in its OWN separate commit, and is best-effort (see
-      KD-VENTA-01 note below).
+  9b. ALWAYS-ON FE sub-chain (``repo.fe_emision.emitir_fe_para_pago``;
+      standard customer unless ``emitir_factura_electronica=true``) --
+      runs AFTER the Step 9 commit, in its OWN separate commit, and is
+      best-effort with automatic retry (see KD-VENTA-01 note below).
 
 KD-VENTA-03b (operator directive, 2026-09-25): the atomicity guarantee
 stops at "pago procesado + factura generada" (Steps 1-9). Electronic
@@ -61,7 +61,7 @@ KD-VENTA-01 single-commit invariant (AST walk enforced): exactly one
 ``await session.commit()`` inside ``venta_suscripcion``'s own body --
 the subscripción + cobro sub-chain (Steps 1-9). The repo layer NEVER
 commits. FE emission (Step 9b) is intentionally a SEPARATE function
-(``_intentar_emitir_factura_electronica``) with its OWN commit -- see
+(``repo.fe_emision.emitir_fe_para_pago``) with its OWN commit -- see
 KD-VENTA-03b above; the AST walk only inspects ``venta_suscripcion``'s
 subtree, so this second commit does not violate the invariant it
 guards (payment atomicity), which is the one that actually matters.
@@ -85,13 +85,10 @@ from ...repo import (
     factura_detalle as repo_factura_detalle,
 )
 from ...repo import (
-    factura_electronica as repo_factura_electronica,
+    fe_emision as repo_fe_emision,
 )
 from ...repo import (
     impuestos as repo_impuestos,
-)
-from ...repo import (
-    resolucion_facturacion as repo_resolucion,
 )
 from ...repo import venta_suscripcion as repo_venta
 from ...schemas.clientes import VentaSuscripcionCreate, VentaSuscripcionResponse
@@ -388,23 +385,34 @@ async def venta_suscripcion(
     # never be undone by a DIAN/resolución issue.
     await session.commit()
 
-    # --- Step 9b: Optional best-effort FE sub-chain (KD-VENTA-03b). ----
-    # Runs in `_intentar_emitir_factura_electronica`'s OWN commit, AFTER
-    # the payment above is already durable. A failure here degrades
-    # gracefully -- `factura_electronica_error` carries the reason so
-    # the operator can retry FE alone (same recovery path ingreso/salida
-    # already exposes via `POST /facturacion/factura-electronica` +
-    # `useReintentarFE`), instead of losing the whole sale.
+    # --- Step 9b: ALWAYS-ON best-effort FE sub-chain (KD-VENTA-03b). ----
+    # FE is ALWAYS emitted (transversal rule): the subscriber's own data when
+    # the operator asked to invoice them (`emitir_factura_electronica`, the
+    # wizard toggle), otherwise the standard customer. It runs in its OWN
+    # commit AFTER the payment above is durable; a failure never undoes the
+    # payment: the invoice stays pending and the branch worker retries
+    # automatically (see `repo/fe_emision.py`).
     uuid_fe: uuid_lib.UUID | None = None
+    uuid_envio: uuid_lib.UUID | None = None
     factura_electronica_error: str | None = None
-    if payload.emitir_factura_electronica and uuid_factura is not None:
-        uuid_fe, factura_electronica_error = await _intentar_emitir_factura_electronica(
+    # Snapshots: the emission helper may roll back (expiring ORM objects).
+    cliente_uuid_venta = cliente.uuid
+    subscripcion_uuid_venta = subscripcion.uuid
+    fe_res: repo_fe_emision.FeEmisionResultado | None = None
+    if uuid_factura is not None:
+        fe_res = await repo_fe_emision.emitir_fe_para_pago(
             session,
             actor_uuid=ctx.actor_uuid,
             uuid_sucursal=ctx.sucursal_uuid,
             uuid_factura=uuid_factura,
-            uuid_subscripcion_cliente=subscripcion.uuid,
+            uuid_cliente=(
+                cliente_uuid_venta if payload.emitir_factura_electronica else None
+            ),
+            payload_extra={"uuid_subscripcion_cliente": str(subscripcion_uuid_venta)},
         )
+        uuid_fe = fe_res.uuid_factura_electronica
+        uuid_envio = fe_res.uuid_envio_dian
+        factura_electronica_error = fe_res.error
 
     # --- Step 11: DEC-VENTA-06 -- Cache-Control: no-store + response. ---
     _helpers.apply_no_store_header(response)
@@ -425,12 +433,13 @@ async def venta_suscripcion(
             detalles_creados=detalles_creados,
             payload=payload,
             total_server=total_con_iva or Decimal(0),
-            cliente_uuid=cliente.uuid,
+            cliente_uuid=cliente_uuid_venta,
+            fe_resultado=fe_res,
         )
 
     return VentaSuscripcionResponse(
-        uuid_cliente=cliente.uuid,
-        uuid_subscripcion=subscripcion.uuid,
+        uuid_cliente=cliente_uuid_venta,
+        uuid_subscripcion=subscripcion_uuid_venta,
         uuid_vehiculos=[v.uuid for v in vehiculos],
         uuid_sucursal=ctx.sucursal_uuid,
         fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
@@ -445,93 +454,10 @@ async def venta_suscripcion(
         # its UUID isn't threaded back (same MVP scope the old inline
         # Step 8b already had -- traceability is a SELECT away via
         # `uuid_factura_electronica`).
-        uuid_envio_dian=None,
+        uuid_envio_dian=uuid_envio,
         factura_electronica_error=factura_electronica_error,
         factura=factura_display,
     )
-
-
-async def _intentar_emitir_factura_electronica(
-    session: AsyncSession,
-    *,
-    actor_uuid: uuid_lib.UUID,
-    uuid_sucursal: uuid_lib.UUID | None,
-    uuid_factura: uuid_lib.UUID,
-    uuid_subscripcion_cliente: uuid_lib.UUID,
-) -> tuple[uuid_lib.UUID | None, str | None]:
-    """Best-effort FE emission, AFTER the payment above is already committed.
-
-    KD-VENTA-03b (operator directive, 2026-09-25): "el flujo tiene que
-    garantizarse solo hasta que se pague y se genere la factura" -- FE
-    emission must NEVER roll back a successful payment. This function
-    owns its OWN ``await session.commit()``, deliberately separate from
-    ``venta_suscripcion``'s (KD-VENTA-01 AST walk only inspects that
-    handler's own body, so this second commit is invisible to it and
-    does not violate the payment-atomicity invariant it guards).
-
-    Returns ``(uuid_factura_electronica, error_code)`` -- exactly one of
-    the two is non-``None``. ``error_code`` mirrors the same string
-    literals the old inline Step 8b used to raise as HTTP errors
-    (``missing_sucursal_context``, ``resolucion_facturacion_no_encontrada``,
-    ``numeracion_agotada``, ``resolucion_sin_prefijo``), so any existing
-    frontend/consumer keyed on those codes keeps working -- they just
-    arrive inside a 201 body now instead of a 4xx/40x status.
-
-    Caller MUST have already committed the subscripción + cobro
-    sub-chain (Step 9) before invoking this -- it reads ``uuid_factura``
-    and ``uuid_subscripcion_cliente`` as already-durable FKs.
-    """
-    if uuid_sucursal is None:
-        return None, "missing_sucursal_context"
-
-    resolucion = await repo_resolucion.buscar_resolucion_vigente_por_sucursal(
-        session, uuid_sucursal=uuid_sucursal
-    )
-    if resolucion is None:
-        return None, "resolucion_facturacion_no_encontrada"
-
-    # assign_consecutivo is idempotent on (resolucion_uuid,
-    # source_event_uuid); using subscripcion.uuid as the source makes
-    # the FE consecutivo a deterministic function of the subscripcion
-    # (no collisions across replays/retries).
-    try:
-        consecutivo = await repo_resolucion.assign_consecutivo(
-            session,
-            resolucion_uuid=resolucion.uuid,
-            source_event_uuid=uuid_subscripcion_cliente,
-        )
-    except repo_resolucion.ConsecutivoRangeExhaustedError:
-        return None, "numeracion_agotada"
-
-    if not resolucion.prefijo:
-        return None, "resolucion_sin_prefijo"
-
-    fe_row = await repo_factura_electronica.crear_factura_electronica_inicial(
-        session,
-        actor_uuid=actor_uuid,
-        uuid_sucursal=uuid_sucursal,
-        uuid_factura=uuid_factura,
-        uuid_resolucion_facturacion=resolucion.uuid,
-        prefijo=resolucion.prefijo,
-        consecutivo=consecutivo,
-    )
-
-    await repo_factura_electronica.crear_envio_dian_inicial(
-        session,
-        actor_uuid=actor_uuid,
-        uuid_sucursal=uuid_sucursal,
-        uuid_factura_electronica=fe_row.uuid,
-        uuid_resolucion_facturacion=resolucion.uuid,
-        payload={
-            "prefijo": resolucion.prefijo,
-            "consecutivo": consecutivo,
-            "uuid_factura": str(uuid_factura),
-            "uuid_subscripcion_cliente": str(uuid_subscripcion_cliente),
-        },
-    )
-
-    await session.commit()
-    return fe_row.uuid, None
 
 
 __all__ = ["router"]

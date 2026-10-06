@@ -45,6 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.tenancy import TenantContext, get_tenant_ctx
+from ...constants import CLIENTE_ESTANDAR_UUID
 from ...db.engine import get_session
 from ...models.A.factura_detalle import FacturaDetalle
 from ...models.A.factura_impuestos import FacturaImpuestos
@@ -54,6 +55,7 @@ from ...models.L_E.facturas import Facturas
 from ...models.L_E.ingreso import Ingreso
 from ...repo import factura as repo_factura
 from ...repo.factura_detalle import crear_factura_detalle_bulk
+from ...repo.fe_emision import emitir_fe_para_pago
 from ...repo.impuestos import obtener_iva_vigente
 from ...schemas.facturacion import (
     FacturaCreate,
@@ -460,6 +462,20 @@ async def create_factura(
     # --- Step 11: KD-FACT-01 single commit. ---------------------------
     await session.commit()  # UN solo commit (lock release, KD-FACT-02)
 
+    # --- Step 12b: ALWAYS-ON FE (own commit, AFTER the payment is durable). --
+    # The invoice goes to `cliente_uuid` when the payer gave data
+    # (`fe_con_datos`), otherwise to the standard customer. A failure never
+    # undoes the payment: the invoice is left pending, retried automatically,
+    # and the administrator is alerted if it keeps failing
+    # (repo/fe_emision.py).
+    fe_resultado = await emitir_fe_para_pago(
+        session,
+        actor_uuid=ctx.actor_uuid,
+        uuid_factura=new_factura.uuid,
+        uuid_sucursal=target_sucursal,
+        uuid_cliente=cliente_uuid,
+    )
+
     # --- Step 12: response shape. -------------------------------------
     apply_no_store_header(response)
     await session.refresh(new_factura)
@@ -484,6 +500,7 @@ async def create_factura(
         payload=payload,
         total_server=total_server,
         cliente_uuid=cliente_uuid,
+        fe_resultado=fe_resultado,
     )
 
 
@@ -826,6 +843,20 @@ async def create_factura_servicio(
     # --- Step 12: KD-FACT-01 single commit. -----------------------------
     await session.commit()  # UN solo commit (lock release, KD-FACT-02)
 
+    # --- Step 13b: ALWAYS-ON FE (own commit, AFTER the payment is durable). --
+    # The invoice goes to `cliente_uuid` when the payer gave data
+    # (`fe_con_datos`), otherwise to the standard customer. A failure never
+    # undoes the payment: the invoice is left pending, retried automatically,
+    # and the administrator is alerted if it keeps failing
+    # (repo/fe_emision.py).
+    fe_resultado = await emitir_fe_para_pago(
+        session,
+        actor_uuid=ctx.actor_uuid,
+        uuid_factura=new_factura.uuid,
+        uuid_sucursal=target_sucursal,
+        uuid_cliente=cliente_uuid,
+    )
+
     # --- Step 13: response shape. ----------------------------------------
     apply_no_store_header(response)
     await session.refresh(new_factura)
@@ -836,6 +867,7 @@ async def create_factura_servicio(
         payload=payload,
         total_server=total_server,
         cliente_uuid=cliente_uuid,
+        fe_resultado=fe_resultado,
     )
 
 
@@ -1020,6 +1052,9 @@ async def create_factura_electronica(
         # for every ordinary rotacion factura; the subscription value
         # for a salida-mensualidad factura) onto the DIAN document.
         descuento=factura.descuento or Decimal(0),
+        # FE always has a customer: this legacy manual path carries no
+        # customer data, so it goes to the standard customer.
+        uuid_cliente=CLIENTE_ESTANDAR_UUID,
     )
 
     # --- Step 8: INSERT initial prod.envio_dian row. --------------------

@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 from parkos_core.api.v1.facturacion import create_factura_servicio
+from parkos_core.repo.fe_emision import FeEmisionResultado
 from parkos_core.schemas.facturacion import FacturaItemCreate, FacturaServicioCreate
 
 
@@ -139,6 +140,11 @@ def _patch_happy_path(monkeypatch: pytest.MonkeyPatch, *, new_factura: MagicMock
     monkeypatch.setattr(
         "parkos_core.api.v1.facturacion.build_display_factura",
         _build_display_factura,
+    )
+    # FE emission has its own commit and tests (test_fe_emision.py).
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.emitir_fe_para_pago",
+        AsyncMock(return_value=FeEmisionResultado(uuid_factura_electronica=uuid_lib.uuid4())),
     )
     return spies
 

@@ -48,6 +48,7 @@ if str(_PARKOS_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_PARKOS_CORE_SRC))
 
 import pytest  # noqa: E402
+from parkos_core.repo.fe_emision import FeEmisionResultado  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -626,6 +627,13 @@ async def test_cobrar_ahora_genera_factura_con_display_enriquecido() -> None:
         patch.object(handler_mod.repo_factura, "crear_factura_impuesto_iva", new=m_crear_impuesto),
         patch.object(handler_mod.repo_factura, "crear_factura_pago", new=m_crear_pago),
         patch.object(handler_mod, "build_display_factura", new=m_build_display),
+        patch.object(
+            handler_mod.repo_fe_emision,
+            "emitir_fe_para_pago",
+            new=AsyncMock(
+                return_value=FeEmisionResultado(uuid_factura_electronica=uuid_lib.uuid4())
+            ),
+        ),
     ]
     for p in extra_patchers:
         p.start()
@@ -662,36 +670,27 @@ async def test_cobrar_ahora_genera_factura_con_display_enriquecido() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T6/T7 -- KD-VENTA-03b: FE emission is best-effort, AFTER the payment commit
+# T6/T7 -- FE is ALWAYS emitted, AFTER the payment commit (KD-VENTA-03b)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_fe_fallida_no_revierte_pago_ni_factura() -> None:
-    """T6 (bugfix 2026-09-25, directiva del operador): "el flujo tiene que
-    garantizarse solo hasta que se pague y se genere la factura" -- una
-    falla de FE (ej. sucursal sin resolución) NO debe tumbar una venta
-    con cobro ya procesado.
+async def _venta_con_cobro(
+    *, resultado_fe: FeEmisionResultado, emitir_fe_flag: bool
+) -> tuple[object, MagicMock, MagicMock, uuid_lib.UUID, uuid_lib.UUID]:
+    """Run the handler with cobrar_ahora=true and a mocked FE helper.
 
-    Asserts:
-      * 201 con ``uuid_factura``/``factura`` intactos (el pago SÍ quedó).
-      * ``uuid_factura_electronica`` es ``None`` y
-        ``factura_electronica_error == "resolucion_facturacion_no_encontrada"``.
-      * ``session.commit`` se llama UNA sola vez -- el commit del pago
-        (Step 10). El helper de FE nunca llega a su propio commit porque
-        la resolución no existe.
+    Returns ``(result, session, emit_mock, factura_uuid, cliente_uuid)``.
     """
     from parkos_core.api.v1 import clientes_venta as handler_mod
 
     ctx = _make_ctx()
     response = _new_response()
     payload = _build_payload_nuevo_cliente(placas=["ABC123"], cobrar_ahora=True)
-    payload.emitir_factura_electronica = True
+    payload.emitir_factura_electronica = emitir_fe_flag
     session = MagicMock()
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
 
-    plan = _make_plan()
     cliente_row = MagicMock()
     cliente_row.uuid = uuid_lib.uuid4()
     vehiculo_row = MagicMock()
@@ -703,121 +702,12 @@ async def test_fe_fallida_no_revierte_pago_ni_factura() -> None:
 
     patchers = _patch_happy_path(
         handler_mod,
-        plan=plan,
+        plan=_make_plan(),
         cliente_row=cliente_row,
         vehiculos=[vehiculo_row],
         subscripcion_row=subscripcion_row,
     )[-1]
-    m_iva = AsyncMock(return_value=Decimal("0.19"))
-    m_crear_factura = AsyncMock(return_value=factura_row)
-    m_crear_detalle = AsyncMock(return_value=[MagicMock()])
-    m_crear_impuesto = AsyncMock()
-    m_crear_pago = AsyncMock()
-    m_build_display = AsyncMock(
-        return_value=_minimal_factura_read(uuid_factura=factura_row.uuid)
-    )
-    # No hay resolución vigente para la sucursal -- el helper de FE debe
-    # devolver el error SIN insertar nada ni tocar session.commit.
-    m_resolucion = AsyncMock(return_value=None)
-    m_assign_consecutivo = AsyncMock()
-    m_crear_fe = AsyncMock()
-    m_crear_envio = AsyncMock()
-    extra_patchers = [
-        patch.object(handler_mod.repo_impuestos, "obtener_iva_vigente", new=m_iva),
-        patch.object(handler_mod.repo_factura, "crear_factura_evento", new=m_crear_factura),
-        patch.object(
-            handler_mod.repo_factura_detalle,
-            "crear_factura_detalle_bulk",
-            new=m_crear_detalle,
-        ),
-        patch.object(handler_mod.repo_factura, "crear_factura_impuesto_iva", new=m_crear_impuesto),
-        patch.object(handler_mod.repo_factura, "crear_factura_pago", new=m_crear_pago),
-        patch.object(handler_mod, "build_display_factura", new=m_build_display),
-        patch.object(
-            handler_mod.repo_resolucion,
-            "buscar_resolucion_vigente_por_sucursal",
-            new=m_resolucion,
-        ),
-        patch.object(handler_mod.repo_resolucion, "assign_consecutivo", new=m_assign_consecutivo),
-        patch.object(
-            handler_mod.repo_factura_electronica,
-            "crear_factura_electronica_inicial",
-            new=m_crear_fe,
-        ),
-        patch.object(
-            handler_mod.repo_factura_electronica, "crear_envio_dian_inicial", new=m_crear_envio
-        ),
-    ]
-    for p in extra_patchers:
-        p.start()
-    try:
-        result = await handler_mod.venta_suscripcion(
-            response=response,
-            payload=payload,
-            session=session,
-            ctx=ctx,
-            _claims=None,
-        )
-    finally:
-        for p in patchers + extra_patchers:
-            p.stop()
-
-    # KD-VENTA-01: exactamente un commit -- el del pago. El helper de FE
-    # nunca llegó a su propio commit (la resolución no existe).
-    assert session.commit.await_count == 1
-    # El pago y la factura SIGUEN presentes -- eso es lo que se garantiza.
-    assert result.uuid_factura == factura_row.uuid
-    assert result.factura is not None
-    # FE degradó sin tumbar la venta.
-    assert result.uuid_factura_electronica is None
-    assert result.factura_electronica_error == "resolucion_facturacion_no_encontrada"
-    m_assign_consecutivo.assert_not_awaited()
-    m_crear_fe.assert_not_awaited()
-    m_crear_envio.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_fe_exitosa_commitea_por_separado_del_pago() -> None:
-    """T7: cuando la resolución SÍ existe, la FE se emite en su PROPIO
-    commit, separado del commit del pago (KD-VENTA-03b) -- ambos deben
-    ejecutarse, en ese orden, y ``session.commit`` se llama DOS veces
-    en total (payment + FE), aunque ``venta_suscripcion`` en sí mismo
-    solo invoque una (la AST walk de KD-VENTA-01 solo mira su propio
-    cuerpo; el segundo commit vive en
-    ``_intentar_emitir_factura_electronica``).
-    """
-    from parkos_core.api.v1 import clientes_venta as handler_mod
-
-    ctx = _make_ctx()
-    response = _new_response()
-    payload = _build_payload_nuevo_cliente(placas=["ABC123"], cobrar_ahora=True)
-    payload.emitir_factura_electronica = True
-    session = MagicMock()
-    session.commit = AsyncMock()
-    session.refresh = AsyncMock()
-
-    plan = _make_plan()
-    cliente_row = MagicMock()
-    cliente_row.uuid = uuid_lib.uuid4()
-    vehiculo_row = MagicMock()
-    vehiculo_row.uuid = uuid_lib.uuid4()
-    subscripcion_row = MagicMock()
-    subscripcion_row.uuid = uuid_lib.uuid4()
-    factura_row = MagicMock()
-    factura_row.uuid = uuid_lib.uuid4()
-    fe_row = MagicMock()
-    fe_row.uuid = uuid_lib.uuid4()
-    resolucion_row = MagicMock()
-    resolucion_row.uuid = uuid_lib.uuid4()
-    resolucion_row.prefijo = "SETP"
-
-    patchers = _patch_happy_path(
-        handler_mod,
-        plan=plan,
-        cliente_row=cliente_row,
-        vehiculos=[vehiculo_row],
-        subscripcion_row=subscripcion_row,
-    )[-1]
+    m_emit = AsyncMock(return_value=resultado_fe)
     extra_patchers = [
         patch.object(
             handler_mod.repo_impuestos,
@@ -839,30 +729,9 @@ async def test_fe_exitosa_commitea_por_separado_del_pago() -> None:
         patch.object(
             handler_mod,
             "build_display_factura",
-            new=AsyncMock(
-                return_value=_minimal_factura_read(uuid_factura=factura_row.uuid)
-            ),
+            new=AsyncMock(return_value=_minimal_factura_read(uuid_factura=factura_row.uuid)),
         ),
-        patch.object(
-            handler_mod.repo_resolucion,
-            "buscar_resolucion_vigente_por_sucursal",
-            new=AsyncMock(return_value=resolucion_row),
-        ),
-        patch.object(
-            handler_mod.repo_resolucion,
-            "assign_consecutivo",
-            new=AsyncMock(return_value=42),
-        ),
-        patch.object(
-            handler_mod.repo_factura_electronica,
-            "crear_factura_electronica_inicial",
-            new=AsyncMock(return_value=fe_row),
-        ),
-        patch.object(
-            handler_mod.repo_factura_electronica,
-            "crear_envio_dian_inicial",
-            new=AsyncMock(),
-        ),
+        patch.object(handler_mod.repo_fe_emision, "emitir_fe_para_pago", new=m_emit),
     ]
     for p in extra_patchers:
         p.start()
@@ -877,9 +746,70 @@ async def test_fe_exitosa_commitea_por_separado_del_pago() -> None:
     finally:
         for p in patchers + extra_patchers:
             p.stop()
+    return result, session, m_emit, factura_row.uuid, cliente_row.uuid
 
-    # Dos commits en total: pago (Step 10) + FE (helper propio).
-    assert session.commit.await_count == 2
-    assert result.uuid_factura == factura_row.uuid
-    assert result.uuid_factura_electronica == fe_row.uuid
+
+@pytest.mark.asyncio
+async def test_fe_fallida_no_revierte_pago_ni_factura() -> None:
+    """A FE failure (e.g. no resolution) never undoes a processed payment.
+
+    * 201 with ``uuid_factura``/``factura`` intact.
+    * ``uuid_factura_electronica`` None, ``factura_electronica_error`` set.
+    * ``venta_suscripcion`` itself commits exactly once (the payment); the
+      emission helper owns its own commit (mocked here).
+    """
+    result, session, m_emit, factura_uuid, _ = await _venta_con_cobro(
+        resultado_fe=FeEmisionResultado(
+            error="resolucion_facturacion_no_encontrada", pendiente=True
+        ),
+        emitir_fe_flag=True,
+    )
+    assert session.commit.await_count == 1
+    assert result.uuid_factura == factura_uuid
+    assert result.factura is not None
+    assert result.uuid_factura_electronica is None
+    assert result.factura_electronica_error == "resolucion_facturacion_no_encontrada"
+    m_emit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fe_exitosa_se_emite_despues_del_commit_del_pago() -> None:
+    """FE success: ids reach the response; payment commit stays single."""
+    fe_uuid = uuid_lib.uuid4()
+    envio_uuid = uuid_lib.uuid4()
+    result, session, m_emit, factura_uuid, _ = await _venta_con_cobro(
+        resultado_fe=FeEmisionResultado(
+            uuid_factura_electronica=fe_uuid, uuid_envio_dian=envio_uuid
+        ),
+        emitir_fe_flag=True,
+    )
+    assert session.commit.await_count == 1
+    assert result.uuid_factura == factura_uuid
+    assert result.uuid_factura_electronica == fe_uuid
+    assert result.uuid_envio_dian == envio_uuid
     assert result.factura_electronica_error is None
+    # The helper ran after the payment commit.
+    assert m_emit.await_args.kwargs["uuid_factura"] == factura_uuid
+
+
+@pytest.mark.asyncio
+async def test_fe_con_flag_usa_cliente_de_la_venta() -> None:
+    """``emitir_factura_electronica=true`` invoices the subscriber."""
+    _, _, m_emit, _, cliente_uuid = await _venta_con_cobro(
+        resultado_fe=FeEmisionResultado(uuid_factura_electronica=uuid_lib.uuid4()),
+        emitir_fe_flag=True,
+    )
+    assert m_emit.await_args.kwargs["uuid_cliente"] == cliente_uuid
+
+
+@pytest.mark.asyncio
+async def test_fe_sin_flag_se_emite_igual_con_cliente_estandar() -> None:
+    """FE is emitted even when the operator did NOT ask for it: the helper
+    is called with ``uuid_cliente=None`` (-> standard customer)."""
+    result, _, m_emit, _, _ = await _venta_con_cobro(
+        resultado_fe=FeEmisionResultado(uuid_factura_electronica=uuid_lib.uuid4()),
+        emitir_fe_flag=False,
+    )
+    m_emit.assert_awaited_once()
+    assert m_emit.await_args.kwargs["uuid_cliente"] is None
+    assert result.uuid_factura_electronica is not None
