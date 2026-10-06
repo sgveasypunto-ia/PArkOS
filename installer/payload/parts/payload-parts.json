@@ -4,6 +4,98 @@
   "maxPartBytes": 94371840,
   "artifacts": [
     {
+      "id": "api-sucursal",
+      "kind": "dir",
+      "target": "services\\api-sucursal",
+      "archive": "api-sucursal.zip",
+      "uncompressedSize": 88351353,
+      "archiveSize": 43563300,
+      "sha256": "6b8598b7948c1e3a7b7bb9b7bc527d2ba7d43b2989af4197ded26d71c3838c50",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "api-sucursal.zip",
+          "size": 43563300,
+          "sha256": "6b8598b7948c1e3a7b7bb9b7bc527d2ba7d43b2989af4197ded26d71c3838c50"
+        }
+      ],
+      "builtFromCommit": "eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "packedAtUtc": "2026-10-06T21:01:34Z",
+      "source": "built from backend (PyInstaller onedir) @ eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "note": "",
+      "sourceDependent": true,
+      "restoreToPayload": true
+    },
+    {
+      "id": "doctor",
+      "kind": "dir",
+      "target": "services\\doctor",
+      "archive": "doctor.zip",
+      "uncompressedSize": 79793287,
+      "archiveSize": 36779283,
+      "sha256": "a59fe6fbdf6ecbb387ec8940ddabce898867c5cb7fc7081784972db3904e2dce",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "doctor.zip",
+          "size": 36779283,
+          "sha256": "a59fe6fbdf6ecbb387ec8940ddabce898867c5cb7fc7081784972db3904e2dce"
+        }
+      ],
+      "builtFromCommit": "eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "packedAtUtc": "2026-10-06T21:01:46Z",
+      "source": "built from backend (PyInstaller onedir) @ eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "note": "",
+      "sourceDependent": true,
+      "restoreToPayload": true
+    },
+    {
+      "id": "job-sync-sucursal",
+      "kind": "dir",
+      "target": "services\\job-sync-sucursal",
+      "archive": "job-sync-sucursal.zip",
+      "uncompressedSize": 86090947,
+      "archiveSize": 41946532,
+      "sha256": "4ef186de96848d0873c65235d3536d57e2cdb8f29bb834158b52d688f5f7b6b1",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "job-sync-sucursal.zip",
+          "size": 41946532,
+          "sha256": "4ef186de96848d0873c65235d3536d57e2cdb8f29bb834158b52d688f5f7b6b1"
+        }
+      ],
+      "builtFromCommit": "eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "packedAtUtc": "2026-10-06T21:01:37Z",
+      "source": "built from backend (PyInstaller onedir) @ eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "note": "",
+      "sourceDependent": true,
+      "restoreToPayload": true
+    },
+    {
+      "id": "migrate",
+      "kind": "dir",
+      "target": "services\\migrate",
+      "archive": "migrate.zip",
+      "uncompressedSize": 85687107,
+      "archiveSize": 41525812,
+      "sha256": "86f83c74bc829c54e2b9f614649ed25109941e09ada51401024f1f0bcc030f62",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "migrate.zip",
+          "size": 41525812,
+          "sha256": "86f83c74bc829c54e2b9f614649ed25109941e09ada51401024f1f0bcc030f62"
+        }
+      ],
+      "builtFromCommit": "eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "packedAtUtc": "2026-10-06T21:01:40Z",
+      "source": "built from backend (PyInstaller onedir) @ eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "note": "",
+      "sourceDependent": true,
+      "restoreToPayload": true
+    },
+    {
       "id": "nssm",
       "kind": "file",
       "target": "nssm.exe",
@@ -113,6 +205,57 @@
       "source": "third-party download (PowerShell GitHub release)",
       "note": "",
       "sourceDependent": false,
+      "restoreToPayload": true
+    },
+    {
+      "id": "seed",
+      "kind": "dir",
+      "target": "services\\seed",
+      "archive": "seed.zip",
+      "uncompressedSize": 85633935,
+      "archiveSize": 41470701,
+      "sha256": "6b11f21d74c7bd9386d71b8083aaaac785b7de636f0a576f506ee2bb39a31f0e",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "seed.zip",
+          "size": 41470701,
+          "sha256": "6b11f21d74c7bd9386d71b8083aaaac785b7de636f0a576f506ee2bb39a31f0e"
+        }
+      ],
+      "builtFromCommit": "eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "packedAtUtc": "2026-10-06T21:01:42Z",
+      "source": "built from backend (PyInstaller onedir) @ eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "note": "",
+      "sourceDependent": true,
+      "restoreToPayload": true
+    },
+    {
+      "id": "web-sucursal-msi",
+      "kind": "file",
+      "target": "apps\\web_sucursal-0.1.0-x64.msi",
+      "archive": "web_sucursal-0.1.0-x64.msi",
+      "uncompressedSize": 95711232,
+      "archiveSize": 95711232,
+      "sha256": "107c2261f8b1f182dedab27e27fcbff54e2166ad9a59672769dde8d98a07a91f",
+      "partCount": 2,
+      "parts": [
+        {
+          "name": "web_sucursal-0.1.0-x64.msi.part01",
+          "size": 94371840,
+          "sha256": "5f8a339baac2da82889cf3368568bec820757f46bcfa17a9ea96532654cab434"
+        },
+        {
+          "name": "web_sucursal-0.1.0-x64.msi.part02",
+          "size": 1339392,
+          "sha256": "24cd9ec4b66fb95d2e398c3336b6296fe30f262479e372a27e6ede07c9e0249c"
+        }
+      ],
+      "builtFromCommit": "eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "packedAtUtc": "2026-10-06T21:06:41Z",
+      "source": "built from apps/electron-sucursal @ eed68026b971707527b59ed64d68f0bdf8a933d7",
+      "note": "",
+      "sourceDependent": true,
       "restoreToPayload": true
     }
   ]
