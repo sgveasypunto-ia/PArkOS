@@ -9,6 +9,11 @@ import path from 'node:path';
  * (target node20, format cjs, external:electron) per DEC-ELEC-03. The renderer
  * is a regular SPA loaded by Electron's BrowserWindow.
  */
+// Lite installer (browser mode): the API port is configurable via env; the
+// default stays 8100 (docker dev mapping) so existing workflows are unchanged.
+const apiPort = process.env.PARKOS_API_PORT || '8100';
+const apiOrigin = `http://localhost:${apiPort}`;
+
 export default defineConfig({
   // Relative asset paths (not Vite's default `/` root-relative) - the
   // packaged app loads index.html via `file://` (electron/main.ts's
@@ -40,7 +45,13 @@ export default defineConfig({
     // `parkos-api-sucursal` mapeado a host port 8100.
     proxy: {
       '/api': {
-        target: 'http://localhost:8100',
+        target: apiOrigin,
+        changeOrigin: true,
+        secure: false,
+      },
+      // Health probe used by the browser-mode bridge shim (lib/browserBridge.ts).
+      '/health': {
+        target: apiOrigin,
         changeOrigin: true,
         secure: false,
       },
@@ -48,7 +59,7 @@ export default defineConfig({
       // endpoints siguen el mismo patrón. Proxy catch-all para que el browser
       // reciba la respuesta del backend real, no el index.html de Vite.
       '/auth': {
-        target: 'http://localhost:8100/api/v1',
+        target: `${apiOrigin}/api/v1`,
         changeOrigin: true,
         secure: false,
       },

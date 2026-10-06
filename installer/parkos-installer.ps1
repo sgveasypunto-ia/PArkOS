@@ -163,6 +163,35 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:PayloadRoot = Join-Path $PSScriptRoot 'payload'
+
+# Descarga/instalacion de Postgres (ZIP de EDB) y pg_partman SQL-only: codigo
+# COMPARTIDO con el instalador lite (installer/shared). Se busca junto al
+# script (repo: shared\), en payload\ y junto al .exe compilado (ps2exe no
+# empaqueta archivos dot-sourceados: build-release.ps1 lo copia al payload y
+# lo incluye en manifest.sha256.json). Si falta NO se aborta al cargar (el
+# modo Update/Restore no lo necesita): Install-Postgres falla con un mensaje.
+$script:ParkosSharedPostgresLoaded = $false
+$parkosSharedCandidates = @(
+    (Join-Path $PSScriptRoot 'shared\ParkosPostgresDownload.ps1')
+    (Join-Path $PSScriptRoot 'ParkosPostgresDownload.ps1')
+    (Join-Path $script:PayloadRoot 'ParkosPostgresDownload.ps1')
+    (Join-Path ([System.AppContext]::BaseDirectory) 'ParkosPostgresDownload.ps1')
+)
+foreach ($parkosSharedCandidate in $parkosSharedCandidates) {
+    if ($parkosSharedCandidate -and (Test-Path -LiteralPath $parkosSharedCandidate)) {
+        . $parkosSharedCandidate
+        $script:ParkosSharedPostgresLoaded = $true
+        break
+    }
+}
+
+# Servicio de Windows de la base de datos de Parkos. El nombre CONTIENE
+# 'postgresql' a proposito: Parkos.psm1 (Uninstall-Parkos, Test-CrashRecovery)
+# resuelve el servicio por el patron *postgresql*.
+$script:ParkosPostgresServiceName = 'postgresql-parkos'
+# Estado de la etapa 1 que lee su Rollback (se reinician al arrancar la etapa).
+$script:PostgresServiceRegistered = $false
+$script:PostgresDataCreatedByInstaller = $false
 $script:PS7_MSI_NAME = 'PowerShell-7.4.6-win-x64.msi'
 $script:PS7_MSI_URL = "https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/$($script:PS7_MSI_NAME)"
 # Real SHA256, computed directly from the file downloaded over HTTPS from
@@ -697,107 +726,296 @@ function Set-MachineApiOrigin {
 }
 
 # ---------------------------------------------------------------------------
-# Fase 22 - HU-F22.2: instalacion de Postgres 16 (winget con fallback a ZIP)
+# Fase 22 - HU-F22.2: instalacion de Postgres 16 (ZIP de EDB + servicio de Windows)
 # ---------------------------------------------------------------------------
 
-# Found by actually running Install-PostgresViaWinget for real (not just
-# reading it): a bare `winget install` with no `--override` never sets a
-# superuser password or a custom port at all - the EDB installer it wraps
-# would fall back to whatever its own silent-mode default is (verified
-# manually: it accepts `--superpassword`/`--serverport` via winget's
-# `--override` passthrough only when explicitly given). Every earlier
-# manual test in this session that "worked" set these by hand outside this
-# function; the function itself had never been exercised before this fix.
-function Install-PostgresViaWinget {
-    param([int]$Port, [string]$SuperuserPassword)
+# DEC-INST-45: la etapa 1 ya NO usa winget. SIEMPRE se instala Postgres 16
+# desde el ZIP de binarios de EDB (payload\postgres si viene pre-descargado;
+# si no, se descarga a <DataPath>\downloads con reintentos - codigo compartido
+# con el instalador lite, installer\shared\ParkosPostgresDownload.ps1), se
+# inicializa el cluster con initdb y se registra como SERVICIO de Windows de
+# inicio automatico (pg_ctl register -S auto) para que arranque con el
+# equipo. Todo comando externo (pg_ctl, initdb, pg_isready, icacls, sc.exe) y
+# todo acceso a servicios/procesos vive en un wrapper propio para poder
+# mockearlo en Pester 3.4.
 
-    # Auditoria de seguridad (confianza 8/10, severidad Medium): $SuperuserPassword
-    # viajaba antes en texto plano dentro de $overrideArgs (argumento -c de
-    # winget), visible en el argv del proceso hijo ante cualquier auditoria de
-    # creacion de procesos de Windows (Event ID 4688 con linea de comandos
-    # habilitada, Sysmon, EDR).
-    #
-    # Investigado (no asumido) contra la documentacion oficial real del
-    # instalador de PostgreSQL para Windows - BitRock/InstallBuilder, el mismo
-    # binario que `winget install --override` invoca en modo silencioso:
-    # https://www.enterprisedb.com/docs/supported-open-source/postgresql/installing/command_line_parameters/
-    # documenta `--optionfile <path>` como alternativa real (no inventada) a
-    # pasar `--superpassword`/`--serverport`/`--disable-components` como
-    # argumentos sueltos - el instalador lee esos mismos parametros de un
-    # archivo en vez del command line. `mode`/`unattendedmodeui` (ningun
-    # secreto) se dejan en el override literal a proposito: un hilo de la
-    # lista de correo de postgresql.org documenta que definir
-    # `mode=unattended` DENTRO del optionfile (en vez del CLI) deja vacio el
-    # data directory en algunas versiones del instalador - se evita ese bug
-    # conocido dejando esas dos claves fuera del archivo.
-    $optionFile = New-TemporaryFile
-    try {
-        Set-Content -Path $optionFile -Encoding ascii -Value @(
-            "superpassword=$SuperuserPassword"
-            "serverport=$Port"
-            'disable-components=stackbuilder'
-        )
-        $overrideArgs = "--mode unattended --unattendedmodeui none --optionfile `"$optionFile`""
-        winget install --id PostgreSQL.PostgreSQL.16 --silent --accept-package-agreements --accept-source-agreements --override $overrideArgs | Out-Host
-        return $LASTEXITCODE -eq 0
-    } finally {
-        Remove-Item $optionFile -Force -ErrorAction SilentlyContinue
+function Get-ParkosPostgresServiceName {
+    return $script:ParkosPostgresServiceName
+}
+
+# Linea de comandos de `pg_ctl register`. Sin -U: pg_ctl registra el servicio
+# con NT AUTHORITY\NetworkService (Postgres NO puede correr como
+# Administrador/LocalSystem); el acceso de esa cuenta al data directory lo da
+# Grant-ParkosPgDataAccess.
+function Get-ParkosPgCtlRegisterArguments {
+    param([Parameter(Mandatory)][string]$ServiceName, [Parameter(Mandatory)][string]$PgDataPath)
+    return @('register', '-N', $ServiceName, '-D', $PgDataPath, '-S', 'auto')
+}
+
+function Invoke-ParkosPgCtl {
+    param([Parameter(Mandatory)][string]$PgCtlPath, [Parameter(Mandatory)][string[]]$Arguments)
+    $output = & $PgCtlPath @Arguments 2>&1 | Out-String
+    return [PSCustomObject]@{ ExitCode = $LASTEXITCODE; Output = $output.Trim() }
+}
+
+function Invoke-ParkosInitdb {
+    param([Parameter(Mandatory)][string]$InitdbPath, [Parameter(Mandatory)][string]$PgDataPath, [Parameter(Mandatory)][string]$PwFile)
+    # `-U postgres` (superusuario de bootstrap): Initialize-DatabaseRoles
+    # conecta como `postgres` y crea el rol `parkos` de forma idempotente.
+    & $InitdbPath -D $PgDataPath --locale=es-CO --encoding=UTF8 -U postgres --pwfile=$PwFile --auth=scram-sha-256 | Out-Host
+    return $LASTEXITCODE
+}
+
+function Invoke-ParkosIcacls {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    & icacls.exe @Arguments | Out-Null
+    return $LASTEXITCODE
+}
+
+function Invoke-ParkosScDelete {
+    param([Parameter(Mandatory)][string]$ServiceName)
+    & sc.exe delete $ServiceName | Out-Null
+    return $LASTEXITCODE
+}
+
+function Invoke-ParkosPgIsReady {
+    param([Parameter(Mandatory)][string]$PgIsReadyPath, [Parameter(Mandatory)][int]$Port)
+    & $PgIsReadyPath -h 127.0.0.1 -p $Port | Out-Null
+    return $LASTEXITCODE
+}
+
+# Estado del servicio ('Running', 'Stopped', ...) o $null si no existe.
+function Get-ParkosServiceState {
+    param([Parameter(Mandatory)][string]$Name)
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) { return $null }
+    return [string]$svc.Status
+}
+
+function Start-ParkosServiceByName {
+    param([Parameter(Mandatory)][string]$Name)
+    Start-Service -Name $Name -ErrorAction Stop
+}
+
+function Stop-ParkosServiceByName {
+    param([Parameter(Mandatory)][string]$Name)
+    Stop-Service -Name $Name -Force -ErrorAction Stop
+}
+
+# Nombre del proceso con ese PID, o $null si no existe.
+function Get-ParkosProcessNameById {
+    param([Parameter(Mandatory)][int]$ProcessId)
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    return [string]$p.ProcessName
+}
+
+# postmaster.pid huerfano (apagado sucio / corte de luz): la primera linea es
+# el PID del postmaster. Se considera VIGENTE solo si ese PID existe y es un
+# proceso 'postgres'; en cualquier otro caso (sin proceso, o PID reciclado por
+# otro programa) esta obsoleto y se borra para que pg_ctl no se niegue a
+# arrancar. Devuelve $true si lo borro.
+function Remove-ParkosStalePostmasterPid {
+    param([Parameter(Mandatory)][string]$PgDataPath)
+
+    $pidFile = Join-Path $PgDataPath 'postmaster.pid'
+    if (-not (Test-Path -LiteralPath $pidFile)) { return $false }
+
+    $firstLine = ''
+    try { $firstLine = [string](Get-Content -LiteralPath $pidFile -TotalCount 1 -ErrorAction Stop) } catch { $firstLine = '' }
+    $pidValue = 0
+    $live = $false
+    if ([int]::TryParse($firstLine.Trim(), [ref]$pidValue) -and $pidValue -gt 0) {
+        $name = Get-ParkosProcessNameById -ProcessId $pidValue
+        if ($name -and $name -match '^postgres') { $live = $true }
     }
+    if ($live) { return $false }
+
+    Remove-Item -LiteralPath $pidFile -Force
+    Write-Host "  postmaster.pid obsoleto (PID '$($firstLine.Trim())' ya no es un Postgres vivo); se elimino." -ForegroundColor Yellow
+    return $true
+}
+
+# Fija `Name = Value` en postgresql.conf: reemplaza una linea activa existente
+# (re-ejecutar la etapa nunca duplica) o la agrega al final.
+function Set-ParkosPgConfSetting {
+    param([Parameter(Mandatory)][string]$ConfPath, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Value)
+
+    $lines = @()
+    if (Test-Path -LiteralPath $ConfPath) { $lines = @(Get-Content -LiteralPath $ConfPath) }
+    $pattern = '^\s*' + [regex]::Escape($Name) + '\s*='
+    $newLine = "$Name = $Value"
+    $found = $false
+    $out = foreach ($line in $lines) {
+        if ($line -match $pattern) {
+            if (-not $found) { $newLine; $found = $true }
+        } else {
+            $line
+        }
+    }
+    $out = @($out)
+    if (-not $found) { $out += $newLine }
+    Set-Content -LiteralPath $ConfPath -Value $out
+}
+
+# La cuenta del servicio (NetworkService, SID S-1-5-20: independiente del
+# idioma de Windows) necesita control total del data directory que creo
+# initdb bajo la cuenta del instalador.
+function Grant-ParkosPgDataAccess {
+    param([Parameter(Mandatory)][string]$PgDataPath)
+    $code = Invoke-ParkosIcacls -Arguments @($PgDataPath, '/grant', '*S-1-5-20:(OI)(CI)F', '/T', '/Q')
+    if ($code -ne 0) {
+        throw "No se pudo dar acceso al data directory de Postgres ($PgDataPath) a la cuenta del servicio (icacls exit $code)."
+    }
+}
+
+# Quita el servicio de Windows de Postgres de Parkos si existe (detener +
+# desregistrar). Tolerante: nunca lanza.
+function Remove-ParkosPostgresService {
+    param([Parameter(Mandatory)][string]$PgInstallPath)
+
+    $name = Get-ParkosPostgresServiceName
+    $state = Get-ParkosServiceState -Name $name
+    if ($null -eq $state) { return }
+
+    try {
+        if ($state -ne 'Stopped') { Stop-ParkosServiceByName -Name $name }
+    } catch {
+        Write-Host "  No se pudo detener el servicio '$name': $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    $unregistered = $false
+    $pgCtl = Join-Path $PgInstallPath 'bin\pg_ctl.exe'
+    if (Test-Path -LiteralPath $pgCtl) {
+        try { $unregistered = ((Invoke-ParkosPgCtl -PgCtlPath $pgCtl -Arguments @('unregister', '-N', $name)).ExitCode -eq 0) } catch { $unregistered = $false }
+    }
+    if (-not $unregistered) {
+        try { Invoke-ParkosScDelete -ServiceName $name | Out-Null } catch { $null = $_ }
+    }
+}
+
+# Registra Postgres como servicio de inicio AUTOMATICO. Idempotente: si ya
+# existe se detiene y se re-registra (reemplaza, nunca duplica).
+function Register-ParkosPostgresService {
+    param([Parameter(Mandatory)][string]$PgInstallPath, [Parameter(Mandatory)][string]$PgDataPath)
+
+    $name = Get-ParkosPostgresServiceName
+    $pgCtl = Join-Path $PgInstallPath 'bin\pg_ctl.exe'
+    if ($null -ne (Get-ParkosServiceState -Name $name)) {
+        Write-Host "  El servicio '$name' ya existe; se reemplaza." -ForegroundColor Yellow
+        Remove-ParkosPostgresService -PgInstallPath $PgInstallPath
+    }
+    $result = Invoke-ParkosPgCtl -PgCtlPath $pgCtl -Arguments (Get-ParkosPgCtlRegisterArguments -ServiceName $name -PgDataPath $PgDataPath)
+    if ($result.ExitCode -ne 0) {
+        throw "No se pudo registrar el servicio de Windows '$name' (pg_ctl register exit $($result.ExitCode)): $($result.Output)"
+    }
+    $script:PostgresServiceRegistered = $true
+}
+
+# Espera a que Postgres acepte conexiones (pg_isready). Lanza si no responde.
+function Wait-ParkosPostgresReady {
+    param(
+        [Parameter(Mandatory)][string]$PgInstallPath,
+        [Parameter(Mandatory)][int]$Port,
+        [int]$MaxAttempts = 30,
+        [int]$IntervalSeconds = 2
+    )
+
+    $pgIsReady = Join-Path $PgInstallPath 'bin\pg_isready.exe'
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        if ((Invoke-ParkosPgIsReady -PgIsReadyPath $pgIsReady -Port $Port) -eq 0) { return }
+        if ($attempt -lt $MaxAttempts) { Start-ParkosSleep -Seconds $IntervalSeconds }
+    }
+    throw "Postgres no acepto conexiones en 127.0.0.1:$Port tras $($MaxAttempts * $IntervalSeconds) s. Revise el Visor de eventos (origen PostgreSQL) y la carpeta log\ del data directory, y reintente la etapa 1 (es re-ejecutable)."
+}
+
+# Arranca el servicio y espera a que Postgres este listo ANTES de crear roles
+# y base. Si ya corre no lo toca; si quedo un postmaster.pid obsoleto lo borra.
+function Start-ParkosPostgresService {
+    param([Parameter(Mandatory)][string]$PgInstallPath, [Parameter(Mandatory)][string]$PgDataPath, [Parameter(Mandatory)][int]$Port)
+
+    $name = Get-ParkosPostgresServiceName
+    $state = Get-ParkosServiceState -Name $name
+    if ($state -ne 'Running') {
+        Remove-ParkosStalePostmasterPid -PgDataPath $PgDataPath | Out-Null
+        Write-Host "  Iniciando el servicio '$name'..."
+        Start-ParkosServiceByName -Name $name
+    }
+    Wait-ParkosPostgresReady -PgInstallPath $PgInstallPath -Port $Port
+}
+
+# ZIP de Postgres: payload\postgres (pre-descargado / instalacion offline) se
+# respeta primero; si no, cache <DataPath>\downloads o descarga nueva.
+function Get-ParkosPostgresZipForInstall {
+    param([Parameter(Mandatory)][string]$DownloadDir)
+
+    $payloadDir = Join-Path $script:PayloadRoot 'postgres'
+    $info = Get-ParkosPostgresDownloadInfo
+    foreach ($name in @('postgresql-16-windows-x64-binaries.zip', $info.FileName)) {
+        $candidate = Join-Path $payloadDir $name
+        if ((Test-Path -LiteralPath $candidate) -and (Test-ParkosPostgresZip -Path $candidate)) {
+            Write-Host "Postgres ZIP en payload: $candidate"
+            return $candidate
+        }
+    }
+    return (Get-ParkosPostgresZip -CacheDir $DownloadDir -PayloadDir $payloadDir -Logger { param($m) Write-Host $m })
 }
 
 function Install-PostgresViaZip {
     param([string]$PayloadZipPath, [string]$PgInstallPath, [string]$PgDataPath, [int]$Port, [string]$SuperuserPassword)
 
-    Expand-Archive -Path $PayloadZipPath -DestinationPath $PgInstallPath -Force
-    # `-U postgres` (default bootstrap superuser), never `-U parkos` - the
-    # winget path (HU-F22.2's primary method, verified against a real
-    # install) always bootstraps as `postgres`; using a different bootstrap
-    # identity here would make Initialize-DatabaseRoles need two incompatible
-    # code paths depending on which install method ran. Both paths converge
-    # on the same idempotent `parkos` role creation afterward.
-    $pwFile = New-TemporaryFile
-    Set-Content -Path $pwFile -Value $SuperuserPassword -NoNewline
-    try {
-        & "$PgInstallPath\bin\initdb.exe" -D $PgDataPath --locale=es-CO --encoding=UTF8 -U postgres --pwfile=$pwFile --auth=scram-sha-256
-        if ($LASTEXITCODE -ne 0) {
-            throw 'initdb fallo al inicializar el data directory de Postgres.'
+    Expand-ParkosPostgresZip -ZipPath $PayloadZipPath -PgRoot $PgInstallPath -Logger { param($m) Write-Host $m } | Out-Null
+
+    # Idempotente: un data directory ya inicializado (PG_VERSION) se reutiliza
+    # tal cual - las passwords se derivan de UUID + clave maestra, asi que el
+    # bootstrap sigue siendo valido. Un directorio a medias (initdb
+    # interrumpido, sin PG_VERSION) no es un cluster: se rehace.
+    $versionFile = Join-Path $PgDataPath 'PG_VERSION'
+    if (Test-Path -LiteralPath $versionFile) {
+        Write-Host "  Data directory de Postgres ya inicializado ($PgDataPath); se reutiliza."
+    } else {
+        if (Test-Path -LiteralPath $PgDataPath) { Remove-Item -LiteralPath $PgDataPath -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path (Split-Path $PgDataPath) | Out-Null
+        $script:PostgresDataCreatedByInstaller = $true
+        $pwFile = New-TemporaryFile
+        Set-Content -Path $pwFile -Value $SuperuserPassword -NoNewline
+        try {
+            $code = Invoke-ParkosInitdb -InitdbPath (Join-Path $PgInstallPath 'bin\initdb.exe') -PgDataPath $PgDataPath -PwFile $pwFile
+            if ($code -ne 0) {
+                throw 'initdb fallo al inicializar el data directory de Postgres.'
+            }
+        } finally {
+            Remove-Item $pwFile -Force -ErrorAction SilentlyContinue
         }
-    } finally {
-        Remove-Item $pwFile -Force -ErrorAction SilentlyContinue
     }
-    # ZIP path needs an explicit port (winget's package sets it via
-    # --override at install time; a manual initdb+ZIP layout defaults to
-    # 5432 via postgresql.conf otherwise).
+
+    # Puerto explicito (se reemplaza, no se duplica, al re-ejecutar) y log a
+    # archivo en <data>\log (el servicio no tiene consola).
     $confPath = Join-Path $PgDataPath 'postgresql.conf'
-    Add-Content -Path $confPath -Value "port = $Port"
+    Set-ParkosPgConfSetting -ConfPath $confPath -Name 'port' -Value "$Port"
+    Set-ParkosPgConfSetting -ConfPath $confPath -Name 'logging_collector' -Value 'on'
+    Grant-ParkosPgDataAccess -PgDataPath $PgDataPath
 }
 
-# DEC-INST-32 (PR5): devuelve el metodo REAL que instalo Postgres ('winget'
-# o 'zip') - antes esta funcion era void. El rollback automatico de la etapa
-# 1 (-Unattended, Get-ParkosStageDefinitions) necesita saber cual de los dos
-# para desinstalar con el mecanismo correcto (winget uninstall vs. borrar el
-# directorio del ZIP); guardado por el llamador en $script:PostgresInstallMethod.
+# DEC-INST-32 (PR5): devuelve el metodo REAL de instalacion; ahora siempre
+# 'zip' (DEC-INST-45). Lo guarda el llamador en $script:PostgresInstallMethod
+# y lo lee el Rollback de la etapa 1. Deja Postgres CORRIENDO como servicio de
+# Windows de inicio automatico y aceptando conexiones.
 function Install-Postgres {
-    param([string]$PgInstallPath, [string]$PgDataPath, [int]$Port, [string]$SuperuserPassword)
+    param([string]$PgInstallPath, [string]$PgDataPath, [int]$Port, [string]$SuperuserPassword, [string]$DownloadDir)
 
-    Write-Host 'Instalando Postgres via winget...'
-    $wingetOk = $false
-    try {
-        $wingetOk = Install-PostgresViaWinget -Port $Port -SuperuserPassword $SuperuserPassword
-    } catch {
-        $wingetOk = $false
+    if (-not $script:ParkosSharedPostgresLoaded) {
+        throw 'Falta ParkosPostgresDownload.ps1 junto al instalador (installer\shared\ o payload\); no se puede descargar/instalar Postgres. Vuelva a copiar el instalador completo o pida ayuda al equipo de soporte.'
     }
+    if (-not $DownloadDir) { $DownloadDir = Join-Path 'C:\ProgramData\Parkos' 'downloads' }
 
-    if ($wingetOk) {
-        return 'winget'
-    }
+    Write-Host 'Instalando Postgres (ZIP de EDB)...'
+    $zipPath = Get-ParkosPostgresZipForInstall -DownloadDir $DownloadDir
 
-    Write-Host 'winget no disponible o fallo; usando ZIP de EDB del payload...' -ForegroundColor Yellow
-    $zipPath = Join-Path $script:PayloadRoot 'postgres\postgresql-16-windows-x64-binaries.zip'
-    if (-not (Test-Path $zipPath)) {
-        throw "Ni winget ni el ZIP de fallback ($zipPath) estan disponibles; no se puede instalar Postgres."
-    }
+    # Desde aqui hay algo que revertir: el Rollback decide por este valor.
+    $script:PostgresInstallMethod = 'zip'
     Install-PostgresViaZip -PayloadZipPath $zipPath -PgInstallPath $PgInstallPath -PgDataPath $PgDataPath -Port $Port -SuperuserPassword $SuperuserPassword
+    Register-ParkosPostgresService -PgInstallPath $PgInstallPath -PgDataPath $PgDataPath
+    Start-ParkosPostgresService -PgInstallPath $PgInstallPath -PgDataPath $PgDataPath -Port $Port
     return 'zip'
 }
 
@@ -968,9 +1186,10 @@ function Initialize-DatabaseRoles {
     # (Invoke-MigrationsAndSeed), not here - the role does not exist yet.
     Set-PgPassFile -Port $Port -Credentials @{ postgres = $BootstrapPassword; parkos = $superuserPassword }
 
-    # Bootstraps as `postgres` (the identity both Install-PostgresViaWinget
-    # and Install-PostgresViaZip now converge on, using $BootstrapPassword -
-    # the same password Install-Postgres set at install time). `parkos` may
+    # Bootstraps as `postgres` (the identity Install-PostgresViaZip creates
+    # with initdb -U postgres, using $BootstrapPassword - the same password
+    # Install-Postgres set at install time). Postgres is already running and
+    # accepting connections here (Install-Postgres waits for pg_isready). `parkos` may
     # or may not exist yet depending on prior runs, so this is idempotent -
     # verified against a real winget-installed Postgres 16 where `parkos`
     # genuinely did not exist (only `postgres` did; a plain `ALTER ROLE
@@ -995,7 +1214,7 @@ END
     # Auditoria de seguridad (confianza 8/10, severidad Medium): $sql (que
     # embebe $superuserPassword en texto plano dentro del `PASSWORD '...'`)
     # viajaba antes como argumento -c, visible en el argv del proceso ante
-    # Event ID 4688/Sysmon/EDR - mismo hallazgo que Install-PostgresViaWinget.
+    # Event ID 4688/Sysmon/EDR - hallazgo ya corregido en el Install-Postgres anterior (winget --override).
     # psql, sin -c/-f, lee el batch completo desde stdin cuando no es
     # interactivo (comportamiento estandar y documentado de psql) - se pasa
     # el mismo texto SQL por el pipeline en vez de como argumento; el
@@ -1155,10 +1374,17 @@ function Ensure-ServiceAccount {
 # lo dispara la tarea programada de Windows (Register-PgPartmanMaintenance),
 # nunca el timer interno del bgw - exactamente lo que DEC-INST-14 ya pedia.
 function Install-PgPartman {
-    param([string]$PgInstallPath, [string]$PsqlPath, [int]$Port)
+    param([string]$PgInstallPath, [string]$PsqlPath, [int]$Port, [string]$DownloadDir)
 
-    $payloadExtension = Join-Path $script:PayloadRoot 'pg_partman\extension'
-    Copy-Item "$payloadExtension\*" "$PgInstallPath\share\extension\" -Force
+    if (-not $DownloadDir) { $DownloadDir = Join-Path 'C:\ProgramData\Parkos' 'downloads' }
+    # Payload (build-release.ps1) primero; si no trae la extension, se
+    # descarga y ensambla SQL-only (codigo compartido) en la cache.
+    $extensionDir = Get-ParkosPgPartmanExtension `
+        -ExtensionDir (Join-Path $DownloadDir 'pg_partman-extension') `
+        -TempDir (Join-Path $DownloadDir 'tmp') `
+        -PayloadDir (Join-Path $script:PayloadRoot 'pg_partman\extension') `
+        -Logger { param($m) Write-Host $m }
+    Install-ParkosPgPartmanExtension -PgRoot $PgInstallPath -ExtensionDir $extensionDir
 
     # `-w` (never prompt) + `-h 127.0.0.1` (.pgpass matches by exact
     # hostname): relies on the `parkos` entry Initialize-DatabaseRoles
@@ -2705,6 +2931,7 @@ function Get-ParkosStageDefinitions {
         SyncJwtPath   = $syncJwtPath
         EnvFilePath   = $envFilePath
         NssmPath      = $nssmPath
+        DownloadDir   = Join-Path $DataPath 'downloads'
     }
 
     $stages = [ordered]@{
@@ -2727,10 +2954,18 @@ function Get-ParkosStageDefinitions {
                 $pgInstallPath = $ctx.PgInstallPath; $pgDataPath = $ctx.PgDataPath; $psqlPath = $ctx.PsqlPath
                 $jwtKeyPath = $ctx.JwtKeyPath; $syncJwtPath = $ctx.SyncJwtPath; $envFilePath = $ctx.EnvFilePath
                 $DataPath = $ctx.DataPath; $SucursalUuid = $ctx.SucursalUuid; $CloudApiUrl = $ctx.CloudApiUrl
+                $script:PostgresServiceRegistered = $false
+                $script:PostgresDataCreatedByInstaller = $false
+                # Re-ejecucion: se detiene el servicio propio ANTES de buscar
+                # puerto libre, para que su propio 5432 no cuente como ocupado.
+                if ($null -ne (Get-ParkosServiceState -Name (Get-ParkosPostgresServiceName))) {
+                    Stop-ParkosServiceByName -Name (Get-ParkosPostgresServiceName)
+                }
                 $script:port = Test-PostgresPorts
                 $script:apiPort = Test-ApiPort
                 $bootstrapPassword = New-ParkosDerivedPassword -SucursalUuid $SucursalUuid -Purpose 'postgres-bootstrap'
-                $script:PostgresInstallMethod = Install-Postgres -PgInstallPath $pgInstallPath -PgDataPath $pgDataPath -Port $script:port -SuperuserPassword $bootstrapPassword
+                $installMethod = @(Install-Postgres -PgInstallPath $pgInstallPath -PgDataPath $pgDataPath -Port $script:port -SuperuserPassword $bootstrapPassword -DownloadDir $ctx.DownloadDir) | Select-Object -Last 1
+                $script:PostgresInstallMethod = $installMethod
                 $script:roles = Initialize-DatabaseRoles -PsqlPath $psqlPath -Port $script:port -BootstrapPassword $bootstrapPassword -SucursalUuid $SucursalUuid
 
                 # svc-parkos tiene que existir ANTES de Get-OrCreateParkosEnvCert:
@@ -2749,24 +2984,32 @@ function Get-ParkosStageDefinitions {
                     -SucursalUuid $SucursalUuid -CloudApiUrl $CloudApiUrl -JwtKeyPath $jwtKeyPath -SyncJwtPath $syncJwtPath
                 Set-MachineApiOrigin -Port $script:apiPort
 
-                Install-PgPartman -PgInstallPath $pgInstallPath -PsqlPath $psqlPath -Port $script:port
+                Install-PgPartman -PgInstallPath $pgInstallPath -PsqlPath $psqlPath -Port $script:port -DownloadDir $ctx.DownloadDir
                 Register-PgPartmanMaintenance -PsqlPath $psqlPath -Port $script:port
             }
-            # Desinstala Postgres con el MISMO mecanismo que lo instalo
-            # ($script:PostgresInstallMethod, seteado por Install-Postgres en
-            # el Action de arriba): winget uninstall si vino por winget,
-            # borrar el directorio si vino por el ZIP de fallback. El data
-            # directory se borra siempre (ambos metodos lo crean en el mismo
-            # lugar).
+            # Revierte SOLO lo que esta corrida de la etapa creo (Install-
+            # Postgres marca $script:PostgresInstallMethod = 'zip' al empezar
+            # a tocar el equipo): detiene y desregistra el servicio de
+            # Windows de Postgres, borra los binarios extraidos y borra el
+            # data directory SOLO si lo creo esta corrida (un cluster previo
+            # que se reutilizo nunca se borra). NO revierte (se documenta en
+            # MANUAL.md): svc-parkos, certificado CMS, secrets\ (.env,
+            # jwt.key, pgpass.conf), PGPASSFILE, PARKOS_API_ORIGIN, archivos
+            # de share\extension y la tarea ParkosPgPartmanMaintenance.
             Rollback = {
                 $pgInstallPath = $script:StageContext.PgInstallPath
                 $pgDataPath = $script:StageContext.PgDataPath
-                if ($script:PostgresInstallMethod -eq 'winget') {
-                    winget uninstall --id PostgreSQL.PostgreSQL.16 --silent | Out-Host
-                } elseif ($script:PostgresInstallMethod -eq 'zip') {
+                if ($script:PostgresServiceRegistered) {
+                    Remove-ParkosPostgresService -PgInstallPath $pgInstallPath
+                    $script:PostgresServiceRegistered = $false
+                }
+                if ($script:PostgresInstallMethod -eq 'zip') {
                     Remove-Item $pgInstallPath -Recurse -Force -ErrorAction SilentlyContinue
                 }
-                Remove-Item $pgDataPath -Recurse -Force -ErrorAction SilentlyContinue
+                if ($script:PostgresDataCreatedByInstaller) {
+                    Remove-Item $pgDataPath -Recurse -Force -ErrorAction SilentlyContinue
+                    $script:PostgresDataCreatedByInstaller = $false
+                }
             }
         }
         '2' = @{
@@ -3086,6 +3329,8 @@ function Invoke-ParkosInstall {
     $script:roles = $null
     $script:port = $null
     $script:PostgresInstallMethod = $null
+    $script:PostgresServiceRegistered = $false
+    $script:PostgresDataCreatedByInstaller = $false
 
     # DEC-INST-17: menu-driven instead of a single forced top-to-bottom pass.
     # Each stage keeps its own internal gate (Wait-ForApiHealth,
@@ -3498,6 +3743,8 @@ function Invoke-ParkosUnattendedCascade {
         $script:roles = $null
         $script:port = $null
         $script:PostgresInstallMethod = $null
+        $script:PostgresServiceRegistered = $false
+        $script:PostgresDataCreatedByInstaller = $false
         $script:StageStatus = [ordered]@{
             build = [ParkosStageState]::NotRun
             db = [ParkosStageState]::NotRun; migrate = [ParkosStageState]::NotRun; sucursal = [ParkosStageState]::NotRun; seed = [ParkosStageState]::NotRun

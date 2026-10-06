@@ -465,6 +465,36 @@ Describe 'Uninstall-Parkos' {
         Assert-MockCalled Remove-Item -ModuleName Parkos -ParameterFilter { $Path -eq 'C:\Program Files\Parkos' } -Scope It
     }
 
+    It 'desregistra el servicio postgresql-parkos (el del instalador) y lo prefiere sobre otro postgresql-*' {
+        Mock Read-Host -ModuleName Parkos { 'CONFIRMAR' }
+        Mock Test-Path -ModuleName Parkos { $true }
+        Mock Get-ItemProperty -ModuleName Parkos { $null }
+        Mock Get-LocalUser -ModuleName Parkos { $null }
+        Mock Get-Service -ModuleName Parkos { @([PSCustomObject]@{ Name = 'postgresql-x64-16' }, [PSCustomObject]@{ Name = 'postgresql-parkos' }) }
+        Mock Get-ScheduledTask -ModuleName Parkos { $null }
+        Mock Invoke-ParkosScDelete -ModuleName Parkos { }
+
+        $result = Uninstall-Parkos -PurgeData
+
+        $result.ExitCode | Should Be 0
+        Assert-MockCalled Stop-Service -ModuleName Parkos -ParameterFilter { $Name -eq 'postgresql-parkos' } -Times 1 -Exactly -Scope It
+        Assert-MockCalled Invoke-ParkosScDelete -ModuleName Parkos -ParameterFilter { $ServiceName -eq 'postgresql-parkos' } -Times 1 -Exactly -Scope It
+    }
+
+    It 'nunca desregistra un servicio postgresql-* ajeno al instalador' {
+        Mock Read-Host -ModuleName Parkos { 'CONFIRMAR' }
+        Mock Test-Path -ModuleName Parkos { $true }
+        Mock Get-ItemProperty -ModuleName Parkos { $null }
+        Mock Get-LocalUser -ModuleName Parkos { $null }
+        Mock Get-Service -ModuleName Parkos { [PSCustomObject]@{ Name = 'postgresql-x64-16' } }
+        Mock Get-ScheduledTask -ModuleName Parkos { $null }
+        Mock Invoke-ParkosScDelete -ModuleName Parkos { }
+
+        Uninstall-Parkos -PurgeData | Out-Null
+
+        Assert-MockCalled Invoke-ParkosScDelete -ModuleName Parkos -Times 0 -Exactly -Scope It
+    }
+
     It 'throws when -PurgeData -Unattended is used without -UnattendedPurgeConfirmed' {
         { Uninstall-Parkos -PurgeData -Unattended } | Should Throw 'UnattendedPurgeConfirmed'
     }

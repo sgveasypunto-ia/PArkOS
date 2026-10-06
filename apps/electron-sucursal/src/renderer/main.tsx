@@ -1,3 +1,7 @@
+// Must be first: installs the window.bridge shim in a plain browser (lite
+// installer). No-op inside Electron, where the preload already defines it.
+import './browserBridgeSetup';
+
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';

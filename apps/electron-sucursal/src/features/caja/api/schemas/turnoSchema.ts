@@ -86,7 +86,11 @@ export const abrirTurnoSchema = z.object({
       z
         .number({ invalid_type_error: 'validation.number.required' })
         .min(0, { message: 'validation.number.minZero' }),
-    ),
+    )
+    // El form de abrir turno ya no renderiza este campo (el container
+    // envia 0 a la API). Si fuera requerido, el submit fallaria en
+    // silencio (validacion invalida sin ningun <FormMessage> visible).
+    .optional(),
   observaciones: z.string().optional(),
 });
 

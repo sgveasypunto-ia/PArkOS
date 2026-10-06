@@ -57,7 +57,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 
 | Componente | Detalle |
 |---|---|
-| **PostgreSQL 16** | Vía `winget` (preferente) o, si `winget` no está disponible o falla, desde un ZIP de EDB incluido en el payload. Se crean los roles `postgres` (bootstrap), `parkos` (superusuario de migración) y `parkos_app` (runtime, sin privilegios de superusuario) y la base `parkos` |
+| **PostgreSQL 16** | Siempre desde el ZIP de binarios de EDB (**ya no se usa `winget`**): si el payload trae `postgres\postgresql-16-windows-x64-binaries.zip` se usa ese; si no, el instalador lo **descarga solo** (necesita Internet) a `<DataPath>\downloads`. Se inicializa con `initdb`, se registra como **servicio de Windows `postgresql-parkos` de inicio automático** (arranca con el equipo) y se espera a que acepte conexiones antes de seguir. Se crean los roles `postgres` (bootstrap), `parkos` (superusuario de migración) y `parkos_app` (runtime, sin privilegios de superusuario) y la base `parkos` |
 | **`pg_partman`** | Extensión SQL-only (sin background worker). El mantenimiento de particiones lo dispara la tarea programada `ParkosPgPartmanMaintenance` (diaria, 02:00) |
 | **`api-sucursal`** | Servicio de Windows `ParkosApiSucursal` (binario Python congelado con PyInstaller, registrado con NSSM) |
 | **`job-sync-sucursal`** | Servicio de Windows `ParkosJobSyncSucursal` (mismo mecanismo) |
@@ -78,7 +78,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 
 ### 1.4 Qué queda corriendo al terminar
 
-- Servicios de Windows: `ParkosApiSucursal`, `ParkosJobSyncSucursal` (inicio automático) y el servicio nativo de PostgreSQL.
+- Servicios de Windows: `ParkosApiSucursal`, `ParkosJobSyncSucursal` y `postgresql-parkos` (PostgreSQL), todos de inicio automático.
 - Tarea programada `ParkosPgPartmanMaintenance`.
 - La app de escritorio instalada.
 - El módulo PowerShell `Parkos` disponible (`C:\Program Files\PowerShell\Modules\Parkos\1.0.0\`).
@@ -100,7 +100,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 | 7 | **Clave maestra** `parkos-master.key` | Archivo de 32 bytes o más. Soporte la entrega por canal seguro (ver 3.2) | Soporte | Pre-flight de la instalación guiada | `[FALLO] Clave maestra de Parkos` y no empieza |
 | 8 | **UUID de la sucursal** | Código `8-4-4-4-12` (letras y números separados por guiones). Está en la ficha de la sucursal del panel de administración | Administrador del panel admin | Cuando el instalador lo pide (es lo único que se escribe) | Hasta 5 intentos; luego `Demasiados intentos con un codigo de sucursal invalido ...` |
 | 9 | Dirección del servidor (nube) | Variable `PARKOS_CLOUD_API_URL` (`http://` o `https://`). **Opcional**: si no existe se usa `http://localhost:8000`. Se prueba la conexión a su `host:puerto` | Soporte / TI | Pre-flight | Servidor remoto sin respuesta: `[FALLO] Conexion con el servidor Parkos`. En `localhost`: solo `[AVISO]` y continúa |
-| 10 | Internet para Postgres | `winget` descarga PostgreSQL 16. Si no hay `winget`/internet, el payload debe traer el ZIP de EDB (ver [5](#5-el-payload-qué-debe-existir-en-installerpayload)) | Sucursal / soporte | Etapa 1 (Paso 1 de 8) | `Ni winget ni el ZIP de fallback (...) estan disponibles; no se puede instalar Postgres.` |
+| 10 | Internet para Postgres | El instalador **descarga** el ZIP de PostgreSQL 16 (~330 MB) desde `get.enterprisedb.com` en la etapa 1 (3 intentos con espera creciente; reanuda una descarga cortada). **No hay que bajar nada a mano.** Sin Internet: dejar el ZIP en `payload\postgres\` (ver [5](#5-el-payload-qué-debe-existir-en-installerpayload)) o en `<DataPath>\downloads\` | Sucursal / soporte | Etapa 1 (Paso 1 de 8) | `No se pudo obtener los binarios de Postgres 16.15-1 (se necesita Internet SOLO en este paso).` con la URL y la carpeta donde dejar el archivo |
 | 11 | Puertos libres | Uno de `5432` o `5433` (Postgres) y uno de `8000`, `8001` o `8002` (API); el instalador los prueba contra `127.0.0.1` | Sucursal / TI | Etapa 1 | `Puertos 5432 y 5433 ambos ocupados; ...` / `Puertos 8000, 8001, 8002 todos ocupados; ...` |
 | 12 | Sin instalación previa de Parkos | Que no exista `C:\ProgramData\Parkos\pairing.json` | — | Pre-flight (`Sin instalacion previa`) | `[FALLO]` y el aviso `Ya existe una instalacion de Parkos en este equipo.` |
 
@@ -112,7 +112,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 | Al arrancar | Internet a `github.com` solo si falta PowerShell 7; usuario administrador |
 | Pre-flight | Windows 10 21H2+, 5 GB libres, administrador, conexión al servidor (`host:puerto`), clave maestra válida, sin `pairing.json` |
 | EULA | `payload\README-EULA.txt` (salvo `-EulaAccepted`) |
-| Etapa 1 (Paso 1 de 8) | `winget` + internet, o `payload\postgres\postgresql-16-windows-x64-binaries.zip`; puertos libres; `payload\pg_partman\extension\`; clave maestra |
+| Etapa 1 (Paso 1 de 8) | Internet (o el ZIP en `payload\postgres\` / `<DataPath>\downloads\`); puertos libres; `ParkosPostgresDownload.ps1` junto al instalador; clave maestra. `payload\pg_partman\extension\` (si falta, se descarga y ensambla) |
 | Etapa 2 | `payload\services\migrate\migrate\migrate.exe` |
 | Etapa 4 | `payload\services\api-sucursal\...` y `payload\services\seed\seed\seed.exe` |
 | Etapas 5 y 6 | `payload\nssm.exe`, bundles `api-sucursal` y `job-sync-sucursal` |
@@ -182,7 +182,7 @@ Más detalle técnico (derivación, seguridad, qué hacer después): sección [6
 
 | Paso | Mensaje | Qué está haciendo |
 |---|---|---|
-| 1 de 8 | Instalando la base de datos | Instala PostgreSQL y crea usuarios y datos de acceso |
+| 1 de 8 | Instalando la base de datos | Descarga PostgreSQL (necesita Internet, ~330 MB, solo la primera vez), lo instala como servicio de Windows que arranca con el equipo y crea usuarios y datos de acceso |
 | 2 de 8 | Preparando las tablas de la base de datos | Crea la estructura de tablas |
 | 3 de 8 | Configurando esta sucursal | Guarda el código de la sucursal en la configuración |
 | 4 de 8 | Cargando los datos iniciales | Siembra catálogos (p. ej. tipos de vehículo) |
@@ -191,7 +191,7 @@ Más detalle técnico (derivación, seguridad, qué hacer después): sección [6
 | 7 de 8 | Instalando la aplicación de escritorio | Instala la aplicación que usa el personal |
 | 8 de 8 | Verificando que todo funcione | Comprueba todo e instala las herramientas de gestión |
 
-El tiempo total depende del equipo y de la descarga de PostgreSQL; el código no fija una duración (los pasos 5, 6 y 4 esperan hasta 30 segundos a que el servicio responda). Los mensajes dicen "puede tardar unos minutos".
+El tiempo total depende del equipo y de la descarga de PostgreSQL (si falla por falta de Internet, el instalador muestra la dirección y la carpeta donde dejar el archivo y se puede volver a ejecutar sin perder lo ya hecho); el código no fija una duración (los pasos 5, 6 y 4 esperan hasta 30 segundos a que el servicio responda). Los mensajes dicen "puede tardar unos minutos".
 
 ### 3.5 Al terminar
 
@@ -243,7 +243,8 @@ El instalador resuelve el payload como `<carpeta de parkos-installer.ps1>\payloa
 | `README-EULA.txt` | Texto del acuerdo de licencia | Repo (documento legal) | **Sí** | EULA (guiado y menú; no se lee con `-EulaAccepted` ni en `-Unattended`) | `EULA file not found at $EulaPath - a real EULA (...) must be staged there before this installer ships.` |
 | `management\Parkos.psd1`, `Parkos.psm1`, `about_Parkos.help.txt` | Módulo de gestión `Parkos` | Repo | **Sí** | Etapa 8 (`Install-ManagementModule`); opciones `A/R/U/V/X/D/M/C` del menú (importa desde aquí); `build-release.ps1` etapa Payload valida su existencia | `Falta $src en el payload - no se puede instalar el modulo de gestion Parkos.` / en build: `Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga).` |
 | `security\parkos-master.key` | Clave maestra (secreto de la empresa, ≥ 32 bytes) | **Soporte** (entrega manual, canal seguro) | No | Pre-flight guiado (bloquea) y etapa 1 (`New-ParkosDerivedPassword`) | Ver mensajes en la sección [6.5](#65-validación-y-mensajes) |
-| `postgres\postgresql-16-windows-x64-binaries.zip` | ZIP de binarios de PostgreSQL 16 (EDB) para instalación sin `winget` | **Soporte** (descarga manual de EDB; `build-release.ps1` solo avisa con `Write-Warning`) | No | Etapa 1, **solo** si `winget` falla | `Ni winget ni el ZIP de fallback ($zipPath) estan disponibles; no se puede instalar Postgres.` |
+| `postgres\postgresql-16-windows-x64-binaries.zip` | ZIP de binarios de PostgreSQL 16 (EDB). **Opcional**: solo para instalar sin Internet; si falta, la etapa 1 lo descarga a `<DataPath>\downloads` | **Soporte** (opcional; `build-release.ps1` solo avisa con `Write-Warning`) | No | Etapa 1 (se usa antes que la cache y que la descarga) | Se descarga; si tampoco hay Internet: `No se pudo obtener los binarios de Postgres ... URL ... Manual: descarga el archivo ... y guardalo como <DataPath>\downloads\<archivo>` |
+| `ParkosPostgresDownload.ps1` (junto a `parkos-installer.exe`; en el repo: `installer\shared\`) | Código compartido de descarga/instalación de Postgres y `pg_partman` (lo carga el instalador con dot-source) | `build-release.ps1` (lo copia a `payload\` en la etapa del instalador y lo incluye en `manifest.sha256.json`) | **Sí** (en `installer\shared\`) | Etapa 1 | `Falta ParkosPostgresDownload.ps1 junto al instalador ...` |
 | `nssm.exe` | NSSM 2.24 (x64) | `build-release.ps1` (descarga `nssm-2.24.zip` de `nssm.cc`) | No | Etapas 5 y 6 (registro de servicios); etapa 8 lo copia a `InstallPath\nssm.exe` | Etapas 5/6: error crudo de PowerShell al invocar `nssm.exe` (sin mensaje propio); etapa 8: `Falta $nssmSrc en el payload - no se puede instalar nssm.exe para el modulo de gestion Parkos.` |
 | `pg_partman\extension\pg_partman--5.1.0.sql` y `pg_partman.control` | Extensión `pg_partman` 5.1.0 SQL-only | `build-release.ps1` (descarga el fuente v5.1.0 y concatena `types`+`tables`+`functions`+`procedures`) | No | Etapa 1 (`Install-PgPartman`: copia a `share\extension\` de Postgres) | Error crudo de `Copy-Item` (sin mensaje propio) |
 | `services\api-sucursal\api-sucursal\` (`api-sucursal.exe` + onedir + `migrations\` + `alembic.ini`) | Servicio API congelado (PyInstaller `--onedir`) | `build-release.ps1 -ApiSucursal` | No | `Test-ParkosPayloadReady`; etapa 4 (arranque temporal); etapa 5 (copia a `InstallPath\api-sucursal\`) | Guiado: `Este instalador no trae los programas ya preparados ...`. Menú/etapa: `Falta el bundle del servicio 'api-sucursal' en el payload (...). Ejecute la opcion 0 ...` |
@@ -278,7 +279,7 @@ password = Base64( HMAC-SHA256( bytes_de_la_clave_maestra, UTF8("<UUID_SUCURSAL>
 
 | Propósito (`Purpose`) | Rol de PostgreSQL | Uso |
 |---|---|---|
-| `postgres-bootstrap` | `postgres` | Contraseña del superusuario nativo al instalar (vía `--optionfile` de `winget` o `initdb --pwfile`) |
+| `postgres-bootstrap` | `postgres` | Contraseña del superusuario nativo al instalar (`initdb --pwfile`) |
 | `parkos-superuser` | `parkos` | Superusuario de migración (`CREATE ROLE ... SUPERUSER`); lo usan `migrate.exe` y `seed.exe` |
 | `parkos-app` | `parkos_app` | Rol de runtime (lo fija la migración `0021` desde `PARKOS_APP_DB_PASSWORD`); va en `PARKOS_DB_URL`/`DATABASE_URL` del `.env` |
 
@@ -440,21 +441,21 @@ flowchart LR
 
 | Aspecto | Detalle |
 |---|---|
-| Orden interno | (1) `Test-PostgresPorts` (5432, si no 5433) y `Test-ApiPort` (8000, 8001, 8002); (2) contraseña `postgres-bootstrap`; (3) `Install-Postgres`; (4) `Initialize-DatabaseRoles`; (5) `Ensure-ServiceAccount`; (6) `New-JwtSigningKey` + `Test-JwtSecretGate`; (7) `Get-OrCreateParkosEnvCert`; (8) `Write-RuntimeEnvFile`; (9) `Set-MachineApiOrigin`; (10) `Install-PgPartman`; (11) `Register-PgPartmanMaintenance` |
-| Postgres vía winget | `winget install --id PostgreSQL.PostgreSQL.16 --silent --accept-package-agreements --accept-source-agreements --override "--mode unattended --unattendedmodeui none --optionfile <tmp>"`. El archivo temporal (ASCII) lleva `superpassword`, `serverport`, `disable-components=stackbuilder` y se borra al terminar; así la contraseña no viaja en la línea de comandos |
-| Postgres vía ZIP | Solo si `winget` falla: `Expand-Archive` a `C:\Program Files\PostgreSQL\16`, `initdb -D $DataPath\pg-data --locale=es-CO --encoding=UTF8 -U postgres --pwfile=<tmp> --auth=scram-sha-256` y agrega `port = <puerto>` a `postgresql.conf`. **El código no registra ni arranca el servicio** (ver [16](#16-limitaciones-conocidas--no-verificado)) |
+| Orden interno | (1) si ya existe el servicio `postgresql-parkos` se detiene (re-ejecución); `Test-PostgresPorts` (5432, si no 5433) y `Test-ApiPort` (8000, 8001, 8002); (2) contraseña `postgres-bootstrap`; (3) `Install-Postgres` (ZIP → `initdb` → registrar servicio → arrancar y esperar `pg_isready`); (4) `Initialize-DatabaseRoles`; (5) `Ensure-ServiceAccount`; (6) `New-JwtSigningKey` + `Test-JwtSecretGate`; (7) `Get-OrCreateParkosEnvCert`; (8) `Write-RuntimeEnvFile`; (9) `Set-MachineApiOrigin`; (10) `Install-PgPartman`; (11) `Register-PgPartmanMaintenance` |
+| Obtención del ZIP | `Get-ParkosPostgresZipForInstall`: (1) `payload\postgres\` si trae un ZIP válido; (2) cache `<DataPath>\downloads\` (se verifica el SHA-256 registrado en `<zip>.sha256`); (3) descarga desde `https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64-binaries.zip` a `.part` (3 intentos, espera 5/10 s, reanuda con `Range`), se valida (`pg_ctl`, `initdb`, `psql`) y se registra su hash. Si falla: error en español con la URL y la carpeta donde dejar el archivo; **la etapa se puede reintentar** desde el menú o volviendo a ejecutar el instalador guiado |
+| Instalación y servicio | `Expand-ParkosPostgresZip` extrae a `C:\Program Files\PostgreSQL\16` (si ya está extraído no repite); `initdb -D $DataPath\pg-data --locale=es-CO --encoding=UTF8 -U postgres --pwfile=<tmp> --auth=scram-sha-256` solo si el data directory no tiene `PG_VERSION` (si existe se **reutiliza**; uno a medias se rehace); fija `port` y `logging_collector = on` en `postgresql.conf` (reemplaza, no duplica); da control total del data directory a `NT AUTHORITY\NetworkService` (`icacls`); `pg_ctl register -N postgresql-parkos -D <data> -S auto` (si el servicio ya existe se detiene y se re-registra: nunca se duplica); borra un `postmaster.pid` obsoleto (PID inexistente o que no es `postgres`); inicia el servicio y espera hasta 60 s a que `pg_isready` responda **antes** de crear roles y base. El servicio corre como `NetworkService` (Postgres no puede correr como Administrador/LocalSystem) |
 | Roles y base | Por `psql` (contraseña vía `.pgpass`, SQL por stdin): rol `parkos` `LOGIN SUPERUSER` (crea o altera) y `CREATE DATABASE parkos OWNER parkos` |
 | Cuenta local | `svc-parkos` (`New-LocalUser`; contraseña aleatoria de 32 caracteres, no se guarda; no expira; no puede cambiarla); se agrega a `SeBatchLogonRight` con `secedit`. Idempotente |
 | Certificado | `CN=ParkosEnvProtection` en `Cert:\LocalMachine\My` (`New-SelfSignedCertificate -Type DocumentEncryptionCert`), idempotente por *Subject*. Thumbprint en `secrets\env-cert-thumbprint.txt`. Lectura de la clave privada para `svc-parkos` (best-effort, solo avisa si falla) |
 | `.env` | Cifrado CMS (`Protect-CmsMessage`) en `secrets\.env`; claves en la sección [10](#10-variables-de-entorno-y-configuración) |
 | Variables de máquina | `PGPASSFILE` (ruta de `pgpass.conf`) y `PARKOS_API_ORIGIN=http://127.0.0.1:<puerto API>` |
-| `pg_partman` | Copia `pg_partman\extension\*` a `C:\Program Files\PostgreSQL\16\share\extension\`; `CREATE SCHEMA IF NOT EXISTS partman` y `CREATE EXTENSION IF NOT EXISTS pg_partman WITH SCHEMA partman`; verifica en `pg_extension` |
+| `pg_partman` | `Get-ParkosPgPartmanExtension` usa `payload\pg_partman\extension\` o, si falta, descarga el fuente v5.1.0 y ensambla el SQL-only en `<DataPath>\downloads\pg_partman-extension`; `Install-ParkosPgPartmanExtension` lo copia a `C:\Program Files\PostgreSQL\16\share\extension\`; `CREATE SCHEMA IF NOT EXISTS partman` y `CREATE EXTENSION IF NOT EXISTS pg_partman WITH SCHEMA partman`; verifica en `pg_extension` |
 | Tarea programada | `ParkosPgPartmanMaintenance`: diaria 02:00, ejecuta `psql.exe -w -p <puerto> -h 127.0.0.1 -U parkos_app -d parkos -c "CALL partman.run_maintenance_proc();"` como `svc-parkos` (`LogonType ServiceAccount`) |
 | Puertos | Postgres `5432` o `5433` (probados contra `127.0.0.1`); el puerto de la API se decide aquí (8000–8002) |
-| Rollback (cascada) | `winget uninstall --id PostgreSQL.PostgreSQL.16 --silent` si el método fue `winget`; borra `C:\Program Files\PostgreSQL\16` si fue `zip`; borra `$DataPath\pg-data`. **No** revierte la cuenta `svc-parkos`, el certificado, `secrets\` (`.env`, `jwt.key`, `pgpass.conf`), `PGPASSFILE`, `PARKOS_API_ORIGIN`, los archivos de `share\extension` ni la tarea programada |
-| Verificar | `Get-Service *postgres*`; conexión `psql -w -h 127.0.0.1 -p <puerto> -U parkos -d parkos -c "SELECT 1"`; `Get-ScheduledTask ParkosPgPartmanMaintenance` |
+| Rollback (cascada) | Solo revierte lo que **esa corrida** creó: detiene y desregistra el servicio `postgresql-parkos` (si lo registró), borra `C:\Program Files\PostgreSQL\16` y borra `$DataPath\pg-data` **solo si esa corrida lo creó con `initdb`** (un cluster existente que se reutilizó nunca se borra). **No** revierte la cuenta `svc-parkos`, el certificado, `secrets\` (`.env`, `jwt.key`, `pgpass.conf`), `PGPASSFILE`, `PARKOS_API_ORIGIN`, los archivos de `share\extension`, la cache `<DataPath>\downloads` (a propósito, para no volver a descargar) ni la tarea programada |
+| Verificar | `Get-Service postgresql-parkos` (`Running`, inicio `Automatic`); `pg_isready -h 127.0.0.1 -p <puerto>`; conexión `psql -w -h 127.0.0.1 -p <puerto> -U parkos -d parkos -c "SELECT 1"`; `Get-ScheduledTask ParkosPgPartmanMaintenance` |
 
-> Las contraseñas **no** viajan por argumentos: `winget` usa `--optionfile`, `psql` recibe el SQL por stdin, `migrate.exe` y `seed.exe` reciben la conexión por variable de entorno de proceso (evita Event ID 4688/Sysmon/EDR).
+> Las contraseñas **no** viajan por argumentos: `initdb` usa `--pwfile`, `psql` recibe el SQL por stdin, `migrate.exe` y `seed.exe` reciben la conexión por variable de entorno de proceso (evita Event ID 4688/Sysmon/EDR).
 
 ### 7.5 Etapa 2 — Migraciones
 
@@ -632,7 +633,7 @@ C:\Program Files\Parkos\                           (InstallPath)
 C:\Program Files\PostgreSQL\16\                    (ruta fija; independiente de -InstallPath)
 ├── bin\ (psql.exe, pg_dump.exe, pg_restore.exe, initdb.exe)
 ├── share\extension\                               (pg_partman--5.1.0.sql + pg_partman.control)
-└── data\ ...                                      (si winget: la ubicación la decide el instalador de EDB; no verificado)
+└── data\ ...                                      (`pg-data\`: lo crea `initdb`; el servicio `postgresql-parkos` apunta aquí)
 
 C:\Program Files\PowerShell\Modules\Parkos\1.0.0\  (Parkos.psd1, Parkos.psm1, about_Parkos.help.txt)  [etapa 8]
 
@@ -667,7 +668,7 @@ C:\ProgramData\Parkos\                             (DataPath)
 
 | Elemento | Detalle |
 |---|---|
-| Servicios | `ParkosApiSucursal`, `ParkosJobSyncSucursal` (NSSM, auto-inicio); servicio nativo de PostgreSQL (si `winget`) |
+| Servicios | `ParkosApiSucursal`, `ParkosJobSyncSucursal` (NSSM, auto-inicio); `postgresql-parkos` (`pg_ctl register -S auto`, cuenta `NetworkService`) |
 | Parámetros NSSM | Bajo `HKLM\SYSTEM\CurrentControlSet\Services\<servicio>\Parameters`, incluido `AppEnvironmentExtra` (el contenido del `.env` en texto plano; ver [15](#15-seguridad-y-cumplimiento)) |
 | Tareas programadas | `ParkosPgPartmanMaintenance` (02:00), `ParkosBackupDiario` (por defecto 03:00, opcional) |
 | Cuenta local | `svc-parkos` |
@@ -882,9 +883,9 @@ El módulo usa **siempre** las rutas por defecto (`C:\Program Files\Parkos`, `C:
 
 | Siempre borra | Solo con `-PurgeData` |
 |---|---|
-| Servicios NSSM `ParkosApiSucursal`/`ParkosJobSyncSucursal`; tarea `ParkosPgPartmanMaintenance`; MSI de `web_sucursal`; `InstallPath` completo (incluye `releases\`); carpeta del módulo | `logs\`, `pg-data\`, `backups\`, `secrets\`, `installer-runs\`; tarea `ParkosBackupDiario`; usuario `svc-parkos`; detiene el servicio de Postgres y borra `C:\Program Files\PostgreSQL\16` |
+| Servicios NSSM `ParkosApiSucursal`/`ParkosJobSyncSucursal`; tarea `ParkosPgPartmanMaintenance`; MSI de `web_sucursal`; `InstallPath` completo (incluye `releases\`); carpeta del módulo | `logs\`, `pg-data\`, `backups\`, `secrets\`, `installer-runs\`; tarea `ParkosBackupDiario`; usuario `svc-parkos`; detiene y desregistra el servicio `postgresql-parkos` (si hay otro `postgresql-*` ajeno lo detiene pero no lo desregistra) y borra `C:\Program Files\PostgreSQL\16` |
 
-Cada paso va en su propio `try/catch`: un fallo suma una advertencia y no frena el resto (`ExitCode 1` si hubo alguna). **No** elimina: el certificado `CN=ParkosEnvProtection`, las variables de máquina `PGPASSFILE` y `PARKOS_API_ORIGIN`, ni el registro del paquete de `winget` de PostgreSQL; tampoco `current-version.txt`, `manifest.sha256.json` ni `auto-update-paused.flag` si no se usa `-PurgeData` (los datos permanecen en `DataPath`).
+Cada paso va en su propio `try/catch`: un fallo suma una advertencia y no frena el resto (`ExitCode 1` si hubo alguna). **No** elimina: el certificado `CN=ParkosEnvProtection`, las variables de máquina `PGPASSFILE` y `PARKOS_API_ORIGIN`, ni la cache `<DataPath>\downloads` sin `-PurgeData`; tampoco `current-version.txt`, `manifest.sha256.json` ni `auto-update-paused.flag` si no se usa `-PurgeData` (los datos permanecen en `DataPath`).
 
 ---
 
@@ -916,7 +917,7 @@ El **manifest de integridad** (`manifest.sha256.json`) se genera solo si en la m
 ### 13.3 Qué debe incluir soporte antes de entregar
 
 1. `payload\security\parkos-master.key` (≥ 32 bytes) **antes** del build (si se entrega aparte, usar `-MasterKeyPath` en el equipo y no incluirla en el medio).
-2. `payload\postgres\postgresql-16-windows-x64-binaries.zip` si el equipo puede no tener `winget`/internet (descarga manual desde EDB; ver también las limitaciones del camino ZIP).
+2. (Opcional) `payload\postgres\postgresql-16-windows-x64-binaries.zip` solo si el equipo no tendrá Internet durante la instalación: por defecto el instalador lo descarga solo.
 3. El resto lo produce `build-release.ps1`.
 4. Rama: `-SourceBranch dev` (default) para integración; para un release certificado, `release/vX.Y.Z` o `main` (gitflow: `main` solo recibe releases).
 
@@ -930,7 +931,7 @@ El **manifest de integridad** (`manifest.sha256.json`) se genera solo si en la m
 | ☐ | `services\api-sucursal\api-sucursal\api-sucursal.exe`, `services\job-sync-sucursal\job-sync-sucursal\job-sync-sucursal.exe`, `services\migrate\migrate\migrate.exe`, `services\seed\seed\seed.exe`, `services\doctor\doctor\doctor.exe` |
 | ☐ | `apps\*.msi` (uno solo, el instalador toma el primero) |
 | ☐ | `manifest.sha256.json` (solo necesario para `-Command Update`) |
-| ☐ | `postgres\postgresql-16-windows-x64-binaries.zip` (si no hay `winget`) |
+| ☐ | `ParkosPostgresDownload.ps1` junto a `parkos-installer.exe` (lo copia `build-release.ps1`); `postgres\postgresql-16-windows-x64-binaries.zip` (opcional, solo instalación sin Internet) |
 
 ### 13.5 Pruebas
 
@@ -1006,8 +1007,8 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 |---|---|---|
 | `Puertos 5432 y 5433 ambos ocupados; no se puede instalar Postgres de Parkos.` | Ambos en uso | Liberar uno |
 | `Puertos 8000, 8001, 8002 todos ocupados; no se puede instalar el servicio api-sucursal.` | Los 3 en uso | Liberar uno |
-| `Ni winget ni el ZIP de fallback ($zipPath) estan disponibles; no se puede instalar Postgres.` | Sin `winget`/internet y sin ZIP | Instalar `winget` o agregar el ZIP al payload |
-| `initdb fallo al inicializar el data directory de Postgres.` | Falla del camino ZIP | Revisar el ZIP y la configuración regional |
+| `No se pudo obtener los binarios de Postgres 16.15-1 (se necesita Internet SOLO en este paso). Detalle / URL / Manual ...` | Sin Internet o EDB inaccesible tras 3 intentos | Reintentar la etapa 1 con Internet, o descargar el ZIP desde la URL del mensaje y guardarlo en la carpeta indicada (`<DataPath>\downloads\`) o en `payload\postgres\` |\n| `Falta ParkosPostgresDownload.ps1 junto al instalador ...` | El archivo compartido no viaja con el instalador | Copiar de nuevo `parkos-installer.exe` **con** `ParkosPostgresDownload.ps1` |\n| `No se pudo registrar el servicio de Windows postgresql-parkos` / `Postgres no acepto conexiones en 127.0.0.1:<puerto> tras 60 s.` | Falla de `pg_ctl register`/arranque (permisos, puerto, data directory) | Revisar el Visor de eventos (origen PostgreSQL) y `pg-data\log\`; reintentar la etapa 1 (es re-ejecutable) |
+| `initdb fallo al inicializar el data directory de Postgres.` | Falla de `initdb` (el instalador ya probó `--locale=es-CO` con el ZIP de EDB 16.15-1) | Revisar el ZIP y el espacio en disco; reintentar la etapa 1 |
 | Mensajes de clave maestra (`No se encontro la clave maestra ...`, `... demasiado corta ...`, `No se encontro el archivo indicado en -MasterKeyPath ...`) | Ver 6.5 | Ver 6.5 |
 | `No se pudo configurar el superusuario parkos.` | `psql` como `postgres` falló (contraseña/servicio no iniciado) | Verificar servicio y `pgpass.conf` |
 | `No se pudo crear la base de datos parkos.` | Ídem | Ídem |
@@ -1137,7 +1138,7 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 | **Contraseñas de PostgreSQL** | Derivadas con HMAC-SHA256 (DEC-INST-42); las 3 distintas; reproducibles por soporte con UUID + clave |
 | **Cifrado del `.env`** | CMS contra `CN=ParkosEnvProtection` (no DPAPI: no hay API DPAPI de alcance de máquina; `ConvertTo-SecureString` es de alcance de usuario, inútil para una cuenta distinta). Detección por contenido |
 | **Secreto JWT** | 64 bytes aleatorios (`RandomNumberGenerator`) por instalación; gate de ≥ 32 bytes y denylist de 6 secretos de desarrollo/placeholder (SHA256). No hay allowlist de secretos buenos (incoherente para un secreto aleatorio) |
-| **Secretos fuera de la línea de comandos** | `winget --optionfile`, `psql` por stdin, `migrate.exe`/`seed.exe` por variable de entorno de proceso (evita Event ID 4688/Sysmon/EDR) |
+| **Secretos fuera de la línea de comandos** | `initdb --pwfile`, `psql` por stdin, `migrate.exe`/`seed.exe` por variable de entorno de proceso (evita Event ID 4688/Sysmon/EDR) |
 | **Ámbito de cuentas** | `svc-parkos`: cuenta local sin sesión interactiva con `SeBatchLogonRight`, usada por las tareas programadas; lectura de la clave privada del certificado (best-effort). Los servicios NSSM **no** usan `svc-parkos` (cuenta por defecto de NSSM). Rol `parkos_app`: sin `CREATE ROLE` (se comprueba en la etapa 8); el runtime nunca usa el superusuario |
 | **Red** | `api-sucursal` escucha en `0.0.0.0` (código de `app.py`) y el instalador no restringe el enlace ni crea reglas de firewall; restringir el acceso externo al puerto de la API queda a cargo de TI. Para PostgreSQL no se define `listen_addresses` (no verificado) |
 | **Logs sin secretos** | El log de la cascada no contiene contraseñas; `Export-ParkosDiagnostics` redacta secretos y aborta sin ZIP ante redacción incompleta; los mensajes de la clave muestran solo ruta y longitud |
@@ -1151,10 +1152,10 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 
 ### 16.1 Funcionalidad no implementada o con huecos (verificado en el código)
 
+> Los puntos 2 y 3 (camino ZIP incompleto y ruta de datos inconsistente con `winget`) se corrigieron: la etapa 1 siempre usa el ZIP, registra y arranca el servicio. La numeración se conserva.
+
 1. **Pairing/`sync-agent.jwt`/`pairing.json`:** ningún código del instalador ni del módulo los escribe. El comando `parkos_core.cli.pair` (variables `PARKOS_PAIRING_TOKEN`, `PARKOS_CLOUD_API_URL`, `PARKOS_SYNC_JWT_PATH`, `PARKOS_SUCURSAL_UUID`) existe en el backend, pero **no hay un `.exe` congelado ni paso del instalador** que lo ejecute; cómo se empareja una sucursal instalada así **no está verificado**. Además `pairing.json` no lo crea `pair.py` (la búsqueda en el repo solo lo encuentra en el pre-flight y en el módulo), por lo que la verificación `Sin instalacion previa` hoy prácticamente nunca bloquea y **no impide reinstalar sobre una instalación existente** (reinstalar regeneraría `jwt.key`).
-2. **Camino ZIP de PostgreSQL incompleto:** `Install-PostgresViaZip` solo extrae, ejecuta `initdb` y agrega `port`; no registra ni arranca el servicio, por lo que `Initialize-DatabaseRoles` no podría conectar. Tampoco está verificado que la estructura del ZIP de EDB deje `bin\initdb.exe` bajo `C:\Program Files\PostgreSQL\16` ni que `--locale=es-CO` esté disponible.
-3. **Ruta de datos de PostgreSQL inconsistente:** con `winget` el data directory lo decide EDB; `Test-CrashRecovery` y `postgres-config.txt` del diagnóstico asumen `$DataPath\pg-data\postgresql.conf` y el rollback de la etapa 1 borra `$DataPath\pg-data`, no el directorio real de `winget`.
-4. **Rollback parcial de la etapa 1:** no revierte `svc-parkos`, el certificado, `secrets\`, `PGPASSFILE`, `PARKOS_API_ORIGIN`, los archivos de `share\extension` ni la tarea programada. La etapa 4 (seed) no tiene rollback.
+4. **Rollback parcial de la etapa 1:** ya detiene/desregistra el servicio `postgresql-parkos`, borra los binarios y el data directory que creó esa corrida, pero no revierte `svc-parkos`, el certificado, `secrets\`, `PGPASSFILE`, `PARKOS_API_ORIGIN`, los archivos de `share\extension`, la cache de descargas ni la tarea programada. La etapa 4 (seed) no tiene rollback.
 5. **Estado en memoria:** el estado de las etapas y las contraseñas derivadas no persisten; reanudar en una sesión nueva exige repetir desde la etapa 1 (reejecutar la 1 vuelve a instalar/configurar Postgres y **regenera `jwt.key`**).
 6. **ACL de `secrets\`:** solo `pgpass.conf` se restringe en la instalación; el directorio, `.env` y `jwt.key` heredan la ACL de `C:\ProgramData` hasta que `Repair-ParkosInstall` (E4, solo si la salud no es 0) o una acción manual la endurece. Si se endurece a Administrators+SYSTEM, **no verificado** si `svc-parkos` (tareas `ParkosBackupDiario` y `ParkosPgPartmanMaintenance`, que dependen de `PGPASSFILE`/`.env`) conserva el acceso necesario.
 7. **Secretos en NSSM:** `AppEnvironmentExtra` guarda las variables del `.env` (incluida la URL de la base con la contraseña de `parkos_app`) en texto plano en el registro de cada servicio; la ACL de esas claves no se verificó.
@@ -1165,7 +1166,7 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 12. **`Get-ParkosVersion` es un placeholder** (PR1): no reporta versión pese a estar exportado y ser invocado por `Export-ParkosDiagnostics`.
 13. **`auto-update-paused.flag` es informativo:** nadie lo lee.
 14. **`releases\` no se puede preservar por separado** al desinstalar sin `-PurgeData` (vive bajo `InstallPath`, DEC-INST-37).
-15. **`Uninstall-Parkos` no limpia** el certificado, `PGPASSFILE`, `PARKOS_API_ORIGIN` ni el paquete de `winget`.
+15. **`Uninstall-Parkos` no limpia** el certificado, `PGPASSFILE` ni `PARKOS_API_ORIGIN`.
 16. **`current-version.txt` no se crea en la instalación:** la primera actualización sintetiza `unknown-<timestamp>` como versión saliente.
 17. **Sin canal piloto/beta:** canal único `latest` (DEC-INST-06); `Repair-ParkosInstall` no admite `-Version`.
 18. **Sin tracking de filas del seed**, por lo que no existe un `DELETE` de catálogos sembrados (decisión deliberada).
@@ -1174,10 +1175,11 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 
 ### 16.2 No verificado en este análisis (solo lectura de código)
 
-- Ejecución real de cualquier etapa, del MSI, de `winget` o de `ps2exe`/`parkos-installer.exe`.
+- Ejecución real completa de cualquier etapa, del MSI o de `ps2exe`/`parkos-installer.exe`. De la etapa 1 se verificó con el ZIP real de EDB solo la extracción, `initdb --locale=es-CO` y la idempotencia; el registro/arranque del servicio (`pg_ctl register`, `NetworkService`, `pg_isready`) solo está probado con mocks y requiere una prueba en un equipo real con administrador.
+- Que `$PSScriptRoot`/`AppContext.BaseDirectory` apunten a la carpeta del `.exe` compilado con `ps2exe` (de ello depende encontrar `ParkosPostgresDownload.ps1`).
 - Duración de cada etapa (el código solo fija esperas máximas de 30 s en `/health` y en el ciclo de sondeo).
 - Instalación de PowerShell 7 desde un PowerShell 5.1 **no elevado** (el MSI se instala antes de pedir la elevación).
-- Políticas de ejecución de scripts del equipo; nombre del servicio nativo de PostgreSQL, carpeta de instalación y acceso directo de la app (los definen EDB/MSI).
+- Políticas de ejecución de scripts del equipo; carpeta de instalación y acceso directo de la app (los define el MSI).
 - Que `LogonType ServiceAccount` con la cuenta local `svc-parkos` ejecute las tareas programadas correctamente.
 - CI e2e: no provisiona la clave maestra y no pasa `-SkipStage 0` (ver 13.6); su cabecera también afirma que `Update`/`Restore` no propagan el código de salida, pero el despachador actual sí hace `exit $result.ExitCode`.
 - Ruta de verificación del firewall, y firma de binarios.

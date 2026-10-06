@@ -161,14 +161,11 @@ function Get-PostgresZip {
         Write-Host '[payload] Postgres 16 ZIP already cached, skipping.'
         return
     }
-    # EnterpriseDB does not publish a stable, predictable direct-download URL
-    # for a given Postgres/Windows build (their CDN paths are resolved
-    # through the interactive downloads page). Do not fabricate one here  -
-    # resolve the real URL manually (or via `winget show --id
-    # PostgreSQL.PostgreSQL.16` metadata) and drop the ZIP at $dest, or let
-    # HU-F22.2's winget path handle it online instead of relying on this
-    # fallback ZIP.
-    Write-Warning "[payload] Postgres 16 EDB ZIP not staged at $dest  - no stable direct-download URL exists; fetch it manually from https://www.enterprisedb.com/download-postgresql-binaries and place it there, or rely on the winget path (HU-F22.2) instead of the offline fallback."
+    # OPCIONAL (DEC-INST-45): la etapa 1 del instalador descarga el ZIP de EDB
+    # por si misma (installer\shared\ParkosPostgresDownload.ps1) a
+    # <DataPath>\downloads cuando no hay uno aqui. Dejarlo en $dest solo hace
+    # falta para instalar SIN internet; no se descarga en el build.
+    Write-Warning "[payload] Postgres 16 ZIP not staged at $dest  - optional: the installer downloads it at install time (internet needed); drop the EDB ZIP there only for offline installs."
 }
 
 function Get-NssmBinary {
@@ -354,6 +351,13 @@ function Build-ParkosInstallerExe {
         Write-Warning '[installer] installer/parkos-installer.ps1 does not exist yet (Fases 21-24 of plan.md  - separate deliverable). Skipping ps2exe compilation.'
         return
     }
+    # ps2exe no empaqueta los archivos que el script dot-sourcea: el codigo
+    # compartido de descarga de Postgres viaja junto al .exe (payload\) y se
+    # verifica en manifest.sha256.json (New-PayloadIntegrityManifest).
+    $sharedPostgres = Join-Path $InstallerRoot 'shared\ParkosPostgresDownload.ps1'
+    if (-not (Test-Path $sharedPostgres)) { throw "[installer] Falta $sharedPostgres (codigo compartido de descarga de Postgres)." }
+    Copy-Item -Path $sharedPostgres -Destination (Join-Path $PayloadRoot 'ParkosPostgresDownload.ps1') -Force
+
     if (-not (Get-Module -ListAvailable -Name ps2exe)) {
         Write-Warning "[installer] PowerShell module 'ps2exe' is not installed (Install-Module ps2exe -Scope CurrentUser). Skipping compilation."
         return
@@ -389,6 +393,7 @@ function New-PayloadIntegrityManifest {
         'services\job-sync-sucursal\job-sync-sucursal\job-sync-sucursal.exe'
         'services\migrate\migrate\migrate.exe'
         'services\doctor\doctor\doctor.exe'
+        'ParkosPostgresDownload.ps1'
     )
 
     $hashes = [ordered]@{}
