@@ -60,6 +60,21 @@ def _new_response() -> MagicMock:
     return r
 
 
+class _AllowAll:
+    """Scope stub that allows every branch: isolates the operador- checks."""
+
+    def allows(self, uuid_sucursal: uuid_lib.UUID | None) -> bool:
+        return uuid_sucursal is not None
+
+
+def _admin_ctx(*, actor: uuid_lib.UUID) -> MagicMock:
+    ctx = MagicMock()
+    ctx.actor_uuid = actor
+    ctx.issuer_prefix = "admin-"
+    ctx.sucursal_uuid = None  # global mode: no X-Sucursal-Context header
+    return ctx
+
+
 def _select_returning(sesion: MagicMock | None) -> MagicMock:
     m = MagicMock()
     m.scalar_one_or_none.return_value = sesion
@@ -114,6 +129,7 @@ async def test_happy_path_groups_by_medio_pago_and_reports_reversos() -> None:
             session=session,
             ctx=ctx,
             _claims=None,
+            scope=_AllowAll(),
         )
 
     assert isinstance(result, ResumenCierreTurnoRead)
@@ -151,6 +167,7 @@ async def test_zero_state_returns_empty_medios() -> None:
             session=session,
             ctx=_make_ctx(sucursal=sucursal, actor=usuario),
             _claims=None,
+            scope=_AllowAll(),
         )
 
     assert result.medios_pago == []
@@ -176,6 +193,7 @@ async def test_cross_branch_operator_gets_uniform_404() -> None:
             session=session,
             ctx=_make_ctx(sucursal=uuid_lib.uuid4(), actor=usuario),
             _claims=None,
+            scope=_AllowAll(),
         )
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail["error"] == "sesion_not_found"
@@ -198,6 +216,7 @@ async def test_other_operators_sesion_gets_uniform_404() -> None:
             session=session,
             ctx=_make_ctx(sucursal=sucursal, actor=uuid_lib.uuid4()),
             _claims=None,
+            scope=_AllowAll(),
         )
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail["error"] == "sesion_not_found"
@@ -218,6 +237,7 @@ async def test_unknown_sesion_gets_404() -> None:
             session=session,
             ctx=_make_ctx(sucursal=uuid_lib.uuid4(), actor=uuid_lib.uuid4()),
             _claims=None,
+            scope=_AllowAll(),
         )
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail["error"] == "sesion_not_found"
@@ -241,11 +261,68 @@ async def test_open_sesion_gets_409_before_any_total_is_exposed() -> None:
             session=session,
             ctx=_make_ctx(sucursal=sucursal, actor=usuario),
             _claims=None,
+            scope=_AllowAll(),
         )
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["error"] == "sesion_abierta"
     # Only the sesion lookup ran: no aggregate was computed.
     assert session.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_outside_allowed_sucursales_gets_uniform_404_before_the_409() -> None:
+    """A global-mode admin- token must not read another branch's totals."""
+    from fastapi import HTTPException
+    from parkos_core.api.v1 import operacion as handler_mod
+    from parkos_core.auth.tenancy import BranchScope
+
+    admin = uuid_lib.uuid4()
+    sesion = _make_sesion(sucursal=uuid_lib.uuid4(), usuario=uuid_lib.uuid4())
+    sesion.timestamp_cierre = None  # open: the 409 must NOT leak for foreign branches
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_select_returning(sesion))
+    scope = BranchScope(
+        actor_uuid=admin, issuer_prefix="admin-", permitidas=frozenset({uuid_lib.uuid4()})
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await handler_mod.get_resumen_cierre_turno(
+            response=_new_response(),
+            uuid_sesion=sesion.uuid,
+            session=session,
+            ctx=_admin_ctx(actor=admin),
+            _claims=None,
+            scope=scope,
+        )
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"] == "sesion_not_found"
+    assert session.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_inside_allowed_sucursales_reaches_the_closed_sesion_check() -> None:
+    from fastapi import HTTPException
+    from parkos_core.api.v1 import operacion as handler_mod
+    from parkos_core.auth.tenancy import BranchScope
+
+    admin, sucursal = uuid_lib.uuid4(), uuid_lib.uuid4()
+    sesion = _make_sesion(sucursal=sucursal, usuario=uuid_lib.uuid4())
+    sesion.timestamp_cierre = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_select_returning(sesion))
+    scope = BranchScope(actor_uuid=admin, issuer_prefix="admin-", permitidas=frozenset({sucursal}))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await handler_mod.get_resumen_cierre_turno(
+            response=_new_response(),
+            uuid_sesion=sesion.uuid,
+            session=session,
+            ctx=_admin_ctx(actor=admin),
+            _claims=None,
+            scope=scope,
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"] == "sesion_abierta"
 
 
 def test_wire_shape_is_additive_and_mi_turno_read_is_frozen() -> None:

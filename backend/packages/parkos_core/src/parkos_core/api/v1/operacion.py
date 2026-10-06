@@ -1596,6 +1596,7 @@ async def get_resumen_cierre_turno(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_ingreso_issuer_dep),
+    scope: BranchScope = _scope_dep,
 ) -> ResumenCierreTurnoRead:
     """Aggregate the sesion's payments for the post-close read-only summary.
 
@@ -1624,13 +1625,17 @@ async def get_resumen_cierre_turno(
             detail={"error": "sesion_not_found", "uuid_sesion": str(uuid_sesion)},
             headers=no_store,
         )
-    if ctx.issuer_prefix == "operador-" and (
-        ctx.sucursal_uuid is None
-        or sesion_row.uuid_sucursal != ctx.sucursal_uuid
-        or sesion_row.uuid_usuario != ctx.actor_uuid
+    if not scope.allows(sesion_row.uuid_sucursal) or (
+        ctx.issuer_prefix == "operador-"
+        and (
+            ctx.sucursal_uuid is None
+            or sesion_row.uuid_sucursal != ctx.sucursal_uuid
+            or sesion_row.uuid_usuario != ctx.actor_uuid
+        )
     ):
-        # Uniform 404 for "other branch" AND "other operator's sesion":
-        # a distinct 403 would let a caller probe which uuids exist.
+        # Uniform 404 for "other branch" (admin- tokens outside their
+        # allowed sucursales included) AND "other operator's sesion": a
+        # distinct 403 would let a caller probe which uuids exist.
         raise HTTPException(
             status_code=404,
             detail={"error": "sesion_not_found", "uuid_sesion": str(uuid_sesion)},
