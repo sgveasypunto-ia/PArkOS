@@ -73,7 +73,7 @@ assert len(SYNC_CATALOG_BY_NAME) == len(SYNC_CATALOG), "duplicate entry name in 
 #      every such row stuck at ``mark_failed(unknown_table)`` with an
 #      unbounded retry loop (real finding, branch E2E 2026-09-25).
 _PARTMAN_SUFFIX_RE = re.compile(
-    r"(?:_p(?:_current|_default|\d{4}_?\d{2}(?:_?\d{2})?|\d{8})|_default)$"
+    r"(?:_p_(?:current|default|\d{4}_?\d{2}(?:_?\d{2})?)|_p\d{8}|_default)$"
 )
 
 
