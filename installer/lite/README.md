@@ -15,8 +15,20 @@ Manual completo (testers y soporte): [MANUAL.md](MANUAL.md).
 
 ## Requisitos
 
-`git`, `uv`, `node` (LTS) y `pnpm`. El paso 10 del TUI (parte de la opcion 1) dice que falta y como
-instalarlo (`winget install ...`). Funciona con Windows PowerShell 5.1 o pwsh 7.
+Solo Windows (PowerShell 5.1 o pwsh 7) e internet **durante la instalacion**. Sin admin y sin winget.
+El paso 10 (parte de la opcion 1) usa `git`, `uv`, `node` (>= 20) y `pnpm` (>= 10) del sistema si ya
+son compatibles; si no, descarga copias portatiles a `<LITE>\tools\` (solo las ve el lite; no se toca
+el PATH ni el registro de la maquina). Sin internet: el mensaje dice la URL y donde dejar el archivo
+en `<LITE>\downloads`; luego repetir la opcion 10.
+
+| Herramienta | Version fijada | Origen | Verificacion |
+|---|---|---|---|
+| Node.js | 22.23.3 | nodejs.org/dist (zip, ~30 MB) | SHA-256 fijado + `SHASUMS256.txt` |
+| pnpm | 10.0.0 (`packageManager` de `apps/`) | `npm install -g --prefix tools\pnpm` | integridad npm |
+| uv | 0.12.23 | GitHub astral-sh/uv (zip, ~18 MB) | SHA-256 fijado + asset `.sha256` |
+| Git (MinGit) | 2.56.0.2 | GitHub git-for-windows (zip, ~40 MB) | SHA-256 fijado (digest del release) |
+
+Para quitarlas: borrar `<LITE>\tools` y correr la opcion 10. Detalle en [MANUAL.md](MANUAL.md#3-requisitos-previos).
 
 ## Como correrlo
 
