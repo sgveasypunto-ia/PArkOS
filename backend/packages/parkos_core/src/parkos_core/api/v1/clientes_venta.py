@@ -13,7 +13,7 @@ KD-VENTA-01 mirror of F1.11 KD-TKT-01):
   6. V6 ``cantidad_maxima_vehiculos`` in-process check.
   7. V4 per-placa duplicate detection (F1.7
      ``resolve_active_subscription_for_exit`` reuse).
-  8. V7 A-09 prorrateo compute (DEC-VENTA-03).
+  8. V7 full-plan amount (PT-3: no proration).
   8a. Optional V8 F1.9 cobro sub-chain (when ``cobrar_ahora=true``).
   9. V9 INSERT subscription + junction (pg_advisory_xact_lock) + SINGLE
      COMMIT + response shape + ``Cache-Control: no-store``.
@@ -69,7 +69,6 @@ guards (payment atomicity), which is the one that actually matters.
 from __future__ import annotations
 
 import uuid as uuid_lib
-from datetime import timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -256,9 +255,12 @@ async def venta_suscripcion(
                 headers=no_store,
             ) from exc
 
-    # --- Step 8: V7 A-09 prorrateo compute (DEC-VENTA-03). -------------
+    # --- Step 8: V7 full plan amount + billing-cycle end (PT-3). -------
+    # The full plan price is always charged (no proration) and the cycle
+    # is `fecha_inicio_cobertura + duracion_dias`, not the calendar month.
     try:
-        monto_proporcional = repo_venta.calcular_prorrateo(
+        monto_a_cobrar = repo_venta.calcular_monto_suscripcion(plan=plan)
+        fecha_vencimiento = repo_venta.calcular_fecha_vencimiento(
             plan=plan,
             fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
         )
@@ -270,8 +272,6 @@ async def venta_suscripcion(
         ) from exc
 
     # --- Step 9: V9 INSERT subscription + junction (REQ-OP-08 lock). ---
-    duracion_dias = plan.duracion_dias or 0
-    fecha_vencimiento = payload.fecha_inicio_cobertura + timedelta(days=duracion_dias)
     subscripcion = await repo_venta.crear_subscripcion_cliente(
         session,
         actor_uuid=ctx.actor_uuid,
@@ -291,10 +291,8 @@ async def venta_suscripcion(
     # --- Step 8a: Optional V8 cobro sub-chain (F1.9 helpers reused). ----
     # V8 wires 4 sub-chain tables (facturas + factura_detalle +
     # factura_impuestos + factura_pagos) onto the same atomic TX as the
-    # subscripcion INSERTs. The cobro amount is:
-    # - monto_proporcional if fecha_inicio_cobertura.day > 15 (A-09 prorrateo,
-    #   persisted as `concepto='subscripcion_mensual_prorrateada'`)
-    # - plan.valor otherwise (`concepto='subscripcion_mensual'`)
+    # subscripcion INSERTs. The cobro amount is always the full plan.valor
+    # (PT-3, persisted as `concepto='subscripcion_mensual'`).
     # IVA is server-sourced from prod.impuestos.IVA (DEC-FACT-03: never
     # hardcoded). The medio_pago='datafono' branch enforces voucher
     # presence inline (mirror F1.9 facturacion.py:449-457; the typed
@@ -324,21 +322,7 @@ async def venta_suscripcion(
                 headers=no_store,
             )
 
-        # Compute cobro base.
-        plan_valor_raw = plan.valor if plan.valor is not None else Decimal(0)
-        plan_valor: Decimal = (
-            Decimal(plan_valor_raw) if not isinstance(plan_valor_raw, Decimal) else plan_valor_raw
-        )
-        monto_a_cobrar: Decimal = (
-            Decimal(monto_proporcional)
-            if monto_proporcional is not None
-            else plan_valor
-        )
-        detalle_concepto = (
-            "subscripcion_mensual_prorrateada"
-            if monto_proporcional is not None
-            else "subscripcion_mensual"
-        )
+        detalle_concepto = "subscripcion_mensual"
         iva_monto = (monto_a_cobrar * iva_porcentaje).quantize(Decimal("0.01"))
         total_con_iva = (monto_a_cobrar + iva_monto).quantize(Decimal("0.01"))
 
@@ -452,9 +436,9 @@ async def venta_suscripcion(
         fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
         fecha_vencimiento=fecha_vencimiento,
         valor_total_plan=plan.valor,
-        monto_prorrateado=monto_proporcional
-        if (payload.cobrar_ahora and monto_proporcional is not None)
-        else None,
+        # Kept for wire compatibility (PT-3): proration was removed, so
+        # this is always null; the amount charged is `valor_total_plan`.
+        monto_prorrateado=None,
         uuid_factura=uuid_factura,
         uuid_factura_electronica=uuid_fe,
         # envio_dian is created (when FE succeeds) via the helper below;

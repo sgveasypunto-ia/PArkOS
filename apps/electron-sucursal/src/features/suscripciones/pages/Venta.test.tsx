@@ -8,7 +8,8 @@
  *   T4: pago submit -> 422 typed error -> revert to step 4 (Placas) with
  *       inline placa group error.
  *   T5: cliente + plan + cantidad + placas -> advances to step 5 (Pago).
- *   T6: step 5 shows prorrateo badge when applicable (day>15).
+ *   T6: step 5 charges the FULL plan on the last day of the month (PT-3,
+ *       no proration badge) and defaults the start date to today in Bogota.
  *   T7: confirm -> useVentaSuscripcion.trigger called with full payload.
  *
  * The PagoModal composition is stubbed via a real `<PagoModal />`
@@ -119,7 +120,7 @@ beforeEach(() => {
     uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
     uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
     uuid_factura: '00000000-0000-0000-0000-0000000000d1',
-    monto_prorrateado: 11000,
+    monto_prorrateado: null,
   });
 });
 
@@ -269,8 +270,12 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     expect(screen.getByTestId('venta-paso-5')).toBeDefined();
   });
 
-  it('T6: step 5 shows prorrateo badge when applicable (day>15)', async () => {
-    // date=2026-09-19 (day=19) -> prorrateo visible
+  it('T6: last day of month charges the full plan, no badge, start date = today Bogota', async () => {
+    // 2026-09-30 20:00 Bogota == 2026-10-01T01:00Z (UTC is already next month).
+    // Only Date is faked so promises/act keep working.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-01T01:00:00Z'));
+    try {
     renderVenta();
     // step 1
     await act(async () => {
@@ -314,9 +319,18 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     await act(async () => {
       fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
     });
-    // step 5: prorrateo badge should be visible (total > 0)
+    // step 5: full plan.valor, never a prorated amount, no badge.
     expect(screen.getByTestId('pago-modal')).toBeDefined();
-    expect(screen.getByTestId('pago-total').textContent).toBeTruthy();
+    expect(screen.getByTestId('pago-total').textContent).toBe('30000');
+    expect(screen.queryByTestId('venta-prorrateo-badge')).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
+    });
+    const arg = mockTrigger.mock.calls[0]?.[0] as { fecha_inicio_cobertura: string };
+    expect(arg.fecha_inicio_cobertura).toBe('2026-09-30');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('T7: confirm -> useVentaSuscripcion.trigger called with full payload', async () => {
@@ -431,7 +445,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
       uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
       uuid_factura: facturaMock.uuid,
-      monto_prorrateado: 11000,
+      monto_prorrateado: null,
       factura: facturaMock,
       factura_electronica_error: null,
     });
@@ -542,7 +556,7 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
       uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
       uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
       uuid_factura: facturaMock.uuid,
-      monto_prorrateado: 11000,
+      monto_prorrateado: null,
       factura: facturaMock,
       factura_electronica_error: 'resolucion_facturacion_no_encontrada',
     });

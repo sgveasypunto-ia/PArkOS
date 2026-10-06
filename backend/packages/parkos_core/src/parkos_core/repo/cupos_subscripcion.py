@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +35,7 @@ from ..models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ..models.V.subscripciones_cliente import SubscripcionesCliente
 from ..models.V.tipo_subscripciones import TipoSubscripciones
 from ..models.V.vehiculos import Vehiculos
+from ..runtime.tiempo import hoy_bogota
 from . import versioned
 
 __all__ = [
@@ -113,7 +113,7 @@ async def listar_subscripciones_activas(
     El tenant scoping de ``uuid_sucursal`` lo aplica automáticamente el
     listener de ``db/tenancy.py`` -- no se filtra a mano acá.
     """
-    hoy = datetime.now(UTC).date()
+    hoy = hoy_bogota()
 
     conteo_subq = (
         select(
@@ -185,7 +185,7 @@ async def buscar_subscripcion_activa_por_identificacion(
     número de identificación. ``None`` si el cliente no existe o no tiene
     una suscripción activa en la sucursal actual (estado vacío, no error).
     """
-    hoy = datetime.now(UTC).date()
+    hoy = hoy_bogota()
     stmt = (
         select(SubscripcionesCliente, Clientes, TipoSubscripciones)
         .join(Clientes, Clientes.uuid == SubscripcionesCliente.uuid_cliente)

@@ -86,6 +86,7 @@ from ...repo.salida import (
     crear_salida_evento,
     insertar_alerta_salida_forzado,
 )
+from ...runtime.tiempo import hoy_bogota
 from ...schemas.operacion import (
     AnularSalidaNoPagadaPayload,
     CotizarFacturacion,
@@ -1353,7 +1354,7 @@ async def resolve_active_subscription_for_exit(
     if subscripcion is None:
         return SubscriptionLookupResult(found=False, message="no subscription at this branch")
 
-    reference_date = as_of or datetime.now(UTC).date()
+    reference_date = as_of or hoy_bogota()
     if (
         subscripcion.fecha_vencimiento is not None
         and subscripcion.fecha_vencimiento < reference_date

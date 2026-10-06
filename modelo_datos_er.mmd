@@ -112,6 +112,7 @@
         int cantidad_maxima_vehiculos "máximo de vehículos asociables al plan"
         bool mismo_tipo_vehiculo "true = todos los vehículos asociados del mismo tipo"
         string tipo_cliente_permitido "restringe el plan a un tipo de cliente (ej: solo B2B)"
+        uuid uuid_tipo_vehiculo FK "tipo de vehículo que cubre el plan; NULL = cualquier tipo"
         %% Audit
         timestamp created_at "cuándo la DB registró la fila (UTC)"
         uuid created_by "usuario que originó la inserción"
@@ -1191,6 +1192,7 @@
     clientes ||--o{ subscripciones_cliente : "contrata"
     sucursal ||--o{ subscripciones_cliente : "origen"
     tipo_subscripciones ||--o{ subscripciones_cliente : "plan"
+    tipos_vehiculo ||--o{ tipo_subscripciones : "cubre (opcional)"
 
     tipos_vehiculo ||--o{ vehiculos : "tipo"
     subscripciones_cliente ||--o{ subscripcion_vehiculos : "incluye"

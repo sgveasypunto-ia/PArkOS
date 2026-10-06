@@ -73,7 +73,7 @@ const happyResponse = {
   fecha_inicio_cobertura: '2026-09-19',
   fecha_vencimiento: '2026-10-19',
   valor_total_plan: 30000,
-  monto_prorrateado: 11000,
+  monto_prorrateado: null,
   uuid_factura: UUID_FACTURA,
   uuid_factura_electronica: null,
   uuid_envio_dian: null,

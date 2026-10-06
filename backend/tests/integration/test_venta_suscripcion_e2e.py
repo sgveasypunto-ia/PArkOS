@@ -139,7 +139,7 @@ async def test_venta_suscripcion_e2e_full_chain_single_commit() -> None:
         patch.object(handler_mod.repo_venta, "validar_placas_mismo_tipo_vehiculo", new=m_v5),
         patch.object(handler_mod.repo_venta, "validar_cantidad_maxima_vehiculos", new=m_v6),
         patch.object(handler_mod.repo_venta, "validar_placa_duplicada_subscripcion", new=m_v4),
-        patch.object(handler_mod.repo_venta, "calcular_prorrateo", new=m_v7),
+        patch.object(handler_mod.repo_venta, "calcular_monto_suscripcion", new=m_v7),
         patch.object(handler_mod.repo_venta, "crear_subscripcion_cliente", new=m_v9a),
         patch.object(handler_mod.repo_venta, "crear_subscripcion_vehiculos_bulk", new=m_v9b),
     ]

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ..models.V.subscripciones_cliente import SubscripcionesCliente
 from ..models.V.vehiculos import Vehiculos
+from ..runtime.tiempo import hoy_bogota
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ async def validar_subscripcion_vigente(
         SubscripcionesCliente.vigente_hasta.is_(None),
         SubscripcionesCliente.estado == "activo",
         SubscripcionesCliente.fecha_vencimiento
-        >= datetime.now(UTC).date(),
+        >= hoy_bogota(),
     )
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is not None:
@@ -129,7 +130,7 @@ async def resolve_active_subscription_for_exit(
     if subscripcion is None:
         return SubscriptionLookupResult(found=False, message="no subscription at this branch")
 
-    reference_date = as_of or datetime.now(UTC).date()
+    reference_date = as_of or hoy_bogota()
     if (
         subscripcion.fecha_vencimiento is not None
         and subscripcion.fecha_vencimiento < reference_date

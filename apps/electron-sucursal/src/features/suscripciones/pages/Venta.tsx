@@ -24,10 +24,9 @@
  * `VentaSuscripcionCantidadMaximaError`) and renders the inline
  * message with `instanceof` discrimination.
  *
- * Step 4 displays "Monto prorrateado: $X" badge when
- * `calcularMontoProporcional(plan, fecha) !== null` (A-09 +
- * DEC-VENTA-03). The PagoModal receives `total_cop = monto_prorrateado
- * ?? plan.valor` so vueltos live reflects the actual charge.
+ * PT-3: the full plan price is ALWAYS charged (no proration). The
+ * PagoModal receives `total_cop = plan.valor` so vueltos live reflects
+ * the actual charge; the default start date is today in Bogota.
  *
  * On pago 201 the wizard navigates to `/suscripciones` (F9.2 list).
  */
@@ -58,7 +57,7 @@ import {
   type VentaSuscripcionCreate,
 } from '../hooks/useVentaSuscripcion';
 import { useTiposSubscripciones } from '../hooks/useTiposSubscripciones';
-import { calcularMontoProporcional } from '../lib/prorrateo';
+import { hoyBogotaISO } from '../lib/fechaInicio';
 import { buildClienteVentaPayload } from '../lib/clienteVentaPayload';
 import { validarIdentificacion } from '../../../lib/validation/identificacion';
 import { validarNitModulo11 } from '../../../lib/validation/nit';
@@ -269,17 +268,12 @@ const buildPlacasSchema = (count: number) =>
   });
 
 /**
- * Default plan valor / duracion_dias used for the prorrateo
- * display when the operator hasn't selected a plan yet (early
- * render of step 4). When a plan IS selected, its `valor` and
- * `duracion_dias` drive the prorrateo computation. The authoritative
- * amount is still computed server-side at the POST (defense in
- * depth -- the wizard's preview is informational).
+ * Default plan valor used for the payment preview when the operator
+ * hasn't selected a plan yet. When a plan IS selected, its `valor`
+ * drives the amount. The authoritative amount is computed server-side
+ * at the POST (defense in depth -- the wizard's preview is informational).
  */
 const PLAN_PREVIEW_VALOR = 30000;
-const PLAN_PREVIEW_DURACION_DIAS = 30;
-
-const DEFAULT_FECHA_INICIO = '2026-09-19'; // day=19 → prorrateo visible
 
 export function Venta({
   onSuccess,
@@ -341,25 +335,14 @@ export function Venta({
 
   // Look up the selected plan's pricing once the operator commits to
   // a uuid_tipo_subscripcion at step 3. Used by step 4 to render the
-  // prorrateo badge against the canonical plan numbers instead of
-  // the F9.1-era 30000/30 preview baseline.
+  // payment preview against the canonical plan numbers instead of
+  // the F9.1-era 30000 preview baseline.
   const selectedPlan = useMemo(() => {
     if (!planes || !state.uuid_tipo_subscripcion) return null;
     return (
       planes.find((p) => p.uuid === state.uuid_tipo_subscripcion) ?? null
     );
   }, [planes, state.uuid_tipo_subscripcion]);
-
-  const montoProporcional = useMemo<number | null>(() => {
-    if (state.paso !== 5 || !state.fecha_inicio_cobertura) return null;
-    const planArgs = selectedPlan
-      ? {
-          valor: selectedPlan.valor,
-          duracion_dias: selectedPlan.duracion_dias,
-        }
-      : { valor: PLAN_PREVIEW_VALOR, duracion_dias: PLAN_PREVIEW_DURACION_DIAS };
-    return calcularMontoProporcional(planArgs, new Date(state.fecha_inicio_cobertura));
-  }, [state.paso, state.fecha_inicio_cobertura, selectedPlan]);
 
   const handlePaso1Siguiente = (): void => {
     const parsed = clienteSchema.safeParse(clienteIdent);
@@ -418,7 +401,7 @@ export function Venta({
       paso: 4,
       cantidad_vehiculos: n,
       placas: new Array(n).fill(''),
-      fecha_inicio_cobertura: DEFAULT_FECHA_INICIO,
+      fecha_inicio_cobertura: hoyBogotaISO(),
     }));
   };
 
@@ -442,7 +425,7 @@ export function Venta({
 
   const buildVentaPayload = (values: PagoFormValues): VentaSuscripcionCreate => {
     const fecha_inicio_cobertura =
-      state.fecha_inicio_cobertura ?? DEFAULT_FECHA_INICIO;
+      state.fecha_inicio_cobertura ?? hoyBogotaISO();
     // Ajuste identificación persona natural/empresa: el armado del
     // payload de cliente sale de `buildClienteVentaPayload` (función
     // pura compartida, `../lib/clienteVentaPayload.ts`) — ya NO se
@@ -586,8 +569,8 @@ export function Venta({
         step 4 reuses F8.1 `<PagoModal />` from
         `../../facturacion/components/PagoModal`. PagoModal owns
         vueltos live + FE con datos + NIT módulo 11 validation —
-        no duplicate UI in the wizard. `total_cop = monto_proporcional
-        ?? plan.valor` so vueltos live reflects the actual charge
+        no duplicate UI in the wizard. `total_cop = plan.valor`
+        so vueltos live reflects the actual charge
         (informational; authoritative amount is `factura_detalle.valor_unitario`).
         On pago 201, `handlePagoSubmit` calls `trigger` + navigates
         to `/suscripciones` (F9.2 list).
@@ -626,8 +609,7 @@ export function Venta({
             selected plan's `uuid` flows into
             `state.uuid_tipo_subscripcion` and its
             `cantidad_maxima_vehiculos` caps the next step's quantity
-            input. The full valor + duracion_dias drive the prorrateo
-            badge in step 5.
+            input. The plan valor drives the payment total in step 5.
           */}
           {planesLoading && (
             <p
@@ -850,17 +832,6 @@ export function Venta({
           <h2 className="text-lg">
             {t('suscripciones:venta.paso5.titulo', { defaultValue: 'Pago' })}
           </h2>
-          {montoProporcional !== null && (
-            <p
-              data-testid="venta-prorrateo-badge"
-              className="text-sm bg-muted px-2 py-1 inline-block rounded"
-            >
-              {t('suscripciones:venta.prorrateo.label', {
-                defaultValue: 'Monto prorrateado',
-              })}
-              : {formatCOP(montoProporcional)}
-            </p>
-          )}
           {/*
             PagoModal composition (REQ-OPS-180, OD-2 ratified):
             step 5 reuses F8.1 `<PagoModal />` from
@@ -871,7 +842,7 @@ export function Venta({
             flips the "Generar factura
             electrónica" toggle ON at step 5 entry -- operator can
             still untick for a no-FE sale. `total_cop =
-            monto_proporcional ?? plan.valor` so vueltos live
+            plan.valor` so vueltos live
             reflects the actual charge (informational; authoritative
             amount is `factura_detalle.valor_unitario`). On pago 201,
             `handlePagoSubmit` calls `trigger` with
@@ -889,10 +860,7 @@ export function Venta({
           */}
           <PagoModal
             uuid_ingreso={null}
-            total_cop={
-              montoProporcional ??
-              (selectedPlan?.valor ?? PLAN_PREVIEW_VALOR)
-            }
+            total_cop={selectedPlan?.valor ?? PLAN_PREVIEW_VALOR}
             clientePrefill={{
               nit: state.cliente?.numero_identificacion ?? '',
               nombre: state.cliente?.nombre ?? '',

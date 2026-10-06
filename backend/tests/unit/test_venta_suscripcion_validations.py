@@ -4,7 +4,7 @@ Pure logic + mock-based tests for V4 + V5 + V6 + V7 + V9a + V9b.
 
 * V5 ``validar_placas_mismo_tipo_vehiculo``: in-process same-tipo check.
 * V6 ``validar_cantidad_maxima_vehiculos``: in-process count check.
-* V7 ``calcular_prorrateo``: pure Decimal math + ZeroDivisionError catch.
+* V7 ``calcular_monto_suscripcion`` / ``calcular_fecha_vencimiento`` (PT-3, no proration).
 * V4 ``validar_placa_duplicada_subscripcion``: reuses F1.7
   ``resolve_active_subscription_for_exit`` (mocked).
 * V9a ``crear_subscripcion_cliente``: delegates to close_and_insert with
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 import uuid as uuid_lib
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -129,56 +129,102 @@ def test_validar_cantidad_maxima_vehiculos_ok_when_limit_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# V7 -- calcular_prorrateo (pure Decimal math)
+# V7 -- calcular_monto_suscripcion / calcular_fecha_vencimiento (PT-3)
 # ---------------------------------------------------------------------------
 
 
-def _make_plan_for_prorrateo(*, valor: float, duracion_dias: int) -> MagicMock:
+def _make_plan_for_monto(*, valor: float, duracion_dias: int | None) -> MagicMock:
     plan = MagicMock()
     plan.valor = valor
     plan.duracion_dias = duracion_dias
     return plan
 
 
-def test_calcular_prorrateo_after_day_15_returns_proportional() -> None:
-    """V7 T1: day > 15 -> (valor/duracion) * (dias_en_mes - day)."""
+@pytest.mark.parametrize(("valor", "duracion"), [(60000, 30), (220000, 60), (320000, 90)])
+def test_calcular_monto_suscripcion_always_full_plan_value(valor: int, duracion: int) -> None:
+    """PT-3: the charge is the full plan price; it takes no start date at all.
+
+    The old proration charged $0 on the last day of a month and a fraction
+    after day 15; the signature (plan only) now rules that out.
+    """
     from parkos_core.repo import venta_suscripcion as repo_venta
 
-    plan = _make_plan_for_prorrateo(valor=30000, duracion_dias=30)
-    fecha = date(2026, 9, 20)  # day=20; September has 30 days; dias_restantes=10
-    # 30000 / 30 * 10 = 10000.00
-    result = repo_venta.calcular_prorrateo(plan=plan, fecha_inicio_cobertura=fecha)
-    assert result == Decimal("10000.00")
+    plan = _make_plan_for_monto(valor=valor, duracion_dias=duracion)
+    assert repo_venta.calcular_monto_suscripcion(plan=plan) == Decimal(f"{valor}.00")
+    assert not hasattr(repo_venta, "calcular_prorrateo")
 
 
-def test_calcular_prorrateo_before_day_15_returns_full_value() -> None:
-    """V7 T2: day <= 15 -> full plan.valor."""
+@pytest.mark.parametrize("duracion", [None, 0, -5])
+def test_calcular_monto_suscripcion_invalid_duracion_raises(duracion: int | None) -> None:
     from parkos_core.repo import venta_suscripcion as repo_venta
 
-    plan = _make_plan_for_prorrateo(valor=30000, duracion_dias=30)
-    fecha = date(2026, 9, 10)  # day=10 -> full
-    result = repo_venta.calcular_prorrateo(plan=plan, fecha_inicio_cobertura=fecha)
-    assert result == Decimal("30000.00")
-
-
-def test_calcular_prorrateo_zero_duracion_raises() -> None:
-    """V7 T3: plan.duracion_dias=0 -> ZeroDivisionError -> PlanDuracionDiasInvalidoError."""
-    from parkos_core.repo import venta_suscripcion as repo_venta
-
-    plan = _make_plan_for_prorrateo(valor=30000, duracion_dias=0)
+    plan = _make_plan_for_monto(valor=30000, duracion_dias=duracion)
     with pytest.raises(repo_venta.PlanDuracionDiasInvalidoError) as excinfo:
-        repo_venta.calcular_prorrateo(plan=plan, fecha_inicio_cobertura=date(2026, 9, 20))
+        repo_venta.calcular_monto_suscripcion(plan=plan)
     assert "plan_duracion_dias_invalido" in str(excinfo.value)
 
 
-def test_calcular_prorrateo_boundary_day_15_returns_full() -> None:
-    """V7 edge: day == 15 boundary (inclusive) returns full."""
+@pytest.mark.parametrize(
+    ("inicio", "duracion", "esperado"),
+    [
+        (date(2026, 9, 1), 30, date(2026, 9, 30)),  # 30 days from day 1 -> day 30
+        (date(2026, 9, 20), 30, date(2026, 10, 19)),
+        (date(2026, 9, 20), 60, date(2026, 11, 18)),
+        (date(2026, 9, 20), 90, date(2026, 12, 18)),
+        (date(2026, 9, 30), 30, date(2026, 10, 29)),  # last day of month
+        (date(2026, 1, 31), 1, date(2026, 1, 31)),  # 1-day plan covers only the start day
+        (date(2028, 1, 31), 30, date(2028, 2, 29)),  # leap year: Jan 31 + 29 = Feb 29
+        (date(2028, 2, 1), 29, date(2028, 2, 29)),  # lands exactly on Feb 29
+        (date(2028, 2, 29), 30, date(2028, 3, 29)),  # start on leap day
+        (date(2027, 1, 31), 30, date(2027, 3, 1)),  # non-leap: Feb has 28 days
+        (date(2026, 12, 31), 60, date(2027, 2, 28)),  # year rollover
+    ],
+)
+def test_calcular_fecha_vencimiento_is_start_plus_duration_minus_one(
+    inicio: date, duracion: int, esperado: date
+) -> None:
+    """PD-01: cycle = fecha_inicio_cobertura + duracion_dias - 1 (inclusive last day)."""
     from parkos_core.repo import venta_suscripcion as repo_venta
 
-    plan = _make_plan_for_prorrateo(valor=30000, duracion_dias=30)
-    fecha = date(2026, 9, 15)
-    result = repo_venta.calcular_prorrateo(plan=plan, fecha_inicio_cobertura=fecha)
-    assert result == Decimal("30000.00")
+    plan = _make_plan_for_monto(valor=1, duracion_dias=duracion)
+    assert (
+        repo_venta.calcular_fecha_vencimiento(plan=plan, fecha_inicio_cobertura=inicio)
+        == esperado
+    )
+
+
+def test_calcular_fecha_vencimiento_invalid_duracion_raises() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    plan = _make_plan_for_monto(valor=1, duracion_dias=0)
+    with pytest.raises(repo_venta.PlanDuracionDiasInvalidoError):
+        repo_venta.calcular_fecha_vencimiento(
+            plan=plan, fecha_inicio_cobertura=date(2026, 9, 20)
+        )
+
+
+@pytest.mark.parametrize("duracion", [30, 60, 90])
+@pytest.mark.parametrize("inicio", [date(2026, 9, 1), date(2026, 9, 30), date(2028, 2, 29)])
+def test_vencimiento_semantics_covers_exactly_duration_calendar_days(
+    inicio: date, duracion: int
+) -> None:
+    """PD-01: a plan of N days is valid for EXACTLY N calendar days.
+
+    ``fecha_vencimiento`` is the last covered day and the validity predicates
+    use ``fecha_vencimiento >= hoy`` (subscripcion_activa.py): counting the
+    days from the start for which that predicate holds yields N.
+    """
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    plan = _make_plan_for_monto(valor=1, duracion_dias=duracion)
+    venc = repo_venta.calcular_fecha_vencimiento(plan=plan, fecha_inicio_cobertura=inicio)
+    cubiertos = [
+        d
+        for d in (inicio + timedelta(days=i) for i in range(duracion + 10))
+        if venc >= d
+    ]
+    assert len(cubiertos) == duracion
+    assert venc + timedelta(days=1) not in cubiertos
 
 
 # ---------------------------------------------------------------------------

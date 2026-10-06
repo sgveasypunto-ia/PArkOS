@@ -86,7 +86,7 @@ describe('<SuscripcionForm /> -- crear', () => {
     expect(screen.getByTestId('suscripcion-form-submit')).toBeDisabled();
   });
 
-  it('shows the monto de referencia panel once a plan + fecha are set', async () => {
+  it('shows the FULL plan valor in the monto panel once a plan is set (no proration)', async () => {
     window.localStorage.setItem(SUCURSAL_STORAGE_KEY, 'suc-1');
     render(
       <SuscripcionForm onSubmit={vi.fn()} onDone={vi.fn()} onCancel={vi.fn()} />,
@@ -99,9 +99,34 @@ describe('<SuscripcionForm /> -- crear', () => {
     await userEvent.selectOptions(screen.getByTestId('suscripcion-field-plan'), '33333333-3333-3333-3333-333333333333');
 
     await waitFor(() => {
-      expect(screen.getByTestId('suscripcion-monto-referencia').textContent).not.toMatch(
-        /Seleccioná un plan/,
-      );
+      const text = screen.getByTestId('suscripcion-monto-referencia').textContent ?? '';
+      expect(text).not.toMatch(/Seleccioná un plan/);
+      expect(text.replace(/\D/g, '')).toContain('30000');
+    });
+    // Whatever the start date (here: last day of a month), the amount is the full plan.
+    await userEvent.clear(screen.getByTestId('suscripcion-field-fecha-inicio'));
+    await userEvent.type(screen.getByTestId('suscripcion-field-fecha-inicio'), '2026-09-30');
+    await waitFor(() => {
+      const text = screen.getByTestId('suscripcion-monto-referencia').textContent ?? '';
+      expect(text.replace(/\D/g, '')).toContain('30000');
+    });
+  });
+
+  it('suggests fecha_vencimiento = inicio + duracion - 1 (plan of N days covers exactly N days)', async () => {
+    window.localStorage.setItem(SUCURSAL_STORAGE_KEY, 'suc-1');
+    render(
+      <SuscripcionForm onSubmit={vi.fn()} onDone={vi.fn()} onCancel={vi.fn()} />,
+      { wrapper },
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('suscripcion-field-plan')).toBeInTheDocument();
+    });
+    await userEvent.selectOptions(screen.getByTestId('suscripcion-field-plan'), '33333333-3333-3333-3333-333333333333');
+    await userEvent.clear(screen.getByTestId('suscripcion-field-fecha-inicio'));
+    await userEvent.type(screen.getByTestId('suscripcion-field-fecha-inicio'), '2026-09-01');
+    // PLAN has duracion_dias = 30: Sep 1 + 29 = Sep 30.
+    await waitFor(() => {
+      expect(screen.getByTestId('suscripcion-field-fecha-vencimiento')).toHaveValue('2026-09-30');
     });
   });
 

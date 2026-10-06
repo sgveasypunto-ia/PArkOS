@@ -138,6 +138,10 @@ _TIPO_SUBSCRIPCIONES = SyncCatalogEntry(
     direction="cloud_to_branch",
     broadcast_policy="all_branches",
     apply_strategy="close_and_insert",
+    # 0087 adds a NULLABLE uuid_tipo_vehiculo FK -> tipos_vehiculo. R22 guard
+    # (check_catalog_drift rule 5) forbids nullable FKs in depends_on, so the
+    # edge is not declared; tipos_vehiculo is listed first in this module, and a
+    # transient fk_violation self-heals on the next pull cycle.
     depends_on=(),
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",

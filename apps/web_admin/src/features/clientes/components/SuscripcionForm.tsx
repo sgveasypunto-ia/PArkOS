@@ -14,10 +14,11 @@
  * `venta_suscripcion` already uses server-side: create the subscripcion
  * row first, then bulk-attach vehiculos).
  *
- * BR2 (prorrateo): the "Monto de referencia del primer periodo" panel is
- * read-only and computed client-side via `calcularMontoReferencia`
- * (`lib/subscripciones.ts`) -- it is NEVER sent to the backend as a
- * charge; `SubscripcionesClienteCreate`/`Update` have no such field.
+ * BR2 (PT-3, no proration): the "Monto del primer periodo" panel is
+ * read-only and shows the FULL plan valor (the sale always charges the
+ * whole plan, regardless of the start date) -- it is NEVER sent to the
+ * backend as a charge; `SubscripcionesClienteCreate`/`Update` have no
+ * such field.
  *
  * Error mapping: the 3 new 422 codes this HU introduces
  * (`placa_con_suscripcion_vigente`, `cantidad_vehiculos_excede_plan`,
@@ -45,7 +46,6 @@ import {
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { listCatalog } from '@/features/catalogos/api/catalogApi';
-import { calcularMontoReferencia } from '@/lib/subscripciones';
 import { useSucursal } from '@/lib/sucursal-context';
 
 import {
@@ -136,7 +136,9 @@ export function SuscripcionForm({
     if (!planSeleccionado || !fechaInicio) return;
     const duracionDias = Number(planSeleccionado.duracion_dias ?? 0);
     if (!duracionDias) return;
-    const computed = addDaysIso(fechaInicio, duracionDias);
+    // PT-3 / PD-01: a plan of N days covers exactly N calendar days, so the
+    // last covered day (inclusive) is start + N - 1.
+    const computed = addDaysIso(fechaInicio, duracionDias - 1);
     const current = form.getValues('fecha_vencimiento');
     if (current === '' || current === autoComputedRef.current) {
       form.setValue('fecha_vencimiento', computed, { shouldValidate: true });
@@ -144,15 +146,11 @@ export function SuscripcionForm({
     }
   }, [subscripcion, planSeleccionado, fechaInicio, form]);
 
-  const montoReferencia = calcularMontoReferencia(
-    planSeleccionado
-      ? {
-          valor: planSeleccionado.valor as number | string | null,
-          duracion_dias: planSeleccionado.duracion_dias as number | null,
-        }
-      : null,
-    fechaInicio,
-  );
+  const valorPlan =
+    planSeleccionado && planSeleccionado.valor !== null && planSeleccionado.valor !== ''
+      ? Number(planSeleccionado.valor)
+      : Number.NaN;
+  const montoReferencia = Number.isFinite(valorPlan) ? valorPlan : null;
 
   function mapVehiculoError(e: unknown): string {
     const message = e instanceof Error ? e.message : '';
@@ -366,7 +364,7 @@ export function SuscripcionForm({
           data-testid="suscripcion-monto-referencia"
         >
           <span className="font-medium">
-            {t('suscripcionForm.montoReferencia', 'Monto de referencia del primer periodo')}
+            {t('suscripcionForm.montoReferencia', 'Monto del primer periodo (plan completo)')}
           </span>
           <span className="text-muted-foreground block">
             {montoReferencia !== null
@@ -377,7 +375,7 @@ export function SuscripcionForm({
                     maximumFractionDigits: 0,
                   }),
                 })
-              : t('suscripcionForm.montoReferenciaSinDatos', 'Seleccioná un plan y una fecha de inicio.')}
+              : t('suscripcionForm.montoReferenciaSinDatos', 'Seleccioná un plan.')}
           </span>
         </div>
 
