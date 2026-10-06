@@ -274,7 +274,9 @@ function Invoke-SourceUpdateAndBuild {
     [CmdletBinding()]
     param()
 
-    $missing = Test-BuildToolchain
+    # @() fuerza array: una funcion que retorna @() desenrolla a $null y
+    # $null.Count revienta bajo Set-StrictMode -Version Latest.
+    $missing = @(Test-BuildToolchain)
     if ($missing.Count -gt 0) {
         throw "Falta instalar: $($missing -join ', '). Alternativa: corre build-release.ps1 a mano en una maquina con el toolchain completo y copia installer\payload\ aca."
     }
