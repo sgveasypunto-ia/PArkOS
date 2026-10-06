@@ -39,14 +39,16 @@ def test_all_branches_has_no_predicate() -> None:
 
 def test_single_branch_filters_on_uuid_sucursal() -> None:
     spec = SYNC_CATALOG_BY_NAME["resolucion_facturacion"]
-    assert spec.broadcast_policy == "single_branch" and spec.has_uuid_sucursal
+    assert spec.broadcast_policy == "single_branch"
+    assert spec.has_uuid_sucursal
     where = _sql("resolucion_facturacion")
     assert where == f"prod.resolucion_facturacion.uuid_sucursal = '{BRANCH}'"
 
 
 def test_single_branch_without_uuid_sucursal_filters_on_own_uuid() -> None:
     spec = SYNC_CATALOG_BY_NAME["sucursal"]
-    assert spec.broadcast_policy == "single_branch" and not spec.has_uuid_sucursal
+    assert spec.broadcast_policy == "single_branch"
+    assert not spec.has_uuid_sucursal
     assert _sql("sucursal") == f"prod.sucursal.uuid = '{BRANCH}'"
 
 
@@ -62,7 +64,8 @@ def test_override_accepts_global_default_or_own_row() -> None:
 
 def test_subscription_direct_filters_on_uuid_sucursal() -> None:
     spec = SYNC_CATALOG_BY_NAME["subscripciones_cliente"]
-    assert spec.broadcast_policy == "subscription" and spec.has_uuid_sucursal
+    assert spec.broadcast_policy == "subscription"
+    assert spec.has_uuid_sucursal
     assert _sql("subscripciones_cliente") == (
         f"prod.subscripciones_cliente.uuid_sucursal = '{BRANCH}'"
     )
@@ -70,7 +73,8 @@ def test_subscription_direct_filters_on_uuid_sucursal() -> None:
 
 def test_subscription_transitive_uses_parent_subselect_without_vigencia() -> None:
     spec = SYNC_CATALOG_BY_NAME["subscripcion_vehiculos"]
-    assert spec.broadcast_policy == "subscription" and not spec.has_uuid_sucursal
+    assert spec.broadcast_policy == "subscription"
+    assert not spec.has_uuid_sucursal
     where = _sql("subscripcion_vehiculos")
     assert where is not None
     assert where.startswith("prod.subscripcion_vehiculos.uuid_subscripcion_cliente IN (SELECT")

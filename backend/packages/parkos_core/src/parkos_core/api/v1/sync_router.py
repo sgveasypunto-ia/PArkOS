@@ -744,7 +744,7 @@ _PULL_WIRE_METADATA_KEYS = frozenset(
 )
 
 
-_EPOCH = datetime(1970, 1, 1)
+_EPOCH = datetime(1970, 1, 1)  # noqa: DTZ001 - columns are naive UTC
 _ONE_MS = timedelta(milliseconds=1)
 
 
@@ -777,7 +777,7 @@ def _created_at_floor_for_seq(since_seq: int) -> datetime | None:
     try:
         return _EPOCH + (since_seq + 1) * _ONE_MS
     except OverflowError:
-        return None if since_seq > 0 else datetime.min
+        return None if since_seq > 0 else datetime.min  # noqa: DTZ901
 
 
 def _wire_payload(spec: Any, row: Any) -> dict[str, Any]:
@@ -870,7 +870,7 @@ async def _fetch_pull_rows(
     for spec in SYNC_CATALOG:
         if spec.direction not in _PULL_DIRECTIONS or spec.broadcast_policy is None:
             continue
-        model = spec.model_cls
+        model: Any = spec.model_cls
         predicate = build_scope_predicate(spec, uuid_sucursal)
         stmt = select(model).where(model.created_at >= floor)
         if spec.audit_class == "V":

@@ -25,6 +25,7 @@ unscoped (leaking) query.
 from __future__ import annotations
 
 import uuid as uuid_lib
+from typing import Any
 
 from sqlalchemy import ColumnElement, or_, select
 
@@ -43,7 +44,7 @@ def build_scope_predicate(
     registered parent mapping.
     """
     policy = spec.broadcast_policy
-    model = spec.model_cls
+    model: Any = spec.model_cls
 
     if policy is None:
         raise ValueError(
@@ -74,7 +75,7 @@ def build_scope_predicate(
         # Lazy import — same circularity reasoning as broadcast_resolver.
         from ..catalog.sync_catalog import SYNC_CATALOG_BY_NAME
 
-        parent_model = SYNC_CATALOG_BY_NAME[parent_table].model_cls
+        parent_model: Any = SYNC_CATALOG_BY_NAME[parent_table].model_cls
         parent_uuids = select(parent_model.uuid).where(
             parent_model.uuid_sucursal == uuid_sucursal
         )
