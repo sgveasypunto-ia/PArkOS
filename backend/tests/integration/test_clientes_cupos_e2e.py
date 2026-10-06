@@ -31,10 +31,13 @@ import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 
+SUCURSAL = uuid_lib.uuid4()
+
+
 def _make_ctx() -> MagicMock:
     ctx = MagicMock()
     ctx.actor_uuid = uuid_lib.uuid4()
-    ctx.sucursal_uuid = uuid_lib.uuid4()
+    ctx.sucursal_uuid = SUCURSAL
     return ctx
 
 
@@ -60,6 +63,7 @@ def _make_plan(**overrides) -> MagicMock:
     p.valor = overrides.get("valor", Decimal("30000.00"))
     p.cantidad_maxima_vehiculos = overrides.get("cantidad_maxima_vehiculos", 2)
     p.mismo_tipo_vehiculo = overrides.get("mismo_tipo_vehiculo", False)
+    p.uuid_tipo_vehiculo = overrides.get("uuid_tipo_vehiculo")
     return p
 
 
@@ -77,6 +81,7 @@ def _make_subscripcion(**overrides) -> MagicMock:
     s.uuid_subscripcion_cliente = overrides.get("uuid_subscripcion_cliente", uuid_lib.uuid4())
     s.fecha_inicio_cobertura = overrides.get("fecha_inicio_cobertura")
     s.fecha_vencimiento = overrides.get("fecha_vencimiento")
+    s.uuid_sucursal = overrides.get("uuid_sucursal", SUCURSAL)
     return s
 
 
@@ -230,6 +235,11 @@ async def test_agregar_vehiculo_happy_path_single_commit() -> None:
             handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=m_buscar_o_crear
         ),
         patch.object(handler_mod.repo_cupos, "agregar_vehiculo_a_subscripcion", new=m_agregar),
+        patch.object(
+            handler_mod.repo_venta,
+            "validar_placa_duplicada_subscripcion",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         result = await handler_mod.agregar_vehiculo(
             response=_new_response(),
@@ -278,6 +288,11 @@ async def test_agregar_vehiculo_cantidad_maxima_excedida_no_commit() -> None:
             handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=m_buscar_o_crear
         ),
         patch.object(handler_mod.repo_cupos, "agregar_vehiculo_a_subscripcion", new=m_agregar),
+        patch.object(
+            handler_mod.repo_venta,
+            "validar_placa_duplicada_subscripcion",
+            new=AsyncMock(return_value=None),
+        ),
         pytest.raises(HTTPException) as exc_info,
     ):
         await handler_mod.agregar_vehiculo(
@@ -329,6 +344,11 @@ async def test_agregar_vehiculo_tipo_incompatible_no_commit() -> None:
             handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=m_buscar_o_crear
         ),
         patch.object(handler_mod.repo_cupos, "agregar_vehiculo_a_subscripcion", new=m_agregar),
+        patch.object(
+            handler_mod.repo_venta,
+            "validar_placa_duplicada_subscripcion",
+            new=AsyncMock(return_value=None),
+        ),
         pytest.raises(HTTPException) as exc_info,
     ):
         await handler_mod.agregar_vehiculo(
@@ -402,6 +422,11 @@ async def test_agregar_vehiculo_ya_inscrito_no_commit() -> None:
             handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=m_buscar_o_crear
         ),
         patch.object(handler_mod.repo_cupos, "agregar_vehiculo_a_subscripcion", new=m_agregar),
+        patch.object(
+            handler_mod.repo_venta,
+            "validar_placa_duplicada_subscripcion",
+            new=AsyncMock(return_value=None),
+        ),
         pytest.raises(HTTPException) as exc_info,
     ):
         await handler_mod.agregar_vehiculo(

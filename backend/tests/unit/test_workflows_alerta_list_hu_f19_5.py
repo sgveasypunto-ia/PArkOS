@@ -68,6 +68,7 @@ def _make_alerta_row(
     row.vigente_desde = vigente_desde or _now()
     row.vigente_hasta = None
     row.estado = estado
+    row.datos_nuevos = None
     return row
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,4 +54,34 @@ async def insertar_alerta_forzado(
     return alerta
 
 
-__all__ = ["insertar_alerta_forzado"]
+async def insertar_alerta_informativa(
+    session: AsyncSession,
+    *,
+    tipo_alerta: str,
+    uuid_sucursal: uuid_lib.UUID,
+    actor_uuid: uuid_lib.UUID,
+    datos: dict[str, Any],
+) -> Alerta:
+    """Insert an informational ``prod.alerta`` row (``estado='abierta'``).
+
+    ``tipo_alerta`` must exist in ``prod.alert_types`` (the registry owns the
+    severity; PT-2 seeds ``suscripcion_placa_agregada`` / ``_quitada`` as
+    ``info`` in migration 0086). ``datos`` lands in the JSONB
+    ``datos_nuevos`` column. Same TX as the business write: the caller
+    commits, the helper only flushes.
+    """
+    alerta = Alerta(
+        uuid_sucursal=uuid_sucursal,
+        uuid_usuario=actor_uuid,
+        tipo_alerta=tipo_alerta,
+        estado="abierta",
+        timestamp_evento=datetime.now(UTC).replace(tzinfo=None),
+        uuid_arqueo=None,
+        datos_nuevos=datos,
+    )
+    session.add(alerta)
+    await session.flush()
+    return alerta
+
+
+__all__ = ["insertar_alerta_forzado", "insertar_alerta_informativa"]

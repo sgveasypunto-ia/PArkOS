@@ -185,6 +185,13 @@ def _register_global_catalog_reads(
     async def _catalog_list(
         cursor: str | None = Query(None),
         limit: int = Query(50, ge=1, le=200),
+        uuid_tipo_vehiculo: uuid_lib.UUID | None = Query(
+            None,
+            description=(
+                "Solo ``tipo-subscripciones`` (PT-2): devuelve los planes de ese "
+                "tipo de vehiculo MAS los planes sin tipo (NULL = cualquier tipo)."
+            ),
+        ),
         session: AsyncSession = Depends(get_session),
         _claims: None = Depends(_catalog_reads_issuer_dep),
     ):
@@ -198,6 +205,16 @@ def _register_global_catalog_reads(
         stmt = select(model_cls)
         if hasattr(model_cls, "vigente_hasta"):
             stmt = stmt.where(model_cls.vigente_hasta.is_(None))
+        if uuid_tipo_vehiculo is not None:
+            if model_cls is not TipoSubscripciones:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "filter_not_supported", "detail": "uuid_tipo_vehiculo"},
+                )
+            stmt = stmt.where(
+                (TipoSubscripciones.uuid_tipo_vehiculo == uuid_tipo_vehiculo)
+                | TipoSubscripciones.uuid_tipo_vehiculo.is_(None)
+            )
         stmt = stmt.order_by(order_col, model_cls.uuid.asc())
         if decoded is not None:
             from datetime import datetime
