@@ -35,6 +35,7 @@ from typing import Any
 from sqlalchemy import ColumnElement, Select, or_, select
 
 from ...models.L_E.factura_electronica import FacturaElectronica
+from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.usuarios_sucursal import UsuariosSucursal
 from ..catalog.schema import SyncCatalogEntry
@@ -100,10 +101,29 @@ def _clientes_b2b_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElemen
     return _cliente_in_branch_scope(model.uuid_cliente, uuid_sucursal)
 
 
+def _vehiculos_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
+    """Vehicles linked, through ``subscripcion_vehiculos``, to a subscription sold
+    at ``uuid_sucursal``. No vigencia filter on the subscription (a renewal inserts
+    a new row) and no ``sync_identity_alias`` branch (no sucursal column, local-only).
+    Served by the UK of ``subscripcion_vehiculos`` plus the
+    ``subscripciones_cliente (uuid_sucursal, ...)`` indexes of migration 0083.
+    """
+    from_subscription = (
+        select(SubscripcionVehiculos.uuid_vehiculo)
+        .join(
+            SubscripcionesCliente,
+            SubscripcionesCliente.uuid == SubscripcionVehiculos.uuid_subscripcion_cliente,
+        )
+        .where(SubscripcionesCliente.uuid_sucursal == uuid_sucursal)
+    )
+    return model.uuid.in_(from_subscription)
+
+
 _DERIVED_RULES["usuarios"] = _usuarios_rule
 _DERIVED_RULES["permisos_usuario"] = _permisos_usuario_rule
 _DERIVED_RULES["clientes"] = _clientes_rule
 _DERIVED_RULES["clientes_b2b"] = _clientes_b2b_rule
+_DERIVED_RULES["vehiculos"] = _vehiculos_rule
 
 
 def build_scope_predicate(

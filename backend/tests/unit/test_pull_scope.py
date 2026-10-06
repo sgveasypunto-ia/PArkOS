@@ -182,3 +182,28 @@ def test_clientes_b2b_scope_follows_its_cliente() -> None:
         f"prod.clientes_b2b.uuid_cliente IN {_CLIENTES_FROM_SUBSCRIPTION} "
         f"OR prod.clientes_b2b.uuid_cliente IN {_CLIENTES_FROM_INVOICE}"
     )
+
+
+# ---------------------------------------------------------------------------
+# derived — vehiculos follow a subscription at the branch
+# ---------------------------------------------------------------------------
+
+
+def test_vehiculos_scope_is_subscription_at_the_branch() -> None:
+    spec = SYNC_CATALOG_BY_NAME["vehiculos"]
+    assert spec.broadcast_policy == "derived"
+    assert spec.direction == "bidirectional"
+    assert _sql("vehiculos") == (
+        "prod.vehiculos.uuid IN (SELECT prod.subscripcion_vehiculos.uuid_vehiculo "
+        "FROM prod.subscripcion_vehiculos JOIN prod.subscripciones_cliente "
+        "ON prod.subscripciones_cliente.uuid = "
+        "prod.subscripcion_vehiculos.uuid_subscripcion_cliente "
+        f"WHERE prod.subscripciones_cliente.uuid_sucursal = '{BRANCH}')"
+    )
+
+
+def test_vehiculos_scope_has_no_vigencia_filter_nor_alias_branch() -> None:
+    where = _sql("vehiculos")
+    assert where is not None
+    assert "vigente_hasta" not in where
+    assert "sync_identity_alias" not in where
