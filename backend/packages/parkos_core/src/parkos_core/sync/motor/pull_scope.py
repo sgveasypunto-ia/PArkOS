@@ -62,7 +62,12 @@ def _usuarios_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bo
     return model.uuid.in_(_branch_member_usuarios(uuid_sucursal))
 
 
+def _permisos_usuario_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
+    return model.uuid_usuario.in_(_branch_member_usuarios(uuid_sucursal))
+
+
 _DERIVED_RULES["usuarios"] = _usuarios_rule
+_DERIVED_RULES["permisos_usuario"] = _permisos_usuario_rule
 
 
 def build_scope_predicate(

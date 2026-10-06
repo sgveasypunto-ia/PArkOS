@@ -132,3 +132,9 @@ def test_usuarios_scope_is_vigente_branch_membership() -> None:
     spec = SYNC_CATALOG_BY_NAME["usuarios"]
     assert spec.broadcast_policy == "derived"
     assert _sql("usuarios") == f"prod.usuarios.uuid IN {_MEMBERS_SUBSELECT}"
+
+
+def test_permisos_usuario_scope_reuses_the_membership_subselect() -> None:
+    spec = SYNC_CATALOG_BY_NAME["permisos_usuario"]
+    assert spec.broadcast_policy == "derived"
+    assert _sql("permisos_usuario") == f"prod.permisos_usuario.uuid_usuario IN {_MEMBERS_SUBSELECT}"
