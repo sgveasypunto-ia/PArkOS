@@ -9,6 +9,13 @@
 payload/*
 !payload/management/
 !payload/README-EULA.txt
+# Exception: payload/postgres/ holds the Postgres 16 Windows binaries split in
+# ~83 MB parts (GitHub rejects single files > 100 MB) plus the SHA-256 of the
+# whole zip. The installers reassemble and verify them. The reassembled .zip
+# (332 MB) must NEVER be committed; neither must payload/security/parkos-master.key
+# (it stays ignored by payload/*).
+!payload/postgres/
+payload/postgres/*.zip
 .pyinstaller-work/
 __pycache__/
 *.spec
