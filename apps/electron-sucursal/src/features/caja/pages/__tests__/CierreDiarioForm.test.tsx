@@ -32,7 +32,6 @@ import type { ArqueoResumenPorSesion } from '../../hooks/useArqueoResumenPorSesi
 
 const cierreDiarioSchema = z.object({
   valor_efectivo_reportado: z.coerce.number().int().nonnegative(),
-  valor_datafono_reportado: z.coerce.number().int().nonnegative(),
   justificacion: z.string().trim().optional(),
 });
 type CierreDiarioInput = z.infer<typeof cierreDiarioSchema>;
@@ -80,13 +79,11 @@ const TRES_SESIONES: ArqueoResumenPorSesion['sesiones'] = [
 // Σ values reflect only closed sessions (REQ-OPS-163).
 const TOTALS_NO_DIFF = {
   valor_efectivo_reportado: 150_000, // 50_000 + 100_000
-  valor_datafono_reportado: 30_000, // 0 + 30_000
-  diferencia: 0, // Σ(|50_000-50_000| + |100_000-100_000| + |0-0| + |30_000-30_000|) = 0
+  diferencia: 0, // Σ(|50_000-50_000| + |100_000-100_000|) = 0 (PT-6: efectivo-only)
 };
 
 const TOTALS_WITH_DIFF = {
   valor_efectivo_reportado: 147_000,
-  valor_datafono_reportado: 30_000,
   diferencia: 3_000, // Σ| -3_000 | from session 2
 };
 
@@ -103,7 +100,6 @@ function FormHost(
     mode: 'onBlur',
     defaultValues: {
       valor_efectivo_reportado: 0,
-      valor_datafono_reportado: 0,
       justificacion: '',
     },
   });
@@ -290,5 +286,8 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
     expect(
       screen.queryByTestId('cierre-diario-justificacion'),
     ).not.toBeInTheDocument();
+    // PT-6: the cierre diario cuadre is efectivo-only — no datáfono field.
+    expect(screen.queryByTestId('cierre-diario-valor-datafono')).toBeNull();
+    expect(document.body.textContent ?? '').not.toMatch(/datáfono/i);
   });
 });
