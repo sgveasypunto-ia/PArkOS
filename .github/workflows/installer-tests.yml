@@ -63,7 +63,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $dir = 'installer/payload/parts'
-          if (-not (Test-Path $dir)) { Write-Host "No existe $dir: nada que verificar."; return }
+          if (-not (Test-Path $dir)) { Write-Host "No existe ${dir}: nada que verificar."; return }
           . ./installer/shared/ParkosPayloadParts.ps1
           $r = Test-ParkosPayloadParts -PartsDir (Resolve-Path $dir).Path
           if (-not $r.Ok) {
