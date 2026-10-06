@@ -335,13 +335,18 @@ async def calcular_esperado_sesion(
     session: AsyncSession,
     *,
     uuid_sesion: uuid_lib.UUID,
-) -> tuple[Decimal, Decimal]:
-    """V5a (REQ-OPS-091 + DEC-ARQUEO-10): compute expected per medio_pago.
+) -> Decimal:
+    """V5a (REQ-OPS-194): compute expected efectivo for one sesion.
 
-    Returns ``(esperado_efectivo, esperado_datafono)``:
+    Returns ``esperado_efectivo`` (single Decimal, NOT a tuple) as:
 
     * ``esperado_efectivo = sesion.valor_inicial_efectivo + SUM(factura_pagos.valor WHERE medio_pago='efectivo' AND tipo_movimiento='pago')``
-    * ``esperado_datafono = sesion.valor_inicial_datafono + SUM(factura_pagos.valor WHERE medio_pago IN ('tarjeta', 'datafono') AND tipo_movimiento='pago')``
+
+    The datafono dimension is excluded from the result per the F12.1.1
+    backend-ignore-datafono change: the datafono column is preserved in
+    the schema (compliance) but no longer participates in the expected
+    calculation. (D4 default; previously returned a ``(esperado_efectivo,
+    esperado_datafono)`` tuple -- call sites updated.)
 
     Read-only -- does NOT mutate ``prod.factura_pagos`` (F1.9 immutability).
     """
@@ -350,7 +355,6 @@ async def calcular_esperado_sesion(
         raise SesionNoEncontradaError(uuid_sesion=uuid_sesion)
 
     inicial_efectivo = _to_decimal(sesion.valor_inicial_efectivo)
-    inicial_datafono = _to_decimal(sesion.valor_inicial_datafono)
 
     sum_efectivo = await _sum_factura_pagos_by_medio_pago(
         session,
@@ -359,14 +363,7 @@ async def calcular_esperado_sesion(
         fecha=None,
         medios_pago=("efectivo",),
     )
-    sum_datafono = await _sum_factura_pagos_by_medio_pago(
-        session,
-        uuid_sesion=uuid_sesion,
-        uuid_sucursal=None,
-        fecha=None,
-        medios_pago=("tarjeta", "datafono"),
-    )
-    return (inicial_efectivo + sum_efectivo, inicial_datafono + sum_datafono)
+    return inicial_efectivo + sum_efectivo
 
 
 async def calcular_esperado_cierre_dia(
@@ -374,13 +371,14 @@ async def calcular_esperado_cierre_dia(
     *,
     uuid_sucursal: uuid_lib.UUID,
     fecha: date_cls,
-) -> tuple[Decimal, Decimal]:
-    """V5b (REQ-OPS-091 + DEC-ARQUEO-10): aggregate ALL open sesiones at branch on date.
+) -> Decimal:
+    """V5b (REQ-OPS-194): aggregate ALL sesiones at branch on date (efectivo only).
 
     Used by ``cierre_dia`` codigo. Reads ``prod.sesion`` JOIN
     ``prod.factura_pagos`` with ``uuid_sucursal=:s`` and
     ``timestamp_apertura::date=:fecha`` (no closed-sesion filter --
     a sesion closed earlier in the day still has its pagos summed).
+    The datafono dimension is excluded from the aggregate per F12.1.1.
     """
     sum_efectivo = await _sum_factura_pagos_by_medio_pago(
         session,
@@ -389,14 +387,7 @@ async def calcular_esperado_cierre_dia(
         fecha=fecha,
         medios_pago=("efectivo",),
     )
-    sum_datafono = await _sum_factura_pagos_by_medio_pago(
-        session,
-        uuid_sesion=None,
-        uuid_sucursal=uuid_sucursal,
-        fecha=fecha,
-        medios_pago=("tarjeta", "datafono"),
-    )
-    return (sum_efectivo, sum_datafono)
+    return sum_efectivo
 
 
 def calcular_diferencia(
@@ -416,23 +407,24 @@ def calcular_diferencia(
 
 def es_descuadre_critico(
     *,
-    diferencia_efectivo: Decimal,
-    diferencia_datafono: Decimal,
+    diferencia_efectivo: Decimal | float,
     tolerancia_efectivo: Decimal | float | int | None,
-    tolerancia_datafono: Decimal | float | int | None,
 ) -> bool:
-    """V7 (REQ-OPS-093): ABSOLUTE monto decision per plan.md line 1065.
+    """V7 (REQ-OPS-195): ABSOLUTE monto decision on effective only.
 
-    Returns ``True`` when ``|diferencia_efectivo| > tolerancia_efectivo
-    OR |diferencia_datafono| > tolerancia_datafono``. STRICT ``>``
-    (boundary ``|diferencia| == tolerancia`` returns ``False``,
-    per REQ-OPS-093 Scenario 3).
+    Returns ``True`` when ``|diferencia_efectivo| > tolerancia_efectivo``.
+    STRICT ``>`` (boundary ``|diferencia| == tolerancia`` returns
+    ``False``, per REQ-OPS-093 Scenario 3 / REQ-OPS-195).
+
+    The datafono dimension is REMOVED from this decision per F12.1.1
+    (D5 default): the datafono column is preserved in the schema but no
+    longer drives an alerta. A ``TypeError`` at the call site is the
+    intentional failure mode if a caller still passes the legacy
+    ``diferencia_datafono`` / ``tolerancia_datafono`` kwargs.
     """
     abs_efectivo = abs(_to_decimal(diferencia_efectivo))
-    abs_datafono = abs(_to_decimal(diferencia_datafono))
     tol_efectivo = _to_decimal(tolerancia_efectivo)
-    tol_datafono = _to_decimal(tolerancia_datafono)
-    return (abs_efectivo > tol_efectivo) or (abs_datafono > tol_datafono)
+    return abs_efectivo > tol_efectivo
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +677,7 @@ async def construir_resumen_sesion(
     Returns a dict matching ``ArqueoResumenItem`` shape (the schema
     is in ``schemas/caja.py``). Pure read -- no DB writes.
     """
-    esperado_efectivo, esperado_datafono = await calcular_esperado_sesion(
+    esperado_efectivo = await calcular_esperado_sesion(
         session, uuid_sesion=sesion.uuid
     )
     # Latest arqueo for the sesion (if any).
@@ -712,7 +704,7 @@ async def construir_resumen_sesion(
         "timestamp_cierre": sesion.timestamp_cierre,
         "estado": estado_derivado,
         "valor_efectivo_esperado": esperado_efectivo,
-        "valor_datafono_esperado": esperado_datafono,
+        "valor_datafono_esperado": _to_decimal(arqueo_row.valor_datafono_esperado) if arqueo_row else None,
         "valor_efectivo_reportado": _to_decimal(arqueo_row.valor_efectivo_reportado) if arqueo_row else None,
         "valor_datafono_reportado": _to_decimal(arqueo_row.valor_datafono_reportado) if arqueo_row else None,
         "uuid_arqueo": arqueo_row.uuid if arqueo_row else None,
@@ -968,7 +960,7 @@ async def resumen_admin_del_dia(
     out: list[Dict[str, Any]] = []
     sucursales = await listar_sucursales_vigentes(session)
     for s in sucursales:
-        esperado_e, esperado_d = await calcular_esperado_cierre_dia(
+        esperado_e = await calcular_esperado_cierre_dia(
             session,
             uuid_sucursal=s.uuid,
             fecha=fecha,
@@ -1001,7 +993,7 @@ async def resumen_admin_del_dia(
                 "uuid_sucursal": s.uuid,
                 "nombre": s.nombre,
                 "esperado_efectivo": esperado_e,
-                "esperado_datafono": esperado_d,
+                "esperado_datafono": Decimal("0"),
                 "cierre_dia": cierre_dia_dict,
                 "total_arqueos": total,
             }

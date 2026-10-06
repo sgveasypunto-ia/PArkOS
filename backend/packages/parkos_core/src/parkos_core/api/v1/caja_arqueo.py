@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import date as date_cls
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -344,7 +345,7 @@ async def post_arqueo(
 
     # --- Step 5 (V5 + DEC-ARQUEO-04 + DEC-ARQUEO-10): compute esperado + diferencia.
     if tipo_arqueo.codigo == "cierre_dia":
-        esperado_efectivo, esperado_datafono = (
+        esperado_efectivo = (
             await repo_arqueo.calcular_esperado_cierre_dia(
                 session,
                 uuid_sucursal=target_sucursal,
@@ -352,20 +353,21 @@ async def post_arqueo(
             )
         )
     else:
-        esperado_efectivo, esperado_datafono = (
+        esperado_efectivo = (
             await repo_arqueo.calcular_esperado_sesion(
                 session,
                 uuid_sesion=payload.uuid_sesion,  # type: ignore[arg-type]
             )
         )
+    # datafono dimension is ignored (REQ-OPS-194 / F12.1.1). The
+    # expected / difference for datafono is forced to 0 -- Phase 3 will
+    # drop these placeholders + the INSERT kwargs + the alerta keys.
+    esperado_datafono: Decimal = Decimal(0)
     diferencia_efectivo = repo_arqueo.calcular_diferencia(
         reportado=payload.valor_efectivo_reportado,
         esperado=esperado_efectivo,
     )
-    diferencia_datafono = repo_arqueo.calcular_diferencia(
-        reportado=payload.valor_datafono_reportado,
-        esperado=esperado_datafono,
-    )
+    diferencia_datafono: Decimal = Decimal(0)
 
     # --- Step 6 (DEC-ARQUEO-07): justificacion required on cierre_turno / cierre_dia + diferencia != 0.
     if tipo_arqueo.codigo != "auditoria" and (
@@ -378,12 +380,10 @@ async def post_arqueo(
                 headers=no_store,
             )
 
-    # --- Step 7 (DEC-ARQUEO-04 + KD-ARQUEO-04): descuadre decision (absolute monto).
+    # --- Step 7 (DEC-ARQUEO-04 + KD-ARQUEO-04): descuadre decision (effective only per REQ-OPS-195).
     es_critico = repo_arqueo.es_descuadre_critico(
         diferencia_efectivo=diferencia_efectivo,
-        diferencia_datafono=diferencia_datafono,
         tolerancia_efectivo=tolerancia.tolerancia_efectivo,
-        tolerancia_datafono=tolerancia.tolerancia_datafono,
     )
 
     # --- Step 8 (KD-ARQUEO-02 + DEC-ARQUEO-02): INSERT prod.arqueo via append_event.
@@ -552,7 +552,7 @@ async def get_arqueo_requiere_justificacion(
             headers=no_store,
         ) from exc
 
-    esperado_efectivo, esperado_datafono = await repo_arqueo.calcular_esperado_sesion(
+    esperado_efectivo = await repo_arqueo.calcular_esperado_sesion(
         session,
         uuid_sesion=params.uuid_sesion,
     )
@@ -560,14 +560,11 @@ async def get_arqueo_requiere_justificacion(
         reportado=params.valor_efectivo_reportado,
         esperado=esperado_efectivo,
     )
-    diferencia_datafono = repo_arqueo.calcular_diferencia(
-        reportado=params.valor_datafono_reportado,
-        esperado=esperado_datafono,
-    )
-
+    # REQ-OPS-193: datafono dimension is excluded; the gate is
+    # effective-only.
     _helpers.apply_no_store_header(response)
     return ArqueoRequiereJustificacionRead(
-        requiere_justificacion=diferencia_efectivo != 0 or diferencia_datafono != 0,
+        requiere_justificacion=diferencia_efectivo != 0,
     )
 
 
