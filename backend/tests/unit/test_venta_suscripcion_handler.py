@@ -133,8 +133,8 @@ async def test_venta_suscripcion_happy_path_calls_helpers_and_single_commit() ->
         handler_mod.repo_venta, "validar_placa_duplicada_subscripcion",
         new=AsyncMock(),
     ) as mock_v4, patch.object(
-        handler_mod.repo_venta, "calcular_prorrateo",
-        return_value=Decimal("10000.00"),
+        handler_mod.repo_venta, "calcular_monto_suscripcion",
+        return_value=Decimal("30000.00"),
     ) as mock_v7, patch.object(
         handler_mod.repo_venta, "crear_subscripcion_cliente",
         new=AsyncMock(return_value=subscripcion_row),
@@ -242,7 +242,7 @@ async def test_venta_suscripcion_same_branch_operador_succeeds() -> None:
         handler_mod.repo_venta, "validar_placa_duplicada_subscripcion",
         new=AsyncMock(),
     ), patch.object(
-        handler_mod.repo_venta, "calcular_prorrateo",
+        handler_mod.repo_venta, "calcular_monto_suscripcion",
         return_value=Decimal("30000.00"),
     ), patch.object(
         handler_mod.repo_venta, "crear_subscripcion_cliente",
@@ -390,8 +390,8 @@ async def test_venta_suscripcion_voucher_requerido_datafono_sin_referencia() -> 
         handler_mod.repo_venta, "validar_placa_duplicada_subscripcion",
         new=AsyncMock(),
     ), patch.object(
-        handler_mod.repo_venta, "calcular_prorrateo",
-        return_value=Decimal("10000.00"),
+        handler_mod.repo_venta, "calcular_monto_suscripcion",
+        return_value=Decimal("30000.00"),
     ), patch.object(
         handler_mod.repo_venta, "crear_subscripcion_cliente",
         new=AsyncMock(),
@@ -464,8 +464,8 @@ async def test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_aho
         handler_mod.repo_venta, "validar_placa_duplicada_subscripcion",
         new=AsyncMock(),
     ), patch.object(
-        handler_mod.repo_venta, "calcular_prorrateo",
-        return_value=Decimal("10000.00"),
+        handler_mod.repo_venta, "calcular_monto_suscripcion",
+        return_value=Decimal("30000.00"),
     ), patch.object(
         handler_mod.repo_venta, "crear_subscripcion_cliente",
         new=AsyncMock(return_value=subscripcion_row),
@@ -517,10 +517,10 @@ async def test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_aho
     # REQ-OPS-090: subtotal + total server-computed (no client supply)
     assert isinstance(new_attrs["subtotal"], Decimal)
     assert isinstance(new_attrs["total"], Decimal)
-    # A-09 prorrateo: dia=20 -> monto_proporcional=10000 -> subtotal=10000
-    assert new_attrs["subtotal"] == Decimal("10000.00")
-    # DEC-VENTA-03: response.monto_prorrateado set when cobrar_ahora=True
-    assert result.monto_prorrateado == Decimal("10000.00")
+    # PT-3: dia=20 still charges the FULL plan (no proration)
+    assert new_attrs["subtotal"] == Decimal("30000.00")
+    # PT-3: monto_prorrateado kept for wire compat, always None
+    assert result.monto_prorrateado is None
     assert result.uuid_factura == factura_row.uuid
 
 

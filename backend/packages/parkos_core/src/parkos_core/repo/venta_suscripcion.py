@@ -7,14 +7,14 @@ REQ-OPS-083..090 + REQ-OPS-XR5 traceability (see
   (``buscar_cliente_por_uuid_o_crear`` + ``buscar_tipo_subscripcion_vigente_por_uuid``
   + ``buscar_o_crear_vehiculo_por_placa`` + ``validar_placas_mismo_tipo_vehiculo``
   + ``validar_cantidad_maxima_vehiculos`` + ``validar_placa_duplicada_subscripcion``
-  + ``calcular_prorrateo`` + ``crear_subscripcion_cliente`` +
+  + ``calcular_monto_suscripcion`` + ``crear_subscripcion_cliente`` +
   ``crear_subscripcion_vehiculos_bulk``) all stay commit-free. The
   single ``await session.commit()`` is owned by the API handler at
   Step 10 of the 10-step chain (KD-VENTA-01).
 * REQ-OPS-084 V2          -- ``buscar_tipo_subscripcion_vigente_por_uuid``
   uses ``SELECT ... FOR UPDATE`` (exclusive, NOT ``FOR SHARE`` -- DEC-VENTA-04).
-* REQ-OPS-086 V7          -- ``calcular_prorrateo`` implements A-09 prorrateo
-  (no ``monto_prorrateado`` column on ``prod.subscripciones_cliente``).
+* REQ-OPS-086 V7          -- ``calcular_monto_suscripcion`` always charges the
+  full plan price (PT-3: A-09 prorrateo was removed).
 * REQ-OPS-087 V5          -- ``validar_placas_mismo_tipo_vehiculo`` raises
   ``TipoVehiculoIncompatibleError`` BEFORE any INSERT.
 * REQ-OPS-088 V6          -- ``validar_cantidad_maxima_vehiculos`` raises
@@ -36,9 +36,8 @@ DEC-VENTA-08 WITHDRAWN: all 5 [V] sync catalog entries pre-exist at
 """
 from __future__ import annotations
 
-import calendar
 import uuid as uuid_lib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 from decimal import Decimal
 from typing import Any
@@ -51,6 +50,7 @@ from ..models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ..models.V.subscripciones_cliente import SubscripcionesCliente
 from ..models.V.tipo_subscripciones import TipoSubscripciones
 from ..models.V.vehiculos import Vehiculos
+from ..runtime.tiempo import hoy_bogota
 from . import placa as repo_placa
 from . import versioned
 from .tipo_persona import resolve_uuid_tipo_persona
@@ -69,7 +69,8 @@ __all__ = [
     "buscar_cliente_por_uuid_o_crear_nuevo",
     "buscar_o_crear_vehiculo_por_placa",
     "buscar_tipo_subscripcion_vigente_por_uuid",
-    "calcular_prorrateo",
+    "calcular_fecha_vencimiento",
+    "calcular_monto_suscripcion",
     "crear_subscripcion_cliente",
     "crear_subscripcion_vehiculos_bulk",
     "validar_cantidad_maxima_vehiculos",
@@ -153,7 +154,7 @@ class CantidadMaximaExcedidaError(Exception):
 
 
 class PlanDuracionDiasInvalidoError(Exception):
-    """V7 422 edge -- ``plan.duracion_dias <= 0`` (ZeroDivisionError catch)."""
+    """V7 422 edge -- ``plan.duracion_dias`` missing or ``<= 0``."""
 
     def __init__(self) -> None:
         super().__init__("plan_duracion_dias_invalido: duracion_dias must be > 0")
@@ -449,7 +450,7 @@ async def validar_vehiculo_sin_suscripcion_vigente_distinta(
     its OWN subscripcion is a different, already-handled concern, see
     ``repo.cupos_subscripcion.VehiculoYaInscritoError``).
     """
-    hoy = datetime.now(UTC).date()
+    hoy = hoy_bogota()
     stmt = (
         select(SubscripcionVehiculos.uuid)
         .join(
@@ -472,36 +473,42 @@ async def validar_vehiculo_sin_suscripcion_vigente_distinta(
         raise PlacaConSuscripcionVigenteError(uuid_vehiculo=uuid_vehiculo)
 
 
-def calcular_prorrateo(
-    *, plan: TipoSubscripciones, fecha_inicio_cobertura: date_cls
-) -> Decimal:
-    """V7 (REQ-OPS-090 / A-09 prorrateo, DEC-VENTA-03).
+def _duracion_dias_valida(plan: TipoSubscripciones) -> int:
+    """Return ``plan.duracion_dias`` or raise 422 ``plan_duracion_dias_invalido``."""
+    duracion = plan.duracion_dias
+    if duracion is None or duracion <= 0:
+        raise PlanDuracionDiasInvalidoError()
+    return int(duracion)
 
-    Triggers proportional prorrateo when ``fecha_inicio_cobertura.day > 15``
-    (covers the second half of the month). Returns:
 
-    - ``plan.valor`` (full) when ``day <= 15``
-    - ``valor_dia * dias_restantes`` when ``day > 15``
-      where ``valor_dia = plan.valor / plan.duracion_dias`` and
-      ``dias_restantes = days_in_month - day``
+def calcular_monto_suscripcion(*, plan: TipoSubscripciones) -> Decimal:
+    """V7 (PT-3): the full plan price is ALWAYS charged -- no proration.
+
+    The charge depends only on the plan, never on how close the start date
+    is to the end of the calendar month. A 60-day plan charges the 60 days.
 
     Raises :class:`PlanDuracionDiasInvalidoError` when
-    ``plan.duracion_dias <= 0`` (ZeroDivisionError catch -- 422
-    ``plan_duracion_dias_invalido``).
+    ``plan.duracion_dias`` is missing or ``<= 0``.
     """
-    try:
-        valor_dia = plan.valor / plan.duracion_dias
-    except ZeroDivisionError as exc:
-        raise PlanDuracionDiasInvalidoError() from exc
-    if fecha_inicio_cobertura.day > 15:
-        dias_en_mes = calendar.monthrange(
-            fecha_inicio_cobertura.year, fecha_inicio_cobertura.month
-        )[1]
-        dias_restantes = dias_en_mes - fecha_inicio_cobertura.day
-        return (Decimal(valor_dia) * Decimal(dias_restantes)).quantize(
-            Decimal("0.01")
-        )
-    return Decimal(plan.valor).quantize(Decimal("0.01"))
+    _duracion_dias_valida(plan)
+    valor = plan.valor if plan.valor is not None else 0
+    return Decimal(valor).quantize(Decimal("0.01"))
+
+
+def calcular_fecha_vencimiento(
+    *, plan: TipoSubscripciones, fecha_inicio_cobertura: date_cls
+) -> date_cls:
+    """Last covered day: ``fecha_inicio_cobertura + plan.duracion_dias - 1``.
+
+    The cycle is per subscription (starts at activation), never the
+    calendar month. PD-01: a plan of N days covers EXACTLY N calendar days.
+    ``fecha_vencimiento`` is the last covered day, INCLUSIVE: the validity
+    predicates use ``fecha_vencimiento >= hoy``, so start day through
+    ``fecha_vencimiento`` is N days. Existing rows are not rewritten.
+
+    Raises :class:`PlanDuracionDiasInvalidoError` on an invalid duration.
+    """
+    return fecha_inicio_cobertura + timedelta(days=_duracion_dias_valida(plan) - 1)
 
 
 async def crear_subscripcion_cliente(
@@ -589,6 +596,5 @@ def datetime_utcnow() -> Any:
     convention -- no tzinfo so SQLAlchemy stores as ``timestamp without
     time zone``).
     """
-    from datetime import datetime
 
     return datetime.now(UTC).replace(tzinfo=None)

@@ -471,9 +471,10 @@ class VentaSuscripcionResponse(_Base):
     Returns the full set of created UUIDs (cliente, subscripcion,
     vehiculos) + dates + amounts.
 
-    DEC-VENTA-03: ``monto_prorrateado`` is ``None`` when
-    ``cobrar_ahora=False`` (V7 prorrateo not persisted -- V8 cobro
-    sub-chain runs only when ``cobrar_ahora=True``). Optional cobro
+    PT-3: proration was removed; the full ``valor_total_plan`` is always
+    charged. ``monto_prorrateado`` is kept only for wire compatibility and
+    is always ``None``. The V8 cobro sub-chain runs only when
+    ``cobrar_ahora=True``. Optional cobro
     artifacts (``uuid_factura``, ``uuid_factura_electronica``,
     ``uuid_envio_dian``) are ``None`` when not requested.
     """

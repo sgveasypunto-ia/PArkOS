@@ -3413,7 +3413,7 @@ The handler MUST issue exactly one `await session.commit()` at the END of the re
 **Statement**:
 The handler MUST take `SELECT ... FOR UPDATE` (exclusive, NOT `FOR SHARE`) on the vigente `prod.tipo_subscripciones` row identified by `payload.uuid_tipo_subscripcion` BEFORE any other lock is acquired (Step 2 of the 10-step chain). The lock MUST be held until `await session.commit()` at Step 10. If the lookup returns no vigente row, the handler MUST raise `HTTPException(404, {"error": "tipo_subscripcion_no_encontrado", "uuid_tipo_subscripcion": str(payload.uuid_tipo_subscripcion)}, headers=no_store_headers())`. If multiple vigentes exist (corrupt DB), the handler MUST deterministically pick the latest by `vigente_desde DESC LIMIT 1`.
 
-**Rationale**: The plan read mutates the sale semantics — `fecha_inicio_cobertura` is captured, and concurrent ventas on the SAME plan with different `fecha_inicio_cobertura` would produce different A-09 prorrateo amounts. `FOR SHARE` (F1.9 KD-FACT-02 pattern) is insufficient because two concurrent ventas could compute prorrateo on a stale snapshot. `FOR UPDATE` serializes the calc.
+**Rationale**: The plan read mutates the sale semantics — `fecha_inicio_cobertura` is captured, and concurrent ventas on the SAME plan with different `fecha_inicio_cobertura` would produce different `fecha_vencimiento` values (the charge itself is always the full `plan.valor`, PT-3). `FOR SHARE` (F1.9 KD-FACT-02 pattern) is insufficient because two concurrent ventas could read a stale plan snapshot. `FOR UPDATE` serializes the calc.
 
 **Source**: `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` lines 195-210 (`tipo_subscripciones` schema + bi-temporal VersionedBase); F1.9 KD-FACT-02 (`FOR SHARE` precedent, intentionally diverged); F1.10 REQ-OPS-064 (`assign_consecutivo` `FOR UPDATE` precedent); `plan.md` lines 1010-1054 (KD-VENTA-02).
 
@@ -3429,9 +3429,9 @@ The handler MUST take `SELECT ... FOR UPDATE` (exclusive, NOT `FOR SHARE`) on th
 - **When** both TXs reach Step 2 simultaneously
 - **Then** TX-A MUST acquire `SELECT FOR UPDATE` on `:p` first
 - **And** TX-B MUST block at the `SELECT FOR UPDATE` until TX-A commits
-- **And** TX-B MUST re-read `:p` (no read snapshot taken before the lock release) and compute prorrateo on its OWN `fecha_inicio_cobertura='2026-09-25'` (after-day-15 prorrateo path)
-- **And** TX-A MUST compute prorrateo on its OWN `fecha_inicio_cobertura='2026-09-10'` (no prorrateo, full `plan.valor`)
-- **And** both ventas MUST succeed atomically with DIFFERENT prorrateo amounts persisted in each `prod.factura_detalle` row (no cross-contamination).
+- **And** TX-B MUST re-read `:p` (no read snapshot taken before the lock release) and compute `fecha_vencimiento` from its OWN `fecha_inicio_cobertura='2026-09-25'` (full `plan.valor` charged)
+- **And** TX-A MUST compute `fecha_vencimiento` from its OWN `fecha_inicio_cobertura='2026-09-10'` (full `plan.valor` charged)
+- **And** both ventas MUST succeed atomically with the SAME full `plan.valor` persisted in each `prod.factura_detalle` row and their own `fecha_vencimiento` (no cross-contamination).
 
 **Scenario 3: Concurrent ventas on DIFFERENT plans — NOT serialized, both succeed**
 - **Given** two vigentes `prod.tipo_subscripciones` rows `:p1` (plan "mensualidad") and `:p2` (plan "trimestral")
@@ -3586,7 +3586,7 @@ For each placa in `payload.placas`, the handler MUST call `repo.subscripcion_act
 - **And** a payload with `placas: ["ABC123"]`
 - **When** the handler Step 7 invokes `resolve_active_subscription_for_exit(session, placa="ABC123", uuid_sucursal=:s, fecha_salida=<fecha_inicio_cobertura>)`
 - **Then** the helper MUST return `found=False` (no active subscription at this branch)
-- **And** the handler MUST proceed to Step 8 (A-09 prorrateo calc).
+- **And** the handler MUST proceed to Step 8 (full-plan amount + `fecha_vencimiento`, PT-3/PD-01).
 
 **Scenario 2: Placa has active subscription at SAME branch — 422 `suscripcion_duplicada_placa`**
 - **Given** an existing `prod.subscripciones_cliente` row `:sc1` with `uuid_cliente=:c1`, `uuid_sucursal=:s`, `uuid_tipo_subscripcion=:p`, `fecha_vencimiento='2026-12-31'` (active)
@@ -3608,43 +3608,37 @@ For each placa in `payload.placas`, the handler MUST call `repo.subscripcion_act
 
 ---
 
-### REQ-OPS-090 — A-09 prorrateo calc and persistence (DEC-VENTA-03)
+### REQ-OPS-090 — Full-plan charge and N-day coverage (DEC-VENTA-03, superseded by PT-3 / PD-01)
 
-**Source**: HU-F1.12 (DEC-VENTA-03) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+**Source**: HU-F1.12 (DEC-VENTA-03) · **Priority**: CRITICAL · **RFC 2119 keywords apply**
 
 **Statement**:
-The handler MUST compute the A-09 prorrateo at Step 8 via `repo_venta.calcular_prorrateo(plan=plan, fecha_inicio_cobertura=payload.fecha_inicio_cobertura)`. The formula: `valor_dia = plan.valor / plan.duracion_dias` (when `plan.duracion_dias > 0`, else `PlanDuracionDiasInvalidoError`); `dias_restantes_mes = (<last day of fecha_inicio_cobertura.month> - fecha_inicio_cobertura.day)` (calendar month after `fecha_inicio_cobertura`); `monto_proporcional = valor_dia * dias_restantes_mes` IF `fecha_inicio_cobertura.day > 15` ELSE `None` (no prorrateo before day 16). When `cobrar_ahora=true`, the handler MUST persist `monto_proporcional` in `prod.factura_detalle.valor_unitario` AND `prod.factura_detalle.subtotal` of the SINGLE detail row with `concepto='subscripcion_mensual_prorrateada'`, `cantidad=1`. When `cobrar_ahora=false`, the handler MUST NOT persist prorrateo anywhere — the prorrateo amount is returned in the response body's `monto_prorrateado` field only when `monto_proporcional is not None`, else `null`.
+The A-09 prorrateo was REMOVED. The handler MUST charge the FULL plan price at Step 8 via `repo_venta.calcular_monto_suscripcion(plan=plan)`, which returns `plan.valor` regardless of `fecha_inicio_cobertura` (no day-15 threshold, no calendar-month dependency; the last day of a month does NOT yield `0`). It MUST raise `PlanDuracionDiasInvalidoError` (422 `plan_duracion_dias_invalido`) when `plan.duracion_dias` is null or `<= 0`. The billing cycle is per subscription, not the calendar month: `fecha_vencimiento = fecha_inicio_cobertura + plan.duracion_dias - 1` via `repo_venta.calcular_fecha_vencimiento` (PD-01), i.e. the LAST COVERED DAY, inclusive. Because the validity predicates keep `fecha_vencimiento >= hoy`, a plan of N days covers EXACTLY N calendar days (a 30-day plan starting on the 1st is valid through the 30th). Rows already stored are NOT rewritten (no retroactive migration; they keep their one extra day). "Today" in validity checks is the `America/Bogota` calendar date (`parkos_core.runtime.tiempo.hoy_bogota`), not UTC. When `cobrar_ahora=true`, the handler MUST persist `plan.valor` in `prod.factura_detalle.valor_unitario` AND `subtotal` of the SINGLE detail row with `concepto='subscripcion_mensual'`, `cantidad=1`. For wire compatibility the response keeps `monto_prorrateado`, which is ALWAYS `null`; the amount charged is `valor_total_plan`.
 
-**Rationale**: plan.md line 460 explicitly: "no hay columna para el monto prorrateado en `subscripciones_cliente`. Se calcula al momento de la venta y el resultado sí queda persistido, pero en `factura_detalle.valor_unitario`/`subtotal` — no en la tabla de suscripción misma, que no necesita columna nueva." The decay rule (`day > 15`) is the plan.md trigger condition (line 1053 T2).
+**Rationale**: User decisions PT-3 (always charge the whole subscription per the plan duration) and PD-01 (N days = exactly N calendar days). The previous formula charged `$0` on the last day of the month and a fraction after day 15.
 
-**Source**: `plan.md` line 460 (A-09 spec), line 1053 (T2 day > 15 trigger); `backend/packages/parkos_core/src/parkos_core/repo/factura.py::crear_factura_detalle_bulk` (F1.9 helper, reused with `concepto='subscripcion_mensual_prorrateada'`); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` lines 483-496 (`subscripciones_cliente` has NO prorrateo column by design).
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/venta_suscripcion.py::calcular_monto_suscripcion`, `::calcular_fecha_vencimiento`; `backend/tests/unit/test_venta_suscripcion_validations.py`.
 
-**Scenario 1: `fecha_inicio_cobertura.day = 20` + `cobrar_ahora=true` — prorrateo persisted in `factura_detalle`**
+**Scenario 1: `fecha_inicio_cobertura.day = 20` + `cobrar_ahora=true` — full plan charged**
 - **Given** a plan `:p` with `valor=30000`, `duracion_dias=30`
 - **And** a payload with `fecha_inicio_cobertura='2026-09-20'`, `cobrar_ahora=true`
-- **When** the handler Step 8 invokes `calcular_prorrateo(plan=:p, fecha_inicio_cobertura='2026-09-20')`
-- **Then** the helper MUST compute `valor_dia = 30000 / 30 = 1000.0` AND `dias_restantes_mes = (30 - 20) = 10` (September has 30 days)
-- **And** MUST return `monto_proporcional = 1000.0 * 10 = 10000.0`
-- **And** Step 8a (`_factura_sub_chain`) MUST persist `prod.factura_detalle` row with `concepto='subscripcion_mensual_prorrateada'`, `valor_unitario=10000.0`, `cantidad=1`, `subtotal=10000.0`
-- **And** the response MUST include `monto_prorrateado=10000.0`.
+- **When** the handler Step 8 invokes `calcular_monto_suscripcion(plan=:p)`
+- **Then** it MUST return `30000.00` AND `fecha_vencimiento` MUST be `2026-10-19` (30 days covered: Sep 20 .. Oct 19)
+- **And** Step 8a MUST persist `prod.factura_detalle` with `concepto='subscripcion_mensual'`, `valor_unitario=30000.0`, `cantidad=1`, `subtotal=30000.0`
+- **And** the response MUST include `monto_prorrateado=null` and `valor_total_plan=30000`.
 
-**Scenario 2: `fecha_inicio_cobertura.day = 10` — no prorrateo, full `plan.valor` charged**
-- **Given** a plan `:p` with `valor=30000`, `duracion_dias=30`
-- **And** a payload with `fecha_inicio_cobertura='2026-09-10'`, `cobrar_ahora=true`
-- **When** the handler Step 8 invokes `calcular_prorrateo(plan=:p, fecha_inicio_cobertura='2026-09-10')`
-- **Then** the helper MUST detect `day=10` is NOT `> 15` and MUST return `monto_proporcional = None`
-- **And** Step 8a MUST persist `prod.factura_detalle` row with `concepto='subscripcion_mensual'`, `valor_unitario=30000.0`, `cantidad=1`, `subtotal=30000.0` (full `plan.valor`, no prorrateo)
-- **And** the response MUST include `monto_prorrateado=null` (no prorrateo applied).
+**Scenario 2: activation on the last day of the month, 60-day plan**
+- **Given** a plan `:p` with `valor=220000`, `duracion_dias=60`
+- **And** a payload with `fecha_inicio_cobertura='2026-09-30'`
+- **Then** the amount MUST be `220000.00` (never `0`) AND `fecha_vencimiento` MUST be `2026-11-28`.
 
-**Scenario 3: `fecha_inicio_cobertura.day = 20` + `cobrar_ahora=false` — `monto_prorrateado` in response body only, no persistence**
-- **Given** a plan `:p` with `valor=30000`, `duracion_dias=30`
-- **And** a payload with `fecha_inicio_cobertura='2026-09-20'`, `cobrar_ahora=false` (deferred billing)
-- **When** the handler Step 8 invokes `calcular_prorrateo(plan=:p, fecha_inicio_cobertura='2026-09-20')`
-- **Then** the helper MUST return `monto_proporcional = 10000.0` (same calc as Scenario 1)
-- **And** Step 8a MUST be SKIPPED (no `_factura_sub_chain` call because `cobrar_ahora=false`)
-- **And** NO `prod.factura_detalle` row MUST be INSERTed with prorrateo (the prorrateo is NOT persisted when not charging)
-- **And** the response MUST include `monto_prorrateado=10000.0` (informational, returned for the operator's records but NOT in the DB)
-- **And** `uuid_factura` MUST be `null` in the response (no factura was created).
+**Scenario 3: leap year**
+- **Given** `duracion_dias=29` and `fecha_inicio_cobertura='2028-02-01'`
+- **Then** `fecha_vencimiento` MUST be `2028-02-29`.
+
+**Scenario 4: `cobrar_ahora=false`**
+- **Given** a payload with `cobrar_ahora=false` (deferred billing)
+- **Then** Step 8a MUST be SKIPPED, NO `prod.factura_detalle` row MUST be INSERTed, `monto_prorrateado=null` and `uuid_factura=null` in the response, and `fecha_vencimiento` is still `inicio + duracion_dias - 1`.
 
 ---
 
@@ -5898,7 +5892,9 @@ The system SHALL export uscarIngresoTolerante(placa: string, getIngresosByPlaca
 
 ### REQ-OPS-145 — useCotizacion polls at 1s with 5s timeout, 401 clears auth
 
-The system SHALL export useCotizacion(uuid_ingreso: string | null) from pps/electron-sucursal/src/features/operacion/hooks/useCotizacion.ts as an SWR hook polling GET /api/v1/operacion/cotizar?uuid_ingreso=X at efreshInterval: OPERACION_COTIZAR_REFRESH_INTERVAL_MS = 1_000 while the panel is mounted, with efreshInterval: 0 (no polling) when uuid_ingreso === null. Each fetch MUST abort after OPERACION_COTIZAR_TIMEOUT_MS = 5_000 via AbortController. shouldRetryOnError MUST exclude 401/403/404. On HTTP 401, the hook MUST call useAuthStore.clear() AND dispatch the parkos:auth:cleared event (preserved invariant from current impl lines 96-105). [Cite: proposal.md §2.1 T2 + R1 | plan.md:1685]
+The system SHALL export useCotizacion(uuid_ingreso: string | null) from pps/electron-sucursal/src/features/operacion/hooks/useCotizacion.ts as an SWR hook polling GET /api/v1/operacion/cotizar?uuid_ingreso=X at 
+efreshInterval: OPERACION_COTIZAR_REFRESH_INTERVAL_MS = 1_000 while the panel is mounted, with 
+efreshInterval: 0 (no polling) when uuid_ingreso === null. Each fetch MUST abort after OPERACION_COTIZAR_TIMEOUT_MS = 5_000 via AbortController. shouldRetryOnError MUST exclude 401/403/404. On HTTP 401, the hook MUST call useAuthStore.clear() AND dispatch the parkos:auth:cleared event (preserved invariant from current impl lines 96-105). [Cite: proposal.md §2.1 T2 + R1 | plan.md:1685]
 
 #### Scenario: HTTP 401 from cotizar clears auth and redirects to login
 
@@ -5910,13 +5906,15 @@ The system SHALL export useCotizacion(uuid_ingreso: string | null) from pps/ele
 
 ### REQ-OPS-146 — 15-minute countdown turns red with ria-live ticks when secondsLeft < 120
 
-The system SHALL wrap the countdown <div> inside <CotizacionPanel /> in ria-live="polite" (WCAG 2.1 AA, RNF-022) so screen readers announce each tick. The countdown MUST turn 	ext-destructive (shadcn CSS variable --destructive), MUST render the <AlertTriangle /> icon from lucide-react, and MUST set ole="alert" when secondsLeft < 120 (2-minute threshold). The countdown MUST reuse useCountdown(15 * 60) from pps/electron-sucursal/src/features/auth/hooks/useCountdown.ts (F3.2 DEC-F3.2-01 drift-resistant Date.now() baseline). [Cite: REQ-OPS-113 | proposal.md §2.1 T3]
+The system SHALL wrap the countdown <div> inside <CotizacionPanel /> in ria-live="polite" (WCAG 2.1 AA, RNF-022) so screen readers announce each tick. The countdown MUST turn 	ext-destructive (shadcn CSS variable --destructive), MUST render the <AlertTriangle /> icon from lucide-react, and MUST set 
+ole="alert" when secondsLeft < 120 (2-minute threshold). The countdown MUST reuse useCountdown(15 * 60) from pps/electron-sucursal/src/features/auth/hooks/useCountdown.ts (F3.2 DEC-F3.2-01 drift-resistant Date.now() baseline). [Cite: REQ-OPS-113 | proposal.md §2.1 T3]
 
 #### Scenario: countdown crosses the 2-minute red threshold
 
 - **Given** <CotizacionPanel data={cotizacion} secondsLeft={n} /> is mounted with secondsLeft decrementing once per second via useCountdown(15 * 60)
 - **When** useCountdown transitions secondsLeft from 120 to 119 (2-minute threshold crossed)
-- **Then** the countdown <div> MUST render with className="text-destructive" (shadcn semantic token), MUST show the <AlertTriangle /> icon beside the countdown text, and MUST set ole="alert"
+- **Then** the countdown <div> MUST render with className="text-destructive" (shadcn semantic token), MUST show the <AlertTriangle /> icon beside the countdown text, and MUST set 
+ole="alert"
 - **And** the outer <div> MUST carry ria-live="polite" so screen readers announce each subsequent tick as the countdown approaches zero
 - **And** MUST show the message cotizar.countdown.expiring_soon ("Cotización expira pronto — confirma o recalcula") when secondsLeft < 120 and secondsLeft > 0
 - **And** MUST show cotizar.countdown.expirada ("Cotización expirada — recalculando…") when secondsLeft === 0 (the SWR re-fetch will produce a fresh igente_hasta and the countdown resets).
@@ -5948,7 +5946,8 @@ The system SHALL render the cotizar.errors.iva_no_configurado info banner in <Co
 
 ### REQ-OPS-149 — useCotizacion.test.ts covers rotación, mensualidad, and tiempo ≥ tarifa-plena
 
-The system SHALL add 3 NEW hook tests to pps/electron-sucursal/src/features/operacion/hooks/useCotizacion.test.ts covering the canonical discriminated union (per plan.md:1689): (1) otación mocks cobrar:true with the full fiscal breakdown and asserts the SWR key + parser path; (2) mensualidad mocks cobrar:false with motivo:'mensualidad_vigente' and asserts the short-circuit branch; (3) 	iempo ≥ tarifa-plena mocks a high 	iempo_minutos (≥ the tarifa_plena threshold, e.g. 24 hours = 1440) with 	otal === valor_plena and asserts no fraction accumulation. The existing 3 tests in useCotizacion.test.ts (C1: null key no fetch, C2: fetcher-closure, C3: 401 → useAuthStore.clear) MUST be migrated to the canonical Zod schema mocks. The 4 existing tests in SalidaPanel.test.tsx MUST be migrated to canonical schema mocks asserting ormatCOP(x) output (literal "$ 50.000" fixture) instead of '$'+x.toLocaleString('es-CO'). [Cite: proposal.md §2.1 T4 + R4 + R5 | plan.md:1689]
+The system SHALL add 3 NEW hook tests to pps/electron-sucursal/src/features/operacion/hooks/useCotizacion.test.ts covering the canonical discriminated union (per plan.md:1689): (1) 
+otación mocks cobrar:true with the full fiscal breakdown and asserts the SWR key + parser path; (2) mensualidad mocks cobrar:false with motivo:'mensualidad_vigente' and asserts the short-circuit branch; (3) 	iempo ≥ tarifa-plena mocks a high 	iempo_minutos (≥ the tarifa_plena threshold, e.g. 24 hours = 1440) with 	otal === valor_plena and asserts no fraction accumulation. The existing 3 tests in useCotizacion.test.ts (C1: null key no fetch, C2: fetcher-closure, C3: 401 → useAuthStore.clear) MUST be migrated to the canonical Zod schema mocks. The 4 existing tests in SalidaPanel.test.tsx MUST be migrated to canonical schema mocks asserting ormatCOP(x) output (literal "$ 50.000" fixture) instead of '$'+x.toLocaleString('es-CO'). [Cite: proposal.md §2.1 T4 + R4 + R5 | plan.md:1689]
 
 #### Scenario: all 6 useCotizacion tests pass with the canonical schema
 
