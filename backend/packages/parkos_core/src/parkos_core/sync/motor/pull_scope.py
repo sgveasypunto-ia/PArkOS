@@ -20,7 +20,8 @@ that keeps exactly the rows the resolver would deliver to ``uuid_sucursal``.
                                     survive it.
 
   - ``derived``                   — a per-entry rule over bridge tables
-                                    (membership / subscription / invoice); see
+                                    (membership / subscription / invoice /
+                                    ``sucursal.uuid_empresa``); see
                                     ``_DERIVED_RULES``.
 
 An unsupported policy raises :class:`ValueError`; it never degrades to an
@@ -32,13 +33,15 @@ import uuid as uuid_lib
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import ColumnElement, CompoundSelect, Select, func, or_, select, tuple_
+from sqlalchemy import ColumnElement, CompoundSelect, Select, exists, func, or_, select, tuple_
 from sqlalchemy.orm import aliased
 
 from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.V.clientes import Clientes
+from ...models.V.empresa import Empresa
 from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
+from ...models.V.sucursal import Sucursal
 from ...models.V.usuarios_sucursal import UsuariosSucursal
 from ...models.V.vehiculos import Vehiculos
 from ..catalog.schema import SyncCatalogEntry
@@ -185,6 +188,34 @@ def _vehiculos_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[b
     )
 
 
+def _empresa_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
+    """The empresa of the pulling branch, matched by NIT across versions.
+
+    ``sucursal.uuid_empresa`` (nullable, FK ``fk_sucursal_uuid_empresa``) names the
+    operator, but an empresa [V] bump (``close_and_insert``) mints a NEW uuid while
+    the sucursal keeps pointing at the old, closed one. So the NIT of the
+    referenced version is in scope and every open version carrying it is
+    delivered (the same natural-key approach as ``clientes``). A branch with NULL
+    ``uuid_empresa`` (a real case) -- or an unknown one -- falls back to the open
+    empresa row(s): returning zero rows would strip it of NIT, regimen and ticket
+    messages. The open-version filter lives in the caller.
+    """
+    referenced = (
+        select(Sucursal.uuid_empresa)
+        .where(Sucursal.uuid == uuid_sucursal, Sucursal.uuid_empresa.is_not(None))
+        .scalar_subquery()
+    )
+    known = aliased(Empresa)
+    nits = select(known.nit).where(known.uuid == referenced)
+    has_reference = exists(
+        select(Sucursal.uuid).where(
+            Sucursal.uuid == uuid_sucursal, Sucursal.uuid_empresa.is_not(None)
+        )
+    )
+    return or_(~has_reference, model.uuid == referenced, model.nit.in_(nits))
+
+
+_DERIVED_RULES["empresa"] = _empresa_rule
 _DERIVED_RULES["usuarios"] = _usuarios_rule
 _DERIVED_RULES["permisos_usuario"] = _permisos_usuario_rule
 _DERIVED_RULES["clientes"] = _clientes_rule

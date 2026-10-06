@@ -42,7 +42,6 @@ EXPECTED_SCOPE: dict[str, str] = {
     "impuestos": "global",
     "otros_cobros": "global",
     "costos_servicios": "global",
-    "empresa": "global",
     # owned by one branch
     "sucursal": "owned",
     "resolucion_facturacion": "owned",
@@ -59,6 +58,7 @@ EXPECTED_SCOPE: dict[str, str] = {
     # reachable only through bridge tables
     "usuarios": "derived",
     "permisos_usuario": "derived",
+    "empresa": "derived",  # own sucursal.uuid_empresa by NIT (test_sync_pull_scope_empresa)
     "clientes": "derived",
     "clientes_b2b": "derived",
     "vehiculos": "derived",
@@ -137,7 +137,6 @@ class World:
 
 
 async def _seed_world(engine, factory) -> tuple[World, int]:
-    from sqlalchemy import update
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     since_seq = _now_ms() - 2  # only rows created by this seed are pulled back
@@ -162,15 +161,6 @@ async def _seed_world(engine, factory) -> tuple[World, int]:
             build("vehiculos", "b", placa=f"B{tag}"),
         ]
         stage1 += [build(t, "global") for t in GLOBAL_TABLES]
-        # ``empresa`` is a singleton (one open row): close the open version
-        # the way production does, then insert the new one.
-        empresa = _model("empresa")
-        now = datetime.now(UTC).replace(tzinfo=None)
-        await s.execute(
-            update(empresa)
-            .where(empresa.vigente_hasta.is_(None))
-            .values(vigente_hasta=now, estado="inactivo")
-        )
         s.add_all(stage1)
         await s.commit()
 
@@ -238,8 +228,7 @@ async def world(client, pg_engine, alembic_upgrade, mint_sync_agent_jwt, v_fixtu
     w, since_seq = await _seed_world(pg_engine, v_fixture_factory)
     by_table: dict[str, list[uuid_lib.UUID]] = {}
     for (table, _who), row_uuid in w.ids.items():
-        if table != "empresa":  # singleton: keep the open row other tests rely on
-            by_table.setdefault(table, []).append(row_uuid)
+        by_table.setdefault(table, []).append(row_uuid)
     for table, ids in by_table.items():
         retire(table, ids)
     for who, suc in (("a", w.suc_a), ("b", w.suc_b)):

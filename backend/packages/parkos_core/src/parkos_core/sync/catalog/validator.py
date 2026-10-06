@@ -63,11 +63,11 @@ _AUDIT_DIRS = ("V", "L_E", "L_W", "L_S", "A")
 
 _BIDIRECTIONAL_ALL_BRANCHES: frozenset[str] = frozenset({"clientes", "clientes_b2b", "vehiculos"})
 # [V] entries without uuid_sucursal whose pull scope is derived through bridge
-# tables (membership / subscription / invoice) instead of broadcast to every
-# branch. ER-derived as ``all_branches`` before D3; now ``derived``. The
-# direction keeps following ``_BIDIRECTIONAL_ALL_BRANCHES``.
+# tables (membership / subscription / invoice / ``sucursal.uuid_empresa``)
+# instead of broadcast to every branch. ER-derived as ``all_branches`` before D3;
+# now ``derived``. The direction keeps following ``_BIDIRECTIONAL_ALL_BRANCHES``.
 _DERIVED_SCOPE: frozenset[str] = frozenset(
-    {"usuarios", "permisos_usuario", "clientes", "clientes_b2b", "vehiculos"}
+    {"usuarios", "permisos_usuario", "clientes", "clientes_b2b", "vehiculos", "empresa"}
 )
 _BIDIRECTIONAL_SUBSCRIPTION: frozenset[str] = frozenset(
     {"subscripciones_cliente", "subscripcion_vehiculos"}

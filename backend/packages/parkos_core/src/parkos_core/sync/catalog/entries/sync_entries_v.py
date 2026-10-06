@@ -252,12 +252,11 @@ _EMPRESA = SyncCatalogEntry(
     audit_class="V",
     sync_strategy="append",
     direction="cloud_to_branch",
-    # Tenant filter (proposal §6.1): broadcast only the version reachable
-    # from the branch's own sucursal.uuid_empresa — today one operator, so
-    # functionally all_branches, but multi-operator-safe. The filter itself
-    # is applied by the broadcast resolver (PR4+), not encoded as a distinct
-    # broadcast_policy literal here.
-    broadcast_policy="all_branches",
+    # Tenant filter (proposal §6.1): a branch receives only the empresa of its
+    # own sucursal.uuid_empresa (matched by NIT across versions; NULL falls
+    # back to the open empresa). The rule is SQL, registered in
+    # ``motor/pull_scope.py::_DERIVED_RULES["empresa"]``.
+    broadcast_policy="derived",
     apply_strategy="close_and_insert",
     depends_on=(),
     has_uuid_sucursal=False,
