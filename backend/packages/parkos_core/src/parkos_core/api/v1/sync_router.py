@@ -51,6 +51,7 @@ Architecture notes:
 from __future__ import annotations
 
 import logging
+import time
 import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -730,6 +731,9 @@ _PULL_DIRECTIONS = frozenset({"cloud_to_branch", "bidirectional"})
 #: keeps one request bounded regardless of how much data has accumulated.
 _PULL_BATCH_LIMIT = 500
 
+#: A pull slower than this is logged as ``sync_pull.slow`` (WARNING).
+_PULL_SLOW_THRESHOLD_MS = 2000
+
 #: Same stripping convention as ``jobs/sync_cloud.py``'s
 #: ``_business_payload_for_apply`` (audit/queue metadata never a real
 #: business attribute) — applied here in the OTHER direction: a live ORM
@@ -910,6 +914,34 @@ async def _fetch_pull_rows(
     return pushed_rows, max_seq_seen
 
 
+def _log_pull(
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    rows: list[_PushedRow],
+    since_seq: int,
+    next_seq: int,
+    duration_ms: float,
+) -> None:
+    """One structured record per pull. Counts only: never a row payload
+    (``usuarios`` rows carry ``password_hash``)."""
+    rows_por_tabla: dict[str, int] = {}
+    for row in rows:
+        rows_por_tabla[row.tabla] = rows_por_tabla.get(row.tabla, 0) + 1
+    slow = duration_ms > _PULL_SLOW_THRESHOLD_MS
+    logger.log(
+        logging.WARNING if slow else logging.INFO,
+        "sync_pull.slow" if slow else "sync_pull.completed",
+        extra={
+            "uuid_sucursal": str(uuid_sucursal),
+            "rows_por_tabla": rows_por_tabla,
+            "total_rows": len(rows),
+            "duration_ms": duration_ms,
+            "since_seq": since_seq,
+            "next_seq": next_seq,
+        },
+    )
+
+
 @router.post(
     "/pull",
     response_model=_PullResponse,
@@ -977,8 +1009,17 @@ async def sync_pull(
             detail={"error": "missing_or_invalid_sucursal_claim"},
         ) from e
 
+    started = time.perf_counter()
     rows, next_seq = await _fetch_pull_rows(
         session, uuid_sucursal=uuid_sucursal, since_seq=payload.since_seq
+    )
+    duration_ms = round((time.perf_counter() - started) * 1000, 1)
+    _log_pull(
+        uuid_sucursal=uuid_sucursal,
+        rows=rows,
+        since_seq=payload.since_seq,
+        next_seq=next_seq,
+        duration_ms=duration_ms,
     )
 
     response_body = {
