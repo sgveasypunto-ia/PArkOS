@@ -72,8 +72,10 @@ def test_fk_columns_golden_lists() -> None:
     assert cols["usuarios_sucursal"] == {"uuid_usuario"}
     assert cols["permisos_usuario"] == {"uuid_permiso", "uuid_usuario"}
     assert cols["sesion"] == {"uuid_usuario", "uuid_usuario_cierre"}
+    # tipo_subscripciones.uuid_tipo_vehiculo (migration 0087)
+    assert cols["tipo_subscripciones"] == {"uuid_tipo_vehiculo"}
     # a table with no FK onto a reconciled master has nothing to remap
-    assert identity_fk_columns(SYNC_CATALOG_BY_NAME["tipo_subscripciones"]) == frozenset()
+    assert identity_fk_columns(SYNC_CATALOG_BY_NAME["tipos_vehiculo"]) == frozenset()
 
 
 def test_fk_columns_never_include_identity_audit_or_sucursal_columns() -> None:

@@ -42,6 +42,7 @@ IDENTITY_FK_COLUMNS: dict[str, frozenset[str]] = {
     "subscripcion_vehiculos": frozenset({"uuid_vehiculo"}),
     "subscripciones_cliente": frozenset({"uuid_cliente", "uuid_tipo_subscripcion"}),
     "tarifas_sucursal": frozenset({"uuid_tipo_tarifa", "uuid_tipo_vehiculo"}),
+    "tipo_subscripciones": frozenset({"uuid_tipo_vehiculo"}),
     "usuarios_sucursal": frozenset({"uuid_usuario"}),
     "validacion_evento": frozenset({"uuid_usuario"}),
     "vehiculos": frozenset({"uuid_tipo_vehiculo"}),
