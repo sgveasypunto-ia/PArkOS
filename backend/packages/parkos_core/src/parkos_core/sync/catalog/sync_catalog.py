@@ -72,7 +72,9 @@ assert len(SYNC_CATALOG_BY_NAME) == len(SYNC_CATALOG), "duplicate entry name in 
 #      ``TG_TABLE_NAME = 'salidas_default'``, which never resolved and left
 #      every such row stuck at ``mark_failed(unknown_table)`` with an
 #      unbounded retry loop (real finding, branch E2E 2026-09-25).
-_PARTMAN_SUFFIX_RE = re.compile(r"(?:_p(?:_current|_default|\d{8})|_default)$")
+_PARTMAN_SUFFIX_RE = re.compile(
+    r"(?:_p(?:_current|_default|\d{4}_?\d{2}(?:_?\d{2})?|\d{8})|_default)$"
+)
 
 
 def resolve_catalog_name(tabla: str) -> str:
