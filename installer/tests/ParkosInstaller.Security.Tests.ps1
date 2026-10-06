@@ -281,9 +281,9 @@ Describe 'Get-ParkosMasterKeyBytes (DEC-INST-42: clave maestra de la empresa, nu
         { Get-ParkosMasterKeyBytes -MasterKeyPath $missingPath } | Should Throw "No se encontro la clave maestra de Parkos en $missingPath"
     }
 
-    It 'el mensaje de clave faltante es accionable: ruta exacta + pedirla a soporte' {
+    It 'el mensaje de clave faltante es accionable: paquete danado + restaurar con git o -MasterKeyPath' {
         $missingPath = Join-Path $env:TEMP "parkos-master-key-missing-$(Get-Random -Maximum 999999).key"
-        { Get-ParkosMasterKeyBytes -MasterKeyPath $missingPath } | Should Throw 'Solicitela al equipo de soporte por un canal seguro y copiela a esa ruta'
+        { Get-ParkosMasterKeyBytes -MasterKeyPath $missingPath } | Should Throw 'git checkout -- installer/payload/security'
     }
 
     It 'lanza un mensaje distinto si la clave existe pero mide menos de 32 bytes' {
@@ -309,39 +309,37 @@ Describe 'Get-ParkosMasterKeyBytes (DEC-INST-42: clave maestra de la empresa, nu
     }
 }
 
-Describe 'Import-ParkosMasterKey (-MasterKeyPath: copia validada de la clave entregada por soporte)' {
+Describe 'Set-ParkosMasterKeyOverride (-MasterKeyPath / PARKOS_MASTER_KEY_FILE: validada y usada tal cual)' {
 
-    It 'copia una clave valida al destino y no imprime sus bytes' {
+    It 'una clave valida pasa a ser la clave de la ejecucion (origen param) sin copiarse a ninguna parte' {
         $srcPath = Join-Path $env:TEMP "parkos-mk-src-$(Get-Random -Maximum 999999).key"
-        $dstDir = Join-Path $env:TEMP "parkos-mk-dst-$(Get-Random -Maximum 999999)"
-        $dstPath = Join-Path $dstDir 'security\parkos-master.key'
-        $expected = [byte[]](40..80)
-        [System.IO.File]::WriteAllBytes($srcPath, $expected)
+        [System.IO.File]::WriteAllBytes($srcPath, [byte[]](40..80))
         try {
-            Import-ParkosMasterKey -SourcePath $srcPath -DestinationPath $dstPath
-            (Test-Path -LiteralPath $dstPath) | Should Be $true
-            ([System.IO.File]::ReadAllBytes($dstPath) -join ',') | Should Be ($expected -join ',')
+            Mock Write-Host { }
+            Set-ParkosMasterKeyOverride -SourcePath $srcPath -Source 'param'
+            $resolved = Resolve-ParkosMasterKey
+            $resolved.Source | Should Be 'param'
+            $resolved.Path | Should Be ([System.IO.Path]::GetFullPath($srcPath))
         } finally {
+            Set-ParkosMasterKeyOverride -SourcePath ''
             Remove-Item -LiteralPath $srcPath -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $dstDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
-    It 'rechaza una clave corta y NO crea el destino' {
+    It 'rechaza una clave corta y no deja override' {
         $srcPath = Join-Path $env:TEMP "parkos-mk-short-$(Get-Random -Maximum 999999).key"
-        $dstPath = Join-Path $env:TEMP "parkos-mk-nodst-$(Get-Random -Maximum 999999)\parkos-master.key"
         [System.IO.File]::WriteAllBytes($srcPath, [byte[]](1..8))
         try {
-            { Import-ParkosMasterKey -SourcePath $srcPath -DestinationPath $dstPath } | Should Throw 'demasiado corta'
-            (Test-Path -LiteralPath $dstPath) | Should Be $false
+            { Set-ParkosMasterKeyOverride -SourcePath $srcPath -Source 'param' } | Should Throw 'demasiado corta'
+            $script:MasterKeyOverridePath | Should Be ''
         } finally {
             Remove-Item -LiteralPath $srcPath -Force -ErrorAction SilentlyContinue
         }
     }
 
-    It 'lanza si el archivo origen no existe' {
+    It 'lanza si el archivo indicado no existe' {
         $srcPath = Join-Path $env:TEMP "parkos-mk-nosrc-$(Get-Random -Maximum 999999).key"
-        { Import-ParkosMasterKey -SourcePath $srcPath -DestinationPath (Join-Path $env:TEMP 'x.key') } | Should Throw 'No se encontro el archivo indicado en -MasterKeyPath'
+        { Set-ParkosMasterKeyOverride -SourcePath $srcPath -Source 'env' } | Should Throw 'No se encontro el archivo de clave maestra indicado'
     }
 }
 

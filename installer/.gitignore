@@ -15,9 +15,15 @@ payload/*
 # includes the Postgres 16 binaries (parts/postgres). The RAW / unpacked forms
 # stay ignored by payload/* above (services/, apps/, *.msi and nssm.exe at the
 # payload root, pg_partman/, postgres/*.zip, .parts-sha256 markers): only the
-# packed parts are versioned. payload/security/parkos-master.key is a company
-# secret and must NEVER be committed (ignored by payload/*; never add it).
+# packed parts are versioned.
 !payload/parts/
+# Exception: payload/security/ is VERSIONED, including parkos-master.key. The
+# project decided that the Postgres master key lives in the repository so a
+# tester can run the full installer with zero intervention (the installer shows
+# a warning when it uses this copy and -Produccion refuses it). Support may
+# overwrite the file with the real company key and commit it. Nothing under
+# payload/security/ is ignored.
+!payload/security/
 .pyinstaller-work/
 __pycache__/
 *.spec

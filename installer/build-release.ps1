@@ -57,9 +57,10 @@ param(
     [string[]]$Ids,
     # Con -Pack: reescribe las partes aunque el contenido no haya cambiado.
     [switch]$Force,
-    # Clave maestra de Parkos (>=32 bytes) a copiar a payload\security\
-    # parkos-master.key si todavia no esta (CI/tecnico). Alternativa: variable
-    # PARKOS_MASTER_KEY_FILE. NUNCA se genera.
+    # Clave maestra de Parkos (>=32 bytes) a VALIDAR (no se copia: payload\
+    # security\parkos-master.key esta versionada en el repo). Alternativa:
+    # variable PARKOS_MASTER_KEY_FILE. Sin ninguna se usa la del repo. NUNCA se
+    # genera.
     [string]$MasterKeyPath = '',
     [string]$Version
 )
@@ -151,29 +152,34 @@ function Get-ManagementModulePayload {
 }
 
 # La clave maestra de Parkos (installer/payload/security/parkos-master.key,
-# DEC-INST-42) es un secreto de la EMPRESA, no de la instalacion - al igual
-# que el ZIP de Postgres de Get-PostgresZip, nunca se genera automaticamente
-# ni se descarga: debe ser provista manualmente por el equipo de soporte
-# antes de un build real. Falla aca en vez de dejar que
-# parkos-installer.ps1 la descubra faltante recien durante una instalacion.
+# DEC-INST-42) esta VERSIONADA en el repositorio (decision del proyecto: los
+# testers corren el instalador sin intervencion). Resolucion, igual que en
+# parkos-installer.ps1 (Resolve-ParkosMasterKey): -MasterKeyPath >
+# PARKOS_MASTER_KEY_FILE > copia del repositorio. Una clave indicada por
+# param/env solo se VALIDA (existe, >= 32 bytes): NO se copia sobre el archivo
+# versionado (ensuciaria git); se entrega al instalador en tiempo de
+# instalacion. Nunca se genera ni se imprime su contenido. Falla si la copia
+# del repositorio falta (paquete danado) y no se indico otra.
 function Get-MasterKeyPayload {
-    $masterKeyPath = Join-Path $PayloadRoot 'security\parkos-master.key'
+    $repoKeyPath = Join-Path $PayloadRoot 'security\parkos-master.key'
 
-    # Entrega no interactiva (CI/tecnico): -MasterKeyPath o PARKOS_MASTER_KEY_FILE.
     $source = $MasterKeyPath
-    if (-not $source) { $source = $env:PARKOS_MASTER_KEY_FILE }
-    if ($source -and -not (Test-Path $masterKeyPath)) {
-        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "La clave maestra indicada ($source) no existe." }
-        if ((Get-Item -LiteralPath $source).Length -lt 32) { throw "La clave maestra indicada ($source) tiene menos de 32 bytes." }
-        New-Item -ItemType Directory -Force -Path (Split-Path $masterKeyPath -Parent) | Out-Null
-        Copy-Item -LiteralPath $source -Destination $masterKeyPath -Force
-        Write-Host '[payload] Parkos master key copied from the provided path (never generated).'
-    }
+    $origin = 'param'
+    if (-not $source) { $source = $env:PARKOS_MASTER_KEY_FILE; $origin = 'env' }
+    if (-not $source) { $source = $repoKeyPath; $origin = 'repo' }
 
-    if (-not (Test-Path $masterKeyPath)) {
-        throw "Falta $masterKeyPath - la clave maestra debe ser provista por el equipo de soporte antes de un build real, nunca se genera automaticamente."
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        if ($origin -eq 'repo') {
+            throw "Falta $repoKeyPath - la clave maestra versionada debe venir con el repositorio; restaurela con git (git checkout -- installer/payload/security) o indique una con -MasterKeyPath."
+        }
+        throw "La clave maestra indicada ($source) no existe."
     }
-    Write-Host '[payload] Parkos master key found, staged in place.'
+    if ((Get-Item -LiteralPath $source).Length -lt 32) { throw "La clave maestra ($origin) tiene menos de 32 bytes." }
+    if ($origin -eq 'repo') {
+        Write-Host '[payload] Parkos master key: using the copy versioned in the repository (QA only; pass -MasterKeyPath for production).'
+    } else {
+        Write-Host "[payload] Parkos master key ($origin) validated; it is NOT copied into the package (supply it again at install time)."
+    }
 }
 
 function Get-PowerShell7Msi {
