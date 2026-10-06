@@ -291,13 +291,10 @@ Describe 'env requiere configuracion generada' {
     }
 }
 
-Describe 'Test-ParkosLiteTools' {
-    It 'lista lo que falta con la forma de instalarlo' {
-        Mock Test-ParkosLiteCommand { param($Name) $Name -ne 'uv' }
-        $m = Get-ParkosLiteMissingTools
-        $m.Count | Should Be 1
-        $m[0].Name | Should Be 'uv'
-        $m[0].Hint | Should Match 'winget'
+Describe 'Get-ParkosLitePaths (tools)' {
+    It 'las herramientas portatiles viven bajo <lite>\tools' {
+        $paths = Get-ParkosLitePaths -LitePath 'C:\L' -RepoRoot 'C:\R'
+        $paths.Tools | Should Be 'C:\L\tools'
     }
 }
 

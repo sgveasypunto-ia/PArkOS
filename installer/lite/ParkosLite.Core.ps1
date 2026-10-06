@@ -23,6 +23,7 @@ function Get-ParkosLitePaths {
     return @{
         Lite       = $LitePath
         Downloads  = Join-Path $LitePath 'downloads'
+        Tools      = Join-Path $LitePath 'tools'
         PgRoot     = Join-Path $LitePath 'pgsql'
         PgData     = Join-Path $data 'pg'
         Logs       = Join-Path $LitePath 'logs'
@@ -399,30 +400,7 @@ function Get-ParkosLiteStepStatus {
     return $r
 }
 
-# ---------------------------------------------------------------------------
-# Herramientas
-# ---------------------------------------------------------------------------
-
-function Test-ParkosLiteCommand {
-    param([Parameter(Mandatory)][string]$Name)
-    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
-}
-
-function Get-ParkosLiteMissingTools {
-    $hints = [ordered]@{
-        git   = 'winget install --id Git.Git -e'
-        uv    = 'winget install --id astral-sh.uv -e'
-        node  = 'winget install --id OpenJS.NodeJS.LTS -e'
-        pnpm  = 'npm install -g pnpm   (o: corepack enable)'
-    }
-    $missing = @()
-    foreach ($name in $hints.Keys) {
-        if (-not (Test-ParkosLiteCommand -Name $name)) {
-            $missing += [PSCustomObject]@{ Name = $name; Hint = $hints[$name] }
-        }
-    }
-    return $missing
-}
+# Herramientas (git, uv, node, pnpm): ver ParkosLite.Tools.ps1 (sistema o portatiles).
 
 # ---------------------------------------------------------------------------
 # Refresh ("bajar cambios de dev")
