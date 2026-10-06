@@ -40,8 +40,8 @@ $script:DefaultInstallPath = 'C:\Program Files\Parkos'
 
 # Mismo layout fijo que usa parkos-installer.ps1 (Test-PostInstallation,
 # Invoke-ParkosInstall) para psql.exe - Postgres 16 siempre termina en esta
-# ruta sin importar si el metodo de instalacion fue winget o el ZIP de
-# fallback (Install-Postgres converge en el mismo layout en ambos casos).
+# ruta (el instalador extrae el ZIP de EDB ahi; instalaciones antiguas por
+# winget usan la misma carpeta).
 $script:PostgresInstallPath = 'C:\Program Files\PostgreSQL\16'
 $script:PsqlExePath = Join-Path $script:PostgresInstallPath 'bin\psql.exe'
 
@@ -217,6 +217,33 @@ function script:Invoke-ParkosNssm {
     )
 
     & $NssmPath @Arguments
+}
+
+# Servicio de Windows de Postgres que registra parkos-installer.ps1 (etapa 1,
+# `pg_ctl register`). Contiene 'postgresql' para seguir resolviendose por el
+# patron *postgresql*; cuando hay varios (p. ej. un postgresql-x64-16 ajeno)
+# este va primero (ver Select-ParkosPostgresService).
+$script:ParkosPostgresServiceName = 'postgresql-parkos'
+
+# Wrapper minimo sobre `sc.exe delete` (mockeable): quita el registro del
+# servicio de Postgres de Parkos al desinstalar.
+function script:Invoke-ParkosScDelete {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ServiceName)
+
+    & sc.exe delete $ServiceName | Out-Null
+}
+
+# Servicio de Postgres a operar: el de Parkos si existe; si no, el primero que
+# case con *postgresql* (instalaciones antiguas por winget/EDB).
+function script:Select-ParkosPostgresService {
+    [CmdletBinding()]
+    param()
+
+    $candidates = @(Get-Service | Where-Object { $_ -and $_.Name -match 'postgresql' })
+    $own = $candidates | Where-Object { $_.Name -eq $script:ParkosPostgresServiceName } | Select-Object -First 1
+    if ($own) { return $own }
+    return ($candidates | Select-Object -First 1)
 }
 
 # Wrapper minimo sobre psql.exe para una consulta administrativa de solo
@@ -1249,10 +1276,16 @@ function Uninstall-Parkos {
         # hardcodeado - mismo patron que ya usa Test-CrashRecovery en este
         # mismo archivo.
         try {
-            $pgService = Get-Service | Where-Object { $_ -and $_.Name -match 'postgresql' } | Select-Object -First 1
+            $pgService = Select-ParkosPostgresService
             if ($pgService) {
                 Stop-Service -Name $pgService.Name -Force -ErrorAction Stop
                 Write-Host "[OK] Servicio de Postgres ('$($pgService.Name)') detenido." -ForegroundColor Green
+                # Solo el servicio que registro el instalador de Parkos se
+                # desregistra (nunca un postgresql-* ajeno).
+                if ($pgService.Name -eq $script:ParkosPostgresServiceName) {
+                    Invoke-ParkosScDelete -ServiceName $pgService.Name
+                    Write-Host "[OK] Servicio de Postgres ('$($pgService.Name)') desregistrado." -ForegroundColor Green
+                }
             }
         } catch {
             $msg = "Servicio de Postgres: $($_.Exception.Message)"
@@ -2084,12 +2117,10 @@ function Test-CrashRecovery {
     # ya haya corrido. Se documenta en vez de afirmar que "funciona perfecto".
     Start-Sleep -Seconds 1
 
-    # 3. Resolver el nombre real del servicio de Postgres DINAMICAMENTE - no
-    # esta hardcodeado en ningun lado de parkos-installer.ps1 (Install-Postgres
-    # /Install-PostgresViaWinget/Install-PostgresViaZip nunca registran ni
-    # nombran el servicio de Windows explicitamente), asi que se resuelve en
-    # runtime por patron, nunca adivinado.
-    $pgService = Get-Service | Where-Object { $_.Name -match 'postgresql' } | Select-Object -First 1
+    # 3. Resolver el servicio de Postgres: el que registra parkos-installer.ps1
+    # (postgresql-parkos) si existe; si no, por patron *postgresql* (instalaciones
+    # antiguas por winget/EDB), nunca adivinado.
+    $pgService = Select-ParkosPostgresService
     if (-not $pgService) {
         Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         throw "No se encontro el servicio de Windows de Postgres (patron '*postgresql*') - no se puede continuar con la prueba de crash recovery."

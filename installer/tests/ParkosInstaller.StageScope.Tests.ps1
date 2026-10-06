@@ -41,6 +41,7 @@ Describe 'Get-ParkosStageDefinitions - scope de Action/Rollback' {
         Mock Test-ApiPort { 8000 }
         Mock New-ParkosDerivedPassword { 'stub-pass' }
         Mock Install-Postgres { 'stub' }
+        Mock Get-ParkosServiceState { $null }
         Mock Initialize-DatabaseRoles { @{ AppPassword = 'a'; SuperuserPassword = 's' } }
         Mock Ensure-ServiceAccount { }
         Mock New-JwtSigningKey { }
