@@ -8,12 +8,15 @@
  * which silently no-op'd the submit guard).
  *
  * Plan source of truth -- HU-F10.1 acceptance criteria verbatim:
- *   - Shows "base vigente" (sesion.valor_inicial_efectivo +
- *     sesion.valor_inicial_datafono, BR1 literal) + per-medio_pago
- *     sum of pagos during the session. The pagos sum is a TODO for
- *     F10.2/F10.3 (those HUs own the chain that needs it); F10.1
- *     ships with the initial values only and notes the limitation.
- *   - Operator enters physical count for efectivo + datáfono.
+ *   - Shows "base vigente" (sesion.valor_inicial_efectivo, BR1 literal)
+ *     + per-medio_pago sum of pagos during the session. The pagos sum
+ *     is a TODO for F10.2/F10.3 (those HUs own the chain that needs
+ *     it); F10.1 ships with the initial values only and notes the
+ *     limitation. El datáfono ya no se arquea en el cuadre parcial
+ *     (fix/electron-sucursal-datafono-arqueo) -- el wire sigue
+ *     recibiendo `valor_datafono_reportado: 0` para preservar el
+ *     contrato del backend (ArqueoCreateV2 requiere el campo).
+ *   - Operator enters physical count for efectivo.
  *   - Live diferencia displayed: monto absoluto (informative:
  *     descuadre_pct per CU-10 BR2) + % info. Decision gate fires on
  *     the monto absoluto per configuracion_tolerancias -- NOT on %
@@ -59,15 +62,17 @@ import { formatCOP } from '../lib/format';
  * ArqueoSheet.tsx). Justification becomes required when
  * |diferencia total| > 0. Inline here -- the page only needs this
  * one branch (the strict-mode variant lives in CerrarTurno).
+ *
+ * Solo efectivo: el datáfono ya no se arquea en el cuadre parcial
+ * (fix/electron-sucursal-datafono-arqueo), así que la diferencia se
+ * computa sobre el único medio que el operador tipea.
  */
 function hasDifferenceError(
-  reportado: { efectivo: number; datafono: number },
-  esperado: { efectivo: number; datafono: number },
+  reportado: { efectivo: number },
+  esperado: { efectivo: number },
   justificacion: string,
 ): string | null {
-  const difTotal =
-    Math.abs(reportado.efectivo - esperado.efectivo) +
-    Math.abs(reportado.datafono - esperado.datafono);
+  const difTotal = Math.abs(reportado.efectivo - esperado.efectivo);
   if (
     difTotal > 0 &&
     (!justificacion || justificacion.trim().length < 3)
@@ -99,7 +104,6 @@ export function ArqueoParcial(): JSX.Element {
 
   // Reported values: 0 by default, integer non-negative per the BE schema.
   const [reportEfectivo, setReportEfectivo] = useState(0);
-  const [reportDatafono, setReportDatafono] = useState(0);
   const [justificacion, setJustificacion] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -114,7 +118,6 @@ export function ArqueoParcial(): JSX.Element {
   useEffect(() => {
     setSubmitError(null);
     setReportEfectivo(0);
-    setReportDatafono(0);
     setJustificacion('');
   }, []);
 
@@ -124,16 +127,13 @@ export function ArqueoParcial(): JSX.Element {
   // pagos during the session once `/caja-sesion/arqueos/.../pagos` (or
   // equivalent) is exposed for read.
   const esperadoEfectivo = sesion?.valor_inicial_efectivo ?? 0;
-  const esperadoDatafono = sesion?.valor_inicial_datafono ?? 0;
 
   const reportadoEfectivoNum = Number.isFinite(reportEfectivo) ? reportEfectivo : 0;
-  const reportadoDatafonoNum = Number.isFinite(reportDatafono) ? reportDatafono : 0;
 
   const difEfectivo = reportadoEfectivoNum - esperadoEfectivo;
-  const difDatafono = reportadoDatafonoNum - esperadoDatafono;
-  const difTotal = Math.abs(difEfectivo) + Math.abs(difDatafono);
-  const reportadoTotal = reportadoEfectivoNum + reportadoDatafonoNum;
-  const esperadoTotal = esperadoEfectivo + esperadoDatafono;
+  const difTotal = Math.abs(difEfectivo);
+  const reportadoTotal = reportadoEfectivoNum;
+  const esperadoTotal = esperadoEfectivo;
   // CU-10 BR2 informational percentage -- decision gate (alerta) uses
   // the absolute monto, not this %. Reconciliation rule from plan.md.
   const difPct =
@@ -144,11 +144,11 @@ export function ArqueoParcial(): JSX.Element {
   const validacionError = useMemo(
     () =>
       hasDifferenceError(
-        { efectivo: reportadoEfectivoNum, datafono: reportadoDatafonoNum },
-        { efectivo: esperadoEfectivo, datafono: esperadoDatafono },
+        { efectivo: reportadoEfectivoNum },
+        { efectivo: esperadoEfectivo },
         justificacion,
       ),
-    [reportadoEfectivoNum, reportadoDatafonoNum, esperadoEfectivo, esperadoDatafono, justificacion],
+    [reportadoEfectivoNum, esperadoEfectivo, justificacion],
   );
 
   const canSubmit =
@@ -173,7 +173,10 @@ export function ArqueoParcial(): JSX.Element {
         uuid_sesion: sesion.uuid,
         uuid_tipo_arqueo: uuidTipoAuditoria,
         valor_efectivo_reportado: reportadoEfectivoNum,
-        valor_datafono_reportado: reportadoDatafonoNum,
+        // El datafono no se arquea en el cuadre parcial; el contrato del
+        // backend lo exige, lo mandamos en 0 (mismo patrón que AbrirTurno
+        // hardcodea valor_inicial_datafono).
+        valor_datafono_reportado: 0,
         justificacion: difTotal > 0 ? justificacion.trim() : undefined,
       });
       // POST 201 -> refresh sesion state THEN close the drawer so
@@ -259,19 +262,6 @@ export function ArqueoParcial(): JSX.Element {
               {formatCOP(esperadoEfectivo)}
             </span>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">
-              {t('caja:arqueoParcial.baseDatafonoLabel', {
-                defaultValue: 'Datáfono esperado',
-              })}
-            </span>
-            <span
-              className="font-medium tabular-nums"
-              data-testid="arqueo-esperado-datafono"
-            >
-              {formatCOP(esperadoDatafono)}
-            </span>
-          </div>
         </CardContent>
       </Card>
 
@@ -287,20 +277,6 @@ export function ArqueoParcial(): JSX.Element {
             inputTestId="arqueo-efectivo-input"
             value={reportEfectivo || undefined}
             onChange={(raw) => setReportEfectivo(raw === '' ? 0 : Number(raw))}
-            placeholder="0"
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-sm font-medium" htmlFor="arqueo-datafono-input">
-            {t('caja:arqueoParcial.reportedDatafonoLabel', {
-              defaultValue: 'Datáfono contado',
-            })}
-          </label>
-          <MoneyInput
-            inputId="arqueo-datafono-input"
-            inputTestId="arqueo-datafono-input"
-            value={reportDatafono || undefined}
-            onChange={(raw) => setReportDatafono(raw === '' ? 0 : Number(raw))}
             placeholder="0"
           />
         </div>
@@ -327,22 +303,6 @@ export function ArqueoParcial(): JSX.Element {
             data-testid="arqueo-dif-efectivo"
           >
             {formatCOP(difEfectivo)}
-          </span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-muted-foreground">
-            {t('caja:arqueoParcial.difDatafono', {
-              defaultValue: 'Dif. datáfono',
-            })}
-          </span>
-          <span
-            className={
-              'tabular-nums ' +
-              (difDatafono === 0 ? '' : 'font-semibold text-destructive')
-            }
-            data-testid="arqueo-dif-datafono"
-          >
-            {formatCOP(difDatafono)}
           </span>
         </div>
         <div className="flex items-center justify-between border-t pt-1">

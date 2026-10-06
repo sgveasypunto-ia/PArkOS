@@ -132,7 +132,9 @@ describe('HU-F10.1 — <ArqueoParcial /> drawer-mounted page (REQ-OPS-154)', () 
 
   // ──────────────────────────────────────────────────────────────────────
   // render-2 — sesion activa renders form (Sesion activa card +
-  // Efectivo contado input + Datáfono contado input + dif total $0)
+  // Efectivo contado input + dif total $0). El datafono se removio
+  // de la UI en fix/electron-sucursal-datafono-arqueo: ya no se
+  // tipea ni se muestra el input ni los renglones de esperado/dif.
   // ──────────────────────────────────────────────────────────────────────
   it('render-2: when sesion is active, renders the form with sesion UUID + zero-stated inputs', () => {
     mockSesion.mockReturnValue({
@@ -148,7 +150,6 @@ describe('HU-F10.1 — <ArqueoParcial /> drawer-mounted page (REQ-OPS-154)', () 
     expect(screen.getByTestId('arqueo-parcial-page')).toBeInTheDocument();
     expect(screen.getByTestId('arqueo-sesion-uuid')).toBeInTheDocument();
     expect(screen.getByTestId('arqueo-efectivo-input')).toBeInTheDocument();
-    expect(screen.getByTestId('arqueo-datafono-input')).toBeInTheDocument();
     expect(screen.getByTestId('arqueo-dif-total')).toHaveTextContent('$ 0');
     expect(screen.getByTestId('arqueo-confirmar')).toBeInTheDocument();
   });
