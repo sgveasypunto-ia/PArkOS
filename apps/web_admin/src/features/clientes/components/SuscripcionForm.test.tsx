@@ -112,6 +112,24 @@ describe('<SuscripcionForm /> -- crear', () => {
     });
   });
 
+  it('suggests fecha_vencimiento = inicio + duracion - 1 (plan of N days covers exactly N days)', async () => {
+    window.localStorage.setItem(SUCURSAL_STORAGE_KEY, 'suc-1');
+    render(
+      <SuscripcionForm onSubmit={vi.fn()} onDone={vi.fn()} onCancel={vi.fn()} />,
+      { wrapper },
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('suscripcion-field-plan')).toBeInTheDocument();
+    });
+    await userEvent.selectOptions(screen.getByTestId('suscripcion-field-plan'), '33333333-3333-3333-3333-333333333333');
+    await userEvent.clear(screen.getByTestId('suscripcion-field-fecha-inicio'));
+    await userEvent.type(screen.getByTestId('suscripcion-field-fecha-inicio'), '2026-09-01');
+    // PLAN has duracion_dias = 30: Sep 1 + 29 = Sep 30.
+    await waitFor(() => {
+      expect(screen.getByTestId('suscripcion-field-fecha-vencimiento')).toHaveValue('2026-09-30');
+    });
+  });
+
   it('saves the subscripcion then maps a per-vehiculo 422 without losing the saved subscripcion', async () => {
     window.localStorage.setItem(SUCURSAL_STORAGE_KEY, 'suc-1');
     const onSubmit = vi.fn().mockResolvedValue({ ...VIGENTE, uuid: 'sub-new' });

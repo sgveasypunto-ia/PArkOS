@@ -498,17 +498,17 @@ def calcular_monto_suscripcion(*, plan: TipoSubscripciones) -> Decimal:
 def calcular_fecha_vencimiento(
     *, plan: TipoSubscripciones, fecha_inicio_cobertura: date_cls
 ) -> date_cls:
-    """Billing cycle end: ``fecha_inicio_cobertura + plan.duracion_dias`` days.
+    """Last covered day: ``fecha_inicio_cobertura + plan.duracion_dias - 1``.
 
     The cycle is per subscription (starts at activation), never the
-    calendar month. NOTE (semantics pinned by tests, see PT-3 report):
-    ``fecha_vencimiento`` is compared with ``>= hoy`` by the validity
-    predicates, so the subscription covers ``duracion_dias + 1`` calendar
-    days (start day through ``fecha_vencimiento`` inclusive).
+    calendar month. PD-01: a plan of N days covers EXACTLY N calendar days.
+    ``fecha_vencimiento`` is the last covered day, INCLUSIVE: the validity
+    predicates use ``fecha_vencimiento >= hoy``, so start day through
+    ``fecha_vencimiento`` is N days. Existing rows are not rewritten.
 
     Raises :class:`PlanDuracionDiasInvalidoError` on an invalid duration.
     """
-    return fecha_inicio_cobertura + timedelta(days=_duracion_dias_valida(plan))
+    return fecha_inicio_cobertura + timedelta(days=_duracion_dias_valida(plan) - 1)
 
 
 async def crear_subscripcion_cliente(

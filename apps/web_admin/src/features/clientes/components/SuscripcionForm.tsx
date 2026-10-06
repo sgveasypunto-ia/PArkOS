@@ -136,7 +136,9 @@ export function SuscripcionForm({
     if (!planSeleccionado || !fechaInicio) return;
     const duracionDias = Number(planSeleccionado.duracion_dias ?? 0);
     if (!duracionDias) return;
-    const computed = addDaysIso(fechaInicio, duracionDias);
+    // PT-3 / PD-01: a plan of N days covers exactly N calendar days, so the
+    // last covered day (inclusive) is start + N - 1.
+    const computed = addDaysIso(fechaInicio, duracionDias - 1);
     const current = form.getValues('fecha_vencimiento');
     if (current === '' || current === autoComputedRef.current) {
       form.setValue('fecha_vencimiento', computed, { shouldValidate: true });

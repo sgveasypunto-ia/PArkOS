@@ -167,20 +167,23 @@ def test_calcular_monto_suscripcion_invalid_duracion_raises(duracion: int | None
 @pytest.mark.parametrize(
     ("inicio", "duracion", "esperado"),
     [
-        (date(2026, 9, 20), 30, date(2026, 10, 20)),
-        (date(2026, 9, 20), 60, date(2026, 11, 19)),
-        (date(2026, 9, 20), 90, date(2026, 12, 19)),
-        (date(2026, 9, 30), 30, date(2026, 10, 30)),  # last day of month
-        (date(2028, 1, 30), 30, date(2028, 2, 29)),  # leap year lands on Feb 29
-        (date(2028, 2, 29), 30, date(2028, 3, 30)),  # start on leap day
-        (date(2027, 1, 30), 30, date(2027, 3, 1)),  # non-leap: Feb has 28 days
-        (date(2026, 12, 31), 60, date(2027, 3, 1)),  # year rollover
+        (date(2026, 9, 1), 30, date(2026, 9, 30)),  # 30 days from day 1 -> day 30
+        (date(2026, 9, 20), 30, date(2026, 10, 19)),
+        (date(2026, 9, 20), 60, date(2026, 11, 18)),
+        (date(2026, 9, 20), 90, date(2026, 12, 18)),
+        (date(2026, 9, 30), 30, date(2026, 10, 29)),  # last day of month
+        (date(2026, 1, 31), 1, date(2026, 1, 31)),  # 1-day plan covers only the start day
+        (date(2028, 1, 31), 30, date(2028, 2, 29)),  # leap year: Jan 31 + 29 = Feb 29
+        (date(2028, 2, 1), 29, date(2028, 2, 29)),  # lands exactly on Feb 29
+        (date(2028, 2, 29), 30, date(2028, 3, 29)),  # start on leap day
+        (date(2027, 1, 31), 30, date(2027, 3, 1)),  # non-leap: Feb has 28 days
+        (date(2026, 12, 31), 60, date(2027, 2, 28)),  # year rollover
     ],
 )
-def test_calcular_fecha_vencimiento_is_start_plus_duration(
+def test_calcular_fecha_vencimiento_is_start_plus_duration_minus_one(
     inicio: date, duracion: int, esperado: date
 ) -> None:
-    """PT-3: cycle = fecha_inicio_cobertura + duracion_dias, not calendar month."""
+    """PD-01: cycle = fecha_inicio_cobertura + duracion_dias - 1 (inclusive last day)."""
     from parkos_core.repo import venta_suscripcion as repo_venta
 
     plan = _make_plan_for_monto(valor=1, duracion_dias=duracion)
@@ -200,22 +203,28 @@ def test_calcular_fecha_vencimiento_invalid_duracion_raises() -> None:
         )
 
 
-def test_vencimiento_semantics_covers_duration_plus_one_calendar_days() -> None:
-    """Pins CURRENT semantics (to be decided by BR, see PT-3 report).
+@pytest.mark.parametrize("duracion", [30, 60, 90])
+@pytest.mark.parametrize("inicio", [date(2026, 9, 1), date(2026, 9, 30), date(2028, 2, 29)])
+def test_vencimiento_semantics_covers_exactly_duration_calendar_days(
+    inicio: date, duracion: int
+) -> None:
+    """PD-01: a plan of N days is valid for EXACTLY N calendar days.
 
-    ``fecha_vencimiento = inicio + N`` and the validity predicates use
-    ``fecha_vencimiento >= hoy`` (subscripcion_activa.py), so a 30-day plan
-    started on day D is still valid on D+30: 31 calendar days inclusive.
+    ``fecha_vencimiento`` is the last covered day and the validity predicates
+    use ``fecha_vencimiento >= hoy`` (subscripcion_activa.py): counting the
+    days from the start for which that predicate holds yields N.
     """
     from parkos_core.repo import venta_suscripcion as repo_venta
 
-    inicio = date(2026, 9, 1)
-    plan = _make_plan_for_monto(valor=1, duracion_dias=30)
+    plan = _make_plan_for_monto(valor=1, duracion_dias=duracion)
     venc = repo_venta.calcular_fecha_vencimiento(plan=plan, fecha_inicio_cobertura=inicio)
-    dias_cubiertos = [
-        d for d in (inicio + timedelta(days=i) for i in range(40)) if venc >= d
+    cubiertos = [
+        d
+        for d in (inicio + timedelta(days=i) for i in range(duracion + 10))
+        if venc >= d
     ]
-    assert len(dias_cubiertos) == 31
+    assert len(cubiertos) == duracion
+    assert venc + timedelta(days=1) not in cubiertos
 
 
 # ---------------------------------------------------------------------------
