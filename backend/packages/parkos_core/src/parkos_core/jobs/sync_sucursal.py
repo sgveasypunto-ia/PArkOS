@@ -1208,6 +1208,22 @@ def _wire_shape(row: Any) -> dict[str, Any]:
     :class:`parkos_core.sync.transport.PushResponse`. We pass the
     minimum needed to route + apply the row on the cloud side.
     """
+    datos = getattr(row, "datos", None) or {}
+    # ``seq`` is a REQUIRED int on the cloud's ``_PushedRow`` schema
+    # (``parkos_core/api/v1/sync_router.py::sync_push``); without it
+    # the Pydantic v2 validation rejects the whole batch with 422 and
+    # the row sits in 4xx backoff for 2h+ (BACKOFF_4XX[3]=7200s after
+    # 3 failed attempts). Real defect confirmed live, 2026-10-05:
+    # a single ``sesion`` event for a 4-attempt login was stuck in
+    # 4xx backoff with ``ultimo_error='http_422'`` and the cloud's
+    # log_transaccional was 8 rows short of the branch's. ``seq`` lives
+    # only in the ``datos`` JSONB (not a sync_queue column) — extract
+    # it here so the wire shape matches the schema.
+    raw_seq = datos.get("seq") if isinstance(datos, dict) else None
+    try:
+        seq = int(raw_seq) if raw_seq is not None else 0
+    except (TypeError, ValueError):
+        seq = 0
     return {
         "tabla": getattr(row, "tabla", None),
         # Bug 9 fix: ``str(None)`` is the literal ``'None'`` — the legacy
@@ -1217,7 +1233,8 @@ def _wire_shape(row: Any) -> dict[str, Any]:
         "uuid_sucursal": _str_or_none(getattr(row, "uuid_sucursal", None)),
         "operacion": getattr(row, "operacion", None),
         "prioridad": getattr(row, "prioridad", None),
-        "datos": getattr(row, "datos", None) or {},
+        "seq": seq,
+        "datos": datos,
     }
 
 
