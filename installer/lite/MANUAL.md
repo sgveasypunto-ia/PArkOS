@@ -74,21 +74,32 @@ Nota: los ejecutables y `node_modules` se generan **dentro del repositorio** (`i
 
 ## 3. Requisitos previos
 
-Necesita Windows y cuatro herramientas. No necesita ser administrador. Conexión a internet **solo mientras instala** (o cuando use la opción 7).
+Necesita **Windows e internet mientras instala**. No necesita ser administrador ni instalar nada antes: si el equipo no tiene `git`, `uv`, `node` o `pnpm` (o tiene versiones viejas), el paso "Preparar entorno" (opción 10, parte de la opción 1) descarga copias **portátiles** dentro de `<LITE>\tools` y las usa solo el instalador. Si ya hay una versión compatible en el PATH (node 20 o superior, pnpm 10 o superior, uv y git recientes), se usa esa y no se descarga nada.
 
-| Herramienta | Para qué | Cómo comprobar (en una consola) | Cómo instalar si falta |
-|---|---|---|---|
-| `git` | Obtener y actualizar el código | `git --version` | `winget install --id Git.Git -e` |
-| `uv` | Construir la API (Python) | `uv --version` | `winget install --id astral-sh.uv -e` |
-| `node` (LTS, 20 o superior) | Servir el front | `node --version` | `winget install --id OpenJS.NodeJS.LTS -e` |
-| `pnpm` (10) | Dependencias del front | `pnpm --version` | `npm install -g pnpm` (o `corepack enable`) |
+### Herramientas portátiles
+
+| Herramienta | Versión fijada | Origen (URL) | Dónde se instala | Verificación de integridad |
+|---|---|---|---|---|
+| Node.js | 22.23.3 (LTS; se acepta 20 o superior del sistema) | `https://nodejs.org/dist/v22.23.3/node-v22.23.3-win-x64.zip` (~30 MB) | `<LITE>\tools\node` | SHA-256 fijado y contrastado con `SHASUMS256.txt` del mismo `dist` |
+| pnpm | 10.0.0 (el `packageManager` de `apps\package.json`; se acepta 10 o superior) | `npm install -g pnpm@10.0.0 --prefix <LITE>\tools\pnpm` con el npm del Node anterior (registro npm) | `<LITE>\tools\pnpm` | Lo verifica npm (integridad del registro) |
+| uv | 0.12.23 (se acepta 0.5 o superior) | `https://github.com/astral-sh/uv/releases/download/0.12.23/uv-x86_64-pc-windows-msvc.zip` (~18 MB) | `<LITE>\tools\uv` | SHA-256 fijado y contrastado con el asset `.sha256` del release |
+| Git (MinGit) | 2.56.0.2 (se acepta 2.20 o superior) | `https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/MinGit-2.56.0.2-64-bit.zip` (~40 MB) | `<LITE>\tools\git` | SHA-256 fijado = digest que publica GitHub para ese asset (Git for Windows no publica un `.sha256` aparte) |
+
+Los zip se guardan en `<LITE>\downloads` (caché). Las cachés de uv (incluido el Python 3.13 que uv baja solo), de npm y el almacén de pnpm viven en `<LITE>\tools\cache`. Todo se define en un solo lugar: la tabla de versiones de `installer\lite\ParkosLite.Tools.ps1`.
+
+- **Qué verá**: por cada herramienta `[YA ESTA]` (ya existía, del sistema o de `tools\`), `[INSTALADO]` (la descargó ahora) y al final un resumen con versión y origen (`sistema` o `portatil`). La opción 5 (Estado) muestra lo mismo.
+- **Alcance**: las carpetas de `tools\` se anteponen al PATH **solo del proceso del instalador y de sus hijos** (build, uv, pnpm, node/Vite, git). No se modifica el PATH de Máquina ni de Usuario, ni el registro. Por eso `node --version` en su consola puede seguir fallando: es normal, las herramientas no son visibles fuera del lite.
+- **Sin internet / descarga fallida**: el mensaje indica la URL, la carpeta exacta (`<LITE>\downloads`) y el nombre del archivo donde dejarlo a mano; luego vuelva a correr la opción 10 (o la 1), que es re-ejecutable y reutiliza el zip si su hash coincide.
+- **Verificar**: `& "<LITE>\tools\node\node.exe" --version`, `& "<LITE>\tools\uv\uv.exe" --version`, `& "<LITE>\tools\git\cmd\git.exe" --version`, `& "<LITE>\tools\pnpm\pnpm.cmd" --version`.
+- **Quitar / reinstalar**: borre `<LITE>\tools` (y, si quiere forzar nueva descarga, los zip de `<LITE>\downloads`) y corra la opción 10. No afecta a Postgres ni a los datos.
+- **Antivirus / proxy corporativo**: un antivirus puede escanear o bloquear las `.exe` recién extraídas (el instalador reintenta y, si falla, lo dice); si hay proxy con inspección TLS, la descarga puede fallar con un error de certificado: descargue los zip desde otra red y déjelos en `<LITE>\downloads`. Para pnpm vía npm use las variables estándar del proxy (`HTTPS_PROXY`).
+- **Limitación de git portátil**: MinGit no trae Git Credential Manager; la opción 7 (`git pull`) contra un remoto privado puede pedir credenciales o fallar si el equipo no tiene su propio git configurado.
 
 Otros requisitos:
 
 - **PowerShell**: funciona con Windows PowerShell 5.1 o con `pwsh` 7.
 - **Espacio en disco**: el código no declara un mínimo. Solo hay dos referencias: el ZIP de Postgres pesa unos 300 MB (texto del propio instalador) y luego se extrae; además se construyen dos ejecutables y se instalan dependencias de Node. Reserve varios GB libres (estimación, ver [sección 22](#22-limitaciones--no-verificado)).
 - **Puertos**: por defecto Postgres 5433, API 8100 y front 5173. Si alguno está ocupado, el instalador toma el siguiente libre solo (ver [sección 13](#13-puertos)).
-- Después de instalar una herramienta con `winget`, **abra una consola nueva** para que el sistema la reconozca. Si falta alguna, el paso "Preparar entorno" se lo dirá y le mostrará el comando.
 
 ## 4. Cómo ejecutarlo
 
@@ -431,7 +442,7 @@ Lógica en `installer\shared\ParkosPostgresDownload.ps1` (compartida con el inst
 ```mermaid
 flowchart TD
     A["Opción 1: Instalar todo"] --> B["Paso 1 de 7: Preparar entorno (opción 10)"]
-    B -->|"faltan herramientas"| F["Mensaje con winget y se detiene"]
+    B -->|"faltan herramientas"| F["Descarga portátiles a tools\ (sin admin)"]
     B --> C["Paso 2 de 7: Instalar base de datos (opción 11)"]
     C --> C1["ZIP: caché, payload o descarga"]
     C1 --> C2["Extraer, pg_partman, initdb, arrancar, roles y base parkos"]
@@ -477,7 +488,7 @@ Orden de arranque (`Start-ParkosLiteAll`): Postgres (limpia pid huérfano, `pg_c
 1. Opción 3 (Detener todo).
 2. Opción 9, submenú 3 (Desactivar): quita la tarea `ParkosLiteDb`, la clave Run y, con administrador, el servicio. Sin administrador y con servicio registrado: en una consola elevada, `& "<LITE>\pgsql\bin\pg_ctl.exe" unregister -N ParkosLiteDb`.
 3. Verifique que no quedó nada: `Get-ScheduledTask -TaskName ParkosLiteDb` y `Get-Service ParkosLiteDb` deben dar error de no encontrado.
-4. Borre la carpeta `<LITE>` (incluye Postgres, datos, logs y la caché de descargas).
+4. Borre la carpeta `<LITE>` (incluye Postgres, datos, logs, la caché de descargas y las herramientas portátiles de `tools\`).
 5. Opcional, dentro del repositorio: borre `installer\payload\services\api-sucursal`, `installer\payload\services\migrate`, `installer\.pyinstaller-work` y `apps\**\node_modules` (todo regenerable).
 
 Si borra `<LITE>` sin desactivar el arranque automático, la tarea intentará arrancar al iniciar sesión un script cuyos datos ya no existen.
@@ -565,6 +576,7 @@ Las celdas de la columna "Instalador completo" se basan en el encabezado de `par
 - El instalador ejecuta código del **mismo repositorio** donde está el script: la opción 7 modifica ese árbol de trabajo (`git checkout` y `git pull`).
 - Tres mensajes de error citan una numeración antigua de pasos (`paso 1`, `paso 6`); la numeración vigente es 10 (Preparar entorno) y 15 (Instalar dependencias del front).
 - Si falla la reconstrucción, la migración o `pnpm` **después** de un pull correcto en la opción 7, el error se muestra pero los servicios quedan detenidos (solo el fallo del pull reinicia lo anterior); use la opción 2 tras corregir (deducción del código).
+- Las herramientas portátiles (`<LITE>	ools`) solo las ven el instalador y sus procesos hijos, no la consola del usuario.
 - El arranque automático es único por usuario de Windows (`ParkosLiteDb`), no por `LitePath`.
 
 ## 22. Limitaciones / no verificado

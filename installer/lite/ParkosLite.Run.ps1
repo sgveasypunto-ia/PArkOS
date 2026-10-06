@@ -26,7 +26,7 @@ function New-ParkosLiteJwtKey {
 
 function Get-ParkosLiteNodePath {
     $c = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $c) { throw 'No se encontro node en el PATH (opcion 10: Preparar entorno).' }
+    if (-not $c) { throw 'No se encontro node (ni del sistema ni portatil): corre la opcion 10 (Preparar entorno), que lo instala sola.' }
     return $c.Source
 }
 
@@ -123,7 +123,8 @@ function Invoke-ParkosLitePnpmInstall {
     # (--frozen falla) y asi un install del lite nunca ensucia el arbol git.
     Push-Location $AppsDir
     try {
-        & pnpm install --ignore-scripts --frozen-lockfile=false --lockfile=false --config.confirmModulesPurge=false *>&1 | Tee-Object -FilePath $LogPath | ForEach-Object { if ("$_" -notmatch '^Progress:') { Write-Host $_ } }
+        # pnpm.cmd (no pnpm.ps1): la politica de ejecucion de PS 5.1 puede bloquear los .ps1.
+        & pnpm.cmd install --ignore-scripts --frozen-lockfile=false --lockfile=false --config.confirmModulesPurge=false *>&1 | Tee-Object -FilePath $LogPath | ForEach-Object { if ("$_" -notmatch '^Progress:') { Write-Host $_ } }
         return $LASTEXITCODE
     } finally {
         Pop-Location
@@ -284,11 +285,9 @@ function Invoke-ParkosLiteStep {
     $state = $Ctx.State
     switch ($Key) {
         'env' {
-            $missing = @(Get-ParkosLiteMissingTools)
-            if ($missing.Count -gt 0) {
-                $msg = "Faltan herramientas:`n" + (($missing | ForEach-Object { "  - $($_.Name): $($_.Hint)" }) -join "`n") + "`nInstalalas, abre una consola nueva y reintenta."
-                throw $msg
-            }
+            # Herramientas: usa las del sistema si son compatibles; si no, las instala
+            # portatiles en <lite>	ools (sin admin) y las pone en el PATH de este proceso.
+            Install-ParkosLiteToolchain -LitePath $paths.Lite -Logger $Ctx.Logger | Out-Null
             $req = $Ctx.Requested
             if (-not $req) { $req = @{ Db = 0; Api = 0; Front = 0 } }
             Initialize-ParkosLiteConfig -Ctx $Ctx -DbPortRequested $req.Db -ApiPortRequested $req.Api -FrontPortRequested $req.Front

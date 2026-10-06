@@ -10,7 +10,7 @@
       - el front React de la sucursal servido por Vite en el navegador,
       - sin job de sync, con datos de demo (tarifas, config, usuarios).
     Internet solo hace falta al instalar / bajar cambios (descarga de Postgres,
-    pg_partman, git pull, pnpm/uv). Compatible con Windows PowerShell 5.1 y pwsh 7.
+    pg_partman, herramientas portatiles git/uv/node/pnpm, git pull, pnpm/uv). Compatible con Windows PowerShell 5.1 y pwsh 7.
 
 .PARAMETER LitePath
     Carpeta de trabajo del lite (binarios de Postgres, datos, logs, estado).
@@ -40,6 +40,7 @@ $script:LiteRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 . (Join-Path $PSScriptRoot '..\shared\ParkosPostgresDownload.ps1')
 . (Join-Path $PSScriptRoot 'ParkosLite.Core.ps1')
 . (Join-Path $PSScriptRoot 'ParkosLite.Db.ps1')
+. (Join-Path $PSScriptRoot 'ParkosLite.Tools.ps1')
 . (Join-Path $PSScriptRoot 'ParkosLite.Autostart.ps1')
 . (Join-Path $PSScriptRoot 'ParkosLite.Run.ps1')
 
@@ -53,6 +54,8 @@ function New-ParkosLiteContext {
     if (-not $LitePath) { $LitePath = Get-ParkosLiteDefaultPath }
     $paths = Get-ParkosLitePaths -LitePath $LitePath -RepoRoot $script:LiteRepoRoot
     New-Item -ItemType Directory -Force -Path $paths.Lite, $paths.Logs, $paths.Run | Out-Null
+    # Si ya hay herramientas portatiles en <lite>	ools, solo este proceso y sus hijos las ven.
+    Enable-ParkosLiteToolchainEnv -LitePath $paths.Lite | Out-Null
     $logFile = Join-Path $paths.Logs 'lite.log'
     $logger = {
         param($m)
@@ -74,7 +77,7 @@ function Get-ParkosLiteFacts {
     param([Parameter(Mandatory)]$Ctx)
     $p = $Ctx.Paths
     $facts = @{
-        ToolsMissing   = @(Get-ParkosLiteMissingTools | ForEach-Object { $_.Name })
+        ToolsMissing   = @(Get-ParkosLiteMissingTools -LitePath $p.Lite | ForEach-Object { $_.Name })
         ConfigReady    = ((Test-ParkosUuidV4 -Value $Ctx.State.sucursal_uuid) -and (Test-Path $p.EnvFile) -and $Ctx.State.db_port -gt 0)
         PgInstalled    = (Test-Path (Join-Path $p.PgRoot 'bin\pg_ctl.exe'))
         PgInitialized  = ((Test-Path (Join-Path $p.PgData 'PG_VERSION')) -and (Test-Path $p.Secrets))
@@ -128,7 +131,7 @@ function Invoke-ParkosLiteTuiStep {
 # sembrar si corren siempre: son baratos e idempotentes).
 $script:LiteSkipWhenOk = @('db', 'api', 'front')
 $script:LiteStepHints = @{
-    env     = 'unos segundos'
+    env     = 'unos segundos; si no tienes git/uv/node/pnpm los descarga portatiles (~100 MB, 1 a 3 minutos), sin admin'
     db      = 'descarga ~300 MB la primera vez: 2 a 8 minutos segun tu internet'
     api     = 'compila el programa: 3 a 10 minutos la primera vez (omite si ya esta hecho)'
     migrate = 'menos de 1 minuto'
@@ -221,6 +224,8 @@ function Show-ParkosLiteStatus {
     Write-Host ("  API      : {0} pid={1} puerto={2} /health={3}" -f $(if ($apiPid) { 'ARRIBA' } else { 'abajo' }), $apiPid, $s.api_port, $health)
     Write-Host ("  Front    : {0} pid={1} puerto={2} http={3}" -f $(if ($frPid) { 'ARRIBA' } else { 'abajo' }), $frPid, $s.front_port, $front)
     Write-Host ("  Sucursal : {0}" -f $s.sucursal_uuid)
+    Write-Host '  Herramientas (sistema o portatil en <lite>	ools):'
+    foreach ($l in (Format-ParkosLiteToolLines -Status (Get-ParkosLiteToolStatus -LitePath $p.Lite))) { Write-Host $l }
     Write-Host ("  Rama     : {0}   Commit del exe: {1}" -f $Ctx.Branch, $s.api_built_commit)
     Write-Host ('  ' + (Format-ParkosLiteAutostartLine -Status (Get-ParkosLiteAutostartStatus)))
     Write-Host ("  URL front: {0}" -f $u.Front)
