@@ -287,12 +287,18 @@ installer/payload/parts/
   powershell7-msi/PowerShell-7.4.6-win-x64.msi.part01..02
   nssm/nssm.exe                               (<= 90 MiB: se guarda tal cual, una sola parte)
   pg_partman-extension/pg_partman-extension.zip
-  [web-sucursal-msi/, api-sucursal/, job-sync-sucursal/, migrate/, seed/, doctor/   solo al publicar]
+  web-sucursal-msi/, api-sucursal/, job-sync-sucursal/, migrate/, seed/, doctor/   (versionados al publicar)
+  tools-node/node-v22.23.3-win-x64.zip        herramientas portatiles del LITE (ver abajo)
+  tools-uv/uv-0.12.23-x86_64-pc-windows-msvc.zip
+  tools-mingit/MinGit-2.56.0.2-64-bit.zip
+  tools-pnpm/tools-pnpm.zip                   (carpeta portatil de pnpm 10.0.0)
 ```
 
 **Campos del manifest** (por artefacto): `id`, `kind` (`file`|`dir`), `target` (ruta relativa bajo `payload\` donde se restaura), `archive` (nombre del archivo o `<id>.zip`), `uncompressedSize`, `archiveSize`, `sha256` (del archivo final), `partCount`, `parts[]` (`name`, `size`, `sha256`), `builtFromCommit` (commit del repo al empaquetar), `packedAtUtc`, `source` (p. ej. `third-party download (...)` o `built from backend (PyInstaller onedir) @ <commit>`), `note`, `sourceDependent` (su contenido sale de `backend/` o `installer\bootstrap\`) y `restoreToPayload` (`false` para Postgres: se rearma en la cache al instalar, no en `payload\`).
 
 **Artefactos y tabla** (`Get-ParkosPayloadArtifactTable`): `postgres`, `powershell7-msi`, `nssm`, `pg_partman-extension` se empaquetan por defecto; `web-sucursal-msi`, `api-sucursal`, `job-sync-sucursal`, `migrate`, `seed` y `doctor` están definidos y **ya van versionados** (empaquetados con `-Ids` desde una compilación fresca de `eed68026`; `builtFromCommit` de cada entrada = ese commit). Así la instalación LITE y la COMPLETA funcionan solo con lo que hay en el repositorio.
+
+**Herramientas portatiles del LITE (`tools-*`).** Cuatro ids extra en la tabla, todos `Default = $false`, `SourceDependent = $false` y `RestoreToPayload = $false` (por eso `Restore-ParkosPayloadAll` sin `-Ids` y `build-release.ps1 -Restore` **no** los restauran: no son del instalador completo): `tools-node`, `tools-uv` y `tools-mingit` (`file`: **exactamente** los zip fijados en la tabla de versiones de `installer\lite\ParkosLite.Tools.ps1`, mismo nombre y mismo sha256) y `tools-pnpm` (`dir`: la carpeta que produce `npm install -g pnpm@10.0.0 --prefix`, target `tools\pnpm`). Los consume el lite (`Restore-ParkosLiteToolZipFromParts`, `Restore-ParkosLitePnpmFromParts`): PATH compatible -> partes del repo (se rearman en `<LITE>\downloads\_parts`, se verifican contra el sha256 **fijado** de la tabla del lite y se mueven a la cache de descargas; pnpm se restaura directo a `<LITE>\tools\pnpm`) -> descarga. Una parte danada, de otra version o con hash distinto del fijado no rompe nada: el lite avisa y descarga. Se obtienen ejecutando las propias funciones del lite en una carpeta temporal (`Install-ParkosLiteToolchain` con un PATH sin git/node/uv/pnpm; descarga una vez y verifica los hashes fijados) y empaquetando con `Pack-ParkosPayloadArtifact -NoRestoreToPayload` (no se pasa por `Pack-ParkosPayload.ps1` porque su origen no es `payload\`). **Si sube una version en `ParkosLite.Tools.ps1`** hay que re-empaquetar el id y actualizar la fila de la tabla (`Path`): un test (`ParkosLite.Tools.Tests.ps1`) falla si el nombre del manifest, la tabla del lite y el sha256 fijado dejan de coincidir. Tamanos (primer empaquetado): `tools-node` 35,6 MB, `tools-mingit` 39,8 MB, `tools-uv` 18,0 MB, `tools-pnpm` 5,1 MB (una parte cada uno; ~98,5 MB en total, historial permanente; son terceros con version fijada, no cambian).
 
 **Empaquetar** (desde el repo, con el payload crudo presente):
 
@@ -326,6 +332,8 @@ La restauración es **idempotente**: deja `<destino>.parts-sha256` y una segunda
 |---|---|---|
 | `powershell7-msi`, `nssm`, `pg_partman-extension` | Al cambiar la versión fijada en `build-release.ps1` | Dejar el crudo en `payload\` (`build-release.ps1 -Payload` lo descarga) y `Pack-ParkosPayload.ps1 -Ids <id> -Force` |
 | `postgres` | Al cambiar la versión de EDB | Ver arriba |
+| `tools-node`, `tools-uv`, `tools-mingit`, `tools-pnpm` | Al cambiar la versión fijada en `ParkosLite.Tools.ps1` | Ver "Herramientas portatiles del LITE" arriba |
+| `api-sucursal`, `migrate` para el LITE | El lite los restaura solo si `backend/` e `installer\bootstrap\` no cambiaron desde `builtFromCommit`; si cambiaron compila (uv/Python + Internet). Reempaquetar al publicar para que el lite vuelva a restaurar sin compilar | Misma fila de servicios (abajo) |
 | `web-sucursal-msi`, servicios | **Solo al publicar una versión**, o cuando cambió `backend\`, `installer\bootstrap\` o `apps\electron-sucursal` desde su `builtFromCommit` | `pwsh -NoProfile -File installer\build-release.ps1 -ApiSucursal -JobSync -Migrate -Seed -Doctor -WebSucursal` y luego `pwsh -NoProfile -File installer\tools\Pack-ParkosPayload.ps1 -Ids api-sucursal,job-sync-sucursal,migrate,seed,doctor,web-sucursal-msi` (empaquetar **una sola vez** por compilación; `-Force` solo para reescribir). El MSI requiere `pnpm install` en `apps\` antes de compilar |
 
 **Política de tamaño / historial.** La salida de PyInstaller **no es reproducible byte a byte** (cambian marcas de tiempo y orden), así que cada reempaquetado de servicios o MSI genera partes nuevas y **suma su tamaño al historial de git para siempre** (cientos de MB por juego completo). Empaquételos solo al publicar una versión, no en cada cambio. Los terceros (versión fijada) no cambian y no generan ruido. El peso del repositorio no es una restricción; el límite duro es el archivo de 100 MB.
