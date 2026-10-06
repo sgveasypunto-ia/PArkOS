@@ -280,6 +280,81 @@ Describe 'Get-ParkosMasterKeyBytes (DEC-INST-42: clave maestra de la empresa, nu
         $missingPath = Join-Path $env:TEMP "parkos-master-key-missing-$(Get-Random -Maximum 999999).key"
         { Get-ParkosMasterKeyBytes -MasterKeyPath $missingPath } | Should Throw "No se encontro la clave maestra de Parkos en $missingPath"
     }
+
+    It 'el mensaje de clave faltante es accionable: ruta exacta + pedirla a soporte' {
+        $missingPath = Join-Path $env:TEMP "parkos-master-key-missing-$(Get-Random -Maximum 999999).key"
+        { Get-ParkosMasterKeyBytes -MasterKeyPath $missingPath } | Should Throw 'Solicitela al equipo de soporte por un canal seguro y copiela a esa ruta'
+    }
+
+    It 'lanza un mensaje distinto si la clave existe pero mide menos de 32 bytes' {
+        $shortPath = Join-Path $env:TEMP "parkos-master-key-short-$(Get-Random -Maximum 999999).key"
+        [System.IO.File]::WriteAllBytes($shortPath, [byte[]](1..31))
+        try {
+            { Get-ParkosMasterKeyBytes -MasterKeyPath $shortPath } | Should Throw 'demasiado corta (31 bytes; minimo 32)'
+        } finally {
+            Remove-Item -LiteralPath $shortPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'devuelve los bytes de una clave valida de 32 bytes' {
+        $keyPath = Join-Path $env:TEMP "parkos-master-key-ok-$(Get-Random -Maximum 999999).key"
+        $expected = [byte[]](1..32)
+        [System.IO.File]::WriteAllBytes($keyPath, $expected)
+        try {
+            $bytes = Get-ParkosMasterKeyBytes -MasterKeyPath $keyPath
+            ($bytes -join ',') | Should Be ($expected -join ',')
+        } finally {
+            Remove-Item -LiteralPath $keyPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Describe 'Import-ParkosMasterKey (-MasterKeyPath: copia validada de la clave entregada por soporte)' {
+
+    It 'copia una clave valida al destino y no imprime sus bytes' {
+        $srcPath = Join-Path $env:TEMP "parkos-mk-src-$(Get-Random -Maximum 999999).key"
+        $dstDir = Join-Path $env:TEMP "parkos-mk-dst-$(Get-Random -Maximum 999999)"
+        $dstPath = Join-Path $dstDir 'security\parkos-master.key'
+        $expected = [byte[]](40..80)
+        [System.IO.File]::WriteAllBytes($srcPath, $expected)
+        try {
+            Import-ParkosMasterKey -SourcePath $srcPath -DestinationPath $dstPath
+            (Test-Path -LiteralPath $dstPath) | Should Be $true
+            ([System.IO.File]::ReadAllBytes($dstPath) -join ',') | Should Be ($expected -join ',')
+        } finally {
+            Remove-Item -LiteralPath $srcPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $dstDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'rechaza una clave corta y NO crea el destino' {
+        $srcPath = Join-Path $env:TEMP "parkos-mk-short-$(Get-Random -Maximum 999999).key"
+        $dstPath = Join-Path $env:TEMP "parkos-mk-nodst-$(Get-Random -Maximum 999999)\parkos-master.key"
+        [System.IO.File]::WriteAllBytes($srcPath, [byte[]](1..8))
+        try {
+            { Import-ParkosMasterKey -SourcePath $srcPath -DestinationPath $dstPath } | Should Throw 'demasiado corta'
+            (Test-Path -LiteralPath $dstPath) | Should Be $false
+        } finally {
+            Remove-Item -LiteralPath $srcPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'lanza si el archivo origen no existe' {
+        $srcPath = Join-Path $env:TEMP "parkos-mk-nosrc-$(Get-Random -Maximum 999999).key"
+        { Import-ParkosMasterKey -SourcePath $srcPath -DestinationPath (Join-Path $env:TEMP 'x.key') } | Should Throw 'No se encontro el archivo indicado en -MasterKeyPath'
+    }
+}
+
+Describe 'Test-Preflight (aviso de clave maestra, no bloqueante)' {
+
+    It 'imprime el [AVISO] de clave maestra cuando esta ausente' {
+        Mock Get-ParkosMasterKeyProblem { 'No se encontro la clave maestra de Parkos en X' }
+        Mock Write-Host { }
+        Mock Test-NetConnection { $true }
+        Mock Test-WindowsVersion { $true }
+        $null = Test-Preflight -InstallPath "$env:SystemDrive\Parkos" -DataPath (Join-Path $env:TEMP "parkos-pf-$(Get-Random -Maximum 999999)")
+        Assert-MockCalled Write-Host -ParameterFilter { $Object -like '*[[]AVISO[]] Clave maestra*' } -Times 1
+    }
 }
 
 Describe 'Initialize-DatabaseRoles (DEC-INST-42: deriva superuser/app password por SucursalUuid)' {

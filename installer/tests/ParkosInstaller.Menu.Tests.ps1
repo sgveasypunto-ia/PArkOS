@@ -404,4 +404,167 @@ Describe 'Get-ParkosStageMenuLines' {
     }
 }
 
+# Gates de dependencia entre etapas (unidad 4 del arreglo del instalador): el
+# mapa real vive en Get-ParkosStagePrerequisites; Get-ParkosStageBlockReason
+# es la funcion pura que usan tanto el render del menu como el dispatch.
+function New-TestStageStatus {
+    param([hashtable]$Overrides = @{})
+    $status = [ordered]@{
+        build = [ParkosStageState]::NotRun
+        db = [ParkosStageState]::NotRun; migrate = [ParkosStageState]::NotRun; sucursal = [ParkosStageState]::NotRun; seed = [ParkosStageState]::NotRun
+        api = [ParkosStageState]::NotRun; job = [ParkosStageState]::NotRun; electron = [ParkosStageState]::NotRun; verify = [ParkosStageState]::NotRun
+    }
+    foreach ($k in $Overrides.Keys) { $status[$k] = $Overrides[$k] }
+    return $status
+}
+
+# Etapas de prueba cuyo Action solo registra su numero en $global:DispatchRan.
+function New-RecordingMenuStageDefinitions {
+    $defs = New-FakeMenuStageDefinitions
+    foreach ($n in 0..8) {
+        $num = $n
+        $defs.Stages["$n"].Action = { $global:DispatchRan += $num }.GetNewClosure()
+    }
+    return $defs
+}
+
+Describe 'Get-ParkosStagePrerequisites / Get-ParkosStageBlockReason' {
+
+    It 'la etapa 0 nunca tiene prerequisitos y las etapas 1-8 si' {
+        $prereqs = Get-ParkosStagePrerequisites
+        $prereqs.ContainsKey('0') | Should Be $false
+        foreach ($n in 1..8) { $prereqs.ContainsKey("$n") | Should Be $true }
+    }
+
+    It 'todo prerequisito tiene numero menor que su etapa (la cascada 0..8 siempre los satisface)' {
+        $prereqs = Get-ParkosStagePrerequisites
+        foreach ($n in 1..8) {
+            foreach ($p in @($prereqs["$n"])) { ([int]$p.Number -lt $n) | Should Be $true }
+        }
+    }
+
+    It 'la cascada completa en orden 0..8 nunca queda bloqueada' {
+        $prereqs = Get-ParkosStagePrerequisites
+        $status = New-TestStageStatus
+        $keys = 'build', 'db', 'migrate', 'sucursal', 'seed', 'api', 'job', 'electron', 'verify'
+        foreach ($n in 0..8) {
+            (Get-ParkosStageBlockReason -Number "$n" -StageStatus $status -Prereqs $prereqs) | Should BeNullOrEmpty
+            $status[$keys[$n]] = [ParkosStageState]::Ok
+        }
+    }
+
+    It 'las etapas 1 y 7 requieren la 0; 5 requiere la 4; 6 requiere la 5' {
+        $prereqs = Get-ParkosStagePrerequisites
+        $status = New-TestStageStatus
+        (Get-ParkosStageBlockReason -Number '1' -StageStatus $status -Prereqs $prereqs) | Should Be 'requiere que 0 este OK'
+        (Get-ParkosStageBlockReason -Number '7' -StageStatus $status -Prereqs $prereqs) | Should Be 'requiere que 0 este OK'
+        (Get-ParkosStageBlockReason -Number '5' -StageStatus $status -Prereqs $prereqs) | Should Be 'requiere que 4 este OK'
+        (Get-ParkosStageBlockReason -Number '6' -StageStatus $status -Prereqs $prereqs) | Should Be 'requiere que 5 este OK'
+    }
+
+    It 'la etapa 8 lista ambos prerequisitos pendientes y solo el que falta cuando uno ya esta Ok' {
+        $prereqs = Get-ParkosStagePrerequisites
+        $status = New-TestStageStatus
+        (Get-ParkosStageBlockReason -Number '8' -StageStatus $status -Prereqs $prereqs) | Should Be 'requiere que 5 y 6 esten OK'
+
+        $status['api'] = [ParkosStageState]::Ok
+        (Get-ParkosStageBlockReason -Number '8' -StageStatus $status -Prereqs $prereqs) | Should Be 'requiere que 6 este OK'
+
+        $status['job'] = [ParkosStageState]::Ok
+        (Get-ParkosStageBlockReason -Number '8' -StageStatus $status -Prereqs $prereqs) | Should BeNullOrEmpty
+    }
+
+    It 'Failed, RolledBack, Running y Blocked NO satisfacen un prerequisito (solo Ok)' {
+        $prereqs = Get-ParkosStagePrerequisites
+        foreach ($state in 'Failed', 'RolledBack', 'Running', 'Blocked') {
+            $status = New-TestStageStatus -Overrides @{ seed = [ParkosStageState]::$state }
+            (Get-ParkosStageBlockReason -Number '5' -StageStatus $status -Prereqs $prereqs) | Should Be 'requiere que 4 este OK'
+        }
+    }
+
+    It 'el menu renderiza [BLOQ] con el mismo texto para las etapas 1-8 sin prerequisitos Ok' {
+        $fakeStages = (New-FakeMenuStageDefinitions).Stages
+        $lines = Get-ParkosStageMenuLines -Stages $fakeStages -StageStatus (New-TestStageStatus) -Prereqs (Get-ParkosStagePrerequisites)
+        ($lines[0].Text -match '\[\.\.\.\.\]') | Should Be $true
+        foreach ($n in 1..8) { ($lines[$n].Text -match '\[BLOQ\]') | Should Be $true }
+        ($lines[5].Text -match 'requiere que 4 este OK') | Should Be $true
+        ($lines[8].Text -match 'requiere que 5 y 6 esten OK') | Should Be $true
+    }
+}
+
+Describe 'Test-ParkosPayloadReady' {
+
+    It 'es $false con el payload vacio y $true cuando existen los 5 ejecutables' {
+        $root = Join-Path $TestDrive 'payload-ready'
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Test-ParkosPayloadReady -PayloadRoot $root | Should Be $false
+
+        foreach ($rel in 'services\api-sucursal\api-sucursal\api-sucursal.exe', 'services\job-sync-sucursal\job-sync-sucursal\job-sync-sucursal.exe',
+                         'services\migrate\migrate\migrate.exe', 'services\seed\seed\seed.exe', 'services\doctor\doctor\doctor.exe') {
+            $full = Join-Path $root $rel
+            New-Item -ItemType Directory -Path (Split-Path $full) -Force | Out-Null
+            Set-Content -Path $full -Value 'x'
+        }
+        Test-ParkosPayloadReady -PayloadRoot $root | Should Be $true
+    }
+}
+
+Describe 'Invoke-ParkosInstall - dispatch rechaza etapas bloqueadas' {
+
+    Mock Ensure-PowerShell7 { }
+    Mock Request-Elevation { }
+    Mock Test-Preflight { $true }
+    Mock Show-Eula { $true }
+    Mock Read-SucursalUuid { $script:SucursalUuid }
+    Mock Test-ParkosPayloadReady { $false }
+    Mock Get-ParkosStageDefinitions { New-RecordingMenuStageDefinitions }
+    Mock Write-Host { }
+    Mock Invoke-TuiStep { & $Action }
+    Mock Read-Host {
+        if ($script:MenuReadHostQueue.Count -eq 0) { throw 'Read-Host: cola de respuestas de prueba agotada.' }
+        return $script:MenuReadHostQueue.Dequeue()
+    }
+
+    It 'una etapa bloqueada NO ejecuta su Action y el menu sigue vivo (llega a Q)' {
+        Set-MenuTestParams -Root (Join-Path $TestDrive 'dispatch-blocked')
+        Mock Read-InstallPaths { @{ InstallPath = $script:InstallPath; DataPath = $script:DataPath } }
+        $global:DispatchRan = @()
+
+        # '2' bloqueada (db no Ok), '5' (seed no Ok), '8' (api y job no Ok).
+        Set-MenuReadHostQueue -Responses @('2', '5', '8', 'Q', 'S')
+
+        Invoke-ParkosInstall
+
+        @($global:DispatchRan).Count | Should Be 0
+        Assert-MockCalled Invoke-TuiStep -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-Host -Scope It -ParameterFilter { $Object -match 'bloqueada \(requiere que 1 este OK\)' }
+        Assert-MockCalled Write-Host -Scope It -ParameterFilter { $Object -match 'bloqueada \(requiere que 5 y 6 esten OK\)' }
+    }
+
+    It 'una etapa con prerequisitos Ok SI corre (1 bloqueada, 0 corre, 1 ahora corre)' {
+        Set-MenuTestParams -Root (Join-Path $TestDrive 'dispatch-allowed')
+        Mock Read-InstallPaths { @{ InstallPath = $script:InstallPath; DataPath = $script:DataPath } }
+        $global:DispatchRan = @()
+
+        Set-MenuReadHostQueue -Responses @('1', '0', '1', 'Q', 'S')
+
+        Invoke-ParkosInstall
+
+        (@($global:DispatchRan) -join ',') | Should Be '0,1'
+    }
+
+    It 'con el payload ya compilado la etapa 0 cuenta como Ok y la 1 corre sin pasar por la 0' {
+        Set-MenuTestParams -Root (Join-Path $TestDrive 'dispatch-payload-ready')
+        Mock Test-ParkosPayloadReady { $true }
+        Mock Read-InstallPaths { @{ InstallPath = $script:InstallPath; DataPath = $script:DataPath } }
+        $global:DispatchRan = @()
+
+        Set-MenuReadHostQueue -Responses @('1', 'Q', 'S')
+
+        Invoke-ParkosInstall
+
+        (@($global:DispatchRan) -join ',') | Should Be '1'
+    }
+}
+
 # Ejecutar con: Invoke-Pester -Path installer/tests/ParkosInstaller.Menu.Tests.ps1

@@ -139,7 +139,20 @@ param(
     # DEC-INST-34 (PR5): -1 (default) corre las 9 etapas; un valor 0..8 corta
     # la cascada deliberadamente DESPUES de esa etapa (exit 0, no es un
     # fallo - util para debug de una etapa puntual sin correr el resto).
-    [int]$StopAfterStage = -1
+    [int]$StopAfterStage = -1,
+    # Clave maestra de Parkos (>=32 bytes) entregada por el equipo de soporte:
+    # si se pasa, se COPIA a payload\security\parkos-master.key (tras validar
+    # su tamano) antes del pre-flight. NUNCA se genera una clave aqui y el
+    # contenido jamas se imprime - ver Get-ParkosMasterKeyBytes.
+    [string]$MasterKeyPath = '',
+    # Flujo por defecto (sin switches) = instalacion GUIADA: el operador solo
+    # tipea el UUID de la sucursal. -Menu abre el menu interactivo de 9
+    # etapas (uso tecnico); no se combina con -Unattended.
+    [switch]$Menu,
+    # Flujo guiado: la etapa 0 (descargar main + compilar, git/pnpm/uv) NO
+    # corre salvo con este switch - en una sucursal el payload llega ya
+    # compilado (DEC-INST-20). El menu y -Unattended no lo necesitan.
+    [switch]$IncludeBuild
 )
 
 Set-StrictMode -Version Latest
@@ -172,6 +185,140 @@ enum ParkosStageState {
 # Fase 21 - HU-F21.1: pre-flight check (6 blocking verifications)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Flujo guiado: URL del cloud, relanzo con parametros y modo de instalacion
+# ---------------------------------------------------------------------------
+
+# Lee una variable de entorno en proceso, luego maquina, luego usuario (la
+# primera con valor). Funcion propia para poder mockearla en las pruebas.
+function Get-ParkosEnvironmentValue {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+
+    foreach ($target in 'Process', 'Machine', 'User') {
+        $value = [System.Environment]::GetEnvironmentVariable($Name, $target)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value.Trim() }
+    }
+    return $null
+}
+
+# URL de la API cloud: -CloudApiUrl explicito > PARKOS_CLOUD_API_URL > default
+# http://localhost:8000. Nunca se pregunta al operador.
+function Resolve-ParkosCloudApiUrl {
+    [CmdletBinding()]
+    param([string]$Explicit = '')
+
+    $source = '-CloudApiUrl'
+    $value = $Explicit
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $source = 'PARKOS_CLOUD_API_URL'
+        $value = Get-ParkosEnvironmentValue -Name 'PARKOS_CLOUD_API_URL'
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) { return 'http://localhost:8000' }
+
+    $value = $value.Trim()
+    $uri = $null
+    $valid = [uri]::TryCreate($value, [System.UriKind]::Absolute, [ref]$uri) -and
+        ($uri.Scheme -eq 'http' -or $uri.Scheme -eq 'https')
+    if (-not $valid) {
+        throw "La direccion del servidor Parkos ('$value', tomada de $source) no es valida: debe empezar con http:// o https://. Corrija la variable de entorno PARKOS_CLOUD_API_URL (o el parametro -CloudApiUrl) o pida ayuda al equipo de soporte."
+    }
+    return $value.TrimEnd('/')
+}
+
+# Host, puerto efectivo y si es loopback de una URL (para el pre-flight).
+function Get-ParkosCloudEndpoint {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Url)
+
+    $uri = [uri]$Url
+    return [PSCustomObject]@{
+        Host       = $uri.Host
+        Port       = $uri.Port
+        IsLoopback = [bool]$uri.IsLoopback
+    }
+}
+
+# Literal de PowerShell entre comillas simples (las comillas simples internas,
+# incluidas las tipograficas que PowerShell tambien trata como comilla, se
+# duplican).
+function Format-ParkosPsLiteral {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Value)
+
+    $escaped = [regex]::Replace($Value, "['\u2018\u2019\u201A\u201B]", '$0$0')
+    return "'" + $escaped + "'"
+}
+
+# Reconstruye la lista de parametros con nombre ($PSBoundParameters) como
+# tokens de una linea de comandos de PowerShell, para relanzar el script
+# (elevacion / PowerShell 7) sin perder ninguno. $args NO sirve: no trae los
+# parametros con nombre.
+function ConvertTo-ParkosRelaunchArgs {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$BoundParameters)
+
+    $pathParams = @('MasterKeyPath', 'PayloadPath')
+    $tokens = @()
+    foreach ($name in $BoundParameters.Keys) {
+        $value = $BoundParameters[$name]
+
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            if ($value.IsPresent) { $tokens += "-$name" } else { $tokens += "-${name}:`$false" }
+            continue
+        }
+
+        $items = @($value)
+        $rendered = foreach ($item in $items) {
+            if ($item -is [bool]) {
+                if ($item) { '$true' } else { '$false' }
+            } elseif ($item -is [int] -or $item -is [long] -or $item -is [double]) {
+                [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, '{0}', $item)
+            } else {
+                $text = [string]$item
+                # El proceso relanzado puede arrancar en otro directorio.
+                if ($pathParams -contains $name -and -not [string]::IsNullOrWhiteSpace($text)) {
+                    $text = [System.IO.Path]::GetFullPath($text)
+                }
+                Format-ParkosPsLiteral -Value $text
+            }
+        }
+        $tokens += "-$name"
+        $tokens += (@($rendered) -join ',')
+    }
+    return $tokens
+}
+
+# Argumentos de pwsh para relanzar este script: -EncodedCommand (no -File, que
+# aplana los arreglos: -SkipStage 2,7 llegaria como 27) y propaga el codigo de
+# salida del script.
+function Get-ParkosRelaunchArgumentList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [string[]]$OriginalArgs = @()
+    )
+
+    $call = "& $(Format-ParkosPsLiteral -Value $ScriptPath)"
+    if (@($OriginalArgs).Count -gt 0) { $call += ' ' + (@($OriginalArgs) -join ' ') }
+    $body = "$call; exit `$LASTEXITCODE"
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($body))
+    return @('-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded)
+}
+
+# Modo de la instalacion: Guided (default), Menu (-Menu) o Unattended.
+function Resolve-ParkosInstallMode {
+    [CmdletBinding()]
+    param([switch]$Menu, [switch]$Unattended)
+
+    if ($Menu -and $Unattended) {
+        throw '-Menu y -Unattended son incompatibles: el menu es interactivo y -Unattended no puede preguntar nada. Elija uno solo.'
+    }
+    if ($Unattended) { return 'Unattended' }
+    if ($Menu) { return 'Menu' }
+    return 'Guided'
+}
+
 function Test-WindowsVersion {
     param([int]$MinBuild = 19044)  # Windows 10 21H2
     $build = [System.Environment]::OSVersion.Version.Build
@@ -180,14 +327,26 @@ function Test-WindowsVersion {
 
 function Test-Preflight {
     [CmdletBinding()]
-    param([string]$InstallPath = $script:InstallPath, [string]$DataPath = $script:DataPath)
+    param(
+        [string]$InstallPath = $script:InstallPath,
+        [string]$DataPath = $script:DataPath,
+        # Servidor cloud contra el que se mide la conectividad (host:puerto de
+        # la URL, NO github.com). Vacio = se resuelve con
+        # Resolve-ParkosCloudApiUrl (PARKOS_CLOUD_API_URL o el default).
+        [string]$CloudApiUrl = '',
+        # Flujo guiado: la clave maestra es el requisito duro - sin ella el
+        # pre-flight bloquea. Sin el switch (menu) solo avisa.
+        [switch]$RequireMasterKey
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CloudApiUrl)) { $CloudApiUrl = Resolve-ParkosCloudApiUrl }
+    $endpoint = Get-ParkosCloudEndpoint -Url $CloudApiUrl
 
     $driveLetter = $InstallPath.Substring(0, 1)
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltinRole]::Administrator
     )
     $freeBytes = (Get-PSDrive -Name $driveLetter).Free
-    $hasConnectivity = Test-NetConnection -ComputerName 'github.com' -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue
     $alreadyInstalled = Test-Path (Join-Path $DataPath 'pairing.json')
 
     $results = [ordered]@{
@@ -195,8 +354,17 @@ function Test-Preflight {
         'PowerShell >= 7'            = ($PSVersionTable.PSVersion.Major -ge 7)
         'Permisos de administrador'  = $isAdmin
         'Espacio en disco (>=5GB)'   = ($freeBytes -gt 5GB)
-        'Conectividad saliente'      = $hasConnectivity
         'Sin instalacion previa'     = (-not $alreadyInstalled)
+    }
+
+    # Conectividad: se mide contra el servidor Parkos configurado. Si es el
+    # propio equipo (localhost) un fallo solo avisa - el servidor puede no
+    # estar encendido todavia; si es remoto, bloquea.
+    $reachable = [bool](Test-NetConnection -ComputerName $endpoint.Host -Port $endpoint.Port -InformationLevel Quiet -WarningAction SilentlyContinue)
+    if ($reachable) {
+        $results['Conexion con el servidor Parkos'] = $true
+    } elseif (-not $endpoint.IsLoopback) {
+        $results['Conexion con el servidor Parkos'] = $false
     }
 
     foreach ($check in $results.GetEnumerator()) {
@@ -206,6 +374,30 @@ function Test-Preflight {
             Write-Host "[FALLO] $($check.Key)" -ForegroundColor Red
         }
     }
+    if (-not $reachable) {
+        if ($endpoint.IsLoopback) {
+            Write-Host "[AVISO] No se pudo contactar al servidor Parkos en $($endpoint.Host):$($endpoint.Port) (este mismo equipo). Si el servidor esta en otro equipo, defina la variable de entorno PARKOS_CLOUD_API_URL con su direccion. La instalacion continua." -ForegroundColor Yellow
+        } else {
+            Write-Host "        No se pudo contactar a $($endpoint.Host):$($endpoint.Port). Revise la conexion a internet/red del equipo y que la direccion (PARKOS_CLOUD_API_URL) sea correcta." -ForegroundColor Red
+        }
+    }
+
+    # Clave maestra: requisito duro en el flujo guiado; en el menu solo se
+    # avisa (la etapa 0 corre sin ella, solo la etapa 1 la necesita).
+    $masterKeyProblem = Get-ParkosMasterKeyProblem
+    $masterKeyBlocks = $false
+    if ($masterKeyProblem) {
+        if ($RequireMasterKey) {
+            $masterKeyBlocks = $true
+            Write-Host '[FALLO] Clave maestra de Parkos' -ForegroundColor Red
+            Write-Host "        $masterKeyProblem" -ForegroundColor Red
+        } else {
+            Write-Host '[AVISO] Clave maestra de Parkos ausente o invalida (la etapa 1 fallara sin ella)' -ForegroundColor Yellow
+            Write-Host "        $masterKeyProblem" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host '[OK]    Clave maestra de Parkos' -ForegroundColor Green
+    }
 
     if ($alreadyInstalled) {
         Write-Host ''
@@ -213,7 +405,7 @@ function Test-Preflight {
         Write-Host 'Use Repair-ParkosInstall o Invoke-ParkosUpdate en vez de una instalacion limpia (Fases 25/26).' -ForegroundColor Yellow
     }
 
-    return -not ($results.Values -contains $false)
+    return (-not ($results.Values -contains $false)) -and (-not $masterKeyBlocks)
 }
 
 # ---------------------------------------------------------------------------
@@ -238,7 +430,7 @@ function Request-Elevation {
     }
 
     Write-Host 'Se requieren permisos de administrador; solicitando elevacion (UAC)...' -ForegroundColor Yellow
-    $relaunchArgs = @('-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"") + $OriginalArgs
+    $relaunchArgs = Get-ParkosRelaunchArgumentList -ScriptPath $PSCommandPath -OriginalArgs $OriginalArgs
     try {
         $proc = Start-Process pwsh -ArgumentList $relaunchArgs -Verb RunAs -Wait -PassThru
     } catch {
@@ -274,7 +466,9 @@ function Invoke-SourceUpdateAndBuild {
     [CmdletBinding()]
     param()
 
-    $missing = Test-BuildToolchain
+    # @() fuerza array: una funcion que retorna @() desenrolla a $null y
+    # $null.Count revienta bajo Set-StrictMode -Version Latest.
+    $missing = @(Test-BuildToolchain)
     if ($missing.Count -gt 0) {
         throw "Falta instalar: $($missing -join ', '). Alternativa: corre build-release.ps1 a mano en una maquina con el toolchain completo y copia installer\payload\ aca."
     }
@@ -350,7 +544,7 @@ function Ensure-PowerShell7 {
 
     Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn" -Wait
 
-    $relaunchArgs = @('-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"") + $OriginalArgs
+    $relaunchArgs = Get-ParkosRelaunchArgumentList -ScriptPath $PSCommandPath -OriginalArgs $OriginalArgs
     $proc = Start-Process pwsh -ArgumentList $relaunchArgs -Wait -PassThru
     exit $proc.ExitCode
 }
@@ -375,6 +569,12 @@ function Show-Eula {
         return $true
     }
 
+    # -EulaAccepted tambien salta el prompt fuera de -Unattended (el operador
+    # ya acepto el texto por otra via, p.ej. un script de despliegue).
+    if ($EulaAccepted -eq $true) {
+        return $true
+    }
+
     if (-not (Test-Path $EulaPath)) {
         # Real legal text is a business/legal deliverable, not something to
         # fabricate here - fail loudly instead of shipping a blank EULA.
@@ -388,8 +588,8 @@ function Show-Eula {
     # EULA de tamano razonable.
     Get-Content $EulaPath
     Write-Host ''
-    $answer = Read-Host 'Escriba ACEPTO para continuar (cualquier otra respuesta cancela la instalacion)'
-    if ($answer -ne 'ACEPTO') {
+    $answer = Read-Host 'Presione Enter para ACEPTAR los terminos y continuar (o escriba N y Enter para cancelar)'
+    if (-not [string]::IsNullOrWhiteSpace($answer) -and $answer.Trim() -notin @('ACEPTO', 's', 'S', 'si', 'SI', 'Si')) {
         Write-Host 'EULA no aceptada. Saliendo sin cambios.' -ForegroundColor Yellow
         exit 0
     }
@@ -413,18 +613,15 @@ function Read-InstallPaths {
         [string]$DefaultDataPath = 'C:\ProgramData\Parkos'
     )
 
-    if ($Unattended) {
-        return @{ InstallPath = $DefaultInstallPath; DataPath = $DefaultDataPath }
-    }
-
-    $installPath = Read-Host "Ruta de instalacion de binarios [$DefaultInstallPath]"
-    if ([string]::IsNullOrWhiteSpace($installPath)) { $installPath = $DefaultInstallPath }
+    # Nunca pregunta: el operador no elige rutas. Se usan los valores por
+    # defecto o los de -InstallPath/-DataPath, y se siguen rechazando las
+    # rutas no permitidas.
+    $installPath = $DefaultInstallPath
     if (-not (Test-InstallPathAllowed $installPath)) {
         throw "Ruta de instalacion invalida: $installPath (no se permite C:\Windows, Program Files (x86), ni rutas de red UNC)."
     }
 
-    $dataPath = Read-Host "Ruta de datos [$DefaultDataPath]"
-    if ([string]::IsNullOrWhiteSpace($dataPath)) { $dataPath = $DefaultDataPath }
+    $dataPath = $DefaultDataPath
     if (-not (Test-InstallPathAllowed $dataPath)) {
         throw "Ruta de datos invalida: $dataPath (no se permite C:\Windows, Program Files (x86), ni rutas de red UNC)."
     }
@@ -605,12 +802,62 @@ function New-SecurePassword {
 # abajo) NO participa de este cambio: esa es la password de la cuenta LOCAL
 # DE WINDOWS svc-parkos, no una password de Postgres, y sigue usando
 # New-SecurePassword sin modificar.
-function Get-ParkosMasterKeyBytes {
-    param([string]$MasterKeyPath = (Join-Path $script:PayloadRoot 'security\parkos-master.key'))
-    if (-not (Test-Path $MasterKeyPath)) {
-        throw "No se encontro la clave maestra de Parkos en $MasterKeyPath - debe ser provista por el equipo de soporte antes de instalar (nunca se genera automaticamente ni se versiona en el repo)."
+# Tamano minimo de la clave maestra (HMAC-SHA256: menos de 32 bytes debilita
+# la derivacion de las 3 passwords de Postgres).
+$script:MasterKeyMinBytes = 32
+
+function Get-ParkosMasterKeyDefaultPath {
+    return (Join-Path $script:PayloadRoot 'security\parkos-master.key')
+}
+
+# Valida la clave maestra SIN exponer su contenido: devuelve $null si es
+# valida, o el mensaje de error accionable (nunca los bytes).
+function Get-ParkosMasterKeyProblem {
+    param([string]$MasterKeyPath = (Get-ParkosMasterKeyDefaultPath))
+    if (-not (Test-Path -LiteralPath $MasterKeyPath -PathType Leaf)) {
+        return "No se encontro la clave maestra de Parkos en $MasterKeyPath - es un secreto de la compania que NO se genera automaticamente ni vive en el repo. Solicitela al equipo de soporte por un canal seguro y copiela a esa ruta (o reintente con -MasterKeyPath <archivo>)."
     }
-    return [System.IO.File]::ReadAllBytes($MasterKeyPath)
+    $length = (Get-Item -LiteralPath $MasterKeyPath).Length
+    if ($length -lt $script:MasterKeyMinBytes) {
+        return "La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($length bytes; minimo $($script:MasterKeyMinBytes)) - parece truncada o incorrecta. Solicite una copia valida al equipo de soporte por un canal seguro y reemplace ese archivo."
+    }
+    return $null
+}
+
+function Get-ParkosMasterKeyBytes {
+    param([string]$MasterKeyPath = (Get-ParkosMasterKeyDefaultPath))
+    $problem = Get-ParkosMasterKeyProblem -MasterKeyPath $MasterKeyPath
+    if ($problem) { throw $problem }
+    $bytes = [System.IO.File]::ReadAllBytes($MasterKeyPath)
+    # Revalida sobre los bytes realmente leidos (el archivo pudo cambiar
+    # entre la validacion y la lectura).
+    if ($bytes.Length -lt $script:MasterKeyMinBytes) {
+        throw "La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($($bytes.Length) bytes; minimo $($script:MasterKeyMinBytes)) - parece truncada o incorrecta. Solicite una copia valida al equipo de soporte por un canal seguro y reemplace ese archivo."
+    }
+    return $bytes
+}
+
+# -MasterKeyPath <archivo>: copia la clave entregada por soporte a la ruta
+# esperada por el instalador, validando antes su tamano. No genera nada ni
+# imprime bytes.
+function Import-ParkosMasterKey {
+    param(
+        [Parameter(Mandatory)][string]$SourcePath,
+        [string]$DestinationPath = (Get-ParkosMasterKeyDefaultPath)
+    )
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+        throw "No se encontro el archivo indicado en -MasterKeyPath ($SourcePath) - solicite la clave maestra al equipo de soporte por un canal seguro."
+    }
+    $problem = Get-ParkosMasterKeyProblem -MasterKeyPath $SourcePath
+    if ($problem) { throw $problem }
+    $destDir = Split-Path -Parent $DestinationPath
+    if (-not (Test-Path -LiteralPath $destDir)) {
+        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    }
+    if ([System.IO.Path]::GetFullPath($SourcePath) -ne [System.IO.Path]::GetFullPath($DestinationPath)) {
+        Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+    }
+    Write-Host "Clave maestra copiada a $DestinationPath" -ForegroundColor Green
 }
 
 # `Purpose` distinto por rol es CRITICO: garantiza que las 3 passwords NUNCA
@@ -939,6 +1186,7 @@ function Invoke-MigrationsAndSeed {
 
     $migrateDir = Join-Path $script:PayloadRoot 'services\migrate\migrate'
     $migrateExe = Join-Path $migrateDir 'migrate.exe'
+    Assert-PayloadPath -Path $migrateDir -What "el bundle del servicio 'migrate'"
 
     Push-Location $migrateDir
     try {
@@ -985,19 +1233,40 @@ function Read-SucursalUuid {
     [CmdletBinding()]
     param([string]$Uuid = '')
 
-    if ([string]::IsNullOrWhiteSpace($Uuid)) {
-        if ($Unattended) {
+    # Unica forma aceptada: 8-4-4-4-12 hexadecimal. No se "adivina" (32 hex
+    # sin guiones o con llaves se rechazan: seria aceptar un dato mal copiado).
+    $pattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    $maxAttempts = 5
+
+    if ($Unattended) {
+        if ([string]::IsNullOrWhiteSpace($Uuid)) {
             throw '-SucursalUuid es obligatorio en modo -Unattended (la sucursal se crea desde el panel admin, no desde este instalador).'
         }
-        $Uuid = Read-Host 'UUID de la sucursal (generado al crearla desde el panel admin)'
+        $candidate = $Uuid.Trim()
+        if ($candidate -notmatch $pattern) {
+            throw "El UUID de sucursal '$Uuid' no tiene formato valido (UUIDv4 esperado). Verificalo en el panel admin antes de reintentar."
+        }
+        return $candidate.ToLowerInvariant()
     }
 
-    $parsed = [guid]::Empty
-    if (-not [guid]::TryParse($Uuid, [ref]$parsed)) {
-        throw "El UUID de sucursal '$Uuid' no tiene formato valido (UUIDv4 esperado). Verificalo en el panel admin antes de reintentar."
+    if (-not [string]::IsNullOrWhiteSpace($Uuid)) {
+        $candidate = $Uuid.Trim()
+        if ($candidate -match $pattern) { return $candidate.ToLowerInvariant() }
+        Write-Host "El codigo de sucursal recibido ('$Uuid') no tiene el formato correcto. Escribalo de nuevo." -ForegroundColor Yellow
     }
 
-    return $parsed.ToString()
+    Write-Host ''
+    Write-Host 'Este es el unico dato que debe escribir: el codigo (UUID) de esta sucursal.' -ForegroundColor Cyan
+    Write-Host 'Lo encuentra en el panel de administracion, en la ficha de la sucursal.' -ForegroundColor Cyan
+    Write-Host 'Tiene este aspecto: 11111111-2222-3333-4444-555555555555 (puede copiarlo y pegarlo).' -ForegroundColor Cyan
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $answer = Read-Host 'Codigo (UUID) de la sucursal'
+        $candidate = ([string]$answer).Trim()
+        if ($candidate -match $pattern) { return $candidate.ToLowerInvariant() }
+        Write-Host "Ese codigo no es valido: debe tener 5 grupos de letras/numeros separados por guiones (8-4-4-4-12). Intento $attempt de $maxAttempts." -ForegroundColor Yellow
+    }
+    throw "Demasiados intentos con un codigo de sucursal invalido ($maxAttempts). Verifique el codigo en el panel de administracion o pidalo al equipo de soporte, y vuelva a ejecutar el instalador."
 }
 
 # Idempotente - reescribe solo la linea PARKOS_SUCURSAL_UUID del .env sin
@@ -1089,10 +1358,23 @@ function Invoke-CatalogSeed {
 # Fase 24 - HU-F24.1/24.2: servicios NSSM (api-sucursal, job-sync-sucursal)
 # ---------------------------------------------------------------------------
 
+# Falla con un mensaje claro cuando falta un artefacto del payload (p. ej. la
+# etapa 0 nunca corrio en esta maquina) en vez del "No se encuentra la ruta
+# de acceso" crudo de Copy-Item/Get-ChildItem/Push-Location.
+function Assert-PayloadPath {
+    param([string]$Path, [string]$What)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Falta $What en el payload ($Path). Ejecute la opcion 0 (descarga y compilacion del payload) o copie el payload completo junto al instalador y reintente."
+    }
+}
+
 function Copy-ServiceBundle {
     param([string]$Name, [string]$InstallPath)
 
     $src = Join-Path $script:PayloadRoot "services\$Name\$Name"
+    Assert-PayloadPath -Path $src -What "el bundle del servicio '$Name'"
+    Assert-PayloadPath -Path (Join-Path $src "$Name.exe") -What "el ejecutable '$Name.exe' del servicio '$Name'"
     $dest = Join-Path $InstallPath $Name
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Copy-Item "$src\*" $dest -Recurse -Force
@@ -2330,8 +2612,8 @@ function Invoke-TuiStep {
 # DEC-INST-32 (PR5 de 11): fabrica compartida de las 9 definiciones de etapa
 # ---------------------------------------------------------------------------
 # Antes esto vivia INLINE dentro de Invoke-ParkosInstall (las 9 Action
-# scriptblocks + las variables de closure que usan: $pgInstallPath,
-# $psqlPath, $secretsDir, $envFilePath, $nssmPath, etc.) - la cascada nueva
+# scriptblocks + las variables que usan: $pgInstallPath, $psqlPath,
+# $secretsDir, $envFilePath, $nssmPath, etc.) - la cascada nueva
 # -Unattended (Invoke-ParkosUnattendedCascade, mas abajo) necesitaba las
 # MISMAS 9 etapas sin duplicar su cuerpo, asi que se extrajo a esta funcion.
 # Ambos callers (el menu interactivo y la cascada) consumen la misma
@@ -2346,6 +2628,16 @@ function Invoke-TuiStep {
 # propio scope hijo al ejecutarse, asi que una variable declarada dentro de
 # Action no es visible desde su Rollback sibling aunque ambos esten
 # definidos en el mismo lugar de este archivo.
+#
+# IMPORTANTE (scope): los Action/Rollback NO son closures. Un scriptblock
+# literal se ejecuta (`& $Action`) en el scope de quien lo invoca, no en el
+# de esta fabrica: los locals de abajo ($envFilePath, $pgInstallPath, los
+# parametros, etc.) ya no existen cuando corre, y bajo Set-StrictMode
+# -Version Latest eso tira "variable no establecida". Tampoco se usa
+# .GetNewClosure(): captura por valor y ademas reasigna $script: al modulo
+# dinamico, rompiendo el estado compartido entre etapas ($script:port,
+# $script:roles, $script:StageStatus). En su lugar la fabrica publica todo en
+# $script:StageContext y cada scriptblock arranca leyendolo a locals.
 function Get-ParkosStageDefinitions {
     [CmdletBinding()]
     param(
@@ -2364,6 +2656,30 @@ function Get-ParkosStageDefinitions {
     $envFilePath = Join-Path $secretsDir '.env'
     $nssmPath = Join-Path $script:PayloadRoot 'nssm.exe'
 
+    # Estado compartido entre etapas: bajo StrictMode leer una variable nunca
+    # asignada tira, asi que se declara en $null (sin pisar uno ya seteado).
+    foreach ($sharedName in 'port', 'apiPort', 'roles', 'PostgresInstallMethod') {
+        if (-not (Get-Variable -Name $sharedName -Scope Script -ErrorAction SilentlyContinue)) {
+            Set-Variable -Name $sharedName -Scope Script -Value $null
+        }
+    }
+
+    # Fuente unica de verdad que leen los Action/Rollback (ver nota de scope).
+    $script:StageContext = @{
+        InstallPath   = $InstallPath
+        DataPath      = $DataPath
+        SucursalUuid  = $SucursalUuid
+        CloudApiUrl   = $CloudApiUrl
+        PgInstallPath = $pgInstallPath
+        PgDataPath    = $pgDataPath
+        PsqlPath      = $psqlPath
+        SecretsDir    = $secretsDir
+        JwtKeyPath    = $jwtKeyPath
+        SyncJwtPath   = $syncJwtPath
+        EnvFilePath   = $envFilePath
+        NssmPath      = $nssmPath
+    }
+
     $stages = [ordered]@{
         '0' = @{
             Key      = 'build'
@@ -2380,6 +2696,10 @@ function Get-ParkosStageDefinitions {
             Key      = 'db'
             Name     = 'Instalar base de datos (Postgres + roles + pg_partman)'
             Action   = {
+                $ctx = $script:StageContext
+                $pgInstallPath = $ctx.PgInstallPath; $pgDataPath = $ctx.PgDataPath; $psqlPath = $ctx.PsqlPath
+                $jwtKeyPath = $ctx.JwtKeyPath; $syncJwtPath = $ctx.SyncJwtPath; $envFilePath = $ctx.EnvFilePath
+                $DataPath = $ctx.DataPath; $SucursalUuid = $ctx.SucursalUuid; $CloudApiUrl = $ctx.CloudApiUrl
                 $script:port = Test-PostgresPorts
                 $script:apiPort = Test-ApiPort
                 $bootstrapPassword = New-ParkosDerivedPassword -SucursalUuid $SucursalUuid -Purpose 'postgres-bootstrap'
@@ -2412,6 +2732,8 @@ function Get-ParkosStageDefinitions {
             # directory se borra siempre (ambos metodos lo crean en el mismo
             # lugar).
             Rollback = {
+                $pgInstallPath = $script:StageContext.PgInstallPath
+                $pgDataPath = $script:StageContext.PgDataPath
                 if ($script:PostgresInstallMethod -eq 'winget') {
                     winget uninstall --id PostgreSQL.PostgreSQL.16 --silent | Out-Host
                 } elseif ($script:PostgresInstallMethod -eq 'zip') {
@@ -2461,6 +2783,8 @@ function Get-ParkosStageDefinitions {
             Key      = 'sucursal'
             Name     = 'Confirmar UUID de sucursal (creada desde el panel admin)'
             Action   = {
+                $envFilePath = $script:StageContext.EnvFilePath
+                $SucursalUuid = $script:StageContext.SucursalUuid
                 if ($script:StageStatus.db -ne [ParkosStageState]::Ok) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }
                 Update-SucursalUuidInEnvFile -EnvFilePath $envFilePath -SucursalUuid $SucursalUuid
                 Write-Host "UUID de sucursal confirmado: $SucursalUuid" -ForegroundColor Cyan
@@ -2474,6 +2798,8 @@ function Get-ParkosStageDefinitions {
             Key      = 'seed'
             Name     = 'Sembrar catalogos iniciales (arranca api-sucursal temporalmente)'
             Action   = {
+                $ctx = $script:StageContext
+                $envFilePath = $ctx.EnvFilePath; $jwtKeyPath = $ctx.JwtKeyPath; $SucursalUuid = $ctx.SucursalUuid
                 if ($script:StageStatus.migrate -ne [ParkosStageState]::Ok) { throw 'Corre primero "Ejecutar migraciones" (opcion 2).' }
                 Invoke-CatalogSeed -EnvFilePath $envFilePath -Roles $script:roles -Port $script:port -JwtKeyPath $jwtKeyPath -SucursalUuid $SucursalUuid -ApiPort $script:apiPort
             }
@@ -2490,13 +2816,17 @@ function Get-ParkosStageDefinitions {
             Key      = 'api'
             Name     = 'Instalar servicio api-sucursal (NSSM)'
             Action   = {
+                $ctx = $script:StageContext
+                $InstallPath = $ctx.InstallPath; $nssmPath = $ctx.NssmPath; $envFilePath = $ctx.EnvFilePath
                 $apiExePath = Copy-ServiceBundle -Name 'api-sucursal' -InstallPath $InstallPath
                 Install-ApiService -NssmPath $nssmPath -ExePath $apiExePath -EnvFilePath $envFilePath
-                if (-not (Wait-ForApiHealth -Url "http://127.0.0.1:$($script:apiPort)/health")) {
+                $apiPort = if ($null -ne $script:apiPort) { $script:apiPort } else { 8000 }  # default de Test-ApiPort/.env
+                if (-not (Wait-ForApiHealth -Url "http://127.0.0.1:$apiPort/health")) {
                     throw 'ParkosApiSucursal no respondio /health a tiempo tras el registro NSSM.'
                 }
             }
             Rollback = {
+                $nssmPath = $script:StageContext.NssmPath
                 & $nssmPath stop ParkosApiSucursal | Out-Null
                 & $nssmPath remove ParkosApiSucursal confirm | Out-Null
             }
@@ -2505,6 +2835,9 @@ function Get-ParkosStageDefinitions {
             Key      = 'job'
             Name     = 'Instalar job de sincronizacion (NSSM)'
             Action   = {
+                $ctx = $script:StageContext
+                $InstallPath = $ctx.InstallPath; $DataPath = $ctx.DataPath
+                $nssmPath = $ctx.NssmPath; $envFilePath = $ctx.EnvFilePath
                 $jobExePath = Copy-ServiceBundle -Name 'job-sync-sucursal' -InstallPath $InstallPath
                 Install-JobService -NssmPath $nssmPath -ExePath $jobExePath -EnvFilePath $envFilePath
                 $syncLogPath = Join-Path $DataPath 'logs\job-sync.out.log'
@@ -2513,6 +2846,7 @@ function Get-ParkosStageDefinitions {
                 }
             }
             Rollback = {
+                $nssmPath = $script:StageContext.NssmPath
                 & $nssmPath stop ParkosJobSyncSucursal | Out-Null
                 & $nssmPath remove ParkosJobSyncSucursal confirm | Out-Null
             }
@@ -2521,9 +2855,11 @@ function Get-ParkosStageDefinitions {
             Key      = 'electron'
             Name     = 'Instalar aplicacion de escritorio (web_sucursal)'
             Action   = {
-                $msiPath = (Get-ChildItem (Join-Path $script:PayloadRoot 'apps') -Filter '*.msi' | Select-Object -First 1).FullName
+                $appsDir = Join-Path $script:PayloadRoot 'apps'
+                Assert-PayloadPath -Path $appsDir -What 'la carpeta apps con el MSI de web_sucursal'
+                $msiPath = (Get-ChildItem $appsDir -Filter '*.msi' | Select-Object -First 1).FullName
                 if (-not $msiPath) {
-                    throw 'No se encontro el MSI de web_sucursal en el payload.'
+                    throw "Falta el MSI de web_sucursal en el payload ($appsDir). Ejecute la opcion 0 (descarga y compilacion del payload) o copie el MSI a esa carpeta y reintente."
                 }
                 Install-Electron -MsiPath $msiPath
             }
@@ -2540,7 +2876,14 @@ function Get-ParkosStageDefinitions {
             Key      = 'verify'
             Name     = 'Verificacion final (Postgres, JWT, servicios)'
             Action   = {
-                Test-PostInstallation -EnvFilePath $envFilePath -Port $script:port
+                $envFilePath = $script:StageContext.EnvFilePath
+                $InstallPath = $script:StageContext.InstallPath
+                # $script:port solo lo setea la etapa 1 en ESTA sesion; si el
+                # operador corre la etapa 8 sola (o tras reabrir el menu) es
+                # $null y [int]$null silenciaria a 0 - se recupera del .env.
+                $verifyPort = $script:port
+                if ($null -eq $verifyPort) { $verifyPort = Get-EnvFilePostgresPort -EnvFilePath $envFilePath }
+                Test-PostInstallation -EnvFilePath $envFilePath -Port $verifyPort
                 Install-ManagementModule -InstallPath $InstallPath
             }
             # De solo lectura - no hay nada que revertir.
@@ -2563,14 +2906,79 @@ function Get-ParkosStageDefinitions {
     }
 }
 
+# Mapa unico de dependencias entre etapas del menu: numero de etapa ->
+# prerequisito(s) que deben estar [ParkosStageState]::Ok. Cada prerequisito es
+# @{ Key; Number } (Key = clave en $script:StageStatus, Number = numero de
+# etapa mostrado al operador); una etapa puede tener varios (array). Todos los
+# prerequisitos tienen numero MENOR que la etapa, asi que el orden 0..8 de la
+# cascada -Unattended (Invoke-ParkosUnattendedCascade) siempre los satisface.
+function Get-ParkosStagePrerequisites {
+    [CmdletBinding()]
+    param()
+
+    return @{
+        '1' = @(@{ Key = 'build'; Number = '0' })
+        '2' = @(@{ Key = 'db'; Number = '1' })
+        '3' = @(@{ Key = 'db'; Number = '1' })
+        '4' = @(@{ Key = 'migrate'; Number = '2' })
+        '5' = @(@{ Key = 'seed'; Number = '4' })
+        '6' = @(@{ Key = 'api'; Number = '5' })
+        '7' = @(@{ Key = 'build'; Number = '0' })
+        '8' = @(@{ Key = 'api'; Number = '5' }, @{ Key = 'job'; Number = '6' })
+    }
+}
+
+# Artefactos que la etapa 0 (build) deja en el payload - mismo set que valida
+# Invoke-SourceUpdateAndBuild al final. En una maquina de campo el payload
+# llega ya compilado (la etapa 0 corre solo en la maquina del tecnico,
+# DEC-INST-20), asi que "payload listo" equivale a la etapa 0 en Ok.
+function Test-ParkosPayloadReady {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PayloadRoot)
+
+    $expectedExes = @(
+        'services\api-sucursal\api-sucursal\api-sucursal.exe'
+        'services\job-sync-sucursal\job-sync-sucursal\job-sync-sucursal.exe'
+        'services\migrate\migrate\migrate.exe'
+        'services\seed\seed\seed.exe'
+        'services\doctor\doctor\doctor.exe'
+    )
+    foreach ($rel in $expectedExes) {
+        if (-not (Test-Path (Join-Path $PayloadRoot $rel))) { return $false }
+    }
+    return $true
+}
+
+# Funcion pura: devuelve $null si la etapa $Number puede correr, o el texto de
+# la razon ("requiere que N este OK" / "requiere que N y M esten OK",
+# solo con los prerequisitos aun no Ok) si esta bloqueada. La comparten el
+# render del menu y el dispatch, para que [BLOQ] y el rechazo nunca difieran.
+function Get-ParkosStageBlockReason {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Number,
+        [Parameter(Mandatory)]$StageStatus,
+        [hashtable]$Prereqs = @{}
+    )
+
+    if (-not $Prereqs.ContainsKey($Number)) { return $null }
+
+    $unmet = @(@($Prereqs[$Number]) | Where-Object { $StageStatus[$_.Key] -ne [ParkosStageState]::Ok })
+    if ($unmet.Count -eq 0) { return $null }
+
+    $numbers = @($unmet | ForEach-Object { $_.Number })
+    if ($numbers.Count -eq 1) {
+        return "requiere que $($numbers[0]) este OK"
+    }
+    return "requiere que $($numbers[0..($numbers.Count - 2)] -join ', ') y $($numbers[-1]) esten OK"
+}
+
 # DEC-INST-41 (PR10): helper puro (sin Write-Host adentro) que arma las
 # lineas de texto del menu de etapas - separado del bucle principal de
 # Invoke-ParkosInstall para poder verificar el TEXTO exacto de cada estado
 # (Ok/Failed/RolledBack/NotRun-Running/Blocked) desde un test sin tener que
-# mockear Write-Host ni parsear su salida por consola. $Prereqs es un mapeo
-# MINIMO y a proposito NO generico: solo expone en el render los 2 gates que
-# YA tiran throw hoy dentro de Get-ParkosStageDefinitions (etapa 3 exige 'db'
-# Ok, etapa 4 exige 'migrate' Ok) - no es un grafo de dependencias nuevo.
+# mockear Write-Host ni parsear su salida por consola. $Prereqs viene de
+# Get-ParkosStagePrerequisites (ver arriba).
 function Get-ParkosStageMenuLines {
     [CmdletBinding()]
     param(
@@ -2583,12 +2991,12 @@ function Get-ParkosStageMenuLines {
     foreach ($number in $Stages.Keys) {
         $stage = $Stages[$number]
         $state = $StageStatus[$stage.Key]
-        $prereq = $Prereqs[$number]
+        $blockReason = Get-ParkosStageBlockReason -Number "$number" -StageStatus $StageStatus -Prereqs $Prereqs
 
-        if ($null -ne $prereq -and $StageStatus[$prereq.Key] -ne [ParkosStageState]::Ok) {
+        if ($null -ne $blockReason) {
             $tag = '[BLOQ]'
             $color = 'DarkYellow'
-            $suffix = " (requiere que $($prereq.Number) este OK)"
+            $suffix = " ($blockReason)"
         } else {
             switch ($state) {
                 ([ParkosStageState]::Ok)         { $tag = '[ OK ]'; $color = 'Green'; $suffix = '' }
@@ -2614,8 +3022,15 @@ function Invoke-ParkosInstall {
     Ensure-PowerShell7 -OriginalArgs $script:OriginalArgs
     Request-Elevation -OriginalArgs $script:OriginalArgs
 
+    # La URL del cloud nunca se pregunta: -CloudApiUrl > PARKOS_CLOUD_API_URL
+    # > http://localhost:8000.
+    $CloudApiUrl = Resolve-ParkosCloudApiUrl -Explicit $CloudApiUrl
+
+    if ($MasterKeyPath) { Import-ParkosMasterKey -SourcePath $MasterKeyPath }
     Write-Host '=== Parkos - pre-flight ===' -ForegroundColor Cyan
-    $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath
+    # En el menu la clave maestra solo AVISA (sin -RequireMasterKey): la etapa
+    # 0 corre sin ella; solo la etapa 1 la necesita.
+    $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath -CloudApiUrl $CloudApiUrl
     if (-not $preflightOk) {
         Write-Host 'Pre-flight fallo. Instalacion abortada, sin cambios en el sistema.' -ForegroundColor Red
         exit 2
@@ -2637,10 +3052,6 @@ function Invoke-ParkosInstall {
     # admin, no desde este instalador - Read-SucursalUuid solo valida forma
     # de UUID, nunca inserta nada en prod.sucursal (Fase 22b).
     $SucursalUuid = Read-SucursalUuid -Uuid $SucursalUuid
-    if ([string]::IsNullOrWhiteSpace($CloudApiUrl)) {
-        if ($Unattended) { throw '-CloudApiUrl es obligatorio en modo -Unattended.' }
-        $CloudApiUrl = Read-Host 'URL de la API cloud (PARKOS_CLOUD_API_URL)'
-    }
 
     Write-Host ''
     Write-Host '=== Parkos - instalacion (Fases 22-24) ===' -ForegroundColor Cyan
@@ -2671,16 +3082,16 @@ function Invoke-ParkosInstall {
         -SucursalUuid $SucursalUuid -CloudApiUrl $CloudApiUrl
     $stages = $definitions.Stages
 
-    # DEC-INST-41 (PR10): mapeo MINIMO de los 3 gates que YA tiran throw hoy
-    # dentro de Get-ParkosStageDefinitions (etapa 2 exige 'db' Ok via
-    # $script:roles, etapa 3 exige 'db' Ok, etapa 4 exige 'migrate' Ok) -
-    # solo para que Get-ParkosStageMenuLines pueda mostrar [BLOQ] ANTES de
-    # que el operador intente y falle. No es un grafo de dependencias nuevo
-    # (item 7 del PR).
-    $stagePrereqs = @{
-        '2' = @{ Key = 'db'; Number = '1' }
-        '3' = @{ Key = 'db'; Number = '1' }
-        '4' = @{ Key = 'migrate'; Number = '2' }
+    # Gates de dependencia entre etapas (ver Get-ParkosStagePrerequisites):
+    # el menu muestra [BLOQ] y el dispatch rechaza la etapa bloqueada.
+    $stagePrereqs = Get-ParkosStagePrerequisites
+
+    # El estado de etapa es solo en memoria (no se persiste entre corridas).
+    # En una maquina de campo el payload ya viene compilado y la etapa 0
+    # nunca se corre aca (DEC-INST-20) - si los artefactos ya estan, la etapa
+    # 0 cuenta como Ok para no bloquear 1 y 7 sin motivo.
+    if (Test-ParkosPayloadReady -PayloadRoot $script:PayloadRoot) {
+        $script:StageStatus['build'] = [ParkosStageState]::Ok
     }
 
     # DEC-INST-41 (PR10): el modulo Parkos (8 cmdlets, PR1..PR8) se importa
@@ -2713,6 +3124,11 @@ function Invoke-ParkosInstall {
 
         if ($stages.Contains($choice)) {
             $stage = $stages[$choice]
+            $blockReason = Get-ParkosStageBlockReason -Number $choice -StageStatus $script:StageStatus -Prereqs $stagePrereqs
+            if ($null -ne $blockReason) {
+                Write-Host "La etapa $choice ('$($stage.Name)') esta bloqueada ($blockReason)." -ForegroundColor Yellow
+                continue
+            }
             $script:StageStatus[$stage.Key] = [ParkosStageState]::Running
             try {
                 Invoke-TuiStep -Name $stage.Name -Action $stage.Action
@@ -2967,9 +3383,8 @@ function Assert-ParkosCascadeParamsValid {
         if (-not $EulaAccepted) {
             throw '-Unattended requiere -EulaAccepted (ver Show-Eula).'
         }
-        if ([string]::IsNullOrWhiteSpace($CloudApiUrl)) {
-            throw '-Unattended requiere -CloudApiUrl.'
-        }
+        # -CloudApiUrl ya NO es obligatorio: si falta se toma de
+        # PARKOS_CLOUD_API_URL o del default (Resolve-ParkosCloudApiUrl).
         # -SucursalUuid deliberadamente NO se revalida aca: Read-SucursalUuid
         # ya lanza su propia excepcion en modo -Unattended si viene vacio
         # (ver mas abajo, dentro de Invoke-ParkosUnattendedCascade) - duplicar
@@ -2977,21 +3392,69 @@ function Assert-ParkosCascadeParamsValid {
     }
 }
 
+# Texto para el operador (sin jerga) de cada etapa del flujo guiado.
+function Get-ParkosStagePlainName {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$Number)
+
+    $names = @{
+        0 = 'Preparando los archivos de instalacion'
+        1 = 'Instalando la base de datos'
+        2 = 'Preparando las tablas de la base de datos'
+        3 = 'Configurando esta sucursal'
+        4 = 'Cargando los datos iniciales'
+        5 = 'Instalando el servicio principal de Parkos'
+        6 = 'Instalando el servicio de sincronizacion'
+        7 = 'Instalando la aplicacion de escritorio'
+        8 = 'Verificando que todo funcione'
+    }
+    return $names[$Number]
+}
+
+# -Guided: flujo del operador de sucursal (default del instalador). Misma
+# cascada que -Unattended pero (a) sin la etapa 0 salvo -IncludeBuild: el
+# payload debe venir ya compilado, (b) la clave maestra es requisito duro del
+# pre-flight, (c) el EULA se acepta con Enter y el UUID de la sucursal es lo
+# unico que se tipea, y (d) el progreso se informa como "Paso N de M" en
+# lenguaje llano. Nunca llama `exit` (ver el wrapper al final del archivo).
 function Invoke-ParkosUnattendedCascade {
     [CmdletBinding()]
-    param()
+    param([switch]$Guided)
+
+    $modeLabel = 'Unattended'
+    if ($Guided) { $modeLabel = 'Guided' }
 
     $runTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $logPath = Join-Path $DataPath "installer-runs\$runTimestamp.log"
-    Write-ParkosInstallerLog -LogPath $logPath -Level 'INIT' -Message 'parkos-installer iniciando (modo=Unattended)'
+    Write-ParkosInstallerLog -LogPath $logPath -Level 'INIT' -Message "parkos-installer iniciando (modo=$modeLabel)"
+
+    # Etapas que NO corren en este flujo: las de -SkipStage y, en el flujo
+    # guiado sin -IncludeBuild, la etapa 0 (el payload ya viene compilado).
+    $skipBuildStage = ($Guided -and -not $IncludeBuild)
 
     try {
-        Assert-ParkosCascadeParamsValid -SkipStage $SkipStage -StopAfterStage $StopAfterStage -Force:$Force `
-            -Unattended:$Unattended -EulaAccepted:$EulaAccepted -CloudApiUrl $CloudApiUrl
+        $resolvedCloudApiUrl = Resolve-ParkosCloudApiUrl -Explicit $CloudApiUrl
 
-        Write-Host '=== Parkos - pre-flight ===' -ForegroundColor Cyan
-        $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath
+        Assert-ParkosCascadeParamsValid -SkipStage $SkipStage -StopAfterStage $StopAfterStage -Force:$Force `
+            -Unattended:$Unattended -EulaAccepted:$EulaAccepted -CloudApiUrl $resolvedCloudApiUrl
+
+        # Antes de pedir nada: sin payload compilado no hay nada que instalar.
+        if ($skipBuildStage -and -not (Test-ParkosPayloadReady -PayloadRoot $script:PayloadRoot)) {
+            throw 'Este instalador no trae los programas ya preparados (falta el paquete de instalacion completo). No hay nada que usted pueda corregir aqui: pida un instalador completo al equipo de soporte.'
+        }
+
+        if ($MasterKeyPath) { Import-ParkosMasterKey -SourcePath $MasterKeyPath }
+        if ($Guided) {
+            Write-Host ''
+            Write-Host 'Revisando que este equipo este listo para instalar Parkos...' -ForegroundColor Cyan
+        } else {
+            Write-Host '=== Parkos - pre-flight ===' -ForegroundColor Cyan
+        }
+        $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath -CloudApiUrl $resolvedCloudApiUrl -RequireMasterKey:$Guided
         if (-not $preflightOk) {
+            if ($Guided) {
+                throw 'El equipo todavia no cumple los requisitos para instalar (revise las lineas [FALLO] de arriba). No se hizo ningun cambio en el equipo. Corrija lo indicado o pida ayuda al equipo de soporte.'
+            }
             throw 'Pre-flight fallo - instalacion abortada, sin cambios en el sistema.'
         }
 
@@ -3013,9 +3476,12 @@ function Invoke-ParkosUnattendedCascade {
             db = [ParkosStageState]::NotRun; migrate = [ParkosStageState]::NotRun; sucursal = [ParkosStageState]::NotRun; seed = [ParkosStageState]::NotRun
             api = [ParkosStageState]::NotRun; job = [ParkosStageState]::NotRun; electron = [ParkosStageState]::NotRun; verify = [ParkosStageState]::NotRun
         }
+        # Payload compilado == etapa 0 en Ok (mismo criterio que el menu), lo
+        # que mantiene coherentes los prerequisitos de las etapas 1 y 7.
+        if ($skipBuildStage) { $script:StageStatus['build'] = [ParkosStageState]::Ok }
 
         $definitions = Get-ParkosStageDefinitions -InstallPath $paths.InstallPath -DataPath $paths.DataPath `
-            -SucursalUuid $resolvedSucursalUuid -CloudApiUrl $CloudApiUrl
+            -SucursalUuid $resolvedSucursalUuid -CloudApiUrl $resolvedCloudApiUrl
         $stages = $definitions.Stages
     } catch {
         $message = $_.Exception.Message
@@ -3024,12 +3490,24 @@ function Invoke-ParkosUnattendedCascade {
         return [PSCustomObject]@{ ExitCode = 2; Detail = $message }
     }
 
+    # Total de pasos que van a correr, para "Paso N de M".
+    $stagesToRun = @(0..8 | Where-Object { ($SkipStage -notcontains $_) -and -not ($skipBuildStage -and $_ -eq 0) })
+    $totalSteps = $stagesToRun.Count
+    $stepNumber = 0
+
     foreach ($number in 0..8) {
         $stage = $stages["$number"]
 
         if ($SkipStage -contains $number) {
             Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message 'Omitida por -SkipStage'
+        } elseif ($skipBuildStage -and $number -eq 0) {
+            Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message 'Omitida (flujo guiado: el payload ya esta compilado; use -IncludeBuild para compilar)'
         } else {
+            $stepNumber++
+            if ($Guided) {
+                Write-Host ''
+                Write-Host "Paso $stepNumber de ${totalSteps}: $(Get-ParkosStagePlainName -Number $number)... (puede tardar unos minutos, no cierre esta ventana)" -ForegroundColor Cyan
+            }
             Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message 'Iniciando'
             $script:StageStatus[$stage.Key] = [ParkosStageState]::Running
             $stageStart = Get-Date
@@ -3039,55 +3517,121 @@ function Invoke-ParkosUnattendedCascade {
                 $elapsedSeconds = [int]((Get-Date) - $stageStart).TotalSeconds
                 Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message "[OK] $($stage.Name)"
                 Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message "Estado: Ok (${elapsedSeconds}s)"
+                if ($Guided) {
+                    Write-Host "Paso $stepNumber de ${totalSteps} terminado." -ForegroundColor Green
+                }
             } catch {
                 $failureMessage = $_.Exception.Message
                 $script:StageStatus[$stage.Key] = [ParkosStageState]::Failed
                 Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message "[FAIL] $failureMessage"
 
+                $rolledBack = $false
                 if ($null -ne $stage.Rollback) {
                     try {
                         & $stage.Rollback
                         $script:StageStatus[$stage.Key] = [ParkosStageState]::RolledBack
+                        $rolledBack = $true
                         Write-ParkosInstallerLog -LogPath $logPath -Level 'ROLLBACK' -Message "[OK] $($stage.Name)"
                     } catch {
                         Write-ParkosInstallerLog -LogPath $logPath -Level 'ROLLBACK' -Message "[FAIL] $($_.Exception.Message)"
                     }
                 }
 
+                if ($Guided) {
+                    Write-Host ''
+                    Write-Host "No se pudo completar el paso $stepNumber de ${totalSteps} ($(Get-ParkosStagePlainName -Number $number))." -ForegroundColor Red
+                    if ($rolledBack) {
+                        Write-Host 'El instalador deshizo automaticamente los cambios de ese paso.' -ForegroundColor Yellow
+                    } else {
+                        Write-Host 'No fue posible deshacer automaticamente los cambios de ese paso: informelo al equipo de soporte.' -ForegroundColor Yellow
+                    }
+                    Write-Host "Motivo tecnico (para soporte): $failureMessage" -ForegroundColor Yellow
+                    Write-Host "Registro de esta instalacion: $logPath" -ForegroundColor Yellow
+                }
+
                 Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Exit code: 1'
-                return [PSCustomObject]@{ ExitCode = 1; Detail = "Etapa $number ($($stage.Name)) fallo: $failureMessage" }
+                return [PSCustomObject]@{ ExitCode = 1; Detail = "Etapa $number ($($stage.Name)) fallo: $failureMessage"; LogPath = $logPath }
             }
         }
 
         if ($StopAfterStage -ne -1 -and $number -eq $StopAfterStage) {
             Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message "Detenido en etapa $number por -StopAfterStage"
             Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Exit code: 0'
-            return [PSCustomObject]@{ ExitCode = 0; Detail = "Detenido deliberadamente en etapa $number (-StopAfterStage)." }
+            return [PSCustomObject]@{ ExitCode = 0; Detail = "Detenido deliberadamente en etapa $number (-StopAfterStage)."; LogPath = $logPath }
         }
     }
 
     Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Estado final: Ok (todas las etapas)'
     Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Exit code: 0'
-    return [PSCustomObject]@{ ExitCode = 0; Detail = 'Instalacion desatendida completada (todas las etapas).' }
+    return [PSCustomObject]@{ ExitCode = 0; Detail = 'Instalacion completada (todas las etapas).'; LogPath = $logPath }
+}
+
+# Punto de entrada del flujo por defecto: el operador no elige opciones. Eleva
+# a administrador y relanza en PowerShell 7 conservando los parametros, y
+# corre la cascada guiada. Devuelve el resultado (nunca llama `exit`).
+function Invoke-ParkosGuidedInstall {
+    [CmdletBinding()]
+    param()
+
+    Ensure-PowerShell7 -OriginalArgs $script:OriginalArgs
+    Request-Elevation -OriginalArgs $script:OriginalArgs
+
+    Write-Host ''
+    Write-Host '=== Instalacion de Parkos ===' -ForegroundColor Cyan
+    Write-Host 'Este asistente instala Parkos en este equipo de forma automatica.' -ForegroundColor Cyan
+    Write-Host 'Solo se le pedira un dato: el codigo (UUID) de la sucursal. No cierre esta ventana hasta que termine.' -ForegroundColor Cyan
+
+    $result = Invoke-ParkosUnattendedCascade -Guided
+
+    Write-Host ''
+    if ($result.ExitCode -eq 0) {
+        Write-Host 'Listo: Parkos quedo instalado y funcionando en este equipo.' -ForegroundColor Green
+    } else {
+        Write-Host 'La instalacion NO se completo.' -ForegroundColor Red
+        $logHint = ''
+        if ($result.PSObject.Properties['LogPath'] -and $result.LogPath) { $logHint = ", junto con el archivo de registro: $($result.LogPath)" }
+        Write-Host "Que hacer: tome una foto o copie los mensajes de esta ventana y envielos al equipo de soporte$logHint." -ForegroundColor Yellow
+        if ($result.Detail) { Write-Host "Detalle: $($result.Detail)" -ForegroundColor Yellow }
+    }
+    return $result
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $script:OriginalArgs = $args
+    # Los parametros con nombre NO viajan en $args: se reconstruyen desde
+    # $PSBoundParameters (switches, textos con espacios, arreglos como
+    # -SkipStage 2,7) para que la elevacion/relanzo en PowerShell 7 conserve
+    # exactamente lo que el operador paso (ver Get-ParkosRelaunchArgumentList).
+    $script:OriginalArgs = @(ConvertTo-ParkosRelaunchArgs -BoundParameters $PSBoundParameters)
     switch ($Command) {
         'Install' {
-            if ($Unattended) {
-                # DEC-INST-35: nunca Invoke-ParkosInstall aca - ese es el
-                # menu interactivo (Read-Host), incompatible con -Unattended
-                # por diseno. La funcion de cascada nunca llama `exit`
-                # internamente (para poder testearla con Pester, que no
-                # intercepta un `exit` real del proceso host de forma
-                # confiable) - este wrapper delgado es el UNICO lugar del
-                # archivo que traduce su ExitCode a una salida real de
-                # proceso.
-                $cascadeResult = Invoke-ParkosUnattendedCascade
-                exit $cascadeResult.ExitCode
+            try {
+                $installMode = Resolve-ParkosInstallMode -Menu:$Menu -Unattended:$Unattended
+            } catch {
+                Write-Host $_.Exception.Message -ForegroundColor Red
+                exit 2
             }
-            Invoke-ParkosInstall
+            switch ($installMode) {
+                'Unattended' {
+                    # DEC-INST-35: nunca Invoke-ParkosInstall aca - ese es el
+                    # menu interactivo (Read-Host), incompatible con
+                    # -Unattended por diseno. La funcion de cascada nunca
+                    # llama `exit` internamente (para poder testearla con
+                    # Pester, que no intercepta un `exit` real del proceso
+                    # host de forma confiable) - este wrapper delgado es el
+                    # UNICO lugar del archivo que traduce su ExitCode a una
+                    # salida real de proceso.
+                    $cascadeResult = Invoke-ParkosUnattendedCascade
+                    exit $cascadeResult.ExitCode
+                }
+                'Menu' { Invoke-ParkosInstall }
+                'Guided' {
+                    $guidedResult = Invoke-ParkosGuidedInstall
+                    # La ventana elevada se cierra sola al terminar: se deja
+                    # leer el resultado antes de cerrarla.
+                    try { Read-Host 'Presione Enter para cerrar esta ventana' | Out-Null } catch { $null = $_ }
+                    exit $guidedResult.ExitCode
+                }
+            }
         }
         'Update'  { $updateResult = Invoke-ParkosUpdate; exit $updateResult.ExitCode }
         'Restore' { $restoreResult = Invoke-ParkosRestore; exit $restoreResult.ExitCode }
