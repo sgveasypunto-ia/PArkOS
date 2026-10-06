@@ -462,7 +462,9 @@ function Get-ParkosHealth {
 
         Runs 6 checks: Postgres reachable, api-sucursal service running,
         job-sync-sucursal service running, /health responds 200, doctor.exe
-        passes, disk has more than 10% free space. Exit codes: 0 (all OK),
+        passes, disk has more than 5GB free (WARN when <=10% free). If
+        nothing is installed it reports a single FAIL line (ExitCode 2,
+        NotInstalled=$true). Exit codes: 0 (all OK),
         1 (degraded - at least one non-critical check failed), 2 (critical -
         installation cannot be considered healthy).
 
@@ -502,6 +504,25 @@ function Get-ParkosHealth {
         $envLoadError = $_.Exception.Message
     }
     $noInstallMessage = "No se encontro instalacion en $($paths.InstallPath)."
+
+    # Early exit: nada instalado (ni carpeta de instalacion ni .env). Los 6
+    # checks fallarian todos con el mismo mensaje redundante; se reporta UNA
+    # linea clara. ExitCode 2 (critico) para no cambiar la semantica que
+    # esperan Repair/Update/menu A; NotInstalled permite distinguirlo.
+    if (-not $envMap -and -not (Test-Path -LiteralPath $paths.InstallPath)) {
+        $notInstalledDetail = "Parkos no esta instalado (sin instalacion en $($paths.InstallPath) ni .env en $envFilePath)."
+        Write-Host '[FAIL] Parkos no esta instalado' -ForegroundColor Red
+        if ($Detailed) {
+            Write-Host "       $notInstalledDetail" -ForegroundColor Red
+        }
+        Write-ParkosLog 'Get-ParkosHealth exit code: 2 (Parkos no esta instalado).'
+        $global:LASTEXITCODE = 2
+        return [PSCustomObject]@{
+            ExitCode     = 2
+            NotInstalled = $true
+            Checks       = [ordered]@{ 'Instalacion' = @{ Status = 'FAIL'; Detail = $notInstalledDetail } }
+        }
+    }
 
     $checks = [ordered]@{}
 
@@ -575,16 +596,21 @@ function Get-ParkosHealth {
         $checks['Doctor'] = @{ Status = 'FAIL'; Detail = $_.Exception.Message }
     }
 
-    # 6. Disco >10% libre
+    # 6. Espacio en disco: FAIL solo bajo el piso absoluto (5GB, igual que el
+    # pre-flight del instalador); el porcentaje (<=10%) es solo WARN, porque
+    # en discos grandes 9% libre son cientos de GB.
     try {
         $driveLetter = $paths.InstallPath.Substring(0, 1)
         $drive = Get-PSDrive -Name $driveLetter -ErrorAction Stop
         $total = $drive.Free + $drive.Used
         $freeRatio = if ($total -gt 0) { $drive.Free / $total } else { 0 }
-        if ($freeRatio -gt 0.10) {
-            $checks['Espacio en disco'] = @{ Status = 'OK'; Detail = ("{0:P1} libre en {1}:" -f $freeRatio, $driveLetter) }
+        $freeGb = [math]::Round($drive.Free / 1GB, 1)
+        if ($drive.Free -le 5GB) {
+            $checks['Espacio en disco'] = @{ Status = 'FAIL'; Detail = ("Solo {0} GB libres en {1}: (minimo 5 GB)." -f $freeGb, $driveLetter) }
+        } elseif ($freeRatio -le 0.10) {
+            $checks['Espacio en disco'] = @{ Status = 'WARN'; Detail = ("{0:P1} libre en {1}: ({2} GB)." -f $freeRatio, $driveLetter, $freeGb) }
         } else {
-            $checks['Espacio en disco'] = @{ Status = 'FAIL'; Detail = ("Solo {0:P1} libre en {1}:" -f $freeRatio, $driveLetter) }
+            $checks['Espacio en disco'] = @{ Status = 'OK'; Detail = ("{0:P1} libre en {1}: ({2} GB)." -f $freeRatio, $driveLetter, $freeGb) }
         }
     } catch {
         $checks['Espacio en disco'] = @{ Status = 'FAIL'; Detail = $_.Exception.Message }

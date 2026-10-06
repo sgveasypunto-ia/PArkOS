@@ -85,16 +85,61 @@ C:\ProgramData\Parkos\                          (DataPath)
 
 ---
 
-## 2. Modo interactivo (menú)
+## 1bis. Flujo guiado (por defecto)
 
-`Invoke-ParkosInstall` (invocado sin `-Unattended`, `-Command Install` por defecto) ejecuta, en orden, antes de mostrar el menú:
+Ejecutar el instalador **sin ningún switch** (`parkos-installer.exe` o `pwsh .\parkos-installer.ps1`) inicia el flujo guiado, pensado para el operador de la sucursal: solo ejecuta pasos y escribe un único dato, el **UUID de la sucursal**. El menú de 9 etapas ya no es el comportamiento por defecto: se abre únicamente con `-Menu` (uso técnico). `-Menu` y `-Unattended` son incompatibles (`exit 2`).
+
+### Qué hace el flujo guiado, en orden
+
+1. `Invoke-ParkosGuidedInstall`: `Ensure-PowerShell7` + `Request-Elevation`. El relanzo (PowerShell 7 / administrador) **conserva todos los parámetros con nombre**: se reconstruyen desde `$PSBoundParameters` y se reenvían con `-EncodedCommand` (con `-File` los arreglos como `-SkipStage 2,7` llegaban aplanados como `27`). Las rutas `-MasterKeyPath` y `-PayloadPath` se convierten a absolutas porque el proceso elevado arranca en otro directorio.
+2. `Invoke-ParkosUnattendedCascade -Guided`:
+   - Verifica que el **payload esté compilado** (`Test-ParkosPayloadReady`). Si no, termina con `exit 2` **antes de pedir nada** y pide un instalador completo a soporte.
+   - **Pre-flight** (ver abajo), con la clave maestra como requisito duro.
+   - **EULA**: se muestra y se acepta con **Enter** (`-EulaAccepted` lo omite). Escribir `N` cancela sin cambios.
+   - **Rutas**: nunca se preguntan. Se usan `C:\Program Files\Parkos` y `C:\ProgramData\Parkos`, o `-InstallPath` / `-DataPath` si se pasaron (se siguen rechazando `C:\Windows`, `Program Files (x86)` y rutas UNC).
+   - **UUID de la sucursal**: único dato que se escribe. Forma estricta 8-4-4-4-12 hexadecimal; se toleran espacios alrededor y mayúsculas (se normaliza a minúsculas). Se vuelve a preguntar hasta **5 veces**; luego falla con `Demasiados intentos ...`. También puede venir por `-SucursalUuid`.
+   - Corre las etapas **1 a 8** mostrando `Paso N de M: <descripción en lenguaje llano>`. La **etapa 0** (git/pnpm/uv + build) **no corre** salvo `-IncludeBuild`; como el payload ya está compilado, la etapa 0 cuenta como `Ok` (los prerequisitos de las etapas 1 y 7 se cumplen).
+   - Si una etapa falla: se detiene, hace **rollback automático de esa etapa** y explica qué hacer (enviar el archivo de registro a soporte). Exit codes: `0` completo, `1` etapa fallida, `2` configuración/pre-flight inválidos.
+3. Al terminar, la ventana espera Enter para que el operador pueda leer el resultado.
+
+El registro de cada corrida queda en `$DataPath\installer-runs\<timestamp>.log`.
+
+### URL del servidor (cloud)
+
+Nunca se pregunta. Orden de resolución (`Resolve-ParkosCloudApiUrl`): parámetro `-CloudApiUrl` > variable de entorno `PARKOS_CLOUD_API_URL` (proceso, luego máquina, luego usuario) > `http://localhost:8000`. Debe ser `http://` o `https://`; si no, el instalador falla (`exit 2`) nombrando `PARKOS_CLOUD_API_URL`. La barra final se elimina.
+
+### Pre-flight del flujo guiado
+
+Además de las verificaciones de la sección 2:
+
+- **Conectividad**: se mide `host:puerto` de la URL del cloud (`Test-NetConnection`), **no** `github.com:443`. Si el servidor es el propio equipo (`localhost`/`127.0.0.1`) y no responde, solo se imprime `[AVISO]` (puede no estar encendido todavía) y la instalación continúa; si es remoto y no responde, **bloquea** con `[FALLO] Conexion con el servidor Parkos`.
+- **Clave maestra** (`payload\security\parkos-master.key`, >= 32 bytes): es el **único requisito duro** del flujo guiado. Sin ella el pre-flight **bloquea** con `[FALLO] Clave maestra de Parkos` y el mensaje accionable (pedirla a soporte por un canal seguro y copiarla a esa ruta, o usar `-MasterKeyPath`). En `-Menu` solo avisa. El instalador **nunca genera** claves.
+
+### Tabla de errores frecuentes (lo que ve el operador)
+
+| Qué ve el operador | Qué significa | Qué hacer |
+|---|---|---|
+| `Este instalador no trae los programas ya preparados ...` (exit 2) | El payload no está compilado | Pedir un instalador completo a soporte (o, en la máquina del técnico, correr con `-IncludeBuild`) |
+| `[FALLO] Clave maestra de Parkos` | Falta `parkos-master.key` o es demasiado corta | Pedir la clave a soporte y copiarla a la ruta indicada |
+| `[FALLO] Conexion con el servidor Parkos` | El servidor remoto no responde | Revisar red/internet y la variable `PARKOS_CLOUD_API_URL`; reintentar |
+| `[AVISO] No se pudo contactar al servidor Parkos en localhost:8000` | El servidor local no está encendido o es otro equipo | No bloquea; si el servidor está en otro equipo, definir `PARKOS_CLOUD_API_URL` |
+| `[FALLO] Permisos de administrador` | No se concedió el UAC | Volver a ejecutar y aceptar el aviso de permisos |
+| `Demasiados intentos con un codigo de sucursal invalido` | El UUID se escribió mal 5 veces | Copiar el UUID desde el panel de administración y reejecutar |
+| `No se pudo completar el paso N de M ...` (exit 1) | Falló una etapa; ya se deshizo | Enviar los mensajes y el archivo de registro a soporte |
+| `La direccion del servidor Parkos (...) no es valida` | `PARKOS_CLOUD_API_URL` mal escrita | Corregirla (debe empezar con `http://` o `https://`) |
+
+---
+
+## 2. Modo interactivo (menú, `-Menu`)
+
+`Invoke-ParkosInstall` (invocado con `-Menu`; ya no es el comportamiento por defecto) ejecuta, en orden, antes de mostrar el menú:
 
 1. `Ensure-PowerShell7` — si corre bajo PowerShell 5.1, descarga el MSI de PowerShell 7.4.6, verifica su SHA256 (`ED331A04679B83D4C013705282D1F3F8D8300485EB04C081F36E11EAF1148BD0`), lo instala silenciosamente y relanza el script bajo `pwsh`.
 2. `Request-Elevation` — si no corre como administrador, se relanza con `Start-Process pwsh -Verb RunAs`. Si el usuario rechaza el UAC: `'Se requieren permisos de administrador para instalar Parkos.'` y `exit 2`.
-3. `Test-Preflight` — 6 verificaciones bloqueantes (detalladas abajo).
-4. `Show-Eula`.
-5. `Read-InstallPaths`.
-6. `Read-SucursalUuid` + prompt de `-CloudApiUrl` si falta.
+3. `Test-Preflight` — verificaciones bloqueantes (detalladas abajo). La clave maestra solo avisa en el menú.
+4. `Show-Eula` (Enter acepta).
+5. `Read-InstallPaths` (nunca pregunta: valores por defecto o parámetros).
+6. `Read-SucursalUuid` (único prompt de datos). La URL del cloud no se pregunta (ver sección 1bis).
 7. El bucle del menú (9 etapas numeradas + 8 opciones de letra + `Q`).
 
 ### Pre-flight (`Test-Preflight`)
@@ -105,8 +150,9 @@ C:\ProgramData\Parkos\                          (DataPath)
 | `PowerShell >= 7` | `$PSVersionTable.PSVersion.Major -ge 7` |
 | `Permisos de administrador` | Rol `Administrator` del usuario actual |
 | `Espacio en disco (>=5GB)` | Espacio libre en la unidad de `-InstallPath` |
-| `Conectividad saliente` | `Test-NetConnection github.com:443` |
+| `Conexion con el servidor Parkos` | `Test-NetConnection` a `host:puerto` de la URL del cloud (`PARKOS_CLOUD_API_URL`, default `http://localhost:8000`), no a github.com. En `localhost` solo avisa; en un host remoto bloquea |
 | `Sin instalacion previa` | Ausencia de `$DataPath\pairing.json` |
+| `Clave maestra de Parkos` (**no bloqueante en `-Menu`; bloqueante en el flujo guiado**) | `payload\security\parkos-master.key` existe y mide >= 32 bytes. Si no, imprime `[AVISO]` con la ruta exacta y la remediación, pero **no** aborta el pre-flight (la etapa 0 no la necesita); la etapa 1 fallará sin ella. Se puede pasar `-MasterKeyPath <archivo>` para copiarla (validando el tamaño) antes del pre-flight |
 
 Si falla cualquiera, el modo interactivo imprime `'Pre-flight fallo. Instalacion abortada, sin cambios en el sistema.'` y hace `exit 2`. Si ya existe `pairing.json`, además imprime: `'Ya existe una instalacion de Parkos en este equipo.'` y `'Use Repair-ParkosInstall o Update-ParkosStack en vez de una instalacion limpia (Fases 25/26).'`.
 
@@ -162,7 +208,7 @@ Gate de "instalación incompleta": si no las 9 etapas están en `Ok`, se pregunt
 | `-StopAfterStage` | `-1` o entre 0 y 8 | `"-StopAfterStage invalido ($StopAfterStage) - debe ser -1 (correr todas las etapas) o un valor entre 0 y 8."` |
 | `-SkipStage` conteniendo `1` (Postgres) | Requiere `-Force` | `'Saltar la etapa 1 (Postgres) puede dejar el resto de las etapas sin base de datos - si estas seguro, agrega -Force.'` (con `-Force`: solo advierte, no bloquea) |
 | `-Unattended` sin `-EulaAccepted` | — | `'-Unattended requiere -EulaAccepted (ver Show-Eula).'` |
-| `-Unattended` sin `-CloudApiUrl` | — | `'-Unattended requiere -CloudApiUrl.'` |
+| `-Unattended` sin `-CloudApiUrl` | Ya no es obligatorio | Se toma de `PARKOS_CLOUD_API_URL` o `http://localhost:8000` |
 
 `-SucursalUuid` **no** se revalida en `Assert-ParkosCascadeParamsValid` — `Read-SucursalUuid` ya lanza su propia excepción (`'-SucursalUuid es obligatorio en modo -Unattended (la sucursal se crea desde el panel admin, no desde este instalador).'`) para evitar duplicar la misma validación en dos lugares.
 
@@ -279,7 +325,7 @@ Manifiesto (`Parkos.psd1`): `ModuleVersion = '1.0.0'`, `PowerShellVersion = '7.0
 
 ### `Get-ParkosHealth [-Detailed]`
 
-Corre 6 checks (Postgres alcanzable, servicio `ParkosApiSucursal`, servicio `ParkosJobSyncSucursal`, `/health` 200, `doctor.exe`, espacio en disco >10%). El servicio de sync es el **único no crítico**: detenido es `WARN`, no `FAIL`. Devuelve `{ExitCode; Checks}` y además setea `$global:LASTEXITCODE`.
+Corre 6 checks (Postgres alcanzable, servicio `ParkosApiSucursal`, servicio `ParkosJobSyncSucursal`, `/health` 200, `doctor.exe`, espacio en disco: `FAIL` bajo 5 GB libres, `WARN` si queda <=10%). El servicio de sync es el **único no crítico**: detenido es `WARN`, no `FAIL`. Si no hay instalación ni `.env`, reporta una sola línea `[FAIL] Parkos no esta instalado` (ExitCode 2, `NotInstalled=$true`). Devuelve `{ExitCode; Checks}` y además setea `$global:LASTEXITCODE`.
 
 Regla de exit code: `0` si los 6 checks están OK, `1` si hay al menos un `WARN` y cero `FAIL`, `2` si hay al menos un `FAIL`.
 
@@ -435,7 +481,9 @@ Cada entrada cita el mensaje **exacto** (interpolaciones de PowerShell tal como 
 | `"Puertos $($CandidatePorts -join ', ') todos ocupados; no se puede instalar el servicio api-sucursal."` | `Test-ApiPort` |
 | `'initdb fallo al inicializar el data directory de Postgres.'` | `Install-PostgresViaZip` |
 | `"Ni winget ni el ZIP de fallback ($zipPath) estan disponibles; no se puede instalar Postgres."` | `Install-Postgres` |
-| `"No se encontro la clave maestra de Parkos en $MasterKeyPath - debe ser provista por el equipo de soporte antes de instalar (nunca se genera automaticamente ni se versiona en el repo)."` | `Get-ParkosMasterKeyBytes` |
+| `"No se encontro la clave maestra de Parkos en $MasterKeyPath - es un secreto de la compania que NO se genera automaticamente ni vive en el repo. Solicitela al equipo de soporte por un canal seguro y copiela a esa ruta (o reintente con -MasterKeyPath <archivo>)."` | `Get-ParkosMasterKeyBytes` / `Get-ParkosMasterKeyProblem` |
+| `"La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($length bytes; minimo 32) - parece truncada o incorrecta. Solicite una copia valida al equipo de soporte por un canal seguro y reemplace ese archivo."` | `Get-ParkosMasterKeyBytes` / `Import-ParkosMasterKey` |
+| `"No se encontro el archivo indicado en -MasterKeyPath ($SourcePath) - solicite la clave maestra al equipo de soporte por un canal seguro."` | `Import-ParkosMasterKey` |
 | `'No se pudo configurar el superusuario parkos.'` | `Initialize-DatabaseRoles` |
 | `'No se pudo crear la base de datos parkos.'` | `Initialize-DatabaseRoles` |
 | `"No se pudo crear el schema partman (psql exit $LASTEXITCODE) - revisar .pgpass/autenticacion de 'parkos'."` | `Install-PgPartman` |
@@ -503,9 +551,10 @@ Cada entrada cita el mensaje **exacto** (interpolaciones de PowerShell tal como 
 | `"-StopAfterStage invalido ($StopAfterStage) - debe ser -1 (correr todas las etapas) o un valor entre 0 y 8."` | `Assert-ParkosCascadeParamsValid` |
 | `'Saltar la etapa 1 (Postgres) puede dejar el resto de las etapas sin base de datos - si estas seguro, agrega -Force.'` | `Assert-ParkosCascadeParamsValid` |
 | `'-Unattended requiere -EulaAccepted (ver Show-Eula).'` | `Assert-ParkosCascadeParamsValid` |
-| `'-Unattended requiere -CloudApiUrl.'` | `Assert-ParkosCascadeParamsValid` |
 | `'Pre-flight fallo - instalacion abortada, sin cambios en el sistema.'` | `Invoke-ParkosUnattendedCascade` |
-| `'-CloudApiUrl es obligatorio en modo -Unattended.'` | `Invoke-ParkosInstall` (también aplica al menú interactivo si `-Unattended` sin el valor) |
+| `"La direccion del servidor Parkos ('$value', tomada de $source) no es valida: ..."` | `Resolve-ParkosCloudApiUrl` |
+| `'-Menu y -Unattended son incompatibles: ...'` | `Resolve-ParkosInstallMode` (`exit 2`) |
+| `"Demasiados intentos con un codigo de sucursal invalido ($maxAttempts). ..."` | `Read-SucursalUuid` |
 
 ### 8.11 `-Command Update`
 

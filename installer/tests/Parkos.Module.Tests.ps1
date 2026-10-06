@@ -193,6 +193,46 @@ Describe 'Get-ParkosHealth' {
         $result.ExitCode | Should Be 1
     }
 
+    It 'does not FAIL the disk check on a big disk with 9% free' {
+        Mock Test-NetConnection -ModuleName Parkos { $true }
+        Mock Get-Service -ModuleName Parkos { [PSCustomObject]@{ Status = 'Running' } }
+        Mock Invoke-WebRequest -ModuleName Parkos { [PSCustomObject]@{ StatusCode = 200 } }
+        Mock Get-PSDrive -ModuleName Parkos { [PSCustomObject]@{ Name = 'C'; Free = 90GB; Used = 910GB } }
+
+        $result = Get-ParkosHealth
+        $result.Checks['Espacio en disco'].Status | Should Be 'WARN'
+        $result.ExitCode | Should Be 1
+    }
+
+    It 'FAILs the disk check when free space is below the 5GB floor' {
+        Mock Test-NetConnection -ModuleName Parkos { $true }
+        Mock Get-Service -ModuleName Parkos { [PSCustomObject]@{ Status = 'Running' } }
+        Mock Invoke-WebRequest -ModuleName Parkos { [PSCustomObject]@{ StatusCode = 200 } }
+        Mock Get-PSDrive -ModuleName Parkos { [PSCustomObject]@{ Name = 'C'; Free = 2GB; Used = 98GB } }
+
+        $result = Get-ParkosHealth
+        $result.Checks['Espacio en disco'].Status | Should Be 'FAIL'
+        $result.ExitCode | Should Be 2
+    }
+
+    Remove-Module Parkos -Force -ErrorAction SilentlyContinue
+}
+
+Describe 'Get-ParkosHealth (nothing installed)' {
+    Import-Module $moduleManifestPath -Force
+
+    It 'reports a single clear FAIL line and ExitCode 2 when nothing is installed' {
+        Mock Import-ParkosEnvFile -ModuleName Parkos { throw 'No se encontro el archivo .env' }
+        Mock Test-Path -ModuleName Parkos { $false }
+        Mock Write-Host -ModuleName Parkos { }
+
+        $result = Get-ParkosHealth
+        $result.ExitCode | Should Be 2
+        $result.NotInstalled | Should Be $true
+        @($result.Checks.Keys).Count | Should Be 1
+        Assert-MockCalled Write-Host -ModuleName Parkos -Times 1 -Exactly -Scope It -ParameterFilter { $Object -like '*Parkos no esta instalado*' }
+    }
+
     Remove-Module Parkos -Force -ErrorAction SilentlyContinue
 }
 
