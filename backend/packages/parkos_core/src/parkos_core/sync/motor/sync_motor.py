@@ -295,61 +295,17 @@ class SyncMotor:
         automatically, exactly what ``test_identity_invariant.py`` used to
         do by hand for its own assertions only.
         """
-        if self.engine is engine_flag.EngineMode.LEGACY:
-            return await self._apply_row_legacy(session, spec, payload, actor_uuid=actor_uuid)
-
-        # Universal self/repeat-duplication guard (real defect confirmed
-        # live, 2026-09-10): every one of the 4 real apply entry points
-        # (``api/v1/sync_router.py::sync_events``, ``jobs/sync_cloud.py::
-        # _apply_pending_batch_once``, ``jobs/sync_sucursal.py::
-        # _pull_and_apply_catalog``, ``sync/cutover/backfill.py::
-        # run_backfill``) funnels through THIS method — placing the check
-        # here, once, covers all of them instead of the first 3 needing
-        # their own copy (already added separately, before this one, kept
-        # as harmless defense-in-depth) and ``sync_events`` silently
-        # missing it. Confirmed live: migration ``0019``'s deterministic
-        # ``permisos`` uuid landed on cloud AND branch independently (each
-        # side's own migration run), each side's own enqueue trigger fired
-        # for its own INSERT, and BOTH pushed the "same" row to the other
-        # via the real ``/sync/events`` receiver — which, lacking this
-        # check, blindly inserted a THIRD, fresh-uuid duplicate on each
-        # side instead of recognizing the incoming uuid already existed.
-        # Real defect confirmed live, 2026-10-06: the user requirement
-        # for the ``sucursal`` table is "the only keys are UUIDs — an
-        # edit is an UPDATE, not a new entity". The apply_guard
-        # ``row_already_present`` check is the duplicate-prevention
-        # mechanism for [V] re-applies, but it also blocks the
-        # admin's UPDATE-in-place from reaching an already-known
-        # branch uuid. The pull already bypasses this guard for
-        # ``sucursal`` (see jobs/sync_sucursal.py::_pull_and_apply*),
-        # so the catalog apply_row must let the apply through too.
-        # Without this, the pull's resolved list includes the
-        # sucursal row but apply_row returns "APPLIED" without
-        # re-running the dispatch — the local copy keeps the OLD
-        # field values forever.
-        if (
-            spec.audit_class == "V"
-            and spec.name != "sucursal"
-            and await apply_guard.row_already_present(
-                session, spec.model_cls, payload.get("uuid")
-            )
-        ):
-            return ApplyResult(status="APPLIED", row_uuid=payload.get("uuid"), reason=None)
-
         # Real defect confirmed live, 2026-10-06: the ``sucursal``
         # table is a special case where the user requirement is
         # "the only keys are UUIDs — an edit is an UPDATE, not a
-        # new entity". The catalog's ``close_and_insert`` strategy
-        # on the BRANCH side closes the local row and inserts a
-        # new one with a new uuid, which collides with the cloud's
-        # payload uuid on the PK (the new row's uuid was being
-        # set from the payload, matching the just-closed old
-        # row's uuid). IntegrityError 23505 on every pull. The
-        # fix: for ``sucursal`` specifically, UPDATE the existing
-        # row in place rather than close+insert, matching what
-        # the admin's ``update_sucursal_dedicated`` now does on
-        # the cloud side. The uuid is the identity; the field
-        # values are just updated.
+        # new entity". This check has to run BEFORE the LEGACY
+        # dispatch below, because the LEGACY path goes through
+        # ``ConflictResolver`` (a verdict-only shim since PR7) and
+        # returns CONFLICT for an already-known prefijo_nombre — which
+        # would short-circuit before our direct UPDATE/INSERT can run.
+        # The cloud's engine is also LEGACY (per compose default), so
+        # the pull path lands here too: this branch is the only entry
+        # point for both the cloud and the branch apply sides.
         if spec.name == "sucursal" and spec.audit_class == "V":
             target_uuid = payload.get("uuid")
             if target_uuid is None:
@@ -397,6 +353,47 @@ class SyncMotor:
                 row_uuid=target_uuid,
                 reason=None,
             )
+
+        if self.engine is engine_flag.EngineMode.LEGACY:
+            return await self._apply_row_legacy(session, spec, payload, actor_uuid=actor_uuid)
+
+        # Universal self/repeat-duplication guard (real defect confirmed
+        # live, 2026-09-10): every one of the 4 real apply entry points
+        # (``api/v1/sync_router.py::sync_events``, ``jobs/sync_cloud.py::
+        # _apply_pending_batch_once``, ``jobs/sync_sucursal.py::
+        # _pull_and_apply_catalog``, ``sync/cutover/backfill.py::
+        # run_backfill``) funnels through THIS method — placing the check
+        # here, once, covers all of them instead of the first 3 needing
+        # their own copy (already added separately, before this one, kept
+        # as harmless defense-in-depth) and ``sync_events`` silently
+        # missing it. Confirmed live: migration ``0019``'s deterministic
+        # ``permisos`` uuid landed on cloud AND branch independently (each
+        # side's own migration run), each side's own enqueue trigger fired
+        # for its own INSERT, and BOTH pushed the "same" row to the other
+        # via the real ``/sync/events`` receiver — which, lacking this
+        # check, blindly inserted a THIRD, fresh-uuid duplicate on each
+        # side instead of recognizing the incoming uuid already existed.
+        # Real defect confirmed live, 2026-10-06: the user requirement
+        # for the ``sucursal`` table is "the only keys are UUIDs — an
+        # edit is an UPDATE, not a new entity". The apply_guard
+        # ``row_already_present`` check is the duplicate-prevention
+        # mechanism for [V] re-applies, but it also blocks the
+        # admin's UPDATE-in-place from reaching an already-known
+        # branch uuid. The pull already bypasses this guard for
+        # ``sucursal`` (see jobs/sync_sucursal.py::_pull_and_apply*),
+        # so the catalog apply_row must let the apply through too.
+        # Without this, the pull's resolved list includes the
+        # sucursal row but apply_row returns "APPLIED" without
+        # re-running the dispatch — the local copy keeps the OLD
+        # field values forever.
+        if (
+            spec.audit_class == "V"
+            and spec.name != "sucursal"
+            and await apply_guard.row_already_present(
+                session, spec.model_cls, payload.get("uuid")
+            )
+        ):
+            return ApplyResult(status="APPLIED", row_uuid=payload.get("uuid"), reason=None)
 
         open_version = (
             await resolve_open_version(session, spec, payload)
