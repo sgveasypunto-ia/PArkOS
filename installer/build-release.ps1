@@ -42,6 +42,13 @@ param(
     [switch]$Seed,
     [switch]$Doctor,
     [switch]$Installer,
+    # Regenera manifest.sha256.json (hashes de exes, MSI, shared y partes de
+    # Postgres presentes). Con -All o sin switches se regenera siempre.
+    [switch]$Manifest,
+    # Clave maestra de Parkos (>=32 bytes) a copiar a payload\security\
+    # parkos-master.key si todavia no esta (CI/tecnico). Alternativa: variable
+    # PARKOS_MASTER_KEY_FILE. NUNCA se genera.
+    [string]$MasterKeyPath = '',
     [string]$Version
 )
 
@@ -67,9 +74,9 @@ if (-not $Version) {
 }
 
 # No switch passed at all -> full build.
-$anySwitch = $Payload -or $WebSucursal -or $ApiSucursal -or $JobSync -or $Migrate -or $Seed -or $Doctor -or $Installer
+$anySwitch = $Payload -or $WebSucursal -or $ApiSucursal -or $JobSync -or $Migrate -or $Seed -or $Doctor -or $Installer -or $Manifest
 if ($All -or -not $anySwitch) {
-    $Payload = $true; $WebSucursal = $true; $ApiSucursal = $true; $JobSync = $true; $Migrate = $true; $Seed = $true; $Doctor = $true; $Installer = $true
+    $Payload = $true; $WebSucursal = $true; $ApiSucursal = $true; $JobSync = $true; $Migrate = $true; $Seed = $true; $Doctor = $true; $Installer = $true; $Manifest = $true
 }
 
 function Write-StageBanner {
@@ -124,6 +131,17 @@ function Get-ManagementModulePayload {
 function Get-MasterKeyPayload {
     $masterKeyPath = Join-Path $PayloadRoot 'security\parkos-master.key'
 
+    # Entrega no interactiva (CI/tecnico): -MasterKeyPath o PARKOS_MASTER_KEY_FILE.
+    $source = $MasterKeyPath
+    if (-not $source) { $source = $env:PARKOS_MASTER_KEY_FILE }
+    if ($source -and -not (Test-Path $masterKeyPath)) {
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "La clave maestra indicada ($source) no existe." }
+        if ((Get-Item -LiteralPath $source).Length -lt 32) { throw "La clave maestra indicada ($source) tiene menos de 32 bytes." }
+        New-Item -ItemType Directory -Force -Path (Split-Path $masterKeyPath -Parent) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $masterKeyPath -Force
+        Write-Host '[payload] Parkos master key copied from the provided path (never generated).'
+    }
+
     if (-not (Test-Path $masterKeyPath)) {
         throw "Falta $masterKeyPath - la clave maestra debe ser provista por el equipo de soporte antes de un build real, nunca se genera automaticamente."
     }
@@ -159,6 +177,13 @@ function Get-PostgresZip {
     $dest = Join-Path $PayloadRoot 'postgres\postgresql-16-windows-x64-binaries.zip'
     if (Test-Path $dest) {
         Write-Host '[payload] Postgres 16 ZIP already cached, skipping.'
+        return
+    }
+    # El ZIP completo (>100 MB) NO va en git: viaja versionado como partes
+    # (*.zip.part01..NN + .sha256); el instalador las rearma al instalar.
+    $parts = @(Get-ChildItem (Join-Path $PayloadRoot 'postgres') -Filter '*.zip.part*' -ErrorAction SilentlyContinue)
+    if ($parts.Count -gt 0) {
+        Write-Host "[payload] Postgres 16 ZIP staged as $($parts.Count) versioned parts, skipping."
         return
     }
     # OPCIONAL (DEC-INST-45): la etapa 1 del instalador descarga el ZIP de EDB
@@ -344,6 +369,13 @@ function Build-DoctorExe {
 # Stage 4  - parkos-installer.exe (ps2exe over the runtime installer script)
 # ---------------------------------------------------------------------------
 
+function Copy-SharedPostgresDownload {
+    $sharedPostgres = Join-Path $InstallerRoot 'shared\ParkosPostgresDownload.ps1'
+    if (-not (Test-Path $sharedPostgres)) { throw "[installer] Falta $sharedPostgres (codigo compartido de descarga de Postgres)." }
+    New-Item -ItemType Directory -Force -Path $PayloadRoot | Out-Null
+    Copy-Item -Path $sharedPostgres -Destination (Join-Path $PayloadRoot 'ParkosPostgresDownload.ps1') -Force
+}
+
 function Build-ParkosInstallerExe {
     $installerScript = Join-Path $InstallerRoot 'parkos-installer.ps1'
 
@@ -354,9 +386,7 @@ function Build-ParkosInstallerExe {
     # ps2exe no empaqueta los archivos que el script dot-sourcea: el codigo
     # compartido de descarga de Postgres viaja junto al .exe (payload\) y se
     # verifica en manifest.sha256.json (New-PayloadIntegrityManifest).
-    $sharedPostgres = Join-Path $InstallerRoot 'shared\ParkosPostgresDownload.ps1'
-    if (-not (Test-Path $sharedPostgres)) { throw "[installer] Falta $sharedPostgres (codigo compartido de descarga de Postgres)." }
-    Copy-Item -Path $sharedPostgres -Destination (Join-Path $PayloadRoot 'ParkosPostgresDownload.ps1') -Force
+    Copy-SharedPostgresDownload
 
     if (-not (Get-Module -ListAvailable -Name ps2exe)) {
         Write-Warning "[installer] PowerShell module 'ps2exe' is not installed (Install-Module ps2exe -Scope CurrentUser). Skipping compilation."
@@ -404,6 +434,13 @@ function New-PayloadIntegrityManifest {
         } else {
             Write-Host "Manifest de payload: $relativePath no encontrado - se omite del manifest (correr antes las etapas que lo generan)." -ForegroundColor Yellow
         }
+    }
+
+    # Partes versionadas del ZIP de Postgres (+ sidecar .sha256): se hashean
+    # tal cual estan; el ZIP completo rearmado nunca entra al manifest.
+    foreach ($pgFile in @(Get-ChildItem -Path (Join-Path $PayloadRoot 'postgres') -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '\.zip\.part\d+$' -or $_.Name -match '\.zip\.sha256$' } | Sort-Object Name)) {
+        $hashes["postgres\$($pgFile.Name)"] = (Get-FileHash -Path $pgFile.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
     }
 
     $msi = Get-ChildItem -Path (Join-Path $PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -456,8 +493,8 @@ try {
     # sentido si las 5 etapas de las que depende (los 4 exes congelados + el
     # MSI de web_sucursal) realmente corrieron en esta invocacion - mismo
     # idioma de gating por switch que cada etapa de arriba.
-    if ($ApiSucursal -and $JobSync -and $Migrate -and $Doctor -and $WebSucursal) {
-        Invoke-Stage 'Payload integrity manifest' { New-PayloadIntegrityManifest -PayloadRoot $PayloadRoot }
+    if ($Manifest -or ($ApiSucursal -and $JobSync -and $Migrate -and $Doctor -and $WebSucursal)) {
+        Invoke-Stage 'Payload integrity manifest' { Copy-SharedPostgresDownload; New-PayloadIntegrityManifest -PayloadRoot $PayloadRoot }
     }
 } finally {
     Write-Host ''

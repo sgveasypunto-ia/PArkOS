@@ -322,13 +322,20 @@ function Set-GuidedTestParams {
     # de un It se filtra a los It siguientes en este Pester 3.4.0).
     $script:PreflightResult = $true
     $script:PayloadReady = $true
+    $script:PayloadBlockers = @()
+    $script:SkipStages = @()
     $script:FailingStage = -1
 }
 
 Describe 'Invoke-ParkosUnattendedCascade -Guided (flujo del operador de sucursal)' {
 
-    Mock Test-Preflight { $script:PreflightResult }
+    Mock Test-Preflight { $script:PreflightResult -and (@($ExtraProblems).Count -eq 0) }
     Mock Test-ParkosPayloadReady { $script:PayloadReady }
+    Mock Get-ParkosRepoRoot { 'C:\repo' }
+    Mock Get-ParkosPayloadBuildPlan { [PSCustomObject]@{ Needed = (-not $script:PayloadReady); Switches = @('ApiSucursal'); Reasons = @('prueba') } }
+    Mock Get-ParkosPayloadBlockers { $script:PayloadBlockers }
+    Mock Get-ParkosStageSkipReason { if ($script:SkipStages -contains $Number) { 'ya hecho' } else { $null } }
+    Mock Resolve-ParkosMasterKeySource { '' }
     Mock Show-Eula { $true }
     Mock Write-Host { }
     Mock Read-Host { throw 'el flujo guiado no deberia preguntar nada aqui' }
@@ -355,14 +362,32 @@ Describe 'Invoke-ParkosUnattendedCascade -Guided (flujo del operador de sucursal
         ($script:GuidedCallLog -join ',') | Should Be 'action:0,action:1,action:2,action:3,action:4,action:5,action:6,action:7,action:8'
     }
 
-    It 'sin payload compilado y sin -IncludeBuild aborta con ExitCode 2 ANTES de pedir nada o tocar el sistema' {
+    It 'sin payload y SIN toolchain el pre-flight recibe el problema, devuelve ExitCode 2 y no toca el sistema' {
         Set-GuidedTestParams -Root (Join-Path $TestDrive 'guided-nopayload')
         $script:PayloadReady = $false
+        $script:PayloadBlockers = @('falta instalar: uv')
         $result = Invoke-ParkosUnattendedCascade -Guided
         $result.ExitCode | Should Be 2
-        $result.Detail | Should Match 'equipo de soporte'
+        $result.Detail | Should Match 'requisitos'
         @($script:GuidedCallLog).Count | Should Be 0
+        Assert-MockCalled Test-Preflight -Scope It -Times 1 -Exactly -ParameterFilter { @($ExtraProblems) -contains 'falta instalar: uv' }
         Assert-MockCalled Show-Eula -Scope It -Times 0 -Exactly
+    }
+
+    It 'sin payload pero CON toolchain la etapa 0 SI corre sola (construccion automatica) y el resto sigue' {
+        Set-GuidedTestParams -Root (Join-Path $TestDrive 'guided-autobuild')
+        $script:PayloadReady = $false
+        $result = Invoke-ParkosUnattendedCascade -Guided
+        $result.ExitCode | Should Be 0
+        ($script:GuidedCallLog -join ',') | Should Be 'action:0,action:1,action:2,action:3,action:4,action:5,action:6,action:7,action:8'
+    }
+
+    It 'una etapa que ya estaba hecha (idempotencia) se omite y se informa' {
+        Set-GuidedTestParams -Root (Join-Path $TestDrive 'guided-skip')
+        Mock Get-ParkosStageSkipReason { if ($Number -eq 7) { 'ya instalada' } else { $null } }
+        $result = Invoke-ParkosUnattendedCascade -Guided
+        $result.ExitCode | Should Be 0
+        ($script:GuidedCallLog -join ',') | Should Be 'action:1,action:2,action:3,action:4,action:5,action:6,action:8'
     }
 
     It 'si el pre-flight falla (p.ej. sin clave maestra) devuelve ExitCode 2 sin correr etapas' {

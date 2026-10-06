@@ -96,12 +96,12 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 | 3 | Permisos de administrador | Usuario administrador local; se acepta el aviso UAC | Sucursal / TI | Al arrancar (elevación automática) | `Se requieren permisos de administrador para instalar Parkos.` (termina, sin cambios) |
 | 4 | PowerShell 7 | Si el equipo solo tiene Windows PowerShell 5.1, el instalador **descarga e instala PowerShell 7.4.6** (verifica su SHA256) y se relanza solo. Requiere internet en ese momento (`github.com`) | Automático | Al arrancar, antes de la elevación | `Hash de PowerShell 7 no coincide; instalacion abortada por seguridad.` o error de descarga |
 | 5 | Ejecución de scripts permitida | Si Windows bloquea la ejecución del `.ps1`, abrir PowerShell y ejecutar con `-ExecutionPolicy Bypass` (ver 3.1). **No verificado**: depende de la política del equipo | Soporte / TI | Al arrancar | Mensaje de Windows sobre la política de ejecución |
-| 6 | Instalador y payload completos | Carpeta `installer\` con `parkos-installer.ps1` **y** la carpeta `payload\` ya compilada (ver [5](#5-el-payload-qué-debe-existir-en-installerpayload)) | Soporte | Antes de empezar | `Este instalador no trae los programas ya preparados ...` (exit 2) |
+| 6 | Instalador y payload completos | Carpeta `installer\` con `parkos-installer.ps1` **y** `payload\` ya preparado (`-Command Prepare`, ver [13.2b](#132b-modo-prepare-un-solo-comando-del-técnico)). Si NO está preparado pero el equipo tiene el toolchain (git, uv, node, pnpm), el instalador **compila lo que falte solo** (etapa 0 automática, sin tocar git). En un PC de sucursal no se instalan herramientas de desarrollo (DEC-INST-20) | Soporte | Antes de empezar / pre-flight | Pre-flight: `[FALLO] Programas de Parkos` con **un solo** mensaje (qué instalar, o "pida un instalador completo al equipo de soporte"); exit 2 sin cambios |
 | 7 | **Clave maestra** `parkos-master.key` | Archivo de 32 bytes o más. Soporte la entrega por canal seguro (ver 3.2) | Soporte | Pre-flight de la instalación guiada | `[FALLO] Clave maestra de Parkos` y no empieza |
 | 8 | **UUID de la sucursal** | Código `8-4-4-4-12` (letras y números separados por guiones). Está en la ficha de la sucursal del panel de administración | Administrador del panel admin | Cuando el instalador lo pide (es lo único que se escribe) | Hasta 5 intentos; luego `Demasiados intentos con un codigo de sucursal invalido ...` |
 | 9 | Dirección del servidor (nube) | Variable `PARKOS_CLOUD_API_URL` (`http://` o `https://`). **Opcional**: si no existe se usa `http://localhost:8000`. Se prueba la conexión a su `host:puerto` | Soporte / TI | Pre-flight | Servidor remoto sin respuesta: `[FALLO] Conexion con el servidor Parkos`. En `localhost`: solo `[AVISO]` y continúa |
-| 10 | Internet para Postgres | El instalador **descarga** el ZIP de PostgreSQL 16 (~330 MB) desde `get.enterprisedb.com` en la etapa 1 (3 intentos con espera creciente; reanuda una descarga cortada). **No hay que bajar nada a mano.** Sin Internet: dejar el ZIP en `payload\postgres\` (ver [5](#5-el-payload-qué-debe-existir-en-installerpayload)) o en `<DataPath>\downloads\` | Sucursal / soporte | Etapa 1 (Paso 1 de 8) | `No se pudo obtener los binarios de Postgres 16.15-1 (se necesita Internet SOLO en este paso).` con la URL y la carpeta donde dejar el archivo |
-| 11 | Puertos libres | Uno de `5432` o `5433` (Postgres) y uno de `8000`, `8001` o `8002` (API); el instalador los prueba contra `127.0.0.1` | Sucursal / TI | Etapa 1 | `Puertos 5432 y 5433 ambos ocupados; ...` / `Puertos 8000, 8001, 8002 todos ocupados; ...` |
+| 10 | Binarios de PostgreSQL | **Vienen en el repositorio** como partes (`payload\postgres\*.zip.part01..NN` + `.sha256`, ver [5.4](#54-postgresql-en-git-partes-del-zip)): la etapa 1 las rearma en `<DataPath>\downloads\` y verifica el SHA-256; **no hace falta Internet ni bajar nada a mano**. Orden de búsqueda: ZIP completo en `payload\postgres\` → partes → cache → descarga desde `get.enterprisedb.com` (último recurso, ~330 MB, 3 intentos) | Soporte (ya versionado) | Etapa 1 | Partes con un hueco o hash distinto: error claro con el comando `git checkout -- installer/payload/postgres` (no cae en silencio a una descarga). Sin partes ni Internet: `No se pudo obtener los binarios de Postgres 16.15-1 ...` |
+| 11 | Puertos libres | Uno de `5432`–`5439` (Postgres) y uno de `8000`–`8009` (API). Se eligen consultando los **listeners TCP reales** del sistema (`GetActiveTcpListeners`): un connect/bind de prueba informaba como libres puertos retenidos por Docker/WSL (error del lite) | Sucursal / TI | Etapa 1 | `Los puertos 5432 a 5439 estan todos ocupados; ...` / `Puertos 8000, ... todos ocupados; ...` |
 | 12 | Sin instalación previa de Parkos | Que no exista `C:\ProgramData\Parkos\pairing.json` | — | Pre-flight (`Sin instalacion previa`) | `[FALLO]` y el aviso `Ya existe una instalacion de Parkos en este equipo.` |
 
 ### 2.2 Qué debe existir y cuándo (resumen cronológico)
@@ -112,7 +112,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 | Al arrancar | Internet a `github.com` solo si falta PowerShell 7; usuario administrador |
 | Pre-flight | Windows 10 21H2+, 5 GB libres, administrador, conexión al servidor (`host:puerto`), clave maestra válida, sin `pairing.json` |
 | EULA | `payload\README-EULA.txt` (salvo `-EulaAccepted`) |
-| Etapa 1 (Paso 1 de 8) | Internet (o el ZIP en `payload\postgres\` / `<DataPath>\downloads\`); puertos libres; `ParkosPostgresDownload.ps1` junto al instalador; clave maestra. `payload\pg_partman\extension\` (si falta, se descarga y ensambla) |
+| Etapa 1 (Paso 1 de 8) | Las partes de Postgres versionadas en `payload\postgres\` (sin Internet; la descarga solo es el último recurso); puertos libres; `ParkosPostgresDownload.ps1` junto al instalador; clave maestra. `payload\pg_partman\extension\` (si falta, se descarga y ensambla) |
 | Etapa 2 | `payload\services\migrate\migrate\migrate.exe` |
 | Etapa 4 | `payload\services\api-sucursal\...` y `payload\services\seed\seed\seed.exe` |
 | Etapas 5 y 6 | `payload\nssm.exe`, bundles `api-sucursal` y `job-sync-sucursal` |
@@ -140,6 +140,13 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 
 3. Si no eres administrador, Windows mostrará el aviso de permisos (UAC): **acéptalo**. Se abrirá una ventana nueva con permisos elevados y la ventana original esperará. En esa ventana nueva ocurre todo lo demás. Si el equipo solo tiene PowerShell 5.1, primero verás `Instalando PowerShell 7 (requerido)...`.
 4. Si entregaste la clave con una ruta propia, agrégala: `./parkos-installer.ps1 -MasterKeyPath "<RUTA_CLAVE>"` (ver 3.2).
+5. **Instalación sin escribir nada (cero intervención):** el UUID puede venir de `-SucursalUuid <UUID_SUCURSAL>`, de la variable de entorno `PARKOS_SUCURSAL_UUID` o de un archivo `parkos-install.json` junto al instalador (o `-AnswersPath <ruta>`), en ese orden de prioridad:
+
+   ```json
+   { "sucursalUuid": "<UUID_SUCURSAL>", "cloudApiUrl": "<URL_CLOUD>", "eulaAccepted": true }
+   ```
+
+   Con el UUID y el EULA ya indicados (`-EulaAccepted` o `eulaAccepted: true`) el asistente no pregunta nada y tampoco espera la tecla final. Lo único estrictamente obligatorio es la clave maestra (`payload\security\parkos-master.key`, `-MasterKeyPath` o la variable `PARKOS_MASTER_KEY_FILE`) y la aceptación de UAC.
 
 ### 3.2 Clave maestra: guía para quien instala o prueba
 
@@ -179,6 +186,8 @@ Más detalle técnico (derivación, seguridad, qué hacer después): sección [6
 | 6 | `Listo: Parkos quedo instalado y funcionando en este equipo.` | Pulsa Enter para cerrar la ventana |
 
 ### 3.4 Los 8 pasos que verás
+
+> Si el paquete no venía preparado y el equipo tiene el toolchain, aparece un paso previo **"Preparando los archivos de instalación"** (la numeración pasa a "N de 9") que compila lo que falte. Si una etapa ya estaba hecha de una corrida anterior (base de datos funcionando para **esta** sucursal, app de escritorio instalada), se informa `ya estaba hecho ...; se omite` y sigue; las etapas baratas e idempotentes (2, 3, 4, 5, 6 y 8) se vuelven a correr siempre.
 
 | Paso | Mensaje | Qué está haciendo |
 |---|---|---|
@@ -234,7 +243,7 @@ El instalador resuelve el payload como `<carpeta de parkos-installer.ps1>\payloa
 
 ### 5.1 Qué va en git y qué no
 
-`installer/.gitignore` ignora todo `payload/*` **salvo** `payload/management/` y `payload/README-EULA.txt` (verificado con `git check-ignore`). En git solo hay: `README-EULA.txt`, `management/Parkos.psd1`, `management/Parkos.psm1` y `management/about_Parkos.help.txt`. Todo lo demás es **artefacto de build o aporte de soporte** y nunca se versiona (también `.pyinstaller-work/`, `__pycache__/` y `*.spec`).
+`installer/.gitignore` ignora todo `payload/*` **salvo** `payload/management/`, `payload/README-EULA.txt` y `payload/postgres/` (donde el ZIP completo `*.zip` sigue ignorado: solo se versionan sus partes y el `.sha256`). En git hay: `README-EULA.txt`, `management/*` y `postgres/*.zip.part01..NN` + `postgres/*.zip.sha256`. La clave maestra **nunca** va en git. Todo lo demás es **artefacto de build o aporte de soporte** y nunca se versiona (también `.pyinstaller-work/`, `__pycache__/` y `*.spec`).
 
 ### 5.2 Tabla del payload
 
@@ -243,7 +252,8 @@ El instalador resuelve el payload como `<carpeta de parkos-installer.ps1>\payloa
 | `README-EULA.txt` | Texto del acuerdo de licencia | Repo (documento legal) | **Sí** | EULA (guiado y menú; no se lee con `-EulaAccepted` ni en `-Unattended`) | `EULA file not found at $EulaPath - a real EULA (...) must be staged there before this installer ships.` |
 | `management\Parkos.psd1`, `Parkos.psm1`, `about_Parkos.help.txt` | Módulo de gestión `Parkos` | Repo | **Sí** | Etapa 8 (`Install-ManagementModule`); opciones `A/R/U/V/X/D/M/C` del menú (importa desde aquí); `build-release.ps1` etapa Payload valida su existencia | `Falta $src en el payload - no se puede instalar el modulo de gestion Parkos.` / en build: `Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga).` |
 | `security\parkos-master.key` | Clave maestra (secreto de la empresa, ≥ 32 bytes) | **Soporte** (entrega manual, canal seguro) | No | Pre-flight guiado (bloquea) y etapa 1 (`New-ParkosDerivedPassword`) | Ver mensajes en la sección [6.5](#65-validación-y-mensajes) |
-| `postgres\postgresql-16-windows-x64-binaries.zip` | ZIP de binarios de PostgreSQL 16 (EDB). **Opcional**: solo para instalar sin Internet; si falta, la etapa 1 lo descarga a `<DataPath>\downloads` | **Soporte** (opcional; `build-release.ps1` solo avisa con `Write-Warning`) | No | Etapa 1 (se usa antes que la cache y que la descarga) | Se descarga; si tampoco hay Internet: `No se pudo obtener los binarios de Postgres ... URL ... Manual: descarga el archivo ... y guardalo como <DataPath>\downloads\<archivo>` |
+| `postgres\postgresql-16.15-1-windows-x64-binaries.zip.part01..NN` + `.sha256` | ZIP de PostgreSQL 16 (EDB) **partido** (GitHub rechaza archivos > 100 MB) y SHA-256 del ZIP completo | Repo (ver [5.4](#54-postgresql-en-git-partes-del-zip)) | **Sí** | Etapa 1: rearma el ZIP en `<DataPath>\downloads\` (nunca dentro de `payload\`), verifica el hash y lo usa | Hueco / hash distinto / falta el `.sha256`: error claro con `git checkout -- installer/payload/postgres`; sin partes: descarga desde EDB |
+| `postgres\postgresql-16-windows-x64-binaries.zip` (ZIP completo) | Alternativa manual a las partes; gitignored | Soporte (opcional) | No | Etapa 1 (tiene prioridad sobre las partes) | Se usan las partes |
 | `ParkosPostgresDownload.ps1` (junto a `parkos-installer.exe`; en el repo: `installer\shared\`) | Código compartido de descarga/instalación de Postgres y `pg_partman` (lo carga el instalador con dot-source) | `build-release.ps1` (lo copia a `payload\` en la etapa del instalador y lo incluye en `manifest.sha256.json`) | **Sí** (en `installer\shared\`) | Etapa 1 | `Falta ParkosPostgresDownload.ps1 junto al instalador ...` |
 | `nssm.exe` | NSSM 2.24 (x64) | `build-release.ps1` (descarga `nssm-2.24.zip` de `nssm.cc`) | No | Etapas 5 y 6 (registro de servicios); etapa 8 lo copia a `InstallPath\nssm.exe` | Etapas 5/6: error crudo de PowerShell al invocar `nssm.exe` (sin mensaje propio); etapa 8: `Falta $nssmSrc en el payload - no se puede instalar nssm.exe para el modulo de gestion Parkos.` |
 | `pg_partman\extension\pg_partman--5.1.0.sql` y `pg_partman.control` | Extensión `pg_partman` 5.1.0 SQL-only | `build-release.ps1` (descarga el fuente v5.1.0 y concatena `types`+`tables`+`functions`+`procedures`) | No | Etapa 1 (`Install-PgPartman`: copia a `share\extension\` de Postgres) | Error crudo de `Copy-Item` (sin mensaje propio) |
@@ -253,13 +263,30 @@ El instalador resuelve el payload como `<carpeta de parkos-installer.ps1>\payloa
 | `services\seed\seed\seed.exe` | Siembra de catálogos vía API (`entry_seed.py`) | `build-release.ps1 -Seed` | No | `Test-ParkosPayloadReady`; etapa 4 | Error al invocar `seed.exe` / `Build termino sin error pero falta el artefacto esperado: ...` (solo etapa 0) |
 | `services\doctor\doctor\doctor.exe` | Diagnóstico (`parkos_core.cli.doctor`) | `build-release.ps1 -Doctor` | No | `Test-ParkosPayloadReady`; etapa 8 (`Test-PostInstallation` y copia a `InstallPath\doctor\`) | `Falta $doctorSrc en el payload - no se puede instalar doctor.exe para el modulo de gestion Parkos.` |
 | `apps\web_sucursal-<version>-x64.msi` | Instalador de la app Electron | `build-release.ps1 -WebSucursal` (electron-builder) | No | Etapa 7 (se usa el **primer** `*.msi` de la carpeta) | `Falta el MSI de web_sucursal en el payload ($appsDir). Ejecute la opcion 0 ...` |
-| `manifest.sha256.json` | Hashes SHA256 (clave = ruta relativa) de los 4 `.exe` y el `.msi` | `build-release.ps1` (solo si se construyen `-ApiSucursal -JobSync -Migrate -Doctor -WebSucursal` en la misma corrida) | No | **Solo** `-Command Update` (paso VERIFY BINARIES sobre el payload **nuevo**). La instalación limpia no lo lee | `Falta el manifest de integridad del payload en $manifestPath - no se puede verificar el payload nuevo.` |
+| `manifest.sha256.json` | Hashes SHA256 (clave = ruta relativa) de los 4 `.exe`, el `.msi`, `ParkosPostgresDownload.ps1` y las **partes de Postgres + su `.sha256`** | `build-release.ps1` (con `-Manifest`, con `-All`, o si se construyen `-ApiSucursal -JobSync -Migrate -Doctor -WebSucursal` en la misma corrida) | No | **Solo** `-Command Update` (paso VERIFY BINARIES sobre el payload **nuevo**). La instalación limpia no lo lee | `Falta el manifest de integridad del payload en $manifestPath - no se puede verificar el payload nuevo.` |
 | `PowerShell-7.4.6-win-x64.msi` | MSI de PowerShell 7 con SHA256 verificado | `build-release.ps1` (descarga y verifica) | No | **No lo consume el instalador**: `Ensure-PowerShell7` descarga su propia copia a `%TEMP%` desde GitHub | — |
 | `parkos-installer.exe` | Instalador compilado con `ps2exe` (`-requireAdmin`) | `build-release.ps1 -Installer` (se omite con aviso si no existe el módulo `ps2exe`) | No | Opcional (distribución alternativa al `.ps1`). **No verificado** su comportamiento | — |
 
 ### 5.3 Qué comprueba el instalador antes de empezar
 
-`Test-ParkosPayloadReady` solo verifica la existencia de **5 ejecutables**: `api-sucursal`, `job-sync-sucursal`, `migrate`, `seed` y `doctor`. No comprueba el `.msi`, `nssm.exe`, `pg_partman`, la clave ni `management\`; esos faltantes aparecen más tarde, en la etapa que los consume. Por eso conviene validar el payload completo con la checklist de la sección [13.4](#134-checklist-de-entrega-antes-de-enviar-a-la-sucursal).
+En el flujo guiado, `Get-ParkosPayloadBuildPlan` decide si hay que (re)construir: **no** hace falta cuando existen los 5 exe, el MSI, `nssm.exe` y `pg_partman`, y **ningún archivo bajo `backend/` ni `installer\bootstrap\` es más nuevo que el exe más viejo** (se listan con `git ls-files -co --exclude-standard`, incluye cambios sin commit; si git falla se compila por seguridad). Si hay que construir y falta el toolchain, el pre-flight lo informa junto con el resto de problemas. Además, `Test-ParkosPayloadReady` verifica la existencia de **5 ejecutables**: `api-sucursal`, `job-sync-sucursal`, `migrate`, `seed` y `doctor`. No comprueba el `.msi`, `nssm.exe`, `pg_partman`, la clave ni `management\`; esos faltantes aparecen más tarde, en la etapa que los consume. Por eso conviene validar el payload completo con la checklist de la sección [13.4](#134-checklist-de-entrega-antes-de-enviar-a-la-sucursal).
+
+### 5.4 PostgreSQL en git: partes del ZIP
+
+El ZIP de EDB (~332 MB) supera el límite de 100 MB de GitHub, por eso el repo versiona `installer/payload/postgres/postgresql-<ver>-windows-x64-binaries.zip.part01..NN` (cada una < 100 MB) y `...zip.sha256` (SHA-256 hexadecimal, 64 caracteres, sin salto de línea, **del ZIP completo**). `Get-ParkosPostgresZip` (en `installer\shared\ParkosPostgresDownload.ps1`, compartido con el instalador lite) busca en este orden: (1) ZIP completo válido en el payload, (2) partes: concatena por streaming (buffer de 4 MB) **en la cache** (`<DataPath>\downloads`), verifica contra el `.sha256` y valida con `Test-ParkosPostgresZip`; si ya hay un ZIP rearmado válido con ese hash lo reutiliza, (3) cache de descargas, (4) descarga desde EDB. Si hay partes con problema (hueco en la numeración, hash distinto) falla con mensaje claro y borra el archivo rearmado defectuoso: **no se cae en silencio a descargar**. El modo Prepare solo verifica que las partes estén completas; nunca crea el ZIP completo dentro del payload.
+
+**Cómo refrescarlas** (al cambiar la versión fijada en `Get-ParkosPostgresDownloadInfo`):
+
+```bash
+# 1) bajar el ZIP nuevo (fuera de payload\) y partirlo en N trozos < 100 MB (aquí 4)
+split -n 4 -d -a 2 --numeric-suffixes=1 postgresql-<ver>-windows-x64-binaries.zip postgresql-<ver>-windows-x64-binaries.zip.part
+# 2) sidecar: hash del ZIP COMPLETO, sin salto de línea
+pwsh -NoProfile -Command "(Get-FileHash -Algorithm SHA256 postgresql-<ver>-windows-x64-binaries.zip).Hash.ToLower() | Set-Content -NoNewline postgresql-<ver>-windows-x64-binaries.zip.sha256"
+# 3) borrar las partes/sidecar de la versión vieja, copiar las nuevas a installer/payload/postgres/ y regenerar el manifest
+pwsh -File installer/build-release.ps1 -Manifest
+```
+
+Verificación: reensamblar en una carpeta temporal con `Get-ParkosPostgresZip -CacheDir <tmp> -PayloadDir installer\payload\postgres` y comprobar que el hash coincide con el `.sha256`.
 
 ---
 
@@ -427,7 +454,7 @@ flowchart LR
 | Aspecto | Detalle |
 |---|---|
 | Qué hace | `Invoke-SourceUpdateAndBuild`: verifica `git`, `pnpm`, `uv` (`Test-BuildToolchain`); en la raíz del repo (carpeta padre de `installer\`) ejecuta `git fetch origin <rama>`, `git checkout <rama>`, `git pull --ff-only origin <rama>`; corre `build-release.ps1` sin switches (build completo) y comprueba los 5 `.exe` y el `.msi` |
-| Cuándo corre | Menú: opción 0. Guiado: **solo con `-IncludeBuild`**. Desatendido: **siempre** salvo `-SkipStage 0` (por eso en un equipo sin toolchain `-Unattended` requiere `-SkipStage 0`) |
+| Cuándo corre | Menú: opción 0. Desatendido: **siempre** salvo `-SkipStage 0` (por eso en un equipo sin toolchain `-Unattended` requiere `-SkipStage 0`). **Guiado (nuevo):** corre **sola y solo si hace falta** (`Invoke-ParkosEnsurePayload`: faltan exe/MSI/terceros o el fuente es más nuevo que el exe más viejo); NO hace `git fetch/checkout/pull`; cierra antes los procesos propios que bloquean archivos del payload (PyInstaller falla con "Acceso denegado" sobre un `.pyd` en uso) y compila por pasos con `Preparando n de m` + manifest. Con `-IncludeBuild` en guiado se usa el comportamiento clásico (descarga de rama + build completo) |
 | Rama | `-SourceBranch` (default `dev`; para un release, `release/vX.Y.Z` o `main`). Se valida con `^[A-Za-z0-9][A-Za-z0-9._/-]*$` |
 | Prerrequisitos | `git`, `pnpm`, `uv` en PATH; **la clave maestra ya en `payload\security\`** (`build-release.ps1` falla sin ella); dependencias de `apps\` instaladas (`pnpm install`; el script no lo hace) |
 | Crea / modifica | El árbol del repo (cambia de rama y hace pull); `installer\payload\` (artefactos), `installer\.pyinstaller-work\`. **Nada** en el sistema (sin servicios, sin registro) |
@@ -544,6 +571,7 @@ flowchart LR
 | **Desatendido** | `-Unattended` | Cascada 0→8 sin ningún `Read-Host`, con rollback automático por etapa y log estructurado |
 | **Actualización** | `-Command Update` | `Invoke-ParkosUpdate` (sección [12.2](#122-actualización--command-update)) |
 | **Restauración** | `-Command Restore` | `Invoke-ParkosRestore` (sección [12.3](#123-restauración--command-restore)) |
+| **Preparar payload** | `-Command Prepare` | Modo del técnico (sin elevación): construye todo el payload y lo verifica (sección [13.2b](#132b-modo-prepare-un-solo-comando-del-técnico)) |
 
 > `-Command Update` y `-Command Restore` **no** elevan ni relanzan en PowerShell 7: ejecútalos desde una consola de PowerShell 7 **ya elevada**.
 
@@ -553,16 +581,17 @@ El script usa `[CmdletBinding(SupportsShouldProcess)]`: aceptan también `-WhatI
 
 | Parámetro | Tipo / default | Aplica a | Efecto |
 |---|---|---|---|
-| `-Command` | `Install` (default), `Update`, `Restore` | Todos | Selecciona el flujo |
+| `-Command` | `Install` (default), `Update`, `Restore`, `Prepare` | Todos | Selecciona el flujo |
 | `-InstallPath` | `C:\Program Files\Parkos` | Todos | Binarios, `releases\`, `nssm.exe`, `doctor\`. Se rechazan `C:\Windows`, `Program Files (x86)` y rutas UNC. **El módulo `Parkos` ignora este valor** (usa siempre los defaults) |
 | `-DataPath` | `C:\ProgramData\Parkos` | Todos | Secretos, logs, backups, `pg-data`, logs del instalador (mismas restricciones) |
-| `-SucursalUuid` | vacío | Install | UUID `8-4-4-4-12`. En guiado/menú, si falta o es inválido se pregunta; en `-Unattended` es **obligatorio** |
+| `-SucursalUuid` | vacío → `PARKOS_SUCURSAL_UUID` → `parkos-install.json` | Install | UUID `8-4-4-4-12`. En guiado/menú, si ninguna fuente lo trae (o es inválido) se pregunta; en `-Unattended` es **obligatorio** |
 | `-CloudApiUrl` | vacío → `PARKOS_CLOUD_API_URL` → `http://localhost:8000` | Install | URL del servidor cloud. Debe ser `http://` o `https://`; se quita la barra final. Nunca se pregunta |
 | `-Unattended` | switch | Install, Restore | Cascada sin prompts; en Restore exige `-UnattendedRestoreConfirmed` |
 | `-EulaAccepted` | switch | Install | Omite el prompt del EULA (guiado/menú); **obligatorio** con `-Unattended` |
-| `-MasterKeyPath` | vacío | Install | Archivo de la clave maestra a copiar a `payload\security\parkos-master.key` antes del pre-flight |
+| `-MasterKeyPath` | vacío → variable `PARKOS_MASTER_KEY_FILE` | Install, Prepare | Archivo de la clave maestra a copiar a `payload\security\parkos-master.key` antes del pre-flight / del build. Nunca se genera |
+| `-AnswersPath` | vacío → `parkos-install.json` junto al instalador | Install | JSON con `sucursalUuid`, `cloudApiUrl`, `eulaAccepted` para instalar sin escribir nada |
 | `-Menu` | switch | Install | Abre el menú de etapas |
-| `-IncludeBuild` | switch | Guiado | Ejecuta también la etapa 0 (descarga fuente y compila) |
+| `-IncludeBuild` | switch | Guiado | Fuerza la etapa 0 clásica (descarga la rama y compila todo). Sin él, el guiado compila solo lo que falte (sin git) |
 | `-SourceBranch` | `dev` | Etapa 0 | Rama de la que se descarga el fuente |
 | `-SkipStage` | `int[]`, vacío | Cascada (`-Unattended` y guiado) | Etapas 0–8 a omitir. Incluir `1` exige `-Force` |
 | `-StopAfterStage` | `int`, `-1` | Cascada | `-1` = todas; 0–8 corta después de esa etapa con `exit 0` |
@@ -909,15 +938,26 @@ pwsh -File installer/build-release.ps1 -ApiSucursal -JobSync -Migrate -Seed -Doc
 | `-Payload` | Terceros | `PowerShell-7.4.6-win-x64.msi` (SHA256 verificado), `postgres\...zip` (solo aviso si falta), `nssm.exe`, `pg_partman\extension\*`; **valida** `management\Parkos.psd1/.psm1` y `security\parkos-master.key` (si faltan: `throw`) |
 | `-WebSucursal` | Electron | `pnpm --filter '@parkos/electron-sucursal' build` y `build:packager`; copia el `.msi` a `apps\web_sucursal-<Version>-x64.msi` |
 | `-ApiSucursal`, `-JobSync`, `-Migrate`, `-Seed`, `-Doctor` | PyInstaller (`uv run pyinstaller --onedir ...` en `backend\`) | `services\<nombre>\<nombre>\<nombre>.exe` (+ `migrations\` y `alembic.ini` copiados junto al `.exe`) |
-| `-Installer` | `ps2exe` | `parkos-installer.exe` (se omite con aviso si falta `ps2exe`) |
+| `-Installer` | `ps2exe` | `parkos-installer.exe` (se omite con aviso si falta `ps2exe`) y copia `ParkosPostgresDownload.ps1` al payload |
+| `-Manifest` | Integridad | Regenera `manifest.sha256.json` (exe, MSI, shared, partes de Postgres + `.sha256`) sin recompilar |
+| `-MasterKeyPath <ruta>` | Clave | Copia la clave a `payload\security\parkos-master.key` si aún no está (alternativa: `PARKOS_MASTER_KEY_FILE`); ≥ 32 bytes; nunca se genera |
 | `-Version <v>` | — | Solo cambia el nombre del `.msi`; default = versión de `apps\electron-sucursal\package.json` |
 
 El **manifest de integridad** (`manifest.sha256.json`) se genera solo si en la misma corrida se construyen `-ApiSucursal -JobSync -Migrate -Doctor -WebSucursal`. La corrida termina con un resumen (`Build summary`) por etapa (`OK` / `FAILED: ...`).
 
+### 13.2b Modo Prepare: un solo comando del técnico
+
+```powershell
+pwsh -File installer\parkos-installer.ps1 -Command Prepare -MasterKeyPath <RUTA_CLAVE>
+# o con la variable (CI): $env:PARKOS_MASTER_KEY_FILE = "<RUTA_CLAVE>"
+```
+
+`Invoke-ParkosPreparePayload`: (1) exige el toolchain completo (git, uv, node, pnpm) y lo informa **una sola vez** si falta algo; (2) importa la clave maestra (`-MasterKeyPath` / `PARKOS_MASTER_KEY_FILE` / ya presente; **nunca se genera**); (3) cierra los procesos propios que bloquean archivos del payload; (4) corre `build-release.ps1` por pasos (terceros: nssm/pg_partman; MSI; los 5 exe; exe del instalador si hay `ps2exe`) con `Paso n de m`, copia `ParkosPostgresDownload.ps1` y regenera `manifest.sha256.json` (`-Manifest`); (5) verifica las partes de Postgres (no descarga ni crea el ZIP completo); (6) comprueba que el payload esté completo (exe, MSI, nssm, pg_partman, shared, manifest, módulo, clave, Postgres). Termina con `exit 0` o `exit 1` con el detalle. Un paquete preparado así **no compila nada en la sucursal**: se copia `installer\` completo (con `payload\`).
+
 ### 13.3 Qué debe incluir soporte antes de entregar
 
 1. `payload\security\parkos-master.key` (≥ 32 bytes) **antes** del build (si se entrega aparte, usar `-MasterKeyPath` en el equipo y no incluirla en el medio).
-2. (Opcional) `payload\postgres\postgresql-16-windows-x64-binaries.zip` solo si el equipo no tendrá Internet durante la instalación: por defecto el instalador lo descarga solo.
+2. Postgres: ya viene en git como partes (ver [5.4](#54-postgresql-en-git-partes-del-zip)); no hay que descargar ni copiar nada. (Opcional) un ZIP completo en `payload\postgres\` tiene prioridad sobre las partes.
 3. El resto lo produce `build-release.ps1`.
 4. Rama: `-SourceBranch dev` (default) para integración; para un release certificado, `release/vX.Y.Z` o `main` (gitflow: `main` solo recibe releases).
 
@@ -930,8 +970,8 @@ El **manifest de integridad** (`manifest.sha256.json`) se genera solo si en la m
 | ☐ | `nssm.exe`, `pg_partman\extension\pg_partman--5.1.0.sql`, `pg_partman.control` |
 | ☐ | `services\api-sucursal\api-sucursal\api-sucursal.exe`, `services\job-sync-sucursal\job-sync-sucursal\job-sync-sucursal.exe`, `services\migrate\migrate\migrate.exe`, `services\seed\seed\seed.exe`, `services\doctor\doctor\doctor.exe` |
 | ☐ | `apps\*.msi` (uno solo, el instalador toma el primero) |
-| ☐ | `manifest.sha256.json` (solo necesario para `-Command Update`) |
-| ☐ | `ParkosPostgresDownload.ps1` junto a `parkos-installer.exe` (lo copia `build-release.ps1`); `postgres\postgresql-16-windows-x64-binaries.zip` (opcional, solo instalación sin Internet) |
+| ☐ | `manifest.sha256.json` (cubre exe, MSI, shared y partes de Postgres; lo regenera `-Command Prepare`) |
+| ☐ | `ParkosPostgresDownload.ps1` junto a `parkos-installer.exe` (lo copia `build-release.ps1`); `postgres\*.zip.part01..NN` + `*.zip.sha256` (versionados en git) |
 
 ### 13.5 Pruebas
 
@@ -1000,6 +1040,10 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 | `git pull --ff-only fallo (la rama local diverge de origin/$Branch - ...)` | Rama local divergente | Resolver a mano |
 | `build-release.ps1 fallo (exit $LASTEXITCODE).` | Falló una etapa del build | Ver el resumen `Build summary` |
 | `Build termino sin error pero falta el artefacto esperado: $rel` / `... no se encontro el MSI de web_sucursal en installer\payload\apps.` | Payload incompleto tras el build | Reconstruir la etapa faltante |
+| `Para preparar los programas de Parkos en este equipo falta instalar: ...` (pre-flight, `[FALLO] Programas de Parkos`) | Flujo guiado sin payload preparado y sin toolchain | Instalar lo indicado o pedir un instalador ya preparado (`-Command Prepare` en el equipo del técnico) |
+| `Este instalador no trae los programas ya preparados y este equipo no tiene el codigo fuente ...` | Paquete sin payload y sin repo | Pedir un instalador completo |
+| `La preparacion de '<paso>' fallo (codigo N). Registro en <DataPath>\logs.` | Falló un paso de la compilación automática | Abrir `build-<n>.log` / `build-<n>.err.log` |
+| `Falta instalar: git, uv, ...` (`-Command Prepare`) | Toolchain incompleto | Instalar todo lo listado (se informa de una vez) |
 
 ### 14.3 Etapa 1 (Postgres, roles, secretos, `pg_partman`)
 
@@ -1156,7 +1200,9 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 
 1. **Pairing/`sync-agent.jwt`/`pairing.json`:** ningún código del instalador ni del módulo los escribe. El comando `parkos_core.cli.pair` (variables `PARKOS_PAIRING_TOKEN`, `PARKOS_CLOUD_API_URL`, `PARKOS_SYNC_JWT_PATH`, `PARKOS_SUCURSAL_UUID`) existe en el backend, pero **no hay un `.exe` congelado ni paso del instalador** que lo ejecute; cómo se empareja una sucursal instalada así **no está verificado**. Además `pairing.json` no lo crea `pair.py` (la búsqueda en el repo solo lo encuentra en el pre-flight y en el módulo), por lo que la verificación `Sin instalacion previa` hoy prácticamente nunca bloquea y **no impide reinstalar sobre una instalación existente** (reinstalar regeneraría `jwt.key`).
 4. **Rollback parcial de la etapa 1:** ya detiene/desregistra el servicio `postgresql-parkos`, borra los binarios y el data directory que creó esa corrida, pero no revierte `svc-parkos`, el certificado, `secrets\`, `PGPASSFILE`, `PARKOS_API_ORIGIN`, los archivos de `share\extension`, la cache de descargas ni la tarea programada. La etapa 4 (seed) no tiene rollback.
-5. **Estado en memoria:** el estado de las etapas y las contraseñas derivadas no persisten; reanudar en una sesión nueva exige repetir desde la etapa 1 (reejecutar la 1 vuelve a instalar/configurar Postgres y **regenera `jwt.key`**).
+5. **Estado en memoria (parcialmente resuelto):** en el flujo guiado la etapa 1 se **omite** si el servicio `postgresql-parkos` corre, responde y el `.env` pertenece a la misma sucursal (los puertos se leen del `.env` y las contraseñas se re-derivan de la clave maestra + UUID), y la 7 si la app ya figura instalada; las demás etapas son idempotentes y se re-ejecutan (los servicios NSSM existentes se detienen y se vuelven a registrar). En el menú y en `-Unattended` el estado sigue sin persistir y reejecutar la etapa 1 regenera `jwt.key`.
+21. **Datos de negocio que llegan por sincronización, no del instalador:** el instalador (producción) solo siembra, vía migraciones y `seed.exe`, los tipos de vehículo `moto` y `otro`; **no** crea usuarios, tarifas, la fila de `sucursal`, `resolucion_facturacion` ni `configuracion_caja`: la sucursal real los recibe de la nube por `job-sync-sucursal` una vez emparejada (ver punto 1: el emparejamiento sigue sin implementarse en el instalador). `seed.exe` y las migraciones son re-ejecutables sin error (idempotentes). No se agregaron usuarios de demo (eso es del instalador lite).
+22. **Particiones:** tras las migraciones la etapa 2 ejecuta `SELECT prod.fn_ensure_partitions();` (idempotente) y falla si no puede; no hay mantenimiento automático (no hay `pg_cron`), la ventana cercana vence en 2028-01.
 6. **ACL de `secrets\`:** solo `pgpass.conf` se restringe en la instalación; el directorio, `.env` y `jwt.key` heredan la ACL de `C:\ProgramData` hasta que `Repair-ParkosInstall` (E4, solo si la salud no es 0) o una acción manual la endurece. Si se endurece a Administrators+SYSTEM, **no verificado** si `svc-parkos` (tareas `ParkosBackupDiario` y `ParkosPgPartmanMaintenance`, que dependen de `PGPASSFILE`/`.env`) conserva el acceso necesario.
 7. **Secretos en NSSM:** `AppEnvironmentExtra` guarda las variables del `.env` (incluida la URL de la base con la contraseña de `parkos_app`) en texto plano en el registro de cada servicio; la ACL de esas claves no se verificó.
 8. **Clave maestra residual:** el instalador no la elimina de `payload\security\`.

@@ -208,6 +208,98 @@ function Test-ParkosPostgresZip {
 }
 
 # ---------------------------------------------------------------------------
+# Postgres ZIP en partes (el ZIP completo supera los 100 MB de GitHub, asi que
+# el repo versiona <zip>.part01..NN + <zip>.sha256 del ZIP COMPLETO)
+# ---------------------------------------------------------------------------
+
+# Estado de las partes de <FileName> en <Dir>: Parts = rutas ordenadas
+# numericamente (vacio si no hay ninguna); Problem = $null o el texto de lo que
+# esta mal (hueco en la numeracion, falta el .sha256).
+function Get-ParkosPostgresPartsStatus {
+    param([Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][string]$FileName)
+
+    $found = @()
+    if (Test-Path -LiteralPath $Dir) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $Dir -File -Filter "$FileName.part*")) {
+            if ($f.Name -match '\.part(\d+)$') { $found += [PSCustomObject]@{ Number = [int]$Matches[1]; Path = $f.FullName } }
+        }
+    }
+    $found = @($found | Sort-Object Number)
+    if ($found.Count -eq 0) { return [PSCustomObject]@{ Parts = @(); Problem = $null } }
+
+    for ($i = 0; $i -lt $found.Count; $i++) {
+        if ($found[$i].Number -ne ($i + 1)) {
+            $missing = '{0:D2}' -f ($i + 1)
+            return [PSCustomObject]@{ Parts = @(); Problem = "Falta la parte $missing de $FileName en ${Dir} (se encontraron $($found.Count) partes no contiguas). Restaure las partes con git (git checkout -- installer/payload/postgres) o copie de nuevo el paquete completo." }
+        }
+    }
+    $sidecar = Join-Path $Dir "$FileName.sha256"
+    if (-not (Test-Path -LiteralPath $sidecar)) {
+        return [PSCustomObject]@{ Parts = @(); Problem = "Falta el archivo $FileName.sha256 junto a las partes en ${Dir}: sin el no se puede verificar el ZIP rearmado." }
+    }
+    return [PSCustomObject]@{ Parts = @($found | ForEach-Object { $_.Path }); Problem = $null }
+}
+
+# Concatena las partes (en el orden dado) en <Destination> por streaming (buffer
+# de 4 MB: nunca carga un ZIP de ~330 MB en memoria).
+function Join-ParkosFileParts {
+    param([Parameter(Mandatory)][string[]]$PartPaths, [Parameter(Mandatory)][string]$Destination)
+
+    $buffer = New-Object byte[] (4MB)
+    $out = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    try {
+        foreach ($part in $PartPaths) {
+            $in = [System.IO.File]::OpenRead($part)
+            try {
+                while (($read = $in.Read($buffer, 0, $buffer.Length)) -gt 0) { $out.Write($buffer, 0, $read) }
+            } finally { $in.Dispose() }
+        }
+    } finally { $out.Dispose() }
+}
+
+# Rearma el ZIP desde las partes de <PayloadDir> hacia <CacheDir> (nunca dentro
+# del payload) y lo verifica contra <zip>.sha256 del payload. Si el cache ya
+# tiene un ZIP valido con ese hash lo reusa (re-ejecucion idempotente).
+function Restore-ParkosPostgresZipFromParts {
+    param(
+        [Parameter(Mandatory)][string]$PayloadDir,
+        [Parameter(Mandatory)][string]$CacheDir,
+        [Parameter(Mandatory)][string]$FileName,
+        [Parameter(Mandatory)][string[]]$PartPaths,
+        [scriptblock]$Logger
+    )
+
+    $expected = (([System.IO.File]::ReadAllText((Join-Path $PayloadDir "$FileName.sha256"))).Trim() -split '\s+')[0].ToLowerInvariant()
+    New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
+    $target = Join-Path $CacheDir $FileName
+
+    if ((Test-Path -LiteralPath $target) -and ((Get-ParkosFileSha256 -Path $target) -eq $expected) -and (Test-ParkosPostgresZip -Path $target)) {
+        Write-ParkosDownloadLog $Logger "Postgres ZIP ya rearmado en cache: $target"
+        return $target
+    }
+
+    $tmp = "$target.assembling"
+    Write-ParkosDownloadLog $Logger "Rearmando Postgres ZIP desde $($PartPaths.Count) partes versionadas del paquete..."
+    try {
+        Join-ParkosFileParts -PartPaths $PartPaths -Destination $tmp
+        $actual = Get-ParkosFileSha256 -Path $tmp
+        if ($actual -ne $expected) {
+            throw "El ZIP de Postgres rearmado desde las partes tiene hash SHA-256 $actual y se esperaba $expected ($FileName.sha256). Alguna parte esta danada o es de otra version: restaure las partes con git (git checkout -- installer/payload/postgres) o copie de nuevo el paquete."
+        }
+        if (-not (Test-ParkosPostgresZip -Path $tmp)) {
+            throw 'El ZIP rearmado coincide con el hash pero no contiene pg_ctl/initdb/psql: el paquete esta mal armado.'
+        }
+    } catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    Move-Item -LiteralPath $tmp -Destination $target -Force
+    Set-Content -Path "$target.sha256" -Value $actual -NoNewline
+    Write-ParkosDownloadLog $Logger "Postgres ZIP rearmado y verificado: $target"
+    return $target
+}
+
+# ---------------------------------------------------------------------------
 # Postgres ZIP
 # ---------------------------------------------------------------------------
 
@@ -226,7 +318,27 @@ function Get-ParkosPostgresZip {
     $info = Get-ParkosPostgresDownloadInfo
     $cached = Join-Path $CacheDir $info.FileName
 
-    # 1) Cache de descargas (con verificacion de hash registrado).
+    # 1) Payload del instalador: ZIP completo (sin hash registrado).
+    if ($PayloadDir) {
+        foreach ($name in @($info.FileName, 'postgresql-16-windows-x64-binaries.zip')) {
+            $p = Join-Path $PayloadDir $name
+            if ((Test-Path $p) -and (Test-ParkosPostgresZip -Path $p)) {
+                Write-ParkosDownloadLog $Logger "Postgres ZIP en payload: $p"
+                return $p
+            }
+        }
+
+        # 2) Payload del instalador: partes versionadas -> se rearma en el
+        #    CACHE y se verifica contra el .sha256. Cualquier problema aqui
+        #    es un error del paquete: NO se cae en silencio a una descarga.
+        $partsStatus = Get-ParkosPostgresPartsStatus -Dir $PayloadDir -FileName $info.FileName
+        if ($partsStatus.Problem) { throw $partsStatus.Problem }
+        if (@($partsStatus.Parts).Count -gt 0) {
+            return (Restore-ParkosPostgresZipFromParts -PayloadDir $PayloadDir -CacheDir $CacheDir -FileName $info.FileName -PartPaths $partsStatus.Parts -Logger $Logger)
+        }
+    }
+
+    # 3) Cache de descargas (con verificacion de hash registrado).
     if (Test-Path $cached) {
         if (Test-ParkosPostgresZip -Path $cached) {
             $hashFile = "$cached.sha256"
@@ -247,18 +359,7 @@ function Get-ParkosPostgresZip {
         Move-Item -Path $cached -Destination "$cached.bad" -Force
     }
 
-    # 2) Payload del instalador (zip pre-staged, sin hash registrado).
-    if ($PayloadDir) {
-        foreach ($name in @($info.FileName, 'postgresql-16-windows-x64-binaries.zip')) {
-            $p = Join-Path $PayloadDir $name
-            if ((Test-Path $p) -and (Test-ParkosPostgresZip -Path $p)) {
-                Write-ParkosDownloadLog $Logger "Postgres ZIP en payload: $p"
-                return $p
-            }
-        }
-    }
-
-    # 3) Descarga con reintentos.
+    # 4) Descarga con reintentos (ultimo recurso).
     New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null
     $part = "$cached.part"
     $lastError = ''

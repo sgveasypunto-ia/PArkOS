@@ -88,7 +88,11 @@ param(
     # 'Restore' (PR4b) revierte esta instalacion a una version previa
     # archivada bajo releases\<version>\ (Invoke-ParkosRestore) - binarios
     # siempre, base de datos y MSI de escritorio opcionales/best-effort.
-    [ValidateSet('Install', 'Update', 'Restore')]
+    # 'Prepare' (modo tecnico, sin elevacion): compila TODOS los .exe y el MSI,
+    # descarga Postgres/pg_partman/nssm al payload, regenera el manifest y lo
+    # verifica (Invoke-ParkosPreparePayload) - un paquete preparado asi no
+    # necesita compilar nada en la sucursal.
+    [ValidateSet('Install', 'Update', 'Restore', 'Prepare')]
     [string]$Command = 'Install',
     [string]$InstallPath = 'C:\Program Files\Parkos',
     [string]$DataPath = 'C:\ProgramData\Parkos',
@@ -156,13 +160,20 @@ param(
     # Rama de la que la etapa 0 descarga el fuente. Default dev (gitflow:
     # main solo recibe releases certificados); pasar release/vX.Y.Z o main
     # para compilar un release.
-    [string]$SourceBranch = 'dev'
+    [string]$SourceBranch = 'dev',
+    # Instalacion SIN intervencion: archivo JSON con respuestas
+    # (sucursalUuid, cloudApiUrl, eulaAccepted). Si no se pasa se busca
+    # parkos-install.json junto al instalador. Orden de prioridad del UUID:
+    # -SucursalUuid > variable PARKOS_SUCURSAL_UUID > este archivo.
+    [string]$AnswersPath = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:PayloadRoot = Join-Path $PSScriptRoot 'payload'
+$script:ParkosAnswersParam = $AnswersPath
+$script:ParkosAutoPayload = $false
 
 # Descarga/instalacion de Postgres (ZIP de EDB) y pg_partman SQL-only: codigo
 # COMPARTIDO con el instalador lite (installer/shared). Se busca junto al
@@ -246,6 +257,10 @@ function Resolve-ParkosCloudApiUrl {
     if ([string]::IsNullOrWhiteSpace($value)) {
         $source = 'PARKOS_CLOUD_API_URL'
         $value = Get-ParkosEnvironmentValue -Name 'PARKOS_CLOUD_API_URL'
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $source = 'parkos-install.json (cloudApiUrl)'
+        $value = [string](Get-ParkosInstallAnswer -Name 'cloudApiUrl')
     }
     if ([string]::IsNullOrWhiteSpace($value)) { return 'http://localhost:8000' }
 
@@ -369,7 +384,10 @@ function Test-Preflight {
         [string]$CloudApiUrl = '',
         # Flujo guiado: la clave maestra es el requisito duro - sin ella el
         # pre-flight bloquea. Sin el switch (menu) solo avisa.
-        [switch]$RequireMasterKey
+        [switch]$RequireMasterKey,
+        # Problemas ya detectados fuera (p.ej. payload sin compilar y sin
+        # toolchain): se muestran junto con el resto y bloquean la instalacion.
+        [string[]]$ExtraProblems = @()
     )
 
     if ([string]::IsNullOrWhiteSpace($CloudApiUrl)) { $CloudApiUrl = Resolve-ParkosCloudApiUrl }
@@ -432,13 +450,18 @@ function Test-Preflight {
         Write-Host '[OK]    Clave maestra de Parkos' -ForegroundColor Green
     }
 
+    foreach ($extra in @($ExtraProblems | Where-Object { $_ })) {
+        Write-Host '[FALLO] Programas de Parkos' -ForegroundColor Red
+        Write-Host "        $extra" -ForegroundColor Red
+    }
+
     if ($alreadyInstalled) {
         Write-Host ''
         Write-Host 'Ya existe una instalacion de Parkos en este equipo.' -ForegroundColor Yellow
         Write-Host 'Use Repair-ParkosInstall o Invoke-ParkosUpdate en vez de una instalacion limpia (Fases 25/26).' -ForegroundColor Yellow
     }
 
-    return (-not ($results.Values -contains $false)) -and (-not $masterKeyBlocks)
+    return (-not ($results.Values -contains $false)) -and (-not $masterKeyBlocks) -and (@($ExtraProblems | Where-Object { $_ }).Count -eq 0)
 }
 
 # ---------------------------------------------------------------------------
@@ -498,6 +521,471 @@ function Test-BuildToolchain {
 # Wrapper de git para poder mockearlo en tests sin tocar el repo real.
 function Invoke-Git {
     & git @args
+}
+
+# ---------------------------------------------------------------------------
+# Payload autosuficiente: construir lo que falte (flujo guiado) y modo Prepare
+# ---------------------------------------------------------------------------
+# Aprendido del instalador lite: el instalador completo produce por si mismo
+# los .exe que necesita. En una sucursal el payload llega ya preparado (modo
+# -Command Prepare en el equipo del tecnico) y nada se compila; si NO esta
+# preparado y el equipo tiene el toolchain (DEC-INST-20: nunca se instalan
+# herramientas de desarrollo en silencio), se compila automaticamente. Sin
+# toolchain el pre-flight lo informa con UN mensaje claro de que instalar.
+
+# Programas congelados que la instalacion necesita (relativos al payload).
+function Get-ParkosExpectedPayloadExes {
+    return @(
+        'services\api-sucursal\api-sucursal\api-sucursal.exe'
+        'services\job-sync-sucursal\job-sync-sucursal\job-sync-sucursal.exe'
+        'services\migrate\migrate\migrate.exe'
+        'services\seed\seed\seed.exe'
+        'services\doctor\doctor\doctor.exe'
+    )
+}
+
+# Raiz del repo si este instalador corre desde un checkout (backend/ e
+# installer\bootstrap\ presentes); $null en un paquete entregado sin fuente.
+function Get-ParkosRepoRoot {
+    $candidate = Join-Path $PSScriptRoot '..'
+    if ((Test-Path (Join-Path $candidate 'backend')) -and (Test-Path (Join-Path $candidate 'installer\bootstrap'))) {
+        return (Resolve-Path $candidate).Path
+    }
+    return $null
+}
+
+# Wrapper mockeable: archivos fuente que entran a los exe (tracked + untracked
+# no ignorados, cubre cambios locales sin commit). $null si git falla.
+function Get-ParkosSourceFileList {
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $files = @(& git -C $RepoRoot ls-files -co --exclude-standard -- backend installer/bootstrap 2>$null)
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return $files
+}
+
+# Fecha del fuente mas reciente que entra a los exe; $null si no se puede saber.
+function Get-ParkosPayloadSourceNewestWrite {
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $files = Get-ParkosSourceFileList -RepoRoot $RepoRoot
+    if ($null -eq $files) { return $null }
+    $newest = $null
+    foreach ($rel in @($files | Where-Object { $_ -and $_.Trim() })) {
+        $f = Join-Path $RepoRoot $rel.Trim()
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+        $t = (Get-Item -LiteralPath $f).LastWriteTimeUtc
+        if ($null -eq $newest -or $t -gt $newest) { $newest = $t }
+    }
+    return $newest
+}
+
+# Decide que hay que (re)construir. Needed=$false cuando los 5 exe existen y
+# ningun archivo bajo backend/ o installer\bootstrap\ es mas nuevo que el exe
+# mas viejo (misma logica que el lite), y ademas estan el MSI de web_sucursal,
+# nssm.exe y la extension pg_partman. Switches = switches de build-release.ps1.
+function Get-ParkosPayloadBuildPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$PayloadRoot,
+        [string]$RepoRoot = ''
+    )
+
+    $switches = [System.Collections.Generic.List[string]]::new()
+    $reasons = [System.Collections.Generic.List[string]]::new()
+    $exeSwitches = @('ApiSucursal', 'JobSync', 'Migrate', 'Seed', 'Doctor')
+
+    $thirdParty = @('nssm.exe', 'pg_partman\extension\pg_partman.control') |
+        Where-Object { -not (Test-Path (Join-Path $PayloadRoot $_)) }
+    if (@($thirdParty).Count -gt 0) {
+        $switches.Add('Payload')
+        $reasons.Add("faltan componentes de terceros: $(@($thirdParty) -join ', ')")
+    }
+
+    $msi = Get-ChildItem (Join-Path $PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $msi) {
+        $switches.Add('WebSucursal')
+        $reasons.Add('falta el instalador de la aplicacion de escritorio (MSI)')
+    }
+
+    $missingExes = @(Get-ParkosExpectedPayloadExes | Where-Object { -not (Test-Path (Join-Path $PayloadRoot $_)) })
+    $rebuildExes = $false
+    if ($missingExes.Count -gt 0) {
+        $rebuildExes = $true
+        $reasons.Add("faltan programas: $($missingExes -join ', ')")
+    } elseif ($RepoRoot) {
+        $oldest = @(Get-ParkosExpectedPayloadExes | ForEach-Object { (Get-Item (Join-Path $PayloadRoot $_)).LastWriteTimeUtc }) |
+            Sort-Object | Select-Object -First 1
+        $newestSource = Get-ParkosPayloadSourceNewestWrite -RepoRoot $RepoRoot
+        if ($null -eq $newestSource) {
+            $rebuildExes = $true
+            $reasons.Add('no se pudo comparar las fechas del codigo fuente (se compila por seguridad)')
+        } elseif ($newestSource -gt $oldest) {
+            $rebuildExes = $true
+            $reasons.Add('el codigo fuente es mas nuevo que los programas compilados')
+        }
+    }
+    if ($rebuildExes) { foreach ($s in $exeSwitches) { $switches.Add($s) } }
+
+    return [PSCustomObject]@{
+        Needed   = ($switches.Count -gt 0)
+        Switches = @($switches)
+        Reasons  = @($reasons)
+    }
+}
+
+# Wrapper mockeable: $true si la herramienta esta en el PATH.
+function Test-ParkosCommandAvailable {
+    param([Parameter(Mandatory)][string]$Name)
+    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+# Herramientas que faltan para ejecutar esos switches de build-release.ps1.
+function Get-ParkosMissingBuildTools {
+    [CmdletBinding()]
+    param([string[]]$Switches = @())
+
+    $needed = [System.Collections.Generic.List[string]]::new()
+    if (@($Switches | Where-Object { @('ApiSucursal', 'JobSync', 'Migrate', 'Seed', 'Doctor') -contains $_ }).Count -gt 0) {
+        $needed.Add('git'); $needed.Add('uv')
+    }
+    if ($Switches -contains 'WebSucursal') {
+        $needed.Add('node'); $needed.Add('pnpm')
+    }
+    return @($needed | Where-Object { -not (Test-ParkosCommandAvailable -Name $_) })
+}
+
+# Problemas bloqueantes (texto para el operador) para poder tener el payload
+# listo. Vacio si ya esta listo o si se puede construir aqui. Se entrega al
+# pre-flight para informar TODO junto.
+function Get-ParkosPayloadBlockers {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Plan,
+        [string]$RepoRoot = ''
+    )
+
+    if (-not $Plan.Needed) { return @() }
+    if (-not $RepoRoot) {
+        return @('Este instalador no trae los programas ya preparados y este equipo no tiene el codigo fuente para prepararlos. No hay nada que usted pueda corregir aqui: pida un instalador completo al equipo de soporte.')
+    }
+    $missing = @(Get-ParkosMissingBuildTools -Switches $Plan.Switches)
+    if ($missing.Count -gt 0) {
+        return @("Para preparar los programas de Parkos en este equipo falta instalar: $($missing -join ', '). Instalelo(s) y vuelva a ejecutar el instalador (git: git-scm.com; uv: astral.sh/uv; node y pnpm: nodejs.org), o pida al equipo de soporte un instalador ya preparado (ese no necesita ninguna herramienta).")
+    }
+    return @()
+}
+
+# Wrapper mockeable: procesos que tienen archivos del payload abiertos (sus
+# .exe corren desde payload\ o desde el area de trabajo de PyInstaller).
+function Get-ParkosPayloadLockingProcesses {
+    param([Parameter(Mandatory)][string]$PayloadRoot)
+    $roots = @($PayloadRoot, (Join-Path (Split-Path $PayloadRoot -Parent) '.pyinstaller-work'))
+    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $p = $null
+            try { $p = $_.Path } catch { $null = $_ }
+            $p -and ($roots | Where-Object { $p.StartsWith($_ + '\', [System.StringComparison]::OrdinalIgnoreCase) }) -and $_.Id -ne $PID
+        })
+}
+
+function Stop-ParkosProcessById {
+    param([Parameter(Mandatory)][int]$Id)
+    Stop-Process -Id $Id -Force -ErrorAction SilentlyContinue
+}
+
+# Detiene los procesos propios que bloquearian la recompilacion (PyInstaller
+# falla con 'Acceso denegado' al sobrescribir un .pyd en uso). Devuelve cuantos.
+function Stop-ParkosPayloadProcesses {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PayloadRoot)
+
+    $locking = @(Get-ParkosPayloadLockingProcesses -PayloadRoot $PayloadRoot)
+    foreach ($proc in $locking) {
+        Write-Host "  Cerrando $($proc.ProcessName) (PID $($proc.Id)) para poder reemplazar sus archivos..." -ForegroundColor Yellow
+        Stop-ParkosProcessById -Id $proc.Id
+    }
+    if ($locking.Count -gt 0) { Start-Sleep -Seconds 2 }
+    return $locking.Count
+}
+
+# Wrapper mockeable: corre build-release.ps1 en un proceso aparte SIN pipes
+# (salida a archivos; espera por codigo de salida, no por texto). Devuelve el
+# exit code.
+function Invoke-ParkosBuildReleaseScript {
+    param(
+        [string[]]$Switches = @(),
+        [string]$MasterKeyPath = '',
+        [string]$LogPath = ''
+    )
+
+    $buildScript = Join-Path $PSScriptRoot 'build-release.ps1'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$buildScript`"")
+    foreach ($s in $Switches) { $argList += "-$s" }
+    if ($MasterKeyPath) { $argList += @('-MasterKeyPath', "`"$MasterKeyPath`"") }
+    if (-not $LogPath) { $LogPath = Join-Path ([System.IO.Path]::GetTempPath()) "parkos-build-$(Get-Date -Format 'yyyyMMdd-HHmmss').log" }
+    $logDir = Split-Path $LogPath -Parent
+    if ($logDir -and -not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+    $errLog = [System.IO.Path]::ChangeExtension($LogPath, '.err.log')
+
+    $exe = (Get-Process -Id $PID).Path
+    $proc = Start-Process -FilePath $exe -ArgumentList $argList -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $LogPath -RedirectStandardError $errLog
+    $waited = 0
+    while (-not $proc.WaitForExit(15000)) {
+        $waited += 15
+        if (($waited % 60) -eq 0) { Write-Host "    ...sigue trabajando ($([int]($waited / 60)) min). Registro: $LogPath" -ForegroundColor DarkGray }
+    }
+    $proc.WaitForExit()
+    $code = $proc.ExitCode
+    if ($code -ne 0 -and (Test-Path $errLog)) {
+        Write-Host "    Ultimas lineas del error ($errLog):" -ForegroundColor Yellow
+        Get-Content $errLog -Tail 8 | ForEach-Object { Write-Host "      $_" -ForegroundColor Yellow }
+    }
+    return $code
+}
+
+# Agrupa los switches del plan en pasos de build: Payload, WebSucursal, un
+# paso con todos los exe y, al final, el manifest de integridad.
+function Get-ParkosBuildSteps {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$Switches, [switch]$IncludeInstallerExe)
+
+    $steps = [System.Collections.Generic.List[object]]::new()
+    if ($Switches -contains 'Payload') { $steps.Add(@{ Label = 'componentes de terceros (nssm, pg_partman)'; Switches = @('Payload') }) }
+    if ($Switches -contains 'WebSucursal') { $steps.Add(@{ Label = 'aplicacion de escritorio (MSI)'; Switches = @('WebSucursal') }) }
+    $exes = @($Switches | Where-Object { @('ApiSucursal', 'JobSync', 'Migrate', 'Seed', 'Doctor') -contains $_ })
+    if ($exes.Count -gt 0) { $steps.Add(@{ Label = 'programas de Parkos (api, sincronizacion, migraciones, datos iniciales, doctor)'; Switches = $exes }) }
+    if ($IncludeInstallerExe) { $steps.Add(@{ Label = 'ejecutable del instalador'; Switches = @('Installer') }) }
+    return @($steps)
+}
+
+# Flujo guiado (etapa 0): deja el payload completo; no hace nada si ya lo esta.
+function Invoke-ParkosEnsurePayload {
+    [CmdletBinding()]
+    param(
+        [string]$PayloadRoot = $script:PayloadRoot,
+        [string]$RepoRoot = (Get-ParkosRepoRoot),
+        [string]$LogDir = ''
+    )
+
+    $plan = Get-ParkosPayloadBuildPlan -PayloadRoot $PayloadRoot -RepoRoot $RepoRoot
+    if (-not $plan.Needed) {
+        Write-Host '  Los programas de Parkos ya estan preparados y al dia; no hace falta compilar nada.' -ForegroundColor Green
+        return
+    }
+    foreach ($reason in $plan.Reasons) { Write-Host "  Hay que preparar los programas: $reason." -ForegroundColor Yellow }
+
+    $blockers = @(Get-ParkosPayloadBlockers -Plan $plan -RepoRoot $RepoRoot)
+    if ($blockers.Count -gt 0) { throw ($blockers -join ' ') }
+
+    [void](Stop-ParkosPayloadProcesses -PayloadRoot $PayloadRoot)
+
+    if (-not $LogDir) { $LogDir = Join-Path $script:DataPath 'logs' }
+    $steps = @(Get-ParkosBuildSteps -Switches $plan.Switches)
+    $total = $steps.Count + 1   # +1: manifest de integridad
+    $n = 0
+    foreach ($step in $steps) {
+        $n++
+        Write-Host "  Preparando $n de ${total}: $($step.Label)... (puede tardar varios minutos)" -ForegroundColor Cyan
+        $code = Invoke-ParkosBuildReleaseScript -Switches $step.Switches -LogPath (Join-Path $LogDir "build-$n.log")
+        if ($code -ne 0) { throw "La preparacion de '$($step.Label)' fallo (codigo $code). Registro en $LogDir." }
+    }
+    $n++
+    Write-Host "  Preparando $n de ${total}: verificacion de integridad..." -ForegroundColor Cyan
+    $code = Invoke-ParkosBuildReleaseScript -Switches @('Manifest') -LogPath (Join-Path $LogDir "build-$n.log")
+    if ($code -ne 0) { throw "No se pudo generar el manifest de integridad (codigo $code)." }
+
+    if (-not (Test-ParkosPayloadReady -PayloadRoot $PayloadRoot)) {
+        throw 'La preparacion termino sin error pero siguen faltando programas en el paquete de instalacion.'
+    }
+}
+
+# Origen de la clave maestra para el build/instalacion: -MasterKeyPath o la
+# variable PARKOS_MASTER_KEY_FILE (CI/tecnico). Nunca se genera.
+function Resolve-ParkosMasterKeySource {
+    param([string]$Explicit = '')
+    if (-not [string]::IsNullOrWhiteSpace($Explicit)) { return $Explicit }
+    $fromEnv = Get-ParkosEnvironmentValue -Name 'PARKOS_MASTER_KEY_FILE'
+    if ($fromEnv) { return $fromEnv }
+    return ''
+}
+
+# Lista de problemas de un payload "entregable" (modo Prepare lo verifica al
+# terminar): vacio = completo.
+function Get-ParkosPayloadCompletenessProblems {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PayloadRoot)
+
+    $problems = [System.Collections.Generic.List[string]]::new()
+    foreach ($rel in (Get-ParkosExpectedPayloadExes)) {
+        if (-not (Test-Path (Join-Path $PayloadRoot $rel))) { $problems.Add("falta $rel") }
+    }
+    if (-not (Get-ChildItem (Join-Path $PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        $problems.Add('falta el MSI de web_sucursal en apps\')
+    }
+    foreach ($rel in 'nssm.exe', 'pg_partman\extension\pg_partman.control', 'ParkosPostgresDownload.ps1', 'manifest.sha256.json', 'management\Parkos.psd1', 'security\parkos-master.key') {
+        if (-not (Test-Path (Join-Path $PayloadRoot $rel))) { $problems.Add("falta $rel") }
+    }
+    $pgProblem = Get-ParkosPostgresPayloadProblem -PayloadRoot $PayloadRoot
+    if ($pgProblem) { $problems.Add($pgProblem) }
+    return @($problems)
+}
+
+# Postgres en el payload: las partes versionadas en git (<zip>.part01..NN +
+# .sha256) o un ZIP completo valido (gitignored; solo para quien lo copie a
+# mano). Devuelve $null si esta bien, o el texto del problema. El modo Prepare
+# NUNCA crea el ZIP completo dentro del payload.
+function Get-ParkosPostgresPayloadProblem {
+    param([Parameter(Mandatory)][string]$PayloadRoot)
+
+    $dir = Join-Path $PayloadRoot 'postgres'
+    $info = Get-ParkosPostgresDownloadInfo
+    foreach ($name in @($info.FileName, 'postgresql-16-windows-x64-binaries.zip')) {
+        $p = Join-Path $dir $name
+        if ((Test-Path -LiteralPath $p) -and (Test-ParkosPostgresZip -Path $p)) { return $null }
+    }
+    $status = Get-ParkosPostgresPartsStatus -Dir $dir -FileName $info.FileName
+    if ($status.Problem) { return $status.Problem }
+    if (@($status.Parts).Count -eq 0) {
+        return "faltan las partes versionadas de Postgres en postgres\ ($($info.FileName).part01..NN y .sha256): restaurelas con git (git checkout -- installer/payload/postgres)"
+    }
+    return $null
+}
+
+# -Command Prepare: modo del tecnico. Todo en un comando, sin elevacion.
+# Devuelve { ExitCode; Detail } (nunca llama exit).
+function Invoke-ParkosPreparePayload {
+    [CmdletBinding()]
+    param(
+        [string]$PayloadRoot = $script:PayloadRoot,
+        [string]$MasterKeySource = '',
+        [string]$LogDir = ''
+    )
+
+    try {
+        if (-not $script:ParkosSharedPostgresLoaded) {
+            throw 'Falta installer\shared\ParkosPostgresDownload.ps1 (codigo compartido de descarga de Postgres).'
+        }
+        $repoRoot = Get-ParkosRepoRoot
+        if (-not $repoRoot) { throw 'El modo Prepare solo corre desde una copia completa del repositorio (faltan backend\ o installer\bootstrap\).' }
+
+        $allSwitches = @('Payload', 'WebSucursal', 'ApiSucursal', 'JobSync', 'Migrate', 'Seed', 'Doctor')
+        $missing = @(Get-ParkosMissingBuildTools -Switches $allSwitches)
+        if ($missing.Count -gt 0) {
+            throw "Falta instalar: $($missing -join ', ') (git: git-scm.com; uv: astral.sh/uv; node y pnpm: nodejs.org). Instalelo(s) y vuelva a ejecutar -Command Prepare."
+        }
+
+        $keySource = Resolve-ParkosMasterKeySource -Explicit $MasterKeySource
+        if ($keySource) {
+            Import-ParkosMasterKey -SourcePath $keySource
+        } else {
+            $problem = Get-ParkosMasterKeyProblem
+            if ($problem) { throw "$problem Para CI/automatizacion use -MasterKeyPath o la variable PARKOS_MASTER_KEY_FILE." }
+        }
+
+        [void](Stop-ParkosPayloadProcesses -PayloadRoot $PayloadRoot)
+
+        if (-not $LogDir) { $LogDir = Join-Path ([System.IO.Path]::GetTempPath()) 'parkos-prepare' }
+        $steps = @(Get-ParkosBuildSteps -Switches $allSwitches -IncludeInstallerExe)
+        $total = $steps.Count + 2   # + verificacion de Postgres + manifest
+        $n = 0
+        foreach ($step in $steps) {
+            $n++
+            Write-Host "Paso $n de ${total}: $($step.Label)..." -ForegroundColor Cyan
+            $code = Invoke-ParkosBuildReleaseScript -Switches $step.Switches -LogPath (Join-Path $LogDir "prepare-$n.log")
+            if ($code -ne 0) { throw "'$($step.Label)' fallo (codigo $code). Registro en $LogDir." }
+        }
+        $n++
+        Write-Host "Paso $n de ${total}: verificando las partes de Postgres del paquete..." -ForegroundColor Cyan
+        $pgProblem = Get-ParkosPostgresPayloadProblem -PayloadRoot $PayloadRoot
+        if ($pgProblem) { throw "Postgres: $pgProblem." }
+        $n++
+        Write-Host "Paso $n de ${total}: manifest de integridad..." -ForegroundColor Cyan
+        $code = Invoke-ParkosBuildReleaseScript -Switches @('Manifest') -LogPath (Join-Path $LogDir "prepare-$n.log")
+        if ($code -ne 0) { throw "No se pudo generar el manifest (codigo $code)." }
+
+        $problems = @(Get-ParkosPayloadCompletenessProblems -PayloadRoot $PayloadRoot)
+        if ($problems.Count -gt 0) { throw "El paquete quedo incompleto: $($problems -join '; ')." }
+
+        Write-Host "Paquete listo en $PayloadRoot. Copie installer\ completo (incluida payload\) a la sucursal: no necesita compilar nada alli." -ForegroundColor Green
+        return [PSCustomObject]@{ ExitCode = 0; Detail = 'Paquete preparado y verificado.' }
+    } catch {
+        Write-Host "Prepare fallo: $($_.Exception.Message)" -ForegroundColor Red
+        return [PSCustomObject]@{ ExitCode = 1; Detail = $_.Exception.Message }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Instalacion sin intervencion: respuestas por variable de entorno / archivo
+# ---------------------------------------------------------------------------
+
+# Ruta del archivo de respuestas: -AnswersPath o parkos-install.json junto al
+# instalador / al .exe. $null si no hay.
+function Get-ParkosAnswersPath {
+    param([string]$Explicit = $script:ParkosAnswersParam)
+    if (-not [string]::IsNullOrWhiteSpace($Explicit)) {
+        if (-not (Test-Path -LiteralPath $Explicit -PathType Leaf)) {
+            throw "No se encontro el archivo de respuestas indicado en -AnswersPath ($Explicit)."
+        }
+        return $Explicit
+    }
+    foreach ($dir in @($PSScriptRoot, [System.AppContext]::BaseDirectory)) {
+        if (-not $dir) { continue }
+        $candidate = Join-Path $dir 'parkos-install.json'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
+# Valor de una clave del archivo de respuestas, o $null.
+function Get-ParkosInstallAnswer {
+    param([Parameter(Mandatory)][string]$Name)
+    $path = Get-ParkosAnswersPath
+    if (-not $path) { return $null }
+    try {
+        $data = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    } catch {
+        throw "El archivo de respuestas $path no es un JSON valido: $($_.Exception.Message)"
+    }
+    $prop = $data.PSObject.Properties[$Name]
+    if ($null -eq $prop) { return $null }
+    return $prop.Value
+}
+
+# UUID de la sucursal sin preguntar: parametro > PARKOS_SUCURSAL_UUID > archivo.
+# '' si ninguna fuente lo trae.
+function Resolve-ParkosSucursalUuidSource {
+    param([string]$Explicit = '')
+    if (-not [string]::IsNullOrWhiteSpace($Explicit)) { return $Explicit.Trim() }
+    $fromEnv = Get-ParkosEnvironmentValue -Name 'PARKOS_SUCURSAL_UUID'
+    if ($fromEnv) { return $fromEnv }
+    $fromFile = Get-ParkosInstallAnswer -Name 'sucursalUuid'
+    if (-not [string]::IsNullOrWhiteSpace([string]$fromFile)) { return ([string]$fromFile).Trim() }
+    return ''
+}
+
+# $true si el EULA ya viene aceptado por parametro o por el archivo de respuestas.
+function Test-ParkosEulaPreAccepted {
+    if ($EulaAccepted -eq $true) { return $true }
+    return ((Get-ParkosInstallAnswer -Name 'eulaAccepted') -eq $true)
+}
+
+# ---------------------------------------------------------------------------
+# Puertos: se consultan los listeners reales del sistema (un bind/connect de
+# prueba informaba como libres puertos retenidos por Docker/WSL).
+# ---------------------------------------------------------------------------
+
+# Wrapper mockeable.
+function Get-ParkosListeningPorts {
+    return @([System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+            ForEach-Object { $_.Port } | Sort-Object -Unique)
+}
+
+function Select-ParkosFreePort {
+    param([Parameter(Mandatory)][int[]]$CandidatePorts)
+    $busy = @(Get-ParkosListeningPorts)
+    foreach ($candidate in $CandidatePorts) {
+        if ($busy -notcontains $candidate) { return $candidate }
+    }
+    return $null
 }
 
 # Trae el fuente de la rama indicada (default dev: gitflow del proyecto, main
@@ -619,7 +1107,7 @@ function Show-Eula {
     # pagina, algo sin sentido - y sin operador presente - en un proceso
     # desatendido).
     if ($Unattended) {
-        if ($EulaAccepted -ne $true) {
+        if (-not (Test-ParkosEulaPreAccepted)) {
             throw 'EULA no aceptada explicitamente - modo -Unattended requiere -EulaAccepted.'
         }
         return $true
@@ -627,7 +1115,7 @@ function Show-Eula {
 
     # -EulaAccepted tambien salta el prompt fuera de -Unattended (el operador
     # ya acepto el texto por otra via, p.ej. un script de despliegue).
-    if ($EulaAccepted -eq $true) {
+    if (Test-ParkosEulaPreAccepted) {
         return $true
     }
 
@@ -690,11 +1178,9 @@ function Read-InstallPaths {
 # ---------------------------------------------------------------------------
 
 function Test-PostgresPorts {
-    foreach ($candidatePort in 5432, 5433) {
-        $inUse = Test-NetConnection -ComputerName '127.0.0.1' -Port $candidatePort -InformationLevel Quiet -WarningAction SilentlyContinue
-        if (-not $inUse) { return $candidatePort }
-    }
-    throw 'Puertos 5432 y 5433 ambos ocupados; no se puede instalar Postgres de Parkos.'
+    $free = Select-ParkosFreePort -CandidatePorts @(5432..5439)
+    if ($null -ne $free) { return $free }
+    throw 'Los puertos 5432 a 5439 estan todos ocupados; no se puede instalar Postgres de Parkos. Cierre el programa que los usa (p.ej. otro Postgres o Docker) y reintente.'
 }
 
 # DEC-INST-18 (port reconciliation): mismo patron que Test-PostgresPorts -
@@ -705,11 +1191,9 @@ function Test-PostgresPorts {
 # leer un puerto distinto en runtime - lo que faltaba era que el instalador
 # realmente eligiera uno y lo propagara de punta a punta.
 function Test-ApiPort {
-    param([int[]]$CandidatePorts = @(8000, 8001, 8002))
-    foreach ($candidatePort in $CandidatePorts) {
-        $inUse = Test-NetConnection -ComputerName '127.0.0.1' -Port $candidatePort -InformationLevel Quiet -WarningAction SilentlyContinue
-        if (-not $inUse) { return $candidatePort }
-    }
+    param([int[]]$CandidatePorts = @(8000..8009))
+    $free = Select-ParkosFreePort -CandidatePorts $CandidatePorts
+    if ($null -ne $free) { return $free }
     throw "Puertos $($CandidatePorts -join ', ') todos ocupados; no se puede instalar el servicio api-sucursal."
 }
 
@@ -1434,6 +1918,27 @@ function Register-PgPartmanMaintenance {
 # ../src` are CWD-relative (verified: not `%(here)s`-anchored) - migrate.exe
 # must run from its own directory, exactly like plan.md's Push-Location
 # pattern, or Alembic cannot find the migration scripts at all.
+# Wrapper mockeable: ejecuta una sentencia con psql y devuelve exit code + salida.
+function Invoke-ParkosPsqlScalar {
+    param([string]$PsqlPath, [int]$Port, [string]$User, [string]$Sql)
+    $out = & $PsqlPath -w -p $Port -h 127.0.0.1 -U $User -d parkos -tAc $Sql 2>&1
+    return [PSCustomObject]@{ ExitCode = $LASTEXITCODE; Output = (@($out) -join ' ').Trim() }
+}
+
+# Tras las migraciones: pg_partman no tiene mantenimiento automatico en esta
+# imagen (no hay pg_cron), asi que las particiones futuras las crea esta
+# funcion SQL (idempotente). Sin ellas una fecha sin particion rompe el login.
+function Invoke-ParkosPartitionSanity {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PsqlPath, [Parameter(Mandatory)][int]$Port)
+
+    $r = Invoke-ParkosPsqlScalar -PsqlPath $PsqlPath -Port $Port -User 'parkos' -Sql 'SELECT prod.fn_ensure_partitions();'
+    if ($r.ExitCode -ne 0) {
+        throw "No se pudieron crear las particiones de la base de datos (SELECT prod.fn_ensure_partitions() fallo, codigo $($r.ExitCode)): $($r.Output)"
+    }
+    Write-Host '  Particiones de la base de datos verificadas.' -ForegroundColor Green
+}
+
 function Invoke-MigrationsAndSeed {
     param([hashtable]$Roles, [int]$Port)
 
@@ -1490,6 +1995,9 @@ function Read-SucursalUuid {
     # sin guiones o con llaves se rechazan: seria aceptar un dato mal copiado).
     $pattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
     $maxAttempts = 5
+
+    # Sin intervencion: parametro > PARKOS_SUCURSAL_UUID > parkos-install.json.
+    $Uuid = Resolve-ParkosSucursalUuidSource -Explicit $Uuid
 
     if ($Unattended) {
         if ([string]::IsNullOrWhiteSpace($Uuid)) {
@@ -1634,9 +2142,20 @@ function Copy-ServiceBundle {
     return (Join-Path $dest "$Name.exe")
 }
 
+# Re-ejecucion: si el servicio ya existe se detiene y se quita antes de
+# registrarlo de nuevo (nssm install falla sobre un servicio existente y un
+# servicio en marcha bloquea la copia de sus archivos).
+function Remove-ParkosNssmServiceIfPresent {
+    param([Parameter(Mandatory)][string]$NssmPath, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq (Get-ParkosServiceState -Name $Name)) { return }
+    & $NssmPath stop $Name | Out-Null
+    & $NssmPath remove $Name confirm | Out-Null
+}
+
 function Install-ApiService {
     param([string]$NssmPath, [string]$ExePath, [string]$EnvFilePath)
 
+    Remove-ParkosNssmServiceIfPresent -NssmPath $NssmPath -Name 'ParkosApiSucursal'
     & $NssmPath install ParkosApiSucursal $ExePath | Out-Null
     & $NssmPath set ParkosApiSucursal AppDirectory (Split-Path $ExePath) | Out-Null
     & $NssmPath set ParkosApiSucursal AppStdout (Join-Path $script:DataPath 'logs\api-sucursal.out.log') | Out-Null
@@ -1668,6 +2187,7 @@ function Wait-ForApiHealth {
 function Install-JobService {
     param([string]$NssmPath, [string]$ExePath, [string]$EnvFilePath)
 
+    Remove-ParkosNssmServiceIfPresent -NssmPath $NssmPath -Name 'ParkosJobSyncSucursal'
     & $NssmPath install ParkosJobSyncSucursal $ExePath | Out-Null
     & $NssmPath set ParkosJobSyncSucursal AppDirectory (Split-Path $ExePath) | Out-Null
     & $NssmPath set ParkosJobSyncSucursal AppStdout (Join-Path $script:DataPath 'logs\job-sync.out.log') | Out-Null
@@ -2939,7 +3459,13 @@ function Get-ParkosStageDefinitions {
             Key      = 'build'
             Name     = "Descargar ultima version de $SourceBranch y compilar artefactos"
             Action   = {
-                Invoke-SourceUpdateAndBuild -Branch $SourceBranch
+                # Flujo guiado: construye solo lo que falte (sin tocar git);
+                # menu/-Unattended/-IncludeBuild: descarga la rama y compila todo.
+                if ($script:ParkosAutoPayload -and -not $IncludeBuild) {
+                    Invoke-ParkosEnsurePayload
+                } else {
+                    Invoke-SourceUpdateAndBuild -Branch $SourceBranch
+                }
             }
             # De solo lectura sobre la maquina destino - este build corre en
             # la maquina del TECNICO (DEC-INST-20), nunca en el equipo final;
@@ -2960,6 +3486,11 @@ function Get-ParkosStageDefinitions {
                 # puerto libre, para que su propio 5432 no cuente como ocupado.
                 if ($null -ne (Get-ParkosServiceState -Name (Get-ParkosPostgresServiceName))) {
                     Stop-ParkosServiceByName -Name (Get-ParkosPostgresServiceName)
+                }
+                # Y los servicios de Parkos de una corrida anterior (retienen su
+                # puerto de API y bloquean la copia de sus archivos).
+                foreach ($svcName in 'ParkosJobSyncSucursal', 'ParkosApiSucursal') {
+                    if ($null -ne (Get-ParkosServiceState -Name $svcName)) { Stop-ParkosServiceByName -Name $svcName }
                 }
                 $script:port = Test-PostgresPorts
                 $script:apiPort = Test-ApiPort
@@ -3018,6 +3549,7 @@ function Get-ParkosStageDefinitions {
             Action   = {
                 if ($null -eq $script:roles) { throw 'Corre primero "Instalar base de datos" (opcion 1).' }
                 Invoke-MigrationsAndSeed -Roles $script:roles -Port $script:port
+                Invoke-ParkosPartitionSanity -PsqlPath $script:StageContext.PsqlPath -Port $script:port
             }
             # Intenta revertir el schema con el mismo migrate.exe (mismo
             # patron de invocacion que Invoke-MigrationsAndSeed) - si el
@@ -3683,6 +4215,98 @@ function Get-ParkosStagePlainName {
     return $names[$Number]
 }
 
+# Wrapper mockeable: la app de escritorio ya figura instalada (clave Uninstall).
+function Test-ParkosElectronInstalled {
+    $found = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -match 'Parkos' }
+    return [bool]$found
+}
+
+# Idempotencia del flujo guiado: razon (texto) por la que la etapa ya esta
+# hecha y se omite, o $null si hay que correrla. Solo las etapas caras y
+# seguras de omitir: la 1 (base de datos: servicio corriendo, responde, y el
+# .env corresponde a ESTA sucursal) y la 7 (app de escritorio ya instalada).
+# El resto (migraciones, UUID, datos iniciales, servicios, verificacion) es
+# barato e idempotente y SIEMPRE se vuelve a correr.
+function Get-ParkosStageSkipReason {
+    [CmdletBinding()]
+    param([int]$Number, [string]$EnvFilePath = '', [string]$SucursalUuid = '')
+
+    if ($Number -eq 7) {
+        if (Test-ParkosElectronInstalled) { return 'la aplicacion de escritorio ya esta instalada' }
+        return $null
+    }
+    if ($Number -ne 1 -or [string]::IsNullOrWhiteSpace($EnvFilePath) -or -not (Test-Path $EnvFilePath)) { return $null }
+    if ((Get-ParkosServiceState -Name (Get-ParkosPostgresServiceName)) -ne 'Running') { return $null }
+    try {
+        $envLines = @(Read-ParkosEnvLines -EnvFilePath $EnvFilePath)
+        $uuidLine = $envLines | Where-Object { $_ -match '^PARKOS_SUCURSAL_UUID=' } | Select-Object -First 1
+        if (-not $uuidLine -or ($uuidLine -split '=', 2)[1].Trim().ToLowerInvariant() -ne $SucursalUuid.ToLowerInvariant()) { return $null }
+        $port = Get-EnvFilePostgresPort -EnvFilePath $EnvFilePath
+        if ((Invoke-ParkosPgIsReady -PgIsReadyPath 'C:\Program Files\PostgreSQL\16\bin\pg_isready.exe' -Port $port) -ne 0) { return $null }
+    } catch {
+        return $null
+    }
+    return 'la base de datos ya esta instalada y funcionando para esta sucursal'
+}
+
+# Si la etapa 1 se omite, las etapas siguientes igual necesitan su estado en
+# memoria: puertos desde el .env y contrasenas re-derivadas (determinista a
+# partir de la clave maestra + UUID de la sucursal).
+function Restore-ParkosDatabaseContext {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$EnvFilePath, [Parameter(Mandatory)][string]$SucursalUuid)
+
+    $script:port = Get-EnvFilePostgresPort -EnvFilePath $EnvFilePath
+    $apiPort = 8000
+    foreach ($line in @(Read-ParkosEnvLines -EnvFilePath $EnvFilePath)) {
+        if ($line -match '^PORT=(\d+)$') { $apiPort = [int]$Matches[1] }
+    }
+    $script:apiPort = $apiPort
+    $script:roles = @{
+        SuperuserPassword = New-ParkosDerivedPassword -SucursalUuid $SucursalUuid -Purpose 'parkos-superuser'
+        AppPassword       = New-ParkosDerivedPassword -SucursalUuid $SucursalUuid -Purpose 'parkos-app'
+    }
+    $script:PostgresInstallMethod = 'existing'
+}
+
+# Pantalla final del flujo guiado, en lenguaje llano.
+function Write-ParkosInstallSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$InstallPath,
+        [Parameter(Mandatory)][string]$DataPath,
+        [string]$LogPath = ''
+    )
+
+    $pgPort = '(ver .env)'; $apiPort = '8000'
+    try {
+        $envFile = Join-Path $DataPath 'secrets\.env'
+        $pgPort = Get-EnvFilePostgresPort -EnvFilePath $envFile
+        foreach ($line in @(Read-ParkosEnvLines -EnvFilePath $envFile)) {
+            if ($line -match '^PORT=(\d+)$') { $apiPort = $Matches[1] }
+        }
+    } catch { $null = $_ }
+
+    Write-Host ''
+    Write-Host '=== Resumen de la instalacion ===' -ForegroundColor Green
+    Write-Host 'Que se instalo:' -ForegroundColor Green
+    Write-Host '  - Base de datos de Parkos (servicio de Windows postgresql-parkos)'
+    Write-Host '  - Servicio principal (ParkosApiSucursal) y servicio de sincronizacion (ParkosJobSyncSucursal)'
+    Write-Host '  - Aplicacion de escritorio de la sucursal'
+    Write-Host 'Direcciones y puertos:' -ForegroundColor Green
+    Write-Host "  - Servicio principal:  http://127.0.0.1:$apiPort/health"
+    Write-Host "  - Base de datos:       puerto $pgPort (solo este equipo)"
+    Write-Host "  - Programas en:        $InstallPath"
+    Write-Host "  - Datos y registros en: $DataPath (registros: $(Join-Path $DataPath 'logs'))"
+    if ($LogPath) { Write-Host "  - Registro de esta instalacion: $LogPath" }
+    Write-Host 'Como comprobar que todo funciona:' -ForegroundColor Green
+    Write-Host '  Abra PowerShell 7 como administrador y ejecute: Get-ParkosHealth'
+    Write-Host 'Como desinstalar:' -ForegroundColor Green
+    Write-Host '  En PowerShell 7 como administrador: Uninstall-Parkos (agregue -PurgeData para borrar tambien los datos)'
+    Write-Host 'Nota: los usuarios, las tarifas y la ficha de la sucursal llegan desde el servidor de Parkos por sincronizacion; esta instalacion no los crea.' -ForegroundColor Yellow
+}
+
 # -Guided: flujo del operador de sucursal (default del instalador). Misma
 # cascada que -Unattended pero (a) sin la etapa 0 salvo -IncludeBuild: el
 # payload debe venir ya compilado, (b) la clave maestra es requisito duro del
@@ -3702,7 +4326,9 @@ function Invoke-ParkosUnattendedCascade {
 
     # Etapas que NO corren en este flujo: las de -SkipStage y, en el flujo
     # guiado sin -IncludeBuild, la etapa 0 (el payload ya viene compilado).
-    $skipBuildStage = ($Guided -and -not $IncludeBuild)
+    $skipBuildStage = $false
+    $payloadBlockers = @()
+    $script:ParkosAutoPayload = [bool]$Guided
 
     try {
         $resolvedCloudApiUrl = Resolve-ParkosCloudApiUrl -Explicit $CloudApiUrl
@@ -3710,19 +4336,25 @@ function Invoke-ParkosUnattendedCascade {
         Assert-ParkosCascadeParamsValid -SkipStage $SkipStage -StopAfterStage $StopAfterStage -Force:$Force `
             -Unattended:$Unattended -EulaAccepted:$EulaAccepted -CloudApiUrl $resolvedCloudApiUrl
 
-        # Antes de pedir nada: sin payload compilado no hay nada que instalar.
-        if ($skipBuildStage -and -not (Test-ParkosPayloadReady -PayloadRoot $script:PayloadRoot)) {
-            throw 'Este instalador no trae los programas ya preparados (falta el paquete de instalacion completo). No hay nada que usted pueda corregir aqui: pida un instalador completo al equipo de soporte.'
+        # Flujo guiado: si faltan programas (o el fuente es mas nuevo) se
+        # construyen solos en la etapa 0 cuando hay toolchain; si no, se
+        # informa en el pre-flight junto con los demas problemas.
+        if ($Guided -and -not $IncludeBuild) {
+            $repoRoot = [string](Get-ParkosRepoRoot)
+            $payloadPlan = Get-ParkosPayloadBuildPlan -PayloadRoot $script:PayloadRoot -RepoRoot $repoRoot
+            $payloadBlockers = @(Get-ParkosPayloadBlockers -Plan $payloadPlan -RepoRoot $repoRoot)
+            $skipBuildStage = -not $payloadPlan.Needed
         }
 
-        if ($MasterKeyPath) { Import-ParkosMasterKey -SourcePath $MasterKeyPath }
+        $masterKeySource = Resolve-ParkosMasterKeySource -Explicit $MasterKeyPath
+        if ($masterKeySource) { Import-ParkosMasterKey -SourcePath $masterKeySource }
         if ($Guided) {
             Write-Host ''
             Write-Host 'Revisando que este equipo este listo para instalar Parkos...' -ForegroundColor Cyan
         } else {
             Write-Host '=== Parkos - pre-flight ===' -ForegroundColor Cyan
         }
-        $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath -CloudApiUrl $resolvedCloudApiUrl -RequireMasterKey:$Guided
+        $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath -CloudApiUrl $resolvedCloudApiUrl -RequireMasterKey:$Guided -ExtraProblems $payloadBlockers
         if (-not $preflightOk) {
             if ($Guided) {
                 throw 'El equipo todavia no cumple los requisitos para instalar (revise las lineas [FALLO] de arriba). No se hizo ningun cambio en el equipo. Corrija lo indicado o pida ayuda al equipo de soporte.'
@@ -3769,11 +4401,18 @@ function Invoke-ParkosUnattendedCascade {
     $totalSteps = $stagesToRun.Count
     $stepNumber = 0
 
+    $stageEnvFile = [string]$definitions.Paths['EnvFilePath']
     foreach ($number in 0..8) {
         $stage = $stages["$number"]
 
         if ($SkipStage -contains $number) {
             Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message 'Omitida por -SkipStage'
+        } elseif ($Guided -and ($skipReason = Get-ParkosStageSkipReason -Number $number -EnvFilePath $stageEnvFile -SucursalUuid $resolvedSucursalUuid)) {
+            $stepNumber++
+            Write-Host "Paso $stepNumber de ${totalSteps}: $(Get-ParkosStagePlainName -Number $number) - ya estaba hecho ($skipReason); se omite." -ForegroundColor Green
+            Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message "Omitida (idempotencia): $skipReason"
+            if ($number -eq 1) { Restore-ParkosDatabaseContext -EnvFilePath $stageEnvFile -SucursalUuid $resolvedSucursalUuid }
+            $script:StageStatus[$stage.Key] = [ParkosStageState]::Ok
         } elseif ($skipBuildStage -and $number -eq 0) {
             Write-ParkosInstallerLog -LogPath $logPath -Level "STAGE $number" -Message 'Omitida (flujo guiado: el payload ya esta compilado; use -IncludeBuild para compilar)'
         } else {
@@ -3837,7 +4476,7 @@ function Invoke-ParkosUnattendedCascade {
 
     Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Estado final: Ok (todas las etapas)'
     Write-ParkosInstallerLog -LogPath $logPath -Level 'INSTALL' -Message 'Exit code: 0'
-    return [PSCustomObject]@{ ExitCode = 0; Detail = 'Instalacion completada (todas las etapas).'; LogPath = $logPath }
+    return [PSCustomObject]@{ ExitCode = 0; Detail = 'Instalacion completada (todas las etapas).'; LogPath = $logPath; InstallPath = $paths.InstallPath; DataPath = $paths.DataPath }
 }
 
 # Punto de entrada del flujo por defecto: el operador no elige opciones. Eleva
@@ -3853,13 +4492,22 @@ function Invoke-ParkosGuidedInstall {
     Write-Host ''
     Write-Host '=== Instalacion de Parkos ===' -ForegroundColor Cyan
     Write-Host 'Este asistente instala Parkos en este equipo de forma automatica.' -ForegroundColor Cyan
-    Write-Host 'Solo se le pedira un dato: el codigo (UUID) de la sucursal. No cierre esta ventana hasta que termine.' -ForegroundColor Cyan
+    if (Resolve-ParkosSucursalUuidSource -Explicit $SucursalUuid) {
+        Write-Host 'No se le pedira ningun dato: el codigo de la sucursal ya viene indicado. No cierre esta ventana hasta que termine.' -ForegroundColor Cyan
+    } else {
+        Write-Host 'Solo se le pedira un dato: el codigo (UUID) de la sucursal. No cierre esta ventana hasta que termine.' -ForegroundColor Cyan
+    }
 
     $result = Invoke-ParkosUnattendedCascade -Guided
 
     Write-Host ''
     if ($result.ExitCode -eq 0) {
         Write-Host 'Listo: Parkos quedo instalado y funcionando en este equipo.' -ForegroundColor Green
+        if ($result.PSObject.Properties['InstallPath'] -and $result.PSObject.Properties['DataPath']) {
+            $summaryLog = ''
+            if ($result.PSObject.Properties['LogPath']) { $summaryLog = $result.LogPath }
+            Write-ParkosInstallSummary -InstallPath $result.InstallPath -DataPath $result.DataPath -LogPath $summaryLog
+        }
     } else {
         Write-Host 'La instalacion NO se completo.' -ForegroundColor Red
         $logHint = ''
@@ -3902,11 +4550,15 @@ if ($MyInvocation.InvocationName -ne '.') {
                     $guidedResult = Invoke-ParkosGuidedInstall
                     # La ventana elevada se cierra sola al terminar: se deja
                     # leer el resultado antes de cerrarla.
-                    try { Read-Host 'Presione Enter para cerrar esta ventana' | Out-Null } catch { $null = $_ }
+                    # Sin intervencion (UUID y EULA ya indicados) no se espera tecla.
+                    if (-not ((Resolve-ParkosSucursalUuidSource -Explicit $SucursalUuid) -and (Test-ParkosEulaPreAccepted))) {
+                        try { Read-Host 'Presione Enter para cerrar esta ventana' | Out-Null } catch { $null = $_ }
+                    }
                     exit $guidedResult.ExitCode
                 }
             }
         }
+        'Prepare' { $prepareResult = Invoke-ParkosPreparePayload -MasterKeySource $MasterKeyPath; exit $prepareResult.ExitCode }
         'Update'  { $updateResult = Invoke-ParkosUpdate; exit $updateResult.ExitCode }
         'Restore' { $restoreResult = Invoke-ParkosRestore; exit $restoreResult.ExitCode }
     }

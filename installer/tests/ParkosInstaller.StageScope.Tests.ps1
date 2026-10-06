@@ -52,6 +52,7 @@ Describe 'Get-ParkosStageDefinitions - scope de Action/Rollback' {
         Mock Install-PgPartman { }
         Mock Register-PgPartmanMaintenance { }
         Mock Invoke-MigrationsAndSeed { }
+        Mock Invoke-ParkosPartitionSanity { }
         Mock Update-SucursalUuidInEnvFile { }
         Mock Invoke-CatalogSeed { }
         Mock Copy-ServiceBundle { 'C:\stub\svc.exe' }
