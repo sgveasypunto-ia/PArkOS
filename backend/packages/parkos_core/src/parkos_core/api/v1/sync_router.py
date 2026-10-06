@@ -75,7 +75,6 @@ from ...repo.pairing import (
 from ...repo.revoked_sync_jwt import is_revoked
 from ...runtime import engine_flag
 from ...runtime.clock import ClockSkewError
-from ...sync.catalog.schema import SyncCatalogEntry
 from ...sync.catalog.sync_catalog import (
     SYNC_CATALOG,
     SYNC_CATALOG_BY_NAME,
@@ -90,8 +89,6 @@ from ...sync.motor.pull_scope import build_scope_entry_predicate, build_scope_pr
 from ...sync.motor.sync_motor import (
     SyncMotor,
     describe_apply_error,
-    remap_foreign_keys,
-    resolve_identity_aliases,
 )
 from ...sync.observability.logs import get_logger, log_sync_event
 from ...sync.router_helpers import (
@@ -1386,46 +1383,12 @@ async def sync_events(
     results_by_index: list[_EventResponseRow | None] = [None] * len(payload.events)
     index_by_event: dict[int, int] = {id(ev): i for i, ev in enumerate(payload.events)}
 
-    # Real bug found + fixed (qa/integracion-admin-sucursal, confirmed live
-    # 2026-10-05): ``SyncMotor.apply_batch`` (the PULL path) resolves durable
-    # ``prod.sync_identity_alias`` rows and remaps a row's FK columns onto the
-    # locally-reconciled parent before calling ``apply_row`` — but this PUSH
-    # receiver never did, so a ``branch_to_cloud`` row whose FK column still
-    # named a catalog uuid ``identity_reconciler`` had already collapsed onto
-    # a DIFFERENT local row (exactly what migration 0081's alias table closed
-    # for the pull direction) ALWAYS raised its FK violation here, forever —
-    # three real rows (an ``ingreso``, a ``factura``, a related ``arqueo``)
-    # were stuck ``pendiente`` in ``prod.sync_queue`` because of this exact
-    # gap. Resolve the SAME durable aliases ``apply_batch`` does, ONCE for
-    # this whole request's catalog-driven rows (never one query per row —
-    # same bounded posture ``resolve_identity_aliases`` already documents),
-    # then remap each row's payload before it reaches ``apply_row`` below.
-    catalog_rows: list[tuple[SyncCatalogEntry, dict[str, Any]]] = []
-    catalog_events: list[_CatalogPushEvent] = []
-    for push_ev in payload.events:
-        if push_ev.tabla is None:
-            continue
-        # Wrap in resolve_catalog_name so pg_partman partition suffixes
-        # (salidas_default, factura_detalle_p_2026_10, ...) collapse onto
-        # the parent catalog entry instead of unknown_table.
-        spec = SYNC_CATALOG_BY_NAME.get(resolve_catalog_name(push_ev.tabla))
-        if spec is None:
-            continue
-        catalog_rows.append((spec, push_ev.payload))
-        catalog_events.append(push_ev)
-
-    aliases = await resolve_identity_aliases(session, catalog_rows)
-    # Always populated for every catalog-driven event (never a ``.get(...,
-    # default)`` fallback onto the main loop's own ``ev.payload`` below) —
-    # ``ev`` there is only known to satisfy ``dependency_orderer.
-    # QueueRowLike`` (``.tabla`` alone), so indexing this dict directly is
-    # what lets the main loop reach the already-resolved payload without
-    # depending on an attribute that protocol does not promise.
-    apply_payload_by_event_id: dict[int, dict[str, Any]] = {
-        id(push_ev): (remap_foreign_keys(spec, raw_payload, aliases) if aliases else raw_payload)
-        for push_ev, (spec, raw_payload) in zip(catalog_events, catalog_rows, strict=True)
-    }
-
+    # FK remap through ``prod.sync_identity_alias`` happens inside
+    # ``SyncMotor.apply_row`` (one lookup per row, only for FK columns onto
+    # identity-reconciled masters). It is deliberately NOT pre-resolved here:
+    # a pre-resolve ran once before the loop and could not see an alias that
+    # an earlier row of the SAME request (a cliente collapsed by
+    # ``identity_reconciler``) was about to write for its dependents.
     try:
         # Echo-amplification fix (post-PR14 real-Docker closing exercise,
         # real defect #3; migration 0016_add_sync_apply_guard). This
@@ -1473,7 +1436,7 @@ async def sync_events(
                 # it, one row blocked on its OWN, unrelated issue aborts the
                 # entire shared transaction and every other — perfectly
                 # valid — row in this batch is lost with it.
-                apply_payload = apply_payload_by_event_id[id(ev)]
+                apply_payload = ev.payload
                 async with session.begin_nested():
                     apply_result = await motor.apply_row(
                         session, spec, apply_payload, actor_uuid=actor_uuid

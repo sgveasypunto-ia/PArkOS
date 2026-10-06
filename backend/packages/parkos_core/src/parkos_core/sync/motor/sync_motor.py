@@ -50,6 +50,7 @@ from . import apply_guard
 from .apply_result import ApplyResult
 from .apply_row import apply_row as _catalog_apply_row
 from .dependency_orderer import order_batch
+from .identity_fk_map import IDENTITY_FK_COLUMNS
 from .identity_lookup import resolve_open_version
 from .read_local_seq import ReadLocalSeq
 
@@ -130,20 +131,14 @@ def describe_apply_error(exc: BaseException) -> str:
 # documents)". All candidate uuids are collected up front, then one
 # ``WHERE uuid_origen = ANY(:candidates)`` returns the whole map.
 #
-# KNOWN LIMIT (D17 follow-up, session 2026-10-05 09:01). ``prod.
-# sync_identity_alias`` is registered in ``OUT_OF_CATALOG`` — it is NEVER
-# replicated between branch and cloud by design. The remap therefore
-# works correctly for the LOCAL pull path (the node that did the
-# pull-side reconciliation has the alias row) and for the LOCAL push
-# path (the push receiver reads its own local table). It does NOT help
-# cross-node push where the receiver's local alias table is empty or
-# doesn't contain the sender's ``uuid_origen`` — those events still
-# raise FK violations on the parent. The architectural fix (option 1:
-# receiver resolves catalog uuid by natural_key at push-apply time, or
-# option 2: bidirectionally replicate ``sync_identity_alias`` with
-# per-node direction handling) is a pending user decision; this
-# restoration closes the IMPORT gap and the local-pull gap, not the
-# cross-node push gap.
+# ``prod.sync_identity_alias`` is local to each node (OUT_OF_CATALOG, never
+# replicated). It is WRITTEN by ``record_identity_alias`` when
+# ``identity_reconciler`` classifies an arrival as ``noop`` against an open
+# version with a different uuid (``motor/apply_row.py``), and READ by
+# ``remap_payload_with_aliases`` inside ``SyncMotor.apply_row`` -- so
+# /sync/events, /sync/push, the pull and jobs/sync_cloud all remap alike.
+# Only effective under the catalog engine: the legacy engine never runs the
+# reconciler, hence never writes an alias.
 # ---------------------------------------------------------------------------
 async def resolve_identity_aliases(
     session: AsyncSession,
@@ -198,21 +193,105 @@ def remap_foreign_keys(
     can safely pass it to ``apply_row`` without aliasing the original
     payload).
     """
-    if not aliases:
-        return dict(raw_payload)
     out = dict(raw_payload)
-    for key, value in list(out.items()):
-        candidate: uuid_lib.UUID | None = None
-        if isinstance(value, uuid_lib.UUID):
-            candidate = value
-        elif isinstance(value, str):
-            try:
-                candidate = uuid_lib.UUID(value)
-            except ValueError:
-                continue
+    if not aliases:
+        return out
+    # Column-filtered: ONLY columns that are foreign keys onto an identity
+    # -reconciled master are candidates. ``uuid``, ``created_by``,
+    # ``current_uuid`` and every other column are never rewritten, even when
+    # their value happens to equal an aliased uuid.
+    for key in identity_fk_columns(spec):
+        candidate = _as_uuid(out.get(key))
         if candidate is not None and candidate in aliases:
             out[key] = aliases[candidate]
     return out
+
+
+def _as_uuid(value: Any) -> uuid_lib.UUID | None:
+    if isinstance(value, uuid_lib.UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return uuid_lib.UUID(value)
+        except ValueError:
+            return None
+    return None
+
+
+# Never remapped, regardless of metadata: identity and audit columns.
+_NEVER_REMAPPED: frozenset[str] = frozenset({"uuid", "created_by", "current_uuid"})
+def identity_fk_columns(spec: SyncCatalogEntry) -> frozenset[str]:
+    """Columns of ``spec``'s table that are foreign keys onto a table whose
+    catalog entry reconciles identity by natural key (``identity_reconciler``).
+
+    Read from the explicit :data:`~.identity_fk_map.IDENTITY_FK_COLUMNS` (the ORM
+    declares no ``ForeignKey`` on these columns, so SQLAlchemy metadata cannot
+    be the source); ``test_sync_identity_alias_fk_columns`` keeps it in step
+    with ``pg_constraint``.
+    """
+    return IDENTITY_FK_COLUMNS.get(spec.name, frozenset()) - _NEVER_REMAPPED
+
+
+async def remap_payload_with_aliases(
+    session: AsyncSession,
+    spec: SyncCatalogEntry,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Repoint ``payload``'s reconciled-master FK columns through
+    ``prod.sync_identity_alias`` (one indexed lookup).
+
+    Returns ``payload`` itself, with no query, when the spec has no such FK
+    column or none carries a value. A missing alias leaves the payload
+    untouched (the apply then behaves as before and is retried next cycle).
+    """
+    columns = identity_fk_columns(spec)
+    if not columns:
+        return payload
+    candidates = {c for c in (_as_uuid(payload.get(col)) for col in columns) if c is not None}
+    if not candidates:
+        return payload
+    result = await session.execute(
+        text(
+            "SELECT uuid_origen, uuid_resuelto FROM prod.sync_identity_alias "
+            "WHERE uuid_origen = ANY(:ids)"
+        ),
+        {"ids": list(candidates)},
+    )
+    aliases = {row.uuid_origen: row.uuid_resuelto for row in result.all()}
+    if not aliases:
+        return payload
+    return remap_foreign_keys(spec, payload, aliases)
+
+
+async def record_identity_alias(
+    session: AsyncSession,
+    tabla: str,
+    uuid_origen: Any,
+    uuid_resuelto: Any,
+    actor_uuid: uuid_lib.UUID | None,
+) -> bool:
+    """Durably record ``uuid_origen -> uuid_resuelto`` (an arriving row that
+    ``identity_reconciler`` collapsed onto an existing open version).
+
+    Idempotent (``ON CONFLICT (uuid_origen) DO NOTHING``; the table is
+    append-only). Skipped (returns ``False``) when either uuid is missing or
+    malformed, or when both are equal. Runs inside the caller's transaction /
+    SAVEPOINT, so it commits or rolls back together with the apply.
+    """
+    origen = _as_uuid(uuid_origen)
+    resuelto = _as_uuid(uuid_resuelto)
+    if origen is None or resuelto is None or origen == resuelto:
+        return False
+    await session.execute(
+        text(
+            "INSERT INTO prod.sync_identity_alias "
+            "(tabla, uuid_origen, uuid_resuelto, created_by) "
+            "VALUES (:tabla, :origen, :resuelto, :actor) "
+            "ON CONFLICT (uuid_origen) DO NOTHING"
+        ),
+        {"tabla": tabla, "origen": origen, "resuelto": resuelto, "actor": actor_uuid},
+    )
+    return True
 
 
 @dataclass
@@ -353,6 +432,11 @@ class SyncMotor:
                 row_uuid=target_uuid,
                 reason=None,
             )
+
+        # Identity-alias remap (single place for /sync/events, /sync/push, the
+        # pull and jobs/sync_cloud): repoint FK columns that name an arriving
+        # uuid ``identity_reconciler`` collapsed onto another open version.
+        payload = await remap_payload_with_aliases(session, spec, payload)
 
         if self.engine is engine_flag.EngineMode.LEGACY:
             return await self._apply_row_legacy(session, spec, payload, actor_uuid=actor_uuid)
