@@ -10,6 +10,7 @@ behaviorally, not just by reading the source.
 """
 from __future__ import annotations
 
+import dataclasses
 import uuid as uuid_lib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -234,3 +235,24 @@ async def test_subscription_transitive_never_falls_back_to_all_branches(
             spec,
             {"uuid_subscripcion_cliente": parent_cliente_uuid, "uuid_vehiculo": uuid_lib.uuid4()},
         )
+
+
+# ---------------------------------------------------------------------------
+# derived — scope is decided in SQL by pull_scope, never per row here
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_derived_policy_raises_and_never_queries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``derived`` entries have no per-row scope: the SQL predicate is the authority."""
+    spec = dataclasses.replace(SYNC_CATALOG_BY_NAME["usuarios"], broadcast_policy="derived")
+
+    async def _fail_if_called(*args: Any, **kwargs: Any) -> list[BranchEndpoint]:
+        raise AssertionError("derived must never enumerate branches")
+
+    monkeypatch.setattr(resolver_module, "discover_active_branches", _fail_if_called)
+    session = _fake_session()
+
+    with pytest.raises(BroadcastPolicyError, match="pull_scope"):
+        await resolve_broadcast_targets(session, spec, {"uuid": uuid_lib.uuid4()})
+    session.execute.assert_not_called()

@@ -62,6 +62,13 @@ _AUDIT_DIRS = ("V", "L_E", "L_W", "L_S", "A")
 # --- Rule 4 curated exception sets (see module docstring) -------------------
 
 _BIDIRECTIONAL_ALL_BRANCHES: frozenset[str] = frozenset({"clientes", "clientes_b2b", "vehiculos"})
+# [V] entries without uuid_sucursal whose pull scope is derived through bridge
+# tables (membership / subscription / invoice / ``sucursal.uuid_empresa``)
+# instead of broadcast to every branch. ER-derived as ``all_branches`` before D3;
+# now ``derived``. The direction keeps following ``_BIDIRECTIONAL_ALL_BRANCHES``.
+_DERIVED_SCOPE: frozenset[str] = frozenset(
+    {"usuarios", "permisos_usuario", "clientes", "clientes_b2b", "vehiculos", "empresa"}
+)
 _BIDIRECTIONAL_SUBSCRIPTION: frozenset[str] = frozenset(
     {"subscripciones_cliente", "subscripcion_vehiculos"}
 )
@@ -294,6 +301,9 @@ def derive_expected_direction_broadcast(
             return ("cloud_to_branch", "all_branches_with_override")
         if name in _BIDIRECTIONAL_SUBSCRIPTION:
             return ("bidirectional", "subscription")
+        if name in _DERIVED_SCOPE:
+            direction = "bidirectional" if name in _BIDIRECTIONAL_ALL_BRANCHES else "cloud_to_branch"
+            return (direction, "derived")
         if name in _BIDIRECTIONAL_ALL_BRANCHES:
             return ("bidirectional", "all_branches")
         if name in _SINGLE_BRANCH_BY_IDENTITY:

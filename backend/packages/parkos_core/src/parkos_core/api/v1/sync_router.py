@@ -51,6 +51,7 @@ Architecture notes:
 from __future__ import annotations
 
 import logging
+import time
 import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -85,6 +86,7 @@ from ...sync.motor import apply_guard
 from ...sync.motor.apply_result import ApplyResult
 from ...sync.motor.broadcast_resolver import BroadcastPolicyError, resolve_broadcast_targets
 from ...sync.motor.dependency_orderer import order_batch
+from ...sync.motor.pull_scope import build_scope_entry_predicate, build_scope_predicate
 from ...sync.motor.sync_motor import (
     SyncMotor,
     describe_apply_error,
@@ -729,6 +731,9 @@ _PULL_DIRECTIONS = frozenset({"cloud_to_branch", "bidirectional"})
 #: keeps one request bounded regardless of how much data has accumulated.
 _PULL_BATCH_LIMIT = 500
 
+#: A pull slower than this is logged as ``sync_pull.slow`` (WARNING).
+_PULL_SLOW_THRESHOLD_MS = 2000
+
 #: Same stripping convention as ``jobs/sync_cloud.py``'s
 #: ``_business_payload_for_apply`` (audit/queue metadata never a real
 #: business attribute) — applied here in the OTHER direction: a live ORM
@@ -743,17 +748,40 @@ _PULL_WIRE_METADATA_KEYS = frozenset(
 )
 
 
+_EPOCH = datetime(1970, 1, 1)  # noqa: DTZ001 - columns are naive UTC
+_ONE_MS = timedelta(milliseconds=1)
+
+
 def _row_seq(row: Any) -> int:
     """Epoch-millisecond ``seq`` for a row — matches every real
     ``cloud_to_branch``/``bidirectional`` catalog entry's own
     ``seq_strategy="max_created_at"`` declaration (see
     ``sync/catalog/entries/*.py``). Falls back to 0 for the rare row with
     no ``created_at`` (append-only tables always have it; defensive only).
+
+    ``created_at`` is naive UTC. Integer arithmetic (not ``timestamp()*1000``)
+    so the value is exactly the millisecond floor that
+    :func:`_created_at_floor_for_seq` pushes into SQL.
     """
     created_at = getattr(row, "created_at", None)
     if created_at is None:
         return 0
-    return int(created_at.replace(tzinfo=UTC).timestamp() * 1000)
+    return (created_at.replace(tzinfo=None) - _EPOCH) // _ONE_MS
+
+
+def _created_at_floor_for_seq(since_seq: int) -> datetime | None:
+    """Smallest naive-UTC ``created_at`` whose :func:`_row_seq` is ``> since_seq``.
+
+    ``seq > since_seq`` <=> ``floor_ms(created_at) >= since_seq + 1`` <=>
+    ``created_at >= epoch + (since_seq + 1) ms``. Returns ``None`` when
+    ``since_seq`` is so large that no representable ``created_at`` qualifies.
+    A ``since_seq`` below the datetime range matches every row, so it is
+    clamped to ``datetime.min``.
+    """
+    try:
+        return _EPOCH + (since_seq + 1) * _ONE_MS
+    except OverflowError:
+        return None if since_seq > 0 else datetime.min  # noqa: DTZ901
 
 
 def _wire_payload(spec: Any, row: Any) -> dict[str, Any]:
@@ -783,6 +811,36 @@ def _wire_payload(spec: Any, row: Any) -> dict[str, Any]:
     }
 
 
+async def _passes_scope_recheck(
+    session: AsyncSession,
+    spec: Any,
+    payload: dict[str, Any],
+    uuid_sucursal: uuid_lib.UUID,
+) -> bool:
+    """Defense-in-depth second check of a row the SQL scope already selected.
+
+    The SQL predicate (:func:`build_scope_predicate`) is the authority. The
+    resolver is consulted again ONLY where that costs no query: ``all_branches``
+    (it would enumerate branches), a NULL-``uuid_sucursal`` override default,
+    and the transitive ``subscription`` (it would fetch the parent) are
+    guaranteed by SQL and skipped; ``derived`` has no per-row resolver at all
+    (its scope is bridge-table SQL), so it is trusted as selected. A resolver rejection of a row SQL returned
+    means the two scoping rules disagree: the caller logs and drops it.
+    """
+    policy = spec.broadcast_policy
+    if policy in ("all_branches", "derived"):
+        return True
+    if policy == "all_branches_with_override" and payload.get("uuid_sucursal") is None:
+        return True
+    if policy == "subscription" and not spec.has_uuid_sucursal:
+        return True
+    try:
+        targets = await resolve_broadcast_targets(session, spec, payload)
+    except BroadcastPolicyError:
+        return False
+    return targets.all_branches or uuid_sucursal in targets.branch_uuids
+
+
 async def _fetch_pull_rows(
     session: AsyncSession,
     *,
@@ -808,43 +866,130 @@ async def _fetch_pull_rows(
     resnapshot rather than missing rows — safe specifically BECAUSE
     :func:`apply_guard.row_already_present` (branch-side) now makes
     re-delivery a no-op instead of a duplicate-key crash.
+
+    **Scope-entry delivery (``derived`` tables).** The page above is selected by each
+    row's OWN ``created_at``. A ``derived`` row (usuarios, permisos_usuario, clientes,
+    clientes_b2b, vehiculos, empresa) can enter the branch's scope long after it was
+    created -- when a bridge row (membership, subscription, invoice, link, sucursal)
+    appears -- so its ``created_at`` would never cross an incremental cursor. After the
+    page is cut, the rows brought into scope by a bridge row created in the cursor
+    window ``[since_seq + 1, max_seq_seen]`` (:func:`build_scope_entry_predicate`) are
+    delivered too, listed BEFORE the page (parents before the children that reference
+    them). The window is the one the cursor just crossed, so the page, its LIMIT cut and
+    ``next_seq`` are untouched: extras never advance the cursor (it cannot regress or
+    stall) and a bridge row cut by the LIMIT brings its parents on the page that
+    delivers it, not before. A parent can be re-delivered while its bridge row is still
+    ahead of the cursor (e.g. an invoice at the branch, which is not itself a pulled
+    table) or when it has several bridge rows; that is idempotent (``apply_guard.
+    row_already_present``). ``since_seq <= 0`` skips it: every row already qualifies.
     """
+    floor = _created_at_floor_for_seq(since_seq)
+    if floor is None:
+        return [], since_seq
+
     candidates: list[tuple[Any, Any, int]] = []
     for spec in SYNC_CATALOG:
         if spec.direction not in _PULL_DIRECTIONS or spec.broadcast_policy is None:
             continue
-        stmt = select(spec.model_cls)
+        model: Any = spec.model_cls
+        predicate = build_scope_predicate(spec, uuid_sucursal)
+        stmt = select(model).where(model.created_at >= floor)
         if spec.audit_class == "V":
-            stmt = stmt.where(spec.model_cls.vigente_hasta.is_(None))
+            stmt = stmt.where(model.vigente_hasta.is_(None))
+        if predicate is not None:
+            stmt = stmt.where(predicate)
+        # Per-table top-N by (created_at, uuid): the global top-``limit`` by
+        # seq is always contained in the union of each table's top-``limit``.
+        stmt = stmt.order_by(model.created_at.asc(), model.uuid.asc()).limit(limit)
         rows = (await session.execute(stmt)).scalars().all()
         for row in rows:
-            seq = _row_seq(row)
-            if seq <= since_seq:
-                continue
-            candidates.append((spec, row, seq))
+            candidates.append((spec, row, _row_seq(row)))
 
     pushed_rows: list[_PushedRow] = []
     max_seq_seen = since_seq
+    truncated = False
+    # Stable sort: seq ties keep catalog order, then (created_at, uuid) order.
     for spec, row, seq in sorted(candidates, key=lambda item: item[2]):
         payload = _wire_payload(spec, row)
-        try:
-            targets = await resolve_broadcast_targets(session, spec, payload)
-        except BroadcastPolicyError as exc:
-            logger.warning(
-                "sync_pull.broadcast_resolution_failed",
-                extra={"tabla": spec.name, "uuid_registro": str(row.uuid), "error": str(exc)},
+        if not await _passes_scope_recheck(session, spec, payload, uuid_sucursal):
+            logger.error(
+                "sync_pull.scope_violation",
+                extra={
+                    "tabla": spec.name,
+                    "uuid_registro": str(row.uuid),
+                    "uuid_sucursal": str(uuid_sucursal),
+                },
             )
-            continue
-        if not (targets.all_branches or uuid_sucursal in targets.branch_uuids):
             continue
         pushed_rows.append(
             _PushedRow(tabla=spec.name, uuid_registro=row.uuid, seq=seq, datos=payload)
         )
         max_seq_seen = max(max_seq_seen, seq)
         if len(pushed_rows) >= limit:
+            truncated = True
             break
 
+    if since_seq > 0:
+        # With a LIMIT cut the window ends where the cursor ends; otherwise it is open.
+        ceiling = _created_at_floor_for_seq(max_seq_seen) if truncated else None
+        delivered = {(row.tabla, row.uuid_registro) for row in pushed_rows}
+        entered: list[_PushedRow] = []
+        for spec in SYNC_CATALOG:
+            if spec.direction not in _PULL_DIRECTIONS or spec.broadcast_policy != "derived":
+                continue
+            model = spec.model_cls
+            scope = build_scope_predicate(spec, uuid_sucursal)
+            entry = build_scope_entry_predicate(spec, uuid_sucursal, floor, ceiling)
+            if scope is None or entry is None:
+                continue
+            stmt = select(model).where(scope, entry)
+            if spec.audit_class == "V":
+                stmt = stmt.where(model.vigente_hasta.is_(None))
+            stmt = stmt.order_by(model.created_at.asc(), model.uuid.asc())
+            for row in (await session.execute(stmt)).scalars().all():
+                if (spec.name, row.uuid) in delivered:
+                    continue
+                delivered.add((spec.name, row.uuid))
+                entered.append(
+                    _PushedRow(
+                        tabla=spec.name,
+                        uuid_registro=row.uuid,
+                        seq=_row_seq(row),
+                        datos=_wire_payload(spec, row),
+                    )
+                )
+        # Parents first; ``next_seq`` is still the page's cursor, never an extra's.
+        pushed_rows = entered + pushed_rows
+
     return pushed_rows, max_seq_seen
+
+
+def _log_pull(
+    *,
+    uuid_sucursal: uuid_lib.UUID,
+    rows: list[_PushedRow],
+    since_seq: int,
+    next_seq: int,
+    duration_ms: float,
+) -> None:
+    """One structured record per pull. Counts only: never a row payload
+    (``usuarios`` rows carry ``password_hash``)."""
+    rows_por_tabla: dict[str, int] = {}
+    for row in rows:
+        rows_por_tabla[row.tabla] = rows_por_tabla.get(row.tabla, 0) + 1
+    slow = duration_ms > _PULL_SLOW_THRESHOLD_MS
+    logger.log(
+        logging.WARNING if slow else logging.INFO,
+        "sync_pull.slow" if slow else "sync_pull.completed",
+        extra={
+            "uuid_sucursal": str(uuid_sucursal),
+            "rows_por_tabla": rows_por_tabla,
+            "total_rows": len(rows),
+            "duration_ms": duration_ms,
+            "since_seq": since_seq,
+            "next_seq": next_seq,
+        },
+    )
 
 
 @router.post(
@@ -865,8 +1010,8 @@ async def sync_pull(
     supplied uuid — so this is generic across every paired sucursal, not
     just whichever one exercised it first. Per-table ``broadcast_policy``
     (``all_branches`` / ``all_branches_with_override`` / ``single_branch`` /
-    ``subscription``) is honored via :func:`resolve_broadcast_targets`
-    (T-PR12-003) — see :func:`_fetch_pull_rows`.
+    ``subscription`` / ``derived``) is enforced in SQL by
+    :func:`build_scope_predicate` — see :func:`_fetch_pull_rows`.
     """
     issuer = claims.get("iss", "")
     subject = extract_subject_from_jwt(claims)
@@ -914,8 +1059,17 @@ async def sync_pull(
             detail={"error": "missing_or_invalid_sucursal_claim"},
         ) from e
 
+    started = time.perf_counter()
     rows, next_seq = await _fetch_pull_rows(
         session, uuid_sucursal=uuid_sucursal, since_seq=payload.since_seq
+    )
+    duration_ms = round((time.perf_counter() - started) * 1000, 1)
+    _log_pull(
+        uuid_sucursal=uuid_sucursal,
+        rows=rows,
+        since_seq=payload.since_seq,
+        next_seq=next_seq,
+        duration_ms=duration_ms,
     )
 
     response_body = {

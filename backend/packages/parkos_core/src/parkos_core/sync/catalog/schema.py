@@ -55,6 +55,10 @@ BroadcastPolicy = Literal[
     "all_branches",
     "all_branches_with_override",
     "subscription",
+    # Scope is derived through bridge tables (membership, subscription,
+    # invoice) and decided in SQL by ``sync/motor/pull_scope.py``; the
+    # per-row resolver has no answer for it.
+    "derived",
 ]
 
 ApplyStrategy = Literal[
@@ -82,7 +86,7 @@ _DIRECTION_VALUES: frozenset[str] = frozenset(
     {"cloud_to_branch", "branch_to_cloud", "bidirectional"}
 )
 _BROADCAST_POLICY_VALUES: frozenset[str] = frozenset(
-    {"single_branch", "all_branches", "all_branches_with_override", "subscription"}
+    {"single_branch", "all_branches", "all_branches_with_override", "subscription", "derived"}
 )
 assert _DIRECTION_VALUES.isdisjoint(_BROADCAST_POLICY_VALUES), (
     "direction and broadcast_policy enums must stay disjoint string-literal sets"

@@ -49,6 +49,14 @@ def test_direction_and_broadcast_policy_enums_are_disjoint() -> None:
     assert "bidirectional" not in _BROADCAST_POLICY_VALUES
 
 
+def test_derived_is_a_recognized_broadcast_policy() -> None:
+    """``derived`` (scope decided in SQL by bridge tables) is a valid policy and
+    stays disjoint from every ``direction`` literal."""
+    assert "derived" in _BROADCAST_POLICY_VALUES
+    assert "derived" not in _DIRECTION_VALUES
+    assert _valid_entry(broadcast_policy="derived").broadcast_policy == "derived"
+
+
 def test_removed_fields_are_absent() -> None:
     """cloud_only, sync_back_event, direction_proposed were removed by this amendment."""
     field_names = {f.name for f in dataclasses.fields(SyncCatalogEntry)}

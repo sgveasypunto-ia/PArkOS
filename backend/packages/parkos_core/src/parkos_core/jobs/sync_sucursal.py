@@ -1251,6 +1251,21 @@ def _wire_shape(row: Any) -> dict[str, Any]:
     Fix: drop the three forbidden extras AND add ``seq`` extracted
     from ``datos``. Defensive: a row whose ``datos`` has no parseable
     ``seq`` falls back to ``0`` rather than crashing the whole batch.
+
+    Real defect confirmed live, 2026-10-06: the branch's sync_queue
+    stores the trigger-sourced ``TG_TABLE_NAME`` verbatim, which for
+    pg_partman-partitioned tables is the physical partition name
+    (``factura_detalle_p_2026_10``, ``factura_pagos_p_2026_10``,
+    ``log_transaccional_p_2026_10``, etc.). The cloud's catalog is
+    keyed on the PARENT name only (``factura_detalle``, ``factura_pagos``,
+    ``log_transaccional``) — without the ``resolve_catalog_name``
+    normalization the catalog path uses, every row from the 8
+    partitioned tables fails ``unknown_table`` and the worker logs
+    ``push_partial accepted=N rejected=M`` indefinitely. The catalog
+    push path at line 613 already calls
+    ``resolve_catalog_name(tabla)``; mirror it here so the legacy
+    wire shape is correct too.
+    ``seq`` falls back to ``0`` rather than crashing the whole batch.
     """
     datos = getattr(row, "datos", None) or {}
     raw_seq = datos.get("seq") if isinstance(datos, dict) else None
@@ -1258,8 +1273,16 @@ def _wire_shape(row: Any) -> dict[str, Any]:
         seq = int(raw_seq) if raw_seq is not None else 0
     except (TypeError, ValueError):
         seq = 0
+    # Normalize pg_partman partition names (``factura_detalle_p_2026_10``)
+    # to the parent catalog name (``factura_detalle``) so the cloud's
+    # catalog lookup doesn't return ``unknown_table`` for the 8
+    # partitioned tables. The catalog push path at line 613 calls
+    # ``resolve_catalog_name`` explicitly; mirror it here so the legacy
+    # wire shape is also catalog-valid.
+    raw_tabla = getattr(row, "tabla", None)
+    wire_tabla = resolve_catalog_name(raw_tabla) if raw_tabla else raw_tabla
     return {
-        "tabla": getattr(row, "tabla", None),
+        "tabla": wire_tabla,
         "uuid_registro": _str_or_none(getattr(row, "uuid_registro", None)),
         "seq": seq,
         "datos": datos,

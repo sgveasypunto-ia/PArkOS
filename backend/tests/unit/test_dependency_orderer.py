@@ -55,6 +55,32 @@ def test_parents_before_children() -> None:
     assert ordered_tables.index("facturas") < ordered_tables.index("factura_pagos"), ordered_tables
 
 
+def test_derived_scope_children_follow_the_parents_the_scope_delivers() -> None:
+    """A subscription (and its vehicle link) pulled in the same batch as the
+    clientes / vehiculos that the derived scope also selects is applied after them,
+    whatever order the pull returned them in."""
+    batch = [
+        _FakeRow(tabla="subscripcion_vehiculos"),
+        _FakeRow(tabla="subscripciones_cliente"),
+        _FakeRow(tabla="vehiculos"),
+        _FakeRow(tabla="clientes"),
+        _FakeRow(tabla="clientes_b2b"),
+        _FakeRow(tabla="permisos_usuario"),
+        _FakeRow(tabla="usuarios"),
+    ]
+
+    tables = [row.tabla for row in order_batch(batch)]
+
+    def before(parent: str, child: str) -> bool:
+        return tables.index(parent) < tables.index(child)
+
+    assert before("clientes", "subscripciones_cliente")
+    assert before("clientes", "clientes_b2b")
+    assert before("subscripciones_cliente", "subscripcion_vehiculos")
+    assert before("vehiculos", "subscripcion_vehiculos")
+    assert before("usuarios", "permisos_usuario")
+
+
 def test_order_batch_is_stable_within_a_level() -> None:
     """Rows at the same topological level keep their incoming relative order.
 
