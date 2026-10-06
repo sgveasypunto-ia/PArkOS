@@ -246,3 +246,132 @@ Describe 'Install-ParkosPgPartmanExtension' {
         (Test-Path (Join-Path $pg 'share\extension\pg_partman--5.1.0.sql')) | Should Be $true
     }
 }
+
+# ---------------------------------------------------------------------------
+# Partes versionadas del ZIP (el ZIP completo supera los 100 MB de GitHub)
+# ---------------------------------------------------------------------------
+Describe 'Postgres ZIP en partes versionadas' {
+    BeforeEach {
+        $script:id = [guid]::NewGuid().ToString('N')
+        $script:cache = Join-Path $TestDrive "dl$($script:id)"
+        $script:payload = Join-Path $TestDrive "pl$($script:id)"
+        New-Item -ItemType Directory -Force -Path $script:payload | Out-Null
+        $script:name = (Get-ParkosPostgresDownloadInfo).FileName
+        Mock Start-ParkosSleep { }
+        Mock Test-ParkosPostgresZip { $true }
+        Mock Get-ParkosFileSha256 { param($Path) (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant() }
+        Mock Invoke-ParkosHttpDownload { throw 'no deberia descargar' }
+        # Contenido conocido repartido en 3 partes (la 11 sirve para probar el orden numerico).
+        $script:bytes = [byte[]](1..250)
+        $script:partData = @(
+            $script:bytes[0..99],
+            $script:bytes[100..199],
+            $script:bytes[200..249]
+        )
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $script:fullHash = ([BitConverter]::ToString($sha.ComputeHash([byte[]]$script:bytes)) -replace '-', '').ToLowerInvariant()
+        $sha.Dispose()
+    }
+
+    function New-FakeParts([int[]]$Numbers = @(1, 2, 3), [string]$Sidecar = $null) {
+        for ($i = 0; $i -lt $Numbers.Count; $i++) {
+            [System.IO.File]::WriteAllBytes((Join-Path $script:payload ("{0}.part{1:D2}" -f $script:name, $Numbers[$i])), [byte[]]$script:partData[$i])
+        }
+        if (-not $Sidecar) { $Sidecar = $script:fullHash }
+        Set-Content -Path (Join-Path $script:payload "$($script:name).sha256") -Value $Sidecar -NoNewline
+    }
+
+    It 'Join-ParkosFileParts concatena en el orden recibido (streaming)' {
+        New-FakeParts
+        $parts = 1..3 | ForEach-Object { Join-Path $script:payload ("{0}.part{1:D2}" -f $script:name, $_) }
+        $dest = Join-Path $TestDrive "joined$($script:id).bin"
+        Join-ParkosFileParts -PartPaths $parts -Destination $dest
+        ([System.IO.File]::ReadAllBytes($dest) -join ',') | Should Be ($script:bytes -join ',')
+    }
+
+    It 'Get-ParkosPostgresPartsStatus ordena NUMERICAMENTE (part10 al final, no tras part1)' {
+        foreach ($n in 1..10) { Set-Content (Join-Path $script:payload ("{0}.part{1:D2}" -f $script:name, $n)) 'x' }
+        Set-Content (Join-Path $script:payload "$($script:name).sha256") 'h'
+        $s = Get-ParkosPostgresPartsStatus -Dir $script:payload -FileName $script:name
+        $s.Problem | Should Be $null
+        @($s.Parts).Count | Should Be 10
+        $s.Parts[2] | Should Match 'part03$'
+        $s.Parts[9] | Should Match 'part10$'
+    }
+
+    It 'Get-ParkosPostgresPartsStatus detecta un hueco en la numeracion' {
+        foreach ($n in 1, 2, 4) { Set-Content (Join-Path $script:payload ("{0}.part{1:D2}" -f $script:name, $n)) 'x' }
+        Set-Content (Join-Path $script:payload "$($script:name).sha256") 'h'
+        (Get-ParkosPostgresPartsStatus -Dir $script:payload -FileName $script:name).Problem | Should Match 'Falta la parte 03'
+    }
+    It 'sin partes devuelve lista vacia y sin problema' {
+        $s = Get-ParkosPostgresPartsStatus -Dir $script:payload -FileName $script:name
+        @($s.Parts).Count | Should Be 0
+        $s.Problem | Should Be $null
+    }
+
+    It 'partes sin .sha256 es un problema explicito' {
+        New-FakeParts
+        Remove-Item (Join-Path $script:payload "$($script:name).sha256")
+        (Get-ParkosPostgresPartsStatus -Dir $script:payload -FileName $script:name).Problem | Should Match 'sha256'
+    }
+
+    It 'rearma en el CACHE (nunca en el payload), verifica el hash y no descarga' {
+        New-FakeParts
+        $r = Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet
+        $r | Should Be (Join-Path $script:cache $script:name)
+        ([System.IO.File]::ReadAllBytes($r) -join ',') | Should Be ($script:bytes -join ',')
+        (Test-Path (Join-Path $script:payload $script:name)) | Should Be $false
+        (Test-Path "$r.assembling") | Should Be $false
+        Assert-MockCalled Invoke-ParkosHttpDownload -Times 0 -Scope It
+    }
+
+    It 'las partes tienen precedencia sobre un cache viejo/distinto y sobre la descarga' {
+        New-FakeParts
+        New-Item -ItemType Directory -Force -Path $script:cache | Out-Null
+        Set-Content (Join-Path $script:cache $script:name) 'cache viejo con otro contenido'
+        $r = Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet
+        ([System.IO.File]::ReadAllBytes($r) -join ',') | Should Be ($script:bytes -join ',')
+        Assert-MockCalled Invoke-ParkosHttpDownload -Times 0 -Scope It
+    }
+
+    It 're-ejecucion idempotente: reutiliza el ZIP ya rearmado sin volver a unir' {
+        New-FakeParts
+        $first = Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet
+        # Sello de fecha antigua: si se volviera a unir, el archivo se reescribiria.
+        $old = [datetime]::new(2001, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item $first).LastWriteTimeUtc = $old
+        $second = Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet
+        $second | Should Be $first
+        (Get-Item $second).LastWriteTimeUtc | Should Be $old
+    }
+
+    It 'un ZIP completo valido en el payload gana sobre las partes' {
+        New-FakeParts
+        $full = Join-Path $script:payload $script:name
+        Set-Content $full 'zip completo'
+        (Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet) | Should Be $full
+    }
+
+    It 'falta una parte: error claro, no se cae a la descarga' {
+        New-FakeParts -Numbers @(1, 3)
+        { Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet } | Should Throw 'Falta la parte 02'
+        Assert-MockCalled Invoke-ParkosHttpDownload -Times 0 -Scope It
+    }
+
+    It 'hash que no coincide: borra el rearmado, error claro y no descarga' {
+        New-FakeParts -Sidecar ('0' * 64)
+        { Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet } | Should Throw 'hash SHA-256'
+        (Test-Path (Join-Path $script:cache $script:name)) | Should Be $false
+        (Test-Path (Join-Path $script:cache "$($script:name).assembling")) | Should Be $false
+        Assert-MockCalled Invoke-ParkosHttpDownload -Times 0 -Scope It
+    }
+
+    It 'sin partes ni cache cae a la descarga (ultimo recurso)' {
+        Mock Invoke-ParkosHttpDownload { Set-Content $OutFile 'data' }
+        $r = Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet
+        $r | Should Be (Join-Path $script:cache $script:name)
+        Assert-MockCalled Invoke-ParkosHttpDownload -Times 1 -Scope It
+    }
+}
+
