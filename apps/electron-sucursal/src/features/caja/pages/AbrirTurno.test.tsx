@@ -51,6 +51,18 @@ vi.mock('react-router-dom', async () => {
 
 // Mock the presentational to bypass shadcn Form radix deps loading.
 // We render a passthrough that exposes the same testid contract.
+// `DatafonoHiddenSetup` keeps `valor_inicial_datafono` in RHF state so
+// `abrirTurnoSchema` Zod validation passes (see comment inside the mock).
+function DatafonoHiddenSetup({
+  form,
+}: {
+  form: {
+    setValue: (name: string, value: string) => void;
+  };
+}): null {
+  form.setValue('valor_inicial_datafono', '0');
+  return null;
+}
 vi.mock('../components/AbrirTurnoForm', () => ({
   AbrirTurnoForm: ({
     form,
@@ -65,6 +77,7 @@ vi.mock('../components/AbrirTurnoForm', () => ({
     // sees real values instead of the `useForm({defaultValues})` blanks.
     form: {
       register: (name: string) => Record<string, unknown>;
+      setValue: (name: string, value: string) => void;
     };
     onSubmit: (e: React.FormEvent) => void;
     isSubmitting: boolean;
@@ -85,11 +98,18 @@ vi.mock('../components/AbrirTurnoForm', () => ({
           type="text"
           {...form.register('valor_inicial_efectivo')}
         />
-        <input
-          data-testid="abrir-turno-valor-datafono"
-          type="text"
-          {...form.register('valor_inicial_datafono')}
-        />
+        {/*
+          Hidden mirror: ref d59e6ea5 removed the visible FormField, but
+          `abrirTurnoSchema` (turnoSchema.ts:80-89) still REQUIRES
+          `valor_inicial_datafono` as a STRING (regex + transform "" → 0).
+          The container also dropped the key from `useForm({defaultValues})`,
+          so RHF initializes the field as `undefined` — without this
+          `setValue`, the resolver fails with required_error and
+          `abrirSesion` is never called (U9 + U10 + U10b regression).
+          The container overrides the payload to `0` regardless
+          (AbrirTurno.tsx:104), so this only exists to satisfy validation.
+        */}
+        <DatafonoHiddenSetup form={form} />
         <input
           data-testid="abrir-turno-observaciones"
           type="text"
@@ -158,9 +178,6 @@ afterEach(() => {
 function fillValidForm(): void {
   fireEvent.change(screen.getByTestId('abrir-turno-valor-efectivo'), {
     target: { value: '50000' },
-  });
-  fireEvent.change(screen.getByTestId('abrir-turno-valor-datafono'), {
-    target: { value: '0' },
   });
 }
 
