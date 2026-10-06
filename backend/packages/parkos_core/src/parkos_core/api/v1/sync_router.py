@@ -85,6 +85,7 @@ from ...sync.motor import apply_guard
 from ...sync.motor.apply_result import ApplyResult
 from ...sync.motor.broadcast_resolver import BroadcastPolicyError, resolve_broadcast_targets
 from ...sync.motor.dependency_orderer import order_batch
+from ...sync.motor.pull_scope import build_scope_predicate
 from ...sync.motor.sync_motor import (
     SyncMotor,
     describe_apply_error,
@@ -743,17 +744,40 @@ _PULL_WIRE_METADATA_KEYS = frozenset(
 )
 
 
+_EPOCH = datetime(1970, 1, 1)
+_ONE_MS = timedelta(milliseconds=1)
+
+
 def _row_seq(row: Any) -> int:
     """Epoch-millisecond ``seq`` for a row — matches every real
     ``cloud_to_branch``/``bidirectional`` catalog entry's own
     ``seq_strategy="max_created_at"`` declaration (see
     ``sync/catalog/entries/*.py``). Falls back to 0 for the rare row with
     no ``created_at`` (append-only tables always have it; defensive only).
+
+    ``created_at`` is naive UTC. Integer arithmetic (not ``timestamp()*1000``)
+    so the value is exactly the millisecond floor that
+    :func:`_created_at_floor_for_seq` pushes into SQL.
     """
     created_at = getattr(row, "created_at", None)
     if created_at is None:
         return 0
-    return int(created_at.replace(tzinfo=UTC).timestamp() * 1000)
+    return (created_at.replace(tzinfo=None) - _EPOCH) // _ONE_MS
+
+
+def _created_at_floor_for_seq(since_seq: int) -> datetime | None:
+    """Smallest naive-UTC ``created_at`` whose :func:`_row_seq` is ``> since_seq``.
+
+    ``seq > since_seq`` <=> ``floor_ms(created_at) >= since_seq + 1`` <=>
+    ``created_at >= epoch + (since_seq + 1) ms``. Returns ``None`` when
+    ``since_seq`` is so large that no representable ``created_at`` qualifies.
+    A ``since_seq`` below the datetime range matches every row, so it is
+    clamped to ``datetime.min``.
+    """
+    try:
+        return _EPOCH + (since_seq + 1) * _ONE_MS
+    except OverflowError:
+        return None if since_seq > 0 else datetime.min
 
 
 def _wire_payload(spec: Any, row: Any) -> dict[str, Any]:
@@ -783,6 +807,35 @@ def _wire_payload(spec: Any, row: Any) -> dict[str, Any]:
     }
 
 
+async def _passes_scope_recheck(
+    session: AsyncSession,
+    spec: Any,
+    payload: dict[str, Any],
+    uuid_sucursal: uuid_lib.UUID,
+) -> bool:
+    """Defense-in-depth second check of a row the SQL scope already selected.
+
+    The SQL predicate (:func:`build_scope_predicate`) is the authority. The
+    resolver is consulted again ONLY where that costs no query: ``all_branches``
+    (it would enumerate branches), a NULL-``uuid_sucursal`` override default,
+    and the transitive ``subscription`` (it would fetch the parent) are
+    guaranteed by SQL and skipped. A resolver rejection of a row SQL returned
+    means the two scoping rules disagree: the caller logs and drops it.
+    """
+    policy = spec.broadcast_policy
+    if policy == "all_branches":
+        return True
+    if policy == "all_branches_with_override" and payload.get("uuid_sucursal") is None:
+        return True
+    if policy == "subscription" and not spec.has_uuid_sucursal:
+        return True
+    try:
+        targets = await resolve_broadcast_targets(session, spec, payload)
+    except BroadcastPolicyError:
+        return False
+    return targets.all_branches or uuid_sucursal in targets.branch_uuids
+
+
 async def _fetch_pull_rows(
     session: AsyncSession,
     *,
@@ -809,33 +862,42 @@ async def _fetch_pull_rows(
     :func:`apply_guard.row_already_present` (branch-side) now makes
     re-delivery a no-op instead of a duplicate-key crash.
     """
+    floor = _created_at_floor_for_seq(since_seq)
+    if floor is None:
+        return [], since_seq
+
     candidates: list[tuple[Any, Any, int]] = []
     for spec in SYNC_CATALOG:
         if spec.direction not in _PULL_DIRECTIONS or spec.broadcast_policy is None:
             continue
-        stmt = select(spec.model_cls)
+        model = spec.model_cls
+        predicate = build_scope_predicate(spec, uuid_sucursal)
+        stmt = select(model).where(model.created_at >= floor)
         if spec.audit_class == "V":
-            stmt = stmt.where(spec.model_cls.vigente_hasta.is_(None))
+            stmt = stmt.where(model.vigente_hasta.is_(None))
+        if predicate is not None:
+            stmt = stmt.where(predicate)
+        # Per-table top-N by (created_at, uuid): the global top-``limit`` by
+        # seq is always contained in the union of each table's top-``limit``.
+        stmt = stmt.order_by(model.created_at.asc(), model.uuid.asc()).limit(limit)
         rows = (await session.execute(stmt)).scalars().all()
         for row in rows:
-            seq = _row_seq(row)
-            if seq <= since_seq:
-                continue
-            candidates.append((spec, row, seq))
+            candidates.append((spec, row, _row_seq(row)))
 
     pushed_rows: list[_PushedRow] = []
     max_seq_seen = since_seq
+    # Stable sort: seq ties keep catalog order, then (created_at, uuid) order.
     for spec, row, seq in sorted(candidates, key=lambda item: item[2]):
         payload = _wire_payload(spec, row)
-        try:
-            targets = await resolve_broadcast_targets(session, spec, payload)
-        except BroadcastPolicyError as exc:
-            logger.warning(
-                "sync_pull.broadcast_resolution_failed",
-                extra={"tabla": spec.name, "uuid_registro": str(row.uuid), "error": str(exc)},
+        if not await _passes_scope_recheck(session, spec, payload, uuid_sucursal):
+            logger.error(
+                "sync_pull.scope_violation",
+                extra={
+                    "tabla": spec.name,
+                    "uuid_registro": str(row.uuid),
+                    "uuid_sucursal": str(uuid_sucursal),
+                },
             )
-            continue
-        if not (targets.all_branches or uuid_sucursal in targets.branch_uuids):
             continue
         pushed_rows.append(
             _PushedRow(tabla=spec.name, uuid_registro=row.uuid, seq=seq, datos=payload)
