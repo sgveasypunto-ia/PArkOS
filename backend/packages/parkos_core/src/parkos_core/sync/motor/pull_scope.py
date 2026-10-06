@@ -352,6 +352,10 @@ def _empresa_rule(
 
 
 _DERIVED_RULES["empresa"] = _empresa_rule
+
+# Rules whose windowed form is NOT a subset of their scope form (see
+# :func:`build_scope_entry_predicate`); their entry predicate re-applies the scope.
+_ENTRY_NOT_SUBSET_OF_SCOPE = frozenset({"empresa"})
 _DERIVED_RULES["usuarios"] = _usuarios_rule
 _DERIVED_RULES["permisos_usuario"] = _permisos_usuario_rule
 _DERIVED_RULES["clientes"] = _clientes_rule
@@ -432,8 +436,11 @@ def build_scope_entry_predicate(
     scope, so the pull also delivers the rows whose bridge row (membership,
     subscription, invoice, link, sucursal) is the one crossing the cursor. It is the
     registered scope rule evaluated with a window on the bridge tables, hence a
-    subset of the scope by construction; callers still AND it with
-    :func:`build_scope_predicate`.
+    subset of the scope by construction (the window only ADDS conditions on bridge
+    rows), so callers use it WITHOUT ANDing :func:`build_scope_predicate`: repeating the
+    scope re-runs the same sub-selects for nothing. The one exception is ``empresa``,
+    whose entry ("the branch row is new") does not name the empresa; its predicate
+    carries the scope rule itself so it stays self-sufficient.
     """
     if spec.broadcast_policy != "derived":
         return None
@@ -443,7 +450,10 @@ def build_scope_entry_predicate(
             f"{spec.name}: derived broadcast_policy has no registered scope rule — "
             "refusing to pull unscoped"
         )
-    return rule(spec.model_cls, uuid_sucursal, since_floor, until_ceiling)
+    entry = rule(spec.model_cls, uuid_sucursal, since_floor, until_ceiling)
+    if spec.name in _ENTRY_NOT_SUBSET_OF_SCOPE:
+        return and_(rule(spec.model_cls, uuid_sucursal), entry)
+    return entry
 
 
 __all__ = ["build_scope_entry_predicate", "build_scope_predicate"]

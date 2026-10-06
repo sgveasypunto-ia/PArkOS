@@ -20,6 +20,10 @@ Only indexes verified MISSING at Phase 0 (against the live DB) are created:
     ``usuarios_sucursal``, ``subscripciones_cliente``.
   * ``subscripciones_cliente (uuid_sucursal, uuid_cliente)``.
   * ``factura_electronica (uuid_sucursal, uuid_cliente)``.
+  * ``factura_electronica (uuid_sucursal, created_at)``: the incremental pull's
+    scope-entry lookup of clientes newly referenced by an invoice filters by a
+    ``created_at`` window per branch; without it a branch with hundreds of
+    thousands of invoices pays a parallel sequential scan on every pull.
 
 ``subscripcion_vehiculos`` is already covered by its UK.
 
@@ -90,6 +94,11 @@ _INDEXES: tuple[tuple[str, str, str], ...] = (
         "ix_factura_electronica_sucursal_cliente",
         "factura_electronica",
         "uuid_sucursal, uuid_cliente",
+    ),
+    (
+        "ix_factura_electronica_sucursal_created_at",
+        "factura_electronica",
+        "uuid_sucursal, created_at",
     ),
 )
 

@@ -51,12 +51,20 @@ El pull incremental (`since_seq` = cursor − 1) selecciona por el `created_at` 
 Cómo funciona (`build_scope_entry_predicate` + `_fetch_pull_rows`):
 
 1. La página se arma igual que antes (por `created_at` propio, corte global por `LIMIT`) y `next_seq` es el `seq` máximo entregado en ella. Nada de lo siguiente mueve el cursor.
-2. Para cada tabla `derived` (solo si `since_seq > 0`; con `0` toda fila ya califica) se evalúa **la misma regla de alcance** restringida a filas puente con `created_at` en la ventana que el cursor acaba de cruzar: `[since_seq + 1, max_seq_visto]`, sin tope superior si la página no se cortó por `LIMIT`.
+2. Para cada tabla `derived` (solo si `since_seq > 0`; con `0` toda fila ya califica) se evalúa **la misma regla de alcance** restringida a filas puente con `created_at` en la ventana que el cursor acaba de cruzar: `[since_seq + 1, max_seq_visto]`, sin tope superior si la página no se cortó por `LIMIT`. Esa consulta usa **solo** el predicado de entrada, sin volver a aplicar el alcance completo: la ventana solo añade condiciones sobre las filas puente, así que es un subconjunto del alcance por construcción y repetirlo duplicaba el costo. La excepción es `empresa` (su disparador, "la sucursal es nueva", no nombra a la empresa), cuyo predicado de entrada incluye el alcance.
 3. Esas filas ("entraron al alcance") se entregan **antes** que la página: padres antes que los hijos que los referencian (usuarios antes que `usuarios_sucursal`, clientes antes que sus suscripciones). Las que ya vienen en la página no se repiten.
 4. Fila puente por tabla: `usuarios` y `permisos_usuario` → `usuarios_sucursal` vigente nueva (de un usuario recién asignado llegan **todos** sus permisos abiertos); `clientes` y `clientes_b2b` → suscripción o factura nueva en la sucursal (por llave natural); `vehiculos` → suscripción **o** vínculo `subscripcion_vehiculos` nuevo; `empresa` → fila propia de `sucursal` creada en la ventana.
 5. Una fila puede reenviarse (tiene varias filas puente en la ventana, o su puente es una factura, que no es una tabla del pull y por tanto no hace avanzar el cursor, así que se repite hasta que lleguen filas nuevas de otras tablas). Es **idempotente**: `apply_guard.row_already_present` la convierte en no-op en la sucursal.
 
 Como el `LIMIT` corta solo la página, una fila puente cortada trae a sus padres en la página que la entrega, no antes: sin pérdida y sin estancar el cursor (el estancamiento sería inevitable si las filas de `created_at` viejo contaran para el `LIMIT` y no movieran `next_seq`).
+
+#### Notas de despliegue y operación
+
+- **Reenvío de filas idempotentes.** Mientras el cursor no avance (la fila puente es una factura, que no es tabla del pull) la misma fila de entrada se vuelve a entregar en cada pull. Es esperado: en la sucursal `apply_guard.row_already_present` lo convierte en no-op.
+- **Puentes confirmados tarde.** Una fila puente que se confirma con `created_at` menor al cursor actual no se recupera: es la limitación previa del cursor por `created_at`, no algo nuevo de este cambio. Mitigación: un pull con `since_seq = 0` (o reiniciar el cursor de la sucursal).
+- **Las filas de entrada no cuentan para el `LIMIT`.** Solo se corta la página. Una asignación masiva (p. ej. cientos de usuarios o clientes que entran al alcance de una sucursal a la vez) puede producir una respuesta única grande.
+- **Sin reinicio de cursores al desplegar.** No hace falta resetear los cursores de las sucursales: antes de este cambio cada sucursal recibía todo, así que no hay filas faltantes que recuperar.
+- **Índice de la ventana de facturas.** `ix_factura_electronica_sucursal_created_at (uuid_sucursal, created_at)` (migración `0083`) sirve la ventana de `_branch_referenced_clientes`; sin él, una sucursal con cientos de miles de facturas paga un recorrido secuencial paralelo (≈100 ms con 300 000) en cada pull.
 
 ### Lo que nunca se entrega
 

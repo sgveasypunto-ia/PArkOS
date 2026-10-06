@@ -36,7 +36,15 @@ _EXPECTED = {
         "factura_electronica",
         "uuid_sucursal, uuid_cliente",
     ),
+    "ix_factura_electronica_sucursal_created_at": (
+        "factura_electronica",
+        "uuid_sucursal, created_at",
+    ),
 }
+
+
+def test_expected_index_count() -> None:
+    assert len(_EXPECTED) == 11
 
 
 @pytest.mark.parametrize("name", sorted(_EXPECTED))

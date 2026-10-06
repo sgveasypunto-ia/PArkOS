@@ -938,11 +938,12 @@ async def _fetch_pull_rows(
             if spec.direction not in _PULL_DIRECTIONS or spec.broadcast_policy != "derived":
                 continue
             model = spec.model_cls
-            scope = build_scope_predicate(spec, uuid_sucursal)
+            # The entry predicate already implies the scope (a windowed subset of it;
+            # ``empresa`` carries the scope itself), so it is not ANDed with it again.
             entry = build_scope_entry_predicate(spec, uuid_sucursal, floor, ceiling)
-            if scope is None or entry is None:
+            if entry is None:
                 continue
-            stmt = select(model).where(scope, entry)
+            stmt = select(model).where(entry)
             if spec.audit_class == "V":
                 stmt = stmt.where(model.vigente_hasta.is_(None))
             stmt = stmt.order_by(model.created_at.asc(), model.uuid.asc())

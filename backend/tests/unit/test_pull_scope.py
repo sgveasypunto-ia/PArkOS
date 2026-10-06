@@ -396,10 +396,14 @@ def test_vehiculos_entry_is_new_when_either_the_subscription_or_the_link_is_new(
 
 
 def test_empresa_entry_is_a_branch_row_created_in_the_window() -> None:
-    assert _entry("empresa") == (
+    where = _entry("empresa")
+    # The window trigger (the branch row is new) ...
+    assert (
         "EXISTS (SELECT prod.sucursal.uuid FROM prod.sucursal "
         f"WHERE prod.sucursal.uuid = '{BRANCH}' AND prod.sucursal.{_GE})"
-    )
+    ) in where
+    # ... AND the empresa scope: the window alone does not name the empresa.
+    assert "prod.empresa.nit IN" in where
 
 
 def test_entry_predicate_for_derived_without_rule_raises() -> None:
