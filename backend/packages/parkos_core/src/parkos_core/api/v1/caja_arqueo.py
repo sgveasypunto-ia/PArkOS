@@ -403,7 +403,7 @@ async def post_arqueo(
             valor_efectivo_esperado=esperado_efectivo,
             valor_datafono_esperado=esperado_datafono,
             valor_efectivo_reportado=payload.valor_efectivo_reportado,
-            valor_datafono_reportado=payload.valor_datafono_reportado,
+            valor_datafono_reportado=payload.valor_datafono_reportado or Decimal(0),
             diferencia_efectivo=diferencia_efectivo,
             diferencia_datafono=diferencia_datafono,
             descuadre_pct=descuadre_pct,
@@ -467,11 +467,8 @@ async def post_arqueo(
         codigo_tipo_arqueo=tipo_arqueo.codigo,
         uuid_sesion=payload.uuid_sesion,
         valor_efectivo_esperado=esperado_efectivo,
-        valor_datafono_esperado=esperado_datafono,
         valor_efectivo_reportado=payload.valor_efectivo_reportado,
-        valor_datafono_reportado=payload.valor_datafono_reportado,
         diferencia_efectivo=diferencia_efectivo,
-        diferencia_datafono=diferencia_datafono,
         descuadre_pct=descuadre_pct,
         alerta_generada=alerta_generada,
         alerta_uuid=alerta_uuid,
@@ -629,6 +626,12 @@ async def get_arqueo_resumen(
         resumen_dict = await repo_arqueo.construir_resumen_sesion(
             session, sesion=sesion
         )
+        # F12.1.1 / REQ-OPS-192: strip datafono keys (still emitted by
+        # the repo for backward-compat until Phase 5 drops them
+        # entirely). ``ArqueoResumenItem`` is ``extra='forbid'`` so we
+        # MUST drop unknown keys before ``**resumen_dict`` expansion.
+        resumen_dict.pop("valor_datafono_esperado", None)
+        resumen_dict.pop("valor_datafono_reportado", None)
         items.append(ArqueoResumenItem(**resumen_dict))
 
     # --- Step 5 (G5): cierre_dia aggregate (if exists for fecha+sucursal) ---
@@ -637,6 +640,10 @@ async def get_arqueo_resumen(
         uuid_sucursal=params.uuid_sucursal,
         fecha=params.fecha,
     )
+    if cierre_dia_dict is not None:
+        # F12.1.1 / REQ-OPS-192: strip datafono keys (see comment above).
+        cierre_dia_dict.pop("valor_datafono_esperado", None)
+        cierre_dia_dict.pop("valor_datafono_reportado", None)
     cierre_dia_item: ArqueoResumenItem | None = (
         ArqueoResumenItem(**cierre_dia_dict) if cierre_dia_dict is not None else None
     )
@@ -736,13 +743,17 @@ def _row_to_admin_item(row: dict) -> ArqueoResumenAdminItem:
     The repo produces ``dict[str, Any]`` because its return type is
     shared across helpers; the route handler does the conversion at
     the wire boundary.
+
+    The ``esperado_datafono`` key is dropped from the response per
+    REQ-OPS-097 modified (F12.1.1): the repo still emits the key for
+    backward-compat but the wire shape no longer surfaces it. Phase 5
+    will remove the key entirely from the repo dict.
     """
     cierre = row.get("cierre_dia")
     return ArqueoResumenAdminItem(
         uuid_sucursal=row["uuid_sucursal"],
         nombre=row.get("nombre"),
         esperado_efectivo=row.get("esperado_efectivo"),
-        esperado_datafono=row.get("esperado_datafono"),
         cierre_dia=(
             ArqueoResumenItem(**cierre) if cierre is not None else None
         ),
