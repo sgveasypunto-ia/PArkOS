@@ -60,12 +60,16 @@ const alertaBaseShape = {
   uuid_arqueo: z.string().uuid().nullable(),
   tipo_alerta: z.string().nullable(),
   valor_diferencia_efectivo: z.string().nullable(),
-  valor_diferencia_datafono: z.string().nullable(),
+  // The backend no longer sends the datafono difference (cash-only cuadre);
+  // keep it optional so legacy payloads still parse.
+  valor_diferencia_datafono: z.string().nullable().optional(),
   uuid_alerta_padre: z.string().uuid().nullable(),
   timestamp_evento: z.string().nullable(),
   vigente_desde: z.string().nullable(),
   vigente_hasta: z.string().nullable(),
-  estado: z.enum(ALERTA_ESTADOS).nullable(),
+  // Legacy rows were written with `estado = 'activo'`; read them as `abierta`
+  // so a single old row does not make the whole inbox fail to parse.
+  estado: z.preprocess((v) => (v === 'activo' ? 'abierta' : v), z.enum(ALERTA_ESTADOS).nullable()),
   // Free-form event payload. For `suscripcion_placa_agregada|quitada` it is
   // {placa, accion, uuid_subscripcion, uuid_vehiculo, uuid_sucursal, actor}.
   // Optional/nullable: older servers do not expose it.
