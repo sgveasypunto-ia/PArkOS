@@ -32,12 +32,15 @@ import uuid as uuid_lib
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, or_, select
+from sqlalchemy import ColumnElement, CompoundSelect, Select, func, or_, select, tuple_
+from sqlalchemy.orm import aliased
 
 from ...models.L_E.factura_electronica import FacturaElectronica
+from ...models.V.clientes import Clientes
 from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.usuarios_sucursal import UsuariosSucursal
+from ...models.V.vehiculos import Vehiculos
 from ..catalog.schema import SyncCatalogEntry
 from .broadcast_resolver import _TRANSITIVE_SUBSCRIPTION_PARENT
 
@@ -69,46 +72,94 @@ def _permisos_usuario_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnEl
     return model.uuid_usuario.in_(_branch_member_usuarios(uuid_sucursal))
 
 
-def _cliente_in_branch_scope(cliente_column: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
-    """``cliente_column`` references a cliente known to ``uuid_sucursal``.
+def _nk_numero(column: Any) -> ColumnElement[str]:
+    """Natural-key form of ``numero_identificacion``: separators stripped.
+
+    Must stay identical to the expression of ``ix_clientes_nk_open`` (migration
+    0008) and to ``identity_lookup._resolve_clientes``.
+    """
+    return func.regexp_replace(column, "[^0-9A-Za-z]", "", "g")
+
+
+def _nk_placa(column: Any) -> ColumnElement[str]:
+    """Natural-key form of ``placa``: separators stripped, upper-cased.
+
+    Must stay identical to the expression of ``ix_vehiculos_nk_open`` (migration
+    0008) and to ``identity_lookup._resolve_vehiculos``.
+    """
+    return func.upper(func.regexp_replace(column, "[^0-9A-Za-z]", "", "g"))
+
+
+def _branch_referenced_clientes(uuid_sucursal: uuid_lib.UUID) -> CompoundSelect[Any]:
+    """``uuid`` of every cliente VERSION the branch references.
 
     A cliente is known to a branch when it holds a ``subscripciones_cliente`` row
-    there OR an emitted ``factura_electronica`` there. Defined once: ``clientes``
-    (own ``uuid``) and ``clientes_b2b`` (``uuid_cliente``) share it.
-
-    Subscriptions are NOT filtered by ``vigente_hasta``: a renewal inserts a new
-    row, and a client whose subscription closed but who was invoiced at the branch
-    stays covered by the invoice branch, so a vigencia filter would add no rows
-    and would make the rule depend on subscription lifecycle. There is no
-    ``sync_identity_alias`` branch: that table has no sucursal column, is
-    local-only and has no writer. Indexes: ``ix_subscripciones_cliente_sucursal_cliente``
-    and ``ix_factura_electronica_sucursal_cliente`` (migration 0083).
+    there OR an emitted ``factura_electronica`` there. Subscriptions are NOT
+    filtered by ``vigente_hasta`` (a renewal inserts a new row; a client invoiced
+    at the branch stays covered). There is no ``sync_identity_alias`` branch: that
+    table has no sucursal column, is local-only and has no writer. Indexes:
+    ``ix_subscripciones_cliente_sucursal_cliente`` and
+    ``ix_factura_electronica_sucursal_cliente`` (migration 0083).
     """
-    from_subscription = select(SubscripcionesCliente.uuid_cliente).where(
+    return select(SubscripcionesCliente.uuid_cliente).where(
         SubscripcionesCliente.uuid_sucursal == uuid_sucursal
+    ).union(
+        select(FacturaElectronica.uuid_cliente).where(
+            FacturaElectronica.uuid_sucursal == uuid_sucursal
+        )
     )
-    from_invoice = select(FacturaElectronica.uuid_cliente).where(
-        FacturaElectronica.uuid_sucursal == uuid_sucursal
+
+
+def _branch_cliente_keys(uuid_sucursal: uuid_lib.UUID) -> Select[Any]:
+    """Natural keys ``(tipo_identificador, numero)`` of the clientes the branch knows.
+
+    The references above point at a cliente by ``uuid``, and a [V] version bump
+    (``close_and_insert``) mints a NEW uuid while the references keep the OLD,
+    closed one (the invoice table is append-only and nothing repoints them). So
+    scope is resolved by NATURAL KEY: the key of ANY version (open or closed) the
+    branch references is in scope and every open version carrying it is delivered.
+    Defined once: ``clientes`` and ``clientes_b2b`` share it.
+    """
+    known = aliased(Clientes)
+    return select(known.tipo_identificador, _nk_numero(known.numero_identificacion)).where(
+        known.uuid.in_(_branch_referenced_clientes(uuid_sucursal))
     )
-    return or_(cliente_column.in_(from_subscription), cliente_column.in_(from_invoice))
 
 
 def _clientes_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
-    return _cliente_in_branch_scope(model.uuid, uuid_sucursal)
+    # The uuid branch keeps rows WITHOUT a natural key (NULL tipo/numero, which
+    # ``identity_lookup`` cannot resolve either) delivered, as before.
+    return or_(
+        model.uuid.in_(_branch_referenced_clientes(uuid_sucursal)),
+        tuple_(model.tipo_identificador, _nk_numero(model.numero_identificacion)).in_(
+            _branch_cliente_keys(uuid_sucursal)
+        ),
+    )
 
 
 def _clientes_b2b_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
-    return _cliente_in_branch_scope(model.uuid_cliente, uuid_sucursal)
+    """A b2b row follows its cliente by natural key: ``uuid_cliente`` may point at a
+    closed version of a cliente whose key the branch knows."""
+    version = aliased(Clientes)
+    versions_in_scope = select(version.uuid).where(
+        tuple_(version.tipo_identificador, _nk_numero(version.numero_identificacion)).in_(
+            _branch_cliente_keys(uuid_sucursal)
+        )
+    )
+    return or_(
+        model.uuid_cliente.in_(_branch_referenced_clientes(uuid_sucursal)),
+        model.uuid_cliente.in_(versions_in_scope),
+    )
 
 
-def _vehiculos_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
-    """Vehicles linked, through ``subscripcion_vehiculos``, to a subscription sold
-    at ``uuid_sucursal``. No vigencia filter on the subscription (a renewal inserts
-    a new row) and no ``sync_identity_alias`` branch (no sucursal column, local-only).
-    Served by the UK of ``subscripcion_vehiculos`` plus the
-    ``subscripciones_cliente (uuid_sucursal, ...)`` indexes of migration 0083.
+def _branch_linked_vehiculos(uuid_sucursal: uuid_lib.UUID) -> Select[Any]:
+    """``uuid`` of every vehiculo VERSION linked, through ``subscripcion_vehiculos``,
+    to a subscription sold at ``uuid_sucursal``. No vigencia filter on the
+    subscription (a renewal inserts a new row) and no ``sync_identity_alias`` branch
+    (no sucursal column, local-only). Served by the UK of ``subscripcion_vehiculos``
+    plus the ``subscripciones_cliente (uuid_sucursal, ...)`` indexes of migration 0083.
     """
-    from_subscription = (
+    return (
         select(SubscripcionVehiculos.uuid_vehiculo)
         .join(
             SubscripcionesCliente,
@@ -116,7 +167,20 @@ def _vehiculos_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[b
         )
         .where(SubscripcionesCliente.uuid_sucursal == uuid_sucursal)
     )
-    return model.uuid.in_(from_subscription)
+
+
+def _vehiculos_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
+    """Vehicles linked to the branch, matched by the normalized ``placa`` of ANY
+    linked version: the link references a vehiculo by uuid, which a version bump
+    replaces. The uuid branch keeps keyless (NULL ``placa``) rows delivered."""
+    known = aliased(Vehiculos)
+    keys = select(_nk_placa(known.placa)).where(
+        known.uuid.in_(_branch_linked_vehiculos(uuid_sucursal))
+    )
+    return or_(
+        model.uuid.in_(_branch_linked_vehiculos(uuid_sucursal)),
+        _nk_placa(model.placa).in_(keys),
+    )
 
 
 _DERIVED_RULES["usuarios"] = _usuarios_rule

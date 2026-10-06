@@ -144,24 +144,42 @@ def test_permisos_usuario_scope_reuses_the_membership_subselect() -> None:
 # derived — clientes / clientes_b2b follow a subscription or an invoice
 # ---------------------------------------------------------------------------
 
-_CLIENTES_FROM_SUBSCRIPTION = (
+_NK_NUMERO = "regexp_replace({t}.numero_identificacion, '[^0-9A-Za-z]', '', 'g')"
+_NK_PLACA = "upper(regexp_replace({t}.placa, '[^0-9A-Za-z]', '', 'g'))"
+
+# Any cliente version (open or closed) the branch references, by uuid.
+_REFERENCED_CLIENTES = (
     "(SELECT prod.subscripciones_cliente.uuid_cliente FROM prod.subscripciones_cliente "
-    f"WHERE prod.subscripciones_cliente.uuid_sucursal = '{BRANCH}')"
-)
-_CLIENTES_FROM_INVOICE = (
-    "(SELECT prod.factura_electronica.uuid_cliente FROM prod.factura_electronica "
+    f"WHERE prod.subscripciones_cliente.uuid_sucursal = '{BRANCH}' "
+    "UNION SELECT prod.factura_electronica.uuid_cliente FROM prod.factura_electronica "
     f"WHERE prod.factura_electronica.uuid_sucursal = '{BRANCH}')"
 )
 
 
-def test_clientes_scope_is_subscription_or_invoice_at_the_branch() -> None:
+def _cliente_keys(alias: str) -> str:
+    return (
+        f"(SELECT {alias}.tipo_identificador, {_NK_NUMERO.format(t=alias)} AS regexp_replace_1 "
+        f"FROM prod.clientes AS {alias} WHERE {alias}.uuid IN {_REFERENCED_CLIENTES})"
+    )
+
+
+def test_clientes_scope_matches_by_natural_key_of_any_referenced_version() -> None:
     spec = SYNC_CATALOG_BY_NAME["clientes"]
     assert spec.broadcast_policy == "derived"
     assert spec.direction == "bidirectional"
     assert _sql("clientes") == (
-        f"prod.clientes.uuid IN {_CLIENTES_FROM_SUBSCRIPTION} "
-        f"OR prod.clientes.uuid IN {_CLIENTES_FROM_INVOICE}"
+        f"prod.clientes.uuid IN {_REFERENCED_CLIENTES} OR "
+        f"(prod.clientes.tipo_identificador, {_NK_NUMERO.format(t='prod.clientes')}) "
+        f"IN {_cliente_keys('clientes_1')}"
     )
+
+
+def test_clientes_scope_key_includes_tipo_identificador() -> None:
+    """Same number under another ``tipo_identificador`` is another client."""
+    where = _sql("clientes")
+    assert where is not None
+    assert "(prod.clientes.tipo_identificador, regexp_replace(" in where
+    assert "SELECT clientes_1.tipo_identificador, regexp_replace(" in where
 
 
 def test_clientes_scope_has_no_vigencia_filter_nor_alias_branch() -> None:
@@ -174,13 +192,16 @@ def test_clientes_scope_has_no_vigencia_filter_nor_alias_branch() -> None:
     assert "sync_identity_alias" not in where
 
 
-def test_clientes_b2b_scope_follows_its_cliente() -> None:
+def test_clientes_b2b_scope_follows_its_cliente_by_natural_key() -> None:
     spec = SYNC_CATALOG_BY_NAME["clientes_b2b"]
     assert spec.broadcast_policy == "derived"
     assert spec.direction == "bidirectional"
     assert _sql("clientes_b2b") == (
-        f"prod.clientes_b2b.uuid_cliente IN {_CLIENTES_FROM_SUBSCRIPTION} "
-        f"OR prod.clientes_b2b.uuid_cliente IN {_CLIENTES_FROM_INVOICE}"
+        f"prod.clientes_b2b.uuid_cliente IN {_REFERENCED_CLIENTES} OR "
+        "prod.clientes_b2b.uuid_cliente IN (SELECT clientes_1.uuid "
+        "FROM prod.clientes AS clientes_1 "
+        f"WHERE (clientes_1.tipo_identificador, {_NK_NUMERO.format(t='clientes_1')}) "
+        f"IN {_cliente_keys('clientes_2')})"
     )
 
 
@@ -189,16 +210,25 @@ def test_clientes_b2b_scope_follows_its_cliente() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_vehiculos_scope_is_subscription_at_the_branch() -> None:
+_LINKED_VEHICULOS = (
+    "(SELECT prod.subscripcion_vehiculos.uuid_vehiculo "
+    "FROM prod.subscripcion_vehiculos JOIN prod.subscripciones_cliente "
+    "ON prod.subscripciones_cliente.uuid = "
+    "prod.subscripcion_vehiculos.uuid_subscripcion_cliente "
+    f"WHERE prod.subscripciones_cliente.uuid_sucursal = '{BRANCH}')"
+)
+
+
+def test_vehiculos_scope_matches_by_normalized_placa_of_any_linked_version() -> None:
     spec = SYNC_CATALOG_BY_NAME["vehiculos"]
     assert spec.broadcast_policy == "derived"
     assert spec.direction == "bidirectional"
     assert _sql("vehiculos") == (
-        "prod.vehiculos.uuid IN (SELECT prod.subscripcion_vehiculos.uuid_vehiculo "
-        "FROM prod.subscripcion_vehiculos JOIN prod.subscripciones_cliente "
-        "ON prod.subscripciones_cliente.uuid = "
-        "prod.subscripcion_vehiculos.uuid_subscripcion_cliente "
-        f"WHERE prod.subscripciones_cliente.uuid_sucursal = '{BRANCH}')"
+        f"prod.vehiculos.uuid IN {_LINKED_VEHICULOS} OR "
+        f"{_NK_PLACA.format(t='prod.vehiculos')} IN "
+        f"(SELECT {_NK_PLACA.format(t='vehiculos_1')} AS upper_1 "
+        "FROM prod.vehiculos AS vehiculos_1 "
+        f"WHERE vehiculos_1.uuid IN {_LINKED_VEHICULOS})"
     )
 
 
@@ -207,3 +237,15 @@ def test_vehiculos_scope_has_no_vigencia_filter_nor_alias_branch() -> None:
     assert where is not None
     assert "vigente_hasta" not in where
     assert "sync_identity_alias" not in where
+
+
+def test_natural_key_expressions_match_the_identity_indexes() -> None:
+    """The scope SQL uses the exact expressions of ``ix_clientes_nk_open`` /
+    ``ix_vehiculos_nk_open`` (migration 0008), or the planner could not use them."""
+    from pathlib import Path
+
+    migration = next(
+        Path(__file__).parents[2].glob("packages/parkos_core/migrations/versions/0008_*.py")
+    ).read_text(encoding="utf-8")
+    assert "regexp_replace(numero_identificacion, '[^0-9A-Za-z]', '', 'g')" in migration
+    assert "upper(regexp_replace(placa, '[^0-9A-Za-z]', '', 'g'))" in migration
