@@ -14,9 +14,10 @@ Observed end to end (real HTTP, ``PARKOS_SYNC_ENGINE=catalog``):
 * ``reconciliation`` writes NO ``sync_identity_alias`` row and never rewrites a FK
   (Phase 0 finding), so nothing links B's uuid to A's.
 
-The tests that PASS pin the behavior that holds. The ``xfail(strict=True)`` tests
-pin the REAL GAPS this exposes, stating the behavior that would be correct; each
-flips to a hard failure the day the gap is closed, forcing the marker off.
+The derived scope matches by NATURAL KEY, so a version bump (new uuid, referencing
+rows still on the old one) keeps the open version in scope. The one remaining
+``xfail(strict=True)`` pins the pre-existing identical-data FK gap; it flips to a hard
+failure the day the gap is closed, forcing the marker off.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ pytestmark = pytest.mark.parametrize("app", ["admin"], indirect=True)
 #: 500-row pull cap of later tests is not crowded by this module's leftovers.
 _TOUCHED = (
     "clientes",
+    "clientes_b2b",
     "subscripciones_cliente",
     "usuarios",
     "usuarios_sucursal",
@@ -232,17 +234,6 @@ async def test_divergent_b_receives_the_canonical_row_once_it_subscribes(world: 
     assert pulled == {str(x_b.uuid)}, "B gets its own canonical row, once, and not A's closed one"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GAP: the derived scope matches clientes by uuid, but a [V] version bump mints a new "
-        "uuid and subscripciones_cliente / factura_electronica keep pointing at the OLD one "
-        "(close_and_insert never rewrites those FKs; readers resolve by natural key via "
-        "v_clientes_actual). After the cloud closes A's version and opens B's, A's scope "
-        "('uuid IN subscription/invoice cliente ids') matches only the closed row, so A is "
-        "never sent the canonical open version. all_branches used to deliver it."
-    ),
-)
 async def test_divergent_a_receives_the_canonical_open_version(world: World) -> None:
     x_b = world.b_version(same_data=False)
     await _push(world.client, world.tok_b, "clientes", x_b)
@@ -251,14 +242,6 @@ async def test_divergent_a_receives_the_canonical_open_version(world: World) -> 
     assert pulled == {str(x_b.uuid)}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GAP (same root cause as the divergent case, no reconciliation needed): editing a "
-        "subscribed cliente at the cloud (close_and_insert -> new uuid) leaves the branch's "
-        "subscription pointing at the closed version, so the edit never reaches the branch."
-    ),
-)
 async def test_cloud_edit_of_a_subscribed_cliente_reaches_the_branch(world: World) -> None:
     from parkos_core.repo import versioned
 
@@ -357,14 +340,6 @@ async def test_cloud_edit_of_a_member_usuario_reaches_the_branch(world: World) -
     assert str(user.uuid) not in pulled
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GAP (same root cause as the cliente version bump): subscripcion_vehiculos keeps "
-        "pointing at the closed vehiculos uuid after close_and_insert, so the branch's "
-        "subscription no longer matches the open version and the edit is never delivered."
-    ),
-)
 async def test_cloud_edit_of_a_subscribed_vehiculo_reaches_the_branch(world: World) -> None:
     from parkos_core.repo import versioned
     from sqlalchemy import select
@@ -397,3 +372,122 @@ async def test_cloud_edit_of_a_subscribed_vehiculo_reaches_the_branch(world: Wor
 
     pulled = {u for t, u in await _pull(world.client, world.tok_a, world.since) if t == "vehiculos"}
     assert pulled == {str(edited.uuid)}
+
+
+# ---------------------------------------------------------------------------
+# natural-key scoping: what must NOT be delivered
+# ---------------------------------------------------------------------------
+
+
+async def test_cliente_with_an_unrelated_key_is_not_delivered(world: World) -> None:
+    """A cliente known only to branch B (or to nobody) stays out of A's pull even
+    though natural-key matching is now in play."""
+    from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
+
+    async with world.sessions() as s:
+        only_b = world.factory.build(
+            _model("clientes"), tipo_identificador="CC", numero_identificacion=f"B{world.key}"
+        )
+        nobody = world.factory.build(
+            _model("clientes"), tipo_identificador="CC", numero_identificacion=f"N{world.key}"
+        )
+        s.add_all([only_b, nobody])
+        await s.commit()
+        s.add(
+            world.factory.build(
+                SubscripcionesCliente,
+                uuid_sucursal=world.suc_b,
+                uuid_cliente=only_b.uuid,
+                uuid_tipo_subscripcion=world.tipo,
+            )
+        )
+        await s.commit()
+
+    for_a = world.clientes(await _pull(world.client, world.tok_a, world.since))
+    assert for_a == {str(world.x_a.uuid)}
+    for_b = world.clientes(await _pull(world.client, world.tok_b, world.since))
+    assert for_b == {str(only_b.uuid)}
+
+
+async def test_same_number_with_another_tipo_identificador_is_not_conflated(world: World) -> None:
+    async with world.sessions() as s:
+        other_tipo = world.factory.build(
+            _model("clientes"), tipo_identificador="NIT", numero_identificacion=world.key
+        )
+        s.add(other_tipo)
+        await s.commit()
+
+    pulled = world.clientes(await _pull(world.client, world.tok_a, world.since))
+    assert pulled == {str(world.x_a.uuid)}, "a NIT sharing the number is another client"
+
+
+async def test_cliente_matched_through_a_formatted_number(world: World) -> None:
+    """The key is normalized like ``ix_clientes_nk_open``: separators do not matter."""
+    from parkos_core.repo import versioned
+
+    async with world.sessions() as s:
+        edited = await versioned.close_and_insert(
+            s,
+            _model("clientes"),
+            current_uuid=world.x_a.uuid,
+            new_attrs={"numero_identificacion": f"{world.key[:3]}-{world.key[3:]}"},
+            actor_uuid=uuid_lib.uuid4(),
+            log_tx=False,
+        )
+        await s.commit()
+
+    pulled = world.clientes(await _pull(world.client, world.tok_a, world.since))
+    assert pulled == {str(edited.uuid)}
+
+
+async def test_cloud_edit_of_a_subscribed_cliente_reaches_the_branch_with_its_b2b(
+    world: World,
+) -> None:
+    """A b2b row keeps pointing at the closed cliente version; it still follows the key."""
+    from parkos_core.repo import versioned
+
+    async with world.sessions() as s:
+        b2b = world.factory.build(_model("clientes_b2b"), uuid_cliente=world.x_a.uuid)
+        s.add(b2b)
+        await s.commit()
+        edited = await versioned.close_and_insert(
+            s,
+            _model("clientes"),
+            current_uuid=world.x_a.uuid,
+            new_attrs={"telefono": "3000000001"},
+            actor_uuid=uuid_lib.uuid4(),
+            log_tx=False,
+        )
+        await s.commit()
+
+    pulled = await _pull(world.client, world.tok_a, world.since)
+    assert world.clientes(pulled) == {str(edited.uuid)}
+    assert {u for t, u in pulled if t == "clientes_b2b"} == {str(b2b.uuid)}
+    # the other branch does not get the client's b2b row
+    for_b = await _pull(world.client, world.tok_b, world.since)
+    assert not [u for t, u in for_b if t == "clientes_b2b"]
+
+
+async def test_vehiculo_with_an_unrelated_placa_is_not_delivered(world: World) -> None:
+    from sqlalchemy import select
+
+    sub = _model("subscripciones_cliente")
+    async with world.sessions() as s:
+        linked = world.factory.build(_model("vehiculos"), placa=f"L{uuid_lib.uuid4().hex[:6]}")
+        stranger = world.factory.build(_model("vehiculos"), placa=f"S{uuid_lib.uuid4().hex[:6]}")
+        s.add_all([linked, stranger])
+        await s.commit()
+        sc_a = (
+            await s.execute(select(sub).where(sub.uuid_sucursal == world.suc_a))
+        ).scalars().one()
+        s.add(
+            world.factory.build(
+                _model("subscripcion_vehiculos"),
+                uuid_subscripcion_cliente=sc_a.uuid,
+                uuid_vehiculo=linked.uuid,
+            )
+        )
+        await s.commit()
+
+    pulled = {u for t, u in await _pull(world.client, world.tok_a, world.since) if t == "vehiculos"}
+    assert pulled == {str(linked.uuid)}
