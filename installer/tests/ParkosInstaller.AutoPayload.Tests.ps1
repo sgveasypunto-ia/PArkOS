@@ -247,7 +247,7 @@ Describe 'Invoke-ParkosPreparePayload (-Command Prepare)' {
     Mock Get-ParkosRepoRoot { 'C:\repo' }
     Mock Get-ParkosMissingBuildTools { $script:MissingTools }
     Mock Resolve-ParkosMasterKeySource { $script:KeySource }
-    Mock Import-ParkosMasterKey { $script:Calls += "import:$SourcePath" }
+    Mock Set-ParkosMasterKeyOverride { $script:Calls += "import:$SourcePath" }
     Mock Get-ParkosMasterKeyProblem { $script:KeyProblem }
     Mock Stop-ParkosPayloadProcesses { $script:Calls += 'stop'; 0 }
     Mock Invoke-ParkosBuildReleaseScript { $script:Calls += ('build:' + ($Switches -join '+')); 0 }
