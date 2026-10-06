@@ -8,8 +8,8 @@
  * presentational only — it does NOT fetch the resumen itself).
  *
  * Aggregate-justification rule (REQ-OPS-164 scenario 2 + AD-4): when
- * `Σ|valor_efectivo_reportado - valor_efectivo_esperado| +
- * |valor_datafono_reportado - valor_datafono_esperado|| > 0`,
+ * `Σ|valor_efectivo_reportado - valor_efectivo_esperado| > 0`
+ * (PT-6: the cuadre is efectivo-only — no datáfono),
  * `justificacion` is REQUIRED (`min(3)` after trim) and the
  * Confirmar button stays disabled while the field is invalid.
  *
@@ -50,7 +50,6 @@ export interface CierreDiarioFormProps {
   sesiones: ArqueoResumenPorSesion['sesiones'];
   totals: {
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     diferencia: number;
   };
   cierreDiaExists: boolean;
@@ -58,12 +57,10 @@ export interface CierreDiarioFormProps {
   fecha: string;
   form: UseFormReturn<{
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     justificacion: string;
   }>;
   onSubmit: (values: {
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     justificacion?: string;
   }) => Promise<void>;
   onCancel: () => void;
@@ -94,7 +91,6 @@ export function CierreDiarioForm(props: {
   sesiones: ArqueoResumenPorSesion['sesiones'];
   totals: {
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     diferencia: number;
   };
   cierreDiaExists: boolean;
@@ -102,12 +98,10 @@ export function CierreDiarioForm(props: {
   fecha: string;
   form: UseFormReturn<{
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     justificacion: string;
   }>;
   onSubmit: (values: {
     valor_efectivo_reportado: number;
-    valor_datafono_reportado: number;
     justificacion?: string;
   }) => Promise<void>;
   onCancel: () => void;
@@ -187,10 +181,7 @@ export function CierreDiarioForm(props: {
                 const diferencia =
                   s.valor_efectivo_reportado !== null &&
                   s.valor_efectivo_esperado !== null
-                    ? s.valor_efectivo_reportado -
-                      s.valor_efectivo_esperado +
-                      (s.valor_datafono_reportado ?? 0) -
-                      (s.valor_datafono_esperado ?? 0)
+                    ? s.valor_efectivo_reportado - s.valor_efectivo_esperado
                     : null;
                 return (
                   <tr
@@ -323,32 +314,6 @@ export function CierreDiarioForm(props: {
                 id="cierre-diario-valor-efectivo-msg"
                 data-testid="cierre-diario-valor-efectivo-error"
               />
-            </FormItem>
-          )}
-        />
-
-        {/* ── Datáfono reportado ────────────────────────────────────── */}
-        <FormField
-          control={props.form.control}
-          name="valor_datafono_reportado"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>
-                {t('caja:valorDatafonoReportado', {
-                  defaultValue: 'Datáfono contado',
-                })}
-              </FormLabel>
-              <FormControl>
-                <MoneyInput
-                  inputTestId="cierre-diario-valor-datafono"
-                  value={field.value}
-                  onChange={(raw) => field.onChange(raw === '' ? 0 : Number(raw))}
-                  onBlur={field.onBlur}
-                  name={field.name}
-                  ref={field.ref}
-                />
-              </FormControl>
-              <FormMessage data-testid="cierre-diario-valor-datafono-error" />
             </FormItem>
           )}
         />

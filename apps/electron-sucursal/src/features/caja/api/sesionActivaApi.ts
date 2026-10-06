@@ -73,7 +73,11 @@ export interface SesionCreate {
 /** Cuerpo PUT /caja-sesion/sesion/{uuid}/cerrar (F1.13 backend Pydantic). */
 export interface SesionCerrarRequest {
   valor_final_efectivo: number;
-  valor_final_datafono: number;
+  /**
+   * Opcional (PT-6): el datáfono ya no se cuenta ni se concilia al cerrar el
+   * turno; el backend lo acepta nullable (`SesionCerrarRequest`).
+   */
+  valor_final_datafono?: number;
   observaciones_cierre?: string;
 }
 

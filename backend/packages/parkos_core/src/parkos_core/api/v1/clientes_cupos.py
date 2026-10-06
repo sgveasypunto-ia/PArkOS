@@ -21,6 +21,12 @@ plan + conteo de inscritos).
      no expone ``estado`` como campo (ver schemas/clientes.py), así que
      nunca podría viajar la transición en el payload.
 
+PT-2: ``agregar`` y ``quitar`` exigen el permiso
+``gestionar_placas_suscripcion`` (403 ``permission_denied``), exigen
+contexto de sucursal (un token ``admin-`` debe mandar ``X-Sucursal-Context``
+dentro de sus sucursales permitidas), no generan cobro/factura, y dejan
+``log_transaccional`` (con la placa) + una alerta info para el administrador.
+
 Cada handler mantiene el invariante de un solo ``await session.commit()``
 (mismo KD-VENTA-01 que ``clientes_venta.py``).
 """
@@ -32,7 +38,8 @@ import uuid as uuid_lib
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...auth.tenancy import TenantContext, get_tenant_ctx
+from ...auth.permissions import require_permission
+from ...auth.tenancy import TenantContext, get_tenant_ctx, requires_sucursal
 from ...db.engine import get_session
 from ...repo import cupos_subscripcion as repo_cupos
 from ...repo import venta_suscripcion as repo_venta
@@ -58,6 +65,12 @@ from . import _helpers
 router = APIRouter(tags=["clientes"])
 
 _cupos_issuer_dep = requires_issuer("operador-", "admin-")
+
+# PT-2: solo el perfil con ``gestionar_placas_suscripcion`` (Supervisor)
+# puede agregar/quitar placas. Se valida en BACKEND (permiso en vivo contra
+# permisos_usuario), no solo en la UI. Las lecturas siguen abiertas.
+PERMISO_GESTIONAR_PLACAS = "gestionar_placas_suscripcion"
+_placas_permission_dep = require_permission(PERMISO_GESTIONAR_PLACAS)
 
 
 def _to_cliente_resumen(cliente) -> ClienteResumen:
@@ -155,17 +168,29 @@ async def buscar_subscripcion_por_identificacion(
     response_model=SubscripcionCupoDetalle,
     status_code=201,
     responses={
+        403: {"description": "permission_denied (gestionar_placas_suscripcion)"},
         404: {"description": "subscripcion_no_encontrada"},
-        409: {"description": "vehiculo_ya_inscrito"},
-        422: {"description": "cantidad_maxima_excedida / tipo_vehiculo_incompatible"},
+        409: {
+            "description": (
+                "vehiculo_ya_inscrito / placa_con_suscripcion_activa "
+                "(activa en otra suscripcion de la MISMA sucursal)"
+            )
+        },
+        422: {
+            "description": (
+                "cantidad_maxima_excedida / tipo_vehiculo_incompatible / "
+                "tipo_vehiculo_plan_incompatible"
+            )
+        },
     },
 )
 async def agregar_vehiculo(
     response: Response,
     payload: AgregarVehiculoCupoRequest,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_cupos_issuer_dep),
+    _perm: dict = Depends(_placas_permission_dep),  # noqa: B008
+    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
 ) -> SubscripcionCupoDetalle:
     """Paso 3 del Sheet: agrega un vehículo a una suscripción existente,
     validando cupo (V6) y mismo-tipo (V5) ANTES de tocar la base."""
@@ -182,15 +207,64 @@ async def agregar_vehiculo(
             headers=no_store,
         ) from exc
 
+    # Defensa en profundidad: la suscripcion debe ser de la sucursal del
+    # contexto (el listener de tenancy ya filtra; esto cubre el modo global).
+    if detalle.subscripcion.uuid_sucursal != ctx.sucursal_uuid:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "subscripcion_no_encontrada"},
+            headers=no_store,
+        )
+
     nuevo_vehiculo, _was_created = await repo_venta.buscar_o_crear_vehiculo_por_placa(
         session, placa=payload.placa, actor_uuid=ctx.actor_uuid
     )
 
+    # PT-2: la placa no puede estar activa en OTRA suscripcion activa de la
+    # misma sucursal (en otra sucursal si se permite). Si ya esta en ESTA
+    # suscripcion, `agregar_vehiculo_a_subscripcion` responde
+    # vehiculo_ya_inscrito (409), asi que aqui se excluye la propia.
     try:
-        repo_venta.validar_placas_mismo_tipo_vehiculo(
+        await repo_venta.validar_placa_duplicada_subscripcion(
+            session,
+            placa=nuevo_vehiculo.placa,
+            uuid_sucursal=detalle.subscripcion.uuid_sucursal,
+            excluir_uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente,
+        )
+    except repo_venta.SubscripcionDuplicadaPlacaError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "placa_con_suscripcion_activa",
+                "placa": exc.placa,
+                "uuid_subscripcion_cliente": (
+                    str(exc.uuid_subscripcion_cliente)
+                    if exc.uuid_subscripcion_cliente
+                    else None
+                ),
+            },
+            headers=no_store,
+        ) from exc
+
+    try:
+        # PT-2: el tipo del PLAN se valida solo contra la placa NUEVA (las ya
+        # inscritas -- p. ej. legado sin tipo -- no deben bloquear); V5
+        # (mismo tipo) contra todas.
+        repo_venta.validar_tipo_vehiculo_del_plan(plan=detalle.plan, vehiculos=[nuevo_vehiculo])
+        repo_venta.validar_mismo_tipo_vehiculos(
             plan=detalle.plan,
             vehiculos=[v.vehiculo for v in detalle.vehiculos] + [nuevo_vehiculo],
         )
+    except repo_venta.TipoVehiculoPlanIncompatibleError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "tipo_vehiculo_plan_incompatible",
+                "tipo_plan": str(exc.tipo_plan),
+                "tipos_encontrados": exc.tipos_encontrados,
+            },
+            headers=no_store,
+        ) from exc
     except repo_venta.TipoVehiculoIncompatibleError as exc:
         raise HTTPException(
             status_code=422,
@@ -222,6 +296,7 @@ async def agregar_vehiculo(
             uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente,
             placa=payload.placa,
             actor_uuid=ctx.actor_uuid,
+            uuid_sucursal=detalle.subscripcion.uuid_sucursal,
         )
     except repo_cupos.VehiculoYaInscritoError as exc:
         raise HTTPException(
@@ -242,14 +317,18 @@ async def agregar_vehiculo(
 @router.put(
     "/subscripcion-vehiculos/{uuid}/quitar",
     response_model=SubscripcionCupoDetalle,
-    responses={404: {"description": "vehiculo_inscrito_no_encontrado"}},
+    responses={
+        403: {"description": "permission_denied (gestionar_placas_suscripcion)"},
+        404: {"description": "vehiculo_inscrito_no_encontrado"},
+    },
 )
 async def quitar_vehiculo(
     response: Response,
     uuid: uuid_lib.UUID,
     session: AsyncSession = Depends(get_session),  # noqa: B008
-    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_cupos_issuer_dep),
+    _perm: dict = Depends(_placas_permission_dep),  # noqa: B008
+    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
 ) -> SubscripcionCupoDetalle:
     """Paso 3 del Sheet: da de baja un vehículo inscrito (bi-temporal,
     nunca DELETE) y devuelve el detalle de cupos ya actualizado."""
@@ -257,7 +336,10 @@ async def quitar_vehiculo(
 
     try:
         cerrado = await repo_cupos.quitar_vehiculo_de_subscripcion(
-            session, uuid_subscripcion_vehiculo=uuid, actor_uuid=ctx.actor_uuid
+            session,
+            uuid_subscripcion_vehiculo=uuid,
+            actor_uuid=ctx.actor_uuid,
+            uuid_sucursal=ctx.sucursal_uuid,
         )
     except RowNotFoundError as exc:
         raise HTTPException(

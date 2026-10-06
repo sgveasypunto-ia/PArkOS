@@ -511,9 +511,20 @@ function buildArqueoBody(payload: ArqueoPayload): Buffer {
   const diferenciaEfectivoSign = payload.diferencia_efectivo < 0
     ? `-${formatCOP(Math.abs(payload.diferencia_efectivo))}`
     : `+${formatCOP(payload.diferencia_efectivo)}`;
-  const diferenciaDatafonoSign = payload.diferencia_datafono < 0
-    ? `-${formatCOP(Math.abs(payload.diferencia_datafono))}`
-    : `+${formatCOP(payload.diferencia_datafono)}`;
+  // PT-6: datáfono block only for legacy payloads that still carry all four
+  // datáfono fields; the efectivo-only cuadre omits it entirely.
+  const datafono =
+    payload.valor_esperado_datafono !== undefined &&
+    payload.valor_reportado_datafono !== undefined &&
+    payload.diferencia_datafono !== undefined &&
+    payload.tolerancia_datafono !== undefined
+      ? {
+          esperado: payload.valor_esperado_datafono,
+          reportado: payload.valor_reportado_datafono,
+          diferencia: payload.diferencia_datafono,
+          tolerancia: payload.tolerancia_datafono,
+        }
+      : null;
 
   const lines: Buffer[] = [
     escCenter(),
@@ -535,12 +546,19 @@ function buildArqueoBody(payload: ArqueoPayload): Buffer {
     utf8(`Reportado efectivo: ${formatCOP(payload.valor_reportado_efectivo)}\n`), // 8
     utf8(`Diferencia efectivo: ${diferenciaEfectivoSign}\n`), // 9 (signed)
     utf8(`Tolerancia efectivo: ${formatCOP(payload.tolerancia_efectivo)}\n`), // 10
-    utf8('\n'),
-    utf8(`Esperado datafono: ${formatCOP(payload.valor_esperado_datafono)}\n`), // 11a
-    utf8(`Reportado datafono: ${formatCOP(payload.valor_reportado_datafono)}\n`), // 11b
-    utf8(`Diferencia datafono: ${diferenciaDatafonoSign}\n`), // 11c (signed)
-    utf8(`Tolerancia datafono: ${formatCOP(payload.tolerancia_datafono)}\n`), // 11d
   ];
+  if (datafono !== null) {
+    const diferenciaDatafonoSign = datafono.diferencia < 0
+      ? `-${formatCOP(Math.abs(datafono.diferencia))}`
+      : `+${formatCOP(datafono.diferencia)}`;
+    lines.push(
+      utf8('\n'),
+      utf8(`Esperado datafono: ${formatCOP(datafono.esperado)}\n`), // 11a
+      utf8(`Reportado datafono: ${formatCOP(datafono.reportado)}\n`), // 11b
+      utf8(`Diferencia datafono: ${diferenciaDatafonoSign}\n`), // 11c (signed)
+      utf8(`Tolerancia datafono: ${formatCOP(datafono.tolerancia)}\n`), // 11d
+    );
+  }
   // 12: Justificacion — silent omission when empty (spec scenario 3).
   if (payload.justificacion && payload.justificacion.length > 0) {
     lines.push(utf8('\n'));

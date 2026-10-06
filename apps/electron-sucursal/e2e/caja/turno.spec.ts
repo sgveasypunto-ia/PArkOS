@@ -16,7 +16,8 @@
  *        POST /caja-sesion/sesiones mock 409 -> FormMessage "Ya tenés un
  *        turno abierto" + botón "Ir al turno".
  *   E3 — cerrar-turno-happy-path: setup estado con sesion activa +
- *        submit OK -> 200 -> useAuthStore.clear + parkos:auth:cleared +
+ *        submit OK -> 200 -> resumen de solo lectura (PT-5, logout diferido) ->
+ *        "Finalizar y salir" -> useAuthStore.clear + parkos:auth:cleared +
  *        redirect a /login?closed=true con <p data-testid="turno-cerrado-exito">
  *        visible role=status aria-live=polite.
  *   A1 — axe-core WCAG 2.1 AA en 4 estados (AbrirTurno normal +
@@ -190,6 +191,10 @@ test.describe('Turno flow — F3.3 T5', () => {
     await page.goto('/caja/cerrar-turno');
     await expect(page.getByTestId('cerrar-turno-form')).toBeVisible({ timeout: 10_000 });
     await page.getByTestId('cerrar-turno-confirmar').click();
+
+    // PT-5: the summary is shown BEFORE the logout; the operator dismisses it.
+    await expect(page.getByTestId('resumen-cierre-turno')).toBeVisible({ timeout: 10_000 });
+    await page.getByTestId('resumen-cierre-finalizar').click();
 
     await page.waitForURL(/\/login\?closed=true/);
     await expect(page.getByTestId('turno-cerrado-exito')).toBeVisible();

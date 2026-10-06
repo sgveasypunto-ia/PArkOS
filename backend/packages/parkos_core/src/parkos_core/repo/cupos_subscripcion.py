@@ -26,17 +26,20 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.A.log_transaccional import LogTransaccional
 from ..models.V.clientes import Clientes
 from ..models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ..models.V.subscripciones_cliente import SubscripcionesCliente
 from ..models.V.tipo_subscripciones import TipoSubscripciones
 from ..models.V.vehiculos import Vehiculos
 from ..runtime.tiempo import hoy_bogota
-from . import versioned
+from . import alerta as repo_alerta
+from . import hash_chain, versioned
 
 __all__ = [
     "SubscripcionActivaRow",
@@ -45,10 +48,12 @@ __all__ = [
     "VehiculoInscritoRow",
     "VehiculoYaInscritoError",
     "agregar_vehiculo_a_subscripcion",
+    "inscribir_vehiculo_con_auditoria",
     "buscar_subscripcion_activa_por_identificacion",
     "buscar_subscripcion_con_vehiculos_por_uuid",
     "listar_subscripciones_activas",
     "quitar_vehiculo_de_subscripcion",
+    "registrar_cambio_placa",
 ]
 
 
@@ -254,6 +259,7 @@ async def agregar_vehiculo_a_subscripcion(
     uuid_subscripcion_cliente: uuid_lib.UUID,
     placa: str,
     actor_uuid: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID,
 ) -> SubscripcionVehiculos:
     """Inscribe un vehículo nuevo en una suscripción existente.
 
@@ -262,6 +268,11 @@ async def agregar_vehiculo_a_subscripcion(
     (``validar_cantidad_maxima_vehiculos``) de ``repo.venta_suscripcion``
     -- este helper asume que ya pasaron y solo hace el INSERT bajo el
     mismo ``pg_advisory_xact_lock`` que la venta atómica (REQ-OP-08).
+
+    ``uuid_sucursal`` es la sucursal de la suscripción (para la
+    auditoría y la alerta). Registra ``log_transaccional`` + alerta info
+    en la MISMA transacción (el handler hace el único commit). No genera
+    cobro ni factura.
 
     Raises :class:`VehiculoYaInscritoError` si la placa ya está inscrita
     (vigente) en esta misma suscripción.
@@ -282,11 +293,48 @@ async def agregar_vehiculo_a_subscripcion(
     if ya_inscrito is not None:
         raise VehiculoYaInscritoError(placa=placa)
 
+    return await inscribir_vehiculo_con_auditoria(
+        session,
+        uuid_subscripcion_cliente=uuid_subscripcion_cliente,
+        uuid_sucursal=uuid_sucursal,
+        vehiculo=vehiculo,
+        actor_uuid=actor_uuid,
+    )
+
+
+async def inscribir_vehiculo_con_auditoria(
+    session: AsyncSession,
+    *,
+    uuid_subscripcion_cliente: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID,
+    vehiculo: Vehiculos,
+    actor_uuid: uuid_lib.UUID,
+) -> SubscripcionVehiculos:
+    """UNICO punto de escritura de "agregar placa" (PT-2): INSERT bajo el
+    advisory lock de la suscripcion + ``log_transaccional`` + alerta info.
+
+    Lo usan ``POST /subscripcion-vehiculos/agregar`` (vía
+    :func:`agregar_vehiculo_a_subscripcion`) y ``POST /subscripcion-vehiculos``,
+    de modo que ningun camino de alta de placas puede omitir la auditoria.
+    No hace commit ni genera cobro.
+    """
+    from . import venta_suscripcion as repo_venta
+
     nuevas = await repo_venta.crear_subscripcion_vehiculos_bulk(
         session,
         actor_uuid=actor_uuid,
         uuid_subscripcion_cliente=uuid_subscripcion_cliente,
         uuid_vehiculos=[vehiculo.uuid],
+    )
+    await registrar_cambio_placa(
+        session,
+        accion="agregar",
+        uuid_sucursal=uuid_sucursal,
+        uuid_subscripcion_cliente=uuid_subscripcion_cliente,
+        uuid_subscripcion_vehiculo=nuevas[0].uuid,
+        uuid_vehiculo=vehiculo.uuid,
+        placa=vehiculo.placa,
+        actor_uuid=actor_uuid,
     )
     return nuevas[0]
 
@@ -296,6 +344,7 @@ async def quitar_vehiculo_de_subscripcion(
     *,
     uuid_subscripcion_vehiculo: uuid_lib.UUID,
     actor_uuid: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID,
 ) -> SubscripcionVehiculos:
     """Da de baja un vehículo inscrito -- ``close_and_insert`` bi-temporal
     con ``estado='inactivo'`` (nunca DELETE).
@@ -303,15 +352,138 @@ async def quitar_vehiculo_de_subscripcion(
     Solo pasa ``new_attrs={"estado": "inactivo"}`` -- ``close_and_insert``
     carga el resto de columnas (``uuid_subscripcion_cliente``,
     ``uuid_vehiculo``) desde la fila vigente que cierra (ver
-    ``repo/versioned.py``), así que no hace falta resenviarlas.
+    ``repo/versioned.py``), así que no hace falta resenviarlas. Se pasa
+    ``log_tx=False`` porque el log genérico no incluye la placa: acá se
+    escribe UNA fila de ``log_transaccional`` con ``datos_nuevos`` completos
+    (:func:`registrar_cambio_placa`) más la alerta info, en la misma
+    transacción. Sin cobro ni reembolso.
 
     Propaga ``versioned.RowNotFoundError`` si ``uuid_subscripcion_vehiculo``
     no matchea ninguna fila vigente (el handler la mapea a 404).
     """
-    return await versioned.close_and_insert(
+    # ``subscripcion_vehiculos`` no tiene ``uuid_sucursal`` (el listener de
+    # tenancy no la filtra): se verifica la sucursal de la suscripcion padre
+    # ANTES de cerrar, para que un supervisor no quite placas de otra sucursal.
+    padre_sucursal = (
+        (
+            await session.execute(
+                select(SubscripcionesCliente.uuid_sucursal)
+                .join(
+                    SubscripcionVehiculos,
+                    SubscripcionVehiculos.uuid_subscripcion_cliente
+                    == SubscripcionesCliente.uuid,
+                )
+                .where(
+                    SubscripcionVehiculos.uuid == uuid_subscripcion_vehiculo,
+                    SubscripcionVehiculos.vigente_hasta.is_(None),
+                    SubscripcionesCliente.vigente_hasta.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if padre_sucursal is None or padre_sucursal != uuid_sucursal:
+        raise versioned.RowNotFoundError(
+            f"subscripcion_vehiculos {uuid_subscripcion_vehiculo} not found in sucursal"
+        )
+
+    cerrado = await versioned.close_and_insert(
         session,
         SubscripcionVehiculos,
         current_uuid=uuid_subscripcion_vehiculo,
         new_attrs={"estado": "inactivo"},
         actor_uuid=actor_uuid,
+        log_tx=False,
+    )
+    # Cualquier version del vehiculo sirve para recuperar la placa (si el
+    # vehiculo fue versionado despues de inscribirse, la placa no cambia de
+    # identidad en el log).
+    vehiculo = (
+        (
+            await session.execute(
+                select(Vehiculos)
+                .where(Vehiculos.uuid == cerrado.uuid_vehiculo)
+                .order_by(Vehiculos.vigente_desde.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    await registrar_cambio_placa(
+        session,
+        accion="quitar",
+        uuid_sucursal=uuid_sucursal,
+        uuid_subscripcion_cliente=cerrado.uuid_subscripcion_cliente,
+        uuid_subscripcion_vehiculo=cerrado.uuid,
+        uuid_vehiculo=cerrado.uuid_vehiculo,
+        placa=vehiculo.placa if vehiculo is not None else None,
+        actor_uuid=actor_uuid,
+    )
+    return cerrado
+
+
+_ALERTA_POR_ACCION = {
+    "agregar": "suscripcion_placa_agregada",
+    "quitar": "suscripcion_placa_quitada",
+}
+
+
+async def registrar_cambio_placa(
+    session: AsyncSession,
+    *,
+    accion: str,
+    uuid_sucursal: uuid_lib.UUID,
+    uuid_subscripcion_cliente: uuid_lib.UUID,
+    uuid_subscripcion_vehiculo: uuid_lib.UUID | None,
+    uuid_vehiculo: uuid_lib.UUID,
+    placa: str | None,
+    actor_uuid: uuid_lib.UUID,
+) -> None:
+    """PT-2: audita un agregar/quitar placa y notifica al administrador.
+
+    * ``log_transaccional`` (cadena hash por sucursal) con ``datos_nuevos``
+      ``{placa, accion, uuid_subscripcion, uuid_vehiculo}`` -- quién
+      (``uuid_usuario``), cuándo (``timestamp_evento``), qué placa y acción.
+    * ``alerta`` info (``suscripcion_placa_agregada`` / ``_quitada``) con
+      ``datos_nuevos`` ``{placa, accion, uuid_subscripcion, uuid_vehiculo,
+      uuid_sucursal, actor}``.
+
+    Ambas en la transacción del caller (no hace commit).
+    """
+    if accion not in _ALERTA_POR_ACCION:
+        raise ValueError(f"accion de placa desconocida: {accion!r}")
+
+    datos = {
+        "placa": placa,
+        "accion": accion,
+        "uuid_subscripcion": str(uuid_subscripcion_cliente),
+        "uuid_vehiculo": str(uuid_vehiculo),
+    }
+    await hash_chain.append(
+        session,
+        LogTransaccional,
+        {
+            "uuid_usuario": actor_uuid,
+            "uuid_sucursal": uuid_sucursal,
+            "accion": f"{accion}_placa_subscripcion",
+            "tabla_afectada": SubscripcionVehiculos.__tablename__,
+            "uuid_registro_afectado": uuid_subscripcion_vehiculo,
+            "uuid_referencia": uuid_subscripcion_cliente,
+            "datos_nuevos": datos,
+            "timestamp_evento": datetime.now(UTC).replace(tzinfo=None),
+        },
+        actor_uuid=actor_uuid,
+    )
+    await repo_alerta.insertar_alerta_informativa(
+        session,
+        tipo_alerta=_ALERTA_POR_ACCION[accion],
+        uuid_sucursal=uuid_sucursal,
+        actor_uuid=actor_uuid,
+        datos={
+            **datos,
+            "uuid_sucursal": str(uuid_sucursal),
+            "actor": str(actor_uuid),
+        },
     )

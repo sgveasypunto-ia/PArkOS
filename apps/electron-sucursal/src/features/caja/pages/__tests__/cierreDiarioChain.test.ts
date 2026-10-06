@@ -44,7 +44,6 @@ let bridge: CierreDiarioBridge;
 
 const BASE_VALUES = {
   valor_efectivo_reportado: 150_000,
-  valor_datafono_reportado: 30_000,
 };
 
 beforeEach(() => {
@@ -79,7 +78,6 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
       uuid_sesion: null,
       tipo_arqueo: 'cierre_dia',
       valor_efectivo_reportado: 150_000,
-      valor_datafono_reportado: 30_000,
     });
     // bridge.imprimir fired exactly once with auditoria_codigo='cierre_dia'.
     expect(bridge.imprimir).toHaveBeenCalledTimes(1);

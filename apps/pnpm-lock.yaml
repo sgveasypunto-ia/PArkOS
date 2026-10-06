@@ -74,6 +74,9 @@ importers:
       i18next:
         specifier: ^23.15.2
         version: 23.16.8
+      jspdf:
+        specifier: ^4.2.1
+        version: 4.2.1
       lucide-react:
         specifier: ^0.453.0
         version: 0.453.0(react@18.3.1)
