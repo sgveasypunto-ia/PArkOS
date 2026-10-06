@@ -14,15 +14,18 @@ Esta guía cubre la instalación y ejecución local real de easypunto_parkos: ba
 
 > **Aviso de particionado (2026-10-01).** `pg_partman` está instalado y `pg_partman_bgw` está en `shared_preload_libraries`, pero **nadie invoca `run_maintenance_proc()`**: no hay `pg_cron` en la imagen. Por eso las particiones las crea la migración `0064_ensure_forward_partitions` de forma explícita. Si borras el volumen y recreas el Postgres, corré `SELECT prod.fn_ensure_partitions();` (idempotente) y verificá que `python openspec/scripts/check_schema_match.py --database-url ...` no reporte fallos en (h). Detalle completo en [ADR-004](../02-arquitectura/decisiones-tecnicas.md#adr-004-particionado-sin-mantenimiento-automático-real).
 >
-> **El orden importa al levantar el stack**: `docker compose -f docker-compose.cloud.yml up -d --build` **no** aplica migraciones. Cada servicio sobrescribe el `ENTRYPOINT` del Dockerfile con su propio `command:`, así que el paso `alembic upgrade head` del entrypoint compartido nunca corre. Hay que correrlo a mano:
+> **Migraciones al levantar el stack**: los compose de `infra/deploy/` (`cloud`, `branch`, `local`, `local-e2e`) incluyen un servicio `migrate` de un solo disparo (`e2e-migrate` en `local-e2e`) que ejecuta `alembic upgrade head` antes de que arranquen las APIs y los jobs de sync. Usa la misma imagen que la API, `restart: "no"` y se conecta como superusuario de Postgres, porque el usuario de la app no tiene `CREATE` sobre el esquema `prod` (`InsufficientPrivilege`).
 >
 > ```powershell
-> docker exec -w /app/backend/packages/parkos_core `
->   -e DATABASE_URL="postgresql+psycopg2://parkos:parkos@cloud-db:5432/parkos" `
->   parkos-api-admin /app/backend/.venv/bin/alembic upgrade head
+> docker compose -f infra/deploy/docker-compose.cloud.yml up -d --build
+> docker compose -f infra/deploy/docker-compose.cloud.yml logs migrate   # salida de alembic
 > ```
 >
-> El usuario de la app no sirve para esto: `DATABASE_URL` del contenedor no tiene `CREATE` sobre el esquema `prod` y falla con `InsufficientPrivilege: permission denied for schema prod`. Usá el superusuario `parkos`. Para branch, cambiá `cloud-db` por `branch-db`.
+> - Credenciales del superusuario: variables `PARKOS_DB_SUPER_USER` / `PARKOS_DB_SUPER_PASSWORD` (por defecto `parkos` / `parkos`, solo desarrollo). Definilas igual para la base y para `migrate`; en un despliegue real defínelas en el `.env` y evitá caracteres reservados de URL en la clave.
+> - Estas variables solo se aplican al inicializar un volumen nuevo de Postgres; con un volumen existente, cambiar la clave requiere `ALTER USER` en la base (si no, `migrate` falla por autenticación). En `branch` las APIs y los sync jobs usan estas mismas credenciales (comportamiento previo, ahora parametrizado).
+- Si `migrate` falla, las APIs y los jobs **no arrancan**; el error se ve en `docker compose logs migrate`. Un segundo `up` es un no-op (alembic es idempotente). Hay un único `migrate` por nodo y los jobs de sync corren con 1 réplica, por lo que no hay migraciones concurrentes (no se usa advisory lock).
+> - **Para aplicar una actualización (código y migraciones nuevas) hay que reconstruir las imágenes**: `docker compose -f <archivo> up -d --build` (o `build` y luego `up -d`). Las migraciones van copiadas dentro de la imagen (`COPY backend/packages`), no montadas como volumen; `migrate` usa la misma imagen que los demás servicios, así que sin `--build` no ve las migraciones nuevas y termina con éxito en el head anterior, sin error. En `local-e2e` los servicios reutilizan imágenes ya construidas por `docker-compose.local.yml`: reconstruí allí primero.
+> - Para correrlo a mano (diagnóstico): `docker compose -f <archivo> run --rm migrate`.
 
 
 **Gestor de paquetes del frontend confirmado: npm.** `apps/package.json` usa `npm --workspace=web_admin run <script>` y `npm-run-all`; `apps/web_admin/README.md` documenta explícitamente `npm --workspace=web_admin run <script>` como forma de invocación desde la raíz. No se encontró `pnpm-lock.yaml` ni `yarn.lock` en el repo. **Hueco**: tampoco se encontró `package-lock.json` versionado en `apps/` ni `apps/web_admin/` — ver huecos al final.

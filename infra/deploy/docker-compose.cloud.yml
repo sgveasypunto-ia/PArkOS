@@ -45,8 +45,11 @@ services:
     container_name: parkos-cloud-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: parkos
-      POSTGRES_PASSWORD: parkos
+      # Superuser of this node. The `migrate` service below connects with
+      # the same pair, so both read the same variables (dev defaults only;
+      # override both via env / .env for a real deployment).
+      POSTGRES_USER: ${PARKOS_DB_SUPER_USER:-parkos}
+      POSTGRES_PASSWORD: ${PARKOS_DB_SUPER_PASSWORD:-parkos}
       POSTGRES_DB: parkos
     volumes:
       - cloud-db-data:/var/lib/postgresql/data
@@ -55,11 +58,51 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U parkos -d parkos"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # migrate — one-shot `alembic upgrade head` BEFORE any app service starts.
+  #
+  # Every long-running service overrides the Dockerfile ENTRYPOINT/CMD with
+  # its own `command:`, so nothing else ever runs alembic. This service does
+  # it once per `up`:
+  #   - Same image as api-admin (the venv + alembic.ini + migrations ship in
+  #     it). Built from the same Dockerfile target, so layers are cached.
+  #   - Connects as the Postgres SUPERUSER: the app login role has no CREATE
+  #     on schema `prod` (InsufficientPrivilege). The superuser credentials
+  #     live ONLY in this service; the apps keep the least-privilege role.
+  #   - alembic is idempotent: at head it is a no-op. There is exactly one
+  #     `migrate` per node and job-sync-cloud runs a single replica, so there
+  #     are no concurrent upgrades from this stack.
+  #   - restart "no": it exits 0 on success. If it fails, api-admin and
+  #     job-sync-cloud never start (service_completed_successfully) and the
+  #     error is in `docker compose -f <this file> logs migrate`.
+  # -------------------------------------------------------------------------
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.cloud
+      args:
+        BUILD_TARGET: api_admin
+    image: parkos:api-admin-test
+    restart: "no"
+    working_dir: /app/backend/packages/parkos_core
+    command: ["/app/backend/.venv/bin/alembic", "upgrade", "head"]
+    environment:
+      PARKOS_DEPLOY: cloud
+      DATABASE_URL: postgresql+psycopg2://${PARKOS_DB_SUPER_USER:-parkos}:${PARKOS_DB_SUPER_PASSWORD:-parkos}@cloud-db:5432/parkos
+      # Read by migration 0021 to set the password of the app login role;
+      # must match the value the app services use below.
+      PARKOS_APP_DB_PASSWORD: ${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}
+    depends_on:
+      cloud-db:
+        condition: service_healthy
+    networks:
+      - parkos-cloud-net
 
   # -------------------------------------------------------------------------
   # api-admin — the FastAPI central admin API. Same multi-stage image
@@ -99,6 +142,8 @@ services:
     depends_on:
       cloud-db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - parkos-cloud-net
     ports:
@@ -150,6 +195,8 @@ services:
     depends_on:
       cloud-db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - parkos-cloud-net
     volumes:
