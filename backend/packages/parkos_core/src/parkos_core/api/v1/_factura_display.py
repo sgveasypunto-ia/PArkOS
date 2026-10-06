@@ -52,16 +52,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...models.A.factura_detalle import FacturaDetalle
 from ...models.A.factura_impuestos import FacturaImpuestos
 from ...models.A.factura_pagos import FacturaPagos
+from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_E.facturas import Facturas
 from ...models.L_E.ingreso import Ingreso
 from ...models.V.clientes import Clientes
 from ...models.V.empresa import Empresa
 from ...models.V.impuestos import Impuestos
 from ...models.V.sucursal import Sucursal
+from ...repo.fe_emision import FeEmisionResultado
 from ...schemas.clientes import VentaSuscripcionCreate
 from ...schemas.facturacion import (
     FacturaCreate,
     FacturaDisplayCliente,
+    FacturaDisplayFE,
     FacturaDisplayImpuesto,
     FacturaDisplaySucursal,
     FacturaDisplayVehiculo,
@@ -92,6 +95,7 @@ async def build_display_factura(
     payload: FacturaCreate | FacturaServicioCreate | VentaSuscripcionCreate,
     total_server: Decimal,
     cliente_uuid: uuid_lib.UUID | None,
+    fe_resultado: FeEmisionResultado | None = None,
 ) -> FacturaRead:
     """Assemble the enriched :class:`FacturaRead` for the post-pago response.
 
@@ -283,6 +287,25 @@ async def build_display_factura(
         f"{int(count_today):06d}"
     )
 
+    # ---- 6b) FE display (always emitted; NULL only when emission failed) ----
+    fe_display: FacturaDisplayFE | None = None
+    if fe_resultado is not None and fe_resultado.uuid_factura_electronica is not None:
+        fe_row = (
+            await session.execute(
+                select(FacturaElectronica).where(
+                    FacturaElectronica.uuid == fe_resultado.uuid_factura_electronica
+                )
+            )
+        ).scalar_one_or_none()
+        if fe_row is not None:
+            fe_display = FacturaDisplayFE(
+                uuid=fe_row.uuid,
+                prefijo=fe_row.prefijo,
+                consecutivo=fe_row.consecutivo,
+                estado_dian="pendiente",  # DIAN ack is async; never a print gate
+                cufe=None,
+            )
+
     # ---- 7) Assemble FacturaRead ----
     return FacturaRead(
         # --- Base (HU-F1.9) ---
@@ -328,7 +351,9 @@ async def build_display_factura(
         datos_vehiculo=datos_vehiculo,
         impuestos=impuestos_display,
         pagos=[],  # MVP: empty; FE reads medio_pago + form values for vueltos/voucher
-        factura_electronica=None,  # MVP: NULL (cloud-only, numbers async)
+        factura_electronica=fe_display,
+        factura_electronica_error=fe_resultado.error if fe_resultado else None,
+        factura_electronica_pendiente=bool(fe_resultado and fe_resultado.pendiente),
     )
 
 

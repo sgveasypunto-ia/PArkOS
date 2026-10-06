@@ -66,6 +66,7 @@ T-PR12-004..007.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 import time
@@ -83,6 +84,7 @@ from parkos_core.jobs.runner import WorkerRunner
 from parkos_core.jobs.sync_cloud import _business_payload_for_apply, is_infra_table
 from parkos_core.repo import sync_cursor as sync_cursor_helpers
 from parkos_core.repo import sync_queue as sq_helpers
+from parkos_core.repo.fe_emision import FeRetryScheduler, reintentar_pendientes
 from parkos_core.runtime import engine_flag
 from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME, resolve_catalog_name
 from parkos_core.sync.cutover import dual_protocol
@@ -222,6 +224,8 @@ class SyncSucursalWorker(WorkerRunner):
         # pull failure to the process-liveness signal Docker watches.
         self._consecutive_apply_failures = 0
         self._last_apply_error: str | None = None
+        # Automatic FE retry state (repo/fe_emision.py): in-memory backoff.
+        self._fe_retry = FeRetryScheduler()
 
     # ------------------------------------------------------------------
     # Public surface
@@ -248,7 +252,32 @@ class SyncSucursalWorker(WorkerRunner):
                 self.log.warning("sync_sucursal.cycle_rollback_failed")
             raise
 
+    async def _retry_pending_fe(self) -> None:
+        """Retry invoices whose FE emission failed (local, works offline).
+
+        Never fails the cycle: FE retry is independent of cloud sync.
+        """
+        if self.uuid_sucursal is None:
+            return
+        try:
+            result = await reintentar_pendientes(
+                self._session,
+                uuid_sucursal=self.uuid_sucursal,
+                scheduler=self._fe_retry,
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate from the sync cycle
+            with contextlib.suppress(Exception):
+                await self._session.rollback()
+            self.log.warning("sync_sucursal.fe_retry_failed", error_type=type(exc).__name__)
+            return
+        if any(result.values()):
+            self.log.info("sync_sucursal.fe_retry", **result)
+
     async def _run_cycle(self) -> None:
+        # FE automatic retry first: purely local, so it runs even when the
+        # cloud is unreachable, and its FE/envio rows are pushed this cycle.
+        await self._retry_pending_fe()
+
         # Lazily build collaborators — JWT file might be missing on first
         # boot (pre-pairing); the loop tolerates that and retries next cycle.
         if self._http_client is None:

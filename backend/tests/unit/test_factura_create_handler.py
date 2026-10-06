@@ -25,6 +25,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from parkos_core.repo.fe_emision import FeEmisionResultado
 from fastapi import HTTPException
 from parkos_core.api.v1.facturacion import create_factura
 from parkos_core.schemas.facturacion import (
@@ -70,6 +71,7 @@ async def _build_display_factura_stub(
     payload: object,
     total_server: Decimal,
     cliente_uuid: uuid_lib.UUID | None,
+    fe_resultado: object | None = None,
 ) -> MagicMock:
     """Stand-in for ``build_display_factura`` (HU-F8.4).
 
@@ -221,6 +223,12 @@ async def test_post_factura_invokes_session_commit_exactly_once(
     monkeypatch.setattr(
         "parkos_core.api.v1.facturacion.build_display_factura",
         _build_display_factura_stub,
+    )
+    # FE emission is a separate concern with its own commit (covered by
+    # tests/unit/test_fe_emision.py); keep this test about the payment commit.
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.emitir_fe_para_pago",
+        AsyncMock(return_value=FeEmisionResultado(uuid_factura_electronica=uuid_lib.uuid4())),
     )
 
     # Invoke the handler
@@ -463,6 +471,12 @@ async def test_post_factura_uses_db_iva_not_hardcoded(
     monkeypatch.setattr(
         "parkos_core.api.v1.facturacion.build_display_factura",
         _build_display_factura_stub,
+    )
+    # FE emission is a separate concern with its own commit (covered by
+    # tests/unit/test_fe_emision.py); keep this test about the payment commit.
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.emitir_fe_para_pago",
+        AsyncMock(return_value=FeEmisionResultado(uuid_factura_electronica=uuid_lib.uuid4())),
     )
 
     await create_factura(response, payload, session, ctx, None)
@@ -761,6 +775,12 @@ async def test_create_factura_datafono_con_referencia_201(
     monkeypatch.setattr(
         "parkos_core.api.v1.facturacion.build_display_factura",
         _build_display_factura_stub,
+    )
+    # FE emission is a separate concern with its own commit (covered by
+    # tests/unit/test_fe_emision.py); keep this test about the payment commit.
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.emitir_fe_para_pago",
+        AsyncMock(return_value=FeEmisionResultado(uuid_factura_electronica=uuid_lib.uuid4())),
     )
 
     result = await create_factura(response, payload, session, ctx, None)
