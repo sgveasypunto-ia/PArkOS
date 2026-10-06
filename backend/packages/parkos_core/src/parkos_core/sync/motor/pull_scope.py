@@ -32,8 +32,9 @@ import uuid as uuid_lib
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import ColumnElement, or_, select
+from sqlalchemy import ColumnElement, Select, or_, select
 
+from ...models.V.usuarios_sucursal import UsuariosSucursal
 from ..catalog.schema import SyncCatalogEntry
 from .broadcast_resolver import _TRANSITIVE_SUBSCRIPTION_PARENT
 
@@ -42,6 +43,26 @@ from .broadcast_resolver import _TRANSITIVE_SUBSCRIPTION_PARENT
 # declared ``derived`` with no rule here is refused, never pulled unscoped.
 _DerivedRule = Callable[[Any, uuid_lib.UUID], ColumnElement[bool]]
 _DERIVED_RULES: dict[str, _DerivedRule] = {}
+
+
+def _branch_member_usuarios(uuid_sucursal: uuid_lib.UUID) -> Select[tuple[uuid_lib.UUID | None]]:
+    """Users with a vigente ``usuarios_sucursal`` row at ``uuid_sucursal``.
+
+    Defined once: both ``usuarios`` and ``permisos_usuario`` follow it. The
+    branch login validates against this same vigente membership. Served by the
+    UK ``(uuid_sucursal, uuid_usuario, vigente_desde)`` and ``ix_usuarios_sucursal_*``.
+    """
+    return select(UsuariosSucursal.uuid_usuario).where(
+        UsuariosSucursal.uuid_sucursal == uuid_sucursal,
+        UsuariosSucursal.vigente_hasta.is_(None),
+    )
+
+
+def _usuarios_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bool]:
+    return model.uuid.in_(_branch_member_usuarios(uuid_sucursal))
+
+
+_DERIVED_RULES["usuarios"] = _usuarios_rule
 
 
 def build_scope_predicate(

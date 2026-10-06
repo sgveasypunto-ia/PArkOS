@@ -134,3 +134,21 @@ def test_rule_7_flags_priority_in_fixture_ordering_function(tmp_path: Path) -> N
     )
     messages = [str(v) for v in violations]
     assert any("priority" in m for m in messages), messages
+
+
+def test_rule_4_expects_derived_policy_for_derived_scope_entries() -> None:
+    """Entries moved to ``derived`` scope are not flagged against the ER's old
+    ``all_branches`` default, and reverting one to ``all_branches`` is flagged."""
+    er_entities = parse_er_entities(_REPO_ROOT / "modelo_datos_er.mmd")
+
+    def _violations(catalog: list) -> list[str]:
+        found = check_rule_4_direction_matches_er(sync_catalog=catalog, er_entities=er_entities)
+        return [str(v) for v in found if "usuarios" in str(v)]
+
+    assert _violations(list(SYNC_CATALOG)) == []
+
+    real_usuarios = next(e for e in SYNC_CATALOG if e.name == "usuarios")
+    reverted = replace(real_usuarios, broadcast_policy="all_branches")
+    fixture_catalog = [reverted if e.name == "usuarios" else e for e in SYNC_CATALOG]
+    messages = _violations(fixture_catalog)
+    assert any("broadcast_policy" in m for m in messages), messages

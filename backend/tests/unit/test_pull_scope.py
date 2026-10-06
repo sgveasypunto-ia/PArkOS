@@ -115,3 +115,20 @@ def test_derived_without_registered_rule_raises_instead_of_going_unscoped() -> N
     spec = dataclasses.replace(SYNC_CATALOG_BY_NAME["tipos_vehiculo"], broadcast_policy="derived")
     with pytest.raises(ValueError, match="no registered scope rule"):
         build_scope_predicate(spec, BRANCH)
+
+
+# ---------------------------------------------------------------------------
+# derived — usuarios / permisos_usuario follow a vigente usuarios_sucursal row
+# ---------------------------------------------------------------------------
+
+_MEMBERS_SUBSELECT = (
+    "(SELECT prod.usuarios_sucursal.uuid_usuario FROM prod.usuarios_sucursal "
+    f"WHERE prod.usuarios_sucursal.uuid_sucursal = '{BRANCH}' "
+    "AND prod.usuarios_sucursal.vigente_hasta IS NULL)"
+)
+
+
+def test_usuarios_scope_is_vigente_branch_membership() -> None:
+    spec = SYNC_CATALOG_BY_NAME["usuarios"]
+    assert spec.broadcast_policy == "derived"
+    assert _sql("usuarios") == f"prod.usuarios.uuid IN {_MEMBERS_SUBSELECT}"
