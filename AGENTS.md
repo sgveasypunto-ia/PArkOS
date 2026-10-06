@@ -25,7 +25,13 @@ These credentials exist in the local dev database for end-to-end testing.
 
 | Role | Email | Password | Use case |
 |------|-------|----------|----------|
-| Branch operator | `operador@parkos.local` | `Pass1234word` | Login from `web_sucursal`, post ingresos / salidas / arqueos |
+| Branch operator | `operador.qae2e@parkos.local` | `Pass1234word` | Login from `web_sucursal`, post ingresos / salidas / arqueos |
+
+**NOTE**: `operador@parkos.local` is not present in the current local DBs
+(login returns 401); no seed in `backend/scripts/` or `infra/scripts/` creates
+it. The only seeded account is `admin@parkos.local` (`infra/scripts/bootstrap_pairing.py`).
+`operador.qae2e@parkos.local` (rol `operador`, vigente) is the QA/E2E account
+currently active in the branch DB; login verified against `api-sucursal` (`:8100`).
 
 **WARNING**: password is plaintext in this repo. Compromise of this file =
 compromise of the dev DB. Rotate by re-running the local seed (`backend/scripts/`).
