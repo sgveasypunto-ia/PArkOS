@@ -26,43 +26,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from tests.pull_scope_expected import EXPECTED_SCOPE
+
 pytestmark = pytest.mark.parametrize("app", ["admin"], indirect=True)
 
 PULL_URL = "/api/v1/sync/pull"
-
-EXPECTED_SCOPE: dict[str, str] = {
-    # global catalogs
-    "permisos": "global",
-    "tipo_persona": "global",
-    "tipos_vehiculo": "global",
-    "tipo_subscripciones": "global",
-    "tipo_tarifa": "global",
-    "tipo_sucursal": "global",
-    "tipo_arqueo": "global",
-    "impuestos": "global",
-    "otros_cobros": "global",
-    "costos_servicios": "global",
-    # owned by one branch
-    "sucursal": "owned",
-    "resolucion_facturacion": "owned",
-    "usuarios_sucursal": "owned",
-    "documentos": "owned",
-    "tarifas_sucursal": "owned",
-    "cantidad_vehiculos_sucursal": "owned",
-    # global default + per-branch override
-    "configuracion_tolerancias": "override",
-    "configuracion_seguridad": "override",
-    # sold by one branch
-    "subscripciones_cliente": "subscription",
-    "subscripcion_vehiculos": "subscription",
-    # reachable only through bridge tables
-    "usuarios": "derived",
-    "permisos_usuario": "derived",
-    "empresa": "derived",  # own sucursal.uuid_empresa by NIT (test_sync_pull_scope_empresa)
-    "clientes": "derived",
-    "clientes_b2b": "derived",
-    "vehiculos": "derived",
-}
 
 GLOBAL_TABLES = sorted(t for t, c in EXPECTED_SCOPE.items() if c == "global")
 OWNED_TABLES = sorted(t for t, c in EXPECTED_SCOPE.items() if c == "owned")
