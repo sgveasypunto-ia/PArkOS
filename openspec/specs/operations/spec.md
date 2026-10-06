@@ -3692,29 +3692,30 @@ F1.12 MUST apply the F1.10 + F1.11 defense-in-depth pattern (5 layers), each ind
 - **And** MUST be present on `400 idempotency_key_required` / `403 tenant_scope_violation` / `403 permission_denied` / `404 tipo_subscripcion_no_encontrado` / `404 cliente_no_encontrado` / `409 tipo_subscripcion_no_vigente` / `409 idempotency_conflict` / `422 placa_formato_invalido` / `422 tipo_vehiculo_incompatible` / `422 cantidad_maxima_excedida` / `422 plan_duracion_dias_invalido` / `422 nit_dv_invalido` / `422 suscripcion_duplicada_placa` / `500 iva_no_configurado`
 - **And** MUST be present on any uncaught 5xx (defense-in-depth).
 
-### REQ-OPS-091 — POST `/api/v1/caja/arqueo` single-commit atomicity (KD-ARQUEO-01 + DEC-ARQUEO-01)
+### REQ-OPS-091 — POST `/api/v1/caja/arqueo` single-commit atomicity (KD-ARQUEO-01 + DEC-ARQUEO-01, F12.1.1 amendment)
 
-**Source**: HU-F1.13 (KD-ARQUEO-01 + DEC-ARQUEO-01) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+**Source**: HU-F1.13 (KD-ARQUEO-01 + DEC-ARQUEO-01) + F12.1.1 (datafono-ignored amendment, see REQ-OPS-191/192/195/196) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
 
 **Statement**:
-The handler `post_arqueo` in `api/v1/caja_arqueo.py` MUST execute exactly ONE `await session.commit()` at the END of the request body (Step 12 of the 12-step chain), covering all 4 table families in a single TX: (1) one `prod.arqueo` [A] INSERT via `repo/append_only.append_event` (KD-ARQUEO-02), (2) N `prod.sesion` [L-S] UPDATEs when `tipo_arqueo.codigo == 'cierre_dia'` via `repo/session_cycle.close_session_with_log` per row (KD-ARQUEO-03 + `ls_session_guard` trigger), (3) one conditional `prod.alerta` [L-W] INSERT initial via `repo/workflow.append_transition` when `|diferencia_efectivo| > tolerancia_efectivo OR |diferencia_datafono| > tolerancia_datafono` (KD-ARQUEO-04 + KD-ARQUEO-05), (4) N+1 `prod.log_transaccional` [A] co-INSERTs auto-emitted by the helpers. The handler MUST NOT use `session.begin_nested()` or `SAVEPOINT`. All helper functions (`insertar_arqueo`, `cerrar_sesiones_del_dia_bulk`, `insertar_alerta_descuadre_critico`) MUST stay commit-free — they `session.add()` + `await session.flush()` only. On any helper raise, the entire TX MUST roll back (no SAVEPOINT partial commits). The response MUST return `201 Created` with `Cache-Control: no-store`.
+The handler `post_arqueo` in `api/v1/caja_arqueo.py` MUST execute exactly ONE `await session.commit()` at the END of the request body (Step 12 of the 12-step chain), covering all 4 table families in a single TX: (1) one `prod.arqueo` [A] INSERT via `repo/append_only.append_event` (KD-ARQUEO-02) restricted to the datafono-ignored column set (no `valor_datafono_*`, no `diferencia_datafono` — F12.1.1 amendment, REQ-OPS-191/192); (2) N `prod.sesion` [L-S] UPDATEs when `tipo_arqueo.codigo == 'cierre_dia'` via `repo/session_cycle.close_session_with_log` per row (KD-ARQUEO-03 + `ls_session_guard` trigger); (3) one conditional `prod.alerta` [L-W] INSERT initial via `repo/workflow.append_transition` when `|diferencia_efectivo| > tolerancia_efectivo` ONLY — the datafono dimension is EXCLUDED from the alerta condition (F12.1.1 amendment, REQ-OPS-195/196); (4) N+1 `prod.log_transaccional` [A] co-INSERTs auto-emitted by the helpers. The handler MUST NOT use `session.begin_nested()` or `SAVEPOINT`. All helper functions (`insertar_arqueo`, `cerrar_sesiones_del_dia_bulk`, `insertar_alerta_descuadre_critico`) MUST stay commit-free — they `session.add()` + `await session.flush()` only. On any helper raise, the entire TX MUST roll back (no SAVEPOINT partial commits). The response MUST return `201 Created` with `Cache-Control: no-store` and `ArqueoReadForHandler` carrying NO `valor_datafono_*` / `diferencia_datafono` fields (REQ-OPS-192).
 
-**Rationale**: Cross-domain atomicity for the `arqueo + alerta` pair is the entire business requirement — no arqueo without its alerta when `descuadre_critico` is true. A SAVEPOINT strategy would partially commit, leaving orphan arqueos without the matched alerta. The `ls_session_guard` per-row DB trigger mandates log-first ordering for every sesion UPDATE — the per-row `(log INSERT + flush + UPDATE)` pattern in `close_session_with_log` is the only allowed path inside the outer TX. The single-commit invariant becomes the AST walk contract `tests/static/test_arqueo_handler_single_commit.py` (mirror of `tests/static/test_venta_handler_single_commit.py`).
+**Rationale**: Cross-domain atomicity for the `arqueo + alerta` pair is the entire business requirement — no arqueo without its alerta when `descuadre_critico` is true. A SAVEPOINT strategy would partially commit, leaving orphan arqueos without the matched alerta. The `ls_session_guard` per-row DB trigger mandates log-first ordering for every sesion UPDATE — the per-row `(log INSERT + flush + UPDATE)` pattern in `close_session_with_log` is the only allowed path inside the outer TX. The single-commit invariant becomes the AST walk contract `tests/static/test_arqueo_handler_single_commit.py` (mirror of `tests/static/test_venta_handler_single_commit.py`). F12.1.1 narrows the alerta condition to efectivo-only; a datafono-only descuadre is no longer alerta-worthy (REQ-OPS-196) but `prod.arqueo` columns stay in the DB (no DROP — forward-only, compliance). The `valor_datafono_*` / `diferencia_datafono` columns are preserved on disk and historical rows remain readable; the handler simply stops populating them and the response stops projecting them.
 
-**Source**: `backend/packages/parkos_core/src/parkos_core/repo/append_only.py` lines 64-124 (`append_event` commit-free contract); `backend/packages/parkos_core/src/parkos_core/repo/workflow.py` lines 110-237 (`append_transition` commit-free); `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py` lines 274-349 (`close_session_with_log` + `ls_session_guard` trigger lines 286-289); F1.11 KD-TKT-01 + F1.12 KD-VENTA-01 (single-commit precedents).
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/append_only.py` lines 64-124 (`append_event` commit-free contract); `backend/packages/parkos_core/src/parkos_core/repo/workflow.py` lines 110-237 (`append_transition` commit-free); `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py` lines 274-349 (`close_session_with_log` + `ls_session_guard` trigger lines 286-289); F1.11 KD-TKT-01 + F1.12 KD-VENTA-01 (single-commit precedents); F12.1.1 amendments at `api/v1/caja_arqueo.py:355-477` (Steps 5/7/8/10/13) and `repo/arqueo.py:334-435` (calcular_esperado_* + es_descuadre_critico signatures, REQ-OPS-194/195).
 
-**Scenario 1: Happy path — all writes succeed in 1 commit, all rows visible post-response**
+**Scenario 1: Happy path — datafono-ignored column set persists with no alerta (F12.1.1 amendment)**
 - **Given** an `operador-` issuer with `realizar_arqueo` permission and `ctx.sucursal_uuid=:s`
 - **And** a vigente `prod.tipo_arqueo` row with `codigo='cierre_turno'`, `vigente_hasta IS NULL`
 - **And** a vigente `prod.sesion` row `:ses` with `uuid_sucursal=:s`, `estado='abierta'`, `timestamp_cierre IS NULL`
-- **And** a vigente `prod.configuracion_tolerancias` row with `uuid_sucursal=:s`, `tolerancia_efectivo=100`, `tolerancia_datafono=200`
-- **And** an `ArqueoCreateV2` payload with `uuid_tipo_arqueo=<uuid for cierre_turno>`, `uuid_sesion=<:ses>`, `valor_efectivo_reportado=148000`, `valor_datafono_reportado=320000`, `justificacion=null` (sin diferencia)
+- **And** a vigente `prod.configuracion_tolerancias` row with `uuid_sucursal=:s`, `tolerancia_efectivo=100` (tolerancia_datafono is preserved on disk but is NOT consulted by the handler)
+- **And** an `ArqueoCreateV2` payload with `uuid_tipo_arqueo=<uuid for cierre_turno>`, `uuid_sesion=<:ses>`, `valor_efectivo_reportado=148000`, `valor_datafono_reportado=null` (or any Decimal, ignored — REQ-OPS-191), `justificacion=null` (sin diferencia efectivo)
 - **When** the handler reaches Step 12 and calls `await session.commit()` exactly once
 - **Then** exactly one `prod.arqueo` row MUST be visible (uuid matches response)
+- **And** the `prod.arqueo` row MUST have `valor_datafono_esperado`, `valor_datafono_reportado`, and `diferencia_datafono` at the column default / `NULL` (the handler does NOT populate them; the datafono dimension is no longer part of the write)
 - **And** exactly one `prod.log_transaccional` row MUST be visible (auto-co-inserted by `append_event`)
 - **And** `prod.sesion` MUST be UNCHANGED (UPDATE not required for `cierre_turno` without descuadre; Step 9 only runs on `cierre_dia`)
-- **And** NO `prod.alerta` row MUST be visible (descuadre_critico did NOT trigger — diferencia == 0)
-- **And** the response MUST be `201 Created` with `ArqueoReadForHandler` carrying `alerta_generada=false`, `alerta_uuid=null` + `Cache-Control: no-store`.
+- **And** NO `prod.alerta` row MUST be visible (descuadre_critico did NOT trigger — `|diferencia_efectivo|=0 <= tolerancia_efectivo=100`; datafono is irrelevant per REQ-OPS-196)
+- **And** the response MUST be `201 Created` with `ArqueoReadForHandler` carrying `alerta_generada=false`, `alerta_uuid=null`, NO datafono fields + `Cache-Control: no-store`.
 
 **Scenario 2: Mid-flight failure — any helper raise rolls back the entire TX**
 - **Given** the same valid payload but Step 9 (cierre_dia path) raises `SesionNoEncontradaError` because the sesion was deleted mid-flight by a concurrent TX
@@ -3728,7 +3729,17 @@ The handler `post_arqueo` in `api/v1/caja_arqueo.py` MUST execute exactly ONE `a
 - **When** `tests/static/test_arqueo_handler_single_commit.py` runs an `ast.walk()` over the handler body
 - **Then** the AST walk MUST assert `len([n for n in ast.walk(body) if isinstance(n, ast.Await) and getattr(n.value.func, 'attr', '') == 'commit']) == 1` (exactly one `await session.commit()` call)
 - **And** MUST assert `len([n for n in ast.walk(body) if isinstance(n, ast.Await) and getattr(getattr(n.value, 'func', None), 'attr', '') == 'begin_nested']) == 0` (no SAVEPOINT)
-- **And** MUST assert NO occurrence of the literal string `"SAVEPOINT"` in the handler body (defense in depth).
+- **And** MUST assert NO occurrence of the literal string `"SAVEPOINT"` in the handler body (defense in depth)
+- **And** MUST assert that the call to `insertar_alerta_descuadre_critico(...)` is passed effective-only args (no `diferencia_datafono`, no `tolerancia_datafono` — REQ-OPS-195 signature).
+
+**Scenario 4 (F12.1.1 amendment): datafono-only descuadre does NOT emit an alerta**
+- **Given** `valor_efectivo_esperado=100000`, `valor_efectivo_reportado=100000` (diferencia_efectivo=0, within `tolerancia_efectivo=100`)
+- **And** a payload with `valor_datafono_reportado=50000` (or any Decimal — accepted, ignored — REQ-OPS-191)
+- **When** the handler reaches Step 7
+- **Then** `es_descuadre_critico(diferencia_efectivo=0, tolerancia_efectivo=100)` MUST return `False` (the datafono dimension is NOT consulted — REQ-OPS-195)
+- **And** the handler MUST NOT call `insertar_alerta_descuadre_critico` (Step 10 SKIPPED — the datafono-only descuadre is no longer alerta-worthy, REQ-OPS-196)
+- **And** ZERO `prod.alerta` rows MUST be visible after the commit
+- **And** the response MUST be `201 Created` with `alerta_generada=false`, `alerta_uuid=null`, NO datafono fields + `Cache-Control: no-store`.
 
 ---
 
@@ -3769,99 +3780,117 @@ For `tipo_arqueo.codigo == 'cierre_dia'` with `uuid_sesion=null` and N open sesi
 
 ---
 
-### REQ-OPS-093 — Tolerancia evaluated as ABSOLUTE monto (KD-ARQUEO-04 + DEC-ARQUEO-04)
+### REQ-OPS-093 — Tolerancia evaluated as ABSOLUTE monto on effective only (KD-ARQUEO-04 + DEC-ARQUEO-04, F12.1.1 amendment)
 
-**Source**: HU-F1.13 (KD-ARQUEO-04 + DEC-ARQUEO-04) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+**Source**: HU-F1.13 (KD-ARQUEO-04 + DEC-ARQUEO-04) + F12.1.1 (datafono-ignored amendment, REQ-OPS-195) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
 
 **Statement**:
-The handler MUST evaluate `es_descuadre_critico(diferencia_efectivo, diferencia_datafono, tolerancia_efectivo, tolerancia_datafono)` by computing `abs(diferencia_efectivo) > tolerancia_efectivo OR abs(diferencia_datafono) > tolerancia_datafono`. The comparison MUST use the **absolute monto**, NOT a percentage. The `descuadre_pct` field (computed as `((diferencia_efectivo + diferencia_datafono) / (esperado_efectivo + esperado_datafono)) * 100` when esperado > 0, else `None`) MUST be returned in the response body as **informational only** and MUST NOT participate in the alerta decision. plan.md line 1065 mandates: "tolerancia = monto absoluto (no porcentaje)". The Fase 10 reconciliation may revise to percentage — out of F1.13 scope.
+The handler MUST evaluate `es_descuadre_critico(diferencia_efectivo, tolerancia_efectivo)` by computing `abs(diferencia_efectivo) > tolerancia_efectivo` (F12.1.1 amendment — the previous signature also took `diferencia_datafono` and `tolerancia_datafono`; the datafono dimension is REMOVED from the decision per REQ-OPS-195). The comparison MUST use the **absolute monto on the effective dimension only**, NOT a percentage. The `descuadre_pct` field (computed as `(diferencia_efectivo / esperado_efectivo) * 100` when `esperado_efectivo > 0`, else `None` — F12.1.1 amendment removed the datafono addend) MUST be returned in the response body as **informational only** and MUST NOT participate in the alerta decision. plan.md line 1065 mandates: "tolerancia = monto absoluto (no porcentaje)". The Fase 10 reconciliation may revise to percentage — out of F1.13 scope. `tolerancia_datafono` is preserved in `prod.configuracion_tolerancias` for compliance / historical rows but is NOT read by the handler.
 
-**Rationale**: plan.md line 1065 + line 1093 explicit mandate. Fase 10 owns the percentage reconciliation. Mixing the two would silently accept descuadres > tolerance (R5). The `descuadre_pct` field is informational for the operator's UX (visualization) but the alerta decision uses absolute monto per the F1.13 contract.
+**Rationale**: plan.md line 1065 + line 1093 explicit mandate. Fase 10 owns the percentage reconciliation. F12.1.1 narrows the descuadre evaluation to the efectivo dimension because the operator no longer sees or types the datafono in the UI (5 FE commits prior to `dev` already hardcode `valor_datafono_reportado: 0` in the ArqueoParcial page); the helper signature drops datafono params (REQ-OPS-195 D5). Mixing the two dimensions would silently accept descuadres > tolerance (R5) AND would invite reintroducing the datafono dimension later (the datafono-ignored contract is forward-only — no migration, no `DROP COLUMN`).
 
-**Source**: `plan.md` line 1065 (tolerancia = monto absoluto), line 1093 (4 mandated unit tests); `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py::es_descuadre_critico` (NEW helper, pure function); `backend/packages/parkos_core/src/parkos_core/schemas/caja.py::ArqueoReadForHandler.descuadre_pct` (informational marker).
+**Source**: `plan.md` line 1065 (tolerancia = monto absoluto), line 1093 (4 mandated unit tests); `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py::es_descuadre_critico` (effective-only signature, REQ-OPS-195); `backend/packages/parkos_core/src/parkos_core/schemas/caja.py::ArqueoReadForHandler.descuadre_pct` (informational marker; F12.1.1 removed datafono from the formula).
 
-**Scenario 1: `|diferencia| < tolerancia` — NO descuadre alerta**
+**Scenario 1: `|diferencia_efectivo| < tolerancia` — NO descuadre alerta (datafono ignored)**
 - **Given** a sesion with `valor_efectivo_esperado=100000` and `valor_efectivo_reportado=100050`
-- **And** `tolerancia_efectivo=100`, `tolerancia_datafono=200`
-- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=50, diferencia_datafono=0, tolerancia_efectivo=100, tolerancia_datafono=200)`
-- **Then** the helper MUST compute `abs(50)=50 > 100 → False` AND `abs(0)=0 > 200 → False` → return `False`
-- **And** the handler MUST NOT call `insertar_alerta_descuadre_critico` (Step 10 SKIPPED)
-- **And** the response MUST include `alerta_generada=false`, `alerta_uuid=null` AND `descuadre_pct=0.05` (informational only).
+- **And** `tolerancia_efectivo=100` (tolerancia_datafono may be any value, it is not consulted)
+- **And** any non-zero datafono diferencia (e.g. legacy `valor_datafono_reportado=50000` with `esperado_datafono=0` → `diferencia_datafono=50000`, F12.1.1 amendment: this value is dropped on the floor; the handler does not unpack it)
+- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=50, tolerancia_efectivo=100)`
+- **Then** the helper MUST compute `abs(50)=50 > 100 → False` → return `False`
+- **And** the handler MUST NOT call `insertar_alerta_descuadre_critico` (Step 10 SKIPPED — datafono is irrelevant)
+- **And** the response MUST include `alerta_generada=false`, `alerta_uuid=null` AND `descuadre_pct=0.05` (effective only, NOT a sum with datafono).
 
-**Scenario 2: `|diferencia| > tolerancia` — alerta generated**
+**Scenario 2: `|diferencia_efectivo| > tolerancia` — alerta generated**
 - **Given** the same sesion but `valor_efectivo_reportado=100150`
 - **And** `tolerancia_efectivo=100`
-- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=150, diferencia_datafono=0, tolerancia_efectivo=100, tolerancia_datafono=200)`
+- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=150, tolerancia_efectivo=100)`
 - **Then** the helper MUST compute `abs(150)=150 > 100 → True` → return `True`
-- **And** Step 10 MUST call `insertar_alerta_descuadre_critico` via `append_transition` (REQ-OPS-095)
+- **And** Step 10 MUST call `insertar_alerta_descuadre_critico` with effective-only args via `append_transition` (REQ-OPS-095)
 - **And** the response MUST include `alerta_generada=true`, `alerta_uuid=<uuid>`.
 
-**Scenario 3: `|diferencia| == tolerancia` — boundary, NO alerta**
+**Scenario 3: `|diferencia_efectivo| == tolerancia` — boundary, NO alerta**
 - **Given** `valor_efectivo_reportado=100100`, `tolerancia_efectivo=100` → `|diferencia_efectivo|=100`
-- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=100, diferencia_datafono=0, tolerancia_efectivo=100, tolerancia_datafono=200)`
+- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=100, tolerancia_efectivo=100)`
 - **Then** the helper MUST compute `abs(100)=100 > 100 → False` (strict inequality)
 - **And** the handler MUST NOT generate alerta (`>` not `>=`)
 - **And** `descuadre_pct` MUST appear in response body (informational, not decision-driving).
 
+**Scenario 4 (F12.1.1 amendment): datafono-only descuadre never triggers alerta**
+- **Given** `diferencia_efectivo=0` and a payload with `valor_datafono_reportado=50000` (which would have triggered an alerta under the pre-change contract when `|diferencia_datafono| > tolerancia_datafono`)
+- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=0, tolerancia_efectivo=100)`
+- **Then** the helper MUST return `False` (the datafono dimension is not in the signature anymore)
+- **And** the handler MUST NOT call `insertar_alerta_descuadre_critico` (REQ-OPS-196: datafono-only descuadre is no longer alerta-worthy)
+- **And** ZERO `prod.alerta` rows MUST be visible after the commit.
+
 ---
 
-### REQ-OPS-094 — `justificacion` REQUIRED on `cierre_turno`/`cierre_dia` when diferencia != 0 (DEC-ARQUEO-07)
+### REQ-OPS-094 — `justificacion` REQUIRED on `cierre_turno`/`cierre_dia` when `diferencia_efectivo != 0` (DEC-ARQUEO-07, F12.1.1 amendment)
 
-**Source**: HU-F1.13 (DEC-ARQUEO-07) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+**Source**: HU-F1.13 (DEC-ARQUEO-07) + F12.1.1 (datafono-ignored amendment) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
 
 **Statement**:
-The handler MUST validate the request body at Step 6: when `tipo_arqueo.codigo in ('cierre_turno', 'cierre_dia')` AND (`diferencia_efectivo != 0` OR `diferencia_datafono != 0`) AND `payload.justificacion is None` (or empty string), the handler MUST raise `HTTPException(400, {"error": "justificacion_requerida"}, headers=no_store_headers())`. When `tipo_arqueo.codigo == 'auditoria'` with diferencia != 0, the handler MUST accept the request without `justificacion` (advertencia only — not bloqueante per plan.md lines 1086-1091 + line 2476 mandate).
+The handler MUST validate the request body at Step 6: when `tipo_arqueo.codigo in ('cierre_turno', 'cierre_dia')` AND `diferencia_efectivo != 0` AND `payload.justificacion is None` (or empty string), the handler MUST raise `HTTPException(400, {"error": "justificacion_requerida"}, headers=no_store_headers())`. F12.1.1 amendment: the justificacion gate is conditioned on the **efectivo dimension only** — `diferencia_datafono` does NOT gate the justificacion requirement. When `tipo_arqueo.codigo == 'auditoria'` with `diferencia_efectivo != 0`, the handler MUST accept the request without `justificacion` (advertencia only — not bloqueante per plan.md lines 1086-1091 + line 2476 mandate).
 
-**Rationale**: plan.md line 2476 asymmetry. `auditoria` is an internal control step (advertencia only); `cierre_turno`/`cierre_dia` are operational commitments (justification required when there is a delta). The 400 mapping gives the operator a typed error so the UI can prompt for the missing field.
+**Rationale**: plan.md line 2476 asymmetry. `auditoria` is an internal control step (advertencia only); `cierre_turno`/`cierre_dia` are operational commitments (justification required when there is an efectivo delta). The 400 mapping gives the operator a typed error so the UI can prompt for the missing field. F12.1.1 removes the datafono dimension from the justificacion gate because the operator no longer sees or types the datafono value; conditioning the gate on a dimension the operator cannot observe would block cierres that the new UI does not surface.
 
-**Source**: `plan.md` lines 1086-1091 + line 2476 (justification asymmetry mandate); `backend/packages/parkos_core/src/parkos_core/schemas/caja.py::ArqueoCreateV2.justificacion` (`str | None = None`); `backend/packages/parkos_core/src/parkos_core/api/v1/caja_arqueo.py::post_arqueo` Step 6.
+**Source**: `plan.md` lines 1086-1091 + line 2476 (justification asymmetry mandate); `backend/packages/parkos_core/src/parkos_core/schemas/caja.py::ArqueoCreateV2.justificacion` (`str | None = None`); `backend/packages/parkos_core/src/parkos_core/api/v1/caja_arqueo.py::post_arqueo` Step 6 (F12.1.1 amendment: effective-only check).
 
-**Scenario 1: `cierre_turno` + diferencia != 0 + justificacion=null → 400 `justificacion_requerida`**
-- **Given** a `cierre_turno` `ArqueoCreateV2` with `valor_efectivo_reportado=148050` (esperado=148000, diferencia_efectivo=50, != 0)
+**Scenario 1: `cierre_turno` + `diferencia_efectivo != 0` + justificacion=null → 400 `justificacion_requerida`**
+- **Given** a `cierre_turno` `ArqueoCreateV2` with `valor_efectivo_reportado=148050` (esperado=148000, `diferencia_efectivo=50`, != 0)
 - **And** `justificacion=null` (omitted from payload)
+- **And** any value of `valor_datafono_reportado` (e.g. `0`, `99999`, or null — none of which gates this validation per F12.1.1 amendment)
 - **When** the handler Step 6 validates the body
 - **Then** it MUST raise `HTTPException(400, {"error": "justificacion_requerida"}, headers=no_store_headers())`
 - **And** the response MUST carry `Cache-Control: no-store`
 - **And** NO `prod.arqueo` row MUST be INSERTed (Step 6 short-circuits before Step 8)
 - **And** NO `prod.alerta` row MUST be INSERTed.
 
-**Scenario 2: `auditoria` + diferencia != 0 + justificacion=null → ACCEPTED (advertencia)**
-- **Given** an `auditoria` `ArqueoCreateV2` with `valor_efectivo_reportado=148050` (diferencia_efectivo=50)
+**Scenario 2: `auditoria` + `diferencia_efectivo != 0` + justificacion=null → ACCEPTED (advertencia)**
+- **Given** an `auditoria` `ArqueoCreateV2` with `valor_efectivo_reportado=148050` (`diferencia_efectivo=50`)
 - **And** `justificacion=null`
 - **When** the handler Step 6 validates the body
 - **Then** it MUST NOT raise (DEC-ARQUEO-07 asymmetry — auditoria is advertencia only)
-- **And** the handler MUST proceed to Step 7 (es_descuadre_critico) → Step 8 (INSERT arqueo)
+- **And** the handler MUST proceed to Step 7 (`es_descuadre_critico`) → Step 8 (INSERT arqueo)
 - **And** the response MUST be `201 Created` with `ArqueoReadForHandler` carrying `alerta_generada` per the tolerance check.
 
-**Scenario 3: `cierre_dia` + diferencia != 0 + justificacion=null → 400 `justificacion_requerida`**
-- **Given** a `cierre_dia` `ArqueoCreateV2` with the aggregated day having diferencia != 0
+**Scenario 3: `cierre_dia` + `diferencia_efectivo != 0` + justificacion=null → 400 `justificacion_requerida`**
+- **Given** a `cierre_dia` `ArqueoCreateV2` with the aggregated day having `diferencia_efectivo != 0`
 - **And** `justificacion=null`
+- **And** `sum(diferencia_datafono)=0` (the aggregate datafono difference is irrelevant to the gate per F12.1.1)
 - **When** the handler Step 6 validates the body
 - **Then** it MUST raise `HTTPException(400, {"error": "justificacion_requerida"}, headers=no_store_headers())`
 - **And** NO `prod.sesion` row MUST be UPDATEd (Step 6 short-circuits before Step 9).
 
+**Scenario 4 (F12.1.1 amendment): datafono-only diferencia does NOT gate justificacion**
+- **Given** a `cierre_turno` `ArqueoCreateV2` with `diferencia_efectivo=0` and a payload with `valor_datafono_reportado=50000` (which would have gated the justification pre-change)
+- **And** `justificacion=null`
+- **When** the handler Step 6 validates the body
+- **Then** it MUST NOT raise (F12.1.1 amendment — only `diferencia_efectivo` gates the justificacion)
+- **And** the handler MUST proceed to Step 7 with `diferencia_efectivo=0` (the datafono dimension is ignored in the alerta condition as well — REQ-OPS-196).
+
 ---
 
-### REQ-OPS-095 — `alerta 'descuadre_critico'` INSERTed conditionally via `append_transition` (KD-ARQUEO-05 + DEC-ARQUEO-05)
+### REQ-OPS-095 — `alerta 'descuadre_critico'` INSERTed conditionally via `append_transition` with effective-only payload (KD-ARQUEO-05 + DEC-ARQUEO-05, F12.1.1 amendment)
 
-**Source**: HU-F1.13 (KD-ARQUEO-05 + DEC-ARQUEO-05) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+**Source**: HU-F1.13 (KD-ARQUEO-05 + DEC-ARQUEO-05) + F12.1.1 (datafono-ignored amendment, REQ-OPS-195/196) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
 
 **Statement**:
-When Step 7 evaluates `es_descuadre_critico == True`, the handler MUST call `repo_arqueo.insertar_alerta_descuadre_critico(session, actor_uuid=ctx.actor_uuid, uuid_arqueo=<uuid_arqueo>, uuid_sucursal=target_sucursal, diferencia_efectivo=<diff_e>, diferencia_datafono=<diff_d>, payload_json={...})` at Step 10. The helper MUST internally call `repo.workflow.append_transition(session, tabla='alerta', tipo_alerta='descuadre_critico', estado_inicial='activa', ...)` — NOT raw `session.execute(insert(Alerta))`. The `append_transition` helper MUST validate `tipo_alerta='descuadre_critico'` against `prod.alert_types` (MIGRATION 0031 Op 2 seeded this entry idempotently). The `alerta_generada=true` + `alerta_uuid=<uuid>` MUST appear in the `201 Created` response body. The AST walk `tests/static/test_arqueo_handler_no_raw_dml.py` MUST NOT detect raw INSERT/UPDATE on `prod.alerta`.
+When Step 7 evaluates `es_descuadre_critico == True`, the handler MUST call `repo_arqueo.insertar_alerta_descuadre_critico(session, actor_uuid=ctx.actor_uuid, uuid_arqueo=<uuid_arqueo>, uuid_sucursal=target_sucursal, diferencia_efectivo=<diff_e>, tolerancia_efectivo=<tol_e>, payload_json={...})` at Step 10. F12.1.1 amendment: the helper signature drops `diferencia_datafono` / `tolerancia_datafono` parameters (REQ-OPS-195 D5), and the `payload_json` contains ONLY the effective fields (no `diferencia_datafono`, no `tolerancia_datafono` keys). The helper MUST internally call `repo.workflow.append_transition(session, tabla='alerta', tipo_alerta='descuadre_critico', estado_inicial='activa', ...)` — NOT raw `session.execute(insert(Alerta))`. The `append_transition` helper MUST validate `tipo_alerta='descuadre_critico'` against `prod.alert_types` (MIGRATION 0031 Op 2 seeded this entry idempotently). The `alerta_generada=true` + `alerta_uuid=<uuid>` MUST appear in the `201 Created` response body. The AST walk `tests/static/test_arqueo_handler_no_raw_dml.py` MUST NOT detect raw INSERT/UPDATE on `prod.alerta`.
 
-**Rationale**: `WorkflowBase` provides DB-layer state machine integrity (initial state `{activa -> descartada | resuelta}` only). `append_transition` centralizes the audit/sync columns. Raw INSERT bypasses the state machine guard and the audit/sync column computation. MIGRATION 0031 Op 2 seeds `descuadre_critico` into `prod.alert_types` with `ON CONFLICT DO NOTHING` (idempotent — F1.14's planned seed becomes no-op).
+**Rationale**: `WorkflowBase` provides DB-layer state machine integrity (initial state `{activa -> descartada | resuelta}` only). `append_transition` centralizes the audit/sync columns. Raw INSERT bypasses the state machine guard and the audit/sync column computation. MIGRATION 0031 Op 2 seeds `descuadre_critico` into `prod.alert_types` with `ON CONFLICT DO NOTHING` (idempotent — F1.14's planned seed becomes no-op). F12.1.1 narrows the alerta payload to effective fields; the `valor_diferencia_datafono` column on `prod.alerta` is preserved for historical rows (audit-first) and remains `nullable=True` per the ORM (no migration; REQ-OPS-196), but new alerts write `valor_diferencia_datafono=NULL` because the datafono dimension no longer participates in the decision.
 
-**Source**: `backend/packages/parkos_core/src/parkos_core/repo/workflow.py` lines 110-237 (`append_transition` + `STATE_MACHINES['alerta']` lines 85-90); `backend/packages/parkos_core/migrations/versions/0013_add_alert_types.py` (registry + `alert_types_inmutable` trigger lines 21-22); `backend/packages/parkos_core/migrations/versions/0031_arqueo_cierre_dia_and_gap_be_05.py` (NEW, MIGRATION 0031 Op 2 seeds `descuadre_critico`).
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/workflow.py` lines 110-237 (`append_transition` + `STATE_MACHINES['alerta']` lines 85-90); `backend/packages/parkos_core/migrations/versions/0013_add_alert_types.py` (registry + `alert_types_inmutable` trigger lines 21-22); `backend/packages/parkos_core/migrations/versions/0031_arqueo_cierre_dia_and_gap_be_05.py` (MIGRATION 0031 Op 2 seeds `descuadre_critico`); F12.1.1 amendment at `repo/arqueo.py:417-435` (es_descuadre_critico signature drop) and `caja_arqueo.py:432-454` (payload_json effective-only).
 
-**Scenario 1: `|diferencia_efectivo| > tolerancia_efectivo` → alerta INSERTed via `append_transition`**
+**Scenario 1: `|diferencia_efectivo| > tolerancia_efectivo` → alerta INSERTed via `append_transition` with effective-only payload**
 - **Given** Step 7 evaluated `es_descuadre_critico == True` (REQ-OPS-093 Scenario 2)
 - **And** `prod.alert_types` has the row `('descuadre_critico', 'critical')` seeded by MIGRATION 0031 Op 2
-- **When** the handler Step 10 invokes `insertar_alerta_descuadre_critico(...)`
-- **Then** the helper MUST call `repo.workflow.append_transition(session, tabla='alerta', tipo_alerta='descuadre_critico', estado_inicial='activa', severity='critical', uuid_recurso_origen=<uuid_arqueo>, tipo_recurso_origen='arqueo', payload_json={...})`
+- **When** the handler Step 10 invokes `insertar_alerta_descuadre_critico(diferencia_efectivo=150, tolerancia_efectivo=100, ...)` (effective-only args — F12.1.1 amendment)
+- **Then** the helper MUST call `repo.workflow.append_transition(session, tabla='alerta', tipo_alerta='descuadre_critico', estado_inicial='activa', severity='critical', uuid_recurso_origen=<uuid_arqueo>, tipo_recurso_origen='arqueo', payload_json={diferencia_efectivo, tolerancia_efectivo, valor_esperado_efectivo, valor_reportado_efectivo})` — payload_json contains ONLY effective fields, no `diferencia_datafono` or `tolerancia_datafono` keys
 - **And** exactly one `prod.alerta` row MUST be visible after the commit (uuid matches response `alerta_uuid`)
+- **And** the `prod.alerta` row MUST have `valor_diferencia_datafono = NULL` (no datafono payload, even if historical pre-change rows had it populated)
 - **And** the response MUST include `alerta_generada=true` + `alerta_uuid=<uuid>`.
 
-**Scenario 2: `|diferencia| <= tolerancia` → NO alerta INSERTed**
+**Scenario 2: `|diferencia_efectivo| <= tolerancia_efectivo` → NO alerta INSERTed**
 - **Given** Step 7 evaluated `es_descuadre_critico == False` (REQ-OPS-093 Scenario 1)
 - **When** the handler Step 10 checks `if es_critico:`
 - **Then** the handler MUST NOT call `insertar_alerta_descuadre_critico` (the if-branch is SKIPPED)
@@ -3872,7 +3901,15 @@ When Step 7 evaluates `es_descuadre_critico == True`, the handler MUST call `rep
 - **Given** the source file `api/v1/caja_arqueo.py` containing `post_arqueo`
 - **When** `tests/static/test_arqueo_handler_no_raw_dml.py` runs
 - **Then** the AST walk MUST assert NO occurrence of `session.execute(insert(Alerta))` or `session.execute(text("INSERT INTO prod.alerta ..."))` or `update(Alerta)` in the handler body
-- **And** MUST assert that `append_transition` (or a helper wrapping it) is the ONLY path that inserts into `prod.alerta`.
+- **And** MUST assert that `append_transition` (or a helper wrapping it) is the ONLY path that inserts into `prod.alerta`
+- **And** MUST assert that the call to `insertar_alerta_descuadre_critico(...)` passes exactly 2 dimension params (`diferencia_efectivo`, `tolerancia_efectivo`) — no `diferencia_datafono` or `tolerancia_datafono` (REQ-OPS-195 signature).
+
+**Scenario 4 (F12.1.1 amendment): datafono-only descuadre does NOT call `insertar_alerta_descuadre_critico`**
+- **Given** `diferencia_efectivo=0`, a payload with `valor_datafono_reportado=50000` (legacy pre-change would have flagged `|diferencia_datafono| > tolerancia_datafono`)
+- **When** the handler Step 7 invokes `es_descuadre_critico(diferencia_efectivo=0, tolerancia_efectivo=100)` (F12.1.1 signature)
+- **Then** the helper MUST return `False` (datafono is NOT in the signature — REQ-OPS-195)
+- **And** the handler MUST NOT call `insertar_alerta_descuadre_critico` (Step 10 SKIPPED — datafono-only descuadre is not alerta-worthy, REQ-OPS-196)
+- **And** ZERO `prod.alerta` rows MUST be visible after the commit (the datafono dimension cannot drive an alerta).
 
 ---
 
@@ -3911,33 +3948,35 @@ When `tipo_arqueo.codigo == 'cierre_turno'` (or `'auditoria'`) AND `payload.uuid
 
 ---
 
-### REQ-OPS-097 — GET `/api/v1/caja/arqueo/resumen` JOIN sesion + `factura_pagos` SUM (KD-ARQUEO-07 + DEC-ARQUEO-10)
+### REQ-OPS-097 — GET `/api/v1/caja/arqueo/resumen` JOIN sesion + `factura_pagos` SUM, effective-only (KD-ARQUEO-07 + DEC-ARQUEO-10, F12.1.1 amendment)
 
-**Source**: HU-F1.13 (KD-ARQUEO-07 + DEC-ARQUEO-10) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+**Source**: HU-F1.13 (KD-ARQUEO-07 + DEC-ARQUEO-10) + F12.1.1 (datafono-ignored amendment) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
 
 **Statement**:
-The handler `get_arqueo_resumen` in `api/v1/caja_arqueo.py` MUST execute a read query (Step 3 + Step 4) that returns one row per `prod.sesion` of the day at `params.uuid_sucursal` with `timestamp_apertura::date = params.fecha`. For each sesion, the row MUST compute `valor_efectivo_esperado = sesion.valor_inicial_efectivo + COALESCE((SELECT SUM(valor) FROM prod.factura_pagos WHERE uuid_sesion=sesion.uuid AND medio_pago='efectivo' AND tipo_movimiento='pago'), 0)` and `valor_datafono_esperado = sesion.valor_inicial_datafono + COALESCE((SELECT SUM(valor) FROM prod.factura_pagos WHERE uuid_sesion=sesion.uuid AND medio_pago IN ('tarjeta', 'datafono') AND tipo_movimiento='pago'), 0)`. The query MUST NOT execute any UPDATE/INSERT/DELETE on `prod.factura_pagos` (F1.9 immutability, KD-ARQUEO-08 read-only). If a `cierre_dia` arqueo exists for `(uuid_sucursal, fecha)`, it MUST appear in the `cierre_dia` aggregate field at the bottom of the response. The response MUST be `200 OK` with `Cache-Control: no-store` (DEC-ARQUEO-06).
+The handler `get_arqueo_resumen` in `api/v1/caja_arqueo.py` MUST execute a read query (Step 3 + Step 4) that returns one row per `prod.sesion` of the day at `params.uuid_sucursal` with `timestamp_apertura::date = params.fecha`. For each sesion, the row MUST compute `valor_efectivo_esperado = sesion.valor_inicial_efectivo + COALESCE((SELECT SUM(valor) FROM prod.factura_pagos WHERE uuid_sesion=sesion.uuid AND medio_pago='efectivo' AND tipo_movimiento='pago'), 0)`. F12.1.1 amendment: the response item MUST NOT include `valor_datafono_esperado` (the field is dropped from the wire shape; REQ-OPS-192). The `valor_datafono_*` columns are preserved on disk for compliance / historical rows, but the GET projection is effective-only — the SQL is bound to `medio_pago='efectivo'` only. The query MUST NOT execute any UPDATE/INSERT/DELETE on `prod.factura_pagos` (F1.9 immutability, KD-ARQUEO-08 read-only). If a `cierre_dia` arqueo exists for `(uuid_sucursal, fecha)`, it MUST appear in the `cierre_dia` aggregate field at the bottom of the response (the aggregate is also effective-only per F12.1.1). The response MUST be `200 OK` with `Cache-Control: no-store` (DEC-ARQUEO-06).
 
-**Rationale**: F1.9 `prod.factura_pagos` is immutable (F1.9 REQ-OPS-058 + `fn_factura_pagos_inmutable` trigger migration 0001 lines 2024-2088). F1.13 reads only via the direct FK `prod.factura_pagos.uuid_sesion` (migration 0001 line 716). The grouping matches the arqueo contract (plan.md lines 1062-1065).
+**Rationale**: F1.9 `prod.factura_pagos` is immutable (F1.9 REQ-OPS-058 + `fn_factura_pagos_inmutable` trigger migration 0001 lines 2024-2088). F1.13 reads only via the direct FK `prod.factura_pagos.uuid_sesion` (migration 0001 line 716). The grouping matches the arqueo contract (plan.md lines 1062-1065). F12.1.1 narrows the GET projection to the efectivo dimension because the operator no longer sees the datafono total in the UI; the datafono columns are preserved on disk and the SUM helper `_sum_factura_pagos_by_medio_pago` is reusable via the `medios_pago` tuple argument for any future datafono-bearing projection that may be requested out-of-band (e.g. BI/reportes), but the arqueo GET no longer uses it for datafono.
 
-**Source**: `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py::listar_sesiones_del_dia`, `repo/arqueo.py::construir_resumen_sesion`, `repo/arqueo.py::obtener_cierre_dia_del_dia` (NEW helpers); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` line 716 (`factura_pagos.uuid_sesion` FK), lines 2024-2088 (`fn_factura_pagos_inmutable` trigger); F1.9 REQ-OPS-058 (`factura_pagos` immutability precedent).
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py::listar_sesiones_del_dia`, `repo/arqueo.py::construir_resumen_sesion`, `repo/arqueo.py::obtener_cierre_dia_del_dia`, `repo/arqueo.py::resumen_admin_del_dia` (NEW helpers, F12.1.1 amendment drops datafono dict keys); `backend/packages/parkos_core/migrations/versions/0001_initial_schema.py` line 716 (`factura_pagos.uuid_sesion` FK), lines 2024-2088 (`fn_factura_pagos_inmutable` trigger); F1.9 REQ-OPS-058 (`factura_pagos` immutability precedent); F12.1.1 amendment at `caja_arqueo.py:735-748` (`_row_to_admin_item` drops `esperado_datafono`).
 
-**Scenario 1: Resumen con 1 sesion + 1 arqueo → 1 item con totales calculados**
+**Scenario 1: Resumen con 1 sesion → 1 item, effective-only (F12.1.1 amendment)**
 - **Given** a GET `?uuid_sucursal=<:s>&fecha=2026-09-15`
 - **And** 1 `prod.sesion` row `:ses` at `:s` with `timestamp_apertura::date='2026-09-15'`, `valor_inicial_efectivo=50000`, `valor_inicial_datafono=0`
-- **And** 2 `prod.factura_pagos` rows for `:ses`: `(medio_pago='efectivo', valor=30000, tipo_movimiento='pago')` and `(medio_pago='tarjeta', valor=20000, tipo_movimiento='pago')`
+- **And** 2 `prod.factura_pagos` rows for `:ses`: `(medio_pago='efectivo', valor=30000, tipo_movimiento='pago')` and `(medio_pago='tarjeta', valor=20000, tipo_movimiento='pago')` (the tarjeta row is datafono medio per the F1.13 SUM helper convention; F12.1.1 ignores it for the arqueo resumen)
 - **And** 1 `prod.arqueo` row for `:ses` (cierre_turno or auditoria)
 - **When** the handler Step 3 + Step 4 execute the read query
 - **Then** the response MUST include exactly 1 `ArqueoResumenItem` for `:ses`
-- **And** the item MUST have `valor_efectivo_esperado = 50000 + 30000 = 80000` AND `valor_datafono_esperado = 0 + 20000 = 20000`
+- **And** the item MUST have `valor_efectivo_esperado = 50000 + 30000 = 80000`
+- **And** the item MUST NOT include `valor_datafono_esperado` (the field is dropped from the response shape per REQ-OPS-192)
 - **And** `cierre_dia` MUST be `null` (no cierre_dia arqueo for this date).
 
-**Scenario 2: Resumen con cierre_dia existente → aggregate al fondo**
+**Scenario 2: Resumen con cierre_dia existente → aggregate al fondo (effective-only)**
 - **Given** 3 sesiones at `:s` for `fecha='2026-09-15'`
 - **And** 1 `cierre_dia` arqueo row with `uuid_sucursal=:s`, `uuid_sesion=null`, `fecha_retencion_hasta IN ('2026-09-15', ...)`
 - **When** the handler Step 4 invokes `obtener_cierre_dia_del_dia(session, uuid_sucursal=:s, fecha='2026-09-15')`
-- **Then** the response MUST include 3 items in `sesiones[]` AND 1 item in `cierre_dia` (the aggregate arqueo row)
-- **And** the `cierre_dia` item MUST have `uuid_sesion=null` (because `cierre_dia` carries `uuid_sesion=null` per DEC-ARQUEO-03).
+- **Then** the response MUST include 3 items in `sesiones[]` AND 1 item in `cierre_dia` (the aggregate arqueo row, effective-only)
+- **And** the `cierre_dia` item MUST have `uuid_sesion=null` (because `cierre_dia` carries `uuid_sesion=null` per DEC-ARQUEO-03)
+- **And** the `cierre_dia` item MUST NOT include any datafono field (REQ-OPS-192).
 
 **Scenario 3: Resumen con día vacío → 200 con `sesiones=[]`, `cierre_dia=null`**
 - **Given** a GET `?uuid_sucursal=<:s>&fecha=2026-09-15`
@@ -7867,6 +7906,232 @@ Backend MUST ship pytest unit + integration tests against testcontainers Postgre
 - GIVEN Playwright runner in sandbox F.6 environment (real Electron cannot launch)
 - WHEN `e2e/mi-turno.spec.ts` runs
 - THEN both scenarios log "skip reason: sandbox F.6" and exit `0` without browser launch.
+
+### REQ-OPS-191 — `ArqueoCreateV2.valor_datafono_reportado` accepts `null` and `Decimal` (backward-compat, F12.1.1)
+
+**Source**: HU-F12.1.1 (datafono-ignored, REQ-OPS-191, D1..D5) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The Pydantic schema `ArqueoCreateV2` MUST declare `valor_datafono_reportado: Decimal | None = None` (previously required). The handler MUST accept the field as `None` (or any `Decimal`, ignored) without raising. Clients that omit the field (new build) MUST pass validation; clients that send a `Decimal` (legacy kiosk) MUST pass validation; clients that send `null` MUST pass validation. The handler MUST NOT use the value in any computation, alert decision, or persistence column beyond the historical `prod.arqueo.valor_datafono_reportado` column (which the handler continues to leave at the column default / `NULL` — the column is preserved on disk for compliance; F12.1.1 is forward-only and does NOT migrate existing rows).
+
+**Rationale**: Backward-compat with legacy kiosk clients and external integrators that still send `valor_datafono_reportado`. The input is nullable (not removed) because the C/Q/U API contract forbids DELETE; clients that haven't migrated can keep working. The output drops the field (REQ-OPS-192). Compliance: `valor_datafono_*` columns stay in the DB schema; the handler simply does not populate them. The change is forward-only and aligns with the 5 FE commits already merged to `dev` (the UI hardcodes `valor_datafono_reportado: 0` and `valor_inicial_datafono: 0`, so the new client omits the field).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/schemas/caja.py` lines 349-365 (`ArqueoCreateV2.valor_datafono_reportado: Decimal | None = None`); FE precedents: `apps/electron-sucursal/src/features/caja/pages/ArqueoParcial.tsx:179` (hardcoded `0`); merge commit `ba31545a` brings F12.1.1 forward.
+
+#### Scenario: legacy client sends `valor_datafono_reportado: 100000` → 201
+
+- **Given** an `ArqueoCreateV2` payload with `valor_datafono_reportado=100000` and effective field set
+- **When** the handler validates the body
+- **Then** the request MUST pass schema validation
+- **And** the response MUST be `201 Created` with no datafono fields in the body (REQ-OPS-192)
+- **And** the `prod.arqueo.valor_datafono_reportado` column MUST be the column default (the handler does not propagate the wire value).
+
+#### Scenario: new client omits the field → 201
+
+- **Given** an `ArqueoCreateV2` payload without `valor_datafono_reportado` (omitted)
+- **When** the handler validates the body
+- **Then** the request MUST pass schema validation (`None` default applied).
+
+### REQ-OPS-192 — `ArqueoReadForHandler` and `ArqueoDiferenciasResponse` exclude datafono fields (F12.1.1)
+
+**Source**: HU-F12.1.1 (datafono-ignored) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The response schemas `ArqueoReadForHandler` and `ArqueoDiferenciasResponse` MUST NOT include the fields `valor_datafono_esperado`, `valor_datafono_reportado`, `diferencia_datafono`. (Previously these fields appeared with `Decimal` types — they are REMOVED from the wire shape, not made nullable.) Compliance: the corresponding `prod.arqueo` columns remain in the DB (no DROP), but the handler response and the cierre GET projections MUST NOT expose them.
+
+**Rationale**: Output is reduced (the datafono dimension is no longer relevant to the operator — see REQ-OPS-196). The DB columns are preserved so historical rows remain reconstructable and the datafono-related audit trail stays intact; the response shape simply stops projecting them. Combined with REQ-OPS-191 (nullable input), this implements the "shrink the contract, never delete persistence" principle (F12.1.1 architectural choice).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/schemas/caja.py` lines 368-387 (`ArqueoReadForHandler` drops 3 datafono fields); `backend/packages/parkos_core/src/parkos_core/schemas/caja.py::ArqueoResumenItem` and `ArqueoResumenAdminItem` (drops datafono fields, F12.1.1 amendment); `backend/packages/parkos_core/src/parkos_core/api/v1/caja_sesion.py` lines 104-119 (`ArqueoDiferenciasResponse` drops 3 datafono fields); `backend/packages/parkos_core/src/parkos_core/schemas/operacion.py` lines 757, 774 (`MiTurnoRead.total_cobrado_datafono_cop` PRESERVED with default `Decimal(0)`, D1).
+
+#### Scenario: `ArqueoReadForHandler` happy path has no datafono fields
+
+- **Given** a successful `POST /api/v1/caja/arqueo`
+- **When** the response is rendered
+- **Then** the body MUST NOT contain `valor_datafono_esperado`, `valor_datafono_reportado`, or `diferencia_datafono`
+- **And** the `descuadre_pct` field, if present, MUST reflect effective only.
+
+#### Scenario: `ArqueoDiferenciasResponse` has no datafono fields
+
+- **Given** a `GET /api/v1/caja-sesion/arqueo/diferencias` (or equivalent close-summary endpoint)
+- **When** the response is rendered
+- **Then** the body MUST NOT contain `valor_datafono_esperado`, `valor_datafono_reportado`, or `diferencia_datafono`.
+
+### REQ-OPS-193 — `cierre_dia` path applies the datafono-ignored contract to the aggregate (F12.1.1)
+
+**Source**: HU-F12.1.1 (datafono-ignored, second handler in `caja_arqueo.py` for `cierre_dia` aggregate path) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The `cierre_dia` handler (the second handler in `api/v1/caja_arqueo.py` for the `cierre_dia` aggregate path) MUST compute `diferencia_efectivo` only. The `requiere_justificacion` gate MUST be `diferencia_efectivo != 0` (datafono removed; same amendment as REQ-OPS-094). The `INSERT` into `prod.arqueo` for the `cierre_dia` row MUST follow the same effective-only column set as the arqueo-parcial path (REQ-OPS-191). The `es_descuadre_critico` call MUST be the effective-only signature (REQ-OPS-195).
+
+**Rationale**: Same datafono-ignored contract as the arqueo-parcial path; the `cierre_dia` aggregate is just another arqueo row in `prod.arqueo` (with `uuid_sesion=null`) and the handler at `caja_arqueo.py:563-570` is a second site that must follow the same REQ-OPS-091/092/093/094/095 amendments. No migration; the column set on disk is the same; the handler simply drops datafono from the computation and the response.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/api/v1/caja_arqueo.py:555-571` (cierre_dia handler: single esperado/diferencia; `requiere_justificacion=diferencia_efectivo != 0`); `caja_arqueo.py:735-748` (`_row_to_admin_item` drops `esperado_datafono`).
+
+#### Scenario: `cierre_dia` with aggregate descuadre only on effective
+
+- **Given** a `cierre_dia` payload where `sum(diferencia_efectivo)=1500 > tolerancia_efectivo` and `sum(diferencia_datafono)=0`
+- **When** the handler executes
+- **Then** the handler MUST generate ONE `alerta 'descuadre_critico'` for the effective aggregate
+- **And** the response MUST NOT include any datafono field (REQ-OPS-192).
+
+### REQ-OPS-194 — `calcular_esperado_sesion` and `calcular_esperado_cierre_dia` return only effective (`-> Decimal`, F12.1.1, D4)
+
+**Source**: HU-F12.1.1 (datafono-ignored, D4) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The repository helpers `calcular_esperado_sesion(session, ...)` and `calcular_esperado_cierre_dia(session, ...)` MUST return a single `Decimal` (the expected efectivo total) instead of the previous tuple `(esperado_efectivo, esperado_datafono)`. (D4 default; previously returned tuple, now reduced.) The `Decimal` value MUST equal `valor_inicial_efectivo + sum(factura_pagos WHERE medio_pago='efectivo' AND tipo_movimiento='pago')` for the open sesion (parcial) or aggregated for the day (cierre_dia). Call sites in `caja_arqueo.py` (both handlers) MUST be updated to receive a single `Decimal` and MUST NOT unpack a tuple.
+
+**Rationale**: A 1-tuple that is always ignored is a code smell (D4 default). Reducing the signature to `-> Decimal` makes the helper's purpose explicit and forces every call site to acknowledge the datafono dimension is gone. Tests must be updated in the same change.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py:334-369` (`calcular_esperado_sesion` returns `Decimal`); `repo/arqueo.py:372-399` (`calcular_esperado_cierre_dia` returns `Decimal`); `caja_arqueo.py:347-360, 555-558` (call sites updated to single `Decimal`).
+
+#### Scenario: `calcular_esperado_sesion` returns single Decimal
+
+- **Given** a sesion with `valor_inicial_efectivo=50000` and `factura_pagos` totaling 30000 efectivo
+- **When** the handler calls `esperado = calcular_esperado_sesion(...)`
+- **Then** `esperado` MUST be `Decimal('80000.00')` (a single value, not a tuple)
+- **And** the handler MUST compute `diferencia_efectivo = valor_efectivo_reportado - esperado`.
+
+### REQ-OPS-195 — `es_descuadre_critico` signature drops datafono parameters (F12.1.1, D5)
+
+**Source**: HU-F12.1.1 (datafono-ignored, D5) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The repository helper `es_descuadre_critico(diferencia_efectivo, tolerancia_efectivo)` MUST return `bool` (the previous signature took `diferencia_datafono` and `tolerancia_datafono`; D5 default; those parameters are removed). The function MUST compute `abs(diferencia_efectivo) > tolerancia_efectivo` (strict `>` per F1.13 contract preserved). Call sites MUST pass only the two effective parameters; any caller that previously passed datafono parameters MUST be updated in the same change.
+
+**Rationale**: Default-`None` parameters invite reintroduction (a future caller could re-add the datafono dimension and silently re-open the datafono-only descuadre pathway). `TypeError` is the right failure mode if someone tries to pass the datafono args — the surface is closed at the type level. The `tolerancia_datafono` column is preserved in `prod.configuracion_tolerancias` for compliance / historical rows but is not consulted by the handler.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/arqueo.py:417-435` (`es_descuadre_critico` drops 2 datafono params); `caja_arqueo.py:382-387` (call site updated to 2 args); `caja_arqueo.py:432-454` (insertar_alerta_descuadre_critico payload_json effective-only).
+
+#### Scenario: effective-only descuadre evaluation
+
+- **Given** `diferencia_efectivo=150`, `tolerancia_efectivo=100`
+- **When** the handler calls `es_descuadre_critico(150, 100)`
+- **Then** the helper MUST return `True` (abs(150) > 100)
+- **And** the handler MUST proceed to `insertar_alerta_descuadre_critico` (REQ-OPS-095 amended).
+
+#### Scenario: boundary value `|diferencia| == tolerancia` returns `False` (effective-only)
+
+- **Given** `diferencia_efectivo=100`, `tolerancia_efectivo=100`
+- **When** the handler calls `es_descuadre_critico(100, 100)`
+- **Then** the helper MUST return `False` (strict `>` boundary, not `>=`).
+
+### REQ-OPS-196 — No new `diferencia_datafono` alertas are emitted; historical alertas remain visible (F12.1.1)
+
+**Source**: HU-F12.1.1 (datafono-ignored) · **Priority**: CRITICAL · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The system MUST NOT emit any new `prod.alerta` row whose decision was driven by the datafono dimension alone. Specifically: a sesion with `|diferencia_efectivo| <= tolerancia_efectivo` MUST NOT produce an `alerta 'descuadre_critico'` even when `|diferencia_datafono|` would have exceeded `tolerancia_datafono` under the pre-change contract. (Previously, a descuadre exclusively on datafono could trigger an alerta — that pathway is closed.) Historical `prod.alerta` rows with `valor_diferencia_datafono != 0` MUST remain in the table (the change is forward-only, no DELETE), and the bitácora MUST continue to surface them in the alerts list. The FE drill-down route for `diferencia_datafono` is preserved (REQ-OPS-199) so historical alerts remain resolvable.
+
+**Rationale**: AUDIT-FIRST canon + the C/Q/U API contract forbid DELETE on `[L-W]` tables. Historical rows are part of the audit trail and must remain visible. The drill-down route preservation (REQ-OPS-199, D3 default) is a zero-cost UI change — the entry is unused by new flows but required so that historical alertas remain navigable. The `valor_diferencia_datafono` column on `prod.alerta` is preserved on disk and remains `nullable=True` per the ORM (no migration).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/api/v1/workflows_alerta.py:444-469` (`descuadrar_alerta` keeps `append_transition` reading `tip_row.valor_diferencia_datafono` for historical rows); `models/L_W/alerta.py:62` (`valor_diferencia_datafono` already `nullable=True`, no migration); `apps/electron-sucursal/src/lib/alertas/router.ts:44` (drill-down route preserved, D3).
+
+#### Scenario: descuadre only on datafono → NO alerta generated
+
+- **Given** a sesion with `diferencia_efectivo=0` and `diferencia_datafono=500` (> tolerancia_datafono, pre-change threshold)
+- **When** the handler completes a successful `POST /api/v1/caja/arqueo`
+- **Then** ZERO `prod.alerta` rows MUST be created (the datafono-only descuadre is no longer alerta-worthy)
+- **And** the response MUST be `201 Created` with `alerta_generada=false`, `alerta_uuid=null`.
+
+#### Scenario: pre-existing datafono alertas remain visible in the bitácora
+
+- **Given** a `prod.alerta` row with `valor_diferencia_datafono != 0` and `created_at < '2026-10-06'` (the F12.1.1 commit date)
+- **When** an admin reads the alerts list
+- **Then** the row MUST appear in the response (no DELETE, no soft-delete; audit-first / append-only).
+
+### REQ-OPS-197 — `MiTurnoRead.total_cobrado_datafono_cop` returns `0` (F12.1.1, D1)
+
+**Source**: HU-F12.1.1 (datafono-ignored, D1) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The repository helper `calcular_resumen_mi_turno` MUST return `total_cobrado_datafono_cop: Decimal = 0` for every sesion, regardless of historical `factura_pagos` rows with `medio_pago IN ('tarjeta', 'datafono')`. (D1 default: preserve the field in the response shape for backward-compat with clients reading the field; the value is `0` because the operator no longer sees or types the datafono in the cierre.) The `MiTurnoRead` schema MUST keep the field `total_cobrado_datafono_cop: Decimal` (NOT removed) so external consumers that read the field continue to deserialize successfully. The `MedioPago` breakdown tuple in the helper MUST NOT include `'datafono'` (only `'efectivo'`); the datafono sum is forced to `0`.
+
+**Rationale**: Preserving the field (D1) avoids breaking clients that read it. The value is `0` because the datafono dimension is no longer part of the wire contract (REQ-OPS-191/192). BI/report consumers that read the key continue to deserialize; FE does not render this KPI in the new flow but a zero value is safe to ship. The `MedioPago` breakdown tuple drops `'datafono'` so the SUM helper is bound to `('efectivo',)` only — this is what makes the datafono sum `0` mechanically (the helper does not query the datafono medio at all).
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/repo/mi_turno.py:150-170` (drops `_sum_factura_pagos_by_medio_pago(medios_pago=("tarjeta", "datafono"))`; `total_datafono = Decimal(0)`); `backend/packages/parkos_core/src/parkos_core/schemas/operacion.py:757, 774` (`MiTurnoRead.total_cobrado_datafono_cop: Decimal` preserved with default `0`, D1).
+
+#### Scenario: mi-turno with historical datafono payments returns `0`
+
+- **Given** a sesion X with `factura_pagos` totaling 50000 efectivo + 30000 tarjeta (datafono medio)
+- **When** the handler returns `MiTurnoRead`
+- **Then** the response MUST include `total_cobrado_efectivo_cop=50000` AND `total_cobrado_datafono_cop=0`
+- **And** the datafono total is `0` regardless of the historical `factura_pagos` aggregate.
+
+#### Scenario: mi-turno zero state remains `0`
+
+- **Given** a sesion with no `factura_pagos` rows
+- **When** the handler returns `MiTurnoRead`
+- **Then** `total_cobrado_datafono_cop` MUST be `0` (same as before, no change in the zero path).
+
+### REQ-OPS-198 — Sync `apply_row` close path passes `valor_final_datafono=None` (F12.1.1, D2)
+
+**Source**: HU-F12.1.1 (datafono-ignored, D2) · **Priority**: HIGH · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The sync motor's `apply_row(spec, payload, ...)` for `apply_strategy='session_cycle'` close path MUST invoke `repo.session_cycle.close_session_with_log(..., valor_final_datafono=None)` explicitly. (D2 default: explicit `None`, defense against future positional-arg signatures; semantically documents that the datafono dimension is not part of the close-wire.) The `apply_row` MUST NOT read `payload.get('valor_final_datafono')` to populate the argument — the close-time datafono is dropped at the sync layer, consistent with the API handler behavior (REQ-OPS-191). The `repo.session_cycle.close_session_with_log` helper MUST drop the `valor_final_datafono` key from `datos_nuevos` when the value is `None` (REQ-MOT-017 mirror at the helper level; sub-concern 8a in the design). The open leg (`record_login`) is unchanged — `valor_inicial_datafono` is still passed through (the apertura contract is unaffected; the UI still sends `0`).
+
+**Rationale**: Cross-tier consistency: the close contract is identical at the API handler (REQ-OPS-191/192), the session close repo (REQ-OPS-198), and the sync motor (REQ-MOT-017). All three layers drop the datafono dimension at the close boundary. The `datos_nuevos` key drop is the sub-concern 8a in the design — strict that the helper's `datos_nuevos` dict does NOT carry `valor_final_datafono: None` (which would otherwise leak into the log row). Hash chain safety: `valor_final_datafono` is not a chain-bearing field (per AGENTS.md §Sync hash-chain contract); the chain verifier is unaffected.
+
+**Source**: `backend/packages/parkos_core/src/parkos_core/sync/motor/apply_row.py:294-301` (close branch: `valor_final_datafono=None` explicit); `backend/packages/parkos_core/src/parkos_core/repo/session_cycle.py:333-350` (drops `valor_final_datafono` key from `datos_nuevos` when value is `None`).
+
+#### Scenario: replicated close payload with `valor_final_datafono` key → stripped
+
+- **Given** a sync `apply_row` invocation for the `session_cycle` close path with a payload containing `valor_final_datafono=50000`
+- **When** the motor dispatches to `close_session_with_log`
+- **Then** the helper MUST be called with `valor_final_datafono=None` (the wire value is dropped at the sync boundary, not propagated)
+- **And** `prod.sesion.valor_final_datafono` MUST be the column default (`0` / `NULL`) — the persisted value does not reflect the wire value
+- **And** `prod.log_transaccional.datos_nuevos` MUST NOT contain a `valor_final_datafono` key (the datafono dimension is excluded from the log row's payload too — REQ-MOT-017 Scenario 2).
+
+### REQ-OPS-199 — Drill-down route for `diferencia_datafono` preserved for historical alertas (F12.1.1, D3)
+
+**Source**: HU-F12.1.1 (datafono-ignored, D3) · **Priority**: LOW · **RFC 2119 keywords**: MUST
+
+**Statement**:
+The frontend drill-down router entry keyed on the alert-type discriminator `diferencia_datafono` MUST remain in the route map (`apps/electron-sucursal/src/lib/alertas/router.ts:44` per F12.1.1 verification). The route MUST be reachable for any `prod.alerta` row with `valor_diferencia_datafono != 0` that pre-dates the change. New alerta emissions (post-change) MUST NOT route to this entry because the alert type is no longer emitted (REQ-OPS-196). The route preservation is a zero-cost change — the entry is unused by new flows but is required so that historical alertas remain resolvable in the bitácora UI.
+
+**Rationale**: Audit-first canon + C/Q/U: pre-existing alertas are part of the audit trail and must remain navigable. Removing the route would orphan historical rows in the bitácora UI (a regression in observability). D3 default is "preserve" because the cost is one entry in a router map — zero risk, non-trivial benefit.
+
+**Source**: `apps/electron-sucursal/src/lib/alertas/router.ts:44` (drill-down route preserved); `apps/electron-sucursal/src/lib/alertas/router.test.ts::test_diferencia_datafono_route_preserved` (NEW test file per F12.1.1 Phase 4.2).
+
+#### Scenario: historical datafono alerta still routes to its drill-down
+
+- **Given** a `prod.alerta` row with `tipo_alerta='descuadre_critico'`, `valor_diferencia_datafono != 0`, and `created_at < '2026-10-06'`
+- **When** the admin opens the alerta in the bitácora and clicks the row
+- **Then** the router MUST navigate to the drill-down view (route preserved verbatim)
+- **And** the drill-down view MUST render the historical datafono value as it was at the time of the alerta.
+
+## F12.1.1 Drift reconciliation
+
+| Anchor | Status | Resolution |
+|---|---|---|
+| DA-F12.1.1-1 (datafono input nullable) | RESOLVED | REQ-OPS-191: `ArqueoCreateV2.valor_datafono_reportado: Decimal \| None = None` (backward-compat with legacy kiosk + external integrators) |
+| DA-F12.1.1-2 (responses drop datafono) | RESOLVED | REQ-OPS-192: `ArqueoReadForHandler` + `ArqueoDiferenciasResponse` + `ArqueoResumenItem` + `ArqueoResumenAdminItem` drop `valor_datafono_*` / `diferencia_datafono` fields |
+| DA-F12.1.1-3 (cierre_dia path mirrors) | RESOLVED | REQ-OPS-193: second handler in `caja_arqueo.py` follows the same effective-only contract (single esperado/diferencia, `requiere_justificacion=diferencia_efectivo != 0`) |
+| DA-F12.1.1-4 (repo helper signatures) | RESOLVED | REQ-OPS-194: `calcular_esperado_sesion` / `calcular_esperado_cierre_dia` return `-> Decimal` (D4); REQ-OPS-195: `es_descuadre_critico` drops datafono params (D5) |
+| DA-F12.1.1-5 (alerta decision + emission) | RESOLVED | REQ-OPS-195/196: `es_descuadre_critico` is effective-only; datafono-only descuadre does NOT produce an alerta; historical alertas preserved (no DELETE) |
+| DA-F12.1.1-6 (mi_turno field preserved) | RESOLVED | REQ-OPS-197: `MiTurnoRead.total_cobrado_datafono_cop: Decimal = 0` (D1 default — key preserved, value `0` for FE Zod parity) |
+| DA-F12.1.1-7 (sync close strips datafono) | RESOLVED | REQ-OPS-198: `apply_row` close path passes `valor_final_datafono=None` explicit (D2); `datos_nuevos` omits the key (REQ-MOT-017) |
+| DA-F12.1.1-8 (FE drill-down preserved) | RESOLVED | REQ-OPS-199: `router.ts:44` entry preserved (D3); `router.test.ts::test_diferencia_datafono_route_preserved` (NEW) |
+| DA-F12.1.1-9 (no migration) | RESOLVED | `valor_datafono_*` and `tolerancia_datafono` columns preserved on disk; `models/L_W/alerta.py:62` `valor_diferencia_datafono` already `nullable=True`; `check_schema_match.py` (h) green without changes |
+
+## F12.1.1 Validation matrix
+
+| Layer | Validator | Threshold |
+|---|---|---|
+| BE unit + integration | `pytest backend/tests` with testcontainers | 11 new scenarios green (test_pinning list in `openspec/changes/backend-ignore-datafono-cierre-arqueos/specs/operations/spec.md`); coverage ≥80% on `repo/arqueo.py`, `repo/mi_turno.py`, `repo/session_cycle.py` |
+| BE lint | `ruff check` + `mypy --strict` | 0 errors on F12.1.1-touched files |
+| FE unit (F12.1.1) | `pnpm --filter @apps/electron-sucursal vitest run router.test.ts` | 1 new scenario green (`test_diferencia_datafono_route_preserved`) |
+| FE types + lint | `tsc --noEmit` + `eslint` | 0 errors on F12.1.1-touched files |
+| schema drift | `python openspec/scripts/check_schema_match.py` | exits `0`; no migration (49 tables + 8 pg_partman parents unchanged) |
+
+## F12.1.1 Risk acknowledgements
+
+- **R-F12.1.1-1** — `prod.arqueo` (8) + `prod.alerta` (L-W) keep `valor_datafono_*` columns; new rows have them at the column default. Resolution: forward-only contract (no DROP COLUMN, no migration), historical rows remain reconstructable, audit-first canon honored.
+- **R-F12.1.1-2** — External clients reading removed response fields. Resolution: `MiTurnoRead.total_cobrado_datafono_cop` preserved (D1) for the mi_turno surface; FE commits pre-existentes already drop the field locally; release notes flag the wire shape change.
+- **R-F12.1.1-3** — Pre-existing alertas with `valor_diferencia_datafono != 0` lost. Resolution: D3 drill-down preserved + no-DELETE compliance + REQ-OPS-196.
+- **R-F12.1.1-4** — Hash chain broken by datafono drop. Resolution: `valor_final_datafono` is not chain-bearing (per AGENTS.md §Sync hash-chain contract); `test_chain_unaffected_by_datafono_drop` regression in `test_sync_chain.py`.
+- **R-F12.1.1-5** — `datos_nuevos` leaks `valor_final_datafono: None`. Resolution: REQ-MOT-017 / sub-concern 8a — `close_session_with_log` drops the key from `datos_nuevos` when value is `None`; `test_session_cycle_close_datos_nuevos_omits_datafono` regression.
 
 ## Drift reconciliation
 

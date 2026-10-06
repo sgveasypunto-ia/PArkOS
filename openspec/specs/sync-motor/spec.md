@@ -16,7 +16,7 @@ never recomputed on apply).
 
 ## Requirements
 
-### REQ-MOT-001: `apply_row` dispatches by `apply_strategy`
+### REQ-MOT-001: `apply_row` dispatches by `apply_strategy` (close path drops datafono, F12.1.1 amendment)
 **Given** a `SyncCatalogEntry` with `apply_strategy="close_and_insert"`
 **When** `SyncMotor.apply_row(spec, payload, actor_uuid=…)` is called
 **Then** the motor MUST dispatch to
@@ -32,13 +32,28 @@ Mapping table for the 5 `apply_strategy` values:
 | `record_event` | `repo.event.record_event` |
 | `append_event` | `repo.append_only.append_event(chain_hash=spec.hash_chain)` |
 | `append_transition` | `repo.workflow.append_transition` |
-| `session_cycle` | `repo.session_cycle.record_login` (insert) or `close_login_with_log` (close) based on payload `estado` field |
+| `session_cycle` | `repo.session_cycle.record_login` (insert) or `close_login_with_log` (close) based on payload `estado` field — **close leg (F12.1.1 amendment) MUST pass `valor_final_datafono=None` explicitly, NOT `payload.get('valor_final_datafono')` (D2 default; the datafono dimension is dropped at the sync boundary, mirroring the API handler behavior REQ-OPS-191 and the session close repo REQ-OPS-198); the open leg is unchanged and continues to pass `valor_inicial_datafono` through** |
 
 **Given** any spec with a non-empty `depends_on`
 **When** `apply_row` runs
 **Then** the motor MUST validate every declared parent (REQ-MOT-015)
 **before** the repo dispatch above — parent validation is a precondition
 of persistence, not an observation after the fact.
+
+**Given** a sync queue entry for `session_cycle` close with a payload
+containing `valor_final_datafono=<any Decimal>` (F12.1.1 amendment)
+**When** the motor dispatches the close leg to `close_session_with_log`
+**Then** the motor MUST call `close_session_with_log(..., valor_final_datafono=None)`
+explicitly — the wire value MUST be dropped at the sync boundary, NOT
+propagated
+**And** the persisted `prod.sesion.valor_final_datafono` MUST be the
+column default (the wire value is not reflected)
+**And** `prod.log_transaccional.datos_nuevos` MUST NOT contain a
+`valor_final_datafono` key — the helper drops the key from `datos_nuevos`
+when the value is `None` (REQ-MOT-017, sub-concern 8a in the F12.1.1
+design). Hash chain safety: `valor_final_datafono` is not chain-bearing
+(per AGENTS.md §Sync hash-chain contract), so the SHA256 chain on
+`prod.log_transaccional` and `prod.revocacion_factura` is unaffected.
 
 ### REQ-MOT-002: `apply_row` honors bi-temporal close+insert for `[V]`
 **Given** a payload for a `[V]` table (`audit_class="V"`)
@@ -345,6 +360,32 @@ lacks
 **And** a vehicle presenting at a non-selling branch with no local
 subscription match MUST be handled per `sync-catalog.md` REQ-CAT-017
 (R22) — not as a broadcast failure.
+
+### REQ-MOT-017: Sync layer strips `valor_final_datafono` at the close boundary (F12.1.1)
+**Given** a sync queue entry for `apply_strategy='session_cycle'` close
+path with a payload containing `valor_final_datafono=<any Decimal>` (or
+the key absent)
+**When** `SyncMotor.apply_row` dispatches the close leg to
+`repo.session_cycle.close_session_with_log`
+**Then** the motor MUST call `close_session_with_log(...,
+valor_final_datafono=None)` explicitly (NOT `payload.get('valor_final_datafono')`)
+**And** the persisted `prod.sesion.valor_final_datafono` MUST be the
+column default (the wire value is not reflected, even when present on
+the wire)
+**And** `prod.log_transaccional.datos_nuevos` MUST NOT contain a
+`valor_final_datafono` key (the helper drops the key from `datos_nuevos`
+when the value is `None` — sub-concern 8a in the F12.1.1 design)
+**And** the SHA256 hash chain on `prod.log_transaccional` and
+`prod.revocacion_factura` MUST continue unbroken (the datafono field is
+not part of the chain; per AGENTS.md §Sync hash-chain contract).
+
+**Given** a sync queue entry for `apply_strategy='session_cycle'` open
+path with a payload containing `valor_inicial_datafono=0` (F12.1.1
+amendment — open leg unaffected)
+**When** `SyncMotor.apply_row` dispatches the open leg to `record_login`
+**Then** the motor MUST continue to pass `valor_inicial_datafono=0`
+through (no change to the open path; the apertura contract is preserved;
+the UI hardcodes `0` per the FE commits pre-existentes).
 
 ## Modified Capabilities
 
