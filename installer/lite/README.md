@@ -11,9 +11,11 @@ Windows, sin Electron, sin elevacion y sin conectividad al correr**:
 Internet se necesita **solo al instalar o al bajar cambios** (Postgres,
 pg_partman, `git pull`, `pnpm`/`uv`). Ya instalado, todo corre offline.
 
+Manual completo (testers y soporte): [MANUAL.md](MANUAL.md).
+
 ## Requisitos
 
-`git`, `uv`, `node` (LTS) y `pnpm`. El paso 1 del TUI dice que falta y como
+`git`, `uv`, `node` (LTS) y `pnpm`. El paso 10 del TUI (parte de la opcion 1) dice que falta y como
 instalarlo (`winget install ...`). Funciona con Windows PowerShell 5.1 o pwsh 7.
 
 ## Como correrlo
@@ -22,26 +24,38 @@ instalarlo (`winget install ...`). Funciona con Windows PowerShell 5.1 o pwsh 7.
 powershell -ExecutionPolicy Bypass -File installer\lite\parkos-lite.ps1
 ```
 
-Pulsa **G** (instalar todo, guiado) y al final abre la URL que imprime.
+Elige la opcion **1** (Instalar todo, guiado) y al final abre la URL que imprime.
 Parametros utiles: `-LitePath`, `-SourceBranch` (default `dev`), `-PgPort`,
 `-ApiPort`, `-FrontPort` (0 = automatico: Postgres desde 5433, API desde 8100,
 front desde 5173; si el puerto esta ocupado toma el siguiente libre).
 
 ## Menu
 
-| Tecla | Accion |
-|---|---|
-| 1 | Preparar entorno (herramientas, UUID de sucursal, puertos, passwords y llave JWT descartables) |
-| 2 | Instalar base de datos (descarga Postgres, initdb, roles, pg_partman, arranque automatico) |
-| 3 | Construir API (.exe + migrate.exe, varios minutos) |
-| 4 | Migrar base de datos (`alembic upgrade head`) |
-| 5 | Cargar datos de demo (`seed_demo.sql`, re-ejecutable) |
-| 6 | Instalar dependencias del front (`pnpm install --ignore-scripts`, sin bajar Electron) |
-| 7 / 8 / 9 | Iniciar todo / Detener todo / Estado |
-| G | Instalar todo (pasos 1-7) |
-| B | Bajar cambios de `dev` y reiniciar |
-| R / L / O | Reiniciar / Ver logs / Abrir navegador |
-| A | Arranque automatico de la base de datos |
+Una sola lista numerada (escribe el numero y Enter; `0` o `Q` sale):
+
+| Grupo | Opcion | Accion |
+|---|---|---|
+| PRIMERA VEZ | 1 | Instalar todo (guiado): hace los pasos 10 a 15 solo y luego inicia todo. Si se corta, vuelve a elegir 1: retoma donde quedo |
+| USO DIARIO | 2 | Iniciar todo (DB + API + front) |
+| | 3 | Detener todo |
+| | 4 | Reiniciar |
+| | 5 | Estado |
+| | 6 | Abrir el navegador |
+| | 7 | Bajar cambios de `dev` y reiniciar |
+| | 8 | Ver logs |
+| | 9 | Arranque automatico de la base de datos |
+| AVANZADO (paso a paso, en este orden) | 10 | Preparar entorno (herramientas, UUID de sucursal, puertos, passwords y llave JWT descartables) |
+| | 11 | Instalar base de datos (descarga Postgres, initdb, roles, pg_partman, arranque automatico) |
+| | 12 | Construir API (.exe + migrate.exe, varios minutos) |
+| | 13 | Migrar base de datos (`alembic upgrade head`) |
+| | 14 | Cargar datos de demo (`seed_demo.sql`, re-ejecutable) |
+| | 15 | Instalar dependencias del front (`pnpm install --ignore-scripts`, sin bajar Electron) |
+| | 0 | Salir |
+
+Los pasos 10 a 15 y "Iniciar todo" llevan una etiqueta de estado:
+`[ OK ]`, `[FAIL]`, `[BLOQ]` (indica cual correr primero) o `[....]` (pendiente).
+Una entrada invalida imprime `Opcion no valida, elige un numero de la lista` y
+vuelve a mostrar el menu.
 
 Cada paso depende del anterior (`[BLOQ]` indica cual correr primero). El estado
 real se verifica probando (archivos, puertos, consultas), no solo con
@@ -55,7 +69,7 @@ tipos de vehiculo carro/moto/bicicleta/patineta con tarifas hora/fraccion/plena/
 nocturna en COP, resolucion de facturacion de demo (prefijo DEMO), config de
 caja y cupos. El seed nunca borra ni pisa: solo inserta lo que falta.
 
-## Bajar cambios (opcion B)
+## Bajar cambios (opcion 7)
 
 Detiene todo, `git fetch` + `git pull --ff-only` de `-SourceBranch` (se niega si
 hay cambios locales en archivos versionados), reconstruye el exe **solo si
@@ -63,7 +77,7 @@ cambio `backend/` o `installer/bootstrap/`**, migra, `pnpm install` solo si
 cambio un `package.json`/lockfile de `apps/`, re-siembra y arranca. Si el pull
 falla, vuelve a arrancar la version anterior.
 
-## Arranque automatico (opcion A)
+## Arranque automatico (opcion 9)
 
 Por defecto, al activar la base de datos se crea la **tarea programada de
 usuario `ParkosLiteDb`** (disparador *al iniciar sesion*, sin admin) que ejecuta
@@ -90,14 +104,14 @@ la carpeta donde dejar el archivo; el paso es re-ejecutable. Esta logica vive en
 
 `%LOCALAPPDATA%\ParkosLite` (fuera del repo): `pgsql\`, `data\` (datos de
 Postgres, `api.env` sin cifrar, `secrets.json`, llave JWT), `logs\`, `run\`
-(pids), `downloads\`, `state.json`. Para empezar de cero: opcion 8, quitar el
-arranque automatico (A) y borrar esa carpeta.
+(pids), `downloads\`, `state.json`. Para empezar de cero: opcion 3 (Detener todo), quitar el
+arranque automatico (opcion 9) y borrar esa carpeta.
 
 ## Problemas comunes
 
-- **Puerto ocupado**: se elige otro automaticamente; mira la opcion 9.
-- **La API no arranca**: `L` -> `api.err.log` / `api.out.log`.
-- **`pg_ctl start` falla**: `L` -> `postgres.log`.
+- **Puerto ocupado**: se elige otro automaticamente; mira la opcion 5 (Estado).
+- **La API no arranca**: opcion 8 (Ver logs) -> `api.err.log` / `api.out.log`.
+- **`pg_ctl start` falla**: opcion 8 (Ver logs) -> `postgres.log`.
 - **Pull rechazado**: hay cambios locales o la rama diverge; resuelve con git.
 - **`pnpm`**: el lockfile del repo puede ir desfasado; el lite instala con
   `--lockfile=false` para no ensuciar el arbol git.
