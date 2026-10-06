@@ -158,3 +158,23 @@ class TestReadList:
         rl = TipoSubscripcionesReadList(items=[r], next_cursor="abc")
         assert len(rl.items) == 1
         assert rl.next_cursor == "abc"
+
+
+class TestUuidTipoVehiculo:
+    """Migration 0087: optional ``uuid_tipo_vehiculo`` (NULL = any vehicle type)."""
+
+    def test_create_and_update_default_to_none(self):
+        assert TipoSubscripcionesCreate(tipo="x").uuid_tipo_vehiculo is None
+        assert TipoSubscripcionesUpdate(tipo="x").uuid_tipo_vehiculo is None
+
+    def test_create_accepts_uuid(self):
+        u = uuid_lib.uuid4()
+        assert TipoSubscripcionesCreate(tipo="x", uuid_tipo_vehiculo=u).uuid_tipo_vehiculo == u
+
+    def test_create_rejects_non_uuid(self):
+        with pytest.raises(ValidationError):
+            TipoSubscripcionesCreate(tipo="x", uuid_tipo_vehiculo="no-es-uuid")
+
+    def test_read_exposes_field_with_default_none(self):
+        assert "uuid_tipo_vehiculo" in TipoSubscripcionesRead.model_fields
+        assert TipoSubscripcionesRead.model_fields["uuid_tipo_vehiculo"].default is None

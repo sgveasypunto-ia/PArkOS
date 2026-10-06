@@ -21,6 +21,7 @@ class TipoSubscripcionesRead(_Base):
     cantidad_maxima_vehiculos: int | None
     mismo_tipo_vehiculo: bool | None
     tipo_cliente_permitido: str | None
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None
     vigente_desde: datetime
     vigente_hasta: datetime | None
     estado: str
@@ -38,6 +39,7 @@ class TipoSubscripcionesCreate(_Base):
     cantidad_maxima_vehiculos: int | None = None
     mismo_tipo_vehiculo: bool | None = None
     tipo_cliente_permitido: Annotated[str, StringConstraints(max_length=64)] | None = None
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None
 
 
 class TipoSubscripcionesUpdate(_Base):
@@ -49,6 +51,7 @@ class TipoSubscripcionesUpdate(_Base):
     cantidad_maxima_vehiculos: int | None = None
     mismo_tipo_vehiculo: bool | None = None
     tipo_cliente_permitido: Annotated[str, StringConstraints(max_length=64)] | None = None
+    uuid_tipo_vehiculo: uuid_lib.UUID | None = None
 
 
 class TipoSubscripcionesFilter(FilterBase):
