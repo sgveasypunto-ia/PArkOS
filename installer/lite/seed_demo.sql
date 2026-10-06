@@ -7,7 +7,8 @@
 -- se inserta solo si no existe una version vigente (vigente_hasta IS NULL);
 -- nunca ON CONFLICT sobre vigente_desde (NOW() cambia en cada corrida).
 -- Una fila ya existente (p. ej. una tarifa que el probador edito despues) se
--- respeta: este seed NUNCA pisa ni cierra versiones.
+-- respeta: este seed NUNCA pisa versiones editadas. Unica excepcion: cierra
+-- (sin borrar) las tarifas del seed anterior que no fueron tocadas (ver 3a).
 --
 -- Credenciales DEMO (solo para pruebas locales): password `Demo1234`.
 -- Para cambiar el hash: psql ... -v demo_hash=<bcrypt>.
@@ -86,27 +87,51 @@ FROM (VALUES
 WHERE NOT EXISTS (SELECT 1 FROM prod.tipos_vehiculo t WHERE t.tipo = v.tipo AND t.vigente_hasta IS NULL)
   AND NOT EXISTS (SELECT 1 FROM prod.tipos_vehiculo t WHERE t.uuid = v.uuid::uuid);
 
--- 3) Tarifas (COP) por tipo de vehiculo x tipo de tarifa. Los UUID de
---    tipo_tarifa son fijos (migracion 0071); los tipos de vehiculo se buscan
---    por nombre. La API cotiza solo los tipos que tengan tarifa vigente.
-CREATE TEMP TABLE _demo_tarifas (vehiculo text, tarifa text, valor numeric) ON COMMIT DROP;
-INSERT INTO _demo_tarifas VALUES
+-- 3) Tarifas (COP) por tipo de vehiculo. `prod.calcular_cotizacion` (migraciones
+--    0047/0049) elige UNA sola tarifa vigente por (sucursal, tipo de vehiculo),
+--    cobra `valor` PESOS POR MINUTO (CEIL(minutos) * valor) y topa el cobro en
+--    `valor_plena` cuando el tiempo alcanza valor_plena / valor minutos. Por eso
+--    el demo siembra una unica tarifa 'hora' por tipo, expresada por minuto
+--    (p. ej. carro 70 $/min ~ 4.200 $/h, tope diario 25.000), y NO las 4
+--    modalidades: con varias el calculo tomaba una al azar y cobraba hasta 60x.
+--    Los UUID de tipo_tarifa son fijos (migracion 0071); los tipos de vehiculo se
+--    buscan por nombre. La API cotiza solo los tipos que tengan tarifa vigente.
+--
+--    3a) Migra el seed viejo (4 modalidades "por hora", sin tope): cierra
+--    (vigente_hasta/estado, jamas DELETE) solo las filas que aun coinciden
+--    EXACTAMENTE con el valor sembrado antes y no tienen valor_plena; una tarifa
+--    que el probador edito no coincide y se respeta.
+CREATE TEMP TABLE _demo_tarifas_legacy (vehiculo text, tarifa text, valor numeric) ON COMMIT DROP;
+INSERT INTO _demo_tarifas_legacy VALUES
     ('carro',     'hora',     4000), ('carro',     'fraccion',  1000), ('carro',     'plena', 25000), ('carro',     'nocturna', 12000),
     ('moto',      'hora',     2500), ('moto',      'fraccion',   600), ('moto',      'plena', 15000), ('moto',      'nocturna',  8000),
     ('bicicleta', 'hora',     1000), ('bicicleta', 'fraccion',   300), ('bicicleta', 'plena',  6000), ('bicicleta', 'nocturna',  3000),
     ('patineta',  'hora',     1500), ('patineta',  'fraccion',   400), ('patineta',  'plena',  8000), ('patineta',  'nocturna',  4000);
 
+UPDATE prod.tarifas_sucursal t
+   SET vigente_hasta = NOW(), estado = 'inactivo'
+  FROM _demo_tarifas_legacy d
+  JOIN prod.tipos_vehiculo tv ON tv.tipo = d.vehiculo AND tv.vigente_hasta IS NULL
+  JOIN prod.tipo_tarifa tt ON tt.tipo = d.tarifa AND tt.vigente_hasta IS NULL
+ WHERE t.uuid_sucursal = :'sucursal_uuid'::uuid
+   AND t.uuid_tipo_vehiculo = tv.uuid AND t.uuid_tipo_tarifa = tt.uuid
+   AND t.vigente_hasta IS NULL AND t.valor = d.valor AND t.valor_plena IS NULL;
+
+--    3b) Tarifa vigente del demo: ($/minuto, tope diario).
+CREATE TEMP TABLE _demo_tarifas (vehiculo text, valor numeric, valor_plena numeric) ON COMMIT DROP;
+INSERT INTO _demo_tarifas VALUES
+    ('carro', 70, 25000), ('moto', 40, 15000), ('bicicleta', 20, 6000), ('patineta', 25, 8000);
+
 INSERT INTO prod.tarifas_sucursal
     (uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa, valor, valor_plena,
      vigente_desde, vigente_hasta, estado)
-SELECT :'sucursal_uuid'::uuid, tv.uuid, tt.uuid, d.valor, NULL, NOW(), NULL, 'activo'
+SELECT :'sucursal_uuid'::uuid, tv.uuid, tt.uuid, d.valor, d.valor_plena, NOW(), NULL, 'activo'
 FROM _demo_tarifas d
 JOIN prod.tipos_vehiculo tv ON tv.tipo = d.vehiculo AND tv.vigente_hasta IS NULL
-JOIN prod.tipo_tarifa tt ON tt.tipo = d.tarifa AND tt.vigente_hasta IS NULL
+JOIN prod.tipo_tarifa tt ON tt.tipo = 'hora' AND tt.vigente_hasta IS NULL
 WHERE NOT EXISTS (SELECT 1 FROM prod.tarifas_sucursal t
                   WHERE t.uuid_sucursal = :'sucursal_uuid'::uuid
-                    AND t.uuid_tipo_vehiculo = tv.uuid AND t.uuid_tipo_tarifa = tt.uuid
-                    AND t.vigente_hasta IS NULL);
+                    AND t.uuid_tipo_vehiculo = tv.uuid AND t.vigente_hasta IS NULL);
 
 -- 4) Resolucion de facturacion de demo (rango propio de la sucursal).
 INSERT INTO prod.resolucion_facturacion
