@@ -37,9 +37,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import inspect as _sa_inspect
+from sqlalchemy import select as _sa_select
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...models.V.sucursal import Sucursal as _Sucursal
 from ...runtime import engine_flag
 from ..catalog.schema import SyncCatalogEntry
 from ..conflict_resolver import ApplyOutcome, ConflictResolver
@@ -49,6 +52,23 @@ from .apply_row import apply_row as _catalog_apply_row
 from .dependency_orderer import order_batch
 from .identity_lookup import resolve_open_version
 from .read_local_seq import ReadLocalSeq
+
+# Columns the in-place update path on ``sucursal`` (the user-requirement
+# special case) MUST NOT touch — the identity (uuid), the bi-temporal
+# bookkeeping (vigente_desde/hasta, created_at/by) and the sync-state
+# columns. Everything else is fair game for a cloud-pushed update.
+_SUCURSAL_PROTECTED_COLUMNS: frozenset[str] = frozenset(
+    {
+        "uuid",
+        "vigente_desde",
+        "vigente_hasta",
+        "created_at",
+        "created_by",
+        "sync_status",
+        "sync_timestamp",
+        "sync_attempts",
+    }
+)
 from .resolve_conflict import ConflictResolution
 from .resolve_conflict import resolve_conflict as _resolve_conflict
 
@@ -275,6 +295,65 @@ class SyncMotor:
         automatically, exactly what ``test_identity_invariant.py`` used to
         do by hand for its own assertions only.
         """
+        # Real defect confirmed live, 2026-10-06: the ``sucursal``
+        # table is a special case where the user requirement is
+        # "the only keys are UUIDs — an edit is an UPDATE, not a
+        # new entity". This check has to run BEFORE the LEGACY
+        # dispatch below, because the LEGACY path goes through
+        # ``ConflictResolver`` (a verdict-only shim since PR7) and
+        # returns CONFLICT for an already-known prefijo_nombre — which
+        # would short-circuit before our direct UPDATE/INSERT can run.
+        # The cloud's engine is also LEGACY (per compose default), so
+        # the pull path lands here too: this branch is the only entry
+        # point for both the cloud and the branch apply sides.
+        if spec.name == "sucursal" and spec.audit_class == "V":
+            target_uuid = payload.get("uuid")
+            if target_uuid is None:
+                return ApplyResult(
+                    status="RETRY",
+                    row_uuid=None,
+                    reason="missing_uuid",
+                )
+            stmt = _sa_select(_Sucursal).where(_Sucursal.uuid == target_uuid)
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is None:
+                # First pull for this sucursal — INSERT directly with the
+                # cloud's uuid, prefijo_nombre and other business fields.
+                insert_payload: dict[str, Any] = {
+                    "uuid": target_uuid,
+                    "estado": payload.get("estado", "activo"),
+                    "vigente_desde": payload.get("vigente_desde"),
+                    "vigente_hasta": payload.get("vigente_hasta"),
+                    "created_at": payload.get("created_at"),
+                    "created_by": payload.get("created_by"),
+                }
+                for col in _sa_inspect(_Sucursal).columns:
+                    if col.name in _SUCURSAL_PROTECTED_COLUMNS or col.name in {
+                        "estado"
+                    }:
+                        continue
+                    if col.name in payload:
+                        insert_payload[col.name] = payload[col.name]
+                new_row = _Sucursal(**insert_payload)
+                session.add(new_row)
+                await session.flush()
+                return ApplyResult(
+                    status="APPLIED",
+                    row_uuid=target_uuid,
+                    reason=None,
+                )
+            # Subsequent pulls — UPDATE the local row's fields in place.
+            for col in _sa_inspect(_Sucursal).columns:
+                if col.name in _SUCURSAL_PROTECTED_COLUMNS or col.name == "estado":
+                    continue
+                if col.name in payload:
+                    setattr(existing, col.name, payload[col.name])
+            return ApplyResult(
+                status="APPLIED",
+                row_uuid=target_uuid,
+                reason=None,
+            )
+
         if self.engine is engine_flag.EngineMode.LEGACY:
             return await self._apply_row_legacy(session, spec, payload, actor_uuid=actor_uuid)
 
@@ -294,8 +373,25 @@ class SyncMotor:
         # via the real ``/sync/events`` receiver — which, lacking this
         # check, blindly inserted a THIRD, fresh-uuid duplicate on each
         # side instead of recognizing the incoming uuid already existed.
-        if spec.audit_class == "V" and await apply_guard.row_already_present(
-            session, spec.model_cls, payload.get("uuid")
+        # Real defect confirmed live, 2026-10-06: the user requirement
+        # for the ``sucursal`` table is "the only keys are UUIDs — an
+        # edit is an UPDATE, not a new entity". The apply_guard
+        # ``row_already_present`` check is the duplicate-prevention
+        # mechanism for [V] re-applies, but it also blocks the
+        # admin's UPDATE-in-place from reaching an already-known
+        # branch uuid. The pull already bypasses this guard for
+        # ``sucursal`` (see jobs/sync_sucursal.py::_pull_and_apply*),
+        # so the catalog apply_row must let the apply through too.
+        # Without this, the pull's resolved list includes the
+        # sucursal row but apply_row returns "APPLIED" without
+        # re-running the dispatch — the local copy keeps the OLD
+        # field values forever.
+        if (
+            spec.audit_class == "V"
+            and spec.name != "sucursal"
+            and await apply_guard.row_already_present(
+                session, spec.model_cls, payload.get("uuid")
+            )
         ):
             return ApplyResult(status="APPLIED", row_uuid=payload.get("uuid"), reason=None)
 

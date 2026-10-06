@@ -344,8 +344,16 @@ _SUCURSAL = SyncCatalogEntry(
     # cada sede contiene solo sus filas" narrative, not a self-referencing FK.
     has_uuid_sucursal=False,
     seq_strategy="max_created_at",
-    # ER UK01 (prefijo_nombre, vigente_desde).
-    natural_key=("prefijo_nombre",),
+    # The user requirement (2026-10-06): "the only keys are UUIDs". A
+    # prefijo_nombre change is an UPDATE of the same uuid, not a new
+    # entity. Empty natural_key disables the identity_reconciler hook's
+    # prefijo-based reconciliation, and the admin endpoint
+    # (api/v1/empresa.py::update_sucursal_dedicated) now UPDATEs in
+    # place instead of going through close+insert. The ER UK01 marker
+    # (prefijo_nombre, vigente_desde) stays in the schema for the
+    # duplicate-prefijo guard, but a uuid is the only identity the
+    # sync system recognizes.
+    natural_key=(),
     hook_pre_insert=identity_reconciler,
 )
 
