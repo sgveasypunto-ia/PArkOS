@@ -33,7 +33,17 @@ import uuid as uuid_lib
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import ColumnElement, CompoundSelect, Select, exists, func, or_, select, tuple_
+from sqlalchemy import (
+    ColumnElement,
+    CompoundSelect,
+    Select,
+    and_,
+    exists,
+    func,
+    or_,
+    select,
+    tuple_,
+)
 from sqlalchemy.orm import aliased
 
 from ...models.L_E.factura_electronica import FacturaElectronica
@@ -93,6 +103,19 @@ def _nk_placa(column: Any) -> ColumnElement[str]:
     return func.upper(func.regexp_replace(column, "[^0-9A-Za-z]", "", "g"))
 
 
+def _has_nk(normalized: ColumnElement[str]) -> ColumnElement[bool]:
+    """``normalized <> ''``: an explicit guard, not ``nullif(normalized, '')``.
+
+    A natural key that normalizes to the empty string (``'---'``) is not a key: left
+    unguarded it would match every other row whose key is also empty. Wrapping the
+    expression in ``nullif`` would change it and the planner could no longer use
+    ``ix_clientes_nk_open`` / ``ix_clientes_nk`` / ``ix_vehiculos_nk_open``, which
+    index the bare normalizer, so the guard is a separate predicate applied on both
+    sides of the key comparison. ``NULL <> ''`` is NULL, i.e. also no match.
+    """
+    return normalized != ""
+
+
 def _branch_referenced_clientes(uuid_sucursal: uuid_lib.UUID) -> CompoundSelect[Any]:
     """``uuid`` of every cliente VERSION the branch references.
 
@@ -121,11 +144,13 @@ def _branch_cliente_keys(uuid_sucursal: uuid_lib.UUID) -> Select[Any]:
     closed one (the invoice table is append-only and nothing repoints them). So
     scope is resolved by NATURAL KEY: the key of ANY version (open or closed) the
     branch references is in scope and every open version carrying it is delivered.
-    Defined once: ``clientes`` and ``clientes_b2b`` share it.
+    Defined once: ``clientes`` and ``clientes_b2b`` share it. A key that normalizes
+    to '' is excluded (see :func:`_has_nk`).
     """
     known = aliased(Clientes)
     return select(known.tipo_identificador, _nk_numero(known.numero_identificacion)).where(
-        known.uuid.in_(_branch_referenced_clientes(uuid_sucursal))
+        known.uuid.in_(_branch_referenced_clientes(uuid_sucursal)),
+        _has_nk(_nk_numero(known.numero_identificacion)),
     )
 
 
@@ -134,8 +159,11 @@ def _clientes_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[bo
     # ``identity_lookup`` cannot resolve either) delivered, as before.
     return or_(
         model.uuid.in_(_branch_referenced_clientes(uuid_sucursal)),
-        tuple_(model.tipo_identificador, _nk_numero(model.numero_identificacion)).in_(
-            _branch_cliente_keys(uuid_sucursal)
+        and_(
+            tuple_(model.tipo_identificador, _nk_numero(model.numero_identificacion)).in_(
+                _branch_cliente_keys(uuid_sucursal)
+            ),
+            _has_nk(_nk_numero(model.numero_identificacion)),
         ),
     )
 
@@ -149,7 +177,8 @@ def _clientes_b2b_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElemen
     versions_in_scope = select(version.uuid).where(
         tuple_(version.tipo_identificador, _nk_numero(version.numero_identificacion)).in_(
             _branch_cliente_keys(uuid_sucursal)
-        )
+        ),
+        _has_nk(_nk_numero(version.numero_identificacion)),
     )
     return or_(
         model.uuid_cliente.in_(_branch_referenced_clientes(uuid_sucursal)),
@@ -180,11 +209,12 @@ def _vehiculos_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[b
     replaces. The uuid branch keeps keyless (NULL ``placa``) rows delivered."""
     known = aliased(Vehiculos)
     keys = select(_nk_placa(known.placa)).where(
-        known.uuid.in_(_branch_linked_vehiculos(uuid_sucursal))
+        known.uuid.in_(_branch_linked_vehiculos(uuid_sucursal)),
+        _has_nk(_nk_placa(known.placa)),
     )
     return or_(
         model.uuid.in_(_branch_linked_vehiculos(uuid_sucursal)),
-        _nk_placa(model.placa).in_(keys),
+        and_(_nk_placa(model.placa).in_(keys), _has_nk(_nk_placa(model.placa))),
     )
 
 
@@ -198,7 +228,8 @@ def _empresa_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[boo
     delivered (the same natural-key approach as ``clientes``). A branch with NULL
     ``uuid_empresa`` (a real case) -- or an unknown one -- falls back to the open
     empresa row(s): returning zero rows would strip it of NIT, regimen and ticket
-    messages. The open-version filter lives in the caller.
+    messages. The open-version filter lives in the caller. An empty NIT is not a
+    key (see :func:`_has_nk`).
     """
     referenced = (
         select(Sucursal.uuid_empresa)
@@ -206,13 +237,15 @@ def _empresa_rule(model: Any, uuid_sucursal: uuid_lib.UUID) -> ColumnElement[boo
         .scalar_subquery()
     )
     known = aliased(Empresa)
-    nits = select(known.nit).where(known.uuid == referenced)
+    nits = select(known.nit).where(known.uuid == referenced, _has_nk(known.nit))
     has_reference = exists(
         select(Sucursal.uuid).where(
             Sucursal.uuid == uuid_sucursal, Sucursal.uuid_empresa.is_not(None)
         )
     )
-    return or_(~has_reference, model.uuid == referenced, model.nit.in_(nits))
+    return or_(
+        ~has_reference, model.uuid == referenced, and_(model.nit.in_(nits), _has_nk(model.nit))
+    )
 
 
 _DERIVED_RULES["empresa"] = _empresa_rule

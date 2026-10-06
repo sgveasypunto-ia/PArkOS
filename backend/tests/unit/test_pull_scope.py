@@ -159,7 +159,8 @@ _REFERENCED_CLIENTES = (
 def _cliente_keys(alias: str) -> str:
     return (
         f"(SELECT {alias}.tipo_identificador, {_NK_NUMERO.format(t=alias)} AS regexp_replace_1 "
-        f"FROM prod.clientes AS {alias} WHERE {alias}.uuid IN {_REFERENCED_CLIENTES})"
+        f"FROM prod.clientes AS {alias} WHERE {alias}.uuid IN {_REFERENCED_CLIENTES} "
+        f"AND {_NK_NUMERO.format(t=alias)} != '')"
     )
 
 
@@ -170,7 +171,8 @@ def test_clientes_scope_matches_by_natural_key_of_any_referenced_version() -> No
     assert _sql("clientes") == (
         f"prod.clientes.uuid IN {_REFERENCED_CLIENTES} OR "
         f"(prod.clientes.tipo_identificador, {_NK_NUMERO.format(t='prod.clientes')}) "
-        f"IN {_cliente_keys('clientes_1')}"
+        f"IN {_cliente_keys('clientes_1')} "
+        f"AND {_NK_NUMERO.format(t='prod.clientes')} != ''"
     )
 
 
@@ -201,7 +203,8 @@ def test_clientes_b2b_scope_follows_its_cliente_by_natural_key() -> None:
         "prod.clientes_b2b.uuid_cliente IN (SELECT clientes_1.uuid "
         "FROM prod.clientes AS clientes_1 "
         f"WHERE (clientes_1.tipo_identificador, {_NK_NUMERO.format(t='clientes_1')}) "
-        f"IN {_cliente_keys('clientes_2')})"
+        f"IN {_cliente_keys('clientes_2')} "
+        f"AND {_NK_NUMERO.format(t='clientes_1')} != '')"
     )
 
 
@@ -228,7 +231,9 @@ def test_vehiculos_scope_matches_by_normalized_placa_of_any_linked_version() -> 
         f"{_NK_PLACA.format(t='prod.vehiculos')} IN "
         f"(SELECT {_NK_PLACA.format(t='vehiculos_1')} AS upper_1 "
         "FROM prod.vehiculos AS vehiculos_1 "
-        f"WHERE vehiculos_1.uuid IN {_LINKED_VEHICULOS})"
+        f"WHERE vehiculos_1.uuid IN {_LINKED_VEHICULOS} "
+        f"AND {_NK_PLACA.format(t='vehiculos_1')} != '') "
+        f"AND {_NK_PLACA.format(t='prod.vehiculos')} != ''"
     )
 
 
@@ -249,3 +254,50 @@ def test_natural_key_expressions_match_the_identity_indexes() -> None:
     ).read_text(encoding="utf-8")
     assert "regexp_replace(numero_identificacion, '[^0-9A-Za-z]', '', 'g')" in migration
     assert "upper(regexp_replace(placa, '[^0-9A-Za-z]', '', 'g'))" in migration
+
+
+# ---------------------------------------------------------------------------
+# F3 — a natural key that normalizes to '' is not a key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("table", "needles"),
+    [
+        (
+            "clientes",
+            [
+                f"{_NK_NUMERO.format(t='prod.clientes')} != ''",
+                f"{_NK_NUMERO.format(t='clientes_1')} != ''",
+            ],
+        ),
+        (
+            "clientes_b2b",
+            [
+                f"{_NK_NUMERO.format(t='clientes_1')} != ''",
+                f"{_NK_NUMERO.format(t='clientes_2')} != ''",
+            ],
+        ),
+        (
+            "vehiculos",
+            [
+                f"{_NK_PLACA.format(t='prod.vehiculos')} != ''",
+                f"{_NK_PLACA.format(t='vehiculos_1')} != ''",
+            ],
+        ),
+    ],
+)
+def test_empty_normalized_key_is_guarded_on_both_sides_of_the_comparison(
+    table: str, needles: list[str]
+) -> None:
+    where = _sql(table)
+    assert where is not None
+    for needle in needles:
+        assert needle in where
+
+
+def test_key_guard_does_not_wrap_the_indexed_expression_in_nullif() -> None:
+    """``nullif(expr, '')`` is a different expression: the planner would stop using
+    ``ix_clientes_nk_open`` / ``ix_clientes_nk`` / ``ix_vehiculos_nk_open``."""
+    for table in ("clientes", "clientes_b2b", "vehiculos"):
+        assert "nullif" not in (_sql(table) or "").lower()
