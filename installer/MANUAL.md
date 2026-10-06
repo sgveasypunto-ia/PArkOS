@@ -71,7 +71,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 
 - **No empareja la sucursal con la nube (pairing).** Ningún código del instalador escribe `sync-agent.jwt` ni `pairing.json` (verificado: la ruta `$DataPath\secrets\sync-agent.jwt` solo se escribe en el `.env` como `PARKOS_SYNC_JWT_PATH`; el archivo lo crearía el comando `parkos_core.cli.pair` del backend, que **no** está congelado ni incluido en el payload). Tras la instalación, el servicio de sincronización queda activo pero registrará `cycle_error ... branch must pair first` hasta que la sucursal se empareje por otra vía (ver [16](#16-limitaciones-conocidas--no-verificado)).
 - **No crea la sucursal.** La sucursal se crea en el panel de administración; el instalador solo recibe su UUID y lo escribe en la configuración (DEC-INST-22). La fila llega a la base local por el ciclo de sincronización, nunca por un `INSERT` del instalador.
-- **No genera la clave maestra** ni la descarga: debe entregarla soporte (ver [6](#6-la-clave-maestra-a-fondo)).
+- **No genera la clave maestra** ni la descarga: usa la que se le indique o, si nadie entrega otra, la **copia versionada en el repositorio** (solo pruebas; ver [6](#6-la-clave-maestra-a-fondo)).
 - **No compila nada en el equipo de la sucursal** (salvo `-IncludeBuild`, uso técnico): el payload debe llegar ya compilado.
 - **No configura el backup automático** durante la instalación (es la opción `M` del menú o el cmdlet `Register-ParkosBackupTask`).
 - **No instala herramientas de desarrollo** (git, pnpm, uv) ni las exige en el equipo de la sucursal.
@@ -97,7 +97,7 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
 | 4 | PowerShell 7 | Si el equipo solo tiene Windows PowerShell 5.1, el instalador **descarga e instala PowerShell 7.4.6** (verifica su SHA256) y se relanza solo. Requiere internet en ese momento (`github.com`) | Automático | Al arrancar, antes de la elevación | `Hash de PowerShell 7 no coincide; instalacion abortada por seguridad.` o error de descarga |
 | 5 | Ejecución de scripts permitida | Si Windows bloquea la ejecución del `.ps1`, abrir PowerShell y ejecutar con `-ExecutionPolicy Bypass` (ver 3.1). **No verificado**: depende de la política del equipo | Soporte / TI | Al arrancar | Mensaje de Windows sobre la política de ejecución |
 | 6 | Instalador y payload completos | Carpeta `installer\` con `parkos-installer.ps1` **y** `payload\` ya preparado (`-Command Prepare`, ver [13.2b](#132b-modo-prepare-un-solo-comando-del-técnico)). Si NO está preparado pero el equipo tiene el toolchain (git, uv, node, pnpm), el instalador **compila lo que falte solo** (etapa 0 automática, sin tocar git). En un PC de sucursal no se instalan herramientas de desarrollo (DEC-INST-20) | Soporte | Antes de empezar / pre-flight | Pre-flight: `[FALLO] Programas de Parkos` con **un solo** mensaje (qué instalar, o "pida un instalador completo al equipo de soporte"); exit 2 sin cambios |
-| 7 | **Clave maestra** `parkos-master.key` | Archivo de 32 bytes o más. Soporte la entrega por canal seguro (ver 3.2) | Soporte | Pre-flight de la instalación guiada | `[FALLO] Clave maestra de Parkos` y no empieza |
+| 7 | **Clave maestra** `parkos-master.key` | Archivo de 32 bytes o más. Ya viene versionado en `payload\security\` (solo pruebas); para producción se entrega la propia con `-MasterKeyPath` (ver 3.2) | Repositorio (copia de pruebas) / Soporte (clave propia) | Pre-flight de la instalación guiada | `[FALLO] Clave maestra de Parkos` (paquete dañado, o `-Produccion` con la clave del repositorio) y no empieza |
 | 8 | **UUID de la sucursal** | Código `8-4-4-4-12` (letras y números separados por guiones). Está en la ficha de la sucursal del panel de administración | Administrador del panel admin | Cuando el instalador lo pide (es lo único que se escribe) | Hasta 5 intentos; luego `Demasiados intentos con un codigo de sucursal invalido ...` |
 | 9 | Dirección del servidor (nube) | Variable `PARKOS_CLOUD_API_URL` (`http://` o `https://`). **Opcional**: si no existe se usa `http://localhost:8000`. Se prueba la conexión a su `host:puerto` | Soporte / TI | Pre-flight | Servidor remoto sin respuesta: `[FALLO] Conexion con el servidor Parkos`. En `localhost`: solo `[AVISO]` y continúa |
 | 10 | Binarios de PostgreSQL | **Vienen en el repositorio** como partes (`payload\parts\postgres\*.zip.part01..NN` + `.sha256`, ver [5.4](#54-payload-en-partes-payloadparts)): la etapa 1 las rearma en `<DataPath>\downloads\` y verifica el SHA-256; **no hace falta Internet ni bajar nada a mano**. Orden de búsqueda: ZIP completo en `payload\postgres\` → partes (`payload\parts\postgres\`) → cache → descarga desde `get.enterprisedb.com` (último recurso, ~330 MB, 3 intentos) | Soporte (ya versionado) | Etapa 1 | Partes con un hueco o hash distinto: error claro con el comando `git checkout -- installer/payload/parts` (no cae en silencio a una descarga). Sin partes ni Internet: `No se pudo obtener los binarios de Postgres 16.15-1 ...` |
@@ -146,31 +146,28 @@ El instalador despliega, en un equipo Windows de una sucursal y sin Docker, todo
    { "sucursalUuid": "<UUID_SUCURSAL>", "cloudApiUrl": "<URL_CLOUD>", "eulaAccepted": true }
    ```
 
-   Con el UUID y el EULA ya indicados (`-EulaAccepted` o `eulaAccepted: true`) el asistente no pregunta nada y tampoco espera la tecla final. Lo único estrictamente obligatorio es la clave maestra (`payload\security\parkos-master.key`, `-MasterKeyPath` o la variable `PARKOS_MASTER_KEY_FILE`) y la aceptación de UAC.
+   Con el UUID y el EULA ya indicados (`-EulaAccepted` o `eulaAccepted: true`) el asistente no pregunta nada y tampoco espera la tecla final. La clave maestra ya no hay que pedirla (se usa la versionada en el repositorio si no se indica otra) y lo único estrictamente obligatorio es la aceptación de UAC.
 
 ### 3.2 Clave maestra: guía para quien instala o prueba
 
-**Qué es.** Un archivo llamado `parkos-master.key`, que es un secreto de la empresa. El instalador lo usa para calcular las contraseñas de la base de datos de cada sucursal; con él, soporte puede volver a calcularlas si hace falta. No se descarga, no está en el repositorio y el instalador no puede crearlo: hay que pedirlo.
+**Qué es.** Un archivo llamado `parkos-master.key` (32 bytes aleatorios). El instalador lo usa para calcular las contraseñas de la base de datos de cada sucursal; con él, soporte puede volver a calcularlas si hace falta.
 
-**Cómo conseguirlo.**
+**Para probar o hacer QA: no tienes que hacer nada.** El repositorio incluye una copia en `installer\payload\security\parkos-master.key` y el instalador la usa solo. Verás en amarillo: `[AVISO] Usando la clave maestra versionada en el repositorio (solo pruebas/QA). Cualquiera con acceso al repositorio puede derivar las contrasenas de Postgres. Para produccion entregue su propia clave con -MasterKeyPath o PARKOS_MASTER_KEY_FILE.` (y se repite en el resumen final). No es un error.
 
-1. Pídele a soporte el archivo `parkos-master.key`. Debe llegar por un canal seguro de la compañía, **no** por chat abierto, correo ni el repositorio.
-2. Guárdalo en tu equipo en una carpeta que solo uses tú.
+**Para producción: entrega tu propia clave (elige una) y añade `-Produccion`.**
 
-**Cómo dárselo al instalador (elige una).**
+- **Opción A:** `./parkos-installer.ps1 -Produccion -MasterKeyPath "<RUTA_CLAVE>"`. El instalador valida el tamaño y la **usa tal cual** (no la copia sobre el archivo versionado).
+- **Opción B:** define la variable `PARKOS_MASTER_KEY_FILE` con la ruta y ejecuta `./parkos-installer.ps1 -Produccion`.
+- Con `-Produccion` el pre-flight **rechaza** la clave del repositorio (`[FALLO] Clave maestra de Parkos` / `-Produccion no admite la clave maestra versionada en el repositorio ...`).
 
-- **Opción A, la más simple:** ejecuta el instalador con la ruta del archivo. El instalador comprueba el tamaño y lo copia donde corresponde:
-  `./parkos-installer.ps1 -MasterKeyPath "<RUTA_CLAVE>"`
-- **Opción B:** copia el archivo a mano a la carpeta `installer\payload\security\` (créala si no existe) y ejecuta el instalador normalmente.
-
-**Cómo comprobar que está bien.** Debe llamarse exactamente `parkos-master.key` y pesar **32 bytes o más**. En PowerShell: `(Get-Item "<RUTA_CLAVE>").Length`. Si es menor de 32, el archivo está truncado o es incorrecto: pide otra copia a soporte.
+**Cómo comprobar que está bien.** Debe pesar **32 bytes o más**. En PowerShell: `(Get-Item "<RUTA_CLAVE>").Length`. Si es menor de 32, está truncado o es incorrecto.
 
 **Reglas.**
 
-- Usa la **misma clave** que te dio soporte para todas las pruebas de ese release. Si generas otra por tu cuenta, soporte no podrá reconstruir las contraseñas de ese equipo.
-- No la subas a git, no la pegues en tickets ni la compartas por chat.
-- Si un mensaje dice que falta o es demasiado corta, no la inventes: vuelve al paso 1.
-- Para saber si ya está bien puesta, el pre-flight muestra `[OK] Clave maestra de Parkos`.
+- Usa la **misma clave** para todas las instalaciones de una flota; si generas otra por tu cuenta, soporte no podrá reconstruir esas contraseñas.
+- La clave real de producción **no** se sube a git, ni a tickets ni a chat.
+- Si el mensaje dice que falta la clave, el paquete está dañado: restaura con `git checkout -- installer/payload/security` o entrega una con `-MasterKeyPath`.
+- El pre-flight muestra `[OK] Clave maestra de Parkos`; el registro de la instalación anota el **origen** (`param`, `env` o `repo`), nunca la clave.
 
 Más detalle técnico (derivación, seguridad, qué hacer después): sección [6](#6-la-clave-maestra-a-fondo).
 
@@ -218,7 +215,7 @@ El tiempo total depende del equipo y de la descarga de PostgreSQL (si falla por 
 | Qué ves | Qué significa | Qué hacer |
 |---|---|---|
 | `Este instalador no trae los programas ya preparados ...` | El paquete está incompleto (falta la carpeta `payload` compilada) | Pide a soporte un instalador completo |
-| `[FALLO] Clave maestra de Parkos` | Falta `parkos-master.key` o pesa menos de 32 bytes | Pide la clave a soporte y colócala como se indica en 3.2 |
+| `[FALLO] Clave maestra de Parkos` | La copia del repositorio falta o pesa menos de 32 bytes (paquete dañado), o se usó `-Produccion` sin entregar clave propia | Restaura con `git checkout -- installer/payload/security` o entrega una clave con `-MasterKeyPath` (3.2) |
 | `[FALLO] Conexion con el servidor Parkos` | El servidor remoto no responde | Revisa red e internet; confirma con soporte la dirección `PARKOS_CLOUD_API_URL`; vuelve a ejecutar |
 | `[AVISO] No se pudo contactar al servidor Parkos en localhost:8000 ...` | El servidor es este mismo equipo y aún no está encendido | No bloquea. Si el servidor está en otro equipo, pide a soporte definir `PARKOS_CLOUD_API_URL` |
 | `[FALLO] Permisos de administrador` o `Se requieren permisos de administrador para instalar Parkos.` | No se aceptó el aviso UAC o la cuenta no es administradora | Vuelve a ejecutar y acepta el aviso con una cuenta administradora |
@@ -252,7 +249,7 @@ Regla del repositorio: **GitHub rechaza cualquier archivo de más de 100 MB** (n
 |---|---|---|---|---|---|
 | `README-EULA.txt` | Texto del acuerdo de licencia | Repo (documento legal) | **Sí** | EULA (guiado y menú; no se lee con `-EulaAccepted` ni en `-Unattended`) | `EULA file not found at $EulaPath - a real EULA (...) must be staged there before this installer ships.` |
 | `management\Parkos.psd1`, `Parkos.psm1`, `about_Parkos.help.txt` | Módulo de gestión `Parkos` | Repo | **Sí** | Etapa 8 (`Install-ManagementModule`); opciones `A/R/U/V/X/D/M/C` del menú (importa desde aquí); `build-release.ps1` etapa Payload valida su existencia | `Falta $src en el payload - no se puede instalar el modulo de gestion Parkos.` / en build: `Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga).` |
-| `security\parkos-master.key` | Clave maestra (secreto de la empresa, ≥ 32 bytes) | **Soporte** (entrega manual, canal seguro) | No | Pre-flight guiado (bloquea) y etapa 1 (`New-ParkosDerivedPassword`) | Ver mensajes en la sección [6.5](#65-validación-y-mensajes) |
+| `security\parkos-master.key` | Clave maestra (≥ 32 bytes; copia versionada en el repo, solo pruebas) | **Repositorio** (o la clave propia por `-MasterKeyPath`/`PARKOS_MASTER_KEY_FILE`) | No | Pre-flight guiado (bloquea) y etapa 1 (`New-ParkosDerivedPassword`) | Ver mensajes en la sección [6.5](#65-validación-y-mensajes) |
 | `parts\postgres\postgresql-16.15-1-windows-x64-binaries.zip.part01..NN` + `.sha256` | ZIP de PostgreSQL 16 (EDB) **partido** (GitHub rechaza archivos > 100 MB) y SHA-256 del ZIP completo | Repo (ver [5.4](#54-payload-en-partes-payloadparts)) | **Sí** | Etapa 1: rearma el ZIP en `<DataPath>\downloads\` (nunca dentro de `payload\`), verifica el hash y lo usa | Hueco / hash distinto / falta el `.sha256`: error claro con `git checkout -- installer/payload/parts`; sin partes: descarga desde EDB |
 | `postgres\postgresql-16-windows-x64-binaries.zip` (ZIP completo) | Alternativa manual a las partes; gitignored (también vale en `parts\postgres\`) | Soporte (opcional) | No | Etapa 1 (tiene prioridad sobre las partes) | Se usan las partes |
 | `ParkosPostgresDownload.ps1` (junto a `parkos-installer.exe`; en el repo: `installer\shared\`) | Código compartido de descarga/instalación de Postgres y `pg_partman` (lo carga el instalador con dot-source) | `build-release.ps1` (lo copia a `payload\` en la etapa del instalador y lo incluye en `manifest.sha256.json`) | **Sí** (en `installer\shared\`) | Etapa 1 | `Falta ParkosPostgresDownload.ps1 junto al instalador ...` |
@@ -347,7 +344,7 @@ La restauración es **idempotente**: deja `<destino>.parts-sha256` y una segunda
 
 ### 6.1 Qué es
 
-`installer/payload/security/parkos-master.key` es un secreto **de la empresa**, no de cada instalación. No se versiona, no se descarga y el instalador **nunca la genera** (ni imprime sus bytes). Existe porque el UUID de la sucursal **no es secreto** (se teclea a mano, aparece sin redactar en el diagnóstico `env-redacted.txt` y en el panel admin): derivar las contraseñas solo del UUID permitiría reconstruirlas a quien lo vea (DEC-INST-42).
+`installer/payload/security/parkos-master.key` es la clave de la **empresa**, no de cada instalación. **Decisión del proyecto: está versionada en el repositorio** (32 bytes aleatorios generados con un RNG criptográfico) para que cualquier tester instale sin pedir nada; soporte puede sobrescribir ese archivo con la clave real y hacer commit. El instalador **nunca la genera** ni imprime sus bytes. **Riesgo, dicho sin rodeos:** cualquiera con acceso al repositorio puede derivar las contraseñas de PostgreSQL de **toda instalación que use la clave del repositorio**, y si la clave se rota el historial de git conserva las anteriores para siempre. Por eso es solo para pruebas/QA y existe `-Produccion` (6.3). Existe porque el UUID de la sucursal **no es secreto** (se teclea a mano, aparece sin redactar en el diagnóstico `env-redacted.txt` y en el panel admin): derivar las contraseñas solo del UUID permitiría reconstruirlas a quien lo vea (DEC-INST-42).
 
 ### 6.2 Cómo se usa
 
@@ -379,11 +376,11 @@ flowchart LR
 
 | Aspecto | Regla |
 |---|---|
-| Ruta esperada en el equipo | `<carpeta del instalador>\payload\security\parkos-master.key` |
-| Origen | Equipo de soporte, por un **canal seguro de la compañía** (nunca chat abierto, correo ni repositorio) |
-| Entrega 1 (recomendada) | `-MasterKeyPath "<RUTA_CLAVE>"`: `Import-ParkosMasterKey` valida el tamaño, crea `payload\security\` si hace falta y **copia** el archivo (imprime `Clave maestra copiada a <ruta>`); se ejecuta antes del pre-flight (en guiado, desatendido y menú) |
-| Entrega 2 | Copia manual a `payload\security\parkos-master.key` |
-| Para compilar (etapa 0 / `build-release.ps1`) | Debe existir **antes** del build: `Get-MasterKeyPayload` hace `throw` si falta |
+| Orden de resolución (`Resolve-ParkosMasterKey`, origen entre paréntesis) | 1. `-MasterKeyPath` (`param`) → 2. variable `PARKOS_MASTER_KEY_FILE` (`env`) → 3. `<carpeta del instalador>\payload\security\parkos-master.key`, la copia **versionada en el repositorio** (`repo`) |
+| Clave propia (`param`/`env`) | `Set-ParkosMasterKeyOverride` valida existencia y tamaño y la **usa tal cual** durante esa ejecución (guiado, desatendido, menú, Prepare). **No** se copia a `payload\security\` (ahí vive el archivo versionado). Consecuencia: una etapa que derive contraseñas en otra ejecución debe recibir otra vez la misma clave |
+| Clave del repositorio (`repo`) | Pre-flight: `[AVISO] Usando la clave maestra versionada en el repositorio (solo pruebas/QA). Cualquiera con acceso al repositorio puede derivar las contrasenas de Postgres. Para produccion entregue su propia clave con -MasterKeyPath o PARKOS_MASTER_KEY_FILE.` (amarillo, no bloquea); se repite en el resumen final y el registro anota `Origen de la clave maestra: repo` |
+| `-Produccion` | Interruptor del instalador: con origen `repo` el pre-flight **falla** (`[FALLO] Clave maestra de Parkos` + `-Produccion no admite la clave maestra versionada en el repositorio ...`); con `param` o `env` continúa. Úsalo en todo despliegue real |
+| Para compilar (`build-release.ps1`) | `Get-MasterKeyPayload` usa la misma resolución: valida la clave de `param`/`env` (no la copia) o la del repo; `throw` solo si falta el archivo del repo (paquete dañado) y no se indicó otra |
 
 ### 6.4 Validación
 
@@ -393,18 +390,29 @@ Solo se valida que el archivo exista y mida **≥ 32 bytes** (`$script:MasterKey
 
 | Situación | Dónde | Mensaje |
 |---|---|---|
-| Falta el archivo | Pre-flight guiado (bloquea) / menú y desatendido (solo avisa) / etapa 1 (falla) | `No se encontro la clave maestra de Parkos en $MasterKeyPath - es un secreto de la compania que NO se genera automaticamente ni vive en el repo. Solicitela al equipo de soporte por un canal seguro y copiela a esa ruta (o reintente con -MasterKeyPath <archivo>).` |
-| Demasiado corta | Idem | `La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($length bytes; minimo 32) - parece truncada o incorrecta. Solicite una copia valida al equipo de soporte por un canal seguro y reemplace ese archivo.` |
-| `-MasterKeyPath` apunta a un archivo inexistente | Antes del pre-flight | `No se encontro el archivo indicado en -MasterKeyPath ($SourcePath) - solicite la clave maestra al equipo de soporte por un canal seguro.` |
-| Correcta | Pre-flight | `[OK]    Clave maestra de Parkos` |
-| Falta al compilar | `build-release.ps1` | `Falta $masterKeyPath - la clave maestra debe ser provista por el equipo de soporte antes de un build real, nunca se genera automaticamente.` |
+| Falta el archivo (paquete dañado) | Pre-flight guiado (bloquea) / menú y desatendido (solo avisa) / etapa 1 (falla) | `No se encontro la clave maestra de Parkos en $MasterKeyPath - el paquete de instalacion esta incompleto o danado (la clave versionada payload\security\parkos-master.key debe venir con el repositorio). Restaurela con git (git checkout -- installer/payload/security) o indique una clave propia con -MasterKeyPath <archivo>.` |
+| Demasiado corta (también la del repo) | Idem | `La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($length bytes; minimo 32) - parece truncada o incorrecta. Restaure la copia del repositorio (git checkout -- installer/payload/security) o indique una clave valida con -MasterKeyPath <archivo>.` |
+| `-MasterKeyPath` / `PARKOS_MASTER_KEY_FILE` apunta a un archivo inexistente | Antes del pre-flight | `No se encontro el archivo de clave maestra indicado ($SourcePath, origen: param\|env) - revise -MasterKeyPath o la variable PARKOS_MASTER_KEY_FILE.` |
+| Correcta | Pre-flight | `[OK]    Clave maestra de Parkos` (+ el `[AVISO]` de arriba si el origen es `repo`) |
+| `-Produccion` con la clave del repo | Pre-flight | `[FALLO] Clave maestra de Parkos` y `-Produccion no admite la clave maestra versionada en el repositorio (cualquiera con acceso al repositorio puede derivar las contrasenas de Postgres). Entregue su propia clave con -MasterKeyPath <archivo> o la variable PARKOS_MASTER_KEY_FILE.` |
+| Falta al compilar | `build-release.ps1` | `Falta <ruta> - la clave maestra versionada debe venir con el repositorio; restaurela con git (git checkout -- installer/payload/security) o indique una con -MasterKeyPath.` |
 
 ### 6.6 Reglas de seguridad y qué NO hacer
 
-- **No** subir la clave a git, tickets, chat ni correo. **No** generar una distinta por equipo: soporte no podría reconstruir las contraseñas.
-- **Una sola clave por release/flota**; si se pierde o se cambia, las contraseñas de las instalaciones existentes ya no son reproducibles (no existe rotación; ver [16](#16-limitaciones-conocidas--no-verificado)).
-- **Después de instalar**: el instalador **no borra** la clave de `payload\security\` (ni la copia hecha con `-MasterKeyPath`). La herramienta de soporte establece que la clave "nunca debe vivir en la maquina de un cliente/sucursal". **Recomendación operativa** (no implementada por el instalador): retirar el archivo de `payload\security\` del equipo de la sucursal y del medio de entrega una vez completada la instalación.
+- **No** subir una clave **real de producción** a git, tickets, chat ni correo (la del repositorio es de pruebas y ya es pública para quien tenga acceso). **No** generar una distinta por equipo: soporte no podría reconstruir las contraseñas.
+- **Una sola clave por release/flota**; si se cambia, las contraseñas de las instalaciones existentes ya no son reproducibles (no existe rotación automática; ver 6.8 y [16](#16-limitaciones-conocidas--no-verificado)).
+- **Después de instalar**: el instalador **no borra** `payload\security\parkos-master.key`. **Recomendación operativa** (no implementada): en producción usa `-Produccion` con clave propia y no dejes esa clave en el equipo de la sucursal ni en el medio de entrega.
 - La clave no aparece en logs ni en `Export-ParkosDiagnostics`; los mensajes solo muestran la ruta y la longitud.
+
+### 6.8 Rotar la clave versionada en el repositorio
+
+Para generar una clave nueva (32 bytes de un RNG criptográfico; no imprime nada) desde la raíz del repositorio:
+
+```powershell
+$b = [byte[]]::new(32); $r = [Security.Cryptography.RandomNumberGenerator]::Create(); $r.GetBytes($b); $r.Dispose(); [IO.File]::WriteAllBytes("$PWD\installer\payload\security\parkos-master.key", $b)
+```
+
+Qué implica: las instalaciones que usaron la clave anterior **conservan** sus contraseñas ya derivadas, pero dejan de ser reproducibles con la clave nueva; para esas máquinas soporte debe seguir usando la clave **antigua** (recupérala del historial de git: `git show <commit>:installer/payload/security/parkos-master.key`) y cualquier reinstalación/etapa que derive contraseñas debe recibirla con `-MasterKeyPath`. Además, el historial de git conserva **para siempre** las claves anteriores: rotar no vuelve secreta una clave que ya estuvo en el repositorio. No hagas commit de una clave de producción: úsala con `-Produccion -MasterKeyPath`.
 
 ### 6.7 Cómo reconstruye soporte las contraseñas
 
@@ -414,7 +422,7 @@ Solo se valida que el archivo exista y mida **≥ 32 bytes** (`$script:MasterKey
 .\Get-ParkosSupportPassword.ps1 -SucursalUuid <UUID_SUCURSAL> -MasterKeyPath <RUTA_CLAVE> [-Purpose postgres-bootstrap|parkos-superuser|parkos-app|all] [-Reveal]
 ```
 
-- `-MasterKeyPath` es obligatorio y no tiene valor por defecto (a propósito).
+- `-MasterKeyPath` es obligatorio y no tiene valor por defecto (a propósito). Para una instalación que usó la clave del repositorio, apúntalo a `installer\payload\security\parkos-master.key` (en la versión de git con la que se instaló).
 - Sin `-Reveal`: cada contraseña se copia al portapapeles y **no se imprime**. Con `-Purpose all` (default) pide Enter entre cada una (excepto la última).
 - Con `-Reveal`: imprime `Purpose | Password` en texto plano (advierte que queda en el historial de la consola); para sesiones sin portapapeles (p. ej. SSH).
 - Ninguna contraseña se escribe a disco. Reutiliza `New-ParkosDerivedPassword` por *dot-source* de `parkos-installer.ps1` (el guard `$MyInvocation.InvocationName -ne '.'` evita que arranque el instalador).
@@ -437,7 +445,7 @@ Orden exacto desde `./parkos-installer.ps1` (sin switches, modo `Guided`):
 | 5 | `Invoke-ParkosUnattendedCascade -Guided` arranca | Crea `$DataPath\installer-runs\<yyyyMMdd-HHmmss>.log` (aunque el pre-flight falle después) y escribe `[INIT] parkos-installer iniciando (modo=Guided)` |
 | 6 | URL y parámetros | `Resolve-ParkosCloudApiUrl` y `Assert-ParkosCascadeParamsValid`. Un error aquí: log `[FAIL] Configuracion invalida: ...`, `Exit code: 2` |
 | 7 | Payload listo | Sin `-IncludeBuild`, comprueba los 5 `.exe` (`Test-ParkosPayloadReady`); si faltan, error "Este instalador no trae los programas ya preparados..." **antes de pedir nada** (`exit 2`) |
-| 8 | Clave maestra por parámetro | Si hay `-MasterKeyPath`, `Import-ParkosMasterKey` |
+| 8 | Clave maestra por parámetro/variable | Si hay `-MasterKeyPath` o `PARKOS_MASTER_KEY_FILE`, `Set-ParkosMasterKeyOverride` (valida y usa tal cual); si no, rige la copia del repositorio |
 | 9 | Pre-flight | `Revisando que este equipo este listo para instalar Parkos...` y `Test-Preflight -RequireMasterKey`. Si falla: `El equipo todavia no cumple los requisitos para instalar ...` (`exit 2`, sin cambios en el sistema) |
 | 10 | EULA | `Show-Eula`: muestra `README-EULA.txt` y espera **Enter** (`-EulaAccepted` lo omite). Otra respuesta distinta de Enter/`ACEPTO`/`s`/`si`: `EULA no aceptada. Saliendo sin cambios.` y `exit 0` |
 | 11 | Rutas | `Read-InstallPaths`: nunca pregunta; usa `-InstallPath`/`-DataPath` o los defaults, y rechaza `C:\Windows`, `Program Files (x86)` y rutas UNC |
@@ -641,7 +649,8 @@ El script usa `[CmdletBinding(SupportsShouldProcess)]`: aceptan también `-WhatI
 | `-CloudApiUrl` | vacío → `PARKOS_CLOUD_API_URL` → `http://localhost:8000` | Install | URL del servidor cloud. Debe ser `http://` o `https://`; se quita la barra final. Nunca se pregunta |
 | `-Unattended` | switch | Install, Restore | Cascada sin prompts; en Restore exige `-UnattendedRestoreConfirmed` |
 | `-EulaAccepted` | switch | Install | Omite el prompt del EULA (guiado/menú); **obligatorio** con `-Unattended` |
-| `-MasterKeyPath` | vacío → variable `PARKOS_MASTER_KEY_FILE` | Install, Prepare | Archivo de la clave maestra a copiar a `payload\security\parkos-master.key` antes del pre-flight / del build. Nunca se genera |
+| `-MasterKeyPath` | vacío → variable `PARKOS_MASTER_KEY_FILE` → copia del repo | Install, Prepare | Archivo de la clave maestra: se valida y se usa tal cual (no se copia a `payload\security\`). Nunca se genera |
+| `-Produccion` | desactivado | Install | Rechaza la clave maestra versionada en el repositorio (exige `-MasterKeyPath` o `PARKOS_MASTER_KEY_FILE`); ver 6.3 |
 | `-AnswersPath` | vacío → `parkos-install.json` junto al instalador | Install | JSON con `sucursalUuid`, `cloudApiUrl`, `eulaAccepted` para instalar sin escribir nada |
 | `-Menu` | switch | Install | Abre el menú de etapas |
 | `-IncludeBuild` | switch | Guiado | Fuerza la etapa 0 clásica (descarga la rama y compila todo). Sin él, el guiado compila solo lo que falte (sin git) |
@@ -993,7 +1002,7 @@ pwsh -File installer/build-release.ps1 -ApiSucursal -JobSync -Migrate -Seed -Doc
 | `-ApiSucursal`, `-JobSync`, `-Migrate`, `-Seed`, `-Doctor` | PyInstaller (`uv run pyinstaller --onedir ...` en `backend\`) | `services\<nombre>\<nombre>\<nombre>.exe` (+ `migrations\` y `alembic.ini` copiados junto al `.exe`) |
 | `-Installer` | `ps2exe` | `parkos-installer.exe` (se omite con aviso si falta `ps2exe`) y copia `ParkosPostgresDownload.ps1` al payload |
 | `-Manifest` | Integridad | Regenera `manifest.sha256.json` (exe, MSI, shared, partes de Postgres + `.sha256`) sin recompilar |
-| `-MasterKeyPath <ruta>` | Clave | Copia la clave a `payload\security\parkos-master.key` si aún no está (alternativa: `PARKOS_MASTER_KEY_FILE`); ≥ 32 bytes; nunca se genera |
+| `-MasterKeyPath <ruta>` | Clave | Valida la clave indicada (alternativa: `PARKOS_MASTER_KEY_FILE`; ≥ 32 bytes) sin copiarla; sin ninguna usa la versionada en el repo; nunca se genera |
 | `-Version <v>` | — | Solo cambia el nombre del `.msi`; default = versión de `apps\electron-sucursal\package.json` |
 
 El **manifest de integridad** (`manifest.sha256.json`) se genera solo si en la misma corrida se construyen `-ApiSucursal -JobSync -Migrate -Doctor -WebSucursal`. La corrida termina con un resumen (`Build summary`) por etapa (`OK` / `FAILED: ...`).
@@ -1009,7 +1018,7 @@ pwsh -File installer\parkos-installer.ps1 -Command Prepare -MasterKeyPath <RUTA_
 
 ### 13.3 Qué debe incluir soporte antes de entregar
 
-1. `payload\security\parkos-master.key` (≥ 32 bytes) **antes** del build (si se entrega aparte, usar `-MasterKeyPath` en el equipo y no incluirla en el medio).
+1. `payload\security\parkos-master.key` (≥ 32 bytes): ya viene versionada en el repo. Para producción, entrega tu clave aparte y úsala en el equipo con `-Produccion -MasterKeyPath` (no se incluye en el medio).
 2. Postgres: ya viene en git como partes (ver [5.4](#54-payload-en-partes-payloadparts)); no hay que descargar ni copiar nada. (Opcional) un ZIP completo en `payload\postgres\` tiene prioridad sobre las partes.
 3. El resto lo produce `build-release.ps1`.
 4. Rama: `-SourceBranch dev` (default) para integración; para un release certificado, `release/vX.Y.Z` o `main` (gitflow: `main` solo recibe releases).
@@ -1050,7 +1059,7 @@ pwsh -File installer\parkos-installer.ps1 -Command Prepare -MasterKeyPath <RUTA_
 
 Solo `workflow_dispatch` (nunca en push/PR), `windows-2022`, `pwsh`: instala Node/pnpm/uv, `pnpm install --frozen-lockfile` en `apps`, ejecuta `build-release.ps1` completo, genera un UUID descartable y corre `installer/tests/e2e/Invoke-UnattendedE2E.ps1` (instalación `-Unattended` → salud → `-Command Update` contra el mismo payload → `-Command Restore` → salud) y sube logs (`installer-runs\*.log`, `logs\*`). Instala Postgres, servicios y cuenta reales: solo para VM desechable.
 
-**No verificado / posible fallo:** el workflow no provisiona `payload\security\parkos-master.key` y `build-release.ps1` falla sin ella; además la instalación e2e no pasa `-SkipStage 0`. No se pudo ejecutar el workflow para confirmarlo.
+**Clave maestra en CI:** el secreto `PARKOS_MASTER_KEY_B64` es **opcional**: si existe se escribe (enmascarado) sobre la clave del checkout y se restaura al final; si no existe el job corre con la clave versionada en el repositorio en lugar de omitirse. **No verificado / posible fallo:** la instalación e2e no pasa `-SkipStage 0`. No se pudo ejecutar el workflow para confirmarlo.
 
 ---
 
@@ -1210,7 +1219,7 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 | Mensaje | Causa |
 |---|---|
 | `Falta $manifestPath - el modulo Parkos.psd1 debe existir versionado en el repo (no se descarga).` / `Falta $modulePath - el modulo Parkos.psm1 ...` | Falta el módulo del repo |
-| `Falta $masterKeyPath - la clave maestra debe ser provista por el equipo de soporte antes de un build real, nunca se genera automaticamente.` | Falta la clave |
+| `Falta <ruta> - la clave maestra versionada debe venir con el repositorio; restaurela con git (git checkout -- installer/payload/security) o indique una con -MasterKeyPath.` | Falta la copia del repo |
 | `PowerShell 7 MSI hash mismatch for $msiName. Expected $expectedSha256, got $actual. Aborting - do not ship an unverified binary.` | MSI alterado |
 | `pnpm build (electron-sucursal) failed.` / `electron-builder (build:packager) failed.` | Falla del build de la app |
 | `No .msi found under $distDir  - check electron-builder.yml's win.target includes 'msi'.` | Sin MSI |
@@ -1231,7 +1240,7 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 
 | Tema | Implementación / estado |
 |---|---|
-| **Sin generación de claves de empresa** | La clave maestra no se genera, no se descarga y no se versiona; solo se valida su tamaño (6) |
+| **Sin generación de claves de empresa** | El instalador no genera ni descarga la clave maestra; usa la indicada o la versionada en el repo (solo pruebas, `-Produccion` la rechaza); solo se valida su tamaño (6) |
 | **Contraseñas de PostgreSQL** | Derivadas con HMAC-SHA256 (DEC-INST-42); las 3 distintas; reproducibles por soporte con UUID + clave |
 | **Cifrado del `.env`** | CMS contra `CN=ParkosEnvProtection` (no DPAPI: no hay API DPAPI de alcance de máquina; `ConvertTo-SecureString` es de alcance de usuario, inútil para una cuenta distinta). Detección por contenido |
 | **Secreto JWT** | 64 bytes aleatorios (`RandomNumberGenerator`) por instalación; gate de ≥ 32 bytes y denylist de 6 secretos de desarrollo/placeholder (SHA256). No hay allowlist de secretos buenos (incoherente para un secreto aleatorio) |
@@ -1258,7 +1267,7 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 22. **Particiones:** tras las migraciones la etapa 2 ejecuta `SELECT prod.fn_ensure_partitions();` (idempotente) y falla si no puede; no hay mantenimiento automático (no hay `pg_cron`), la ventana cercana vence en 2028-01.
 6. **ACL de `secrets\`:** solo `pgpass.conf` se restringe en la instalación; el directorio, `.env` y `jwt.key` heredan la ACL de `C:\ProgramData` hasta que `Repair-ParkosInstall` (E4, solo si la salud no es 0) o una acción manual la endurece. Si se endurece a Administrators+SYSTEM, **no verificado** si `svc-parkos` (tareas `ParkosBackupDiario` y `ParkosPgPartmanMaintenance`, que dependen de `PGPASSFILE`/`.env`) conserva el acceso necesario.
 7. **Secretos en NSSM:** `AppEnvironmentExtra` guarda las variables del `.env` (incluida la URL de la base con la contraseña de `parkos_app`) en texto plano en el registro de cada servicio; la ACL de esas claves no se verificó.
-8. **Clave maestra residual:** el instalador no la elimina de `payload\security\`.
+8. **Clave maestra residual y pública:** el instalador no la elimina de `payload\security\`, y la copia versionada en el repositorio es conocida por cualquiera con acceso al repo: toda instalación que la use tiene contraseñas de PostgreSQL derivables por esa gente (solo pruebas; `-Produccion` la rechaza). El historial de git conserva para siempre las claves rotadas (6.8).
 9. **Módulo con rutas fijas:** `Parkos.psm1` ignora `-InstallPath`/`-DataPath` personalizados.
 10. **Update parcial:** `-Command Update` solo reemplaza los bundles `api-sucursal` y `job-sync-sucursal` (no `doctor\`, `nssm.exe`, la app de escritorio ni el módulo); archiva el MSI nuevo pero no lo instala. El smoke test no usa login autenticado (no existe usuario de solo lectura; DEC-INST-27).
 11. **Sin rotación de la clave maestra:** cambiarla impide reconstruir las contraseñas de instalaciones existentes.
@@ -1280,7 +1289,7 @@ Mensajes **literales** (sin tildes, como en el código). `$x` se muestra tal cua
 - Instalación de PowerShell 7 desde un PowerShell 5.1 **no elevado** (el MSI se instala antes de pedir la elevación).
 - Políticas de ejecución de scripts del equipo; carpeta de instalación y acceso directo de la app (los define el MSI).
 - Que `LogonType ServiceAccount` con la cuenta local `svc-parkos` ejecute las tareas programadas correctamente.
-- CI e2e: no provisiona la clave maestra y no pasa `-SkipStage 0` (ver 13.6); su cabecera también afirma que `Update`/`Restore` no propagan el código de salida, pero el despachador actual sí hace `exit $result.ExitCode`.
+- CI e2e: la clave maestra real es opcional (sin ella usa la del repo) y no pasa `-SkipStage 0` (ver 13.6); su cabecera también afirma que `Update`/`Restore` no propagan el código de salida, pero el despachador actual sí hace `exit $result.ExitCode`.
 - Ruta de verificación del firewall, y firma de binarios.
 
 ---

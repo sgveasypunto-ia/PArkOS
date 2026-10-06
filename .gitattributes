@@ -19,3 +19,7 @@ installer/payload/parts/**/*.part* binary
 installer/payload/parts/**/*.zip binary
 installer/payload/parts/**/*.msi binary
 installer/payload/parts/**/*.exe binary
+
+# Master key (installer/payload/security/*.key): 32 raw random bytes. Must never
+# be line-ending converted or diffed (a text filter would corrupt the key).
+installer/payload/security/*.key binary

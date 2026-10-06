@@ -144,11 +144,17 @@ param(
     # la cascada deliberadamente DESPUES de esa etapa (exit 0, no es un
     # fallo - util para debug de una etapa puntual sin correr el resto).
     [int]$StopAfterStage = -1,
-    # Clave maestra de Parkos (>=32 bytes) entregada por el equipo de soporte:
-    # si se pasa, se COPIA a payload\security\parkos-master.key (tras validar
-    # su tamano) antes del pre-flight. NUNCA se genera una clave aqui y el
-    # contenido jamas se imprime - ver Get-ParkosMasterKeyBytes.
+    # Clave maestra de Parkos (>=32 bytes). Orden de resolucion (ver
+    # Resolve-ParkosMasterKey): -MasterKeyPath > PARKOS_MASTER_KEY_FILE >
+    # payload\security\parkos-master.key (copia VERSIONADA en el repositorio).
+    # La clave indicada se valida y se USA TAL CUAL (no se copia al paquete, que
+    # es la copia versionada). NUNCA se genera una clave aqui y el contenido
+    # jamas se imprime - ver Get-ParkosMasterKeyBytes.
     [string]$MasterKeyPath = '',
+    # Rollout de PRODUCCION: rechaza la clave maestra versionada en el
+    # repositorio (cualquiera con acceso al repo la conoce) y exige una clave
+    # propia por -MasterKeyPath o PARKOS_MASTER_KEY_FILE.
+    [switch]$Produccion,
     # Flujo por defecto (sin switches) = instalacion GUIADA: el operador solo
     # tipea el UUID de la sucursal. -Menu abre el menu interactivo de 9
     # etapas (uso tecnico); no se combina con -Unattended.
@@ -404,6 +410,8 @@ function Test-Preflight {
         # Flujo guiado: la clave maestra es el requisito duro - sin ella el
         # pre-flight bloquea. Sin el switch (menu) solo avisa.
         [switch]$RequireMasterKey,
+        # Produccion: la clave maestra versionada en el repositorio NO se acepta.
+        [switch]$Produccion,
         # Problemas ya detectados fuera (p.ej. payload sin compilar y sin
         # toolchain): se muestran junto con el resto y bloquean la instalacion.
         [string[]]$ExtraProblems = @()
@@ -455,6 +463,7 @@ function Test-Preflight {
     # Clave maestra: requisito duro en el flujo guiado; en el menu solo se
     # avisa (la etapa 0 corre sin ella, solo la etapa 1 la necesita).
     $masterKeyProblem = Get-ParkosMasterKeyProblem
+    $masterKeyIsRepo = ((Resolve-ParkosMasterKey).Source -eq 'repo')
     $masterKeyBlocks = $false
     if ($masterKeyProblem) {
         if ($RequireMasterKey) {
@@ -465,8 +474,13 @@ function Test-Preflight {
             Write-Host '[AVISO] Clave maestra de Parkos ausente o invalida (la etapa 1 fallara sin ella)' -ForegroundColor Yellow
             Write-Host "        $masterKeyProblem" -ForegroundColor Yellow
         }
+    } elseif ($Produccion -and $masterKeyIsRepo) {
+        $masterKeyBlocks = $true
+        Write-Host '[FALLO] Clave maestra de Parkos' -ForegroundColor Red
+        Write-Host "        $(Get-ParkosProduccionRepoKeyMessage)" -ForegroundColor Red
     } else {
         Write-Host '[OK]    Clave maestra de Parkos' -ForegroundColor Green
+        if ($masterKeyIsRepo) { Write-Host (Get-ParkosRepoMasterKeyNotice) -ForegroundColor Yellow }
     }
 
     foreach ($extra in @($ExtraProblems | Where-Object { $_ })) {
@@ -1023,7 +1037,7 @@ function Invoke-ParkosPreparePayload {
 
         $keySource = Resolve-ParkosMasterKeySource -Explicit $MasterKeySource
         if ($keySource) {
-            Import-ParkosMasterKey -SourcePath $keySource
+            Set-ParkosMasterKeyOverride -SourcePath $keySource -Source $(if ($MasterKeySource) { 'param' } else { 'env' })
         } else {
             $problem = Get-ParkosMasterKeyProblem
             if ($problem) { throw "$problem Para CI/automatizacion use -MasterKeyPath o la variable PARKOS_MASTER_KEY_FILE." }
@@ -1690,8 +1704,50 @@ function New-SecurePassword {
 # la derivacion de las 3 passwords de Postgres).
 $script:MasterKeyMinBytes = 32
 
-function Get-ParkosMasterKeyDefaultPath {
+# Clave indicada por -MasterKeyPath / PARKOS_MASTER_KEY_FILE para ESTA ejecucion
+# (ver Set-ParkosMasterKeyOverride). Vacia = se usa la resolucion normal.
+$script:MasterKeyOverridePath = ''
+$script:MasterKeyOverrideSource = ''
+
+# Copia de la clave VERSIONADA en el repositorio (payload\security\). Con la
+# decision del proyecto es el ultimo recurso: se usa cuando nadie entrega otra.
+function Get-ParkosRepoMasterKeyPath {
     return (Join-Path $script:PayloadRoot 'security\parkos-master.key')
+}
+
+# Resolucion UNICA de la clave maestra. Orden de prioridad:
+#   1. -MasterKeyPath (param)  2. PARKOS_MASTER_KEY_FILE (env)
+#   3. payload\security\parkos-master.key (repo, versionada)
+# Devuelve la RUTA y el ORIGEN (param|env|repo); nunca el contenido.
+function Resolve-ParkosMasterKey {
+    [CmdletBinding()]
+    param([string]$Explicit = '')
+
+    if (-not [string]::IsNullOrWhiteSpace($Explicit)) {
+        return [PSCustomObject]@{ Path = $Explicit; Source = 'param' }
+    }
+    if ($script:MasterKeyOverridePath) {
+        return [PSCustomObject]@{ Path = $script:MasterKeyOverridePath; Source = $script:MasterKeyOverrideSource }
+    }
+    $fromEnv = Get-ParkosEnvironmentValue -Name 'PARKOS_MASTER_KEY_FILE'
+    if ($fromEnv) {
+        return [PSCustomObject]@{ Path = $fromEnv; Source = 'env' }
+    }
+    return [PSCustomObject]@{ Path = (Get-ParkosRepoMasterKeyPath); Source = 'repo' }
+}
+
+function Get-ParkosMasterKeyDefaultPath {
+    return (Resolve-ParkosMasterKey).Path
+}
+
+# Aviso (NO bloqueante) cuando se usa la clave versionada en el repositorio.
+function Get-ParkosRepoMasterKeyNotice {
+    return '[AVISO] Usando la clave maestra versionada en el repositorio (solo pruebas/QA). Cualquiera con acceso al repositorio puede derivar las contrasenas de Postgres. Para produccion entregue su propia clave con -MasterKeyPath o PARKOS_MASTER_KEY_FILE.'
+}
+
+# -Produccion: motivo del rechazo de la clave versionada en el repositorio.
+function Get-ParkosProduccionRepoKeyMessage {
+    return '-Produccion no admite la clave maestra versionada en el repositorio (cualquiera con acceso al repositorio puede derivar las contrasenas de Postgres). Entregue su propia clave con -MasterKeyPath <archivo> o la variable PARKOS_MASTER_KEY_FILE.'
 }
 
 # Valida la clave maestra SIN exponer su contenido: devuelve $null si es
@@ -1699,11 +1755,11 @@ function Get-ParkosMasterKeyDefaultPath {
 function Get-ParkosMasterKeyProblem {
     param([string]$MasterKeyPath = (Get-ParkosMasterKeyDefaultPath))
     if (-not (Test-Path -LiteralPath $MasterKeyPath -PathType Leaf)) {
-        return "No se encontro la clave maestra de Parkos en $MasterKeyPath - es un secreto de la compania que NO se genera automaticamente ni vive en el repo. Solicitela al equipo de soporte por un canal seguro y copiela a esa ruta (o reintente con -MasterKeyPath <archivo>)."
+        return "No se encontro la clave maestra de Parkos en $MasterKeyPath - el paquete de instalacion esta incompleto o danado (la clave versionada payload\security\parkos-master.key debe venir con el repositorio). Restaurela con git (git checkout -- installer/payload/security) o indique una clave propia con -MasterKeyPath <archivo>."
     }
     $length = (Get-Item -LiteralPath $MasterKeyPath).Length
     if ($length -lt $script:MasterKeyMinBytes) {
-        return "La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($length bytes; minimo $($script:MasterKeyMinBytes)) - parece truncada o incorrecta. Solicite una copia valida al equipo de soporte por un canal seguro y reemplace ese archivo."
+        return "La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($length bytes; minimo $($script:MasterKeyMinBytes)) - parece truncada o incorrecta. Restaure la copia del repositorio (git checkout -- installer/payload/security) o indique una clave valida con -MasterKeyPath <archivo>."
     }
     return $null
 }
@@ -1716,32 +1772,34 @@ function Get-ParkosMasterKeyBytes {
     # Revalida sobre los bytes realmente leidos (el archivo pudo cambiar
     # entre la validacion y la lectura).
     if ($bytes.Length -lt $script:MasterKeyMinBytes) {
-        throw "La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($($bytes.Length) bytes; minimo $($script:MasterKeyMinBytes)) - parece truncada o incorrecta. Solicite una copia valida al equipo de soporte por un canal seguro y reemplace ese archivo."
+        throw "La clave maestra de Parkos en $MasterKeyPath es demasiado corta ($($bytes.Length) bytes; minimo $($script:MasterKeyMinBytes)) - parece truncada o incorrecta. Restaure la copia del repositorio (git checkout -- installer/payload/security) o indique una clave valida con -MasterKeyPath <archivo>."
     }
     return $bytes
 }
 
-# -MasterKeyPath <archivo>: copia la clave entregada por soporte a la ruta
-# esperada por el instalador, validando antes su tamano. No genera nada ni
-# imprime bytes.
-function Import-ParkosMasterKey {
+# -MasterKeyPath / PARKOS_MASTER_KEY_FILE: valida la clave indicada (existe y
+# >= 32 bytes) y la fija como clave de ESTA ejecucion. NO se copia a
+# payload\security: ahi vive la copia versionada en el repositorio y
+# sobrescribirla ensuciaria el arbol de git. -SourcePath '' limpia el
+# override. No genera nada ni imprime bytes.
+function Set-ParkosMasterKeyOverride {
     param(
-        [Parameter(Mandatory)][string]$SourcePath,
-        [string]$DestinationPath = (Get-ParkosMasterKeyDefaultPath)
+        [string]$SourcePath = '',
+        [ValidateSet('param', 'env')][string]$Source = 'param'
     )
+    if ([string]::IsNullOrWhiteSpace($SourcePath)) {
+        $script:MasterKeyOverridePath = ''
+        $script:MasterKeyOverrideSource = ''
+        return
+    }
     if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
-        throw "No se encontro el archivo indicado en -MasterKeyPath ($SourcePath) - solicite la clave maestra al equipo de soporte por un canal seguro."
+        throw "No se encontro el archivo de clave maestra indicado ($SourcePath, origen: $Source) - revise -MasterKeyPath o la variable PARKOS_MASTER_KEY_FILE."
     }
     $problem = Get-ParkosMasterKeyProblem -MasterKeyPath $SourcePath
     if ($problem) { throw $problem }
-    $destDir = Split-Path -Parent $DestinationPath
-    if (-not (Test-Path -LiteralPath $destDir)) {
-        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-    }
-    if ([System.IO.Path]::GetFullPath($SourcePath) -ne [System.IO.Path]::GetFullPath($DestinationPath)) {
-        Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
-    }
-    Write-Host "Clave maestra copiada a $DestinationPath" -ForegroundColor Green
+    $script:MasterKeyOverridePath = [System.IO.Path]::GetFullPath($SourcePath)
+    $script:MasterKeyOverrideSource = $Source
+    Write-Host "Usando la clave maestra indicada ($Source): $SourcePath" -ForegroundColor Green
 }
 
 # `Purpose` distinto por rol es CRITICO: garantiza que las 3 passwords NUNCA
@@ -3994,11 +4052,15 @@ function Invoke-ParkosInstall {
     # > http://localhost:8000.
     $CloudApiUrl = Resolve-ParkosCloudApiUrl -Explicit $CloudApiUrl
 
-    if ($MasterKeyPath) { Import-ParkosMasterKey -SourcePath $MasterKeyPath }
+    $menuKeySource = Resolve-ParkosMasterKeySource -Explicit $MasterKeyPath
+    if ($menuKeySource) {
+        Set-ParkosMasterKeyOverride -SourcePath $menuKeySource -Source $(if ($MasterKeyPath) { 'param' } else { 'env' })
+    }
     Write-Host '=== Parkos - pre-flight ===' -ForegroundColor Cyan
     # En el menu la clave maestra solo AVISA (sin -RequireMasterKey): la etapa
-    # 0 corre sin ella; solo la etapa 1 la necesita.
-    $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath -CloudApiUrl $CloudApiUrl
+    # 0 corre sin ella; solo la etapa 1 la necesita. -Produccion si bloquea la
+    # clave versionada en el repositorio.
+    $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath -CloudApiUrl $CloudApiUrl -Produccion:$Produccion
     if (-not $preflightOk) {
         Write-Host 'Pre-flight fallo. Instalacion abortada, sin cambios en el sistema.' -ForegroundColor Red
         exit 2
@@ -4471,6 +4533,7 @@ function Write-ParkosInstallSummary {
     Write-Host 'Como desinstalar:' -ForegroundColor Green
     Write-Host '  En PowerShell 7 como administrador: Uninstall-Parkos (agregue -PurgeData para borrar tambien los datos)'
     Write-Host 'Nota: los usuarios, las tarifas y la ficha de la sucursal llegan desde el servidor de Parkos por sincronizacion; esta instalacion no los crea.' -ForegroundColor Yellow
+    if ((Resolve-ParkosMasterKey).Source -eq 'repo') { Write-Host (Get-ParkosRepoMasterKeyNotice) -ForegroundColor Yellow }
 }
 
 # -Guided: flujo del operador de sucursal (default del instalador). Misma
@@ -4514,14 +4577,20 @@ function Invoke-ParkosUnattendedCascade {
         }
 
         $masterKeySource = Resolve-ParkosMasterKeySource -Explicit $MasterKeyPath
-        if ($masterKeySource) { Import-ParkosMasterKey -SourcePath $masterKeySource }
+        if ($masterKeySource) {
+            Set-ParkosMasterKeyOverride -SourcePath $masterKeySource -Source $(if ($MasterKeyPath) { 'param' } else { 'env' })
+        } else {
+            Set-ParkosMasterKeyOverride -SourcePath ''
+        }
         if ($Guided) {
             Write-Host ''
             Write-Host 'Revisando que este equipo este listo para instalar Parkos...' -ForegroundColor Cyan
         } else {
             Write-Host '=== Parkos - pre-flight ===' -ForegroundColor Cyan
         }
-        $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath -CloudApiUrl $resolvedCloudApiUrl -RequireMasterKey:$Guided -ExtraProblems $payloadBlockers
+        $preflightOk = Test-Preflight -InstallPath $InstallPath -DataPath $DataPath -CloudApiUrl $resolvedCloudApiUrl -RequireMasterKey:$Guided -Produccion:$Produccion -ExtraProblems $payloadBlockers
+        # Origen de la clave maestra (param|env|repo) en el registro; NUNCA sus bytes.
+        Write-ParkosInstallerLog -LogPath $logPath -Level 'INIT' -Message "Origen de la clave maestra: $((Resolve-ParkosMasterKey).Source) (el contenido de la clave nunca se registra)"
         if (-not $preflightOk) {
             if ($Guided) {
                 throw 'El equipo todavia no cumple los requisitos para instalar (revise las lineas [FALLO] de arriba). No se hizo ningun cambio en el equipo. Corrija lo indicado o pida ayuda al equipo de soporte.'
