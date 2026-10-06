@@ -347,7 +347,7 @@ class SesionReadList(ReadListBase[SesionRead]):
 
 
 class ArqueoCreateV2(_Base):
-    """HU-F1.13 / REQ-OPS-091: POST /api/v1/caja/arqueo payload (V2).
+    """HU-F1.13 / REQ-OPS-091 / REQ-OPS-191: POST /api/v1/caja/arqueo payload (V2).
 
     Server-derived fields (``uuid_sucursal``, ``uuid_usuario``, ``alerta_uuid``,
     ``alerta_generada``, ``descuadre_pct``, ``created_at``, ``created_by``)
@@ -356,20 +356,32 @@ class ArqueoCreateV2(_Base):
     columns. The handler enforces ``justificacion`` REQUIRED when
     ``tipo_arqueo.codigo in ('cierre_turno', 'cierre_dia')`` AND
     diferencia != 0 (DEC-ARQUEO-07).
+
+    ``valor_datafono_reportado`` is nullable for backward-compat (D1):
+    clients that still send the legacy field pass validation; clients
+    that omit it pass validation; the handler ignores the value
+    regardless. The datafono dimension is no longer part of the
+    cierre/arqueo calculation per F12.1.1.
     """
 
     uuid_tipo_arqueo: uuid_lib.UUID
     uuid_sesion: uuid_lib.UUID | None = None  # None when cierre_dia (DEC-ARQUEO-03)
     valor_efectivo_reportado: Decimal
-    valor_datafono_reportado: Decimal
+    valor_datafono_reportado: Decimal | None = None  # REQ-OPS-191 nullable; ignored at handler
     justificacion: str | None = None  # required for cierre_turno/cierre_dia + diferencia != 0
 
 
 class ArqueoReadForHandler(_Base):
-    """HU-F1.13 / REQ-OPS-091 Scenario 1: POST handler response shape.
+    """HU-F1.13 / REQ-OPS-091 Scenario 1 / REQ-OPS-192: POST handler response shape.
 
     Includes ``alerta_generada`` + ``alerta_uuid`` (Step 10 result) +
     ``descuadre_pct`` (informational only, DEC-ARQUEO-04).
+
+    The datafono dimension is REMOVED from this response (REQ-OPS-192):
+    the columns remain in the DB (no DROP), but the handler no longer
+    projects them. Clients that read removed response fields break
+    (release notes; FE already stopped reading them in commits
+    ``d6abd36f`` + ``c6784945`` + ``7c603b35`` + ``481ca7e5``).
     """
 
     uuid: uuid_lib.UUID
@@ -377,21 +389,19 @@ class ArqueoReadForHandler(_Base):
     codigo_tipo_arqueo: str
     uuid_sesion: uuid_lib.UUID | None
     valor_efectivo_esperado: Decimal
-    valor_datafono_esperado: Decimal
     valor_efectivo_reportado: Decimal
-    valor_datafono_reportado: Decimal
     diferencia_efectivo: Decimal
-    diferencia_datafono: Decimal
     descuadre_pct: Decimal | None = None
     alerta_generada: bool = False
     alerta_uuid: uuid_lib.UUID | None = None
 
 
 class ArqueoResumenItem(_Base):
-    """HU-F1.13 / REQ-OPS-097: per-sesion row in GET /arqueo/resumen.
+    """HU-F1.13 / REQ-OPS-097 / REQ-OPS-192: per-sesion row in GET /arqueo/resumen.
 
     For ``cierre_dia`` aggregate items, ``uuid_sesion`` is ``None``
-    (DEC-ARQUEO-03).
+    (DEC-ARQUEO-03). The datafono fields are REMOVED from this
+    response (REQ-OPS-192).
     """
 
     uuid_sesion: uuid_lib.UUID | None
@@ -400,9 +410,7 @@ class ArqueoResumenItem(_Base):
     timestamp_cierre: datetime | None
     estado: str | None
     valor_efectivo_esperado: Decimal | None
-    valor_datafono_esperado: Decimal | None
     valor_efectivo_reportado: Decimal | None
-    valor_datafono_reportado: Decimal | None
     uuid_arqueo: uuid_lib.UUID | None
 
 
@@ -450,12 +458,15 @@ class ArqueoResumenAdminItem(_Base):
     per-branch operator contract on the write path). ``total_arqueos``
     counts the day's regular arqueos at the branch (excludes the
     cierre_dia, which is its own event).
+
+    ``esperado_datafono`` is REMOVED from this response (F12.1.1
+    REQ-OPS-097 modified): the datafono dimension is no longer
+    computed on the read path.
     """
 
     uuid_sucursal: uuid_lib.UUID
     nombre: str | None
     esperado_efectivo: Decimal | None = None
-    esperado_datafono: Decimal | None = None
     cierre_dia: ArqueoResumenItem | None = None
     total_arqueos: int = 0
 
@@ -484,17 +495,21 @@ class CierreDiarioQueryParams(_Base):
 
 
 class RequiereJustificacionQueryParams(_Base):
-    """HU-F10.2 follow-up: GET /arqueo/requiere-justificacion query params.
+    """HU-F10.2 follow-up / REQ-OPS-191: GET /arqueo/requiere-justificacion query params.
 
     Carries the operator's in-progress counted values so the handler can
     run the SAME Step 5/6 diferencia check ``post_arqueo`` will run on
     submit, without the caller having to POST yet. ``extra='forbid'``
     blocks client smuggling.
+
+    ``valor_datafono_reportado`` is nullable per REQ-OPS-191 backward
+    compat; the value is ignored at the handler (datafono dimension is
+    excluded from the gate per F12.1.1).
     """
 
     uuid_sesion: uuid_lib.UUID
     valor_efectivo_reportado: Decimal
-    valor_datafono_reportado: Decimal
+    valor_datafono_reportado: Decimal | None = None  # REQ-OPS-191 nullable; ignored
 
 
 class ArqueoRequiereJustificacionRead(_Base):

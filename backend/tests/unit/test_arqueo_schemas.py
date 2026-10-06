@@ -43,6 +43,45 @@ def test_arqueo_create_v2_accepts_valid_payload_with_sesion() -> None:
     assert payload.uuid_sesion is not None
 
 
+def test_arqueo_create_v2_accepts_null_datafono() -> None:
+    """REQ-OPS-191 Scenario 2: legacy client omits the field (None default applied)."""
+    from parkos_core.schemas.caja import ArqueoCreateV2
+
+    payload = ArqueoCreateV2(
+        uuid_tipo_arqueo=_uuid(),
+        uuid_sesion=_uuid(),
+        valor_efectivo_reportado=Decimal("148000"),
+        # valor_datafono_reportado omitted entirely
+    )
+    assert payload.valor_datafono_reportado is None
+
+
+def test_arqueo_create_v2_accepts_explicit_null_datafono() -> None:
+    """REQ-OPS-191 Scenario 3: legacy client sends ``null`` -- accepted."""
+    from parkos_core.schemas.caja import ArqueoCreateV2
+
+    payload = ArqueoCreateV2(
+        uuid_tipo_arqueo=_uuid(),
+        uuid_sesion=_uuid(),
+        valor_efectivo_reportado=Decimal("148000"),
+        valor_datafono_reportado=None,
+    )
+    assert payload.valor_datafono_reportado is None
+
+
+def test_arqueo_create_v2_accepts_legacy_datafono_decimal() -> None:
+    """REQ-OPS-191 Scenario 1: legacy client sends ``Decimal`` -- accepted (handler ignores)."""
+    from parkos_core.schemas.caja import ArqueoCreateV2
+
+    payload = ArqueoCreateV2(
+        uuid_tipo_arqueo=_uuid(),
+        uuid_sesion=_uuid(),
+        valor_efectivo_reportado=Decimal("148000"),
+        valor_datafono_reportado=Decimal("320000"),  # legacy kiosk compat
+    )
+    assert payload.valor_datafono_reportado == Decimal("320000")
+
+
 def test_arqueo_create_v2_accepts_uuid_sesion_null_for_cierre_dia() -> None:
     """T2.5: valid payload with uuid_sesion=None (cierre_dia codigo)."""
     from parkos_core.schemas.caja import ArqueoCreateV2
@@ -102,11 +141,12 @@ def test_arqueo_create_v2_rejects_created_at_injection() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ArqueoReadForHandler -- POST response
+# ArqueoReadForHandler -- POST response (REQ-OPS-192: datafono fields REMOVED)
 # ---------------------------------------------------------------------------
 
 
 def test_arqueo_read_for_handler_accepts_alerta_generada_true() -> None:
+    """REQ-OPS-192: datafono fields are REMOVED from the response shape."""
     from parkos_core.schemas.caja import ArqueoReadForHandler
 
     resp = ArqueoReadForHandler(
@@ -115,11 +155,8 @@ def test_arqueo_read_for_handler_accepts_alerta_generada_true() -> None:
         codigo_tipo_arqueo="cierre_turno",
         uuid_sesion=_uuid(),
         valor_efectivo_esperado=Decimal("148000"),
-        valor_datafono_esperado=Decimal("320000"),
         valor_efectivo_reportado=Decimal("148150"),
-        valor_datafono_reportado=Decimal("320000"),
         diferencia_efectivo=Decimal("150"),
-        diferencia_datafono=Decimal("0"),
         descuadre_pct=Decimal("0.03"),
         alerta_generada=True,
         alerta_uuid=_uuid(),
@@ -129,6 +166,7 @@ def test_arqueo_read_for_handler_accepts_alerta_generada_true() -> None:
 
 
 def test_arqueo_read_for_handler_alerta_uuid_can_be_null() -> None:
+    """REQ-OPS-192: datafono fields absent from the response (auditoria path)."""
     from parkos_core.schemas.caja import ArqueoReadForHandler
 
     resp = ArqueoReadForHandler(
@@ -137,17 +175,38 @@ def test_arqueo_read_for_handler_alerta_uuid_can_be_null() -> None:
         codigo_tipo_arqueo="auditoria",
         uuid_sesion=_uuid(),
         valor_efectivo_esperado=Decimal("100"),
-        valor_datafono_esperado=Decimal("0"),
         valor_efectivo_reportado=Decimal("100"),
-        valor_datafono_reportado=Decimal("0"),
         diferencia_efectivo=Decimal("0"),
-        diferencia_datafono=Decimal("0"),
         descuadre_pct=None,
         alerta_generada=False,
         alerta_uuid=None,
     )
     assert resp.alerta_generada is False
     assert resp.alerta_uuid is None
+
+
+def test_arqueo_read_for_handler_excludes_datafono_fields() -> None:
+    """REQ-OPS-192 / D3 regression guard: passing datafono kwargs MUST
+    raise ValidationError (the fields are REMOVED, not nullable)."""
+    from parkos_core.schemas.caja import ArqueoReadForHandler
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ArqueoReadForHandler(
+            uuid=_uuid(),
+            uuid_tipo_arqueo=_uuid(),
+            codigo_tipo_arqueo="cierre_turno",
+            uuid_sesion=_uuid(),
+            valor_efectivo_esperado=Decimal("148000"),
+            valor_efectivo_reportado=Decimal("148150"),
+            diferencia_efectivo=Decimal("150"),
+            # REMOVED fields -- ``extra='forbid'`` rejects them.
+            valor_datafono_esperado=Decimal("0"),  # type: ignore[call-arg]
+            valor_datafono_reportado=Decimal("0"),  # type: ignore[call-arg]
+            diferencia_datafono=Decimal("0"),  # type: ignore[call-arg]
+            alerta_generada=False,
+            alerta_uuid=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -223,3 +282,35 @@ def test_typed_error_justificacion_requerida_carries_no_context() -> None:
 
     err = JustificacionRequeridaErrorRead()
     assert err.error == "justificacion_requerida"
+
+
+# ---------------------------------------------------------------------------
+# ArqueoDiferenciasResponse -- GET /arqueos/{uuid}/diferencias (REQ-OPS-192)
+# ---------------------------------------------------------------------------
+
+
+def test_arqueo_diferencias_response_excludes_datafono() -> None:
+    """REQ-OPS-192: datafono fields are REMOVED from the diferencias response."""
+    from parkos_core.api.v1.caja_sesion import ArqueoDiferenciasResponse
+    from pydantic import ValidationError
+
+    # Valid construction (no datafono fields).
+    resp = ArqueoDiferenciasResponse(
+        uuid_arqueo=_uuid(),
+        valor_efectivo_esperado=148000.0,
+        valor_efectivo_reportado=148050.0,
+        diferencia_efectivo=50.0,
+    )
+    assert resp.diferencia_efectivo == 50.0
+
+    # REMOVED fields -- ``extra='forbid'`` rejects them.
+    with pytest.raises(ValidationError):
+        ArqueoDiferenciasResponse(
+            uuid_arqueo=_uuid(),
+            valor_efectivo_esperado=148000.0,
+            valor_efectivo_reportado=148050.0,
+            diferencia_efectivo=50.0,
+            valor_datafono_esperado=0.0,  # type: ignore[call-arg]
+            valor_datafono_reportado=0.0,  # type: ignore[call-arg]
+            diferencia_datafono=0.0,  # type: ignore[call-arg]
+        )

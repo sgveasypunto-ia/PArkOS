@@ -147,17 +147,19 @@ async def calcular_resumen_mi_turno(
         ingresos_count = int(row[0] or 0)
         salidas_count = int(row[1] or 0)
 
-    # 3. SUM factura_pagos (efectivo + datafono) via canonical helper.
+    # 3. SUM factura_pagos (efectivo only -- datafono ignored per F12.1.1).
+    # F12.1.1 / REQ-OPS-197 / D1: ``total_cobrado_datafono_cop`` is
+    # PRESERVED in the response shape (consumers / BI depend on the
+    # key) but the value is hard-coded to ``Decimal(0)`` because the
+    # datafono dimension is no longer computed in the mi-turno
+    # aggregate. Historical ``factura_pagos`` rows with medio_pago IN
+    # ('tarjeta','datafono') are NOT summed here.
     total_efectivo = await _sum_factura_pagos_by_medio_pago(
         session,
         uuid_sesion=uuid_sesion,
         medios_pago=("efectivo",),
     )
-    total_datafono = await _sum_factura_pagos_by_medio_pago(
-        session,
-        uuid_sesion=uuid_sesion,
-        medios_pago=("tarjeta", "datafono"),
-    )
+    total_datafono: Decimal = Decimal(0)
 
     return MiTurnoRead(
         uuid_sesion=sesion.uuid,

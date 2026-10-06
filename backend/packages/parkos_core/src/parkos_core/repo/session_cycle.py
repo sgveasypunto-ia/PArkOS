@@ -344,10 +344,19 @@ async def close_session_with_log(
             "valor_final_efectivo": (
                 str(valor_final_efectivo) if valor_final_efectivo is not None else None
             ),
-            "valor_final_datafono": (
-                str(valor_final_datafono) if valor_final_datafono is not None else None
-            ),
+            # F12.1.1 / REQ-MOT-016 / concern 8a: the datafono dimension
+            # is wire-dead at close. The key is OMITTED from
+            # ``datos_nuevos`` when ``valor_final_datafono`` is ``None``
+            # (strict Scenario 2) — it is NOT serialized as ``"None"``,
+            # because the datafono field is not part of the hash-chain
+            # schema and downstream consumers treat absence as the
+            # canonical "ignored" signal. The DB column
+            # ``prod.sesion.valor_final_datafono`` stays in place for
+            # historical rows (compliance); new rows write the column
+            # default.
         }
+        if valor_final_datafono is not None:
+            datos_nuevos["valor_final_datafono"] = str(valor_final_datafono)
         if observaciones is not None:
             datos_nuevos["observaciones"] = observaciones
         log_row = LogTransaccional(

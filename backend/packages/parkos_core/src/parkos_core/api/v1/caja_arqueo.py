@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import date as date_cls
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -343,8 +344,11 @@ async def post_arqueo(
             ) from exc
 
     # --- Step 5 (V5 + DEC-ARQUEO-04 + DEC-ARQUEO-10): compute esperado + diferencia.
+    # F12.1.1 / REQ-OPS-194: ``calcular_esperado_*`` returns a single
+    # ``Decimal`` (effective only) -- the datafono dimension is no
+    # longer in the calculation.
     if tipo_arqueo.codigo == "cierre_dia":
-        esperado_efectivo, esperado_datafono = (
+        esperado_efectivo = (
             await repo_arqueo.calcular_esperado_cierre_dia(
                 session,
                 uuid_sucursal=target_sucursal,
@@ -352,7 +356,7 @@ async def post_arqueo(
             )
         )
     else:
-        esperado_efectivo, esperado_datafono = (
+        esperado_efectivo = (
             await repo_arqueo.calcular_esperado_sesion(
                 session,
                 uuid_sesion=payload.uuid_sesion,  # type: ignore[arg-type]
@@ -362,37 +366,35 @@ async def post_arqueo(
         reportado=payload.valor_efectivo_reportado,
         esperado=esperado_efectivo,
     )
-    diferencia_datafono = repo_arqueo.calcular_diferencia(
-        reportado=payload.valor_datafono_reportado,
-        esperado=esperado_datafono,
-    )
 
-    # --- Step 6 (DEC-ARQUEO-07): justificacion required on cierre_turno / cierre_dia + diferencia != 0.
-    if tipo_arqueo.codigo != "auditoria" and (
-        diferencia_efectivo != 0 or diferencia_datafono != 0
+    # --- Step 6 (DEC-ARQUEO-07 + REQ-OPS-094 modified): justificacion
+    # required on cierre_turno / cierre_dia + diferencia_efectivo != 0.
+    # The datafono dimension MUST NOT gate the justificacion requirement.
+    if (
+        tipo_arqueo.codigo != "auditoria"
+        and diferencia_efectivo != 0
+        and not payload.justificacion
     ):
-        if not payload.justificacion:
-            raise HTTPException(
-                status_code=400,
-                detail={"error": "justificacion_requerida"},
-                headers=no_store,
-            )
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "justificacion_requerida"},
+            headers=no_store,
+        )
 
-    # --- Step 7 (DEC-ARQUEO-04 + KD-ARQUEO-04): descuadre decision (absolute monto).
+    # --- Step 7 (DEC-ARQUEO-04 + KD-ARQUEO-04 + REQ-OPS-195): descuadre
+    # decision (effective only per F12.1.1).
     es_critico = repo_arqueo.es_descuadre_critico(
         diferencia_efectivo=diferencia_efectivo,
-        diferencia_datafono=diferencia_datafono,
         tolerancia_efectivo=tolerancia.tolerancia_efectivo,
-        tolerancia_datafono=tolerancia.tolerancia_datafono,
     )
 
-    # --- Step 8 (KD-ARQUEO-02 + DEC-ARQUEO-02): INSERT prod.arqueo via append_event.
+    # --- Step 8 (KD-ARQUEO-02 + DEC-ARQUEO-02 + REQ-OPS-093 modified):
+    # INSERT prod.arqueo via append_event. ``descuadre_pct`` is
+    # informational only (DEC-ARQUEO-04), now computed on the effective
+    # dimension only (datafono removed from the formula).
     descuadre_pct = None  # informational only (DEC-ARQUEO-04)
-    esperado_total = esperado_efectivo + esperado_datafono
-    if esperado_total > 0:
-        descuadre_pct = (
-            ((diferencia_efectivo + diferencia_datafono) / esperado_total) * 100
-        )
+    if esperado_efectivo > 0:
+        descuadre_pct = (diferencia_efectivo / esperado_efectivo) * 100
     uuid_arqueo = (
         await repo_arqueo.insertar_arqueo(
             session,
@@ -401,11 +403,8 @@ async def post_arqueo(
             uuid_tipo_arqueo=tipo_arqueo.uuid,
             uuid_sesion=payload.uuid_sesion,
             valor_efectivo_esperado=esperado_efectivo,
-            valor_datafono_esperado=esperado_datafono,
             valor_efectivo_reportado=payload.valor_efectivo_reportado,
-            valor_datafono_reportado=payload.valor_datafono_reportado,
             diferencia_efectivo=diferencia_efectivo,
-            diferencia_datafono=diferencia_datafono,
             descuadre_pct=descuadre_pct,
             justificacion=payload.justificacion,
         )
@@ -420,7 +419,10 @@ async def post_arqueo(
             fecha=date_cls.today(),
         )
 
-    # --- Step 10 (KD-ARQUEO-05 + DEC-ARQUEO-05): conditional alerta INSERT via append_transition.
+    # --- Step 10 (KD-ARQUEO-05 + DEC-ARQUEO-05 + REQ-OPS-094 modified):
+    # conditional alerta INSERT via append_transition. The datafono keys
+    # are REMOVED from the payload (REQ-OPS-094); historical alertas with
+    # the field populated stay in the bitácora (D3 drill-down).
     alerta_uuid: uuid_lib.UUID | None = None
     alerta_generada = False
     if es_critico:
@@ -430,18 +432,11 @@ async def post_arqueo(
             uuid_arqueo=uuid_arqueo,
             uuid_sucursal=target_sucursal,
             diferencia_efectivo=diferencia_efectivo,
-            diferencia_datafono=diferencia_datafono,
             payload_json={
                 "diferencia_efectivo": str(diferencia_efectivo),
-                "diferencia_datafono": str(diferencia_datafono),
                 "tolerancia_efectivo": (
                     str(tolerancia.tolerancia_efectivo)
                     if tolerancia.tolerancia_efectivo is not None
-                    else None
-                ),
-                "tolerancia_datafono": (
-                    str(tolerancia.tolerancia_datafono)
-                    if tolerancia.tolerancia_datafono is not None
                     else None
                 ),
                 "descuadre_pct": (
@@ -460,6 +455,7 @@ async def post_arqueo(
     await session.commit()
 
     # --- Step 13: DEC-ARQUEO-06 -- Cache-Control: no-store + response shape.
+    # REQ-OPS-192: datafono fields are NOT serialized in this response.
     _helpers.apply_no_store_header(response)
     return ArqueoReadForHandler(
         uuid=uuid_arqueo,
@@ -467,11 +463,8 @@ async def post_arqueo(
         codigo_tipo_arqueo=tipo_arqueo.codigo,
         uuid_sesion=payload.uuid_sesion,
         valor_efectivo_esperado=esperado_efectivo,
-        valor_datafono_esperado=esperado_datafono,
         valor_efectivo_reportado=payload.valor_efectivo_reportado,
-        valor_datafono_reportado=payload.valor_datafono_reportado,
         diferencia_efectivo=diferencia_efectivo,
-        diferencia_datafono=diferencia_datafono,
         descuadre_pct=descuadre_pct,
         alerta_generada=alerta_generada,
         alerta_uuid=alerta_uuid,
@@ -552,7 +545,7 @@ async def get_arqueo_requiere_justificacion(
             headers=no_store,
         ) from exc
 
-    esperado_efectivo, esperado_datafono = await repo_arqueo.calcular_esperado_sesion(
+    esperado_efectivo = await repo_arqueo.calcular_esperado_sesion(
         session,
         uuid_sesion=params.uuid_sesion,
     )
@@ -560,14 +553,11 @@ async def get_arqueo_requiere_justificacion(
         reportado=params.valor_efectivo_reportado,
         esperado=esperado_efectivo,
     )
-    diferencia_datafono = repo_arqueo.calcular_diferencia(
-        reportado=params.valor_datafono_reportado,
-        esperado=esperado_datafono,
-    )
-
+    # REQ-OPS-193: datafono dimension is excluded; the gate is
+    # effective-only.
     _helpers.apply_no_store_header(response)
     return ArqueoRequiereJustificacionRead(
-        requiere_justificacion=diferencia_efectivo != 0 or diferencia_datafono != 0,
+        requiere_justificacion=diferencia_efectivo != 0,
     )
 
 
@@ -739,13 +729,17 @@ def _row_to_admin_item(row: dict) -> ArqueoResumenAdminItem:
     The repo produces ``dict[str, Any]`` because its return type is
     shared across helpers; the route handler does the conversion at
     the wire boundary.
+
+    The ``esperado_datafono`` key is dropped from the response per
+    REQ-OPS-097 modified (F12.1.1): the repo still emits the key for
+    backward-compat but the wire shape no longer surfaces it. Phase 5
+    will remove the key entirely from the repo dict.
     """
     cierre = row.get("cierre_dia")
     return ArqueoResumenAdminItem(
         uuid_sucursal=row["uuid_sucursal"],
         nombre=row.get("nombre"),
         esperado_efectivo=row.get("esperado_efectivo"),
-        esperado_datafono=row.get("esperado_datafono"),
         cierre_dia=(
             ArqueoResumenItem(**cierre) if cierre is not None else None
         ),

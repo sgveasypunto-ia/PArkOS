@@ -102,21 +102,23 @@ class SesionCerrarRequest(BaseModel):
 
 
 class ArqueoDiferenciasResponse(BaseModel):
-    """GET /arqueos/{uuid}/diferencias response (SC-40-S-FULL-SHIFT).
+    """GET /arqueos/{uuid}/diferencias response (SC-40-S-FULL-SHIFT) / REQ-OPS-192.
 
     Reads the Arqueo row directly and computes the expected-vs-reported
     deltas. Returns ``None`` for differences when no Arqueo row exists.
+
+    The datafono dimension is REMOVED from this response (F12.1.1
+    REQ-OPS-192): the handler no longer projects the datafono
+    expected/reported/delta columns. Clients that read removed response
+    fields break (release notes; FE already stopped reading them).
     """
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     uuid_arqueo: uuid_lib.UUID
     valor_efectivo_esperado: float | None
-    valor_datafono_esperado: float | None
     valor_efectivo_reportado: float | None
-    valor_datafono_reportado: float | None
     diferencia_efectivo: float | None
-    diferencia_datafono: float | None
 
 
 @router.post(
@@ -244,8 +246,7 @@ async def arqueo_diferencias(
     row = (
         await session.execute(
             text(
-                "SELECT valor_efectivo_esperado, valor_datafono_esperado, "
-                "valor_efectivo_reportado, valor_datafono_reportado "
+                "SELECT valor_efectivo_esperado, valor_efectivo_reportado "
                 "FROM prod.arqueo WHERE uuid = :uuid"
             ),
             {"uuid": str(uuid)},
@@ -256,18 +257,13 @@ async def arqueo_diferencias(
         raise HTTPException(status_code=404, detail={"error": "arqueo_not_found"})
 
     esperado_e = float(row[0]) if row[0] is not None else 0
-    esperado_d = float(row[1]) if row[1] is not None else 0
-    reportado_e = float(row[2]) if row[2] is not None else 0
-    reportado_d = float(row[3]) if row[3] is not None else 0
+    reportado_e = float(row[1]) if row[1] is not None else 0
 
     return ArqueoDiferenciasResponse(
         uuid_arqueo=uuid,
         valor_efectivo_esperado=esperado_e,
-        valor_datafono_esperado=esperado_d,
         valor_efectivo_reportado=reportado_e,
-        valor_datafono_reportado=reportado_d,
         diferencia_efectivo=reportado_e - esperado_e,
-        diferencia_datafono=reportado_d - esperado_d,
     )
 
 

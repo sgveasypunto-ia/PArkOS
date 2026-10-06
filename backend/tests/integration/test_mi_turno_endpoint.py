@@ -87,10 +87,12 @@ async def test_mi_turno_happy_path_returns_seven_fields_with_no_store(
     # (cheap; matches the sesion lookup pattern).
     session.execute = AsyncMock(side_effect=[sesion_select, sesion_select, count_select])
 
+    # F12.1.1 / REQ-OPS-197 / D1: only the efectivo SUM is read; the
+    # datafono sum is dropped (hard-coded to Decimal(0) downstream).
     with patch.object(
         arqueo,
         "_sum_factura_pagos_by_medio_pago",
-        new=AsyncMock(side_effect=[Decimal("50000"), Decimal("30000")]),
+        new=AsyncMock(return_value=Decimal("50000")),
     ):
         result = await handler_mod.get_mi_turno(
             response=response,
@@ -106,7 +108,9 @@ async def test_mi_turno_happy_path_returns_seven_fields_with_no_store(
     assert result.ingresos_count == 2
     assert result.salidas_count == 1
     assert result.total_cobrado_efectivo_cop == Decimal("50000")
-    assert result.total_cobrado_datafono_cop == Decimal("30000")
+    # F12.1.1 / REQ-OPS-197 / D1: datafono is hard-coded to 0 even
+    # when historical tarjeta/datafono payments exist.
+    assert result.total_cobrado_datafono_cop == Decimal("0")
     # Cache-Control: no-store on the SUCCESS path (R-A6 mitigation).
     assert response.headers.get("Cache-Control") == "no-store"
 

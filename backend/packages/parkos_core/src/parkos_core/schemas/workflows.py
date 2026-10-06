@@ -331,6 +331,13 @@ class AlertaRead(_Base):
     ``estado`` values: ``abierta`` | ``en_revision`` | ``resuelta``.
     Transitioning to ``en_revision`` requires an admin actor (REQ-26)
     — enforced at the endpoint layer.
+
+    The datafono difference field is REMOVED from this response (F12.1.1
+    REQ-OPS-196 / REQ-OPS-192). The ``prod.alerta.valor_diferencia_datafono``
+    column itself stays nullable + preserved for the historical bitácora
+    (D3 drill-down); only the wire schema and the alert creation payload
+    drop the field. New ``prod.alerta`` rows are emitted without the
+    datafono difference (REQ-OPS-094 modified).
     """
 
     uuid: uuid_lib.UUID
@@ -345,7 +352,6 @@ class AlertaRead(_Base):
     uuid_arqueo: uuid_lib.UUID | None
     tipo_alerta: str | None
     valor_diferencia_efectivo: Decimal | None
-    valor_diferencia_datafono: Decimal | None
     uuid_alerta_padre: uuid_lib.UUID | None
     timestamp_evento: datetime | None
     vigente_desde: datetime | None
@@ -354,7 +360,7 @@ class AlertaRead(_Base):
 
 
 class AlertaCreate(_Base):
-    """REQ-26-W-ALERTA-DESCARTADA.
+    """REQ-26-W-ALERTA-DESCARTADA / REQ-OPS-094 modified.
 
     When ``estado='en_revision'``, the alert's *user*
     (``uuid_usuario``) MUST NOT be the writer. Enforced at the endpoint
@@ -363,7 +369,12 @@ class AlertaCreate(_Base):
     and raises ``HTTPException(403)``.
 
     This validator only enforces shape; the policy lives at the API edge
-    (T-PR6-10) where the JWT context is available.
+    (``T-PR6-10``) where the JWT context is available.
+
+    The datafono difference field is REMOVED from the create payload
+    (REQ-OPS-094 modified): the datafono dimension is no longer a
+    gate for alerta emission. Historical alertas with the field populated
+    stay in the bitácora (D3 drill-down).
     """
 
     uuid_sucursal: uuid_lib.UUID
@@ -371,7 +382,6 @@ class AlertaCreate(_Base):
     uuid_arqueo: uuid_lib.UUID | None = None
     tipo_alerta: Annotated[str, StringConstraints(max_length=64)]
     valor_diferencia_efectivo: Decimal | None = None
-    valor_diferencia_datafono: Decimal | None = None
     uuid_alerta_padre: uuid_lib.UUID | None = None
     timestamp_evento: datetime | None = None
     estado: Literal["abierta", "en_revision", "resuelta"] = "abierta"
@@ -382,6 +392,9 @@ class AlertaUpdate(_Base):
 
     Endpoint layer enforces the admin-only ``en_revision`` rule on Update
     paths too (REQ-26).
+
+    The datafono difference field is REMOVED from the update payload
+    (F12.1.1 REQ-OPS-094 / REQ-OPS-196).
     """
 
     uuid_sucursal: uuid_lib.UUID | None = None
@@ -389,7 +402,6 @@ class AlertaUpdate(_Base):
     uuid_arqueo: uuid_lib.UUID | None = None
     tipo_alerta: Annotated[str, StringConstraints(max_length=64)] | None = None
     valor_diferencia_efectivo: Decimal | None = None
-    valor_diferencia_datafono: Decimal | None = None
     uuid_alerta_padre: uuid_lib.UUID | None = None
     timestamp_evento: datetime | None = None
     estado: Literal["abierta", "en_revision", "resuelta"] | None = None

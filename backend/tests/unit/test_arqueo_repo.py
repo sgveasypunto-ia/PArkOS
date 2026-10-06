@@ -62,21 +62,17 @@ def test_es_descuadre_critico_sobre_tolerancia_returns_true() -> None:
 
     assert es_descuadre_critico(
         diferencia_efectivo=150,
-        diferencia_datafono=0,
         tolerancia_efectivo=100,
-        tolerancia_datafono=200,
     )
 
 
 def test_es_descuadre_critico_igual_tolerancia_returns_false() -> None:
-    """V7 REQ-OPS-093 Scenario 3: |diferencia| == tolerancia -> False (strict >)."""
+    """V7 REQ-OPS-093 Scenario 3 / REQ-OPS-195: |diferencia| == tolerancia -> False (strict >)."""
     from parkos_core.repo.arqueo import es_descuadre_critico
 
     assert not es_descuadre_critico(
         diferencia_efectivo=100,
-        diferencia_datafono=0,
         tolerancia_efectivo=100,
-        tolerancia_datafono=200,
     )
 
 
@@ -86,21 +82,7 @@ def test_es_descuadre_critico_dentro_tolerancia_returns_false() -> None:
 
     assert not es_descuadre_critico(
         diferencia_efectivo=50,
-        diferencia_datafono=0,
         tolerancia_efectivo=100,
-        tolerancia_datafono=200,
-    )
-
-
-def test_es_descuadre_critico_datafono_branch_triggers() -> None:
-    """V7: |diferencia_datafono| > tolerancia_datafono alone triggers."""
-    from parkos_core.repo.arqueo import es_descuadre_critico
-
-    assert es_descuadre_critico(
-        diferencia_efectivo=0,
-        diferencia_datafono=250,
-        tolerancia_efectivo=100,
-        tolerancia_datafono=200,
     )
 
 
@@ -119,6 +101,88 @@ def test_calcular_diferencia_substracts() -> None:
     assert calcular_diferencia(
         reportado=Decimal("0"), esperado=Decimal("0")
     ) == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# F12.1.1 -- datafono-ignored signature collapse (REQ-OPS-194, REQ-OPS-195)
+# ---------------------------------------------------------------------------
+
+
+def test_es_descuadre_critico_drops_datafono_params() -> None:
+    """REQ-OPS-195 / D5 default: datafono parameters are REMOVED from the signature.
+
+    The pre-change signature took ``diferencia_datafono`` and
+    ``tolerancia_datafono``; F12.1.1 collapses the function to a
+    effective-only comparator. A caller that still passes the legacy
+    kwargs MUST raise ``TypeError`` -- the wrong API surface is a
+    programming error, not a runtime no-op.
+    """
+    import pytest
+
+    from parkos_core.repo.arqueo import es_descuadre_critico
+
+    # 2-arg call works.
+    es_descuadre_critico(diferencia_efectivo=150, tolerancia_efectivo=100)
+
+    # Legacy kwargs now raise TypeError (defensive against reintroduction).
+    with pytest.raises(TypeError):
+        es_descuadre_critico(
+            diferencia_efectivo=150,
+            diferencia_datafono=0,  # type: ignore[call-arg]
+            tolerancia_efectivo=100,
+            tolerancia_datafono=200,  # type: ignore[call-arg]
+        )
+
+
+def test_es_descuadre_critico_boundary() -> None:
+    """REQ-OPS-195 Scenario 2: |diferencia| == tolerancia returns False (strict >)."""
+    from parkos_core.repo.arqueo import es_descuadre_critico
+
+    assert not es_descuadre_critico(diferencia_efectivo=100, tolerancia_efectivo=100)
+    assert es_descuadre_critico(diferencia_efectivo=101, tolerancia_efectivo=100)
+    assert not es_descuadre_critico(diferencia_efectivo=99, tolerancia_efectivo=100)
+
+
+async def test_calcular_esperado_sesion_returns_decimal_only() -> None:
+    """REQ-OPS-194 / D4 default: returns a single ``Decimal`` (NOT a tuple).
+
+    The pre-change signature returned ``(esperado_efectivo,
+    esperado_datafono)``. F12.1.1 collapses the helper to the effective
+    dimension only. A return-type guard on the call itself ensures the
+    signature is enforced at runtime even when mocking the session --
+    the previous tuple shape would still produce a value that
+    ``isinstance(esperado, tuple)``.
+    """
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, MagicMock
+
+    import uuid as uuid_lib
+
+    from parkos_core.repo.arqueo import calcular_esperado_sesion
+
+    uuid_sesion = uuid_lib.uuid4()
+
+    # Mock Sesion row: valor_inicial_efectivo=50000 (no datafono needed).
+    mock_sesion = MagicMock()
+    mock_sesion.valor_inicial_efectivo = Decimal("50000")
+
+    # session.execute() is called twice (sesion SELECT + SUM pago).
+    # First call returns the sesion row; second call returns the SUM
+    # scalar. MagicMock lets us reuse the same execute() return value
+    # but we configure scalar_one_or_none + scalar_one separately.
+    mock_session = AsyncMock()
+    execute_return = MagicMock()
+    execute_return.scalar_one_or_none.return_value = mock_sesion
+    execute_return.scalar_one.return_value = Decimal("30000")
+    mock_session.execute.return_value = execute_return
+
+    esperado = await calcular_esperado_sesion(
+        mock_session, uuid_sesion=uuid_sesion
+    )
+
+    assert isinstance(esperado, Decimal)
+    assert not isinstance(esperado, tuple)
+    assert esperado == Decimal("80000")
 
 
 # ---------------------------------------------------------------------------

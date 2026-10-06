@@ -132,7 +132,7 @@ def test_mi_turno_read_field_set_matches_fe_zod_contract() -> None:
 
 
 def test_mi_turno_read_requires_uuid_sesion() -> None:
-    """S4 (REQ-OPS-184): uuid_sesion is REQUIRED."""
+    """S4 (REQ-OPS-184): uuid_ses is REQUIRED."""
     import pytest
     from parkos_core.schemas.operacion import MiTurnoRead
     from pydantic import ValidationError
@@ -142,3 +142,24 @@ def test_mi_turno_read_requires_uuid_sesion() -> None:
     with pytest.raises(ValidationError) as exc_info:
         MiTurnoRead.model_validate(payload)
     assert "uuid_sesion" in str(exc_info.value)
+
+
+def test_total_cobrado_datafono_cop_is_zero() -> None:
+    """REQ-OPS-197 / D1: the datafono field is preserved in the response shape
+    with value ``Decimal(0)``. F12.1.1 collapsed the mi-turno aggregate to
+    efectivo only (``miet_turnstile`` sum of ``medio_pago='efectivo'``),
+    but the key MUST remain in the response so external consumers
+    deserialize cleanly.
+    """
+    from parkos_core.schemas.operacion import MiTurnoRead
+
+    # Minimal payload -- datafono defaults to Decimal(0).
+    parsed = MiTurnoRead.model_validate(_make_minimal_payload())
+    assert parsed.total_cobrado_datafono_cop == Decimal("0")
+
+    # Explicit value (positive) is preserved verbatim -- the schema
+    # accepts any Decimal, the repo enforces the "always 0" invariant.
+    parsed = MiTurnoRead.model_validate(
+        {**_make_minimal_payload(), "total_cobrado_datafono_cop": Decimal("99999")}
+    )
+    assert parsed.total_cobrado_datafono_cop == Decimal("99999")

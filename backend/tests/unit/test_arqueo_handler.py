@@ -119,7 +119,7 @@ async def test_arqueo_sin_diferencia_201() -> None:
     m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="auditoria"))
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
-    m_calcular_esperado = AsyncMock(return_value=(Decimal("148000"), Decimal("320000")))
+    m_calcular_esperado = AsyncMock(return_value=Decimal("148000"))  # REQ-OPS-194: effective-only
     m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
     m_insertar_alerta = AsyncMock(return_value=_build_alerta_row())
@@ -171,7 +171,7 @@ async def test_arqueo_diferencia_justificada_201() -> None:
     m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="cierre_turno"))
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
-    m_calcular_esperado = AsyncMock(return_value=(Decimal("100000"), Decimal("50000")))
+    m_calcular_esperado = AsyncMock(return_value=Decimal("100000"))  # REQ-OPS-194: effective-only
     m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
     m_insertar_alerta = AsyncMock(return_value=_build_alerta_row())
@@ -221,7 +221,7 @@ async def test_arqueo_descuadre_sobre_tolerancia_201_con_alerta() -> None:
     m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="cierre_turno"))
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
-    m_calcular_esperado = AsyncMock(return_value=(Decimal("100000"), Decimal("50000")))
+    m_calcular_esperado = AsyncMock(return_value=Decimal("100000"))  # REQ-OPS-194: effective-only
     m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
     m_insertar_alerta = AsyncMock(return_value=alerta_row)
@@ -269,7 +269,7 @@ async def test_arqueo_diferencia_sin_justificacion_400() -> None:
     m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="cierre_turno"))
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
-    m_calcular_esperado = AsyncMock(return_value=(Decimal("100000"), Decimal("50000")))
+    m_calcular_esperado = AsyncMock(return_value=Decimal("100000"))  # REQ-OPS-194: effective-only
     m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
 
     with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
@@ -319,7 +319,7 @@ async def test_arqueo_auditoria_con_diferencia_sin_justificacion_accepted() -> N
     m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="auditoria"))
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
     m_validar_sesion = AsyncMock(return_value=MagicMock())
-    m_calcular_esperado = AsyncMock(return_value=(Decimal("100000"), Decimal("50000")))
+    m_calcular_esperado = AsyncMock(return_value=Decimal("100000"))  # REQ-OPS-194: effective-only
     m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
     m_insertar_alerta = AsyncMock(return_value=_build_alerta_row())
@@ -511,3 +511,159 @@ async def test_arqueo_no_store_header_on_400() -> None:
             )
 
     assert exc_info.value.headers["Cache-Control"] == "no-store"
+
+
+# ---------------------------------------------------------------------------
+# F12.1.1 -- datafono-ignored INSERT + alerta (REQ-OPS-091 + REQ-OPS-196)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_arqueo_insert_excludes_datafono_columns() -> None:
+    """REQ-OPS-091 modified: ``insertar_arqueo`` is called WITHOUT datafono kwargs.
+
+    F12.1.1 / Phase 3 concern 3: the INSERT to ``prod.arqueo`` MUST NOT
+    include ``valor_datafono_esperado`` / ``valor_datafono_reportado`` /
+    ``diferencia_datafono``. The DB columns are preserved (compliance)
+    and the column default / NULL is stored for new rows.
+    """
+    from parkos_core.api.v1 import caja_arqueo as handler_mod
+
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload(
+        codigo="auditoria",
+        valor_efectivo=Decimal("148000"),
+        valor_datafono=Decimal("320000"),  # legacy field; ignored
+        justificacion=None,
+    )
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="auditoria"))
+    m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
+    m_validar_sesion = AsyncMock(return_value=MagicMock())
+    m_calcular_esperado = AsyncMock(return_value=Decimal("148000"))
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
+
+    with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
+         patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
+         patch.object(handler_mod.repo_arqueo, "validar_sesion_abierta_para_arqueo", m_validar_sesion), \
+         patch.object(handler_mod.repo_arqueo, "calcular_esperado_sesion", m_calcular_esperado), \
+         patch.object(handler_mod.repo_arqueo, "insertar_arqueo", m_insertar_arqueo):
+        await handler_mod.post_arqueo(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
+
+    m_insertar_arqueo.assert_awaited_once()
+    call_kwargs = m_insertar_arqueo.await_args.kwargs
+    # F12.1.1: datafono columns MUST NOT be passed.
+    assert "valor_datafono_esperado" not in call_kwargs
+    assert "valor_datafono_reportado" not in call_kwargs
+    assert "diferencia_datafono" not in call_kwargs
+    # effective columns MUST be passed.
+    assert "valor_efectivo_esperado" in call_kwargs
+    assert "valor_efectivo_reportado" in call_kwargs
+    assert "diferencia_efectivo" in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_datafono_only_descuadre_does_not_emit_alerta() -> None:
+    """REQ-OPS-196 Scenario 1: datafono-only descuadre MUST NOT trigger an alerta.
+
+    Effective diff = 0 (sin descuadre) + legacy datafono report 99999
+    (would have triggered under the pre-F12.1.1 contract) -> ZERO
+    ``prod.alerta`` rows. The handler ignores the datafono value
+    entirely.
+    """
+    from parkos_core.api.v1 import caja_arqueo as handler_mod
+
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload(
+        codigo="auditoria",
+        valor_efectivo=Decimal("148000"),  # matches esperado exactly
+        valor_datafono=Decimal("999999"),  # legacy: would have triggered pre-F12.1.1
+        justificacion=None,
+    )
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="auditoria"))
+    m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
+    m_validar_sesion = AsyncMock(return_value=MagicMock())
+    m_calcular_esperado = AsyncMock(return_value=Decimal("148000"))  # matches payload
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
+    m_insertar_alerta = AsyncMock(return_value=_build_alerta_row())
+
+    with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
+         patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
+         patch.object(handler_mod.repo_arqueo, "validar_sesion_abierta_para_arqueo", m_validar_sesion), \
+         patch.object(handler_mod.repo_arqueo, "calcular_esperado_sesion", m_calcular_esperado), \
+         patch.object(handler_mod.repo_arqueo, "insertar_arqueo", m_insertar_arqueo), \
+         patch.object(handler_mod.repo_arqueo, "insertar_alerta_descuadre_critico", m_insertar_alerta):
+        result = await handler_mod.post_arqueo(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
+
+    # Effective diff = 0, so sin descuadre -> NO alerta.
+    assert not m_insertar_alerta.called
+    assert result.alerta_generada is False
+    assert result.alerta_uuid is None
+
+
+@pytest.mark.asyncio
+async def test_alerta_payload_excludes_datafono_keys() -> None:
+    """REQ-OPS-094 modified / REQ-OPS-196: alerta ``datos_nuevos`` MUST NOT
+    contain ``diferencia_datafono`` / ``tolerancia_datafono`` keys.
+    """
+    from parkos_core.api.v1 import caja_arqueo as handler_mod
+
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload(
+        codigo="cierre_turno",
+        valor_efectivo=Decimal("100150"),  # diff=150 > tol=100 -> alerta
+        valor_datafono=Decimal("50000"),
+        justificacion="Vueltos",
+    )
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="cierre_turno"))
+    m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
+    m_validar_sesion = AsyncMock(return_value=MagicMock())
+    m_calcular_esperado = AsyncMock(return_value=Decimal("100000"))
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
+    m_insertar_alerta = AsyncMock(return_value=_build_alerta_row())
+
+    with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
+         patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
+         patch.object(handler_mod.repo_arqueo, "validar_sesion_abierta_para_arqueo", m_validar_sesion), \
+         patch.object(handler_mod.repo_arqueo, "calcular_esperado_sesion", m_calcular_esperado), \
+         patch.object(handler_mod.repo_arqueo, "insertar_arqueo", m_insertar_arqueo), \
+         patch.object(handler_mod.repo_arqueo, "insertar_alerta_descuadre_critico", m_insertar_alerta):
+        await handler_mod.post_arqueo(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
+
+    m_insertar_alerta.assert_awaited_once()
+    call_kwargs = m_insertar_alerta.await_args.kwargs
+    assert "diferencia_datafono" not in call_kwargs
+    payload_json = call_kwargs["payload_json"]
+    assert "diferencia_datafono" not in payload_json
+    assert "tolerancia_datafono" not in payload_json
+    assert "diferencia_efectivo" in payload_json
+    assert "tolerancia_efectivo" in payload_json
