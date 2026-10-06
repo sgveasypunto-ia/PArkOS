@@ -3,6 +3,7 @@
 # wrappers que se mockean aqui; nada real se ejecuta ni se descarga.
 
 . (Join-Path $PSScriptRoot '..\shared\ParkosPostgresDownload.ps1')
+. (Join-Path $PSScriptRoot '..\shared\ParkosPayloadParts.ps1')
 . (Join-Path $PSScriptRoot '..\lite\ParkosLite.Core.ps1')
 . (Join-Path $PSScriptRoot '..\lite\ParkosLite.Db.ps1')
 . (Join-Path $PSScriptRoot '..\lite\ParkosLite.Tools.ps1')
@@ -379,5 +380,251 @@ Describe 'compatibilidad de state.json' {
         (Get-ParkosLiteStepStatus -State $st -Facts $facts).env | Should Be 'ok'
         $facts.ToolsMissing = @('node')
         (Get-ParkosLiteStepStatus -State $st -Facts $facts).env | Should Be 'pending'
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Herramientas desde el repositorio (partes): PATH -> partes -> descarga
+# ---------------------------------------------------------------------------
+
+function New-ToolPartsFixture {
+    # Empaqueta de verdad un "zip" falso con Pack-ParkosPayloadArtifact y devuelve
+    # PartsDir + la Spec (Sha256 fijado = hash del archivo empaquetado).
+    param([string]$Root, [string]$Id = 'tools-node', [string]$FileName = 'node.zip', [switch]$WrongPin)
+    $src = Join-Path $Root "src\$FileName"
+    New-Item -ItemType Directory -Force -Path (Split-Path $src) | Out-Null
+    [IO.File]::WriteAllBytes($src, [byte[]](1..200))
+    $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $src).Hash.ToLowerInvariant()
+    $parts = Join-Path $Root 'parts'
+    [void](Pack-ParkosPayloadArtifact -Source $src -Id $Id -PartsDir $parts -Target "tools\$FileName" -NoRestoreToPayload -Logger $script:quiet)
+    $pin = $sha
+    if ($WrongPin) { $pin = ('0' * 64) }
+    $spec = @{ Name = 'node'; Label = 'Node.js'; Version = '22.0.0'; SizeMb = 30; Url = 'https://example.test/node.zip'; FileName = $FileName; Sha256 = $pin; HashUrl = ''; Dir = 'node'; BinDir = ''; Exe = 'node.exe'; Kind = 'zip' }
+    return @{ PartsDir = $parts; Spec = $spec; Sha = $sha }
+}
+
+Describe 'ids de partes de las herramientas' {
+    It 'git usa tools-mingit; el resto tools-<nombre>' {
+        (Get-ParkosLiteToolPartsId -Name 'git') | Should Be 'tools-mingit'
+        (Get-ParkosLiteToolPartsId -Name 'uv') | Should Be 'tools-uv'
+        (Get-ParkosLiteToolPartsId -Name 'node') | Should Be 'tools-node'
+        (Get-ParkosLiteToolPartsId -Name 'pnpm') | Should Be 'tools-pnpm'
+    }
+    It 'la tabla de artefactos del payload y la tabla de versiones del lite no se desfasan' {
+        $specs = Get-ParkosLiteToolSpecs
+        $tbl = Get-ParkosPayloadArtifactTable
+        foreach ($n in 'git', 'uv', 'node') {
+            $row = $tbl | Where-Object { $_.Id -eq (Get-ParkosLiteToolPartsId -Name $n) }
+            $row | Should Not BeNullOrEmpty
+            (Split-Path $row.Path -Leaf) | Should Be $specs[$n].FileName
+        }
+    }
+    It 'las partes versionadas en el repo traen los 4 ids y los zip coinciden con el sha256 fijado' {
+        $parts = Join-Path $PSScriptRoot '..\payload\parts'
+        $specs = Get-ParkosLiteToolSpecs
+        foreach ($n in 'git', 'uv', 'node') {
+            $e = Find-ParkosPayloadEntry -PartsDir $parts -Id (Get-ParkosLiteToolPartsId -Name $n)
+            $e | Should Not BeNullOrEmpty
+            $e.archive | Should Be $specs[$n].FileName
+            $e.sha256 | Should Be $specs[$n].Sha256
+            (@($e.parts | Where-Object { $_.size -gt 90MB }).Count) | Should Be 0
+        }
+        $p = Find-ParkosPayloadEntry -PartsDir $parts -Id 'tools-pnpm'
+        $p | Should Not BeNullOrEmpty
+        $p.kind | Should Be 'dir'
+        $p.target | Should Be 'tools\pnpm'
+    }
+}
+
+Describe 'Restore-ParkosLiteToolZipFromParts' {
+    It 'restaura el zip exacto a la cache de descargas, verificado contra el sha256 fijado, sin dejar temporales' {
+        $fx = New-ToolPartsFixture -Root (Join-Path $TestDrive 'rz1')
+        $dl = Join-Path $TestDrive 'rz1\dl'
+        $r = Restore-ParkosLiteToolZipFromParts -Spec $fx.Spec -DownloadsDir $dl -PartsDir $fx.PartsDir -Logger $script:quiet
+        $r | Should Be (Join-Path $dl 'node.zip')
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $r).Hash.ToLowerInvariant() | Should Be $fx.Sha
+        (Test-Path (Join-Path $dl '_parts')) | Should Be $false
+    }
+    It 'sin PartsDir o sin manifest devuelve $null sin error (se descargara)' {
+        $spec = @{ Name = 'node'; Label = 'Node.js'; Version = '1'; FileName = 'node.zip'; Sha256 = ('a' * 64) }
+        (Restore-ParkosLiteToolZipFromParts -Spec $spec -DownloadsDir (Join-Path $TestDrive 'rz2') -PartsDir '' -Logger $script:quiet) | Should BeNullOrEmpty
+        (Restore-ParkosLiteToolZipFromParts -Spec $spec -DownloadsDir (Join-Path $TestDrive 'rz2') -PartsDir (Join-Path $TestDrive 'no-existe') -Logger $script:quiet) | Should BeNullOrEmpty
+    }
+    It 'si el archivo del manifest no es el que fija el lite (otra version) devuelve $null y lo dice' {
+        $fx = New-ToolPartsFixture -Root (Join-Path $TestDrive 'rz3') -FileName 'node-v21.zip'
+        $fx.Spec.FileName = 'node-v22.zip'
+        $script:msgs = @()
+        $r = Restore-ParkosLiteToolZipFromParts -Spec $fx.Spec -DownloadsDir (Join-Path $TestDrive 'rz3\dl') -PartsDir $fx.PartsDir -Logger { param($m) $script:msgs += $m }
+        $r | Should BeNullOrEmpty
+        ($script:msgs -join ' ') | Should Match 'otra version'
+    }
+    It 'si el hash restaurado no es el fijado devuelve $null, avisa y no deja el archivo en la cache' {
+        $fx = New-ToolPartsFixture -Root (Join-Path $TestDrive 'rz4') -WrongPin
+        $dl = Join-Path $TestDrive 'rz4\dl'
+        $script:msgs = @()
+        $r = Restore-ParkosLiteToolZipFromParts -Spec $fx.Spec -DownloadsDir $dl -PartsDir $fx.PartsDir -Logger { param($m) $script:msgs += $m }
+        $r | Should BeNullOrEmpty
+        ($script:msgs -join ' ') | Should Match 'no coincide con el sha256 fijado'
+        (Test-Path (Join-Path $dl 'node.zip')) | Should Be $false
+        (Test-Path (Join-Path $dl '_parts')) | Should Be $false
+    }
+    It 'una parte danada en el repo no rompe la instalacion: avisa y devuelve $null (cae a la descarga)' {
+        $fx = New-ToolPartsFixture -Root (Join-Path $TestDrive 'rz5')
+        $part = Get-ChildItem (Join-Path $fx.PartsDir 'tools-node') -File | Select-Object -First 1
+        [IO.File]::WriteAllBytes($part.FullName, [byte[]](9..208))
+        $script:msgs = @()
+        $r = Restore-ParkosLiteToolZipFromParts -Spec $fx.Spec -DownloadsDir (Join-Path $TestDrive 'rz5\dl') -PartsDir $fx.PartsDir -Logger { param($m) $script:msgs += $m }
+        $r | Should BeNullOrEmpty
+        ($script:msgs -join ' ') | Should Match 'se descarga'
+    }
+}
+
+Describe 'Get-ParkosLiteToolZip: cache -> partes del repo -> descarga' {
+    BeforeEach {
+        $script:spec = @{ Name = 'node'; Label = 'Node.js'; Version = '22.0.0'; SizeMb = 30; Url = 'https://example.test/node.zip'; FileName = 'node.zip'; Sha256 = ('a' * 64); HashUrl = '' }
+        Mock Start-ParkosSleep { }
+        Mock Invoke-ParkosHttpDownload { param($Url, $OutFile) Set-Content -Path $OutFile -Value 'zip' }
+        Mock Get-ParkosFileSha256 { 'a' * 64 }
+        Mock Get-ParkosLiteExpectedHash { 'a' * 64 }
+        Mock Restore-ParkosLiteToolZipFromParts { $null }
+    }
+    It 'con partes validas no descarga ni consulta el hash oficial en la red' {
+        $dl = Join-Path $TestDrive 'zo1'
+        Mock Restore-ParkosLiteToolZipFromParts { New-Item -ItemType Directory -Force -Path $DownloadsDir | Out-Null; $p = Join-Path $DownloadsDir 'node.zip'; Set-Content $p 'x'; $p }
+        Mock Get-ParkosLiteExpectedHash { throw 'no deberia consultar la red' }
+        $zip = Get-ParkosLiteToolZip -Spec $script:spec -DownloadsDir $dl -PartsDir 'C:\repo\parts' -Logger $script:quiet
+        $zip | Should Be (Join-Path $dl 'node.zip')
+        Assert-MockCalled Invoke-ParkosHttpDownload -Times 0 -Scope It
+        Assert-MockCalled Restore-ParkosLiteToolZipFromParts -Times 1 -Scope It
+    }
+    It 'una copia valida en la cache gana a las partes (no restaura)' {
+        $dl = Join-Path $TestDrive 'zo2'
+        New-Item -ItemType Directory -Force -Path $dl | Out-Null
+        Set-Content (Join-Path $dl 'node.zip') 'ya'
+        Mock Restore-ParkosLiteToolZipFromParts { throw 'no deberia restaurar' }
+        Mock Get-ParkosLiteExpectedHash { throw 'no deberia consultar la red' }
+        Get-ParkosLiteToolZip -Spec $script:spec -DownloadsDir $dl -PartsDir 'C:\repo\parts' -Logger $script:quiet | Should Be (Join-Path $dl 'node.zip')
+        Assert-MockCalled Restore-ParkosLiteToolZipFromParts -Times 0 -Scope It
+    }
+    It 'si las partes no sirven ($null) descarga como antes' {
+        $dl = Join-Path $TestDrive 'zo3'
+        Mock Restore-ParkosLiteToolZipFromParts { $null }
+        Get-ParkosLiteToolZip -Spec $script:spec -DownloadsDir $dl -PartsDir 'C:\repo\parts' -Logger $script:quiet | Out-Null
+        Assert-MockCalled Invoke-ParkosHttpDownload -Times 1 -Scope It
+    }
+    It 'sin -PartsDir el comportamiento es el de siempre (solo descarga)' {
+        $dl = Join-Path $TestDrive 'zo4'
+        Mock Restore-ParkosLiteToolZipFromParts { throw 'no deberia restaurar' }
+        Get-ParkosLiteToolZip -Spec $script:spec -DownloadsDir $dl -Logger $script:quiet | Out-Null
+        Assert-MockCalled Invoke-ParkosHttpDownload -Times 1 -Scope It
+        Assert-MockCalled Restore-ParkosLiteToolZipFromParts -Times 0 -Scope It
+    }
+}
+
+Describe 'pnpm desde partes' {
+    It 'restaura tools\pnpm bajo la carpeta del lite (target tools\pnpm) y devuelve $true' {
+        $srcDir = Join-Path $TestDrive 'pn1\pnpmdir'
+        New-Item -ItemType Directory -Force -Path (Join-Path $srcDir 'node_modules') | Out-Null
+        Set-Content (Join-Path $srcDir 'pnpm.cmd') 'rem'
+        Set-Content (Join-Path $srcDir 'node_modules\x.txt') 'x'
+        $parts = Join-Path $TestDrive 'pn1\parts2'
+        [void](Pack-ParkosPayloadArtifact -Source $srcDir -Id 'tools-pnpm' -PartsDir $parts -Target 'tools\pnpm' -NoRestoreToPayload -Logger $script:quiet)
+        $lite = Join-Path $TestDrive 'pn1\lite'
+        (Restore-ParkosLitePnpmFromParts -LitePath $lite -PartsDir $parts -Logger $script:quiet) | Should Be $true
+        (Test-Path (Join-Path $lite 'tools\pnpm\pnpm.cmd')) | Should Be $true
+        (Test-Path (Join-Path $lite 'tools\pnpm\node_modules\x.txt')) | Should Be $true
+    }
+    It 'sin manifest o sin entrada devuelve $false (se instalara con npm)' {
+        (Restore-ParkosLitePnpmFromParts -LitePath (Join-Path $TestDrive 'pn2') -PartsDir '' -Logger $script:quiet) | Should Be $false
+        (Restore-ParkosLitePnpmFromParts -LitePath (Join-Path $TestDrive 'pn2') -PartsDir (Join-Path $TestDrive 'nada') -Logger $script:quiet) | Should Be $false
+    }
+    It 'unas partes danadas devuelven $false y avisan (cae a npm)' {
+        $srcDir = Join-Path $TestDrive 'pn3\pnpmdir'
+        New-Item -ItemType Directory -Force -Path $srcDir | Out-Null
+        Set-Content (Join-Path $srcDir 'pnpm.cmd') 'rem'
+        $parts = Join-Path $TestDrive 'pn3\parts'
+        [void](Pack-ParkosPayloadArtifact -Source $srcDir -Id 'tools-pnpm' -PartsDir $parts -Target 'tools\pnpm' -NoRestoreToPayload -Logger $script:quiet)
+        $part = Get-ChildItem (Join-Path $parts 'tools-pnpm') -File | Select-Object -First 1
+        [IO.File]::WriteAllBytes($part.FullName, [byte[]](1..50))
+        $script:msgs = @()
+        (Restore-ParkosLitePnpmFromParts -LitePath (Join-Path $TestDrive 'pn3\lite') -PartsDir $parts -Logger { param($m) $script:msgs += $m }) | Should Be $false
+        ($script:msgs -join ' ') | Should Match 'npm'
+    }
+}
+
+Describe 'Install-ParkosLiteTool con partes del repo' {
+    BeforeEach {
+        Mock Get-ParkosLiteProcessEnvVar { 'C:\Windows' }
+        Mock Start-ParkosSleep { }
+    }
+    It 'zip: pasa -PartsDir a Get-ParkosLiteToolZip' {
+        $lite = Join-Path $TestDrive 'it1'
+        $script:placed = $false
+        Mock Get-ParkosLiteToolZip { 'C:\cache\uv.zip' }
+        Mock Expand-ParkosZipArchive { param($Destination) New-Item -ItemType Directory -Force -Path $Destination | Out-Null }
+        Mock Move-ParkosLiteExtractedContent { param($Destination) New-Item -ItemType Directory -Force -Path $Destination | Out-Null; Set-Content (Join-Path $Destination 'uv.exe') 'x'; $script:placed = $true }
+        Mock Get-ParkosLiteToolVersionText { if ($script:placed) { 'uv 0.12.23' } else { $null } }
+        Install-ParkosLiteTool -Name 'uv' -LitePath $lite -PartsDir 'C:\repo\parts' -Logger $script:quiet | Should Be 'INSTALADO'
+        Assert-MockCalled Get-ParkosLiteToolZip -ParameterFilter { $PartsDir -eq 'C:\repo\parts' } -Times 1 -Scope It
+    }
+    It 'pnpm: si las partes lo restauran no usa npm (sin Internet)' {
+        $lite = Join-Path $TestDrive 'it2'
+        $script:placed = $false
+        Mock Get-ParkosLiteToolStatus { @{ node = @{ Path = 'C:\n\node.exe' } } }
+        Mock Restore-ParkosLitePnpmFromParts { $script:placed = $true; $true }
+        Mock Install-ParkosLitePnpmPackage { throw 'no deberia usar npm' }
+        Mock Get-ParkosLiteToolVersionText { if ($script:placed) { '10.0.0' } else { $null } }
+        Install-ParkosLiteTool -Name 'pnpm' -LitePath $lite -PartsDir 'C:\repo\parts' -Logger $script:quiet | Should Be 'INSTALADO'
+        Assert-MockCalled Install-ParkosLitePnpmPackage -Times 0 -Scope It
+    }
+    It 'pnpm: sin partes cae a npm' {
+        $lite = Join-Path $TestDrive 'it3'
+        $script:placed = $false
+        Mock Get-ParkosLiteToolStatus { @{ node = @{ Path = 'C:\n\node.exe' } } }
+        Mock Restore-ParkosLitePnpmFromParts { $false }
+        Mock Install-ParkosLitePnpmPackage { $script:placed = $true }
+        Mock Get-ParkosLiteToolVersionText { if ($script:placed) { '10.0.0' } else { $null } }
+        Install-ParkosLiteTool -Name 'pnpm' -LitePath $lite -PartsDir 'C:\repo\parts' -Logger $script:quiet | Should Be 'INSTALADO'
+        Assert-MockCalled Install-ParkosLitePnpmPackage -Times 1 -Scope It
+    }
+    It 'pnpm: si lo restaurado de las partes no responde --version, cae a npm' {
+        $lite = Join-Path $TestDrive 'it4'
+        $script:npmDone = $false
+        Mock Get-ParkosLiteToolStatus { @{ node = @{ Path = 'C:\n\node.exe' } } }
+        Mock Restore-ParkosLitePnpmFromParts { $true }
+        Mock Install-ParkosLitePnpmPackage { $script:npmDone = $true }
+        Mock Get-ParkosLiteToolVersionText { if ($script:npmDone) { '10.0.0' } else { $null } }
+        Install-ParkosLiteTool -Name 'pnpm' -LitePath $lite -PartsDir 'C:\repo\parts' -Logger $script:quiet | Should Be 'INSTALADO'
+        Assert-MockCalled Install-ParkosLitePnpmPackage -Times 1 -Scope It
+    }
+    It 'sin PartsDir pnpm sigue instalando con npm como antes' {
+        $lite = Join-Path $TestDrive 'it5'
+        $script:placed = $false
+        Mock Get-ParkosLiteToolStatus { @{ node = @{ Path = 'C:\n\node.exe' } } }
+        Mock Restore-ParkosLitePnpmFromParts { throw 'no deberia restaurar' }
+        Mock Install-ParkosLitePnpmPackage { $script:placed = $true }
+        Mock Get-ParkosLiteToolVersionText { if ($script:placed) { '10.0.0' } else { $null } }
+        Install-ParkosLiteTool -Name 'pnpm' -LitePath $lite -Logger $script:quiet | Should Be 'INSTALADO'
+    }
+}
+
+Describe 'Install-ParkosLiteToolchain pasa el directorio de partes' {
+    It 'cada herramienta faltante se instala con -PartsDir' {
+        $missing = [ordered]@{}
+        foreach ($n in 'git', 'uv', 'node', 'pnpm') { $missing[$n] = @{ Name = $n; Origin = 'missing'; Version = ''; Path = '' } }
+        Mock Get-ParkosLiteToolStatus { $missing }
+        Mock Install-ParkosLiteTool { 'INSTALADO' }
+        Mock Enable-ParkosLiteToolchainEnv { $missing }
+        Install-ParkosLiteToolchain -LitePath 'C:\L' -PartsDir 'C:\repo\parts' -Logger $script:quiet | Out-Null
+        Assert-MockCalled Install-ParkosLiteTool -ParameterFilter { $PartsDir -eq 'C:\repo\parts' } -Times 4 -Scope It
+    }
+    It 'una herramienta compatible en el PATH no toca las partes ni la red (PATH primero)' {
+        $ok = [ordered]@{}
+        foreach ($n in 'git', 'uv', 'node', 'pnpm') { $ok[$n] = @{ Name = $n; Origin = 'system'; Version = '99.0.0'; Path = 'x' } }
+        Mock Get-ParkosLiteToolStatus { $ok }
+        Mock Install-ParkosLiteTool { throw 'no deberia instalar' }
+        Mock Enable-ParkosLiteToolchainEnv { $ok }
+        Install-ParkosLiteToolchain -LitePath 'C:\L' -PartsDir 'C:\repo\parts' -Logger $script:quiet | Out-Null
+        Assert-MockCalled Install-ParkosLiteTool -Times 0 -Scope It
     }
 }

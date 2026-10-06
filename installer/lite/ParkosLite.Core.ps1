@@ -40,7 +40,11 @@ function Get-ParkosLitePaths {
         FrontDir   = Join-Path $RepoRoot 'apps\electron-sucursal'
         AppsDir    = Join-Path $RepoRoot 'apps'
         SeedSql    = Join-Path $RepoRoot 'installer\lite\seed_demo.sql'
-        PgPayload  = Join-Path $RepoRoot 'installer\payload\postgres'
+        # Partes versionadas en git (zips en partes + payload-parts.json). Postgres
+        # vive en parts\postgres (se movio desde payload\postgres).
+        PartsDir   = Join-Path $RepoRoot 'installer\payload\parts'
+        PayloadRoot = Join-Path $RepoRoot 'installer\payload'
+        PgPayload  = Join-Path $RepoRoot 'installer\payload\parts\postgres'
         PartmanPayload = Join-Path $RepoRoot 'installer\payload\pg_partman\extension'
         RepoRoot   = $RepoRoot
     }

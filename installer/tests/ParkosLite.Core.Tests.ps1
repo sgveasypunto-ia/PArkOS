@@ -23,6 +23,21 @@ Describe 'Get-ParkosLitePaths' {
         $p.FrontDir | Should Be 'C:\repo\apps\electron-sucursal'
         $p.SeedSql | Should Be 'C:\repo\installer\lite\seed_demo.sql'
     }
+    It 'Postgres y el resto de artefactos se leen de installer\payload\parts (donde viven versionados)' {
+        $p = Get-ParkosLitePaths -LitePath 'C:\lite' -RepoRoot 'C:\repo'
+        $p.PartsDir | Should Be 'C:\repo\installer\payload\parts'
+        $p.PayloadRoot | Should Be 'C:\repo\installer\payload'
+        $p.PgPayload | Should Be 'C:\repo\installer\payload\parts\postgres'
+    }
+    It 'las partes de Postgres del repo real se encuentran con PgPayload (sin problemas)' {
+        . (Join-Path $PSScriptRoot '..\shared\ParkosPostgresDownload.ps1')
+        $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+        $p = Get-ParkosLitePaths -LitePath 'C:\lite' -RepoRoot $repo
+        $info = Get-ParkosPostgresDownloadInfo
+        $st = Get-ParkosPostgresPartsStatus -Dir $p.PgPayload -FileName $info.FileName
+        $st.Problem | Should BeNullOrEmpty
+        (@($st.Parts).Count -ge 1) | Should Be $true
+    }
 }
 
 Describe 'Find-ParkosLiteFreePort / Resolve-ParkosLitePort' {

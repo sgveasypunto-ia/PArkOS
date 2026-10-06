@@ -4,7 +4,8 @@
 # Solo funciones. $Ctx = @{ Paths; State; Secrets; Branch; Logger; ScriptPath;
 # Requested } (lo arma parkos-lite.ps1). Procesos, red, git, builds y pnpm
 # estan en wrappers pequenos que los tests mockean. PowerShell 5.1 compatible.
-# Requiere los otros ParkosLite.*.ps1 y shared\ParkosPostgresDownload.ps1.
+# Requiere los otros ParkosLite.*.ps1 y shared\ParkosPostgresDownload.ps1 y
+# shared\ParkosPayloadParts.ps1.
 
 function Write-ParkosLiteLog {
     param($Ctx, [string]$Message)
@@ -113,6 +114,75 @@ function Test-ParkosLiteApiBuildNeeded {
     $src = Get-ParkosLiteApiSourceNewestWrite -RepoRoot $Paths.RepoRoot
     if (-not $src) { return $true }
     return ($src -gt $exeTime)
+}
+
+# Ids del manifest de partes que reemplazan al build de PyInstaller del lite.
+# El lite NO usa job-sync, seed ni doctor: nunca se restauran.
+$script:ParkosLiteApiPartsIds = @('api-sucursal', 'migrate')
+
+# Archivos de backend/ e installer/bootstrap/ cambiados desde <Commit>. $null si
+# no se puede saber (sin git, commit ausente del clon, sin commit); un arreglo
+# VACIO (",@()") si se sabe y no cambio nada. Get-ParkosPartsChangedFiles no
+# distingue "nada" de "no se sabe" (PowerShell desenrolla el arreglo vacio), asi
+# que si vuelve vacio se comprueba que git conozca el commit.
+function Get-ParkosLiteChangedSinceCommit {
+    param([Parameter(Mandatory)][string]$RepoRoot, [string]$Commit)
+    if (-not $Commit) { return $null }
+    try {
+        $files = @(Get-ParkosPartsChangedFiles -RepoRoot $RepoRoot -Commit $Commit | Where-Object { $_ })
+        if ($files.Count -gt 0) { return , $files }
+        $v = Invoke-ParkosLiteGit -RepoRoot $RepoRoot -Arguments @('rev-parse', '--verify', '--quiet', "$Commit^{commit}")
+        if ($v.ExitCode -eq 0) { return , @() }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
+# Decision restaurar-vs-construir de la API: 'restore' si el repo trae partes de
+# api-sucursal y migrate y backend/ + installer/bootstrap/ no cambiaron desde el
+# commit con el que se empaquetaron; 'build' en cualquier otro caso (sin partes,
+# sin git, o codigo cambiado). Devuelve @{ Action; Commit; Reason }.
+function Get-ParkosLiteApiSourcePlan {
+    param([Parameter(Mandatory)]$Paths)
+    $commit = ''
+    foreach ($id in $script:ParkosLiteApiPartsIds) {
+        $entry = $null
+        try {
+            if (Test-Path -LiteralPath $Paths.PartsDir) { $entry = Find-ParkosPayloadEntry -PartsDir $Paths.PartsDir -Id $id }
+        } catch { $entry = $null }
+        if (-not $entry -or @($entry.parts).Count -eq 0) {
+            return @{ Action = 'build'; Commit = ''; Reason = "el repositorio no trae partes de '$id' (installer\payload\parts)" }
+        }
+        $built = [string]$entry.builtFromCommit
+        $changed = Get-ParkosLiteChangedSinceCommit -RepoRoot $Paths.RepoRoot -Commit $built
+        if ($null -eq $changed) {
+            return @{ Action = 'build'; Commit = ''; Reason = 'no se pudo comparar el codigo con git (sin git, sin el commit de las partes o el repo no es un clon)' }
+        }
+        if ((Get-ParkosPartsArtifactDecision -Entry $entry -ChangedFiles $changed) -ne 'restore') {
+            $short = $built
+            if ($short.Length -gt 7) { $short = $short.Substring(0, 7) }
+            return @{ Action = 'build'; Commit = ''; Reason = "backend/ o installer/bootstrap/ cambio desde el commit $short de las partes ($(@($changed).Count) archivos)" }
+        }
+        if ($id -eq 'api-sucursal') { $commit = $built }
+    }
+    return @{ Action = 'restore'; Commit = $commit; Reason = '' }
+}
+
+# Restaura api-sucursal y migrate a installer\payload\services (idempotente:
+# marcador .parts-sha256 junto a cada carpeta).
+function Restore-ParkosLiteApiFromParts {
+    param([Parameter(Mandatory)]$Paths, [scriptblock]$Logger)
+    foreach ($id in $script:ParkosLiteApiPartsIds) {
+        [void](Restore-ParkosPayloadArtifact -Id $id -PartsDir $Paths.PartsDir -PayloadRoot $Paths.PayloadRoot -CacheDir (Join-Path $Paths.Downloads 'tmp') -Logger $Logger)
+    }
+}
+
+# Marcadores que deja una restauracion de partes (su presencia = la carpeta de
+# servicios es la version empaquetada en el repo, no una compilada aqui).
+function Get-ParkosLiteApiRestoreMarkers {
+    param([Parameter(Mandatory)]$Paths)
+    return @($script:ParkosLiteApiPartsIds | ForEach-Object { Join-Path $Paths.PayloadRoot "services\$_.parts-sha256" })
 }
 
 function Invoke-ParkosLitePnpmInstall {
@@ -287,7 +357,7 @@ function Invoke-ParkosLiteStep {
         'env' {
             # Herramientas: usa las del sistema si son compatibles; si no, las instala
             # portatiles en <lite>	ools (sin admin) y las pone en el PATH de este proceso.
-            Install-ParkosLiteToolchain -LitePath $paths.Lite -Logger $Ctx.Logger | Out-Null
+            Install-ParkosLiteToolchain -LitePath $paths.Lite -PartsDir $paths.PartsDir -Logger $Ctx.Logger | Out-Null
             $req = $Ctx.Requested
             if (-not $req) { $req = @{ Db = 0; Api = 0; Front = 0 } }
             Initialize-ParkosLiteConfig -Ctx $Ctx -DbPortRequested $req.Db -ApiPortRequested $req.Api -FrontPortRequested $req.Front
@@ -303,7 +373,32 @@ function Invoke-ParkosLiteStep {
             }
         }
         'api' {
-            if (-not (Test-ParkosLiteApiBuildNeeded -Paths $paths)) {
+            $plan = Get-ParkosLiteApiSourcePlan -Paths $paths
+            if ($plan.Action -eq 'restore') {
+                # El restore reemplaza las carpetas de servicios: si el exe esta corriendo, Windows bloquea los archivos.
+                Stop-ParkosLiteService -Paths $paths -Name 'api' -ExpectedProcess 'api-sucursal' | Out-Null
+                $restored = $false
+                try {
+                    Restore-ParkosLiteApiFromParts -Paths $paths -Logger $Ctx.Logger
+                    if (-not ((Test-Path $paths.ApiExe) -and (Test-Path $paths.MigrateExe))) { throw 'faltan api-sucursal.exe o migrate.exe tras restaurar' }
+                    $restored = $true
+                } catch {
+                    Write-ParkosLiteLog $Ctx "Las partes de la API del repositorio no sirven ($($_.Exception.Message)): se construye con PyInstaller (necesita uv/Python e Internet)."
+                }
+                if ($restored) {
+                    $short = [string]$plan.Commit
+                    if ($short.Length -gt 7) { $short = $short.Substring(0, 7) }
+                    Write-ParkosLiteLog $Ctx "API restaurada desde el repositorio (commit $short): se omite la compilacion (no hace falta uv ni Python)."
+                    $state.api_built_commit = [string]$plan.Commit
+                    return
+                }
+            } else {
+                Write-ParkosLiteLog $Ctx "No se restaura la API desde el repositorio: $($plan.Reason)."
+            }
+            # Una carpeta restaurada (marcador presente) es la version del repo: si hay que
+            # construir es porque el codigo cambio, y el mtime no sirve para decidirlo.
+            $staleRestored = @(Get-ParkosLiteApiRestoreMarkers -Paths $paths | Where-Object { Test-Path -LiteralPath $_ })
+            if ($staleRestored.Count -eq 0 -and -not (Test-ParkosLiteApiBuildNeeded -Paths $paths)) {
                 Write-ParkosLiteLog $Ctx 'La API (api-sucursal.exe y migrate.exe) ya esta construida y el codigo no cambio: se omite el build.'
                 if (-not $state.api_built_commit) {
                     $head = Invoke-ParkosLiteGit -RepoRoot $paths.RepoRoot -Arguments @('rev-parse', 'HEAD')
@@ -311,12 +406,14 @@ function Invoke-ParkosLiteStep {
                 }
                 return
             }
-            Write-ParkosLiteLog $Ctx 'Construyendo la API (PyInstaller). Tarda entre 3 y 10 minutos la primera vez; no cierres la ventana.'
+            Write-ParkosLiteLog $Ctx 'Construyendo la API (PyInstaller): necesita uv/Python e Internet. Tarda entre 3 y 10 minutos la primera vez; no cierres la ventana.'
             # El build reemplaza los .exe: si el nuestro esta corriendo, Windows bloquea los archivos.
             Stop-ParkosLiteService -Paths $paths -Name 'api' -ExpectedProcess 'api-sucursal' | Out-Null
             $rc = Invoke-ParkosLiteBuildScript -RepoRoot $paths.RepoRoot -LogPath (Join-Path $paths.Logs 'build-api.log')
             if ($rc -ne 0) { throw "build-release.ps1 fallo (exit $rc). Revisa $(Join-Path $paths.Logs 'build-api.log')" }
             if (-not ((Test-Path $paths.ApiExe) -and (Test-Path $paths.MigrateExe))) { throw 'El build termino pero faltan api-sucursal.exe o migrate.exe.' }
+            # Lo construido ya no es la version de las partes: sin marcadores, la proxima corrida usa el mtime.
+            foreach ($m in (Get-ParkosLiteApiRestoreMarkers -Paths $paths)) { Remove-Item -LiteralPath $m -Force -ErrorAction SilentlyContinue }
             $head = Invoke-ParkosLiteGit -RepoRoot $paths.RepoRoot -Arguments @('rev-parse', 'HEAD')
             if ($head.ExitCode -eq 0) { $state.api_built_commit = ($head.Output -join '').Trim() }
         }
