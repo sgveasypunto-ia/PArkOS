@@ -39,6 +39,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Guard - no tracked file over 95 MiB
+        run: |
+          # GitHub rechaza cualquier archivo > 100 MB (no se usa LFS): todo artefacto
+          # grande debe viajar como partes <= 90 MiB en installer/payload/parts.
+          $ErrorActionPreference = 'Stop'
+          $limit = 95MB
+          $big = @()
+          foreach ($f in @(git ls-files)) {
+            if (Test-Path -LiteralPath $f -PathType Leaf) {
+              $len = (Get-Item -LiteralPath $f).Length
+              if ($len -gt $limit) { $big += "$f ($len bytes)" }
+            }
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'git ls-files fallo.' }
+          if ($big.Count -gt 0) {
+            foreach ($b in $big) { Write-Host "::error::Archivo versionado de mas de 95 MiB: $b" }
+            throw "$($big.Count) archivo(s) versionado(s) superan 95 MiB: empaquetelos con installer/tools/Pack-ParkosPayload.ps1 (partes <= 90 MiB)."
+          }
+          'Ningun archivo versionado supera 95 MiB.' | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Verify payload parts (manifest vs files, hashes, <= 90 MiB)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = 'installer/payload/parts'
+          if (-not (Test-Path $dir)) { Write-Host "No existe ${dir}: nada que verificar."; return }
+          . ./installer/shared/ParkosPayloadParts.ps1
+          $r = Test-ParkosPayloadParts -PartsDir (Resolve-Path $dir).Path
+          if (-not $r.Ok) {
+            foreach ($p in $r.Problems) { Write-Host "::error::payload\parts: $p" }
+            throw "payload\parts inconsistente ($($r.Problems.Count) problema(s))."
+          }
+          'payload\parts verificado (manifest, tamanos, hashes, sin archivos desconocidos).' | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
       - name: Parse-check every installer .ps1
         run: |
           $ErrorActionPreference = 'Stop'

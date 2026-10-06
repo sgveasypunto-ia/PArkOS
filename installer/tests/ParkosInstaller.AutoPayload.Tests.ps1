@@ -293,7 +293,7 @@ Describe 'Invoke-ParkosPreparePayload (-Command Prepare)' {
     }
 
     It 'sin partes ni zip de Postgres falla con el comando git para restaurarlas' {
-        $script:PgProblem = 'faltan las partes versionadas de Postgres (git checkout -- installer/payload/postgres)'
+        $script:PgProblem = 'faltan las partes versionadas de Postgres (git checkout -- installer/payload/parts)'
         $r = Invoke-ParkosPreparePayload -PayloadRoot 'C:\pl' -LogDir 'C:\logs'
         $r.ExitCode | Should Be 1
         $r.Detail | Should Match 'git checkout'
@@ -606,10 +606,25 @@ Describe 'build-release.ps1 (contrato estatico)' {
         $src | Should Match 'PARKOS_MASTER_KEY_FILE'
         $src | Should Not Match 'RandomNumberGenerator'
     }
-    It 'tiene -Manifest y el manifest cubre las partes de Postgres y su sidecar' {
+    It 'tiene -Manifest y el manifest cubre las partes versionadas (payload\parts, incluida Postgres y su sidecar)' {
         $src | Should Match '\[switch\]\$Manifest'
-        $src | Should Match 'zip\\\.part'
-        $src | Should Match 'zip\\\.sha256'
+        $src | Should Match "Join-Path \`$PayloadRoot 'parts'"
+        # Enumeracion .NET (no Get-ChildItem.FullName): robusta ante rutas cortas 8.3.
+        $src | Should Match 'EnumerateFiles\(\$partsBase'
+        $src | Should Match 'SearchOption\]::AllDirectories'
+        $src | Should Match "'ParkosPayloadParts\.ps1'"
+    }
+    It 'tiene -Pack y -Restore y los cuenta como switches (no disparan el build completo)' {
+        $src | Should Match '\[switch\]\$Pack'
+        $src | Should Match '\[switch\]\$Restore'
+        $src | Should Match '\$Manifest -or \$Pack -or \$Restore'
+        $src | Should Match 'Invoke-ParkosPackPayload'
+        $src | Should Match 'Restore-ParkosPayloadAll'
+    }
+    It 'restaura de payload\parts antes de descargar los terceros' {
+        $src | Should Match "Restore-PayloadFromParts -Id 'powershell7-msi'"
+        $src | Should Match "Restore-PayloadFromParts -Id 'nssm'"
+        $src | Should Match "Restore-PayloadFromParts -Id 'pg_partman-extension'"
     }
     It 'sigue siendo analizable por el parser de PowerShell' {
         $errors = $null

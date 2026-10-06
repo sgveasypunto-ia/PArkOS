@@ -196,6 +196,25 @@ foreach ($parkosSharedCandidate in $parkosSharedCandidates) {
     }
 }
 
+# Payload en partes (installer/shared/ParkosPayloadParts.ps1): restaura desde
+# payload\parts\ lo que falte del payload crudo (zip/msi/servicios empaquetados
+# en partes <= 90 MiB para git). Mismo orden de busqueda que el anterior; si
+# falta no se aborta al cargar (solo se pierde la restauracion desde partes).
+$script:ParkosPartsLoaded = $false
+$parkosPartsCandidates = @(
+    (Join-Path $PSScriptRoot 'shared\ParkosPayloadParts.ps1')
+    (Join-Path $PSScriptRoot 'ParkosPayloadParts.ps1')
+    (Join-Path $script:PayloadRoot 'ParkosPayloadParts.ps1')
+    (Join-Path ([System.AppContext]::BaseDirectory) 'ParkosPayloadParts.ps1')
+)
+foreach ($parkosPartsCandidate in $parkosPartsCandidates) {
+    if ($parkosPartsCandidate -and (Test-Path -LiteralPath $parkosPartsCandidate)) {
+        . $parkosPartsCandidate
+        $script:ParkosPartsLoaded = $true
+        break
+    }
+}
+
 # Servicio de Windows de la base de datos de Parkos. El nombre CONTIENE
 # 'postgresql' a proposito: Parkos.psm1 (Uninstall-Parkos, Test-CrashRecovery)
 # resuelve el servicio por el patron *postgresql*.
@@ -554,6 +573,85 @@ function Get-ParkosRepoRoot {
     return $null
 }
 
+# Carpeta de las partes versionadas (payload\parts).
+function Get-ParkosPartsDir {
+    param([string]$PayloadRoot = $script:PayloadRoot)
+    return (Join-Path $PayloadRoot 'parts')
+}
+
+# Entradas del manifest de partes (vacio si no hay manifest, el codigo
+# compartido no esta cargado o el manifest esta ilegible).
+function Get-ParkosPartsEntries {
+    param([string]$PayloadRoot = $script:PayloadRoot)
+    if (-not $script:ParkosPartsLoaded) { return @() }
+    try {
+        $m = Get-ParkosPayloadManifest -PartsDir (Get-ParkosPartsDir -PayloadRoot $PayloadRoot)
+    } catch {
+        return @()
+    }
+    return @(Get-ParkosPayloadManifestEntries -Manifest $m)
+}
+
+# Ids de artefactos que faltan en el payload crudo y se pueden RESTAURAR de
+# payload\parts en vez de construirse/descargarse: terceros siempre; servicios
+# y MSI solo si no hay informacion de git o ningun archivo de backend/ o
+# installer\bootstrap\ cambio desde builtFromCommit (decision pura en
+# Get-ParkosPartsArtifactDecision). Nunca restaura un MSI si ya hay uno en apps\.
+function Get-ParkosPartsRestorePlan {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$PayloadRoot, [string]$RepoRoot = '')
+
+    $ids = [System.Collections.Generic.List[string]]::new()
+    foreach ($e in @(Get-ParkosPartsEntries -PayloadRoot $PayloadRoot)) {
+        if (-not [bool](Get-ParkosPartsProp -Object $e -Name 'restoreToPayload' -Default $true)) { continue }
+        if (Test-Path -LiteralPath (Join-Path $PayloadRoot $e.target)) { continue }
+        if ($e.id -eq 'web-sucursal-msi' -and (Get-ChildItem (Join-Path $PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1)) { continue }
+        $changed = $null
+        if ([bool](Get-ParkosPartsProp -Object $e -Name 'sourceDependent' -Default $false) -and $RepoRoot) {
+            $changed = Get-ParkosPartsChangedFiles -RepoRoot $RepoRoot -Commit ([string](Get-ParkosPartsProp -Object $e -Name 'builtFromCommit' -Default ''))
+        }
+        if ((Get-ParkosPartsArtifactDecision -Entry $e -ChangedFiles $changed) -eq 'restore') { $ids.Add([string]$e.id) }
+    }
+    return @($ids)
+}
+
+# Wrapper mockeable: restaura esos ids de payload\parts (log 'Restaurando <id> n de m').
+function Invoke-ParkosRestoreFromParts {
+    param([Parameter(Mandatory)][string]$PayloadRoot, [Parameter(Mandatory)][string[]]$Ids)
+    [void](Restore-ParkosPayloadAll -PartsDir (Get-ParkosPartsDir -PayloadRoot $PayloadRoot) -PayloadRoot $PayloadRoot -Ids $Ids -Logger { param($m) Write-Host "  $m" })
+}
+
+# Si <Path> (bajo el payload) falta y algun artefacto de payload\parts lo
+# contiene, lo restaura. $true si restauro algo. Un error de partes (falta una,
+# hash distinto) se propaga: nunca se sigue en silencio.
+function Restore-ParkosPayloadForPath {
+    param([Parameter(Mandatory)][string]$Path, [string]$PayloadRoot = $script:PayloadRoot)
+
+    if (Test-Path -LiteralPath $Path) { return $false }
+    $root = $PayloadRoot.TrimEnd('\') + '\'
+    if (-not $Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $rel = $Path.Substring($root.Length).TrimEnd('\')
+    foreach ($e in @(Get-ParkosPartsEntries -PayloadRoot $PayloadRoot)) {
+        $target = ([string]$e.target).TrimEnd('\')
+        $hit = ($rel -ieq $target) -or $rel.StartsWith("$target\", [System.StringComparison]::OrdinalIgnoreCase) -or $target.StartsWith("$rel\", [System.StringComparison]::OrdinalIgnoreCase)
+        if ($hit) {
+            Invoke-ParkosRestoreFromParts -PayloadRoot $PayloadRoot -Ids @([string]$e.id)
+            return $true
+        }
+    }
+    return $false
+}
+
+# Restaura un artefacto por id si su destino falta (p. ej. el MSI de web_sucursal).
+function Restore-ParkosPayloadById {
+    param([Parameter(Mandatory)][string]$Id, [string]$PayloadRoot = $script:PayloadRoot)
+    $e = @(Get-ParkosPartsEntries -PayloadRoot $PayloadRoot) | Where-Object { $_.id -eq $Id } | Select-Object -First 1
+    if (-not $e) { return $false }
+    if (Test-Path -LiteralPath (Join-Path $PayloadRoot $e.target)) { return $false }
+    Invoke-ParkosRestoreFromParts -PayloadRoot $PayloadRoot -Ids @($Id)
+    return $true
+}
+
 # Wrapper mockeable: archivos fuente que entran a los exe (tracked + untracked
 # no ignorados, cubre cambios locales sin commit). $null si git falla.
 function Get-ParkosSourceFileList {
@@ -593,29 +691,45 @@ function Get-ParkosPayloadBuildPlan {
     $reasons = [System.Collections.Generic.List[string]]::new()
     $exeSwitches = @('ApiSucursal', 'JobSync', 'Migrate', 'Seed', 'Doctor')
 
+    # Lo que falta pero se puede RESTAURAR de payload\parts cuenta como presente
+    # (no se compila ni se descarga): se restaura antes de decidir construir.
+    $restoreIds = @(Get-ParkosPartsRestorePlan -PayloadRoot $PayloadRoot -RepoRoot $RepoRoot)
+    $restoreTargets = @(Get-ParkosPartsEntries -PayloadRoot $PayloadRoot | Where-Object { $restoreIds -contains $_.id } | ForEach-Object { ([string]$_.target).TrimEnd('\') })
+    $covered = {
+        param([string]$rel)
+        foreach ($t in $restoreTargets) {
+            if ($rel -ieq $t -or $rel.StartsWith("$t\", [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+        }
+        return $false
+    }
+
     $thirdParty = @('nssm.exe', 'pg_partman\extension\pg_partman.control') |
-        Where-Object { -not (Test-Path (Join-Path $PayloadRoot $_)) }
+        Where-Object { -not (Test-Path (Join-Path $PayloadRoot $_)) -and -not (& $covered $_) }
     if (@($thirdParty).Count -gt 0) {
         $switches.Add('Payload')
         $reasons.Add("faltan componentes de terceros: $(@($thirdParty) -join ', ')")
     }
 
     $msi = Get-ChildItem (Join-Path $PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $msi) {
+    if (-not $msi -and ($restoreIds -notcontains 'web-sucursal-msi')) {
         $switches.Add('WebSucursal')
         $reasons.Add('falta el instalador de la aplicacion de escritorio (MSI)')
     }
 
-    $missingExes = @(Get-ParkosExpectedPayloadExes | Where-Object { -not (Test-Path (Join-Path $PayloadRoot $_)) })
+    $missingExes = @(Get-ParkosExpectedPayloadExes | Where-Object { -not (Test-Path (Join-Path $PayloadRoot $_)) -and -not (& $covered $_) })
     $rebuildExes = $false
     if ($missingExes.Count -gt 0) {
         $rebuildExes = $true
         $reasons.Add("faltan programas: $($missingExes -join ', ')")
     } elseif ($RepoRoot) {
-        $oldest = @(Get-ParkosExpectedPayloadExes | ForEach-Object { (Get-Item (Join-Path $PayloadRoot $_)).LastWriteTimeUtc }) |
+        $presentExes = @(Get-ParkosExpectedPayloadExes | Where-Object { Test-Path (Join-Path $PayloadRoot $_) })
+        $oldest = @($presentExes | ForEach-Object { (Get-Item (Join-Path $PayloadRoot $_)).LastWriteTimeUtc }) |
             Sort-Object | Select-Object -First 1
-        $newestSource = Get-ParkosPayloadSourceNewestWrite -RepoRoot $RepoRoot
-        if ($null -eq $newestSource) {
+        $newestSource = $null
+        if ($presentExes.Count -gt 0) { $newestSource = Get-ParkosPayloadSourceNewestWrite -RepoRoot $RepoRoot }
+        if ($presentExes.Count -eq 0) {
+            # todos los programas se restauran de partes: nada que comparar
+        } elseif ($null -eq $newestSource) {
             $rebuildExes = $true
             $reasons.Add('no se pudo comparar las fechas del codigo fuente (se compila por seguridad)')
         } elseif ($newestSource -gt $oldest) {
@@ -623,12 +737,17 @@ function Get-ParkosPayloadBuildPlan {
             $reasons.Add('el codigo fuente es mas nuevo que los programas compilados')
         }
     }
-    if ($rebuildExes) { foreach ($s in $exeSwitches) { $switches.Add($s) } }
+    if ($rebuildExes) {
+        foreach ($s in $exeSwitches) { $switches.Add($s) }
+        # se reconstruyen: no tiene sentido restaurar servicios viejos
+        $restoreIds = @($restoreIds | Where-Object { @('api-sucursal', 'job-sync-sucursal', 'migrate', 'seed', 'doctor') -notcontains $_ })
+    }
 
     return [PSCustomObject]@{
-        Needed   = ($switches.Count -gt 0)
-        Switches = @($switches)
-        Reasons  = @($reasons)
+        Needed     = ($switches.Count -gt 0)
+        Switches   = @($switches)
+        Reasons    = @($reasons)
+        RestoreIds = @($restoreIds)
     }
 }
 
@@ -767,6 +886,13 @@ function Invoke-ParkosEnsurePayload {
     )
 
     $plan = Get-ParkosPayloadBuildPlan -PayloadRoot $PayloadRoot -RepoRoot $RepoRoot
+    # Primero lo que se puede restaurar de payload\parts (terceros, y servicios/MSI
+    # cuyo codigo no cambio desde que se empaquetaron): evita compilar/descargar.
+    $restoreIds = @(); if ($plan.PSObject.Properties['RestoreIds']) { $restoreIds = @($plan.RestoreIds) }
+    if ($restoreIds.Count -gt 0) {
+        Write-Host "  Restaurando $($restoreIds.Count) componente(s) desde las partes versionadas del paquete..." -ForegroundColor Cyan
+        Invoke-ParkosRestoreFromParts -PayloadRoot $PayloadRoot -Ids $restoreIds
+    }
     if (-not $plan.Needed) {
         Write-Host '  Los programas de Parkos ya estan preparados y al dia; no hace falta compilar nada.' -ForegroundColor Green
         return
@@ -821,12 +947,34 @@ function Get-ParkosPayloadCompletenessProblems {
     if (-not (Get-ChildItem (Join-Path $PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1)) {
         $problems.Add('falta el MSI de web_sucursal en apps\')
     }
-    foreach ($rel in 'nssm.exe', 'pg_partman\extension\pg_partman.control', 'ParkosPostgresDownload.ps1', 'manifest.sha256.json', 'management\Parkos.psd1', 'security\parkos-master.key') {
+    foreach ($rel in 'nssm.exe', 'pg_partman\extension\pg_partman.control', 'ParkosPostgresDownload.ps1', 'ParkosPayloadParts.ps1', 'manifest.sha256.json', 'management\Parkos.psd1', 'security\parkos-master.key') {
         if (-not (Test-Path (Join-Path $PayloadRoot $rel))) { $problems.Add("falta $rel") }
     }
     $pgProblem = Get-ParkosPostgresPayloadProblem -PayloadRoot $PayloadRoot
     if ($pgProblem) { $problems.Add($pgProblem) }
     return @($problems)
+}
+
+# Carpeta con las partes de Postgres: payload\parts\postgres (versionada en git);
+# si no hay partes ahi, el payload\postgres de los paquetes antiguos.
+function Get-ParkosPostgresPartsDir {
+    param([Parameter(Mandatory)][string]$PayloadRoot)
+    $new = Join-Path (Get-ParkosPartsDir -PayloadRoot $PayloadRoot) 'postgres'
+    if (@(Get-ChildItem -LiteralPath $new -File -Filter '*.part*' -ErrorAction SilentlyContinue).Count -gt 0) { return $new }
+    $legacy = Join-Path $PayloadRoot 'postgres'
+    if (Test-Path -LiteralPath $legacy) { return $legacy }
+    return $new
+}
+
+# Problemas de las partes versionadas (todas, no solo Postgres): vacio si no hay
+# manifest de partes (paquete antiguo) o si todo coincide (tamanos y hashes).
+function Get-ParkosPayloadPartsProblems {
+    param([Parameter(Mandatory)][string]$PayloadRoot)
+    if (-not $script:ParkosPartsLoaded) { return @() }
+    $dir = Get-ParkosPartsDir -PayloadRoot $PayloadRoot
+    if (-not (Test-Path -LiteralPath (Join-Path $dir 'payload-parts.json'))) { return @() }
+    $r = Test-ParkosPayloadParts -PartsDir $dir
+    return @($r.Problems)
 }
 
 # Postgres en el payload: las partes versionadas en git (<zip>.part01..NN +
@@ -836,7 +984,7 @@ function Get-ParkosPayloadCompletenessProblems {
 function Get-ParkosPostgresPayloadProblem {
     param([Parameter(Mandatory)][string]$PayloadRoot)
 
-    $dir = Join-Path $PayloadRoot 'postgres'
+    $dir = Get-ParkosPostgresPartsDir -PayloadRoot $PayloadRoot
     $info = Get-ParkosPostgresDownloadInfo
     foreach ($name in @($info.FileName, 'postgresql-16-windows-x64-binaries.zip')) {
         $p = Join-Path $dir $name
@@ -845,7 +993,7 @@ function Get-ParkosPostgresPayloadProblem {
     $status = Get-ParkosPostgresPartsStatus -Dir $dir -FileName $info.FileName
     if ($status.Problem) { return $status.Problem }
     if (@($status.Parts).Count -eq 0) {
-        return "faltan las partes versionadas de Postgres en postgres\ ($($info.FileName).part01..NN y .sha256): restaurelas con git (git checkout -- installer/payload/postgres)"
+        return "faltan las partes versionadas de Postgres en parts\postgres\ ($($info.FileName).part01..NN y .sha256): restaurelas con git (git checkout -- installer/payload/parts)"
     }
     return $null
 }
@@ -897,6 +1045,8 @@ function Invoke-ParkosPreparePayload {
         Write-Host "Paso $n de ${total}: verificando las partes de Postgres del paquete..." -ForegroundColor Cyan
         $pgProblem = Get-ParkosPostgresPayloadProblem -PayloadRoot $PayloadRoot
         if ($pgProblem) { throw "Postgres: $pgProblem." }
+        $partsProblems = @(Get-ParkosPayloadPartsProblems -PayloadRoot $PayloadRoot)
+        if ($partsProblems.Count -gt 0) { throw "Partes versionadas inconsistentes (payload\parts): $($partsProblems -join '; ')." }
         $n++
         Write-Host "Paso $n de ${total}: manifest de integridad..." -ForegroundColor Cyan
         $code = Invoke-ParkosBuildReleaseScript -Switches @('Manifest') -LogPath (Join-Path $LogDir "prepare-$n.log")
@@ -1432,13 +1582,18 @@ function Start-ParkosPostgresService {
 function Get-ParkosPostgresZipForInstall {
     param([Parameter(Mandatory)][string]$DownloadDir)
 
-    $payloadDir = Join-Path $script:PayloadRoot 'postgres'
+    $payloadDir = Get-ParkosPostgresPartsDir -PayloadRoot $script:PayloadRoot
     $info = Get-ParkosPostgresDownloadInfo
-    foreach ($name in @('postgresql-16-windows-x64-binaries.zip', $info.FileName)) {
-        $candidate = Join-Path $payloadDir $name
-        if ((Test-Path -LiteralPath $candidate) -and (Test-ParkosPostgresZip -Path $candidate)) {
-            Write-Host "Postgres ZIP en payload: $candidate"
-            return $candidate
+    # ZIP completo "crudo" (instalacion offline copiada a mano): payload\postgres
+    # o la carpeta de partes; si no hay, se rearma desde las partes versionadas.
+    $rawDirs = @((Join-Path $script:PayloadRoot 'postgres'), $payloadDir) | Select-Object -Unique
+    foreach ($dir in $rawDirs) {
+        foreach ($name in @('postgresql-16-windows-x64-binaries.zip', $info.FileName)) {
+            $candidate = Join-Path $dir $name
+            if ((Test-Path -LiteralPath $candidate) -and (Test-ParkosPostgresZip -Path $candidate)) {
+                Write-Host "Postgres ZIP en payload: $candidate"
+                return $candidate
+            }
         }
     }
     return (Get-ParkosPostgresZip -CacheDir $DownloadDir -PayloadDir $payloadDir -Logger { param($m) Write-Host $m })
@@ -1863,6 +2018,7 @@ function Install-PgPartman {
     if (-not $DownloadDir) { $DownloadDir = Join-Path 'C:\ProgramData\Parkos' 'downloads' }
     # Payload (build-release.ps1) primero; si no trae la extension, se
     # descarga y ensambla SQL-only (codigo compartido) en la cache.
+    [void](Restore-ParkosPayloadForPath -Path (Join-Path $script:PayloadRoot 'pg_partman\extension\pg_partman.control'))
     $extensionDir = Get-ParkosPgPartmanExtension `
         -ExtensionDir (Join-Path $DownloadDir 'pg_partman-extension') `
         -TempDir (Join-Path $DownloadDir 'tmp') `
@@ -2067,6 +2223,8 @@ function Invoke-CatalogSeed {
 
     $apiExe = Join-Path $script:PayloadRoot 'services\api-sucursal\api-sucursal\api-sucursal.exe'
     $seedExe = Join-Path $script:PayloadRoot 'services\seed\seed\seed.exe'
+    [void](Restore-ParkosPayloadForPath -Path $apiExe)
+    [void](Restore-ParkosPayloadForPath -Path $seedExe)
     $logDir = Join-Path $script:DataPath 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
@@ -2125,6 +2283,8 @@ function Invoke-CatalogSeed {
 function Assert-PayloadPath {
     param([string]$Path, [string]$What)
 
+    # Antes de fallar: si el artefacto viaja en payload\parts, se restaura.
+    if (-not (Test-Path -LiteralPath $Path)) { [void](Restore-ParkosPayloadForPath -Path $Path) }
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "Falta $What en el payload ($Path). Ejecute la opcion 0 (descarga y compilacion del payload) o copie el payload completo junto al instalador y reintente."
     }
@@ -2282,6 +2442,7 @@ function Test-PostInstallation {
     param([string]$EnvFilePath, [int]$Port)
 
     $doctorExe = Join-Path $script:PayloadRoot 'services\doctor\doctor\doctor.exe'
+    [void](Restore-ParkosPayloadForPath -Path $doctorExe)
     $envLines = Read-ParkosEnvLines -EnvFilePath $EnvFilePath
     foreach ($line in $envLines) {
         $parts = $line -split '=', 2
@@ -2436,6 +2597,7 @@ function Install-ManagementModule {
     # de diagnostico, asi que se copia aca, con el mismo patron de
     # Copy-ServiceBundle: el onedir COMPLETO, no solo el .exe suelto.
     $doctorSrc = Join-Path $script:PayloadRoot 'services\doctor\doctor'
+    [void](Restore-ParkosPayloadForPath -Path $doctorSrc)
     if (-not (Test-Path $doctorSrc)) {
         throw "Falta $doctorSrc en el payload - no se puede instalar doctor.exe para el modulo de gestion Parkos."
     }
@@ -2451,6 +2613,7 @@ function Install-ManagementModule {
     # (re-registrar un servicio NSSM faltante) necesita su propia copia de
     # nssm.exe en vez de asumir que el payload completo sigue presente.
     $nssmSrc = Join-Path $script:PayloadRoot 'nssm.exe'
+    [void](Restore-ParkosPayloadForPath -Path $nssmSrc)
     if (-not (Test-Path $nssmSrc)) {
         throw "Falta $nssmSrc en el payload - no se puede instalar nssm.exe para el modulo de gestion Parkos."
     }
@@ -3658,6 +3821,9 @@ function Get-ParkosStageDefinitions {
             Name     = 'Instalar aplicacion de escritorio (web_sucursal)'
             Action   = {
                 $appsDir = Join-Path $script:PayloadRoot 'apps'
+                if (-not (Get-ChildItem $appsDir -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+                    [void](Restore-ParkosPayloadById -Id 'web-sucursal-msi')
+                }
                 Assert-PayloadPath -Path $appsDir -What 'la carpeta apps con el MSI de web_sucursal'
                 $msiPath = (Get-ChildItem $appsDir -Filter '*.msi' | Select-Object -First 1).FullName
                 if (-not $msiPath) {
@@ -4343,7 +4509,8 @@ function Invoke-ParkosUnattendedCascade {
             $repoRoot = [string](Get-ParkosRepoRoot)
             $payloadPlan = Get-ParkosPayloadBuildPlan -PayloadRoot $script:PayloadRoot -RepoRoot $repoRoot
             $payloadBlockers = @(Get-ParkosPayloadBlockers -Plan $payloadPlan -RepoRoot $repoRoot)
-            $skipBuildStage = -not $payloadPlan.Needed
+            # Needed=$false pero con RestoreIds: la etapa 0 corre solo para restaurar de partes.
+            $skipBuildStage = (-not $payloadPlan.Needed) -and (-not ($payloadPlan.PSObject.Properties['RestoreIds'] -and @($payloadPlan.RestoreIds).Count -gt 0))
         }
 
         $masterKeySource = Resolve-ParkosMasterKeySource -Explicit $MasterKeyPath

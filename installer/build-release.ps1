@@ -45,6 +45,18 @@ param(
     # Regenera manifest.sha256.json (hashes de exes, MSI, shared y partes de
     # Postgres presentes). Con -All o sin switches se regenera siempre.
     [switch]$Manifest,
+    # Empaqueta artefactos del payload crudo en installer\payload\parts\ (zip +
+    # partes <= 90 MiB + payload-parts.json) para versionarlos en git. Sin -Ids:
+    # solo terceros estables (PowerShell 7 MSI, nssm, pg_partman). Servicios y
+    # MSI de web_sucursal solo con -Ids explicito (se publican al hacer release).
+    [switch]$Pack,
+    # Restaura de installer\payload\parts\ lo que falte del payload crudo
+    # (sin -Ids: todo lo que va a payload\; Postgres se rearma al instalar).
+    [switch]$Restore,
+    # Ids para -Pack / -Restore (p. ej. -Ids api-sucursal,migrate,web-sucursal-msi).
+    [string[]]$Ids,
+    # Con -Pack: reescribe las partes aunque el contenido no haya cambiado.
+    [switch]$Force,
     # Clave maestra de Parkos (>=32 bytes) a copiar a payload\security\
     # parkos-master.key si todavia no esta (CI/tecnico). Alternativa: variable
     # PARKOS_MASTER_KEY_FILE. NUNCA se genera.
@@ -74,9 +86,25 @@ if (-not $Version) {
 }
 
 # No switch passed at all -> full build.
-$anySwitch = $Payload -or $WebSucursal -or $ApiSucursal -or $JobSync -or $Migrate -or $Seed -or $Doctor -or $Installer -or $Manifest
+$anySwitch = $Payload -or $WebSucursal -or $ApiSucursal -or $JobSync -or $Migrate -or $Seed -or $Doctor -or $Installer -or $Manifest -or $Pack -or $Restore
 if ($All -or -not $anySwitch) {
     $Payload = $true; $WebSucursal = $true; $ApiSucursal = $true; $JobSync = $true; $Migrate = $true; $Seed = $true; $Doctor = $true; $Installer = $true; $Manifest = $true
+}
+
+# Payload en partes (installer\shared\ParkosPayloadParts.ps1): empaquetar /
+# restaurar artefactos grandes para git (GitHub rechaza archivos > 100 MB).
+. (Join-Path $InstallerRoot 'shared\ParkosPayloadParts.ps1')
+$PartsDir = Join-Path $PayloadRoot 'parts'
+# -File no convierte 'a,b' en lista: se aceptan ambas formas.
+$Ids = @($Ids | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+
+# Restaura el artefacto <Id> de payload\parts si existe en el manifest.
+# $true si lo restauro (o ya estaba al dia); $false si no esta en partes.
+function Restore-PayloadFromParts {
+    param([Parameter(Mandatory)][string]$Id)
+    if (-not (Find-ParkosPayloadEntry -PartsDir $PartsDir -Id $Id)) { return $false }
+    [void](Restore-ParkosPayloadArtifact -Id $Id -PartsDir $PartsDir -PayloadRoot $PayloadRoot -Logger { param($m) Write-Host "[payload] $m" })
+    return $true
 }
 
 function Write-StageBanner {
@@ -92,7 +120,7 @@ function Write-StageBanner {
 # ---------------------------------------------------------------------------
 
 function Get-BuildPayload {
-    New-Item -ItemType Directory -Force -Path $PayloadRoot, "$PayloadRoot\postgres", "$PayloadRoot\pg_partman" | Out-Null
+    New-Item -ItemType Directory -Force -Path $PayloadRoot, "$PayloadRoot\pg_partman" | Out-Null
 
     Get-PowerShell7Msi
     Get-PostgresZip
@@ -160,6 +188,7 @@ function Get-PowerShell7Msi {
     # over HTTPS from this exact GitHub Releases URL - not fabricated.
     $expectedSha256 = 'ED331A04679B83D4C013705282D1F3F8D8300485EB04C081F36E11EAF1148BD0'
 
+    if (-not (Test-Path $dest)) { [void](Restore-PayloadFromParts -Id 'powershell7-msi') }
     if (Test-Path $dest) {
         Write-Host "[payload] $msiName already cached, skipping download."
     } else {
@@ -179,9 +208,10 @@ function Get-PostgresZip {
         Write-Host '[payload] Postgres 16 ZIP already cached, skipping.'
         return
     }
-    # El ZIP completo (>100 MB) NO va en git: viaja versionado como partes
-    # (*.zip.part01..NN + .sha256); el instalador las rearma al instalar.
-    $parts = @(Get-ChildItem (Join-Path $PayloadRoot 'postgres') -Filter '*.zip.part*' -ErrorAction SilentlyContinue)
+    # El ZIP completo (>100 MB) NO va en git: viaja versionado como partes en
+    # payload\parts\postgres (*.zip.part01..NN + .sha256); el instalador las
+    # rearma al instalar.
+    $parts = @(Get-ChildItem (Join-Path $PartsDir 'postgres') -Filter '*.zip.part*' -ErrorAction SilentlyContinue)
     if ($parts.Count -gt 0) {
         Write-Host "[payload] Postgres 16 ZIP staged as $($parts.Count) versioned parts, skipping."
         return
@@ -195,6 +225,7 @@ function Get-PostgresZip {
 
 function Get-NssmBinary {
     $dest = Join-Path $PayloadRoot 'nssm.exe'
+    if (-not (Test-Path $dest)) { [void](Restore-PayloadFromParts -Id 'nssm') }
     if (Test-Path $dest) {
         Write-Host '[payload] nssm.exe already cached, skipping.'
         return
@@ -230,10 +261,11 @@ function Get-NssmBinary {
 function Get-PgPartmanBinaries {
     $version = '5.1.0'
     $dest = Join-Path $PayloadRoot 'pg_partman\extension'
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-
     $sqlOut = Join-Path $dest "pg_partman--$version.sql"
     $controlOut = Join-Path $dest 'pg_partman.control'
+    if (-not ((Test-Path $sqlOut) -and (Test-Path $controlOut))) { [void](Restore-PayloadFromParts -Id 'pg_partman-extension') }
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
     if ((Test-Path $sqlOut) -and (Test-Path $controlOut)) {
         Write-Host '[payload] pg_partman SQL-only extension already staged, skipping.'
         return
@@ -374,6 +406,12 @@ function Copy-SharedPostgresDownload {
     if (-not (Test-Path $sharedPostgres)) { throw "[installer] Falta $sharedPostgres (codigo compartido de descarga de Postgres)." }
     New-Item -ItemType Directory -Force -Path $PayloadRoot | Out-Null
     Copy-Item -Path $sharedPostgres -Destination (Join-Path $PayloadRoot 'ParkosPostgresDownload.ps1') -Force
+
+    # Codigo compartido de payload en partes (restaurar al instalar): igual que
+    # el anterior, viaja junto al .exe y se verifica en manifest.sha256.json.
+    $sharedParts = Join-Path $InstallerRoot 'shared\ParkosPayloadParts.ps1'
+    if (-not (Test-Path $sharedParts)) { throw "[installer] Falta $sharedParts (codigo compartido de payload en partes)." }
+    Copy-Item -Path $sharedParts -Destination (Join-Path $PayloadRoot 'ParkosPayloadParts.ps1') -Force
 }
 
 function Build-ParkosInstallerExe {
@@ -424,6 +462,7 @@ function New-PayloadIntegrityManifest {
         'services\migrate\migrate\migrate.exe'
         'services\doctor\doctor\doctor.exe'
         'ParkosPostgresDownload.ps1'
+        'ParkosPayloadParts.ps1'
     )
 
     $hashes = [ordered]@{}
@@ -436,11 +475,20 @@ function New-PayloadIntegrityManifest {
         }
     }
 
-    # Partes versionadas del ZIP de Postgres (+ sidecar .sha256): se hashean
-    # tal cual estan; el ZIP completo rearmado nunca entra al manifest.
-    foreach ($pgFile in @(Get-ChildItem -Path (Join-Path $PayloadRoot 'postgres') -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '\.zip\.part\d+$' -or $_.Name -match '\.zip\.sha256$' } | Sort-Object Name)) {
-        $hashes["postgres\$($pgFile.Name)"] = (Get-FileHash -Path $pgFile.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+    # Partes versionadas (payload\parts: Postgres, PowerShell 7, nssm, ... + el
+    # manifest payload-parts.json): se hashean tal cual estan; el archivo
+    # rearmado nunca entra al manifest.
+    $partsRoot = Join-Path $PayloadRoot 'parts'
+    if (Test-Path -LiteralPath $partsRoot) {
+        # Enumeracion .NET: devuelve las rutas con el mismo prefijo que $partsRoot
+        # (Get-ChildItem.FullName devuelve la ruta larga aunque la raiz venga en
+        # formato corto 8.3 y el Substring desalineaba el nombre relativo).
+        $partsBase = $partsRoot.TrimEnd('\')
+        $partPaths = @([System.IO.Directory]::EnumerateFiles($partsBase, '*', [System.IO.SearchOption]::AllDirectories) | Sort-Object)
+        foreach ($partPath in $partPaths) {
+            $rel = 'parts\' + $partPath.Substring($partsBase.Length + 1)
+            $hashes[$rel] = (Get-FileHash -LiteralPath $partPath -Algorithm SHA256).Hash.ToUpperInvariant()
+        }
     }
 
     $msi = Get-ChildItem -Path (Join-Path $PayloadRoot 'apps') -Filter '*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -467,6 +515,17 @@ function New-PayloadIntegrityManifest {
 
 $results = [ordered]@{}
 
+function Invoke-PackPayloadStage {
+    $done = @(Invoke-ParkosPackPayload -PayloadRoot $PayloadRoot -PartsDir $PartsDir -RepoRoot $RepoRoot -Ids $Ids -Force:$Force -Logger { param($m) Write-Host "[pack] $m" })
+    $check = Test-ParkosPayloadParts -PartsDir $PartsDir
+    if (-not $check.Ok) { throw "Las partes quedaron inconsistentes: $($check.Problems -join '; ')" }
+    Write-Host "[pack] $($done.Count) artefacto(s) en $PartsDir ($($done -join ', ')). Recuerde: las partes de servicios/MSI agregan su peso al historial de git para siempre; empaquetelos solo al publicar una version."
+}
+
+function Invoke-RestorePayloadStage {
+    [void](Restore-ParkosPayloadAll -PartsDir $PartsDir -PayloadRoot $PayloadRoot -Ids $Ids -Logger { param($m) Write-Host "[restore] $m" })
+}
+
 function Invoke-Stage {
     param([string]$StageName, [scriptblock]$Action)
     Write-StageBanner $StageName
@@ -481,6 +540,8 @@ function Invoke-Stage {
 }
 
 try {
+    if ($Pack) { Invoke-Stage 'Pack payload parts (payload\parts)' { Invoke-PackPayloadStage } }
+    if ($Restore) { Invoke-Stage 'Restore payload from parts' { Invoke-RestorePayloadStage } }
     if ($Payload) { Invoke-Stage 'Payload (Postgres/pg_partman/NSSM/PS7)' { Get-BuildPayload } }
     if ($WebSucursal) { Invoke-Stage 'web_sucursal (Electron MSI)' { Build-WebSucursal } }
     if ($ApiSucursal) { Invoke-Stage 'api-sucursal.exe (PyInstaller)' { Build-ApiSucursalExe } }

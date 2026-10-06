@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "generator": "installer/shared/ParkosPayloadParts.ps1",
+  "maxPartBytes": 94371840,
+  "artifacts": [
+    {
+      "id": "nssm",
+      "kind": "file",
+      "target": "nssm.exe",
+      "archive": "nssm.exe",
+      "uncompressedSize": 331264,
+      "archiveSize": 331264,
+      "sha256": "f689ee9af94b00e9e3f0bb072b34caaf207f32dcb4f5782fc9ca351df9a06c97",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "nssm.exe",
+          "size": 331264,
+          "sha256": "f689ee9af94b00e9e3f0bb072b34caaf207f32dcb4f5782fc9ca351df9a06c97"
+        }
+      ],
+      "builtFromCommit": "eb72149e6fca260d4b3b9ad4f85319a35fcaf6ad",
+      "packedAtUtc": "2026-10-06T20:19:43Z",
+      "source": "third-party download (nssm 2.24)",
+      "note": "",
+      "sourceDependent": false,
+      "restoreToPayload": true
+    },
+    {
+      "id": "pg_partman-extension",
+      "kind": "dir",
+      "target": "pg_partman\\extension",
+      "archive": "pg_partman-extension.zip",
+      "uncompressedSize": 280859,
+      "archiveSize": 46267,
+      "sha256": "4ffd320b7f5b19e952e554f67836bd63c370c90c6da04f5431611b8d9324ea2c",
+      "partCount": 1,
+      "parts": [
+        {
+          "name": "pg_partman-extension.zip",
+          "size": 46267,
+          "sha256": "4ffd320b7f5b19e952e554f67836bd63c370c90c6da04f5431611b8d9324ea2c"
+        }
+      ],
+      "builtFromCommit": "eb72149e6fca260d4b3b9ad4f85319a35fcaf6ad",
+      "packedAtUtc": "2026-10-06T20:22:21Z",
+      "source": "third-party download (pg_partman 5.1.0 SQL-only)",
+      "note": "",
+      "sourceDependent": false,
+      "restoreToPayload": true
+    },
+    {
+      "id": "postgres",
+      "kind": "file",
+      "target": "postgres\\postgresql-16.15-1-windows-x64-binaries.zip",
+      "archive": "postgresql-16.15-1-windows-x64-binaries.zip",
+      "uncompressedSize": 332441502,
+      "archiveSize": 332441502,
+      "sha256": "25e6fcdfb8caec38691bf461125e7564508760666f7b8e5dc6a5f0818f58f81e",
+      "partCount": 4,
+      "parts": [
+        {
+          "name": "postgresql-16.15-1-windows-x64-binaries.zip.part01",
+          "size": 83110375,
+          "sha256": "281fac3b3fc5fe518ac3f581c824ded22c6cb86227c8b73809762a61e9feb104"
+        },
+        {
+          "name": "postgresql-16.15-1-windows-x64-binaries.zip.part02",
+          "size": 83110375,
+          "sha256": "04d5085c5ef69e721282e1ff494f715d0df213e4159f90e1420f391cb366917e"
+        },
+        {
+          "name": "postgresql-16.15-1-windows-x64-binaries.zip.part03",
+          "size": 83110375,
+          "sha256": "94fae048604f302b93acb8d21d102bfb8094205e158e5885c43df241f590a728"
+        },
+        {
+          "name": "postgresql-16.15-1-windows-x64-binaries.zip.part04",
+          "size": 83110377,
+          "sha256": "536806e81ef73a9f6c133e89a24366590f58bb7881feacf322a105ccf9641d53"
+        }
+      ],
+      "builtFromCommit": "eb72149e6fca260d4b3b9ad4f85319a35fcaf6ad",
+      "packedAtUtc": "2026-10-06T20:19:42Z",
+      "source": "third-party download (EnterpriseDB)",
+      "note": "",
+      "sourceDependent": false,
+      "restoreToPayload": false
+    },
+    {
+      "id": "powershell7-msi",
+      "kind": "file",
+      "target": "PowerShell-7.4.6-win-x64.msi",
+      "archive": "PowerShell-7.4.6-win-x64.msi",
+      "uncompressedSize": 109203456,
+      "archiveSize": 109203456,
+      "sha256": "ed331a04679b83d4c013705282d1f3f8d8300485eb04c081f36e11eaf1148bd0",
+      "partCount": 2,
+      "parts": [
+        {
+          "name": "PowerShell-7.4.6-win-x64.msi.part01",
+          "size": 94371840,
+          "sha256": "fff9c1b192631abbcf7b0559cd0d6d5007d2250f1dd89a7c0f5186467f5a8bf2"
+        },
+        {
+          "name": "PowerShell-7.4.6-win-x64.msi.part02",
+          "size": 14831616,
+          "sha256": "2cd61e1e17f912b3580a382278b4c778c1a290de9c0ff382019937b0215ac453"
+        }
+      ],
+      "builtFromCommit": "eb72149e6fca260d4b3b9ad4f85319a35fcaf6ad",
+      "packedAtUtc": "2026-10-06T20:19:43Z",
+      "source": "third-party download (PowerShell GitHub release)",
+      "note": "",
+      "sourceDependent": false,
+      "restoreToPayload": true
+    }
+  ]
+}

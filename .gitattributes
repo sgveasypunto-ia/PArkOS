@@ -12,6 +12,10 @@
 *.png binary
 *.ico binary
 
-# Postgres binaries split in parts (installer/payload/postgres): raw bytes, never
-# converted or diffed. The hash of the reassembled zip is verified by the installers.
-installer/payload/postgres/*.part* binary
+# Payload packed in parts (installer/payload/parts): raw bytes, never converted or
+# diffed. The hash of each part and of the reassembled file is verified by the
+# installers (payload-parts.json). payload-parts.json itself stays text (LF).
+installer/payload/parts/**/*.part* binary
+installer/payload/parts/**/*.zip binary
+installer/payload/parts/**/*.msi binary
+installer/payload/parts/**/*.exe binary
