@@ -480,9 +480,14 @@ function New-PayloadIntegrityManifest {
     # rearmado nunca entra al manifest.
     $partsRoot = Join-Path $PayloadRoot 'parts'
     if (Test-Path -LiteralPath $partsRoot) {
-        foreach ($partFile in @(Get-ChildItem -LiteralPath $partsRoot -Recurse -File | Sort-Object FullName)) {
-            $rel = $partFile.FullName.Substring($PayloadRoot.TrimEnd('\').Length + 1)
-            $hashes[$rel] = (Get-FileHash -Path $partFile.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+        # Enumeracion .NET: devuelve las rutas con el mismo prefijo que $partsRoot
+        # (Get-ChildItem.FullName devuelve la ruta larga aunque la raiz venga en
+        # formato corto 8.3 y el Substring desalineaba el nombre relativo).
+        $partsBase = $partsRoot.TrimEnd('\')
+        $partPaths = @([System.IO.Directory]::EnumerateFiles($partsBase, '*', [System.IO.SearchOption]::AllDirectories) | Sort-Object)
+        foreach ($partPath in $partPaths) {
+            $rel = 'parts\' + $partPath.Substring($partsBase.Length + 1)
+            $hashes[$rel] = (Get-FileHash -LiteralPath $partPath -Algorithm SHA256).Hash.ToUpperInvariant()
         }
     }
 

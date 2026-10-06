@@ -609,7 +609,9 @@ Describe 'build-release.ps1 (contrato estatico)' {
     It 'tiene -Manifest y el manifest cubre las partes versionadas (payload\parts, incluida Postgres y su sidecar)' {
         $src | Should Match '\[switch\]\$Manifest'
         $src | Should Match "Join-Path \`$PayloadRoot 'parts'"
-        $src | Should Match '-Recurse -File'
+        # Enumeracion .NET (no Get-ChildItem.FullName): robusta ante rutas cortas 8.3.
+        $src | Should Match 'EnumerateFiles\(\$partsBase'
+        $src | Should Match 'SearchOption\]::AllDirectories'
         $src | Should Match "'ParkosPayloadParts\.ps1'"
     }
     It 'tiene -Pack y -Restore y los cuenta como switches (no disparan el build completo)' {

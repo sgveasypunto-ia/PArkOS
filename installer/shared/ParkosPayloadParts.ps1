@@ -99,6 +99,19 @@ function Get-ParkosPartsChangedFiles {
     }
 }
 
+# Rutas relativas (con '\') de todos los archivos bajo $Root, incluidos los
+# ocultos. Se enumera con .NET porque devuelve las rutas con el MISMO prefijo
+# que la raiz recibida; Get-ChildItem.FullName devuelve la ruta larga aunque la
+# raiz venga en formato corto 8.3 (RUNNER~1 en los runners de CI) y cortar con
+# Substring(root.Length) desalineaba los nombres.
+function Get-ParkosRelativeFilePaths {
+    param([Parameter(Mandatory)][string]$Root)
+
+    $base = $Root.TrimEnd('\')
+    $paths = [System.IO.Directory]::EnumerateFiles($base, '*', [System.IO.SearchOption]::AllDirectories)
+    foreach ($p in $paths) { $p.Substring($base.Length + 1) }
+}
+
 # Zip determinista de una carpeta: entradas en orden ordinal, '/' como
 # separador, fecha fija (2020-01-01) y compresion Optimal. Devuelve los bytes
 # sin comprimir.
@@ -109,8 +122,8 @@ function New-ParkosPartsZip {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $root = (Resolve-Path -LiteralPath $SourceDir).Path.TrimEnd('\')
     $names = [System.Collections.Generic.List[string]]::new()
-    foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File -Force) {
-        $names.Add($f.FullName.Substring($root.Length + 1).Replace('\', '/'))
+    foreach ($rel in (Get-ParkosRelativeFilePaths -Root $root)) {
+        $names.Add($rel.Replace('\', '/'))
     }
     $arr = $names.ToArray()
     [Array]::Sort($arr, [System.StringComparer]::Ordinal)
@@ -694,10 +707,10 @@ function Test-ParkosPayloadParts {
             [void]$known.Add("$($e.id)\$($e.archive).sha256")   # sidecar opcional
         }
         $root = (Resolve-Path -LiteralPath $PartsDir).Path.TrimEnd('\')
-        foreach ($f in @(Get-ChildItem -LiteralPath $root -Recurse -File -Force)) {
-            $rel = $f.FullName.Substring($root.Length + 1)
+        foreach ($rel in @(Get-ParkosRelativeFilePaths -Root $root)) {
+            $len = (New-Object System.IO.FileInfo (Join-Path $root $rel)).Length
             if (-not $known.Contains($rel)) { $problems.Add("archivo desconocido en parts\: $rel (no figura en el manifest)") }
-            if ($f.Length -gt $script:ParkosPartsMaxPartBytes) { $problems.Add("$rel supera 90 MiB ($($f.Length) bytes)") }
+            if ($len -gt $script:ParkosPartsMaxPartBytes) { $problems.Add("$rel supera 90 MiB ($len bytes)") }
         }
     }
     return [PSCustomObject]@{ Ok = ($problems.Count -eq 0); Problems = @($problems | Select-Object -Unique) }

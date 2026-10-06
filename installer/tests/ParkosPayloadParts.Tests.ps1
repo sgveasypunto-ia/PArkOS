@@ -391,3 +391,37 @@ Describe 'Invoke-ParkosPackPayload (tabla de artefactos)' {
         ($ids -join ',') | Should Be 'pgy'
     }
 }
+
+Describe 'Rutas cortas 8.3 de Windows (TEMP de los runners de CI usa RUNNER~1)' {
+
+    # Get-ChildItem devuelve rutas largas aunque la raiz se pase en formato corto,
+    # asi que cortar la ruta relativa con Substring(root.Length) desalineaba los
+    # nombres de las entradas del zip y OpenRead fallaba con DirectoryNotFound.
+    function New-ShortPathRoot {
+        $long = Join-Path ([System.IO.Path]::GetTempPath()) ('ParkosLongDirectoryNameForShortPath-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path (Join-Path $long 'src\sub') | Out-Null
+        Set-Content -Path (Join-Path $long 'src\a.txt') -Value 'alpha'
+        Set-Content -Path (Join-Path $long 'src\sub\b.txt') -Value 'bravo'
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        $short = $fso.GetFolder($long).ShortPath
+        return @{ Long = $long; Short = $short; Differs = ($short -ne $long) }
+    }
+
+    It 'empaqueta y restaura una carpeta pasada por su ruta corta 8.3' {
+        $r = New-ShortPathRoot
+        try {
+            if (-not $r.Differs) { Set-TestInconclusive 'El volumen no genera nombres 8.3: no se puede reproducir.'; return }
+            $parts = Join-Path $r.Short 'parts'
+            $threw = $false; $msg = ''
+            try {
+                Pack-ParkosPayloadArtifact -Source (Join-Path $r.Short 'src') -Id 'sp' -PartsDir $parts -Target 'sp' -Logger $script:quiet | Out-Null
+            } catch { $threw = $true; $msg = $_.Exception.Message }
+            $msg | Should Be ''
+            $threw | Should Be $false
+            $dest = Join-Path $r.Short 'out'
+            Restore-ParkosPayloadArtifact -Id 'sp' -PartsDir $parts -PayloadRoot $dest -Logger $script:quiet | Out-Null
+            (Get-Content (Join-Path $dest 'sp\sub\b.txt')) | Should Be 'bravo'
+            (Test-ParkosPayloadParts -PartsDir $parts).Ok | Should Be $true
+        } finally { Remove-Item -Recurse -Force $r.Long -ErrorAction SilentlyContinue }
+    }
+}
