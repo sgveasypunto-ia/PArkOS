@@ -11,13 +11,12 @@ Observed end to end (real HTTP, ``PARKOS_SYNC_ENGINE=catalog``):
 * divergent data -> the cloud closes A's version and opens B's (B's uuid is
   preserved): exactly one open row, plus an informational ``sync_conflict``.
 * identical data -> ``noop``: the cloud keeps A's row open and never stores B's uuid.
-* ``reconciliation`` writes NO ``sync_identity_alias`` row and never rewrites a FK
-  (Phase 0 finding), so nothing links B's uuid to A's.
+* the ``noop`` records ``B uuid -> A uuid`` in ``sync_identity_alias`` and the motor
+  remaps B's dependents (FK columns onto identity-reconciled masters only) before
+  applying them, so they reach the cloud (formerly an xfail-strict FK gap).
 
 The derived scope matches by NATURAL KEY, so a version bump (new uuid, referencing
-rows still on the old one) keeps the open version in scope. The one remaining
-``xfail(strict=True)`` pins the pre-existing identical-data FK gap; it flips to a hard
-failure the day the gap is closed, forcing the marker off.
+rows still on the old one) keeps the open version in scope.
 """
 
 from __future__ import annotations
@@ -273,16 +272,6 @@ async def test_identical_push_is_noop_and_creates_no_duplicate(world: World) -> 
     assert [r.uuid for r in open_rows] == [world.x_a.uuid], "A's row stays; B's uuid is not stored"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GAP (pre-existing, Phase 0): identity reconciliation is a noop without a "
-        "sync_identity_alias row, so B's local cliente uuid is unknown to the cloud and "
-        "every dependent B pushes (subscripciones_cliente, factura_electronica, ...) fails "
-        "with a FK violation (apply_error) forever. The derived pull scope does not change "
-        "this: B has no subscription/invoice on A's uuid, so A's row is never pulled either."
-    ),
-)
 async def test_identical_push_dependents_of_b_reach_the_cloud(world: World) -> None:
     from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
 
@@ -491,3 +480,213 @@ async def test_vehiculo_with_an_unrelated_placa_is_not_delivered(world: World) -
 
     pulled = {u for t, u in await _pull(world.client, world.tok_a, world.since) if t == "vehiculos"}
     assert pulled == {str(linked.uuid)}
+
+
+# ---------------------------------------------------------------------------
+# identity alias writer + motor-level remap
+# ---------------------------------------------------------------------------
+
+_AUDIT_SKIP = {"uuid", "created_at", "created_by", "sync_status", "sync_attempts", "sync_timestamp"}
+_VERSION_SKIP = {"vigente_desde", "vigente_hasta", "estado"}
+
+
+def _spec(name: str):
+    from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG_BY_NAME
+
+    return SYNC_CATALOG_BY_NAME[name]
+
+
+def _twin(factory, row):
+    """A new row (new uuid) carrying the same business columns as ``row``."""
+    model = type(row)
+    copy = {
+        c.name: getattr(row, c.name)
+        for c in model.__table__.columns
+        if c.name not in _AUDIT_SKIP and c.name not in _VERSION_SKIP
+    }
+    return factory.build(model, **copy)
+
+
+async def _aliases(world: World, origen) -> list[tuple[str, str]]:
+    from sqlalchemy import text
+
+    async with world.sessions() as s:
+        rows = await s.execute(
+            text(
+                "SELECT uuid_origen::text, uuid_resuelto::text "
+                "FROM prod.sync_identity_alias WHERE uuid_origen = :o"
+            ),
+            {"o": origen},
+        )
+        return [tuple(r) for r in rows.all()]
+
+
+async def _push_batch(client, token: str, items: list[tuple[str, object]]) -> list[str]:
+    resp = await client.post(
+        "/api/v1/sync/events",
+        json={
+            "events": [
+                {
+                    "event_type": "row_push",
+                    "tabla": tabla,
+                    "uuid_registro": str(row.uuid),
+                    "payload": _wire(row),
+                }
+                for tabla, row in items
+            ]
+        },
+        headers={"Authorization": f"Bearer {token}", "X-Request-Id": uuid_lib.uuid4().hex},
+    )
+    assert resp.status_code in (200, 207), resp.text
+    return [r["status"] for r in resp.json()["results"]]
+
+
+def _sc_b(world: World, x_b):
+    return world.factory.build(
+        _model("subscripciones_cliente"),
+        uuid_sucursal=world.suc_b,
+        uuid_cliente=x_b.uuid,
+        uuid_tipo_subscripcion=world.tipo,
+    )
+
+
+async def test_identical_push_records_the_alias(world: World) -> None:
+    x_b = world.b_version(same_data=True)
+    await _push(world.client, world.tok_b, "clientes", x_b)
+    assert await _aliases(world, x_b.uuid) == [(str(x_b.uuid), str(world.x_a.uuid))]
+
+
+async def test_dependent_subscription_is_stored_on_the_canonical_cliente(world: World) -> None:
+    from sqlalchemy import select
+
+    x_b = world.b_version(same_data=True)
+    sc_b = _sc_b(world, x_b)
+    await _push(world.client, world.tok_b, "clientes", x_b)
+    assert await _push(world.client, world.tok_b, "subscripciones_cliente", sc_b) == "applied"
+
+    sub = _model("subscripciones_cliente")
+    async with world.sessions() as s:
+        stored = (await s.execute(select(sub).where(sub.uuid == sc_b.uuid))).scalars().one()
+    assert stored.uuid_cliente == world.x_a.uuid, "FK repointed onto A's row; own uuid kept"
+
+
+async def test_cliente_and_subscription_in_one_batch_respect_ordering(world: World) -> None:
+    """The alias written by the cliente row is visible to the dependent of the SAME
+    request (why the remap lives in the motor and is not pre-resolved per request)."""
+    x_b = world.b_version(same_data=True)
+    sc_b = _sc_b(world, x_b)
+    statuses = await _push_batch(
+        world.client,
+        world.tok_b,
+        [("subscripciones_cliente", sc_b), ("clientes", x_b)],  # child listed first
+    )
+    assert statuses == ["applied", "applied"]
+
+
+async def test_vehiculo_and_subscripcion_vehiculos_pair(world: World) -> None:
+    from sqlalchemy import select, text
+
+    sub = _model("subscripciones_cliente")
+    async with world.sessions() as s:
+        v_a = world.factory.build(_model("vehiculos"), placa=f"P{uuid_lib.uuid4().hex[:6]}")
+        s.add(v_a)
+        await s.commit()
+        sc_a = (
+            await s.execute(select(sub).where(sub.uuid_sucursal == world.suc_a))
+        ).scalars().one()
+    v_b = _twin(world.factory, v_a)
+    sv_b = world.factory.build(
+        _model("subscripcion_vehiculos"),
+        uuid_subscripcion_cliente=sc_a.uuid,
+        uuid_vehiculo=v_b.uuid,
+    )
+    assert await _push(world.client, world.tok_b, "vehiculos", v_b) == "applied"
+    assert await _push(world.client, world.tok_b, "subscripcion_vehiculos", sv_b) == "applied"
+    async with world.sessions() as s:
+        row = (
+            await s.execute(
+                text("SELECT uuid_vehiculo FROM prod.subscripcion_vehiculos WHERE uuid = :u"),
+                {"u": sv_b.uuid},
+            )
+        ).one()
+    assert row.uuid_vehiculo == v_a.uuid
+
+
+async def test_replaying_the_same_cliente_push_writes_no_second_alias(world: World) -> None:
+    x_b = world.b_version(same_data=True)
+    await _push(world.client, world.tok_b, "clientes", x_b)
+    await _push(world.client, world.tok_b, "clientes", x_b)
+    assert len(await _aliases(world, x_b.uuid)) == 1
+
+
+async def test_legacy_engine_push_does_not_reconcile_and_writes_no_alias(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Documents the legacy default: ``PARKOS_SYNC_ENGINE=legacy`` never looks up the
+    open version, so ``identity_reconciler`` does not run and no alias is written."""
+    monkeypatch.setenv("PARKOS_SYNC_ENGINE", "legacy")
+    engine_flag._reset_cache_for_tests()
+    x_b = world.b_version(same_data=True)
+    try:
+        await _push(world.client, world.tok_b, "clientes", x_b)
+    finally:
+        engine_flag._reset_cache_for_tests()
+    assert await _aliases(world, x_b.uuid) == []
+    open_uuids = {r.uuid for r in await world.open_rows()}
+    assert x_b.uuid in open_uuids, "legacy stores B's row as a plain insert (no reconciliation)"
+
+
+async def test_branch_pull_of_the_canonical_cliente_collapses_onto_the_local_one(
+    world: World,
+) -> None:
+    """Branch-side mirror: B holds its own open cliente (uB); the cloud's identical uA
+    arrives by pull. One open row remains, uA is aliased to uB, B's own subscription
+    pulled back with uuid_cliente=uA does not violate the FK (``row_already_present``)
+    and a foreign subscription naming uA is remapped onto uB."""
+    from parkos_core.sync.motor.sync_motor import SyncMotor
+    from sqlalchemy import select
+
+    key = f"K{uuid_lib.uuid4().hex[:8]}"
+    clientes = _model("clientes")
+    sub = _model("subscripciones_cliente")
+    async with world.sessions() as s:
+        u_b = world.factory.build(
+            clientes, tipo_identificador="CC", numero_identificacion=key, telefono="3002222222"
+        )
+        s.add(u_b)
+        await s.commit()
+        sc_own = world.factory.build(
+            sub, uuid_sucursal=world.suc_b, uuid_cliente=u_b.uuid, uuid_tipo_subscripcion=world.tipo
+        )
+        s.add(sc_own)
+        await s.commit()
+    u_a = _twin(world.factory, u_b)
+    sc_other = world.factory.build(
+        sub, uuid_sucursal=world.suc_b, uuid_cliente=u_a.uuid, uuid_tipo_subscripcion=world.tipo
+    )
+    sc_pulled_back = _wire(sc_own) | {"uuid_cliente": str(u_a.uuid)}
+
+    motor = SyncMotor(engine=engine_flag.EngineMode.CATALOG_BRANCH)
+    actor = uuid_lib.uuid4()
+    async with world.sessions() as s:
+        r1 = await motor.apply_row(s, _spec("clientes"), _wire(u_a), actor_uuid=actor)
+        spec_sc = _spec("subscripciones_cliente")
+        r2 = await motor.apply_row(s, spec_sc, _wire(sc_other), actor_uuid=actor)
+        r3 = await motor.apply_row(s, spec_sc, sc_pulled_back, actor_uuid=actor)
+        await s.commit()
+    assert (r1.status, r2.status, r3.status) == ("APPLIED", "APPLIED", "APPLIED")
+
+    async with world.sessions() as s:
+        open_ = (
+            await s.execute(
+                select(clientes).where(
+                    clientes.numero_identificacion == key, clientes.vigente_hasta.is_(None)
+                )
+            )
+        ).scalars().all()
+        other = (await s.execute(select(sub).where(sub.uuid == sc_other.uuid))).scalars().one()
+        own = (await s.execute(select(sub).where(sub.uuid == sc_own.uuid))).scalars().one()
+    assert [r.uuid for r in open_] == [u_b.uuid]
+    assert other.uuid_cliente == u_b.uuid
+    assert own.uuid_cliente == u_b.uuid
+    assert await _aliases(world, u_a.uuid) == [(str(u_a.uuid), str(u_b.uuid))]

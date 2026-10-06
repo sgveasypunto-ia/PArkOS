@@ -444,6 +444,14 @@ async def apply_row(
         # but the outcome is still APPLIED, not a rejection.
         if result.reconciliation == "noop":
             noop_uuid = open_version.get("uuid") if open_version else None
+            # Remember the collapse: the arriving uuid is never stored, yet
+            # its dependents will name it. Same transaction as the apply.
+            # Lazy import: sync_motor imports this module.
+            from .sync_motor import record_identity_alias
+
+            await record_identity_alias(
+                session, spec.name, payload.get("uuid"), noop_uuid, actor_uuid
+            )
             return ApplyResult(
                 status="APPLIED",
                 row_uuid=noop_uuid,
