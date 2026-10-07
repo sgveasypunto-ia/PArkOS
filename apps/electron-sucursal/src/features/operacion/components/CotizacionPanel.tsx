@@ -38,6 +38,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatCOP, formatCOPDecimal, formatFechaHoraCorta } from '../../caja/lib/format';
 import type { Cotizacion } from '../hooks/useCotizacion';
 import { isUsableTarifaUuid, useTarifaByUuid } from '../../catalogos/hooks/useTarifaByUuid';
+import { etiquetaUnidadTarifa } from '../../catalogos/lib/modalidadTarifa';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 /**
@@ -220,7 +221,7 @@ function CotizacionPanelImpl({
           <dd data-testid="cotizacion-tarifa-detalle">
             {tarifa ? (
               <span>
-                    {formatCOPNullable(tarifa.valor)}/min · Plena: {formatCOPNullable(tarifa.valor_plena)} ·{' '}
+                    {formatCOPNullable(tarifa.valor)}{etiquetaUnidadTarifa(tarifa.uuid_tipo_tarifa)} · Plena: {formatCOPNullable(tarifa.valor_plena)} ·{' '}
                     {tarifa.estado === 'activo' ? 'Vigente' : `Estado: ${tarifa.estado}`} desde{' '}
                     {formatFechaHoraCorta(tarifa.vigente_desde)}
                     {tarifa.vigente_hasta ? ` hasta ${formatFechaHoraCorta(tarifa.vigente_hasta)}` : ''}
