@@ -64,6 +64,19 @@ export type AlertaRead = z.infer<typeof AlertaSchema>;
 export const AlertaReadListSchema = z.array(AlertaSchema);
 
 /**
+ * `GET /workflows/alerta` answers the cursor-paginated envelope
+ * `{ items, next_cursor }` (HU-F19.5); older shapes answered a bare array.
+ * Accept both so the panel does not fail to parse a valid response.
+ */
+export function parseAlertasPayload(raw: unknown): AlertaRead[] {
+  const items =
+    raw !== null && typeof raw === 'object' && !Array.isArray(raw) && 'items' in raw
+      ? (raw as { items: unknown }).items
+      : raw;
+  return AlertaReadListSchema.parse(items);
+}
+
+/**
  * `AlertTypeSchema` — the second SWR payload
  * (`GET /workflows/alert-types?uuid_sucursal=X`) supplying
  * `severidad`, `descripcion`, and `mensaje` for the client-side

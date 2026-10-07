@@ -25,7 +25,7 @@ import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError, parkosFetch } from '@parkos/ui-kit/fetch';
 
 import {
-  AlertaReadListSchema,
+  parseAlertasPayload,
   AlertTypeReadListSchema,
   type AlertaRead,
   type AlertTypeRead,
@@ -41,7 +41,7 @@ async function fetchAlertas(uuid_sucursal: string): Promise<AlertaRead[]> {
   const raw = await parkosFetch<unknown>(
     `/api/v1/workflows/alerta?uuid_sucursal=${encodeURIComponent(uuid_sucursal)}&estado=abierta`,
   );
-  return AlertaReadListSchema.parse(raw);
+  return parseAlertasPayload(raw);
 }
 
 async function fetchAlertTypes(uuid_sucursal: string): Promise<AlertTypeRead[]> {
