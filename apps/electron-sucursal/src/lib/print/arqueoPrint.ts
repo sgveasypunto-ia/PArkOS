@@ -43,6 +43,11 @@ export interface CierreImpresion {
   uuidArqueo?: string | null;
 }
 
+/** The backend stores naive UTC (no zone): without a designator JS would read it as local time. */
+function comoUtc(iso: string): string {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`;
+}
+
 function conSigno(n: number): string {
   if (n === 0) return dinero(0);
   return n < 0 ? `-${dinero(Math.abs(n))}` : `+${dinero(n)}`;
@@ -72,8 +77,8 @@ export function construirCierre(d: CierreImpresion): FacturaLinea[] {
   sep();
   texto(`Operador: ${d.operador}`);
   if (d.uuidSesion) texto(`Turno: ${d.uuidSesion.slice(-8)}`);
-  if (d.aperturaIso) texto(`Apertura: ${formatFechaCorta(d.aperturaIso)}`);
-  if (d.cierreIso) texto(`Cierre: ${formatFechaCorta(d.cierreIso)}`);
+  if (d.aperturaIso) texto(`Apertura: ${formatFechaCorta(comoUtc(d.aperturaIso))}`);
+  if (d.cierreIso) texto(`Cierre: ${formatFechaCorta(comoUtc(d.cierreIso))}`);
   if (d.uuidArqueo) texto(`Arqueo: ${d.uuidArqueo.slice(-8)}`);
   sep();
   if (d.baseEfectivo !== undefined && d.baseEfectivo !== null) {

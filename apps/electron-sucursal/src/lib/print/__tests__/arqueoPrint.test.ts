@@ -68,6 +68,15 @@ describe('construirCierre', () => {
     expect(txt).toMatch(/Diferencia.*0/);
   });
 
+  it('el backend manda UTC sin zona: se interpreta como UTC (no como hora local)', () => {
+    const d = { ...TURNO, aperturaIso: '2026-10-07T22:21:00', cierreIso: '2026-10-07T22:34:00' };
+    const esperadaApertura = new Date('2026-10-07T22:21:00Z');
+    const hh = String(esperadaApertura.getHours()).padStart(2, '0');
+    const mm = String(esperadaApertura.getMinutes()).padStart(2, '0');
+    const txt = norm(facturaATexto(construirCierre(d)));
+    expect(txt).toContain(`${hh}:${mm}`);
+  });
+
   it('nunca imprime datáfono, ni siquiera si el payload lo trae', () => {
     const extra = { ...TURNO, valor_datafono_reportado: 1 } as unknown as CierreImpresion;
     for (const d of [TURNO, DIA, extra]) {
