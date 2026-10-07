@@ -149,7 +149,10 @@ export function CerrarTurno(): JSX.Element | null {
   // double-wraps it into a native `(e?: BaseSyntheticEvent) => Promise<void>`
   // handler, which both breaks the `CerrarTurnoFormProps.onSubmit` contract
   // and would mean the values are validated/parsed twice.
-  const onSubmit = async (values: CerrarTurnoInput): Promise<void> => {
+  const onSubmit = async (
+    values: CerrarTurnoInput,
+    ctx?: { requiereJustificacion: boolean },
+  ): Promise<void> => {
     if (!sesion) return;
     if (!uuidTipoArqueo) {
       // Bugfix (2026-10-01): this used to `return` silently, leaving
@@ -196,6 +199,7 @@ export function CerrarTurno(): JSX.Element | null {
       cerrarSesion: cerrarSesionHelper as unknown as CerrarSesionHelper,
       bridge,
       values,
+      requiereJustificacion: ctx?.requiereJustificacion === true,
     });
 
     if (result.kind === 'cierre_completado') {

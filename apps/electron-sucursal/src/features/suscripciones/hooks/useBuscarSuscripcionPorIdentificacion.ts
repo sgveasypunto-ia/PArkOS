@@ -21,6 +21,7 @@ import {
   SubscripcionCupoDetalleOrNullSchema,
   type SubscripcionCupoDetalle,
 } from '../api/cuposApi';
+import { esClienteEstandar } from '../lib/clienteEstandar';
 
 async function handle401(): Promise<never> {
   useAuthStore.getState().clear();
@@ -39,7 +40,9 @@ async function buscarFn(
     const raw = await parkosFetch<unknown>(
       `${GET_BUSCAR_SUBSCRIPCION_PATH}?numero_identificacion=${encodeURIComponent(arg)}`,
     );
-    return SubscripcionCupoDetalleOrNullSchema.parse(raw);
+    const detalle = SubscripcionCupoDetalleOrNullSchema.parse(raw);
+    // The standard customer (consumidor final) is not a real subscriber.
+    return detalle && esClienteEstandar(detalle.cliente) ? null : detalle;
   } catch (err) {
     if (err instanceof ParkosHttpError && err.status === 401) {
       return handle401();

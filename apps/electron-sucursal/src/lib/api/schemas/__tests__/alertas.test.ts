@@ -4,13 +4,14 @@
  *
  * The schema codifies 18 BE fields from
  * `backend/packages/parkos_core/src/parkos_core/schemas/workflows.py:328-353`,
- * the canonical `estado` enum `Literal["activa", "descartada", "resuelta"]`
- * (DA-F11.2-9 reconciled), and `datos_nuevos: z.record(z.unknown()).
+ * the canonical `estado` enum `Literal["abierta", "en_revision", "resuelta"]`
+ * (DA-F11.2-9 corrected: the backend never had `activa`, and
+ * `GET /workflows/alerta?estado=activa` answers 422), and `datos_nuevos: z.record(z.unknown()).
  * nullable().optional()` so the schema parses today's BE response
  * (DA-F11.2-14 — column is not yet exposed).
  *
  * Coverage:
- *   S1 (U1): canonical state `activa` parses + carries 18 fields + drops
+ *   S1 (U1): canonical state `abierta` parses + carries 18 fields + drops
  *       display fields (`severidad`, `descripcion`, `mensaje`).
  *   S2 (U2): legacy `estado: "abierta"` REJECTED with ZodError.
  *   S3 (U3): `datos_nuevos` is optional today (BE omits it) AND accepted
@@ -47,13 +48,13 @@ const BASE_ROW = {
   timestamp_evento: '2026-09-21T10:00:00.000Z',
   vigente_desde: '2026-09-21T10:00:00.000Z',
   vigente_hasta: null,
-  estado: 'activa' as const,
+  estado: 'abierta' as const,
 };
 
 describe('AlertaSchema — REQ-OPS-177 + REQ-OPS-180 (HU-F11.2)', () => {
-  it('S1: canonical state `activa` parses; the 18 BE fields are preserved (no display fields)', () => {
+  it('S1: canonical state `abierta` parses; the 18 BE fields are preserved (no display fields)', () => {
     const parsed = AlertaSchema.parse(BASE_ROW);
-    expect(parsed.estado).toBe('activa');
+    expect(parsed.estado).toBe('abierta');
     expect(parsed.uuid).toBe(VALID_UUID);
     expect(parsed.tipo_alerta).toBe('descuadre_critico');
     // The 18-field contract: the parsed object MUST NOT carry display
@@ -66,9 +67,20 @@ describe('AlertaSchema — REQ-OPS-177 + REQ-OPS-180 (HU-F11.2)', () => {
     expect(Object.keys(parsed)).toHaveLength(18);
   });
 
-  it('S2: legacy `estado: "abierta"` is REJECTED with ZodError (DA-F11.2-9 GATING)', () => {
-    const legacy = { ...BASE_ROW, estado: 'abierta' };
+  it('S2: legacy `estado: "activa"` is REJECTED with ZodError (DA-F11.2-9 GATING)', () => {
+    const legacy = { ...BASE_ROW, estado: 'activa' };
     expect(() => AlertaSchema.parse(legacy)).toThrow();
+  });
+
+  it('S2b: the real backend vocabulary parses (abierta | en_revision | resuelta)', () => {
+    for (const estado of ['abierta', 'en_revision', 'resuelta']) {
+      expect(AlertaSchema.parse({ ...BASE_ROW, estado }).estado).toBe(estado);
+    }
+  });
+
+  it('S2c: `valor_diferencia_datafono` was removed from the BE wire schema -- both shapes parse', () => {
+    const { valor_diferencia_datafono: _drop, ...sinDatafono } = BASE_ROW;
+    expect(() => AlertaSchema.parse(sinDatafono)).not.toThrow();
   });
 
   it('S3a: `datos_nuevos` is OPTIONAL — schema parses a BE row that omits the field today (DA-F11.2-14)', () => {
@@ -81,7 +93,7 @@ describe('AlertaSchema — REQ-OPS-177 + REQ-OPS-180 (HU-F11.2)', () => {
     // real /workflows/alerta response shape.
     const list = AlertaReadListSchema.parse([BASE_ROW]);
     expect(list).toHaveLength(1);
-    expect(list[0]?.estado).toBe('activa');
+    expect(list[0]?.estado).toBe('abierta');
   });
 
   it('S3b: `datos_nuevos: { uuid_ingreso: "Z" }` parses typed as Record<string, unknown> | null | undefined', () => {

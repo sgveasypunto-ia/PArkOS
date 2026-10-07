@@ -28,7 +28,11 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (_ns: string, opts?: { defaultValue?: string }) => opts?.defaultValue ?? _ns }),
 }));
 
-const mockUseAuth = vi.fn(() => ({ sucursal: { uuid: 'suc-1' } }));
+const PERMISO = 'gestionar_placas_suscripcion';
+const mockUseAuth = vi.fn((): { sucursal: { uuid: string }; permisos: string[] } => ({
+  sucursal: { uuid: 'suc-1' },
+  permisos: [PERMISO],
+}));
 vi.mock('@parkos/ui-kit/hooks', () => ({
   useAuth: () => mockUseAuth(),
 }));
@@ -56,6 +60,34 @@ vi.mock('../hooks/useSuscripcionesActivas', () => ({
   }),
 }));
 
+const mockRenovablesData = vi.fn((): unknown[] | undefined => []);
+const mockRefreshRenovables = vi.fn();
+vi.mock('../hooks/useSuscripcionesRenovables', () => ({
+  useSuscripcionesRenovables: () => ({
+    data: mockRenovablesData(),
+    error: undefined,
+    refresh: mockRefreshRenovables,
+  }),
+}));
+
+// The renewal panel has its own tests; here only the drawer navigation matters.
+vi.mock('./RenovarSuscripcionPanel', () => ({
+  RenovarSuscripcionPanel: (props: {
+    target: { uuid: string; placas?: string[] };
+    onBack: () => void;
+    onRenovada: () => void;
+  }) => (
+    <div data-testid="renovar-stub" data-uuid={props.target.uuid}>
+      <button type="button" onClick={props.onBack} data-testid="renovar-stub-volver">
+        volver
+      </button>
+      <button type="button" onClick={props.onRenovada} data-testid="renovar-stub-ok">
+        ok
+      </button>
+    </div>
+  ),
+}));
+
 const mockBuscarTrigger = vi.fn();
 const mockBuscarData = vi.fn(() => undefined as unknown);
 vi.mock('../hooks/useBuscarSuscripcionPorIdentificacion', () => ({
@@ -68,11 +100,12 @@ vi.mock('../hooks/useBuscarSuscripcionPorIdentificacion', () => ({
 }));
 
 const mockAgregarTrigger = vi.fn();
+const mockAgregarError = vi.fn((): unknown => undefined);
 vi.mock('../hooks/useAgregarVehiculoSuscripcion', () => ({
   useAgregarVehiculoSuscripcion: () => ({
     trigger: mockAgregarTrigger,
     isMutating: false,
-    error: undefined,
+    error: mockAgregarError(),
     data: undefined,
   }),
 }));
@@ -125,6 +158,10 @@ beforeEach(() => {
   mockAgregarTrigger.mockReset();
   mockQuitarTrigger.mockReset();
   mockRefresh.mockReset();
+  mockRefreshRenovables.mockReset();
+  mockRenovablesData.mockReturnValue([]);
+  mockAgregarError.mockReturnValue(undefined);
+  mockUseAuth.mockReturnValue({ sucursal: { uuid: 'suc-1' }, permisos: [PERMISO] });
 });
 
 describe('<SuscripcionesSheet /> — HU-F9.1 + HU-F9.2 realineada', () => {
@@ -272,5 +309,132 @@ describe('<SuscripcionesSheet /> — HU-F9.1 + HU-F9.2 realineada', () => {
     await user.click(screen.getByTestId('suscripciones-sheet-nueva-venta'));
 
     expect(screen.getByTestId('venta-stub')).toBeInTheDocument();
+  });
+
+  it('S10b (PT-1): the wizard\'s step-1 "Volver" (onCancel) lands on the list', async () => {
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('suscripciones-sheet-nueva-venta'));
+    await user.click(screen.getByTestId('venta-stub-cancel'));
+
+    expect(screen.getByTestId('suscripciones-sheet-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('venta-stub')).not.toBeInTheDocument();
+  });
+
+  it('S11 (PT-2): an operator without the permission sees NO Agregar/Quitar', async () => {
+    mockUseAuth.mockReturnValue({ sucursal: { uuid: 'suc-1' }, permisos: [] });
+    mockBuscarTrigger.mockResolvedValue(DETALLE);
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('suscripciones-sheet-item-sub-1'));
+    await waitFor(() => screen.getByTestId('suscripciones-cupos-detalle'));
+
+    expect(screen.getByTestId('suscripciones-cupos-vehiculo-sv-1')).toHaveTextContent('CUP001');
+    expect(screen.queryByTestId('suscripciones-cupos-quitar-sv-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('suscripciones-cupos-agregar-form')).not.toBeInTheDocument();
+    expect(screen.getByTestId('suscripciones-cupos-solo-supervisor')).toBeInTheDocument();
+  });
+
+  it('S12 (PT-2): a supervisor sees them and backend errors render as Spanish messages', async () => {
+    const { CuposPlacaConSuscripcionActivaError } = await import('../hooks/cuposErrors');
+    mockAgregarError.mockReturnValue(new CuposPlacaConSuscripcionActivaError('ZZZ999', 'sub-9'));
+    mockBuscarTrigger.mockResolvedValue(DETALLE);
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('suscripciones-sheet-item-sub-1'));
+    await waitFor(() => screen.getByTestId('suscripciones-cupos-detalle'));
+
+    expect(screen.getByTestId('suscripciones-cupos-quitar-sv-1')).toBeInTheDocument();
+    expect(screen.getByTestId('suscripciones-cupos-agregar-form')).toBeInTheDocument();
+    const err = screen.getByTestId('suscripciones-cupos-agregar-error');
+    expect(err).toHaveTextContent('ZZZ999');
+    expect(err).toHaveTextContent('otra suscripción activa');
+    expect(err).not.toHaveTextContent('placa_con_suscripcion_activa');
+  });
+
+  const RENOVABLE = {
+    uuid: 'sub-1',
+    cliente_nombre: 'Cupos DeTest',
+    plan_nombre: 'MENSUAL_EMPRESA',
+    placas: ['CUP001', 'CUP002'],
+    fecha_vencimiento: '2026-10-08',
+    dias_restantes: 3,
+    dias_alerta_pre_vencimiento: 7,
+    puede_renovar: true,
+  };
+
+  it('S13 (PT-3): "Renovar" appears only for renewable subscriptions', () => {
+    mockRenovablesData.mockReturnValue([RENOVABLE]);
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+    expect(screen.getByTestId('suscripciones-renovar-sub-1')).toBeInTheDocument();
+  });
+
+  it('S13b (PT-3): nothing renewable -> no "Por renovar" section nor Renovar button', () => {
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+    expect(screen.queryByTestId('suscripciones-renovables')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('suscripciones-renovar-sub-1')).not.toBeInTheDocument();
+  });
+
+  it('S14 (PT-1/PT-3): renew from the list -> "Volver" returns to the list', async () => {
+    mockRenovablesData.mockReturnValue([RENOVABLE]);
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('suscripciones-renovar-sub-1'));
+    expect(screen.getByTestId('renovar-stub')).toHaveAttribute('data-uuid', 'sub-1');
+
+    await user.click(screen.getByTestId('renovar-stub-volver'));
+    expect(screen.getByTestId('suscripciones-sheet-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('renovar-stub')).not.toBeInTheDocument();
+  });
+
+  it('S15 (PT-1/PT-3): renew from the cupos detail -> "Volver" returns to that detail; only if puede_renovar', async () => {
+    mockBuscarTrigger.mockResolvedValue({ ...DETALLE, dias_restantes: 5, puede_renovar: true });
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('suscripciones-sheet-item-sub-1'));
+    await waitFor(() => screen.getByTestId('suscripciones-cupos-detalle'));
+    await user.click(screen.getByTestId('suscripciones-cupos-renovar'));
+    expect(screen.getByTestId('renovar-stub')).toBeInTheDocument();
+
+    await user.click(screen.getByTestId('renovar-stub-volver'));
+    expect(screen.getByTestId('suscripciones-cupos-detalle')).toBeInTheDocument();
+    expect(screen.getByTestId('suscripciones-cupos-vehiculo-sv-1')).toHaveTextContent('CUP001');
+  });
+
+  it('S15b (PT-3): cupos detail with >10 days left has no "Renovar"', async () => {
+    mockBuscarTrigger.mockResolvedValue({ ...DETALLE, dias_restantes: 25, puede_renovar: false });
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('suscripciones-sheet-item-sub-1'));
+    await waitFor(() => screen.getByTestId('suscripciones-cupos-detalle'));
+    expect(screen.queryByTestId('suscripciones-cupos-renovar')).not.toBeInTheDocument();
+  });
+
+  it('S16 (PT-3): after a renewal the lists are refreshed and the list is shown', async () => {
+    mockRenovablesData.mockReturnValue([RENOVABLE]);
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('suscripciones-renovar-sub-1'));
+    await user.click(screen.getByTestId('renovar-stub-ok'));
+
+    expect(mockRefresh).toHaveBeenCalled();
+    expect(mockRefreshRenovables).toHaveBeenCalled();
+    expect(screen.getByTestId('suscripciones-sheet-list')).toBeInTheDocument();
   });
 });

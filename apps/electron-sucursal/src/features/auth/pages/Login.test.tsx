@@ -166,6 +166,59 @@ describe('<Login /> container — T2 postLogin + error mapping', () => {
     });
   });
 
+  // PT-2: a supervisor logs in through the SAME screen with an `admin-` token;
+  // every later call to the branch API must carry X-Sucursal-Context, which
+  // `parkosFetch` reads from localStorage -- derived from the token's claim.
+  const fakeJwt = (claims: Record<string, unknown>): string => {
+    const enc = (o: unknown): string =>
+      btoa(JSON.stringify(o)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    return `${enc({ alg: 'RS256' })}.${enc(claims)}.sig`;
+  };
+
+  it('U9b (PT-2): supervisor (admin- token) -> stores the sucursal claim BEFORE setTokens so the header is sent', async () => {
+    const access = fakeJwt({ iss: 'admin-parkos', sucursal: 'suc-supervisor-1' });
+    let storedAtSetTokens: string | null = null;
+    mockSetTokens.mockImplementation(() => {
+      storedAtSetTokens = window.localStorage.getItem('parkos.lastSelectedSucursal');
+    });
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      mockFetchOnce(
+        { access_token: access, refresh_token: 'r-1', token_type: 'Bearer', expires_in: 3600 },
+        200,
+        { 'Content-Type': 'application/json' },
+      ),
+    );
+
+    const user = renderLogin();
+    await user.type(screen.getByTestId('login-email'), 'sup@test.co');
+    await user.type(screen.getByTestId('login-password'), 'password1234');
+    await user.click(screen.getByTestId('login-submit'));
+
+    await waitFor(() => expect(mockSetTokens).toHaveBeenCalledWith(access, 'r-1', 3600));
+    expect(storedAtSetTokens).toBe('suc-supervisor-1');
+    mockSetTokens.mockReset();
+  });
+
+  it('U9c (PT-2): a regular operator login removes any stale supervisor sucursal context', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', 'stale-supervisor-suc');
+    const access = fakeJwt({ iss: 'operador-parkos', sucursal: 'suc-op' });
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      mockFetchOnce(
+        { access_token: access, refresh_token: 'r-1', token_type: 'Bearer', expires_in: 3600 },
+        200,
+        { 'Content-Type': 'application/json' },
+      ),
+    );
+
+    const user = renderLogin();
+    await user.type(screen.getByTestId('login-email'), 'op@test.co');
+    await user.type(screen.getByTestId('login-password'), 'password1234');
+    await user.click(screen.getByTestId('login-submit'));
+
+    await waitFor(() => expect(mockSetTokens).toHaveBeenCalled());
+    expect(window.localStorage.getItem('parkos.lastSelectedSucursal')).toBeNull();
+  });
+
   it('U10: 401 muestra <p role="alert"> con t("invalidCredentials")', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValueOnce(
       mockFetchOnce({ error: 'invalid_credentials' }, 401),

@@ -195,16 +195,58 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     expect(vueltosEl.textContent).toBe('—');
   });
 
-  it('M7 (fix HU-F8.1-copy): el label del toggle FE usa el copy obligatorio de la spec ("a nombre del cliente ... consumidor final")', () => {
+  it('M7 (FE siempre): el aviso fijo dice que la FE se emite siempre a consumidor final por defecto; el checkbox solo elige facturar a nombre del cliente (opcional)', () => {
     render(<PagoModal {...DEFAULT_PROPS} />);
+    // Fixed notice: the electronic invoice is ALWAYS emitted (no operator decision).
+    const aviso = screen.getByTestId('pago-fe-aviso');
+    expect(aviso.textContent).toMatch(/se emite siempre/i);
+    expect(aviso.textContent).toMatch(/consumidor final/i);
+    // The checkbox only decides whether the customer's own data go on it.
     const feToggle = screen.getByTestId('pago-fe-toggle');
-    // El FormLabel padre (sibling del checkbox) debe contener el copy
-    // obligatorio de HU-F8.1 — "Factura a nombre del cliente (opcional);
-    // por defecto, factura a consumidor final" (nunca "FE opcional" a secas).
     const label = feToggle.parentElement?.querySelector('label');
     expect(label?.textContent).toMatch(/a nombre del cliente/i);
-    expect(label?.textContent).toMatch(/consumidor final/i);
     expect(label?.textContent).toMatch(/opcional/i);
+    expect(label?.textContent).not.toMatch(/generar/i);
+  });
+
+  it('M7b: feCheckboxLabel overrides the checkbox copy (subscription sale: bill the subscriber)', () => {
+    render(<PagoModal {...DEFAULT_PROPS} feCheckboxLabel="Facturar a nombre del suscriptor (opcional)" />);
+    const label = screen.getByTestId('pago-fe-toggle').parentElement?.querySelector('label');
+    expect(label?.textContent).toBe('Facturar a nombre del suscriptor (opcional)');
+  });
+
+  it('M13b (PT-1): `draft` restores what was typed before stepping back; onDraftChange reports edits', () => {
+    const onDraftChange = vi.fn();
+    const { unmount } = render(<PagoModal {...DEFAULT_PROPS} onDraftChange={onDraftChange} />);
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-monto-recibido'), { target: { value: '50000' } });
+    });
+    const last = onDraftChange.mock.calls.at(-1)?.[0] as PagoFormValues;
+    expect((last as { monto_recibido_cop: number }).monto_recibido_cop).toBe(50000);
+    unmount();
+
+    // Back -> forward: the host re-mounts the modal with the saved draft.
+    render(<PagoModal {...DEFAULT_PROPS} draft={last} />);
+    expect(screen.getByTestId('pago-vueltos').textContent?.replace(/\s/g, ' ')).toMatch(/^\$ 9\.000$/);
+  });
+
+  it('M14 (PT-1): a different total discards the draft (plan changed)', () => {
+    const draft = { medio_pago: 'efectivo', monto_recibido_cop: 99999, fe: false } as Partial<PagoFormValues>;
+    const { rerender } = render(<PagoModal {...DEFAULT_PROPS} draft={draft} />);
+    rerender(<PagoModal {...DEFAULT_PROPS} total_cop={30000} draft={draft} />);
+    // Reset to the new total: nothing left over to give back.
+    expect(screen.getByTestId('pago-vueltos').textContent).toBe('—');
+  });
+
+  it('M15: re-rendering with a NEW clientePrefill object never wipes what the operator typed', () => {
+    const { rerender } = render(
+      <PagoModal {...DEFAULT_PROPS} clientePrefill={{ nit: '900123456', nombre: 'ACME', fe: true }} />,
+    );
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-fe-email'), { target: { value: 'a@b.co' } });
+    });
+    rerender(<PagoModal {...DEFAULT_PROPS} clientePrefill={{ nit: '900123456', nombre: 'ACME', fe: true }} />);
+    expect((screen.getByTestId('pago-fe-email') as HTMLInputElement).value).toBe('a@b.co');
   });
 
   it('M8 (persona/empresa): checkbox marcado arranca en "empresa"/NIT sin ningún valor precargado (solo placeholder)', () => {

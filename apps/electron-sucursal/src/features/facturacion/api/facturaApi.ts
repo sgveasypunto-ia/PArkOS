@@ -164,6 +164,11 @@ export const FacturaReadSchema = z.object({
   impuestos: z.array(impuestoDisplaySchema),
   pagos: z.array(pagoDisplaySchema),
   factura_electronica: feDisplaySchema.nullable(),
+  // The FE is ALWAYS emitted after the charge. When the emission failed the
+  // payment stays, `factura_electronica` is null, the error code is here and
+  // `factura_electronica_pendiente` is true (auto-retried; HTTP 201).
+  factura_electronica_error: z.string().nullable().optional(),
+  factura_electronica_pendiente: z.boolean().optional(),
 });
 export type FacturaRead = z.infer<typeof FacturaReadSchema>;
 

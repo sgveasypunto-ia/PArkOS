@@ -41,7 +41,7 @@ function makeAlert(tipo_alerta: string, severidad: 'alta' | 'media' | 'baja'): M
     timestamp_evento: '2026-09-21T10:00:00.000Z',
     vigente_desde: '2026-09-21T10:00:00.000Z',
     vigente_hasta: null,
-    estado: 'activa',
+    estado: 'abierta',
     severidad,
     descripcion: 'd',
     mensaje: 'm',

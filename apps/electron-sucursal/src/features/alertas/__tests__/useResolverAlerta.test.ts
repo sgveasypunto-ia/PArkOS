@@ -8,7 +8,7 @@
  *       (NEVER 'descartada' — REQ-26 actor check trip), all
  *       required fields present.
  *   R2: SWR cache invalidation on 200 — `mutate(...)` is called
- *       with a matcher targeting `/workflows/alerta` + `estado=activa`.
+ *       with a matcher targeting `/workflows/alerta` + `estado=abierta`.
  *   R3: 403 → `actor_is_target` typed error (defense — we never
  *       emit 'descartada' but the hook surfaces a typed error
  *       anyway for future-proofing).
@@ -82,7 +82,7 @@ const ALERT = {
   timestamp_evento: '2026-09-21T10:00:00.000Z',
   vigente_desde: '2026-09-21T10:00:00.000Z',
   vigente_hasta: null,
-  estado: 'activa' as const,
+  estado: 'abierta' as const,
 };
 
 beforeEach(() => {
@@ -128,7 +128,7 @@ describe('useResolverAlerta — REQ-OPS-181 + DEC-SUC-25 (HU-F11.2)', () => {
 
     expect(mutateMock).toHaveBeenCalledTimes(1);
     const matcher = (mutateMock.mock.calls[0] as unknown as [(key: unknown) => boolean])[0];
-    expect(matcher('/workflows/alerta?uuid_sucursal=X&estado=activa')).toBe(true);
+    expect(matcher('/workflows/alerta?uuid_sucursal=X&estado=abierta')).toBe(true);
     expect(matcher('/workflows/alert-types?uuid_sucursal=X')).toBe(false);
     expect(matcher(null)).toBe(false);
   });

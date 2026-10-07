@@ -10,7 +10,7 @@
  *   - DA-F11.2-6: 30 s polling cadence on `/workflows/alerta`
  *     (matches F11.1 SyncBanner precedent).
  *   - DA-F11.2-7: derived `openAlertsCount` selector — business
- *     codes + `estado === 'activa'`.
+ *     codes + `estado === 'abierta'` (the backend vocabulary is abierta|en_revision|resuelta).
  *   - DA-F11.2-10: path (b) — client-side merge from
  *     `/workflows/alert-types` (refresh 5 min). Path (a) — BE JOIN —
  *     is filed as ABBC-F11.2-BE-1 in `pending-fase-11.md`.
@@ -32,14 +32,14 @@ import {
   type MergedAlerta,
 } from '../../../lib/api/schemas/alertas';
 
-import { BUSINESS_ALERT_CODES } from '../constants';
+import { ALERT_CODE_FALLBACK, BUSINESS_ALERT_CODES } from '../constants';
 
 const ALERTA_REFRESH_INTERVAL_MS = 30_000;
 const ALERT_TYPES_REFRESH_INTERVAL_MS = 300_000;
 
 async function fetchAlertas(uuid_sucursal: string): Promise<AlertaRead[]> {
   const raw = await parkosFetch<unknown>(
-    `/api/v1/workflows/alerta?uuid_sucursal=${encodeURIComponent(uuid_sucursal)}&estado=activa`,
+    `/api/v1/workflows/alerta?uuid_sucursal=${encodeURIComponent(uuid_sucursal)}&estado=abierta`,
   );
   return AlertaReadListSchema.parse(raw);
 }
@@ -81,6 +81,17 @@ export function mergeAlertasWithAlertTypes(
       continue;
     }
     const t = typeByCode.get(code);
+    const fallback = ALERT_CODE_FALLBACK[code];
+    if (!t && fallback) {
+      // New code not yet seeded in alert_types: readable local label.
+      merged.push({
+        ...a,
+        severidad: fallback.severidad,
+        descripcion: fallback.descripcion,
+        mensaje: fallback.etiqueta,
+      });
+      continue;
+    }
     if (!t) {
       if (typeof console !== 'undefined' && typeof console.debug === 'function') {
         console.debug(`[useAlertas] dropping alert code ${code} — not present in alert_types`);
@@ -109,7 +120,7 @@ export function useAlertas(uuid_sucursal: string | null): UseAlertasResult {
   const accessToken = useAuthStore((s) => s.accessToken);
   const gate = uuid_sucursal && accessToken ? uuid_sucursal : null;
 
-  const alertaKey = gate ? `/workflows/alerta?uuid_sucursal=${gate}&estado=activa` : null;
+  const alertaKey = gate ? `/workflows/alerta?uuid_sucursal=${gate}&estado=abierta` : null;
   const typesKey = gate ? `/workflows/alert-types?uuid_sucursal=${gate}` : null;
 
   const sharedErrorHandler = {
@@ -164,7 +175,7 @@ export function useAlertas(uuid_sucursal: string | null): UseAlertasResult {
             }))
         : [];
 
-  const openAlertsCount = mergedAlertas.filter((a) => a.estado === 'activa').length;
+  const openAlertsCount = mergedAlertas.filter((a) => a.estado === 'abierta').length;
 
   return {
     data: alertaData,

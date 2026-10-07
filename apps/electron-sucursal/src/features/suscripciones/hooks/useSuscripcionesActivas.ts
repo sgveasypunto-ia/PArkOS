@@ -22,11 +22,12 @@ import {
   SubscripcionesActivasResponseSchema,
   type SubscripcionActivaItem,
 } from '../api/cuposApi';
+import { excluirClienteEstandar } from '../lib/clienteEstandar';
 
 async function fetchSubscripcionesActivas(): Promise<SubscripcionActivaItem[]> {
   const { parkosFetch } = await import('@parkos/ui-kit/fetch');
   const raw = await parkosFetch<unknown>(GET_SUBSCRIPCIONES_ACTIVAS_PATH);
-  return SubscripcionesActivasResponseSchema.parse(raw).items;
+  return excluirClienteEstandar(SubscripcionesActivasResponseSchema.parse(raw).items);
 }
 
 export interface UseSuscripcionesActivasResult {

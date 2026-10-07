@@ -44,18 +44,28 @@ import { useAgregarVehiculoSuscripcion } from '../hooks/useAgregarVehiculoSuscri
 import { useBuscarSuscripcionPorIdentificacion } from '../hooks/useBuscarSuscripcionPorIdentificacion';
 import { useQuitarVehiculoSuscripcion } from '../hooks/useQuitarVehiculoSuscripcion';
 import { useSuscripcionesActivas } from '../hooks/useSuscripcionesActivas';
+import { useSuscripcionesRenovables } from '../hooks/useSuscripcionesRenovables';
+import { cuposErrorMessage } from '../lib/cuposErrorMessage';
 import { Venta } from '../pages/Venta';
+import { RenovarSuscripcionPanel, type RenovarTarget } from './RenovarSuscripcionPanel';
 
-type SheetMode = 'list' | 'venta' | 'cupos';
+type SheetMode = 'list' | 'venta' | 'cupos' | 'renovar';
+
+/** Permission that lets a user add/remove plates of a subscription (PT-2, supervisor). */
+const PERMISO_GESTIONAR_PLACAS = 'gestionar_placas_suscripcion';
 
 export function SuscripcionesSheet(): JSX.Element {
   const { t } = useTranslation(['suscripciones', 'common']);
-  const { sucursal } = useAuth();
+  const { sucursal, permisos } = useAuth();
+  // PT-2: the UI only hides/disables; the backend is the authority (403 permission_denied).
+  const puedeGestionarPlacas = (permisos ?? []).includes(PERMISO_GESTIONAR_PLACAS);
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
   const lastAnchorId = useDashboardDrawerStore((s) => s.lastAnchorId);
   const close = useDashboardDrawerStore((s) => s.close);
   const uuid_sucursal = sucursal?.uuid ?? null;
   const { data, error, refresh } = useSuscripcionesActivas(uuid_sucursal);
+  const { data: renovables, refresh: refreshRenovables } =
+    useSuscripcionesRenovables(uuid_sucursal);
 
   const open = openDrawer === 'suscripciones';
 
@@ -63,6 +73,9 @@ export function SuscripcionesSheet(): JSX.Element {
   const [numeroIdentificacion, setNumeroIdentificacion] = useState('');
   const [detalle, setDetalle] = useState<SubscripcionCupoDetalle | null>(null);
   const [nuevaPlaca, setNuevaPlaca] = useState('');
+  // PT-3 renewal flow: what is being renewed + the screen to come back to (PT-1).
+  const [renovarTarget, setRenovarTarget] = useState<RenovarTarget | null>(null);
+  const [renovarOrigen, setRenovarOrigen] = useState<'list' | 'cupos'>('list');
 
   const buscar = useBuscarSuscripcionPorIdentificacion();
   const agregar = useAgregarVehiculoSuscripcion();
@@ -77,6 +90,7 @@ export function SuscripcionesSheet(): JSX.Element {
       setNumeroIdentificacion('');
       setDetalle(null);
       setNuevaPlaca('');
+      setRenovarTarget(null);
     }
   }, [open]);
 
@@ -92,9 +106,34 @@ export function SuscripcionesSheet(): JSX.Element {
   const handleNuevaVenta = (): void => {
     setMode('venta');
   };
+  // PT-1: every "Volver" goes to the screen immediately before.
+  //   - venta: step by step inside <Venta/>; its step 1 lands here -> list
+  //   - cupos -> list
+  //   - renovar -> where it was opened from (list or cupos, detail kept)
   const handleVolver = (): void => {
     setMode('list');
     setDetalle(null);
+  };
+  const handleVolverDeRenovar = (): void => {
+    setMode(renovarOrigen);
+    setRenovarTarget(null);
+  };
+  const abrirRenovar = (target: RenovarTarget, origen: 'list' | 'cupos'): void => {
+    setRenovarTarget(target);
+    setRenovarOrigen(origen);
+    setMode('renovar');
+  };
+  const handleRenovada = (): void => {
+    // The renewed subscription is a NEW row: reload the lists and land on the list.
+    void refresh();
+    void refreshRenovables();
+    setRenovarTarget(null);
+    setDetalle(null);
+    setMode('list');
+  };
+  const handleRenovarStale = (): void => {
+    void refresh();
+    void refreshRenovables();
   };
   const handleVentaSuccess = (): void => {
     void refresh();
@@ -198,6 +237,8 @@ export function SuscripcionesSheet(): JSX.Element {
               })}
             {mode === 'cupos' &&
               t('suscripciones:sheet.tituloCupos', { defaultValue: 'Gestión de cupos' })}
+            {mode === 'renovar' &&
+              t('suscripciones:sheet.tituloRenovar', { defaultValue: 'Renovar suscripción' })}
             {mode === 'list' &&
               t('suscripciones:sheet.titulo', { defaultValue: 'Suscripciones' })}
           </SheetTitle>
@@ -209,11 +250,19 @@ export function SuscripcionesSheet(): JSX.Element {
             {mode === 'venta' &&
               t('suscripciones:sheet.descripcionVenta', {
                 defaultValue:
-                  'Venta de suscripción en 4 pasos. Al pagar, regresa a esta pestaña.',
+                  'Venta de suscripción en 6 pasos. Al pagar, regresa a esta pestaña.',
               })}
             {mode === 'cupos' &&
-              t('suscripciones:sheet.descripcionCupos', {
-                defaultValue: 'Agregá o quitá vehículos inscritos en esta suscripción.',
+              (puedeGestionarPlacas
+                ? t('suscripciones:sheet.descripcionCupos', {
+                    defaultValue: 'Agregá o quitá vehículos inscritos en esta suscripción.',
+                  })
+                : t('suscripciones:sheet.descripcionCuposSoloLectura', {
+                    defaultValue: 'Vehículos inscritos en esta suscripción.',
+                  }))}
+            {mode === 'renovar' &&
+              t('suscripciones:sheet.descripcionRenovar', {
+                defaultValue: 'Confirmá el pago para renovar. Se mantienen las placas actuales.',
               })}
           </SheetDescription>
         </SheetHeader>
@@ -274,6 +323,69 @@ export function SuscripcionesSheet(): JSX.Element {
                   })}
                 </p>
               )}
+              {/*
+                PT-3: "Renovar" is offered ONLY for what the backend lists as
+                renewable (<= 10 days left, expired included).
+              */}
+              {renovables && renovables.length > 0 && (
+                <section
+                  aria-labelledby="suscripciones-renovables-titulo"
+                  className="space-y-2 rounded border border-warning p-2"
+                  data-testid="suscripciones-renovables"
+                >
+                  <h3
+                    id="suscripciones-renovables-titulo"
+                    className="text-sm font-semibold"
+                  >
+                    {t('suscripciones:sheet.porRenovar', { defaultValue: 'Por renovar' })}
+                  </h3>
+                  <ul className="space-y-2">
+                    {renovables.map((r) => (
+                      <li
+                        key={r.uuid}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded border bg-card px-3 py-2 text-sm"
+                        data-testid={`suscripciones-renovable-${r.uuid}`}
+                      >
+                        <div className="min-w-0">
+                          <div className="break-words font-medium">{r.cliente_nombre}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {r.plan_nombre} · {r.placas.join(', ')} ·{' '}
+                            {r.dias_restantes < 0
+                              ? t('suscripciones:renovar.vencida', { defaultValue: 'vencida' })
+                              : t('suscripciones:renovar.diasRestantes', {
+                                  count: r.dias_restantes,
+                                  defaultValue_one: '{{count}} día restante',
+                                  defaultValue_other: '{{count}} días restantes',
+                                })}
+                          </div>
+                        </div>
+                        {r.puede_renovar && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            data-testid={`suscripciones-renovar-${r.uuid}`}
+                            onClick={() =>
+                              abrirRenovar(
+                                {
+                                  uuid: r.uuid,
+                                  cliente_nombre: r.cliente_nombre,
+                                  plan_nombre: r.plan_nombre,
+                                  fecha_vencimiento: r.fecha_vencimiento,
+                                  dias_restantes: r.dias_restantes,
+                                  placas: r.placas,
+                                },
+                                'list',
+                              )
+                            }
+                          >
+                            {t('suscripciones:sheet.renovar', { defaultValue: 'Renovar' })}
+                          </Button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
               {data && data.length === 0 && (
                 <p
                   className="text-sm text-muted-foreground"
@@ -302,6 +414,14 @@ export function SuscripcionesSheet(): JSX.Element {
                             {s.plan.tipo}
                           </span>
                         </div>
+                        {s.puede_renovar && (
+                          <div
+                            className="mt-1 inline-block rounded bg-warning px-1.5 py-0.5 text-xs font-medium text-warning-foreground"
+                            data-testid={`suscripciones-sheet-por-renovar-${s.uuid}`}
+                          >
+                            {t('suscripciones:sheet.porRenovar', { defaultValue: 'Por renovar' })}
+                          </div>
+                        )}
                         <div className="flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
                           <span>
                             {t('suscripciones:sheet.vence', { defaultValue: 'Vence' })}:{' '}
@@ -369,16 +489,22 @@ export function SuscripcionesSheet(): JSX.Element {
                     data-testid={`suscripciones-cupos-vehiculo-${v.uuid}`}
                   >
                     <span className="font-mono uppercase">{v.placa}</span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={quitar.isMutating}
-                      onClick={() => void handleQuitar(v.uuid)}
-                      data-testid={`suscripciones-cupos-quitar-${v.uuid}`}
-                    >
-                      {t('suscripciones:sheet.quitar', { defaultValue: 'Quitar' })}
-                    </Button>
+                    {puedeGestionarPlacas && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={quitar.isMutating}
+                        onClick={() => void handleQuitar(v.uuid)}
+                        data-testid={`suscripciones-cupos-quitar-${v.uuid}`}
+                        aria-label={t('suscripciones:sheet.quitarPlaca', {
+                          placa: v.placa ?? '',
+                          defaultValue: `Quitar placa ${v.placa ?? ''}`,
+                        })}
+                      >
+                        {t('suscripciones:sheet.quitar', { defaultValue: 'Quitar' })}
+                      </Button>
+                    )}
                   </li>
                 ))}
                 {detalle.vehiculos.length === 0 && (
@@ -396,7 +522,7 @@ export function SuscripcionesSheet(): JSX.Element {
                   className="text-sm text-destructive"
                   data-testid="suscripciones-cupos-agregar-error"
                 >
-                  {agregar.error.message}
+                  {cuposErrorMessage(agregar.error, t)}
                 </p>
               )}
               {quitar.error && (
@@ -405,11 +531,47 @@ export function SuscripcionesSheet(): JSX.Element {
                   className="text-sm text-destructive"
                   data-testid="suscripciones-cupos-quitar-error"
                 >
-                  {quitar.error.message}
+                  {cuposErrorMessage(quitar.error, t)}
                 </p>
               )}
 
-              {cupoLleno ? (
+              {/* PT-3: only when the backend says the subscription is in the renewal window. */}
+              {detalle.puede_renovar && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full"
+                  data-testid="suscripciones-cupos-renovar"
+                  onClick={() =>
+                    abrirRenovar(
+                      {
+                        uuid: detalle.uuid,
+                        cliente_nombre: [detalle.cliente.nombre, detalle.cliente.apellido]
+                          .filter(Boolean)
+                          .join(' '),
+                        plan_nombre: detalle.plan.tipo ?? '',
+                        fecha_vencimiento: detalle.fecha_vencimiento,
+                        dias_restantes: detalle.dias_restantes ?? null,
+                        placas: detalle.vehiculos.map((v) => v.placa ?? '').filter(Boolean),
+                      },
+                      'cupos',
+                    )
+                  }
+                >
+                  {t('suscripciones:sheet.renovar', { defaultValue: 'Renovar' })}
+                </Button>
+              )}
+
+              {!puedeGestionarPlacas ? (
+                <p
+                  className="text-sm text-muted-foreground"
+                  data-testid="suscripciones-cupos-solo-supervisor"
+                >
+                  {t('suscripciones:sheet.soloSupervisorPlacas', {
+                    defaultValue: 'Solo el supervisor puede agregar o quitar placas.',
+                  })}
+                </p>
+              ) : cupoLleno ? (
                 <p
                   className="text-sm text-muted-foreground"
                   data-testid="suscripciones-cupos-lleno"
@@ -428,7 +590,8 @@ export function SuscripcionesSheet(): JSX.Element {
                     id="suscripciones-cupos-agregar-input"
                     name="placa"
                     value={nuevaPlaca}
-                    onChange={(e) => setNuevaPlaca(e.target.value)}
+                    onChange={(e) => setNuevaPlaca(e.target.value.toUpperCase())}
+                    maxLength={16}
                     placeholder={t('suscripciones:sheet.placaPlaceholder', {
                       defaultValue: 'Placa',
                     })}
@@ -448,6 +611,15 @@ export function SuscripcionesSheet(): JSX.Element {
                 </form>
               )}
             </div>
+          )}
+
+          {mode === 'renovar' && renovarTarget && (
+            <RenovarSuscripcionPanel
+              target={renovarTarget}
+              onBack={handleVolverDeRenovar}
+              onRenovada={handleRenovada}
+              onStale={handleRenovarStale}
+            />
           )}
         </div>
 

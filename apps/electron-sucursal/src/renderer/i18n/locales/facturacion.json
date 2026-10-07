@@ -20,7 +20,8 @@
     "medio_datafono": "Datáfono",
     "voucher_label": "Voucher (datáfono)",
     "vueltos": "Vueltos",
-    "fe_toggle": "Factura a nombre del cliente (opcional); por defecto, factura a consumidor final",
+    "fe_toggle": "Facturar a nombre del cliente (opcional)",
+    "fe_aviso": "La factura electrónica se emite siempre. Por defecto: Factura a consumidor final.",
     "monto_insuficiente": "Monto recibido es menor al total",
     "tipo_persona_label": "Tipo de cliente",
     "tipo_persona_empresa": "Empresa",
@@ -57,6 +58,23 @@
     },
     "errors": {
       "numeracion_agotada": "Numeración agotada. Contactar proveedor."
+    },
+    "aviso": {
+      "pendiente": "Factura electrónica pendiente, se reintenta sola. El cobro quedó registrado.",
+      "motivoPrefijo": "Motivo:",
+      "motivo": {
+        "resolucionNoEncontrada": "falta configurar la resolución de facturación de esta sucursal.",
+        "numeracionAgotada": "se agotó la numeración de la resolución de facturación; avisá para renovarla.",
+        "resolucionSinPrefijo": "la resolución de facturación no tiene prefijo configurado.",
+        "sinSucursal": "no se pudo identificar la sucursal de la sesión.",
+        "inesperado": "ocurrió un error inesperado al emitir."
+      },
+      "estado": {
+        "pendiente": "Emitida, pendiente de la DIAN",
+        "enviado": "Enviada a la DIAN",
+        "aceptado": "Aceptada por la DIAN",
+        "rechazado": "Rechazada por la DIAN"
+      }
     }
   },
   "reimprimir": {

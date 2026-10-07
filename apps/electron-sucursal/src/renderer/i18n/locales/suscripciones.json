@@ -12,8 +12,23 @@
     "listaVacia": "Sin suscripciones activas en esta sede.",
     "nuevaVenta": "Nueva venta de suscripción",
     "tituloVenta": "Nueva venta de suscripción",
-    "descripcionVenta": "Venta de suscripción en 5 pasos. Al pagar, regresa a esta pestaña.",
+    "descripcionVenta": "Venta de suscripción en 6 pasos. Al pagar, regresa a esta pestaña.",
+    "tituloRenovar": "Renovar suscripción",
+    "descripcionRenovar": "Confirmá el pago para renovar. Se mantienen las placas actuales.",
+    "descripcionCuposSoloLectura": "Vehículos inscritos en esta suscripción.",
+    "porRenovar": "Por renovar",
+    "renovar": "Renovar",
+    "quitarPlaca": "Quitar placa {{placa}}",
+    "soloSupervisorPlacas": "Solo el supervisor puede agregar o quitar placas.",
     "volver": "Volver"
+  },
+  "banner": {
+    "texto_one": "{{count}} suscripción próxima a vencer.",
+    "texto_other": "{{count}} suscripciones próximas a vencer.",
+    "vencidas_one": "{{count}} ya venció.",
+    "vencidas_other": "{{count}} ya vencieron.",
+    "proxima": "La más cercana: {{cliente}} ({{fecha}}).",
+    "ver": "Ver suscripciones"
   },
   "listado": {
     "titulo": "Suscripciones",
@@ -33,38 +48,99 @@
       "vencida": "vencida"
     }
   },
+  "cupos": {
+    "errors": {
+      "permission_denied": "Solo el supervisor puede agregar o quitar placas de una suscripción.",
+      "missing_sucursal_context": "No se pudo identificar la sucursal de la sesión. Cerrá sesión e ingresá de nuevo.",
+      "unauthorized_sucursal_context": "Tu usuario no tiene acceso a esta sucursal.",
+      "subscripcion_no_encontrada": "La suscripción ya no está activa en esta sucursal.",
+      "vehiculo_inscrito_no_encontrado": "El vehículo ya no está inscrito en esta suscripción.",
+      "vehiculo_ya_inscrito": "La placa {{placa}} ya está inscrita en esta suscripción.",
+      "placa_con_suscripcion_activa": "La placa {{placa}} ya está en otra suscripción activa de esta sucursal.",
+      "tipo_vehiculo_plan_incompatible": "El plan es para vehículos tipo {{tipoPlan}}; la placa corresponde a {{tipos}}.",
+      "tipo_vehiculo_incompatible": "Este plan exige que todos los vehículos sean del mismo tipo.",
+      "cantidad_maxima_excedida": "El plan alcanzó su cantidad máxima de vehículos.",
+      "sesion_expirada": "Tu sesión expiró. Ingresá de nuevo.",
+      "generico": "No se pudo completar la operación. Intentá de nuevo."
+    }
+  },
+  "renovar": {
+    "vencida": "vencida",
+    "diasRestantes_one": "{{count}} día restante",
+    "diasRestantes_other": "{{count}} días restantes",
+    "nota": "La renovación mantiene las placas de la suscripción y cobra el plan completo. No hace falta registrar placas.",
+    "medioPago": "Medio de pago",
+    "medios": {
+      "efectivo": "Efectivo",
+      "tarjeta": "Tarjeta",
+      "datafono": "Datáfono",
+      "transferencia": "Transferencia"
+    },
+    "voucher": "Voucher (datáfono)",
+    "referencia": "Referencia (opcional)",
+    "confirmar": "Confirmar renovación y cobrar",
+    "procesando": "Procesando…",
+    "exito": "Suscripción renovada.",
+    "nuevoVencimiento": "Nuevo vencimiento: {{fecha}}",
+    "errors": {
+      "renovacion_fuera_de_ventana": "Todavía no se puede renovar: faltan {{dias}} días y la renovación se habilita cuando queden {{ventana}} o menos.",
+      "idempotency_key_requerido": "No se pudo identificar el intento de renovación. Intentá de nuevo.",
+      "voucher_requerido": "Ingresá el número de voucher del datáfono.",
+      "missing_sucursal_context": "No se pudo identificar la sucursal de la sesión. Cerrá sesión e ingresá de nuevo.",
+      "permission_denied": "Tu usuario no tiene permiso para renovar suscripciones.",
+      "subscripcion_no_encontrada": "La suscripción no existe o ya no está activa en esta sucursal.",
+      "suscripcion_no_renovable": "Esta suscripción no se puede renovar (ya fue renovada o está cancelada).",
+      "plan_no_vigente": "El plan de esta suscripción ya no está vigente. Vendé una suscripción nueva.",
+      "idempotency_key_conflict": "Este intento de renovación ya se había enviado con otros datos. Cerrá esta pantalla y volvé a intentar.",
+      "placa_con_suscripcion_vigente": "La placa {{placa}} ya tiene otra suscripción vigente en esta sucursal.",
+      "suscripcion_sin_vehiculos": "La suscripción no tiene vehículos inscritos para renovar.",
+      "vehiculo_no_resuelto": "No se pudo resolver uno de los vehículos de la suscripción.",
+      "cantidad_maxima_excedida": "La cantidad de vehículos supera el máximo del plan.",
+      "tipo_vehiculo_incompatible": "Los vehículos de la suscripción no coinciden con el tipo exigido por el plan.",
+      "plan_duracion_dias_invalido": "El plan tiene una duración inválida. Avisá al administrador.",
+      "iva_no_configurado": "No hay IVA configurado en la sucursal. Avisá al administrador.",
+      "desconocido": "No se pudo renovar la suscripción. Intentá de nuevo."
+    }
+  },
   "venta": {
     "titulo": "Venta de suscripción",
+    "progreso": "Paso {{paso}} de {{total}}",
+    "siguiente": "Siguiente",
     "paso1": {
       "titulo": "Cliente",
       "siguiente": "Siguiente"
     },
     "paso2": {
-      "titulo": "Plan",
-      "siguiente": "Siguiente",
-      "loading": "Cargando planes…",
-      "error": "No se pudieron cargar los planes para esta sede.",
-      "empty": "No hay planes configurados para esta sede.",
-      "duracion": "{{dias}} días · máx {{vehiculos}} vehículo(s)"
+      "titulo": "Tipo de vehículo",
+      "descripcion": "Elegí el tipo de vehículo: solo verás los planes que le corresponden.",
+      "tiposError": "No se pudo cargar el catálogo de tipos de vehículo. Intentá de nuevo."
     },
     "paso3": {
-      "titulo": "Cantidad de vehículos",
-      "siguiente": "Siguiente",
-      "descripcion": "Este plan permite hasta {{max}} vehículo(s). ¿Cuántos vas a registrar?"
+      "titulo": "Plan",
+      "tipoElegido": "Planes para: {{tipo}}",
+      "loading": "Cargando planes…",
+      "error": "No se pudieron cargar los planes para esta sede.",
+      "empty": "No hay planes configurados para este tipo de vehículo en esta sede.",
+      "duracion": "{{dias}} días · máx {{vehiculos}} vehículo(s)"
     },
     "paso4": {
-      "titulo": "Placas",
-      "siguiente": "Siguiente",
-      "vehiculoLabel": "Vehículo {{n}}"
+      "titulo": "Cantidad de vehículos",
+      "descripcion": "Este plan permite hasta {{max}} vehículo(s). ¿Cuántos vas a registrar?"
     },
     "paso5": {
-      "titulo": "Pago"
+      "titulo": "Placas",
+      "vehiculoLabel": "Vehículo {{n}}"
+    },
+    "paso6": {
+      "titulo": "Pago",
+      "feSuscriptor": "Facturar a nombre del suscriptor (opcional)"
     },
     "errors": {
       "suscripcion_duplicada_placa": "Esta placa ya tiene una suscripción vigente",
       "tipo_vehiculo_incompatible": "Este plan exige que todas las placas sean del mismo tipo",
       "cantidad_maxima_excedida": "Cantidad máxima de vehículos excedida",
-      "placa_formato_invalido": "Formato de placa inválido"
+      "placa_formato_invalido": "Formato de placa inválido",
+      "placa_tipo_incompatible": "La placa no corresponde al tipo de vehículo elegido ({{tipo}})."
     }
   }
 }

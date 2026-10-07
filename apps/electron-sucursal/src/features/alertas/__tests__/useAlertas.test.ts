@@ -75,7 +75,8 @@ vi.mock('swr', () => ({
 
 // Import after mocks so the mocked modules are wired.
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
-import { useAlertas } from '../hooks/useAlertas';
+import { mergeAlertasWithAlertTypes, useAlertas } from '../hooks/useAlertas';
+import type { AlertaRead } from '../../../lib/api/schemas/alertas';
 
 const VALID_UUID = '00000000-0000-0000-0000-000000000001';
 
@@ -143,15 +144,15 @@ describe('useAlertas — REQ-OPS-179 (HU-F11.2)', () => {
     expect(typesReg?.options.refreshInterval).toBe(300_000);
   });
 
-  it('U4: BUSINESS_ALERT_CODES whitelist drops technical codes silently; openAlertsCount = business+activa only', async () => {
+  it('U4: BUSINESS_ALERT_CODES whitelist drops technical codes silently; openAlertsCount = business+abierta only', async () => {
     // Re-mock the hook with a tiny in-line reimplementation that
     // exercises the whitelist selector in isolation. The full hook's
     // RED bootstrap here is the import + key registration; the
     // selector tests live in C2 (constants.test.ts) once `constants.ts`
     // lands. For now we assert that the constants module is exported
-    // with the canonical 11/8 split.
+    // with the canonical 14/8 split (11 originals + fe_emision_fallida + 2 placa codes).
     const constants = await import('../constants');
-    expect(constants.BUSINESS_ALERT_CODES.size).toBe(11);
+    expect(constants.BUSINESS_ALERT_CODES.size).toBe(14);
     expect(constants.TECHNICAL_ALERT_CODES.size).toBe(8);
     // Disjoint sets — no overlap between business and technical codes.
     for (const code of constants.BUSINESS_ALERT_CODES) {
@@ -183,5 +184,64 @@ describe('useAlertas — REQ-OPS-179 (HU-F11.2)', () => {
       .filter((k): k is string => k !== null);
     expect(routes.some((k) => k.includes('/workflows/alerta'))).toBe(true);
     expect(routes.some((k) => k.includes('/workflows/alert-types'))).toBe(true);
+  });
+
+  it('U6: the alerta query uses the REAL backend state (abierta) -- never the old activa value (422)', () => {
+    useAuthStoreSelectorMock.mockReturnValue('jwt-abc');
+    useAlertas(VALID_UUID);
+    const reg = getSWRForRoute('/workflows/alerta');
+    expect(String(reg?.key)).toContain('estado=abierta');
+    expect(String(reg?.key)).not.toContain('activa');
+  });
+
+  const row = (tipo: string): AlertaRead => ({
+    uuid: VALID_UUID,
+    fecha_retencion_hasta: '2031-01-01',
+    created_at: '2026-10-01T10:00:00Z',
+    created_by: null,
+    sync_status: null,
+    sync_timestamp: null,
+    sync_attempts: null,
+    uuid_sucursal: VALID_UUID,
+    uuid_usuario: null,
+    uuid_arqueo: null,
+    tipo_alerta: tipo,
+    valor_diferencia_efectivo: null,
+    uuid_alerta_padre: null,
+    timestamp_evento: null,
+    vigente_desde: null,
+    vigente_hasta: null,
+    estado: 'abierta',
+  });
+
+  it('U7: new codes (fe_emision_fallida, suscripcion_placa_*) show a readable label even when alert_types lacks them', () => {
+    const merged = mergeAlertasWithAlertTypes(
+      [row('fe_emision_fallida'), row('suscripcion_placa_agregada'), row('suscripcion_placa_quitada')],
+      [],
+    );
+    expect(merged.map((m) => m.tipo_alerta)).toEqual([
+      'fe_emision_fallida',
+      'suscripcion_placa_agregada',
+      'suscripcion_placa_quitada',
+    ]);
+    for (const m of merged) {
+      expect(m.mensaje).not.toBe(m.tipo_alerta);
+      expect(m.mensaje).toMatch(/[a-záéíóú] /i);
+    }
+  });
+
+  it('U8: alert_types (when present) wins over the local fallback label', () => {
+    const merged = mergeAlertasWithAlertTypes(
+      [row('fe_emision_fallida')],
+      [{ codigo: 'fe_emision_fallida', severidad: 'alta', descripcion: 'D', mensaje: 'M' }],
+    );
+    expect(merged[0]?.severidad).toBe('alta');
+    expect(merged[0]?.mensaje).toBe('M');
+  });
+
+  it('U9: an unknown business-looking code without alert_types is still dropped silently', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    expect(mergeAlertasWithAlertTypes([row('codigo_inventado')], [])).toEqual([]);
+    debug.mockRestore();
   });
 });

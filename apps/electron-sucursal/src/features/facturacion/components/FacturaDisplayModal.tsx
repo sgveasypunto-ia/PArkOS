@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/dialog';
 
 import type { FacturaRead } from '../api/facturaApi';
+import { feEstadoLabel, feWarningMessage } from '../lib/feEstado';
 import { formatCOP } from '../../caja/lib/format';
 
 export interface FacturaDisplayModalProps {
@@ -121,6 +122,11 @@ export function FacturaDisplayModal({
   // here; a conditional Dialog open is the canonical pattern.
   const open = factura !== null;
   const f = factura;
+  // FE outcome: an explicit `warning` from the caller wins; otherwise derive it
+  // from the invoice itself so EVERY charge flow shows a pending/failed FE.
+  const feWarning =
+    warning ??
+    (f ? feWarningMessage(f.factura_electronica_error, f.factura_electronica_pendiente, t) : null);
 
   // Defensive: shadcn Dialog requires at least one child. When
   // `factura` is null we render an empty Dialog so the close
@@ -310,8 +316,9 @@ export function FacturaDisplayModal({
                     {f.factura_electronica.prefijo ?? ''}
                     {f.factura_electronica.consecutivo ?? '—'}
                   </div>
-                  <div className="capitalize" data-estado={f.factura_electronica.estado_dian}>
-                    {f.factura_electronica.estado_dian}
+                  <div data-estado={f.factura_electronica.estado_dian}>
+                    {t('facturacion:fe.titulo', { defaultValue: 'Factura electrónica' })}:{' '}
+                    {feEstadoLabel(f.factura_electronica.estado_dian, t)}
                   </div>
                   {f.factura_electronica.cufe && (
                     <div className="break-all text-[10px]">
@@ -322,7 +329,7 @@ export function FacturaDisplayModal({
               )}
             </div>
 
-            {warning && (
+            {feWarning && (
               // BUGFIX (2026-09-25): the opacity-modifier utilities
               // (`bg-warning/10`, `border-warning/40`) resolve to
               // transparent in this theme -- `--color-warning` is
@@ -337,7 +344,7 @@ export function FacturaDisplayModal({
                 role="alert"
                 className="rounded border border-warning bg-warning p-2 text-xs font-medium text-warning-foreground"
               >
-                {warning}
+                {feWarning}
               </p>
             )}
 

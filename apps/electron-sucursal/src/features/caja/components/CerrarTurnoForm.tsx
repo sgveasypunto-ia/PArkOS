@@ -96,7 +96,15 @@ export type CerrarTurnoErrorState =
 
 export interface CerrarTurnoFormProps {
   form: UseFormReturn<CerrarTurnoInput>;
-  onSubmit: (data: CerrarTurnoInput) => Promise<void>;
+  /**
+   * `ctx.requiereJustificacion` is the backend pre-flight verdict (`true` only
+   * when the server confirmed a cash difference): the host forwards it so the
+   * FIRST `POST /caja/arqueo` already carries the motivo (no 400 round-trip).
+   */
+  onSubmit: (
+    data: CerrarTurnoInput,
+    ctx?: { requiereJustificacion: boolean },
+  ) => Promise<void>;
   isSubmitting: boolean;
   error: CerrarTurnoErrorState;
   sesion: SesionRead;
@@ -192,7 +200,7 @@ export function CerrarTurnoForm({
       });
       return;
     }
-    await onSubmit(data);
+    await onSubmit(data, { requiereJustificacion: requiereMotivoServer === true });
   };
 
   return (

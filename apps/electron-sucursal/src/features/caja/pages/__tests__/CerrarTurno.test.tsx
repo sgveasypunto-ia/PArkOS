@@ -195,6 +195,73 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
   });
 
   // ────────────────────────────────────────────────────────────────────
+  // seq-3b (E) — pre-flight says the motivo is REQUIRED: it goes in the
+  // FIRST POST (no 400 round-trip in the console).
+  // ────────────────────────────────────────────────────────────────────
+  it('seq-3b: requiereJustificacion=true -> the FIRST POST already carries justificacion (single call, no 400 retry)', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-3b' });
+    cerrarSesion.mockResolvedValueOnce({ ok: true, status: 200, sesion: SESION });
+
+    const result = await runCerrarTurnoChain({
+      sesion: SESION,
+      uuidTipoArqueo: UUID_TIPO_CIERRE_TURNO,
+      submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
+      cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
+      bridge,
+      values: {
+        ...BASE_VALUES,
+        valor_efectivo_reportado: 97_000,
+        observaciones_cierre: '  Faltante menor en caja  ',
+      } as never,
+      requiereJustificacion: true,
+    });
+
+    expect(result.kind).toBe('cierre_completado');
+    expect(submitArqueo).toHaveBeenCalledTimes(1);
+    expect(submitArqueo).toHaveBeenCalledWith(
+      expect.objectContaining({ justificacion: 'Faltante menor en caja' }),
+    );
+  });
+
+  it('seq-3c: requiereJustificacion=false/absent -> the first POST carries NO justificacion (REQ-OPS-157), even with Observaciones typed', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-3c' });
+    cerrarSesion.mockResolvedValueOnce({ ok: true, status: 200, sesion: SESION });
+
+    await runCerrarTurnoChain({
+      sesion: SESION,
+      uuidTipoArqueo: UUID_TIPO_CIERRE_TURNO,
+      submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
+      cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
+      bridge,
+      values: {
+        ...BASE_VALUES,
+        valor_efectivo_reportado: 100_000,
+        observaciones_cierre: 'Todo cuadrado',
+      } as never,
+      requiereJustificacion: false,
+    });
+
+    expect(submitArqueo).toHaveBeenCalledTimes(1);
+    expect(submitArqueo.mock.calls[0]?.[0]).not.toHaveProperty('justificacion');
+  });
+
+  it('seq-3d: requiereJustificacion=true but the motivo is empty -> no justificacion sent (the form blocks this case)', async () => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-3d' });
+    cerrarSesion.mockResolvedValueOnce({ ok: true, status: 200, sesion: SESION });
+
+    await runCerrarTurnoChain({
+      sesion: SESION,
+      uuidTipoArqueo: UUID_TIPO_CIERRE_TURNO,
+      submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
+      cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
+      bridge,
+      values: { ...BASE_VALUES, valor_efectivo_reportado: 97_000, observaciones_cierre: '   ' } as never,
+      requiereJustificacion: true,
+    });
+    expect(submitArqueo.mock.calls[0]?.[0]).not.toHaveProperty('justificacion');
+  });
+
+  // ────────────────────────────────────────────────────────────────────
   // post-3-5xx-no-cerrarsesion — POST 5xx → arqueo_fallido
   // ────────────────────────────────────────────────────────────────────
   it('post-3: POST 5xx → arqueo_fallido, NO bridge.imprimir, NO cerrarSesion', async () => {

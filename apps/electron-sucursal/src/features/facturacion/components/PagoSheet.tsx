@@ -34,7 +34,6 @@
  */
 import { useEffect, useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -128,7 +127,6 @@ export function PagoSheet({
   firePrintEnvelope,
 }: PagoSheetProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
-  const navigate = useNavigate();
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
   const lastAnchorId = useDashboardDrawerStore((s) => s.lastAnchorId);
   const close = useDashboardDrawerStore((s) => s.close);
@@ -304,14 +302,11 @@ export function PagoSheet({
       // operator-facing confirmation; the thermal print fires in
       // parallel per DEC-SUC-27.
       setFacturaDisplay(result);
-      // HU-F8.2 (REQ-OPS-169/170) — navigate to the FE detail page if
-      // the pago created an electronic invoice. The discriminated
-      // FacturaReadSchema enforces ``factura_electronica.estado_dian``
-      // so a missing/null FE just falls through to the normal close
-      // + print sequence.
-      if (result.factura_electronica && result.factura_electronica.uuid) {
-        navigate(`/factura-electronica/${result.factura_electronica.uuid}`);
-      }
+      // The FE is ALWAYS emitted by the backend right after the charge (to the
+      // standard customer when no data was given): its state (emitted /
+      // pending / failed-and-auto-retried) is shown by <FacturaDisplayModal />.
+      // The operator is NOT redirected away, and the front never calls
+      // POST /facturacion/factura-electronica (it would answer 409).
       // DEC-SUC-27 — CU-15S print fires AFTER pago, then recibo de pago.
       const emit = firePrintEnvelope ?? defaultFirePrintEnvelope;
       deferredSafePrint(emit, 'salida', { uuid_factura: result.uuid });
@@ -323,7 +318,7 @@ export function PagoSheet({
       // FacturaDisplayModal, not here. The drawer stays open with
       // the modal mounted until the operator closes it.
     },
-    [uuid_salida, subtotal_cop, total_cop, trigger, firePrintEnvelope, navigate, invalidarConteos, sucursal?.uuid, sesion?.uuid],
+    [uuid_salida, subtotal_cop, total_cop, trigger, firePrintEnvelope, invalidarConteos, sucursal?.uuid, sesion?.uuid],
   );
 
   return (
