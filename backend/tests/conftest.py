@@ -432,7 +432,10 @@ def _terminate_leaked_transactions() -> None:
         cur.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
             "WHERE datname = current_database() AND pid <> pg_backend_pid() "
-            "AND state = 'idle in transaction'"
+            "AND state = 'idle in transaction' "
+            # Only sessions that have been stuck for a while: a connection that
+            # went idle a moment ago may belong to a test that is still running.
+            "AND now() - state_change > interval '3 seconds'"
         )
 
 
