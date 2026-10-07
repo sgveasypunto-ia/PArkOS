@@ -987,6 +987,13 @@ export function Venta({
             The FE is always emitted: the checkbox only chooses to bill the
             subscriber instead of "consumidor final".
           */}
+          {/* UX4: el precio del plan INCLUYE el IVA; esta línea es el monto a cobrar. */}
+          <p className="text-base font-semibold" data-testid="venta-total-a-pagar">
+            {t('suscripciones:venta.paso6.total_a_pagar', {
+              defaultValue: 'Total a pagar: {{monto}} (IVA incluido)',
+              monto: formatCopDecimal(totalPlan),
+            })}
+          </p>
           {desgloseIva !== null && ivaVigente.porcentaje !== null && (
             <p
               className="text-sm text-muted-foreground"
