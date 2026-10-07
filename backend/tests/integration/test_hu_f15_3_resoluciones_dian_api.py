@@ -20,6 +20,7 @@ import uuid as uuid_lib
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from _seeds import ensure_usuario
 
 _ADMIN_HTTP_PYTESTMARK = pytest.mark.parametrize("app", ["admin"], indirect=True)
 
@@ -71,6 +72,7 @@ async def _grant_permission(pg_engine, *, actor_uuid: uuid_lib.UUID, perm_code: 
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
+    await ensure_usuario(pg_engine, actor_uuid)
     permiso_uuid = await _ensure_permiso(pg_engine, perm_code=perm_code)
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
@@ -94,22 +96,12 @@ async def _assign_admin_to_sucursal(
 ) -> None:
     """Grant an admin actor an open ``usuarios_sucursal`` row for a branch.
     Mirror of ``test_hu_f15_1_sucursal_detalle_api.py::_assign_admin_to_sucursal``."""
-    from parkos_core.models.V.usuarios import Usuarios
     from parkos_core.models.V.usuarios_sucursal import UsuariosSucursal
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
+    await ensure_usuario(pg_engine, actor_uuid, rol="admin")
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        session.add(
-            Usuarios(
-                uuid=actor_uuid,
-                nombre="Admin",
-                apellido="HU-F15.3",
-                email=f"{actor_uuid}@example.com",
-                password_hash="test-hash",
-                rol="admin",
-            )
-        )
         session.add(UsuariosSucursal(uuid_sucursal=uuid_sucursal, uuid_usuario=actor_uuid))
         await session.commit()
 

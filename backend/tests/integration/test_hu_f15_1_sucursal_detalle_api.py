@@ -28,6 +28,7 @@ import uuid as uuid_lib
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from _seeds import ensure_usuario
 
 _HTTP_PYTESTMARK = pytest.mark.parametrize("app", ["sucursal"], indirect=True)
 _ADMIN_HTTP_PYTESTMARK = pytest.mark.parametrize("app", ["admin"], indirect=True)
@@ -80,6 +81,7 @@ async def _grant_permission(pg_engine, *, actor_uuid: uuid_lib.UUID, perm_code: 
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
+    await ensure_usuario(pg_engine, actor_uuid)
     permiso_uuid = await _ensure_permiso(pg_engine, perm_code=perm_code)
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
@@ -113,22 +115,12 @@ async def _assign_admin_to_sucursal(
     DB-level FK to ``prod.usuarios``, so a bare ``Usuarios`` row is seeded
     too (mirrors ``test_tarifas_tipo_required.py``'s ``_grant_permission``
     minimal-user shape)."""
-    from parkos_core.models.V.usuarios import Usuarios
     from parkos_core.models.V.usuarios_sucursal import UsuariosSucursal
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
+    await ensure_usuario(pg_engine, actor_uuid, rol="admin")
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        session.add(
-            Usuarios(
-                uuid=actor_uuid,
-                nombre="Admin",
-                apellido="HU-F15.1",
-                email=f"{actor_uuid}@example.com",
-                password_hash="test-hash",
-                rol="admin",
-            )
-        )
         session.add(
             UsuariosSucursal(uuid_sucursal=uuid_sucursal, uuid_usuario=actor_uuid)
         )
@@ -334,23 +326,31 @@ async def _seed_subscripcion_cliente_vigente(
     pg_engine, *, uuid_sucursal: uuid_lib.UUID
 ) -> uuid_lib.UUID:
     """Insert one vigente ``subscripciones_cliente`` row referencing a branch
-    (BR3: blocks ``deshabilitar`` while any such row is open). No real
-    ``clientes`` / ``tipo_subscripciones`` parent rows are needed -- neither
-    FK is enforced at the SQL level (app-enforced only, per this table's own
-    model docstring)."""
+    (BR3: blocks ``deshabilitar`` while any such row is open). The
+    ``clientes`` / ``tipo_subscripciones`` parents are seeded because both
+    FKs (``fk_subscripciones_cliente_uuid_cliente`` / ``..._tipo_subscripcion``)
+    are enforced at the SQL level."""
+    from parkos_core.models.V.clientes import Clientes
     from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
+    from parkos_core.models.V.tipo_subscripciones import TipoSubscripciones
     from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from tests.conftest import VFixtureFactory
 
     row_uuid = uuid_lib.uuid4()
     hoy = date.today()
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        cliente = VFixtureFactory.build(Clientes)
+        tipo = VFixtureFactory.build(TipoSubscripciones)
+        session.add_all([cliente, tipo])
+        await session.flush()
         session.add(
             SubscripcionesCliente(
                 uuid=row_uuid,
-                uuid_cliente=uuid_lib.uuid4(),
+                uuid_cliente=cliente.uuid,
                 uuid_sucursal=uuid_sucursal,
-                uuid_tipo_subscripcion=uuid_lib.uuid4(),
+                uuid_tipo_subscripcion=tipo.uuid,
                 fecha_inicio_cobertura=hoy,
                 fecha_vencimiento=hoy + timedelta(days=30),
                 vigente_desde=_now_naive(),

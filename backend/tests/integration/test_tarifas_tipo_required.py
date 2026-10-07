@@ -30,6 +30,12 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import pytest
+from _seeds import grant_admin_scope
+
+# Pydantic v2 reports an OMITTED required field as ``missing`` and an explicit
+# ``null`` for a non-nullable UUID as ``uuid_type``. Both mean "the tipo is
+# required" -- the contract these tests pin.
+_REQUIRED_ERROR_TYPES = ("missing", "uuid_type")
 
 
 async def _grant_permission(pg_engine, *, actor_uuid: uuid_lib.UUID, perm_code: str) -> None:
@@ -104,9 +110,8 @@ async def _seed_sucursal(pg_engine, uuid_sucursal: uuid_lib.UUID) -> None:
                 ciudad="Bogota",
                 direccion="Calle 1",
                 telefono="000",
-                email="test@parkos.local",
-                responsable="Tester",
-                operativa_desde=now,
+                prefijo_nombre=f"T{uuid_sucursal.hex[:6]}",
+                horario="24/7",
                 vigente_desde=now,
                 vigente_hasta=None,
                 estado="activo",
@@ -189,6 +194,7 @@ async def test_post_tarifa_uuid_tipo_vehiculo_null_returns_422(
 
     actor_uuid = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     resp = await client.post(
@@ -210,7 +216,7 @@ async def test_post_tarifa_uuid_tipo_vehiculo_null_returns_422(
     detail = resp.json()["detail"]
     assert any(
         err["loc"] == ["body", "uuid_tipo_vehiculo"]
-        and err["type"] == "missing"
+        and err["type"] in _REQUIRED_ERROR_TYPES
         for err in detail
     ), detail
 
@@ -233,6 +239,7 @@ async def test_post_tarifa_uuid_tipo_tarifa_null_returns_422(
 
     actor_uuid = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     resp = await client.post(
@@ -252,7 +259,8 @@ async def test_post_tarifa_uuid_tipo_tarifa_null_returns_422(
     assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
     detail = resp.json()["detail"]
     assert any(
-        err["loc"] == ["body", "uuid_tipo_tarifa"] and err["type"] == "missing"
+        err["loc"] == ["body", "uuid_tipo_tarifa"]
+        and err["type"] in _REQUIRED_ERROR_TYPES
         for err in detail
     ), detail
 
@@ -271,6 +279,7 @@ async def test_post_tarifa_both_tipos_null_returns_422(
 
     actor_uuid = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     resp = await client.post(
@@ -290,7 +299,7 @@ async def test_post_tarifa_both_tipos_null_returns_422(
     assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
     detail = resp.json()["detail"]
     missing_locs = {
-        tuple(err["loc"]) for err in detail if err["type"] == "missing"
+        tuple(err["loc"]) for err in detail if err["type"] in _REQUIRED_ERROR_TYPES
     }
     assert ("body", "uuid_tipo_vehiculo") in missing_locs
     assert ("body", "uuid_tipo_tarifa") in missing_locs
@@ -316,6 +325,7 @@ async def test_post_tarifa_both_tipos_set_succeeds(
 
     actor_uuid = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     resp = await client.post(
@@ -360,6 +370,7 @@ async def test_put_tarifa_cannot_clear_tipo_via_update(
 
     actor_uuid = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     # Seed a tarifa (happy path).
@@ -398,6 +409,7 @@ async def test_put_tarifa_cannot_clear_tipo_via_update(
     assert put.status_code == 422, f"got {put.status_code}: {put.text}"
     detail = put.json()["detail"]
     assert any(
-        err["loc"] == ["body", "uuid_tipo_vehiculo"] and err["type"] == "missing"
+        err["loc"] == ["body", "uuid_tipo_vehiculo"]
+        and err["type"] in _REQUIRED_ERROR_TYPES
         for err in detail
     ), detail

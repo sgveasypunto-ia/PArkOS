@@ -29,6 +29,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import pytest
+from _seeds import grant_admin_scope
 
 
 async def _grant(pg_engine, *, actor_uuid: uuid_lib.UUID, perm_code: str) -> None:
@@ -71,6 +72,7 @@ async def test_create_cliente_via_real_http_with_canonical_permission(
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant(pg_engine, actor_uuid=actor_uuid, perm_code="gestionar_clientes")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
 
     resp = await client.post(

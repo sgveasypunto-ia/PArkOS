@@ -37,6 +37,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import pytest
+from _seeds import close_open_tipos_vehiculo, grant_admin_scope
 
 
 async def _grant_permission(pg_engine, *, actor_uuid: uuid_lib.UUID, perm_code: str) -> None:
@@ -94,15 +95,14 @@ async def _seed_active_tipos_vehiculo(pg_engine, tipos: list[str]) -> None:
 
 
 async def _truncate_tipos_vehiculo(pg_engine) -> None:
-    """Wipe the catalog for isolation between tests."""
-    from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
-    from sqlalchemy.ext.asyncio import async_sessionmaker
+    """Free the catalog for isolation between tests (logical close, no DELETE).
 
-    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
-    async with Session() as session:
-        for row in (await session.execute(TiposVehiculo.__table__.select())).scalars():
-            await session.delete(row)
-        await session.commit()
+    ``tipos_vehiculo_restaurados`` (module-wide) reopens the seeded rows after.
+    """
+    await close_open_tipos_vehiculo(pg_engine)
+
+
+pytestmark = pytest.mark.usefixtures("tipos_vehiculo_restaurados")
 
 
 @pytest.mark.parametrize("app", ["admin"], indirect=True)
@@ -120,6 +120,7 @@ async def test_sextu_tipo_returns_409_max_reached(
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_catalogo")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
 
     resp = await client.post(
@@ -149,6 +150,7 @@ async def test_post_succeeds_when_one_slot_frees_up_via_bi_temporal_close(
     from datetime import UTC, datetime
 
     from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
+    from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     await _truncate_tipos_vehiculo(pg_engine)
@@ -159,9 +161,12 @@ async def test_post_succeeds_when_one_slot_frees_up_via_bi_temporal_close(
     # Close ``moto`` bi-temporally (no DELETE — canon).
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        # Only the OPEN ``moto``: earlier tests leave closed history rows behind.
         moto = (
             await session.execute(
-                TiposVehiculo.__table__.select().where(TiposVehiculo.tipo == "moto")
+                select(TiposVehiculo).where(
+                    TiposVehiculo.tipo == "moto", TiposVehiculo.vigente_hasta.is_(None)
+                )
             )
         ).scalar_one()
         moto.vigente_hasta = datetime.now(UTC).replace(tzinfo=None)
@@ -171,6 +176,7 @@ async def test_post_succeeds_when_one_slot_frees_up_via_bi_temporal_close(
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_catalogo")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
 
     resp = await client.post(
@@ -259,6 +265,7 @@ async def test_put_tipo_vehiculo_returns_409_with_subscripcion_vigente(
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_catalogo")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
 
     resp = await client.put(
@@ -288,6 +295,7 @@ async def test_put_tipo_vehiculo_succeeds_without_subscripcion_vigente(
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_catalogo")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
 
     resp = await client.put(

@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 
 def _now_naive() -> datetime:
@@ -259,3 +260,41 @@ def _empresa_extra_rows_as_closed_history():
         yield
     finally:
         event.remove(Session, "before_flush", _before_flush)
+
+
+@pytest_asyncio.fixture
+async def tipos_vehiculo_restaurados(pg_engine, alembic_upgrade):
+    """Leave ``tipos_vehiculo`` exactly as found, whatever the test did to it.
+
+    Tests of the 5-row cap close the seeded catalog (see
+    ``_seeds.close_open_tipos_vehiculo``) and create their own rows. On teardown
+    every row opened by the test is closed and the originally-open ones are
+    reopened, so later tests see the seeded catalog again (no order dependence).
+    """
+    from sqlalchemy import text
+
+    async with pg_engine.connect() as conn:
+        originales = [
+            row[0]
+            for row in await conn.execute(
+                text("SELECT uuid FROM prod.tipos_vehiculo WHERE vigente_hasta IS NULL")
+            )
+        ]
+    try:
+        yield
+    finally:
+        async with pg_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE prod.tipos_vehiculo SET vigente_hasta = NOW(), estado = 'inactivo' "
+                    "WHERE vigente_hasta IS NULL AND uuid <> ALL(:orig)"
+                ),
+                {"orig": originales},
+            )
+            await conn.execute(
+                text(
+                    "UPDATE prod.tipos_vehiculo SET vigente_hasta = NULL, estado = 'activo' "
+                    "WHERE uuid = ANY(:orig)"
+                ),
+                {"orig": originales},
+            )

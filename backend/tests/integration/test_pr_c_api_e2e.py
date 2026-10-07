@@ -34,6 +34,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from _seeds import ensure_usuario, grant_admin_scope
 
 # Only the HTTP-driven tests parametrize ``app``. The UK01 invariant
 # tests (no HTTP) skip it. Pattern documented in PR-C.
@@ -92,6 +93,7 @@ async def _grant_permission(
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
+    await ensure_usuario(pg_engine, actor_uuid)
     permiso_uuid = await _ensure_permiso(pg_engine, perm_code=perm_code)
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
@@ -158,6 +160,43 @@ async def _seed_sucursal(pg_engine, uuid_sucursal: uuid_lib.UUID) -> None:
             )
         )
         await session.commit()
+    await _seed_tipos_tarifa_requeridos(pg_engine)
+
+
+# ``tarifas_sucursal.uuid_tipo_vehiculo`` / ``uuid_tipo_tarifa`` are mandatory
+# (see ``test_tarifas_tipo_required.py``), so every tarifa this module posts
+# carries these two real catalog rows (seeded idempotently by ``_seed_sucursal``).
+_TIPO_VEHICULO_UUID = uuid_lib.UUID("5f0c1b7e-0000-4000-8000-00000000c001")
+_TIPO_TARIFA_UUID = uuid_lib.UUID("5f0c1b7e-0000-4000-8000-00000000c002")
+
+
+async def _seed_tipos_tarifa_requeridos(pg_engine) -> None:
+    from parkos_core.models.V.tipo_tarifa import TipoTarifa
+    from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        for model, uid, nombre in (
+            (TiposVehiculo, _TIPO_VEHICULO_UUID, "pr-c-vehiculo"),
+            (TipoTarifa, _TIPO_TARIFA_UUID, "pr-c-tarifa"),
+        ):
+            if (await session.execute(select(model.uuid).where(model.uuid == uid))).first():
+                continue
+            session.add(
+                model(
+                    uuid=uid,
+                    tipo=nombre,
+                    vigente_desde=_now_naive(),
+                    vigente_hasta=None,
+                    estado="activo",
+                    created_at=_now_naive(),
+                    created_by=None,
+                    sync_status="sincronizado",
+                )
+            )
+        await session.commit()
 
 
 async def _truncate_tarifas(pg_dsn: str) -> None:
@@ -185,8 +224,8 @@ def _tarifa_payload(
 ) -> dict[str, object]:
     body: dict[str, object] = {
         "uuid_sucursal": str(uuid_sucursal),
-        "uuid_tipo_vehiculo": None,
-        "uuid_tipo_tarifa": None,
+        "uuid_tipo_vehiculo": str(_TIPO_VEHICULO_UUID),
+        "uuid_tipo_tarifa": str(_TIPO_TARIFA_UUID),
         "valor": valor,
         "valor_plena": valor_plena,
     }
@@ -311,6 +350,7 @@ async def test_t1_tarifa_vigente_desde_futuro(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     futura = _now_naive() + timedelta(days=30)
@@ -330,7 +370,11 @@ async def test_t1_tarifa_vigente_desde_futuro(
     # GET by-key/history lists the future version.
     by_key = await client.get(
         "/api/v1/empresa/tarifas-sucursal/by-key",
-        params={"sucursal": str(branch_uuid)},
+        params={
+            "sucursal": str(branch_uuid),
+            "tipo_vehiculo": str(_TIPO_VEHICULO_UUID),
+            "tipo_tarifa": str(_TIPO_TARIFA_UUID),
+        },
         headers={
             "Authorization": f"Bearer {token}",
             "X-Sucursal-Context": str(branch_uuid),
@@ -364,6 +408,7 @@ async def test_t2_put_tarifa_overlap_devuelve_409(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -421,6 +466,7 @@ async def test_t3_put_tarifa_cambia_sucursal_devuelve_422(
     await _seed_sucursal(pg_engine, branch_a)
     await _seed_sucursal(pg_engine, branch_b)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_a, branch_b])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_a, branch_b])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -464,6 +510,7 @@ async def test_t4_post_tarifa_valor_negativo_devuelve_422(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     resp = await client.post(
@@ -500,6 +547,7 @@ async def test_t5_by_key_history_recorre_versiones_post_close(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -528,7 +576,11 @@ async def test_t5_by_key_history_recorre_versiones_post_close(
     # by-key walks the full chain.
     by_key = await client.get(
         "/api/v1/empresa/tarifas-sucursal/by-key",
-        params={"sucursal": str(branch_uuid)},
+        params={
+            "sucursal": str(branch_uuid),
+            "tipo_vehiculo": str(_TIPO_VEHICULO_UUID),
+            "tipo_tarifa": str(_TIPO_TARIFA_UUID),
+        },
         headers=headers,
     )
     assert by_key.status_code == 200, by_key.text
@@ -560,6 +612,7 @@ async def test_c1_post_cantidad_vigente_desde_futuro(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     futura = _now_naive() + timedelta(days=15)
@@ -606,6 +659,7 @@ async def test_c2_put_cantidad_bajo_ingresos_activos_devuelve_422(
     await _seed_sucursal(pg_engine, branch_uuid)
     await _seed_tipo_vehiculo(pg_engine, uuid_tipo=tipo_uuid, tipo="moto")
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -660,6 +714,7 @@ async def test_c8_put_cantidad_aumenta_capacidad_ok(
     await _seed_sucursal(pg_engine, branch_uuid)
     await _seed_tipo_vehiculo(pg_engine, uuid_tipo=tipo_uuid, tipo="carro")
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -703,6 +758,7 @@ async def test_c9_put_cantidad_reduce_por_encima_de_ocupado_ok(
     await _seed_sucursal(pg_engine, branch_uuid)
     await _seed_tipo_vehiculo(pg_engine, uuid_tipo=tipo_uuid, tipo="carro")
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -751,6 +807,7 @@ async def test_c3_put_cantidad_baja_sin_ingresos_activos_ok(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -804,6 +861,7 @@ async def test_c4_post_cantidad_overlap_devuelve_409(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -854,6 +912,7 @@ async def test_c5_put_cantidad_cambia_sucursal_devuelve_422(
     await _seed_sucursal(pg_engine, branch_a)
     await _seed_sucursal(pg_engine, branch_b)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_a, branch_b])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_a, branch_b])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -907,6 +966,7 @@ async def test_c6_post_cantidad_vigente_desde_tz_aware_no_500(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -944,6 +1004,7 @@ async def test_c7_put_cantidad_vigente_desde_tz_aware_no_500(
     actor_uuid = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, branch_uuid)
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
     headers = {
         "Authorization": f"Bearer {token}",

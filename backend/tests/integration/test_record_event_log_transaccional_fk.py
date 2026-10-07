@@ -26,8 +26,10 @@ populate a server-generated column.
 from __future__ import annotations
 
 import uuid as uuid_lib
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from _seeds import grant_admin_scope
 
 
 @pytest.mark.parametrize("app", ["admin"], indirect=True)
@@ -35,7 +37,9 @@ async def test_ingreso_log_transaccional_row_has_real_fk(
     client, pg_engine, alembic_upgrade, mint_admin_jwt
 ) -> None:
     from parkos_core.models.A.log_transaccional import LogTransaccional
+    from parkos_core.models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
     from parkos_core.models.V.sucursal import Sucursal
+    from parkos_core.models.V.tarifas_sucursal import TarifasSucursal
     from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -50,7 +54,27 @@ async def test_ingreso_log_transaccional_row_has_real_fk(
         session.add(Sucursal(uuid=sucursal_ctx, nombre="Test", prefijo_nombre="TST"))
         tipo_vehiculo_uuid = uuid_lib.uuid4()
         session.add(TiposVehiculo(uuid=tipo_vehiculo_uuid, tipo="carro"))
+        await session.flush()
+        # V1 (HU-F1.6): an ingreso needs a configured cupo for the tipo.
+        session.add(
+            CantidadVehiculosSucursal(
+                uuid_sucursal=sucursal_ctx, uuid_tipo_vehiculo=tipo_vehiculo_uuid, cantidad=10
+            )
+        )
+        # V3 (HU-F1.6): and a vigente tarifa to bill against.
+        session.add(
+            TarifasSucursal(
+                uuid_sucursal=sucursal_ctx,
+                uuid_tipo_vehiculo=tipo_vehiculo_uuid,
+                valor=1000,
+                valor_plena=1500,
+                vigente_desde=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1),
+                estado="activo",
+            )
+        )
         await session.commit()
+    # After the branch exists: the admin scope is read from usuarios_sucursal.
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
 
     placa = f"AUD{uuid_lib.uuid4().hex[:5].upper()}"
     resp = await client.post(
