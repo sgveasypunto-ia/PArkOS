@@ -470,7 +470,12 @@ async def dispatch_factura_electronica(
         created_by=actor_uuid,
     )
     session.add(envio)
-    await session.flush()  # populate envio.uuid without committing
+    # COMMIT (not just flush) before any HTTP work: the provider call can
+    # sleep minutes (transport backoff) and must never run inside an open
+    # transaction -- that left connections 'idle in transaction' holding
+    # locks and blocked /sync/push (defect D5).
+    await session.commit()
+    await session.refresh(envio)
 
     # Initial POST. Rejected XML → rejection + alerta, no track_id.
     track_id, rechazo = await _send_initial(provider, xml_bytes)
@@ -586,7 +591,12 @@ async def dispatch_revocacion(
         created_by=actor_uuid,
     )
     session.add(envio)
-    await session.flush()  # populate envio.uuid without committing
+    # COMMIT (not just flush) before any HTTP work: the provider call can
+    # sleep minutes (transport backoff) and must never run inside an open
+    # transaction -- that left connections 'idle in transaction' holding
+    # locks and blocked /sync/push (defect D5).
+    await session.commit()
+    await session.refresh(envio)
 
     # Initial POST — rejection short-circuits straight to terminal.
     try:
@@ -596,6 +606,17 @@ async def dispatch_revocacion(
             envio,
             PollResult(
                 estado=ESTADO_RECHAZADO, motivo_rechazo=_http_motivo("send:", exc)
+            ),
+            session,
+        )
+    except httpx.RequestError as exc:
+        # Transport failure (DNS, connect, read timeout): degrade to a
+        # retryable ``timeout`` outcome instead of propagating (D5).
+        return await _record_terminal(
+            envio,
+            PollResult(
+                estado=ESTADO_TIMEOUT,
+                motivo_rechazo=f"send: {type(exc).__name__}: timeout",
             ),
             session,
         )

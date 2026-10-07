@@ -315,6 +315,24 @@ async def test_ls_manual_when_timestamp_evento_missing(make_spec) -> None:
     assert resolution.reason == "missing_timestamp_evento"
 
 
+async def test_ls_sesion_uses_its_own_lifecycle_timestamp_as_event_time(make_spec) -> None:
+    """D5: ``sesion`` has no ``timestamp_evento``; apertura/cierre stand in."""
+    spec = make_spec("sesion")
+    fresh = (datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=2)).isoformat()
+    stale = (datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=40)).isoformat()
+
+    async def run(remote):
+        return await resolve_conflict(
+            None, spec, uuid_registro=uuid_lib.uuid4(), local=None,  # type: ignore[arg-type]
+            remote=remote, actor_uuid=ACTOR_UUID,
+        )
+
+    assert (await run({"timestamp_apertura": fresh})).status == "APPLIED"
+    assert (await run({"timestamp_apertura": stale, "timestamp_cierre": fresh})).status == "APPLIED"
+    assert (await run({"timestamp_apertura": stale})).reason == "grace_window_expired"
+    assert (await run({})).reason == "missing_timestamp_evento"
+
+
 async def test_ls_applies_when_timestamp_evento_is_wire_string(make_spec) -> None:
     """``remote`` is the incoming WIRE payload — over real JSON (the only
     way a row actually reaches this function outside a test), a datetime

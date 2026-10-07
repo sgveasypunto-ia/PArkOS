@@ -62,6 +62,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.jwt_issuer_guard import verify_jwt
@@ -214,6 +215,9 @@ class _PushResponseRow(_Base):
     - ``retry_parent_missing`` — a declared ``depends_on`` parent has not
       arrived yet; also settled for the outbox (T-PR12-005 leaves
       ``intentos``/``next_retry_at`` untouched).
+    - ``apply_error`` — the database rejected the row (e.g. FK violation
+      while its parent is still in flight). Rolled back to its own
+      savepoint; the sender marks it failed and retries with backoff.
     - ``unknown_table`` — the row names a table with no
       ``SYNC_CATALOG`` entry. Reported, never silently dropped
       (REQ-CUT-015).
@@ -688,7 +692,27 @@ async def sync_push(
 
             if motor is None:
                 motor = SyncMotor(engine=engine_flag.get_engine())
-            apply_result = await motor.apply_row(session, spec, row.datos, actor_uuid=actor_uuid)
+            try:
+                # SAVEPOINT per row (D5): one row violating a constraint
+                # (typically an FK whose parent is still in flight) used to
+                # abort the WHOLE batch with a 500; the sender retried the
+                # identical batch forever and every other valid row starved.
+                async with session.begin_nested():
+                    apply_result = await motor.apply_row(
+                        session, spec, row.datos, actor_uuid=actor_uuid
+                    )
+            except DBAPIError as exc:
+                logging.getLogger(__name__).warning(
+                    "sync_push.row_db_error tabla=%s error=%s", row.tabla, type(exc.orig).__name__
+                )
+                # Reported, not applied: the sender marks it failed and
+                # retries it with backoff (never mark_dispatched).
+                results_by_index[idx] = _PushResponseRow(
+                    uuid_registro=row.uuid_registro,
+                    status="apply_error",
+                    detail=f"{type(exc.orig).__name__}: {str(exc.orig)[:200]}",
+                )
+                continue
             results_by_index[idx] = _PushResponseRow(
                 uuid_registro=row.uuid_registro,
                 status=wire_status_for_apply_result(apply_result),

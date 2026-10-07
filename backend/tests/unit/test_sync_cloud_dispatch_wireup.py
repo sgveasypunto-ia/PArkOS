@@ -94,7 +94,25 @@ def _fake_session() -> MagicMock:
     """
     session = MagicMock(name="session")
     session.flush = AsyncMock()
+    # D5: dispatches are DEFERRED to after the commit (``defer_dispatch``
+    # queues them in ``sync_session.info``); ``_drain`` plays the part of
+    # the post-commit listener.
+    session.sync_session = SimpleNamespace(info={})
     return session
+
+
+async def _drain(session: MagicMock) -> None:
+    """Run what the hooks queued, as the after-commit listener would."""
+    queued = session.sync_session.info.get(dian_dispatch_on_sync._PENDING_KEY, [])
+    for make in list(queued):
+        await make(MagicMock(name="fresh_session"))
+    queued.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_session_listeners():
+    with patch.object(dian_dispatch_on_sync.event, "listen"):
+        yield
 
 
 def _fake_row(row_uuid: uuid_lib.UUID | None = None) -> SimpleNamespace:
@@ -186,6 +204,8 @@ class TestFacturaElectronicaApplyFiresDispatch:
                 session, spec, dict(payload), actor_uuid=ACTOR_UUID
             )
 
+        await _drain(session)
+
         assert result.status == "APPLIED"
         assert result.row_uuid == FE_UUID
 
@@ -239,6 +259,8 @@ class TestRevocacionFacturaApplyFiresDispatch:
             result = await apply_row(
                 session, spec, dict(payload), actor_uuid=ACTOR_UUID
             )
+
+        await _drain(session)
 
         assert result.status == "APPLIED"
         assert result.row_uuid == REV_UUID
@@ -297,6 +319,8 @@ class TestEnvioDianApplyDispatchRouting:
                 session, spec, dict(payload), actor_uuid=ACTOR_UUID
             )
 
+        await _drain(session)
+
         assert result.status == "APPLIED"
         fe_dispatch_mock.assert_awaited_once()
         rev_dispatch_mock.assert_not_called()
@@ -344,6 +368,8 @@ class TestEnvioDianApplyDispatchRouting:
             result = await apply_row(
                 session, spec, dict(payload), actor_uuid=ACTOR_UUID
             )
+
+        await _drain(session)
 
         assert result.status == "APPLIED"
         fe_dispatch_mock.assert_not_called()
@@ -395,6 +421,7 @@ class TestEnvioDianApplyDispatchRouting:
                 result = await apply_row(
                     session, spec, dict(payload), actor_uuid=ACTOR_UUID
                 )
+                await _drain(session)
                 assert result.status == "APPLIED", (
                     f"apply failed for estado={non_pendiente}"
                 )
@@ -436,6 +463,8 @@ class TestEnvioDianApplyDispatchRouting:
             result = await apply_row(
                 session, spec, dict(payload), actor_uuid=ACTOR_UUID
             )
+
+        await _drain(session)
 
         assert result.status == "APPLIED"
         fe_dispatch_mock.assert_not_called()

@@ -96,7 +96,9 @@ class FactusProvider(DianProvider):
         )
 
     def _default_session_factory(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=httpx.Timeout(self.timeout_s))
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(self.timeout_s, connect=min(self.timeout_s, 5.0))
+        )
 
     def _read_token(self) -> str:
         """Read the Bearer token from disk on every call (rotation-safe)."""

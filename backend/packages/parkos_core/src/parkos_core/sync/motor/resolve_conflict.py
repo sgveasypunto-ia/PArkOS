@@ -283,6 +283,15 @@ async def resolve_conflict(
         # REQ-MOT-013 — 24h grace window (configurable).
         grace_hours = _resolve_session_grace_hours(session_grace_hours)
         timestamp_evento = remote.get("timestamp_evento")
+        if timestamp_evento is None and spec.name == "sesion":
+            # ``sesion`` carries no ``timestamp_evento``; its own lifecycle
+            # timestamps ARE the event time. Without this every sesion
+            # resolved MANUAL (silently never written, yet acknowledged to
+            # the branch), and every child row (arqueo, factura_pagos, ...)
+            # then failed its FK to ``sesion`` forever (D5).
+            timestamp_evento = remote.get("timestamp_cierre") or remote.get(
+                "timestamp_apertura"
+            )
         if timestamp_evento is None:
             return ConflictResolution(status="MANUAL", reason="missing_timestamp_evento")
         # ``remote`` is the incoming wire payload — over JSON, a datetime

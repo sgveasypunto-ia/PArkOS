@@ -49,9 +49,15 @@ next touches the FE/dispatcher wire-up.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid as uuid_lib
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
+
+import structlog
+from sqlalchemy import event
 
 from .. import registry
 from ..base import HookContext, HookResult
@@ -66,6 +72,65 @@ _DIAN_PROVIDER_URL: str = os.environ.get(
 _DIAN_TOKEN_PATH: Path = Path(
     os.environ.get("PARKOS_DIAN_PROVIDER_TOKEN_PATH", "/dev/null")
 )
+
+_log = structlog.get_logger(__name__)
+
+#: ``Session.info`` key holding the dispatches queued by the current
+#: transaction (defect D5: they used to run INLINE inside the sync apply
+#: transaction; a slow/unreachable provider left it ``idle in transaction``
+#: holding locks and blocked ``/sync/push`` for every other branch).
+_PENDING_KEY = "parkos_dian_deferred_dispatches"
+
+DeferredDispatch = Callable[[Any], Awaitable[Any]]
+
+# Strong refs: the loop only keeps weak refs to tasks.
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+async def _run_deferred(make: DeferredDispatch) -> None:
+    """Run one queued dispatch in its OWN session, after the apply committed."""
+    try:
+        from ....db.engine import SessionLocal
+
+        async with SessionLocal() as session:
+            await make(session)
+    except Exception:  # noqa: BLE001 - background; the envio_dian chain keeps the state
+        _log.warning("dian_dispatch.deferred_failed", exc_info=True)
+
+
+def _on_after_commit(sync_session: Any) -> None:
+    pending: list[DeferredDispatch] = sync_session.info.get(_PENDING_KEY) or []
+    if not pending:
+        return
+    queued = list(pending)
+    pending.clear()
+    loop = asyncio.get_running_loop()
+    for make in queued:
+        task = loop.create_task(_run_deferred(make), name="dian_dispatch")
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+def _on_after_rollback(sync_session: Any) -> None:
+    pending = sync_session.info.get(_PENDING_KEY)
+    if pending:
+        pending.clear()
+
+
+def defer_dispatch(session: Any, make: DeferredDispatch) -> None:
+    """Queue ``make(fresh_session)`` to run AFTER the session's commit.
+
+    Never runs the provider call inside the caller's transaction. A
+    rollback drops the queue (the rows it referred to never existed).
+    """
+    sync_session = session.sync_session
+    pending = sync_session.info.get(_PENDING_KEY)
+    if pending is None:
+        sync_session.info[_PENDING_KEY] = pending = []
+        event.listen(sync_session, "after_commit", _on_after_commit)
+        event.listen(sync_session, "after_rollback", _on_after_rollback)
+    pending.append(make)
+
 
 # ``envio_dian`` workflow state-machine initial state (D1-rev: branch is
 # the author of the envio_dian chain, initial transition is ``pendiente``).
@@ -100,12 +165,18 @@ async def dian_factura_electronica_dispatch_hook(ctx: HookContext) -> HookResult
         dispatch_factura_electronica_with_backoff,
     )
 
-    await dispatch_factura_electronica_with_backoff(
+    row_uuid = ctx.row_uuid
+    actor_uuid = ctx.actor_uuid
+
+    defer_dispatch(
         ctx.session,
-        uuid_factura_electronica=ctx.row_uuid,
-        actor_uuid=ctx.actor_uuid,
-        dian_provider_url=_DIAN_PROVIDER_URL,
-        dian_token_path=_DIAN_TOKEN_PATH,
+        lambda session: dispatch_factura_electronica_with_backoff(
+            session,
+            uuid_factura_electronica=row_uuid,
+            actor_uuid=actor_uuid,
+            dian_provider_url=_DIAN_PROVIDER_URL,
+            dian_token_path=_DIAN_TOKEN_PATH,
+        ),
     )
     return HookResult(proceed=True)
 
@@ -126,12 +197,18 @@ async def dian_revocacion_factura_dispatch_hook(ctx: HookContext) -> HookResult:
 
     from ....dian.cloud.dispatcher import dispatch_revocacion_with_backoff
 
-    await dispatch_revocacion_with_backoff(
+    row_uuid = ctx.row_uuid
+    actor_uuid = ctx.actor_uuid
+
+    defer_dispatch(
         ctx.session,
-        uuid_revocacion_factura=ctx.row_uuid,
-        actor_uuid=ctx.actor_uuid,
-        dian_provider_url=_DIAN_PROVIDER_URL,
-        dian_token_path=_DIAN_TOKEN_PATH,
+        lambda session: dispatch_revocacion_with_backoff(
+            session,
+            uuid_revocacion_factura=row_uuid,
+            actor_uuid=actor_uuid,
+            dian_provider_url=_DIAN_PROVIDER_URL,
+            dian_token_path=_DIAN_TOKEN_PATH,
+        ),
     )
     return HookResult(proceed=True)
 
@@ -176,22 +253,28 @@ async def envio_dian_resume_hook(ctx: HookContext) -> HookResult:
             dispatch_factura_electronica_with_backoff,
         )
 
-        await dispatch_factura_electronica_with_backoff(
+        defer_dispatch(
             ctx.session,
-            uuid_factura_electronica=uuid_factura_electronica,
-            actor_uuid=ctx.actor_uuid,
-            dian_provider_url=_DIAN_PROVIDER_URL,
-            dian_token_path=_DIAN_TOKEN_PATH,
+            lambda session: dispatch_factura_electronica_with_backoff(
+                session,
+                uuid_factura_electronica=uuid_factura_electronica,
+                actor_uuid=ctx.actor_uuid,
+                dian_provider_url=_DIAN_PROVIDER_URL,
+                dian_token_path=_DIAN_TOKEN_PATH,
+            ),
         )
     elif uuid_revocacion_factura is not None:
         from ....dian.cloud.dispatcher import dispatch_revocacion_with_backoff
 
-        await dispatch_revocacion_with_backoff(
+        defer_dispatch(
             ctx.session,
-            uuid_revocacion_factura=uuid_revocacion_factura,
-            actor_uuid=ctx.actor_uuid,
-            dian_provider_url=_DIAN_PROVIDER_URL,
-            dian_token_path=_DIAN_TOKEN_PATH,
+            lambda session: dispatch_revocacion_with_backoff(
+                session,
+                uuid_revocacion_factura=uuid_revocacion_factura,
+                actor_uuid=ctx.actor_uuid,
+                dian_provider_url=_DIAN_PROVIDER_URL,
+                dian_token_path=_DIAN_TOKEN_PATH,
+            ),
         )
 
     return HookResult(proceed=True)
@@ -212,6 +295,7 @@ registry.register(
 
 
 __all__ = [
+    "defer_dispatch",
     "dian_factura_electronica_dispatch_hook",
     "dian_revocacion_factura_dispatch_hook",
     "envio_dian_resume_hook",
