@@ -5,7 +5,7 @@
  * Layout:
  *   - Header con título i18n.
  *   - Input de búsqueda (`data-testid="listado-search-input"`) →
- *     filtra case-insensitive por `placa` OR `cliente_nombre` SIN
+ *     filtra case-insensitive por cliente OR identificación SIN
  *     emitir un nuevo GET (filter is client-side, no SWR mutate).
  *   - DataTable con 5 columnas: cliente | plan | fecha_vencimiento |
  *     dias_restantes | estado (badge).
@@ -16,18 +16,15 @@
  * Ruta: `/suscripciones` (registrada en `App.tsx`). El F9.1 wizard
  * vive en `/suscripciones/venta` y permanece inalterado.
  *
- * Data fetching: SWR over `GET /api/v1/suscripciones-cliente?uuid_sucursal=X`
- * (Path A — paginado por cursor, plan.md:2099). El hook here is
- * intentionally minimal; the polling cadence is the same as
- * `useSuscripcionesProximasVencer` but the SWR key is distinct.
+ * Data fetching: `useSuscripcionesActivas` -> `GET /api/v1/clientes/subscripciones-activas`
+ * (branch-scoped server-side, enriched with cliente/plan/dias_restantes). The raw
+ * `/clientes/subscripciones-cliente` CRUD list only carries FKs (no client/plan names), and
+ * the old `/api/v1/suscripciones-cliente` path never existed (404).
  */
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import useSWR from 'swr';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
-import { useAuthStore } from '@parkos/ui-kit/store';
-import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 import { Input } from '@/components/ui/input';
 import {
@@ -40,82 +37,55 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 
-const ONE_DAY_MS = 86_400_000;
+import type { SubscripcionActivaItem } from '../api/cuposApi';
+import { useSuscripcionesActivas } from '../hooks/useSuscripcionesActivas';
 
 export interface ListadoRow {
   uuid: string;
-  placa: string;
   cliente_nombre: string;
+  numero_identificacion: string;
   plan_nombre: string;
-  fecha_vencimiento: string; // ISO YYYY-MM-DD
-  estado: 'activa' | 'vencida' | 'suspendida';
+  fecha_vencimiento: string; // ISO YYYY-MM-DD ('' when unknown)
+  dias_restantes: number | null;
+  estado: 'activa' | 'vencida';
 }
 
-/**
- * Pure helper — case-insensitive substring search over `placa` OR
- * `cliente_nombre`. Empty query passes the rows through (REQ-OPS-182
- * "empty search shows all rows"). Exported for testability.
- */
+/** Maps the backend item; `dias_restantes` is server-computed (Bogota calendar), never recomputed here. */
+function toRow(i: SubscripcionActivaItem): ListadoRow {
+  const dias = i.dias_restantes ?? null;
+  return {
+    uuid: i.uuid,
+    cliente_nombre: [i.cliente.nombre, i.cliente.apellido].filter(Boolean).join(' '),
+    numero_identificacion: i.cliente.numero_identificacion ?? '',
+    plan_nombre: i.plan.tipo ?? '',
+    fecha_vencimiento: i.fecha_vencimiento ?? '',
+    dias_restantes: dias,
+    estado: dias !== null && dias < 0 ? 'vencida' : 'activa',
+  };
+}
+
+/** Case-insensitive substring search over cliente name OR identification. Empty query passes all. */
 function filterListado(rows: ListadoRow[], query: string): ListadoRow[] {
   const q = query.trim().toLowerCase();
   if (!q) return rows;
   return rows.filter(
     (r) =>
-      r.placa.toLowerCase().includes(q) ||
-      r.cliente_nombre.toLowerCase().includes(q),
+      r.cliente_nombre.toLowerCase().includes(q) ||
+      r.numero_identificacion.toLowerCase().includes(q),
   );
-}
-
-/**
- * Pure helper — days remaining from `now` to `fecha_vencimiento`.
- * Negative means already expired (rendered via badge, NOT in the
- * banner hook — REQ-OPS-181 filter excludes those).
- */
-function diasRestantes(fecha_vencimiento: string, now: Date): number {
-  const v = new Date(`${fecha_vencimiento}T00:00:00Z`).getTime();
-  return Math.floor((v - now.getTime()) / ONE_DAY_MS);
 }
 
 export function Listado(): JSX.Element {
   const { t } = useTranslation('suscripciones');
   const { sucursal } = useAuth();
-  const accessToken = useAuthStore((s) => s.accessToken);
   const uuid_sucursal = sucursal?.uuid ?? null;
   const [search, setSearch] = useState('');
+  const { data, error } = useSuscripcionesActivas(uuid_sucursal);
 
-  const key =
-    uuid_sucursal && accessToken
-      ? `/api/v1/suscripciones-cliente?uuid_sucursal=${uuid_sucursal}`
-      : null;
-
-  const fetcher = async (k: string): Promise<ListadoRow[]> => {
-    const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-    const raw = (await parkosFetch<unknown>(k)) as ListadoRow[];
-    if (!Array.isArray(raw)) return [];
-    return raw;
-  };
-
-  const { data, error } = useSWR<ListadoRow[]>(key, fetcher, {
-    dedupingInterval: 30_000,
-    shouldRetryOnError: (err) => {
-      if (err instanceof ParkosHttpError) {
-        return err.status !== 401 && err.status !== 403 && err.status !== 404;
-      }
-      return true;
-    },
-    onError: (err) => {
-      if (err instanceof ParkosHttpError && err.status === 401) {
-        useAuthStore.getState().clear();
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new Event('parkos:auth:cleared'));
-        }
-      }
-    },
-  });
-
+  const rows = useMemo(() => (data ?? []).map(toRow), [data]);
   const filtered = useMemo(
-    () => filterListado(data ?? [], search),
-    [data, search],
+    () => filterListado(rows, search),
+    [rows, search],
   );
 
   return (
@@ -133,7 +103,7 @@ export function Listado(): JSX.Element {
       <Input
         data-testid="listado-search-input"
         placeholder={t('listado.searchPlaceholder', {
-          defaultValue: 'Buscar por placa o cliente',
+          defaultValue: 'Buscar por cliente o identificación',
         })}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
@@ -164,17 +134,17 @@ export function Listado(): JSX.Element {
             </TableRow>
           )}
           {filtered.map((r) => (
-            <TableRow key={r.uuid} data-testid={`listado-row-${r.placa}`}>
+            <TableRow key={r.uuid} data-testid={`listado-row-${r.uuid}`}>
               <TableCell>{r.cliente_nombre}</TableCell>
               <TableCell>{r.plan_nombre}</TableCell>
               <TableCell>{r.fecha_vencimiento}</TableCell>
-              <TableCell data-testid={`listado-diasrestantes-${r.placa}`}>
-                {diasRestantes(r.fecha_vencimiento, new Date())}
+              <TableCell data-testid={`listado-diasrestantes-${r.uuid}`}>
+                {r.dias_restantes ?? '—'}
               </TableCell>
               <TableCell>
                 <Badge
                   variant={r.estado === 'vencida' ? 'destructive' : 'default'}
-                  data-testid={`listado-estado-${r.placa}`}
+                  data-testid={`listado-estado-${r.uuid}`}
                 >
                   {t(r.estado, { defaultValue: r.estado })}
                 </Badge>

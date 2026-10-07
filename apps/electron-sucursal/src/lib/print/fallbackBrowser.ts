@@ -399,8 +399,12 @@ export function renderTiqueteHtml(tipo: TiqueteTipo, payload: unknown): string {
  * `window.print()` once. Shared by every browser-mode print (tiquetes and
  * invoices). A second `<style>` (`@media print`) un-hides the container: it
  * lives at `left:-10000px` on screen, which would print a blank page.
- * The caller removes nothing: the container is reused by the next print.
+ * The container is aria-hidden while present and removed once the print
+ * finishes (`afterprint`, with a timeout fallback for engines that never fire it).
  */
+const CONTAINER_CLEANUP_TIMEOUT_MS = 30_000;
+let cancelPendingCleanup: (() => void) | null = null;
+
 export function printHtml(html: string): void {
   injectPageStyle();
   injectPrintLayout();
@@ -417,7 +421,22 @@ export function printHtml(html: string): void {
       container.style.top = '0';
       document.body.appendChild(container);
     }
+    container.setAttribute('aria-hidden', 'true');
     container.innerHTML = html;
+    // A previous print's pending cleanup must not remove this print's content.
+    cancelPendingCleanup?.();
+    const target = container;
+    const remove = (): void => {
+      cancelPendingCleanup?.();
+      target.remove();
+    };
+    const timer = setTimeout(remove, CONTAINER_CLEANUP_TIMEOUT_MS);
+    window.addEventListener('afterprint', remove, { once: true });
+    cancelPendingCleanup = (): void => {
+      clearTimeout(timer);
+      window.removeEventListener('afterprint', remove);
+      cancelPendingCleanup = null;
+    };
     window.print();
   } finally {
     cleanupPageStyle();

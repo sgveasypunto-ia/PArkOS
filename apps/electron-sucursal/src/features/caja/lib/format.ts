@@ -23,6 +23,22 @@ const copFormatter = new Intl.NumberFormat('es-CO', {
   maximumFractionDigits: 0,
 });
 
+const copDecimalFormatter = new Intl.NumberFormat('es-CO', {
+  style: 'currency',
+  currency: 'COP',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+/**
+ * COP con centavos, para partes de un desglose fiscal (subtotal/IVA) que deben
+ * reconciliar con el total sin que el redondeo a pesos enteros las desajuste.
+ * Ejemplo: `formatCOPDecimal(1260.5)` → `"$ 1.260,50"`.
+ */
+export function formatCOPDecimal(value: number): string {
+  return copDecimalFormatter.format(value);
+}
+
 /**
  * Formatea un número como COP (moneda colombiana).
  * Sin decimales para efectivo/datáfono kiosko (DB persiste NUMERIC(18,4)).

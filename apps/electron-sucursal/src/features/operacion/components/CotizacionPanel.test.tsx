@@ -67,6 +67,22 @@ describe('<CotizacionPanel /> — pure presentational (REQ-OPS-143)', () => {
     expect(dl.textContent).toContain('7.790');
   });
 
+  it('T1b: subtotal e IVA muestran centavos para que reconcilien con el total', () => {
+    render(
+      <CotizacionPanel
+        data={{ ...cotizacionRotacion, subtotal: 1260.5, iva: 239.5, total: 1500 }}
+        secondsLeft={900}
+        onConfirmar={vi.fn()}
+        onRecalcular={vi.fn()}
+      />,
+    );
+    const dl = screen.getByTestId('cotizacion-dl');
+    expect(dl.textContent).toContain('1.260,50');
+    expect(dl.textContent).toContain('239,50');
+    // El total conserva el formato de pesos enteros del resto de la UI.
+    expect(screen.getByTestId('cotizacion-total').textContent).toMatch(/1\.500$/);
+  });
+
   it('T2: mensualidad renderiza banner sin <dl>', () => {
     render(
       <CotizacionPanel

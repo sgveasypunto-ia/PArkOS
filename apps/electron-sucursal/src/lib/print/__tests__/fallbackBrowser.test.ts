@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 
-import { print, PAGE_RULE } from '../fallbackBrowser';
+import { print, printHtml, PAGE_RULE } from '../fallbackBrowser';
 import { validEntradaPayload, validSalidaPayload } from './escposBuilder.test';
 import type { SalidaMensualidadPayload } from '../escposTemplates';
 
@@ -114,5 +114,53 @@ describe('fallbackBrowser.print — Tipo de operación (pedido del operador)', (
 describe('fallbackBrowser.print — invalid tipo', () => {
   it('throws EscposInvalidTipoError', () => {
     expect(() => print('nope' as never, {})).toThrow();
+  });
+});
+describe('fallbackBrowser.printHtml — limpieza del contenedor de impresión', () => {
+  const ID = 'parkos-escpos-fallback-container';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.getElementById(ID)?.remove();
+    vi.spyOn(window, 'print').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.getElementById(ID)?.remove();
+  });
+
+  it('mientras existe, el contenedor está oculto al árbol de accesibilidad', () => {
+    printHtml('<p>hola</p>');
+    const container = document.getElementById(ID);
+    expect(container?.getAttribute('aria-hidden')).toBe('true');
+    expect(container?.textContent).toContain('hola');
+  });
+
+  it('se elimina del DOM al dispararse afterprint', () => {
+    printHtml('<p>hola</p>');
+    expect(document.getElementById(ID)).not.toBeNull();
+    window.dispatchEvent(new Event('afterprint'));
+    expect(document.getElementById(ID)).toBeNull();
+  });
+
+  it('se elimina por timeout si afterprint nunca llega', () => {
+    printHtml('<p>hola</p>');
+    vi.advanceTimersByTime(60_000);
+    expect(document.getElementById(ID)).toBeNull();
+  });
+
+  it('una impresión nueva no es borrada por el afterprint/timeout de la anterior', () => {
+    printHtml('<p>uno</p>');
+    printHtml('<p>dos</p>');
+    vi.advanceTimersByTime(1_000);
+    expect(document.getElementById(ID)?.textContent).toContain('dos');
+    window.dispatchEvent(new Event('afterprint'));
+    expect(document.getElementById(ID)).toBeNull();
+    // el timeout de la primera ya no debe actuar sobre un contenedor posterior
+    printHtml('<p>tres</p>');
+    vi.advanceTimersByTime(29_000);
+    expect(document.getElementById(ID)?.textContent).toContain('tres');
   });
 });
