@@ -332,6 +332,76 @@ def alembic_upgrade(pg_dsn: str, _wait_for_pg: None) -> None:
             f"Captured output:\n{snippet}"
         )
 
+    _snapshot_seed_tables(pg_dsn)
+
+
+# ---------------------------------------------------------------------------
+# Seed-data snapshot / restore (cross-test pollution guard)
+# ---------------------------------------------------------------------------
+#
+# The whole session shares ONE database, and a good part of the suite cleans up
+# with ``TRUNCATE ... CASCADE`` on tables that migrations seed (``alert_types``,
+# ``empresa``, ``permisos``, ``tipos_vehiculo``...), plus everything that
+# references them. Whatever ran after such a test then saw a database that no
+# migration ever produces (and ``tests/migrations`` assertions on the seeded
+# catalogs failed or passed depending on file order).
+#
+# Right after ``alembic upgrade head`` we copy every non-empty ``prod`` table
+# into the ``seed_snapshot`` schema; after each test MODULE the rows that went
+# missing are put back (``ON CONFLICT DO NOTHING``, triggers and FK checks off
+# via ``session_replication_role = replica`` so neither the append-only guards
+# nor the sync outbox fire). Rows a test adds are left alone: tests must not
+# depend on them, but the seeded catalogs are always there.
+
+_SEED_STATE: dict[str, object] = {"dsn": None, "tables": []}
+
+
+def _snapshot_seed_tables(dsn: str) -> None:
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("DROP SCHEMA IF EXISTS seed_snapshot CASCADE")
+        cur.execute("CREATE SCHEMA seed_snapshot")
+        cur.execute(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'prod' AND c.relkind IN ('r', 'p') AND NOT c.relispartition "
+            "ORDER BY c.relname"
+        )
+        tables = [row[0] for row in cur.fetchall()]
+        seeded: list[str] = []
+        for table in tables:
+            cur.execute(f'SELECT EXISTS (SELECT 1 FROM prod."{table}")')
+            if cur.fetchone()[0]:
+                cur.execute(
+                    f'CREATE TABLE seed_snapshot."{table}" AS SELECT * FROM prod."{table}"'
+                )
+                seeded.append(table)
+    _SEED_STATE["dsn"] = dsn
+    _SEED_STATE["tables"] = seeded
+
+
+def _restore_seed_tables() -> None:
+    dsn = _SEED_STATE["dsn"]
+    tables = _SEED_STATE["tables"]
+    if not dsn or not tables:
+        return
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("SET session_replication_role = replica")
+        for table in tables:
+            cur.execute(
+                f'INSERT INTO prod."{table}" SELECT * FROM seed_snapshot."{table}" '
+                "ON CONFLICT DO NOTHING"
+            )
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _seed_data_restored_after_module() -> Iterator[None]:
+    """Put the migration-seeded rows back after each module (see block above)."""
+    yield
+    _restore_seed_tables()
+
 
 # ---------------------------------------------------------------------------
 # Async SQLAlchemy engine + session

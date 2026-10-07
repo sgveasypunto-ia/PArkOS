@@ -46,37 +46,45 @@ async def test_one_fe_per_factura_partial_uk_blocks_duplicate_fe(
 
     from parkos_core.models.L_E.factura_electronica import FacturaElectronica
 
+    from datetime import date, timedelta
+
+    from parkos_core.models.L_E.facturas import Facturas
+
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
-    uuid_factura = None
+    retencion = date.today() + timedelta(days=5 * 365)
+
+    # ``factura_electronica.uuid_factura`` is a real FK: seed the parent factura.
+    async with Session() as session:
+        factura = Facturas(fecha_retencion_hasta=retencion, subtotal=0, descuento=0, total=0)
+        session.add(factura)
+        await session.commit()
+        uuid_factura = factura.uuid
 
     async with Session() as session:
-        fe1 = FacturaElectronica(
-            uuid=None,  # server default
-            fecha_retencion_hasta=None,
-            uuid_sucursal=None,
-            uuid_factura=None,
-            uuid_resolucion_facturacion=None,
-            prefijo="SETP",
-            consecutivo=1,
-            descuento=0,
+        session.add(
+            FacturaElectronica(
+                fecha_retencion_hasta=retencion,
+                uuid_sucursal=None,
+                uuid_factura=uuid_factura,
+                uuid_resolucion_facturacion=None,
+                prefijo="SETP",
+                consecutivo=1,
+                descuento=0,
+            )
         )
-        # Set uuid_factura separately to share between rows
-        from datetime import date, timedelta
-        uuid_factura = __import__("uuid").uuid4()
-        fe1.uuid_factura = uuid_factura
-        session.add(fe1)
         await session.commit()
 
     async with Session() as session:
-        fe2 = FacturaElectronica(
-            uuid=None,
-            fecha_retencion_hasta=date.today() + timedelta(days=5 * 365),
-            uuid_sucursal=None,
-            uuid_factura=uuid_factura,  # SAME uuid_factura → blocked by partial UK
-            uuid_resolucion_facturacion=None,
-            prefijo="SETP",
-            consecutivo=2,
-            descuento=0,
+        session.add(
+            FacturaElectronica(
+                fecha_retencion_hasta=retencion,
+                uuid_sucursal=None,
+                uuid_factura=uuid_factura,  # SAME uuid_factura -> blocked by partial UK
+                uuid_resolucion_facturacion=None,
+                prefijo="SETP",
+                consecutivo=2,
+                descuento=0,
+            )
         )
         with pytest.raises(IntegrityError) as exc_info:
             await session.commit()

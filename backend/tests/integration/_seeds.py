@@ -110,3 +110,69 @@ async def close_open_tipos_vehiculo(pg_engine) -> None:
                 "WHERE vigente_hasta IS NULL"
             )
         )
+
+
+async def grant_permission(pg_engine, actor_uuid: uuid_lib.UUID, perm_code: str) -> None:
+    """Idempotently grant ``perm_code`` to ``actor_uuid`` (actor created if needed).
+
+    ``require_permission`` reads ``permisos_usuario`` from the DB, never the JWT.
+    The ``permisos`` row is created when the code is not one the migrations seed.
+    """
+    from datetime import UTC, datetime
+
+    from parkos_core.models.V.permisos import Permisos
+    from parkos_core.models.V.permisos_usuario import PermisosUsuario
+
+    await ensure_usuario(pg_engine, actor_uuid)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        permiso = (
+            await session.execute(
+                select(Permisos).where(
+                    Permisos.permiso == perm_code, Permisos.vigente_hasta.is_(None)
+                )
+            )
+        ).scalar_one_or_none()
+        if permiso is None:
+            permiso = Permisos(
+                uuid=uuid_lib.uuid4(),
+                permiso=perm_code,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+            )
+            session.add(permiso)
+            await session.flush()
+        already = (
+            await session.execute(
+                select(PermisosUsuario.uuid).where(
+                    PermisosUsuario.uuid_usuario == actor_uuid,
+                    PermisosUsuario.uuid_permiso == permiso.uuid,
+                    PermisosUsuario.vigente_hasta.is_(None),
+                )
+            )
+        ).first()
+        if already is None:
+            session.add(PermisosUsuario(uuid_usuario=actor_uuid, uuid_permiso=permiso.uuid))
+        await session.commit()
+
+
+async def seed_sucursales(pg_engine, *sucursales: uuid_lib.UUID) -> None:
+    """Insert a plain ``sucursal`` row for each uuid that does not exist yet.
+
+    ``envio_dian``, ``validacion_evento``, ``usuarios_sucursal``, ... carry a real
+    FK to ``prod.sucursal``, so a bare ``uuid4()`` is no longer a valid branch.
+    """
+    from parkos_core.models.V.sucursal import Sucursal
+
+    from tests.conftest import VFixtureFactory
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        for suc in sucursales:
+            if (
+                await session.execute(select(Sucursal.uuid).where(Sucursal.uuid == suc))
+            ).first() is None:
+                session.add(VFixtureFactory.build(Sucursal, uuid=suc))
+        await session.commit()

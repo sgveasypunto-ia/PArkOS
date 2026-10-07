@@ -51,6 +51,7 @@ finally:
     else:
         os.environ["PARKOS_DEPLOY"] = _PREV_DEPLOY
 
+from _seeds import seed_sucursales  # noqa: E402
 from parkos_core.auth.tokens import issue_token  # noqa: E402
 from parkos_core.db.engine import get_session  # noqa: E402
 from parkos_core.models.L_W.envio_dian import EnvioDian  # noqa: E402
@@ -165,16 +166,21 @@ async def test_t1_envio_dian_estado_filter_restricts_to_matching_rows(
     admin_jwt = _admin_token()
 
     now = datetime.now(UTC).replace(tzinfo=None)
+    # One dedicated branch, and the query is scoped to it: the DB is shared
+    # across the session, so rows other tests left in ``envio_dian`` must not
+    # change what this test counts.
+    sucursal = uuid_lib.uuid4()
+    await seed_sucursales(pg_engine, sucursal)
     for minute in (5, 4):
         _seed_envio_dian(
             pg_session,
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=sucursal,
             estado="pendiente",
             vigente_desde=now - timedelta(minutes=minute),
         )
     ack_row = _seed_envio_dian(
         pg_session,
-        uuid_sucursal=uuid_lib.uuid4(),
+        uuid_sucursal=sucursal,
         estado="ack",
         vigente_desde=now - timedelta(minutes=3),
     )
@@ -183,7 +189,7 @@ async def test_t1_envio_dian_estado_filter_restricts_to_matching_rows(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
         r = await client.get(
-            "/api/v1/envio-dian?estado=ack",
+            f"/api/v1/envio-dian?estado=ack&uuid_sucursal={sucursal}",
             headers={"Authorization": f"Bearer {admin_jwt}"},
         )
 
@@ -205,6 +211,7 @@ async def test_t2_validacion_evento_uuid_sucursal_filter(
     now = datetime.now(UTC).replace(tzinfo=None)
     sucursal_a = uuid_lib.uuid4()
     sucursal_b = uuid_lib.uuid4()
+    await seed_sucursales(pg_engine, sucursal_a, sucursal_b)
     for _ in range(2):
         _seed_validacion_evento(
             pg_session,
@@ -243,10 +250,12 @@ async def test_t3_cursor_pagination_envio_dian(
     admin_jwt = _admin_token()
 
     now = datetime.now(UTC).replace(tzinfo=None)
+    sucursal = uuid_lib.uuid4()  # dedicated branch: the query is scoped to it
+    await seed_sucursales(pg_engine, sucursal)
     for minute in (5, 4, 3, 2):
         _seed_envio_dian(
             pg_session,
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=sucursal,
             estado="pendiente",
             vigente_desde=now - timedelta(minutes=minute),
         )
@@ -255,7 +264,7 @@ async def test_t3_cursor_pagination_envio_dian(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
         r1 = await client.get(
-            "/api/v1/envio-dian?limit=2",
+            f"/api/v1/envio-dian?limit=2&uuid_sucursal={sucursal}",
             headers={"Authorization": f"Bearer {admin_jwt}"},
         )
         assert r1.status_code == 200, r1.text
@@ -266,7 +275,7 @@ async def test_t3_cursor_pagination_envio_dian(
         assert timestamps == sorted(timestamps, reverse=True)
 
         r2 = await client.get(
-            f"/api/v1/envio-dian?limit=2&cursor={page1['next_cursor']}",
+            f"/api/v1/envio-dian?limit=2&uuid_sucursal={sucursal}&cursor={page1['next_cursor']}",
             headers={"Authorization": f"Bearer {admin_jwt}"},
         )
         assert r2.status_code == 200, r2.text

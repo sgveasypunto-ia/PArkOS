@@ -43,6 +43,26 @@ ACTOR_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000aa")
 SUCURSAL_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000bb")
 
 
+@pytest.fixture(autouse=True)
+def _stub_hash_chain_append(monkeypatch):
+    """Isolate ``append_transition`` from the hash-chain mechanics.
+
+    The log row now goes through ``repo.hash_chain.append`` (it reads the chain
+    head from the DB and bootstraps the genesis row -- covered by
+    ``test_hash_chain.py`` and the integration suite). Here the fake only does
+    what these tests assert on: build the ``LogTransaccional`` from the payload
+    and ``session.add`` it, exactly like the real helper's final step.
+    """
+    from parkos_core.repo import hash_chain
+
+    async def _fake_append(session, model_cls, payload, actor_uuid):
+        row = model_cls(**payload)
+        session.add(row)
+        return row
+
+    monkeypatch.setattr(hash_chain, "append", _fake_append)
+
+
 def _make_session(parent_row=None) -> AsyncMock:
     """Mock ``AsyncSession`` — ``add()`` is sync, ``execute()`` is async.
 

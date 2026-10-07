@@ -43,6 +43,7 @@ for _p in (_PARKOS_CORE_SRC,):
 
 
 from parkos_core.api.v1.audit import router as audit_router_obj  # noqa: E402
+from _seeds import grant_admin_scope, grant_permission  # noqa: E402
 from parkos_core.auth.jwt_issuer_guard import requires_issuer  # noqa: E402
 from parkos_core.auth.tokens import issue_token  # noqa: E402
 from parkos_core.models.A.log_transaccional import LogTransaccional  # noqa: E402
@@ -50,24 +51,19 @@ from parkos_core.models.V.sucursal import Sucursal  # noqa: E402
 from parkos_core.repo.append_only import append_event  # noqa: E402
 
 
-def _build_cloud_admin_app(pg_engine) -> tuple[FastAPI, callable]:
-    """Mount the audit router into a FastAPI app for ASGITransport."""
+def _build_cloud_admin_app(pg_engine) -> FastAPI:
+    """Mount the audit router into a FastAPI app for ASGITransport.
+
+    No auth dependency is overridden: the request carries a real ``admin-`` JWT,
+    ``get_tenant_ctx`` checks the actor's ``usuarios_sucursal`` scope and
+    ``require_permission`` reads ``permisos_usuario`` (see ``_admin_headers``).
+    """
     from parkos_core.db.engine import get_session
 
     app = FastAPI()
     outer = APIRouter(prefix="/api/v1")
     outer.include_router(audit_router_obj)
     app.include_router(outer)
-
-    issuer_dep = audit_router_obj._admin_issuer_dep
-    captured_claims: dict = {"value": None}
-
-    def _override() -> dict:
-        if captured_claims["value"] is None:
-            raise RuntimeError("set_claims() before render()")
-        return captured_claims["value"]
-
-    app.dependency_overrides[issuer_dep] = _override
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
 
@@ -76,21 +72,21 @@ def _build_cloud_admin_app(pg_engine) -> tuple[FastAPI, callable]:
             yield session
 
     app.dependency_overrides[get_session] = _session_override
+    return app
 
-    return app, lambda c: captured_claims.__setitem__("value", c)
 
-
-def _admin_jwt(*, permissions: list[str] | None = None) -> str:
-    return issue_token(
-        subject_uuid=uuid_lib.uuid4(),
+async def _admin_headers(pg_engine, uuid_sucursal: uuid_lib.UUID) -> dict[str, str]:
+    """Real admin JWT + DB-backed scope on the branch + ``audit_read`` grant."""
+    actor_uuid = uuid_lib.uuid4()
+    await grant_admin_scope(pg_engine, actor_uuid, [uuid_sucursal])
+    await grant_permission(pg_engine, actor_uuid, "audit_read")
+    token = issue_token(
+        subject_uuid=actor_uuid,
         issuer="admin-test",
-        claims={
-            "rol": "admin",
-            "sucursales_permitidas": [str(uuid_lib.uuid4())],
-            "permisos": permissions if permissions is not None else ["audit_read"],
-        },
+        claims={"rol": "admin", "sucursales_permitidas": [str(uuid_sucursal)]},
         expires_in=3600,
     )
+    return {"Authorization": f"Bearer {token}", "X-Sucursal-Context": str(uuid_sucursal)}
 
 
 async def _seed_sucursal(pg_engine) -> uuid_lib.UUID:
@@ -137,6 +133,7 @@ async def _seed_log_rows(
                     "timestamp_evento": datetime.now(UTC).replace(tzinfo=None),
                     "datos_nuevos": {"index": i},
                 },
+                chain_hash=True,
             )
         await session.commit()
 
@@ -149,21 +146,14 @@ async def test_first_page_returns_rows_and_next_cursor(
     sucursal_uuid = await _seed_sucursal(pg_engine)
     await _seed_log_rows(pg_engine, uuid_sucursal=sucursal_uuid, actor_uuid=actor_uuid, count=7)
 
-    app, set_claims = _build_cloud_admin_app(pg_engine)
-    set_claims(
-        {
-            "iss": "admin-test",
-            "sub": str(uuid_lib.uuid4()),
-            "rol": "admin",
-            "sucursales_permitidas": [str(uuid_lib.uuid4())],
-            "permisos": ["audit_read"],
-        }
-    )
+    app = _build_cloud_admin_app(pg_engine)
+    headers = await _admin_headers(pg_engine, sucursal_uuid)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
         response = await client.get(
-            f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}&limit=5"
+            f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}&limit=5",
+            headers=headers,
         )
 
     assert response.status_code == 200, response.text
@@ -187,21 +177,14 @@ async def test_pagination_round_trip_returns_all_rows(
     sucursal_uuid = await _seed_sucursal(pg_engine)
     await _seed_log_rows(pg_engine, uuid_sucursal=sucursal_uuid, actor_uuid=actor_uuid, count=7)
 
-    app, set_claims = _build_cloud_admin_app(pg_engine)
-    set_claims(
-        {
-            "iss": "admin-test",
-            "sub": str(uuid_lib.uuid4()),
-            "rol": "admin",
-            "sucursales_permitidas": [str(uuid_lib.uuid4())],
-            "permisos": ["audit_read"],
-        }
-    )
+    app = _build_cloud_admin_app(pg_engine)
+    headers = await _admin_headers(pg_engine, sucursal_uuid)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
         first = await client.get(
-            f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}&limit=5"
+            f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}&limit=5",
+            headers=headers,
         )
         first_body = first.json()
         first_uuids = {it["uuid"] for it in first_body["items"]}
@@ -209,14 +192,17 @@ async def test_pagination_round_trip_returns_all_rows(
 
         second = await client.get(
             f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}"
-            f"&limit=5&cursor={first_body['next_cursor']}"
+            f"&limit=5&cursor={first_body['next_cursor']}",
+            headers=headers,
         )
         second_body = second.json()
         second_uuids = {it["uuid"] for it in second_body["items"]}
 
-    # Two pages, disjoint uuid sets, total 7 rows.
+    # Two pages, disjoint uuid sets: the 7 events plus the branch's hash-chain
+    # genesis anchor, which ``hash_chain.append`` writes on first use and which
+    # is part of the branch's log.
     assert first_uuids.isdisjoint(second_uuids)
-    assert len(first_uuids | second_uuids) == 7
+    assert len(first_uuids | second_uuids) == 7 + 1
     # The second page is the LAST page (next_cursor=None).
     assert second_body["next_cursor"] is None
 
@@ -228,21 +214,14 @@ async def test_empty_branch_returns_empty_items_with_200(
     sucursal_uuid = await _seed_sucursal(pg_engine)
     # Note: NO rows inserted.
 
-    app, set_claims = _build_cloud_admin_app(pg_engine)
-    set_claims(
-        {
-            "iss": "admin-test",
-            "sub": str(uuid_lib.uuid4()),
-            "rol": "admin",
-            "sucursales_permitidas": [str(uuid_lib.uuid4())],
-            "permisos": ["audit_read"],
-        }
-    )
+    app = _build_cloud_admin_app(pg_engine)
+    headers = await _admin_headers(pg_engine, sucursal_uuid)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
         response = await client.get(
-            f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}"
+            f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}",
+            headers=headers,
         )
 
     assert response.status_code == 200
@@ -255,21 +234,14 @@ async def test_invalid_cursor_returns_400(
     """Malformed cursor -> 400 (Layer 4 violation)."""
     sucursal_uuid = await _seed_sucursal(pg_engine)
 
-    app, set_claims = _build_cloud_admin_app(pg_engine)
-    set_claims(
-        {
-            "iss": "admin-test",
-            "sub": str(uuid_lib.uuid4()),
-            "rol": "admin",
-            "sucursales_permitidas": [str(uuid_lib.uuid4())],
-            "permisos": ["audit_read"],
-        }
-    )
+    app = _build_cloud_admin_app(pg_engine)
+    headers = await _admin_headers(pg_engine, sucursal_uuid)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
         response = await client.get(
-            f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}&cursor=!!!not-base64!!!"
+            f"/api/v1/admin/audit/log?uuid_sucursal={sucursal_uuid}&cursor=!!!not-base64!!!",
+            headers=headers,
         )
 
     assert response.status_code == 400
