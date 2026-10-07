@@ -60,8 +60,8 @@ class RefreshMvOcupacionWorker(WorkerRunner):
     DEFAULT_REFRESH_INTERVAL_S = 10  # KD-1: matches F4.3 polling cadence
     # REQ-OPS-133: skip the first REFRESH if the MV was created within
     # this many seconds (Postgres 9.4+). ``pg_stat_get_last_analyze_time``
-    # returns NULL for a freshly-created relation; we treat NULL the
-    # same as "just now" so the first cycle is always skipped. 60s is
+    # returns NULL for a never-analyzed relation; NULL is treated as
+    # stale (refresh), only a timestamp within the window skips. 60s is
     # wide enough to absorb the migration's own CONCURRENTLY-on-fresh-
     # MV race window without being so wide that a real operator-driven
     # CREATE-OR-REPLACE during a maintenance window is hidden.
@@ -82,11 +82,13 @@ class RefreshMvOcupacionWorker(WorkerRunner):
         """Return True iff ``prod.mv_ocupacion_diaria`` was created or
         last analyzed within ``FRESH_MV_SKIP_WINDOW_S`` seconds.
 
-        Uses ``pg_stat_get_last_analyze_time`` as a proxy for "freshly
-        created" — both NULL and a recent timestamp mean "skip the
-        first REFRESH this cycle". The MV is created by migrations
-        0024 and 0034 with no ANALYZE in the same TX, so the analyzer
-        has not run yet when the worker boots inside the same window.
+        Uses the analyze timestamps as a proxy for "recently touched".
+        A NULL timestamp (the MV was NEVER analyzed) means "age
+        unknown", which is STALE, not fresh: the previous
+        ``coalesce(..., now())`` made such an MV look 0s old forever, so
+        the job never refreshed an empty MV (defect D1). The refresh
+        helper is a no-op when the MV is missing and raises when it is
+        unpopulated (logged, retried next cycle), so refreshing is safe.
         """
         try:
             row = (
@@ -95,8 +97,8 @@ class RefreshMvOcupacionWorker(WorkerRunner):
                         "SELECT "
                         "extract(epoch from (now() - "
                         "  coalesce(pg_stat_get_last_analyze_time(c.oid), "
-                        "           pg_stat_get_last_autoanalyze_time(c.oid), "
-                        "           now()))) AS seconds_since_analyze "
+                        "           pg_stat_get_last_autoanalyze_time(c.oid)"
+                        ")) AS seconds_since_analyze "
                         "FROM pg_class c "
                         "JOIN pg_namespace n ON c.relnamespace = n.oid "
                         "WHERE n.nspname = 'prod' AND c.relname = "
@@ -110,7 +112,7 @@ class RefreshMvOcupacionWorker(WorkerRunner):
             return False
         seconds = row[0]
         if seconds is None:
-            return True
+            return False
         return float(seconds) < self.FRESH_MV_SKIP_WINDOW_S
 
     async def cycle(self) -> None:
