@@ -36,7 +36,6 @@ under this repo's pytest collection.
 
 from __future__ import annotations
 
-import contextlib
 
 import os
 import subprocess
@@ -50,7 +49,7 @@ from typing import Any
 import httpx
 import psycopg
 import pytest
-from _seeds import ensure_usuario
+from _seeds import cloud_node_env, ensure_usuario
 from fastapi import FastAPI
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
@@ -320,34 +319,6 @@ def build_branch_worker(branch_session: Any, cloud_app: FastAPI, jwt_path: Path)
     return worker
 
 
-@contextlib.contextmanager
-def _cloud_node_env():
-    """Run the cloud side of this two-node, one-process simulation as a cloud deploy.
-
-    Applying a ``factura_electronica`` on the cloud lazily imports
-    ``parkos_core.dian.cloud.*``, whose import-time guard (REQ-X3, design section
-    10 layer 2) refuses to load under ``PARKOS_DEPLOY=branch`` -- the default the
-    root conftest pins for the whole session. Switch the env for the cloud-side
-    steps and drop the cloud-only modules afterwards so no other test sees a
-    branch process that has them loaded.
-    """
-    previous = os.environ.get("PARKOS_DEPLOY")
-    os.environ["PARKOS_DEPLOY"] = "cloud"
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop("PARKOS_DEPLOY", None)
-        else:
-            os.environ["PARKOS_DEPLOY"] = previous
-        for name in [m for m in sys.modules if m.startswith("parkos_core.dian.cloud")]:
-            sys.modules.pop(name, None)
-            parent, _, attr = name.rpartition(".")
-            parent_mod = sys.modules.get(parent)
-            if parent_mod is not None and attr in vars(parent_mod):
-                delattr(parent_mod, attr)
-
-
 async def push_and_verify(
     branch_session: Any, worker: Any, table_name: str, *, uuid_registro: uuid_lib.UUID | None = None
 ) -> None:
@@ -586,7 +557,7 @@ async def test_offline_numbering_reconciles_without_collision_on_reconnect(
     # =====================================================================
     async with BranchSession() as branch_session:
         worker = build_branch_worker(branch_session, cloud_app, jwt_path)
-        with _cloud_node_env():
+        with cloud_node_env():
             for fe_uuid, attrs in origin.items():
                 await push_and_verify(
                     branch_session, worker, "facturas", uuid_registro=attrs["uuid_factura"]

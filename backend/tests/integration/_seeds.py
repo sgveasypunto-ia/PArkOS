@@ -10,6 +10,9 @@ from a valid actor instead of each re-inventing the seed.
 """
 from __future__ import annotations
 
+import contextlib
+import os
+import sys
 import uuid as uuid_lib
 
 from sqlalchemy import select
@@ -222,3 +225,31 @@ async def ensure_cliente(pg_engine, uuid_cliente: uuid_lib.UUID | None) -> uuid_
             session.add(VFixtureFactory.build(Clientes, uuid=uuid_cliente))
             await session.commit()
     return uuid_cliente
+
+
+@contextlib.contextmanager
+def cloud_node_env():
+    """Run the cloud side of this two-node, one-process simulation as a cloud deploy.
+
+    Applying a ``factura_electronica`` on the cloud lazily imports
+    ``parkos_core.dian.cloud.*``, whose import-time guard (REQ-X3, design section
+    10 layer 2) refuses to load under ``PARKOS_DEPLOY=branch`` -- the default the
+    root conftest pins for the whole session. Switch the env for the cloud-side
+    steps and drop the cloud-only modules afterwards so no other test sees a
+    branch process that has them loaded.
+    """
+    previous = os.environ.get("PARKOS_DEPLOY")
+    os.environ["PARKOS_DEPLOY"] = "cloud"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("PARKOS_DEPLOY", None)
+        else:
+            os.environ["PARKOS_DEPLOY"] = previous
+        for name in [m for m in sys.modules if m.startswith("parkos_core.dian.cloud")]:
+            sys.modules.pop(name, None)
+            parent, _, attr = name.rpartition(".")
+            parent_mod = sys.modules.get(parent)
+            if parent_mod is not None and attr in vars(parent_mod):
+                delattr(parent_mod, attr)
