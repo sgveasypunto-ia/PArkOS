@@ -40,6 +40,8 @@ def test_repo_reimpresion_ticket_module_imports() -> None:
         "buscar_ingreso_por_uuid",
         "buscar_reimpresion_por_uuid",
         "buscar_factura_por_uuid",
+        # H10 closed-ingreso guard (1)
+        "ingreso_tiene_salida_vigente",
         # V2 chain-tip guard (1)
         "buscar_reimpresion_activa_por_ingreso",
         # DEC-TKT-05 siembra lookup (1)
@@ -355,3 +357,28 @@ async def test_check_idempotency_key_returns_none_when_key_absent(
     # cache lookup; the helper exists for testability + explicit
     # documentation of DEC-IDEM-01 reuse).
     assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exists", [True, False])
+async def test_ingreso_tiene_salida_vigente_excludes_annulled_salidas(
+    exists: bool,
+) -> None:
+    """H10: live-salida lookup mirrors ``get_ingreso_estado`` (annulled salidas do not count)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from parkos_core.repo.reimpresion_ticket import ingreso_tiene_salida_vigente
+
+    result = MagicMock()
+    result.scalar.return_value = exists
+    session = AsyncMock()
+    session.execute.return_value = result
+
+    got = await ingreso_tiene_salida_vigente(session, uuid_ingreso=uuid_lib.uuid4())
+
+    assert got is exists
+    sql = str(session.execute.call_args.args[0]).lower()
+    assert "prod.salidas" in sql
+    assert "prod.anulaciones" in sql
+    assert "tipo_anulable = 'salida'" in sql
+    assert "estado = 'ejecutada'" in sql

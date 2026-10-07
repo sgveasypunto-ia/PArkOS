@@ -100,6 +100,21 @@ def _make_costo_servicio_orm(
     return row
 
 
+@pytest.fixture(autouse=True)
+def _ingreso_sin_salida_por_defecto(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H10: default every test to an OPEN ingreso (no live salida).
+
+    Tests that exercise the closed-ingreso guard override this stub.
+    """
+    import parkos_core.api.v1.workflows_reimpresion as workflows_reimpresion_mod
+
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "ingreso_tiene_salida_vigente",
+        AsyncMock(return_value=False),
+    )
+
+
 # ---------------------------------------------------------------------------
 # T4.1 — happy path + V1..V5 error paths (mocked, no DB)
 # ---------------------------------------------------------------------------
@@ -468,3 +483,88 @@ async def test_create_reimpresion_returns_403_tenant_scope_violation(
     workflows_reimpresion_mod.repo_reimpresion.buscar_reimpresion_activa_por_ingreso.assert_not_called()
     workflows_reimpresion_mod.repo_workflow.append_transition.assert_not_called()
     assert session.commit.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_create_reimpresion_returns_409_ingreso_ya_tiene_salida(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H10: an ingreso with a live (non-annulled) salida cannot be reprinted."""
+    import parkos_core.api.v1.workflows_reimpresion as workflows_reimpresion_mod
+
+    uuid_ingreso = uuid_lib.uuid4()
+    uuid_sucursal = uuid_lib.uuid4()
+    ingreso = _make_ingreso_orm(uuid_ingreso=uuid_ingreso, uuid_sucursal=uuid_sucursal)
+    ctx = _make_ctx(sucursal_uuid=uuid_sucursal)
+    session = AsyncMock()
+    response = _new_response()
+
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "buscar_ingreso_por_uuid",
+        AsyncMock(return_value=ingreso),
+    )
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "ingreso_tiene_salida_vigente",
+        AsyncMock(return_value=True),
+    )
+    guard = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "buscar_reimpresion_activa_por_ingreso",
+        guard,
+    )
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_workflow,
+        "append_transition",
+        AsyncMock(return_value=None),
+    )
+
+    payload = ReimpresionTicketCreateEndpoint(
+        motivo="Cliente solicita reimpresion por error administrativo",
+        uuid_ingreso=uuid_ingreso,
+        uuid_factura=None,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await workflows_reimpresion_mod.create_reimpresion_ticket(
+            response, payload, session, ctx, None
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"] == "ingreso_ya_tiene_salida"
+    assert exc_info.value.detail["uuid_ingreso"] == str(uuid_ingreso)
+    assert exc_info.value.headers == {"Cache-Control": "no-store"}
+    guard.assert_not_called()
+    workflows_reimpresion_mod.repo_workflow.append_transition.assert_not_called()
+    assert session.commit.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_create_reimpresion_cross_branch_closed_ingreso_is_403_not_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H10: the state guard runs AFTER the tenant scope check (no state leak)."""
+    import parkos_core.api.v1.workflows_reimpresion as workflows_reimpresion_mod
+
+    ingreso = _make_ingreso_orm()
+    ctx = _make_ctx(sucursal_uuid=uuid_lib.uuid4())
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "buscar_ingreso_por_uuid",
+        AsyncMock(return_value=ingreso),
+    )
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
+        "ingreso_tiene_salida_vigente",
+        AsyncMock(return_value=True),
+    )
+    payload = ReimpresionTicketCreateEndpoint(
+        motivo="Cliente solicita reimpresion por error administrativo",
+        uuid_ingreso=ingreso.uuid,
+        uuid_factura=None,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await workflows_reimpresion_mod.create_reimpresion_ticket(
+            _new_response(), payload, AsyncMock(), ctx, None
+        )
+    assert exc_info.value.status_code == 403

@@ -31,7 +31,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.L_E.facturas import Facturas
@@ -53,6 +53,7 @@ __all__ = [
     "buscar_reimpresion_activa_por_ingreso",
     "buscar_reimpresion_por_uuid",
     "check_idempotency_key",
+    "ingreso_tiene_salida_vigente",
 ]
 
 
@@ -128,6 +129,34 @@ async def buscar_ingreso_por_uuid(
     404 via HTTPException (DEC-TKT-06 layer-5 mapping).
     """
     return await session.get(Ingreso, uuid_ingreso)
+
+
+async def ingreso_tiene_salida_vigente(
+    session: AsyncSession, *, uuid_ingreso: uuid_lib.UUID
+) -> bool:
+    """H10: True when the ingreso already has a live (non-annulled) salida.
+
+    Same exclusion semantics as ``get_ingreso_estado`` (``cerrado`` state):
+    a salida whose ``anulaciones`` row is ``ejecutada`` never really left,
+    so it does NOT count. Reprinting the ticket of an ingreso that already
+    exited is blocked by the handler (409 ``ingreso_ya_tiene_salida``).
+    """
+    stmt = text(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM prod.salidas s
+            WHERE s.uuid_ingreso = :ingreso_uuid
+              AND NOT EXISTS (
+                  SELECT 1 FROM prod.anulaciones a
+                  WHERE a.uuid_salida = s.uuid
+                    AND a.tipo_anulable = 'salida'
+                    AND a.estado = 'ejecutada'
+              )
+        )
+        """
+    )
+    result = await session.execute(stmt, {"ingreso_uuid": str(uuid_ingreso)})
+    return bool(result.scalar())
 
 
 async def buscar_reimpresion_por_uuid(

@@ -166,6 +166,11 @@ async def test_reimpresion_full_chain_post_create_then_anular_then_reanular_retu
     )
     monkeypatch.setattr(
         workflows_reimpresion_mod.repo_reimpresion,
+        "ingreso_tiene_salida_vigente",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        workflows_reimpresion_mod.repo_reimpresion,
         "buscar_reimpresion_activa_por_ingreso",
         AsyncMock(return_value=None),
     )
