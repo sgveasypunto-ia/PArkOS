@@ -9,7 +9,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import text
 
-_EXPECTED_TIPOS = frozenset(
+# The 8 tipos seeded by 0013 (the original registry).
+_ORIGINAL_TIPOS = frozenset(
     {
         "hash_chain_anomaly",
         "dian_rechazada",
@@ -19,6 +20,31 @@ _EXPECTED_TIPOS = frozenset(
         "orphan_workflow_chain",
         "fe_provider_error",
         "fe_numbering_exhausted",
+    }
+)
+
+# Full registry after ``alembic upgrade head``: 0013 + the tipos added by
+# 0025 / 0031 / 0032 / 0086 / 0089 etc. Adding an alert type is a deliberate
+# migration, so this set MUST be updated alongside it.
+_EXPECTED_TIPOS = _ORIGINAL_TIPOS | frozenset(
+    {
+        "arqueo_pendiente_24h",
+        "cache_desactualizado",
+        "capacidad_agotada",
+        "capacidad_agotada_forzado",
+        "descuadre_critico",
+        "evento_no_procesado",
+        "fe_emision_fallida",
+        "fe_emision_pendiente",
+        "fe_error_toppoint",
+        "impresora_caida",
+        "numeracion_toppoint_agotada",
+        "subscripcion_vencida_forzado",
+        "suscripcion_placa_agregada",
+        "suscripcion_placa_quitada",
+        "suscripcion_proxima_vencer",
+        "sync_fallida",
+        "tarifa_vigente_forzado",
     }
 )
 
@@ -36,12 +62,12 @@ async def test_alert_types_table_exists(pg_engine, alembic_upgrade) -> None:
     assert rows == ["alert_types"]
 
 
-async def test_alert_types_seed_has_exactly_8_rows(pg_engine, alembic_upgrade) -> None:
+async def test_alert_types_seed_matches_registry(pg_engine, alembic_upgrade) -> None:
     async with pg_engine.connect() as conn:
         result = await conn.execute(text("SELECT tipo_alerta FROM prod.alert_types"))
         rows = result.scalars().all()
     assert set(rows) == _EXPECTED_TIPOS
-    assert len(rows) == 8
+    assert len(rows) == len(_EXPECTED_TIPOS)
 
 
 async def test_alert_types_severity_values(pg_engine, alembic_upgrade) -> None:
@@ -111,4 +137,4 @@ async def test_alert_types_reseed_is_idempotent(pg_engine, alembic_upgrade) -> N
             )
         )
         after = (await conn.execute(text("SELECT count(*) FROM prod.alert_types"))).scalar_one()
-    assert before == after == 8
+    assert before == after == len(_EXPECTED_TIPOS)
