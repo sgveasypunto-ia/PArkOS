@@ -51,7 +51,18 @@ from ..models.L_W.alerta import Alerta
 from ..models.V.configuracion_tolerancias import ConfiguracionTolerancias
 from ..models.V.sucursal import Sucursal
 from ..models.V.tipo_arqueo import TipoArqueo
+from ..runtime.tiempo import dia_bogota_rango_utc
 from . import append_only, workflow
+
+
+def _inicio_dia(fecha: date_cls) -> datetime:
+    """Start (naive UTC) of the Bogota business day ``fecha`` (H9)."""
+    return dia_bogota_rango_utc(fecha)[0]
+
+
+def _fin_dia(fecha: date_cls) -> datetime:
+    """Exclusive end (naive UTC) of the Bogota business day ``fecha`` (H9)."""
+    return dia_bogota_rango_utc(fecha)[1]
 
 __all__ = [
     "CierreDiaNoAceptaSesionError",
@@ -325,7 +336,8 @@ async def _sum_factura_pagos_by_medio_pago(
             Sesion, FacturaPagos.uuid_sesion == Sesion.uuid
         ).where(
             Sesion.uuid_sucursal == uuid_sucursal,
-            func.date(Sesion.timestamp_apertura) == fecha,
+            Sesion.timestamp_apertura >= _inicio_dia(fecha),
+            Sesion.timestamp_apertura < _fin_dia(fecha),
         )
     result = (await session.execute(stmt)).scalar_one()
     return _to_decimal(result)
@@ -594,7 +606,8 @@ async def listar_sesiones_abiertas_del_dia(
         .where(
             Sesion.uuid_sucursal == uuid_sucursal,
             Sesion.timestamp_cierre.is_(None),
-            func.date(Sesion.timestamp_apertura) == fecha,
+            Sesion.timestamp_apertura >= _inicio_dia(fecha),
+            Sesion.timestamp_apertura < _fin_dia(fecha),
         )
         .order_by(Sesion.timestamp_apertura.asc())
     )
@@ -616,7 +629,8 @@ async def listar_sesiones_del_dia(
         select(Sesion)
         .where(
             Sesion.uuid_sucursal == uuid_sucursal,
-            func.date(Sesion.timestamp_apertura) == fecha,
+            Sesion.timestamp_apertura >= _inicio_dia(fecha),
+            Sesion.timestamp_apertura < _fin_dia(fecha),
         )
         .order_by(Sesion.timestamp_apertura.asc())
     )
