@@ -46,8 +46,13 @@ import {
 import type { FacturaRead } from '../api/facturaApi';
 import { feEstadoLabel, feWarningMessage } from '../lib/feEstado';
 import { FacturaImpuestosDetalle } from './FacturaImpuestosDetalle';
-import { formatCOP } from '../../caja/lib/format';
+import { formatCOP, formatFechaHoraCorta } from '../../caja/lib/format';
 import { imprimirFactura } from '../../../lib/print/facturaPrint';
+import {
+  conceptoLegible,
+  etiquetaSemanticaLineas,
+  semanticaLineas,
+} from '../../../lib/print/facturaTextos';
 
 export interface FacturaDisplayModalProps {
   /** Enriched FacturaRead from the post-pago POST. NULL = modal hidden. */
@@ -146,9 +151,9 @@ export function FacturaDisplayModal({
               <DialogTitle data-testid="factura-display-titulo">
                 {t('facturacion:display.titulo', { defaultValue: 'Factura emitida' })}
               </DialogTitle>
-              <DialogDescription id="factura-display-desc">
+              <DialogDescription id="factura-display-desc" data-testid="factura-display-desc">
                 {t('facturacion:display.descripcion', {
-                  defaultValue: `Recibo ${f.numero_recibo} — ${new Date(f.created_at).toLocaleString('es-CO')}`,
+                  defaultValue: `Recibo ${f.numero_recibo} — ${formatFechaHoraCorta(f.created_at)}`,
                 })}
               </DialogDescription>
             </DialogHeader>
@@ -228,6 +233,11 @@ export function FacturaDisplayModal({
               {/* === Líneas / items === */}
               <div data-testid="factura-display-items">
                 <TicketDivider />
+                {etiquetaSemanticaLineas(semanticaLineas(f)) && (
+                  <div className="text-[10px] text-neutral-500" data-testid="factura-display-items-semantica">
+                    {etiquetaSemanticaLineas(semanticaLineas(f))}
+                  </div>
+                )}
                 {f.items.length === 0 ? (
                   <div>—</div>
                 ) : (
@@ -242,7 +252,7 @@ export function FacturaDisplayModal({
                           (mismo patrón que Dashboard.tsx usa para filas
                           flex con contenido variable). */}
                       <span className="min-w-0 flex-1 truncate">
-                        {item.concepto} × {item.cantidad}
+                        {conceptoLegible(item.concepto)} × {item.cantidad}
                       </span>
                       <span className="shrink-0 tabular-nums">{money(item.subtotal)}</span>
                     </div>

@@ -31,7 +31,7 @@ describe('construirFactura / facturaATexto', () => {
     expect(txt).toContain('Laura Martinez');
     expect(txt).toContain('1020304050');
     expect(txt).toContain('Mensualidad automovil');
-    expect(txt).toMatch(/Subtotal \$ ?100\.840,34/);
+    expect(txt).toMatch(/Subtotal \(base\) \$ ?100\.840,34/);
     expect(txt).toMatch(/IVA 19% \$ ?19\.159,66/);
     expect(txt).toMatch(/Base \$ ?100\.840,34/);
     expect(txt).toMatch(/TOTAL \$ ?120\.000/);
@@ -93,7 +93,7 @@ describe('facturaAEscpos', () => {
     expect([...buf.subarray(0, 2)]).toEqual([0x1b, 0x40]);
     const text = norm(buf.toString('utf8'));
     expect(text).toMatch(/IVA 19% \$ ?19\.159,66/);
-    expect(text).toMatch(/Subtotal \$ ?100\.840,34/);
+    expect(text).toMatch(/Subtotal \(base\) \$ ?100\.840,34/);
     expect(text).toMatch(/TOTAL \$ ?120\.000/);
     // GS V 0 (partial cut) near the end
     const tail = [...buf.subarray(buf.length - 4)];
