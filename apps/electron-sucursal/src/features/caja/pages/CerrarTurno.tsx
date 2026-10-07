@@ -42,6 +42,7 @@ import { logoutAfterClose, useSesionActiva } from '../hooks/useSesionActiva';
 import { useResumenCierrePendiente } from '../hooks/useResumenCierrePendiente';
 import { useArqueo } from '../hooks/useArqueo';
 import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
+import { useImprimirCierre } from '../hooks/useImprimirCierre';
 import {
   cerrarTurnoSchema,
   type CerrarTurnoInput,
@@ -54,7 +55,6 @@ import { ResumenCierreTurno } from '../components/ResumenCierreTurno';
 import type { SesionRead } from '../api/sesionActivaApi';
 import {
   runCerrarTurnoChain,
-  type CerrarTurnoBridge,
   type CerrarSesionHelper,
   type ArqueoSubmitFn,
 } from './cerrarTurnoChain';
@@ -66,6 +66,7 @@ export function CerrarTurno(): JSX.Element | null {
   const navigate = useNavigate();
   const { sesion, cerrarSesion: cerrarSesionHelper } = useSesionActiva();
   const { submit: submitArqueo } = useArqueo();
+  const imprimir = useImprimirCierre();
   // F11.3: the BE arqueo POST requires `uuid_tipo_arqueo` (UUID), not
   // the legacy codigo string — resolve it via the catalog SWR hook
   // (mirrors `ArqueoParcial.tsx`, HU-F10.1).
@@ -165,39 +166,15 @@ export function CerrarTurno(): JSX.Element | null {
     setErrorState(null);
     setIsSubmitting(true);
 
-    // Wire the bridge if available (jsdom + vitest may not have it).
-    //
-    // KNOWN GAP (found while fixing tsc errors post-rediseño,
-    // 2026-09-25): `CerrarTurnoBridge.imprimir(kind, payload)`
-    // (cerrarTurnoChain.ts) assumes a 2-arg bridge, but the REAL
-    // preload bridge (`electron/preload.ts` `buildImprimir()`) only
-    // accepts ONE arg (`payload`) — calling it with 2 args silently
-    // drops the payload object (JS binds only the declared param), the
-    // same latent bug already present for the identical 2-arg
-    // `bridge.imprimir(kind, payload)` convention used by
-    // `SalidaMensualidad.tsx` / `PagoSheet.tsx`. Fixing the real
-    // contract is out of scope here (owned by `cerrarTurnoChain.ts` /
-    // `electron/preload.ts` / `bridge.d.ts`); this cast only restores
-    // type-checking without changing the pre-existing runtime behavior.
-    const bridge: CerrarTurnoBridge | null =
-      typeof window !== 'undefined' &&
-      typeof window.bridge?.imprimir === 'function'
-        ? {
-            // Deliberate double-cast, see the KNOWN GAP comment above:
-            // preserves pre-existing (broken) runtime behavior without
-            // fabricating a fix for the missing arqueo ticket buffer.
-            imprimir: window.bridge.imprimir.bind(
-              window.bridge,
-            ) as unknown as CerrarTurnoBridge['imprimir'],
-          }
-        : null;
-
     const result = await runCerrarTurnoChain({
       sesion,
       uuidTipoArqueo,
       submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
       cerrarSesion: cerrarSesionHelper as unknown as CerrarSesionHelper,
-      bridge,
+      // Real print through the shared layer (arqueoPrint → bridge contract
+      // `{ buffer, ticketId, cut }` / window.print in browser mode); failures
+      // surface as a visible notice with retry and never block the cierre.
+      imprimirCierre: imprimir.turno,
       values,
       requiereJustificacion: ctx?.requiereJustificacion === true,
     });

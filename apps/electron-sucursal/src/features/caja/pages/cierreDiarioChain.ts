@@ -34,14 +34,20 @@
  */
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
+import type { ArqueoSubmitResult } from '../hooks/useArqueo';
+
 /**
- * Bridge signature: `window.bridge.imprimir(kind, payload)` per F2.2
- * DEC-FETCH-08 + `renderer/global.d.ts`. Typed as a minimal interface
- * so the helper is unit-testable without a real Electron bridge.
+ * What the cierre-diario slip needs once the arqueo is persisted. The
+ * orchestrator injects `imprimirCierre` (real print via
+ * `arqueoPrint.imprimirCierre` + the visible failure notice); the chain only
+ * hands it the data and never lets a print failure change the outcome.
  */
-export interface CierreDiarioBridge {
-  imprimir(kind: string, payload: Record<string, unknown>): Promise<unknown>;
+export interface CierreDiarioParaImprimir {
+  arqueo: ArqueoSubmitResult;
+  valor_efectivo_reportado: number;
+  justificacion: string | undefined;
 }
+export type ImprimirCierreDiarioFn = (cierre: CierreDiarioParaImprimir) => unknown;
 
 /**
  * `ArqueoSubmitFn` — structural type for `useArqueo().submit` shape.
@@ -58,7 +64,7 @@ export interface ArqueoSubmitFn {
     uuid_tipo_arqueo: string;
     valor_efectivo_reportado: number;
     justificacion?: string;
-  }): Promise<{ uuid: string }>;
+  }): Promise<ArqueoSubmitResult>;
 }
 
 /**
@@ -146,7 +152,8 @@ export async function runCierreDiarioChain(args: {
   submitArqueo: ArqueoSubmitFn;
   /** UUID of the `cierre_dia` row in `prod.tipo_arqueo` (catalog lookup). */
   uuidTipoArqueo: string;
-  bridge: CierreDiarioBridge | null;
+  /** Prints the cierre slip (best-effort); `null` when printing is not wired (tests). */
+  imprimirCierre: ImprimirCierreDiarioFn | null;
   values: {
     valor_efectivo_reportado: number;
     justificacion?: string;
@@ -161,18 +168,24 @@ export async function runCierreDiarioChain(args: {
     );
     arqueoUuid = arqueoResult.uuid;
 
-    // Step 2: ESC/POS print. DA-F10.3-6 RESOLVED — the bridge
-    // failure is logged but non-fatal (F10.2 precedent).
-    if (args.bridge !== null) {
+    // Step 2: print the slip through the injected function (real bridge
+    // contract). DA-F10.3-6 RESOLVED — a failure never aborts the success
+    // path: it is surfaced by the injected function (visible notice + retry).
+    if (args.imprimirCierre !== null) {
       try {
-        await args.bridge.imprimir('arqueo', {
-          ...arqueoResult,
-          auditoria_codigo: 'cierre_dia',
+        void Promise.resolve(
+          args.imprimirCierre({
+            arqueo: arqueoResult,
+            valor_efectivo_reportado: args.values.valor_efectivo_reportado,
+            justificacion: args.values.justificacion?.trim() || undefined,
+          }),
+        ).catch((err: unknown) => {
+          console.warn(
+            'escpos_printer_offline',
+            err instanceof Error ? err.message : String(err),
+          );
         });
       } catch (err) {
-        // BORDER tolerant — F10.2 DA-F10.2-5 RESOLVED. We log
-        // observability so the supervisor can investigate post-hoc
-        // without aborting the success path.
         console.warn(
           'escpos_printer_offline',
           err instanceof Error ? err.message : String(err),

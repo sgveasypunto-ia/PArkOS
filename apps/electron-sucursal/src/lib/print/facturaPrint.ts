@@ -26,6 +26,7 @@ import type { BridgeSurface } from '../../../electron/bridge';
 import type { FacturaRead } from '../../features/facturacion/api/facturaApi';
 import { cutPartial, escBoldOff, escBoldOn, escCenter, escInit, escLeft, lf } from './escposBuilder';
 import { formatCOPDecimal, formatFechaCorta } from './escposTemplates';
+import { ejecutarImpresion } from './avisoImpresion';
 import { printHtml } from './fallbackBrowser';
 
 /** Printable columns (58mm paper, Font A). 80mm paper simply leaves margin. */
@@ -36,7 +37,7 @@ export type FacturaLinea =
   | { tipo: 'fila'; izq: string; der: string; negrita?: boolean; sangria?: boolean }
   | { tipo: 'sep' };
 
-function dinero(value: number | null | undefined): string {
+export function dinero(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
   return formatCOPDecimal(value).replace(/ /g, ' ');
 }
@@ -203,11 +204,11 @@ export function facturaATexto(lineas: FacturaLinea[], cols: number = FACTURA_COL
     .join('\n');
 }
 
-/** ESC/POS bytes for the thermal printer (same framing as the other tiquetes). */
-export function facturaAEscpos(f: FacturaRead): Buffer {
+/** ESC/POS bytes for a channel-neutral list of lines (same framing as the other tiquetes). */
+export function lineasAEscpos(lineas: FacturaLinea[]): Buffer {
   const u = (t: string): Buffer => Buffer.from(t, 'utf8');
   const parts: Buffer[] = [escInit()];
-  for (const l of construirFactura(f)) {
+  for (const l of lineas) {
     const texto =
       l.tipo === 'sep'
         ? '-'.repeat(FACTURA_COLUMNAS)
@@ -226,6 +227,11 @@ export function facturaAEscpos(f: FacturaRead): Buffer {
   return Buffer.concat(parts);
 }
 
+/** ESC/POS bytes for the thermal printer (same framing as the other tiquetes). */
+export function facturaAEscpos(f: FacturaRead): Buffer {
+  return lineasAEscpos(construirFactura(f));
+}
+
 function esc(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -235,9 +241,9 @@ function esc(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/** HTML rendering (browser mode), semantic rows with the same lines. */
-export function facturaAHtml(f: FacturaRead): string {
-  const body = construirFactura(f)
+/** HTML rendering (browser mode) of a list of lines, semantic rows. */
+export function lineasAHtml(lineas: FacturaLinea[], testid: string): string {
+  const body = lineas
     .map((l) => {
       if (l.tipo === 'sep') return '<hr />';
       if (l.tipo === 'fila') {
@@ -248,7 +254,12 @@ export function facturaAHtml(f: FacturaRead): string {
       return `<p style="${style}">${esc(l.texto)}</p>`;
     })
     .join('\n');
-  return `<div data-testid="factura-print" style="font-family:monospace;font-size:12px">\n${body}\n</div>`;
+  return `<div data-testid="${testid}" style="font-family:monospace;font-size:12px">\n${body}\n</div>`;
+}
+
+/** HTML rendering (browser mode), semantic rows with the same lines. */
+export function facturaAHtml(f: FacturaRead): string {
+  return lineasAHtml(construirFactura(f), 'factura-print');
 }
 
 export interface ResultadoImpresion {
@@ -258,38 +269,62 @@ export interface ResultadoImpresion {
 }
 
 /**
- * Print ANY invoice with its full tax detail.
+ * The ONE channel switch of every printed document:
  *   - Browser mode (`bridge.imprimir.modo === 'browser'`): HTML → `window.print`.
- *   - Electron: ESC/POS buffer (base64) → `bridge.imprimir({ buffer, … })`.
- * Never throws: a printer failure must not block the operator (the invoice is
- * already persisted).
+ *   - Electron: ESC/POS buffer (base64) → `bridge.imprimir({ buffer, ticketId, cut })`.
+ * Never throws: a printer failure is reported as `{ ok: false }` so the caller
+ * can surface it without blocking the operator (DEC-SUC-08).
  */
-export async function imprimirFactura(
-  factura: FacturaRead,
-  bridge: Pick<BridgeSurface, 'imprimir'> | undefined = (
-    globalThis as unknown as { window?: { bridge?: BridgeSurface } }
-  ).window?.bridge,
+export async function enviarAlBridge(
+  bridge: Pick<BridgeSurface, 'imprimir'> | undefined,
+  doc: {
+    escpos: () => Buffer;
+    html: () => string;
+    ticketId: string;
+    uuidRegistro?: string;
+  },
 ): Promise<ResultadoImpresion> {
   if (!bridge?.imprimir) return { ok: false, motivo: 'sin_bridge' };
   try {
     if ((bridge.imprimir as { modo?: string }).modo === 'browser') {
-      printHtml(facturaAHtml(factura));
+      printHtml(doc.html());
       return { ok: true };
     }
     const result = await bridge.imprimir({
-      buffer: facturaAEscpos(factura).toString('base64'),
-      ticketId: `factura-${factura.numero_recibo}`.slice(0, 64),
+      buffer: doc.escpos().toString('base64'),
+      ticketId: doc.ticketId.slice(0, 64),
       cut: true,
-      uuidRegistro: factura.uuid,
+      ...(doc.uuidRegistro !== undefined ? { uuidRegistro: doc.uuidRegistro } : {}),
     });
     // A bridge that answers nothing (or {ok:true}) counts as sent.
     return result && result.ok === false
       ? { ok: false, motivo: result.error ?? 'print_failed' }
       : { ok: true };
   } catch (err) {
-    console.warn('[imprimirFactura] bridge.imprimir failed (printer_offline / disconnected; la factura ya está registrada):', err);
+    console.warn('[imprimir] bridge.imprimir failed (printer_offline / disconnected; el documento ya está registrado):', err);
     return { ok: false, motivo: 'excepcion' };
   }
+}
+
+/** Default bridge = `window.bridge` (undefined in tests / SSR). */
+export function bridgeActual(): BridgeSurface | undefined {
+  return (globalThis as unknown as { window?: { bridge?: BridgeSurface } }).window?.bridge;
+}
+
+/**
+ * Print ANY invoice with its full tax detail (see `enviarAlBridge`).
+ * Never throws: the invoice is already persisted.
+ */
+export async function imprimirFactura(
+  factura: FacturaRead,
+  bridge: Pick<BridgeSurface, 'imprimir'> | undefined = bridgeActual(),
+): Promise<ResultadoImpresion> {
+  return enviarAlBridge(bridge, {
+    escpos: () => facturaAEscpos(factura),
+    html: () => facturaAHtml(factura),
+    ticketId: `factura-${factura.numero_recibo}`,
+    uuidRegistro: factura.uuid,
+  });
 }
 
 /** What a screen injects (tests) to observe/replace the real printing. */
@@ -306,13 +341,13 @@ export function dispararImpresionFactura(
   imprimir: ImprimirFacturaFn = imprimirFactura,
 ): void {
   queueMicrotask(() => {
-    const warn = (err: unknown): void => {
-      console.warn('[imprimirFactura] bridge.imprimir failed (printer_offline / disconnected):', err);
-    };
-    try {
-      void Promise.resolve(imprimir(factura)).catch(warn);
-    } catch (err) {
-      warn(err);
-    }
+    // Failures are surfaced as a visible, non-blocking notice with retry
+    // (`ejecutarImpresion`); nothing here ever throws into the caller.
+    void ejecutarImpresion('la factura', async () => {
+      const res = await imprimir(factura);
+      return res !== null && typeof res === 'object' && (res as { ok?: unknown }).ok === false
+        ? { ok: false }
+        : { ok: true };
+    });
   });
 }

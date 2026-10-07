@@ -2,32 +2,32 @@
  * `cierreDiarioChain.test.ts` — Strict-TDD RED scaffold for HU-F10.3
  * (REQ-OPS-166, AD-2).
  *
- * 2-step sequencer (POST /caja/arqueo + bridge.imprimir) that mirrors
+ * 2-step sequencer (POST /caja/arqueo + imprimirCierre) that mirrors
  * F10.2's `cerrarTurnoChain.ts` (REQ-OPS-159) but FLATTENED to
  * 2 steps because the backend `cerrar_sesiones_del_dia_bulk` (KD-ARQUEO-03,
  * triggered at `caja_arqueo.py:266-272`) handles per-session closure
  * in-tx. NO PUT sesion-close; NO client-side DELETE on `[A]` tables.
  *
  * The discriminated result envelope has 5 kinds per REQ-OPS-166:
- *   - 'success' — happy path (bridge.imprimir failure is non-fatal)
+ *   - 'success' — happy path (imprimirCierre failure is non-fatal)
  *   - 'arqueo_fallido' — POST 4xx/5xx (ParkosHttpError)
  *   - 'red_arqueo' — POST TypeError (network)
  *   - 'ya_cerrado' — POST 409 closure already exists (defensive)
  *   - 'permiso_insuficiente' — POST 403 tenant_scope_violation
  *
  * Scenarios (5):
- *   chain-1 — happy 2-step: POST 201 + bridge.imprimir once →
+ *   chain-1 — happy 2-step: POST 201 + imprimirCierre once →
  *             { kind: 'success', uuid_arqueo: 'AD' }
- *   chain-2 — bridge failure non-fatal: POST 201 + bridge.imprimir
+ *   chain-2 — bridge failure non-fatal: POST 201 + imprimirCierre
  *             rejects → still { kind: 'success', uuid_arqueo: 'AD' } +
  *             console.warn observability (DA-F10.3-6 RESOLVED).
  *   chain-3 — POST 400 `cierre_dia_no_acepta_uuid_sesion` →
  *             { kind: 'arqueo_fallido', status: 400 } — programmer
  *             error indicator (the FE never passes uuid_sesion).
  *   chain-4 — POST 5xx → { kind: 'arqueo_fallido', status: 500 }
- *             NO bridge.imprimir fires.
+ *             NO imprimirCierre fires.
  *   chain-5 — POST network TypeError → { kind: 'red_arqueo' }
- *             NO bridge.imprimir fires.
+ *             NO imprimirCierre fires.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,11 +36,10 @@ import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import {
   runCierreDiarioChain,
   type ArqueoSubmitFn,
-  type CierreDiarioBridge,
 } from '../cierreDiarioChain';
 
 let submitArqueo: ReturnType<typeof vi.fn>;
-let bridge: CierreDiarioBridge;
+let imprimirCierre: ReturnType<typeof vi.fn>;
 
 const TIPO_CIERRE_DIA_UUID = '6a759c41-1896-4362-bde4-6eff00ae6626';
 
@@ -50,7 +49,7 @@ const BASE_VALUES = {
 
 beforeEach(() => {
   submitArqueo = vi.fn();
-  bridge = { imprimir: vi.fn() };
+  imprimirCierre = vi.fn();
 });
 
 afterEach(() => {
@@ -61,7 +60,7 @@ const chain = (values: unknown = BASE_VALUES) =>
   runCierreDiarioChain({
     submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
     uuidTipoArqueo: TIPO_CIERRE_DIA_UUID,
-    bridge,
+    imprimirCierre,
     values: values as never,
   });
 
@@ -69,7 +68,7 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
   // ──────────────────────────────────────────────────────────────────
   // chain-1 — happy path 2-step sequencer
   // ──────────────────────────────────────────────────────────────────
-  it('chain-1: happy 2-step sequencer POST 201 + bridge.imprimir once → { kind: "success", uuid_arqueo: "AD" }', async () => {
+  it('chain-1: happy 2-step sequencer POST 201 + imprimirCierre once → { kind: "success", uuid_arqueo: "AD" }', async () => {
     submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-AD' });
 
     const result = await chain();
@@ -84,15 +83,13 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
       valor_efectivo_reportado: 150_000,
     });
     expect(submitArqueo.mock.calls[0]?.[0]).not.toHaveProperty('tipo_arqueo');
-    // bridge.imprimir fired exactly once with auditoria_codigo='cierre_dia'.
-    expect(bridge.imprimir).toHaveBeenCalledTimes(1);
-    expect(bridge.imprimir).toHaveBeenCalledWith(
-      'arqueo',
-      expect.objectContaining({
-        uuid: 'arqueo-uuid-AD',
-        auditoria_codigo: 'cierre_dia',
-      }),
-    );
+    // the slip data is handed over exactly once (real print lives in the orchestrator).
+    expect(imprimirCierre).toHaveBeenCalledTimes(1);
+    expect(imprimirCierre).toHaveBeenCalledWith({
+      arqueo: { uuid: 'arqueo-uuid-AD' },
+      valor_efectivo_reportado: 150_000,
+      justificacion: undefined,
+    });
     expect(result).toEqual({
       kind: 'success',
       uuid_arqueo: 'arqueo-uuid-AD',
@@ -102,16 +99,15 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
   // ──────────────────────────────────────────────────────────────────
   // chain-2 — bridge failure non-fatal (DA-F10.3-6 RESOLVED)
   // ──────────────────────────────────────────────────────────────────
-  it('chain-2: bridge.imprimir rejects → still { kind: "success" } + console.warn "escpos_printer_offline"', async () => {
+  it('chain-2: imprimirCierre rejects → still { kind: "success" } + console.warn "escpos_printer_offline"', async () => {
     submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-AD' });
     const warnSpy = vi
       .spyOn(console, 'warn')
       .mockImplementation(() => undefined);
-    (bridge.imprimir as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('printer offline'),
-    );
+    imprimirCierre.mockRejectedValueOnce(new Error('printer offline'));
 
     const result = await chain();
+    await Promise.resolve();
 
     // Non-fatal: result MUST still be success.
     expect(result).toEqual({
@@ -140,8 +136,8 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
 
     const result = await chain();
 
-    // NO bridge.imprimir on failure.
-    expect(bridge.imprimir).not.toHaveBeenCalled();
+    // NO imprimirCierre on failure.
+    expect(imprimirCierre).not.toHaveBeenCalled();
     expect(result).toEqual({
       kind: 'arqueo_fallido',
       status: 400,
@@ -151,14 +147,14 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
   // ──────────────────────────────────────────────────────────────────
   // chain-4 — POST 5xx leaves S3 OPEN (KD-ARQUEO-01 atomicity)
   // ──────────────────────────────────────────────────────────────────
-  it('chain-4: POST 5xx → { kind: "arqueo_fallido", status: 500 } (NO bridge.imprimir, NO retry)', async () => {
+  it('chain-4: POST 5xx → { kind: "arqueo_fallido", status: 500 } (NO imprimirCierre, NO retry)', async () => {
     submitArqueo.mockRejectedValueOnce(
       new ParkosHttpError(500, 'internal_server_error', 'internal_error'),
     );
 
     const result = await chain();
 
-    expect(bridge.imprimir).not.toHaveBeenCalled();
+    expect(imprimirCierre).not.toHaveBeenCalled();
     expect(result).toEqual({
       kind: 'arqueo_fallido',
       status: 500,
@@ -168,12 +164,12 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
   // ──────────────────────────────────────────────────────────────────
   // chain-5 — POST network TypeError → { kind: 'red_arqueo' }
   // ──────────────────────────────────────────────────────────────────
-  it('chain-5: POST network TypeError → { kind: "red_arqueo" } (NO bridge.imprimir)', async () => {
+  it('chain-5: POST network TypeError → { kind: "red_arqueo" } (NO imprimirCierre)', async () => {
     submitArqueo.mockRejectedValueOnce(new TypeError('NetworkError'));
 
     const result = await chain();
 
-    expect(bridge.imprimir).not.toHaveBeenCalled();
+    expect(imprimirCierre).not.toHaveBeenCalled();
     expect(result).toEqual({ kind: 'red_arqueo' });
   });
 

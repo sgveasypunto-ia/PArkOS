@@ -344,6 +344,14 @@ function renderReciboPagoHtml(payload: ReciboPagoPayload): string {
  *   - `EscposPayloadMissingFieldError` if Zod parse fails.
  */
 export function print(tipo: TiqueteTipo, payload: unknown): void {
+  printHtml(renderTiqueteHtml(tipo, payload));
+}
+
+/**
+ * Validate `tipo` + `payload` and render the tiquete HTML (no printing).
+ * Same throws as `print`. Shared with `tiquetePrint.ts` (browser channel).
+ */
+export function renderTiqueteHtml(tipo: TiqueteTipo, payload: unknown): string {
   if (!isTiqueteTipo(tipo)) {
     throw new EscposInvalidTipoError(String(tipo));
   }
@@ -383,8 +391,7 @@ export function print(tipo: TiqueteTipo, payload: unknown): void {
     default:
       throw new EscposInvalidTipoError(String(tipo));
   }
-
-  printHtml(html);
+  return html;
 }
 
 /**
