@@ -139,25 +139,35 @@ async def _seed_sucursal(pg_engine, uuid_sucursal: uuid_lib.UUID) -> None:
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    from sqlalchemy import select
+
     async with Session() as session:
-        empresa_uuid = uuid_lib.uuid4()
-        session.add(
-            Empresa(
-                uuid=empresa_uuid,
-                nombre="Empresa Test",
-                nit=f"900{empresa_uuid.hex[:6]}",
-                mensaje_bienvenida="Hola",
-                mensaje_salida="Adios",
-                regimen="comun",
-                vigente_desde=_now_naive(),
-                vigente_hasta=None,
-                estado="activo",
-                created_at=_now_naive(),
-                created_by=None,
-                sync_status="sincronizado",
+        # ``empresa`` is a singleton (0078 ``empresa_singleton_uk``): reuse
+        # the open one when an earlier test already created it.
+        empresa_uuid = (
+            await session.execute(
+                select(Empresa.uuid).where(Empresa.vigente_hasta.is_(None))
             )
-        )
-        await session.flush()
+        ).scalars().first()
+        if empresa_uuid is None:
+            empresa_uuid = uuid_lib.uuid4()
+            session.add(
+                Empresa(
+                    uuid=empresa_uuid,
+                    nombre="Empresa Test",
+                    nit=f"900{empresa_uuid.hex[:6]}",
+                    mensaje_bienvenida="Hola",
+                    mensaje_salida="Adios",
+                    regimen="comun",
+                    vigente_desde=_now_naive(),
+                    vigente_hasta=None,
+                    estado="activo",
+                    created_at=_now_naive(),
+                    created_by=None,
+                    sync_status="sincronizado",
+                )
+            )
+            await session.flush()
         session.add(
             Sucursal(
                 uuid=uuid_sucursal,
