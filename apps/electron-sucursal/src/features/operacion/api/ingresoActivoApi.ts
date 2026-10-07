@@ -106,8 +106,12 @@ const INGRESOS_PATH = '/api/v1/operacion/ingresos';
  * preserves it (200 OK with `[]` body). The hook treats `length === 0`
  * as `hasActive: false`.
  */
-export async function getIngresosByPlaca(placa: string): Promise<Ingreso[]> {
+export async function getIngresosByPlaca(
+  placa: string,
+  opts: { soloActivos?: boolean } = {},
+): Promise<Ingreso[]> {
   const params = new URLSearchParams({ placa });
+  if (opts.soloActivos) params.set('activo', 'true');
   const raw = await parkosFetch<unknown>(`${INGRESOS_PATH}?${params.toString()}`);
   return IngresoArraySchema.parse(raw);
 }
@@ -119,8 +123,12 @@ export async function getIngresosByPlaca(placa: string): Promise<Ingreso[]> {
  * `activo` filter — needed so reimpresión can find a no-placa vehicle
  * whose ticket already registered salida días atrás.
  */
-export async function getIngresosByConsecutivo(consecutivo: string): Promise<Ingreso[]> {
+export async function getIngresosByConsecutivo(
+  consecutivo: string,
+  opts: { soloActivos?: boolean } = {},
+): Promise<Ingreso[]> {
   const params = new URLSearchParams({ consecutivo });
+  if (opts.soloActivos) params.set('activo', 'true');
   const raw = await parkosFetch<unknown>(`${INGRESOS_PATH}?${params.toString()}`);
   return IngresoArraySchema.parse(raw);
 }

@@ -87,6 +87,7 @@
       "buscar": "Buscar",
       "cambiar": "Buscar otro",
       "no_encontrado": "No se encontró ningún ingreso para \"{{termino}}\"",
+      "ingreso_cerrado": "Este ingreso ya tiene salida registrada; no se puede reimprimir el tiquete",
       "candidatos_titulo": "Múltiples candidatos"
     },
     "ingreso": {
