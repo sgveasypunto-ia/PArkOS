@@ -22,7 +22,7 @@ from ..models.L_E.ingreso import Ingreso
 from ..models.V.tipos_vehiculo import TiposVehiculo
 from .alerta import insertar_alerta_forzado
 from .event import record_event
-from .ingreso_activo import salida_vigente_exists_sql
+from .ingreso_activo import ingreso_activo_sql
 from .ingreso_consecutivo import (
     ConsecutivoExhaustedError,
     TipoVehiculoNotFoundError,
@@ -77,20 +77,15 @@ async def existe_ingreso_activo(
     # One SELECT: the duplicate guard and the "active" listings share the
     # same definition (``repo/ingreso_activo.py``). A salida annulled by an
     # ``ejecutada`` anulacion never happened, so the vehicle is still
-    # inside; an annulled INGRESO (tipo_anulable='ingreso') is not active.
+    # inside; an annulled INGRESO (tipo_anulable='ingreso') is not active
+    # (both rules live in ``ingreso_activo_sql``).
     id_stmt = text(
         f"""
         SELECT i.uuid
         FROM prod.ingreso i
         WHERE i.uuid_sucursal = :uuid_sucursal
           AND i.placa = :placa
-          AND NOT {salida_vigente_exists_sql("i.uuid")}
-          AND NOT EXISTS (
-            SELECT 1 FROM prod.anulaciones a
-            WHERE a.uuid_ingreso = i.uuid
-              AND a.estado = 'ejecutada'
-              AND a.tipo_anulable = 'ingreso'
-          )
+          AND {ingreso_activo_sql("i.uuid")}
         LIMIT 1
         """
     )

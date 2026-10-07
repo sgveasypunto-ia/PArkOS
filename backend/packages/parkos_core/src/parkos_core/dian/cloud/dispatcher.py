@@ -74,7 +74,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # T-PR11-07 — DIAN boundary layer 2: branch deploys bail at module load.
@@ -248,6 +248,31 @@ async def _write_alerta(
     await append_event(session, Alerta, attrs)  # type: ignore[arg-type]
 
 
+async def record_dispatch_failure(
+    session: AsyncSession, *, uuid_documento: uuid_lib.UUID, kind: str
+) -> None:
+    """Alert a dispatch that died BEFORE any ``envio_dian`` outcome existed.
+
+    ``_record_terminal`` only alerts once an envio row exists; a dispatch that
+    raises earlier (source row invisible, customer not synced yet, range
+    violation, unreadable token) left the branch's ``pendiente`` row sitting
+    silently forever. One ``dian_error`` alerta per failure, referencing the
+    document, makes it visible AND is the counter the sweep uses to stop
+    retrying a document that needs a human.
+    """
+    model = FacturaElectronica if kind == "fe" else RevocacionFactura
+    sucursal = (
+        await session.execute(select(model.uuid_sucursal).where(model.uuid == uuid_documento))
+    ).scalar_one_or_none()
+    await _write_alerta(
+        session,
+        uuid_sucursal=sucursal,
+        uuid_arqueo=uuid_documento,
+        tipo_alerta="dian_error",
+    )
+    await session.commit()
+
+
 def _stamp_envio_retention_on_attribute(envio: EnvioDian) -> None:
     """Stamp the DIAN 5-year retention column on the ORM instance (PR11c -- Bug 4).
 
@@ -317,6 +342,45 @@ async def _record_terminal(
     await session.commit()
     await session.refresh(envio)
     return envio
+
+
+class SourceRowNotVisibleError(RuntimeError):
+    """The FE/revocation row is not visible to this session (yet).
+
+    ``not_visible`` lets the deferred-dispatch runner retry it briefly as a
+    safety net without importing this cloud-only module.
+    """
+
+    not_visible = True
+
+
+class DispatchAlreadyHandledError(Exception):
+    """Another chain already owns this document; sending again would submit
+    the same document to the provider twice."""
+
+
+async def _claim_first_attempt(
+    session: AsyncSession, *, lock_key: str, conditions: tuple[Any, ...]
+) -> None:
+    """Serialize and de-duplicate the FIRST attempt of a deferred dispatch.
+
+    Takes a transaction-scoped advisory lock on the document (released by the
+    commit that persists this attempt's ``envio_dian``), then refuses when a
+    cloud-originated chain (``payload.xml_sha256``, written only by this
+    module) already exists. The branch's own ``pendiente`` row never carries
+    ``xml_sha256``, so it does not count as a chain.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": lock_key}
+    )
+    existing = (
+        await session.execute(
+            select(EnvioDian.uuid).where(*conditions).limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        await session.rollback()
+        raise DispatchAlreadyHandledError(lock_key)
 
 
 class ClienteNoDisponibleError(RuntimeError):
@@ -408,6 +472,7 @@ async def dispatch_factura_electronica(
     dian_provider_url: str,
     dian_token_path: Path,
     parent_envio_uuid: uuid_lib.UUID | None = None,
+    skip_if_dispatched: bool = False,
 ) -> EnvioDian:
     """Send ``factura_electronica`` to DIAN; return the terminal ``envio_dian``.
 
@@ -433,8 +498,19 @@ async def dispatch_factura_electronica(
         )
     ).scalar_one_or_none()
     if row is None:
-        raise RuntimeError(
+        raise SourceRowNotVisibleError(
             f"factura_electronica {uuid_factura_electronica} not found"
+        )
+
+    if skip_if_dispatched and parent_envio_uuid is None:
+        await _claim_first_attempt(
+            session,
+            lock_key=f"dian:fe:{uuid_factura_electronica}",
+            conditions=(
+                EnvioDian.uuid_factura_electronica == uuid_factura_electronica,
+                EnvioDian.payload["xml_sha256"].astext.is_not(None),
+                EnvioDian.payload["uuid_revocacion_factura"].astext.is_(None),
+            ),
         )
 
     await validate_consecutivo_range(session, factura=row)
@@ -530,6 +606,7 @@ async def dispatch_revocacion(
     dian_provider_url: str,
     dian_token_path: Path,
     parent_envio_uuid: uuid_lib.UUID | None = None,
+    skip_if_dispatched: bool = False,
 ) -> EnvioDian:
     """Send a ``revocacion_factura`` to DIAN (T-PR11-02, design §21.11 step 2).
 
@@ -568,8 +645,18 @@ async def dispatch_revocacion(
         )
     ).scalar_one_or_none()
     if row is None:
-        raise RuntimeError(
+        raise SourceRowNotVisibleError(
             f"revocacion_factura {uuid_revocacion_factura} not found"
+        )
+
+    if skip_if_dispatched and parent_envio_uuid is None:
+        await _claim_first_attempt(
+            session,
+            lock_key=f"dian:rev:{uuid_revocacion_factura}",
+            conditions=(
+                EnvioDian.payload["uuid_revocacion_factura"].astext
+                == str(uuid_revocacion_factura),
+            ),
         )
 
     # 2. Serialize to UBL XML. TODO(T-PR11c): replace with
@@ -784,6 +871,7 @@ async def dispatch_factura_electronica_with_backoff(
     dian_provider_url: str,
     dian_token_path: Path,
     max_retries: int = DIAN_MAX_RETRIES,
+    skip_if_dispatched: bool = False,
 ) -> EnvioDian:
     """Drive :func:`dispatch_factura_electronica` across the DIAN retry budget.
 
@@ -811,6 +899,7 @@ async def dispatch_factura_electronica_with_backoff(
             dian_provider_url=dian_provider_url,
             dian_token_path=dian_token_path,
             parent_envio_uuid=parent_uuid,
+            skip_if_dispatched=skip_if_dispatched,
         )
         if _terminal_estado_dian(envio) == ESTADO_ACEPTADO:
             return envio
@@ -830,6 +919,7 @@ async def dispatch_revocacion_with_backoff(
     dian_provider_url: str,
     dian_token_path: Path,
     max_retries: int = DIAN_MAX_RETRIES,
+    skip_if_dispatched: bool = False,
 ) -> EnvioDian:
     """Drive :func:`dispatch_revocacion` across the DIAN retry budget.
 
@@ -848,6 +938,7 @@ async def dispatch_revocacion_with_backoff(
             dian_provider_url=dian_provider_url,
             dian_token_path=dian_token_path,
             parent_envio_uuid=parent_uuid,
+            skip_if_dispatched=skip_if_dispatched,
         )
         if _terminal_estado_dian(envio) == ESTADO_ACEPTADO:
             return envio
@@ -862,6 +953,8 @@ async def dispatch_revocacion_with_backoff(
 __all__ = [
     "ClienteNoDisponibleError",
     "ConsecutivoRangeError",
+    "DispatchAlreadyHandledError",
+    "SourceRowNotVisibleError",
     "DianProvider",
     "EnvioDian",
     "FactusProvider",
@@ -870,5 +963,6 @@ __all__ = [
     "dispatch_factura_electronica_with_backoff",
     "dispatch_revocacion",
     "dispatch_revocacion_with_backoff",
+    "record_dispatch_failure",
     "validate_consecutivo_range",
 ]

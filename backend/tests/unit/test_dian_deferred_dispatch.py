@@ -25,7 +25,8 @@ FE = uuid_lib.UUID("00000000-0000-0000-0000-0000000000d1")
 
 def _session() -> MagicMock:
     s = MagicMock(name="session")
-    s.sync_session = SimpleNamespace(info={})
+    s.sync_session = SimpleNamespace(info={}, get_nested_transaction=lambda: None, get_transaction=lambda: None
+    )
     return s
 
 
@@ -70,7 +71,10 @@ async def test_after_commit_spawns_detached_task_and_never_blocks() -> None:
         started.set()
         await hang.wait()
 
-    sync_session = SimpleNamespace(info={hooks._PENDING_KEY: [hanging]})
+    sync_session = SimpleNamespace(
+        info={hooks._PENDING_KEY: [hooks._Queued(make=hanging, key=None, txn=None)]},
+        in_nested_transaction=lambda: False,
+    )
     fake_local = MagicMock()
     fake_local.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
     fake_local.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -95,8 +99,11 @@ async def test_deferred_failure_is_swallowed() -> None:
 
 
 def test_rollback_drops_queued_dispatches() -> None:
-    sync_session = SimpleNamespace(info={hooks._PENDING_KEY: [object()]})
-    hooks._on_after_rollback(sync_session)
+    root = SimpleNamespace(parent=None)
+    sync_session = SimpleNamespace(
+        info={hooks._PENDING_KEY: [hooks._Queued(make=object(), key=None, txn=root)]}
+    )
+    hooks._on_after_soft_rollback(sync_session, root)
     assert sync_session.info[hooks._PENDING_KEY] == []
 
 

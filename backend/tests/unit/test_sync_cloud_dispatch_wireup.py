@@ -97,15 +97,17 @@ def _fake_session() -> MagicMock:
     # D5: dispatches are DEFERRED to after the commit (``defer_dispatch``
     # queues them in ``sync_session.info``); ``_drain`` plays the part of
     # the post-commit listener.
-    session.sync_session = SimpleNamespace(info={})
+    session.sync_session = SimpleNamespace(
+        info={}, get_nested_transaction=lambda: None, get_transaction=lambda: None
+    )
     return session
 
 
 async def _drain(session: MagicMock) -> None:
     """Run what the hooks queued, as the after-commit listener would."""
     queued = session.sync_session.info.get(dian_dispatch_on_sync._PENDING_KEY, [])
-    for make in list(queued):
-        await make(MagicMock(name="fresh_session"))
+    for item in list(queued):
+        await item.make(MagicMock(name="fresh_session"))
     queued.clear()
 
 
