@@ -378,6 +378,7 @@ async def crear_factura_impuesto_iva(
     base: Decimal,
     iva: Decimal,
     iva_monto: Decimal | None = None,
+    uuid_sucursal: uuid_lib.UUID | None = None,
 ) -> FacturaImpuestos:
     """Step 10b: INSERT one IVA snapshot row in ``prod.factura_impuestos``.
 
@@ -399,6 +400,11 @@ async def crear_factura_impuesto_iva(
     omitted the legacy ``ROUND(base * iva, 2)`` applies (rotacion flow,
     unchanged).
 
+    ``uuid_sucursal`` (owning branch of the factura) MUST be passed: the
+    tenant listener scopes ORM reads of this table with ``uuid_sucursal =
+    :ctx``, so a NULL row never shows up in the invoice display, reports or
+    the FE (same defect class as ``crear_factura_pago``).
+
     KD-FACT-01: caller commits ONCE.
     """
     from ..models.V.impuestos import Impuestos  # local import to avoid cycles
@@ -417,6 +423,7 @@ async def crear_factura_impuesto_iva(
         iva_monto = (base * iva).quantize(Decimal("0.01"))
     new_row = FacturaImpuestos(
         uuid_factura=uuid_factura,
+        uuid_sucursal=uuid_sucursal,
         uuid_impuesto=iva_row.uuid,
         base_calculo=base,
         porcentaje_aplicado=iva,

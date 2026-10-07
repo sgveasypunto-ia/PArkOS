@@ -72,5 +72,65 @@ async def test_venta_suscripcion_cobra_el_valor_del_plan_con_iva_incluido(
     assert Decimal(imp.base_calculo) == Decimal("84033.61")
     assert Decimal(imp.valor) == Decimal("15966.39")
     assert Decimal(imp.base_calculo) + Decimal(imp.valor) == Decimal(factura.total)
+    # child rows carry the owning branch: the tenant listener hides NULL ones
+    assert imp.uuid_sucursal == m.sucursal and det.uuid_sucursal == m.sucursal
     assert Decimal(pago.valor) == Decimal("100000.00")
     assert esperado == Decimal("4500") + Decimal("100000")
+
+
+def _assert_display_con_detalle_de_impuestos(factura: dict) -> None:
+    """The response carries the applied-tax detail, reconciled with the totals."""
+    assert Decimal(factura["subtotal"]) == Decimal("84033.61")
+    assert Decimal(factura["total"]) == Decimal("100000.00")
+    assert len(factura["impuestos"]) == 1
+    imp = factura["impuestos"][0]
+    assert imp["codigo_impuesto"] == "IVA"
+    assert imp["nombre_impuesto"]
+    assert Decimal(imp["porcentaje_aplicado"]) == Decimal("0.19")
+    assert Decimal(imp["base_calculo"]) == Decimal("84033.61")
+    assert Decimal(imp["valor"]) == Decimal("15966.39")
+    assert Decimal(imp["base_calculo"]) + Decimal(imp["valor"]) == Decimal(factura["total"])
+    assert Decimal(factura["subtotal"]) == Decimal(imp["base_calculo"])
+
+
+async def test_venta_suscripcion_responde_con_el_detalle_de_impuestos(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    m = await _sembrar_base(pg_engine, con_resolucion=True, valor="100000")
+    await _abrir_sesion(pg_engine, m)
+
+    r = await client.post(
+        f"{BASE}/venta-suscripcion",
+        json={
+            "uuid_cliente": str(m.cliente),
+            "placas": ["ZZZ998"],
+            "uuid_tipo_subscripcion": str(m.plan),
+            "fecha_inicio_cobertura": hoy_bogota().isoformat(),
+            "cobrar_ahora": True,
+            "medio_pago": "efectivo",
+        },
+        headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"),
+    )
+    assert r.status_code == 201, r.text
+    _assert_display_con_detalle_de_impuestos(r.json()["factura"])
+
+
+async def test_renovacion_responde_con_el_detalle_de_impuestos(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    from datetime import timedelta
+
+    from tests.integration.test_renovacion_e2e import _sembrar_suscripcion
+
+    m = await _sembrar_base(pg_engine, con_resolucion=True, dias_plan=30, valor="100000")
+    sub = await _sembrar_suscripcion(
+        pg_engine, m, vencimiento=hoy_bogota() + timedelta(days=5)
+    )
+
+    r = await client.post(
+        f"{BASE}/subscripciones/{sub}/renovar",
+        json={"medio_pago": "efectivo"},
+        headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"),
+    )
+    assert r.status_code == 201, r.text
+    _assert_display_con_detalle_de_impuestos(r.json()["factura"])

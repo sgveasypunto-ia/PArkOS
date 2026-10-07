@@ -429,7 +429,10 @@ async def create_factura(
 
     # --- Step 10: INSERT factura_detalle (N) + impuestos (1) + pago. --
     detalles_creados = await crear_factura_detalle_bulk(
-        session, uuid_factura=new_factura.uuid, items=items_validados
+        session,
+        uuid_factura=new_factura.uuid,
+        items=items_validados,
+        uuid_sucursal=target_sucursal,
     )
     # ``base`` (2026-09-24, live-validation bugfix): the GROSS base
     # (servicio/producto only), NOT ``total_server`` (net, post-
@@ -444,6 +447,7 @@ async def create_factura(
         base=base_iva,
         iva=iva_porcentaje,
         iva_monto=iva_monto,
+        uuid_sucursal=target_sucursal,
     )
     assert target_sucursal is not None  # salida.uuid_sucursal, persisted row
     try:
@@ -838,7 +842,10 @@ async def create_factura_servicio(
 
     # --- Step 11: INSERT factura_detalle (N) + impuestos (1) + pago. ---
     detalles_creados = await crear_factura_detalle_bulk(
-        session, uuid_factura=new_factura.uuid, items=items_validados
+        session,
+        uuid_factura=new_factura.uuid,
+        items=items_validados,
+        uuid_sucursal=target_sucursal,
     )
     await repo_factura.crear_factura_impuesto_iva(
         session,
@@ -846,6 +853,7 @@ async def create_factura_servicio(
         base=base_iva,
         iva=iva_porcentaje,
         iva_monto=iva_monto,
+        uuid_sucursal=target_sucursal,
     )
     assert target_sucursal is not None  # ingreso.uuid_sucursal, persisted row
     try:
