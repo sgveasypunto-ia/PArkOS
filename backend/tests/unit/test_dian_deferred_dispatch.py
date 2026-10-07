@@ -138,3 +138,75 @@ async def test_revocacion_commits_before_http_and_degrades_on_transport_error(di
         )
     assert order[:2] == ["commit", "http"]
     assert envio.respuesta_proveedor["estado_dian"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_deferred_failure_log_carries_class_and_sanitized_message() -> None:
+    """JB2: the warning had no cause (structlog does not render exc_info)."""
+
+    async def boom(_session):
+        raise FileNotFoundError(
+            "[Errno 2] token https://user:s3cret@provider.example/x missing"
+        )
+
+    fake_local = MagicMock()
+    fake_local.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+    fake_local.return_value.__aexit__ = AsyncMock(return_value=False)
+    with (
+        patch("parkos_core.db.engine.SessionLocal", new=fake_local),
+        patch.object(hooks, "_log") as log,
+    ):
+        await hooks._run_deferred(boom)
+    (event,), kwargs = log.warning.call_args
+    assert event == "dian_dispatch.deferred_failed"
+    assert kwargs["error_class"] == "FileNotFoundError"
+    assert "token" in kwargs["error"] and "s3cret" not in kwargs["error"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_token_ends_in_terminal_error_not_an_orphan_row(dispatcher) -> None:
+    """JB2: a missing provider token (OSError, not httpx) left the envio_dian
+    inserted by the dispatcher with no outcome and no alerta, never retried."""
+    row = SimpleNamespace(
+        uuid=uuid_lib.uuid4(), uuid_sucursal=uuid_lib.uuid4(),
+        uuid_factura_electronica=uuid_lib.uuid4(),
+    )
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = row
+    session.execute = AsyncMock(return_value=result)
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    session.commit = AsyncMock()
+
+    class Provider:
+        def __init__(self, **_k): ...
+
+        async def send_revocacion(self, _xml):
+            raise FileNotFoundError("/var/run/parkos/factus_token")
+
+    alerta = AsyncMock()
+    with (
+        patch.object(dispatcher, "FactusProvider", Provider),
+        patch.object(dispatcher, "_write_alerta", new=alerta),
+    ):
+        envio = await dispatcher.dispatch_revocacion(
+            session, uuid_revocacion_factura=row.uuid, actor_uuid=uuid_lib.uuid4(),
+            dian_provider_url="https://x.invalid", dian_token_path=MagicMock(),
+        )
+    assert envio.estado == "error"
+    assert envio.respuesta_proveedor["estado_dian"] == "error"
+    assert "FileNotFoundError" in envio.respuesta_proveedor["motivo_rechazo"]
+    assert alerta.await_args.kwargs["tipo_alerta"] == "dian_error"
+
+
+@pytest.mark.asyncio
+async def test_send_initial_maps_oserror_to_error_outcome(dispatcher) -> None:
+    class Provider:
+        async def send_ubl(self, _xml):
+            raise PermissionError("denied")
+
+    track, rechazo = await dispatcher._send_initial(Provider(), b"<x/>")
+    assert track is None
+    assert rechazo.estado == dispatcher.ESTADO_ERROR
+    assert "PermissionError" in rechazo.motivo_rechazo

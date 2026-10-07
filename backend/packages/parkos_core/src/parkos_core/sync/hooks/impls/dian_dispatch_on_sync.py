@@ -59,6 +59,8 @@ from typing import Any
 import structlog
 from sqlalchemy import event
 
+from parkos_core.runtime.log_safe import sanitize_error
+
 from .. import registry
 from ..base import HookContext, HookResult
 
@@ -94,8 +96,16 @@ async def _run_deferred(make: DeferredDispatch) -> None:
 
         async with SessionLocal() as session:
             await make(session)
-    except Exception:  # noqa: BLE001 - background; the envio_dian chain keeps the state
-        _log.warning("dian_dispatch.deferred_failed", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - background; the envio_dian chain keeps the state
+        # structlog is not configured to render ``exc_info`` here, so the
+        # warning used to carry no cause. Class + sanitized message (URL
+        # credentials masked, truncated) make it diagnosable; never the token.
+        _log.warning(
+            "dian_dispatch.deferred_failed",
+            error_class=type(exc).__name__,
+            error=sanitize_error(exc),
+            exc_info=True,
+        )
 
 
 def _on_after_commit(sync_session: Any) -> None:
