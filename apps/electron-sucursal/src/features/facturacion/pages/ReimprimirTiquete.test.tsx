@@ -28,6 +28,10 @@
  *   T7: success card "Anular" click → alertdialog con motivo_anulacion.
  *   T8: búsqueda resuelve 'none' → mensaje de error visible.
  *   T9: búsqueda resuelve 'multiple' → lista de candidatos clickeable.
+ *   T10: búsqueda resuelve 'cerrado' (ya tiene salida) → mensaje claro,
+ *       sin motivo ni cobro (H10).
+ *   T11: el backend responde 409 `ingreso_ya_tiene_salida` → mensaje en
+ *       español, no el texto crudo del error HTTP (H10).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
@@ -477,6 +481,53 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
 
     expect(screen.getByTestId('reimprimir-no-encontrado')).toBeInTheDocument();
     expect(screen.queryByTestId('reimprimir-motivo')).not.toBeInTheDocument();
+  });
+
+  it('T10: búsqueda resuelve "cerrado" → mensaje claro y no se ofrece reimpresión (H10)', async () => {
+    mockUseReimprimir.mockReturnValue(buildReimprimirHook());
+    mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+    mockUseRegistrarPagoServicio.mockReturnValue(buildRegistrarPagoServicioHook());
+    mockResolverIngresoReimpresion.mockResolvedValue({
+      kind: 'cerrado',
+      termino: 'ABC123',
+    });
+
+    renderAt();
+    await buscarYEncontrar('ABC123');
+
+    const msg = screen.getByTestId('reimprimir-ingreso-cerrado');
+    expect(msg).toHaveTextContent(
+      'Este ingreso ya tiene salida registrada; no se puede reimprimir el tiquete',
+    );
+    expect(screen.queryByTestId('reimprimir-no-encontrado')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('reimprimir-motivo')).not.toBeInTheDocument();
+  });
+
+  it('T11: 409 ingreso_ya_tiene_salida del backend → mensaje en español (H10)', async () => {
+    const reimprimirHook = buildReimprimirHook({
+      triggerError: new Error(
+        'parkosFetch 409 /api/v1/workflows/reimpresion-ticket: {"detail":{"error":"ingreso_ya_tiene_salida"}}',
+      ),
+    });
+    mockUseReimprimir.mockReturnValue(reimprimirHook);
+    mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+    mockUseRegistrarPagoServicio.mockReturnValue(buildRegistrarPagoServicioHook());
+    mockResolverIngresoReimpresion.mockResolvedValue({
+      kind: 'found',
+      ingreso: INGRESO_CON_PLACA,
+    });
+
+    renderAt();
+    await llegarAlPago();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    const err = screen.getByTestId('reimprimir-error');
+    expect(err).toHaveTextContent(
+      'Este ingreso ya tiene salida registrada; no se puede reimprimir el tiquete',
+    );
+    expect(err).not.toHaveTextContent('parkosFetch');
   });
 
   it('T9: búsqueda resuelve "multiple" → lista de candidatos clickeable selecciona uno', async () => {

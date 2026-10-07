@@ -121,6 +121,8 @@ async def create_reimpresion_ticket(
         1. KD-3 issuer claims + no_store headers (DI)
         2. V1 ``prod.ingreso.uuid`` exists (404 if None)
         3. Tenant scope post-V1 (403 if operador- cross-branch)
+        3b. Closed-ingreso guard (409 ``ingreso_ya_tiene_salida`` when a
+            non-annulled salida exists; H10)
         4. V2 chain-tip guard (409 ``reimpresion_already_pending``,
            KD-TKT-02 SELECT FOR UPDATE on the most-recent active row)
         5. V3 optional ``prod.facturas.uuid`` validation
@@ -161,6 +163,21 @@ async def create_reimpresion_ticket(
             status_code=403,
             detail={
                 "error": "tenant_scope_violation",
+                "uuid_ingreso": str(payload.uuid_ingreso),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 3b: H10 closed-ingreso guard. A vehicle that already left
+    # (live, non-annulled salida) has no ticket to reprint. Runs AFTER the
+    # tenant scope so a cross-branch caller cannot probe ingreso state.
+    if await repo_reimpresion.ingreso_tiene_salida_vigente(
+        session, uuid_ingreso=payload.uuid_ingreso
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "ingreso_ya_tiene_salida",
                 "uuid_ingreso": str(payload.uuid_ingreso),
             },
             headers=no_store,

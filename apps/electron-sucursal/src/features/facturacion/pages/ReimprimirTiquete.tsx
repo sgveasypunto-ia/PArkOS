@@ -151,6 +151,14 @@ async function imprimirReimpresionEntrada(
   });
 }
 
+const MSG_INGRESO_CERRADO =
+  'Este ingreso ya tiene salida registrada; no se puede reimprimir el tiquete';
+
+/** H10: backend 409 `ingreso_ya_tiene_salida` (la reimpresión se bloquea tras la salida). */
+function esIngresoYaTieneSalida(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('ingreso_ya_tiene_salida');
+}
+
 export function ReimprimirTiquete(): JSX.Element {
   const { t } = useTranslation('facturacion');
   const { sucursal } = useAuth();
@@ -158,6 +166,7 @@ export function ReimprimirTiquete(): JSX.Element {
   const [busqueda, setBusqueda] = useState<
     | { kind: 'idle' }
     | { kind: 'multiple'; candidatos: Ingreso[] }
+    | { kind: 'cerrado'; termino: string }
     | { kind: 'none'; termino: string }
   >({ kind: 'idle' });
   const [ingresoEncontrado, setIngresoEncontrado] = useState<Ingreso | null>(null);
@@ -238,6 +247,8 @@ export function ReimprimirTiquete(): JSX.Element {
         setIngresoEncontrado(resolucion.ingreso);
       } else if (resolucion.kind === 'multiple') {
         setBusqueda({ kind: 'multiple', candidatos: resolucion.candidatos });
+      } else if (resolucion.kind === 'cerrado') {
+        setBusqueda({ kind: 'cerrado', termino: resolucion.termino });
       } else {
         setBusqueda({ kind: 'none', termino: resolucion.termino });
       }
@@ -339,10 +350,19 @@ export function ReimprimirTiquete(): JSX.Element {
           // bloquear ni revertir el flujo.
         }
       } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : 'error');
+        setErrorMsg(
+          esIngresoYaTieneSalida(err)
+            ? t('reimprimir.busqueda.ingreso_cerrado', {
+                defaultValue: MSG_INGRESO_CERRADO,
+              })
+            : err instanceof Error
+              ? err.message
+              : 'error',
+        );
       }
     },
     [
+      t,
       ingresoEncontrado,
       motivoConfirmado,
       costoServicio.costo,
@@ -477,6 +497,18 @@ export function ReimprimirTiquete(): JSX.Element {
               {t('reimprimir.busqueda.no_encontrado', {
                 defaultValue: 'No se encontró ningún ingreso para "{{termino}}"',
                 termino: busqueda.termino,
+              })}
+            </p>
+          )}
+
+          {busqueda.kind === 'cerrado' && (
+            <p
+              role="alert"
+              className="text-sm text-destructive"
+              data-testid="reimprimir-ingreso-cerrado"
+            >
+              {t('reimprimir.busqueda.ingreso_cerrado', {
+                defaultValue: MSG_INGRESO_CERRADO,
               })}
             </p>
           )}

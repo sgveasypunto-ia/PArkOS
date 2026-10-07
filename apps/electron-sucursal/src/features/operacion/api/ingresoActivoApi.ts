@@ -133,8 +133,12 @@ export async function getIngresosByPlaca(
  * `activo` filter — needed so reimpresión can find a no-placa vehicle
  * whose ticket already registered salida días atrás.
  */
-export async function getIngresosByConsecutivo(consecutivo: string): Promise<Ingreso[]> {
+export async function getIngresosByConsecutivo(
+  consecutivo: string,
+  opts: { soloActivos?: boolean } = {},
+): Promise<Ingreso[]> {
   const params = new URLSearchParams({ consecutivo });
+  if (opts.soloActivos) params.set('activo', 'true');
   const raw = await parkosFetch<unknown>(`${INGRESOS_PATH}?${params.toString()}`);
   return IngresoArraySchema.parse(raw);
 }

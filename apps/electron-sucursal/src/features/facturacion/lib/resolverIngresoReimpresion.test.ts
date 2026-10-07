@@ -74,4 +74,26 @@ describe('resolverIngresoReimpresion', () => {
       expect(result.candidatos).toHaveLength(2);
     }
   });
+
+  it('returns "cerrado" when the only match already has a salida (H10)', async () => {
+    mockFetch.mockImplementation(async (path: string) => {
+      // Active-only lookups come back empty; the full history still has it.
+      if (path.includes('activo=true')) return [];
+      if (path.includes('placa=')) return [ingresoConPlaca];
+      return [];
+    });
+    const result = await resolverIngresoReimpresion('ABC123');
+    expect(result).toEqual({ kind: 'cerrado', termino: 'ABC123' });
+  });
+
+  it('only resolves ingresos through the active-only lookup (H10)', async () => {
+    mockFetch.mockImplementation(async (path: string) => {
+      if (path.includes('activo=true') && path.includes('placa=')) return [ingresoConPlaca];
+      return [];
+    });
+    const result = await resolverIngresoReimpresion('ABC123');
+    expect(result).toEqual({ kind: 'found', ingreso: ingresoConPlaca });
+    const paths = mockFetch.mock.calls.map((c) => c[0] as string);
+    expect(paths.every((p) => p.includes('activo=true'))).toBe(true);
+  });
 });

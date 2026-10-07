@@ -3015,6 +3015,13 @@ blocker is resolved (verified by F1.8 regression test
 **And** MUST return `422 Unprocessable Entity` with body `{"error":"missing_field", "field":"uuid_ingreso"}` and `Cache-Control: no-store`.
 **And** NO `prod.reimpresion_ticket` row MUST be INSERTed.
 
+#### Scenario 5: `409` when the ingreso already has a live salida (H10)
+
+**Given** an `ingreso` with a non-annulled `salidas` row (same exclusion as `get_ingreso_estado`; a salida annulled by an `ejecutada` anulacion does NOT count)
+**When** the client POSTs `/api/v1/workflows/reimpresion-ticket` for that `uuid_ingreso`
+**Then** the handler MUST return `409` with body `{"error":"ingreso_ya_tiene_salida", "uuid_ingreso":"..."}` and `Cache-Control: no-store`, after the tenant scope check.
+**And** NO `prod.reimpresion_ticket` row MUST be INSERTed. This supersedes the earlier HU-F8.3 "lost ticket days after exit" behavior: reprint is only allowed while the vehicle is still inside.
+
 #### Definition of Done for REQ-OPS-075
 
 - Handler `_create_reimpresion_ticket` wired in new module `api/v1/workflows_reimpresion.py` with `POST /api/v1/workflows/reimpresion-ticket`.
