@@ -44,9 +44,7 @@ const TRES_SESIONES: ArqueoResumenPorSesion['sesiones'] = [
     timestamp_cierre: '2026-09-21T18:00:00Z',
     estado: 'cerrado',
     valor_efectivo_esperado: 50_000,
-    valor_datafono_esperado: 0,
     valor_efectivo_reportado: 50_000,
-    valor_datafono_reportado: 0,
     uuid_arqueo: 'cccccccc-dddd-4eee-8fff-111111111111',
   },
   {
@@ -56,9 +54,7 @@ const TRES_SESIONES: ArqueoResumenPorSesion['sesiones'] = [
     timestamp_cierre: '2026-09-21T18:00:00Z',
     estado: 'cerrado',
     valor_efectivo_esperado: 100_000,
-    valor_datafono_esperado: 30_000,
     valor_efectivo_reportado: 100_000,
-    valor_datafono_reportado: 30_000,
     uuid_arqueo: 'cccccccc-dddd-4eee-8fff-222222222222',
   },
   {
@@ -68,9 +64,7 @@ const TRES_SESIONES: ArqueoResumenPorSesion['sesiones'] = [
     timestamp_cierre: null,
     estado: 'abierta',
     valor_efectivo_esperado: null,
-    valor_datafono_esperado: null,
     valor_efectivo_reportado: null,
-    valor_datafono_reportado: null,
     uuid_arqueo: null,
   },
 ];

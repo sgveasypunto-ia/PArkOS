@@ -73,13 +73,16 @@ export function useTipoArqueoPorCodigo(
   // NOT wire filters in the factory mount -- it returns ALL current
   // rows (vigente_hasta IS NULL). Filtering on the FE side is fine
   // since the type_arqueo catalog is small (~9 rows total).
-  const key =
-    codigo && accessToken ? `/catalogos/tipo-arqueo?limit=200` : null;
+  // El `codigo` DEBE formar parte de la clave SWR: el fetcher devuelve la fila
+  // de ese código, y sin él todos los códigos compartían una entrada de caché
+  // (cerrar turno enviaba el uuid de cierre_dia). La URL no cambia.
+  const path = `/catalogos/tipo-arqueo?limit=200`;
+  const key = codigo && accessToken ? `${path}&codigo=${encodeURIComponent(codigo)}` : null;
 
   const { data, error } = useSWR<{ uuid: string; codigo: string | null }>(
     key,
     async () => {
-      const raw = await parkosFetch<unknown>(`/api/v1${key}`);
+      const raw = await parkosFetch<unknown>(`/api/v1${path}`);
       const parsed = TipoArqueoListSchema.parse(raw);
       const row = parsed.items.find((it) => it.codigo === codigo);
       if (!row) {

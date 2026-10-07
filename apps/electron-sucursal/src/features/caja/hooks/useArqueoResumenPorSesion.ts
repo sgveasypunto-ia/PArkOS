@@ -49,12 +49,11 @@ const ArqueoResumenItemSchema = z
     // reventando el render de <CierreDiario /> con el dump crudo del
     // ZodError en vez de la tabla de sesiones.
     valor_efectivo_esperado: z.coerce.number().nullable(),
-    valor_datafono_esperado: z.coerce.number().nullable(),
     valor_efectivo_reportado: z.coerce.number().nullable(),
-    valor_datafono_reportado: z.coerce.number().nullable(),
     uuid_arqueo: z.string().uuid().nullable(),
-  })
-  .strict();
+    // REQ-OPS-192: los campos datafono ya no existen en la respuesta; si un
+    // backend anterior los envía se ignoran (objeto no estricto).
+  });
 
 /**
  * Top-level ArqueoResumenRead mirror — `fecha` is ISO 8601 date
@@ -68,8 +67,7 @@ const ArqueoResumenPorSesionSchema = z
     uuid_sucursal: z.string().uuid(),
     sesiones: z.array(ArqueoResumenItemSchema),
     cierre_dia: ArqueoResumenItemSchema.nullable(),
-  })
-  .strict();
+  });
 
 /**
  * `ArqueoResumenPorSesion` — public type alias consumed by the
@@ -126,7 +124,15 @@ export function useArqueoResumenPorSesion(
       const raw = await parkosFetch<unknown>(
         `/api/v1${key}`,
       );
-      return ArqueoResumenPorSesionSchema.parse(raw);
+      const parsed = ArqueoResumenPorSesionSchema.safeParse(raw);
+      if (!parsed.success) {
+        // Nunca exponer el ZodError crudo al operador.
+        console.error('arqueo/resumen fuera de contrato', parsed.error.issues);
+        throw new Error(
+          'No se pudo leer el resumen del día (respuesta inesperada del servidor). Reintente o contacte a soporte.',
+        );
+      }
+      return parsed.data;
     },
     {
       dedupingInterval: 10_000,

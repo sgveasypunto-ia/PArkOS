@@ -392,6 +392,18 @@ async def calcular_esperado_cierre_dia(
     a sesion closed earlier in the day still has its pagos summed).
     The datafono dimension is excluded from the aggregate per F12.1.1.
     """
+    # REQ-OPS-194: igual que ``calcular_esperado_sesion`` por sesion, el
+    # esperado del dia incluye la base de efectivo con la que abrio cada sesion
+    # (sin ella un cierre_dia correcto contaba como descuadre critico).
+    base = (
+        await session.execute(
+            select(func.coalesce(func.sum(Sesion.valor_inicial_efectivo), 0)).where(
+                Sesion.uuid_sucursal == uuid_sucursal,
+                Sesion.timestamp_apertura >= _inicio_dia(fecha),
+                Sesion.timestamp_apertura < _fin_dia(fecha),
+            )
+        )
+    ).scalar_one()
     sum_efectivo = await _sum_factura_pagos_by_medio_pago(
         session,
         uuid_sesion=None,
@@ -399,7 +411,7 @@ async def calcular_esperado_cierre_dia(
         fecha=fecha,
         medios_pago=("efectivo",),
     )
-    return sum_efectivo
+    return _to_decimal(base) + sum_efectivo
 
 
 def calcular_diferencia(
