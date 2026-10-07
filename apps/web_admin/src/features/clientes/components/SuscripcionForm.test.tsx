@@ -71,6 +71,7 @@ const { PLAN, PLAN_CARRO, PLAN_MOTO, VIGENTE, TIPO_CARRO, TIPO_MOTO } = vi.hoist
 
 const mockCreateSubscripcionVehiculo = vi.fn();
 const mockListVehiculos = vi.fn();
+const mockValidarAlta = vi.fn();
 
 vi.mock('../api/clientesApi', async () => {
   const actual = await vi.importActual<typeof ClientesApiModule>('../api/clientesApi');
@@ -78,6 +79,7 @@ vi.mock('../api/clientesApi', async () => {
     ...actual,
     createSubscripcionVehiculo: (...args: unknown[]) => mockCreateSubscripcionVehiculo(...args),
     listVehiculos: (...args: unknown[]) => mockListVehiculos(...args),
+    validarAltaSubscripcion: (...args: unknown[]) => mockValidarAlta(...args),
   };
 });
 
@@ -101,6 +103,8 @@ beforeEach(() => {
   window.localStorage.removeItem(SUCURSAL_STORAGE_KEY);
   mockCreateSubscripcionVehiculo.mockReset();
   mockListVehiculos.mockReset();
+  mockValidarAlta.mockReset();
+  mockValidarAlta.mockResolvedValue(undefined);
   mockListVehiculos.mockResolvedValue({
     items: [
       { uuid: 'veh-1', placa: 'ABC123', uuid_tipo_vehiculo: TIPO_CARRO, estado: 'activo' },
@@ -224,6 +228,95 @@ describe('<SuscripcionForm /> -- crear', () => {
     // stays open so the admin sees which vehiculo failed), but onSubmit
     // (the save) already ran exactly once and is not retried.
     expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('does NOT create the subscripcion when the plate is already active in the branch (dry-run rejects first)', async () => {
+    const onSubmit = vi.fn();
+    const onDone = vi.fn();
+    mockValidarAlta.mockRejectedValue(
+      apiError(409, {
+        error: 'placa_con_suscripcion_activa',
+        placa: 'ABC123',
+        uuid_vehiculo: 'veh-1',
+        uuid_subscripcion_cliente: 'otra-sub',
+      }),
+    );
+    await renderCreate(onSubmit, onDone);
+    await userEvent.selectOptions(
+      screen.getByTestId('suscripcion-field-plan'),
+      '33333333-3333-3333-3333-333333333333',
+    );
+    await addVehiculo(0, 'veh-1');
+    await userEvent.click(screen.getByTestId('suscripcion-form-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('suscripcion-vehiculo-error-0').textContent).toMatch(/ABC123/);
+    });
+    expect(screen.getByTestId('suscripcion-form-submit-error').textContent).toMatch(
+      /No se creó la suscripción/,
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(mockCreateSubscripcionVehiculo).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+    expect(mockValidarAlta).toHaveBeenCalledWith({
+      uuid_tipo_subscripcion: '33333333-3333-3333-3333-333333333333',
+      uuid_vehiculos: ['veh-1'],
+    });
+  });
+
+  it('does NOT create the subscripcion on a plan/quantity error not attributable to one vehicle', async () => {
+    const onSubmit = vi.fn();
+    mockValidarAlta.mockRejectedValue(
+      apiError(422, { error: 'cantidad_vehiculos_excede_plan', cantidad_maxima_vehiculos: 2 }),
+    );
+    await renderCreate(onSubmit);
+    await userEvent.selectOptions(
+      screen.getByTestId('suscripcion-field-plan'),
+      '33333333-3333-3333-3333-333333333333',
+    );
+    await addVehiculo(0, 'veh-1');
+    await userEvent.click(screen.getByTestId('suscripcion-form-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('suscripcion-form-submit-error').textContent).toMatch(
+        /No se creó la suscripción.*cantidad máxima/,
+      );
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does NOT create the subscripcion when the same vehicle is added twice', async () => {
+    const onSubmit = vi.fn();
+    await renderCreate(onSubmit);
+    await userEvent.selectOptions(
+      screen.getByTestId('suscripcion-field-plan'),
+      '33333333-3333-3333-3333-333333333333',
+    );
+    await addVehiculo(0, 'veh-1');
+    await addVehiculo(1, 'veh-1');
+    await userEvent.click(screen.getByTestId('suscripcion-form-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('suscripcion-form-submit-error').textContent).toMatch(
+        /vehículos repetidos/,
+      );
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(mockValidarAlta).not.toHaveBeenCalled();
+  });
+
+  it('skips the dry-run when no vehicle was added', async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ ...VIGENTE, uuid: 'sub-new' });
+    await renderCreate(onSubmit);
+    await userEvent.selectOptions(
+      screen.getByTestId('suscripcion-field-plan'),
+      '33333333-3333-3333-3333-333333333333',
+    );
+    await userEvent.click(screen.getByTestId('suscripcion-form-submit'));
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(mockValidarAlta).not.toHaveBeenCalled();
   });
 
   it('keeps the legacy 422 placa_con_suscripcion_vigente code as an alias', async () => {

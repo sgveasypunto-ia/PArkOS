@@ -74,13 +74,17 @@ primitive was introduced; this endpoint reuses the existing one.
 """
 from __future__ import annotations
 
+import uuid as uuid_lib
+
 from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext, requires_sucursal
 from ...db.engine import get_session
+from ...models.V.tipo_subscripciones import TipoSubscripciones
 from ...models.V.vehiculos import Vehiculos
 from ...repo import cupos_subscripcion as repo_cupos
 from ...repo import venta_suscripcion as repo_venta
@@ -273,6 +277,138 @@ async def crear_subscripcion_vehiculo(
 
     _helpers.apply_no_store_header(response)
     return SubscripcionVehiculosRead.model_validate(nuevo)
+
+
+class ValidarAltaSubscripcionRequest(BaseModel):
+    """``POST /clientes/subscripcion-vehiculos/validar-alta`` payload."""
+
+    uuid_tipo_subscripcion: uuid_lib.UUID
+    uuid_vehiculos: list[uuid_lib.UUID] = Field(min_length=1, max_length=50)
+
+
+class ValidarAltaSubscripcionResponse(BaseModel):
+    ok: bool = True
+
+
+@router.post(
+    "/validar-alta",
+    response_model=ValidarAltaSubscripcionResponse,
+    responses={
+        404: {"description": "plan_no_encontrado / vehiculo_no_encontrado"},
+        409: {"description": "placa_con_suscripcion_activa (misma sucursal)"},
+        422: {
+            "description": (
+                "cantidad_vehiculos_excede_plan / tipo_vehiculo_mixto_no_permitido / "
+                "tipo_vehiculo_plan_incompatible"
+            )
+        },
+    },
+)
+async def validar_alta_subscripcion(
+    response: Response,
+    payload: ValidarAltaSubscripcionRequest,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _claims: None = Depends(_issuer_dep),
+    _perm: dict = Depends(_permission_dep),  # noqa: B008
+    ctx: TenantContext = Depends(requires_sucursal),  # noqa: B008
+) -> ValidarAltaSubscripcionResponse:
+    """Dry-run of the plate rules for a subscription that is NOT created yet.
+
+    Lets the admin UI reject a bad plate BEFORE creating the subscription, so a
+    plate failure never leaves an empty subscription behind. Read-only (no
+    INSERT, no lock): the same rules ``POST /subscripcion-vehiculos`` enforces
+    per plate (duplicate plate in the branch, plan type, max quantity, mixed
+    types) with the same error codes. Errors carry ``uuid_vehiculo`` when they
+    are attributable to one vehicle.
+    """
+    no_store = _helpers.no_store_headers()
+
+    plan = (
+        await session.execute(
+            select(TipoSubscripciones).where(
+                TipoSubscripciones.uuid == payload.uuid_tipo_subscripcion
+            )
+        )
+    ).scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(
+            status_code=404, detail={"error": "plan_no_encontrado"}, headers=no_store
+        )
+
+    ids = list(dict.fromkeys(payload.uuid_vehiculos))
+    encontrados = {
+        v.uuid: v
+        for v in (
+            await session.execute(
+                select(Vehiculos).where(Vehiculos.uuid.in_(ids), Vehiculos.vigente_hasta.is_(None))
+            )
+        )
+        .scalars()
+        .all()
+    }
+    for uuid_vehiculo in ids:
+        if uuid_vehiculo not in encontrados:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "vehiculo_no_encontrado", "uuid_vehiculo": str(uuid_vehiculo)},
+                headers=no_store,
+            )
+    vehiculos = [encontrados[u] for u in ids]
+
+    # Duplicate plate in the branch (read-only lookup, no advisory lock).
+    for vehiculo in vehiculos:
+        conflicto = await repo_venta.buscar_subscripcion_activa_de_placa(
+            session, placa=vehiculo.placa, uuid_sucursal=ctx.sucursal_uuid
+        )
+        if conflicto is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "placa_con_suscripcion_activa",
+                    "placa": vehiculo.placa,
+                    "uuid_vehiculo": str(vehiculo.uuid),
+                    "uuid_subscripcion_cliente": str(conflicto),
+                },
+                headers=no_store,
+            )
+
+    try:
+        repo_venta.validar_cantidad_maxima_vehiculos(plan=plan, n_placas=len(vehiculos))
+    except repo_venta.CantidadMaximaExcedidaError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "cantidad_vehiculos_excede_plan",
+                "cantidad_maxima_vehiculos": exc.cantidad_maxima_vehiculos,
+                "placas_proporcionadas": exc.placas_proporcionadas,
+            },
+            headers=no_store,
+        ) from exc
+    try:
+        repo_venta.validar_tipo_vehiculo_del_plan(plan=plan, vehiculos=vehiculos)
+        repo_venta.validar_mismo_tipo_vehiculos(plan=plan, vehiculos=vehiculos)
+    except repo_venta.TipoVehiculoPlanIncompatibleError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "tipo_vehiculo_plan_incompatible",
+                "tipo_plan": str(exc.tipo_plan),
+                "tipos_encontrados": exc.tipos_encontrados,
+            },
+            headers=no_store,
+        ) from exc
+    except repo_venta.TipoVehiculoIncompatibleError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "tipo_vehiculo_mixto_no_permitido",
+                "tipos_encontrados": exc.tipos_encontrados,
+            },
+            headers=no_store,
+        ) from exc
+
+    _helpers.apply_no_store_header(response)
+    return ValidarAltaSubscripcionResponse(ok=True)
 
 
 __all__ = ["router"]

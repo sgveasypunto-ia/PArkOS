@@ -364,6 +364,27 @@ export async function createSubscripcionVehiculo(
   return subscripcionVehiculoSchema.parse(raw);
 }
 
+/**
+ * `POST /subscripcion-vehiculos/validar-alta` -- read-only dry run of the plate
+ * rules (placa duplicada en la sucursal, tipo vs plan, cantidad máxima) for a
+ * subscription that is NOT created yet. Rejects with the same error codes the
+ * per-vehicle POST uses, so a bad plate never leaves an empty subscription.
+ */
+export const validarAltaSubscripcionSchema = z.object({
+  uuid_tipo_subscripcion: z.string().uuid(),
+  uuid_vehiculos: z.array(z.string().uuid()).min(1),
+});
+export type ValidarAltaSubscripcionInput = z.infer<typeof validarAltaSubscripcionSchema>;
+
+export async function validarAltaSubscripcion(input: ValidarAltaSubscripcionInput): Promise<void> {
+  const parsed = validarAltaSubscripcionSchema.parse(input);
+  await fetchJson<unknown>(`${SUBSCRIPCION_VEHICULOS_PATH}/validar-alta`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(parsed),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Vehiculos
 // ---------------------------------------------------------------------------

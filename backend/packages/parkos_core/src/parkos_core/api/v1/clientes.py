@@ -6,6 +6,8 @@ Branch-originated data (operator writes locally, admin reads cross-branch).
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 from fastapi import APIRouter
 
 from ...models.V.clientes import Clientes
@@ -13,6 +15,7 @@ from ...models.V.clientes_b2b import ClientesB2B
 from ...models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ...models.V.subscripciones_cliente import SubscripcionesCliente
 from ...models.V.vehiculos import Vehiculos
+from ...repo.subscripcion_vinculos import after_update_subscripcion
 from ...schemas.clientes import (
     ClientesB2BCreate,
     ClientesB2BRead,
@@ -68,6 +71,7 @@ def _mount_cliente(
     create_schema: type,
     update_schema: type,
     write_enabled: bool = True,
+    after_update: Callable[..., Awaitable[None]] | None = None,
 ) -> None:
     issuer, perm = _ROUTER_CONFIG[resource]
     router.include_router(
@@ -82,6 +86,7 @@ def _mount_cliente(
             issuer_required=issuer,
             permission_required=perm,
             write_enabled=write_enabled,
+            after_update=after_update,
         )
     )
 
@@ -109,6 +114,8 @@ _mount_cliente(
     read_list_schema=SubscripcionesClienteReadList,
     create_schema=SubscripcionesClienteCreate,
     update_schema=SubscripcionesClienteUpdate,
+    # A version bump mints a new uuid: plate links must follow it (same TX).
+    after_update=after_update_subscripcion,
 )
 _mount_cliente(
     resource="vehiculos",

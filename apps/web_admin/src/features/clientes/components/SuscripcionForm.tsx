@@ -54,8 +54,10 @@ import { listCatalog } from '@/features/catalogos/api/catalogApi';
 import { useSucursal } from '@/lib/sucursal-context';
 
 import {
+  ClientesApiError,
   createSubscripcionVehiculo,
   listVehiculos,
+  validarAltaSubscripcion,
   type SubscripcionCliente,
 } from '../api/clientesApi';
 import { mapVehiculoError } from '../lib/errorMessages';
@@ -91,6 +93,15 @@ function addDaysIso(fechaIso: string, dias: number): string {
   if (Number.isNaN(d.getTime())) return '';
   d.setUTCDate(d.getUTCDate() + dias);
   return d.toISOString().slice(0, 10);
+}
+
+/** Row index of the vehicle a `validar-alta` error is attributed to (by `uuid_vehiculo`), if any. */
+function vehiculoIndexFromError(e: unknown, rows: { uuid_vehiculo: string }[]): number | null {
+  if (!(e instanceof ClientesApiError)) return null;
+  const uuid = e.detail['uuid_vehiculo'];
+  if (typeof uuid !== 'string') return null;
+  const idx = rows.findIndex((r) => r.uuid_vehiculo === uuid);
+  return idx >= 0 ? idx : null;
 }
 
 export function SuscripcionForm({
@@ -196,6 +207,48 @@ export function SuscripcionForm({
       );
       setIsSubmitting(false);
       return;
+    }
+    // Atomicity: in CREATE mode, dry-run the plate rules (placa ya activa en la
+    // sucursal, tipo vs plan, cantidad máxima) BEFORE creating the
+    // subscription, so a plate failure never leaves an empty subscription
+    // behind. The per-vehicle POST below stays as the authoritative check
+    // (it only fails here on a race between the dry-run and the save).
+    const uuidsVehiculos = values.vehiculos
+      .map((v) => v.uuid_vehiculo)
+      .filter((u): u is string => u !== '');
+    if (!subscripcion && uuidsVehiculos.length > 0) {
+      if (new Set(uuidsVehiculos).size !== uuidsVehiculos.length) {
+        setSubmitError(
+          t(
+            'suscripcionForm.errorVehiculosRepetidos',
+            'No se creó la suscripción: hay vehículos repetidos. Quite los duplicados.',
+          ),
+        );
+        setIsSubmitting(false);
+        return;
+      }
+      try {
+        await validarAltaSubscripcion({
+          uuid_tipo_subscripcion: values.uuid_tipo_subscripcion,
+          uuid_vehiculos: uuidsVehiculos,
+        });
+      } catch (e) {
+        const culpable = vehiculoIndexFromError(e, values.vehiculos);
+        if (culpable !== null) setVehiculoErrors({ [culpable]: mapVehiculoError(e, t) });
+        setSubmitError(
+          culpable !== null
+            ? t(
+                'suscripcionForm.errorVehiculosPrevio',
+                'No se creó la suscripción: revisá el vehículo indicado abajo.',
+              )
+            : `${t(
+                'suscripcionForm.errorNoCreada',
+                'No se creó la suscripción.',
+              )} ${mapVehiculoError(e, t)}`,
+        );
+        setIsSubmitting(false);
+        return;
+      }
     }
     try {
       const saved = await onSubmit({
