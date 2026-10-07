@@ -111,6 +111,7 @@ import { useReimprimir } from '../hooks/useReimprimir';
 import { useAnularReimpresion } from '../hooks/useAnularReimpresion';
 import { useCostoServicioVigente } from '../hooks/useCostoServicioVigente';
 import { useIvaVigente } from '../hooks/useIvaVigente';
+import { desglosarIvaIncluido } from '../../suscripciones/lib/ivaIncluido';
 import { useRegistrarPagoServicio } from '../hooks/useRegistrarPagoServicio';
 import { PagoModal, type PagoFormValues } from '../components/PagoModal';
 import { buildClienteFePayload } from '../lib/clienteFePayload';
@@ -293,12 +294,12 @@ export function ReimprimirTiquete(): JSX.Element {
       // BUGFIX (2026-09-25): `costo` ya incluye IVA (precio final al
       // cliente) — mismo criterio que `repo/factura.py::compute_total`
       // + `crear_factura_impuesto_iva` (DEC-FACT-03, mirror de la
-      // PL/pgSQL `calcular_cotizacion`): `iva = round(total * tasa, 2)`,
-      // `subtotal = total - iva`. `total` (lo cobrado) y
+      // PL/pgSQL `calcular_cotizacion`, migración 0094): el IVA es un
+      // desglose DENTRO del total: `subtotal = round(total / (1 + tasa), 2)`,
+      // `iva = total - subtotal`. `total` (lo cobrado) y
       // `items[0].valor_unitario` (lo que el backend recomputa y
       // compara contra `total`, V5) se mantienen en `costo` sin tocar.
-      const ivaMonto = Math.round(costo * ivaVigente.porcentaje * 100) / 100;
-      const subtotal = Math.round((costo - ivaMonto) * 100) / 100;
+      const { base: subtotal } = desglosarIvaIncluido(costo, ivaVigente.porcentaje);
 
       const items = [
         {

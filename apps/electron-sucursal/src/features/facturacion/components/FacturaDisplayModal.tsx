@@ -45,6 +45,7 @@ import {
 
 import type { FacturaRead } from '../api/facturaApi';
 import { feEstadoLabel, feWarningMessage } from '../lib/feEstado';
+import { FacturaImpuestosDetalle } from './FacturaImpuestosDetalle';
 import { formatCOP } from '../../caja/lib/format';
 
 export interface FacturaDisplayModalProps {
@@ -248,39 +249,9 @@ export function FacturaDisplayModal({
                 )}
               </div>
 
-              {/* === Segregación de valores (impuestos + totales) === */}
-              <div data-testid="factura-display-totales">
-                <TicketDivider />
-                <div className="flex justify-between gap-2">
-                  <span className="min-w-0 truncate">{t('facturacion:display.subtotal', { defaultValue: 'Subtotal' })}</span>
-                  <span data-testid="factura-display-subtotal" className="shrink-0 tabular-nums">{money(f.subtotal)}</span>
-                </div>
-                {(f.descuento ?? 0) > 0 && (
-                  <div className="flex justify-between gap-2">
-                    <span className="min-w-0 truncate">{t('facturacion:display.descuento', { defaultValue: 'Descuento' })}</span>
-                    <span className="shrink-0 tabular-nums">− {money(f.descuento)}</span>
-                  </div>
-                )}
-                {f.impuestos.map((imp) => (
-                  <div
-                    key={imp.uuid}
-                    className="flex justify-between gap-2"
-                    data-testid="factura-display-impuesto"
-                  >
-                    <span className="min-w-0 truncate">
-                      {imp.nombre_impuesto ?? 'Impuesto'}{' '}
-                      {imp.porcentaje_aplicado !== null &&
-                        imp.porcentaje_aplicado !== undefined &&
-                        `(${(imp.porcentaje_aplicado * 100).toFixed(2)}%)`}
-                    </span>
-                    <span className="shrink-0 tabular-nums">{money(imp.valor)}</span>
-                  </div>
-                ))}
-                <div className="mt-1 flex justify-between gap-2 border-t border-dashed border-neutral-400 pt-1 font-bold">
-                  <span className="min-w-0 truncate">{t('facturacion:display.total', { defaultValue: 'TOTAL' })}</span>
-                  <span data-testid="factura-display-total" className="shrink-0 tabular-nums">{money(f.total)}</span>
-                </div>
-              </div>
+              {/* === Segregación de valores (subtotal, impuestos con base, total) ===
+                  Sección compartida por todos los tipos de factura. */}
+              <FacturaImpuestosDetalle factura={f} />
 
               {/* === Medio de pago === */}
               <div data-testid="factura-display-mediopago">

@@ -91,6 +91,26 @@ def _clean_module_state(monkeypatch: pytest.MonkeyPatch, token_path: Path):
     hooks._INFLIGHT.clear()
 
 
+def _lineas_y_iva(factura: Facturas) -> list:
+    """A real invoice always carries lines + tax detail: the UBL is built from them."""
+    from parkos_core.models.A.factura_detalle import FacturaDetalle
+    from parkos_core.models.A.factura_impuestos import FacturaImpuestos
+
+    hoy = date.today()
+    return [
+        FacturaDetalle(
+            uuid_factura=factura.uuid, uuid_sucursal=factura.uuid_sucursal,
+            concepto="servicio", cantidad=1, valor_unitario=8403.36,
+            subtotal=8403.36, fecha_retencion_hasta=hoy,
+        ),
+        FacturaImpuestos(
+            uuid_factura=factura.uuid, uuid_sucursal=factura.uuid_sucursal,
+            base_calculo=8403.36, porcentaje_aplicado=0.19, valor=1596.64,
+            fecha_retencion_hasta=hoy,
+        ),
+    ]
+
+
 async def _seed_support(pg_engine: AsyncEngine, sucursal: uuid_lib.UUID) -> dict:
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
@@ -119,6 +139,9 @@ async def _seed_support(pg_engine: AsyncEngine, sucursal: uuid_lib.UUID) -> dict
             sync_status="pendiente", sync_timestamp=None, sync_attempts=0,
         )
         session.add_all([resolucion, *facturas, cliente])
+        await session.flush()
+        for f in facturas:
+            session.add_all(_lineas_y_iva(f))
         await session.commit()
         return {"res": resolucion.uuid, "cli": cliente.uuid, "facs": [f.uuid for f in facturas]}
 

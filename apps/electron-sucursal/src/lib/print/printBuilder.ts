@@ -32,12 +32,32 @@
  */
 import type {
   EntradaPayload,
+  ImpuestoDetalle,
   ReimpresionPayload,
   Sucursal,
   Empresa,
 } from './escposTemplates';
 import type { PostIngresoResponse } from '../../features/operacion/lib/ingresoApi';
 import type { Ingreso } from '../../features/operacion/api/ingresoActivoApi';
+import type { FacturaRead } from '../../features/facturacion/api/facturaApi';
+
+/**
+ * Map the persisted tax rows of a display invoice (`FacturaRead.impuestos`,
+ * i.e. `factura_impuestos` + catalog name) to the `impuestos` field of the
+ * salida / recibo_pago print payloads. Same source for every invoice type
+ * (rotacion, salida, servicio, subscription sale and renewal) so the printed
+ * detail always matches what the display modal shows.
+ */
+export function impuestosDesdeFactura(
+  factura: Pick<FacturaRead, 'impuestos'>,
+): ImpuestoDetalle[] {
+  return factura.impuestos.map((imp) => ({
+    nombre: imp.nombre_impuesto ?? imp.codigo_impuesto ?? 'Impuesto',
+    porcentaje: imp.porcentaje_aplicado ?? 0,
+    base: imp.base_calculo ?? 0,
+    valor: imp.valor ?? 0,
+  }));
+}
 
 /**
  * Optional print-context metadata that the operator-facing renderer

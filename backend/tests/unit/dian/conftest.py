@@ -161,6 +161,7 @@ def factura_row() -> MagicMock:
     row.created_at = datetime(2026, 1, 15, tzinfo=UTC).replace(tzinfo=None)
     row.prefijo = "SETP"
     row.consecutivo = 990000001
+    row.uuid_factura = None  # legacy stub UBL (no lines); see test_dispatcher_ubl_tax_detail
     row.uuid_cliente = None  # FE falls back to the standard customer in the UBL
     return row
 

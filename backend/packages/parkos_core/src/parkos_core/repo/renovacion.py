@@ -521,6 +521,7 @@ async def cobrar_renovacion(
     detalles = await repo_factura_detalle.crear_factura_detalle_bulk(
         session,
         uuid_factura=factura.uuid,
+        uuid_sucursal=uuid_sucursal,
         items=[
             FacturaItemCreate(
                 tipo="servicio",
@@ -536,6 +537,7 @@ async def cobrar_renovacion(
         base=base,
         iva=iva_porcentaje,
         iva_monto=iva_monto,
+        uuid_sucursal=uuid_sucursal,
     )
     await repo_factura.crear_factura_pago(
         session,

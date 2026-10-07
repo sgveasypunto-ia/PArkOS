@@ -219,3 +219,184 @@ def test_ubl_customer_uses_real_cliente_and_stays_xsd_valid() -> None:
 def test_ubl_standard_customer_is_xsd_valid() -> None:
     schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
     assert schema.validate(etree.fromstring(serialize(_build_factura_mock())))
+
+
+# ---------------------------------------------------------------------------
+# 4. Real totals: lines + tax detail from ``factura_detalle`` / ``factura_impuestos``.
+# Subscription sale: the plan price (120000) is IVA-INCLUDED, so the base is
+# 100840.34, the IVA 19159.66 and the payable amount the plan price.
+# ---------------------------------------------------------------------------
+
+
+def _suscripcion_detalles() -> list:
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(
+            concepto="subscripcion_mensual",
+            cantidad=1,
+            valor_unitario=100840.34,
+            subtotal=100840.34,
+        )
+    ]
+
+
+def _suscripcion_impuestos() -> list:
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(
+            codigo="IVA",
+            nombre="IVA",
+            base_calculo=100840.34,
+            porcentaje_aplicado=0.19,
+            valor=19159.66,
+        )
+    ]
+
+
+def _xp(doc: etree._Element, path: str) -> list[etree._Element]:
+    return doc.xpath(path, namespaces={"cac": _CAC, "cbc": _CBC})
+
+
+def test_ubl_emits_tax_detail_and_reconciling_totals() -> None:
+    xml_bytes = serialize(
+        _build_factura_mock(),
+        None,
+        detalles=_suscripcion_detalles(),
+        impuestos=_suscripcion_impuestos(),
+    )
+    doc = etree.fromstring(xml_bytes)
+
+    assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "19159.66"
+    sub = _xp(doc, "/*/cac:TaxTotal/cac:TaxSubtotal")
+    assert len(sub) == 1
+    assert _xp(sub[0], "cbc:TaxableAmount")[0].text == "100840.34"
+    assert _xp(sub[0], "cbc:TaxAmount")[0].text == "19159.66"
+    assert _xp(sub[0], "cac:TaxCategory/cbc:Percent")[0].text == "19.00"
+    assert _xp(sub[0], "cac:TaxCategory/cac:TaxScheme/cbc:ID")[0].text == "01"
+    assert _xp(sub[0], "cac:TaxCategory/cac:TaxScheme/cbc:Name")[0].text == "IVA"
+
+    base = _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:LineExtensionAmount")[0].text
+    excl = _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount")[0].text
+    incl = _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount")[0].text
+    payable = _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:PayableAmount")[0].text
+    assert (base, excl, incl, payable) == ("100840.34", "100840.34", "120000.00", "120000.00")
+
+    # Line: description, quantity, base, and its own tax.
+    line = _xp(doc, "/*/cac:InvoiceLine")
+    assert len(line) == 1
+    assert _xp(line[0], "cbc:LineExtensionAmount")[0].text == "100840.34"
+    assert _xp(line[0], "cac:Item/cbc:Name")[0].text == "subscripcion_mensual"
+    assert _xp(line[0], "cac:TaxTotal/cbc:TaxAmount")[0].text == "19159.66"
+    assert _xp(line[0], "cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount")[0].text == "100840.34"
+
+
+def test_ubl_with_tax_detail_stays_xsd_valid() -> None:
+    xml_bytes = serialize(
+        _build_factura_mock(),
+        None,
+        detalles=_suscripcion_detalles(),
+        impuestos=_suscripcion_impuestos(),
+    )
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(etree.fromstring(xml_bytes)), schema.error_log
+
+
+def test_ubl_line_taxes_sum_to_document_tax_across_several_lines() -> None:
+    from types import SimpleNamespace
+
+    detalles = [
+        SimpleNamespace(concepto="a", cantidad=1, valor_unitario=33.33, subtotal=33.33),
+        SimpleNamespace(concepto="b", cantidad=2, valor_unitario=33.33, subtotal=66.66),
+        SimpleNamespace(concepto="c", cantidad=1, valor_unitario=0.01, subtotal=0.01),
+    ]
+    impuestos = [
+        SimpleNamespace(
+            codigo="IVA", nombre="IVA", base_calculo=100.00,
+            porcentaje_aplicado=0.19, valor=19.00,
+        )
+    ]
+    doc = etree.fromstring(serialize(_build_factura_mock(), None, detalles=detalles, impuestos=impuestos))
+    from decimal import Decimal
+
+    line_taxes = [Decimal(e.text) for e in _xp(doc, "/*/cac:InvoiceLine/cac:TaxTotal/cbc:TaxAmount")]
+    assert len(line_taxes) == 3
+    assert sum(line_taxes) == Decimal("19.00")
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:PayableAmount")[0].text == "119.00"
+
+
+def test_ubl_without_tax_rows_has_zero_tax_and_payable_equals_base() -> None:
+    doc = etree.fromstring(
+        serialize(_build_factura_mock(), None, detalles=_suscripcion_detalles(), impuestos=[])
+    )
+    assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "0.00"
+    assert _xp(doc, "/*/cac:TaxTotal/cac:TaxSubtotal") == []
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:PayableAmount")[0].text == "100840.34"
+
+
+def test_ubl_tax_inclusive_lines_are_netted_to_the_taxable_base() -> None:
+    """Rotacion/salida lines are persisted at the tax-INCLUSIVE tariff price
+    (200) while ``factura_impuestos`` holds base 168.07 + IVA 31.93. The UBL
+    must not add the tax on top of the gross line: lines are netted to the
+    taxable base so base + tax == the 200.00 charged."""
+    from types import SimpleNamespace
+
+    detalles = [
+        SimpleNamespace(concepto="Parqueo", cantidad=1, valor_unitario=200.00, subtotal=200.00)
+    ]
+    impuestos = [
+        SimpleNamespace(
+            codigo="IVA", nombre="IVA", base_calculo=168.07,
+            porcentaje_aplicado=0.19, valor=31.93,
+        )
+    ]
+    xml_bytes = serialize(_build_factura_mock(), None, detalles=detalles, impuestos=impuestos)
+    doc = etree.fromstring(xml_bytes)
+
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:LineExtensionAmount")[0].text == "168.07"
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:PayableAmount")[0].text == "200.00"
+    assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "31.93"
+    line = _xp(doc, "/*/cac:InvoiceLine")[0]
+    assert _xp(line, "cbc:LineExtensionAmount")[0].text == "168.07"
+    assert _xp(line, "cac:Price/cbc:PriceAmount")[0].text == "168.07"
+    assert _xp(line, "cac:TaxTotal/cbc:TaxAmount")[0].text == "31.93"
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(doc), schema.error_log
+
+
+def test_ubl_mensualidad_exit_with_full_discount_reconciles_to_zero() -> None:
+    """Salida-mensualidad invoice: servicio (gross tariff 1500) + a
+    'Descuento ...' line of the same value, charged total 0. The discount is
+    a document-level allowance, never an InvoiceLine, so
+    base 1260.50 + IVA 239.50 - descuento 1500.00 == payable 0.00."""
+    from types import SimpleNamespace
+
+    detalles = [
+        SimpleNamespace(concepto="Parqueo", cantidad=1, valor_unitario=1500.00, subtotal=1500.00),
+        SimpleNamespace(
+            concepto="Descuento por mensualidad - Plan Mensual",
+            cantidad=1, valor_unitario=1500.00, subtotal=1500.00,
+        ),
+    ]
+    impuestos = [
+        SimpleNamespace(
+            codigo="IVA", nombre="IVA", base_calculo=1260.50,
+            porcentaje_aplicado=0.19, valor=239.50,
+        )
+    ]
+    xml_bytes = serialize(_build_factura_mock(), None, detalles=detalles, impuestos=impuestos)
+    doc = etree.fromstring(xml_bytes)
+
+    assert len(_xp(doc, "/*/cac:InvoiceLine")) == 1
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:LineExtensionAmount")[0].text == "1260.50"
+    assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "239.50"
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount")[0].text == "1500.00"
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:AllowanceTotalAmount")[0].text == "1500.00"
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:PayableAmount")[0].text == "0.00"
+    allowance = _xp(doc, "/*/cac:AllowanceCharge")
+    assert len(allowance) == 1
+    assert _xp(allowance[0], "cbc:ChargeIndicator")[0].text == "false"
+    assert _xp(allowance[0], "cbc:Amount")[0].text == "1500.00"
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(doc), schema.error_log

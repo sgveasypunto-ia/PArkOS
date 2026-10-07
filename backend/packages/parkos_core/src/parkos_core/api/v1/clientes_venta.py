@@ -349,6 +349,7 @@ async def venta_suscripcion(
         detalles_creados = await repo_factura_detalle.crear_factura_detalle_bulk(
             session,
             uuid_factura=uuid_factura,
+            uuid_sucursal=ctx.sucursal_uuid,
             items=[
                 FacturaItemCreate(
                     tipo="servicio",
@@ -366,6 +367,7 @@ async def venta_suscripcion(
             base=base_gravable,
             iva=iva_porcentaje,
             iva_monto=iva_monto,
+            uuid_sucursal=ctx.sucursal_uuid,
         )
 
         # Step 10c: INSERT prod.factura_pagos (initial pago).

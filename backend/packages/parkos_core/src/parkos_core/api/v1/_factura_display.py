@@ -49,6 +49,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...db.tenancy import suspend_tenant_context
 from ...models.A.factura_detalle import FacturaDetalle
 from ...models.A.factura_impuestos import FacturaImpuestos
 from ...models.A.factura_pagos import FacturaPagos
@@ -154,13 +155,25 @@ async def build_display_factura(
     # was applied, NOT just the total. ``porcentaje_aplicado`` is the
     # historical snapshot (preserved on factura_impuestos even when
     # the catalog version closes).
-    impuestos_rows = (
-        await session.execute(
-            select(FacturaImpuestos, Impuestos)
-            .join(Impuestos, FacturaImpuestos.uuid_impuesto == Impuestos.uuid, isouter=True)
-            .where(FacturaImpuestos.uuid_factura == new_factura.uuid)
-        )
-    ).all()
+    # The read is keyed by ``uuid_factura`` of a factura the caller already
+    # authorized under the tenant scope. Invoices emitted before the
+    # creators stamped ``uuid_sucursal`` on ``factura_impuestos`` carry NULL
+    # there, and the tenant listener (``uuid_sucursal = :ctx``) would hide
+    # their tax detail (empty ``impuestos`` on every reprint): suspend the
+    # context for this child read only. [A] rows are never mutated.
+    with suspend_tenant_context():
+        impuestos_rows = (
+            await session.execute(
+                select(FacturaImpuestos, Impuestos)
+                .join(
+                    Impuestos,
+                    FacturaImpuestos.uuid_impuesto == Impuestos.uuid,
+                    isouter=True,
+                )
+                .where(FacturaImpuestos.uuid_factura == new_factura.uuid)
+                .order_by(FacturaImpuestos.created_at.asc(), FacturaImpuestos.uuid.asc())
+            )
+        ).all()
     impuestos_display = [
         FacturaDisplayImpuesto(
             uuid=imp.uuid,

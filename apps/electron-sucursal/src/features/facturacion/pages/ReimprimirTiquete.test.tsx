@@ -473,9 +473,9 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
             valor_unitario: COSTO_VIGENTE,
           }),
         ],
-        // BUGFIX (2026-09-25): COSTO_VIGENTE (5000) ya incluye IVA;
-        // subtotal = total - round(total*0.19,2) = 5000-950 = 4050.
-        subtotal: 4050,
+        // COSTO_VIGENTE (5000) ya incluye IVA: base = round(5000/1.19, 2) = 4201.68
+        // (el IVA, 798.32, es un desglose DENTRO del total, base + iva == total).
+        subtotal: 4201.68,
         total: COSTO_VIGENTE,
       }),
     );

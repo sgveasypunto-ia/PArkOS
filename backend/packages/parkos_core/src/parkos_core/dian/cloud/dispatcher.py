@@ -85,10 +85,14 @@ if os.environ.get("PARKOS_DEPLOY", "cloud").lower() == "branch":
 
 from ...models.A.revocacion_factura import RevocacionFactura
 from ...constants import CLIENTE_ESTANDAR_UUID
+from ...db.tenancy import suspend_tenant_context
+from ...models.A.factura_detalle import FacturaDetalle
+from ...models.A.factura_impuestos import FacturaImpuestos
 from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_W.alerta import Alerta
 from ...models.L_W.envio_dian import EnvioDian
 from ...models.V.clientes import Clientes
+from ...models.V.impuestos import Impuestos
 from ...models.V.resolucion_facturacion import ResolucionFacturacion
 from ...repo import alert_types
 from ...repo.append_only import append_event
@@ -387,6 +391,62 @@ class ClienteNoDisponibleError(RuntimeError):
     """The invoice's customer row is not in this node yet; retry later."""
 
 
+class FacturaDetalleNoDisponibleError(RuntimeError):
+    """The invoice's lines are not in this node yet; retry later.
+
+    A DIAN document must carry the real lines, tax detail and totals: it is
+    never sent with the zero-amount stub while ``facturas`` / ``factura_detalle``
+    have not finished replicating from the branch.
+    """
+
+
+async def _load_lines_and_taxes(
+    session: AsyncSession, *, uuid_factura: uuid_lib.UUID
+) -> tuple[list[Any], list[Any]]:
+    """Load ``factura_detalle`` rows and ``factura_impuestos`` (with catalog name/code).
+
+    Returns ``(detalles, impuestos)`` where each tax is a lightweight object
+    exposing ``codigo``, ``nombre``, ``base_calculo``, ``porcentaje_aplicado``
+    and ``valor`` (the persisted snapshot, never recomputed).
+    """
+    from types import SimpleNamespace
+
+    # System-level read keyed by the invoice already resolved above: rows
+    # emitted before the creators stamped ``uuid_sucursal`` carry NULL there
+    # and the tenant listener would hide them under an admin context.
+    with suspend_tenant_context():
+        detalles = list(
+            (
+                await session.execute(
+                    select(FacturaDetalle)
+                    .where(FacturaDetalle.uuid_factura == uuid_factura)
+                    .order_by(FacturaDetalle.created_at.asc(), FacturaDetalle.uuid.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        imp_rows = (
+            await session.execute(
+                select(FacturaImpuestos, Impuestos)
+                .join(Impuestos, FacturaImpuestos.uuid_impuesto == Impuestos.uuid, isouter=True)
+                .where(FacturaImpuestos.uuid_factura == uuid_factura)
+                .order_by(FacturaImpuestos.created_at.asc(), FacturaImpuestos.uuid.asc())
+            )
+        ).all()
+    impuestos = [
+        SimpleNamespace(
+            codigo=cat.codigo if cat is not None else None,
+            nombre=cat.nombre if cat is not None else None,
+            base_calculo=imp.base_calculo,
+            porcentaje_aplicado=imp.porcentaje_aplicado,
+            valor=imp.valor,
+        )
+        for imp, cat in imp_rows
+    ]
+    return detalles, impuestos
+
+
 class ConsecutivoRangeError(RuntimeError):
     """Raised when a ``factura_electronica``'s ``consecutivo`` falls
     outside its ``resolucion_facturacion``'s authorized range (T-PR9-003).
@@ -536,7 +596,18 @@ async def dispatch_factura_electronica(
             f"cliente {row.uuid_cliente} of factura_electronica "
             f"{uuid_factura_electronica} is not available yet"
         )
-    xml_bytes = serialize(row, cliente_row)
+    detalles: list[Any] = []
+    impuestos: list[Any] = []
+    if row.uuid_factura is not None:
+        detalles, impuestos = await _load_lines_and_taxes(
+            session, uuid_factura=row.uuid_factura
+        )
+        if not detalles:
+            raise FacturaDetalleNoDisponibleError(
+                f"factura {row.uuid_factura} of factura_electronica "
+                f"{uuid_factura_electronica} has no lines in this node yet"
+            )
+    xml_bytes = serialize(row, cliente_row, detalles=detalles, impuestos=impuestos)
     xml_sha256 = hashlib.sha256(xml_bytes).hexdigest()
     provider: DianProvider = FactusProvider(
         base_url=dian_provider_url, token_path=dian_token_path
@@ -952,6 +1023,7 @@ async def dispatch_revocacion_with_backoff(
 
 __all__ = [
     "ClienteNoDisponibleError",
+    "FacturaDetalleNoDisponibleError",
     "ConsecutivoRangeError",
     "DispatchAlreadyHandledError",
     "SourceRowNotVisibleError",

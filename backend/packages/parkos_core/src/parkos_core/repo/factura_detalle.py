@@ -28,11 +28,17 @@ async def crear_factura_detalle_bulk(
     *,
     uuid_factura: uuid_lib.UUID,
     items: Sequence[FacturaItemCreate],
+    uuid_sucursal: uuid_lib.UUID | None = None,
 ) -> list[FacturaDetalle]:
     """Bulk INSERT N ``FacturaDetalle`` rows for one factura.
 
     Uses :meth:`AsyncSession.add_all` (no per-row flush); single
     ``flush()`` at the end. Caller commits (KD-FACT-01).
+
+    ``uuid_sucursal`` (owning branch of the factura) MUST be passed: the
+    tenant listener (``db/tenancy.py``) scopes every ORM read of this table
+    with ``uuid_sucursal = :ctx``, so rows left NULL are invisible to
+    every branch/admin read (the invoice display showed no lines/taxes).
 
     ``fecha_retencion_hasta`` = ``today() + 5 years`` (DIAN 5-year
     retention).
@@ -75,6 +81,7 @@ async def crear_factura_detalle_bulk(
     new_rows = [
         FacturaDetalle(
             uuid_factura=uuid_factura,
+            uuid_sucursal=uuid_sucursal,
             # tipo and uuid_tarifa_sucursal intentionally omitted
             # (see NOTE above).
             concepto=item.concepto,
