@@ -758,6 +758,10 @@ async def obtener_cierre_dia_del_dia(
     stmt = (
         select(Arqueo)
         .where(
+            # Scoped to the requested branch: ``uuid_sucursal`` was accepted but
+            # never applied, so the resumen of one branch could surface the
+            # cierre_dia of another branch of the same day.
+            Arqueo.uuid_sucursal == uuid_sucursal,
             Arqueo.uuid_sesion.is_(None),
             func.date(Arqueo.created_at) == fecha,
         )

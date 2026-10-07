@@ -236,7 +236,9 @@ async def test_t1_empty_day_returns_items_empty(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["fecha"] == "2026-10-01"
-    assert body["items"] == []
+    # One item per vigente sucursal (the DB is shared with other tests), but a day
+    # with no arqueo anywhere carries no cierre_dia and no regular arqueos.
+    assert all(i["cierre_dia"] is None and i["total_arqueos"] == 0 for i in body["items"])
 
 
 async def test_t2_mixed_branches_returns_one_item_per_branch(
@@ -310,9 +312,11 @@ async def test_t2_mixed_branches_returns_one_item_per_branch(
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["fecha"] == fecha
-    assert len(body["items"]) == 3
-
     by_uuid = {i["uuid_sucursal"]: i for i in body["items"]}
+    # The shared DB holds branches of other tests: this test's own three must each
+    # appear exactly once.
+    assert {str(s_a.uuid), str(s_b.uuid), str(s_c.uuid)} <= set(by_uuid)
+    assert len(by_uuid) == len(body["items"])
     assert by_uuid[str(s_a.uuid)]["total_arqueos"] == 2
     assert by_uuid[str(s_a.uuid)]["cierre_dia"] is None
     assert by_uuid[str(s_b.uuid)]["total_arqueos"] == 0  # cierre_dia IS NOT regular
@@ -365,3 +369,32 @@ async def test_t4_missing_fecha_returns_422(
         )
 
     assert r.status_code == 422, r.text
+
+async def test_cierre_dia_del_dia_is_scoped_to_the_requested_branch(
+    pg_engine, alembic_upgrade, pg_session
+) -> None:
+    """``obtener_cierre_dia_del_dia`` (operator resumen) must only look at the
+    requested branch: another branch's cierre_dia of the same day is not its own."""
+    from parkos_core.repo.arqueo import obtener_cierre_dia_del_dia
+
+    base = datetime.now(UTC).replace(tzinfo=None, hour=12, minute=0, second=0, microsecond=0)
+    s_con = await _seed_sucursal(pg_session, nombre="Con cierre")
+    s_sin = await _seed_sucursal(pg_session, nombre="Sin cierre")
+    tipo = await _seed_tipo_arqueo(pg_session, codigo="cierre_dia")
+    arqueo = await _seed_arqueo(
+        pg_session,
+        uuid_sucursal=s_con.uuid,
+        uuid_tipo_arqueo=tipo.uuid,
+        uuid_sesion=None,
+        created_at=base,
+    )
+    await pg_session.commit()
+
+    propio = await obtener_cierre_dia_del_dia(
+        pg_session, uuid_sucursal=s_con.uuid, fecha=base.date()
+    )
+    ajeno = await obtener_cierre_dia_del_dia(
+        pg_session, uuid_sucursal=s_sin.uuid, fecha=base.date()
+    )
+    assert propio is not None and propio["uuid_arqueo"] == arqueo.uuid
+    assert ajeno is None
