@@ -45,6 +45,7 @@ import { Input } from '@/components/ui/input';
 import { formatCOP } from '../../caja/lib/format';
 import { PagoModal, type PagoFormValues } from '../../facturacion/components/PagoModal';
 import { FacturaDisplayModal } from '../../facturacion/components/FacturaDisplayModal';
+import { dispararImpresionFactura, type ImprimirFacturaFn } from '../../../lib/print/facturaPrint';
 import {
   ClienteIdentificacionFields,
   type ClienteIdentificacionValue,
@@ -80,49 +81,16 @@ import { validarNitModulo11 } from '../../../lib/validation/nit';
  *   at the top of the wizard when this callback is supplied. Lets the
  *   sheet return to the list view while keeping the wizard state for
  *   re-entry.
- * - `firePrintEnvelope()` — optional override for the post-pago recibo
- *   print (mirrors `PagoSheetProps.firePrintEnvelope` / F8.1). Defaults
- *   to `window.bridge?.imprimir('recibo_pago', payload)` via the same
- *   swallow-errors helper `<PagoSheet />` uses (DEC-SUC-08).
+ * - `imprimirFactura()` — optional override of the post-pago invoice print
+ *   (mirrors `PagoSheetProps.imprimirFactura`). Defaults to the shared
+ *   `imprimirFactura` (`lib/print/facturaPrint`): the COMPLETE invoice with
+ *   its per-tax detail, never swallowing the sale on a printer failure
+ *   (DEC-SUC-08).
  */
 export interface VentaProps {
   onSuccess?: () => void;
   onCancel?: () => void;
-  firePrintEnvelope?: (tipo: 'recibo_pago', payload: unknown) => void;
-}
-
-function defaultFirePrintEnvelope(tipo: 'recibo_pago', payload: unknown): void {
-  const w = globalThis as unknown as {
-    window?: { bridge?: { imprimir?: (k: string, p: unknown) => void } };
-  };
-  const bridge = w.window?.bridge;
-  if (bridge?.imprimir) {
-    bridge.imprimir(tipo, payload);
-  }
-}
-
-/**
- * F7.3 (DEC-SUC-08 + DEC-SUC-27) — defer the print envelope to the
- * next microtask so it never blocks the modal-dismiss render commit,
- * and swallow any bridge failure (printer offline / disconnected) so
- * a hardware issue never blocks the operator from finishing the sale.
- * Mirrors `<PagoSheet />`'s `deferredSafePrint` verbatim.
- */
-function deferredSafePrint(
-  emit: (tipo: 'recibo_pago', payload: unknown) => void,
-  tipo: 'recibo_pago',
-  payload: unknown,
-): void {
-  queueMicrotask(() => {
-    try {
-      emit(tipo, payload);
-    } catch (err) {
-      console.warn(
-        `[Venta] bridge.imprimir(${tipo}) failed (printer_offline / disconnected):`,
-        err,
-      );
-    }
-  });
+  imprimirFactura?: ImprimirFacturaFn;
 }
 
 export interface VentaStepState {
@@ -266,7 +234,7 @@ const TOTAL_PASOS = 6;
 export function Venta({
   onSuccess,
   onCancel,
-  firePrintEnvelope,
+  imprimirFactura,
 }: VentaProps = {}): JSX.Element {
   const { t } = useTranslation(['suscripciones', 'common']);
   const navigate = useNavigate();
@@ -547,11 +515,7 @@ export function Venta({
     // `<SalidaMensualidad />`. A printer failure (offline/disconnected)
     // never blocks completing the sale (DEC-SUC-08).
     if (facturaDisplay) {
-      const emit = firePrintEnvelope ?? defaultFirePrintEnvelope;
-      deferredSafePrint(emit, 'recibo_pago', {
-        uuid_factura: facturaDisplay.uuid,
-        numero_recibo: facturaDisplay.numero_recibo,
-      });
+      dispararImpresionFactura(facturaDisplay, imprimirFactura);
     }
     setFacturaDisplay(null);
     setFacturaElectronicaWarning(null);

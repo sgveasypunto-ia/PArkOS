@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
 import { FacturaDisplayModal } from '../../facturacion/components/FacturaDisplayModal';
+import { dispararImpresionFactura, type ImprimirFacturaFn } from '../../../lib/print/facturaPrint';
 import { feWarningMessage } from '../../facturacion/lib/feEstado';
 import {
   MEDIOS_PAGO_RENOVACION,
@@ -49,14 +50,8 @@ export interface RenovarSuscripcionPanelProps {
   onRenovada: (result: RenovarSuscripcionResponse) => void;
   /** The backend answered the subscription is no longer renewable: refresh the lists. */
   onStale?: () => void;
-  firePrintEnvelope?: (tipo: 'recibo_pago', payload: unknown) => void;
-}
-
-function defaultFirePrintEnvelope(tipo: 'recibo_pago', payload: unknown): void {
-  const w = globalThis as unknown as {
-    window?: { bridge?: { imprimir?: (k: string, p: unknown) => void } };
-  };
-  w.window?.bridge?.imprimir?.(tipo, payload);
+  /** Invoice printer (defaults to the shared complete-invoice `imprimirFactura`). */
+  imprimirFactura?: ImprimirFacturaFn;
 }
 
 const STALE_CODES: ReadonlySet<string> = new Set([
@@ -70,7 +65,7 @@ export function RenovarSuscripcionPanel({
   onBack,
   onRenovada,
   onStale,
-  firePrintEnvelope,
+  imprimirFactura,
 }: RenovarSuscripcionPanelProps): JSX.Element {
   const { t } = useTranslation(['suscripciones', 'common']);
   const { trigger, isMutating } = useRenovarSuscripcion();
@@ -124,17 +119,7 @@ export function RenovarSuscripcionPanel({
     if (!resultado) return;
     const factura = resultado.factura;
     if (factura) {
-      const emit = firePrintEnvelope ?? defaultFirePrintEnvelope;
-      queueMicrotask(() => {
-        try {
-          emit('recibo_pago', {
-            uuid_factura: factura.uuid,
-            numero_recibo: factura.numero_recibo,
-          });
-        } catch (err) {
-          console.warn('[Renovar] bridge.imprimir(recibo_pago) failed:', err);
-        }
-      });
+      dispararImpresionFactura(factura, imprimirFactura);
     }
     setReciboAbierto(false);
     onRenovada(resultado);

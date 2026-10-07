@@ -490,6 +490,49 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
     expect(imprimirMock).toHaveBeenCalled();
   });
 
+  it('T6b: la factura del servicio tambien se imprime completa (detalle de impuestos), ademas del tiquete de entrada', async () => {
+    imprimirMock.mockClear();
+    mockUseReimprimir.mockReturnValue(buildReimprimirHook());
+    mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+    mockUseRegistrarPagoServicio.mockReturnValue(
+      buildRegistrarPagoServicioHook({
+        triggerResult: buildFacturaRead({
+          impuestos: [
+            {
+              uuid: UUID_FACTURA,
+              uuid_impuesto: null,
+              nombre_impuesto: 'IVA',
+              codigo_impuesto: '01',
+              base_calculo: 4201.68,
+              porcentaje_aplicado: 0.19,
+              valor: 798.32,
+            },
+          ],
+        }),
+      }),
+    );
+    mockResolverIngresoReimpresion.mockResolvedValue({ kind: 'found', ingreso: INGRESO_CON_PLACA });
+
+    renderAt();
+    await llegarAlPago();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    // Every call carries a full print payload (object with a buffer).
+    const textos = imprimirMock.mock.calls.map((c) =>
+      Buffer.from((c[0] as { buffer: string }).buffer, 'base64')
+        .toString('utf8')
+        .replace(/ /g, ' ')
+        .replace(/[ 	]+/g, ' '),
+    );
+    expect(textos.length).toBe(2); // tiquete de entrada (reimpresion) + factura del servicio
+    const factura = textos.find((t) => t.includes('FACTURA'));
+    expect(factura).toBeDefined();
+    expect(factura).toMatch(/IVA 19% \$ ?798,32/);
+    expect(factura).toMatch(/Base \$ ?4\.201,68/);
+  });
+
   it('T7: success card "Anular" click → alertdialog con motivo_anulacion', async () => {
     mockUseReimprimir.mockReturnValue(buildReimprimirHook());
     mockUseAnularReimpresion.mockReturnValue(buildAnularHook());

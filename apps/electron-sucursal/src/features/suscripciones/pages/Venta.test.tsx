@@ -157,6 +157,8 @@ vi.mock('../../facturacion/components/PagoModal', () => ({
   ),
 }));
 
+import { instalarBridgeImprimir, textoImpreso, expectDetalleImpuestos } from '../../../lib/print/__tests__/facturaAssert';
+import { FACTURA_SUSCRIPCION_120000 } from '../../../lib/print/__tests__/facturaFixtures';
 import { Venta } from './Venta';
 
 const renderVenta = (props: Parameters<typeof Venta>[0] = {}): ReturnType<typeof render> =>
@@ -383,6 +385,7 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
       monto_prorrateado: null,
       factura: {
         ...FACTURA_BASE,
+        impuestos: FACTURA_SUSCRIPCION_120000.impuestos,
         factura_electronica: {
           uuid: 'fe000000-0000-0000-0000-000000000001',
           prefijo: 'SETP',
@@ -393,10 +396,10 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
       },
       factura_electronica_error: null,
     });
-    const firePrintEnvelope = vi.fn();
+    const imprimir = instalarBridgeImprimir();
     const onSuccess = vi.fn();
 
-    renderVenta({ firePrintEnvelope, onSuccess });
+    renderVenta({ onSuccess });
     await hastaPago();
     await click('pago-confirmar-stub');
 
@@ -412,13 +415,11 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
       await Promise.resolve();
     });
 
-    expect(firePrintEnvelope).toHaveBeenCalledWith(
-      'recibo_pago',
-      expect.objectContaining({
-        uuid_factura: FACTURA_BASE.uuid,
-        numero_recibo: FACTURA_BASE.numero_recibo,
-      }),
-    );
+    expect(imprimir).toHaveBeenCalledTimes(1);
+    const texto = textoImpreso(imprimir);
+    expectDetalleImpuestos(texto, FACTURA_BASE.numero_recibo);
+    expect(texto).toMatch(/IVA 19% \$ ?19\.159,66/);
+    expect(texto).toMatch(/Base \$ ?100\.840,34/);
     expect(onSuccess).toHaveBeenCalledTimes(1);
   });
 

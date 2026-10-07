@@ -25,11 +25,11 @@
  * PagoModal / operator interaction needed, `medio_pago='suscripcion'`
  * identifies this as a $0-via-subscription payment.
  *
- * The CU-15SM ticket itself is UNCHANGED (still the 15-field format
- * without a cobro breakdown, still the "PAGO CON MENSUALIDAD" seal) —
- * that is a distinct physical artifact from the factura; the operator
- * confirmed the ticket stays as-is, only the invoicing behavior
- * changed.
+ * Print: the former CU-15SM `bridge.imprimir('salida_mensualidad', { uuid_salida })`
+ * envelope carried no buffer (the main process rejected it), so nothing was ever
+ * printed. The $0 invoice shown by the modal (placa, entrada/salida, tiempo,
+ * servicio + descuento, detalle de impuestos, total 0) is now printed complete
+ * on dismiss through `lib/print/facturaPrint`.
  *
  * F7.3 (REQ-OPS-160 / DEC-SUC-08 + DEC-SUC-27) — the print envelope
  * is fired ASYNCHRONOUSLY via `queueMicrotask` to avoid blocking the
@@ -56,6 +56,7 @@ import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
 import { useRegistrarPago } from '../../facturacion/hooks/useRegistrarPago';
 import { useDashboardDrawerStore } from '../../../renderer/store/dashboardDrawerStore';
 import { FacturaDisplayModal } from '../../facturacion/components/FacturaDisplayModal';
+import { dispararImpresionFactura, type ImprimirFacturaFn } from '../../../lib/print/facturaPrint';
 import type { FacturaRead, PostFacturaSuscripcion } from '../../facturacion/api/facturaApi';
 
 export interface SalidaMensualidadProps {
@@ -79,56 +80,18 @@ export interface SalidaMensualidadProps {
    * remount of this component). Keeps the confirm button disabled.
    */
   yaConfirmada?: boolean;
-  /** Optional override for the post-print envelope; tests spy on it. */
-  onPrint?: (payload: { uuid_salida: string }) => void;
-  /** Optional override for `window.bridge?.imprimir`; defaults to the global. */
-  firePrintEnvelope?: (payload: { uuid_salida: string }) => void;
-}
-
-/**
- * Bridge print-envelope emitter (typed event `salida_mensualidad`).
- * F7.3 owns the actual `escposBuilder.build('salida_mensualidad', payload)`
- * + `bridge.imprimir` payload shape; F7.2 only fires the typed event
- * envelope. If `window.bridge?.imprimir` exists, we use it; otherwise
- * we fall back to the test override. Failures (offline, disconnected,
- * IPC channel error) are caught and logged to `console.warn` — they
- * MUST NOT propagate to the React error boundary.
- */
-function defaultFirePrintEnvelope(payload: { uuid_salida: string }): void {
-  const w = globalThis as unknown as { window?: { bridge?: { imprimir?: (k: string, p: unknown) => void } } };
-  const bridge = w.window?.bridge;
-  if (bridge?.imprimir) {
-    bridge.imprimir('salida_mensualidad', payload);
-  }
-}
-
-/**
- * F7.3 (DEC-SUC-08 + DEC-SUC-27) — defer the print envelope to the
- * next microtask (so the React render commit completes BEFORE the
- * IPC round-trip begins), and wrap in `try/catch` so a printer
- * failure never blocks the operator's flow. Reprint is F8.x.
- */
-function deferredSafePrint(
-  emit: (payload: { uuid_salida: string }) => void,
-  payload: { uuid_salida: string },
-): void {
-  queueMicrotask(() => {
-    try {
-      emit(payload);
-    } catch (err) {
-      console.warn(
-        '[SalidaMensualidad] bridge.imprimir failed (printer_offline / disconnected — reprint is F8.x):',
-        err,
-      );
-    }
-  });
+  /**
+   * Invoice printer; defaults to the shared `imprimirFactura` which sends the
+   * COMPLETE $0 invoice (servicio + descuento + detalle de impuestos) through
+   * the bridge. Tests override it.
+   */
+  imprimirFactura?: ImprimirFacturaFn;
 }
 
 export function SalidaMensualidad({
   uuidIngreso,
   cotizacion,
-  onPrint,
-  firePrintEnvelope,
+  imprimirFactura,
   onSalidaConfirmada,
   yaConfirmada = false,
 }: SalidaMensualidadProps): JSX.Element {
@@ -151,18 +114,6 @@ export function SalidaMensualidad({
   // FacturaRead from the discount-factura POST so <FacturaDisplayModal
   // /> can render the full breakdown before the CU-15SM ticket prints.
   const [facturaDisplay, setFacturaDisplay] = useState<FacturaRead | null>(null);
-  // The print envelope fires only AFTER the operator dismisses the
-  // modal (see module docstring) — hold the payload until then.
-  const [pendingPrint, setPendingPrint] = useState<{ uuid_salida: string } | null>(null);
-
-  const emitPrint = (payload: { uuid_salida: string }): void => {
-    if (onPrint) {
-      onPrint(payload);
-    } else {
-      (firePrintEnvelope ?? defaultFirePrintEnvelope)(payload);
-    }
-  };
-
   const handleConfirmar = async (): Promise<void> => {
     if (confirmandoRef.current || salidaRegistrada || yaConfirmada) return;
     confirmandoRef.current = true;
@@ -213,7 +164,6 @@ export function SalidaMensualidad({
           uuid_sesion: sesion?.uuid ?? null,
         };
         const facturaResult = await triggerPago(payload);
-        setPendingPrint({ uuid_salida: result.uuid });
         setFacturaDisplay(facturaResult);
       }
     } catch (err) {
@@ -248,10 +198,8 @@ export function SalidaMensualidad({
         factura={facturaDisplay}
         onClose={() => {
           setFacturaDisplay(null);
-          if (pendingPrint) {
-            deferredSafePrint(emitPrint, pendingPrint);
-            setPendingPrint(null);
-          }
+          // The $0 invoice (what the modal just showed) prints complete.
+          if (facturaDisplay) dispararImpresionFactura(facturaDisplay, imprimirFactura);
           // The salida is fully done once the factura modal is
           // dismissed — close the dashboard drawer so the operator
           // does not have to click outside it (H5). Print is already
