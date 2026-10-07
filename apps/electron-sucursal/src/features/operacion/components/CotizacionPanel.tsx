@@ -35,7 +35,7 @@ import { AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
-import { formatCOP, formatFechaHoraCorta } from '../../caja/lib/format';
+import { formatCOP, formatCOPDecimal, formatFechaHoraCorta } from '../../caja/lib/format';
 import type { Cotizacion } from '../hooks/useCotizacion';
 import { isUsableTarifaUuid, useTarifaByUuid } from '../../catalogos/hooks/useTarifaByUuid';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
@@ -209,9 +209,9 @@ function CotizacionPanelImpl({
           <dt>Tiempo</dt>
           <dd>{data.tiempo_minutos}</dd>
           <dt>Subtotal</dt>
-          <dd>{formatCOP(data.subtotal)}</dd>
+          <dd>{formatCOPDecimal(data.subtotal)}</dd>
           <dt>IVA</dt>
-          <dd>{formatCOP(data.iva)}</dd>
+          <dd>{formatCOPDecimal(data.iva)}</dd>
           <dt className="font-semibold">Total a pagar</dt>
           <dd className="font-semibold" data-testid="cotizacion-total">
             {formatCOP(data.total)}
