@@ -36,6 +36,8 @@ under this repo's pytest collection.
 
 from __future__ import annotations
 
+import contextlib
+
 import os
 import subprocess
 import sys
@@ -48,6 +50,7 @@ from typing import Any
 import httpx
 import psycopg
 import pytest
+from _seeds import ensure_usuario
 from fastapi import FastAPI
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
@@ -317,6 +320,34 @@ def build_branch_worker(branch_session: Any, cloud_app: FastAPI, jwt_path: Path)
     return worker
 
 
+@contextlib.contextmanager
+def _cloud_node_env():
+    """Run the cloud side of this two-node, one-process simulation as a cloud deploy.
+
+    Applying a ``factura_electronica`` on the cloud lazily imports
+    ``parkos_core.dian.cloud.*``, whose import-time guard (REQ-X3, design section
+    10 layer 2) refuses to load under ``PARKOS_DEPLOY=branch`` -- the default the
+    root conftest pins for the whole session. Switch the env for the cloud-side
+    steps and drop the cloud-only modules afterwards so no other test sees a
+    branch process that has them loaded.
+    """
+    previous = os.environ.get("PARKOS_DEPLOY")
+    os.environ["PARKOS_DEPLOY"] = "cloud"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("PARKOS_DEPLOY", None)
+        else:
+            os.environ["PARKOS_DEPLOY"] = previous
+        for name in [m for m in sys.modules if m.startswith("parkos_core.dian.cloud")]:
+            sys.modules.pop(name, None)
+            parent, _, attr = name.rpartition(".")
+            parent_mod = sys.modules.get(parent)
+            if parent_mod is not None and attr in vars(parent_mod):
+                delattr(parent_mod, attr)
+
+
 async def push_and_verify(
     branch_session: Any, worker: Any, table_name: str, *, uuid_registro: uuid_lib.UUID | None = None
 ) -> None:
@@ -333,12 +364,17 @@ async def push_and_verify(
     await branch_session.commit()
 
     for row in own_rows:
-        estado = (
+        estado, ultimo_error = (
             await branch_session.execute(
-                select(sq_helpers.SyncQueue.estado).where(sq_helpers.SyncQueue.uuid == row.uuid)
+                select(sq_helpers.SyncQueue.estado, sq_helpers.SyncQueue.ultimo_error).where(
+                    sq_helpers.SyncQueue.uuid == row.uuid
+                )
             )
-        ).scalar_one()
-        assert estado == "exitoso", f"{table_name}: {row.uuid} settled as {estado!r}, not exitoso"
+        ).one()
+        assert estado == "exitoso", (
+            f"{table_name}: {row.uuid} settled as {estado!r}, not exitoso "
+            f"(ultimo_error={ultimo_error!r})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +424,11 @@ async def test_offline_numbering_reconciles_without_collision_on_reconnect(
     # =====================================================================
     # 1. Minimal V-catalog prerequisites (cloud->branch, real backfill).
     # =====================================================================
+    # The origin actor is a real user: creating a sucursal as that actor also
+    # assigns it (``usuarios_sucursal.uuid_usuario`` is a real FK to usuarios).
+    await ensure_usuario(pg_engine, ACTOR_UUID, rol="admin")
+    await ensure_usuario(branch_pg_engine, ACTOR_UUID, rol="admin")
+
     C: dict[str, Any] = {}
     async with CloudSession() as session:
         C["tipo_sucursal"] = await create_origin_row(
@@ -545,13 +586,14 @@ async def test_offline_numbering_reconciles_without_collision_on_reconnect(
     # =====================================================================
     async with BranchSession() as branch_session:
         worker = build_branch_worker(branch_session, cloud_app, jwt_path)
-        for fe_uuid, attrs in origin.items():
-            await push_and_verify(
-                branch_session, worker, "facturas", uuid_registro=attrs["uuid_factura"]
-            )
-            await push_and_verify(
-                branch_session, worker, "factura_electronica", uuid_registro=fe_uuid
-            )
+        with _cloud_node_env():
+            for fe_uuid, attrs in origin.items():
+                await push_and_verify(
+                    branch_session, worker, "facturas", uuid_registro=attrs["uuid_factura"]
+                )
+                await push_and_verify(
+                    branch_session, worker, "factura_electronica", uuid_registro=fe_uuid
+                )
 
     # =====================================================================
     # 4. Verify at CLOUD: no collision, no gap, identity preserved, and the

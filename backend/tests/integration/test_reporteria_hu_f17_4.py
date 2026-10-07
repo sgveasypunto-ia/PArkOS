@@ -27,6 +27,7 @@ from typing import Any
 
 import httpx
 import pytest
+from _seeds import ensure_cliente
 from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -153,12 +154,13 @@ async def _seed_subscripcion(
 ) -> uuid_lib.UUID:
     now = _now_naive()
     subscripcion_uuid = uuid_lib.uuid4()
+    uuid_cliente = await ensure_cliente(pg_engine, uuid_lib.uuid4())  # real FK to clientes
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         session.add(
             SubscripcionesCliente(
                 uuid=subscripcion_uuid,
-                uuid_cliente=uuid_lib.uuid4(),
+                uuid_cliente=uuid_cliente,
                 uuid_sucursal=uuid_sucursal,
                 uuid_tipo_subscripcion=None,
                 fecha_inicio_cobertura=fecha_inicio_cobertura,

@@ -232,7 +232,7 @@ def _empresa_extra_rows_as_closed_history():
     from datetime import timedelta
 
     from parkos_core.models.V.empresa import Empresa
-    from sqlalchemy import event, select
+    from sqlalchemy import event, select, text
     from sqlalchemy.orm import Session
 
     def _before_flush(session, flush_context, instances):  # noqa: ARG001
@@ -242,6 +242,19 @@ def _empresa_extra_rows_as_closed_history():
         if not new_open:
             return
         with session.no_autoflush:
+            # A test that drops ``empresa_singleton_uk`` on purpose (multi-empresa
+            # worlds, e.g. test_sync_pull_scope_empresa) wants every open empresa
+            # to STAY open: only act while the singleton index is really there.
+            if (
+                session.execute(
+                    text(
+                        "SELECT 1 FROM pg_indexes "
+                        "WHERE schemaname = 'prod' AND indexname = 'empresa_singleton_uk'"
+                    )
+                ).first()
+                is None
+            ):
+                return
             slot_taken = (
                 session.execute(select(Empresa.uuid).where(Empresa.vigente_hasta.is_(None)))
                 .scalars()

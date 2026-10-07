@@ -200,3 +200,25 @@ async def seed_ingreso(pg_engine, uuid_sucursal: uuid_lib.UUID) -> uuid_lib.UUID
         )
         await session.commit()
     return ingreso_uuid
+
+
+async def ensure_cliente(pg_engine, uuid_cliente: uuid_lib.UUID | None) -> uuid_lib.UUID | None:
+    """Idempotently insert a ``clientes`` row with this uuid (``None`` passes through).
+
+    ``factura_electronica.uuid_cliente`` and ``subscripciones_cliente.uuid_cliente``
+    are real FKs.
+    """
+    if uuid_cliente is None:
+        return None
+    from parkos_core.models.V.clientes import Clientes
+
+    from tests.conftest import VFixtureFactory
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        if (
+            await session.execute(select(Clientes.uuid).where(Clientes.uuid == uuid_cliente))
+        ).first() is None:
+            session.add(VFixtureFactory.build(Clientes, uuid=uuid_cliente))
+            await session.commit()
+    return uuid_cliente

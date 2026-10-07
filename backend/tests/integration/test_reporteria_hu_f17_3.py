@@ -32,6 +32,7 @@ from typing import Any
 
 import httpx
 import pytest
+from _seeds import ensure_cliente
 from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -250,6 +251,7 @@ async def _seed_factura_electronica(
     uuid_cliente: uuid_lib.UUID | None = None,
 ) -> uuid_lib.UUID:
     fe_uuid = uuid_lib.uuid4()
+    await ensure_cliente(pg_engine, uuid_cliente)  # real FK to clientes
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         session.add(
@@ -615,11 +617,21 @@ async def test_pagos_netea_reverso_contra_pago_agrupado_por_medio(pg_engine, pg_
         created_at=today,
         uuid_pago_revertido=pago_efectivo,
     )
-    # An unrelated datafono payment the same day -- its own bucket.
+    # An unrelated datafono payment the same day -- its own bucket. It belongs
+    # to ANOTHER factura: ``factura_pagos_init_pago_uniqueness`` allows a single
+    # initial ``pago`` per factura (only reversos may follow it).
+    factura_datafono = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=uuid_sucursal,
+        created_at=today,
+        subtotal=Decimal("20000"),
+        descuento=Decimal("0"),
+        total=Decimal("20000"),
+    )
     await _seed_factura_pago(
         pg_engine,
         uuid_sucursal=uuid_sucursal,
-        uuid_factura=factura_uuid,
+        uuid_factura=factura_datafono,
         medio_pago="datafono",
         valor=Decimal("20000"),
         tipo_movimiento="pago",
