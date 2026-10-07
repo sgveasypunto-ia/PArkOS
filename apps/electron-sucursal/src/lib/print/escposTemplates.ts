@@ -287,7 +287,7 @@ const entradaConPlacaSchema = z.object({
   logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
-  tarifaAplicada: z.number().nonnegative(),
+  tarifaAplicada: z.number().nonnegative().optional(),
   horarioAtencion: z.string().min(1),
   polizaRC: z.string().optional(),
   folio: z.string().uuid(),
@@ -311,7 +311,7 @@ const entradaConConsecutivoSchema = z.object({
   logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
-  tarifaAplicada: z.number().nonnegative(),
+  tarifaAplicada: z.number().nonnegative().optional(),
   horarioAtencion: z.string().min(1),
   polizaRC: z.string().optional(),
   folio: z.string().uuid(),
@@ -655,6 +655,8 @@ export function lineasMontos(payload: {
 }
 
 export const salidaPayloadSchema = entradaConPlacaSchema.extend({
+  // Salida / recibo always carry the applied tariff (only the ENTRADA ticket may omit it).
+  tarifaAplicada: z.number().nonnegative(),
   sucursal: sucursalSchema,
   fechaSalida: z.string().datetime({ offset: true }),
   tiempoTotal: z.string().min(1),

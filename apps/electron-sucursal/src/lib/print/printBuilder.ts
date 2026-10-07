@@ -74,6 +74,11 @@ export interface PrintContext {
   readonly sucursalEncabezado?: string;
   /** Branch horario de atención — falls back to "24h". */
   readonly horarioAtencion?: string;
+  /**
+   * Hourly tariff of the ingreso's vehicle type (`resolverTarifaHora*`). When
+   * absent/null the ticket prints no tariff line (never a misleading "$ 0").
+   */
+  readonly tarifaHora?: number | null;
 }
 
 /**
@@ -88,6 +93,12 @@ const DEFAULT_EMPRESA: Empresa = {
   direccion: 'Sin direccion registrada',
   regimen: 'Comun',
 };
+
+function tarifaDe(context: PrintContext): { tarifaAplicada?: number } {
+  return context.tarifaHora === undefined || context.tarifaHora === null
+    ? {}
+    : { tarifaAplicada: context.tarifaHora };
+}
 
 const DEFAULT_SUCURSAL_ENCABEZADO = 'Sucursal';
 const DEFAULT_HORARIO = '24h';
@@ -128,7 +139,7 @@ export function buildEntradaPayloadFromResponse(
     logoDataUrl: '',
     empresa: DEFAULT_EMPRESA,
     operario: context.operario ?? 'Operador',
-    tarifaAplicada: 0,
+    ...tarifaDe(context),
     horarioAtencion: context.horarioAtencion ?? DEFAULT_HORARIO,
     folio: response.uuid,
     observaciones: undefined,
@@ -219,7 +230,7 @@ export function buildReimpresionEntradaPayload(
     logoDataUrl: '',
     empresa: DEFAULT_EMPRESA,
     operario: context.operario ?? 'Operador',
-    tarifaAplicada: 0,
+    ...tarifaDe(context),
     horarioAtencion: context.horarioAtencion ?? DEFAULT_HORARIO,
     folio: ingreso.uuid,
     observaciones: undefined,

@@ -218,7 +218,10 @@ function buildEntradaBody(payload: EntradaPayload): Buffer {
   lines.push(escBoldOff());
   lines.push(utf8('\n'));
   lines.push(utf8(`Folio: ${payload.folio}\n`));        // octavo
-  lines.push(utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`)); // noveno
+  // noveno — omitted when the hourly tariff is unknown (never print "$ 0").
+  if (payload.tarifaAplicada !== undefined) {
+    lines.push(utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`));
+  }
   lines.push(utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`)); // decimo
   lines.push(utf8(`Hora: ${formatHora(payload.fechaEntrada)}\n`));    // onceavo
   // REQ-OPS-197 — doceavo (12th conceptual field) branches on variant.

@@ -15,6 +15,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
+// FB1: the ticket's hourly tariff comes from the catalog (network) — stub it.
+vi.mock('../../../lib/print/tarifaHoraEntrada', () => ({
+  resolverTarifaHoraDeIngreso: vi.fn().mockResolvedValue(1500),
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -191,7 +196,7 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
       placa: 'ABC123',
       uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000010',
     });
-    expect(window.bridge.imprimir).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(window.bridge.imprimir).toHaveBeenCalledTimes(1));
     // Real contract: ONE object `{ buffer, ticketId, cut }` with the ESC/POS tiquete.
     const arg = (imprimirMock.mock.calls[0] as unknown[])[0] as {
       buffer: string;
@@ -203,6 +208,7 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
     const txt = Buffer.from(arg.buffer, 'base64').toString('utf8');
     expect(txt).toContain('TIQUETE DE ENTRADA');
     expect(txt).toContain('ABC123');
+    expect(txt).toMatch(/Tarifa: \$\s+1\.500\/hora/);
   });
 
   it('I2c: modo navegador — el tiquete de ingreso se imprime por window.print (HTML), no por el bridge', async () => {
@@ -234,8 +240,8 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
         await Promise.resolve();
         await Promise.resolve();
       });
+      await vi.waitFor(() => expect(window.print).toHaveBeenCalledTimes(1));
       expect(navegador).not.toHaveBeenCalled();
-      expect(window.print).toHaveBeenCalledTimes(1);
       const dom = document.getElementById('parkos-escpos-fallback-container')?.textContent ?? '';
       expect(dom).toContain('TIQUETE DE ENTRADA');
       expect(dom).toContain('ABC123');
