@@ -234,6 +234,9 @@ def _row(expires_delta_hours: float):
         + timedelta(hours=expires_delta_hours),
         response_status=201,
         response_body={"body": {"n": 99}, "headers": {}},
+        request_body_hash=hashlib.sha256(b"").hexdigest(),
+        method="POST",
+        path="/op",
     )
 
 
