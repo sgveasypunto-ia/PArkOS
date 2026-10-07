@@ -116,6 +116,26 @@ SELECT gen_random_uuid(), s.uuid_sucursal, 'UPDATE', 'sesion', s.uuid,
    AND s.timestamp_cierre >= TIMESTAMP '2026-10-06';
 ```
 
+### 3.2 Filas de catálogo sembradas con uuid distinto por nodo
+
+`0029` sembraba `costos_servicios.concepto='reimpresion'` con `gen_random_uuid()` en cada nodo, y `costos_servicios` solo replica nube -> sucursal. Una `reimpresion_ticket` creada en la sucursal nombra el uuid local, que la nube no tiene: su push falla con violación de FK para siempre. `0093` hace que todo nodo converja en el uuid determinista `08e06c53-60cf-5392-8b96-51024d6d3c9e` (uuid5, mismo namespace que `0019`/`0056`); la fila anterior se cierra, nunca se borra.
+
+Las `reimpresion_ticket` ya emitidas apuntan al uuid aleatorio de la sucursal (la FK local lo sigue satisfaciendo: la versión cerrada permanece). Para que su push se aplique, en la **nube** se registra el alias uuid-sucursal -> uuid-determinista (tabla `[A]` local de sync; el motor reescribe `uuid_costo_servicio` al aplicar). Después se reinician solo los campos operativos de esas filas en la **sucursal** (§3.1):
+
+```sql
+-- nube: <uuid_sucursal> = uuid de costos_servicios que el push no encuentra (ultimo_error / datos->>'uuid_costo_servicio')
+INSERT INTO prod.sync_identity_alias (tabla, uuid_origen, uuid_resuelto)
+VALUES ('costos_servicios', '<uuid_sucursal>', '08e06c53-60cf-5392-8b96-51024d6d3c9e')
+ON CONFLICT (uuid_origen) DO NOTHING;
+
+-- sucursal: solo las filas que fallaron por esa FK
+UPDATE prod.sync_queue
+   SET estado = 'pendiente', intentos = 0, next_retry_at = NULL, ultimo_error = NULL
+ WHERE tabla = 'reimpresion_ticket' AND estado = 'pendiente' AND ultimo_error IS NOT NULL;
+```
+
+Auditoría de las demás siembras con uuid aleatorio por nodo (no tocadas por `0093`): `tipo_arqueo` (`0040`) y `tipos_vehiculo` (`0062`) divergen entre nodos y hoy funcionan solo porque la nube tiene el alias de cada uno; `configuracion_seguridad` y una fila de `configuracion_tolerancias` (`0001`/`0041`) divergen pero ninguna tabla transaccional las referencia por FK. Un nodo nuevo repetirá el fallo en `arqueo.uuid_tipo_arqueo` hasta que se les dé uuid determinista o se registre su alias.
+
 ### 4. Tests backend
 
 ```bash
