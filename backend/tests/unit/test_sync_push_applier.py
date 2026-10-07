@@ -109,6 +109,16 @@ class _Recorder:
             from sqlalchemy.exc import IntegrityError
 
             raise IntegrityError("INSERT", {}, Exception("fk_factura_pagos_uuid_sesion"))
+        if outcome == "sesion_already_active":
+            import uuid as _uuid
+
+            from parkos_core.exceptions import SesionAlreadyActive
+
+            raise SesionAlreadyActive(_uuid.uuid4())
+        if outcome == "sesion_not_found":
+            from parkos_core.repo.session_cycle import SessionNotFoundError
+
+            raise SessionNotFoundError("sesion not found")
         if outcome == "APPLIED":
             return ApplyResult(status="APPLIED")
         if outcome == "CONFLICT":
@@ -402,6 +412,26 @@ def test_push_db_error_on_one_row_does_not_abort_the_batch(
     assert resp.status_code == 207
     statuses = [r["status"] for r in resp.json()["results"]]
     assert statuses == ["apply_error", "applied"]
+    assert session.savepoints_rolled_back == 1
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.parametrize("outcome", ["sesion_already_active", "sesion_not_found"])
+def test_push_sesion_domain_error_is_per_row_not_a_batch_500(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """SS1: ``open_session`` raises ``SesionAlreadyActive`` (not a DBAPIError)
+    when the cloud still holds the operator's previous sesion ACTIVE, and a
+    close that outruns its open raises ``SessionNotFoundError``. Both used to
+    escape the per-row guard and 500 the WHOLE batch (``http_500`` on every row
+    the branch sent with it). They are per-row ``apply_error`` now: the sender
+    retries just that row and the rest of the batch commits."""
+    c, _rec, session = _build_client(monkeypatch, outcomes={"sesion": outcome})
+
+    resp = c.post("/sync/push", json={"rows": [_row("sesion"), _row("login", seq=2)]})
+
+    assert resp.status_code == 207
+    assert [r["status"] for r in resp.json()["results"]] == ["apply_error", "applied"]
     assert session.savepoints_rolled_back == 1
     session.commit.assert_awaited_once()
 

@@ -84,6 +84,38 @@ uv run alembic upgrade head
 
 Alternativa vía script (usa `testcontainers` para levantar un Postgres efímero): `uv run python scripts/apply_migration.py`.
 
+### 3.1 Cola de sync: reinicio operativo y cierres de sesión atrasados
+
+La migración `0092` hace dos cosas: el cierre de una `sesion` (UPDATE) ahora se encola igual que su apertura, y `sync_queue.tabla` lleva siempre el nombre de la tabla padre (nunca `*_p_2026_10` ni `*_default`). Las filas ya encoladas antes de `0092` no se reescriben ni se borran (la regla "sin DELETE" aplica también a `sync_queue`); se reinician SOLO los campos operativos:
+
+```sql
+-- filas fallidas o atascadas con error (cloud y sucursal): vuelven a la cola
+UPDATE prod.sync_queue
+   SET estado = 'pendiente', intentos = 0, next_retry_at = NULL, ultimo_error = NULL
+ WHERE estado = 'fallido' OR (estado = 'pendiente' AND ultimo_error IS NOT NULL);
+```
+
+El worker de la nube normaliza el nombre de partición (`log_transaccional_p_2026_10` -> `log_transaccional`) y liquida como `exitoso` las filas cuyo uuid ya existe en su propia tabla (se originaron en ese nodo y reaplicarlas duplicaría la cadena hash).
+
+Los cierres de sesión ocurridos ANTES de `0092` nunca se encolaron. Para reponerlos, en la sucursal (idempotente: la nube aplica el cierre sobre el mismo uuid y un cierre repetido es un no-op). El `created_at` de cada fila es el instante de cierre, para que se aplique antes de la apertura posterior del mismo operador:
+
+```sql
+INSERT INTO prod.sync_queue (uuid, uuid_sucursal, operacion, tabla, uuid_registro, datos,
+                             prioridad, estado, intentos, created_at, created_by,
+                             sync_status, sync_attempts)
+SELECT gen_random_uuid(), s.uuid_sucursal, 'UPDATE', 'sesion', s.uuid,
+       jsonb_set(to_jsonb(s), '{seq}',
+                 to_jsonb((SELECT COALESCE(MAX((q.datos->>'seq')::bigint), 0)
+                             FROM prod.sync_queue q
+                            WHERE q.uuid_sucursal IS NOT DISTINCT FROM s.uuid_sucursal)
+                          + ROW_NUMBER() OVER (PARTITION BY s.uuid_sucursal
+                                               ORDER BY s.timestamp_cierre))),
+       1, 'pendiente', 0, s.timestamp_cierre, s.created_by, 'pendiente', 0
+  FROM prod.sesion s
+ WHERE s.timestamp_cierre IS NOT NULL
+   AND s.timestamp_cierre >= TIMESTAMP '2026-10-06';
+```
+
 ### 4. Tests backend
 
 ```bash

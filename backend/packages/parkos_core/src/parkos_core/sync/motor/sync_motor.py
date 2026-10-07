@@ -478,9 +478,6 @@ class SyncMotor:
         # uuid ``identity_reconciler`` collapsed onto another open version.
         payload = await remap_payload_with_aliases(session, spec, payload)
 
-        if self.engine is engine_flag.EngineMode.LEGACY:
-            return await self._apply_row_legacy(session, spec, payload, actor_uuid=actor_uuid)
-
         # Universal self/repeat-duplication guard (real defect confirmed
         # live, 2026-09-10): every one of the 4 real apply entry points
         # (``api/v1/sync_router.py::sync_events``, ``jobs/sync_cloud.py::
@@ -510,14 +507,23 @@ class SyncMotor:
         # sucursal row but apply_row returns "APPLIED" without
         # re-running the dispatch — the local copy keeps the OLD
         # field values forever.
-        if (
-            spec.audit_class == "V"
-            and spec.name != "sucursal"
-            and await apply_guard.row_already_present(
-                session, spec.model_cls, payload.get("uuid")
-            )
+        #
+        # SS1: this guard now runs BEFORE the LEGACY dispatch and for EVERY audit
+        # class (it used to be ``[V]``-only and after the LEGACY return). The
+        # cloud runs ``PARKOS_SYNC_ENGINE=legacy``, so a re-delivered row — a
+        # seed row (``permisos``, ``clientes``) or an already-applied
+        # ``[A]``/``[L-*]`` row — hit ``duplicate key ... _pkey`` on every retry
+        # and the branch queue never drained. A row whose uuid already exists can
+        # never be a new fact. Exempt: ``sucursal`` (UPDATE in place, above) and
+        # ``sesion`` (its closing event legitimately names an existing uuid and
+        # is applied idempotently by ``repo.session_cycle``).
+        if spec.name not in ("sucursal", "sesion") and await apply_guard.row_already_present(
+            session, spec.model_cls, payload.get("uuid")
         ):
             return ApplyResult(status="APPLIED", row_uuid=payload.get("uuid"), reason=None)
+
+        if self.engine is engine_flag.EngineMode.LEGACY:
+            return await self._apply_row_legacy(session, spec, payload, actor_uuid=actor_uuid)
 
         open_version = (
             await resolve_open_version(session, spec, payload)

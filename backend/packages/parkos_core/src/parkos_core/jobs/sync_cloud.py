@@ -528,7 +528,15 @@ class SyncCloudWorker(WorkerRunner):
             # gap (that push settles the BRANCH's own row and applies
             # remotely on CLOUD — it never re-drains what it just
             # applied), so normalizing there remains safe and unchanged.
-            spec = SYNC_CATALOG_BY_NAME.get(row.tabla)
+            #
+            # SS1 update: the lookup NOW strips a pg_partman child suffix
+            # (``log_transaccional_p_2026_10`` -> ``log_transaccional``). The
+            # echo-loop concern above is covered by the self-origin guard just
+            # below, which settles ANY row whose own uuid already exists in the
+            # target table; without the normalization, partition-named rows
+            # (written by the pre-0092 trigger) stayed ``unknown_table``
+            # forever.
+            spec = SYNC_CATALOG_BY_NAME.get(resolve_catalog_name(row.tabla))
             if spec is None:
                 await sq_helpers.mark_failed(session, row.uuid, "unknown_table")
                 settled += 1
@@ -556,7 +564,16 @@ class SyncCloudWorker(WorkerRunner):
             # applied — never re-apply it. A genuinely incoming row (from a
             # branch, e.g. a bidirectional table's remote update) carries a
             # uuid not yet present locally and is unaffected by this check.
-            if spec.audit_class == "V" and await _row_already_applied(
+            #
+            # SS1: generalized beyond ``[V]``. The cloud's own queue is fed by
+            # triggers on rows written HERE, so for any audit class a row whose
+            # uuid already exists in its table originated on this node and must
+            # never be re-applied (re-applying a ``log_transaccional`` /
+            # ``revocacion_factura`` row would extend the SHA-256 chain twice).
+            # ``sesion`` is exempt: its UPDATE (closing) event is, by definition,
+            # about a uuid that already exists, and it is applied idempotently
+            # by the ``session_cycle`` dispatch instead.
+            if spec.name != "sesion" and await _row_already_applied(
                 session, spec, row.datos or {}
             ):
                 await sq_helpers.mark_dispatched(session, row.uuid)
@@ -603,7 +620,9 @@ class SyncCloudWorker(WorkerRunner):
             # anything committed/flushed by a PRIOR call on this same
             # session stays intact.
             async with session.begin_nested():
-                await motor.apply_batch(session, resolved, actor_uuid=uuid_lib.uuid4())
+                batch_result = await motor.apply_batch(
+                    session, resolved, actor_uuid=uuid_lib.uuid4()
+                )
         except Exception as batch_exc:  # noqa: BLE001 — deliberate per-row fallback below
             self.log.warning(
                 "sync_cloud.apply_batch_failed_falling_back_to_per_row",
@@ -625,8 +644,19 @@ class SyncCloudWorker(WorkerRunner):
             await session.commit()
             return settled + len(resolved_row_uuids)
 
-        for row_uuid in resolved_row_uuids:
-            await sq_helpers.mark_dispatched(session, row_uuid)
+        # SS1: ``apply_batch`` isolates a failing row in its own SAVEPOINT and
+        # reports it in ``BatchResult.failed`` instead of raising. Settling the
+        # whole batch ``exitoso`` therefore silently LOST every such row (e.g. a
+        # sesion INSERT rejected by ``uq_prod_sesion_one_active_per_user``).
+        # A failed row is re-queued with backoff, exactly like the per-row
+        # fallback above; the rest of the batch still settles ``exitoso``.
+        failed_by_payload = {id(item[1]): item[2] for item in batch_result.failed}
+        for (_spec, payload), row_uuid in zip(resolved, resolved_row_uuids, strict=True):
+            error = failed_by_payload.get(id(payload))
+            if error is None:
+                await sq_helpers.mark_dispatched(session, row_uuid)
+            else:
+                await sq_helpers.mark_failed(session, row_uuid, str(error))
         # See the "not resolved" branch above for why this commit is
         # required — same never-committed-session defect.
         await session.commit()

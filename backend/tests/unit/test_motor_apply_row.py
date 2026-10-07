@@ -21,6 +21,7 @@ then:
 from __future__ import annotations
 
 import uuid as uuid_lib
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -246,6 +247,9 @@ async def test_dispatch_per_apply_strategy_session_cycle_insert_sesion(make_spec
         # docstring) — required once any FK-carrying child (arqueo,
         # factura_pagos) syncs alongside its sesion parent.
         uuid=LOGIN_UUID,
+        # SS1: origin's opening time + idempotent re-delivery.
+        timestamp_apertura=None,
+        idempotent=True,
     )
     close_mock.assert_not_called()
     record_mock.assert_not_called()
@@ -271,6 +275,10 @@ async def test_dispatch_per_apply_strategy_session_cycle_close_sesion(make_spec)
         session,
         actor_uuid=ACTOR_UUID,
         sesion_uuid=LOGIN_UUID,
+        # SS1: the origin's closing facts, applied idempotently.
+        timestamp_cierre=datetime(2026, 9, 9),
+        uuid_usuario_cierre=None,
+        idempotent=True,
         valor_final_efectivo=None,
         valor_final_datafono=None,
     )

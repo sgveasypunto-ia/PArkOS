@@ -196,6 +196,8 @@ async def open_session(
     log_tx: bool = True,
     uuid: uuid_lib.UUID | None = None,
     observaciones: str | None = None,
+    timestamp_apertura: datetime | None = None,
+    idempotent: bool = False,
 ) -> Sesion:
     """Open a cash session — REQ-40-S-OPEN.
 
@@ -232,17 +234,32 @@ async def open_session(
             for audit (REQ-OPS-021 AUDIT-FIRST canon). When None or
             empty string, neither the column nor the audit payload
             carries the field — no empty-key noise.
+        timestamp_apertura: Origin's opening time. Only the sync apply path
+            passes it, so the destination keeps the origin's valid time
+            instead of re-stamping its own receipt time. ``None`` (default)
+            stamps ``now``.
+        idempotent: Sync apply only (SS1). When ``True`` and ``uuid`` is
+            given and that sesion already exists, return it untouched —
+            re-delivering an already-applied INSERT event must neither
+            fail on the primary key nor re-open a closed sesion.
     """
     from ..models.A.log_transaccional import LogTransaccional
 
     now = _now_naive()
+
+    if idempotent and uuid is not None:
+        existing = (
+            await session.execute(select(Sesion).where(Sesion.uuid == uuid))
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
 
     new_row = Sesion(
         valor_inicial_efectivo=valor_inicial_efectivo,
         valor_inicial_datafono=valor_inicial_datafono,
         uuid_sucursal=uuid_sucursal,
         uuid_usuario=uuid_usuario,
-        timestamp_apertura=now,
+        timestamp_apertura=timestamp_apertura if timestamp_apertura is not None else now,
         timestamp_cierre=None,
         uuid_usuario_cierre=None,
         created_at=now,
@@ -300,6 +317,9 @@ async def close_session_with_log(
     valor_final_datafono: float | None = None,
     observaciones: str | None = None,
     log_tx: bool = True,
+    timestamp_cierre: datetime | None = None,
+    uuid_usuario_cierre: uuid_lib.UUID | None = None,
+    idempotent: bool = False,
 ) -> Sesion:
     """Close a cash session — REQ-41, SC-42.
 
@@ -319,7 +339,12 @@ async def close_session_with_log(
     """
     from ..models.A.log_transaccional import LogTransaccional
 
-    now = _now_naive()
+    # SS1: the sync apply path passes the ORIGIN's closing time (and closing
+    # user, ``uuid_usuario_cierre``): the cloud must show the branch's facts, not
+    # its own receipt time. ``idempotent=True`` turns a re-delivery of an
+    # already-applied close into a no-op; a sesion that does not exist at all
+    # still raises, so a close that outruns its open stays retryable.
+    now = timestamp_cierre if timestamp_cierre is not None else _now_naive()
 
     # 1. Read the current Sesion row (for uuid_sucursal + initial values
     #    to snapshot into datos_nuevos).
@@ -327,6 +352,8 @@ async def close_session_with_log(
     row = result.scalar_one_or_none()
     if row is None:
         raise SessionNotFoundError(f"sesion {sesion_uuid} not found")
+    if idempotent and row.timestamp_cierre is not None:
+        return row
 
     # 2. Log row FIRST (so the DB-layer session-guard trigger accepts the UPDATE)
     if log_tx:
@@ -375,7 +402,13 @@ async def close_session_with_log(
     update_result_raw = await session.execute(
         update(Sesion)
         .where(Sesion.uuid == sesion_uuid, Sesion.timestamp_cierre.is_(None))
-        .values(timestamp_cierre=now, uuid_usuario_cierre=actor_uuid, estado="cerrado")
+        .values(
+            timestamp_cierre=now,
+            uuid_usuario_cierre=(
+                uuid_usuario_cierre if uuid_usuario_cierre is not None else actor_uuid
+            ),
+            estado="cerrado",
+        )
     )
     # mypy --strict sees ``Result[Any]`` from ``session.execute``;
     # ``rowcount`` is only on ``CursorResult``. The UPDATE statement
