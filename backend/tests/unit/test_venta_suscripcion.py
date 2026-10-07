@@ -665,7 +665,8 @@ async def test_cobrar_ahora_genera_factura_con_display_enriquecido() -> None:
     build_kwargs = m_build_display.await_args.kwargs
     assert build_kwargs["new_factura"] is factura_row
     assert build_kwargs["detalles_creados"] is detalle_rows
-    assert build_kwargs["cliente_uuid"] == cliente_row.uuid
+    # FE not requested -> the receipt bills "Consumidor final", not the subscriber.
+    assert build_kwargs["cliente_uuid"] is None
     assert build_kwargs["payload"] is payload
 
 

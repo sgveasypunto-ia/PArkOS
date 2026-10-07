@@ -45,4 +45,33 @@ async def get_sesion_activa(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-__all__ = ["get_sesion_activa"]
+async def resolver_sesion_de_pago(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID | None,
+    uuid_sesion_explicita: uuid_lib.UUID | None = None,
+) -> uuid_lib.UUID | None:
+    """Session a payment must be tied to (cash-close accounting).
+
+    Precedence: explicit value (request body / JWT ``sesion`` claim) ->
+    the actor's OPEN ``prod.sesion`` in that branch, read from the DB.
+    The claim is absent when the operator opens the turno AFTER logging
+    in, so it can never be the only source: a payment with a NULL
+    ``uuid_sesion`` is invisible to 'efectivo esperado'. ``None`` only
+    when the operator has no open turno (the pre-existing rule).
+    """
+    if uuid_sesion_explicita is not None:
+        return uuid_sesion_explicita
+    stmt = (
+        select(Sesion.uuid)
+        .where(Sesion.uuid_usuario == actor_uuid)
+        .where(Sesion.timestamp_cierre.is_(None))
+    )
+    if uuid_sucursal is not None:
+        stmt = stmt.where(Sesion.uuid_sucursal == uuid_sucursal)
+    stmt = stmt.order_by(Sesion.timestamp_apertura.desc().nulls_last()).limit(1)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+__all__ = ["get_sesion_activa", "resolver_sesion_de_pago"]

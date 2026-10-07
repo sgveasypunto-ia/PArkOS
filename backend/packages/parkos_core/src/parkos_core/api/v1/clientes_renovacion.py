@@ -48,6 +48,7 @@ from ...models.L_E.factura_electronica import FacturaElectronica
 from ...repo import fe_emision as repo_fe_emision
 from ...repo import idempotency as repo_idempotency
 from ...repo import renovacion as repo_renovacion
+from ...repo.sesion_activa import resolver_sesion_de_pago
 from ...repo import subscripcion_activa as repo_activa
 from ...repo import venta_suscripcion as repo_venta
 from ...runtime.renovacion import RENOVACION_VENTANA_DIAS
@@ -161,7 +162,12 @@ async def renovar_subscripcion(
             session,
             actor_uuid=ctx.actor_uuid,
             uuid_sucursal=ctx.sucursal_uuid,
-            uuid_sesion=ctx.uuid_sesion,
+            uuid_sesion=await resolver_sesion_de_pago(
+                session,
+                actor_uuid=ctx.actor_uuid,
+                uuid_sucursal=ctx.sucursal_uuid,
+                uuid_sesion_explicita=ctx.uuid_sesion,
+            ),
             uuid_subscripcion_nueva=resultado.nueva.uuid,
             monto=resultado.monto,
             medio_pago=payload.medio_pago,
