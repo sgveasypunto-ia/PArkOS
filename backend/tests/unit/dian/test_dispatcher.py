@@ -438,3 +438,62 @@ async def test_dispatcher_standard_customer_missing_row_uses_constants(
     row.uuid_cliente = CLIENTE_ESTANDAR_UUID
     envio = await _dispatch(mock_session_with_factura(row), token_path)
     assert envio is not None
+
+
+# ---------------------------------------------------------------------------
+# Tax detail: the UBL carries the persisted lines + factura_impuestos rows.
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatcher_feeds_serializer_with_persisted_lines_and_taxes(
+    monkeypatch: pytest.MonkeyPatch, token_path: Path
+) -> None:
+    import uuid as uuid_lib
+    from types import SimpleNamespace
+
+    _install_transport(
+        monkeypatch, track_id="t-1", poll_body={"estado": "aceptado", "cufe": "c"}
+    )
+    monkeypatch.setattr(dispatcher, "append_event", AsyncMock(name="append_event"))
+    detalle = SimpleNamespace(
+        concepto="subscripcion_mensual", cantidad=1, valor_unitario=100840.34, subtotal=100840.34
+    )
+    iva = SimpleNamespace(
+        codigo="IVA", nombre="IVA", base_calculo=100840.34,
+        porcentaje_aplicado=0.19, valor=19159.66,
+    )
+    monkeypatch.setattr(
+        dispatcher, "_load_lines_and_taxes", AsyncMock(return_value=([detalle], [iva]))
+    )
+    captured: dict[str, Any] = {}
+    real_serialize = dispatcher.serialize
+
+    def _spy(row: Any, cliente: Any = None, **kw: Any) -> bytes:
+        captured.update(kw)
+        return real_serialize(row, cliente, **kw)
+
+    monkeypatch.setattr(dispatcher, "serialize", _spy)
+    row = factura_row()
+    row.uuid_factura = uuid_lib.uuid4()
+
+    await _dispatch(mock_session_with_factura(row), token_path)
+
+    assert captured["detalles"] == [detalle]
+    assert captured["impuestos"] == [iva]
+
+
+async def test_dispatcher_never_sends_zero_stub_when_invoice_lines_not_synced(
+    monkeypatch: pytest.MonkeyPatch, token_path: Path
+) -> None:
+    import uuid as uuid_lib
+
+    monkeypatch.setattr(
+        dispatcher, "_load_lines_and_taxes", AsyncMock(return_value=([], []))
+    )
+    row = factura_row()
+    row.uuid_factura = uuid_lib.uuid4()
+    session = mock_session_with_factura(row)
+
+    with pytest.raises(dispatcher.FacturaDetalleNoDisponibleError):
+        await _dispatch(session, token_path)
+    assert session.added == []  # no envio row, no HTTP

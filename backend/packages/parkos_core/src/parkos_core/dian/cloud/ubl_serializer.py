@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from lxml import etree
@@ -140,38 +140,78 @@ def _build_customer_party(cliente: Any | None) -> etree._Element:
     return customer
 
 
-def _build_tax_total(amount: str, currency: str) -> etree._Element:
-    """Build ``cac:TaxTotal`` with the required ``TaxAmount`` + currency.
+_CENT = Decimal("0.01")
 
-    UBL ``TaxAmount`` carries an optional ``currencyID`` attribute; the
-    XSD binds it to ``Currency_ Code. Type``. ``cac:TaxTotal`` itself
-    appears minOccurs=0 on InvoiceType, so emitting one with ``0.00``
-    is the safe minimal stub for PR11c -- PR12+ reads the real
-    ``factura_impuestos`` rows and emits one ``TaxTotal`` per active
-    tax code.
-    """
+# DIAN tax-scheme codes (UBL ``cac:TaxScheme/cbc:ID``) by catalog ``codigo``.
+_DIAN_TAX_SCHEME_ID = {"IVA": "01", "INC": "04", "ICA": "03"}
+
+
+def _dec(value: Any) -> Decimal:
+    """Coerce a Numeric/float/None to ``Decimal`` without float noise."""
+    return Decimal(str(value if value is not None else 0))
+
+
+def _q(value: Decimal) -> Decimal:
+    return value.quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _money_el(
+    parent: etree._Element, tag: str, amount: Decimal | str, currency: str
+) -> etree._Element:
+    el = etree.SubElement(parent, f"{{{NS_CBC}}}{tag}")
+    el.set("currencyID", currency)
+    el.text = amount if isinstance(amount, str) else _format_money(amount)
+    return el
+
+
+def _build_tax_subtotal(
+    *, taxable: Decimal, amount: Decimal, percent: Decimal, code: str, name: str, currency: str
+) -> etree._Element:
+    """Build ``cac:TaxSubtotal`` (base, amount, rate and tax scheme)."""
+    sub = etree.Element(f"{{{NS_CAC}}}TaxSubtotal")
+    _money_el(sub, "TaxableAmount", taxable, currency)
+    _money_el(sub, "TaxAmount", amount, currency)
+    category = etree.SubElement(sub, f"{{{NS_CAC}}}TaxCategory")
+    etree.SubElement(category, f"{{{NS_CBC}}}Percent").text = f"{percent:.2f}"
+    scheme = etree.SubElement(category, f"{{{NS_CAC}}}TaxScheme")
+    etree.SubElement(scheme, f"{{{NS_CBC}}}ID").text = code
+    etree.SubElement(scheme, f"{{{NS_CBC}}}Name").text = name
+    return sub
+
+
+def _build_tax_total(
+    amount: str, currency: str, subtotals: list[etree._Element] | None = None
+) -> etree._Element:
+    """Build ``cac:TaxTotal``: ``TaxAmount`` + one ``TaxSubtotal`` per tax."""
     tax_total = etree.Element(f"{{{NS_CAC}}}TaxTotal")
-    tax_amount = etree.SubElement(tax_total, f"{{{NS_CBC}}}TaxAmount")
-    tax_amount.set("currencyID", currency)
-    tax_amount.text = amount
+    _money_el(tax_total, "TaxAmount", amount, currency)
+    for sub in subtotals or []:
+        tax_total.append(sub)
     return tax_total
 
 
-def _build_legal_monetary_total(payable: str, currency: str) -> etree._Element:
-    """Build ``cac:LegalMonetaryTotal`` with the required ``PayableAmount``.
+def _build_legal_monetary_total(
+    payable: str,
+    currency: str,
+    *,
+    line_extension: str | None = None,
+    tax_exclusive: str | None = None,
+    tax_inclusive: str | None = None,
+) -> etree._Element:
+    """Build ``cac:LegalMonetaryTotal``.
 
-    ``LegalMonetaryTotal`` carries ``PayableAmount`` (minOccurs=1) +
-    ``LineExtensionAmount`` (minOccurs=1). PR12 reads the real totals
-    from ``factura_detalle`` + ``factura_impuestos`` + ``factura_otros_cobros``;
-    this stub emits the minimum XSD-valid block with zero amounts.
+    Without the optional amounts it emits the minimal stub (line extension
+    == payable). With them: base (``LineExtensionAmount`` /
+    ``TaxExclusiveAmount``), base + tax (``TaxInclusiveAmount``) and the
+    ``PayableAmount``.
     """
     monetary = etree.Element(f"{{{NS_CAC}}}LegalMonetaryTotal")
-    line_ext = etree.SubElement(monetary, f"{{{NS_CBC}}}LineExtensionAmount")
-    line_ext.set("currencyID", currency)
-    line_ext.text = payable
-    payable_el = etree.SubElement(monetary, f"{{{NS_CBC}}}PayableAmount")
-    payable_el.set("currencyID", currency)
-    payable_el.text = payable
+    _money_el(monetary, "LineExtensionAmount", line_extension or payable, currency)
+    if tax_exclusive is not None:
+        _money_el(monetary, "TaxExclusiveAmount", tax_exclusive, currency)
+    if tax_inclusive is not None:
+        _money_el(monetary, "TaxInclusiveAmount", tax_inclusive, currency)
+    _money_el(monetary, "PayableAmount", payable, currency)
     return monetary
 
 
@@ -184,14 +224,12 @@ def _build_invoice_line(
     description: str,
     price_amount: str,
     currency: str,
+    tax_total: etree._Element | None = None,
 ) -> etree._Element:
-    """Build a minimal ``cac:InvoiceLine`` block.
+    """Build a ``cac:InvoiceLine`` block (with its own tax when given).
 
     UBL ``InvoiceLine`` requires ``ID`` + ``LineExtensionAmount`` +
-    ``Item``. ``Item`` itself requires at least one name child. We
-    emit ``cbc:Description`` (allowed on Item, no minOccurs) plus the
-    required name via ``cbc:Name``. ``Price`` requires
-    ``PriceAmount`` (minOccurs=1).
+    ``Item``; ``TaxTotal`` sits between the amount and the ``Item``.
     """
     inv_line = etree.Element(f"{{{NS_CAC}}}InvoiceLine")
     id_el = etree.SubElement(inv_line, f"{{{NS_CBC}}}ID")
@@ -202,6 +240,8 @@ def _build_invoice_line(
     line_ext = etree.SubElement(inv_line, f"{{{NS_CBC}}}LineExtensionAmount")
     line_ext.set("currencyID", currency)
     line_ext.text = line_amount
+    if tax_total is not None:
+        inv_line.append(tax_total)
 
     item = etree.SubElement(inv_line, f"{{{NS_CAC}}}Item")
     desc_el = etree.SubElement(item, f"{{{NS_CBC}}}Description")
@@ -216,7 +256,113 @@ def _build_invoice_line(
     return inv_line
 
 
-def serialize(factura: FacturaElectronica, cliente: Any | None = None) -> bytes:
+def _tax_identity(imp: Any) -> tuple[str, str, Decimal]:
+    """``(scheme_id, name, percent)`` of a ``factura_impuestos`` row.
+
+    ``porcentaje_aplicado`` is stored as a fraction (0.19) -> 19.00 %.
+    """
+    codigo = str(getattr(imp, "codigo", None) or "IVA")
+    nombre = str(getattr(imp, "nombre", None) or codigo)
+    percent = _q(_dec(getattr(imp, "porcentaje_aplicado", None)) * 100)
+    return _DIAN_TAX_SCHEME_ID.get(codigo.upper(), codigo), nombre, percent
+
+
+def _allocate_line_taxes(
+    line_bases: list[Decimal], impuestos: list[Any]
+) -> list[list[Decimal]]:
+    """Split each document tax across the lines, pro rata to the line base.
+
+    Returns ``allocation[line][tax]``; the LAST line absorbs the rounding so
+    the per-line taxes of every tax add up exactly to its ``valor``.
+    """
+    total_base = sum(line_bases, Decimal(0))
+    allocation: list[list[Decimal]] = [[] for _ in line_bases]
+    for imp in impuestos:
+        valor = _q(_dec(getattr(imp, "valor", None)))
+        remaining = valor
+        for idx, base in enumerate(line_bases):
+            if idx == len(line_bases) - 1:
+                share = remaining
+            elif total_base == 0:
+                share = Decimal(0)
+            else:
+                share = _q(valor * base / total_base)
+            allocation[idx].append(share)
+            remaining -= share
+    return allocation
+
+
+def _build_detailed_body(
+    invoice: etree._Element, detalles: list[Any], impuestos: list[Any]
+) -> None:
+    """Append TaxTotal + LegalMonetaryTotal + InvoiceLines from persisted rows."""
+    line_bases = [_q(_dec(d.subtotal)) for d in detalles]
+    base_total = sum(line_bases, Decimal(0))
+    tax_amounts = [_q(_dec(getattr(i, "valor", None))) for i in impuestos]
+    tax_total = sum(tax_amounts, Decimal(0))
+    identities = [_tax_identity(i) for i in impuestos]
+
+    subtotals = [
+        _build_tax_subtotal(
+            taxable=_q(_dec(getattr(imp, "base_calculo", None))),
+            amount=amount,
+            percent=percent,
+            code=scheme_id,
+            name=name,
+            currency=_CURRENCY_CODE,
+        )
+        for imp, amount, (scheme_id, name, percent) in zip(
+            impuestos, tax_amounts, identities, strict=True
+        )
+    ]
+    invoice.append(_build_tax_total(_format_money(tax_total), _CURRENCY_CODE, subtotals))
+    invoice.append(
+        _build_legal_monetary_total(
+            _format_money(base_total + tax_total),
+            _CURRENCY_CODE,
+            line_extension=_format_money(base_total),
+            tax_exclusive=_format_money(base_total),
+            tax_inclusive=_format_money(base_total + tax_total),
+        )
+    )
+
+    allocation = _allocate_line_taxes(line_bases, impuestos)
+    for idx, det in enumerate(detalles):
+        line_subtotals = [
+            _build_tax_subtotal(
+                taxable=line_bases[idx],
+                amount=allocation[idx][t],
+                percent=percent,
+                code=scheme_id,
+                name=name,
+                currency=_CURRENCY_CODE,
+            )
+            for t, (scheme_id, name, percent) in enumerate(identities)
+        ]
+        line_tax = sum(allocation[idx], Decimal(0))
+        invoice.append(
+            _build_invoice_line(
+                line_id=str(idx + 1),
+                quantity=str(det.cantidad or 1),
+                unit_code=_LINE_UNIT_CODE,
+                line_amount=_format_money(line_bases[idx]),
+                description=str(det.concepto or _LINE_DESCRIPTION),
+                price_amount=_format_money(_dec(det.valor_unitario)),
+                currency=_CURRENCY_CODE,
+                tax_total=_build_tax_total(
+                    _format_money(line_tax), _CURRENCY_CODE, line_subtotals
+                ),
+            )
+        )
+
+
+def serialize(
+    factura: FacturaElectronica,
+    cliente: Any | None = None,
+    *,
+    detalles: list[Any] | None = None,
+    impuestos: list[Any] | None = None,
+) -> bytes:
     """Build a UBL 2.1 XML payload from a ``factura_electronica`` row.
 
     Args:
@@ -225,6 +371,13 @@ def serialize(factura: FacturaElectronica, cliente: Any | None = None) -> bytes:
             the row is never mutated.
         cliente: The ``prod.clientes`` row referenced by
             ``factura.uuid_cliente`` (``None`` -> standard customer).
+        detalles: ``prod.factura_detalle`` rows of the invoice. When given,
+            one ``InvoiceLine`` per row and the totals come from the
+            persisted rows (``None`` -> legacy zero-amount stub).
+        impuestos: ``prod.factura_impuestos`` rows (duck-typed: ``codigo``,
+            ``nombre``, ``base_calculo``, ``porcentaje_aplicado``, ``valor``).
+            Emitted as ``TaxTotal/TaxSubtotal`` (base, rate, amount) and
+            allocated to each line; base + tax == ``PayableAmount``.
 
     Returns:
         UTF-8 encoded XML bytes, ready to POST to the DIAN provider.
@@ -264,6 +417,12 @@ def serialize(factura: FacturaElectronica, cliente: Any | None = None) -> bytes:
     # Parties (both minOccurs=1).
     invoice.append(_build_supplier_party(_SUPPLIER_NAME))
     invoice.append(_build_customer_party(cliente))
+
+    if detalles:
+        _build_detailed_body(invoice, detalles, impuestos or [])
+        return etree.tostring(
+            invoice, xml_declaration=True, encoding="UTF-8", pretty_print=False
+        )
 
     # Totals (minOccurs=1 for LegalMonetaryTotal; TaxTotal optional).
     invoice.append(_build_tax_total(_TAX_AMOUNT, _CURRENCY_CODE))
