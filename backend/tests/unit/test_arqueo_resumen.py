@@ -64,9 +64,7 @@ def _resumen_dict_for(sesion_uuid: uuid_lib.UUID | None = None) -> dict:
         "timestamp_cierre": "2026-09-15T20:00:00",
         "estado": "cerrada",
         "valor_efectivo_esperado": Decimal("100000"),
-        "valor_datafono_esperado": Decimal("50000"),
         "valor_efectivo_reportado": Decimal("100000"),
-        "valor_datafono_reportado": Decimal("50000"),
         "uuid_arqueo": uuid_lib.uuid4(),
     }
 
