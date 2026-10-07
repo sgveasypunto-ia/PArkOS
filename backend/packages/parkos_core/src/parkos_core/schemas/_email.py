@@ -77,7 +77,9 @@ def _parkos_email_lenient(v: str) -> str:
     if ".." in v:
         raise ValueError(f"Email must not contain consecutive dots: {v!r}")
     # Extract TLD (rightmost label after the last dot in domain)
-    tld = domain.rsplit(".", 1)[-1].lower() if "." in domain else ""
+    # A single-label domain (``user@localhost``, ``noreply@invalid``) is its
+    # own TLD: ``rsplit`` returns the whole string when there is no dot.
+    tld = domain.rsplit(".", 1)[-1].lower()
     if tld in _RESERVED_TLDS_ALLOWED:
         # Bypass email_validator's strict reserved-TLD check for dev TLDs.
         return v.strip().lower()
