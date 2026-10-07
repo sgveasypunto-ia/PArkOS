@@ -335,6 +335,71 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     });
   };
 
+  // -----------------------------------------------------------------
+  // H2: a failed POST must be visible and must not look like a payment.
+  // -----------------------------------------------------------------
+  it('P13 (H2): POST fails -> inline error, drawer stays open, no annul', async () => {
+    mockTrigger.mockRejectedValueOnce(new Error('cliente_no_encontrado'));
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
+        total_cop: 5000,
+      }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    expect(screen.getByTestId('pago-error')).not.toBeNull();
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('pago');
+    expect(mockAnularTrigger).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('factura-display-modal')).toBeNull();
+  });
+
+  it('P14 (H2): after a failed POST the operator can still cancel (pagadoRef stays false -> annul)', async () => {
+    mockTrigger.mockRejectedValueOnce(new Error('boom'));
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
+        total_cop: 5000,
+      }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-cancelar'));
+    });
+    expect(mockAnularTrigger).toHaveBeenCalledWith({ uuid_salida: 'salida-1' });
+  });
+
+  it('P15 (H2): annul failure is visible and keeps the drawer open; second cancel closes', async () => {
+    mockAnularTrigger.mockRejectedValueOnce(new Error('forbidden'));
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
+        total_cop: 5000,
+      }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-cancelar'));
+    });
+    expect(screen.getByTestId('pago-anular-error')).not.toBeNull();
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('pago');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-cancelar'));
+    });
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+  });
+
   it('P11: no toggle decides the FE -- fixed consumidor-final notice; charge never calls POST /facturacion/factura-electronica nor navigates', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
     mockNavigate.mockClear();

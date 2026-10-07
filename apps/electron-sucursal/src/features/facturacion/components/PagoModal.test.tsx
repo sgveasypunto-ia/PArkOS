@@ -170,6 +170,19 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     expect(arg.nombre_cliente).toBeDefined();
   });
 
+  it('M5b (H2): onSubmit rejects -> inline error shown, no unhandled rejection, button re-enabled', async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new Error('boom'));
+    render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} total_cop={41000} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('pago-error')).not.toBeNull();
+    expect(screen.getByTestId('pago-confirmar')).not.toHaveProperty('disabled', true);
+  });
+
   it('M6 (fix HU-F8.1-monto-insuficiente): efectivo + monto_recibido < total → submit blocked, onSubmit NOT called, vueltos "—"', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} total_cop={41000} />);
