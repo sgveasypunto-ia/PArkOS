@@ -135,7 +135,8 @@ async def test_create_handler_sets_cache_control_no_store(
     )
 
     payload = FacturaElectronicaCreate(uuid_factura=uuid_lib.uuid4())
-    ctx = _make_ctx()
+    # The operador must belong to the factura's sucursal (tenant scope, Step 3).
+    ctx = _make_ctx(sucursal_uuid=factura_orm.uuid_sucursal)
     response = MagicMock()
     response.headers = {}
     session = AsyncMock()
