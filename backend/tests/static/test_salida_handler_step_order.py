@@ -155,7 +155,8 @@ def test_create_salida_cadena_completa_en_orden() -> None:
 
 def test_create_salida_no_tiene_segundo_commit() -> None:
     """KD-S7 invariant: a single ``session.commit()`` after the alerta
-    INSERT -- NO second commit anywhere else in the handler.
+    INSERT -- NO second commit anywhere else in the handler (except the
+    post-commit, fire-and-forget MV refresh, see below).
 
     Defense in depth: another commit would silently release the
     ``SELECT ... FOR SHARE`` lock acquired in ``cotizar_para_salida``
@@ -166,21 +167,41 @@ def test_create_salida_no_tiene_segundo_commit() -> None:
     tree = ast.parse(src)
     fn = _find_create_salida(tree)
 
-    commits: list[int] = []
-    for node in ast.walk(fn):
-        if isinstance(node, ast.Call):
-            # Detect ``session.commit()`` attribute call.
-            if (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr == "commit"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "session"
-            ):
-                commits.append(node.lineno)
+    def _is_commit(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "commit"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "session"
+        )
 
-    assert len(commits) == 1, (
-        f"KD-S7 violated: create_salida has {len(commits)} session.commit() "
-        f"calls at lines {commits!r}; exactly ONE is required."
+    # The ONLY tolerated extra commit is the fire-and-forget MV refresh
+    # (``SELECT prod.refresh_mv_ocupacion_diaria()``) that runs AFTER the
+    # main commit, inside its own ``try`` (failure is logged, not raised).
+    # By then the FOR SHARE lock is already released, so KD-S7 holds.
+    post_commit_refresh: set[int] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Try) and any(
+            "refresh_mv_ocupacion_diaria" in ast.unparse(stmt) for stmt in node.body
+        ):
+            post_commit_refresh.update(
+                sub.lineno
+                for stmt in node.body
+                for sub in ast.walk(stmt)
+                if _is_commit(sub)
+            )
+
+    commits = [n.lineno for n in ast.walk(fn) if _is_commit(n)]
+    main_commits = [ln for ln in commits if ln not in post_commit_refresh]
+
+    assert len(main_commits) == 1, (
+        f"KD-S7 violated: create_salida has {len(main_commits)} "
+        f"session.commit() calls at lines {main_commits!r} outside the "
+        f"post-commit MV refresh; exactly ONE is required."
+    )
+    assert all(ln > main_commits[0] for ln in post_commit_refresh), (
+        "the MV-refresh commit must come AFTER the single main commit"
     )
 
 
