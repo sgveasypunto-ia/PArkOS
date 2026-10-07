@@ -41,10 +41,21 @@ test.describe('HU-F7.2 — Vehicle exit flow', () => {
 
   test('S3 doble-clic idempotente → segundo click devuelve cached 201', async ({ page: _page }) => {
     // Stub: navigate to /operacion, cotiza, click Confirm twice
-    // within <500ms, assert the network tab shows TWO requests with
-    // the same `Idempotency-Key` header, and the backend's
-    // `IdempotencyKeyMiddleware` returns the cached 201 on the
-    // second request (no duplicate INSERT into `prod.salidas`).
+    // within <500ms (same in-flight action), assert the network tab
+    // shows at most TWO requests carrying the SAME `Idempotency-Key`
+    // header, and the backend's `IdempotencyKeyMiddleware` returns the
+    // cached 201 on the second request (no duplicate INSERT into
+    // `prod.salidas`). Runnable coverage of the key contract:
+    // `e2e/operacion/idempotencia-por-accion.spec.ts`.
+  });
+
+  test('S3b salida → anular → salida (acciones separadas) usa Idempotency-Key distinto', async ({ page: _page }) => {
+    // Stub: confirm the exit (PagoSheet opens), dismiss the drawer
+    // ("anular"), confirm the exit again for the same ingreso. The
+    // action settled in between, so the second POST /salidas MUST carry
+    // a DIFFERENT `Idempotency-Key`; otherwise the middleware replays the
+    // annulled salida. Runnable coverage:
+    // `e2e/operacion/idempotencia-por-accion.spec.ts`.
   });
 
   test('AST drift guard: zero matches for salidas/mensualidad + mensualidad_no_vigente', async ({ page: _page }) => {

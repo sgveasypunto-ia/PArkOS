@@ -18,11 +18,17 @@
  *        NOT block the operator — the pago is persisted in
  *        `prod.factura`; reprint is F8.x. Verified via `console.warn`
  *        spy — the React render commit proceeds.
- *   S6 — Double-click "Confirmar pago" → SAME `Idempotency-Key` SHA-256
- *        header on both calls → server-side cache dedup (F1.6
+ *   S6 — Double-click "Confirmar pago" → both in-flight calls share the
+ *        SAME per-action `Idempotency-Key` (random, released once the action
+ *        settles) → server-side cache dedup (F1.6
  *        `IdempotencyKeyMiddleware`) returns the cached 201 on the
  *        second call; only ONE `bridge.imprimir` set fires (no
  *        duplicate print).
+ *   S7 — Two SEPARATE pago actions with an identical body (pago rejected
+ *        or annulled, then the operator confirms again) → DIFFERENT
+ *        `Idempotency-Key`, so the middleware never replays the old result.
+ *        Runnable coverage of the key contract lives in
+ *        `e2e/operacion/idempotencia-por-accion.spec.ts`.
  *
  * Sandbox F.6 caveat (precedent F2.x/F3.x/F7.x e2e specs): the
  * Electron main process + printer hardware are unavailable in this
@@ -59,7 +65,12 @@ test.describe('HU-F8.1 — PagoModal + post-pago print envelopes', () => {
     expect(true).toBe(true);
   });
 
-  test('S6 (stub) — Double-click → same Idempotency-Key header → server cache dedup (no duplicate print)', async () => {
+  test('S6 (stub) — Double-click → same in-flight Idempotency-Key header → server cache dedup (no duplicate print)', async () => {
+    // Stub — covered in F8.1 integration sprint.
+    expect(true).toBe(true);
+  });
+
+  test('S7 (stub) — Two separate pago actions with identical body → DIFFERENT Idempotency-Key (no stale replay)', async () => {
     // Stub — covered in F8.1 integration sprint.
     expect(true).toBe(true);
   });

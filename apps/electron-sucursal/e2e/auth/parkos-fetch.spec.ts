@@ -41,7 +41,7 @@ test.describe('e2e parkosFetch', () => {
     });
   });
 
-  test('2) POST incluye Idempotency-Key SHA-256(method|path|body)', async () => {
+  test('2) POST incluye Idempotency-Key de 64 hex (nonce por llamada)', async () => {
     await bootAppWith(async (page) => {
       let capturedKey: string | undefined;
       await page.route('**/api/e2e/orders', (route) => {
@@ -49,17 +49,19 @@ test.describe('e2e parkosFetch', () => {
         void route.fulfill({ status: 201, body: '{"id":42}' });
       });
       await page.evaluate(async () => {
-        await fetch('/api/e2e/orders', {
+        const { parkosFetch } = (await import(
+          /* @vite-ignore */ '/@id/@parkos/ui-kit/fetch'
+        )) as { parkosFetch: (p: string, i: unknown) => Promise<unknown> };
+        await parkosFetch('/api/e2e/orders', {
           method: 'POST',
           body: JSON.stringify({ item: 'abc' }),
-          headers: { 'Content-Type': 'application/json' },
         });
       });
       expect(capturedKey).toMatch(/^[0-9a-f]{64}$/);
     });
   });
 
-  test('3) dos POST idénticos producen mismo Idempotency-Key (idempotencia)', async () => {
+  test('3) dos POST idénticos SEPARADOS producen Idempotency-Key distintos (una llave por acción)', async () => {
     await bootAppWith(async (page) => {
       const keys: string[] = [];
       await page.route('**/api/e2e/idem', (route) => {
@@ -67,12 +69,45 @@ test.describe('e2e parkosFetch', () => {
         void route.fulfill({ status: 201, body: '{}' });
       });
       await page.evaluate(async () => {
-        const body = JSON.stringify({ a: 1 });
-        await fetch('/api/e2e/idem', { method: 'POST', body, headers: { 'Content-Type': 'application/json' } });
-        await fetch('/api/e2e/idem', { method: 'POST', body, headers: { 'Content-Type': 'application/json' } });
+        const { parkosFetch } = (await import(
+          /* @vite-ignore */ '/@id/@parkos/ui-kit/fetch'
+        )) as { parkosFetch: (p: string, i: unknown) => Promise<unknown> };
+        const init = { method: 'POST', body: JSON.stringify({ a: 1 }) };
+        await parkosFetch('/api/e2e/idem', init);
+        await parkosFetch('/api/e2e/idem', init);
       });
-      expect(keys[0]).toBe(keys[1]);
+      expect(keys).toHaveLength(2);
       expect(keys[0]).toMatch(/^[0-9a-f]{64}$/);
+      expect(keys[1]).toMatch(/^[0-9a-f]{64}$/);
+      // Same content, two user actions: a repeated key would make the
+      // backend replay the first response for the second action.
+      expect(keys[1]).not.toBe(keys[0]);
+    });
+  });
+
+  test('3b) reintento 5xx de la MISMA llamada reutiliza el Idempotency-Key', async () => {
+    await bootAppWith(async (page) => {
+      const keys: string[] = [];
+      await page.route('**/api/e2e/idem-retry', (route) => {
+        keys.push(route.request().headers()['idempotency-key'] ?? '');
+        if (keys.length === 1) {
+          void route.fulfill({ status: 503, body: 'busy' });
+        } else {
+          void route.fulfill({ status: 201, body: '{}' });
+        }
+      });
+      await page.evaluate(async () => {
+        const { parkosFetch } = (await import(
+          /* @vite-ignore */ '/@id/@parkos/ui-kit/fetch'
+        )) as { parkosFetch: (p: string, i: unknown) => Promise<unknown> };
+        await parkosFetch('/api/e2e/idem-retry', {
+          method: 'POST',
+          body: JSON.stringify({ a: 1 }),
+        });
+      });
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toMatch(/^[0-9a-f]{64}$/);
+      expect(keys[1]).toBe(keys[0]);
     });
   });
 

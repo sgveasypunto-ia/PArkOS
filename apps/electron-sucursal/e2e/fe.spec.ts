@@ -16,7 +16,7 @@
  *        with the SWR cache mutated at the terminal tick (REQ-OPS-166).
  *   S3 — "Reintentar" button (rendered only on `estado='rechazado'`)
  *        issues `POST /facturacion/factura-electronica/{uuid}/reintentar`
- *        with the canonical `Idempotency-Key` header (SHA-256 hex, 64 chars);
+ *        with a per-action `Idempotency-Key` header (random, 64 hex chars);
  *        the 201 response triggers `mutate('/facturacion/factura-electronica/{uuid}')`
  *        so polling re-engages with the new chain tip (REQ-OPS-168/169).
  *
