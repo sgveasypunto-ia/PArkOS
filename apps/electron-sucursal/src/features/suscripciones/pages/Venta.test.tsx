@@ -446,6 +446,47 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  // H8: "Volver" must never jump to the start/list from a mid-flow step.
+  // One test per step so a failure names the offending step.
+  describe.each([
+    { from: 6, to: 5, label: 'payment -> plates' },
+    { from: 5, to: 4, label: 'plate registration -> quantity' },
+    { from: 4, to: 3, label: 'quantity -> plan' },
+    { from: 3, to: 2, label: 'plan -> vehicle type' },
+    { from: 2, to: 1, label: 'vehicle type -> client' },
+  ])('H8: "Volver" from step $from ($label)', ({ from, to }) => {
+    it(`lands on step ${to} and does not leave the wizard`, async () => {
+      const onCancel = vi.fn();
+      renderVenta({ onCancel });
+      await hastaPago();
+      for (let paso = 6; paso > from; paso -= 1) {
+        await click('venta-volver');
+      }
+      expect(screen.getByTestId(`venta-paso-${from}`)).toBeDefined();
+
+      await click('venta-volver');
+
+      expect(screen.getByTestId(`venta-paso-${to}`)).toBeDefined();
+      expect(screen.queryByTestId(`venta-paso-${from}`)).toBeNull();
+      expect(onCancel).not.toHaveBeenCalled();
+    });
+  });
+
+  it('H8: "Volver" on a plate validation error stays one step back, not at the start', async () => {
+    const onCancel = vi.fn();
+    renderVenta({ onCancel });
+    await hastaPago();
+    await click('venta-volver'); // 5
+    await change('venta-placa-input-0', '');
+    await click('venta-paso-5-siguiente'); // invalid plate: stays on 5
+    expect(screen.getByTestId('venta-paso-5')).toBeDefined();
+
+    await click('venta-volver');
+
+    expect(screen.getByTestId('venta-paso-4')).toBeDefined();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
   it('T11b (PT-1): the page route (no onCancel) has no "Volver" on step 1', () => {
     renderVenta();
     expect(screen.queryByTestId('venta-volver')).toBeNull();
