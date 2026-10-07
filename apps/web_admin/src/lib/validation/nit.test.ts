@@ -121,3 +121,44 @@ describe('validarNitModulo11', () => {
     expect(validarNitModulo11(undefined).ok).toBe(false);
   });
 });
+
+describe('validarNitModulo11 — real institutional NITs (official DIAN algorithm)', () => {
+  it.each([
+    ['899999068-1'], // Ecopetrol
+    ['890903938-8'], // Bancolombia
+    ['860034313-7'], // Davivienda
+    ['800197268-4'], // DIAN
+    ['860002964-4'], // Banco de Bogotá
+    ['890900608-9'], // Almacenes Éxito
+  ])('acepta %s', (nit) => {
+    expect(validarNitModulo11(nit).ok).toBe(true);
+  });
+
+  it('900123456 tiene DV 8', () => {
+    expect(calcularDvModulo11('900123456')).toBe(8);
+  });
+
+  it('resto 10 produce DV 1 (nunca null ni 10) y el NIT se acepta', () => {
+    let body: string | null = null;
+    for (let n = 10000; n < 14000 && body === null; n += 1) {
+      const digits = String(n);
+      const sum = digits
+        .split('')
+        .reverse()
+        .reduce((acc, d, i) => acc + Number(d) * [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71][i]!, 0);
+      if (sum % 11 === 10) body = digits;
+    }
+    expect(body).not.toBeNull();
+    expect(calcularDvModulo11(body!)).toBe(1);
+    expect(validarNitModulo11(`${body}-1`).ok).toBe(true);
+  });
+
+  it('resto 0 y 1 devuelven el resto como DV', () => {
+    const dvs = new Set<number | null>();
+    for (let n = 10000; n < 12000; n += 1) dvs.add(calcularDvModulo11(String(n)));
+    expect(dvs.has(0)).toBe(true);
+    expect(dvs.has(1)).toBe(true);
+    expect(dvs.has(null)).toBe(false);
+    expect(Math.max(...(dvs as Set<number>))).toBeLessThanOrEqual(9);
+  });
+});

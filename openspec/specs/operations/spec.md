@@ -2325,42 +2325,42 @@ blocker is resolved (verified by F1.8 regression test
 **When** the Pydantic v2 `@field_validator("numero_identificacion")` runs (either via `FacturaItemConDatosPropios` in `/facturacion/factura` payload OR via `ClientesCreate` in any `/clientes` POST payload)
 **Then** validation MUST raise a Pydantic validation error mapped to `HTTPException(status_code=422, detail={"error":"nit_invalido", "dv_esperado":<int>, "dv_recibido":"<string>"}, headers={"Cache-Control":"no-store"})`.
 **And** the validator MUST NOT proceed to insert any row in `prod.clientes` or `prod.facturas`.
-**RFC 2119**: MUST (Variant A canónica per DIAN Resolución 000175 de 2021; `dv_calculado = sum_ponderada % 11`; NO alternative algorithms; weights `[3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71]` applied **right-to-left** over NIT digits without DV; NIT normalized: strip non-digits, strip leading zeros, minimum 5 digits).
+**RFC 2119**: MUST (official DIAN check-digit algorithm: `r = sum_ponderada % 11`, `dv_calculado = r` if `r` in {0, 1} else `11 - r`; NO alternative algorithms; weights `[3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71]` applied **right-to-left** over NIT digits without DV; NIT normalized: strip non-digits, strip leading zeros, minimum 5 digits).
 
 **Algorithm** (canonical reference for `repo/nit_modulo11.py::validar_nit_modulo11`):
 
-1. Strip non-digits from NIT (`"800.123.456-7"` → `"800123456"`).
+1. Strip non-digits from NIT (`"800.123.456-5"` → `"800123456"`).
 2. Strip leading zeros (`"000123"` → `"123"`).
 3. Compute weighted sum: `sum = Σ(d_i × w_i)` for `i=0..len-1`, where `d_i` is the i-th digit from RIGHT to LEFT, and `w_i` cycles through `[3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71]`.
 4. Compute `mod = sum % 11`.
-5. `dv_calculado = mod` (Variant A canónica per DIAN, NOT `11 - mod` Variant B).
+5. `dv_calculado = mod` if `mod < 2` else `11 - mod` (official DIAN; remainder 10 → DV 1; the DV is always 0..9). Reference pairs: `899999068-1`, `890903938-8`, `860034313-7`, `800197268-4`, `860002964-4`, `890900608-9`, `900123456-8`.
 6. If `dv_calculado != int(dv_input)` → reject with `dv_esperado=dv_calculado`, `dv_recibido=dv_input`.
 
-#### Scenario: T3 NIT válido `800.123.456-7` (DV=7) MUST pass
-
-**Given** a `FacturaItemConDatosPropios` block with `tipo_identificador="NIT"`, `numero_identificacion="800.123.456-7"`, `dv="7"`
-**When** Pydantic v2 validation runs
-**Then** `validar_nit_modulo11("800.123.456-7", "7")` MUST return `True` (Variant A canónica).
-**And** the request MUST proceed (assuming other validations pass).
-
-#### Scenario: T4 NIT inválido `800.123.456-5` (DV=5) MUST fail con dv_esperado=7
+#### Scenario: T3 NIT válido `800.123.456-5` (DV=5) MUST pass
 
 **Given** a `FacturaItemConDatosPropios` block with `tipo_identificador="NIT"`, `numero_identificacion="800.123.456-5"`, `dv="5"`
 **When** Pydantic v2 validation runs
-**Then** validation MUST fail with body `{"error":"nit_invalido","dv_esperado":7,"dv_recibido":"5"}` and HTTP `422 Unprocessable Entity`.
+**Then** `validar_nit_modulo11("800.123.456-5", "5")` MUST return `True` (official DIAN algorithm).
+**And** the request MUST proceed (assuming other validations pass).
+
+#### Scenario: T4 NIT inválido `800.123.456-7` (DV=7) MUST fail con dv_esperado=5
+
+**Given** a `FacturaItemConDatosPropios` block with `tipo_identificador="NIT"`, `numero_identificacion="800.123.456-7"`, `dv="7"`
+**When** Pydantic v2 validation runs
+**Then** validation MUST fail with body `{"error":"nit_invalido","dv_esperado":5,"dv_recibido":"7"}` and HTTP `422 Unprocessable Entity`.
 **And** NO INSERT en `prod.clientes` o `prod.facturas`.
 
 #### Scenario: edge — NIT con ceros a la izquierda normaliza
 
-**Given** `numero_identificacion="000123-1"` (`tipo_identificador="NIT"`)
+**Given** `numero_identificacion="000899999068-1"` (`tipo_identificador="NIT"`)
 **When** validation runs
-**Then** the helper MUST normalize to `"123"`, compute `dv_esperado("123")=1`, and `dv="1"` MUST pass.
+**Then** the helper MUST normalize to `"899999068"`, compute `dv_esperado("899999068")=1`, and `dv="1"` MUST pass.
 
 #### Scenario: edge — NIT con guión y puntos normaliza
 
-**Given** `numero_identificacion="800.123.456-7"`, `dv="7"`
+**Given** `numero_identificacion="800.123.456-5"`, `dv="5"`
 **When** validation runs
-**Then** the helper MUST strip non-digits to `"800123456"`, compute `dv_esperado("800123456")=7`, and `dv="7"` MUST pass.
+**Then** the helper MUST strip non-digits to `"800123456"`, compute `dv_esperado("800123456")=5`, and `dv="5"` MUST pass.
 
 #### Scenario: edge — DV no-dígito MUST reject
 

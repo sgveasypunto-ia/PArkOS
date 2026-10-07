@@ -131,7 +131,7 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
       fireEvent.click(feToggle);
     });
 
-    // Type the canonical reference NIT with WRONG DV ('1' instead of '7').
+    // Type the canonical reference NIT with WRONG DV ('1' instead of '5').
     const nitInput = screen.getByTestId('pago-nit');
     act(() => {
       fireEvent.change(nitInput, { target: { value: '800.123.456' } });

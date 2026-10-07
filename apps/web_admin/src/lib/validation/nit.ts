@@ -21,8 +21,8 @@
  *      de 15 dígitos, los pesos ciclan desde el inicio.
  *   3. Sumar los productos.
  *   4. `mod = suma % 11`. Si `mod < 2`, el DV esperado es `mod` (0 o 1).
- *      Si `mod >= 2`, el DV esperado es `11 - mod`. Si el módulo da
- *      exactamente 10 el NIT es inválido estructuralmente.
+ *      Si `mod >= 2`, el DV esperado es `11 - mod` (resto 10 → DV 1;
+ *      el DV siempre es 0..9).
  *   5. Comparar DV esperado contra DV provisto.
  *
  * Formatos aceptados (todo se normaliza a solo dígitos antes de validar):
@@ -57,8 +57,7 @@ export interface NitValidationFail {
     | 'too_short'
     | 'too_long'
     | 'invalid_dv_format'
-    | 'dv_mismatch'
-    | 'modulo_10_invalid';
+    | 'dv_mismatch';
   /** Mensaje en español listo para `<FormMessage>`. */
   message: string;
 }
@@ -73,9 +72,8 @@ export function normalizeNit(raw: string | null | undefined): string {
 
 /**
  * Calcula el dígito de verificación módulo 11 a partir del cuerpo
- * (sin DV). Devuelve `null` si el módulo es exactamente 10 — eso
- * significa que el NIT es estructuralmente inválido y no se puede
- * emitir un DV que cierre la cadena.
+ * (sin DV) según el algoritmo oficial de la DIAN. Devuelve `null`
+ * solo si el cuerpo está vacío; el DV resultante siempre es 0..9.
  */
 export function calcularDvModulo11(body: string): number | null {
   if (body.length === 0) return null;
@@ -86,7 +84,6 @@ export function calcularDvModulo11(body: string): number | null {
     sum += digit * weight;
   }
   const mod = sum % 11;
-  if (mod === 10) return null;
   if (mod < 2) return mod;
   return 11 - mod;
 }
@@ -154,9 +151,8 @@ export function validarNitModulo11(raw: string | null | undefined): NitValidatio
       digits: body,
       dv: dvNum,
       expectedDv: null,
-      reason: 'modulo_10_invalid',
-      message:
-        'El NIT es estructuralmente inválido (módulo 10). Ajustá el cuerpo e intentá de nuevo.',
+      reason: 'too_short',
+      message: 'El NIT debe tener al menos un cuerpo y un dígito de verificación.',
     };
   }
 
