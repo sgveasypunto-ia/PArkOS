@@ -269,8 +269,8 @@ async def test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos(
 
       ``tiempo_tar_plena = valor_plena / valor = 200 / 100 = 2`` minutes
       ``89.X >= 2`` → flat ``total = valor_plena = 200``
-      ``iva = 200 * 0.19 = 38``
-      ``subtotal = 200 - 38 = 162``
+      the tariff price is IVA-INCLUDED (0094): ``subtotal = ROUND(200 / 1.19, 2)
+      = 168.07`` and ``iva = total - subtotal = 31.93`` (168.07 * 19% = 31.93)
 
     The per-minute ``CEIL(tiempo) * valor`` branch is covered by the
     cases below that park for less than ``tiempo_tar_plena``.
@@ -318,11 +318,15 @@ async def test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos(
         f"total must be valor_plena = 200 (89.X >= tiempo_tar_plena=2 min); "
         f"got {payload['total']!r}"
     )
-    assert Decimal(str(payload["iva"])) == Decimal("38"), (
-        f"iva must be 200 * 0.19 = 38; got {payload['iva']!r}"
+    assert Decimal(str(payload["subtotal"])) == Decimal("168.07"), (
+        f"subtotal must be the base of the IVA-included price (200/1.19); "
+        f"got {payload['subtotal']!r}"
     )
-    assert Decimal(str(payload["subtotal"])) == Decimal("162"), (
-        f"subtotal must be total - iva = 162; got {payload['subtotal']!r}"
+    assert Decimal(str(payload["iva"])) == Decimal("31.93"), (
+        f"iva must be total - subtotal = 31.93; got {payload['iva']!r}"
+    )
+    assert Decimal(str(payload["subtotal"])) + Decimal(str(payload["iva"])) == Decimal(
+        str(payload["total"])
     )
     # ``tiempo_minutos`` carries the raw float (89 + drift); contract
     # asserts the field is present and in the (89, 90) range.
@@ -1343,12 +1347,12 @@ async def test_calcular_cotizacion_db_unidad_minutos_siempre_uno(
         f"valor_plena=200, tiempo ~89min debe aplicar plena 200 "
         f"(techo valor_plena/valor = 2min); got {payload['total']!r}"
     )
-    assert Decimal(str(payload["iva"])) == Decimal("38"), (
-        f"iva = 200 * 0.19 = 38; got {payload['iva']!r}"
-    )
-    assert Decimal(str(payload["subtotal"])) == Decimal("162"), (
-        f"subtotal = total - iva = 200 - 38 = 162; got "
+    assert Decimal(str(payload["subtotal"])) == Decimal("168.07"), (
+        f"subtotal = ROUND(200 / 1.19, 2) = 168.07 (IVA incluido); got "
         f"{payload['subtotal']!r}"
+    )
+    assert Decimal(str(payload["iva"])) == Decimal("31.93"), (
+        f"iva = total - subtotal = 31.93; got {payload['iva']!r}"
     )
     assert 89.0 < float(payload["tiempo_minutos"]) < 90.0, (
         f"tiempo_minutos must reflect actual elapsed (~89min); "
