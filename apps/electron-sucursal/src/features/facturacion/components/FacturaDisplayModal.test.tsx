@@ -223,3 +223,91 @@ describe('<FacturaDisplayModal /> — HU-F8.4', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * Applied-tax detail on every invoice (user requirement: "la factura debe
+ * tener el detalle de impuestos aplicados, no solo el subvalor"): per tax
+ * the name, rate, taxable base and amount, plus subtotal (base) and total.
+ * One shared section for rotacion/salida/servicio/suscripcion/renovacion.
+ */
+describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
+  const SUSCRIPCION: FacturaRead = {
+    ...BASE_FACTURA,
+    uuid_ingreso: null,
+    uuid_salida: null,
+    datos_vehiculo: null,
+    subtotal: 100840.34,
+    total: 120000,
+    items: [
+      {
+        uuid: 'item-s',
+        tipo: 'servicio',
+        concepto: 'subscripcion_mensual',
+        cantidad: 1,
+        valor_unitario: 100840.34,
+        subtotal: 100840.34,
+      },
+    ],
+    impuestos: [
+      {
+        uuid: 'imp-s',
+        uuid_impuesto: 'iva-1',
+        nombre_impuesto: 'IVA',
+        codigo_impuesto: 'IVA',
+        base_calculo: 100840.34,
+        porcentaje_aplicado: 0.19,
+        valor: 19159.66,
+      },
+    ],
+  };
+
+  it('T1: venta de suscripción → subtotal (base), IVA con tasa, base y valor, y total', () => {
+    render(<FacturaDisplayModal factura={SUSCRIPCION} onClose={vi.fn()} />);
+
+    expect(screen.getByTestId('factura-display-subtotal').textContent).toContain('100.840,34');
+    const imp = screen.getByTestId('factura-display-impuesto');
+    expect(imp.textContent).toContain('IVA');
+    expect(imp.textContent).toContain('19.00%');
+    expect(imp.textContent).toContain('19.159,66');
+    expect(screen.getByTestId('factura-display-impuesto-base').textContent).toContain('100.840,34');
+    expect(screen.getByTestId('factura-display-total').textContent).toContain('120.000');
+  });
+
+  it('T2: cada impuesto aplicado tiene su propia fila con base y valor', () => {
+    render(
+      <FacturaDisplayModal
+        factura={{
+          ...SUSCRIPCION,
+          impuestos: [
+            ...SUSCRIPCION.impuestos,
+            {
+              uuid: 'imp-2',
+              uuid_impuesto: 'inc-1',
+              nombre_impuesto: 'INC',
+              codigo_impuesto: 'INC',
+              base_calculo: 100840.34,
+              porcentaje_aplicado: 0.08,
+              valor: 8067.23,
+            },
+          ],
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByTestId('factura-display-impuesto')).toHaveLength(2);
+    expect(screen.getAllByTestId('factura-display-impuesto-base')).toHaveLength(2);
+  });
+
+  it('T3: factura sin impuestos → no hay filas de impuesto pero sí subtotal y total', () => {
+    render(
+      <FacturaDisplayModal
+        factura={{ ...BASE_FACTURA, impuestos: [], subtotal: 100, total: 100 }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryAllByTestId('factura-display-impuesto')).toHaveLength(0);
+    expect(screen.queryAllByTestId('factura-display-impuesto-base')).toHaveLength(0);
+    expect(screen.getByTestId('factura-display-subtotal')).toBeTruthy();
+    expect(screen.getByTestId('factura-display-total')).toBeTruthy();
+  });
+});

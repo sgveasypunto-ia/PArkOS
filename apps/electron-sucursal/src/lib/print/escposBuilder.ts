@@ -57,6 +57,7 @@ import {
   reciboPagoPayloadSchema,
   arqueoPayloadSchema,
   formatCOP,
+  lineasMontos,
   formatFecha,
   formatFechaCorta,
   formatHora,
@@ -251,6 +252,7 @@ function buildEntradaBody(payload: EntradaPayload): Buffer {
 }
 
 function buildSalidaBody(payload: SalidaPayload): Buffer {
+  const montos = lineasMontos(payload);
   // F7.3 (HU-F7.3 / REQ-OPS-158) — 19-field CU-15S layout per
   // `plan.md:1789-1807` + 2 DEC-SUC-26 additions (QR + logo markers).
   //
@@ -284,10 +286,10 @@ function buildSalidaBody(payload: SalidaPayload): Buffer {
     utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),  // 12: Hora salida
     utf8(`Tiempo: ${payload.tiempoTotal}\n`),                 // 13: Tiempo total
     utf8('\n'),
-    utf8(`Subtotal: ${formatCOP(payload.subtotal)}\n`),       // 14: Subtotal
-    utf8(`IVA: ${formatCOP(payload.iva)}\n`),                 // 15: IVA
+    utf8(`${montos.subtotal}\n`),                              // 14: Subtotal (base)
+    ...montos.impuestos.map((l) => utf8(`${l}\n`)),          // 15: Impuestos (nombre, %, base, valor)
     escBoldOn(),
-    utf8(`TOTAL: ${formatCOP(payload.total)}\n`),             // 16: TOTAL
+    utf8(`${montos.total}\n`),                                // 16: TOTAL
     escBoldOff(),
     utf8(`Medio de pago: ${payload.medioPago}\n`),            // 17: Medio de pago
     utf8(`Placa: ${payload.placa}\n`),                        // 18: Placa
@@ -427,6 +429,7 @@ function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
 }
 
 function buildReciboPagoBody(payload: ReciboPagoPayload): Buffer {
+  const montos = lineasMontos(payload);
   // F8.1 (HU-F8.1 — PagoModal) — Recibo de pago. Carries the SAME 19
   // CU-15S conceptual fields PLUS two additions:
   //   - `numero_recibo` — backend F1.10 assigns
@@ -466,10 +469,10 @@ function buildReciboPagoBody(payload: ReciboPagoPayload): Buffer {
     utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),  // 12: Hora salida
     utf8(`Tiempo: ${payload.tiempoTotal}\n`),                 // 13: Tiempo total
     utf8('\n'),
-    utf8(`Subtotal: ${formatCOP(payload.subtotal)}\n`),       // 14: Subtotal
-    utf8(`IVA: ${formatCOP(payload.iva)}\n`),                 // 15: IVA
+    utf8(`${montos.subtotal}\n`),                              // 14: Subtotal (base)
+    ...montos.impuestos.map((l) => utf8(`${l}\n`)),          // 15: Impuestos (nombre, %, base, valor)
     escBoldOn(),
-    utf8(`TOTAL: ${formatCOP(payload.total)}\n`),             // 16: TOTAL
+    utf8(`${montos.total}\n`),                                // 16: TOTAL
     escBoldOff(),
     utf8(`Medio de pago: ${payload.medio_pago}\n`),           // 17: Medio (typed)
     utf8(`Placa: ${payload.placa}\n`),                        // 18: Placa

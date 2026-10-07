@@ -70,6 +70,21 @@ export function formatCOP(value: number): string {
   return copFormatter.format(value);
 }
 
+const copDecimalFormatter = new Intl.NumberFormat('es-CO', {
+  style: 'currency',
+  currency: 'COP',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+/**
+ * COP with cents. Used on the tax detail of a fiscal document so base +
+ * tax == total reconciles to the cent (whole-peso rounding could drift 1 COP).
+ */
+export function formatCOPDecimal(value: number): string {
+  return copDecimalFormatter.format(value);
+}
+
 /**
  * F6.2 — date only (es-CO short): "dd/MM/yyyy" (for the decimo
  * conceptual field — CU-15E field 10, CU-15S field 10, CU-15SM field 9).
@@ -564,6 +579,50 @@ function generateQrSentinel(ingreso: IngresoForPayload): string {
  * con-placa schema propagates automatically). HU-INGRESO-SIN-PLACA
  * does NOT affect this payload — salida still uses the legacy shape.
  */
+/**
+ * One applied tax of the invoice (a `factura_impuestos` row): the printed
+ * invoice shows name, rate, taxable base and amount, not only a bare total.
+ * `porcentaje` is the fraction snapshot (0.19 = 19 %).
+ */
+export const impuestoDetalleSchema = z.object({
+  nombre: z.string().min(1),
+  porcentaje: z.number().nonnegative(),
+  base: z.number().nonnegative(),
+  valor: z.number().nonnegative(),
+});
+export type ImpuestoDetalle = z.infer<typeof impuestoDetalleSchema>;
+
+/**
+ * Money lines of a printed invoice. With the persisted tax rows (`impuestos`)
+ * each tax prints as `<name> <rate>%: <amount>` + `Base: <base>`; without
+ * them (invoices issued before the detail existed) the legacy single
+ * `IVA: <valor>` line is kept. Cents are shown when the detail is present so
+ * base + tax == total reconciles exactly.
+ */
+export function lineasMontos(payload: {
+  subtotal: number;
+  iva: number;
+  total: number;
+  impuestos?: ImpuestoDetalle[] | undefined;
+}): { subtotal: string; impuestos: string[]; total: string } {
+  const detalle = payload.impuestos ?? [];
+  if (detalle.length === 0) {
+    return {
+      subtotal: `Subtotal: ${formatCOP(payload.subtotal)}`,
+      impuestos: [`IVA: ${formatCOP(payload.iva)}`],
+      total: `TOTAL: ${formatCOP(payload.total)}`,
+    };
+  }
+  return {
+    subtotal: `Subtotal: ${formatCOPDecimal(payload.subtotal)}`,
+    impuestos: detalle.flatMap((imp) => [
+      `${imp.nombre} ${(imp.porcentaje * 100).toFixed(2)}%: ${formatCOPDecimal(imp.valor)}`,
+      `  Base: ${formatCOPDecimal(imp.base)}`,
+    ]),
+    total: `TOTAL: ${formatCOPDecimal(payload.total)}`,
+  };
+}
+
 export const salidaPayloadSchema = entradaConPlacaSchema.extend({
   sucursal: sucursalSchema,
   fechaSalida: z.string().datetime({ offset: true }),
@@ -571,6 +630,8 @@ export const salidaPayloadSchema = entradaConPlacaSchema.extend({
   subtotal: z.number().nonnegative(),
   iva: z.number().nonnegative(),
   total: z.number().nonnegative(),
+  // Applied-tax detail (optional: older callers/reprints omit it).
+  impuestos: z.array(impuestoDetalleSchema).optional(),
   medioPago: z.string().min(1),
   resolucionFE: z.string().min(1),
 });

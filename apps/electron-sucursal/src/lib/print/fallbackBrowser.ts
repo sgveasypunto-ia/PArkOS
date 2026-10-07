@@ -50,6 +50,7 @@ import {
   reimpresionPayloadSchema,
   reciboPagoPayloadSchema,
   formatCOP,
+  lineasMontos,
 } from './escposTemplates';
 import {
   EscposInvalidTipoError,
@@ -199,6 +200,7 @@ export function renderEntradaTiqueteHtml(payload: EntradaPayload): string {
 const renderEntradaHtml = renderEntradaTiqueteHtml;
 
 function renderSalidaHtml(payload: SalidaPayload): string {
+  const montos = lineasMontos(payload);
   const poliza = payload.polizaRC
     ? `<p>Poliza RC: ${escapeHtml(payload.polizaRC)}</p>`
     : '';
@@ -215,9 +217,9 @@ function renderSalidaHtml(payload: SalidaPayload): string {
     <p>Entrada: ${fechaCorta(payload.fechaEntrada)}</p>
     <p>Salida:  ${fechaCorta(payload.fechaSalida)}</p>
     <p>Tiempo: ${escapeHtml(payload.tiempoTotal)}</p>
-    <p>Subtotal: ${formatCOP(payload.subtotal)}</p>
-    <p>IVA: ${formatCOP(payload.iva)}</p>
-    <p><strong>TOTAL: ${formatCOP(payload.total)}</strong></p>
+    <p>${escapeHtml(montos.subtotal)}</p>
+    ${montos.impuestos.map((l) => `<p>${escapeHtml(l)}</p>`).join('\n    ')}
+    <p><strong>${escapeHtml(montos.total)}</strong></p>
     <p>Medio de pago: ${escapeHtml(payload.medioPago)}</p>
     <p>Resolucion FE: ${escapeHtml(payload.resolucionFE)}</p>
     ${poliza}
@@ -281,6 +283,7 @@ function renderReimpresionHtml(payload: ReimpresionPayload): string {
 }
 
 function renderReciboPagoHtml(payload: ReciboPagoPayload): string {
+  const montos = lineasMontos(payload);
   // F8.1 (HU-F8.1) — HTML fallback for the recibo de pago. Mirrors
   // `renderSalidaHtml` with two swaps:
   //   - Sello slot uses `*** RECIBO DE PAGO ***` (NOT `*** SALIDA ***`).
@@ -302,9 +305,9 @@ function renderReciboPagoHtml(payload: ReciboPagoPayload): string {
     <p>Entrada: ${fechaCorta(payload.fechaEntrada)}</p>
     <p>Salida:  ${fechaCorta(payload.fechaSalida)}</p>
     <p>Tiempo: ${escapeHtml(payload.tiempoTotal)}</p>
-    <p>Subtotal: ${formatCOP(payload.subtotal)}</p>
-    <p>IVA: ${formatCOP(payload.iva)}</p>
-    <p><strong>TOTAL: ${formatCOP(payload.total)}</strong></p>
+    <p>${escapeHtml(montos.subtotal)}</p>
+    ${montos.impuestos.map((l) => `<p>${escapeHtml(l)}</p>`).join('\n    ')}
+    <p><strong>${escapeHtml(montos.total)}</strong></p>
     <p>Medio de pago: ${escapeHtml(payload.medio_pago)}</p>
     <p>Resolucion FE: ${escapeHtml(payload.resolucionFE)}</p>
     ${poliza}
