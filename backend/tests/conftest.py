@@ -436,6 +436,25 @@ def _terminate_leaked_transactions() -> None:
         )
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Expose each phase's report on the item (``item.rep_call`` / ``rep_setup``...)."""
+    outcome = yield
+    setattr(item, f"rep_{call.when}", outcome.get_result())
+
+
+@pytest.fixture(autouse=True)
+def _release_locks_of_a_failed_test(request: pytest.FixtureRequest) -> Iterator[None]:
+    """A failed test keeps its traceback -- and the DB sessions in its frames --
+    alive, so whatever it left ``idle in transaction`` would hold its locks until
+    pytest exits and the next ``TRUNCATE`` in the same module would block forever.
+    Terminate those sessions as soon as the failure is reported."""
+    yield
+    report = getattr(request.node, "rep_call", None)
+    if report is not None and report.failed:
+        _terminate_leaked_transactions()
+
+
 @pytest.fixture(autouse=True, scope="module")
 def _seed_data_restored_after_module() -> Iterator[None]:
     """Put the migration-seeded rows back after each module (see block above)."""
