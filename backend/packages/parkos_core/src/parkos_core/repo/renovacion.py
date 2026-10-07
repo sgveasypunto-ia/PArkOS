@@ -492,7 +492,7 @@ async def cobrar_renovacion(
     """INSERT facturas + factura_detalle + factura_impuestos + factura_pagos.
 
     Mirrors the cobro sub-chain of ``api/v1/clientes_venta.py`` (full plan
-    value + server-sourced IVA, DEC-FACT-03). Pre-checks run before any
+    value, IVA-inclusive, server-sourced rate, DEC-FACT-03). Pre-checks run before any
     INSERT so a rejected payment leaves nothing behind.
     """
     if medio_pago == "datafono" and not referencia:
@@ -501,15 +501,18 @@ async def cobrar_renovacion(
     if iva_porcentaje is None:
         raise IvaNoConfiguradoError()
 
-    iva_monto = (monto * iva_porcentaje).quantize(Decimal("0.01"))
-    total_con_iva = (monto + iva_monto).quantize(Decimal("0.01"))
+    # The plan price IS the total (IVA included): the tax is a breakdown
+    # inside it, never charged on top.
+    base, iva_monto, total_con_iva = repo_impuestos.desglosar_iva_incluido(
+        monto, iva_porcentaje
+    )
 
     factura = await repo_factura.crear_factura_evento(
         session,
         actor_uuid=actor_uuid,
         new_attrs={
             "uuid_sucursal": uuid_sucursal,
-            "subtotal": monto,
+            "subtotal": base,
             "descuento": Decimal(0),
             "total": total_con_iva,
             "uuid_subscripcion_cliente": uuid_subscripcion_nueva,
@@ -523,12 +526,16 @@ async def cobrar_renovacion(
                 tipo="servicio",
                 concepto=CONCEPTO_FACTURA,
                 cantidad=1,
-                valor_unitario=monto,
+                valor_unitario=base,
             )
         ],
     )
     await repo_factura.crear_factura_impuesto_iva(
-        session, uuid_factura=factura.uuid, base=monto, iva=iva_porcentaje
+        session,
+        uuid_factura=factura.uuid,
+        base=base,
+        iva=iva_porcentaje,
+        iva_monto=iva_monto,
     )
     await repo_factura.crear_factura_pago(
         session,

@@ -524,7 +524,14 @@ async def test_venta_suscripcion_v8_cobro_subchain_calls_helpers_when_cobrar_aho
     assert isinstance(new_attrs["subtotal"], Decimal)
     assert isinstance(new_attrs["total"], Decimal)
     # PT-3: dia=20 still charges the FULL plan (no proration)
-    assert new_attrs["subtotal"] == Decimal("30000.00")
+    # IVA-inclusive price: the plan valor IS the total; the base (subtotal)
+    # and the tax are a breakdown inside it (base + iva == total exactly).
+    assert new_attrs["total"] == Decimal("30000.00")
+    assert new_attrs["subtotal"] == Decimal("25210.08")
+    iva_kwargs = mock_iva.await_args.kwargs
+    assert iva_kwargs["base"] == Decimal("25210.08")
+    assert iva_kwargs["iva_monto"] == Decimal("4789.92")
+    assert iva_kwargs["base"] + iva_kwargs["iva_monto"] == new_attrs["total"]
     # PT-3: monto_prorrateado kept for wire compat, always None
     assert result.monto_prorrateado is None
     assert result.uuid_factura == factura_row.uuid

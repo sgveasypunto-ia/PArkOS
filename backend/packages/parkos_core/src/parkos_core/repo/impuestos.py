@@ -20,7 +20,7 @@ avoid hardcoded tax constants (DEC-FACT-03).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,4 +86,23 @@ async def obtener_iva_vigente(session: AsyncSession) -> Decimal | None:
     return row
 
 
-__all__ = ["obtener_iva_vigente", "validar_iva_configurado"]
+_CENT = Decimal("0.01")
+
+
+def desglosar_iva_incluido(
+    total: Decimal, iva_porcentaje: Decimal
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Break an IVA-INCLUSIVE ``total`` into ``(base, iva, total)``.
+
+    The subscription plan price (``tipo_subscripciones.valor``) is what the
+    customer pays: the tax is a breakdown INSIDE it, never an extra charge.
+    ``base = ROUND_HALF_UP(total / (1 + p), 2)`` and ``iva = total - base``,
+    so ``base + iva == total`` holds EXACTLY (no cent drift between the
+    invoice header, its detail, ``factura_impuestos`` and the payment).
+    """
+    total_q = Decimal(total).quantize(_CENT, rounding=ROUND_HALF_UP)
+    base = (total_q / (Decimal(1) + iva_porcentaje)).quantize(_CENT, rounding=ROUND_HALF_UP)
+    return base, total_q - base, total_q
+
+
+__all__ = ["desglosar_iva_incluido", "obtener_iva_vigente", "validar_iva_configurado"]

@@ -321,8 +321,11 @@ async def venta_suscripcion(
             )
 
         detalle_concepto = "subscripcion_mensual"
-        iva_monto = (monto_a_cobrar * iva_porcentaje).quantize(Decimal("0.01"))
-        total_con_iva = (monto_a_cobrar + iva_monto).quantize(Decimal("0.01"))
+        # The plan price IS the total (IVA included): the tax is a
+        # breakdown inside it, never charged on top.
+        base_gravable, iva_monto, total_con_iva = repo_impuestos.desglosar_iva_incluido(
+            monto_a_cobrar, iva_porcentaje
+        )
 
         # Step 9 (F1.9 equivalent): INSERT prod.facturas.
         new_factura = await repo_factura.crear_factura_evento(
@@ -330,7 +333,7 @@ async def venta_suscripcion(
             actor_uuid=ctx.actor_uuid,
             new_attrs={
                 "uuid_sucursal": ctx.sucursal_uuid,
-                "subtotal": monto_a_cobrar,
+                "subtotal": base_gravable,
                 "descuento": Decimal(0),
                 "total": total_con_iva,
                 # Q1-A: nullable FK to prod.subscripciones_cliente
@@ -351,7 +354,7 @@ async def venta_suscripcion(
                     tipo="servicio",
                     concepto=detalle_concepto,
                     cantidad=1,
-                    valor_unitario=monto_a_cobrar,
+                    valor_unitario=base_gravable,
                 ),
             ],
         )
@@ -360,8 +363,9 @@ async def venta_suscripcion(
         await repo_factura.crear_factura_impuesto_iva(
             session,
             uuid_factura=uuid_factura,
-            base=monto_a_cobrar,
+            base=base_gravable,
             iva=iva_porcentaje,
+            iva_monto=iva_monto,
         )
 
         # Step 10c: INSERT prod.factura_pagos (initial pago).
