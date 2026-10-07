@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import uuid as uuid_lib
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -130,6 +131,7 @@ def make_router(
     write_enabled: bool = True,
     transition_states: list[str] | None = None,
     tenant_scoped: bool = True,
+    after_update: Callable[..., Awaitable[None]] | None = None,
 ) -> APIRouter:
     """Build the C+Q+U router for ``model_cls``.
 
@@ -165,6 +167,9 @@ def make_router(
             every other branch's override), and editing a row outside that
             branch raised ``RowNotFoundError`` -> 500.
     """
+    # ``after_update(session, old_uuid=..., new_row=..., actor_uuid=...)`` runs
+    # inside the SAME transaction as the close+insert of a PUT (before the
+    # commit), for resources whose dependants reference the row by version uuid.
     router = APIRouter(prefix=f"/{resource}", tags=[resource])
 
     issuers = [s.strip() for s in issuer_required.split(",")]
@@ -363,6 +368,13 @@ def make_router(
                         actor_uuid=ctx.actor_uuid,
                         log_tx=True,
                     )
+                    if after_update is not None:
+                        await after_update(
+                            session,
+                            old_uuid=uuid,
+                            new_row=new_row,
+                            actor_uuid=ctx.actor_uuid,
+                        )
                     await session.commit()
                     await session.refresh(new_row)
                 return read_schema.model_validate(new_row)
