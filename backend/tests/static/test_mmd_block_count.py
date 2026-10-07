@@ -18,9 +18,13 @@ _ER_PATH = _REPO_ROOT / "modelo_datos_er.mmd"
 _A_BLOCK_RE = re.compile(r"%%\s*\[A\]")
 _ANY_CLASS_BLOCK_RE = re.compile(r"%%\s*\[([VLA][\w-]*)\]")
 
-# ADR-002 canon: 26 [V] + 3 [L-E] + 6 [L-W] + 2 [L-S] + 14 [A] = 51 entities.
-_EXPECTED_A_BLOCK_COUNT = 14
-_EXPECTED_TOTAL_ENTITY_COUNT = 51
+# ADR-002 canon was 26 [V] + 3 [L-E] + 6 [L-W] + 2 [L-S] + 14 [A] = 51 entities.
+# Commit 2e7e0d65 (reconstitution of migrations 0076-0081) legitimately added
+# ``configuracion_caja`` [V] and the [A] tables ``sync_catalog`` and
+# ``sync_identity_alias``: the ER file is the source of truth, so the
+# canon is now 27 [V] + 3 [L-E] + 6 [L-W] + 2 [L-S] + 16 [A] = 54 entities.
+_EXPECTED_A_BLOCK_COUNT = 16
+_EXPECTED_TOTAL_ENTITY_COUNT = 54
 
 
 def _read_er_source() -> str:
@@ -28,22 +32,22 @@ def _read_er_source() -> str:
     return _ER_PATH.read_text(encoding="utf-8")
 
 
-def test_mmd_a_block_count_is_14() -> None:
-    """``modelo_datos_er.mmd`` carries exactly 14 ``%% [A]`` blocks (ADR-002)."""
+def test_mmd_a_block_count_is_16() -> None:
+    """``modelo_datos_er.mmd`` carries exactly 16 ``%% [A]`` blocks (ADR-002 + 0076-0081)."""
     source = _read_er_source()
     count = len(_A_BLOCK_RE.findall(source))
     assert count == _EXPECTED_A_BLOCK_COUNT, (
         f"expected {_EXPECTED_A_BLOCK_COUNT} '%% [A]' blocks in modelo_datos_er.mmd "
-        f"(ADR-002: 12 existing + sync_queue_lw_buffer + alert_types), got {count}"
+        f"(ADR-002: 12 existing + sync_queue_lw_buffer + alert_types, + sync_catalog + sync_identity_alias), got {count}"
     )
 
 
-def test_mmd_total_entity_count_is_51() -> None:
-    """``modelo_datos_er.mmd`` carries exactly 51 class-tagged ER entities."""
+def test_mmd_total_entity_count_is_54() -> None:
+    """``modelo_datos_er.mmd`` carries exactly 54 class-tagged ER entities."""
     source = _read_er_source()
     count = len(_ANY_CLASS_BLOCK_RE.findall(source))
     assert count == _EXPECTED_TOTAL_ENTITY_COUNT, (
-        f"expected {_EXPECTED_TOTAL_ENTITY_COUNT} total ER entities (ADR-002), got {count}"
+        f"expected {_EXPECTED_TOTAL_ENTITY_COUNT} total ER entities (ADR-002 + 0076-0081), got {count}"
     )
 
 
