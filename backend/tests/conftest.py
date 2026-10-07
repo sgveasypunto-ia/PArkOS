@@ -348,10 +348,10 @@ def alembic_upgrade(pg_dsn: str, _wait_for_pg: None) -> None:
 #
 # Right after ``alembic upgrade head`` we copy every non-empty ``prod`` table
 # into the ``seed_snapshot`` schema; after each test MODULE the rows that went
-# missing are put back (``ON CONFLICT DO NOTHING``, triggers and FK checks off
-# via ``session_replication_role = replica`` so neither the append-only guards
-# nor the sync outbox fire). Rows a test adds are left alone: tests must not
-# depend on them, but the seeded catalogs are always there.
+# those tables are reset to exactly that content (DELETE + INSERT with triggers
+# and FK checks off via ``session_replication_role = replica`` so neither the
+# append-only guards nor the sync outbox fire). Tables a migration does not seed
+# are left alone.
 
 _SEED_STATE: dict[str, object] = {"dsn": None, "tables": []}
 
@@ -381,6 +381,16 @@ def _snapshot_seed_tables(dsn: str) -> None:
 
 
 def _restore_seed_tables() -> None:
+    """Return every snapshotted table to EXACTLY its post-migration content.
+
+    ``DELETE`` + ``INSERT ... SELECT`` (not "insert what is missing"): a module
+    that re-seeds its own copy of a seeded row (``impuestos.IVA`` with a new
+    uuid, say) would otherwise end up with the original AND its copy, i.e. two
+    open IVA rows. Triggers and FK checks are off (``session_replication_role =
+    replica``) so neither the append-only guards nor the sync outbox fire. A table
+    that cannot be locked within a few seconds (a leaked transaction of a failed
+    test still holds it) is skipped with a warning instead of hanging the session.
+    """
     dsn = _SEED_STATE["dsn"]
     tables = _SEED_STATE["tables"]
     if not dsn or not tables:
@@ -389,11 +399,18 @@ def _restore_seed_tables() -> None:
 
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute("SET session_replication_role = replica")
+        cur.execute("SET lock_timeout = '5s'")
         for table in tables:
-            cur.execute(
-                f'INSERT INTO prod."{table}" SELECT * FROM seed_snapshot."{table}" '
-                "ON CONFLICT DO NOTHING"
-            )
+            try:
+                with conn.transaction():
+                    cur.execute(f'DELETE FROM prod."{table}"')
+                    cur.execute(
+                        f'INSERT INTO prod."{table}" SELECT * FROM seed_snapshot."{table}"'
+                    )
+            except psycopg.errors.LockNotAvailable:
+                import warnings
+
+                warnings.warn(f"seed restore skipped for prod.{table}: lock not available")
 
 
 @pytest.fixture(autouse=True, scope="module")

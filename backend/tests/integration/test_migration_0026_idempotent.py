@@ -239,18 +239,28 @@ async def test_0026_re_aplica_sin_error(pg_engine, pg_dsn) -> None:
         "0026_seed_impuestos_iva_and_one_exit_per_ingreso"
     )
 
+    # Both applies run inside ONE transaction that is rolled back at the end:
+    # the seed in Op 2 uses ``vigente_desde = NOW()`` as part of its conflict
+    # target, so a committed re-apply would leave a SECOND open ``IVA`` row in
+    # the shared database and break every later test that expects exactly one
+    # (``crear_factura_impuesto_iva``). What this test proves -- the statements
+    # re-run without raising -- does not need the second apply to persist.
     engine = create_engine(pg_dsn.replace("postgresql://", "postgresql+psycopg://", 1))
     try:
-        for attempt in ("first", "second"):
+        with engine.connect() as conn:
+            outer = conn.begin()
             try:
-                with engine.begin() as conn:
-                    with Operations.context(MigrationContext.configure(conn)):
-                        migration_mod.upgrade()
-            except Exception as exc:
-                pytest.fail(
-                    f"0026 upgrade must be idempotent (re-apply = no-op); "
-                    f"{attempt} apply raised: {exc!r}"
-                )
+                with Operations.context(MigrationContext.configure(conn)):
+                    for attempt in ("first", "second"):
+                        try:
+                            migration_mod.upgrade()
+                        except Exception as exc:
+                            pytest.fail(
+                                f"0026 upgrade must be idempotent (re-apply = no-op); "
+                                f"{attempt} apply raised: {exc!r}"
+                            )
+            finally:
+                outer.rollback()
     finally:
         engine.dispose()
 
