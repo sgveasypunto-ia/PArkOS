@@ -905,6 +905,26 @@ async def anular_salida_no_pagada_endpoint(
         ) from None
 
     await session.commit()
+
+    # D1: the annulment puts the plate back inside, so the occupancy MV
+    # (cupo shown by the dashboard) must be refreshed exactly like after
+    # ingreso / salida; otherwise the panel kept showing the pre-annulment
+    # count until the worker caught up. The annulment is already committed:
+    # a failed refresh is logged and never alters the response (KD-5).
+    try:
+        await session.execute(text("SELECT prod.refresh_mv_ocupacion_diaria()"))
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        await session.rollback()
+        logger.warning(
+            "anular_salida_post_commit_refresh_failed",
+            extra={
+                "event": "anular_salida_post_commit_refresh_failed",
+                "uuid_salida": str(uuid_salida),
+                "exception_class": type(exc).__name__,
+            },
+        )
+
     await session.refresh(new_row)
     apply_no_store_header(response)
     return AnulacionesRead.model_validate(new_row)
