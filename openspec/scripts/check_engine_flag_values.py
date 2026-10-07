@@ -34,6 +34,7 @@ Exit codes:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -119,7 +120,9 @@ def _check_withdrawn_literals(repo_root: Path) -> list[str]:
             continue
         for lineno, line in enumerate(source.splitlines(), start=1):
             for literal in _WITHDRAWN_LITERALS:
-                if literal in line:
+                # Whole-identifier match: ``catalog_reads`` (a helper name in
+                # ``catalogos.py``) is not the withdrawn ``catalog_read`` value.
+                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(literal)}(?![A-Za-z0-9_])", line):
                     violations.append(f"{rel}:{lineno}: contains withdrawn literal {literal!r}")
     return violations
 

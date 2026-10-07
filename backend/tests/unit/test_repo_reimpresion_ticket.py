@@ -86,7 +86,6 @@ async def test_buscar_ingreso_por_uuid_returns_orm_row_when_found(
             uuid=ingreso_uuid,
             uuid_sucursal=seeded_sucursal_uuid,
             placa="ABC123",
-            uuid_usuario=None,
             created_at=_now(),
             created_by=None,
         )
@@ -120,6 +119,7 @@ async def test_buscar_reimpresion_por_uuid_returns_orm_row_when_found(
     seeded_sucursal_uuid: uuid_lib.UUID,
 ) -> None:
     """V1 (anular): ``prod.reimpresion_ticket`` row found by uuid."""
+    from parkos_core.models.L_E.ingreso import Ingreso
     from parkos_core.models.L_W.reimpresion_ticket import ReimpresionTicket
     from parkos_core.repo.reimpresion_ticket import buscar_reimpresion_por_uuid
 
@@ -127,6 +127,16 @@ async def test_buscar_reimpresion_por_uuid_returns_orm_row_when_found(
     ingreso_uuid = uuid_lib.uuid4()
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        session.add(
+            Ingreso(
+                uuid=ingreso_uuid,
+                uuid_sucursal=seeded_sucursal_uuid,
+                placa="ABC123",
+                created_at=_now(),
+                created_by=None,
+            )
+        )
+        await session.flush()  # FK fk_reimpresion_ticket_uuid_ingreso
         row = ReimpresionTicket(
             uuid=reim_uuid,
             uuid_sucursal=seeded_sucursal_uuid,
@@ -189,6 +199,7 @@ async def test_buscar_reimpresion_activa_por_ingreso_returns_dict_when_found(
     seeded_sucursal_uuid: uuid_lib.UUID,
 ) -> None:
     """V2: 2 rows for same uuid_ingreso → returns the LATEST by (timestamp, lex uuid)."""
+    from parkos_core.models.L_E.ingreso import Ingreso
     from parkos_core.models.L_W.reimpresion_ticket import ReimpresionTicket
     from parkos_core.repo.reimpresion_ticket import (
         buscar_reimpresion_activa_por_ingreso,
@@ -199,6 +210,16 @@ async def test_buscar_reimpresion_activa_por_ingreso_returns_dict_when_found(
     later_uuid = uuid_lib.uuid4()
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        session.add(
+            Ingreso(
+                uuid=ingreso_uuid,
+                uuid_sucursal=seeded_sucursal_uuid,
+                placa="ABC123",
+                created_at=_now(),
+                created_by=None,
+            )
+        )
+        await session.flush()  # FK fk_reimpresion_ticket_uuid_ingreso
         for reim_uuid, ts_offset in (
             (earlier_uuid, -3600),
             (later_uuid, 0),
@@ -212,7 +233,7 @@ async def test_buscar_reimpresion_activa_por_ingreso_returns_dict_when_found(
                 motivo="Cliente solicita reimpresion",
                 uuid_reimpresion_padre=None,
                 timestamp_evento=ts,
-                estado="activo",
+                estado="autorizada"  # workflow rows are written as autorizada,
             )
             session.add(row)
         await session.commit()
@@ -331,7 +352,20 @@ async def test_buscar_costo_servicio_vigente_por_concepto_returns_none_when_no_v
         buscar_costo_servicio_vigente_por_concepto,
     )
 
+    from sqlalchemy import text
+
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    # Migration 0029 seeds a vigente ``reimpresion`` cost; close it so the
+    # "no vigente row" scenario is real (bi-temporal close, no DELETE).
+    async with Session() as session:
+        await session.execute(
+            text(
+                "UPDATE prod.costos_servicios SET vigente_hasta = now(), "
+                "estado = 'inactivo' WHERE concepto = 'reimpresion' "
+                "AND vigente_hasta IS NULL"
+            )
+        )
+        await session.commit()
     async with Session() as session:
         result = await buscar_costo_servicio_vigente_por_concepto(
             session, concepto="reimpresion"

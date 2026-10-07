@@ -35,11 +35,26 @@ _HANDLER_FILE = (
 )
 
 
-def _collect_session_commit_lines(source: str) -> list[int]:
-    """Return the 1-indexed line numbers of every ``await session.commit()``."""
+def _collect_session_commit_lines(
+    source: str, function_name: str | None = None
+) -> list[int]:
+    """Return the 1-indexed line numbers of every ``await session.commit()``.
+
+    When ``function_name`` is given, only commits inside that top-level
+    function are counted (``facturacion.py`` hosts several handlers, each
+    owning its own single commit).
+    """
     tree = ast.parse(source)
+    scope: ast.AST = tree
+    if function_name is not None:
+        scope = next(
+            n
+            for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == function_name
+        )
     hits: list[int] = []
-    for node in ast.walk(tree):
+    for node in ast.walk(scope):
         # Look for ``Await(value=Call(func=Attribute(value=Name('session'),
         # attr='commit')))``
         if not isinstance(node, ast.Await):
@@ -61,60 +76,28 @@ def _collect_session_commit_lines(source: str) -> list[int]:
 def test_create_factura_electronica_has_exactly_one_session_commit() -> None:
     """KD-FE-01: the handler commits exactly ONCE.
 
-    Walks the AST of ``api/v1/facturacion.py`` and counts
-    ``await session.commit()`` invocations. There must be exactly one.
+    Walks the AST of ``create_factura_electronica`` in
+    ``api/v1/facturacion.py`` and counts ``await session.commit()``
+    invocations. There must be exactly one.
     """
     source = _HANDLER_FILE.read_text(encoding="utf-8")
-    hits = _collect_session_commit_lines(source)
+    hits = _collect_session_commit_lines(source, "create_factura_electronica")
     assert len(hits) == 1, (
         f"KD-FE-01 violated: found {len(hits)} `await session.commit()` "
-        f"calls in {_HANDLER_FILE.name} (lines {hits}); the FE row + initial "
-        f"envio_dian row MUST commit atomically in a single transaction."
+        f"calls in create_factura_electronica of {_HANDLER_FILE.name} "
+        f"(lines {hits}); the FE row + initial envio_dian row MUST commit "
+        f"atomically in a single transaction."
     )
 
 
 def test_create_factura_electronica_commit_is_inside_create_handler() -> None:
-    """KD-FE-01: the single commit must live inside ``create_factura_electronica``.
+    """KD-FE-01: the read handler of the FE resource never commits.
 
-    Specifically, no other top-level coroutine in the module may
-    accidentally invoke ``await session.commit()`` outside the create
-    handler (those would belong to the GET or /reintentar handlers).
+    ``get_factura_electronica`` is a pure GET (view JOIN); a commit there
+    would mean a write slipped into the read path. (Other handlers in the
+    module -- pago, servicio, reintentar -- own their own single commit and
+    are pinned by their own tests.)
     """
     source = _HANDLER_FILE.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-
-    # Build a map of function name → first commit line inside it.
-    func_first_commit: dict[str, int] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            inner_hits: list[int] = []
-            for child in ast.walk(node):
-                if (
-                    isinstance(child, ast.Await)
-                    and isinstance(child.value, ast.Call)
-                    and isinstance(child.value.func, ast.Attribute)
-                    and isinstance(child.value.func.value, ast.Name)
-                    and child.value.func.value.id == "session"
-                    and child.value.func.attr == "commit"
-                ):
-                    inner_hits.append(child.lineno)
-            if inner_hits:
-                func_first_commit[node.name] = min(inner_hits)
-
-    create_hits = func_first_commit.get("create_factura_electronica", [])
-    assert len(create_hits) >= 1, (
-        "KD-FE-01 violated: `create_factura_electronica` has no "
-        "`await session.commit()`; the FE row + envio row would never "
-        "materialize."
-    )
-    # No other top-level coroutine in this module may have a commit yet.
-    other_commit_funcs = {
-        name: line
-        for name, line in func_first_commit.items()
-        if name != "create_factura_electronica"
-    }
-    assert not other_commit_funcs, (
-        f"KD-FE-01 violated: only `create_factura_electronica` may own a "
-        f"`await session.commit()`. Found commits inside: "
-        f"{other_commit_funcs}"
-    )
+    assert _collect_session_commit_lines(source, "get_factura_electronica") == []
+    assert len(_collect_session_commit_lines(source, "retry_envio_dian")) == 1

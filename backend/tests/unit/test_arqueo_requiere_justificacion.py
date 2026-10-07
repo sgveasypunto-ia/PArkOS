@@ -60,7 +60,7 @@ async def test_sin_diferencia_requiere_justificacion_false() -> None:
     session = MagicMock()
 
     m_validar = AsyncMock(return_value=MagicMock())
-    m_calcular_esperado = AsyncMock(return_value=(Decimal("150000"), Decimal("30000")))
+    m_calcular_esperado = AsyncMock(return_value=Decimal("150000"))
 
     with (
         patch.object(handler_mod.repo_arqueo, "validar_sesion_abierta_para_arqueo", m_validar),
@@ -98,7 +98,7 @@ async def test_con_diferencia_requiere_justificacion_true() -> None:
 
     m_validar = AsyncMock(return_value=MagicMock())
     # esperado real = inicial (100000) + transacciones del turno (50000).
-    m_calcular_esperado = AsyncMock(return_value=(Decimal("150000"), Decimal("0")))
+    m_calcular_esperado = AsyncMock(return_value=Decimal("150000"))
 
     with (
         patch.object(handler_mod.repo_arqueo, "validar_sesion_abierta_para_arqueo", m_validar),

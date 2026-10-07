@@ -264,17 +264,16 @@ async def test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos(
     tarifa_uuid, vigente_hasta) and the exact decimal values from
     CU-02 AC7.
 
-    Math sanity (``unidad_minutos=60`` for ``hora``):
+    Math sanity (CU-02 spec: the tariff is ALWAYS applied per minute,
+    migration 0047/0048; ``tipo_tarifa`` no longer scales the unit):
 
-      ``tiempo_tar_plena = (200/100) * 60 = 120`` minutes
-      ``CEIL(89 + drift) = 90`` → ``total = 100 * 90 = 9000``
-      ``iva = 9000 * 0.19 = 1710``
-      ``subtotal = 9000 - 1710 = 7290``
+      ``tiempo_tar_plena = valor_plena / valor = 200 / 100 = 2`` minutes
+      ``89.X >= 2`` → flat ``total = valor_plena = 200``
+      ``iva = 200 * 0.19 = 38``
+      ``subtotal = 200 - 38 = 162``
 
-    The seed uses 89 minutes (not 90) because the PL/pgSQL ``NOW()``
-    evaluated at function-execution time is later than the
-    ``fecha_ingreso`` written at test-setup time; CEIL on the resulting
-    float ``89.X`` lands exactly on 90 — the natural test boundary.
+    The per-minute ``CEIL(tiempo) * valor`` branch is covered by the
+    cases below that park for less than ``tiempo_tar_plena``.
     """
     await _truncate_tables(pg_dsn)
 
@@ -315,15 +314,15 @@ async def test_calcular_cotizacion_db_devuelve_jsonb_con_7_campos(
         f"got {sorted(payload.keys())}"
     )
     assert payload["cobrar"] is True
-    assert Decimal(str(payload["total"])) == Decimal("9000"), (
-        f"total must be 100 * CEIL(89.X) = 9000 (89.X < tiempo_tar_plena=120); "
+    assert Decimal(str(payload["total"])) == Decimal("200"), (
+        f"total must be valor_plena = 200 (89.X >= tiempo_tar_plena=2 min); "
         f"got {payload['total']!r}"
     )
-    assert Decimal(str(payload["iva"])) == Decimal("1710"), (
-        f"iva must be 9000 * 0.19 = 1710; got {payload['iva']!r}"
+    assert Decimal(str(payload["iva"])) == Decimal("38"), (
+        f"iva must be 200 * 0.19 = 38; got {payload['iva']!r}"
     )
-    assert Decimal(str(payload["subtotal"])) == Decimal("7290"), (
-        f"subtotal must be total - iva = 7290; got {payload['subtotal']!r}"
+    assert Decimal(str(payload["subtotal"])) == Decimal("162"), (
+        f"subtotal must be total - iva = 162; got {payload['subtotal']!r}"
     )
     # ``tiempo_minutos`` carries the raw float (89 + drift); contract
     # asserts the field is present and in the (89, 90) range.
@@ -1187,6 +1186,10 @@ async def test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at(
         ingreso = await session.get(Ingreso, ingreso_uuid)
         assert ingreso is not None
         ingreso.fecha_ingreso = None  # simulate the historical bug
+        # The seeder stamps ``created_at=now`` (only ``fecha_ingreso`` is
+        # backdated), so backdate ``created_at`` too: the COALESCE fallback
+        # must then yield the same ~89 minutes the happy path computes.
+        ingreso.created_at = ingreso.created_at - timedelta(minutes=89)
         await session.commit()
 
     async with Session() as session:
@@ -1235,8 +1238,8 @@ async def test_calcular_cotizacion_db_fecha_ingreso_null_coalesce_a_created_at(
         f"Pydantic ValidationError 500 — COALESCE fallback to created_at "
         f"is broken); got {payload['tiempo_minutos']!r}"
     )
-    # tiempo_minutos reflects ``NOW() - created_at`` (which was set ~89
-    # minutes ago by the happy-path seeder). Upper bound is loose: the
+    # tiempo_minutos reflects ``NOW() - created_at`` (backdated ~89
+    # minutes above). Upper bound is loose: the
     # seeder + commit overhead pushes it past 89; the COALESCE only
     # protects against NULL, not against numeric magnitude drift.
     assert float(payload["tiempo_minutos"]) > 89.0, (

@@ -34,6 +34,11 @@ ADMIN_V1_DIR = (
 
 LISTENER_MODULE = "parkos_core.db.tenancy"
 HELPER_NAME = "apply_admin_scope"
+# Since ``fix(auth): resolve admin branch scope fresh from DB`` the admin
+# views resolve the allowed branches per request from ``usuarios_sucursal``
+# (never from a possibly stale JWT claim) through this tenancy helper; it is
+# an equally valid way of going through the scope filter.
+FRESH_SCOPE_HELPER_NAME = "extract_sucursales_permitidas_fresh"
 
 
 def _admin_route_files() -> list[Path]:
@@ -135,10 +140,12 @@ def test_admin_views_calls_apply_admin_scope() -> None:
         pytest.skip(f"{target} not present (PR10 not yet shipped)")
 
     tree = ast.parse(target.read_text(encoding="utf-8"))
-    assert _calls_helper(tree, HELPER_NAME), (
+    assert _calls_helper(tree, HELPER_NAME) or _calls_helper(
+        tree, FRESH_SCOPE_HELPER_NAME
+    ), (
         f"{target.name} imports parkos_core.db.tenancy but never calls "
-        f"{HELPER_NAME}(...). At least one query MUST go through the "
-        "scope filter (T-PR10-04)."
+        f"{HELPER_NAME}(...) or {FRESH_SCOPE_HELPER_NAME}(...). At least one "
+        "query MUST go through the scope filter (T-PR10-04)."
     )
 
 

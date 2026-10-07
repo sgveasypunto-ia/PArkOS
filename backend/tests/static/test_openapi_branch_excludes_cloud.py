@@ -30,12 +30,24 @@ from __future__ import annotations
 
 import pytest
 
+# The branch EMITS the electronic invoice (AGENTS.md: ``factura_electronica`` is
+# emitted at the branch and replicated ``branch_to_cloud``), so the branch-side
+# emission endpoints under ``/facturacion`` are legitimate. Only the cloud-only
+# ``dian.cloud_router`` mount (``/api/v1/factura-electronica``) is forbidden.
+BRANCH_EMISSION_PATH_PREFIX = "/api/v1/facturacion/factura-electronica"
+
 CLOUD_ONLY_PATH_FRAGMENTS = (
     "factura-electronica",
     "envio-dian",
     "validacion-evento",
     "revocacion-factura",
 )
+
+
+def _is_cloud_only(path: str, fragment: str) -> bool:
+    if path.startswith(BRANCH_EMISSION_PATH_PREFIX):
+        return False
+    return fragment in path
 
 
 def _branch_openapi_paths() -> list[str]:
@@ -51,7 +63,7 @@ def test_branch_openapi_excludes_cloud_routes() -> None:
     paths = _branch_openapi_paths()
     offenders = [
         p for p in paths
-        if any(fragment in p for fragment in CLOUD_ONLY_PATH_FRAGMENTS)
+        if any(_is_cloud_only(p, fragment) for fragment in CLOUD_ONLY_PATH_FRAGMENTS)
     ]
     assert not offenders, (
         "Branch OpenAPI exposes cloud-only paths:\n"
@@ -74,7 +86,7 @@ def test_branch_openapi_has_no_cloud_only_path_fragments() -> None:
     cloud_hits: list[str] = []
     for p in paths:
         for fragment in CLOUD_ONLY_PATH_FRAGMENTS:
-            if fragment in p:
+            if _is_cloud_only(p, fragment):
                 cloud_hits.append(f"{p} (matched: {fragment})")
                 break
     assert not cloud_hits, (
