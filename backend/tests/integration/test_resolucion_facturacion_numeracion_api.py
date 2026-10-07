@@ -19,7 +19,11 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import pytest
-from test_hu_f15_3_resoluciones_dian_api import _actor_headers
+from test_hu_f15_3_resoluciones_dian_api import (
+    _actor_headers,
+    _assign_admin_to_sucursal,
+    _grant_permission,
+)
 
 _ADMIN = pytest.mark.parametrize("app", ["admin"], indirect=True)
 _URL = "/api/v1/empresa/resolucion-facturacion"
@@ -229,3 +233,118 @@ async def test_put_inexistente_devuelve_404(
 
     resp = await client.put(f"{_URL}/{uuid_lib.uuid4()}", json=_body(branch), headers=headers)
     assert resp.status_code == 404, resp.text
+
+
+async def _headers_solo_a(
+    pg_engine, mint_admin_jwt, *, a: uuid_lib.UUID, contexto: uuid_lib.UUID | None
+) -> dict:
+    """Admin asignado ÚNICAMENTE a la sucursal ``a``; ``contexto`` = valor de
+    X-Sucursal-Context (None = modo global, sin cabecera)."""
+    actor = uuid_lib.uuid4()
+    await _assign_admin_to_sucursal(pg_engine, actor_uuid=actor, uuid_sucursal=a)
+    await _grant_permission(pg_engine, actor_uuid=actor, perm_code="admin_resolucion_facturacion")
+    headers = {
+        "Authorization": f"Bearer {mint_admin_jwt(actor_uuid=actor, sucursales_permitidas=[a])}"
+    }
+    if contexto is not None:
+        headers["X-Sucursal-Context"] = str(contexto)
+    return headers
+
+
+@_ADMIN
+@pytest.mark.parametrize("con_cabecera", [True, False])
+async def test_post_para_sucursal_ajena_se_rechaza(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, con_cabecera: bool
+) -> None:
+    a, b = uuid_lib.uuid4(), uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, a)
+    await _seed_sucursal(pg_engine, b)
+    headers = await _headers_solo_a(
+        pg_engine, mint_admin_jwt, a=a, contexto=a if con_cabecera else None
+    )
+
+    resp = await client.post(
+        _URL, json=_body(b, prefijo=_prefijo(), rango_desde=1, rango_hasta=10), headers=headers
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["error"] == "unauthorized_sucursal_context"
+
+
+@_ADMIN
+async def test_post_con_contexto_distinto_del_body_se_rechaza(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client
+) -> None:
+    """Admin con acceso a A y B, contexto = A, body = B: no coincide."""
+    a, b = uuid_lib.uuid4(), uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, a)
+    await _seed_sucursal(pg_engine, b)
+    actor = uuid_lib.uuid4()
+    await _assign_admin_to_sucursal(pg_engine, actor_uuid=actor, uuid_sucursal=a)
+    from parkos_core.models.V.usuarios_sucursal import UsuariosSucursal
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    async with async_sessionmaker(pg_engine, expire_on_commit=False)() as session:
+        session.add(UsuariosSucursal(uuid_sucursal=b, uuid_usuario=actor))
+        await session.commit()
+    await _grant_permission(pg_engine, actor_uuid=actor, perm_code="admin_resolucion_facturacion")
+    token = mint_admin_jwt(actor_uuid=actor, sucursales_permitidas=[a, b])
+    headers = {"Authorization": f"Bearer {token}", "X-Sucursal-Context": str(a)}
+
+    resp = await client.post(
+        _URL, json=_body(b, prefijo=_prefijo(), rango_desde=1, rango_hasta=10), headers=headers
+    )
+    assert resp.status_code == 403, resp.text
+
+
+@_ADMIN
+@pytest.mark.parametrize("con_cabecera", [True, False])
+async def test_put_sobre_resolucion_ajena_responde_404_y_no_la_modifica(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, con_cabecera: bool
+) -> None:
+    a, b = uuid_lib.uuid4(), uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, a)
+    await _seed_sucursal(pg_engine, b)
+    headers_b = await _actor_headers(pg_engine, mint_admin_jwt, branch_uuid=b)
+    base_b = _body(b, prefijo=_prefijo(), rango_desde=1, rango_hasta=100)
+    de_b = (await client.post(_URL, json=base_b, headers=headers_b)).json()
+
+    headers_a = await _headers_solo_a(
+        pg_engine, mint_admin_jwt, a=a, contexto=a if con_cabecera else None
+    )
+    for uuid_sucursal in (b, a):  # body con la sucursal ajena y con la propia
+        resp = await client.put(
+            f"{_URL}/{de_b['uuid']}",
+            json={**base_b, "uuid_sucursal": str(uuid_sucursal), "rango_hasta": 999},
+            headers=headers_a,
+        )
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["detail"]["error"] == "resolucion_no_encontrada"
+    inexistente = await client.put(f"{_URL}/{uuid_lib.uuid4()}", json=base_b, headers=headers_a)
+    assert inexistente.json() == resp.json() | {
+        "detail": {**resp.json()["detail"], "uuid": inexistente.json()["detail"]["uuid"]}
+    }
+
+    lista = await client.get(_URL, params={"limit": 200}, headers=headers_b)
+    fila = next(i for i in lista.json()["items"] if i["uuid"] == de_b["uuid"])
+    assert fila["rango_hasta"] == 100
+
+
+@_ADMIN
+@pytest.mark.parametrize("con_cabecera", [True, False])
+async def test_admin_de_a_crea_y_edita_su_propia_resolucion(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, con_cabecera: bool
+) -> None:
+    a = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, a)
+    headers = await _headers_solo_a(
+        pg_engine, mint_admin_jwt, a=a, contexto=a if con_cabecera else None
+    )
+    base = _body(a, prefijo=_prefijo(), rango_desde=1, rango_hasta=100)
+
+    creada = await client.post(_URL, json=base, headers=headers)
+    assert creada.status_code == 201, creada.text
+    editada = await client.put(
+        f"{_URL}/{creada.json()['uuid']}", json={**base, "rango_hasta": 200}, headers=headers
+    )
+    assert editada.status_code == 200, editada.text
+    assert editada.json()["rango_hasta"] == 200

@@ -56,7 +56,13 @@ def _to_naive_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value
     return value.astimezone(UTC).replace(tzinfo=None)
-from ...auth.tenancy import TenantContext, get_tenant_ctx, requires_sucursal
+from ...auth.tenancy import (
+    BranchScope,
+    TenantContext,
+    get_tenant_ctx,
+    require_branch_scope,
+    requires_sucursal,
+)
 from ...db.tenancy import (
     extract_sucursales_permitidas,
     extract_sucursales_permitidas_fresh,
@@ -1524,6 +1530,18 @@ async def _assert_rango_resolucion_disjunto(
         )
 
 
+def _sucursal_escribible(
+    scope: BranchScope, ctx: TenantContext, uuid_sucursal: uuid_lib.UUID | None
+) -> bool:
+    """True when the caller may WRITE resolutions of ``uuid_sucursal``: the
+    branch must be in the actor's fresh ``usuarios_sucursal`` set and, when an
+    ``X-Sucursal-Context`` is bound, equal to it. The tenant listener does not
+    rewrite INSERTs and is off in global mode, so this check is mandatory."""
+    if not scope.allows(uuid_sucursal):
+        return False
+    return ctx.sucursal_uuid is None or ctx.sucursal_uuid == uuid_sucursal
+
+
 @_resolucion_dedicated_router.post(
     "",
     response_model=ResolucionFacturacionRead,
@@ -1534,11 +1552,16 @@ async def create_resolucion_facturacion_dedicated(
     payload: ResolucionFacturacionCreate,
     session: AsyncSession = Depends(get_session),
     ctx: TenantContext = Depends(get_tenant_ctx),
+    scope: BranchScope = Depends(require_branch_scope),
     _claims: None = Depends(_resolucion_issuer_dep),
 ) -> ResolucionFacturacionRead:
-    """Shadow the factory's POST to enforce the numbering-overlap guard.
-    Tenant scoping stays ambient (as in the factory); only the overlap query
-    and the post-commit refresh run outside it."""
+    """Shadow the factory's POST to enforce branch scope + numbering overlap.
+    Only the overlap query and the post-commit refresh run outside the
+    ambient tenant scope."""
+    if not _sucursal_escribible(scope, ctx, payload.uuid_sucursal):
+        raise HTTPException(
+            status_code=403, detail={"error": "unauthorized_sucursal_context"}
+        )
     await _assert_rango_resolucion_disjunto(
         session,
         prefijo=payload.prefijo,
@@ -1569,19 +1592,24 @@ async def update_resolucion_facturacion_dedicated(
     uuid: uuid_lib.UUID = Path(...),
     session: AsyncSession = Depends(get_session),
     ctx: TenantContext = Depends(get_tenant_ctx),
+    scope: BranchScope = Depends(require_branch_scope),
     _claims: None = Depends(_resolucion_issuer_dep),
 ) -> ResolucionFacturacionRead:
     """Shadow the factory's PUT: bi-temporal close+insert plus the overlap
     guard. Fields omitted from the payload (e.g. numbering) are carried
-    forward from the closed version by ``close_and_insert``."""
+    forward from the closed version by ``close_and_insert``. A resolution of
+    a branch the caller cannot write answers the same 404 as a missing one."""
     actual = (
         await session.execute(
             select(ResolucionFacturacion).where(
                 ResolucionFacturacion.uuid == uuid,
                 ResolucionFacturacion.vigente_hasta.is_(None),
+                ResolucionFacturacion.uuid_sucursal.in_(scope.permitidas),
             )
         )
     ).scalar_one_or_none()
+    if actual is not None and not _sucursal_escribible(scope, ctx, actual.uuid_sucursal):
+        actual = None
     if actual is None:
         raise HTTPException(
             status_code=404,
