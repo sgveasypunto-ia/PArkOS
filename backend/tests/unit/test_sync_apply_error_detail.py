@@ -61,6 +61,24 @@ def test_detail_for_server_error_omits_row_values() -> None:
     assert "12345" not in detail
 
 
+def test_detail_names_driver_class_and_constraint_from_the_adapter_cause() -> None:
+    """SQLAlchemy's asyncpg adapter keeps the real driver error in ``__cause__``:
+    class + SQLSTATE + constraint, still no row values."""
+
+    class UniqueViolationError(Exception):
+        sqlstate = "23505"
+        constraint_name = "factura_electronica_uk01"
+
+    class _Adapter(Exception):
+        sqlstate = "23505"
+
+    adapter = _Adapter("DETAIL: Key (consecutivo)=(1) already exists.")
+    adapter.__cause__ = UniqueViolationError("Key (consecutivo)=(1) already exists.")
+    detail = describe_apply_error_detail(_Wrapper(adapter))
+    assert detail == "UniqueViolationError:23505:factura_electronica_uk01"
+    assert "consecutivo" not in detail.replace("factura_electronica_uk01", "")
+
+
 def test_detail_without_cause_does_not_use_wrapper_text() -> None:
     class _NoOrig(Exception):
         params = {"x": 1}  # SQLAlchemy wrappers expose the bound parameters

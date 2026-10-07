@@ -28,6 +28,26 @@ If the emission fails (no resolution, range exhausted, no prefix, ...):
 4. If it is still failing after that, ONE ``fe_emision_fallida`` (warning)
    alerta is raised for the administrator.
 
+Deployment awareness (cloud vs branch)
+--------------------------------------
+Invoice numbering is BRANCH-LOCAL (AGENTS.md): ``consecutivo`` is assigned by
+the branch inside its own ``resolucion_facturacion`` range, and the FE is
+emitted there. A charge that originates in the CLOUD (``PARKOS_DEPLOY=cloud``:
+admin renewal, any sale from web_admin) therefore must NOT number nor emit:
+if both nodes numbered from the same resolution they would mint the same
+``(uuid_resolucion_facturacion, consecutivo)`` and the branch->cloud push would
+fail forever on ``factura_electronica_uk01``. In the cloud this function only
+leaves the SAME ``fe_emision_pendiente`` marker the branch retry uses, tagged
+``origen='nube'`` (the factura/pago are already committed by the caller); it
+returns ``pendiente=True`` with no error and never calls ``assign_consecutivo``.
+In a branch deployment nothing changes.
+
+The branch is meant to pick the marker up through :func:`reintentar_pendientes`
+and number with its own resolution. NOTE: ``facturas`` / ``alerta`` are
+``branch_to_cloud`` in the sync catalog, so a cloud-created marker does not
+reach the branch yet; the replication that closes that last hop needs a
+pull-RLS migration and is reported separately ([POR DEFINIR]).
+
 Idempotency: a consecutivo is only consumed when the FE row is inserted in the
 same transaction as the numbering (``assign_consecutivo`` reads
 ``MAX(consecutivo)``; it never reserves). A failed attempt therefore burns
@@ -39,6 +59,7 @@ error codes.
 """
 from __future__ import annotations
 
+import os
 import time
 import uuid as uuid_lib
 from dataclasses import dataclass, field
@@ -77,6 +98,19 @@ ERR_NUMERACION_AGOTADA = "numeracion_agotada"
 ERR_SIN_PREFIJO = "resolucion_sin_prefijo"
 ERR_FACTURA_NO_ENCONTRADA = "factura_no_encontrada"
 ERR_INESPERADO = "fe_error_inesperado"
+# Marker reason for a charge originated in the cloud: numbering/emission is
+# delegated to the branch (not a failure).
+MOTIVO_EMISION_EN_SUCURSAL = "emision_en_sucursal"
+ORIGEN_NUBE = "nube"
+
+
+def es_despliegue_nube() -> bool:
+    """True when this process is the cloud deployment (``PARKOS_DEPLOY=cloud``).
+
+    Read at call time (like ``api/app_factory.py``). Unset or ``branch`` keep
+    the branch behaviour, so tests and the branch API are unaffected.
+    """
+    return os.environ.get("PARKOS_DEPLOY", "").strip().lower() == "cloud"
 
 
 @dataclass(frozen=True)
@@ -160,6 +194,23 @@ async def emitir_fe_para_pago(
             await session.commit()
             return FeEmisionResultado(error=ERR_FACTURA_NO_ENCONTRADA)
         sucursal = uuid_sucursal or factura.uuid_sucursal
+        if es_despliegue_nube():
+            # Cloud-originated charge: the branch numbers and emits. Only
+            # leave the marker (never assign_consecutivo here).
+            await session.commit()  # close the read transaction first
+            pendiente = True
+            if registrar_pendiente:
+                pendiente = await _registrar_pendiente(
+                    session,
+                    actor_uuid=actor_uuid,
+                    uuid_sucursal=sucursal,
+                    uuid_factura=uuid_factura,
+                    uuid_cliente=cliente,
+                    payload_extra=extra,
+                    motivo=MOTIVO_EMISION_EN_SUCURSAL,
+                    origen=ORIGEN_NUBE,
+                )
+            return FeEmisionResultado(pendiente=pendiente)
         descuento = Decimal(str(factura.descuento or 0))
 
         # SAVEPOINT: an unexpected DB fault rolls back only the FE inserts and
@@ -292,15 +343,18 @@ async def _registrar_pendiente(
     uuid_cliente: uuid_lib.UUID,
     payload_extra: dict[str, str],
     motivo: str,
+    origen: str | None = None,
 ) -> bool:
     """Persist the retry marker (once per factura). Returns True if queued."""
-    datos = {
+    datos: dict[str, Any] = {
         "motivo": motivo,
         "uuid_factura": str(uuid_factura),
         "uuid_cliente": str(uuid_cliente),
         "actor_uuid": str(actor_uuid) if actor_uuid else None,
         "payload_extra": payload_extra,
     }
+    if origen:
+        datos["origen"] = origen
     # First try with the operator on the alerta; if that FK cannot be
     # satisfied on this node, fall back to NULL (the actor still travels in
     # ``datos_nuevos`` for the retry).

@@ -147,6 +147,7 @@ def _build_client(
     session = MagicMock(name="AsyncSession")
     session.commit = AsyncMock(side_effect=commit_error)
     session.rollback = AsyncMock()
+    session.flush = AsyncMock()
     session.execute = AsyncMock(
         return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
     )
@@ -390,8 +391,49 @@ def test_push_commit_failure_does_not_return_207(
 # ---------------------------------------------------------------------------
 
 
-def test_push_rolls_back_when_apply_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    c, _, session = _build_client(monkeypatch, outcomes={"alerta": "raise"})
+def test_push_row_fault_is_isolated_and_batch_still_commits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row whose apply raises is that ROW's failure, never a 500 of the batch.
+
+    Regression (factura_electronica_uk01 poison pill): the exception used to
+    escape the loop, roll back every row and answer 500, so the sender retried
+    the same batch forever and no other row ever applied.
+    """
+    c, motor, session = _build_client(monkeypatch, outcomes={"alerta": "raise"})
+
+    resp = c.post(
+        "/sync/push",
+        json={"rows": [_row(tabla="alerta"), _row(tabla="clientes", seq=2)]},
+    )
+
+    assert resp.status_code == 207
+    results = resp.json()["results"]
+    assert [r["status"] for r in results] == ["apply_error", "applied"]
+    assert sorted(motor.tables) == ["alerta", "clientes"]
+    session.commit.assert_awaited_once()
+    session.rollback.assert_not_awaited()
+
+
+def _db_error(sqlstate: str, name: str = "SomeDbError"):
+    from sqlalchemy.exc import DBAPIError, IntegrityError
+
+    orig = type(name, (Exception,), {"sqlstate": sqlstate})("row values here")
+    cls = IntegrityError if sqlstate.startswith("23") else DBAPIError
+    return cls("stmt", {"p": "row values here"}, orig)
+
+
+def test_push_transient_db_fault_is_not_a_poison_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deadlock (40P01) is not the row's fault: the request fails as a whole so
+    healthy rows do not burn their retry counters."""
+
+    async def _deadlock(self, session, spec, payload, *, actor_uuid=None):  # noqa: ANN001
+        raise _db_error("40P01", "DeadlockDetectedError")
+
+    c, _, session = _build_client(monkeypatch)
+    monkeypatch.setattr(sr.SyncMotor, "apply_row", _deadlock)
 
     resp = c.post("/sync/push", json={"rows": [_row()]})
 
@@ -433,6 +475,87 @@ def test_push_sesion_domain_error_is_per_row_not_a_batch_500(
     assert resp.status_code == 207
     assert [r["status"] for r in resp.json()["results"]] == ["apply_error", "applied"]
     assert session.savepoints_rolled_back == 1
+    session.commit.assert_awaited_once()
+
+
+def test_push_fk_violation_is_row_error_without_conflict_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fk(self, session, spec, payload, *, actor_uuid=None):  # noqa: ANN001
+        raise _db_error("23503", "ForeignKeyViolationError")
+
+    c, _, session = _build_client(monkeypatch)
+    monkeypatch.setattr(sr.SyncMotor, "apply_row", _fk)
+
+    resp = c.post("/sync/push", json={"rows": [_row()]})
+
+    assert resp.status_code == 207
+    assert resp.json()["results"][0]["status"] == "apply_error"
+    session.add.assert_not_called()  # a missing parent is "retry later", not a conflict
+
+
+def test_push_plain_python_error_detail_is_class_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _boom(self, session, spec, payload, *, actor_uuid=None):  # noqa: ANN001
+        raise ValueError("badly formed uuid 'PLACA-ABC123'")
+
+    c, _, _ = _build_client(monkeypatch)
+    monkeypatch.setattr(sr.SyncMotor, "apply_row", _boom)
+
+    resp = c.post("/sync/push", json={"rows": [_row()]})
+
+    row = resp.json()["results"][0]
+    assert row["detail"] == "ValueError"
+    assert "PLACA" not in resp.text
+
+
+def test_push_commit_still_rolls_back_on_batch_level_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, _, session = _build_client(monkeypatch, commit_error=RuntimeError("commit failed"))
+
+    resp = c.post("/sync/push", json={"rows": [_row()]})
+
+    assert resp.status_code >= 500
+    session.rollback.assert_awaited()
+
+
+def test_push_integrity_error_reports_class_sqlstate_constraint_without_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row detail names class + SQLSTATE + constraint, never row values."""
+    from sqlalchemy.exc import IntegrityError
+
+    class UniqueViolationError(Exception):
+        sqlstate = "23505"
+
+        class diag:  # noqa: N801 - mimics asyncpg's exception shape
+            constraint_name = "factura_electronica_uk01"
+
+    secret = "VALOR-DE-FILA-NO-DEBE-FILTRARSE"
+
+    async def _boom(self, session, spec, payload, *, actor_uuid=None):  # noqa: ANN001
+        raise IntegrityError(f"INSERT ... {secret}", {"p": secret}, UniqueViolationError(secret))
+
+    c, _, session = _build_client(monkeypatch)
+    monkeypatch.setattr(sr.SyncMotor, "apply_row", _boom)
+
+    resp = c.post(
+        "/sync/push",
+        json={"rows": [_row(tabla="factura_electronica", datos={"consecutivo": 1})]},
+    )
+
+    assert resp.status_code == 207
+    row = resp.json()["results"][0]
+    assert row["status"] == "apply_error"
+    assert row["detail"] == "UniqueViolationError:23505:factura_electronica_uk01"
+    assert secret not in resp.text
+    # informational sync_conflict recorded (best effort) in its own savepoint
+    added = [c_.args[0] for c_ in session.add.call_args_list]
+    assert [type(a).__name__ for a in added] == ["SyncConflict"]
+    assert added[0].politica == "constraint_violation"
+    assert added[0].tabla == "factura_electronica"
     session.commit.assert_awaited_once()
 
 

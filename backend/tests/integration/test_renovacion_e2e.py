@@ -279,6 +279,44 @@ async def test_renovacion_anticipada_conserva_placas_cobra_completo_y_emite_fe(
     assert log.datos_anteriores["fecha_vencimiento"] == venc.isoformat()
 
 
+async def test_renovacion_en_nube_cobra_pero_no_numera_ni_emite_fe(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt, monkeypatch
+) -> None:
+    """Cloud-originated charge: invoice + payment are recorded, but the FE is
+    NOT numbered/emitted here (numbering is branch-local; emitting in both nodes
+    minted the same (resolucion, consecutivo) -> factura_electronica_uk01).
+    Only the pending marker is left for the branch."""
+    from parkos_core.models.L_E.factura_electronica import FacturaElectronica
+    from parkos_core.models.L_W.alerta import Alerta
+
+    monkeypatch.setenv("PARKOS_DEPLOY", "cloud")
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine, con_resolucion=True, dias_plan=30, valor="100000")
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=hoy + timedelta(days=5))
+
+    r = await client.post(
+        _url(sub), json={"medio_pago": "efectivo"},
+        headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["uuid_factura"]
+    assert body["uuid_factura_electronica"] is None
+    assert body["factura_electronica_error"] is None
+    assert body["factura_electronica_pendiente"] is True
+    assert await _contar(
+        pg_engine, FacturaElectronica, FacturaElectronica.uuid_sucursal == m.sucursal
+    ) == 0
+    assert await _contar(
+        pg_engine, FacturaPagos, FacturaPagos.uuid_factura == uuid_lib.UUID(body["uuid_factura"])
+    ) == 1
+    assert await _contar(
+        pg_engine, Alerta,
+        Alerta.uuid_sucursal == m.sucursal,
+        Alerta.tipo_alerta == "fe_emision_pendiente",
+    ) == 1
+
+
 async def test_renovacion_vencida_inicia_hoy_bogota(
     client, pg_engine, alembic_upgrade, mint_operador_jwt
 ) -> None:

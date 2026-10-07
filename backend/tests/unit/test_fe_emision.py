@@ -426,3 +426,84 @@ async def test_marcadores_duplicados_se_procesan_una_vez(
     )
     assert cont["emitidas"] == 1
     assert emit.await_count == 1
+
+
+# --- Cloud deployment: numbering/emission is delegated to the branch --------
+
+
+async def test_nube_no_numera_ni_emite_y_deja_marcador(
+    repos: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PARKOS_DEPLOY", "cloud")
+    session = _session()
+    res = await emitir_fe_para_pago(
+        session, actor_uuid=ACTOR, uuid_factura=FACTURA, uuid_sucursal=SUCURSAL
+    )
+    assert not res.emitida
+    assert res.error is None and res.pendiente
+    repos["consecutivo"].assert_not_awaited()
+    repos["resolucion"].assert_not_awaited()
+    repos["crear_fe"].assert_not_awaited()
+    repos["crear_envio"].assert_not_awaited()
+    marcador = _marker(session)
+    assert marcador is not None
+    assert marcador.datos_nuevos["origen"] == "nube"
+    assert marcador.datos_nuevos["motivo"] == fe_emision.MOTIVO_EMISION_EN_SUCURSAL
+    assert marcador.datos_nuevos["uuid_factura"] == str(FACTURA)
+    assert marcador.uuid_sucursal == SUCURSAL
+
+
+async def test_nube_respeta_fe_ya_existente(
+    repos: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A FE already replicated from the branch is returned untouched."""
+    monkeypatch.setenv("PARKOS_DEPLOY", "cloud")
+    existente = MagicMock()
+    existente.uuid = uuid_lib.uuid4()
+    repos["existente"].return_value = existente
+    session = _session()
+    res = await emitir_fe_para_pago(
+        session, actor_uuid=ACTOR, uuid_factura=FACTURA, uuid_sucursal=SUCURSAL
+    )
+    assert res.uuid_factura_electronica == existente.uuid
+    assert _marker(session) is None
+
+
+async def test_nube_reintento_no_escribe_otro_marcador(
+    repos: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PARKOS_DEPLOY", "cloud")
+    session = _session()
+    res = await emitir_fe_para_pago(
+        session,
+        actor_uuid=ACTOR,
+        uuid_factura=FACTURA,
+        uuid_sucursal=SUCURSAL,
+        registrar_pendiente=False,
+    )
+    assert res.pendiente and not res.emitida
+    assert _marker(session) is None
+    repos["consecutivo"].assert_not_awaited()
+
+
+@pytest.mark.parametrize("valor", ["branch", "", "BRANCH"])
+async def test_sucursal_o_sin_variable_sigue_emitiendo(
+    repos: dict, monkeypatch: pytest.MonkeyPatch, valor: str
+) -> None:
+    monkeypatch.setenv("PARKOS_DEPLOY", valor)
+    res = await emitir_fe_para_pago(
+        _session(), actor_uuid=ACTOR, uuid_factura=FACTURA, uuid_sucursal=SUCURSAL
+    )
+    assert res.emitida
+    repos["consecutivo"].assert_awaited_once()
+
+
+def test_es_despliegue_nube_lee_la_variable_en_cada_llamada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PARKOS_DEPLOY", "Cloud")
+    assert fe_emision.es_despliegue_nube()
+    monkeypatch.setenv("PARKOS_DEPLOY", "branch")
+    assert not fe_emision.es_despliegue_nube()
+    monkeypatch.delenv("PARKOS_DEPLOY")
+    assert not fe_emision.es_despliegue_nube()
