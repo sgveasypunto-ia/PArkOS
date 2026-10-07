@@ -9,7 +9,7 @@ mock would hide; same precedent as
 Mirrors ``assign_consecutivo`` (DIAN numbering) but for the parking-lot
 identifier of ingresos sin placa (bici / patineta). Eight scenarios:
 
-  T1 -- first ingreso for (sucursal, tipo) returns ``BICI-000001-<uuid8>``
+  T1 -- first ingreso for (sucursal, tipo) returns ``BICICLETA-000001-<uuid8>``
   T2 -- monotonic per namespace: 3 calls -> 000001, 000002, 000003
   T3 -- independent counter for a different (sucursal, tipo) pair
   T4 -- idempotency: same source_event_uuid 5x -> same consecutivo
@@ -146,11 +146,16 @@ async def _truncate_ingreso_consecutivo_tables(pg_dsn: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# NOTE: ``<TIPO>`` is ``TiposVehiculo.tipo.upper()`` and the canonical catalog
+# (0062) names the types in full (``bicicleta``, ``patineta``), so the prefix
+# is ``BICICLETA`` / ``PATINETA`` -- not the legacy ``BICI`` / ``PATIN``.
+
+
 @pytest.mark.asyncio
 async def test_first_call_returns_formatted_000001(
     pg_engine: AsyncEngine, pg_dsn: str
 ) -> None:
-    """T1: first ingreso sin placa for (sucursal, bicicleta) -> ``BICI-000001-<uuid8>``.
+    """T1: first ingreso sin placa for (sucursal, bicicleta) -> ``BICICLETA-000001-<uuid8>``.
 
     The ``<uuid8>`` suffix is the first 8 hex chars of the caller-supplied
     ``source_event_uuid``. We pin it explicitly so the assertion is
@@ -172,7 +177,7 @@ async def test_first_call_returns_formatted_000001(
         )
         await session.commit()
 
-    assert consecutivo == f"BICI-000001-{source_event.hex[:8]}"
+    assert consecutivo == f"BICICLETA-000001-{source_event.hex[:8]}"
 
 
 # ---------------------------------------------------------------------------
@@ -204,9 +209,9 @@ async def test_monotonic_per_namespace_three_calls(
             consecutivos.append(c)
             await session.commit()
 
-    # Format: BICI-NNNNNN-<uuid8>
+    # Format: BICICLETA-NNNNNN-<uuid8>
     ns = [c.split("-")[0] + "-" + c.split("-")[1] for c in consecutivos]
-    assert ns == ["BICI-000001", "BICI-000002", "BICI-000003"]
+    assert ns == ["BICICLETA-000001", "BICICLETA-000002", "BICICLETA-000003"]
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +253,8 @@ async def test_independent_counters_per_namespace(
         )
         await session.commit()
 
-    assert c_bici.startswith("BICI-000001-")
-    assert c_patin.startswith("PATIN-000001-")
+    assert c_bici.startswith("BICICLETA-000001-")
+    assert c_patin.startswith("PATINETA-000001-")
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +361,7 @@ async def test_format_for_various_n(
             source_event_uuid=new_source,
         )
         await session.commit()
-    assert c == f"BICI-000101-{new_source.hex[:8]}"
+    assert c == f"BICICLETA-000101-{new_source.hex[:8]}"
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +376,7 @@ async def test_concurrent_lock_serializes_to_distinct_n(
     """T6: SELECT FOR UPDATE serializes 10 concurrent calls.
 
     10 asyncio.gather calls on the same (sucursal, tipo) namespace ->
-    10 distinct ``BICI-NNNNNN-<uuid8>`` strings, n=1..10 (no gap, no
+    10 distinct ``BICICLETA-NNNNNN-<uuid8>`` strings, n=1..10 (no gap, no
     collision). Verifies the SELECT FOR UPDATE pattern protects the
     counter under contention.
     """
@@ -557,7 +562,7 @@ async def test_partial_unique_index_rejects_duplicate_consecutivo(
     tipo_uuid = await _seed_tipo(pg_engine, tipo="bicicleta")
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
-    shared_consecutivo = "BICI-000099-deadbeef"
+    shared_consecutivo = "BICICLETA-000099-deadbeef"
 
     # Insert two ingreso rows with the SAME consecutivo in the same
     # (sucursal, tipo) namespace via raw SQL (bypassing the helper so we
@@ -594,8 +599,10 @@ async def test_partial_unique_index_rejects_duplicate_consecutivo(
         )
 
     with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        _insert_dup(cur, str(sucursal_uuid), str(tipo_uuid), shared_consecutivo)
+        # A unique INDEX is checked immediately: the violation surfaces on
+        # the INSERT itself, not on a later ``commit()``.
         with pytest.raises(psycopg.errors.UniqueViolation) as exc_info:
+            _insert_dup(cur, str(sucursal_uuid), str(tipo_uuid), shared_consecutivo)
             conn.commit()
         conn.rollback()
     # Verify the partial UK fired (not some other constraint).
