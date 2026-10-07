@@ -37,7 +37,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import StringConstraints
+from pydantic import StringConstraints, field_validator
 
 from .common import FilterBase, ReadListBase, _Base
 
@@ -642,6 +642,19 @@ class FacturaServicioCreate(_Base):
     fe_datos_cliente: FacturaItemConDatosPropios | None = None
     # Same client-supplied override as ``FacturaCreate.uuid_sesion`` above.
     uuid_sesion: uuid_lib.UUID | None = None
+
+    @field_validator("total")
+    @classmethod
+    def _total_positivo(cls, value: Decimal) -> Decimal:
+        """Un servicio sin costo (total <= 0) no genera factura.
+
+        El costo $0 de un servicio (ej. reimpresión) significa "sin cobro":
+        no hay documento fiscal que emitir, y una factura electrónica por
+        $0 se rechazaría ante la DIAN. El cliente debe omitir este POST.
+        """
+        if value <= 0:
+            raise ValueError("total_no_positivo")
+        return value
 
 
 class FacturaItemRead(_Base):

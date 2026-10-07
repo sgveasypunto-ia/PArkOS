@@ -311,3 +311,35 @@ def test_factura_pago_read_shape() -> None:
         timestamp_evento="2026-09-14T10:00:00",
     )
     assert obj.medio_pago == "efectivo"
+
+
+def _servicio_kwargs(total: Decimal) -> dict:
+    return {
+        "uuid_ingreso": uuid_lib.uuid4(),
+        "items": [
+            FacturaItemCreate(
+                tipo="servicio",
+                concepto="Reimpresión de tiquete",
+                cantidad=1,
+                valor_unitario=total,
+            )
+        ],
+        "subtotal": total,
+        "total": total,
+        "medio_pago": "efectivo",
+    }
+
+
+@pytest.mark.parametrize("total", [Decimal("0"), Decimal("0.00"), Decimal("-1")])
+def test_factura_servicio_rechaza_total_no_positivo(total: Decimal) -> None:
+    """Un servicio de costo $0 no genera factura (sin cobro no hay documento)."""
+    from parkos_core.schemas.facturacion import FacturaServicioCreate
+
+    with pytest.raises(ValidationError):
+        FacturaServicioCreate(**_servicio_kwargs(total))
+
+
+def test_factura_servicio_acepta_total_positivo() -> None:
+    from parkos_core.schemas.facturacion import FacturaServicioCreate
+
+    FacturaServicioCreate(**_servicio_kwargs(Decimal("1000")))
