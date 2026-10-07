@@ -54,6 +54,7 @@ import { useInvalidateConteosOperacion } from '../hooks/useInvalidateConteosOper
 import { useAuth } from '@parkos/ui-kit/hooks';
 import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
 import { useRegistrarPago } from '../../facturacion/hooks/useRegistrarPago';
+import { useDashboardDrawerStore } from '../../../renderer/store/dashboardDrawerStore';
 import { FacturaDisplayModal } from '../../facturacion/components/FacturaDisplayModal';
 import type { FacturaRead, PostFacturaSuscripcion } from '../../facturacion/api/facturaApi';
 
@@ -226,6 +227,11 @@ export function SalidaMensualidad({
             deferredSafePrint(emitPrint, pendingPrint);
             setPendingPrint(null);
           }
+          // The salida is fully done once the factura modal is
+          // dismissed — close the dashboard drawer so the operator
+          // does not have to click outside it (H5). Print is already
+          // queued, so unmounting this component is safe.
+          useDashboardDrawerStore.getState().close();
         }}
       />
     </div>
