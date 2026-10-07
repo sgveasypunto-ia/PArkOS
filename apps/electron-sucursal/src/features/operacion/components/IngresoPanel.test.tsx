@@ -192,6 +192,48 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
     expect(window.bridge.imprimir).toHaveBeenCalled();
   });
 
+  it('I2b: ingreso activo de rotación NO se rotula "Mensualidad activa"; con suscripción sí', () => {
+    const base = {
+      uuid: '00000000-0000-0000-0000-000000000001',
+      uuid_sucursal: 'suc-1',
+      placa: 'ABC123',
+      fecha_ingreso: '2026-09-17T10:00:00Z',
+      consecutivo: null,
+      uuid_tipo_vehiculo: null,
+    };
+    mockUseIngresoActivo.mockReturnValue({
+      hasActive: true,
+      latestIngreso: { ...base, uuid_subscripcion_cliente: null },
+      isLoading: false,
+      error: undefined,
+      refresh: vi.fn(),
+    });
+    const { unmount } = render(
+      <MemoryRouter>
+        <IngresoPanel />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('ingreso-activo-tipo').textContent).toBe('ingreso_activo_rotacion');
+    unmount();
+
+    mockUseIngresoActivo.mockReturnValue({
+      hasActive: true,
+      latestIngreso: {
+        ...base,
+        uuid_subscripcion_cliente: '00000000-0000-0000-0000-0000000000f1',
+      },
+      isLoading: false,
+      error: undefined,
+      refresh: vi.fn(),
+    });
+    render(
+      <MemoryRouter>
+        <IngresoPanel />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('ingreso-activo-tipo').textContent).toBe('ingreso_mensualidad_activa');
+  });
+
   it('I3: cold mount issues zero network calls when placa stays empty', () => {
     render(
       <MemoryRouter>
