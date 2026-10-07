@@ -14,6 +14,8 @@ import type { ResultadoImpresion } from './facturaPrint';
 
 export interface AvisoImpresion {
   id: string;
+  /** Document label the notice belongs to; a later print of the same label supersedes it. */
+  etiqueta: string;
   mensaje: string;
   /** Re-runs the same print; resolves the outcome (the notice clears on success). */
   reintentar: () => Promise<ResultadoImpresion>;
@@ -54,11 +56,17 @@ export async function ejecutarImpresion(
   }
   const { agregar, descartar } = useAvisosImpresion.getState();
   if (reemplazaId !== undefined) descartar(reemplazaId);
+  // A new outcome for the same document supersedes any earlier notice of it: a
+  // success clears a stale failure, a new failure replaces (never stacks) it.
+  for (const previo of useAvisosImpresion.getState().avisos) {
+    if (previo.etiqueta === etiqueta) descartar(previo.id);
+  }
   if (!res.ok) {
     contador += 1;
     const id = `aviso-impresion-${contador}`;
     agregar({
       id,
+      etiqueta,
       mensaje: `No se pudo imprimir ${etiqueta}. Revise la impresora y reintente.`,
       reintentar: () => ejecutarImpresion(etiqueta, fn, id),
     });

@@ -58,3 +58,28 @@ describe('ejecutarImpresion', () => {
     expect(useAvisosImpresion.getState().avisos).toHaveLength(0);
   });
 });
+
+describe('ejecutarImpresion — un éxito posterior limpia el aviso del mismo documento', () => {
+  beforeEach(() => {
+    useAvisosImpresion.setState({ avisos: [] });
+  });
+
+  it('una impresión nueva exitosa de la misma etiqueta descarta el aviso previo', async () => {
+    await ejecutarImpresion('la factura', async () => ({ ok: false }));
+    expect(useAvisosImpresion.getState().avisos).toHaveLength(1);
+    await ejecutarImpresion('la factura', async () => ({ ok: true }));
+    expect(useAvisosImpresion.getState().avisos).toHaveLength(0);
+  });
+
+  it('un éxito de otro documento no toca el aviso ajeno', async () => {
+    await ejecutarImpresion('la factura', async () => ({ ok: false }));
+    await ejecutarImpresion('el tiquete de entrada', async () => ({ ok: true }));
+    expect(useAvisosImpresion.getState().avisos).toHaveLength(1);
+  });
+
+  it('un nuevo fallo de la misma etiqueta reemplaza el aviso (no se apilan)', async () => {
+    await ejecutarImpresion('la factura', async () => ({ ok: false }));
+    await ejecutarImpresion('la factura', async () => ({ ok: false }));
+    expect(useAvisosImpresion.getState().avisos).toHaveLength(1);
+  });
+});
