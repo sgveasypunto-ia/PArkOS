@@ -62,6 +62,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.jwt_issuer_guard import verify_jwt
@@ -92,6 +93,7 @@ from ...sync.motor.pull_scope import build_scope_entry_predicate, build_scope_pr
 from ...sync.motor.sync_motor import (
     SyncMotor,
     describe_apply_error,
+    describe_apply_error_detail,
 )
 from ...sync.observability.logs import get_logger, log_sync_event
 from ...sync.router_helpers import (
@@ -567,6 +569,104 @@ async def sync_pair(
 # ---------------------------------------------------------------------------
 
 
+#: SQLSTATE classes that are NOT the row's fault: 08 connection, 40 rollback
+#: (serialization/deadlock), 53 resources, 57 operator intervention/timeout.
+_TRANSIENT_SQLSTATE_CLASSES = frozenset({"08", "40", "53", "57"})
+
+
+def _sqlstate(exc: BaseException) -> str | None:
+    """SQLSTATE of a DB error (SQLAlchemy wrapper, adapter or driver level)."""
+    for candidate in (getattr(exc, "orig", None), getattr(exc, "__cause__", None), exc):
+        if candidate is None:
+            continue
+        for level in (candidate, getattr(candidate, "__cause__", None)):
+            state = getattr(level, "sqlstate", None) or getattr(level, "pgcode", None)
+            if state:
+                return str(state)
+    return None
+
+
+def _es_fallo_transitorio(exc: BaseException) -> bool:
+    state = _sqlstate(exc)
+    return state is not None and state[:2] in _TRANSIENT_SQLSTATE_CLASSES
+
+
+def _detalle_seguro(exc: BaseException) -> str:
+    """Wire/log label of a failed row: never carries row values.
+
+    A DB error -> class + SQLSTATE + constraint. Anything else -> the exception
+    class only (the message of a plain Python error may embed a plate, document
+    number or e-mail).
+    """
+    if _sqlstate(exc) is not None:
+        return describe_apply_error_detail(exc)
+    return type(exc).__name__
+
+
+async def _registrar_conflicto_restriccion(
+    session: AsyncSession,
+    spec: Any,
+    row: Any,
+    *,
+    detalle: str,
+    uuid_sucursal: Any = None,
+) -> None:
+    """Informational ``sync_conflict`` for a row rejected by a DB constraint.
+
+    Best effort in its OWN savepoint (never fails the batch). The payload is
+    stored JSON-safe (recursive ``_json_safe``: UUID/datetime/Decimal/...);
+    ``sync_conflict`` is local-only, never propagated. Nothing is resolved
+    automatically: ``resolucion`` stays NULL for a human to review.
+    """
+    # Lazy imports: avoid module-load cycles (same convention as the motor).
+    from ...models.A.sync_conflict import SyncConflict
+    from ...sync.hooks.impls.identity_reconciler import _json_safe
+
+    # Attribute the conflict to the AUTHENTICATED branch (JWT), never to a
+    # ``uuid_sucursal`` the pushed payload claims.
+    branch_uuid: uuid_lib.UUID | None = None
+    if uuid_sucursal:
+        try:
+            branch_uuid = uuid_lib.UUID(str(uuid_sucursal))
+        except ValueError:
+            branch_uuid = None
+    try:
+        async with session.begin_nested():
+            # One informational record per poison row: the sender retries it
+            # with backoff, which must not append a duplicate every attempt.
+            ya = (
+                await session.execute(
+                    select(SyncConflict.uuid)
+                    .where(
+                        SyncConflict.tabla == spec.name,
+                        SyncConflict.uuid_registro == row.uuid_registro,
+                        SyncConflict.politica == "constraint_violation",
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if ya is not None:
+                return
+            session.add(
+                SyncConflict(
+                    uuid_sucursal=branch_uuid,
+                    tabla=spec.name,
+                    uuid_registro=row.uuid_registro,
+                    datos_local=None,
+                    datos_cloud=_json_safe(dict(row.datos or {})),
+                    politica="constraint_violation",
+                    resolucion=f"rejected:{detalle}"[:250],
+                    timestamp_evento=_now_naive(),
+                )
+            )
+            await session.flush()
+    except Exception as exc:  # noqa: BLE001 - informational only
+        logger.warning(
+            "sync_push.conflict_record_failed",
+            extra={"tabla": spec.name, "reason": type(exc).__name__},
+        )
+
+
 @router.post(
     "/push",
     response_model=_PushResponse,
@@ -688,7 +788,48 @@ async def sync_push(
 
             if motor is None:
                 motor = SyncMotor(engine=engine_flag.get_engine())
-            apply_result = await motor.apply_row(session, spec, row.datos, actor_uuid=actor_uuid)
+            try:
+                # Per-row SAVEPOINT (mirrors ``/sync/events`` and
+                # ``SyncMotor.apply_batch``). A row that violates a
+                # constraint (e.g. ``factura_electronica_uk01``) rolls back
+                # ONLY itself; before this, the exception escaped the loop,
+                # the single rollback below discarded the whole batch and the
+                # request answered 500 -- the sender retried the same poison
+                # row forever and no other row of the batch ever applied.
+                async with session.begin_nested():
+                    apply_result = await motor.apply_row(
+                        session, spec, row.datos, actor_uuid=actor_uuid
+                    )
+            except Exception as exc:  # noqa: BLE001 - isolate the row, keep the batch
+                if _es_fallo_transitorio(exc):
+                    # Deadlock / serialization / timeout / connection loss: not
+                    # the row's fault. Let the whole request fail (5xx) so the
+                    # sender retries the batch as a unit without burning each
+                    # healthy row's attempt counter.
+                    raise
+                # Class + SQLSTATE + constraint only: never row values (a DB
+                # error DETAIL carries the offending key values).
+                detalle = _detalle_seguro(exc)
+                logger.warning(
+                    "sync_push.apply_row_failed",
+                    extra={"tabla": row.tabla, "reason": detalle},
+                )
+                if isinstance(exc, IntegrityError) and _sqlstate(exc) != "23503":
+                    # A missing parent (FK, 23503) is a "retry later", not a
+                    # conflict worth a human's review.
+                    await _registrar_conflicto_restriccion(
+                        session,
+                        spec,
+                        row,
+                        detalle=detalle,
+                        uuid_sucursal=claims.get("sucursal"),
+                    )
+                results_by_index[idx] = _PushResponseRow(
+                    uuid_registro=row.uuid_registro,
+                    status="apply_error",
+                    detail=detalle,
+                )
+                continue
             results_by_index[idx] = _PushResponseRow(
                 uuid_registro=row.uuid_registro,
                 status=wire_status_for_apply_result(apply_result),

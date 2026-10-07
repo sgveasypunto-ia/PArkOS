@@ -424,6 +424,7 @@ class SyncSucursalWorker(WorkerRunner):
                 return
             accepted = 0
             rejected = 0
+            reasons: set[str] = set()
             for row, result in zip(pending, results, strict=True):
                 wire_status = result.get("status")
                 if wire_status in ("applied", "conflict", "retry_parent_missing"):
@@ -435,13 +436,20 @@ class SyncSucursalWorker(WorkerRunner):
                     await sq_helpers.mark_dispatched(self._session, row.uuid)
                     accepted += 1
                 else:
+                    # "apply_error" (the cloud isolated THIS row after a DB
+                    # fault, e.g. a unique-constraint violation),
                     # "unknown_table" or anything unrecognized — never a
-                    # silent drop (REQ-CUT-015).
-                    await sq_helpers.mark_failed(
-                        self._session,
-                        row.uuid,
-                        f"push_{wire_status}",
-                    )
+                    # silent drop (REQ-CUT-015). Only this row is failed
+                    # (own backoff + exhaustion sweep): the rest of the
+                    # batch is settled above, so one poison row never
+                    # blocks the others. ``detail`` is class + SQLSTATE +
+                    # constraint (no row values), safe to store and log.
+                    detail = result.get("detail")
+                    label = f"push_{wire_status}"
+                    if isinstance(detail, str) and detail:
+                        label = f"{label}:{detail}"[:240]
+                        reasons.add(detail)
+                    await sq_helpers.mark_failed(self._session, row.uuid, label)
                     rejected += 1
             if rejected:
                 self.log.warning(
@@ -449,6 +457,7 @@ class SyncSucursalWorker(WorkerRunner):
                     status=status,
                     accepted=accepted,
                     rejected=rejected,
+                    reasons=sorted(reasons)[:5],
                 )
             else:
                 self.log.info(
