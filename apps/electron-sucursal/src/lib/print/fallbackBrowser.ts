@@ -81,10 +81,25 @@ function injectPageStyle(): void {
   document.head.appendChild(style);
 }
 
+const LAYOUT_STYLE_ID = 'parkos-escpos-print-layout';
+const PRINT_LAYOUT_RULE =
+  '@media print { body > *:not(#parkos-escpos-fallback-container) { display: none !important } #parkos-escpos-fallback-container { position: static !important; left: auto !important } }';
+
+function injectPrintLayout(): void {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById(LAYOUT_STYLE_ID) !== null) return;
+  const style = document.createElement('style');
+  style.id = LAYOUT_STYLE_ID;
+  style.textContent = PRINT_LAYOUT_RULE;
+  document.head.appendChild(style);
+}
+
 function cleanupPageStyle(): void {
   if (typeof document === 'undefined') return;
-  const node = document.getElementById(STYLE_ID);
-  if (node !== null) node.parentNode?.removeChild(node);
+  for (const id of [STYLE_ID, LAYOUT_STYLE_ID]) {
+    const node = document.getElementById(id);
+    if (node !== null) node.parentNode?.removeChild(node);
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -369,13 +384,20 @@ export function print(tipo: TiqueteTipo, payload: unknown): void {
       throw new EscposInvalidTipoError(String(tipo));
   }
 
+  printHtml(html);
+}
+
+/**
+ * Render `html` into the transient off-screen container and call
+ * `window.print()` once. Shared by every browser-mode print (tiquetes and
+ * invoices). A second `<style>` (`@media print`) un-hides the container: it
+ * lives at `left:-10000px` on screen, which would print a blank page.
+ * The caller removes nothing: the container is reused by the next print.
+ */
+export function printHtml(html: string): void {
   injectPageStyle();
+  injectPrintLayout();
   try {
-    // Render the HTML into a transient container so the print preview
-    // shows the same content as the ESC/POS body. The container is left
-    // in the DOM (off-screen) so the print dialog renders it; the caller
-    // is responsible for removing it after the dialog closes
-    // (out of F5.2 scope — caller wires F5.1 + F5.2 lifecycle).
     const containerId = 'parkos-escpos-fallback-container';
     let container = document.getElementById(containerId);
     if (container === null) {

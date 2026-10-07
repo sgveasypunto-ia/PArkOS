@@ -66,6 +66,12 @@ export interface BridgeSurface {
     (payload: PrintPayload): Promise<PrintResult>;
     getQueue(): Promise<QueueStatus>;
     onStatus(handler: (event: PrintStatusEvent) => void): () => void;
+    /**
+     * Set ONLY by the browser-mode shim (no preload, no thermal printer):
+     * callers that can render HTML (`lib/print/facturaPrint.ts`) print it
+     * through `window.print()` instead of sending an ESC/POS buffer.
+     */
+    readonly modo?: 'browser';
   };
 
   usb: {

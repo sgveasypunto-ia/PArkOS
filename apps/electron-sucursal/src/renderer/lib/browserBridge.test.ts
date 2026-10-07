@@ -64,6 +64,10 @@ describe('browserBridge (modo navegador, sin Electron)', () => {
     expect(() => off()).not.toThrow();
   });
 
+  it("imprimir.modo === 'browser' para que las facturas se impriman como HTML (window.print)", () => {
+    expect(createBrowserBridge(storage).imprimir.modo).toBe('browser');
+  });
+
   it('config.getApiOrigin devuelve cadena vacia (same-origin via proxy de Vite)', async () => {
     expect(await createBrowserBridge(storage).config.getApiOrigin()).toBe('');
   });
