@@ -430,7 +430,21 @@ export function PagoModal({
       });
       return;
     }
-    await onSubmit(values);
+    // H2: a rejected submit (4xx/5xx/network) used to vanish as an unhandled
+    // rejection -- the button looked dead. Surface it inline and let the
+    // parent keep the drawer open (it only marks the pago as paid on success).
+    try {
+      await onSubmit(values);
+    } catch (err) {
+      console.error('[PagoModal] submit failed:', err);
+      form.setError('root.server', {
+        type: 'server',
+        message: t('facturacion:pago.error_registro', {
+          defaultValue:
+            'No se pudo registrar el pago. Revisa los datos e intenta de nuevo.',
+        }),
+      });
+    }
   });
 
   return (
@@ -731,6 +745,16 @@ export function PagoModal({
               )}
             />
           </div>
+        )}
+
+        {form.formState.errors.root?.server?.message && (
+          <p
+            role="alert"
+            data-testid="pago-error"
+            className="rounded border border-destructive/50 px-3 py-2 text-sm text-destructive"
+          >
+            {form.formState.errors.root.server.message}
+          </p>
         )}
 
         <div className="flex justify-end pt-4">

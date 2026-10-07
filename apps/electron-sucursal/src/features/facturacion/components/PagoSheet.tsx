@@ -166,6 +166,12 @@ export function PagoSheet({
   // keep the modal open with the inline error).
   const pagadoRef = useRef(false);
 
+  // H2: the compensating annulment is fire-and-forget; when it fails the
+  // ingreso stays `cerrado` and the operator must know (it needs a per-user
+  // permission). The drawer stays open with this notice; a second "Cancelar"
+  // closes anyway.
+  const [anulacionFallida, setAnulacionFallida] = useState(false);
+
   // Focus restore per REQ-OPS-138 §Esc.
   useEffect(() => {
     if (!open && lastAnchorId) {
@@ -197,26 +203,28 @@ export function PagoSheet({
       close();
       return;
     }
-    if (uuid_salida) {
+    if (uuid_salida && !anulacionFallida) {
       // Close-without-pay: annul the salida so the ingreso returns
       // to `abierto` in `V_INGRESO_ESTADO` and the operator can
       // collect on the next visit (or any other shift).
-      void anularSalidaNoPagada({ uuid_salida })
-        .catch((err: unknown) => {
+      void anularSalidaNoPagada({ uuid_salida }).then(
+        () => {
+          close();
+        },
+        (err: unknown) => {
           console.warn(
             '[PagoSheet] auto-annul failed (the ingreso will stay cerrado; manual recovery required):',
             err,
           );
-        })
-        .finally(() => {
-          close();
-        });
+          setAnulacionFallida(true);
+        },
+      );
       return;
     }
     // Legacy / hotkey-driven flow without a prior salida — nothing
     // to annul, just close.
     close();
-  }, [close, uuid_salida, anularSalidaNoPagada]);
+  }, [close, uuid_salida, anularSalidaNoPagada, anulacionFallida]);
 
   const handleSubmit = useCallback(
     async (values: PagoFormValues): Promise<void> => {
@@ -231,7 +239,7 @@ export function PagoSheet({
         // salida, but if it is, surface a clear error instead of
         // sending a malformed POST.
         console.error('[PagoSheet] uuid_salida missing — cannot POST /facturacion/factura');
-        return;
+        throw new Error('uuid_salida_missing');
       }
       // Build the discriminated POST payload from the form values.
       // Bug 22 (2026-09-23): the BE's `FacturaCreate` requires a
@@ -347,6 +355,19 @@ export function PagoSheet({
           total_cop={total_cop}
           onSubmit={handleSubmit}
         />
+
+        {anulacionFallida && (
+          <p
+            role="alert"
+            data-testid="pago-anular-error"
+            className="rounded border border-destructive/50 px-3 py-2 text-sm text-destructive"
+          >
+            {t('facturacion:pago.anular_error', {
+              defaultValue:
+                'No se pudo anular la salida: el vehículo quedó con salida registrada sin pago. Avisa a un administrador antes de cerrar. Presiona Cancelar de nuevo para cerrar de todos modos.',
+            })}
+          </p>
+        )}
 
         <SheetFooter>
           <Button

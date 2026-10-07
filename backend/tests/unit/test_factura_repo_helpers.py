@@ -298,12 +298,14 @@ async def test_buscar_cliente_por_nit_no_colisiona_con_cc_mismo_numero(
         tipo_identificador="NIT",
         numero_identificacion=numero,
         datos=None,
+        actor_uuid=uuid_lib.uuid4(),
     )
     resultado_cc = await buscar_o_crear_cliente_por_nit(
         pg_session,  # type: ignore[arg-type]
         tipo_identificador="CC",
         numero_identificacion=numero,
         datos=None,
+        actor_uuid=uuid_lib.uuid4(),
     )
 
     assert resultado_nit is not None
@@ -322,6 +324,7 @@ async def test_buscar_cliente_por_nit_missing_returns_none(
         tipo_identificador="CE",
         numero_identificacion="does-not-exist",
         datos=None,
+        actor_uuid=uuid_lib.uuid4(),
     )
     assert resultado is None
 

@@ -319,6 +319,7 @@ async def create_factura(
             tipo_identificador=payload.fe_datos_cliente.tipo_identificador,
             numero_identificacion=payload.fe_datos_cliente.numero_identificacion,
             datos=payload.fe_datos_cliente,
+            actor_uuid=ctx.actor_uuid,
         )
         if cliente is None:
             raise HTTPException(
@@ -728,6 +729,7 @@ async def create_factura_servicio(
             tipo_identificador=payload.fe_datos_cliente.tipo_identificador,
             numero_identificacion=payload.fe_datos_cliente.numero_identificacion,
             datos=payload.fe_datos_cliente,
+            actor_uuid=ctx.actor_uuid,
         )
         if cliente is None:
             raise HTTPException(
