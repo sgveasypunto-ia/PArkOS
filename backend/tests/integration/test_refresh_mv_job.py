@@ -7,18 +7,19 @@ mock the ``AsyncSession`` with ``unittest.mock.AsyncMock`` so the test
 exercises ONLY the worker's ``cycle()`` body -- no live DB needed, no
 ``PARKOS_DOCKER_TEST`` gate.
 
-Two scenarios from ``openspec/changes/hu-f1-5-mv-ocupacion-diaria/
-design.md §11 File 5``:
+H9 (2026-10): the worker connects as the app role, which does NOT own
+``prod.mv_ocupacion_diaria``, so a direct ``REFRESH MATERIALIZED VIEW``
+failed with "must be owner of materialized view" on both branches. The
+refresh now goes through the SECURITY DEFINER helper
+``prod.refresh_mv_ocupacion_diaria()`` (migration 0045), exactly like the
+``/operacion`` API handlers do.
 
-  T1 -- cycle_normal: a fresh ``cycle()`` call invokes
-       ``REFRESH MATERIALIZED VIEW CONCURRENTLY`` + ``commit()`` +
-       ``asyncio.sleep(refresh_interval_s)``. KD-5 happy path.
+  T1 -- cycle_normal: ``cycle()`` calls the helper + ``commit()`` +
+       ``asyncio.sleep(refresh_interval_s)``. Never a direct REFRESH.
 
-  T2 -- cycle_fallback: when the CONCURRENTLY path raises an exception
-       (Postgres ``FeatureNotSupported`` when UNIQUE INDEX is missing,
-       or a transient driver error), the worker logs
-       ``refresh_mv_concurrently_failed_fallback`` and falls back to
-       plain ``REFRESH MATERIALIZED VIEW``. No crash. KD-5 fallback.
+  T2 -- cycle_failure: when the helper raises, the worker rolls back,
+       logs ``refresh_mv_ocupacion_failed`` and does NOT fall back to a
+       direct ``REFRESH`` (it would fail again for a non-owner role).
 
 Both tests additionally assert:
 
@@ -72,150 +73,94 @@ def _patch_sleep(monkeypatch: pytest.MonkeyPatch, captured: list[float]) -> None
 # T1 -- cycle_normal
 # ---------------------------------------------------------------------------
 
+REFRESH_HELPER_SQL = "SELECT prod.refresh_mv_ocupacion_diaria()"
 
-async def test_cycle_normal_refresh_runs_concurrently_then_sleeps(
+
+def _worker_not_fresh(session: AsyncSession):  # type: ignore[no-untyped-def]
+    """Build a worker whose freshness guard (REQ-OPS-133) reports "stale"
+    so ``cycle()`` reaches the refresh step with a mocked session."""
+    from parkos_core.jobs.refresh_mv_ocupacion import RefreshMvOcupacionWorker
+
+    worker = RefreshMvOcupacionWorker(session=session, refresh_interval_s=10)
+
+    async def _not_fresh() -> bool:
+        return False
+
+    worker._is_mv_fresh = _not_fresh  # type: ignore[method-assign]
+    return worker
+
+
+async def test_cycle_normal_calls_security_definer_helper_then_sleeps(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A fresh ``cycle()`` invokes
-    ``REFRESH MATERIALIZED VIEW CONCURRENTLY prod.mv_ocupacion_diaria``,
-    commits the session, and sleeps for ``refresh_interval_s``."""
+    """``cycle()`` refreshes via ``prod.refresh_mv_ocupacion_diaria()``
+    (never a direct REFRESH), commits, and sleeps ``refresh_interval_s``."""
     captured_sleep: list[float] = []
     _patch_sleep(monkeypatch, captured_sleep)
 
     session = _make_mock_session()
-
-    from parkos_core.jobs.refresh_mv_ocupacion import RefreshMvOcupacionWorker
-
-    worker = RefreshMvOcupacionWorker(session=session, refresh_interval_s=10)
+    worker = _worker_not_fresh(session)
     with caplog.at_level(logging.DEBUG, logger="parkos_core.jobs.refresh_mv_ocupacion"):
         await worker.cycle()
 
-    # session.execute called once with the CONCURRENTLY SQL.
-    from sqlalchemy import text
-
-    expected_stmt = text(
-        "REFRESH MATERIALIZED VIEW CONCURRENTLY prod.mv_ocupacion_diaria"
-    )
     execute_calls = session.execute.await_args_list
-    assert len(execute_calls) == 1, (
-        f"normal cycle must call session.execute exactly once; "
-        f"got {len(execute_calls)} calls"
+    assert [str(c.args[0]) for c in execute_calls] == [REFRESH_HELPER_SQL], (
+        f"cycle MUST call only the SECURITY DEFINER helper; got "
+        f"{[str(c.args[0]) for c in execute_calls]!r}"
     )
-    actual_stmt = execute_calls[0].args[0]
-    assert str(actual_stmt) == str(expected_stmt), (
-        f"cycle MUST execute the CONCURRENTLY variant; got {actual_stmt!r}"
-    )
-
-    # session.commit() called once.
     assert session.commit.await_count == 1
-    # session.rollback() NOT called on the happy path.
     assert session.rollback.await_count == 0
-
-    # asyncio.sleep was awaited with 10.
-    assert captured_sleep == [10.0], (
-        f"post-cycle sleep MUST be refresh_interval_s=10; got {captured_sleep!r}"
-    )
-
-    # Debug log emitted on success.
+    assert captured_sleep == [10.0]
     assert any(
         rec.message == "refresh_mv_ocupacion_cycle_ok" for rec in caplog.records
-    ), (
-        f"successful cycle MUST emit the refresh_mv_ocupacion_cycle_ok event; "
-        f"got {[r.message for r in caplog.records]!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# T2 -- cycle_fallback (KD-5)
+# T2 -- cycle_failure (no direct-REFRESH fallback)
 # ---------------------------------------------------------------------------
 
 
-async def test_cycle_concurrently_fails_falls_back_to_plain_refresh(
+async def test_cycle_helper_failure_logs_and_does_not_fall_back_to_direct_refresh(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """When the CONCURRENTLY path raises, the worker logs the fallback
-    event, retries with plain ``REFRESH MATERIALIZED VIEW``, and does NOT
-    crash. KD-5 mitigation.
-
-    The first ``session.execute`` raises; the second (plain ``REFRESH``)
-    succeeds. Log records contain
-    ``refresh_mv_concurrently_failed_fallback`` and NEVER ``pgcode`` /
-    ``repr(exc)`` (R6 mitigation)."""
+    """If the helper raises, the worker rolls back, logs
+    ``refresh_mv_ocupacion_failed`` (exception class only, R6) and returns
+    normally; it never issues a direct ``REFRESH MATERIALIZED VIEW``."""
     captured_sleep: list[float] = []
     _patch_sleep(monkeypatch, captured_sleep)
 
-    # First call raises; subsequent calls succeed.
-    fake_exc = RuntimeError("simulated concurrent refresh failure (no pgcode)")
-    from unittest.mock import MagicMock
-
-    session = _make_mock_session(side_effects=[fake_exc, MagicMock()])
-
-    from parkos_core.jobs.refresh_mv_ocupacion import RefreshMvOcupacionWorker
-
-    worker = RefreshMvOcupacionWorker(session=session, refresh_interval_s=10)
+    fake_exc = RuntimeError("must be owner of materialized view (no pgcode)")
+    session = _make_mock_session(side_effects=[fake_exc])
+    worker = _worker_not_fresh(session)
     with caplog.at_level(
         logging.WARNING, logger="parkos_core.jobs.refresh_mv_ocupacion"
     ):
-        # KD-5: cycle MUST NOT raise -- even on fallback.
-        await worker.cycle()
+        await worker.cycle()  # KD-5: MUST NOT raise
 
     execute_calls = session.execute.await_args_list
-    assert len(execute_calls) == 2, (
-        f"cycle must call session.execute twice (CONCURRENTLY fails, "
-        f"plain REFRESH succeeds); got {len(execute_calls)} calls"
+    assert [str(c.args[0]) for c in execute_calls] == [REFRESH_HELPER_SQL]
+    assert not any(
+        "REFRESH MATERIALIZED VIEW" in str(c.args[0]) for c in execute_calls
     )
-    # First call: the CONCURRENTLY SQL.
-    assert (
-        str(execute_calls[0].args[0])
-        == "REFRESH MATERIALIZED VIEW CONCURRENTLY prod.mv_ocupacion_diaria"
-    )
-    # Second call: the plain REFRESH SQL (no CONCURRENTLY).
-    assert (
-        str(execute_calls[1].args[0])
-        == "REFRESH MATERIALIZED VIEW prod.mv_ocupacion_diaria"
-    ), (
-        f"fallback MUST use plain REFRESH MATERIALIZED VIEW (no CONCURRENTLY); "
-        f"got {execute_calls[1].args[0]!r}"
-    )
-
-    # commit was called twice (once per successful branch). rollback was
-    # called once after the CONCURRENTLY failure.
-    assert session.commit.await_count == 1, (
-        f"plain fallback commit MUST be called once; got "
-        f"{session.commit.await_count}"
-    )
-    assert session.rollback.await_count == 1, (
-        f"rollback MUST be called once after the CONCURRENTLY failure; "
-        f"got {session.rollback.await_count}"
-    )
-
-    # Post-cycle sleep still happens (KD-5).
+    assert session.commit.await_count == 0
+    assert session.rollback.await_count == 1
     assert captured_sleep == [10.0]
 
-    # Log capture: refresh_mv_concurrently_failed_fallback event.
-    assert any(
-        rec.message == "refresh_mv_concurrently_failed_fallback"
-        for rec in caplog.records
-    ), (
-        f"fallback MUST emit the refresh_mv_concurrently_failed_fallback "
-        f"event; got {[r.message for r in caplog.records]!r}"
-    )
+    failed = [r for r in caplog.records if r.message == "refresh_mv_ocupacion_failed"]
+    assert len(failed) == 1
+    assert failed[0].exception_class == "RuntimeError"  # type: ignore[attr-defined]
 
-    # R6 mitigation: NO pgcode / repr(exc) leakage in any log line.
     for rec in caplog.records:
         rendered = rec.getMessage() + " " + str(rec.__dict__)
-        assert "pgcode" not in rendered, (
-            f"log MUST NOT contain pgcode (R6 mitigation); got {rendered!r}"
-        )
-        # ``str(exc)`` would surface "simulated concurrent refresh failure";
-        # the worker must log only ``type(exc).__name__`` ("RuntimeError").
-        assert "simulated concurrent" not in rendered, (
+        assert "pgcode" not in rendered
+        assert "must be owner" not in rendered, (
             f"log MUST NOT contain the original exception message (R6); "
             f"got {rendered!r}"
         )
 
 
 __all__ = [
-    "test_cycle_concurrently_fails_falls_back_to_plain_refresh",
-    "test_cycle_normal_refresh_runs_concurrently_then_sleeps",
+    "test_cycle_helper_failure_logs_and_does_not_fall_back_to_direct_refresh",
+    "test_cycle_normal_calls_security_definer_helper_then_sleeps",
 ]
