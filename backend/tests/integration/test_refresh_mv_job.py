@@ -160,6 +160,83 @@ async def test_cycle_helper_failure_logs_and_does_not_fall_back_to_direct_refres
         )
 
 
+# ---------------------------------------------------------------------------
+# T3 -- freshness guard: never-analyzed MV is STALE (D1)
+# ---------------------------------------------------------------------------
+
+
+def _session_returning_seconds(seconds):  # type: ignore[no-untyped-def]
+    """Session whose stats lookup returns one row ``(seconds,)``."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    session = MagicMock(spec=AsyncSession)
+    result = MagicMock()
+    result.first.return_value = (seconds,)
+    session.execute = AsyncMock(return_value=result)
+    return session
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected_fresh"),
+    [
+        (None, False),  # never analyzed: must be refreshed, NOT skipped forever
+        (5.0, True),  # analyzed moments ago: inside the REQ-OPS-133 window
+        (3600.0, False),  # analyzed long ago: refresh
+    ],
+)
+async def test_is_mv_fresh_treats_never_analyzed_as_stale(
+    seconds: float | None, expected_fresh: bool
+) -> None:
+    from parkos_core.jobs.refresh_mv_ocupacion import RefreshMvOcupacionWorker
+
+    worker = RefreshMvOcupacionWorker(
+        session=_session_returning_seconds(seconds), refresh_interval_s=10
+    )
+    assert await worker._is_mv_fresh() is expected_fresh
+
+
+async def test_is_mv_fresh_sql_does_not_coalesce_missing_analyze_to_now() -> None:
+    """``coalesce(last_analyze, now())`` made a never-analyzed MV look 0s old
+    (fresh forever). The query must leave NULL as NULL."""
+    from parkos_core.jobs.refresh_mv_ocupacion import RefreshMvOcupacionWorker
+
+    session = _session_returning_seconds(None)
+    await RefreshMvOcupacionWorker(session=session)._is_mv_fresh()
+    sql = str(session.execute.await_args_list[0].args[0])
+    after_coalesce = sql.lower().split("coalesce", 1)[1]
+    assert "now()" not in after_coalesce
+    assert "pg_stat_get_last_autoanalyze_time" in sql
+
+
+async def test_cycle_refreshes_when_mv_was_never_analyzed() -> None:
+    """End-to-end on the cycle: NULL stats -> the helper IS invoked."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from parkos_core.jobs.refresh_mv_ocupacion import RefreshMvOcupacionWorker
+
+    stats = MagicMock()
+    stats.first.return_value = (None,)
+    session = MagicMock(spec=AsyncSession)
+    session.execute = AsyncMock(side_effect=[stats, MagicMock()])
+    session.commit = AsyncMock(return_value=None)
+    session.rollback = AsyncMock(return_value=None)
+    captured: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        captured.append(float(seconds))
+
+    import parkos_core.jobs.refresh_mv_ocupacion as mod
+
+    orig = mod.asyncio.sleep
+    mod.asyncio.sleep = _fake_sleep  # type: ignore[assignment]
+    try:
+        await RefreshMvOcupacionWorker(session=session, refresh_interval_s=10).cycle()
+    finally:
+        mod.asyncio.sleep = orig  # type: ignore[assignment]
+    assert [str(c.args[0]) for c in session.execute.await_args_list][-1] == REFRESH_HELPER_SQL
+    assert session.commit.await_count == 1
+
+
 __all__ = [
     "test_cycle_helper_failure_logs_and_does_not_fall_back_to_direct_refresh",
     "test_cycle_normal_calls_security_definer_helper_then_sleeps",

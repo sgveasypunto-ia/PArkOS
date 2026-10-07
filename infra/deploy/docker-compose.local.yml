@@ -161,6 +161,31 @@ services:
     deploy:
       replicas: 1
 
+  # -------------------------------------------------------------------------
+  # job-refresh-mv-ocupacion — refreshes prod.mv_ocupacion_diaria every 10s.
+  # Safety net for writes that bypass the API handlers (sync, scripts); the
+  # handlers also refresh on ingreso / salida / anular-no-pagada. Same image
+  # as job-sync-sucursal (the module ships in every branch image).
+  # -------------------------------------------------------------------------
+  job-refresh-mv-ocupacion:
+    image: parkos:job-sync-sucursal-test
+    container_name: parkos-job-refresh-mv-ocupacion
+    restart: unless-stopped
+    command: ["python", "-m", "parkos_core.jobs.refresh_mv_ocupacion"]
+    environment:
+      PARKOS_DEPLOY: branch
+      PARKOS_BRANCH_DB_DSN: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
+      DATABASE_URL: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
+    depends_on:
+      branch-db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - parkos-cloud-net
+    deploy:
+      replicas: 1
+
 volumes:
   branch-db-data:
   jwt-volume:
