@@ -39,7 +39,7 @@ by natural key at read time (``prod.v_clientes_actual`` /
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -77,7 +77,8 @@ def _differs(payload: dict[str, Any], open_version: dict[str, Any], columns: set
 
 
 def _json_safe(value: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Coerce ``UUID``/``datetime``/``Decimal`` leaf values so the dict is
+    """Coerce ``UUID``/``date``/``datetime``/``Decimal`` (and more, see
+    ``_json_leaf``) leaf values so the dict is
     JSONB-storable.
 
     ``sync_conflict.datos_local`` / ``datos_cloud`` are JSONB columns;
@@ -93,17 +94,30 @@ def _json_safe(value: dict[str, Any] | None) -> dict[str, Any] | None:
     """
     if value is None:
         return None
-    safe: dict[str, Any] = {}
-    for key, item in value.items():
-        if isinstance(item, UUID):
-            safe[key] = str(item)
-        elif isinstance(item, datetime):
-            safe[key] = item.isoformat()
-        elif isinstance(item, Decimal):
-            safe[key] = float(item)
-        else:
-            safe[key] = item
-    return safe
+    return {key: _json_leaf(item) for key, item in value.items()}
+
+
+def _json_leaf(item: Any) -> Any:
+    """Recursive leaf coercion (also ``date``/``time``/``timedelta``/``bytes``
+    and nested containers) so no column type can fail the JSONB bind again."""
+    if isinstance(item, dict):
+        return {k: _json_leaf(v) for k, v in item.items()}
+    if isinstance(item, list | tuple):
+        return [_json_leaf(v) for v in item]
+    if isinstance(item, UUID):
+        return str(item)
+    if isinstance(item, datetime | date | time):
+        # ``datetime`` is a ``date`` subclass. Plain ``date`` columns
+        # (``resolucion_facturacion.fecha_*``) made the JSONB bind raise
+        # ``TypeError`` -> ``StatementError`` and froze the branch pull.
+        return item.isoformat()
+    if isinstance(item, Decimal):
+        return float(item)
+    if isinstance(item, timedelta):
+        return item.total_seconds()
+    if isinstance(item, bytes | bytearray | memoryview):
+        return bytes(item).hex()
+    return item
 
 
 async def _write_divergence_conflict(ctx: HookContext, open_version: dict[str, Any]) -> None:

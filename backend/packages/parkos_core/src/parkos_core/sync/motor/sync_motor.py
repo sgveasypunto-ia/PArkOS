@@ -115,6 +115,42 @@ def describe_apply_error(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+_APPLY_ERROR_DETAIL_MAX = 240
+
+
+def describe_apply_error_detail(exc: BaseException) -> str:
+    """Short human-readable message of the ORIGINAL failure, for the log.
+
+    ``describe_apply_error`` returns only a stable label (``StatementError``)
+    which hides the actual cause. This unwraps SQLAlchemy's ``orig`` and
+    truncates, so the log names the real error (e.g. ``TypeError: Object of
+    type date is not JSON serializable``).
+
+    Never uses ``str()`` of the SQLAlchemy wrapper (it embeds the bound
+    parameter dict). A server-side database error (has a SQLSTATE) is
+    reported as class + SQLSTATE (+ constraint) only: its message carries a
+    ``DETAIL:`` with the offending key values, i.e. personal data.
+    """
+    orig = getattr(exc, "orig", None)
+    if orig is None:
+        orig = exc.__cause__
+    if orig is None:
+        if hasattr(exc, "params"):
+            # SQLAlchemy wrapper without an unwrapped cause: its text holds
+            # the bound row parameters.
+            return type(exc).__name__
+        orig = exc  # a plain Python error raised by our own code
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if sqlstate:
+        constraint = getattr(getattr(orig, "diag", None), "constraint_name", None)
+        suffix = f":{constraint}" if constraint else ""
+        return f"{type(orig).__name__}:{sqlstate}{suffix}"
+    text = " ".join(str(orig).split())
+    if len(text) > _APPLY_ERROR_DETAIL_MAX:
+        text = text[:_APPLY_ERROR_DETAIL_MAX] + "..."
+    return f"{type(orig).__name__}: {text}"
+
+
 # ---------------------------------------------------------------------------
 # ``resolve_identity_aliases`` + ``remap_foreign_keys`` — durable
 # cross-cycle identity-alias remap for the catalog-driven push path.
@@ -323,6 +359,10 @@ class BatchResult:
     failed: list[tuple[SyncCatalogEntry, dict[str, Any], str]] = field(
         default_factory=list
     )
+    # Parallel to ``failed``: a short, truncated message per failed row (see
+    # :func:`describe_apply_error_detail`). Kept apart from ``failed`` so the
+    # ``(spec, payload, reason)`` tuple shape stays stable for its consumers.
+    failed_details: list[str] = field(default_factory=list)
 
 
 class SyncMotor:
@@ -614,6 +654,7 @@ class SyncMotor:
                     )
             except Exception as exc:  # noqa: BLE001 — isolate the row, keep the batch
                 result.failed.append((spec, payload, describe_apply_error(exc)))
+                result.failed_details.append(describe_apply_error_detail(exc))
                 continue
 
             if outcome.status == "RETRY" and outcome.reason == "parent_missing":
