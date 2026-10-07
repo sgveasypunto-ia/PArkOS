@@ -50,6 +50,12 @@ export const AlertaSchema = z
      * response AND gracefully picks up the column when the BE lands it.
      */
     datos_nuevos: z.record(z.unknown()).nullable().optional(),
+    /**
+     * Per-alert severity computed by the backend (`critical` | `warning` |
+     * `info`, or null without an `alert_types` row). The schema is strict, so
+     * the key must be declared or the whole list fails to parse.
+     */
+    severity: z.string().nullable().optional(),
   })
   .strict();
 

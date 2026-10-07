@@ -83,6 +83,12 @@ describe('AlertaSchema — REQ-OPS-177 + REQ-OPS-180 (HU-F11.2)', () => {
     expect(() => AlertaSchema.parse(sinDatafono)).not.toThrow();
   });
 
+  it('S2d: the per-alert `severity` the backend sends is accepted (strict schema must not reject the whole list)', () => {
+    for (const severity of ['critical', 'warning', 'info', null]) {
+      expect(AlertaSchema.parse({ ...BASE_ROW, severity }).severity).toBe(severity);
+    }
+  });
+
   it('S3a: `datos_nuevos` is OPTIONAL — schema parses a BE row that omits the field today (DA-F11.2-14)', () => {
     // Today's BE response does NOT include `datos_nuevos` on the alert
     // row. The schema MUST succeed against that payload; the .optional()
