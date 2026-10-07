@@ -836,6 +836,9 @@ class SyncSucursalWorker(WorkerRunner):
             failed=len(failed),
             reasons=reasons,
             tables=sorted({spec.name for spec, _p, _r in failed if spec is not None}),
+            # Message of the original exception (truncated, driver-level; the
+            # bound row parameters are not included). Distinct values only.
+            errors=sorted(set(getattr(result, "failed_details", None) or []))[:3],
         )
 
     def _note_batch_failure(self, exc: BaseException) -> None:
