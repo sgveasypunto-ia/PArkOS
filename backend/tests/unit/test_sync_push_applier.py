@@ -105,6 +105,10 @@ class _Recorder:
         outcome = self.outcomes.get(spec.name, "APPLIED")
         if outcome == "raise":
             raise RuntimeError(f"motor exploded on {spec.name}")
+        if outcome == "fk_violation":
+            from sqlalchemy.exc import IntegrityError
+
+            raise IntegrityError("INSERT", {}, Exception("fk_factura_pagos_uuid_sesion"))
         if outcome == "APPLIED":
             return ApplyResult(status="APPLIED")
         if outcome == "CONFLICT":
@@ -136,6 +140,18 @@ def _build_client(
     session.execute = AsyncMock(
         return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
     )
+    session.savepoints_rolled_back = 0
+
+    class _Savepoint:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, exc_type: Any, *_: Any) -> bool:
+            if exc_type is not None:
+                session.savepoints_rolled_back += 1
+            return False  # never swallow
+
+    session.begin_nested = lambda: _Savepoint()
 
     application = FastAPI()
     application.include_router(sync_router_obj)
@@ -372,6 +388,22 @@ def test_push_rolls_back_when_apply_raises(monkeypatch: pytest.MonkeyPatch) -> N
     assert resp.status_code >= 500
     session.rollback.assert_awaited()
     session.commit.assert_not_awaited()
+
+
+def test_push_db_error_on_one_row_does_not_abort_the_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D5: an FK violation on one row is reported per row (``apply_error``,
+    retried by the sender) and the other rows of the batch still commit."""
+    c, rec, session = _build_client(monkeypatch, outcomes={"alerta": "fk_violation"})
+
+    resp = c.post("/sync/push", json={"rows": [_row("alerta"), _row("login", seq=2)]})
+
+    assert resp.status_code == 207
+    statuses = [r["status"] for r in resp.json()["results"]]
+    assert statuses == ["apply_error", "applied"]
+    assert session.savepoints_rolled_back == 1
+    session.commit.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
