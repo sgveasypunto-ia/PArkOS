@@ -17,6 +17,7 @@
  */
 import type { EnvioDianEstado, EnvioDianRead } from '../api/envioDianSchema';
 import { ENVIO_DIAN_ESTADOS } from '../api/envioDianSchema';
+import { normalizeEnvioDianEstado } from './envioDianEstado';
 
 export type EnvioDianCounts = Record<EnvioDianEstado, number>;
 
@@ -34,9 +35,9 @@ function emptyCounts(): EnvioDianCounts {
 export function buildEnvioDianCounts(items: readonly EnvioDianRead[]): EnvioDianCounts {
   const counts = emptyCounts();
   for (const item of items) {
-    if (item.estado !== null && (ENVIO_DIAN_ESTADOS as readonly string[]).includes(item.estado)) {
-      counts[item.estado as EnvioDianEstado] += 1;
-    }
+    // 'activo' (a dispatch in flight) counts as en_proceso.
+    const estado = normalizeEnvioDianEstado(item.estado);
+    if (estado !== null) counts[estado] += 1;
   }
   return counts;
 }

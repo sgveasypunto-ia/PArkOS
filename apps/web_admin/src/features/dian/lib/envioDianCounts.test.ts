@@ -52,6 +52,20 @@ describe('buildEnvioDianCounts', () => {
     expect(counts.en_proceso).toBe(0);
   });
 
+  it("counts the dispatcher's in-flight 'activo' rows as en_proceso", () => {
+    // envio_dian is append-only: a dispatch in flight is a row with
+    // estado 'activo' (not yet submitted) or 'en_proceso'; both are "in progress".
+    const counts = buildEnvioDianCounts([
+      envio({ uuid: 'a', estado: 'activo' }),
+      envio({ uuid: 'b', estado: 'en_proceso' }),
+      envio({ uuid: 'c', estado: 'timeout' }),
+    ]);
+    expect(counts.en_proceso).toBe(2);
+    expect(counts.timeout).toBe(1);
+    const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+    expect(total).toBe(3);
+  });
+
   it('ignores a null or unknown estado defensively instead of throwing', () => {
     const items = [
       envio({ uuid: 'a', estado: null }),

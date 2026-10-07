@@ -8,7 +8,8 @@ import { useTranslation } from 'react-i18next';
 
 import { Badge, type BadgeProps } from '@/components/ui/badge';
 
-import { ENVIO_DIAN_ESTADOS, type EnvioDianEstado } from '../api/envioDianSchema';
+import type { EnvioDianEstado } from '../api/envioDianSchema';
+import { normalizeEnvioDianEstado } from '../lib/envioDianEstado';
 
 export interface EstadoEnvioDianBadgeProps {
   estado: string | null;
@@ -28,14 +29,12 @@ const ESTADO_BADGE: Record<
   error: { labelKey: 'dian.estado.error', fallback: 'Error', variant: 'destructive' },
 };
 
-function isKnownEstado(estado: string): estado is EnvioDianEstado {
-  return (ENVIO_DIAN_ESTADOS as readonly string[]).includes(estado);
-}
-
 export function EstadoEnvioDianBadge({ estado }: EstadoEnvioDianBadgeProps): JSX.Element {
   const { t } = useTranslation();
 
-  if (estado === null || !isKnownEstado(estado)) {
+  // The in-flight row of an append-only chain ('activo') shows as En proceso.
+  const known = normalizeEnvioDianEstado(estado);
+  if (known === null) {
     return (
       <Badge variant="outline" data-testid="estado-envio-dian-badge-none">
         {t('dian.estado.none', '—')}
@@ -43,9 +42,9 @@ export function EstadoEnvioDianBadge({ estado }: EstadoEnvioDianBadgeProps): JSX
     );
   }
 
-  const badge = ESTADO_BADGE[estado];
+  const badge = ESTADO_BADGE[known];
   return (
-    <Badge variant={badge.variant} data-testid={`estado-envio-dian-badge-${estado}`}>
+    <Badge variant={badge.variant} data-testid={`estado-envio-dian-badge-${known}`}>
       {t(badge.labelKey, badge.fallback)}
     </Badge>
   );

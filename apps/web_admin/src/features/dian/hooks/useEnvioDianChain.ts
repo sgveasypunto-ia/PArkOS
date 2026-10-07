@@ -58,6 +58,9 @@ async function resolveByUuid(
     pagesFetchedRef.count += 1;
     const page = await fetchEnvioDianList({
       uuid_sucursal: uuidSucursal ?? undefined,
+      // The listing shows only the last row per document by default; the
+      // history needs every row of the chain.
+      solo_tip: false,
       limit: PAGE_LIMIT,
       cursor,
     });
