@@ -377,6 +377,7 @@ async def crear_factura_impuesto_iva(
     uuid_factura: uuid_lib.UUID,
     base: Decimal,
     iva: Decimal,
+    iva_monto: Decimal | None = None,
 ) -> FacturaImpuestos:
     """Step 10b: INSERT one IVA snapshot row in ``prod.factura_impuestos``.
 
@@ -392,6 +393,12 @@ async def crear_factura_impuesto_iva(
     is used for ``compute_total`` (Step 8) and the IVA snapshot
     (this function) — no drift between total and snapshot.
 
+    ``iva_monto`` (optional): the tax amount when the caller already
+    computed it (IVA-inclusive subscription price: ``base + iva_monto ==
+    total`` exactly, via ``repo.impuestos.desglosar_iva_incluido``). When
+    omitted the legacy ``ROUND(base * iva, 2)`` applies (rotacion flow,
+    unchanged).
+
     KD-FACT-01: caller commits ONCE.
     """
     from ..models.V.impuestos import Impuestos  # local import to avoid cycles
@@ -406,7 +413,8 @@ async def crear_factura_impuesto_iva(
         )
     ).scalar_one()
 
-    iva_monto = (base * iva).quantize(Decimal("0.01"))
+    if iva_monto is None:
+        iva_monto = (base * iva).quantize(Decimal("0.01"))
     new_row = FacturaImpuestos(
         uuid_factura=uuid_factura,
         uuid_impuesto=iva_row.uuid,

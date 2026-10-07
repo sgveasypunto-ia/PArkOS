@@ -76,7 +76,7 @@ async def test_renovacion_sin_claim_se_liga_a_la_sesion_abierta_y_cuenta_en_espe
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as s:
         esperado = await repo_arqueo.calcular_esperado_sesion(s, uuid_sesion=sesion)
-    assert esperado == Decimal("4500") + Decimal("119000")
+    assert esperado == Decimal("4500") + Decimal("100000")
 
 
 async def test_venta_suscripcion_sin_claim_se_liga_a_la_sesion_abierta(

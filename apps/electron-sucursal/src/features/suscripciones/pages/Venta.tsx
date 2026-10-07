@@ -60,6 +60,7 @@ import {
 } from '../hooks/useVentaSuscripcion';
 import { useTiposSubscripciones } from '../hooks/useTiposSubscripciones';
 import { useIvaVigente } from '../../facturacion/hooks/useIvaVigente';
+import { desglosarIvaIncluido } from '../lib/ivaIncluido';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { feWarningMessage } from '../../facturacion/lib/feEstado';
 import { hoyBogotaISO } from '../lib/fechaInicio';
@@ -248,6 +249,16 @@ const buildPlacasSchema = (count: number) =>
  */
 const PLAN_PREVIEW_VALOR = 30000;
 
+const copDecimalFormatter = new Intl.NumberFormat('es-CO', {
+  style: 'currency',
+  currency: 'COP',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+function formatCopDecimal(value: number): string {
+  return copDecimalFormatter.format(value);
+}
+
 const PLACA_AUTO = /^[A-Z]{3}[0-9]{3}$/;
 const PLACA_MOTO = /^[A-Z]{3}[0-9]{2}[A-Z]$/;
 const TOTAL_PASOS = 6;
@@ -308,9 +319,10 @@ export function Venta({
     isLoading: planesLoading,
   } = useTiposSubscripciones(uuid_sucursal, state.uuid_tipo_vehiculo ?? null);
 
-  // El backend cobra `plan.valor + IVA` (clientes_venta.py: total_con_iva),
-  // así que el total a cobrar (y el monto recibido por defecto del pago)
-  // debe incluir el IVA vigente; si no, el default queda por debajo.
+  // El precio del plan INCLUYE el IVA: el backend cobra exactamente
+  // `plan.valor` (clientes_venta.py: total == plan.valor) y el IVA es un
+  // desglose dentro de ese total. El IVA vigente solo alimenta la línea
+  // informativa "Incluye IVA"; nunca cambia el monto a cobrar.
   const ivaVigente = useIvaVigente(true);
 
   const selectedPlan = useMemo(() => {
@@ -319,12 +331,11 @@ export function Venta({
       planes.find((p) => p.uuid === state.uuid_tipo_subscripcion) ?? null
     );
   }, [planes, state.uuid_tipo_subscripcion]);
-  const totalConIva =
+  const totalPlan = selectedPlan?.valor ?? PLAN_PREVIEW_VALOR;
+  const desgloseIva =
     ivaVigente.porcentaje === null
       ? null
-      : Math.round(
-          (selectedPlan?.valor ?? PLAN_PREVIEW_VALOR) * (1 + ivaVigente.porcentaje) * 100,
-        ) / 100;
+      : desglosarIvaIncluido(totalPlan, ivaVigente.porcentaje);
 
   const selectedTipoVehiculo = useMemo(
     () => tiposVehiculo.find((tv) => tv.uuid === state.uuid_tipo_vehiculo) ?? null,
@@ -976,19 +987,22 @@ export function Venta({
             The FE is always emitted: the checkbox only chooses to bill the
             subscriber instead of "consumidor final".
           */}
-          {totalConIva === null ? (
+          {desgloseIva !== null && ivaVigente.porcentaje !== null && (
             <p
               className="text-sm text-muted-foreground"
-              data-testid="venta-iva-cargando"
+              data-testid="venta-iva-incluido"
             >
-              {t('suscripciones:venta.paso6.iva_cargando', {
-                defaultValue: 'Calculando el total con IVA…',
+              {t('suscripciones:venta.paso6.iva_incluido', {
+                defaultValue: 'Incluye IVA {{porcentaje}}%: {{iva}} (base {{base}})',
+                porcentaje: Math.round(ivaVigente.porcentaje * 10000) / 100,
+                iva: formatCopDecimal(desgloseIva.iva),
+                base: formatCopDecimal(desgloseIva.base),
               })}
             </p>
-          ) : (
+          )}
           <PagoModal
             uuid_ingreso={null}
-            total_cop={totalConIva}
+            total_cop={totalPlan}
             clientePrefill={clientePrefill}
             identificacionReadonly
             draft={pagoDraft}
@@ -998,7 +1012,6 @@ export function Venta({
             })}
             onSubmit={handlePagoSubmit}
           />
-          )}
           {isMutating && <span data-testid="venta-mutating">Procesando…</span>}
         </section>
       )}

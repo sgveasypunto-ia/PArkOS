@@ -192,7 +192,7 @@ export function RenovarSuscripcionPanel({
       <p className="text-sm text-muted-foreground" data-testid="renovar-nota">
         {t('suscripciones:renovar.nota', {
           defaultValue:
-            'La renovación mantiene las placas de la suscripción y cobra el plan completo. No hace falta registrar placas.',
+            'La renovación mantiene las placas de la suscripción y cobra el plan completo (IVA incluido). No hace falta registrar placas.',
         })}
       </p>
 

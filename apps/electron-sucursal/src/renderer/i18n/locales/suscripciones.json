@@ -68,7 +68,7 @@
     "vencida": "vencida",
     "diasRestantes_one": "{{count}} día restante",
     "diasRestantes_other": "{{count}} días restantes",
-    "nota": "La renovación mantiene las placas de la suscripción y cobra el plan completo. No hace falta registrar placas.",
+    "nota": "La renovación mantiene las placas de la suscripción y cobra el plan completo (IVA incluido). No hace falta registrar placas.",
     "medioPago": "Medio de pago",
     "medios": {
       "efectivo": "Efectivo",
@@ -133,7 +133,8 @@
     },
     "paso6": {
       "titulo": "Pago",
-      "feSuscriptor": "Facturar a nombre del suscriptor (opcional)"
+      "feSuscriptor": "Facturar a nombre del suscriptor (opcional)",
+      "iva_incluido": "Incluye IVA {{porcentaje}}%: {{iva}} (base {{base}})"
     },
     "errors": {
       "suscripcion_duplicada_placa": "Esta placa ya tiene una suscripción vigente",

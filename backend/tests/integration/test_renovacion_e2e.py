@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from parkos_core.models.A.factura_impuestos import FacturaImpuestos
 from parkos_core.models.A.factura_pagos import FacturaPagos
 from parkos_core.models.A.log_transaccional import LogTransaccional
 from parkos_core.models.L_E.facturas import Facturas
@@ -205,9 +206,10 @@ async def test_renovacion_anticipada_conserva_placas_cobra_completo_y_emite_fe(
     assert body["uuid_subscripcion_anterior"] == str(sub)
     assert body["uuid_subscripcion"] != str(sub)
     assert sorted(body["placas"]) == ["AAA111", "BBB222"]
-    # full price + IVA (0.19 seeded), no proration
+    # full price, IVA INCLUDED (0.19 seeded): the plan valor is the total,
+    # the customer is never charged an extra on top; no proration
     assert Decimal(body["valor_total_plan"]) == Decimal("100000.00")
-    assert Decimal(body["total_con_iva"]) == Decimal("119000.00")
+    assert Decimal(body["total_con_iva"]) == Decimal("100000.00")
     # factura + pago + FE (same mechanism as the venta)
     assert body["uuid_factura"]
     assert body["factura_electronica_error"] is None
@@ -258,7 +260,24 @@ async def test_renovacion_anticipada_conserva_placas_cobra_completo_y_emite_fe(
 
     # invoice total, payment row and audit row
     factura = await _fila(pg_engine, Facturas, uuid_lib.UUID(body["uuid_factura"]))
-    assert Decimal(factura.total) == Decimal("119000.00")
+    assert Decimal(factura.total) == Decimal("100000.00")
+    assert Decimal(factura.subtotal) == Decimal("84033.61")
+    async with Session() as s_imp:
+        imp = (
+            await s_imp.execute(
+                select(FacturaImpuestos).where(FacturaImpuestos.uuid_factura == factura.uuid)
+            )
+        ).scalar_one()
+        pago = (
+            await s_imp.execute(
+                select(FacturaPagos).where(FacturaPagos.uuid_factura == factura.uuid)
+            )
+        ).scalar_one()
+    # base + IVA == total EXACTLY; payment == plan valor
+    assert Decimal(imp.base_calculo) == Decimal("84033.61")
+    assert Decimal(imp.valor) == Decimal("15966.39")
+    assert Decimal(imp.base_calculo) + Decimal(imp.valor) == Decimal(factura.total)
+    assert Decimal(pago.valor) == Decimal("100000.00")
     assert factura.uuid_subscripcion_cliente == nueva
     assert await _contar(
         pg_engine, FacturaPagos, FacturaPagos.uuid_factura == factura.uuid
