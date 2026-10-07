@@ -328,8 +328,13 @@ async def test_list_incluye_salida_sin_ingreso_y_al_final_las_sin_fecha(
         uuid_ingreso=ing,
         fecha_salida=_now_naive(),
     )
+    # One non-annulled salida per ingreso (``fn_salidas_one_exit_per_ingreso``):
+    # the undated exit belongs to an ingreso of its own.
+    ing_undated = await _seed_ingreso(
+        pg_engine, uuid_sucursal=branch, uuid_tipo_vehiculo=tipo, placa="KEEP02"
+    )
     undated = await _seed_salida(
-        pg_engine, uuid_sucursal=branch, uuid_ingreso=ing, fecha_salida=None
+        pg_engine, uuid_sucursal=branch, uuid_ingreso=ing_undated, fecha_salida=None
     )
     orphan = await _seed_salida(
         pg_engine,

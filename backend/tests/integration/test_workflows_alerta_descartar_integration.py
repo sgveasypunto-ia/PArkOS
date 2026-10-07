@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import pytest
+from _seeds import ensure_usuario
 from fastapi import HTTPException, Response
 from parkos_core.auth.tenancy import TenantContext
 from parkos_core.models.L_W.alerta import Alerta
@@ -36,6 +37,7 @@ async def test_descartar_alerta_full_transition_then_409_on_retry(
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     actor_uuid = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor_uuid)  # alerta.uuid_usuario is a real FK
     ctx = TenantContext(
         actor_uuid=actor_uuid,
         actor_rol="operador",

@@ -47,6 +47,26 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 
 @pytest.fixture(autouse=True)
+def _empty_outbox_and_audit_chains(pg_dsn, alembic_upgrade) -> None:
+    """Start from an empty outbox and clean hash chains.
+
+    The apply iteration drains EVERY pending ``sync_queue`` row of the (shared)
+    database and the verify iteration walks EVERY ``log_transaccional`` chain.
+    Rows other tests left behind (for branches that are gone, or chains they
+    broke on purpose) would be applied/flagged here and fail on foreign keys that
+    point at deleted branches. The GLOBAL genesis row (``uuid_sucursal IS NULL``)
+    the session bootstrap created is re-seeded after the TRUNCATE.
+    """
+    import psycopg
+    from tests.conftest import seed_hash_chain_genesis_row_sync
+
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute("TRUNCATE prod.sync_queue, prod.sync_conflict, prod.log_transaccional")
+        conn.commit()
+    seed_hash_chain_genesis_row_sync(pg_dsn, None)
+
+
+@pytest.fixture(autouse=True)
 def _catalog_engine_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """The apply side drains real sync_queue rows through SyncMotor —
     matches every other ``_apply_pending_batch_once`` integration test."""

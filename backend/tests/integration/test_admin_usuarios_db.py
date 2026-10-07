@@ -32,6 +32,7 @@ for _p in (_PARKOS_CORE_SRC, _API_ADMIN_SRC):
         sys.path.insert(0, str(_p))
 
 from parkos_core.api.v1 import admin_usuarios as _admin_usuarios_module  # noqa: E402
+from parkos_core.api.v1 import auth as _auth_module  # noqa: E402
 from parkos_core.api.v1.admin_usuarios import router as admin_router_obj  # noqa: E402
 from parkos_core.auth.tokens import issue_token  # noqa: E402
 from parkos_core.db.engine import get_session  # noqa: E402
@@ -65,6 +66,10 @@ def _build_cloud_admin_app(pg_engine) -> tuple[FastAPI, callable]:
     # ``/admin``. Mirror the production mount here so the test sees
     # the same routes the SPA calls.
     outer.include_router(_admin_usuarios_module.catalog_router)
+    # ``/auth/login`` and ``/auth/cambiar-password`` close the must-change
+    # loop that ``reset-password`` opens (HU-F16); production mounts them
+    # alongside the admin routers.
+    outer.include_router(_auth_module.router)
     app.include_router(outer)
 
     # Override get_session so the handler uses the testcontainers DB.
@@ -1097,8 +1102,10 @@ async def test_reset_password_sets_must_change_flag(
     async with Session() as session:
         rows_open = (
             await session.execute(
+                # A [V] bump mints a NEW uuid; the natural key (cedula)
+                # is what ties the versions of the same user together.
                 select(Usuarios).where(
-                    Usuarios.uuid == user_uuid,
+                    Usuarios.cedula == f"must-{user_uuid.hex[:8]}",
                     Usuarios.vigente_hasta.is_(None),
                 )
             )
@@ -1217,7 +1224,7 @@ async def test_cambiar_password_clears_flag_and_returns_normal_token(
         # We synthesize one by completing the change flow first.
         new_password = b"NewStrong-2026!"
         r2 = await client.post(
-            "/auth/cambiar-password",
+            "/api/v1/auth/cambiar-password",
             json={
                 "temporary_token": temp_token,
                 "new_password": new_password.decode("utf-8"),
@@ -1271,7 +1278,7 @@ async def test_cambiar_password_with_normal_access_token_returns_401(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
         r = await client.post(
-            "/auth/cambiar-password",
+            "/api/v1/auth/cambiar-password",
             json={"temporary_token": normal_jwt, "new_password": "Ignored2026!"},
         )
     assert r.status_code == 401, r.text

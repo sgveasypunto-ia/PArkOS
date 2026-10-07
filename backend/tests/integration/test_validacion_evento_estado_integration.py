@@ -58,6 +58,7 @@ finally:
     else:
         os.environ["PARKOS_DEPLOY"] = _PREV_DEPLOY
 
+from _seeds import seed_sucursales  # noqa: E402
 from parkos_core.auth.tokens import issue_token  # noqa: E402
 from parkos_core.db.engine import get_session  # noqa: E402
 from parkos_core.models.L_W.validacion_evento import ValidacionEvento  # noqa: E402
@@ -128,8 +129,10 @@ async def test_t1_rechazado_sin_observaciones_returns_422(
     admin_jwt = _admin_token()
 
     now = datetime.now(UTC).replace(tzinfo=None)
+    sucursal = uuid_lib.uuid4()
+    await seed_sucursales(pg_engine, sucursal)
     root = _seed_validacion_evento(
-        pg_session, uuid_sucursal=uuid_lib.uuid4(), estado="pendiente", vigente_desde=now
+        pg_session, uuid_sucursal=sucursal, estado="pendiente", vigente_desde=now
     )
     await pg_session.commit()
 
@@ -160,8 +163,10 @@ async def test_t2_transicion_ilegal_returns_409(
     admin_jwt = _admin_token()
 
     now = datetime.now(UTC).replace(tzinfo=None)
+    sucursal = uuid_lib.uuid4()
+    await seed_sucursales(pg_engine, sucursal)
     terminal_tip = _seed_validacion_evento(
-        pg_session, uuid_sucursal=uuid_lib.uuid4(), estado="validado", vigente_desde=now
+        pg_session, uuid_sucursal=sucursal, estado="validado", vigente_desde=now
     )
     await pg_session.commit()
 
@@ -192,8 +197,10 @@ async def test_t3_rechazado_legal_con_observaciones_returns_201(
     admin_jwt = _admin_token()
 
     now = datetime.now(UTC).replace(tzinfo=None)
+    sucursal = uuid_lib.uuid4()
+    await seed_sucursales(pg_engine, sucursal)
     root = _seed_validacion_evento(
-        pg_session, uuid_sucursal=uuid_lib.uuid4(), estado="pendiente", vigente_desde=now
+        pg_session, uuid_sucursal=sucursal, estado="pendiente", vigente_desde=now
     )
     await pg_session.commit()
 

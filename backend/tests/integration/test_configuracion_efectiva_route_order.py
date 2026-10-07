@@ -80,7 +80,10 @@ async def test_configuracion_seguridad_efectiva_route_resolves_not_the_factory_u
     )
 
     assert res.status_code != 422, res.text
-    assert res.status_code == 404, res.text
+    # Migration 0001 seeds the GLOBAL seguridad default (``uuid_sucursal IS NULL``),
+    # so a branch with no override of its own resolves to that default instead
+    # of 404: the route is reached (not shadowed by ``/{uuid}``) and falls back.
+    assert res.status_code == 200, res.text
     body = res.json()
-    assert body["detail"]["error"] == "not_found"
-    assert body["detail"]["resource"] == "configuracion-seguridad"
+    assert body["uuid_sucursal"] is None
+    assert body["vigente_hasta"] is None

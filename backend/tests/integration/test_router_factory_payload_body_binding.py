@@ -39,6 +39,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import pytest
+from _seeds import close_open_tipos_vehiculo, grant_admin_scope
 
 
 async def _grant_permission(pg_engine, *, actor_uuid: uuid_lib.UUID, perm_code: str) -> None:
@@ -89,6 +90,7 @@ async def test_create_sucursal_via_real_http_accepts_json_body(
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_sucursal")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
 
     resp = await client.post(
@@ -118,6 +120,7 @@ async def test_create_sucursal_via_real_http_accepts_json_body(
 
 
 @pytest.mark.parametrize("app", ["admin"], indirect=True)
+@pytest.mark.usefixtures("tipos_vehiculo_restaurados")
 async def test_create_tipos_vehiculo_via_real_http_accepts_json_body(
     client, pg_engine, alembic_upgrade, mint_admin_jwt
 ) -> None:
@@ -128,9 +131,11 @@ async def test_create_tipos_vehiculo_via_real_http_accepts_json_body(
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
+    await close_open_tipos_vehiculo(pg_engine)  # the catalog is capped at 5 open rows
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_catalogo")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
 
     tipo_value = f"tipo-{uuid_lib.uuid4().hex[:8]}"

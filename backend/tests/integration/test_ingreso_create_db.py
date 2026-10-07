@@ -12,7 +12,12 @@ import json
 import uuid as uuid_lib
 from datetime import UTC, datetime, timedelta
 
+from _seeds import ensure_usuario
+from tests.conftest import VFixtureFactory
 from parkos_core.models.L_E.ingreso import Ingreso
+from parkos_core.models.V.clientes import Clientes
+from parkos_core.models.V.tarifas_sucursal import TarifasSucursal
+from parkos_core.models.V.tipo_subscripciones import TipoSubscripciones
 from parkos_core.models.L_W.anulaciones import Anulaciones
 from parkos_core.models.V.cantidad_vehiculos_sucursal import (
     CantidadVehiculosSucursal,
@@ -114,6 +119,18 @@ async def _seed_full_chain(
         )
         await session.commit()
     async with Session() as session:
+        # V3 (tarifa vigente) runs before V8/V6 in the handler: without a
+        # tariff for the tipo every ingreso is rejected 422 before reaching them.
+        session.add(
+            TarifasSucursal(
+                uuid_sucursal=uuid_sucursal,
+                uuid_tipo_vehiculo=uuid_tipo_auto,
+                valor=1000,
+                valor_plena=1500,
+                vigente_desde=now - timedelta(days=1),
+                estado="activo",
+            )
+        )
         session.add(
             CantidadVehiculosSucursal(
                 uuid=uuid_lib.uuid4(),
@@ -162,7 +179,9 @@ async def _seed_prior(pg_engine, *, placa: str, uuid_sucursal: uuid_lib.UUID,
 async def _refresh_mv(pg_engine) -> None:
     import psycopg
 
-    dsn_sync = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    dsn_sync = pg_engine.url.render_as_string(hide_password=False).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
     async with async_sessionmaker(pg_engine, expire_on_commit=False)() as session:
         mv_sql = """
         CREATE MATERIALIZED VIEW IF NOT EXISTS prod.mv_ocupacion_diaria AS
@@ -192,6 +211,7 @@ async def test_insert_ingreso_con_alerta_capacidad_agotada_same_tx(
     await _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)  # alerta/ingreso actor columns are real FKs
     tipo_auto = uuid_lib.uuid4()
 
     await _seed_branch(pg_engine, uuid_sucursal=branch)
@@ -224,7 +244,9 @@ async def test_insert_ingreso_con_alerta_capacidad_agotada_same_tx(
 
     import psycopg
 
-    dsn = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    dsn = pg_engine.url.render_as_string(hide_password=False).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM prod.ingreso WHERE uuid_sucursal = %s",
@@ -257,6 +279,7 @@ async def test_duplicado_activo_rechazado_con_uuid_ingreso_existente(
     await _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)  # alerta/ingreso actor columns are real FKs
     tipo_auto = uuid_lib.uuid4()
 
     await _seed_branch(pg_engine, uuid_sucursal=branch)
@@ -279,7 +302,7 @@ async def test_duplicado_activo_rechazado_con_uuid_ingreso_existente(
             "X-Sucursal-Context": str(branch),
         },
     )
-    assert resp.status_code == 409
+    assert resp.status_code == 409, resp.text
     body = resp.json()
     detail = body.get("detail", body)
     assert detail["error"] == "ingreso_activo_existente"
@@ -298,6 +321,7 @@ async def test_subscripcion_vencida_returns_422_sin_forzado(
     await _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)  # alerta/ingreso actor columns are real FKs
     tipo_auto = uuid_lib.uuid4()
     sub = uuid_lib.uuid4()
 
@@ -309,12 +333,17 @@ async def test_subscripcion_vencida_returns_422_sin_forzado(
     now = _now_naive()
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        # Both parents are real FKs.
+        cliente = VFixtureFactory.build(Clientes)
+        tipo_sub = VFixtureFactory.build(TipoSubscripciones)
+        session.add_all([cliente, tipo_sub])
+        await session.flush()
         session.add(
             SubscripcionesCliente(
                 uuid=sub,
-                uuid_cliente=uuid_lib.uuid4(),
+                uuid_cliente=cliente.uuid,
                 uuid_sucursal=branch,
-                uuid_tipo_subscripcion=uuid_lib.uuid4(),
+                uuid_tipo_subscripcion=tipo_sub.uuid,
                 fecha_inicio_cobertura=now.date() - timedelta(days=60),
                 fecha_vencimiento=now.date() - timedelta(days=1),  # past
                 created_at=now,
@@ -376,7 +405,7 @@ async def _seed_pending_anulacion(
                 tipo_anulable=tipo_anulable,
                 uuid_ingreso=uuid_ingreso,
                 uuid_salida=None,
-                uuid_usuario=uuid_lib.uuid4(),
+                uuid_usuario=await ensure_usuario(pg_engine, uuid_lib.uuid4()),
                 motivo="anulacion en prueba M2 regression",
                 uuid_anulacion_padre=None,
                 timestamp_evento=now,
@@ -388,16 +417,15 @@ async def _seed_pending_anulacion(
         await session.commit()
 
 
-async def test_anulacion_pendiente_no_bloquea_nuevo_ingreso(
-    pg_engine, mint_operador_jwt, client, pg_dsn
-) -> None:
-    """M2 regression: a ``pendiente`` anulacion tied to the prior activo
-    ingreso MUST NOT count as ``ingreso_activo_existente`` for V8. The
-    EXISTS predicate should require ``estado='ejecutada'`` (M2 deviation
-    fixed at archive)."""
+async def _post_ingreso_tras_anulacion(
+    pg_engine, mint_operador_jwt, client, pg_dsn, *, estado_anulacion: str
+):
+    """Seed an active ingreso + an anulacion of it in ``estado_anulacion``, then
+    try to register the SAME plate again. Returns ``(response, prior_uuid)``."""
     await _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)  # alerta/ingreso actor columns are real FKs
     tipo_auto = uuid_lib.uuid4()
 
     await _seed_branch(pg_engine, uuid_sucursal=branch)
@@ -410,12 +438,11 @@ async def test_anulacion_pendiente_no_bloquea_nuevo_ingreso(
         uuid_sucursal=branch,
         uuid_tipo_auto=tipo_auto,
     )
-    # Seed a pendiente anulacion tied to the prior ingreso
     await _seed_pending_anulacion(
         pg_engine,
         uuid_ingreso=prior,
         uuid_sucursal=branch,
-        estado="activo",
+        estado=estado_anulacion,
         tipo_anulable="ingreso",
     )
 
@@ -428,15 +455,45 @@ async def test_anulacion_pendiente_no_bloquea_nuevo_ingreso(
             "X-Sucursal-Context": str(branch),
         },
     )
-    # Per M2 fix: pendiente anulacion (estado=activo, not ejecutada) does
-    # NOT count as a blocker -- the new ingreso proceeds (201), NOT 409.
-    assert resp.status_code == 201, (
-        f"pendiente anulacion must not block V8; got {resp.status_code}: {resp.text}"
+    return resp, prior
+
+
+async def test_anulacion_pendiente_no_libera_el_ingreso_activo(
+    pg_engine, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """M2 regression: only an ``ejecutada`` anulacion annuls an ingreso. A
+    anulacion still in flight (``iniciada``) leaves the vehicle inside, so a
+    second ingreso with the same plate is a duplicate -> 409 pointing at the
+    prior ingreso (it neither blocks NOR frees anything by itself).
+
+    This test used to claim ``201`` for a pending anulacion, which contradicts
+    the single "active ingreso" definition (``repo/ingreso_activo.py``) that
+    the V8 guard shares with ``V_INGRESO_ESTADO``.
+    """
+    resp, prior = await _post_ingreso_tras_anulacion(
+        pg_engine, mint_operador_jwt, client, pg_dsn, estado_anulacion="iniciada"
     )
+    assert resp.status_code == 409, resp.text
+    detail = resp.json().get("detail", {})
+    assert detail["error"] == "ingreso_activo_existente"
+    assert detail["uuid_ingreso_existente"] == str(prior)
+
+
+async def test_anulacion_ejecutada_libera_el_ingreso(
+    pg_engine, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """Counterpart of the M2 regression: once the anulacion of the ingreso is
+    ``ejecutada`` the prior ingreso no longer counts as active and the plate can
+    be registered again (201)."""
+    resp, _prior = await _post_ingreso_tras_anulacion(
+        pg_engine, mint_operador_jwt, client, pg_dsn, estado_anulacion="ejecutada"
+    )
+    assert resp.status_code == 201, resp.text
 
 
 __all__ = [
-    "test_anulacion_pendiente_no_bloquea_nuevo_ingreso",
+    "test_anulacion_ejecutada_libera_el_ingreso",
+    "test_anulacion_pendiente_no_libera_el_ingreso_activo",
     "test_duplicado_activo_rechazado_con_uuid_ingreso_existente",
     "test_insert_ingreso_con_alerta_capacidad_agotada_same_tx",
     "test_subscripcion_vencida_returns_422_sin_forzado",

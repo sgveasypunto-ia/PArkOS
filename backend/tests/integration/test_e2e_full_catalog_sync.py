@@ -189,10 +189,16 @@ from typing import Any
 import httpx
 import psycopg
 import pytest
+from _seeds import cloud_node_env, ensure_usuario
 from fastapi import FastAPI
 from sqlalchemy import func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+
+# The test creates its own ``empresa`` on the cloud node (the singleton slot must
+# be free, or the integration conftest stores a second open empresa as closed
+# history and the backfill then has nothing to carry).
+pytestmark = pytest.mark.usefixtures("empresa_slot_libre")
 
 ACTOR_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000e2e01")
 
@@ -621,7 +627,8 @@ async def push_and_verify(
         own_rows = [r for r in own_rows if r.uuid_registro == uuid_registro]
     assert own_rows, f"{table_name}: no pending sync_queue row after creating it"
 
-    await worker._push_and_handle_catalog(own_rows)
+    with cloud_node_env():
+        await worker._push_and_handle_catalog(own_rows)
     await branch_session.commit()
 
     for row in own_rows:
@@ -692,6 +699,11 @@ async def test_full_catalog_sync_46_entries_e2e(
     # STAGE 1 — all 26 [V] entries, authored at CLOUD, delivered to BRANCH
     # via a real cutover/backfill.py::run_backfill call.
     # =====================================================================
+    # The origin actor is a real user on both nodes: creating a sucursal as
+    # that actor also assigns it (``usuarios_sucursal.uuid_usuario`` is a FK).
+    await ensure_usuario(pg_engine, ACTOR_UUID, rol="admin")
+    await ensure_usuario(branch_pg_engine, ACTOR_UUID, rol="admin")
+
     C: dict[str, Any] = {}  # name -> cloud-side row
     async with CloudSession() as session:
         C["usuarios"] = await create_origin_row(

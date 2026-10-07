@@ -210,35 +210,59 @@ async def test_trigger_one_exit_per_ingreso(pg_engine) -> None:
 
 
 @pytest.mark.asyncio
-async def test_0026_re_aplica_sin_error(pg_engine) -> None:
+async def test_0026_re_aplica_sin_error(pg_engine, pg_dsn) -> None:
     """T5: migration 0026 can be applied twice consecutively without
     error. Idempotency proof for the 4 ops (Op 2 ``ON CONFLICT DO
     NOTHING``, Op 3 ``ON CONFLICT DO NOTHING``, Op 4 ``CREATE OR REPLACE
     FUNCTION`` + ``DROP TRIGGER IF EXISTS`` + ``CREATE TRIGGER``).
 
-    Implementation: invoke the migration ``upgrade()`` function via
-    ``alembic``'s programmatic API. The upgrade is a no-op the second
-    time around because every statement is guarded by either a unique
-    constraint conflict (Op 2 + Op 3) or idempotent trigger install
-    (Op 4). The pre-flight Op 1 ``DO $$`` block is read-only (no DDL)
-    so it also runs clean on re-apply.
+    Implementation: load the revision file from ``migrations/versions`` and
+    run its ``upgrade()`` through alembic's programmatic API
+    (``MigrationContext`` + ``Operations.context``) against the test DB. The
+    upgrade is a no-op the second time around because every statement is
+    guarded by either a unique constraint conflict (Op 2 + Op 3) or an
+    idempotent trigger install (Op 4). The pre-flight Op 1 ``DO $$`` block is
+    read-only (no DDL) so it also runs clean on re-apply.
     """
     import importlib
+    import sys
+    from pathlib import Path
 
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine
+
+    versions = Path(__file__).resolve().parents[2] / "packages" / "parkos_core" / "migrations" / "versions"
+    if str(versions) not in sys.path:
+        sys.path.insert(0, str(versions))
     migration_mod = importlib.import_module(
-        "parkos_core.migrations.versions."
         "0026_seed_impuestos_iva_and_one_exit_per_ingreso"
     )
-    # First apply -- might already be applied by alembic_upgrade, so
-    # just call it twice and confirm no exception on the second call.
-    migration_mod.upgrade()
+
+    # Both applies run inside ONE transaction that is rolled back at the end:
+    # the seed in Op 2 uses ``vigente_desde = NOW()`` as part of its conflict
+    # target, so a committed re-apply would leave a SECOND open ``IVA`` row in
+    # the shared database and break every later test that expects exactly one
+    # (``crear_factura_impuesto_iva``). What this test proves -- the statements
+    # re-run without raising -- does not need the second apply to persist.
+    engine = create_engine(pg_dsn.replace("postgresql://", "postgresql+psycopg://", 1))
     try:
-        migration_mod.upgrade()
-    except Exception as exc:
-        pytest.fail(
-            f"0026 upgrade must be idempotent (re-apply = no-op); "
-            f"second apply raised: {exc!r}"
-        )
+        with engine.connect() as conn:
+            outer = conn.begin()
+            try:
+                with Operations.context(MigrationContext.configure(conn)):
+                    for attempt in ("first", "second"):
+                        try:
+                            migration_mod.upgrade()
+                        except Exception as exc:
+                            pytest.fail(
+                                f"0026 upgrade must be idempotent (re-apply = no-op); "
+                                f"{attempt} apply raised: {exc!r}"
+                            )
+            finally:
+                outer.rollback()
+    finally:
+        engine.dispose()
 
 
 __all__ = [

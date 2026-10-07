@@ -24,8 +24,11 @@ from __future__ import annotations
 
 import json
 import uuid as uuid_lib
+
+import pytest
 from datetime import UTC, datetime, timedelta
 
+from _seeds import ensure_usuario
 from parkos_core.models.A.salidas import Salidas
 from parkos_core.models.L_E.ingreso import Ingreso
 from parkos_core.models.V.cantidad_vehiculos_sucursal import (
@@ -35,6 +38,7 @@ from parkos_core.models.V.empresa import Empresa
 from parkos_core.models.V.impuestos import Impuestos
 from parkos_core.models.V.sucursal import Sucursal
 from parkos_core.models.V.tarifas_sucursal import TarifasSucursal
+from parkos_core.models.V.tipo_tarifa import TipoTarifa
 from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -145,22 +149,6 @@ async def _seed_tarifa_vigente(
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         session.add(
-            TarifasSucursal(
-                uuid=uuid_lib.uuid4(),
-                uuid_sucursal=uuid_sucursal,
-                uuid_tipo_vehiculo=uuid_tipo_auto,
-                valor_hora=valor_hora,
-                vigente_desde=now - timedelta(days=1),
-                vigente_hasta=None,
-                estado="activo",
-                created_at=now - timedelta(days=1),
-                created_by=None,
-                sync_status="sincronizado",
-                sync_timestamp=None,
-                sync_attempts=0,
-            )
-        )
-        session.add(
             TiposVehiculo(
                 uuid=uuid_tipo_auto,
                 tipo="carro",
@@ -168,6 +156,43 @@ async def _seed_tarifa_vigente(
                 vigente_hasta=None,
                 estado="activo",
                 created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        # The cotizador prices by the hourly tipo_tarifa (tarifas_tipo_required:
+        # both tipos are mandatory on a tarifa).
+        uuid_tipo_tarifa = uuid_lib.uuid4()
+        session.add(
+            TipoTarifa(
+                uuid=uuid_tipo_tarifa,
+                tipo="hora",
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        # The tipos are real FKs of the tarifa and the cupo: they must exist first.
+        await session.flush()
+        session.add(
+            TarifasSucursal(
+                uuid=uuid_lib.uuid4(),
+                uuid_sucursal=uuid_sucursal,
+                uuid_tipo_vehiculo=uuid_tipo_auto,
+                uuid_tipo_tarifa=uuid_tipo_tarifa,
+                valor=valor_hora,
+                valor_plena=valor_hora * 4,
+                vigente_desde=now - timedelta(days=1),
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now - timedelta(days=1),
                 created_by=None,
                 sync_status="sincronizado",
                 sync_timestamp=None,
@@ -249,6 +274,7 @@ async def test_insert_salida_con_alerta_forzado_atomico(
     await _reseed_iva(pg_engine)
     branch = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)  # actor columns of alerta/salida are real FKs
     tipo_auto = uuid_lib.uuid4()
 
     await _seed_branch(pg_engine, uuid_sucursal=branch)
@@ -291,7 +317,9 @@ async def test_insert_salida_con_alerta_forzado_atomico(
     )
     assert resp.status_code == 201, f"got {resp.status_code}: {resp.text}"
 
-    dsn = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    dsn = pg_engine.url.render_as_string(hide_password=False).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         # Salida inserted
         cur.execute(
@@ -347,6 +375,7 @@ async def test_trigger_one_exit_per_ingreso_emite_409(
     await _reseed_iva(pg_engine)
     branch = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)  # actor columns of alerta/salida are real FKs
     tipo_auto = uuid_lib.uuid4()
 
     await _seed_branch(pg_engine, uuid_sucursal=branch)
@@ -377,28 +406,47 @@ async def test_trigger_one_exit_per_ingreso_emite_409(
         f"{resp_first.text}"
     )
 
-    # Second POST for the same uuid_ingreso: 409 salida_duplicada
+    # Second POST for the same uuid_ingreso, sequentially: the handler's own
+    # "active ingreso" pre-check (shared definition, ``repo/ingreso_activo.py``)
+    # already sees the first exit, so the vehicle is gone -> 404. The 409
+    # ``salida_duplicada`` of the partial unique index is the RACE guard (two
+    # concurrent exits both passing the pre-check) and is exercised below at
+    # the database level, where the guard actually lives.
     resp_second = await client.post(
         "/api/v1/operacion/salidas",
         json={"uuid_ingreso": str(ingreso_uuid), "placa": "ABC123"},
         headers=headers,
     )
-    assert resp_second.status_code == 409, (
-        f"second POST must hit partial unique index -> 409; "
+    assert resp_second.status_code == 404, (
+        f"a sequential second exit must be rejected by the pre-check; "
         f"got {resp_second.status_code}: {resp_second.text}"
     )
-    body = resp_second.json()
-    detail = body.get("detail", body)
-    assert detail["error"] == "salida_duplicada", (
-        f"409 discriminator must be 'salida_duplicada'; got {detail!r}"
-    )
-    assert detail["uuid_ingreso"] == str(ingreso_uuid)
+    assert resp_second.json()["detail"]["error"] == "ingreso_no_encontrado"
+
+    # DB-level guard: a second ``salidas`` row for the same ingreso (what the
+    # losing side of a race would insert) is refused by the partial unique index.
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+
+    async with async_sessionmaker(pg_engine, expire_on_commit=False)() as session:
+        first = (
+            await session.execute(select(Salidas).where(Salidas.uuid_ingreso == ingreso_uuid))
+        ).scalar_one()
+        clone = Salidas(
+            **{c.key: getattr(first, c.key) for c in Salidas.__table__.columns if c.key != "uuid"}
+        )
+        session.add(clone)
+        with pytest.raises(IntegrityError) as exc_info:
+            await session.commit()
+        assert "one_exit_per_ingreso" in str(exc_info.value)
 
     # Sanity: only ONE salida row for this uuid_ingreso (partial index
     # prevented the second INSERT from committing).
     import psycopg
 
-    dsn = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    dsn = pg_engine.url.render_as_string(hide_password=False).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM prod.salidas WHERE uuid_ingreso = %s",
@@ -431,6 +479,7 @@ async def test_iva_no_sembrado_retorna_500(
     await _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)  # actor columns of alerta/salida are real FKs
     tipo_auto = uuid_lib.uuid4()
 
     # Re-seed the tables EXCEPT impuestos.IVA -- the handler path needs
@@ -477,7 +526,9 @@ async def test_iva_no_sembrado_retorna_500(
     # check; an IVANoConfigurado raise aborts the handler before INSERT).
     import psycopg
 
-    dsn = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    dsn = pg_engine.url.render_as_string(hide_password=False).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM prod.salidas")
         salida_count = cur.fetchone()[0]
@@ -658,6 +709,7 @@ async def test_salida_segunda_placa_misma_mensualidad_aplica_rotacion(
 
     branch = uuid_lib.uuid4()
     actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)  # actor columns of alerta/salida are real FKs
     tipo_auto = uuid_lib.uuid4()
     placa_a = "CU03A"
     placa_b = "CU03B"
@@ -755,7 +807,9 @@ async def test_salida_segunda_placa_misma_mensualidad_aplica_rotacion(
     # ingreso is still open (no collateral damage from the rotation).
     import psycopg
 
-    dsn = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    dsn = pg_engine.url.render_as_string(hide_password=False).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM prod.salidas WHERE uuid_ingreso = %s",
@@ -787,11 +841,13 @@ async def test_salida_segunda_placa_misma_mensualidad_aplica_rotacion(
         f"(no V2/V5 bypass happened); got {alerta_rows!r}"
     )
 
-    # Sanity: the 1st plate's subsequent exit also yields ROTACION
-    # (both plates are still simultaneously in patio until each one
-    # gets its own salida; per plan.md:64 the rule is "if any other
-    # plate of the same subscription is in patio, this plate pays as
-    # rotation"). This is the conservative exit-order-agnostic rule.
+    # Counterpart: ``calcular_cotizacion`` counts the OTHER plates of the
+    # subscription that are still inside the patio at calculation time (an
+    # ingreso with no non-annulled salida). Once PLACA-B has left, PLACA-A is
+    # alone again, i.e. the "1st plate" of ``mensualidad_vigente`` (migration
+    # 0050 branch a): it exits free (MENSUALIDAD). The rotation fee is thus
+    # decided by simultaneous presence, not by exit order. (This test used to
+    # assert ROTACION here, which no version of the SQL function ever returned.)
     resp_a = await client.post(
         "/api/v1/operacion/salidas",
         json={"uuid_ingreso": str(ingreso_a_uuid), "placa": placa_a},
@@ -802,15 +858,11 @@ async def test_salida_segunda_placa_misma_mensualidad_aplica_rotacion(
         f"got {resp_a.status_code}: {resp_a.text}"
     )
     body_a = resp_a.json()
-    assert body_a["tipo_salida"] == "ROTACION", (
-        f"the second plate's exit (PLACA-A) MUST also derive "
-        f"tipo_salida='ROTACION' because the rotation rule is "
-        f"exit-order-agnostic (plan.md:64 conservative rule); "
-        f"got {body_a.get('tipo_salida')!r}"
+    assert body_a["tipo_salida"] == "MENSUALIDAD", (
+        f"PLACA-A is alone in the patio after PLACA-B left: it must exit as "
+        f"the plan's 1st plate (MENSUALIDAD); got {body_a.get('tipo_salida')!r}"
     )
-    assert body_a["cotizacion_snapshot"]["motivo"] == (
-        "segunda_placa_misma_mensualidad"
-    )
+    assert body_a["cotizacion_snapshot"]["motivo"] == "mensualidad_vigente"
 
 
 __all__ = [

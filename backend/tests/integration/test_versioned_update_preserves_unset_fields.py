@@ -30,6 +30,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import pytest
+from _seeds import grant_admin_scope
 
 
 async def _grant_permission(pg_engine, *, actor_uuid: uuid_lib.UUID, perm_code: str) -> None:
@@ -72,6 +73,7 @@ async def test_partial_update_preserves_natural_key_on_clientes(
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="gestionar_clientes")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
     headers = {"Authorization": f"Bearer {token}", "X-Sucursal-Context": str(sucursal_ctx)}
 
@@ -128,6 +130,7 @@ async def test_partial_update_preserves_fields_on_costos_servicios(
     actor_uuid = uuid_lib.uuid4()
     sucursal_ctx = uuid_lib.uuid4()
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_catalogo")
+    await grant_admin_scope(pg_engine, actor_uuid, [sucursal_ctx])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[sucursal_ctx])
     headers = {"Authorization": f"Bearer {token}", "X-Sucursal-Context": str(sucursal_ctx)}
 

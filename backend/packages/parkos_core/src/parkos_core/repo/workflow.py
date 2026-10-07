@@ -238,15 +238,27 @@ async def append_transition(  # noqa: UP047 (TypeVar style — matches repo/vers
         # just to read ``new_row.uuid`` back for its OWN response shape.
         await session.flush()
 
-        log_row = LogTransaccional(
-            uuid_usuario=actor_uuid,
-            uuid_sucursal=new_attrs.get("uuid_sucursal"),
-            accion="crear",
-            tabla_afectada=table,
-            uuid_registro_afectado=new_row.uuid,
-            timestamp_evento=_now_naive(),
+        # Extend the SHA-256 chain through ``repo.hash_chain.append`` (the same
+        # primitive ``record_event`` and ``close_and_insert`` use). A plain
+        # ``LogTransaccional(...)`` + ``session.add()`` leaves the hash columns
+        # to ``fn_extend_hash_chain()``, which has no genesis bootstrap of its
+        # own: the first workflow event of a branch with no prior log row
+        # raised ``HASH_CHAIN_INTEGRITY_VIOLATION: no genesis row``.
+        from . import hash_chain
+
+        await hash_chain.append(
+            session,
+            LogTransaccional,
+            {
+                "uuid_usuario": actor_uuid,
+                "uuid_sucursal": new_attrs.get("uuid_sucursal"),
+                "accion": "crear",
+                "tabla_afectada": table,
+                "uuid_registro_afectado": new_row.uuid,
+                "timestamp_evento": _now_naive(),
+            },
+            actor_uuid=actor_uuid,
         )
-        session.add(log_row)
 
     return new_row
 

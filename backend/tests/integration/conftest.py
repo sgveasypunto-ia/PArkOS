@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 
 def _now_naive() -> datetime:
@@ -231,7 +232,7 @@ def _empresa_extra_rows_as_closed_history():
     from datetime import timedelta
 
     from parkos_core.models.V.empresa import Empresa
-    from sqlalchemy import event, select
+    from sqlalchemy import event, select, text
     from sqlalchemy.orm import Session
 
     def _before_flush(session, flush_context, instances):  # noqa: ARG001
@@ -241,6 +242,19 @@ def _empresa_extra_rows_as_closed_history():
         if not new_open:
             return
         with session.no_autoflush:
+            # A test that drops ``empresa_singleton_uk`` on purpose (multi-empresa
+            # worlds, e.g. test_sync_pull_scope_empresa) wants every open empresa
+            # to STAY open: only act while the singleton index is really there.
+            if (
+                session.execute(
+                    text(
+                        "SELECT 1 FROM pg_indexes "
+                        "WHERE schemaname = 'prod' AND indexname = 'empresa_singleton_uk'"
+                    )
+                ).first()
+                is None
+            ):
+                return
             slot_taken = (
                 session.execute(select(Empresa.uuid).where(Empresa.vigente_hasta.is_(None)))
                 .scalars()
@@ -259,3 +273,66 @@ def _empresa_extra_rows_as_closed_history():
         yield
     finally:
         event.remove(Session, "before_flush", _before_flush)
+
+
+@pytest_asyncio.fixture
+async def tipos_vehiculo_restaurados(pg_engine, alembic_upgrade):
+    """Leave ``tipos_vehiculo`` exactly as found, whatever the test did to it.
+
+    Tests of the 5-row cap close the seeded catalog (see
+    ``_seeds.close_open_tipos_vehiculo``) and create their own rows. On teardown
+    every row opened by the test is closed and the originally-open ones are
+    reopened, so later tests see the seeded catalog again (no order dependence).
+    """
+    from sqlalchemy import text
+
+    async with pg_engine.connect() as conn:
+        originales = [
+            row[0]
+            for row in await conn.execute(
+                text("SELECT uuid FROM prod.tipos_vehiculo WHERE vigente_hasta IS NULL")
+            )
+        ]
+    try:
+        yield
+    finally:
+        async with pg_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE prod.tipos_vehiculo SET vigente_hasta = NOW(), estado = 'inactivo' "
+                    "WHERE vigente_hasta IS NULL AND uuid <> ALL(:orig)"
+                ),
+                {"orig": originales},
+            )
+            await conn.execute(
+                text(
+                    "UPDATE prod.tipos_vehiculo SET vigente_hasta = NULL, estado = 'activo' "
+                    "WHERE uuid = ANY(:orig)"
+                ),
+                {"orig": originales},
+            )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _no_deferred_dian_dispatch_outlives_the_test():
+    """Cancel the fire-and-forget DIAN dispatches a test left running.
+
+    ``sync/hooks/impls/dian_dispatch_on_sync.py`` runs each dispatch as a
+    background task in its own session (after the apply committed): it inserts the
+    ``envio_dian`` row and then calls the provider -- unreachable here -- while its
+    transaction stays open. Left running, it outlives the test that spawned it and
+    the next test's ``TRUNCATE`` (a blocking psycopg call on the event-loop
+    thread, which also starves that very task) waits on its lock forever. No test
+    asserts on the outcome of a dispatch it did not await, so cancel (and thereby
+    roll back) whatever is still pending at the end of each test.
+    """
+    yield
+    import asyncio
+
+    from parkos_core.sync.hooks.impls import dian_dispatch_on_sync as dispatch_mod
+
+    pending = [t for t in list(dispatch_mod._BACKGROUND_TASKS) if not t.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)

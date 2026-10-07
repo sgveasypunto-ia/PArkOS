@@ -34,6 +34,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport
+from _seeds import ensure_usuario
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -175,11 +176,12 @@ async def _seed_alerta(
     timestamp_evento: datetime | None = None,
 ) -> uuid_lib.UUID:
     now = vigente_desde or _now_naive()
+    autor = await ensure_usuario(pg_engine, uuid_lib.uuid4())
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         alerta = Alerta(
             uuid_sucursal=uuid_sucursal,
-            uuid_usuario=uuid_lib.uuid4(),
+            uuid_usuario=autor,  # alerta.uuid_usuario is a real FK
             uuid_arqueo=None,
             tipo_alerta=tipo_alerta,
             estado=estado,
@@ -222,17 +224,6 @@ def _build_app(pg_engine) -> tuple[FastAPI, Any]:
     return app, lambda c: captured.__setitem__("value", c)
 
 
-def _truncate(pg_dsn: str) -> None:
-    import psycopg
-
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute(
-            "TRUNCATE prod.alerta, prod.alert_types, prod.usuarios_sucursal, "
-            "prod.usuarios, prod.sucursal, prod.empresa CASCADE"
-        )
-        conn.commit()
-
-
 async def _get(fastapi_app: FastAPI, url: str, token: str) -> httpx.Response:
     transport = ASGITransport(app=fastapi_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
@@ -270,7 +261,6 @@ def _operador_token_and_claims(
 
 
 async def test_list_alertas_admin_sees_every_permitted_branch(pg_engine, pg_dsn) -> None:
-    _truncate(pg_dsn)
     branch_a, branch_b = uuid_lib.uuid4(), uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=branch_a)
     await _seed_sucursal(pg_engine, uuid_sucursal=branch_b)
@@ -290,7 +280,6 @@ async def test_list_alertas_admin_sees_every_permitted_branch(pg_engine, pg_dsn)
 
 
 async def test_list_alertas_admin_unauthorized_branch_filter_returns_403(pg_engine, pg_dsn) -> None:
-    _truncate(pg_dsn)
     branch_a = uuid_lib.uuid4()
     other_branch = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=branch_a)
@@ -315,7 +304,6 @@ async def test_list_alertas_admin_unauthorized_branch_filter_returns_403(pg_engi
 async def test_list_alertas_severity_null_when_tipo_alerta_not_in_catalog(
     pg_engine, pg_dsn
 ) -> None:
-    _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=branch)
     await _seed_alerta(pg_engine, uuid_sucursal=branch, tipo_alerta="sin_catalogo_xyz")
@@ -332,11 +320,13 @@ async def test_list_alertas_severity_null_when_tipo_alerta_not_in_catalog(
 
 
 async def test_list_alertas_severity_populated_from_alert_types(pg_engine, pg_dsn) -> None:
-    _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=branch)
-    await _seed_alert_type(pg_engine, tipo_alerta="descuadre_critico", severity="critical")
-    await _seed_alerta(pg_engine, uuid_sucursal=branch, tipo_alerta="descuadre_critico")
+    # A tipo of its own: ``alert_types`` is append-only and seeded by the
+    # migrations, so the test registers a fresh code instead of wiping the table.
+    tipo = f"tipo_critico_{uuid_lib.uuid4().hex[:8]}"
+    await _seed_alert_type(pg_engine, tipo_alerta=tipo, severity="critical")
+    await _seed_alerta(pg_engine, uuid_sucursal=branch, tipo_alerta=tipo)
     admin_actor = uuid_lib.uuid4()
     await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[branch])
     fastapi_app, set_claims = _build_app(pg_engine)
@@ -357,7 +347,6 @@ async def test_list_alertas_severity_populated_from_alert_types(pg_engine, pg_ds
 
 
 async def test_list_alertas_operador_only_sees_own_branch(pg_engine, pg_dsn) -> None:
-    _truncate(pg_dsn)
     own_branch, other_branch = uuid_lib.uuid4(), uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=own_branch)
     await _seed_sucursal(pg_engine, uuid_sucursal=other_branch)
@@ -378,7 +367,6 @@ async def test_list_alertas_operador_only_sees_own_branch(pg_engine, pg_dsn) -> 
 
 
 async def test_list_alertas_operador_cross_branch_filter_returns_403(pg_engine, pg_dsn) -> None:
-    _truncate(pg_dsn)
     own_branch, other_branch = uuid_lib.uuid4(), uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=own_branch)
     await _seed_sucursal(pg_engine, uuid_sucursal=other_branch)
@@ -401,7 +389,6 @@ async def test_list_alertas_operador_cross_branch_filter_returns_403(pg_engine, 
 
 
 async def test_list_alertas_estado_filter(pg_engine, pg_dsn) -> None:
-    _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=branch)
     await _seed_alerta(pg_engine, uuid_sucursal=branch, estado="abierta")
@@ -420,7 +407,6 @@ async def test_list_alertas_estado_filter(pg_engine, pg_dsn) -> None:
 
 
 async def test_list_alertas_cursor_pagination_newest_first(pg_engine, pg_dsn) -> None:
-    _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=branch)
     now = _now_naive()
@@ -458,7 +444,6 @@ async def test_list_alertas_cursor_pagination_newest_first(pg_engine, pg_dsn) ->
 
 
 async def test_get_alerta_by_uuid_returns_current_version(pg_engine, pg_dsn) -> None:
-    _truncate(pg_dsn)
     branch = uuid_lib.uuid4()
     await _seed_sucursal(pg_engine, uuid_sucursal=branch)
     alerta_uuid = await _seed_alerta(pg_engine, uuid_sucursal=branch)

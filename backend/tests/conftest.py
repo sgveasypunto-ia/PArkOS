@@ -38,6 +38,7 @@ fixtures themselves are sync (the container is blocking I/O).
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import sys
@@ -331,6 +332,139 @@ def alembic_upgrade(pg_dsn: str, _wait_for_pg: None) -> None:
             f"Captured output:\n{snippet}"
         )
 
+    _snapshot_seed_tables(pg_dsn)
+
+
+# ---------------------------------------------------------------------------
+# Seed-data snapshot / restore (cross-test pollution guard)
+# ---------------------------------------------------------------------------
+#
+# The whole session shares ONE database, and a good part of the suite cleans up
+# with ``TRUNCATE ... CASCADE`` on tables that migrations seed (``alert_types``,
+# ``empresa``, ``permisos``, ``tipos_vehiculo``...), plus everything that
+# references them. Whatever ran after such a test then saw a database that no
+# migration ever produces (and ``tests/migrations`` assertions on the seeded
+# catalogs failed or passed depending on file order).
+#
+# Right after ``alembic upgrade head`` we copy every non-empty ``prod`` table
+# into the ``seed_snapshot`` schema; after each test MODULE the rows that went
+# those tables are reset to exactly that content (DELETE + INSERT with triggers
+# and FK checks off via ``session_replication_role = replica`` so neither the
+# append-only guards nor the sync outbox fire). Tables a migration does not seed
+# are left alone.
+
+_SEED_STATE: dict[str, object] = {"dsn": None, "tables": []}
+
+
+def _snapshot_seed_tables(dsn: str) -> None:
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("DROP SCHEMA IF EXISTS seed_snapshot CASCADE")
+        cur.execute("CREATE SCHEMA seed_snapshot")
+        cur.execute(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'prod' AND c.relkind IN ('r', 'p') AND NOT c.relispartition "
+            "ORDER BY c.relname"
+        )
+        tables = [row[0] for row in cur.fetchall()]
+        seeded: list[str] = []
+        for table in tables:
+            cur.execute(f'SELECT EXISTS (SELECT 1 FROM prod."{table}")')
+            if cur.fetchone()[0]:
+                cur.execute(
+                    f'CREATE TABLE seed_snapshot."{table}" AS SELECT * FROM prod."{table}"'
+                )
+                seeded.append(table)
+    _SEED_STATE["dsn"] = dsn
+    _SEED_STATE["tables"] = seeded
+
+
+def _restore_seed_tables() -> None:
+    """Return every snapshotted table to EXACTLY its post-migration content.
+
+    ``DELETE`` + ``INSERT ... SELECT`` (not "insert what is missing"): a module
+    that re-seeds its own copy of a seeded row (``impuestos.IVA`` with a new
+    uuid, say) would otherwise end up with the original AND its copy, i.e. two
+    open IVA rows. Triggers and FK checks are off (``session_replication_role =
+    replica``) so neither the append-only guards nor the sync outbox fire. A table
+    that cannot be locked within a few seconds (a leaked transaction of a failed
+    test still holds it) is skipped with a warning instead of hanging the session.
+    """
+    dsn = _SEED_STATE["dsn"]
+    tables = _SEED_STATE["tables"]
+    if not dsn or not tables:
+        return
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("SET session_replication_role = replica")
+        cur.execute("SET lock_timeout = '5s'")
+        for table in tables:
+            try:
+                with conn.transaction():
+                    cur.execute(f'DELETE FROM prod."{table}"')
+                    cur.execute(
+                        f'INSERT INTO prod."{table}" SELECT * FROM seed_snapshot."{table}"'
+                    )
+            except psycopg.errors.LockNotAvailable:
+                import warnings
+
+                warnings.warn(f"seed restore skipped for prod.{table}: lock not available")
+
+
+def _terminate_leaked_transactions() -> None:
+    """Kill sessions a finished module left ``idle in transaction``.
+
+    A failed test keeps its traceback, and with it every session its locals
+    reference, alive until pytest exits; such a session holds its locks for the
+    rest of the run and the next module that ``TRUNCATE``s a related table then
+    blocks forever (one failing e2e test used to hang the whole suite). At module
+    teardown no fixture legitimately holds an open transaction, so whatever is
+    left idle in transaction is a leak: terminate it.
+    """
+    dsn = _SEED_STATE["dsn"]
+    if not dsn:
+        return
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+            "AND state = 'idle in transaction' "
+            # Only sessions that have been stuck for a while: a connection that
+            # went idle a moment ago may belong to a test that is still running.
+            "AND now() - state_change > interval '3 seconds'"
+        )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Expose each phase's report on the item (``item.rep_call`` / ``rep_setup``...)."""
+    outcome = yield
+    setattr(item, f"rep_{call.when}", outcome.get_result())
+
+
+@pytest.fixture(autouse=True)
+def _release_locks_of_a_failed_test(request: pytest.FixtureRequest) -> Iterator[None]:
+    """A failed test keeps its traceback -- and the DB sessions in its frames --
+    alive, so whatever it left ``idle in transaction`` would hold its locks until
+    pytest exits and the next ``TRUNCATE`` in the same module would block forever.
+    Terminate those sessions as soon as the failure is reported."""
+    yield
+    report = getattr(request.node, "rep_call", None)
+    if report is not None and report.failed:
+        _terminate_leaked_transactions()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _seed_data_restored_after_module() -> Iterator[None]:
+    """Put the migration-seeded rows back after each module (see block above)."""
+    yield
+    _terminate_leaked_transactions()
+    _restore_seed_tables()
+
 
 # ---------------------------------------------------------------------------
 # Async SQLAlchemy engine + session
@@ -611,7 +745,7 @@ def mint_sync_agent_jwt() -> Callable[..., str]:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def app() -> str:
+def app(request: pytest.FixtureRequest) -> str:
     """Parametrize the FastAPI app the ``client`` fixture should bind to.
 
     Default ``"sucursal"`` (branch API). Override via indirect parametrization
@@ -622,7 +756,66 @@ def app() -> str:
     The cloud-only assertion (``test_openapi_branch_excludes_cloud.py``) uses
     the default; the unit test for the admin app uses ``APP=admin``.
     """
-    return os.environ.get("TEST_APP", "sucursal")
+    # ``request.param`` is set by ``@pytest.mark.parametrize("app", [...], indirect=True)``.
+    # Without reading it the parametrization was silently ignored and every
+    # ``[admin]`` case ran against the branch app.
+    return getattr(request, "param", None) or os.environ.get("TEST_APP", "sucursal")
+
+
+
+_CLOUD_PURGE_PREFIXES = ("parkos_core.api.v1", "api_admin_main")
+_CLOUD_PURGE_EXACT = frozenset({"parkos_core.api.deps", "parkos_core.api.middleware"})
+
+
+@contextlib.contextmanager
+def _cloud_admin_app() -> Iterator[object]:
+    """Yield the admin FastAPI app built as a CLOUD deploy, then restore modules.
+
+    The root conftest pins ``PARKOS_DEPLOY=branch`` (the static suite asserts a
+    branch-only OpenAPI), and ``parkos_core.api.v1`` reads that env var ONCE at
+    import time. Under that default, ``api_admin_main.app`` is built WITHOUT the
+    DIAN/cloud-only resources (``/empresa/resolucion-facturacion`` ...) and every
+    test that drives them through ``app="admin"`` gets a bare 404. Production
+    ``api-admin`` runs with ``PARKOS_DEPLOY=cloud`` (docker-compose.cloud.yml),
+    so the ``admin`` client builds the app under that env: it purges the cached
+    ``parkos_core.api.v1.*`` / ``api_admin_main.*`` modules, re-imports them with
+    ``cloud`` and, on exit, puts the original module objects back so sibling
+    tests (and the branch app) keep seeing the identities they imported.
+    """
+    prev_deploy = os.environ.get("PARKOS_DEPLOY")
+    os.environ["PARKOS_DEPLOY"] = "cloud"
+
+    def _purged(name: str) -> bool:
+        return name.startswith(_CLOUD_PURGE_PREFIXES) or name in _CLOUD_PURGE_EXACT
+
+    saved = {n: m for n, m in sys.modules.items() if _purged(n)}
+    saved_parent_attrs: dict[tuple[str, str], object] = {}
+    for name, mod in saved.items():
+        if "." not in name:
+            continue
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and parent.__dict__.get(attr) is mod:
+            saved_parent_attrs[(parent_name, attr)] = mod
+    for name in saved:
+        sys.modules.pop(name, None)
+    try:
+        from api_admin_main.app import app as admin_app
+
+        yield admin_app
+    finally:
+        for name in list(sys.modules):
+            if _purged(name) and name not in saved:
+                sys.modules.pop(name, None)
+        sys.modules.update(saved)
+        for (parent_name, attr), original in saved_parent_attrs.items():
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                parent.__dict__[attr] = original
+        if prev_deploy is None:
+            os.environ.pop("PARKOS_DEPLOY", None)
+        else:
+            os.environ["PARKOS_DEPLOY"] = prev_deploy
 
 
 @pytest_asyncio.fixture
@@ -646,18 +839,19 @@ async def client(app: str, pg_engine: AsyncEngine) -> AsyncIterator[object]:
     _engine_mod._engine = None
     _engine_mod._sessionmaker = None
 
-    if app == "admin":
-        from api_admin_main.app import app as fastapi_app
-    else:
-        from api_sucursal_main.app import app as fastapi_app
+    with contextlib.ExitStack() as stack:
+        if app == "admin":
+            fastapi_app = stack.enter_context(_cloud_admin_app())
+        else:
+            from api_sucursal_main.app import app as fastapi_app
 
-    transport = httpx.ASGITransport(app=fastapi_app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://testserver",
-        headers={"X-Request-ID": "test"},
-    ) as client_:
-        yield client_
+        transport = httpx.ASGITransport(app=fastapi_app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            headers={"X-Request-ID": "test"},
+        ) as client_:
+            yield client_
 
 
 # ---------------------------------------------------------------------------
