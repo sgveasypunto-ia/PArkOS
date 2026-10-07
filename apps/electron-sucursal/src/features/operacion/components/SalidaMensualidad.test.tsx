@@ -35,6 +35,7 @@ import { act, render, screen } from '@testing-library/react';
 import { SalidaMensualidad } from './SalidaMensualidad';
 import { useRegistrarSalida } from '../hooks/useRegistrarSalida';
 import type { CotizarMensualidad } from '../hooks/useCotizacion';
+import { useDashboardDrawerStore } from '../../../renderer/store/dashboardDrawerStore';
 
 // ──────────────────────────────────────────────────────────────────────────
 // vi.mock — replace the network hooks with controllable stubs
@@ -295,6 +296,62 @@ describe('<SalidaMensualidad /> — discount-factura + print envelope wiring (mi
       'salida_mensualidad',
       expect.objectContaining({ uuid_salida: uuidSalida }),
     );
+  });
+
+  it('closes the dashboard drawer when the factura modal is dismissed (H5)', async () => {
+    installBridgeMock();
+    useDashboardDrawerStore.getState().open('salida', 'anchor-salida');
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+
+    mockTriggerImpl.mockResolvedValueOnce({
+      uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      tipo_salida: 'MENSUALIDAD' as const,
+      estado: 'MENSUALIDAD_PAGO' as const,
+    });
+    mockTriggerPagoImpl.mockResolvedValueOnce(facturaMensualidadResponse);
+
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-h5" cotizacion={cotizacionMensualidad} />,
+    );
+
+    await act(async () => {
+      screen.getByTestId('confirmar').click();
+    });
+    // Drawer stays open while the factura modal is showing.
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+
+    await act(async () => {
+      screen.getByTestId('factura-display-cerrar').click();
+    });
+    await flushMicrotasks();
+
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+  });
+
+  it('still prints the envelope when closing the drawer on modal dismiss (H5)', async () => {
+    const bridge = installBridgeMock();
+    useDashboardDrawerStore.getState().open('salida', 'anchor-salida');
+
+    mockTriggerImpl.mockResolvedValueOnce({
+      uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      tipo_salida: 'MENSUALIDAD' as const,
+      estado: 'MENSUALIDAD_PAGO' as const,
+    });
+    mockTriggerPagoImpl.mockResolvedValueOnce(facturaMensualidadResponse);
+
+    render(
+      <SalidaMensualidad uuidIngreso="ingreso-uuid-h5b" cotizacion={cotizacionMensualidad} />,
+    );
+    await act(async () => {
+      screen.getByTestId('confirmar').click();
+    });
+    await act(async () => {
+      screen.getByTestId('factura-display-cerrar').click();
+    });
+    await flushMicrotasks();
+
+    expect(bridge.imprimir).toHaveBeenCalledTimes(1);
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
   });
 
   it('does NOT touch the factura/modal/print flow when tipo_salida is NOT MENSUALIDAD (rotación branch — F8.1 owns)', async () => {
