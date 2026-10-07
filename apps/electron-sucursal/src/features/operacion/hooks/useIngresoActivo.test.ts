@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
-import type { Ingreso } from '../api/ingresoActivoApi';
+import { getIngresosByPlaca, type Ingreso } from '../api/ingresoActivoApi';
 import { pickLatest, useIngresoActivo } from './useIngresoActivo';
 
 interface SwrOptions {
@@ -93,6 +93,17 @@ describe('useIngresoActivo SWR options', () => {
     expect(opts.shouldRetryOnError(new Error('network'))).toBe(true);
   });
 
+  it('fetches only active ingresos (history must not flag the plate as inside)', async () => {
+    renderHook(() => useIngresoActivo('ABC123'));
+    const [key, fetcher] = useSwrSpyStorage.mock.calls.at(-1) as [
+      string,
+      () => Promise<unknown>,
+    ];
+    expect(key).toContain('activo=true');
+    await fetcher();
+    expect(getIngresosByPlaca).toHaveBeenCalledWith('ABC123', { soloActivos: true });
+  });
+
   it('on 401: clears the auth store + dispatches parkos:auth:cleared', () => {
     const opts = captureOptions();
     if (!opts.onError) throw new Error('missing onError');
@@ -142,7 +153,7 @@ describe('useIngresoActivo SWR options', () => {
     renderHook(() => useIngresoActivo('ABC123'));
     const lastCall = useSwrSpyStorage.mock.calls.at(-1);
     const key = lastCall?.[0] as string | null;
-    expect(key).toBe('/api/v1/operacion/ingresos?placa=ABC123');
+    expect(key).toBe('/api/v1/operacion/ingresos?placa=ABC123&activo=true');
   });
 
   it('passes a null SWR key when placa is null (skip pre-typed fetch)', () => {

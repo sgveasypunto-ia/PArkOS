@@ -52,7 +52,7 @@ function buildKey(
 ): string | null {
   if (!placa) return null;
   if (!accessToken) return null;
-  return `/api/v1/operacion/ingresos?placa=${encodeURIComponent(placa)}`;
+  return `/api/v1/operacion/ingresos?placa=${encodeURIComponent(placa)}&activo=true`;
 }
 
 /**
@@ -66,7 +66,7 @@ export function useIngresoActivo(placa: string | null): IngresoActivoState {
 
   const { data, error, isLoading, mutate } = useSWR<Ingreso[]>(
     key,
-    () => getIngresosByPlaca(placa as string),
+    () => getIngresosByPlaca(placa as string, { soloActivos: true }),
     {
       dedupingInterval: DEDUPING_INTERVAL_MS,
       shouldRetryOnError: (err) => {

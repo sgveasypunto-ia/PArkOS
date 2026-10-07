@@ -47,6 +47,23 @@ describe('getIngresosByPlaca', () => {
     );
   });
 
+  it('sends activo=true when soloActivos is set (no history rows)', async () => {
+    mockFetch.mockResolvedValueOnce([]);
+    await getIngresosByPlaca('ABC123', { soloActivos: true });
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/operacion/ingresos?placa=ABC123&activo=true',
+    );
+  });
+
+  it('omits activo when soloActivos is false or absent (history lookup)', async () => {
+    mockFetch.mockResolvedValue([]);
+    await getIngresosByPlaca('ABC123', { soloActivos: false });
+    await getIngresosByPlaca('ABC123', {});
+    for (const call of mockFetch.mock.calls) {
+      expect(call[0]).toBe('/api/v1/operacion/ingresos?placa=ABC123');
+    }
+  });
+
   it('returns [] for an empty list (valid 200 with [] body)', async () => {
     mockFetch.mockResolvedValueOnce([]);
     const result = await getIngresosByPlaca('ABC999');

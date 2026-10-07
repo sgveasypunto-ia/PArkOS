@@ -99,15 +99,29 @@ export type IngresoEstado = z.infer<typeof IngresoEstadoSchema>;
 const INGRESOS_PATH = '/api/v1/operacion/ingresos';
 
 /**
- * `getIngresosByPlaca(placa)` — list 0..N historical rows for the typed
- * plate at the current branch. Pure read; no Idempotency-Key (GET).
+ * `getIngresosByPlaca(placa, { soloActivos })` — list 0..N rows for the
+ * typed plate at the current branch. Pure read; no Idempotency-Key (GET).
+ *
+ * Without `soloActivos` the list is HISTORICAL (closed ingresos included),
+ * which is what reprint wants. Anything asking "is this plate inside
+ * right now?" MUST pass `soloActivos: true`, which sends `activo=true` so
+ * the backend drops ingresos that already have a live salida.
  *
  * Empty list (`[]`) is a valid response — `parkosFetch` 4xx policy
  * preserves it (200 OK with `[]` body). The hook treats `length === 0`
  * as `hasActive: false`.
  */
-export async function getIngresosByPlaca(placa: string): Promise<Ingreso[]> {
+export interface GetIngresosByPlacaOptions {
+  /** Restrict to ingresos without a live salida (`activo=true`). */
+  soloActivos?: boolean;
+}
+
+export async function getIngresosByPlaca(
+  placa: string,
+  options: GetIngresosByPlacaOptions = {},
+): Promise<Ingreso[]> {
   const params = new URLSearchParams({ placa });
+  if (options.soloActivos) params.set('activo', 'true');
   const raw = await parkosFetch<unknown>(`${INGRESOS_PATH}?${params.toString()}`);
   return IngresoArraySchema.parse(raw);
 }

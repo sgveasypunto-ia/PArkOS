@@ -528,6 +528,6 @@ describe('<PlacaInputHero /> — HU-F7.1 búsqueda sin placa (T5) autocomplete',
       expect(useDashboardDrawerStore.getState().openDrawer).toBe('ingreso');
     });
     expect(useDashboardDrawerStore.getState().initialPlaca).toBe('ZZZ999');
-    expect(mockGetIngresosByPlaca).toHaveBeenCalledWith('ZZZ999');
+    expect(mockGetIngresosByPlaca).toHaveBeenCalledWith('ZZZ999', { soloActivos: true });
   });
 });
