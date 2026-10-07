@@ -79,6 +79,11 @@ export interface PrintContext {
    * absent/null the ticket prints no tariff line (never a misleading "$ 0").
    */
   readonly tarifaHora?: number | null;
+  /**
+   * Real empresa header (FC1, see `contextoImpresion.ts`). Absent only when the
+   * API failed: the builders then print `DEFAULT_EMPRESA`.
+   */
+  readonly empresa?: Empresa;
 }
 
 /**
@@ -137,7 +142,7 @@ export function buildEntradaPayloadFromResponse(
     qrDataUrl: '', // caller rasterizes QR; the builder accepts empty string as
     // the documented sentinel ("logo missing" per design.md §Decision)
     logoDataUrl: '',
-    empresa: DEFAULT_EMPRESA,
+    empresa: context.empresa ?? DEFAULT_EMPRESA,
     operario: context.operario ?? 'Operador',
     ...tarifaDe(context),
     horarioAtencion: context.horarioAtencion ?? DEFAULT_HORARIO,
@@ -228,7 +233,7 @@ export function buildReimpresionEntradaPayload(
     fechaEntrada,
     qrDataUrl: '',
     logoDataUrl: '',
-    empresa: DEFAULT_EMPRESA,
+    empresa: context.empresa ?? DEFAULT_EMPRESA,
     operario: context.operario ?? 'Operador',
     ...tarifaDe(context),
     horarioAtencion: context.horarioAtencion ?? DEFAULT_HORARIO,
@@ -255,7 +260,7 @@ export function buildReimpresionEntradaPayload(
   return {
     originalTipo: 'entrada',
     motivo,
-    empresa: DEFAULT_EMPRESA,
+    empresa: context.empresa ?? DEFAULT_EMPRESA,
     folioOriginal: ingreso.uuid,
     payload: entradaPayload,
   };

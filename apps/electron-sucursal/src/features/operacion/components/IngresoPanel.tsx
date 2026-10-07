@@ -49,6 +49,7 @@ import { buildEntradaPayloadFromResponse } from '../../../lib/print/printBuilder
 import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
 import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
 import { resolverTarifaHoraDeIngreso } from '../../../lib/print/tarifaHoraEntrada';
+import { resolverContextoImpresion } from '../../../lib/print/contextoImpresion';
 import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import { useInvalidateConteosOperacion } from '../hooks/useInvalidateConteosOperacion';
@@ -942,9 +943,11 @@ async function buildEntradaPayload(
   return buildEntradaPayloadFromResponse(
     response,
     response.consecutivo ? null : currentPlaca,
-    // TODO: hydrate empresa + sucursal + documentos from a print-context
-    // endpoint; the hourly tariff is already resolved from the ingreso.
-    { tarifaHora: await resolverTarifaHoraDeIngreso(response.uuid) },
+    // Real empresa / sucursal / operator header (FC1) + hourly tariff of the ingreso.
+    {
+      ...(await resolverContextoImpresion()),
+      tarifaHora: await resolverTarifaHoraDeIngreso(response.uuid),
+    },
   );
 }
 
