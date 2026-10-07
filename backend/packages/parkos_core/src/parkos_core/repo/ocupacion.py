@@ -177,9 +177,14 @@ async def validar_cupo_disponible(
     the row matching ``uuid_tipo_vehiculo``. KD-V4 (RIESCO-SUC-02):
     eventual consistency via MV; lag <= 10s accepted as live risk.
 
-    KD-V8: KD-FORZADO chain may BYPASS a V2 agotado; the helper returns
-    ``cupo_agotado=False`` in that case so the handler proceeds to
-    INSERT. Caller is responsible for raising the alerta INSERT.
+    KD-V8: KD-FORZADO chain may BYPASS a V2 agotado, but the helper still
+    REPORTS ``cupo_agotado=True``: the handler needs that signal to decide
+    between 422 ``motivo_forzado_requerido`` (no bypass) and proceeding with
+    ``bypass_reason='cupo_agotado'``, which is also what raises the
+    ``capacidad_agotada_forzado`` alerta (REQ-OPS-041.C). Hiding the
+    exhaustion when ``forzado`` is set silently dropped that alerta.
+    ``forzado`` is accepted for symmetry with the other validators and does
+    not change the result.
     """
     items = await get_ocupacion_puros_activos(session, uuid_sucursal=uuid_sucursal)
     match: OcupacionItemRow | None = next(
@@ -201,7 +206,7 @@ async def validar_cupo_disponible(
             cupo_maximo=0,
             activos=match.activos,
         )
-    if match.activos >= match.cupo_maximo and not forzado:
+    if match.activos >= match.cupo_maximo:
         return CupoValidationResult(
             cupo_no_configurado=False,
             cupo_agotado=True,
