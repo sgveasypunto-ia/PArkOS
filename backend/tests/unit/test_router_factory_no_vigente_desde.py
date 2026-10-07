@@ -86,7 +86,9 @@ async def _grant_permission(
         await session.commit()
 
 
-async def _seed_usuario(pg_engine, actor_uuid: uuid_lib.UUID) -> None:
+async def _seed_usuario(
+    pg_engine, actor_uuid: uuid_lib.UUID, *, rol: str = "operador"
+) -> None:
     """Insert one ``usuarios`` row for ``actor_uuid`` (FK target of the permiso row)."""
     from parkos_core.models.V.usuarios import Usuarios
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -100,7 +102,7 @@ async def _seed_usuario(pg_engine, actor_uuid: uuid_lib.UUID) -> None:
                 apellido="Operador",
                 email=f"{actor_uuid}@example.com",
                 password_hash="test-hash",
-                rol="operador",
+                rol=rol,
             )
         )
         await session.commit()
@@ -123,11 +125,20 @@ async def _seed_sucursal_for_arqueo_fk(
     """
     from parkos_core.models.V.empresa import Empresa
     from parkos_core.models.V.sucursal import Sucursal
+    from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         e_uuid = uuid_empresa
+        if e_uuid is None:
+            # ``empresa`` is a singleton (0078 ``empresa_singleton_uk``):
+            # reuse the open one when an earlier test already created it.
+            e_uuid = (
+                await session.execute(
+                    select(Empresa.uuid).where(Empresa.vigente_hasta.is_(None))
+                )
+            ).scalars().first()
         if e_uuid is None:
             e_uuid = uuid_lib.uuid4()
             session.add(
@@ -309,7 +320,18 @@ async def _seed_empresa(pg_engine) -> uuid_lib.UUID:
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    from sqlalchemy import select
+
     async with Session() as session:
+        # ``empresa`` is a singleton (0078 ``empresa_singleton_uk``): reuse
+        # the open one when an earlier test already created it.
+        existing = (
+            await session.execute(
+                select(Empresa.uuid).where(Empresa.vigente_hasta.is_(None))
+            )
+        ).scalars().first()
+        if existing is not None:
+            return existing
         e_uuid = uuid_lib.uuid4()
         session.add(
             Empresa(
@@ -355,7 +377,7 @@ def _decode_cursor_field(cursor: str | None, *, field: str) -> str | None:
 
 @pytest.mark.parametrize("app", ["sucursal"], indirect=True)
 async def test_list_arqueo_empty_returns_200_with_empty_items(
-    pg_engine, alembic_upgrade, mint_operador_jwt, client, isolated_arqueo_table
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, isolated_arqueo_table
 ) -> None:
     """``GET /caja/arqueo`` on an empty ``arqueo`` table — proves the
     ``order_by(model_cls.vigente_desde.desc(), ...)`` line does NOT
@@ -369,17 +391,18 @@ async def test_list_arqueo_empty_returns_200_with_empty_items(
     # needed since we don't INSERT Arqueo here, but it keeps the test
     # setup consistent with the others) and the operador-token branch
     # pin are anchored to a real row.
+    # ``GET /caja/arqueo`` is the admin-only listing (HU-F18.1, REQ-OPS-152):
+    # ``admin-`` issuer + ``audit_read``, global scope (no sucursal header).
     branch_uuid = await _seed_sucursal_for_arqueo_fk(pg_engine)
     actor_uuid = uuid_lib.uuid4()
-    await _seed_usuario(pg_engine, actor_uuid)
-    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="emitir_factura")
-    token = mint_operador_jwt(actor_uuid=actor_uuid, sucursal_uuid=branch_uuid)
+    await _seed_usuario(pg_engine, actor_uuid, rol="admin")
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="audit_read")
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     resp = await client.get(
         "/api/v1/caja/arqueo",
         headers={
             "Authorization": f"Bearer {token}",
-            "X-Sucursal-Context": str(branch_uuid),
         },
     )
 
@@ -399,18 +422,20 @@ async def test_list_arqueo_empty_returns_200_with_empty_items(
 
 @pytest.mark.parametrize("app", ["sucursal"], indirect=True)
 async def test_list_arqueo_with_three_rows_returns_200_in_created_at_desc(
-    pg_engine, alembic_upgrade, mint_operador_jwt, client, isolated_arqueo_table
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, isolated_arqueo_table
 ) -> None:
     """``GET /caja/arqueo`` with 3 seeded rows — items come back in
     ``created_at DESC, uuid ASC`` order and ``next_cursor`` is present
     (we request ``limit=2`` so the 3rd row triggers ``len(rows) > limit``
     and the ``next_cursor`` branch).
     """
+    # ``GET /caja/arqueo`` is the admin-only listing (HU-F18.1, REQ-OPS-152):
+    # ``admin-`` issuer + ``audit_read``, global scope (no sucursal header).
     branch_uuid = await _seed_sucursal_for_arqueo_fk(pg_engine)
     actor_uuid = uuid_lib.uuid4()
-    await _seed_usuario(pg_engine, actor_uuid)
-    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="emitir_factura")
-    token = mint_operador_jwt(actor_uuid=actor_uuid, sucursal_uuid=branch_uuid)
+    await _seed_usuario(pg_engine, actor_uuid, rol="admin")
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="audit_read")
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     base = _now_naive()
     # Seed 3 rows at increasing timestamps — newest is the LAST one.
@@ -424,7 +449,6 @@ async def test_list_arqueo_with_three_rows_returns_200_in_created_at_desc(
         params={"limit": 2},
         headers={
             "Authorization": f"Bearer {token}",
-            "X-Sucursal-Context": str(branch_uuid),
         },
     )
 
@@ -437,9 +461,10 @@ async def test_list_arqueo_with_three_rows_returns_200_in_created_at_desc(
     assert body["next_cursor"] is not None, (
         "next_cursor must be present so the remaining row is reachable"
     )
-    # The cursor encodes created_at (NOT vigente_desde) — Arqueo has no vigente_desde.
+    # The admin listing cursor keys on ``created_at`` (serialized as ``ts``),
+    # NOT on ``vigente_desde`` — Arqueo has no vigente_desde.
     assert _decode_cursor_field(body["next_cursor"], field="vigente_desde") is None
-    assert _decode_cursor_field(body["next_cursor"], field="created_at") is not None
+    assert _decode_cursor_field(body["next_cursor"], field="ts") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +474,7 @@ async def test_list_arqueo_with_three_rows_returns_200_in_created_at_desc(
 
 @pytest.mark.parametrize("app", ["sucursal"], indirect=True)
 async def test_list_arqueo_pagination_cursor_returns_remaining_row(
-    pg_engine, alembic_upgrade, mint_operador_jwt, client, isolated_arqueo_table
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, isolated_arqueo_table
 ) -> None:
     """``GET /caja/arqueo?cursor=<next>&limit=2`` after page 1 leaves one
     row — page 2 returns exactly that row in the same order.
@@ -458,11 +483,13 @@ async def test_list_arqueo_pagination_cursor_returns_remaining_row(
     clause that filters rows BELOW the cursor must compile against
     ``created_at`` (not ``vigente_desde``) for Arqueo. Pre-fix: 500.
     """
+    # ``GET /caja/arqueo`` is the admin-only listing (HU-F18.1, REQ-OPS-152):
+    # ``admin-`` issuer + ``audit_read``, global scope (no sucursal header).
     branch_uuid = await _seed_sucursal_for_arqueo_fk(pg_engine)
     actor_uuid = uuid_lib.uuid4()
-    await _seed_usuario(pg_engine, actor_uuid)
-    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="emitir_factura")
-    token = mint_operador_jwt(actor_uuid=actor_uuid, sucursal_uuid=branch_uuid)
+    await _seed_usuario(pg_engine, actor_uuid, rol="admin")
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="audit_read")
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
 
     base = _now_naive()
     ts_old, ts_mid, ts_new = base, base + timedelta(hours=1), base + timedelta(hours=2)
@@ -476,7 +503,6 @@ async def test_list_arqueo_pagination_cursor_returns_remaining_row(
         params={"limit": 2},
         headers={
             "Authorization": f"Bearer {token}",
-            "X-Sucursal-Context": str(branch_uuid),
         },
     )
     assert resp1.status_code == 200, f"page 1 got {resp1.status_code}: {resp1.text}"
@@ -491,7 +517,6 @@ async def test_list_arqueo_pagination_cursor_returns_remaining_row(
         params={"limit": 2, "cursor": next_cursor},
         headers={
             "Authorization": f"Bearer {token}",
-            "X-Sucursal-Context": str(branch_uuid),
         },
     )
     assert resp2.status_code == 200, f"page 2 got {resp2.status_code}: {resp2.text}"
@@ -512,7 +537,7 @@ async def test_list_arqueo_pagination_cursor_returns_remaining_row(
 
 @pytest.mark.parametrize("app", ["sucursal"], indirect=True)
 async def test_list_sucursal_with_vigente_desde_uses_vigente_desde_path(
-    pg_engine, alembic_upgrade, mint_operador_jwt, client
+    pg_engine, alembic_upgrade, mint_admin_jwt, client
 ) -> None:
     """Regression: ``GET /empresa/sucursal`` (a ``[V]`` model that DOES
     declare ``vigente_desde``) MUST keep its existing order-by and
@@ -523,14 +548,12 @@ async def test_list_sucursal_with_vigente_desde_uses_vigente_desde_path(
     page-2 of any existing client would break — this test pins the
     pre-existing behaviour.
     """
-    branch_uuid = uuid_lib.uuid4()
     actor_uuid = uuid_lib.uuid4()
     empresa_uuid = await _seed_empresa(pg_engine)
-    await _seed_usuario(pg_engine, actor_uuid)
+    await _seed_usuario(pg_engine, actor_uuid, rol="admin")
     # The ``empresa`` router (which mounts ``sucursal``) requires
     # ``config_sucursal`` per ``empresa.py:60``.
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_sucursal")
-    token = mint_operador_jwt(actor_uuid=actor_uuid, sucursal_uuid=branch_uuid)
 
     base = _now_naive()
     ts_old, ts_mid, ts_new = base, base + timedelta(hours=1), base + timedelta(hours=2)
@@ -538,13 +561,29 @@ async def test_list_sucursal_with_vigente_desde_uses_vigente_desde_path(
         pg_engine, uuid_empresa=empresa_uuid, timestamps=[ts_old, ts_mid, ts_new]
     )
 
+    # The directory read is bounded to the caller's branches: an ``admin-``
+    # scope is read FRESH from ``usuarios_sucursal`` (``list_sucursal_global``),
+    # so assign the admin to every seeded branch.
+    from parkos_core.models.V.usuarios_sucursal import UsuariosSucursal
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from tests.conftest import VFixtureFactory
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        for suc_uuid in uuids:
+            session.add(
+                VFixtureFactory.build(
+                    UsuariosSucursal, uuid_sucursal=suc_uuid, uuid_usuario=actor_uuid
+                )
+            )
+        await session.commit()
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=uuids)
+
     resp = await client.get(
         "/api/v1/empresa/sucursal",
         params={"limit": 2},
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-Sucursal-Context": str(branch_uuid),
-        },
+        headers={"Authorization": f"Bearer {token}"},
     )
 
     assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
