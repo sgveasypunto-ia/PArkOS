@@ -11,14 +11,14 @@ import { describe, it, expect } from 'vitest';
 import { validarIdentificacion } from './identificacion';
 
 describe('validarIdentificacion — NIT delega en validarNitModulo11', () => {
-  it('NIT válido (referencia canónica 800.123.456-7)', () => {
-    expect(validarIdentificacion('NIT', '800.123.456', '7')).toEqual({ ok: true });
+  it('NIT válido (800.123.456-5, algoritmo oficial DIAN)', () => {
+    expect(validarIdentificacion('NIT', '800.123.456', '5')).toEqual({ ok: true });
   });
 
   it('NIT con DV incorrecto propaga dvEsperado', () => {
     const result = validarIdentificacion('NIT', '800.123.456', '1');
     expect(result.ok).toBe(false);
-    expect(result).toMatchObject({ dvEsperado: '7' });
+    expect(result).toMatchObject({ dvEsperado: '5' });
   });
 });
 

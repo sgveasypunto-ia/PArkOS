@@ -1,14 +1,16 @@
 """HU-F1.9 / REQ-OPS-058 -- DIAN NIT módulo 11 validator.
 
 The Colombian NIT (Número de Identificación Tributaria) MUST be validated
-against its check digit (DV) per the algoritmo de módulo 11 established by
-DIAN. The check digit is computed from the preceding digits using weights
+against its check digit (DV) per the official DIAN algorithm (RUT,
+Resolución 000070 de 2016): weights
 ``[3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71]`` applied
-**right-to-left** on the NIT digits (without DV).
+**from the rightmost digit leftwards** on the NIT digits (without DV);
+``r = sum % 11``; ``DV = r`` if ``r in (0, 1)`` else ``11 - r``.
 
-``DV = sum_ponderada % 11`` -- **Variant A canónica** per DIAN
-Resolución 000175 de 2021, NOT ``11 - (sum % 11)`` (Variant B).
-The reference test case ``800.123.456-7`` (DV=7) discriminates Variants.
+History: an earlier version computed ``DV = sum % 11`` with the weight
+table reversed ("Variant A"). It agreed with real NITs only by chance and
+rejected valid ones (e.g. 900123456 -> 8, not 3). Pinned against real
+institutional NITs in ``tests/unit/test_validar_nit_modulo11.py``.
 
 Public API:
     validar_nit_modulo11(nit: str, dv: str | int) -> bool
@@ -18,10 +20,9 @@ from __future__ import annotations
 
 import re
 
-# Weights for módulo 11 (right-to-left, recycled cyclically if NIT >15 digits).
-# Source: DIAN Resolución 000175 de 2021, Anexo Técnico de Facturación
-# Electrónica, Numeral 11.1 (validación del DV del NIT).
-MOD11_WEIGHTS: tuple[int, ...] = (71, 67, 59, 53, 47, 43, 41, 37, 29, 23, 19, 17, 13, 7, 3)
+# Weights for módulo 11; index 0 applies to the RIGHTMOST digit (recycled
+# cyclically if NIT >15 digits). Source: DIAN RUT check-digit algorithm.
+MOD11_WEIGHTS: tuple[int, ...] = (3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71)
 
 _NON_DIGIT_RE = re.compile(r"\D+")
 
@@ -42,13 +43,12 @@ def _normalize_nit(nit: str) -> str:
 def dv_esperado(nit: str) -> int:
     """Compute DV expected for the given NIT (without DV digit).
 
-    Returns an int in [0, 10]. Raises ``ValueError`` if NIT <5 digits.
+    Returns an int in [0, 9]. Raises ``ValueError`` if NIT <5 digits.
 
-    Algorithm (Variant A canónica):
-        sum = 0
-        for i, digit in enumerate(reversed(nit_digits)):
-            sum += int(digit) * MOD11_WEIGHTS[i % len(MOD11_WEIGHTS)]
-        return sum % 11
+    Algorithm (official DIAN):
+        sum = Σ digit_i * MOD11_WEIGHTS[i]   (i = 0 at the rightmost digit)
+        r = sum % 11
+        return r if r < 2 else 11 - r
     """
     digits = _normalize_nit(nit)
     if len(digits) < 5:
@@ -58,7 +58,7 @@ def dv_esperado(nit: str) -> int:
         weight = MOD11_WEIGHTS[idx % len(MOD11_WEIGHTS)]
         sum_ponderada += int(digit_char) * weight
     mod = sum_ponderada % 11
-    return mod  # DIAN Variant A: DV = mod (NOT 11-mod)
+    return mod if mod < 2 else 11 - mod
 
 
 def validar_nit_modulo11(nit: str, dv: str | int) -> bool:
@@ -81,16 +81,16 @@ def validar_nit_modulo11(nit: str, dv: str | int) -> bool:
     try:
         dv_int = int(dv) if isinstance(dv, str) else dv
         digits = _normalize_nit(nit)
-        # Strip the trailing DV if present (e.g., "8001234567" → "800123456"
-        # when dv="7"). This supports the ergonomic "800.123.456-7" form
-        # without forcing callers to split manually.
+        # The NIT may arrive with or without its DV appended
+        # ("800.197.268-4" + "4"). A bare body that happens to END in the
+        # DV digit (860002964 + "4") is also legitimate, so try the body as
+        # given first, then the body with the trailing DV stripped.
+        if dv_int == dv_esperado(digits):
+            return True
         dv_str = str(dv_int)
         if dv_str and len(digits) > len(dv_str) and digits.endswith(dv_str):
-            base = digits[: -len(dv_str)]
-        else:
-            base = digits
-        expected = dv_esperado(base)
-        return dv_int == expected
+            return dv_int == dv_esperado(digits[: -len(dv_str)])
+        return False
     except (ValueError, TypeError):
         return False
 

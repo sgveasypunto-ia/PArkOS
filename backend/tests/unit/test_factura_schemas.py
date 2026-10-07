@@ -40,7 +40,7 @@ def test_clientes_create_rechaza_nit_dv_invalido() -> None:
         ClientesCreate(
             tipo_identificador="NIT",
             numero_identificacion="800.123.456",
-            dv="9",  # wrong; Variant A expects 7
+            dv="9",  # wrong; official DV is 5
             nombre="Empresa ABC",
             apellido=None,
             email="test@example.com",
@@ -57,14 +57,14 @@ def test_clientes_create_acepta_nit_dv_valido() -> None:
     obj = ClientesCreate(
         tipo_identificador="NIT",
         numero_identificacion="800.123.456",
-        dv="7",
+        dv="5",
         nombre="Empresa ABC",
         apellido=None,
         email="test@example.com",
         telefono="3001234567",
     )
     assert obj.tipo_identificador == "NIT"
-    assert obj.dv == "7"
+    assert obj.dv == "5"
 
 
 def test_factura_datos_cliente_rechaza_nit_dv_invalido() -> None:
@@ -73,7 +73,7 @@ def test_factura_datos_cliente_rechaza_nit_dv_invalido() -> None:
         FacturaItemConDatosPropios(
             tipo_identificador="NIT",
             numero_identificacion="800.123.456",
-            dv="9",  # DV esperado = 7
+            dv="9",  # DV esperado = 5
             nombre="Empresa ABC",
             apellido=None,
             email="test@example.com",
@@ -99,14 +99,14 @@ def test_factura_datos_cliente_acepta_nit_dv_valido() -> None:
     obj = FacturaItemConDatosPropios(
         tipo_identificador="NIT",
         numero_identificacion="800.123.456",
-        dv="7",
+        dv="5",
         nombre="Empresa ABC",
         apellido=None,
         email="test@example.com",
         telefono="3001234567",
     )
     assert obj.tipo_identificador == "NIT"
-    assert obj.dv == "7"
+    assert obj.dv == "5"
 
 
 def test_factura_datos_cliente_acepta_cc_sin_dv() -> None:
