@@ -50,10 +50,11 @@ disagree -- a one-line fix when that happens.
 from __future__ import annotations
 
 import uuid as uuid_lib
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 import bcrypt
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, exists, false, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -246,10 +247,51 @@ async def create_admin_usuario(
     return user
 
 
+def usuario_in_scope_clause(
+    permitidas: Collection[uuid_lib.UUID],
+) -> ColumnElement[bool]:
+    """SQL predicate on ``Usuarios.uuid``: is the user manageable by an admin
+    whose branch scope is ``permitidas``? (SC1)
+
+    A user is manageable when it holds at least one OPEN ``usuarios_sucursal``
+    row inside ``permitidas``, OR holds no open assignment at all (a freshly
+    created user that the web_admin wizard has not assigned yet -- without
+    this a scoped admin could not finish the two-step create flow).
+    An empty ``permitidas`` fails closed (matches nothing).
+    """
+    if not permitidas:
+        return false()
+    open_in_scope = exists().where(
+        UsuariosSucursal.uuid_usuario == Usuarios.uuid,
+        UsuariosSucursal.vigente_hasta.is_(None),
+        UsuariosSucursal.uuid_sucursal.in_(list(permitidas)),
+    )
+    any_open = exists().where(
+        UsuariosSucursal.uuid_usuario == Usuarios.uuid,
+        UsuariosSucursal.vigente_hasta.is_(None),
+    )
+    return or_(open_in_scope, ~any_open)
+
+
+async def usuario_visible(
+    session: AsyncSession,
+    *,
+    usuario_uuid: uuid_lib.UUID,
+    permitidas: Collection[uuid_lib.UUID],
+) -> bool:
+    """True when ``usuario_uuid`` exists and is inside the admin's scope."""
+    stmt = select(Usuarios.uuid).where(
+        Usuarios.uuid == usuario_uuid,
+        usuario_in_scope_clause(permitidas),
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
 async def list_active_usuarios(
     session: AsyncSession,
     *,
     limit: int = 100,
+    permitidas: Collection[uuid_lib.UUID] | None = None,
 ) -> list[Usuarios]:
     """Return one page of currently-open ``prod.usuarios`` rows.
 
@@ -259,12 +301,10 @@ async def list_active_usuarios(
     No cursor yet -- IT-1.4 doesn't call for one. The ``limit``
     ceiling matches ``schemas.auth.LoginHistorico`` precedent.
     """
-    stmt = (
-        select(Usuarios)
-        .where(Usuarios.vigente_hasta.is_(None))
-        .order_by(Usuarios.created_at.desc(), Usuarios.uuid.asc())
-        .limit(limit)
-    )
+    stmt = select(Usuarios).where(Usuarios.vigente_hasta.is_(None))
+    if permitidas is not None:
+        stmt = stmt.where(usuario_in_scope_clause(permitidas))
+    stmt = stmt.order_by(Usuarios.created_at.desc(), Usuarios.uuid.asc()).limit(limit)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 

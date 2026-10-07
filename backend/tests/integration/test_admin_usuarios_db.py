@@ -79,10 +79,17 @@ def _build_cloud_admin_app(pg_engine) -> tuple[FastAPI, callable]:
     return app
 
 
+# SC1: the admin scope is the actor's OPEN ``usuarios_sucursal`` rows, so the
+# default test admin must be a real, branch-assigned user. ``_seed_admin_actor``
+# (autouse fixture below) creates it with one home branch, and ``_seed_sucursal``
+# assigns it to every branch the tests create -- i.e. a "global" admin.
+_TEST_ADMIN_UUID = uuid_lib.uuid4()
+
+
 def _admin_token(*, actor_uuid: uuid_lib.UUID | None = None, expires_in: int = 3600) -> str:
     """Mint a REAL ``admin-`` JWT for the happy path."""
     return issue_token(
-        subject_uuid=actor_uuid or uuid_lib.uuid4(),
+        subject_uuid=actor_uuid or _TEST_ADMIN_UUID,
         issuer="admin-test",
         claims={
             "rol": "admin",
@@ -143,7 +150,31 @@ async def _seed_sucursal(pg_engine) -> uuid_lib.UUID:
         session.add(row)
         await session.flush()
         await session.commit()
-        return row.uuid
+        branch_uuid = row.uuid
+    await _assign_test_admin(pg_engine, branch_uuid)
+    return branch_uuid
+
+
+async def _assign_test_admin(pg_engine, sucursal_uuid: uuid_lib.UUID) -> None:
+    """Open one ``usuarios_sucursal`` row linking the default test admin to a branch."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            UsuariosSucursal(
+                uuid_usuario=_TEST_ADMIN_UUID,
+                uuid_sucursal=sucursal_uuid,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+            )
+        )
+        await session.commit()
 
 
 async def _grant_permiso(
@@ -226,6 +257,30 @@ async def _truncate_admin_tables(pg_engine) -> AsyncIterator[None]:
             )
         )
         await session.commit()
+
+    # Default admin actor: a real user holding one home-branch assignment.
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with Session() as session:
+        session.add(
+            Usuarios(
+                uuid=_TEST_ADMIN_UUID,
+                nombre="Test",
+                apellido="Admin",
+                email="test-admin@parkos.local",
+                password_hash="placeholder-bcrypt",
+                rol="admin",
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+            )
+        )
+        await session.commit()
+    await _seed_sucursal(pg_engine)
     yield
 
 
@@ -342,7 +397,9 @@ async def test_get_usuarios_returns_active_only(pg_engine, alembic_upgrade, pg_s
     for item in items:
         assert "sucursales" in item
         assert isinstance(item["sucursales"], list)
-        assert item["sucursales"] == []
+        if item["email"] in {"u0@parkos.local", "u1@parkos.local"}:
+            # The default test admin (also listed) holds its home branch.
+            assert item["sucursales"] == []
 
 
 async def test_list_usuarios_includes_active_branch_assignments(

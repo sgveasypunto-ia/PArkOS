@@ -58,6 +58,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_session, requires_issuer
+from ...db.tenancy import (
+    TenantScopeViolationError,
+    extract_sucursales_permitidas_fresh,
+)
 from ...models.V.usuarios import Usuarios
 from ...repo import admin_usuarios as admin_repo
 from ...schemas.admin import (
@@ -129,6 +133,48 @@ def _actor_uuid_from_claims(claims: dict[str, Any]) -> uuid_lib.UUID:
     return uuid_lib.uuid4()
 
 
+# ---------------------------------------------------------------------------
+# Branch scope (SC1) -- same source of truth as ``admin_views`` and
+# ``auth.tenancy.require_branch_scope``: the actor's OPEN ``usuarios_sucursal``
+# rows, read FRESH from the DB (never the login-time JWT snapshot). A cloud
+# "global" admin is simply one assigned to every branch. Empty scope fails
+# closed. Users outside the scope answer 404 (existence is not disclosed);
+# naming a branch outside the scope answers 403 ``tenant_scope_violation``.
+# ---------------------------------------------------------------------------
+
+
+async def _admin_scope(
+    session: AsyncSession, claims: dict[str, Any]
+) -> frozenset[uuid_lib.UUID]:
+    return frozenset(
+        await extract_sucursales_permitidas_fresh(
+            session, actor_uuid=_actor_uuid_from_claims(claims)
+        )
+    )
+
+
+async def _require_usuario_in_scope(
+    session: AsyncSession, claims: dict[str, Any], usuario_uuid: uuid_lib.UUID
+) -> frozenset[uuid_lib.UUID]:
+    """Resolve the actor's scope and 404 unless ``usuario_uuid`` is inside it."""
+    permitidas = await _admin_scope(session, claims)
+    if not await admin_repo.usuario_visible(
+        session, usuario_uuid=usuario_uuid, permitidas=permitidas
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"no active user with uuid={usuario_uuid}",
+        )
+    return permitidas
+
+
+def _require_branches_in_scope(
+    permitidas: frozenset[uuid_lib.UUID], sucursales: list[uuid_lib.UUID]
+) -> None:
+    if not all(s in permitidas for s in sucursales):
+        raise TenantScopeViolationError()
+
+
 @router.post(
     "",
     response_model=AdminUsuarioRead,
@@ -141,6 +187,10 @@ async def create_usuario(
     session: DbSession,
 ) -> AdminUsuarioRead:
     actor_uuid = _actor_uuid_from_claims(claims)
+    permitidas = await _admin_scope(session, claims)
+    if not permitidas:
+        raise TenantScopeViolationError()
+    _require_branches_in_scope(permitidas, payload.sucursales_asignadas)
     try:
         user = await admin_repo.create_admin_usuario(
             session,
@@ -189,7 +239,10 @@ async def list_usuarios(
     claims: AdminClaims,
     session: DbSession,
 ) -> AdminUsuarioReadList:
-    rows = await admin_repo.list_active_usuarios(session, limit=100)
+    permitidas = await _admin_scope(session, claims)
+    rows = await admin_repo.list_active_usuarios(
+        session, limit=100, permitidas=permitidas
+    )
     assignments_by_user = await admin_repo.list_branch_assignments_for_users(
         session, user_uuids=[r.uuid for r in rows]
     )
@@ -201,7 +254,9 @@ async def list_usuarios(
         payload = AdminUsuarioRead.model_validate(r).model_dump(
             exclude={"sucursales"}
         )
-        payload["sucursales"] = assignments_by_user.get(r.uuid, [])
+        payload["sucursales"] = [
+            a for a in assignments_by_user.get(r.uuid, []) if a.uuid_sucursal in permitidas
+        ]
         items.append(AdminUsuarioRead.model_validate(payload))
     return AdminUsuarioReadList(items=items, next_cursor=None)
 
@@ -216,8 +271,7 @@ async def get_usuario(
     claims: AdminClaims,  # type: ignore[assignment]
     session: DbSession,  # type: ignore[assignment]
 ) -> AdminUsuarioRead:
-    from sqlalchemy import select
-
+    permitidas = await _require_usuario_in_scope(session, claims, uuid)
     stmt = select(Usuarios).where(
         Usuarios.uuid == uuid,
         Usuarios.vigente_hasta.is_(None),
@@ -235,7 +289,9 @@ async def get_usuario(
     payload = AdminUsuarioRead.model_validate(user).model_dump(
         exclude={"sucursales"}
     )
-    payload["sucursales"] = assignments.get(user.uuid, [])
+    payload["sucursales"] = [
+        a for a in assignments.get(user.uuid, []) if a.uuid_sucursal in permitidas
+    ]
     return AdminUsuarioRead.model_validate(payload)
 
 
@@ -285,6 +341,8 @@ async def asignar_sucursal(
     session: DbSession,  # type: ignore[assignment]
 ) -> AdminSucursalAsignadaRead:
     actor_uuid = _actor_uuid_from_claims(claims)
+    permitidas = await _require_usuario_in_scope(session, claims, uuid)
+    _require_branches_in_scope(permitidas, [payload.uuid_sucursal])
     try:
         row = await admin_repo.asignar_sucursal(
             session,
@@ -320,8 +378,13 @@ async def list_asignaciones(
     claims: AdminClaims,  # type: ignore[assignment]
     session: DbSession,  # type: ignore[assignment]
 ) -> list[AdminSucursalAsignadaRead]:
+    permitidas = await _require_usuario_in_scope(session, claims, uuid)
     rows = await admin_repo.list_active_asignaciones_usuario(session, usuario_uuid=uuid)
-    return [AdminSucursalAsignadaRead.model_validate(r) for r in rows]
+    return [
+        AdminSucursalAsignadaRead.model_validate(r)
+        for r in rows
+        if r.uuid_sucursal in permitidas
+    ]
 
 
 @router.post(
@@ -342,6 +405,8 @@ async def desasignar_sucursal(
     session: DbSession,  # type: ignore[assignment]
 ) -> Response:
     actor_uuid = _actor_uuid_from_claims(claims)
+    permitidas = await _require_usuario_in_scope(session, claims, uuid)
+    _require_branches_in_scope(permitidas, [sucursal_uuid])
     # Detect "no open assignment" so we can 404 instead of 204.
     rows = await admin_repo.list_active_asignaciones_usuario(session, usuario_uuid=uuid)
     has_open = any(r.uuid_sucursal == sucursal_uuid for r in rows)
@@ -392,6 +457,8 @@ async def revocar_permiso(
 ) -> Response:
     actor_uuid = _actor_uuid_from_claims(claims)
     from ...repo.admin_usuarios import revocar_permiso as _repo_revoke
+
+    await _require_usuario_in_scope(session, claims, uuid)
 
     try:
         had_open = await _repo_revoke(
@@ -449,6 +516,7 @@ async def update_usuario(
     session: DbSession,  # type: ignore[assignment]
 ) -> AdminUsuarioRead:
     actor_uuid = _actor_uuid_from_claims(claims)
+    await _require_usuario_in_scope(session, claims, uuid)
     try:
         user = await admin_repo.update_admin_usuario(
             session,
@@ -497,7 +565,7 @@ async def list_permisos_usuario(
     claims: AdminClaims,  # type: ignore[assignment]
     session: DbSession,  # type: ignore[assignment]
 ) -> list[AdminPermisoUsuarioRead]:
-    _ = claims
+    await _require_usuario_in_scope(session, claims, uuid)
     pairs = await admin_repo.list_active_permisos_usuario(
         session, usuario_uuid=uuid
     )
@@ -530,6 +598,7 @@ async def asignar_permiso(
     session: DbSession,  # type: ignore[assignment]
 ) -> AdminPermisoUsuarioRead:
     actor_uuid = _actor_uuid_from_claims(claims)
+    await _require_usuario_in_scope(session, claims, uuid)
     try:
         new_row = await admin_repo.asignar_permiso(
             session,
@@ -602,7 +671,8 @@ async def list_sesiones_usuario(
     flips the response without a caller change.
     """
     from sqlalchemy import select as _select
-    _ = claims
+
+    await _require_usuario_in_scope(session, claims, uuid)
     # Local import to avoid a cycle on models.base
     from ...models.L_S.sesion import Sesion as _Sesion
     from ...schemas.admin import AdminSesionRead as _Schema
@@ -657,6 +727,21 @@ async def cerrar_sesion(
     session: DbSession,  # type: ignore[assignment]
 ) -> Response:
     actor_uuid = _actor_uuid_from_claims(claims)
+    await _require_usuario_in_scope(session, claims, uuid)
+    # The login must belong to the user in the path: otherwise a scoped
+    # admin could close any user's login by pairing it with a visible uuid.
+    from ...models.L_S.login import Login as _LoginRow
+
+    owner = (
+        await session.execute(
+            select(_LoginRow.uuid_usuario).where(_LoginRow.uuid == login_uuid)
+        )
+    ).first()
+    if owner is not None and owner[0] != uuid:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"no open login {login_uuid} for user={uuid}",
+        )
     # The repo lives in :mod:`session_cycle`; import lazily so the
     # admin module does not pull it at import time.
     from ...repo.session_cycle import close_login_with_log
@@ -702,7 +787,7 @@ async def login_historico(
     claims: AdminClaims,  # type: ignore[assignment]
     session: DbSession,  # type: ignore[assignment]
 ) -> list[LoginIntentoItem]:
-    _ = claims
+    await _require_usuario_in_scope(session, claims, uuid)
     from sqlalchemy import select as _select
     from ...models.L_S.login import Login as _Login
 
@@ -744,6 +829,7 @@ async def reset_password(
     with no body) round-trips cleanly. ``None`` is the default."""
     payload = AdminResetPasswordRequest()
     actor_uuid = _actor_uuid_from_claims(claims)
+    await _require_usuario_in_scope(session, claims, uuid)
     try:
         plaintext, user_uuid = await admin_repo.reset_admin_password(
             session,
