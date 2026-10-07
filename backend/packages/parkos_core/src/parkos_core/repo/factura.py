@@ -123,6 +123,7 @@ async def buscar_o_crear_cliente_por_nit(
     tipo_identificador: str,
     numero_identificacion: str,
     datos: Any,
+    actor_uuid: uuid_lib.UUID,
 ) -> Any | None:
     """V2 — lookup the vigente ``prod.clientes`` row by ``(tipo_identificador,
     numero_identificacion)`` — matches the real UK (``.mmd`` UK01:
@@ -138,8 +139,11 @@ async def buscar_o_crear_cliente_por_nit(
     orders by ``vigente_desde DESC LIMIT 1`` as defense-in-depth so a
     lookup can never raise ``MultipleResultsFound``.
 
-    For MVP (F1.9): returns ``None`` when not found (handler maps to 404).
-    Auto-creación is Fase 2 (per design).
+    When no vigente row exists and ``datos`` (the ``fe_datos_cliente`` block)
+    is supplied, the cliente is created through
+    :func:`repo.venta_suscripcion.buscar_cliente_por_uuid_o_crear_nuevo`
+    (close+insert, ``uuid_tipo_persona`` resolved server-side). Without
+    ``datos`` a miss still returns ``None``. The caller owns the commit.
     """
     from ..models.V.clientes import Clientes  # local import to avoid cycles
 
@@ -155,7 +159,19 @@ async def buscar_o_crear_cliente_por_nit(
         .limit(1)
     )
     row = (await session.execute(stmt)).scalar_one_or_none()
-    return row
+    if row is not None or datos is None:
+        return row
+
+    from . import venta_suscripcion  # local import to avoid cycles
+
+    datos_cliente = {
+        k: v
+        for k, v in datos.model_dump().items()
+        if v is not None and k != "dv"
+    }
+    return await venta_suscripcion.buscar_cliente_por_uuid_o_crear_nuevo(
+        session, datos_cliente=datos_cliente, actor_uuid=actor_uuid
+    )
 
 
 # ---------------------------------------------------------------------------
