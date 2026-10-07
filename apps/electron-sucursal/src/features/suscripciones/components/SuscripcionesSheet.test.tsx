@@ -376,6 +376,15 @@ describe('<SuscripcionesSheet /> — HU-F9.1 + HU-F9.2 realineada', () => {
     expect(screen.getByTestId('suscripciones-renovar-sub-1')).toBeInTheDocument();
   });
 
+  it('S13c (UX3): the section states its criterion (<= 10 days or expired), not just "Por renovar"', () => {
+    mockRenovablesData.mockReturnValue([RENOVABLE]);
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+    expect(screen.getByTestId('suscripciones-renovables-criterio')).toHaveTextContent(
+      'vencen en 10 días o menos, o ya vencieron',
+    );
+  });
+
   it('S13b (PT-3): nothing renewable -> no "Por renovar" section nor Renovar button', () => {
     useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
     render(<SuscripcionesSheet />);

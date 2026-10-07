@@ -339,6 +339,14 @@ export function SuscripcionesSheet(): JSX.Element {
                   >
                     {t('suscripciones:sheet.porRenovar', { defaultValue: 'Por renovar' })}
                   </h3>
+                  <p
+                    className="text-xs text-muted-foreground"
+                    data-testid="suscripciones-renovables-criterio"
+                  >
+                    {t('suscripciones:sheet.porRenovarCriterio', {
+                      defaultValue: 'Incluye las que vencen en 10 días o menos, o ya vencieron.',
+                    })}
+                  </p>
                   <ul className="space-y-2">
                     {renovables.map((r) => (
                       <li
