@@ -56,10 +56,17 @@ def _to_naive_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value
     return value.astimezone(UTC).replace(tzinfo=None)
-from ...auth.tenancy import TenantContext, get_tenant_ctx, requires_sucursal
+from ...auth.tenancy import (
+    BranchScope,
+    TenantContext,
+    get_tenant_ctx,
+    require_branch_scope,
+    requires_sucursal,
+)
 from ...db.tenancy import (
     extract_sucursales_permitidas,
     extract_sucursales_permitidas_fresh,
+    suspend_tenant_context,
 )
 from ...models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
 from ...models.V.documentos import Documentos
@@ -1469,6 +1476,173 @@ async def get_resolucion_facturacion_consecutivo_actual(
         restantes=restantes,
         agotandose=agotandose,
     )
+
+
+_resolucion_perm_dep = require_permission(_ROUTER_CONFIG["resolucion-facturacion"][1])
+
+
+async def _assert_rango_resolucion_disjunto(
+    session: AsyncSession,
+    *,
+    prefijo: str | None,
+    rango_desde: int | None,
+    rango_hasta: int | None,
+    exclude_uuid: uuid_lib.UUID | None = None,
+) -> None:
+    """Reject numbering that overlaps another vigente resolution with the
+    same ``prefijo`` (any sucursal).
+
+    Two resolutions sharing a prefix and an overlapping range would issue
+    the same invoice number twice towards DIAN (AGENTS.md: one resolution
+    per branch, disjoint authorized ranges). ``exclude_uuid`` is the version
+    being closed by a PUT, so correcting a resolution never conflicts with
+    itself. Runs outside the ambient tenant scope: the check is
+    deliberately cross-branch.
+    """
+    if prefijo is None or rango_desde is None or rango_hasta is None:
+        return
+    # Serialize concurrent writers of the same prefix until commit, so two
+    # simultaneous requests cannot both pass the check below.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+        {"k": f"resolucion_facturacion:{prefijo}"},
+    )
+    stmt = select(ResolucionFacturacion.uuid, ResolucionFacturacion.uuid_sucursal).where(
+        ResolucionFacturacion.vigente_hasta.is_(None),
+        ResolucionFacturacion.prefijo == prefijo,
+        ResolucionFacturacion.rango_desde <= rango_hasta,
+        ResolucionFacturacion.rango_hasta >= rango_desde,
+    )
+    if exclude_uuid is not None:
+        stmt = stmt.where(ResolucionFacturacion.uuid != exclude_uuid)
+    with suspend_tenant_context():  # deliberately cross-branch
+        conflicto = (await session.execute(stmt.limit(1))).first()
+    if conflicto is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "resolucion_rango_solapado",
+                "field": "rango_desde",
+                "prefijo": prefijo,
+                "rango_desde": rango_desde,
+                "rango_hasta": rango_hasta,
+            },
+        )
+
+
+def _sucursal_escribible(
+    scope: BranchScope, ctx: TenantContext, uuid_sucursal: uuid_lib.UUID | None
+) -> bool:
+    """True when the caller may WRITE resolutions of ``uuid_sucursal``: the
+    branch must be in the actor's fresh ``usuarios_sucursal`` set and, when an
+    ``X-Sucursal-Context`` is bound, equal to it. The tenant listener does not
+    rewrite INSERTs and is off in global mode, so this check is mandatory."""
+    if not scope.allows(uuid_sucursal):
+        return False
+    return ctx.sucursal_uuid is None or ctx.sucursal_uuid == uuid_sucursal
+
+
+@_resolucion_dedicated_router.post(
+    "",
+    response_model=ResolucionFacturacionRead,
+    status_code=201,
+    dependencies=[Depends(_resolucion_perm_dep)],
+)
+async def create_resolucion_facturacion_dedicated(
+    payload: ResolucionFacturacionCreate,
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(get_tenant_ctx),
+    scope: BranchScope = Depends(require_branch_scope),
+    _claims: None = Depends(_resolucion_issuer_dep),
+) -> ResolucionFacturacionRead:
+    """Shadow the factory's POST to enforce branch scope + numbering overlap.
+    Only the overlap query and the post-commit refresh run outside the
+    ambient tenant scope."""
+    if not _sucursal_escribible(scope, ctx, payload.uuid_sucursal):
+        raise HTTPException(
+            status_code=403, detail={"error": "unauthorized_sucursal_context"}
+        )
+    await _assert_rango_resolucion_disjunto(
+        session,
+        prefijo=payload.prefijo,
+        rango_desde=payload.rango_desde,
+        rango_hasta=payload.rango_hasta,
+    )
+    new_row = await close_and_insert(
+        session,
+        ResolucionFacturacion,
+        current_uuid=None,
+        new_attrs=payload.model_dump(exclude_none=True),
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    with suspend_tenant_context():
+        await session.refresh(new_row)
+    return ResolucionFacturacionRead.model_validate(new_row)
+
+
+@_resolucion_dedicated_router.put(
+    "/{uuid}",
+    response_model=ResolucionFacturacionRead,
+    dependencies=[Depends(_resolucion_perm_dep)],
+)
+async def update_resolucion_facturacion_dedicated(
+    payload: ResolucionFacturacionUpdate,
+    uuid: uuid_lib.UUID = Path(...),
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(get_tenant_ctx),
+    scope: BranchScope = Depends(require_branch_scope),
+    _claims: None = Depends(_resolucion_issuer_dep),
+) -> ResolucionFacturacionRead:
+    """Shadow the factory's PUT: bi-temporal close+insert plus the overlap
+    guard. Fields omitted from the payload (e.g. numbering) are carried
+    forward from the closed version by ``close_and_insert``. A resolution of
+    a branch the caller cannot write answers the same 404 as a missing one."""
+    actual = (
+        await session.execute(
+            select(ResolucionFacturacion).where(
+                ResolucionFacturacion.uuid == uuid,
+                ResolucionFacturacion.vigente_hasta.is_(None),
+                ResolucionFacturacion.uuid_sucursal.in_(scope.permitidas),
+            )
+        )
+    ).scalar_one_or_none()
+    if actual is not None and not _sucursal_escribible(scope, ctx, actual.uuid_sucursal):
+        actual = None
+    if actual is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "resolucion_no_encontrada", "uuid": str(uuid)},
+        )
+    if actual.uuid_sucursal is not None and actual.uuid_sucursal != payload.uuid_sucursal:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "uuid_sucursal_inmutable", "uuid": str(uuid)},
+        )
+    # Validate the EFFECTIVE numbering (payload over carried-forward).
+    prefijo = payload.prefijo if payload.prefijo is not None else actual.prefijo
+    desde = payload.rango_desde if payload.rango_desde is not None else actual.rango_desde
+    hasta = payload.rango_hasta if payload.rango_hasta is not None else actual.rango_hasta
+    await _assert_rango_resolucion_disjunto(
+        session,
+        prefijo=prefijo,
+        rango_desde=desde,
+        rango_hasta=hasta,
+        exclude_uuid=uuid,
+    )
+    new_row = await close_and_insert(
+        session,
+        ResolucionFacturacion,
+        current_uuid=uuid,
+        new_attrs=payload.model_dump(exclude_none=True),
+        actor_uuid=ctx.actor_uuid,
+        log_tx=True,
+    )
+    await session.commit()
+    with suspend_tenant_context():
+        await session.refresh(new_row)
+    return ResolucionFacturacionRead.model_validate(new_row)
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,8 @@
  *
  * - `GET  /api/v1/empresa/resolucion-facturacion?vigente_en=...&cursor=...&limit=...`
  * - `POST /api/v1/empresa/resolucion-facturacion`
- * - `PUT  /api/v1/empresa/resolucion-facturacion/{uuid}`
+ * - `PUT  /api/v1/empresa/resolucion-facturacion/{uuid}` (bi-temporal:
+ *   cierra la versión y abre otra; así se completa/corrige la numeración)
  * - `GET  /api/v1/empresa/resolucion-facturacion/{uuid}/consecutivo-actual`
  *
  * The list endpoint does NOT filter by `uuid_sucursal` server-side on this
@@ -28,6 +29,7 @@ import {
   resolucionFacturacionReadSchema,
   resolucionFacturacionUpdateSchema,
   resolucionFacturacionValidationErrorSchema,
+  type ResolucionNumeracionCampo,
   type ResolucionFacturacion,
   type ResolucionFacturacionConsecutivoActual,
   type ResolucionFacturacionCreateInput,
@@ -72,13 +74,73 @@ export class ResolucionFacturacionVigenciaError extends Error {
   }
 }
 
+/**
+ * Rechazo del backend atribuible a un campo de numeración (`prefijo`,
+ * `rango_desde`, `rango_hasta`): 422 de validación del rango/prefijo o 409
+ * `resolucion_rango_solapado` (otra resolución vigente con el mismo prefijo
+ * ya cubre parte del rango). `campo` indica dónde mostrar el mensaje.
+ */
+export class ResolucionFacturacionNumeracionError extends Error {
+  readonly campo: ResolucionNumeracionCampo;
+
+  constructor(campo: ResolucionNumeracionCampo, message: string) {
+    super(message);
+    this.name = 'ResolucionFacturacionNumeracionError';
+    this.campo = campo;
+  }
+}
+
+/** Traduce el mensaje técnico del backend a (campo, texto claro en es-CO). */
+function numeracionIssueFromMsg(
+  msg: string,
+): { campo: ResolucionNumeracionCampo; message: string } | null {
+  if (msg.includes('prefijo debe ser')) {
+    return { campo: 'prefijo', message: 'El prefijo debe ser alfanumérico de 1 a 4 caracteres' };
+  }
+  if (msg.includes('rango_hasta debe ser mayor o igual a rango_desde')) {
+    return { campo: 'rango_hasta', message: 'El rango final debe ser mayor o igual al rango inicial' };
+  }
+  if (msg.includes('rango_desde debe ser mayor')) {
+    return { campo: 'rango_desde', message: 'El rango inicial debe ser mayor o igual a 1' };
+  }
+  if (msg.includes('rango_hasta no puede superar')) {
+    return { campo: 'rango_hasta', message: 'El rango final supera el máximo permitido' };
+  }
+  if (msg.includes('deben enviarse juntos')) {
+    return { campo: 'prefijo', message: 'Prefijo y rango deben completarse juntos' };
+  }
+  return null;
+}
+
 function throwTypedError(res: Response, bodyText: string): never {
+  if (res.status === 409) {
+    try {
+      const parsed = JSON.parse(bodyText) as { detail?: { error?: string } };
+      if (parsed.detail?.error === 'resolucion_rango_solapado') {
+        throw new ResolucionFacturacionNumeracionError(
+          'rango_desde',
+          'Este rango se solapa con otra resolución vigente que usa el mismo prefijo',
+        );
+      }
+    } catch (err) {
+      if (err instanceof ResolucionFacturacionNumeracionError) throw err;
+    }
+  }
   if (res.status === 422) {
     let parsedBody: unknown;
     try {
       parsedBody = JSON.parse(bodyText);
     } catch {
       throw new Error(`resolucionFacturacionApi: 422 ${bodyText.slice(0, 200)}`);
+    }
+    const envelope = resolucionFacturacionValidationErrorSchema.safeParse(parsedBody);
+    if (envelope.success) {
+      for (const d of envelope.data.detail) {
+        const numeracion = numeracionIssueFromMsg(d.msg);
+        if (numeracion) {
+          throw new ResolucionFacturacionNumeracionError(numeracion.campo, numeracion.message);
+        }
+      }
     }
     throw new ResolucionFacturacionVigenciaError(parsedBody);
   }

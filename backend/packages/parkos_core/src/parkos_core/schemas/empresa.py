@@ -7,8 +7,8 @@ Covers 6 ``[V]`` tables in ``prod``:
 - :class:`Documentos` — administrative files inlined as base64
   (1MB cap enforced here — REQ-OP-05).
 - :class:`ResolucionFacturacion` — DIAN billing resolution per branch
-  (cloud-only writes; :class:`ResolucionFacturacionCreate` server-assigns
-  ``prefijo`` + ``rango_desde``/``rango_hasta`` — REQ-X3 boundary).
+  (cloud-only writes; numbering ``prefijo`` + ``rango_desde``/``rango_hasta``
+  is written by the admin and validated here).
 - :class:`TarifasSucursal` — per-branch rate by vehicle type + tariff mode.
 - :class:`CantidadVehiculosSucursal` — branch capacity by vehicle type.
 
@@ -20,12 +20,13 @@ project an ORM row directly).
 
 from __future__ import annotations
 
+import re
 import uuid as uuid_lib
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from .common import FilterBase, ReadListBase, _Base
 
@@ -198,14 +199,12 @@ class DocumentosReadList(ReadListBase[DocumentosRead]):
 
 
 # ---------------------------------------------------------------------------
-# ResolucionFacturacion (REQ-X3: DIAN root, server-assigned ranges)
+# ResolucionFacturacion (REQ-X3: DIAN root, cloud-only writes)
 # ---------------------------------------------------------------------------
 
 
 class ResolucionFacturacionRead(_Base):
-    """Read-back for ``prod.resolucion_facturacion``. Includes the server-assigned
-    ``prefijo`` and ``rango_desde``/``rango_hasta`` — but those are NOT accepted
-    on :class:`ResolucionFacturacionCreate`."""
+    """Read-back for ``prod.resolucion_facturacion`` (incl. numbering columns)."""
 
     uuid: uuid_lib.UUID
     uuid_sucursal: uuid_lib.UUID | None
@@ -224,19 +223,23 @@ class ResolucionFacturacionRead(_Base):
     sync_status: str | None
 
 
-class ResolucionFacturacionCreate(_Base):
-    """REQ-X3: server assigns ``prefijo``, ``rango_desde``, ``rango_hasta``.
-    ``extra='forbid'`` (from :class:`_Base`) blocks client-supplied values
-    for those fields — that's T-PR4-08's test.
+# DIAN numbering prefix: 1-4 alphanumeric characters (stored upper-case).
+# ``rango_*`` upper bound mirrors the 10-digit ceiling DIAN accepts for a
+# numbering range and keeps the value inside a JS safe integer.
+_PREFIJO_RE = re.compile(r"^[A-Z0-9]{1,4}$")
+_RANGO_MAX = 9_999_999_999
 
-    HU-F15.3 drift note: the master spec (``plan.md`` HU-F15.3) describes two
-    extra 422 guards — ``rango_hasta > rango_desde`` and no two resoluciones
-    vigentes sharing ``prefijo`` for the same sucursal. Both are moot HERE:
-    neither field is client-writable (confirmed above, REQ-X3), so there is
-    nothing in this payload to validate against — those invariants belong to
-    whatever out-of-band process assigns ``prefijo``/``rango_*`` (not found
-    in this repo). Only the third guard, ``fecha_fin_vigencia >
-    fecha_inicio_vigencia``, applies to fields the client actually sends.
+
+class _ResolucionFacturacionWrite(_Base):
+    """Shared write shape for Create/Update of ``resolucion_facturacion``.
+
+    ``prefijo`` / ``rango_desde`` / ``rango_hasta`` are the numbering columns
+    electronic-invoice emission requires (``repo/fe_emision.py`` fails with
+    ``resolucion_sin_prefijo`` without them). They are optional so a
+    resolution can still be registered first and numbered later, but the
+    three travel together: sending any of them requires all of them.
+    On PUT, omitted fields are carried forward from the closed version
+    (``close_and_insert``), so a correction without numbering keeps it.
     """
 
     uuid_sucursal: uuid_lib.UUID
@@ -244,35 +247,56 @@ class ResolucionFacturacionCreate(_Base):
     fecha_resolucion: date
     fecha_inicio_vigencia: date
     fecha_fin_vigencia: date
+    prefijo: str | None = None
+    rango_desde: int | None = None
+    rango_hasta: int | None = None
+
+    @field_validator("prefijo", mode="before")
+    @classmethod
+    def _normalizar_prefijo(cls, v: object) -> object:
+        if isinstance(v, str):
+            v = v.strip().upper()
+            if v == "":
+                return None
+        return v
 
     @model_validator(mode="after")
-    def _validar_vigencia(self) -> ResolucionFacturacionCreate:
-        """HU-F15.3: ``fecha_fin_vigencia`` must be strictly after ``fecha_inicio_vigencia``."""
+    def _validar_vigencia_y_numeracion(self) -> Self:
+        """``fecha_fin_vigencia`` strictly after ``fecha_inicio_vigencia``; numbering coherent."""
         if self.fecha_fin_vigencia <= self.fecha_inicio_vigencia:
             raise ValueError(
                 "fecha_fin_vigencia debe ser posterior a fecha_inicio_vigencia"
             )
-        return self
-
-
-class ResolucionFacturacionUpdate(_Base):
-    """REQ-04-V-ACTUALIZACION. Same shape as Create (see its docstring for the
-    HU-F15.3 drift note on why only the vigencia-date guard applies here)."""
-
-    uuid_sucursal: uuid_lib.UUID
-    numero_resolucion: Annotated[str, StringConstraints(min_length=1, max_length=64)]
-    fecha_resolucion: date
-    fecha_inicio_vigencia: date
-    fecha_fin_vigencia: date
-
-    @model_validator(mode="after")
-    def _validar_vigencia(self) -> ResolucionFacturacionUpdate:
-        """HU-F15.3: ``fecha_fin_vigencia`` must be strictly after ``fecha_inicio_vigencia``."""
-        if self.fecha_fin_vigencia <= self.fecha_inicio_vigencia:
+        numeracion = (self.prefijo, self.rango_desde, self.rango_hasta)
+        if all(v is None for v in numeracion):
+            return self
+        if any(v is None for v in numeracion):
             raise ValueError(
-                "fecha_fin_vigencia debe ser posterior a fecha_inicio_vigencia"
+                "prefijo, rango_desde y rango_hasta deben enviarse juntos"
             )
+        assert self.prefijo is not None
+        assert self.rango_desde is not None
+        assert self.rango_hasta is not None
+        if not _PREFIJO_RE.fullmatch(self.prefijo):
+            raise ValueError("prefijo debe ser alfanumérico de 1 a 4 caracteres")
+        if self.rango_desde < 1:
+            raise ValueError("rango_desde debe ser mayor o igual a 1")
+        if self.rango_hasta < self.rango_desde:
+            raise ValueError("rango_hasta debe ser mayor o igual a rango_desde")
+        if self.rango_hasta > _RANGO_MAX:
+            raise ValueError(f"rango_hasta no puede superar {_RANGO_MAX}")
         return self
+
+
+class ResolucionFacturacionCreate(_ResolucionFacturacionWrite):
+    """REQ-03-V-INSERCION. Numbering (``prefijo``, ``rango_desde``,
+    ``rango_hasta``) is client-writable and validated in
+    :class:`_ResolucionFacturacionWrite`; cross-resolution overlap is checked
+    by the router (needs the DB)."""
+
+
+class ResolucionFacturacionUpdate(_ResolucionFacturacionWrite):
+    """REQ-04-V-ACTUALIZACION. Same shape as Create."""
 
 
 class ResolucionFacturacionConsecutivoActual(_Base):
