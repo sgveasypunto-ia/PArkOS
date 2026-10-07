@@ -147,6 +147,8 @@ function Invoke-ParkosLiteInstallAll {
     Write-Host ''
     Write-Host 'INSTALACION GUIADA: deja esta ventana abierta, no necesitas hacer nada mas.' -ForegroundColor Cyan
     Write-Host 'Internet solo hace falta para las dependencias del front (pnpm install). Total estimado: 3 a 10 minutos la primera vez (segundos si ya estaba instalado).'
+    # Un paso caro "ya hecho" se omite aunque el repo haya avanzado: avisar (y ofrecer reconstruir).
+    Invoke-ParkosLiteStaleBuildOffer -Ctx $Ctx -AllowRebuild | Out-Null
     $steps = @(Get-ParkosLiteSteps)
     $n = 0
     foreach ($s in $steps) {
@@ -168,7 +170,7 @@ function Invoke-ParkosLiteInstallAll {
     }
     Write-Host ''
     Write-Host ("Paso {0} de {0}: Iniciar base de datos, API y front  (1 a 2 minutos)" -f ($steps.Count + 1)) -ForegroundColor White
-    return (Invoke-ParkosLiteStart -Ctx $Ctx)
+    return (Invoke-ParkosLiteStart -Ctx $Ctx -SkipStaleOffer)
 }
 
 function Show-ParkosLiteSummary {
@@ -191,11 +193,12 @@ function Show-ParkosLiteSummary {
 }
 
 function Invoke-ParkosLiteStart {
-    param([Parameter(Mandatory)]$Ctx)
+    param([Parameter(Mandatory)]$Ctx, [switch]$SkipStaleOffer)
     $status = Get-ParkosLiteCurrentStatus -Ctx $Ctx
     $reason = Get-ParkosLiteBlockReason -Key 'start' -Status $status
     if ($reason) { Write-Host "  Bloqueado: $reason" -ForegroundColor Yellow; return $false }
     try {
+        if (-not $SkipStaleOffer) { Invoke-ParkosLiteStaleBuildOffer -Ctx $Ctx -AllowRebuild | Out-Null }
         Start-ParkosLiteAll -Ctx $Ctx
         $u = Get-ParkosLiteUrls -ApiPort $Ctx.State.api_port -FrontPort $Ctx.State.front_port
         Show-ParkosLiteSummary -Ctx $Ctx
@@ -229,7 +232,8 @@ function Show-ParkosLiteStatus {
     Write-Host ("  Sucursal : {0}" -f $s.sucursal_uuid)
     Write-Host '  Herramientas (sistema o portatil en <lite>	ools):'
     foreach ($l in (Format-ParkosLiteToolLines -Status (Get-ParkosLiteToolStatus -LitePath $p.Lite))) { Write-Host $l }
-    Write-Host ("  Rama     : {0}   Commit del exe: {1}" -f $Ctx.Branch, $s.api_built_commit)
+    Write-Host ("  Rama     : {0}   Commit del exe: {1}   Commit del front: {2}" -f $Ctx.Branch, $s.api_built_commit, $s.front_built_commit)
+    Invoke-ParkosLiteStaleBuildOffer -Ctx $Ctx | Out-Null
     Write-Host ('  ' + (Format-ParkosLiteAutostartLine -Status (Get-ParkosLiteAutostartStatus)))
     Write-Host ("  URL front: {0}" -f $u.Front)
     Write-Host ("  API      : {0}   docs: {1}" -f $u.ApiHealth, $u.ApiDocs)
@@ -282,6 +286,7 @@ function Invoke-ParkosLiteAutostartMenu {
 
 function Invoke-ParkosLiteMenu {
     param([Parameter(Mandatory)]$Ctx)
+    Invoke-ParkosLiteStaleBuildOffer -Ctx $Ctx | Out-Null
     while ($true) {
         $status = Get-ParkosLiteCurrentStatus -Ctx $Ctx
         Write-Host ''
