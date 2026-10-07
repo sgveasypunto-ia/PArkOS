@@ -30,6 +30,7 @@
  *     placeholder values — acceptable in dev, flagged in the tiquete
  *     preview so the operator notices before printing.
  */
+import { comoInstanteUtc } from './escposTemplates';
 import type {
   EntradaPayload,
   ImpuestoDetalle,
@@ -127,7 +128,7 @@ export function buildEntradaPayloadFromResponse(
     logoDataUrl: '',
     empresa: DEFAULT_EMPRESA,
     operario: context.operario ?? 'Operador',
-    tarifaAplicada: 0, // TODO: fetch from GET /empresa/tarifas-sucursal
+    tarifaAplicada: 0,
     horarioAtencion: context.horarioAtencion ?? DEFAULT_HORARIO,
     folio: response.uuid,
     observaciones: undefined,
@@ -204,7 +205,10 @@ export function buildReimpresionEntradaPayload(
   motivo: string,
   context: PrintContext = {},
 ): Extract<ReimpresionPayload, { originalTipo: 'entrada' }> {
-  const fechaEntrada = new Date(ingreso.fecha_ingreso ?? Date.now()).toISOString();
+  // The stored timestamp is naive UTC: read it as UTC, not as machine-local time.
+  const fechaEntrada = new Date(
+    ingreso.fecha_ingreso ? comoInstanteUtc(ingreso.fecha_ingreso) : Date.now(),
+  ).toISOString();
   const sucursal: Sucursal = {
     encabezado: context.sucursalEncabezado ?? DEFAULT_SUCURSAL_ENCABEZADO,
   };
