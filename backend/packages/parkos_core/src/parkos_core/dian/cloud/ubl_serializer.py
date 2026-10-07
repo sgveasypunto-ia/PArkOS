@@ -197,6 +197,7 @@ def _build_legal_monetary_total(
     line_extension: str | None = None,
     tax_exclusive: str | None = None,
     tax_inclusive: str | None = None,
+    allowance_total: str | None = None,
 ) -> etree._Element:
     """Build ``cac:LegalMonetaryTotal``.
 
@@ -211,6 +212,8 @@ def _build_legal_monetary_total(
         _money_el(monetary, "TaxExclusiveAmount", tax_exclusive, currency)
     if tax_inclusive is not None:
         _money_el(monetary, "TaxInclusiveAmount", tax_inclusive, currency)
+    if allowance_total is not None:
+        _money_el(monetary, "AllowanceTotalAmount", allowance_total, currency)
     _money_el(monetary, "PayableAmount", payable, currency)
     return monetary
 
@@ -292,6 +295,25 @@ def _allocate_line_taxes(
     return allocation
 
 
+def _is_descuento(det: Any) -> bool:
+    """A ``factura_detalle`` row that is a DISCOUNT, not a billed line.
+
+    ``factura_detalle`` has no ``tipo`` column; the discount line of a
+    salida-mensualidad invoice is persisted with a concept starting with
+    "Descuento" (same value as the service line, total charged 0).
+    """
+    return str(getattr(det, "concepto", "") or "").strip().casefold().startswith("descuento")
+
+
+def _build_allowance(amount: Decimal, currency: str) -> etree._Element:
+    """Document-level ``cac:AllowanceCharge`` (a discount, tax-inclusive)."""
+    allowance = etree.Element(f"{{{NS_CAC}}}AllowanceCharge")
+    etree.SubElement(allowance, f"{{{NS_CBC}}}ChargeIndicator").text = "false"
+    etree.SubElement(allowance, f"{{{NS_CBC}}}AllowanceChargeReason").text = "descuento"
+    _money_el(allowance, "Amount", amount, currency)
+    return allowance
+
+
 def _net_line_bases(detalles: list[Any], impuestos: list[Any]) -> list[Decimal]:
     """Taxable amount of each line.
 
@@ -322,7 +344,16 @@ def _net_line_bases(detalles: list[Any], impuestos: list[Any]) -> list[Decimal]:
 def _build_detailed_body(
     invoice: etree._Element, detalles: list[Any], impuestos: list[Any]
 ) -> None:
-    """Append TaxTotal + LegalMonetaryTotal + InvoiceLines from persisted rows."""
+    """Append TaxTotal + LegalMonetaryTotal + InvoiceLines from persisted rows.
+
+    Discount rows become a document-level allowance (tax-inclusive, like the
+    gross tariff), so ``base + tax - allowance == payable`` (0 when the
+    subscription covers the whole exit).
+    """
+    allowance_total = sum(
+        (_q(_dec(d.subtotal)) for d in detalles if _is_descuento(d)), Decimal(0)
+    )
+    detalles = [d for d in detalles if not _is_descuento(d)]
     line_bases = _net_line_bases(detalles, impuestos)
     base_total = sum(line_bases, Decimal(0))
     tax_amounts = [_q(_dec(getattr(i, "valor", None))) for i in impuestos]
@@ -342,14 +373,17 @@ def _build_detailed_body(
             impuestos, tax_amounts, identities, strict=True
         )
     ]
+    if allowance_total > 0:
+        invoice.append(_build_allowance(allowance_total, _CURRENCY_CODE))
     invoice.append(_build_tax_total(_format_money(tax_total), _CURRENCY_CODE, subtotals))
     invoice.append(
         _build_legal_monetary_total(
-            _format_money(base_total + tax_total),
+            _format_money(base_total + tax_total - allowance_total),
             _CURRENCY_CODE,
             line_extension=_format_money(base_total),
             tax_exclusive=_format_money(base_total),
             tax_inclusive=_format_money(base_total + tax_total),
+            allowance_total=_format_money(allowance_total) if allowance_total > 0 else None,
         )
     )
 

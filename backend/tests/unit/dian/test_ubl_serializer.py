@@ -363,3 +363,40 @@ def test_ubl_tax_inclusive_lines_are_netted_to_the_taxable_base() -> None:
     assert _xp(line, "cac:TaxTotal/cbc:TaxAmount")[0].text == "31.93"
     schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
     assert schema.validate(doc), schema.error_log
+
+
+def test_ubl_mensualidad_exit_with_full_discount_reconciles_to_zero() -> None:
+    """Salida-mensualidad invoice: servicio (gross tariff 1500) + a
+    'Descuento ...' line of the same value, charged total 0. The discount is
+    a document-level allowance, never an InvoiceLine, so
+    base 1260.50 + IVA 239.50 - descuento 1500.00 == payable 0.00."""
+    from types import SimpleNamespace
+
+    detalles = [
+        SimpleNamespace(concepto="Parqueo", cantidad=1, valor_unitario=1500.00, subtotal=1500.00),
+        SimpleNamespace(
+            concepto="Descuento por mensualidad - Plan Mensual",
+            cantidad=1, valor_unitario=1500.00, subtotal=1500.00,
+        ),
+    ]
+    impuestos = [
+        SimpleNamespace(
+            codigo="IVA", nombre="IVA", base_calculo=1260.50,
+            porcentaje_aplicado=0.19, valor=239.50,
+        )
+    ]
+    xml_bytes = serialize(_build_factura_mock(), None, detalles=detalles, impuestos=impuestos)
+    doc = etree.fromstring(xml_bytes)
+
+    assert len(_xp(doc, "/*/cac:InvoiceLine")) == 1
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:LineExtensionAmount")[0].text == "1260.50"
+    assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "239.50"
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount")[0].text == "1500.00"
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:AllowanceTotalAmount")[0].text == "1500.00"
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:PayableAmount")[0].text == "0.00"
+    allowance = _xp(doc, "/*/cac:AllowanceCharge")
+    assert len(allowance) == 1
+    assert _xp(allowance[0], "cbc:ChargeIndicator")[0].text == "false"
+    assert _xp(allowance[0], "cbc:Amount")[0].text == "1500.00"
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(doc), schema.error_log

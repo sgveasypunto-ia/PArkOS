@@ -310,4 +310,36 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
     expect(screen.getByTestId('factura-display-subtotal')).toBeTruthy();
     expect(screen.getByTestId('factura-display-total')).toBeTruthy();
   });
+  it('T4: salida mensualidad ($0 con descuento) → base + IVA − descuento = total, con todas las líneas visibles', () => {
+    render(
+      <FacturaDisplayModal
+        factura={{
+          ...BASE_FACTURA,
+          subtotal: 1260.5,
+          descuento: 1500,
+          total: 0,
+          medio_pago: 'suscripcion',
+          impuestos: [
+            {
+              uuid: 'imp-m',
+              uuid_impuesto: 'iva-1',
+              nombre_impuesto: 'IVA',
+              codigo_impuesto: 'IVA',
+              base_calculo: 1260.5,
+              porcentaje_aplicado: 0.19,
+              valor: 239.5,
+            },
+          ],
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    const totales = screen.getByTestId('factura-display-totales').textContent ?? '';
+    expect(screen.getByTestId('factura-display-subtotal').textContent).toContain('1.260,50');
+    expect(totales).toContain('1.500,00'); // descuento (todo el valor)
+    expect(screen.getByTestId('factura-display-impuesto').textContent).toContain('239,50');
+    expect(screen.getByTestId('factura-display-total').textContent).toContain('0,00');
+    // 1260.50 + 239.50 - 1500.00 = 0
+    expect(1260.5 + 239.5 - 1500).toBe(0);
+  });
 });

@@ -167,3 +167,58 @@ async def test_servicio_suelto_persists_iva_included_breakdown(
     )
 
     _assert_desglose(captured)
+
+
+@pytest.mark.asyncio
+async def test_mensualidad_exit_zero_total_invoice_adds_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Salida-mensualidad: servicio 1500 (IVA incl.) + descuento 1500, total 0.
+
+    The receipt must add up: base 1260.50 + IVA 239.50 - descuento 1500 == 0
+    (before: subtotal 1215 / IVA 285 split on the total, IVA row not even
+    visible, so "Subtotal 1.215, Descuento -1.500, TOTAL 0" did not reconcile).
+    """
+    sucursal = uuid_lib.uuid4()
+    captured = _wire(monkeypatch, sucursal)
+    # compute_total / compute_descuento are real: they net the discount line.
+    salida = MagicMock()
+    salida.uuid = uuid_lib.uuid4()
+    salida.uuid_sucursal = sucursal
+    salida.uuid_ingreso = uuid_lib.uuid4()
+
+    async def _buscar(*_a: object, **_k: object) -> MagicMock:
+        return salida
+
+    monkeypatch.setattr(
+        "parkos_core.api.v1.facturacion.repo_factura.buscar_salida_facturable", _buscar
+    )
+    payload = FacturaCreate(
+        uuid_salida=salida.uuid,
+        items=[
+            FacturaItemCreate(
+                tipo="servicio", concepto="Parqueo", cantidad=1,
+                valor_unitario=Decimal("1500.00"), uuid_tarifa_sucursal=None,
+            ),
+            FacturaItemCreate(
+                tipo="descuento", concepto="Descuento por mensualidad - Plan",
+                cantidad=1, valor_unitario=Decimal("1500.00"), uuid_tarifa_sucursal=None,
+            ),
+        ],
+        subtotal=Decimal("1215.00"),
+        total=Decimal("0.00"),
+        medio_pago="suscripcion",
+        referencia=None,
+        fe_con_datos=False,
+        fe_datos_cliente=None,
+    )
+
+    await handlers.create_factura(MagicMock(), payload, AsyncMock(), _ctx(sucursal), None)
+
+    imp, fac = captured["impuesto"], captured["factura"]
+    assert imp["base"] == Decimal("1260.50")
+    assert imp["iva_monto"] == Decimal("239.50")
+    assert fac["subtotal"] == Decimal("1260.50")
+    assert fac["descuento"] == Decimal("1500.00")
+    assert fac["total"] == Decimal("0.00")
+    assert fac["subtotal"] + imp["iva_monto"] - fac["descuento"] == fac["total"]

@@ -59,6 +59,26 @@ def token_path(tmp_path: Path) -> Path:
     return path
 
 
+def _lineas_y_iva(factura: Facturas) -> list:
+    """A real invoice always carries lines + tax detail: the UBL is built from them."""
+    from parkos_core.models.A.factura_detalle import FacturaDetalle
+    from parkos_core.models.A.factura_impuestos import FacturaImpuestos
+
+    hoy = date.today()
+    return [
+        FacturaDetalle(
+            uuid_factura=factura.uuid, uuid_sucursal=factura.uuid_sucursal,
+            concepto="servicio", cantidad=1, valor_unitario=8403.36,
+            subtotal=8403.36, fecha_retencion_hasta=hoy,
+        ),
+        FacturaImpuestos(
+            uuid_factura=factura.uuid, uuid_sucursal=factura.uuid_sucursal,
+            base_calculo=8403.36, porcentaje_aplicado=0.19, valor=1596.64,
+            fecha_retencion_hasta=hoy,
+        ),
+    ]
+
+
 async def _seed_factura_electronica(
     pg_engine: AsyncEngine, *, uuid_sucursal: uuid_lib.UUID
 ) -> uuid_lib.UUID:
@@ -111,6 +131,8 @@ async def _seed_factura_electronica(
             sync_attempts=0,
         )
         session.add_all([resolucion, factura_comercial, cliente])
+        await session.flush()
+        session.add_all(_lineas_y_iva(factura_comercial))
         await session.commit()
 
         factura_electronica = FacturaElectronica(
@@ -177,7 +199,7 @@ async def test_success_on_first_attempt_populates_cufe_and_estado(
             return httpx.Response(200, json={"trackId": "track-ok"})
         return httpx.Response(200, json={"estado": "aceptado", "cufe": "cufe-ok-123"})
 
-    _install_transport(monkeypatch, _handler)
+    seen = _install_transport(monkeypatch, _handler)
     _shim_sleep(monkeypatch)
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
@@ -190,6 +212,14 @@ async def test_success_on_first_attempt_populates_cufe_and_estado(
             dian_token_path=token_path,
         )
 
+    # The document sent to DIAN carries the persisted tax detail and
+    # reconciling totals (base 8403.36 + IVA 1596.64 == 10000.00 payable),
+    # not the zero-amount stub.
+    xml = seen[0].content.decode("utf-8")
+    assert "<cac:TaxSubtotal>" in xml
+    assert "<cbc:TaxableAmount currencyID=\"COP\">8403.36</cbc:TaxableAmount>" in xml
+    assert "<cbc:TaxAmount currencyID=\"COP\">1596.64</cbc:TaxAmount>" in xml
+    assert "<cbc:PayableAmount currencyID=\"COP\">10000.00</cbc:PayableAmount>" in xml
     assert envio.respuesta_proveedor["estado_dian"] == dispatcher.ESTADO_ACEPTADO
     assert envio.cufe == "cufe-ok-123"
     assert envio.estado == dispatcher.ESTADO_ACEPTADO
