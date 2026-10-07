@@ -51,7 +51,9 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
 import { useCountdown } from '../../auth/hooks/useCountdown';
+import { useSWRConfig } from 'swr';
 import { useCotizacion } from '../hooks/useCotizacion';
+import type { Cotizacion } from '../hooks/useCotizacion';
 import { useIngresosActivos } from '../hooks/useIngresosActivos';
 import {
   buscarIngresoTolerante,
@@ -284,7 +286,33 @@ export function SalidaPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialUuidIngreso]);
 
-  const { data: cotizacion, error: cotError, refresh } = useCotizacion(uuid_ingreso);
+  // H7: once the salida is confirmed the ingreso is closed, so `/cotizar`
+  // would 404 `ingreso_no_encontrado`. Freeze the last quote the operator
+  // approved, disable the hook (null key) and drop the cached entry so no
+  // stale `cotError` banner can render.
+  const { mutate: swrMutate } = useSWRConfig();
+  const [salidaConfirmada, setSalidaConfirmada] = useState<{
+    uuid: string;
+    cotizacion: Cotizacion;
+  } | null>(null);
+  const confirmada =
+    uuid_ingreso !== null && salidaConfirmada?.uuid === uuid_ingreso ? salidaConfirmada : null;
+  const live = useCotizacion(confirmada ? null : uuid_ingreso);
+  const cotizacion = confirmada ? confirmada.cotizacion : live.data;
+  const cotError = confirmada ? undefined : live.error;
+  const refresh = live.refresh;
+
+  const handleSalidaConfirmada = useCallback((): void => {
+    if (!uuid_ingreso || !live.data) return;
+    setSalidaConfirmada({ uuid: uuid_ingreso, cotizacion: live.data });
+    void swrMutate(
+      (key: unknown) =>
+        typeof key === 'string' &&
+        key.includes(`/operacion/cotizar?uuid_ingreso=${uuid_ingreso}`),
+      undefined,
+      { revalidate: false },
+    );
+  }, [uuid_ingreso, live.data, swrMutate]);
 
   const handlePlacaSubmit = form.handleSubmit(async (values) => {
     setPlaca(values.placa);
@@ -541,7 +569,11 @@ export function SalidaPanel({
             // already uses for rotacion (subtotal_cop/total_cop below
             // come from this same `cotizacion` object, not a fresh
             // recompute).
-            <SalidaMensualidad uuidIngreso={uuid_ingreso} cotizacion={cotizacion} />
+            <SalidaMensualidad
+              uuidIngreso={uuid_ingreso}
+              cotizacion={cotizacion}
+              onSalidaConfirmada={handleSalidaConfirmada}
+            />
           ) : cotizacion ? (
             <SalidaFlow
               uuidIngreso={uuid_ingreso}
@@ -559,6 +591,7 @@ export function SalidaPanel({
               // disabled) and `total_cop=0` (vueltos computation
               // broken). Production wiring MUST pass `onPagoOpen`.
               onPagoOpen={handleOpenPago}
+              onSalidaConfirmada={handleSalidaConfirmada}
               onRecalcular={() => {
                 void refresh();
               }}

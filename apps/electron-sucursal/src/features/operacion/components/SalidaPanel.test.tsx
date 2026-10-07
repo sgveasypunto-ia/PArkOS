@@ -102,6 +102,7 @@ vi.mock('../api/ingresoActivoApi', async (importOriginal) => {
 
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { SalidaPanel } from './SalidaPanel';
+import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 beforeEach(() => {
   useDashboardDrawerStore.getState().close();
@@ -387,5 +388,78 @@ describe('<SalidaPanel /> — HU-F7.1 búsqueda sin placa (T5)', () => {
     expect(screen.queryByRole('listbox')).toBeNull();
 
     window.removeEventListener('keydown', windowEscapeSpy);
+  });
+});
+
+describe('<SalidaPanel /> — H7 no cotizar polling after a confirmed salida', () => {
+  /** Live key behaves like SWR: a stale 404 for the closed ingreso while the key is set. */
+  function mockLiveCotizacion(cot: typeof cotizacionRotacion | typeof cotizacionMensualidad) {
+    mockUseCotizacion.mockImplementation((uuid: string | null) =>
+      uuid
+        ? { data: cot, error: undefined, refresh: vi.fn() }
+        : { data: undefined, error: undefined, refresh: vi.fn() },
+    );
+  }
+
+  it('H7-1: rotación — confirming the salida disables useCotizacion (key null)', async () => {
+    mockLiveCotizacion(cotizacionRotacion);
+    render(<SalidaPanel uuid_ingreso={UUID_INGRESO_A} />);
+    expect(mockUseCotizacion).toHaveBeenLastCalledWith(UUID_INGRESO_A);
+
+    fireEvent.click(screen.getByTestId('cotizacion-confirmar'));
+
+    await waitFor(() => {
+      expect(mockUseCotizacion).toHaveBeenLastCalledWith(null);
+    });
+  });
+
+  it('H7-2: rotación — no stale cotizar error banner renders after confirmation', async () => {
+    const err = new ParkosHttpError(404, 'ingreso_no_encontrado', 'closed');
+    mockUseCotizacion.mockImplementation((uuid: string | null) =>
+      uuid
+        ? { data: cotizacionRotacion, error: undefined, refresh: vi.fn() }
+        : { data: undefined, error: err, refresh: vi.fn() },
+    );
+    render(<SalidaPanel uuid_ingreso={UUID_INGRESO_A} />);
+
+    fireEvent.click(screen.getByTestId('cotizacion-confirmar'));
+
+    await waitFor(() => {
+      expect(mockUseCotizacion).toHaveBeenLastCalledWith(null);
+    });
+    expect(screen.queryByTestId('cotizacion-error-banner')).not.toBeInTheDocument();
+  });
+
+  it('H7-3: mensualidad — confirming disables useCotizacion and keeps the panel mounted', async () => {
+    mockUseRegistrarSalida.mockReturnValue({
+      trigger: vi.fn().mockResolvedValue({
+        uuid: '00000000-0000-0000-0000-0000000000c1',
+        uuid_ingreso: UUID_INGRESO_A,
+        tipo_salida: 'ROTACION',
+      }),
+    });
+    mockLiveCotizacion(cotizacionMensualidad);
+    render(<SalidaPanel uuid_ingreso={UUID_INGRESO_A} />);
+
+    fireEvent.click(screen.getByTestId('cotizacion-confirmar'));
+
+    await waitFor(() => {
+      expect(mockUseCotizacion).toHaveBeenLastCalledWith(null);
+    });
+    expect(screen.getByTestId('salida-mensualidad')).toBeInTheDocument();
+    expect(screen.queryByTestId('cotizacion-error-banner')).not.toBeInTheDocument();
+  });
+
+  it('H7-4: a failed salida keeps polling (key stays set)', async () => {
+    mockUseRegistrarSalida.mockReturnValue({
+      trigger: vi.fn().mockRejectedValue(new Error('boom')),
+    });
+    mockLiveCotizacion(cotizacionRotacion);
+    render(<SalidaPanel uuid_ingreso={UUID_INGRESO_A} />);
+
+    fireEvent.click(screen.getByTestId('cotizacion-confirmar'));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockUseCotizacion).toHaveBeenLastCalledWith(UUID_INGRESO_A);
   });
 });

@@ -67,6 +67,12 @@ export interface SalidaMensualidadProps {
    * build the discount factura after the salida is confirmed.
    */
   cotizacion: CotizarMensualidad;
+  /**
+   * H7: called right after `useRegistrarSalida.trigger()` resolves, i.e.
+   * once the ingreso is closed server-side. The parent uses it to stop
+   * polling `/cotizar` (which would now 404 `ingreso_no_encontrado`).
+   */
+  onSalidaConfirmada?: () => void;
   /** Optional override for the post-print envelope; tests spy on it. */
   onPrint?: (payload: { uuid_salida: string }) => void;
   /** Optional override for `window.bridge?.imprimir`; defaults to the global. */
@@ -117,6 +123,7 @@ export function SalidaMensualidad({
   cotizacion,
   onPrint,
   firePrintEnvelope,
+  onSalidaConfirmada,
 }: SalidaMensualidadProps): JSX.Element {
   const { trigger } = useRegistrarSalida();
   const { trigger: triggerPago } = useRegistrarPago();
@@ -149,6 +156,8 @@ export function SalidaMensualidad({
     setError(null);
     try {
       const result: SalidaReadForzado = await trigger({ uuid_ingreso: uuidIngreso });
+      // H7: the ingreso is closed now — tell the parent to stop polling /cotizar.
+      onSalidaConfirmada?.();
       void invalidarConteos({
         uuid_sucursal: sucursal?.uuid ?? null,
         uuid_sesion: sesion?.uuid ?? null,
