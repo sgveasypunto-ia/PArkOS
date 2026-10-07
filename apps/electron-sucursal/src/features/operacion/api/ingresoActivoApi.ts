@@ -144,6 +144,15 @@ export async function getIngresosByConsecutivo(
 }
 
 /**
+ * `getIngresoByUuid(uuid)` — one ingreso by id (`GET /operacion/ingresos/{uuid}`);
+ * used to learn the vehicle type of a just-registered ingreso (ticket tariff).
+ */
+export async function getIngresoByUuid(uuid: string): Promise<Ingreso> {
+  const raw = await parkosFetch<unknown>(`${INGRESOS_PATH}/${encodeURIComponent(uuid)}`);
+  return IngresoSchema.parse(raw);
+}
+
+/**
  * `getIngresoEstado(uuid)` — fetch the derived state of a single ingreso.
  * Used by `useIngresoActivo` to resolve the `abierto` filter when the
  * list endpoint returns >0 candidates (Path 1 composition).

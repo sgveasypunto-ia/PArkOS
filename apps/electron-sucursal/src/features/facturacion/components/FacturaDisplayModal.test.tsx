@@ -370,3 +370,78 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
     expect(texto).toMatch(/Base \$ ?100,00/);
   });
 });
+
+/**
+ * FB3 — invoice wording: Spanish concept (never the raw code), explicit
+ * semantics of the line values vs the base subtotal, emisor NIT, Bogotá date.
+ */
+describe('<FacturaDisplayModal /> — textos de la factura (FB3)', () => {
+  const SUSCRIPCION_REAL: FacturaRead = {
+    ...BASE_FACTURA,
+    created_at: '2026-10-07T21:07:00',
+    uuid_ingreso: null,
+    uuid_salida: null,
+    datos_vehiculo: null,
+    subtotal: 100840.34,
+    total: 120000,
+    datos_sucursal: { ...BASE_FACTURA.datos_sucursal, nit: '900000000-5' },
+    items: [
+      {
+        uuid: 'item-s',
+        tipo: 'servicio',
+        concepto: 'subscripcion_mensual',
+        cantidad: 1,
+        valor_unitario: 100840.34,
+        subtotal: 100840.34,
+      },
+    ],
+    impuestos: [
+      {
+        uuid: 'imp-s',
+        uuid_impuesto: 'iva-1',
+        nombre_impuesto: 'IVA',
+        codigo_impuesto: 'IVA',
+        base_calculo: 100840.34,
+        porcentaje_aplicado: 0.19,
+        valor: 19159.66,
+      },
+    ],
+  };
+
+  it('F1: el concepto se muestra en español, no el código', () => {
+    render(<FacturaDisplayModal factura={SUSCRIPCION_REAL} onClose={vi.fn()} />);
+    const item = screen.getByTestId('factura-display-item').textContent ?? '';
+    expect(item).toContain('Suscripción mensual');
+    expect(item).not.toContain('subscripcion_mensual');
+  });
+
+  it('F2: las líneas declaran su semántica y el subtotal se rotula como base', () => {
+    render(<FacturaDisplayModal factura={SUSCRIPCION_REAL} onClose={vi.fn()} />);
+    expect(screen.getByTestId('factura-display-items').textContent).toContain('Valores sin IVA');
+    expect(screen.getByTestId('factura-display-totales').textContent).toContain('Subtotal (base)');
+  });
+
+  it('F3: factura de parqueo (líneas brutas) declara IVA incluido', () => {
+    render(
+      <FacturaDisplayModal
+        factura={{
+          ...SUSCRIPCION_REAL,
+          subtotal: 1260.5,
+          total: 1500,
+          items: [{ ...SUSCRIPCION_REAL.items[0]!, concepto: 'parqueo_tiempo', valor_unitario: 1500, subtotal: 1500 }],
+          impuestos: [{ ...SUSCRIPCION_REAL.impuestos[0]!, base_calculo: 1260.5, valor: 239.5 }],
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    const items = screen.getByTestId('factura-display-items').textContent ?? '';
+    expect(items).toContain('Parqueo por tiempo');
+    expect(items).toContain('Valores con IVA incluido');
+  });
+
+  it('F4: el NIT del emisor se muestra con su DV y la fecha en hora de Bogotá', () => {
+    render(<FacturaDisplayModal factura={SUSCRIPCION_REAL} onClose={vi.fn()} />);
+    expect(screen.getByTestId('factura-display-sucursal').textContent).toContain('NIT 900000000-5');
+    expect(screen.getByTestId('factura-display-desc').textContent).toContain('16:07');
+  });
+});

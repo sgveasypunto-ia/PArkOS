@@ -28,6 +28,12 @@ import { cutPartial, escBoldOff, escBoldOn, escCenter, escInit, escLeft, lf } fr
 import { formatCOPDecimal, formatFechaCorta } from './escposTemplates';
 import { ejecutarImpresion } from './avisoImpresion';
 import { printHtml } from './fallbackBrowser';
+import {
+  conceptoLegible,
+  ETIQUETA_SUBTOTAL_BASE,
+  etiquetaSemanticaLineas,
+  semanticaLineas,
+} from './facturaTextos';
 
 /** Printable columns (58mm paper, Font A). 80mm paper simply leaves margin. */
 export const FACTURA_COLUMNAS = 32;
@@ -131,17 +137,19 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
 
   // Ítems
   sep();
+  const etiquetaLineas = etiquetaSemanticaLineas(semanticaLineas(f));
+  if (etiquetaLineas) texto(etiquetaLineas);
   for (const item of f.items) {
     const esDescuento = item.tipo === 'descuento';
     fila(
-      `${item.concepto} x${item.cantidad}`,
+      `${conceptoLegible(item.concepto)} x${item.cantidad}`,
       `${esDescuento && item.subtotal > 0 ? '- ' : ''}${dinero(item.subtotal)}`,
     );
   }
 
   // Totales + detalle por impuesto
   sep();
-  fila('Subtotal', dinero(f.subtotal));
+  fila(ETIQUETA_SUBTOTAL_BASE, dinero(f.subtotal));
   if ((f.descuento ?? 0) > 0) fila('Descuento', `- ${dinero(f.descuento)}`);
   for (const imp of f.impuestos) {
     const nombre = imp.nombre_impuesto ?? imp.codigo_impuesto ?? 'Impuesto';

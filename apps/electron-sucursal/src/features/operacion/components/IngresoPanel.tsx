@@ -48,6 +48,7 @@ import { useClienteBySubscripcion } from '../api/clienteApi';
 import { buildEntradaPayloadFromResponse } from '../../../lib/print/printBuilder';
 import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
 import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
+import { resolverTarifaHoraDeIngreso } from '../../../lib/print/tarifaHoraEntrada';
 import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import { useInvalidateConteosOperacion } from '../hooks/useInvalidateConteosOperacion';
@@ -268,8 +269,8 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
       });
       // Best-effort print — DEC-SUC-27. Never blocks the flow; a failure leaves a
       // visible "No se pudo imprimir…" notice with retry (avisoImpresion).
-      await ejecutarImpresion('el tiquete de entrada', () =>
-        imprimirTiquete('entrada', buildEntradaPayload(response, currentPlaca), {
+      await ejecutarImpresion('el tiquete de entrada', async () =>
+        imprimirTiquete('entrada', await buildEntradaPayload(response, currentPlaca), {
           ticketId: response.uuid,
         }),
       );
@@ -866,10 +867,10 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
             success.uuid_subscripcion_cliente ? clienteData ?? null : null
           }
           initialObservaciones={observaciones}
-          imprimir={(uuid) =>
+          imprimir={async (uuid) =>
             imprimirTiquete(
               'entrada',
-              buildEntradaPayload(
+              await buildEntradaPayload(
                 {
                   uuid,
                   tipo_entrada: success.tipo_entrada,
@@ -934,16 +935,16 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
  * cliente block is currently rendered only in the preview (follow-up: needs a
  * ``clienteSchema`` in ``escposTemplates.ts``).
  */
-function buildEntradaPayload(
+async function buildEntradaPayload(
   response: PostIngresoResponse,
   currentPlaca: string | null,
 ) {
   return buildEntradaPayloadFromResponse(
     response,
     response.consecutivo ? null : currentPlaca,
-    // TODO: hydrate from a future GET /print-context endpoint (or
-    // individual fetches of empresa + sucursal + tarifa + documentos).
-    {},
+    // TODO: hydrate empresa + sucursal + documentos from a print-context
+    // endpoint; the hourly tariff is already resolved from the ingreso.
+    { tarifaHora: await resolverTarifaHoraDeIngreso(response.uuid) },
   );
 }
 

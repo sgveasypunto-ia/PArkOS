@@ -108,6 +108,8 @@ import { formatCOP } from '../../caja/lib/format';
 import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
 import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
 import { buildReimpresionEntradaPayload } from '../../../lib/print/printBuilder';
+import { resolverTarifaHoraDeTipo } from '../../../lib/print/tarifaHoraEntrada';
+import { formatFechaHoraCorta } from '../../caja/lib/format';
 import { useReimprimir } from '../hooks/useReimprimir';
 import { useAnularReimpresion } from '../hooks/useAnularReimpresion';
 import { useCostoServicioVigente } from '../hooks/useCostoServicioVigente';
@@ -151,11 +153,14 @@ async function imprimirReimpresionEntrada(
   ingreso: Ingreso,
   motivo: string,
 ): Promise<void> {
-  await ejecutarImpresion('el tiquete reimpreso', () =>
-    imprimirTiquete('reimpresion', buildReimpresionEntradaPayload(ingreso, motivo), {
-      ticketId: ingreso.uuid,
-    }),
-  );
+  await ejecutarImpresion('el tiquete reimpreso', async () => {
+    const tarifaHora = await resolverTarifaHoraDeTipo(ingreso.uuid_tipo_vehiculo);
+    return imprimirTiquete(
+      'reimpresion',
+      buildReimpresionEntradaPayload(ingreso, motivo, { tarifaHora }),
+      { ticketId: ingreso.uuid },
+    );
+  });
 }
 
 const MSG_INGRESO_CERRADO =
@@ -566,7 +571,7 @@ export function ReimprimirTiquete(): JSX.Element {
                         data-testid={`reimprimir-candidato-${c.uuid}`}
                         onClick={() => seleccionarCandidato(c)}
                       >
-                        {identificadorDe(c)} — {c.fecha_ingreso ?? '—'}
+                        {identificadorDe(c)} — {formatFechaHoraCorta(c.fecha_ingreso)}
                       </button>
                     </li>
                   ))}
@@ -591,7 +596,7 @@ export function ReimprimirTiquete(): JSX.Element {
                   <CardContent className="space-y-1 text-sm text-muted-foreground">
                     <p>
                       {t('reimprimir.ingreso.fecha', { defaultValue: 'Ingreso' })}:{' '}
-                      {ingresoEncontrado.fecha_ingreso ?? '—'}
+                      {formatFechaHoraCorta(ingresoEncontrado.fecha_ingreso)}
                     </p>
                     <Button
                       type="button"

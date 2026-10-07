@@ -23,7 +23,7 @@ import {
   type FacturaLinea,
   type ResultadoImpresion,
 } from './facturaPrint';
-import { formatFechaCorta } from './escposTemplates';
+import { comoInstanteUtc as comoUtc, formatFechaCorta } from './escposTemplates';
 
 export interface CierreImpresion {
   tipo: 'cierre_turno' | 'cierre_dia';
@@ -41,11 +41,6 @@ export interface CierreImpresion {
   diferencia?: number | null;
   justificacion?: string | null;
   uuidArqueo?: string | null;
-}
-
-/** The backend stores naive UTC (no zone): without a designator JS would read it as local time. */
-function comoUtc(iso: string): string {
-  return /(?:Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`;
 }
 
 function conSigno(n: number): string {

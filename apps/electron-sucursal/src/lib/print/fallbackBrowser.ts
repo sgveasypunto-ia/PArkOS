@@ -50,6 +50,7 @@ import {
   reimpresionPayloadSchema,
   reciboPagoPayloadSchema,
   formatCOP,
+  formatFechaCorta,
   lineasMontos,
 } from './escposTemplates';
 import {
@@ -116,13 +117,7 @@ function escapeHtml(text: string): string {
 }
 
 function fechaCorta(iso: string): string {
-  const d = new Date(iso);
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yyyy = d.getFullYear();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+  return formatFechaCorta(iso);
 }
 
 /**
@@ -172,6 +167,10 @@ export function renderEntradaTiqueteHtml(payload: EntradaPayload): string {
   const logoHtml = payload.logoDataUrl === ''
     ? '<p>Logo: \u25A2</p>'
     : `<p><img src="${escapeHtml(payload.logoDataUrl)}" alt="Logo" /></p>`;
+  const tarifaLine =
+    payload.tarifaAplicada === undefined
+      ? ''
+      : `<p>Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora</p>`;
   const fechaParts = fechaCorta(payload.fechaEntrada).split(' ');
   const fechaStr = fechaParts[0] ?? '';
   const horaStr = fechaParts[1] ?? '';
@@ -193,7 +192,7 @@ export function renderEntradaTiqueteHtml(payload: EntradaPayload): string {
     <h2>*** TIQUETE DE ENTRADA ***</h2>
     ${mensualidadTag}
     <p>Folio: ${escapeHtml(payload.folio)}</p>
-    <p>Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora</p>
+    ${tarifaLine}
     <p>Fecha: ${fechaStr}</p>
     <p>Hora: ${horaStr}</p>
     ${identificacionLine}

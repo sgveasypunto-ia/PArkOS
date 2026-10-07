@@ -304,6 +304,9 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
     expect(screen.getByTestId('reimprimir-ingreso-encontrado')).toBeInTheDocument();
     expect(screen.getByTestId('reimprimir-motivo')).toBeInTheDocument();
     expect(screen.getByTestId('reimprimir-continuar')).toBeInTheDocument();
+    // FB2: the stored naive-UTC instant is shown in Bogotá time, not as a raw ISO string.
+    expect(screen.getByTestId('reimprimir-ingreso-encontrado').textContent).toContain('17/09/26 05:00');
+    expect(screen.getByTestId('reimprimir-ingreso-encontrado').textContent).not.toContain('T10:00');
   });
 
   it('T3: motivo <10 chars → inline error; el paso de cobro NUNCA se abre', async () => {

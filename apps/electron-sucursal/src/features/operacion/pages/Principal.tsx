@@ -47,6 +47,7 @@ import { useClienteBySubscripcion } from '../api/clienteApi';
 import { buildEntradaPayloadFromResponse } from '../../../lib/print/printBuilder';
 import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
 import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
+import { resolverTarifaHoraDeIngreso } from '../../../lib/print/tarifaHoraEntrada';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import {
   type PostIngresoPayload,
@@ -214,8 +215,8 @@ export default function Principal() {
       // The ingreso is persisted (DB INSERT is source of truth); a failed print
       // leaves a visible "No se pudo imprimir…" notice with retry and never
       // blocks the flow (avisoImpresion).
-      await ejecutarImpresion('el tiquete de entrada', () =>
-        imprimirTiquete('entrada', buildEntradaPayload(response, currentPlaca), {
+      await ejecutarImpresion('el tiquete de entrada', async () =>
+        imprimirTiquete('entrada', await buildEntradaPayload(response, currentPlaca), {
           ticketId: response.uuid,
         }),
       );
@@ -419,10 +420,10 @@ export default function Principal() {
             success.uuid_subscripcion_cliente ? clienteData ?? null : null
           }
           initialObservaciones={observaciones}
-          imprimir={(uuid) =>
+          imprimir={async (uuid) =>
             imprimirTiquete(
               'entrada',
-              buildEntradaPayload(
+              await buildEntradaPayload(
                 {
                   uuid,
                   tipo_entrada: success.tipo_entrada,
@@ -464,14 +465,14 @@ export default function Principal() {
  * ingreso tiquete; `tiquetePrint.imprimirTiquete` renders it to ESC/POS
  * (Electron) or HTML + `window.print` (browser mode).
  */
-function buildEntradaPayload(
+async function buildEntradaPayload(
   response: PostIngresoResponse,
   currentPlaca: string | null,
 ) {
   return buildEntradaPayloadFromResponse(
     response,
     response.consecutivo ? null : currentPlaca,
-    {},
+    { tarifaHora: await resolverTarifaHoraDeIngreso(response.uuid) },
   );
 }
 

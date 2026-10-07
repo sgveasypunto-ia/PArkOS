@@ -61,6 +61,7 @@ from ...models.V.empresa import Empresa
 from ...models.V.impuestos import Impuestos
 from ...models.V.sucursal import Sucursal
 from ...repo.fe_emision import FeEmisionResultado
+from ...repo.nit_modulo11 import dv_esperado
 from ...schemas.clientes import VentaSuscripcionCreate
 from ...schemas.facturacion import (
     FacturaCreate,
@@ -86,6 +87,46 @@ def _to_decimal(value: float | int | Decimal | None) -> Decimal | None:
     if value is None:
         return None
     return Decimal(str(value))
+
+
+def _dv_cliente_para_display(
+    tipo_identificador: str | None, numero_identificacion: str | None
+) -> str | None:
+    """DV (módulo 11) of a NIT customer, for display only.
+
+    ``clientes`` does not persist the DV (it travels in the request), but it is
+    a pure function of the NIT. A number that already carries its DV
+    (``900123456-8``) or is not a plausible NIT yields ``None``.
+    """
+    if tipo_identificador != "NIT" or not numero_identificacion:
+        return None
+    if "-" in numero_identificacion:
+        return None
+    try:
+        return str(dv_esperado(numero_identificacion))
+    except ValueError:
+        return None
+
+
+async def _empresa_de_sucursal(
+    session: AsyncSession, empresa_unida: Empresa | None
+) -> Empresa | None:
+    """The emisor ``empresa`` of the invoice header.
+
+    A branch whose ``sucursal.uuid_empresa`` is NULL (normal in a paired
+    branch DB) has no joined empresa; the header then falls back to the open
+    ``empresa`` row, same rule the sync pull uses ("never zero rows").
+    """
+    if empresa_unida is not None:
+        return empresa_unida
+    return (
+        await session.execute(
+            select(Empresa)
+            .where(Empresa.vigente_hasta.is_(None))
+            .order_by(Empresa.vigente_desde.desc())
+            .limit(1)
+        )
+    ).scalars().first()
 
 
 async def build_display_factura(
@@ -205,6 +246,7 @@ async def build_display_factura(
             f"sucursal row not found for uuid_sucursal={new_factura.uuid_sucursal}"
         )
     suc, emp = sucursal_row
+    emp = await _empresa_de_sucursal(session, emp)
     datos_sucursal = FacturaDisplaySucursal(
         razon_social=suc.nombre,
         nit=emp.nit if emp else None,
@@ -274,7 +316,10 @@ async def build_display_factura(
             cliente_display = FacturaDisplayCliente(
                 tipo_identificador=cliente_row.tipo_identificador,
                 numero_identificacion=cliente_row.numero_identificacion,
-                dv=None,  # DV is on fe_datos_cliente (request), not persisted
+                # DV is not persisted on `clientes`; derive it (módulo 11) for display.
+                dv=_dv_cliente_para_display(
+                    cliente_row.tipo_identificador, cliente_row.numero_identificacion
+                ),
                 nombre=cliente_row.nombre,
                 apellido=cliente_row.apellido,
                 email=cliente_row.email,

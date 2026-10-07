@@ -41,7 +41,7 @@ export function FacturaImpuestosDetalle({ factura: f }: FacturaImpuestosDetalleP
       <TicketDivider />
       <div className="flex justify-between gap-2">
         <span className="min-w-0 truncate">
-          {t('facturacion:display.subtotal', { defaultValue: 'Subtotal' })}
+          {t('facturacion:display.subtotalBase', { defaultValue: 'Subtotal (base)' })}
         </span>
         <span data-testid="factura-display-subtotal" className="shrink-0 tabular-nums">
           {money(f.subtotal)}

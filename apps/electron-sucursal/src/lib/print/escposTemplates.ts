@@ -86,6 +86,41 @@ export function formatCOPDecimal(value: number): string {
 }
 
 /**
+ * The backend stores NAIVE UTC timestamps (no zone designator). JS would read
+ * such a string as machine-local time, so the printed hour was the raw UTC one
+ * (21:07 for a 16:07 Bogotá ingreso). Without a `Z`/offset we append `Z`.
+ */
+export function comoInstanteUtc(iso: string): string {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`;
+}
+
+const bogotaPartesFormatter = new Intl.DateTimeFormat('es-CO', {
+  timeZone: 'America/Bogota',
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+/** Day/month/year/hour/minute of an instant on the Bogotá wall clock. */
+export function partesBogota(iso: string): {
+  day: string;
+  month: string;
+  year: string;
+  hour: string;
+  minute: string;
+} {
+  const parts = bogotaPartesFormatter.formatToParts(new Date(comoInstanteUtc(iso)));
+  const get = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((x) => x.type === type)?.value ?? '';
+  // `hour12: false` may render midnight as "24" on some engines.
+  const hour = get('hour') === '24' ? '00' : get('hour');
+  return { day: get('day'), month: get('month'), year: get('year'), hour, minute: get('minute') };
+}
+
+/**
  * F6.2 — date only (es-CO short): "dd/MM/yyyy" (for the decimo
  * conceptual field — CU-15E field 10, CU-15S field 10, CU-15SM field 9).
  *
@@ -95,10 +130,8 @@ export function formatCOPDecimal(value: number): string {
  * the expected payload deterministically.
  */
 export function formatFecha(iso: string): string {
-  const d = new Date(iso);
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  return `${dd}/${mm}/${d.getFullYear()}`;
+  const p = partesBogota(iso);
+  return `${p.day}/${p.month}/${p.year}`;
 }
 
 /**
@@ -108,10 +141,8 @@ export function formatFecha(iso: string): string {
  * Pure helper — same caveat as `formatFecha`.
  */
 export function formatHora(iso: string): string {
-  const d = new Date(iso);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${min}`;
+  const p = partesBogota(iso);
+  return `${p.hour}:${p.minute}`;
 }
 
 /**
@@ -256,7 +287,7 @@ const entradaConPlacaSchema = z.object({
   logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
-  tarifaAplicada: z.number().nonnegative(),
+  tarifaAplicada: z.number().nonnegative().optional(),
   horarioAtencion: z.string().min(1),
   polizaRC: z.string().optional(),
   folio: z.string().uuid(),
@@ -280,7 +311,7 @@ const entradaConConsecutivoSchema = z.object({
   logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
-  tarifaAplicada: z.number().nonnegative(),
+  tarifaAplicada: z.number().nonnegative().optional(),
   horarioAtencion: z.string().min(1),
   polizaRC: z.string().optional(),
   folio: z.string().uuid(),
@@ -624,6 +655,8 @@ export function lineasMontos(payload: {
 }
 
 export const salidaPayloadSchema = entradaConPlacaSchema.extend({
+  // Salida / recibo always carry the applied tariff (only the ENTRADA ticket may omit it).
+  tarifaAplicada: z.number().nonnegative(),
   sucursal: sucursalSchema,
   fechaSalida: z.string().datetime({ offset: true }),
   tiempoTotal: z.string().min(1),
