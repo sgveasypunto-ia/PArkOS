@@ -98,11 +98,13 @@ interface PagoStubProps {
   onSubmit: (v: unknown) => Promise<void>;
   draft?: { monto_recibido_cop?: number } | null;
   onDraftChange?: (v: unknown) => void;
+  clientePrefill?: { fe?: boolean };
 }
 vi.mock('../../facturacion/components/PagoModal', () => ({
-  PagoModal: ({ onSubmit, total_cop, draft, onDraftChange }: PagoStubProps) => (
+  PagoModal: ({ onSubmit, total_cop, draft, onDraftChange, clientePrefill }: PagoStubProps) => (
     <div data-testid="pago-modal">
       <span data-testid="pago-total">{total_cop}</span>
+      <span data-testid="pago-prefill-fe">{String(clientePrefill?.fe ?? false)}</span>
       <span data-testid="pago-draft">{String(draft?.monto_recibido_cop ?? '')}</span>
       <button
         type="button"
@@ -120,7 +122,8 @@ vi.mock('../../facturacion/components/PagoModal', () => ({
           onSubmit({
             medio_pago: 'efectivo',
             monto_recibido_cop: total_cop,
-            fe: false,
+            // Mirrors the real PagoModal default: `p?.fe ?? false`.
+            fe: clientePrefill?.fe ?? false,
             nit: '222222222222222',
             dv: '',
             nombre_cliente: 'Consumidor final',
@@ -310,6 +313,12 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(arg.cobrar_ahora).toBe(true);
     // The FE is always emitted by the backend; `false` = standard customer.
     expect(arg.emitir_factura_electronica).toBe(false);
+  });
+
+  it('T7b: la factura a nombre del cliente llega desmarcada por defecto', async () => {
+    renderVenta();
+    await hastaPago();
+    expect(screen.getByTestId('pago-prefill-fe').textContent).toBe('false');
   });
 
   it('T8: pago con cobro -> muestra <FacturaDisplayModal /> y solo completa/imprime al cerrarlo', async () => {
