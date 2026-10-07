@@ -151,26 +151,20 @@ class TestRouterConfigIsCloudOnly:
 
 
 class TestCreateSchemaEnforcesDIANBoundary:
-    """``ResolucionFacturacionCreate`` MUST reject client-supplied server fields."""
+    """``ResolucionFacturacionCreate`` accepts the numbering columns (admin-written)."""
 
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            ("prefijo", "SETP"),
-            ("rango_desde", 1),
-            ("rango_hasta", 1000),
-        ],
-    )
-    def test_create_rejects_server_assigned_field(self, field: str, value: object) -> None:
-        with pytest.raises(ValidationError):
-            ResolucionFacturacionCreate(
-                uuid_sucursal=SUCURSAL_UUID,
-                numero_resolucion="1876",
-                fecha_resolucion=date(2026, 1, 1),
-                fecha_inicio_vigencia=date(2026, 1, 1),
-                fecha_fin_vigencia=date(2027, 1, 1),
-                **{field: value},
-            )
+    def test_create_accepts_numbering(self) -> None:
+        c = ResolucionFacturacionCreate(
+            uuid_sucursal=SUCURSAL_UUID,
+            numero_resolucion="1876",
+            fecha_resolucion=date(2026, 1, 1),
+            fecha_inicio_vigencia=date(2026, 1, 1),
+            fecha_fin_vigencia=date(2027, 1, 1),
+            prefijo="qa",
+            rango_desde=1,
+            rango_hasta=5000,
+        )
+        assert (c.prefijo, c.rango_desde, c.rango_hasta) == ("QA", 1, 5000)
 
     def test_create_accepts_valid_payload(self) -> None:
         c = ResolucionFacturacionCreate(
@@ -182,7 +176,7 @@ class TestCreateSchemaEnforcesDIANBoundary:
         )
         assert c.numero_resolucion == "1876"
         assert c.fecha_inicio_vigencia == date(2026, 1, 1)
-        assert not hasattr(c, "prefijo")
+        assert (c.prefijo, c.rango_desde, c.rango_hasta) == (None, None, None)
 
     def test_create_coerces_iso_date_strings(self) -> None:
         """ISO-8601 strings coerce to ``datetime.date`` (JSON bodies)."""
@@ -218,7 +212,7 @@ class TestCreateSchemaEnforcesDIANBoundary:
 
 
 class TestReadSchemaIncludesServerAssignedFields:
-    """``ResolucionFacturacionRead`` returns the server-assigned DIAN fields."""
+    """``ResolucionFacturacionRead`` returns the numbering DIAN fields."""
 
     def test_read_includes_prefijo_and_range(self) -> None:
         r = ResolucionFacturacionRead(
@@ -248,24 +242,18 @@ class TestReadSchemaIncludesServerAssignedFields:
 class TestUpdateSchemaIsSymmetric:
     """The DIAN boundary applies on PUT too (REQ-04-V-ACTUALIZACION)."""
 
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            ("prefijo", "SETP"),
-            ("rango_desde", 1),
-            ("rango_hasta", 1000),
-        ],
-    )
-    def test_update_rejects_server_assigned_field(self, field: str, value: object) -> None:
-        with pytest.raises(ValidationError):
-            ResolucionFacturacionUpdate(
-                uuid_sucursal=SUCURSAL_UUID,
-                numero_resolucion="1876",
-                fecha_resolucion=date(2026, 1, 1),
-                fecha_inicio_vigencia=date(2026, 1, 1),
-                fecha_fin_vigencia=date(2027, 1, 1),
-                **{field: value},
-            )
+    def test_update_accepts_numbering(self) -> None:
+        u = ResolucionFacturacionUpdate(
+            uuid_sucursal=SUCURSAL_UUID,
+            numero_resolucion="1876",
+            fecha_resolucion=date(2026, 1, 1),
+            fecha_inicio_vigencia=date(2026, 1, 1),
+            fecha_fin_vigencia=date(2027, 1, 1),
+            prefijo="SETP",
+            rango_desde=1,
+            rango_hasta=1000,
+        )
+        assert u.prefijo == "SETP"
 
     def test_update_accepts_valid_payload(self) -> None:
         u = ResolucionFacturacionUpdate(
@@ -307,10 +295,7 @@ class TestVigenciaDateOrder:
     """HU-F15.3: ``fecha_fin_vigencia`` must be strictly after
     ``fecha_inicio_vigencia`` on both Create and Update.
 
-    The other two HU-F15.3 guards (``rango_hasta > rango_desde`` and
-    unique ``prefijo`` among vigentes) do NOT apply here: neither field is
-    client-writable on this schema (see ``TestCreateSchemaEnforcesDIANBoundary``
-    above, REQ-X3) — there is nothing in the payload to validate."""
+    Numbering guards live in ``TestNumeracion`` below."""
 
     @pytest.mark.parametrize(
         ("inicio", "fin"),
@@ -345,3 +330,55 @@ class TestVigenciaDateOrder:
                 fecha_inicio_vigencia=inicio,
                 fecha_fin_vigencia=fin,
             )
+
+
+def _payload(cls: type, **extra: object):
+    return cls(
+        uuid_sucursal=SUCURSAL_UUID,
+        numero_resolucion="1876",
+        fecha_resolucion=date(2026, 1, 1),
+        fecha_inicio_vigencia=date(2026, 1, 1),
+        fecha_fin_vigencia=date(2027, 1, 1),
+        **extra,
+    )
+
+
+@pytest.mark.parametrize("cls", [ResolucionFacturacionCreate, ResolucionFacturacionUpdate])
+class TestNumeracion:
+    """prefijo (1-4 alfanumérico) + rango_desde >= 1 + rango_hasta >= rango_desde."""
+
+    def test_prefijo_se_normaliza_a_mayusculas(self, cls: type) -> None:
+        p = _payload(cls, prefijo=" qa1 ", rango_desde=1, rango_hasta=5000)
+        assert p.prefijo == "QA1"
+
+    def test_rango_de_un_solo_numero_es_valido(self, cls: type) -> None:
+        p = _payload(cls, prefijo="QA", rango_desde=7, rango_hasta=7)
+        assert p.rango_desde == p.rango_hasta == 7
+
+    @pytest.mark.parametrize("prefijo", ["ABCDE", "A-B", "Ñ", "A B"])
+    def test_prefijo_invalido(self, cls: type, prefijo: str) -> None:
+        with pytest.raises(ValidationError):
+            _payload(cls, prefijo=prefijo, rango_desde=1, rango_hasta=10)
+
+    @pytest.mark.parametrize(("desde", "hasta"), [(0, 10), (-1, 10), (10, 9), (1, 10_000_000_000)])
+    def test_rango_invalido(self, cls: type, desde: int, hasta: int) -> None:
+        with pytest.raises(ValidationError):
+            _payload(cls, prefijo="QA", rango_desde=desde, rango_hasta=hasta)
+
+    @pytest.mark.parametrize(
+        "parcial",
+        [
+            {"prefijo": "QA"},
+            {"rango_desde": 1},
+            {"rango_hasta": 10},
+            {"prefijo": "QA", "rango_desde": 1},
+            {"rango_desde": 1, "rango_hasta": 10},
+        ],
+    )
+    def test_numeracion_parcial_se_rechaza(self, cls: type, parcial: dict[str, object]) -> None:
+        with pytest.raises(ValidationError):
+            _payload(cls, **parcial)
+
+    def test_prefijo_en_blanco_cuenta_como_ausente(self, cls: type) -> None:
+        p = _payload(cls, prefijo="  ")
+        assert p.prefijo is None
