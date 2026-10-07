@@ -13,10 +13,9 @@ Renewal flow (one transaction for subscription + payment, FE afterwards):
   2. ``Idempotency-Key`` header is REQUIRED. The replay is done HERE with
      ``repo.idempotency.guard/store_response`` (same key + same body ->
      the stored 201 is returned with ``Idempotent-Replay: true``; same key +
-     different body -> 409 ``idempotency_key_conflict``) because
-     ``IdempotencyKeyMiddleware`` currently never persists a response
-     (``_StreamingResponse`` has no ``.body``; it logs
-     ``idempotency_key_persist_failed`` and never replays). A second renewal
+     different body -> 409 ``idempotency_key_conflict``) because it must
+     refresh the FE outcome on replay; ``IdempotencyKeyMiddleware``
+     deliberately bypasses this path so nothing is processed twice. A second renewal
      of the same row with ANOTHER key is rejected on its own (the old row is
      closed -> 409 ``suscripcion_no_renovable``), which also covers two
      concurrent requests (they serialize on the row lock).
