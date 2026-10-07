@@ -31,7 +31,7 @@
  * path as a manual submit); selecting one without a placa runs the
  * estado-guard directly against the candidate's `uuid_ingreso`.
  */
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
@@ -298,7 +298,21 @@ export function SalidaPanel({
   const confirmada =
     uuid_ingreso !== null && salidaConfirmada?.uuid === uuid_ingreso ? salidaConfirmada : null;
   const live = useCotizacion(confirmada ? null : uuid_ingreso);
-  const cotizacion = confirmada ? confirmada.cotizacion : live.data;
+  // D2: SWR can momentarily report no data for the key (cache cleared by
+  // the H7 mutate below, or a revalidation) one render BEFORE the
+  // `salidaConfirmada` state commits. Rendering without a cotizacion would
+  // unmount <SalidaMensualidad /> mid-flow, losing its pending factura
+  // state and so the modal that closes the drawer. Keep the last quote of
+  // this ingreso as a fallback so the child stays mounted.
+  const lastCotizacionRef = useRef<{ uuid: string; cotizacion: Cotizacion } | null>(null);
+  if (uuid_ingreso !== null && live.data) {
+    lastCotizacionRef.current = { uuid: uuid_ingreso, cotizacion: live.data };
+  }
+  const sticky =
+    uuid_ingreso !== null && lastCotizacionRef.current?.uuid === uuid_ingreso
+      ? lastCotizacionRef.current.cotizacion
+      : undefined;
+  const cotizacion = confirmada ? confirmada.cotizacion : (live.data ?? sticky);
   const cotError = confirmada ? undefined : live.error;
   const refresh = live.refresh;
 
@@ -573,6 +587,7 @@ export function SalidaPanel({
               uuidIngreso={uuid_ingreso}
               cotizacion={cotizacion}
               onSalidaConfirmada={handleSalidaConfirmada}
+              yaConfirmada={confirmada !== null}
             />
           ) : cotizacion ? (
             <SalidaFlow
