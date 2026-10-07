@@ -26,6 +26,7 @@ from ..models.A.salidas import Salidas
 from ..models.L_E.ingreso import Ingreso
 from ..models.L_W.alerta import Alerta
 from ..models.L_W.anulaciones import Anulaciones
+from .ingreso_activo import salida_vigente_exists_sql
 
 
 class SalidaDuplicada(Exception):
@@ -88,17 +89,7 @@ async def buscar_ingreso_activo_por_uuid(
 
     # Existence check: NOT EXISTS salidas not anulada.
     stmt = text(
-        """
-        SELECT 1 FROM prod.salidas s
-        WHERE s.uuid_ingreso = :uuid_ingreso
-          AND NOT EXISTS (
-              SELECT 1 FROM prod.anulaciones a
-              WHERE a.uuid_salida = s.uuid
-                AND a.tipo_anulable = 'salida'
-                AND a.estado = 'ejecutada'
-          )
-        LIMIT 1
-        """
+        f"SELECT 1 WHERE {salida_vigente_exists_sql('CAST(:uuid_ingreso AS uuid)')}"
     )
     exists = (
         await session.execute(stmt, {"uuid_ingreso": str(uuid_ingreso)})

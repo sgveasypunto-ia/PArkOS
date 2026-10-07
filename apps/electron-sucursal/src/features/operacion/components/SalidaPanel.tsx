@@ -293,7 +293,11 @@ export function SalidaPanel({
     setIngresoCerradoIdentificador(null);
     setSuggestionsClosed(true);
     try {
-      const resultado = await buscarIngresoTolerante(values.placa, getIngresosByPlaca);
+      const resultado = await buscarIngresoTolerante(values.placa, (variante) =>
+        // Only plates still inside can be charged: history rows made
+        // "ya tiene salida" shadow a plate that re-entered.
+        getIngresosByPlaca(variante, { soloActivos: true }),
+      );
       setTolerante(resultado);
       // REGRESSION fix (2026-09-22): cuando el candidato es único,
       // resolvemos el uuid en el state local para que

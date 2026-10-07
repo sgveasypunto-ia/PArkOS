@@ -797,7 +797,7 @@ function PlacaInputHero({
       // (no race contra el SWR cache). Reutiliza el mismo endpoint que
       // ``useIngresoActivo`` — solo cambia el modo (await inline vs
       // SWR background poll).
-      const rows = await getIngresosByPlaca(placa);
+      const rows = await getIngresosByPlaca(placa, { soloActivos: true });
       if (rows.length > 0) {
         // Smart routing per plan.md §CU-02: plate already has an active
         // ingreso → open the salida drawer. ``SalidaSheet`` will mount

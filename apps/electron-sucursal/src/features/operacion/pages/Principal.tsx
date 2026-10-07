@@ -487,7 +487,9 @@ async function fetchActiveUuid(placaTarget: string): Promise<string> {
   // for the plate and pick the first row whose estado is `abierto`.
   try {
     const { getIngresosByPlaca } = await import('../api/ingresoActivoApi');
-    const rows: Ingreso[] = await getIngresosByPlaca(placaTarget);
+    const rows: Ingreso[] = await getIngresosByPlaca(placaTarget, {
+      soloActivos: true,
+    });
     for (const row of rows) {
       const estado = await getIngresoEstado(row.uuid);
       if (estado.estado === 'abierto') {

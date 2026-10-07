@@ -340,3 +340,38 @@ __all__ = [
     "test_activo_true_excluye_ingresos_con_salida_no_anulada",
     "test_consecutivo_filtra_por_cupo_exacto_incluye_cerrados",
 ]
+
+
+async def test_existe_ingreso_activo_trata_salida_anulada_como_activo(
+    pg_engine, pg_dsn
+) -> None:
+    """V8 must agree with ``activo=true``: an annulled salida leaves the vehicle inside."""
+    from parkos_core.repo.ingreso import existe_ingreso_activo
+
+    await _truncate(pg_dsn)
+    branch = uuid_lib.uuid4()
+    tipo_auto = await _seed_branch(pg_engine, uuid_sucursal=branch)
+    ing_reabierto = await _seed_ingreso(
+        pg_engine, placa="ABC444", uuid_sucursal=branch, uuid_tipo_vehiculo=tipo_auto
+    )
+    salida = await _seed_salida(
+        pg_engine, uuid_ingreso=ing_reabierto, uuid_sucursal=branch
+    )
+    await _seed_anulacion_salida(
+        pg_engine, uuid_salida=salida, uuid_ingreso=ing_reabierto, uuid_sucursal=branch
+    )
+    ing_cerrado = await _seed_ingreso(
+        pg_engine, placa="ABC555", uuid_sucursal=branch, uuid_tipo_vehiculo=tipo_auto
+    )
+    await _seed_salida(pg_engine, uuid_ingreso=ing_cerrado, uuid_sucursal=branch)
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        assert (
+            await existe_ingreso_activo(session, uuid_sucursal=branch, placa="ABC444")
+            == ing_reabierto
+        )
+        assert (
+            await existe_ingreso_activo(session, uuid_sucursal=branch, placa="ABC555")
+            is None
+        )

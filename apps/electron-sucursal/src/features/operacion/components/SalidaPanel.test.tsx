@@ -284,7 +284,9 @@ describe('<SalidaPanel /> — HU-F7.1 búsqueda sin placa (T5)', () => {
     await userEvent.click(option);
 
     await waitFor(() => {
-      expect(mockGetIngresosByPlaca).toHaveBeenCalled();
+      expect(mockGetIngresosByPlaca).toHaveBeenCalledWith(expect.any(String), {
+        soloActivos: true,
+      });
     });
     await waitFor(() => {
       expect(mockUseCotizacion).toHaveBeenCalledWith(UUID_INGRESO_A);
