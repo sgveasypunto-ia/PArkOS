@@ -326,7 +326,7 @@ export function Venta({
       nit: state.cliente?.numero_identificacion ?? '',
       nombre: state.cliente?.nombre ?? '',
       email: '',
-      fe: true,
+      fe: false,
       tipo_persona: state.cliente?.tipo_persona ?? ('empresa' as const),
       tipo_identificador: state.cliente?.tipo_identificador ?? ('NIT' as const),
       apellido: state.cliente?.apellido ?? '',
