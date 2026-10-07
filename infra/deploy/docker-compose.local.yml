@@ -176,6 +176,14 @@ services:
       PARKOS_DEPLOY: branch
       PARKOS_BRANCH_DB_DSN: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
       DATABASE_URL: postgresql+asyncpg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
+      # WorkerRunner.run() validates the worker env (load_config) before the
+      # first cycle and exits 2 when any of these is unset: without them the
+      # container restart-loops and the view is never refreshed.
+      PARKOS_SUCURSAL_UUID: ${PARKOS_SUCURSAL_UUID:?PARKOS_SUCURSAL_UUID required}
+      PARKOS_DB_URL: postgresql+psycopg://${PARKOS_APP_DB_USER:-parkos_app}:${PARKOS_APP_DB_PASSWORD:-parkos_app_dev}@branch-db:5432/parkos
+      PARKOS_CLOUD_API_URL: http://api-admin:8000
+      PARKOS_JWT_KEY_PATH: /var/run/parkos/jwt_private.pem
+      PARKOS_SYNC_JWT_PATH: /var/run/parkos/sync.jwt
     depends_on:
       branch-db:
         condition: service_healthy
@@ -183,6 +191,8 @@ services:
         condition: service_completed_successfully
     networks:
       - parkos-cloud-net
+    volumes:
+      - ./secrets:/var/run/parkos:ro
     deploy:
       replicas: 1
 
