@@ -122,3 +122,28 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   }
   globalThis.ResizeObserver = ResizeObserverStub;
 }
+
+/**
+ * jsdom + `nwsapi` shim — top-layer pseudo-classes.
+ *
+ * `@floating-ui/dom` (under every Radix Popover/DropdownMenu/Select content)
+ * calls `element.matches(':popover-open')` and `element.matches(':modal')`
+ * (`isTopLayer`) for each node it measures, wrapped in a try/catch that
+ * expects an unsupported pseudo-class to THROW. With jsdom 25 + nwsapi 2.2.x
+ * those selectors do not throw: nwsapi falls into a pathological
+ * `isFullscreen` -> `matches` -> `Resolver` re-entry that blocks the event
+ * loop for 15-40 s per opened popover (and kills the vitest worker when
+ * several open in one file: "Worker exited unexpectedly"). jsdom has no top
+ * layer, so the correct answer is always `false`; answer it directly and
+ * defer every other selector to the real implementation.
+ */
+if (typeof Element !== 'undefined') {
+  const originalMatches = Element.prototype.matches;
+  const TOP_LAYER_SELECTORS = new Set([':popover-open', ':modal', ':fullscreen']);
+  Element.prototype.matches = function matches(this: Element, selectors: string): boolean {
+    if (TOP_LAYER_SELECTORS.has(selectors)) {
+      return false;
+    }
+    return originalMatches.call(this, selectors);
+  };
+}
