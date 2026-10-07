@@ -51,7 +51,7 @@ function makeAlert(overrides: Partial<MergedAlerta> = {}): MergedAlerta {
     timestamp_evento: '2026-09-21T10:00:00.000Z',
     vigente_desde: '2026-09-21T10:00:00.000Z',
     vigente_hasta: null,
-    estado: 'activa',
+    estado: 'abierta',
     severidad: 'alta',
     descripcion: 'desc',
     mensaje: 'mensaje',

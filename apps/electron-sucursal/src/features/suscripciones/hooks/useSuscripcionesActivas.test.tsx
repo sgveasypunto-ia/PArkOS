@@ -88,6 +88,37 @@ describe('useSuscripcionesActivas — HU-F9.2 realineada', () => {
     expect(result.current.data?.[0]?.vehiculos_inscritos).toBe(2);
   });
 
+  it('T1b: exposes puede_renovar/dias_restantes and hides the standard customer "Consumidor final"', async () => {
+    mockFetch.mockResolvedValueOnce({
+      items: [
+        { ...ITEM, dias_restantes: 4, puede_renovar: true },
+        {
+          ...ITEM,
+          uuid: '00000000-0000-0000-0000-000000000009',
+          cliente: { ...ITEM.cliente, nombre: 'Consumidor', apellido: 'final', numero_identificacion: '222222222222' },
+        },
+      ],
+    });
+
+    const { result } = renderHook(() => useSuscripcionesActivas('suc-1'), {
+      wrapper: freshCacheWrapper,
+    });
+    await waitFor(() => expect(result.current.data).toBeDefined());
+
+    expect(result.current.data).toHaveLength(1);
+    expect(result.current.data?.[0]?.puede_renovar).toBe(true);
+    expect(result.current.data?.[0]?.dias_restantes).toBe(4);
+  });
+
+  it('T1c: puede_renovar defaults to false when the backend omits it (>10 days / older backend)', async () => {
+    mockFetch.mockResolvedValueOnce({ items: [ITEM] });
+    const { result } = renderHook(() => useSuscripcionesActivas('suc-1'), {
+      wrapper: freshCacheWrapper,
+    });
+    await waitFor(() => expect(result.current.data).toBeDefined());
+    expect(result.current.data?.[0]?.puede_renovar).toBe(false);
+  });
+
   it('T2: null uuid_sucursal gates the SWR key — no fetch fires', async () => {
     renderHook(() => useSuscripcionesActivas(null), { wrapper: freshCacheWrapper });
     await new Promise((r) => setTimeout(r, 0));

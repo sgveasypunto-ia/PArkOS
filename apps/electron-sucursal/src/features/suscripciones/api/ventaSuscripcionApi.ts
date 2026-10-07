@@ -161,8 +161,12 @@ export const VentaSuscripcionReadSchema = z
     uuid_envio_dian: z.string().uuid().nullable(),
     factura: FacturaReadSchema.nullable(),
     factura_electronica_error: z.string().nullable(),
-  })
-  .strict();
+    // Optional: the pending/auto-retry flag also travels inside `factura`.
+    factura_electronica_pendiente: z.boolean().optional(),
+  });
+// READ schema: NOT strict -- the backend may add display fields (FE state)
+// without breaking a paid sale's confirmation (a parse error here would hide
+// the receipt of an already-committed payment).
 export type VentaSuscripcionRead = z.infer<typeof VentaSuscripcionReadSchema>;
 
 export const POST_VENTA_SUSCRIPCION_PATH = '/api/v1/clientes/venta-suscripcion';
@@ -183,6 +187,8 @@ export const TipoSubscripcionSchema = z
     duracion_dias: z.coerce.number().int().positive(),
     cantidad_maxima_vehiculos: z.coerce.number().int().positive(),
     mismo_tipo_vehiculo: z.boolean(),
+    // NULL = plan valid for any vehicle type (PT-2).
+    uuid_tipo_vehiculo: z.string().uuid().nullable().optional(),
     tipo_cliente_permitido: z
       .string()
       .nullable()

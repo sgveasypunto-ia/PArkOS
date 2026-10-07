@@ -1,34 +1,36 @@
 /**
- * `<Venta />` — F9.1 wizard 4 pasos for subscription sale at the
- * counter (HU-F9.1, REQ-OPS-176).
+ * `<Venta />` — wizard of 6 steps for the subscription sale at the
+ * counter (HU-F9.1, REQ-OPS-176; reordered in PT-2, back-navigation PT-1).
  *
- * Layout (REQ-OPS-176 verbatim):
- *   paso 1 — cliente{tipo_persona, tipo_identificador, numero_identificacion,
- *             dv?, nombre, apellido?} (Ajuste persona natural/empresa:
- *             `<ClienteIdentificacionFields>`, mismo componente compartido
- *             que `<PagoModal>` paso 5)
- *   paso 2 — placas[] (1..2, FORMATO_AUTO | FORMATATO_MOTO)
- *   paso 3 — uuid_tipo_subscripcion (UUID)
- *   paso 4 — `<PagoModal />` (F8.1 reuse) — F8.1 owns vueltos live
- *             + FE con datos + NIT módulo 11 validation
+ * Steps:
+ *   1 — cliente {tipo_persona, tipo_identificador, numero_identificacion,
+ *       dv?, nombre, apellido?} (`<ClienteIdentificacionFields>`)
+ *   2 — tipo de vehículo (moto, carro, ...) from `catalogos/tipos-vehiculo`
+ *   3 — plan: ONLY the plans of that vehicle type (+ the type-agnostic
+ *       ones) via `GET /catalogos/tipo-subscripciones?uuid_tipo_vehiculo=`
+ *   4 — cantidad de vehículos (1..plan.cantidad_maxima_vehiculos)
+ *   5 — placas (exactly N, auto/moto format + matching the chosen type)
+ *   6 — pago: `<PagoModal />` (F8.1 reuse)
  *
- * State machine: `useState<VentaStepState>` orchestrating the 4
- * steps. Each step has its own Zod schema; advancing triggers
- * `safeParse` BEFORE `setPaso(paso + 1)`. This matches F7.1/F7.2/
- * F8.1 patterns (per-step validation, NOT a single big schema at
- * submit time) and keeps each step's error rendering local.
+ * PT-1 — "Volver": a single control that goes back EXACTLY one step keeping
+ * everything captured (cliente, tipo, plan, cantidad, placas, pago draft);
+ * on step 1 it calls `onCancel` (back to the parent list). Changing the
+ * type/plan/quantity invalidates only what depends on it. After a charged
+ * sale it is hidden and the payment can no longer be re-sent.
  *
- * Step 2 catches the 3 backend 422 error subclasses
- * (`VentaSuscripcionDuplicatePlateError`,
- * `VentaSuscripcionTipoIncompatibleError`,
- * `VentaSuscripcionCantidadMaximaError`) and renders the inline
- * message with `instanceof` discrimination.
+ * State machine: `useState<VentaStepState>`; each step has its own Zod
+ * schema and advancing runs `safeParse` first (per-step validation).
  *
- * PT-3: the full plan price is ALWAYS charged (no proration). The
- * PagoModal receives `total_cop = plan.valor` so vueltos live reflects
- * the actual charge; the default start date is today in Bogota.
+ * The 3 backend 422 error subclasses (duplicate plate, incompatible type,
+ * max quantity) send the operator back to the placas step (5) with an
+ * inline message.
  *
- * On pago 201 the wizard navigates to `/suscripciones` (F9.2 list).
+ * PT-3: the full plan price is ALWAYS charged (no proration). The electronic
+ * invoice is ALWAYS emitted by the backend (consumidor final unless the
+ * subscriber is billed); its state is shown in the receipt.
+ *
+ * On a charged sale the receipt is shown and then `onSuccess` (embedded) or a
+ * navigation to `/suscripciones` runs.
  */
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -57,6 +59,8 @@ import {
   type VentaSuscripcionCreate,
 } from '../hooks/useVentaSuscripcion';
 import { useTiposSubscripciones } from '../hooks/useTiposSubscripciones';
+import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
+import { feWarningMessage } from '../../facturacion/lib/feEstado';
 import { hoyBogotaISO } from '../lib/fechaInicio';
 import { buildClienteVentaPayload } from '../lib/clienteVentaPayload';
 import { validarIdentificacion } from '../../../lib/validation/identificacion';
@@ -119,44 +123,12 @@ function deferredSafePrint(
   });
 }
 
-/**
- * KD-VENTA-03b — maps the backend's `factura_electronica_error` code to
- * an operator-facing message. `null` when the sale had no FE issue.
- * Kept as a plain function (not a hook) so it can be called from the
- * `handlePagoSubmit` closure without an extra `useCallback`.
- */
-function facturaElectronicaErrorMessage(
-  code: string | null | undefined,
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): string | null {
-  if (!code) return null;
-  switch (code) {
-    case 'resolucion_facturacion_no_encontrada':
-      return t('suscripciones:venta.fe.resolucionNoEncontrada', {
-        defaultValue:
-          'El cobro y la suscripción quedaron registrados, pero no se pudo emitir la factura electrónica: falta configurar la resolución de facturación de esta sucursal.',
-      });
-    case 'numeracion_agotada':
-      return t('suscripciones:venta.fe.numeracionAgotada', {
-        defaultValue:
-          'El cobro y la suscripción quedaron registrados, pero se agotó la numeración de la resolución de facturación. Avisá para renovarla.',
-      });
-    case 'resolucion_sin_prefijo':
-      return t('suscripciones:venta.fe.resolucionSinPrefijo', {
-        defaultValue:
-          'El cobro y la suscripción quedaron registrados, pero la resolución de facturación no tiene prefijo configurado.',
-      });
-    default:
-      return t('suscripciones:venta.fe.errorGenerico', {
-        defaultValue:
-          'El cobro y la suscripción quedaron registrados, pero no se pudo emitir la factura electrónica. Reintentalo más tarde.',
-      });
-  }
-}
-
 export interface VentaStepState {
-  paso: 1 | 2 | 3 | 4 | 5;
+  /** 1 cliente · 2 tipo de vehículo · 3 plan · 4 cantidad · 5 placas · 6 pago. */
+  paso: 1 | 2 | 3 | 4 | 5 | 6;
   cliente?: ClienteIdentificacionValue;
+  /** PT-2: chosen BEFORE the plan; the plan catalog is filtered by it. */
+  uuid_tipo_vehiculo?: string;
   uuid_tipo_subscripcion?: string;
   /**
    * Number of vehicles the operator is going to associate with this
@@ -275,6 +247,10 @@ const buildPlacasSchema = (count: number) =>
  */
 const PLAN_PREVIEW_VALOR = 30000;
 
+const PLACA_AUTO = /^[A-Z]{3}[0-9]{3}$/;
+const PLACA_MOTO = /^[A-Z]{3}[0-9]{2}[A-Z]$/;
+const TOTAL_PASOS = 6;
+
 export function Venta({
   onSuccess,
   onCancel,
@@ -296,53 +272,86 @@ export function Venta({
   const [clienteErrors, setClienteErrors] = useState<
     Partial<Record<'numero_identificacion' | 'dv' | 'nombre' | 'apellido', string>>
   >({});
+  // PT-2: vehicle type chosen BEFORE the plan (the plan catalog is filtered by it).
+  const [tipoVehiculoInput, setTipoVehiculoInput] = useState('');
   const [planInput, setPlanInput] = useState('');
   const [cantidadError, setCantidadError] = useState<string | null>(null);
   const [cantidadInput, setCantidadInput] = useState('1');
   const [placasError, setPlacasError] = useState<string | null>(null);
-  // Per-placa input draft state. Length matches state.placas when
-  // step 4 is mounted. Initialised empty when the operator advances
-  // from paso 3 with N cantidad.
+  // Per-placa input draft state. Preserved across "Volver" (PT-1): going
+  // back never discards what the operator already typed.
   const [placasInputs, setPlacasInputs] = useState<string[]>([]);
-  // Generic inline error for step 4 -- shared by both duplicate-plate
-  // 422 (server response) and invalid-format (local Zod). The error
-  // attribute is shown under the placa input group; the specific
-  // input that triggered the error is highlighted by the server's
-  // own discriminated error message (VentaSuscripcionDuplicatePlateError).
+  // Generic inline error for the placas step -- shared by both duplicate-plate
+  // 422 (server response) and invalid-format (local Zod).
   const [placaGroupError, setPlacaGroupError] = useState<string | null>(null);
+  // PT-1: payment form values, kept while the operator steps back from the
+  // payment step (and restored when returning to it).
+  const [pagoDraft, setPagoDraft] = useState<PagoFormValues | null>(null);
   // HU-F9.1 bugfix (2026-09-25): hold the enriched `FacturaRead` the
-  // backend now returns when `cobrar_ahora=true` so we can mount
+  // backend returns when `cobrar_ahora=true` so we can mount
   // `<FacturaDisplayModal />` with the full breakdown before completing
-  // the wizard -- mirrors HU-F8.4 (ingreso/salida cobro flow). Previously
-  // the wizard navigated away immediately after a paid sale with no
-  // ticket/factura confirmation shown to the operator.
+  // the wizard.
   const [facturaDisplay, setFacturaDisplay] = useState<FacturaRead | null>(null);
-  // KD-VENTA-03b (operator directive, 2026-09-25): FE emission is
-  // best-effort and runs AFTER the payment already committed -- a
-  // non-null `factura_electronica_error` means the sale + factura
-  // succeeded but the electronic invoice didn't. Shown as a
-  // non-blocking warning inside the same confirmation modal instead of
-  // silently dropping it.
+  // Non-blocking FE notice (pending / failed-and-auto-retried).
   const [facturaElectronicaWarning, setFacturaElectronicaWarning] = useState<
     string | null
   >(null);
+  // PT-1: once the sale is charged the wizard is FINAL -- "Volver" and a
+  // second submit are disabled so the payment can never be re-sent.
+  const [ventaCompletada, setVentaCompletada] = useState(false);
   const { trigger, isMutating } = useVentaSuscripcion();
+  const { tipos: tiposVehiculo, isFromFallback: tiposFromFallback } = useTiposVehiculo();
   const {
     data: planes,
     error: planesError,
     isLoading: planesLoading,
-  } = useTiposSubscripciones(uuid_sucursal);
+  } = useTiposSubscripciones(uuid_sucursal, state.uuid_tipo_vehiculo ?? null);
 
-  // Look up the selected plan's pricing once the operator commits to
-  // a uuid_tipo_subscripcion at step 3. Used by step 4 to render the
-  // payment preview against the canonical plan numbers instead of
-  // the F9.1-era 30000 preview baseline.
   const selectedPlan = useMemo(() => {
     if (!planes || !state.uuid_tipo_subscripcion) return null;
     return (
       planes.find((p) => p.uuid === state.uuid_tipo_subscripcion) ?? null
     );
   }, [planes, state.uuid_tipo_subscripcion]);
+
+  const selectedTipoVehiculo = useMemo(
+    () => tiposVehiculo.find((tv) => tv.uuid === state.uuid_tipo_vehiculo) ?? null,
+    [tiposVehiculo, state.uuid_tipo_vehiculo],
+  );
+
+  // Stable prefill: PagoModal reads it through a ref, but keeping the
+  // identity stable avoids needless re-renders of the payment form.
+  const clientePrefill = useMemo(
+    () => ({
+      nit: state.cliente?.numero_identificacion ?? '',
+      nombre: state.cliente?.nombre ?? '',
+      email: '',
+      fe: true,
+      tipo_persona: state.cliente?.tipo_persona ?? ('empresa' as const),
+      tipo_identificador: state.cliente?.tipo_identificador ?? ('NIT' as const),
+      apellido: state.cliente?.apellido ?? '',
+    }),
+    [state.cliente],
+  );
+
+  /**
+   * PT-1 — "Volver" goes back EXACTLY one step, keeping everything already
+   * captured (cliente, tipo de vehículo, plan, cantidad, placas, pago). On
+   * step 1 it leaves the wizard (back to the list). After a successful
+   * charge it does nothing: the sale is final.
+   */
+  const handleVolver = (): void => {
+    if (ventaCompletada || isMutating) return;
+    if (state.paso === 1) {
+      onCancel?.();
+      return;
+    }
+    setClienteErrors({});
+    setCantidadError(null);
+    setPlacasError(null);
+    setPlacaGroupError(null);
+    setState((s) => ({ ...s, paso: (s.paso - 1) as VentaStepState['paso'] }));
+  };
 
   const handlePaso1Siguiente = (): void => {
     const parsed = clienteSchema.safeParse(clienteIdent);
@@ -366,24 +375,57 @@ export function Venta({
   };
 
   const handlePaso2Siguiente = (): void => {
-    // paso 2 = Plan -- validate UUID, advance to paso 3 (Cantidad).
+    // paso 2 = Tipo de vehículo. Changing it invalidates everything that
+    // depends on it (plan -> cantidad -> placas -> pago); keeping the same
+    // type preserves the rest of the captured data.
+    if (!tipoVehiculoInput) return;
+    const changed = tipoVehiculoInput !== state.uuid_tipo_vehiculo;
+    if (changed) {
+      setPlanInput('');
+      setCantidadInput('1');
+      setPlacasInputs([]);
+      setPagoDraft(null);
+    }
+    setState((s) => ({
+      ...s,
+      paso: 3,
+      uuid_tipo_vehiculo: tipoVehiculoInput,
+      ...(changed
+        ? {
+            uuid_tipo_subscripcion: undefined,
+            cantidad_vehiculos: undefined,
+            placas: undefined,
+          }
+        : {}),
+    }));
+  };
+
+  const handlePaso3Siguiente = (): void => {
+    // paso 3 = Plan -- validate UUID, advance to paso 4 (Cantidad).
     const parsed = planSchema.safeParse({
       uuid_tipo_subscripcion: planInput,
     });
     if (!parsed.success) {
       return;
     }
+    const changed = parsed.data.uuid_tipo_subscripcion !== state.uuid_tipo_subscripcion;
+    if (changed) {
+      setCantidadInput('1');
+      setPlacasInputs([]);
+      setPagoDraft(null);
+    }
     setState((s) => ({
       ...s,
-      paso: 3,
+      paso: 4,
       uuid_tipo_subscripcion: parsed.data.uuid_tipo_subscripcion,
+      ...(changed ? { cantidad_vehiculos: undefined, placas: undefined } : {}),
     }));
   };
 
-  const handlePaso3Siguiente = (): void => {
-    // paso 3 = Cantidad -- validate 1..plan.cantidad_maxima_vehiculos,
-    // advance to paso 4 (Placas) with a pre-allocated array of N
-    // empty strings so the placa inputs are immediately mounted.
+  const handlePaso4Siguiente = (): void => {
+    // paso 4 = Cantidad -- validate 1..plan.cantidad_maxima_vehiculos,
+    // advance to paso 5 (Placas) with N inputs. Already typed plates are
+    // preserved by position (PT-1) when the operator comes back here.
     if (!selectedPlan) return;
     const parsed = buildCantidadSchema(selectedPlan.cantidad_maxima_vehiculos)
       .safeParse({ cantidad_vehiculos: cantidadInput });
@@ -394,20 +436,20 @@ export function Venta({
     }
     setCantidadError(null);
     const n = parsed.data.cantidad_vehiculos;
-    setPlacasInputs(new Array(n).fill(''));
+    if (n !== state.cantidad_vehiculos) setPagoDraft(null);
+    setPlacasInputs((prev) => Array.from({ length: n }, (_, i) => prev[i] ?? ''));
     setPlacaGroupError(null);
     setState((s) => ({
       ...s,
-      paso: 4,
+      paso: 5,
       cantidad_vehiculos: n,
-      placas: new Array(n).fill(''),
-      fecha_inicio_cobertura: hoyBogotaISO(),
+      fecha_inicio_cobertura: s.fecha_inicio_cobertura ?? hoyBogotaISO(),
     }));
   };
 
-  const handlePaso4Siguiente = (): void => {
-    // paso 4 = Placas -- validate exactly N placas (N from step 3),
-    // each matching the auto/moto regex. Advance to paso 5 (Pago).
+  const handlePaso5Siguiente = (): void => {
+    // paso 5 = Placas -- validate exactly N placas (N from step 4), each
+    // matching the auto/moto regex AND the vehicle type chosen at step 2.
     const n = state.cantidad_vehiculos ?? 1;
     const parsed = buildPlacasSchema(n).safeParse({ placas: placasInputs });
     if (!parsed.success) {
@@ -415,10 +457,17 @@ export function Venta({
       setPlacasError(issue?.message ?? 'invalid');
       return;
     }
+    const tipoNombre = (selectedTipoVehiculo?.tipo ?? '').trim().toLowerCase();
+    const formatoEsperado =
+      tipoNombre === 'moto' ? PLACA_MOTO : tipoNombre === 'carro' ? PLACA_AUTO : null;
+    if (formatoEsperado && parsed.data.placas.some((p) => !formatoEsperado.test(p))) {
+      setPlacasError('placa_tipo_incompatible');
+      return;
+    }
     setPlacasError(null);
     setState((s) => ({
       ...s,
-      paso: 5,
+      paso: 6,
       placas: parsed.data.placas,
     }));
   };
@@ -428,8 +477,7 @@ export function Venta({
       state.fecha_inicio_cobertura ?? hoyBogotaISO();
     // Ajuste identificación persona natural/empresa: el armado del
     // payload de cliente sale de `buildClienteVentaPayload` (función
-    // pura compartida, `../lib/clienteVentaPayload.ts`) — ya NO se
-    // hardcodea `tipo_identificador: 'NIT'` acá.
+    // pura compartida, `../lib/clienteVentaPayload.ts`).
     const clienteWizard = state.cliente ?? clienteIdent;
     const base = {
       cliente: buildClienteVentaPayload(clienteWizard),
@@ -437,11 +485,11 @@ export function Venta({
       uuid_tipo_subscripcion:
         state.uuid_tipo_subscripcion ?? '',
       fecha_inicio_cobertura,
-      // Genera FE con los datos del cliente del paso 1 -- el toggle
-      // `fe` de PagoModal lo controla en tiempo real. Plan.md §6.2
-      // (F11.3 follow-up) requiere que el `cliente` payload viaje
-      // completo para que el backend pueda emitir la FE sin re-
-      // preguntarle al operador.
+      // The FE is ALWAYS emitted by the backend. `true` bills it to the
+      // subscriber (data captured at step 1); `false`/omitted bills the
+      // standard customer ("consumidor final"). The checkbox of the
+      // payment step only picks WHO is billed -- it no longer decides
+      // whether an FE exists.
       emitir_factura_electronica: values.fe,
     };
     if (values.medio_pago === 'efectivo') {
@@ -488,16 +536,22 @@ export function Venta({
   };
 
   const handlePagoSubmit = async (values: PagoFormValues): Promise<void> => {
+    // PT-1: the sale is final once charged -- never re-send the payment.
+    if (ventaCompletada) return;
     try {
       const result = await trigger(buildVentaPayload(values));
+      setVentaCompletada(true);
       if (result.factura) {
-        // HU-F9.1 bugfix: show the post-pago ticket/factura
-        // confirmation instead of silently navigating away --
-        // `completeVenta()` runs once the operator dismisses the
-        // modal (`handleFacturaDisplayClose`).
+        // Show the post-pago ticket/factura confirmation --
+        // `completeVenta()` runs once the operator dismisses the modal.
         setFacturaDisplay(result.factura);
         setFacturaElectronicaWarning(
-          facturaElectronicaErrorMessage(result.factura_electronica_error, t),
+          feWarningMessage(
+            result.factura_electronica_error ?? result.factura.factura_electronica_error,
+            result.factura_electronica_pendiente ??
+              result.factura.factura_electronica_pendiente,
+            t,
+          ),
         );
         return;
       }
@@ -508,11 +562,8 @@ export function Venta({
         err instanceof VentaSuscripcionTipoIncompatibleError ||
         err instanceof VentaSuscripcionCantidadMaximaError
       ) {
-        // F11.3 follow-up: revert to paso 4 (Placas) so the operator
-        // sees which input was rejected without losing the rest of
-        // the wizard state. For DuplicatePlateError we also highlight
-        // the offending plate position when the server includes it
-        // (today the error is generic; ABBC-F11.3-1 future work).
+        // Revert to the placas step (paso 5) so the operator sees which
+        // input was rejected without losing the rest of the wizard state.
         const msg =
           err instanceof VentaSuscripcionDuplicatePlateError
             ? t('suscripciones:venta.errors.suscripcion_duplicada_placa', {
@@ -527,34 +578,31 @@ export function Venta({
                   defaultValue: 'Cantidad máxima de vehículos excedida',
                 });
         setPlacaGroupError(msg);
-        setState((s) => ({ ...s, paso: 4 }));
+        setState((s) => ({ ...s, paso: 5 }));
       } else {
         throw err;
       }
     }
   };
 
+  const mostrarVolver = !ventaCompletada && (state.paso > 1 || Boolean(onCancel));
+
   return (
-    // F31.3 rediseño: `max-w-2xl mx-auto` — el wizard de 4 pasos
-    // (inputs cortos, cards de plan) se estiraba a todo el ancho en
-    // 4K/ultrawide/21:9. Centrado + acotado se ve bien tanto standalone
-    // (ruta `/suscripciones/venta`) como embebido en `<SuscripcionesSheet>`
-    // (que ya acota su propio ancho — este max-w solo angosta más la
-    // columna del wizard dentro de ese panel, no compite con él).
+    // F31.3 rediseño: `max-w-2xl mx-auto` — wizard centrado y acotado.
     <div className="mx-auto w-full max-w-2xl space-y-4 p-4" data-testid="venta-page">
       {/*
-        Embedded-wizard "Volver" button (visible only when `onCancel`
-        is supplied). Clicking returns the parent to its list view
-        without unmounting Venta's state (the parent uses conditional
-        render). For page-Venta (no onCancel), no back affordance --
-        the operator navigates back via the browser or sidebar.
+        PT-1: one "Volver" for the wizard whose destination depends on the
+        step: step N>1 -> step N-1 (data intact); step 1 -> parent list
+        (only when `onCancel` is supplied; the page route has no back
+        affordance on step 1).
       */}
-      {onCancel && (
+      {mostrarVolver && (
         <button
           type="button"
-          onClick={onCancel}
+          onClick={handleVolver}
+          disabled={isMutating}
           data-testid="venta-volver"
-          className="inline-flex items-center gap-1 rounded-sm text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="inline-flex items-center gap-1 rounded-sm text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
         >
           ← {t('suscripciones:sheet.volver', { defaultValue: 'Volver' })}
         </button>
@@ -563,18 +611,14 @@ export function Venta({
         <h1 className="text-xl font-semibold">
           {t('suscripciones:venta.titulo', { defaultValue: 'Venta de suscripción' })}
         </h1>
+        <p className="text-xs text-muted-foreground" data-testid="venta-progreso">
+          {t('suscripciones:venta.progreso', {
+            paso: state.paso,
+            total: TOTAL_PASOS,
+            defaultValue: 'Paso {{paso}} de {{total}}',
+          })}
+        </p>
       </header>
-      {/*
-        PagoModal composition (REQ-OPS-180, OD-2 ratified):
-        step 4 reuses F8.1 `<PagoModal />` from
-        `../../facturacion/components/PagoModal`. PagoModal owns
-        vueltos live + FE con datos + NIT módulo 11 validation —
-        no duplicate UI in the wizard. `total_cop = plan.valor`
-        so vueltos live reflects the actual charge
-        (informational; authoritative amount is `factura_detalle.valor_unitario`).
-        On pago 201, `handlePagoSubmit` calls `trigger` + navigates
-        to `/suscripciones` (F9.2 list).
-      */}
 
       {state.paso === 1 && (
         <section className="space-y-3" data-testid="venta-paso-1">
@@ -592,31 +636,99 @@ export function Venta({
             data-testid="venta-paso-1-siguiente"
             onClick={handlePaso1Siguiente}
           >
-            Siguiente
+            {t('suscripciones:venta.siguiente', { defaultValue: 'Siguiente' })}
           </Button>
         </section>
       )}
 
       {state.paso === 2 && (
         <section className="space-y-3" data-testid="venta-paso-2">
-          <h2 className="text-lg">
-            {t('suscripciones:venta.paso2.titulo', { defaultValue: 'Plan' })}
+          <h2 className="text-lg" id="venta-paso-2-titulo">
+            {t('suscripciones:venta.paso2.titulo', { defaultValue: 'Tipo de vehículo' })}
           </h2>
+          <p className="text-sm text-muted-foreground">
+            {t('suscripciones:venta.paso2.descripcion', {
+              defaultValue: 'Elegí el tipo de vehículo: solo verás los planes que le corresponden.',
+            })}
+          </p>
+          {tiposFromFallback && (
+            <p
+              role="alert"
+              className="text-sm text-destructive"
+              data-testid="venta-paso-2-tipos-error"
+            >
+              {t('suscripciones:venta.paso2.tiposError', {
+                defaultValue: 'No se pudo cargar el catálogo de tipos de vehículo. Intentá de nuevo.',
+              })}
+            </p>
+          )}
+          {!tiposFromFallback && (
+            <div
+              role="radiogroup"
+              aria-labelledby="venta-paso-2-titulo"
+              className="grid grid-cols-2 gap-2"
+              data-testid="venta-paso-2-tipos"
+            >
+              {tiposVehiculo.map((tv) => {
+                const selected = tipoVehiculoInput === tv.uuid;
+                return (
+                  <button
+                    key={tv.uuid}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    data-testid={`venta-tipo-vehiculo-${tv.uuid}`}
+                    onClick={() => setTipoVehiculoInput(tv.uuid)}
+                    className={
+                      'rounded border p-3 text-sm font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ' +
+                      (selected
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border hover:bg-muted/50')
+                    }
+                  >
+                    {tv.tipo}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <Button
+            type="button"
+            data-testid="venta-paso-2-siguiente"
+            onClick={handlePaso2Siguiente}
+            disabled={!tipoVehiculoInput}
+          >
+            {t('suscripciones:venta.siguiente', { defaultValue: 'Siguiente' })}
+          </Button>
+        </section>
+      )}
+
+      {state.paso === 3 && (
+        <section className="space-y-3" data-testid="venta-paso-3">
+          <h2 className="text-lg">
+            {t('suscripciones:venta.paso3.titulo', { defaultValue: 'Plan' })}
+          </h2>
+          {selectedTipoVehiculo && (
+            <p className="text-xs text-muted-foreground" data-testid="venta-paso-3-tipo">
+              {t('suscripciones:venta.paso3.tipoElegido', {
+                tipo: selectedTipoVehiculo.tipo,
+                defaultValue: 'Planes para: {{tipo}}',
+              })}
+            </p>
+          )}
 
           {/*
-            Plan catalog from `GET /api/v1/catalogos/tipo-subscripciones`.
-            Operator picks the plan they want to subscribe to -- the
-            selected plan's `uuid` flows into
-            `state.uuid_tipo_subscripcion` and its
-            `cantidad_maxima_vehiculos` caps the next step's quantity
-            input. The plan valor drives the payment total in step 5.
+            Plan catalog from `GET /api/v1/catalogos/tipo-subscripciones`
+            filtered by the vehicle type picked at step 2 (the backend adds
+            the plans valid for any type). The selected plan's
+            `cantidad_maxima_vehiculos` caps the next step's quantity input.
           */}
           {planesLoading && (
             <p
               className="text-sm text-muted-foreground"
-              data-testid="venta-paso-2-loading"
+              data-testid="venta-paso-3-loading"
             >
-              {t('suscripciones:venta.paso2.loading', {
+              {t('suscripciones:venta.paso3.loading', {
                 defaultValue: 'Cargando planes…',
               })}
             </p>
@@ -625,9 +737,9 @@ export function Venta({
             <p
               role="alert"
               className="text-sm text-destructive"
-              data-testid="venta-paso-2-error"
+              data-testid="venta-paso-3-error"
             >
-              {t('suscripciones:venta.paso2.error', {
+              {t('suscripciones:venta.paso3.error', {
                 defaultValue:
                   'No se pudieron cargar los planes para esta sede.',
               })}
@@ -636,17 +748,17 @@ export function Venta({
           {planes && planes.length === 0 && !planesLoading && (
             <p
               className="text-sm text-muted-foreground"
-              data-testid="venta-paso-2-empty"
+              data-testid="venta-paso-3-empty"
             >
-              {t('suscripciones:venta.paso2.empty', {
-                defaultValue: 'No hay planes configurados para esta sede.',
+              {t('suscripciones:venta.paso3.empty', {
+                defaultValue: 'No hay planes configurados para este tipo de vehículo en esta sede.',
               })}
             </p>
           )}
           {planes && planes.length > 0 && (
             <ul
               className="space-y-2"
-              data-testid="venta-paso-2-planes"
+              data-testid="venta-paso-3-planes"
             >
               {planes.map((p) => {
                 const selected = planInput === p.uuid;
@@ -675,7 +787,7 @@ export function Venta({
                       <div className="min-w-0 flex-1">
                         <div className="break-words font-medium">{p.tipo}</div>
                         <div className="break-words text-xs text-muted-foreground">
-                          {t('suscripciones:venta.paso2.duracion', {
+                          {t('suscripciones:venta.paso3.duracion', {
                             dias: p.duracion_dias,
                             vehiculos: p.cantidad_maxima_vehiculos,
                             defaultValue: `{{dias}} días · máx {{vehiculos}} vehículo(s)`,
@@ -696,31 +808,37 @@ export function Venta({
           )}
           <Button
             type="button"
-            data-testid="venta-paso-2-siguiente"
-            onClick={handlePaso2Siguiente}
+            data-testid="venta-paso-3-siguiente"
+            onClick={handlePaso3Siguiente}
             disabled={!planInput}
           >
-            Siguiente
+            {t('suscripciones:venta.siguiente', { defaultValue: 'Siguiente' })}
           </Button>
         </section>
       )}
 
-      {state.paso === 3 && (
-        <section className="space-y-3" data-testid="venta-paso-3">
+      {state.paso === 4 && (
+        <section className="space-y-3" data-testid="venta-paso-4">
           <h2 className="text-lg">
-            {t('suscripciones:venta.paso3.titulo', {
+            {t('suscripciones:venta.paso4.titulo', {
               defaultValue: 'Cantidad de vehículos',
             })}
           </h2>
           <p className="text-sm text-muted-foreground">
             {selectedPlan
-              ? t('suscripciones:venta.paso3.descripcion', {
+              ? t('suscripciones:venta.paso4.descripcion', {
                   max: selectedPlan.cantidad_maxima_vehiculos,
                   defaultValue: `Este plan permite hasta ${selectedPlan.cantidad_maxima_vehiculos} vehículo(s). ¿Cuántos vas a registrar?`,
                 })
               : null}
           </p>
+          <label className="sr-only" htmlFor="venta-cantidad-input">
+            {t('suscripciones:venta.paso4.titulo', {
+              defaultValue: 'Cantidad de vehículos',
+            })}
+          </label>
           <Input
+            id="venta-cantidad-input"
             type="text"
             inputMode="decimal"
             data-testid="venta-cantidad-input"
@@ -746,19 +864,19 @@ export function Venta({
           )}
           <Button
             type="button"
-            data-testid="venta-paso-3-siguiente"
-            onClick={handlePaso3Siguiente}
-            disabled={cantidadInput === ''}
+            data-testid="venta-paso-4-siguiente"
+            onClick={handlePaso4Siguiente}
+            disabled={cantidadInput === '' || !selectedPlan}
           >
-            Siguiente
+            {t('suscripciones:venta.siguiente', { defaultValue: 'Siguiente' })}
           </Button>
         </section>
       )}
 
-      {state.paso === 4 && (
-        <section className="space-y-3" data-testid="venta-paso-4">
+      {state.paso === 5 && (
+        <section className="space-y-3" data-testid="venta-paso-5">
           <h2 className="text-lg">
-            {t('suscripciones:venta.paso4.titulo', { defaultValue: 'Placas' })}
+            {t('suscripciones:venta.paso5.titulo', { defaultValue: 'Placas' })}
           </h2>
           {placaGroupError && (
             <p
@@ -776,7 +894,7 @@ export function Venta({
                   className="text-xs text-muted-foreground"
                   htmlFor={`venta-placa-input-${i}`}
                 >
-                  {t('suscripciones:venta.paso4.vehiculoLabel', {
+                  {t('suscripciones:venta.paso5.vehiculoLabel', {
                     n: i + 1,
                     defaultValue: `Vehículo ${i + 1}`,
                   })}
@@ -813,75 +931,59 @@ export function Venta({
               className="text-sm text-destructive"
               role="alert"
             >
-              {placasError}
+              {placasError === 'placa_tipo_incompatible'
+                ? t('suscripciones:venta.errors.placa_tipo_incompatible', {
+                    tipo: selectedTipoVehiculo?.tipo ?? '',
+                    defaultValue: `La placa no corresponde al tipo de vehículo elegido (${selectedTipoVehiculo?.tipo ?? ''}).`,
+                  })
+                : placasError}
             </span>
           )}
           <Button
             type="button"
-            data-testid="venta-paso-4-siguiente"
-            onClick={handlePaso4Siguiente}
+            data-testid="venta-paso-5-siguiente"
+            onClick={handlePaso5Siguiente}
             disabled={placasInputs.some((p) => p === '')}
           >
-            Siguiente
+            {t('suscripciones:venta.siguiente', { defaultValue: 'Siguiente' })}
           </Button>
         </section>
       )}
 
-      {state.paso === 5 && (
-        <section className="space-y-3" data-testid="venta-paso-5">
+      {state.paso === 6 && !ventaCompletada && (
+        <section className="space-y-3" data-testid="venta-paso-6">
           <h2 className="text-lg">
-            {t('suscripciones:venta.paso5.titulo', { defaultValue: 'Pago' })}
+            {t('suscripciones:venta.paso6.titulo', { defaultValue: 'Pago' })}
           </h2>
           {/*
-            PagoModal composition (REQ-OPS-180, OD-2 ratified):
-            step 5 reuses F8.1 `<PagoModal />` from
-            `../../facturacion/components/PagoModal`. PagoModal owns
-            vueltos live + FE con datos + NIT módulo 11 validation.
-            `clientePrefill` carries step-1 tipo_persona/tipo_identificador/
-            numero/nombre/apellido into the PagoModal form. `fe: true`
-            flips the "Generar factura
-            electrónica" toggle ON at step 5 entry -- operator can
-            still untick for a no-FE sale. `total_cop =
-            plan.valor` so vueltos live
-            reflects the actual charge (informational; authoritative
-            amount is `factura_detalle.valor_unitario`). On pago 201,
-            `handlePagoSubmit` calls `trigger` with
-            `emitir_factura_electronica: values.fe` and either
-            navigates to /suscripciones (page route) or fires the
-            parent's `onSuccess` (embedded drawer).
-
-            `identificacionReadonly` (fix 2026-09-25, decisión del
-            operador): `buildVentaPayload` arma `cliente` EXCLUSIVAMENTE
-            desde `state.cliente` (paso 1) -- el bloque de identificación
-            que `<PagoModal>` muestra acá es puramente decorativo, así
-            que se deshabilita (valores fijados por `clientePrefill`) en
-            vez de dejarlo editable y bloquear el submit con una
-            validación de DV sobre un valor que después se descarta.
+            PagoModal composition (REQ-OPS-180): reuses F8.1 `<PagoModal />`.
+            `clientePrefill` carries the step-1 cliente; `identificacionReadonly`
+            because `buildVentaPayload` builds `cliente` ONLY from step 1.
+            `draft`/`onDraftChange` (PT-1) keep what the operator typed (medio
+            de pago, monto, voucher, ...) when stepping back and returning.
+            The FE is always emitted: the checkbox only chooses to bill the
+            subscriber instead of "consumidor final".
           */}
           <PagoModal
             uuid_ingreso={null}
             total_cop={selectedPlan?.valor ?? PLAN_PREVIEW_VALOR}
-            clientePrefill={{
-              nit: state.cliente?.numero_identificacion ?? '',
-              nombre: state.cliente?.nombre ?? '',
-              email: '',
-              fe: true,
-              tipo_persona: state.cliente?.tipo_persona ?? 'empresa',
-              tipo_identificador: state.cliente?.tipo_identificador ?? 'NIT',
-              apellido: state.cliente?.apellido ?? '',
-            }}
+            clientePrefill={clientePrefill}
             identificacionReadonly
+            draft={pagoDraft}
+            onDraftChange={setPagoDraft}
+            feCheckboxLabel={t('suscripciones:venta.paso6.feSuscriptor', {
+              defaultValue: 'Facturar a nombre del suscriptor (opcional)',
+            })}
             onSubmit={handlePagoSubmit}
           />
           {isMutating && <span data-testid="venta-mutating">Procesando…</span>}
         </section>
       )}
       {/*
-        HU-F9.1 bugfix (2026-09-25): post-pago confirmation -- shows the
-        full breakdown (mirrors HU-F8.4 `<FacturaDisplayModal />`) and
-        fires the recibo print envelope on dismiss. Mounted unconditionally
-        (like `<SalidaMensualidad />`'s copy) so the close animation plays;
-        it renders nothing while `facturaDisplay` is `null`.
+        Post-pago confirmation -- full breakdown (mirrors HU-F8.4
+        `<FacturaDisplayModal />`) and the recibo print on dismiss. Mounted
+        unconditionally so the close animation plays; renders nothing while
+        `facturaDisplay` is `null`. Shows the FE state (emitted / pending).
       */}
       <FacturaDisplayModal
         factura={facturaDisplay}

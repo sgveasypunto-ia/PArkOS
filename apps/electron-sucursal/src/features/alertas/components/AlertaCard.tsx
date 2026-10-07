@@ -53,7 +53,9 @@ export function AlertaCard({ alert }: AlertaCardProps): JSX.Element {
           {t(`alertas:severidad.${sev}`, { defaultValue: sev })}
         </span>
         <span className="break-words text-xs uppercase tracking-wide text-muted-foreground">
-          {alert.tipo_alerta ?? 'desconocido'}
+          {alert.tipo_alerta
+            ? t(`alertas:tipo.${alert.tipo_alerta}`, { defaultValue: alert.tipo_alerta })
+            : 'desconocido'}
         </span>
       </div>
       <p className="break-words text-sm font-medium">{alert.mensaje}</p>

@@ -3,7 +3,7 @@
  * subscription plans. Drives step 3 of the `<Venta />` wizard so the
  * operator no longer types a plan UUID by hand.
  *
- * Calls `GET /api/v1/tipos-subscripciones?uuid_sucursal=X` via
+ * Calls `GET /api/v1/catalogos/tipo-subscripciones?uuid_sucursal=X[&uuid_tipo_vehiculo=Y]` via
  * parkosFetch + `TipoSubscripcionArraySchema.parse` (Zod mirror of
  * the backend `TipoSubscripcionesRead` Pydantic schema). Reuses the
  * authStore access-token gate so the SWR key is `null` while
@@ -26,13 +26,21 @@ import {
   TipoSubscripcionListSchema,
 } from '../api/ventaSuscripcionApi';
 
+function buildUrl(uuid_sucursal: string, uuid_tipo_vehiculo: string | null): string {
+  const base = `${GET_TIPOS_SUBSCRIPCION_PATH}?uuid_sucursal=${encodeURIComponent(uuid_sucursal)}`;
+  // PT-2: the backend returns the plans of that vehicle type plus the ones
+  // with a NULL type (valid for any vehicle).
+  return uuid_tipo_vehiculo
+    ? `${base}&uuid_tipo_vehiculo=${encodeURIComponent(uuid_tipo_vehiculo)}`
+    : base;
+}
+
 async function fetchTiposSubscripciones(
   uuid_sucursal: string,
+  uuid_tipo_vehiculo: string | null,
 ): Promise<TipoSubscripcion[]> {
   const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-  const raw = await parkosFetch<unknown>(
-    `${GET_TIPOS_SUBSCRIPCION_PATH}?uuid_sucursal=${encodeURIComponent(uuid_sucursal)}`,
-  );
+  const raw = await parkosFetch<unknown>(buildUrl(uuid_sucursal, uuid_tipo_vehiculo));
   // Catalog endpoints wrap the rows in `{ items, next_cursor }` per
   // the F1.12 cursor-pagination contract. Unwrap to the bare array
   // for SWR consumers + downstream callers.
@@ -46,18 +54,25 @@ export interface UseTiposSubscripcionesResult {
   refresh: () => Promise<TipoSubscripcion[] | undefined>;
 }
 
+/**
+ * `uuid_tipo_vehiculo`: `undefined` = unfiltered (legacy callers); a string =
+ * only plans of that vehicle type (+ type-agnostic ones); `null` = the
+ * caller has not chosen a type yet, so nothing is fetched (never show
+ * plans of the wrong type).
+ */
 export function useTiposSubscripciones(
   uuid_sucursal: string | null,
+  uuid_tipo_vehiculo?: string | null,
 ): UseTiposSubscripcionesResult {
   const accessToken = useAuthStore((s) => s.accessToken);
+  const tipoVehiculo = uuid_tipo_vehiculo ?? null;
+  const gated = uuid_tipo_vehiculo === null;
   const key =
-    uuid_sucursal && accessToken
-      ? `${GET_TIPOS_SUBSCRIPCION_PATH}?uuid_sucursal=${uuid_sucursal}`
-      : null;
+    uuid_sucursal && accessToken && !gated ? buildUrl(uuid_sucursal, tipoVehiculo) : null;
 
   const { data, error, isLoading, mutate } = useSWR<TipoSubscripcion[]>(
     key,
-    () => fetchTiposSubscripciones(uuid_sucursal as string),
+    () => fetchTiposSubscripciones(uuid_sucursal as string, tipoVehiculo),
     {
       dedupingInterval: 30_000,
       shouldRetryOnError: (err) => {

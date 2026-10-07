@@ -18,14 +18,26 @@ import {
   putQuitarVehiculoPath,
   type SubscripcionCupoDetalle,
 } from '../api/cuposApi';
-import { CuposVehiculoInscritoNoEncontradoError } from './cuposErrors';
+import {
+  CuposVehiculoInscritoNoEncontradoError,
+  mapCuposHttpError,
+  type CuposContextoSucursalError,
+  type CuposPermisoDenegadoError,
+  type CuposSubscripcionNoEncontradaError,
+} from './cuposErrors';
 
 export { CuposVehiculoInscritoNoEncontradoError } from './cuposErrors';
 
 export interface UseQuitarVehiculoSuscripcionReturn {
   trigger: (uuidSubscripcionVehiculo: string) => Promise<SubscripcionCupoDetalle>;
   isMutating: boolean;
-  error: ParkosHttpError | CuposVehiculoInscritoNoEncontradoError | undefined;
+  error:
+    | ParkosHttpError
+    | CuposVehiculoInscritoNoEncontradoError
+    | CuposPermisoDenegadoError
+    | CuposContextoSucursalError
+    | CuposSubscripcionNoEncontradaError
+    | undefined;
   data: SubscripcionCupoDetalle | undefined;
 }
 
@@ -45,7 +57,7 @@ async function mutateFn(
   const idempotencyKey = await buildIdempotencyKey({
     method: 'PUT',
     path,
-    body: {},
+    body: { intento: crypto.randomUUID() },
   });
 
   try {
@@ -53,6 +65,7 @@ async function mutateFn(
     const raw = await parkosFetch<unknown>(path, {
       method: 'PUT',
       headers: { 'Idempotency-Key': idempotencyKey },
+      skipIdempotencyKey: true,
     });
     return SubscripcionCupoDetalleSchema.parse(raw);
   } catch (err) {
@@ -60,6 +73,8 @@ async function mutateFn(
       if (err.status === 401) {
         return handle401(path);
       }
+      const mapped = mapCuposHttpError(err.status, err.body);
+      if (mapped) throw mapped;
       if (err.status === 404) {
         throw new CuposVehiculoInscritoNoEncontradoError();
       }

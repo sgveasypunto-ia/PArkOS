@@ -46,6 +46,10 @@ export const SubscripcionActivaItemSchema = z.object({
   fecha_vencimiento: z.string().nullable(),
   cupo_maximo: z.number().nullable(),
   vehiculos_inscritos: z.number(),
+  // PT-3: computed server-side from Bogota's today (the UI never recalculates
+  // dates). Optional so an older backend degrades to 'no renew action'.
+  dias_restantes: z.number().nullable().optional(),
+  puede_renovar: z.boolean().optional().default(false),
 });
 export type SubscripcionActivaItem = z.infer<typeof SubscripcionActivaItemSchema>;
 
@@ -62,6 +66,8 @@ export const SubscripcionCupoDetalleSchema = z.object({
   cupo_maximo: z.number().nullable(),
   cupo_disponible: z.number().nullable(),
   vehiculos: z.array(VehiculoInscritoSchema),
+  dias_restantes: z.number().nullable().optional(),
+  puede_renovar: z.boolean().optional().default(false),
 });
 export type SubscripcionCupoDetalle = z.infer<typeof SubscripcionCupoDetalleSchema>;
 

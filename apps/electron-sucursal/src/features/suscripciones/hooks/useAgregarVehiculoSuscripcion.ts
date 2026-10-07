@@ -21,9 +21,14 @@ import {
 } from '../api/cuposApi';
 import {
   CuposCantidadMaximaError,
+  CuposContextoSucursalError,
+  CuposPermisoDenegadoError,
+  CuposPlacaConSuscripcionActivaError,
   CuposSubscripcionNoEncontradaError,
   CuposTipoIncompatibleError,
+  CuposTipoPlanIncompatibleError,
   CuposVehiculoYaInscritoError,
+  mapCuposHttpError,
 } from './cuposErrors';
 
 export {
@@ -42,6 +47,10 @@ export interface UseAgregarVehiculoSuscripcionReturn {
     | CuposVehiculoYaInscritoError
     | CuposTipoIncompatibleError
     | CuposCantidadMaximaError
+    | CuposPermisoDenegadoError
+    | CuposContextoSucursalError
+    | CuposPlacaConSuscripcionActivaError
+    | CuposTipoPlanIncompatibleError
     | undefined;
   data: SubscripcionCupoDetalle | undefined;
 }
@@ -54,33 +63,6 @@ async function handle401(): Promise<never> {
   throw new ParkosHttpError(401, '{"error":"unauthorized"}', POST_AGREGAR_VEHICULO_PATH);
 }
 
-interface BackendErrorBody {
-  error?: string;
-  placa?: string;
-  tipos_encontrados?: string[];
-  cantidad_maxima_vehiculos?: number;
-}
-
-/**
- * FastAPI's `HTTPException(status_code=422, detail={"error": ...})`
- * serializes to `{"detail": {"error": ...}}` on the wire -- the typed
- * fields live under `.detail`, never at the top level. Real bug found
- * live 2026-09-24 (first time this handler was ever reachable over real
- * HTTP -- the previous double-prefix routing bug made it 404 forever):
- * reading `parsed.error` directly always returned `undefined`, so every
- * 404/409/422 silently fell through to the generic `ParkosHttpError`
- * instead of its typed subclass. Falls back to the top-level object for
- * robustness in case a future endpoint ever returns an unwrapped body.
- */
-function parseBackendErrorBody(body: string): BackendErrorBody | null {
-  try {
-    const parsed = JSON.parse(body) as { detail?: BackendErrorBody } & BackendErrorBody;
-    return parsed.detail ?? parsed;
-  } catch {
-    return null;
-  }
-}
-
 async function mutateFn(
   _key: string,
   { arg }: { arg: AgregarVehiculoCupoRequest },
@@ -88,7 +70,9 @@ async function mutateFn(
   const idempotencyKey = await buildIdempotencyKey({
     method: 'POST',
     path: POST_AGREGAR_VEHICULO_PATH,
-    body: arg,
+    // Per-attempt nonce: add -> remove -> add of the same plate must NOT replay
+    // the cached 201 of the first add (the middleware caches by key for 24h).
+    body: { ...arg, intento: crypto.randomUUID() },
   });
 
   try {
@@ -97,6 +81,7 @@ async function mutateFn(
       method: 'POST',
       body: JSON.stringify(arg),
       headers: { 'Idempotency-Key': idempotencyKey },
+      skipIdempotencyKey: true,
     });
     return SubscripcionCupoDetalleSchema.parse(raw);
   } catch (err) {
@@ -104,20 +89,8 @@ async function mutateFn(
       if (err.status === 401) {
         return handle401();
       }
-      const parsed = parseBackendErrorBody(err.body);
-      const code = parsed?.error;
-      if (err.status === 404 && code === 'subscripcion_no_encontrada') {
-        throw new CuposSubscripcionNoEncontradaError();
-      }
-      if (err.status === 409 && code === 'vehiculo_ya_inscrito') {
-        throw new CuposVehiculoYaInscritoError(parsed?.placa ?? arg.placa);
-      }
-      if (err.status === 422 && code === 'tipo_vehiculo_incompatible') {
-        throw new CuposTipoIncompatibleError(parsed?.tipos_encontrados ?? []);
-      }
-      if (err.status === 422 && code === 'cantidad_maxima_excedida') {
-        throw new CuposCantidadMaximaError(parsed?.cantidad_maxima_vehiculos ?? 0);
-      }
+      const mapped = mapCuposHttpError(err.status, err.body, arg.placa);
+      if (mapped) throw mapped;
     }
     throw err;
   }

@@ -4,9 +4,9 @@
  *
  * Drift anchors resolved by these schemas:
  *   - DA-F11.2-1: BE `AlertaRead` returns 18 fields; FE MUST align.
- *   - DA-F11.2-9: state vocabulary `Literal["activa", "descartada",
- *     "resuelta"]` per BE Pydantic (`schemas/workflows.py:377`);
- *     legacy `abierta` / `cerrada` are FORBIDDEN.
+ *   - DA-F11.2-9 (corrected): state vocabulary `Literal["abierta", "en_revision",
+ *     "resuelta"]` per BE Pydantic (`schemas/workflows.py`, `AlertaRead`);
+ *     `GET /workflows/alerta?estado=activa` answers 422 -- never send it.
  *   - DA-F11.2-14: `datos_nuevos: z.record(z.unknown()).nullable().optional()`
  *     so the schema parses today's BE response (column absent) and
  *     gracefully picks up the JSONB once ABBC-F11.2-BE-1 lands.
@@ -19,7 +19,7 @@
  */
 import { z } from 'zod';
 
-export const ALERTA_ESTADO = ['activa', 'descartada', 'resuelta'] as const;
+export const ALERTA_ESTADO = ['abierta', 'en_revision', 'resuelta'] as const;
 export type AlertaEstado = (typeof ALERTA_ESTADO)[number];
 
 export const AlertaSchema = z
@@ -36,7 +36,8 @@ export const AlertaSchema = z
     uuid_arqueo: z.string().uuid().nullable(),
     tipo_alerta: z.string().nullable(),
     valor_diferencia_efectivo: z.union([z.string(), z.number()]).nullable(),
-    valor_diferencia_datafono: z.union([z.string(), z.number()]).nullable(),
+    // Removed from the backend wire schema (F12.1.1); optional so both shapes parse.
+    valor_diferencia_datafono: z.union([z.string(), z.number()]).nullable().optional(),
     uuid_alerta_padre: z.string().uuid().nullable(),
     timestamp_evento: z.string().nullable(),
     vigente_desde: z.string().nullable(),

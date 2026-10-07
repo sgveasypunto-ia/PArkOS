@@ -4,10 +4,11 @@
  * F6.2 / F7.1 / F7.3 pattern.
  *
  * Scenarios (deferred to F8.2 integration sprint):
- *   S1 — PagoSheet 201 with `factura_electronica.uuid` →
- *        `navigate('/factura-electronica/<uuid>')` fires →
- *        `<FacturaDetalle />` mounts at `/factura-electronica/:uuid`
- *        with `useParams().uuid` from the URL (REQ-OPS-167 + REQ-OPS-169).
+ *   S1 — (superseded) the FE is ALWAYS emitted by the backend after the
+ *        charge: PagoSheet 201 shows the FE state inside the receipt and
+ *        does NOT navigate away nor call POST /facturacion/factura-electronica
+ *        (asserted in PagoSheet.test.tsx P11/P12). `<FacturaDetalle />` stays
+ *        reachable at `/factura-electronica/:uuid` (REQ-OPS-167).
  *   S2 — `useFacturaElectronica` polling is active while
  *        `estado_dian='pendiente'|'enviado'` (30 s interval) and stops
  *        when `estado_dian` becomes terminal (`aceptado`|`rechazado`)
@@ -30,10 +31,9 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('HU-F8.2 — FacturaDetalle routed page + FE retry chain', () => {
-  test('S1 (stub) — pago 201 → navigate(/factura-electronica/<uuid>) → FacturaDetalle mounts with useParams().uuid', async () => {
-    // Stub — covered in F8.2 integration sprint.
-    // Hook tested in: FacturaDetalle.test.tsx T4 (click Reintentar → trigger called).
-    // PagoSheet navigate wired in PagoSheet.tsx (defensive typeof narrow on z.unknown()).
+  test('S1 (stub) — pago 201 → recibo con estado de FE (sin navegar, sin POST /factura-electronica)', async () => {
+    // Covered in PagoSheet.test.tsx P11 (no navigate, no FE POST) and P12
+    // (pending notice). FacturaDetalle.test.tsx T4 covers Reintentar.
     expect(true).toBe(true);
   });
 

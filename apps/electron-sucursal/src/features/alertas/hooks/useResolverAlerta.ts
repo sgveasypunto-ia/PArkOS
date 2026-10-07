@@ -77,10 +77,10 @@ export function useResolverAlerta(): UseResolverAlertaResult {
           body: JSON.stringify(payload),
         });
         // Invalidate the SWR cache so the panel re-fetches and the
-        // resolved alert disappears (the panel queries `?estado=activa`).
+        // resolved alert disappears (the panel queries `?estado=abierta`).
         await mutate(
           (key) =>
-            typeof key === 'string' && key.includes('/workflows/alerta') && key.includes('estado=activa'),
+            typeof key === 'string' && key.includes('/workflows/alerta') && key.includes('estado=abierta'),
         );
         return res;
       } catch (err) {

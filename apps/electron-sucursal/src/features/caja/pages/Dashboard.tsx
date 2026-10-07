@@ -87,6 +87,7 @@ import { useResumenCierrePendiente } from '../hooks/useResumenCierrePendiente';
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { CuposLibresStrip } from '../../operacion/components/CuposLibresStrip';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
+import { ProximasVencerBanner } from '../../suscripciones/components/ProximasVencerBanner';
 import { SyncStatusBadge } from '../../sync/components/SyncStatusBadge';
 import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
@@ -561,6 +562,10 @@ export function Dashboard(): JSX.Element | null {
           lang="es-CO"
           className="row-start-2 col-start-1 min-w-0 flex flex-col gap-3 overflow-y-auto p-[clamp(0.75rem,1.5vw,1.5rem)] md:col-start-2"
         >
+          {/* PT-3: aviso de suscripciones próximas a vencer (feed del backend);
+              no renderiza nada si no hay avisos. */}
+          <ProximasVencerBanner uuid_sucursal={uuid_sucursal} />
+
           {/* `placa-card` — ancho acotado (48rem) hasta 2xl (1536px) para
               que en laptop/desktop no se vea desproporcionado; en pantallas
               grandes (2xl+) el operador pidió que ocupe el ancho completo

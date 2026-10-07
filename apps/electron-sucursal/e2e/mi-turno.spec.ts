@@ -84,7 +84,7 @@ async function stubAuth(page: Page): Promise<void> {
       }),
     }),
   );
-  await page.route('**/api/v1/suscripciones/proximas-vencer**', (route) =>
+  await page.route('**/api/v1/clientes/subscripciones/proximas-vencer**', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',

@@ -177,8 +177,43 @@ describe('<FacturaDisplayModal /> — HU-F8.4', () => {
     render(<FacturaDisplayModal factura={withFe} onClose={vi.fn()} />);
     const fe = screen.getByTestId('factura-display-fe');
     expect(fe.textContent).toContain('SETP42');
-    expect(fe.textContent).toContain('aceptado');
+    expect(fe.textContent).toContain('Factura electrónica');
+    expect(fe.textContent).toContain('Aceptada por la DIAN');
     expect(fe.textContent).toContain('abc123');
+  });
+
+  it('D6 (FE siempre): emitida con estado DIAN pendiente -> se muestra el estado y NO hay aviso', () => {
+    const emitida: FacturaRead = {
+      ...BASE_FACTURA,
+      factura_electronica: { uuid: 'fe-2', prefijo: 'SETP', consecutivo: 7, estado_dian: 'pendiente', cufe: null },
+    };
+    render(<FacturaDisplayModal factura={emitida} onClose={vi.fn()} />);
+    expect(screen.getByTestId('factura-display-fe').textContent).toContain('pendiente de la DIAN');
+    expect(screen.queryByTestId('factura-display-warning')).toBeNull();
+  });
+
+  it('D7 (FE siempre): emisión fallida -> aviso no bloqueante "se reintenta sola" y se puede cerrar/reimprimir', () => {
+    const fallida: FacturaRead = {
+      ...BASE_FACTURA,
+      factura_electronica: null,
+      factura_electronica_error: 'resolucion_facturacion_no_encontrada',
+      factura_electronica_pendiente: true,
+    };
+    const onClose = vi.fn();
+    render(<FacturaDisplayModal factura={fallida} onClose={onClose} />);
+    const warning = screen.getByTestId('factura-display-warning');
+    expect(warning.textContent).toMatch(/pendiente, se reintenta sola/i);
+    expect(warning.textContent).toMatch(/resolución de facturación/);
+    // The receipt stays fully usable.
+    expect(screen.getByTestId('factura-display-total')).toBeDefined();
+    screen.getByTestId('factura-display-cerrar').click();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('D8: an explicit `warning` prop wins over the derived one', () => {
+    const fallida: FacturaRead = { ...BASE_FACTURA, factura_electronica_pendiente: true };
+    render(<FacturaDisplayModal factura={fallida} onClose={vi.fn()} warning="aviso del caller" />);
+    expect(screen.getByTestId('factura-display-warning').textContent).toBe('aviso del caller');
   });
 
   it('D5: "Cerrar" click → onClose fires', () => {

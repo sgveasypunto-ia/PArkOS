@@ -61,6 +61,12 @@ export interface AuthUser {
    */
   nombre?: string | null;
   apellido?: string | null;
+  /**
+   * PT-2: backend role (`operador`, `Supervisor`, ...). Informational only —
+   * the UI gates features on `permisos` (e.g. `gestionar_placas_suscripcion`),
+   * never on this string; the backend is the authority.
+   */
+  rol?: string | null;
 }
 
 export interface SucursalItem {

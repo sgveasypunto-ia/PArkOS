@@ -177,6 +177,15 @@ export async function runCerrarTurnoChain(args: {
     valor_efectivo_reportado: number;
     observaciones_cierre?: string;
   };
+  /**
+   * Backend pre-flight verdict (`useRequiereJustificacion`). When `true` the
+   * motivo (Observaciones) goes in the FIRST `POST /caja/arqueo` as
+   * `justificacion` -- avoids the 400 `justificacion_requerida` round-trip.
+   * When `false`/absent the first POST carries none (a balanced close must not
+   * store one, REQ-OPS-157); the 400 -> retry-once fallback stays for the race
+   * between the pre-flight and the real POST.
+   */
+  requiereJustificacion?: boolean;
 }): Promise<CerrarTurnoChainResult> {
   // 1. POST /caja/arqueo FIRST (REQ-OPS-157). On ANY error here we
   // ABORT — no PUT call, no bridge.imprimir.
@@ -193,15 +202,17 @@ export async function runCerrarTurnoChain(args: {
         }),
       );
     const motivo = (args.values.observaciones_cierre ?? '').trim();
+    const motivoEnPrimerPost = args.requiereJustificacion === true && motivo !== '';
     try {
       // First attempt carries NO justificacion: a balanced close must not
       // store one. A difference makes the backend answer 400 and we retry
       // ONCE with the operator's Observaciones as the motivo (the body
       // differs, so the Idempotency-Key does too).
-      arqueoResult = await submitWith(false);
+      arqueoResult = await submitWith(motivoEnPrimerPost);
     } catch (firstErr) {
       if (
         motivo !== '' &&
+        !motivoEnPrimerPost &&
         firstErr instanceof ParkosHttpError &&
         firstErr.status === 400 &&
         parseBackendErrorCode(firstErr.body) === 'justificacion_requerida'

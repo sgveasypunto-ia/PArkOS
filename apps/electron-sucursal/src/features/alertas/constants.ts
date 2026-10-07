@@ -26,7 +26,37 @@ export const BUSINESS_ALERT_CODES: ReadonlySet<string> = new Set<string>([
   'reimpresion_excesiva',
   'fallo_conexion_local',
   'diferencia_datafono',
+  // Emitted by the backend after PT-2 / the always-on electronic invoice.
+  'fe_emision_fallida',
+  'suscripcion_placa_agregada',
+  'suscripcion_placa_quitada',
 ]);
+
+/**
+ * Operator-facing label per business code. Used when `alert-types` does not
+ * carry a row for the code yet (new codes) so the alert is never dropped nor
+ * shown as a raw identifier.
+ */
+export const ALERT_CODE_FALLBACK: Readonly<
+  Record<string, { severidad: 'alta' | 'media' | 'baja'; etiqueta: string; descripcion: string }>
+> = {
+  fe_emision_fallida: {
+    severidad: 'media',
+    etiqueta: 'Factura electrónica no emitida',
+    descripcion:
+      'No se pudo emitir una factura electrónica tras varios reintentos. El cobro quedó registrado; revisá la resolución de facturación o reintentá desde la factura.',
+  },
+  suscripcion_placa_agregada: {
+    severidad: 'baja',
+    etiqueta: 'Placa agregada a una suscripción',
+    descripcion: 'Un supervisor agregó una placa a una suscripción.',
+  },
+  suscripcion_placa_quitada: {
+    severidad: 'baja',
+    etiqueta: 'Placa quitada de una suscripción',
+    descripcion: 'Un supervisor quitó una placa de una suscripción.',
+  },
+};
 
 export const TECHNICAL_ALERT_CODES: ReadonlySet<string> = new Set<string>([
   'hash_chain_anomaly',

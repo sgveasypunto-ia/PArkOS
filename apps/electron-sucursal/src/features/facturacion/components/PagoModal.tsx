@@ -17,7 +17,7 @@
  * effects (DEC-SUC-27: CU-15S print fires AFTER pago, then recibo
  * de pago).
  */
-import { useEffect, useId, useMemo } from 'react';
+import { useEffect, useId, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -269,6 +269,23 @@ export interface PagoModalProps {
    * prop (default `false`): ahí el bloque SÍ es la fuente de verdad.
    */
   identificacionReadonly?: boolean;
+  /**
+   * PT-1: values the operator already typed in this form (kept by the host
+   * while the operator steps back and forth in a wizard). Takes precedence
+   * over `clientePrefill` / defaults when the form mounts.
+   */
+  draft?: Partial<PagoFormValues> | null;
+  /**
+   * PT-1: reports every edit so the host can keep it across a "Volver".
+   * Must be referentially stable (e.g. a `useState` setter).
+   */
+  onDraftChange?: (values: PagoFormValues) => void;
+  /**
+   * Label of the OPTIONAL "bill to the customer's name" checkbox. The FE is
+   * always emitted (consumidor final by default); this only decides whether
+   * the customer's own data go on it.
+   */
+  feCheckboxLabel?: string;
 }
 
 /**
@@ -282,6 +299,9 @@ export function PagoModal({
   onSubmit,
   clientePrefill,
   identificacionReadonly = false,
+  draft,
+  onDraftChange,
+  feCheckboxLabel,
 }: PagoModalProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
   const formId = useId();
@@ -303,42 +323,54 @@ export function PagoModal({
     () => buildPagoFormSchema(identificacionReadonly),
     [identificacionReadonly],
   );
+  // PT-1: `draft` (values typed before the operator stepped back in a wizard)
+  // is applied ONLY for the total the form mounted with; a different total
+  // (e.g. the plan changed) restarts from the prefill/defaults.
+  const draftSnapshot = useRef<Partial<PagoFormValues> | null>(draft ?? null);
+  const totalAtMount = useRef(total_cop);
+  const prefillRef = useRef(initialPrefill);
+  prefillRef.current = initialPrefill;
+
+  const buildDefaults = (forTotal: number): PagoFormValues => {
+    const p = prefillRef.current;
+    const d = forTotal === totalAtMount.current ? draftSnapshot.current : null;
+    return {
+      medio_pago: 'efectivo',
+      monto_recibido_cop: forTotal,
+      voucher: '',
+      fe: p?.fe ?? false,
+      tipo_persona: p?.tipo_persona ?? 'empresa',
+      tipo_identificador: p?.tipo_identificador ?? 'NIT',
+      nit: p?.nit ?? '',
+      dv: '',
+      nombre_cliente: p?.nombre ?? '',
+      apellido: p?.apellido ?? '',
+      email_cliente: p?.email ?? '',
+      ...(d ?? {}),
+    } as PagoFormValues;
+  };
+
   const form = useForm<PagoFormValues>({
     resolver: zodResolver(pagoFormSchema),
-    defaultValues: {
-      medio_pago: 'efectivo',
-      monto_recibido_cop: total_cop,
-      voucher: '',
-      fe: initialPrefill?.fe ?? false,
-      tipo_persona: initialPrefill?.tipo_persona ?? 'empresa',
-      tipo_identificador: initialPrefill?.tipo_identificador ?? 'NIT',
-      nit: initialPrefill?.nit ?? '',
-      dv: '',
-      nombre_cliente: initialPrefill?.nombre ?? '',
-      apellido: initialPrefill?.apellido ?? '',
-      email_cliente: initialPrefill?.email ?? '',
-    },
+    defaultValues: buildDefaults(total_cop),
     mode: 'onSubmit',
   });
 
-  // Reset defaults when total changes (e.g. operator re-cotiza).
-  // Preserves the prefill values when provided (existing page
-  // route passes nothing and keeps the empty/genérico fallback).
+  // Reset defaults when the total changes (e.g. operator re-cotiza / plan
+  // changed). Depends on `total_cop` only: the prefill is read through a ref
+  // so a host re-render that rebuilds the `clientePrefill` literal can never
+  // wipe what the operator is typing.
   useEffect(() => {
-    form.reset({
-      medio_pago: 'efectivo',
-      monto_recibido_cop: total_cop,
-      voucher: '',
-      fe: initialPrefill?.fe ?? false,
-      tipo_persona: initialPrefill?.tipo_persona ?? 'empresa',
-      tipo_identificador: initialPrefill?.tipo_identificador ?? 'NIT',
-      nit: initialPrefill?.nit ?? '',
-      dv: '',
-      nombre_cliente: initialPrefill?.nombre ?? '',
-      apellido: initialPrefill?.apellido ?? '',
-      email_cliente: initialPrefill?.email ?? '',
-    });
-  }, [total_cop, form, initialPrefill]);
+    form.reset(buildDefaults(total_cop));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [total_cop, form]);
+
+  // PT-1: surface every edit so the host keeps it across a "Volver".
+  useEffect(() => {
+    if (!onDraftChange) return undefined;
+    const sub = form.watch((values) => onDraftChange(values as PagoFormValues));
+    return () => sub.unsubscribe();
+  }, [form, onDraftChange]);
 
   const medioPago = useWatch({ control: form.control, name: 'medio_pago' });
   const feActive = useWatch({ control: form.control, name: 'fe' });
@@ -483,6 +515,19 @@ export function PagoModal({
           />
         )}
 
+        {/* The electronic invoice is ALWAYS emitted by the backend after the
+            charge. This notice replaces the old "Generar FE" decision: the
+            operator only chooses whether the customer's own data go on it. */}
+        <p
+          data-testid="pago-fe-aviso"
+          className="rounded border border-dashed border-muted-foreground/40 px-3 py-2 text-xs text-muted-foreground"
+        >
+          {t('facturacion:pago.fe_aviso', {
+            defaultValue:
+              'La factura electrónica se emite siempre. Por defecto: Factura a consumidor final.',
+          })}
+        </p>
+
         <FormField
           control={form.control}
           name="fe"
@@ -501,10 +546,10 @@ export function PagoModal({
                 />
               </FormControl>
               <FormLabel className="!mt-0">
-                {t('facturacion:pago.fe_toggle', {
-                  defaultValue:
-                    'Factura a nombre del cliente (opcional); por defecto, factura a consumidor final',
-                })}
+                {feCheckboxLabel ??
+                  t('facturacion:pago.fe_toggle', {
+                    defaultValue: 'Facturar a nombre del cliente (opcional)',
+                  })}
               </FormLabel>
             </FormItem>
           )}

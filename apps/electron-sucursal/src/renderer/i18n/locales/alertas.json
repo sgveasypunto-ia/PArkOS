@@ -25,6 +25,11 @@
   "empty": {
     "noAlerts": "No hay alertas activas"
   },
+  "tipo": {
+    "fe_emision_fallida": "Factura electrónica no emitida",
+    "suscripcion_placa_agregada": "Placa agregada a una suscripción",
+    "suscripcion_placa_quitada": "Placa quitada de una suscripción"
+  },
   "desc": {
     "descuadre_critico": "El arqueo cerró con descuadre mayor al umbral autorizado.",
     "fe_error_toppoint": "TopPoint rechazó el comprobante; revisar el motivo en la factura.",

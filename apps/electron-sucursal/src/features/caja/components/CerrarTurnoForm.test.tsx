@@ -200,6 +200,31 @@ describe('<CerrarTurnoForm /> — motivo del descuadre en Observaciones (conteo 
     });
   });
 
+  it('(E) el veredicto del pre-flight viaja al padre: true con diferencia, false sin diferencia', async () => {
+    const onSubmit = vi.fn(async () => {});
+
+    useRequiereJustificacionMock.mockReturnValue({ requiereJustificacion: true, error: undefined });
+    const { unmount } = render(<Harness efectivoReportado={900_000} onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByTestId('cerrar-turno-observaciones'), {
+      target: { value: 'Billete roto' },
+    });
+    fireEvent.submit(screen.getByTestId('cerrar-turno-form'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect((onSubmit.mock.calls[0] as unknown as [unknown, unknown])[1]).toEqual({
+      requiereJustificacion: true,
+    });
+    unmount();
+
+    onSubmit.mockClear();
+    useRequiereJustificacionMock.mockReturnValue({ requiereJustificacion: false, error: undefined });
+    render(<Harness efectivoReportado={100_000} onSubmit={onSubmit} />);
+    fireEvent.submit(screen.getByTestId('cerrar-turno-form'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect((onSubmit.mock.calls[0] as unknown as [unknown, unknown])[1]).toEqual({
+      requiereJustificacion: false,
+    });
+  });
+
   it('con diferencia y motivo vacío → el submit NO llega al padre (red de seguridad del handler)', async () => {
     useRequiereJustificacionMock.mockReturnValue({
       requiereJustificacion: true,

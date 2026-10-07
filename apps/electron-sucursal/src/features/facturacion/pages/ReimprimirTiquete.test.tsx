@@ -342,6 +342,32 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
     expect(screen.getByTestId('pago-confirmar')).toBeInTheDocument();
   });
 
+  it('T4b (PT-1): "Volver" del cobro retrocede EXACTAMENTE un paso (motivo) conservando ingreso y motivo', async () => {
+    mockUseReimprimir.mockReturnValue(buildReimprimirHook());
+    mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+    mockUseRegistrarPagoServicio.mockReturnValue(buildRegistrarPagoServicioHook());
+    mockResolverIngresoReimpresion.mockResolvedValue({
+      kind: 'found',
+      ingreso: INGRESO_CON_PLACA,
+    });
+
+    renderAt();
+    await llegarAlPago();
+    const motivoEscrito = (screen.queryByTestId('reimprimir-motivo') as HTMLInputElement | null)?.value;
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reimprimir-cambiar-motivo'));
+    });
+
+    // Back at the previous phase: cobro gone, the found ingreso and the motivo
+    // form are still there (NOT back to the search nor out of the flow).
+    expect(screen.queryByTestId('reimprimir-cobro')).not.toBeInTheDocument();
+    expect(screen.getByTestId('reimprimir-ingreso-encontrado')).toBeInTheDocument();
+    const motivo = screen.getByTestId('reimprimir-motivo') as HTMLInputElement;
+    expect(motivo).toBeInTheDocument();
+    if (motivoEscrito !== undefined) expect(motivo.value).toBe(motivoEscrito);
+  });
+
   it('T5: costo NO configurado → banner de error, <PagoModal> NO se muestra', async () => {
     mockUseReimprimir.mockReturnValue(buildReimprimirHook());
     mockUseAnularReimpresion.mockReturnValue(buildAnularHook());

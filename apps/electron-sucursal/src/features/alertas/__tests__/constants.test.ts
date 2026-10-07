@@ -4,8 +4,8 @@
  * REQ-OPS-182 + DA-F11.2-5).
  *
  * Coverage:
- *   C1: 11 business codes + 8 technical codes (canonical split per
- *       the spec §REQ-OPS-182 + plan.md:2311-2323).
+ *   C1: 14 business codes (the original 11 + fe_emision_fallida and
+ *       suscripcion_placa_agregada/_quitada) + 8 technical codes.
  *   C2: disjoint sets — no overlap (defense against future typos).
  *   C3: O(1) `Set.has` membership — array `.includes()` would be
  *       O(n) and is forbidden per the spec §REQ-OPS-182 scenario.
@@ -14,6 +14,7 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  ALERT_CODE_FALLBACK,
   BUSINESS_ALERT_CODES,
   TECHNICAL_ALERT_CODES,
   isBusinessAlert,
@@ -21,9 +22,17 @@ import {
 } from '../constants';
 
 describe('constants — REQ-OPS-182 (HU-F11.2)', () => {
-  it('C1: 11 business codes + 8 technical codes', () => {
-    expect(BUSINESS_ALERT_CODES.size).toBe(11);
+  it('C1: 14 business codes + 8 technical codes', () => {
+    expect(BUSINESS_ALERT_CODES.size).toBe(14);
     expect(TECHNICAL_ALERT_CODES.size).toBe(8);
+  });
+
+  it('C1b: the new codes are business alerts with a readable fallback label', () => {
+    for (const code of ['fe_emision_fallida', 'suscripcion_placa_agregada', 'suscripcion_placa_quitada']) {
+      expect(isBusinessAlert(code)).toBe(true);
+      expect(ALERT_CODE_FALLBACK[code]?.etiqueta).toMatch(/[A-Za-zÁ-ú ]{8,}/);
+      expect(ALERT_CODE_FALLBACK[code]?.etiqueta).not.toBe(code);
+    }
   });
 
   it('C2: business and technical sets are disjoint (no overlap)', () => {

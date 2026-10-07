@@ -40,6 +40,7 @@ import {
   useQuitarVehiculoSuscripcion,
   CuposVehiculoInscritoNoEncontradoError,
 } from './useQuitarVehiculoSuscripcion';
+import { CuposContextoSucursalError, CuposPermisoDenegadoError } from './cuposErrors';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
 const DETALLE = {
@@ -114,5 +115,58 @@ describe('useQuitarVehiculoSuscripcion — HU-F9.2 realineada', () => {
 
     expect(useAuthStore.getState().clear).toHaveBeenCalledTimes(1);
     expect(dispatched).toContain('parkos:auth:cleared');
+  });
+
+  it('T4 (PT-2): 403 permission_denied → CuposPermisoDenegadoError', async () => {
+    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+    mockFetch.mockRejectedValueOnce(
+      new ParkosHttpError(
+        403,
+        JSON.stringify({ detail: { error: 'permission_denied', detail: 'gestionar_placas_suscripcion' } }),
+        'x',
+      ),
+    );
+    const { result } = renderHook(() => useQuitarVehiculoSuscripcion());
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.trigger('00000000-0000-0000-0000-000000000021');
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toBeInstanceOf(CuposPermisoDenegadoError);
+  });
+
+  it('T5 (PT-2): 400 missing_sucursal_context → CuposContextoSucursalError', async () => {
+    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+    mockFetch.mockRejectedValueOnce(
+      new ParkosHttpError(400, JSON.stringify({ detail: { error: 'missing_sucursal_context' } }), 'x'),
+    );
+    const { result } = renderHook(() => useQuitarVehiculoSuscripcion());
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.trigger('00000000-0000-0000-0000-000000000021');
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toBeInstanceOf(CuposContextoSucursalError);
+  });
+
+  it('T6: sends a per-attempt Idempotency-Key (re-adding then removing again is never replayed)', async () => {
+    mockFetch.mockResolvedValue(DETALLE);
+    const { result } = renderHook(() => useQuitarVehiculoSuscripcion());
+    await act(async () => {
+      await result.current.trigger('00000000-0000-0000-0000-000000000021');
+    });
+    await act(async () => {
+      await result.current.trigger('00000000-0000-0000-0000-000000000021');
+    });
+    const key = (i: number): string =>
+      (mockFetch.mock.calls[i]?.[1] as { headers: Record<string, string> }).headers['Idempotency-Key'] ?? '';
+    expect(key(0)).not.toBe('');
+    expect(key(0)).not.toBe(key(1));
   });
 });

@@ -1,31 +1,29 @@
 /**
- * Tests for `<Venta />` wizard page (HU-F9.1, REQ-OPS-176).
+ * Tests for `<Venta />` wizard page (HU-F9.1, REQ-OPS-176; PT-1 / PT-2).
  *
- * Coverage (7 component tests):
- *   T1: mount -> shows step 1 (cliente form).
- *   T2: step 1 submit with valid cliente -> advances to step 2 (Plan).
- *   T3: step 1 submit with NIT corto -> inline Zod error.
- *   T4: pago submit -> 422 typed error -> revert to step 4 (Placas) with
- *       inline placa group error.
- *   T5: cliente + plan + cantidad + placas -> advances to step 5 (Pago).
- *   T6: step 5 charges the FULL plan on the last day of the month (PT-3,
- *       no proration badge) and defaults the start date to today in Bogota.
- *   T7: confirm -> useVentaSuscripcion.trigger called with full payload.
+ * Wizard of 6 steps: cliente -> tipo de vehículo -> plan -> cantidad ->
+ * placas -> pago.
  *
- * The PagoModal composition is stubbed via a real `<PagoModal />`
- * mock that just exposes its `onSubmit` prop -- no full F8.1 PagoModal
- * test re-run inside this file (PagoModal's own tests cover that).
+ * Coverage:
+ *   T1-T3: step 1 (cliente) rendering + validation.
+ *   T4: 422 typed error from the charge -> revert to step 5 (Placas).
+ *   T5: full flow reaches step 6 (Pago).
+ *   T6: step 6 charges the FULL plan (PT-3) and defaults the start date to
+ *       today in Bogota.
+ *   T7: confirm -> `useVentaSuscripcion.trigger` called with the payload.
+ *   T8/T9: receipt (+ FE state / pending notice) after the charge.
+ *   T10 (PT-2): only plans of the chosen vehicle type are requested/shown.
+ *   T11 (PT-1): "Volver" goes back EXACTLY one step keeping the data.
+ *   T12 (PT-1): the payment draft survives a back/forward trip.
+ *   T13 (PT-1): once charged, no "Volver" and no second payment.
+ *   T14 (PT-2): plate format must match the chosen vehicle type.
+ *
+ * The PagoModal composition is stubbed: it only exposes its props.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-// Named type-only import so the `vi.mock` factory below can reference
-// `typeof UseVentaSuscripcionModule` instead of leaving `importOriginal()`
-// untyped (`unknown`) — pre-existing bug found while auditing tsc -b
-// (TS2698 "Spread types may only be created from object types" on
-// `...actual` below; mirrors the pattern already used by
-// `Dashboard.test.tsx`'s `react-router-dom` mock).
 import type * as UseVentaSuscripcionModule from '../hooks/useVentaSuscripcion';
 
 vi.mock('react-i18next', () => ({
@@ -47,39 +45,74 @@ vi.mock('../hooks/useVentaSuscripcion', async (importOriginal) => {
   };
 });
 
-// Stub the catalog endpoint so useTiposSubscripciones returns 1 plan with
-// max=1 -- matches the rest of the test's assumption that the operator
-// will type exactly one plate.
+const TIPO_MOTO = '00000000-0000-0000-0000-00000000aa01';
+const TIPO_CARRO = '00000000-0000-0000-0000-00000000aa02';
+const PLAN_CARRO = '00000000-0000-0000-0000-0000000000a1';
+const PLAN_MOTO = '00000000-0000-0000-0000-0000000000a2';
+const PLAN_ANY = '00000000-0000-0000-0000-0000000000a3';
+
+const PLANES = [
+  { uuid: PLAN_CARRO, tipo: 'MENSUAL_CARRO', uuid_tipo_vehiculo: TIPO_CARRO },
+  { uuid: PLAN_MOTO, tipo: 'MENSUAL_MOTO', uuid_tipo_vehiculo: TIPO_MOTO },
+  { uuid: PLAN_ANY, tipo: 'MENSUAL_CUALQUIERA', uuid_tipo_vehiculo: null },
+].map((p) => ({
+  ...p,
+  valor: 30000,
+  duracion_dias: 30,
+  cantidad_maxima_vehiculos: 1,
+  mismo_tipo_vehiculo: true,
+  tipo_cliente_permitido: 'natural',
+}));
+
+// Mirrors the backend filter: plans of that type + the NULL-type ones; `null`
+// (type not chosen yet) means nothing is fetched.
+const mockUseTiposSubscripciones = vi.fn((_suc: string | null, tipo?: string | null) => ({
+  data:
+    tipo === null
+      ? undefined
+      : PLANES.filter((p) => tipo === undefined || !p.uuid_tipo_vehiculo || p.uuid_tipo_vehiculo === tipo),
+  error: undefined,
+  refresh: async () => undefined,
+  isLoading: false,
+}));
 vi.mock('../hooks/useTiposSubscripciones', () => ({
-  useTiposSubscripciones: () => ({
-    data: [
-      {
-        uuid: '00000000-0000-0000-0000-0000000000a1',
-        tipo: 'MENSUAL_TEST',
-        valor: 30000,
-        duracion_dias: 30,
-        cantidad_maxima_vehiculos: 1,
-        mismo_tipo_vehiculo: true,
-        tipo_cliente_permitido: 'natural',
-      },
+  useTiposSubscripciones: (suc: string | null, tipo?: string | null) =>
+    mockUseTiposSubscripciones(suc, tipo),
+}));
+
+vi.mock('../../catalogos/hooks/useTiposVehiculo', () => ({
+  useTiposVehiculo: () => ({
+    tipos: [
+      { uuid: '00000000-0000-0000-0000-00000000aa01', tipo: 'moto', vigente_desde: '', vigente_hasta: null, estado: 'activo' },
+      { uuid: '00000000-0000-0000-0000-00000000aa02', tipo: 'carro', vigente_desde: '', vigente_hasta: null, estado: 'activo' },
     ],
+    isLoading: false,
     error: undefined,
     refresh: async () => undefined,
-    isLoading: false,
+    isFromFallback: false,
   }),
 }));
 
+interface PagoStubProps {
+  total_cop: number;
+  onSubmit: (v: unknown) => Promise<void>;
+  draft?: { monto_recibido_cop?: number } | null;
+  onDraftChange?: (v: unknown) => void;
+}
 vi.mock('../../facturacion/components/PagoModal', () => ({
-  PagoModal: ({
-    onSubmit,
-    total_cop,
-  }: {
-    uuid_ingreso: string | null;
-    total_cop: number;
-    onSubmit: (v: unknown) => Promise<void>;
-  }) => (
+  PagoModal: ({ onSubmit, total_cop, draft, onDraftChange }: PagoStubProps) => (
     <div data-testid="pago-modal">
       <span data-testid="pago-total">{total_cop}</span>
+      <span data-testid="pago-draft">{String(draft?.monto_recibido_cop ?? '')}</span>
+      <button
+        type="button"
+        data-testid="pago-editar-stub"
+        onClick={() =>
+          onDraftChange?.({ medio_pago: 'efectivo', monto_recibido_cop: 99999, fe: false })
+        }
+      >
+        editar
+      </button>
       <button
         type="button"
         data-testid="pago-confirmar-stub"
@@ -104,12 +137,87 @@ vi.mock('../../facturacion/components/PagoModal', () => ({
 
 import { Venta } from './Venta';
 
-const renderVenta = (): ReturnType<typeof render> =>
+const renderVenta = (props: Parameters<typeof Venta>[0] = {}): ReturnType<typeof render> =>
   render(
     <MemoryRouter>
-      <Venta />
+      <Venta {...props} />
     </MemoryRouter>,
   );
+
+// NOTE: every selection and its "Siguiente" click MUST be separate act()
+// calls: React 18 batches state updates inside one synchronous block, so a
+// same-block "Siguiente" would read the PRE-selection closure.
+async function click(testId: string): Promise<void> {
+  await act(async () => {
+    fireEvent.click(screen.getByTestId(testId));
+  });
+}
+async function change(testId: string, value: string): Promise<void> {
+  await act(async () => {
+    fireEvent.change(screen.getByTestId(testId), { target: { value } });
+  });
+}
+async function paso1(): Promise<void> {
+  await change('venta-cliente-numero', '900123456');
+  await change('venta-cliente-nombre', 'ACME');
+  await click('venta-paso-1-siguiente');
+}
+async function paso2(tipo: string = TIPO_CARRO): Promise<void> {
+  await click(`venta-tipo-vehiculo-${tipo}`);
+  await click('venta-paso-2-siguiente');
+}
+async function paso3(plan: string = PLAN_CARRO): Promise<void> {
+  await click(`venta-plan-${plan}`);
+  await click('venta-paso-3-siguiente');
+}
+async function paso4(): Promise<void> {
+  await change('venta-cantidad-input', '1');
+  await click('venta-paso-4-siguiente');
+}
+async function paso5(placa = 'ABC123'): Promise<void> {
+  await change('venta-placa-input-0', placa);
+  await click('venta-paso-5-siguiente');
+}
+async function hastaPago(): Promise<void> {
+  await paso1();
+  await paso2();
+  await paso3();
+  await paso4();
+  await paso5();
+}
+
+const FACTURA_BASE = {
+  uuid: 'f0000000-0000-0000-0000-000000000001',
+  created_at: '2026-09-25T10:00:00.000Z',
+  uuid_sucursal: '00000000-0000-0000-0000-0000000000f1',
+  uuid_ingreso: null,
+  uuid_salida: null,
+  numero_recibo: 'suc-20260925-000001',
+  subtotal: 30000,
+  descuento: 0,
+  total: 35700,
+  uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
+  items: [],
+  estado: 'emitida' as const,
+  medio_pago: 'efectivo' as const,
+  monto_recibido_cents: null,
+  vuelto_cents: null,
+  voucher: null,
+  cliente: null,
+  datos_sucursal: {
+    razon_social: 'Sede Test',
+    nit: null,
+    direccion: null,
+    ciudad: null,
+    telefono: null,
+    horario: null,
+    regimen: null,
+  },
+  datos_vehiculo: null,
+  impuestos: [],
+  pagos: [],
+  factura_electronica: null,
+};
 
 beforeEach(() => {
   cleanup();
@@ -124,210 +232,60 @@ beforeEach(() => {
   });
 });
 
-describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad -> placas -> pago)', () => {
+describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> placas -> pago', () => {
   it('T1: mount -> shows step 1 (cliente form)', () => {
     renderVenta();
     expect(screen.getByTestId('venta-paso-1')).toBeDefined();
     expect(screen.getByTestId('venta-cliente-numero')).toBeDefined();
   });
 
-  it('T2: step 1 submit with valid cliente -> advances to step 2 (Plan)', async () => {
+  it('T2: step 1 submit with valid cliente -> advances to step 2 (Tipo de vehículo)', async () => {
     renderVenta();
-    const nit = screen.getByTestId('venta-cliente-numero');
-    const nombre = screen.getByTestId('venta-cliente-nombre');
-    await act(async () => {
-      fireEvent.change(nit, { target: { value: '900123456' } });
-      fireEvent.change(nombre, { target: { value: 'ACME S.A.S.' } });
-    });
-    const submit = screen.getByTestId('venta-paso-1-siguiente');
-    await act(async () => {
-      fireEvent.click(submit);
-    });
+    await paso1();
     expect(screen.getByTestId('venta-paso-2')).toBeDefined();
+    expect(screen.getByTestId('venta-paso-2-tipos')).toBeDefined();
   });
 
   it('T3: step 1 submit with NIT corto -> inline Zod error', async () => {
     renderVenta();
-    const nit = screen.getByTestId('venta-cliente-numero');
-    await act(async () => {
-      fireEvent.change(nit, { target: { value: '123' } });
-    });
-    const submit = screen.getByTestId('venta-paso-1-siguiente');
-    await act(async () => {
-      fireEvent.click(submit);
-    });
+    await change('venta-cliente-numero', '123');
+    await click('venta-paso-1-siguiente');
     expect(screen.queryByTestId('venta-paso-2')).toBeNull();
-    expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(
-      /documento/,
-    );
+    expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(/documento/);
   });
 
-  it('T4: pago submit -> 422 typed error -> revert to step 4 (Placas) with inline placa group error', async () => {
-    // Import real classes via the mocked-with-importOriginal hook.
+  it('T4: pago submit -> 422 typed error -> revert to step 5 (Placas) with inline placa group error', async () => {
     const mod = await import('../hooks/useVentaSuscripcion');
-    mockTrigger.mockRejectedValueOnce(
-      new mod.VentaSuscripcionDuplicatePlateError('ABC123'),
-    );
+    mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('ABC123'));
 
     renderVenta();
-    // step 1
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
-        target: { value: '900123456' },
-      });
-      fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
-        target: { value: 'ACME' },
-      });
-      fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
-    });
-    // step 2 (Plan) — the plan click and the "Siguiente" click MUST be
-    // separate act() calls: React 18 batches state updates within one
-    // synchronous block, so a same-block "Siguiente" click would still
-    // read the PRE-selection `planInput` closure (empty string) and
-    // bail out of `handlePaso2Siguiente` before advancing the paso
-    // (real bug found live 2026-09-24 while validating HU-F9.2
-    // realineada — the wizard got stuck on paso 2 in every T4-T7 test).
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
-    });
-    // step 3 (Cantidad) — same batching hazard as step 2 above: split
-    // the change + the "Siguiente" click into separate act() calls.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
-        target: { value: '1' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
-    });
-    // step 4 (Placas) — same batching hazard as steps 2/3 above.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
-        target: { value: 'ABC123' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
-    });
-    // step 5 PagoModal stub: click confirmar -> trigger throws typed error
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
-    });
-    // The wizard reverts to paso 4 (Placas) with the inline group error.
-    expect(screen.getByTestId('venta-paso-4')).toBeDefined();
-    expect(screen.getByTestId('venta-placas-error').textContent).toMatch(
-      /duplicada|placa/i,
-    );
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    // Reverts to the placas step keeping the rest of the wizard state.
+    expect(screen.getByTestId('venta-paso-5')).toBeDefined();
+    expect(screen.getByTestId('venta-placas-error').textContent).toMatch(/duplicada|placa/i);
+    expect((screen.getByTestId('venta-placa-input-0') as HTMLInputElement).value).toBe('ABC123');
   });
 
-  it('T5: cliente + plan + cantidad + placas -> advances to step 5 (Pago)', async () => {
+  it('T5: cliente + tipo + plan + cantidad + placas -> advances to step 6 (Pago)', async () => {
     renderVenta();
-    // step 1
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
-        target: { value: '900123456' },
-      });
-      fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
-        target: { value: 'ACME' },
-      });
-      fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
-    });
-    // step 2 (Plan) — the plan click and the "Siguiente" click MUST be
-    // separate act() calls: React 18 batches state updates within one
-    // synchronous block, so a same-block "Siguiente" click would still
-    // read the PRE-selection `planInput` closure (empty string) and
-    // bail out of `handlePaso2Siguiente` before advancing the paso
-    // (real bug found live 2026-09-24 while validating HU-F9.2
-    // realineada — the wizard got stuck on paso 2 in every T4-T7 test).
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
-    });
-    // step 3 (Cantidad) — same batching hazard as step 2 above: split
-    // the change + the "Siguiente" click into separate act() calls.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
-        target: { value: '1' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
-    });
-    // step 4 (Placas) — same batching hazard as steps 2/3 above.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
-        target: { value: 'ABC123' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
-    });
-    expect(screen.getByTestId('venta-paso-5')).toBeDefined();
+    await hastaPago();
+    expect(screen.getByTestId('venta-paso-6')).toBeDefined();
   });
 
   it('T6: last day of month charges the full plan, no badge, start date = today Bogota', async () => {
     // 2026-09-30 20:00 Bogota == 2026-10-01T01:00Z (UTC is already next month).
-    // Only Date is faked so promises/act keep working.
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-01T01:00:00Z'));
     try {
-    renderVenta();
-    // step 1
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
-        target: { value: '900123456' },
-      });
-      fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
-        target: { value: 'ACME' },
-      });
-      fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
-    });
-    // step 2 (Plan) — the plan click and the "Siguiente" click MUST be
-    // separate act() calls: React 18 batches state updates within one
-    // synchronous block, so a same-block "Siguiente" click would still
-    // read the PRE-selection `planInput` closure (empty string) and
-    // bail out of `handlePaso2Siguiente` before advancing the paso
-    // (real bug found live 2026-09-24 while validating HU-F9.2
-    // realineada — the wizard got stuck on paso 2 in every T4-T7 test).
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
-    });
-    // step 3 (Cantidad) — same batching hazard as step 2 above: split
-    // the change + the "Siguiente" click into separate act() calls.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
-        target: { value: '1' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
-    });
-    // step 4 (Placas) — same batching hazard as steps 2/3 above.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
-        target: { value: 'ABC123' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
-    });
-    // step 5: full plan.valor, never a prorated amount, no badge.
-    expect(screen.getByTestId('pago-modal')).toBeDefined();
-    expect(screen.getByTestId('pago-total').textContent).toBe('30000');
-    expect(screen.queryByTestId('venta-prorrateo-badge')).toBeNull();
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
-    });
-    const arg = mockTrigger.mock.calls[0]?.[0] as { fecha_inicio_cobertura: string };
-    expect(arg.fecha_inicio_cobertura).toBe('2026-09-30');
+      renderVenta();
+      await hastaPago();
+      expect(screen.getByTestId('pago-modal')).toBeDefined();
+      expect(screen.getByTestId('pago-total').textContent).toBe('30000');
+      expect(screen.queryByTestId('venta-prorrateo-badge')).toBeNull();
+      await click('pago-confirmar-stub');
+      const arg = mockTrigger.mock.calls[0]?.[0] as { fecha_inicio_cobertura: string };
+      expect(arg.fecha_inicio_cobertura).toBe('2026-09-30');
     } finally {
       vi.useRealTimers();
     }
@@ -335,169 +293,57 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
 
   it('T7: confirm -> useVentaSuscripcion.trigger called with full payload', async () => {
     renderVenta();
-    // step 1
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
-        target: { value: '900123456' },
-      });
-      fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
-        target: { value: 'ACME' },
-      });
-      fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
-    });
-    // step 2 (Plan) — the plan click and the "Siguiente" click MUST be
-    // separate act() calls: React 18 batches state updates within one
-    // synchronous block, so a same-block "Siguiente" click would still
-    // read the PRE-selection `planInput` closure (empty string) and
-    // bail out of `handlePaso2Siguiente` before advancing the paso
-    // (real bug found live 2026-09-24 while validating HU-F9.2
-    // realineada — the wizard got stuck on paso 2 in every T4-T7 test).
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
-    });
-    // step 3 (Cantidad) — same batching hazard as step 2 above: split
-    // the change + the "Siguiente" click into separate act() calls.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
-        target: { value: '1' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
-    });
-    // step 4 (Placas) — same batching hazard as steps 2/3 above.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
-        target: { value: 'ABC123' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
-    });
-    // step 5 PagoModal stub: click confirmar
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
-    });
+    await hastaPago();
+    await click('pago-confirmar-stub');
     expect(mockTrigger).toHaveBeenCalledTimes(1);
     const arg = mockTrigger.mock.calls[0]?.[0] as {
       cliente: { tipo_identificador: string; numero_identificacion: string };
       placas: string[];
       uuid_tipo_subscripcion: string;
       cobrar_ahora: boolean;
+      emitir_factura_electronica: boolean;
     };
-    // BUGFIX (2026-09-25): el wire contract real (`ClientesCreate`) no
-    // tiene `nit` -- `tipo_identificador`/`numero_identificacion`. Este
-    // assert encodeaba el mismo contrato equivocado que rompía el POST
-    // real (422 extra_forbidden) en cualquier venta a cliente nuevo.
     expect(arg.cliente.tipo_identificador).toBe('NIT');
     expect(arg.cliente.numero_identificacion).toBe('900123456');
     expect(arg.placas).toEqual(['ABC123']);
-    expect(arg.uuid_tipo_subscripcion).toBe(
-      '00000000-0000-0000-0000-0000000000a1',
-    );
+    expect(arg.uuid_tipo_subscripcion).toBe(PLAN_CARRO);
     expect(arg.cobrar_ahora).toBe(true);
+    // The FE is always emitted by the backend; `false` = standard customer.
+    expect(arg.emitir_factura_electronica).toBe(false);
   });
 
   it('T8: pago con cobro -> muestra <FacturaDisplayModal /> y solo completa/imprime al cerrarlo', async () => {
-    // HU-F9.1 bugfix (2026-09-25): previously the wizard navigated away
-    // immediately after `trigger()` resolved, even when the sale
-    // collected payment -- the operator never saw a ticket/factura
-    // confirmation. Now a `factura` in the response must mount
-    // `<FacturaDisplayModal />` and defer completion + the recibo print
-    // until the operator dismisses it (mirrors HU-F8.4 verbatim).
-    const facturaMock = {
-      uuid: 'f0000000-0000-0000-0000-000000000001',
-      created_at: '2026-09-25T10:00:00.000Z',
-      uuid_sucursal: '00000000-0000-0000-0000-0000000000f1',
-      uuid_ingreso: null,
-      uuid_salida: null,
-      numero_recibo: 'suc-20260925-000001',
-      subtotal: 30000,
-      descuento: 0,
-      total: 35700,
-      uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
-      items: [],
-      estado: 'emitida' as const,
-      medio_pago: 'efectivo' as const,
-      monto_recibido_cents: null,
-      vuelto_cents: null,
-      voucher: null,
-      cliente: null,
-      datos_sucursal: {
-        razon_social: 'Sede Test',
-        nit: null,
-        direccion: null,
-        ciudad: null,
-        telefono: null,
-        horario: null,
-        regimen: null,
-      },
-      datos_vehiculo: null,
-      impuestos: [],
-      pagos: [],
-      factura_electronica: null,
-    };
     mockTrigger.mockResolvedValueOnce({
       uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
       uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
       uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
-      uuid_factura: facturaMock.uuid,
+      uuid_factura: FACTURA_BASE.uuid,
       monto_prorrateado: null,
-      factura: facturaMock,
+      factura: {
+        ...FACTURA_BASE,
+        factura_electronica: {
+          uuid: 'fe000000-0000-0000-0000-000000000001',
+          prefijo: 'SETP',
+          consecutivo: 7,
+          estado_dian: 'pendiente' as const,
+          cufe: null,
+        },
+      },
       factura_electronica_error: null,
     });
     const firePrintEnvelope = vi.fn();
+    const onSuccess = vi.fn();
 
-    render(
-      <MemoryRouter>
-        <Venta firePrintEnvelope={firePrintEnvelope} />
-      </MemoryRouter>,
-    );
-    // step 1
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
-        target: { value: '900123456' },
-      });
-      fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
-        target: { value: 'ACME' },
-      });
-      fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
-    });
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
-        target: { value: '1' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
-    });
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
-        target: { value: 'ABC123' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
-    });
-    // step 5 PagoModal stub: click confirmar
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
-    });
+    renderVenta({ firePrintEnvelope, onSuccess });
+    await hastaPago();
+    await click('pago-confirmar-stub');
 
-    // The modal is up; the wizard must NOT have completed yet.
     expect(screen.getByTestId('factura-display-modal')).toBeDefined();
     expect(screen.getByTestId('factura-display-total').textContent).toContain('35.700');
-    // KD-VENTA-03b: no FE issue on this sale -- no warning shown.
+    // FE emitted (state shown) and NOT pending -> no warning.
+    expect(screen.getByTestId('factura-display-fe').textContent).toContain('SETP');
     expect(screen.queryByTestId('factura-display-warning')).toBeNull();
+    expect(onSuccess).not.toHaveBeenCalled();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('factura-display-cerrar'));
@@ -507,107 +353,155 @@ describe('<Venta /> — REQ-OPS-176 (wizard 5 pasos: cliente -> plan -> cantidad
     expect(firePrintEnvelope).toHaveBeenCalledWith(
       'recibo_pago',
       expect.objectContaining({
-        uuid_factura: facturaMock.uuid,
-        numero_recibo: facturaMock.numero_recibo,
+        uuid_factura: FACTURA_BASE.uuid,
+        numero_recibo: FACTURA_BASE.numero_recibo,
       }),
     );
+    expect(onSuccess).toHaveBeenCalledTimes(1);
   });
 
-  it('T9: FE degradada (KD-VENTA-03b) -- la venta se muestra igual, con advertencia no bloqueante', async () => {
-    // El backend garantiza el flujo SOLO hasta pagar + generar factura;
-    // si la emisión de FE falla después (ej. sin resolución configurada),
-    // la venta sigue siendo un 201 con factura_electronica_error
-    // poblado -- el wizard debe mostrar el ticket igual, con una
-    // advertencia no bloqueante, NUNCA revertir la venta.
-    const facturaMock = {
-      uuid: 'f0000000-0000-0000-0000-000000000002',
-      created_at: '2026-09-25T10:00:00.000Z',
-      uuid_sucursal: '00000000-0000-0000-0000-0000000000f1',
-      uuid_ingreso: null,
-      uuid_salida: null,
-      numero_recibo: 'suc-20260925-000002',
-      subtotal: 30000,
-      descuento: 0,
-      total: 35700,
-      uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
-      items: [],
-      estado: 'emitida' as const,
-      medio_pago: 'efectivo' as const,
-      monto_recibido_cents: null,
-      vuelto_cents: null,
-      voucher: null,
-      cliente: null,
-      datos_sucursal: {
-        razon_social: 'Sede Test',
-        nit: null,
-        direccion: null,
-        ciudad: null,
-        telefono: null,
-        horario: null,
-        regimen: null,
-      },
-      datos_vehiculo: null,
-      impuestos: [],
-      pagos: [],
-      factura_electronica: null,
-    };
+  it('T9: FE pendiente -- la venta se muestra igual, con aviso no bloqueante "se reintenta sola"', async () => {
     mockTrigger.mockResolvedValueOnce({
       uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
       uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
       uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
-      uuid_factura: facturaMock.uuid,
+      uuid_factura: FACTURA_BASE.uuid,
       monto_prorrateado: null,
-      factura: facturaMock,
+      factura: {
+        ...FACTURA_BASE,
+        factura_electronica_error: 'resolucion_facturacion_no_encontrada',
+        factura_electronica_pendiente: true,
+      },
       factura_electronica_error: 'resolucion_facturacion_no_encontrada',
     });
 
-    render(
-      <MemoryRouter>
-        <Venta />
-      </MemoryRouter>,
-    );
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cliente-numero'), {
-        target: { value: '900123456' },
-      });
-      fireEvent.change(screen.getByTestId('venta-cliente-nombre'), {
-        target: { value: 'ACME' },
-      });
-      fireEvent.click(screen.getByTestId('venta-paso-1-siguiente'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-plan-00000000-0000-0000-0000-0000000000a1'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-2-siguiente'));
-    });
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-cantidad-input'), {
-        target: { value: '1' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-3-siguiente'));
-    });
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('venta-placa-input-0'), {
-        target: { value: 'ABC123' },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('venta-paso-4-siguiente'));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('pago-confirmar-stub'));
-    });
+    renderVenta();
+    await hastaPago();
+    await click('pago-confirmar-stub');
 
-    // La venta SÍ se muestra -- el pago y la factura quedaron registrados.
     expect(screen.getByTestId('factura-display-modal')).toBeDefined();
-    // Con la advertencia no bloqueante de FE (el mock de react-i18next
-    // devuelve la key cruda, no el defaultValue -- ver el mock al inicio
-    // del archivo).
-    expect(screen.getByTestId('factura-display-warning').textContent).toContain(
-      'resolucionNoEncontrada',
+    // react-i18next is mocked to return the raw key (not the defaultValue).
+    const warning = screen.getByTestId('factura-display-warning').textContent ?? '';
+    expect(warning).toContain('fe.aviso.pendiente');
+    expect(warning).toContain('resolucionNoEncontrada');
+  });
+
+  it('T10 (PT-2): plans are requested/shown ONLY for the chosen vehicle type (+ type-agnostic)', async () => {
+    renderVenta();
+    await paso1();
+    // Before choosing a type nothing is fetched (null gate), no plan list yet.
+    expect(mockUseTiposSubscripciones).toHaveBeenLastCalledWith(null, null);
+    await paso2(TIPO_MOTO);
+    expect(mockUseTiposSubscripciones).toHaveBeenLastCalledWith(null, TIPO_MOTO);
+    expect(screen.getByTestId(`venta-plan-${PLAN_MOTO}`)).toBeDefined();
+    expect(screen.getByTestId(`venta-plan-${PLAN_ANY}`)).toBeDefined();
+    expect(screen.queryByTestId(`venta-plan-${PLAN_CARRO}`)).toBeNull();
+  });
+
+  it('T11 (PT-1): "Volver" goes back EXACTLY one step and keeps the captured data', async () => {
+    const onCancel = vi.fn();
+    renderVenta({ onCancel });
+    await hastaPago();
+    expect(screen.getByTestId('venta-paso-6')).toBeDefined();
+
+    // 6 -> 5 (placas intact)
+    await click('venta-volver');
+    expect(screen.getByTestId('venta-paso-5')).toBeDefined();
+    expect((screen.getByTestId('venta-placa-input-0') as HTMLInputElement).value).toBe('ABC123');
+
+    // 5 -> 4 (cantidad intact)
+    await click('venta-volver');
+    expect(screen.getByTestId('venta-paso-4')).toBeDefined();
+    expect((screen.getByTestId('venta-cantidad-input') as HTMLInputElement).value).toBe('1');
+
+    // 4 -> 3 (plan still selected)
+    await click('venta-volver');
+    expect(screen.getByTestId('venta-paso-3')).toBeDefined();
+    expect(screen.getByTestId(`venta-plan-${PLAN_CARRO}`).getAttribute('aria-pressed')).toBe('true');
+
+    // 3 -> 2 (tipo still selected)
+    await click('venta-volver');
+    expect(screen.getByTestId('venta-paso-2')).toBeDefined();
+    expect(
+      screen.getByTestId(`venta-tipo-vehiculo-${TIPO_CARRO}`).getAttribute('aria-checked'),
+    ).toBe('true');
+
+    // 2 -> 1 (cliente intact), never to the list nor to step 1 directly before
+    await click('venta-volver');
+    expect(screen.getByTestId('venta-paso-1')).toBeDefined();
+    expect((screen.getByTestId('venta-cliente-numero') as HTMLInputElement).value).toBe('900123456');
+    expect(onCancel).not.toHaveBeenCalled();
+
+    // Step 1: "Volver" leaves the wizard (back to the list).
+    await click('venta-volver');
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('T11b (PT-1): the page route (no onCancel) has no "Volver" on step 1', () => {
+    renderVenta();
+    expect(screen.queryByTestId('venta-volver')).toBeNull();
+  });
+
+  it('T11c (PT-1/PT-2): changing the vehicle type invalidates plan/cantidad/placas only then', async () => {
+    renderVenta({ onCancel: vi.fn() });
+    await hastaPago();
+    await click('venta-volver'); // 5
+    await click('venta-volver'); // 4
+    await click('venta-volver'); // 3
+    await click('venta-volver'); // 2
+    // Same type again -> everything below is preserved.
+    await click('venta-paso-2-siguiente');
+    expect(screen.getByTestId(`venta-plan-${PLAN_CARRO}`).getAttribute('aria-pressed')).toBe('true');
+    await click('venta-volver'); // 2
+    // Different type -> the previous plan is gone from the catalog and selection.
+    await click(`venta-tipo-vehiculo-${TIPO_MOTO}`);
+    await click('venta-paso-2-siguiente');
+    expect(screen.queryByTestId(`venta-plan-${PLAN_CARRO}`)).toBeNull();
+    expect(screen.getByTestId(`venta-plan-${PLAN_MOTO}`).getAttribute('aria-pressed')).toBe('false');
+    expect((screen.getByTestId('venta-paso-3-siguiente') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('T12 (PT-1): the payment draft is kept across a back/forward trip', async () => {
+    renderVenta({ onCancel: vi.fn() });
+    await hastaPago();
+    expect(screen.getByTestId('pago-draft').textContent).toBe('');
+    await click('pago-editar-stub');
+    await click('venta-volver'); // 5
+    await click('venta-paso-5-siguiente'); // 6 again
+    expect(screen.getByTestId('pago-draft').textContent).toBe('99999');
+  });
+
+  it('T13 (PT-1): once charged there is no "Volver" and the payment cannot be re-sent', async () => {
+    mockTrigger.mockResolvedValueOnce({
+      uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
+      uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
+      uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
+      uuid_factura: FACTURA_BASE.uuid,
+      monto_prorrateado: null,
+      factura: FACTURA_BASE,
+      factura_electronica_error: null,
+    });
+    renderVenta({ onCancel: vi.fn() });
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    expect(mockTrigger).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('venta-volver')).toBeNull();
+    // The payment step is gone: the stub (second submit) is unreachable.
+    expect(screen.queryByTestId('pago-confirmar-stub')).toBeNull();
+  });
+
+  it('T14 (PT-2): a car plate is rejected when the vehicle type is moto', async () => {
+    renderVenta();
+    await paso1();
+    await paso2(TIPO_MOTO);
+    await paso3(PLAN_MOTO);
+    await paso4();
+    await paso5('ABC123'); // auto format, type = moto
+    expect(screen.getByTestId('venta-placas-format-error').textContent).toContain(
+      'placa_tipo_incompatible',
     );
+    expect(screen.queryByTestId('venta-paso-6')).toBeNull();
+    await paso5('ABC12D'); // moto format
+    expect(screen.getByTestId('venta-paso-6')).toBeDefined();
   });
 });

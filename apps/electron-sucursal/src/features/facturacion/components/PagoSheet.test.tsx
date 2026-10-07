@@ -31,10 +31,9 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
-// HU-F8.2 — PagoSheet now calls `navigate('/factura-electronica/<uuid>')`
-// after pago 201 (REQ-OPS-169). Stub the navigate hook so the tests
-// stay unit-scoped (no router wrapper needed). The navigate call is
-// end-to-end covered by the e2e fe.spec.ts S1 stub.
+// The FE is ALWAYS emitted by the backend after the charge, so PagoSheet no
+// longer redirects to the FE detail page (P11 asserts that `navigate` is NOT
+// called). The hook stays stubbed so no router wrapper is needed.
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof ReactRouterDom>('react-router-dom');
@@ -318,5 +317,74 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     expect(payload.referencia).toBe('VOUCHER-123');
     expect(payload.voucher).toBeUndefined();
     expect(payload.items).toEqual([{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 5000 }]);
+  });
+
+  // --- TRANSVERSAL: electronic invoice is always emitted (consumidor final by default) ---
+  const abrirYPagar = async (): Promise<void> => {
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
+        total_cop: 5000,
+      }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+  };
+
+  it('P11: no toggle decides the FE -- fixed consumidor-final notice; charge never calls POST /facturacion/factura-electronica nor navigates', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    mockNavigate.mockClear();
+    mockTrigger.mockResolvedValue({
+      ...FACTURA_MOCK,
+      factura_electronica: {
+        uuid: '11111111-1111-1111-1111-111111111111',
+        prefijo: 'SETP',
+        consecutivo: 1,
+        estado_dian: 'pendiente',
+        cufe: null,
+      },
+    });
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 4200,
+        total_cop: 5000,
+      }),
+    );
+    expect(screen.getByTestId('pago-fe-aviso')).toBeDefined();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    // The emitted-FE state is shown in the receipt; the operator stays here.
+    expect(screen.getByTestId('factura-display-fe')).toBeDefined();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('factura-electronica'))).toBe(false);
+    fetchSpy.mockRestore();
+  });
+
+  it('P12: FE emission failed -> 201 + non-blocking pending notice; receipt/close still work', async () => {
+    mockTrigger.mockResolvedValue({
+      ...FACTURA_MOCK,
+      factura_electronica: null,
+      factura_electronica_error: 'numeracion_agotada',
+      factura_electronica_pendiente: true,
+    });
+    await abrirYPagar();
+    const warning = screen.getByTestId('factura-display-warning');
+    expect(warning.textContent).toContain('fe.aviso.pendiente');
+    expect(warning.textContent).toContain('numeracionAgotada');
+    // The payment is NOT undone and the receipt can be closed.
+    expect(screen.getByTestId('factura-display-cerrar')).toBeDefined();
+    act(() => {
+      fireEvent.click(screen.getByTestId('factura-display-cerrar'));
+    });
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
   });
 });

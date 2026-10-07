@@ -38,6 +38,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
 import { useAuthStore } from '@parkos/ui-kit/store';
+import { syncSucursalContextFromAccessToken } from '@parkos/ui-kit/fetch';
 
 import { LoginForm, type LoginErrorState } from '../components/LoginForm';
 import { LockoutBlock } from '../components/LockoutBlock';
@@ -153,6 +154,10 @@ export function Login(): JSX.Element {
       // refresh + expiresAt simultáneamente). El redirect lo dispara el
       // useEffect cuando SWR resuelve `user` post-/auth/me. Reset del
       // attempt counter (F11.4) — el operador logró entrar.
+      // PT-2: a supervisor (`admin-` token) must send X-Sucursal-Context on
+      // every branch-API call; derive it from the token's `sucursal` claim
+      // BEFORE tokens land so the first /auth/me already carries it.
+      syncSucursalContextFromAccessToken(pair.access_token);
       setTokens(pair.access_token, pair.refresh_token, pair.expires_in);
       setAttemptCount(0);
     } catch (err) {
@@ -207,6 +212,7 @@ export function Login(): JSX.Element {
         setChangeErrorState({ kind: 'server', status: 500 });
         return;
       }
+      syncSucursalContextFromAccessToken(pair.access_token);
       setTokens(pair.access_token, pair.refresh_token, pair.expires_in);
       setAttemptCount(0);
       // useEffect arriba detecta isAuthenticated=true y redirige a '/'.
