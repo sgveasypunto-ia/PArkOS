@@ -223,6 +223,7 @@ async def _dispatch_repo_call(
     *,
     actor_uuid: uuid_lib.UUID,
     log_tx: bool,
+    hints: dict[str, Any] | None = None,
 ) -> Any:
     """The one ``apply_strategy`` -> ``repo/*`` dispatch table (REQ-MOT-001).
 
@@ -254,7 +255,7 @@ async def _dispatch_repo_call(
     strategy = spec.apply_strategy
 
     if strategy == "close_and_insert":
-        current_uuid = payload.get("current_uuid")
+        current_uuid = payload.get("current_uuid", hints.get("current_uuid") if hints else None)
         new_attrs = {k: v for k, v in payload.items() if k != "current_uuid"}
         return await versioned.close_and_insert(
             session,
@@ -284,7 +285,7 @@ async def _dispatch_repo_call(
         )
 
     if strategy == "append_transition":
-        parent_uuid = payload.get("parent_uuid")
+        parent_uuid = payload.get("parent_uuid", hints.get("parent_uuid") if hints else None)
         new_attrs = {k: v for k, v in payload.items() if k != "parent_uuid"}
         return await workflow.append_transition(
             session,
@@ -400,6 +401,12 @@ async def apply_row(
     # ``_coerce_wire_payload``'s own docstring for the full "why" (ISO
     # string dates/datetimes from JSONB/JSON crossing the wire; asyncpg
     # requires the real instance for a DATE/TIMESTAMP bind).
+    # ``current_uuid`` / ``parent_uuid`` are dispatch hints, not columns:
+    # ``_coerce_wire_payload`` strips them, so capture them first and hand
+    # them to the hooks and to the repo dispatch explicitly.
+    dispatch_hints = {
+        k: payload[k] for k in ("current_uuid", "parent_uuid") if payload.get(k) is not None
+    }
     payload = _coerce_wire_payload(spec.model_cls, payload)
 
     metrics: dict[str, bool] = {
@@ -436,7 +443,7 @@ async def apply_row(
     if spec.hook_pre_insert is not None:
         ctx = HookContext(
             spec=spec,
-            payload=payload,
+            payload={**payload, **dispatch_hints},
             session=session,
             actor_uuid=actor_uuid,
             open_version=open_version,
@@ -488,7 +495,7 @@ async def apply_row(
     #    snapshot_columns (D20) travel inside `payload` verbatim; nothing
     #    above or below this line re-reads a live catalog to recompute them.
     new_row = await _dispatch_repo_call(
-        session, spec, payload, actor_uuid=actor_uuid, log_tx=log_tx
+        session, spec, payload, actor_uuid=actor_uuid, log_tx=log_tx, hints=dispatch_hints
     )
     # repo/* helpers deliberately do not flush/refresh (they stay composable
     # inside a larger caller-owned TX — see repo/versioned.py's docstring).
@@ -505,7 +512,7 @@ async def apply_row(
     if spec.hook_post_insert is not None:
         ctx = HookContext(
             spec=spec,
-            payload=payload,
+            payload={**payload, **dispatch_hints},
             session=session,
             actor_uuid=actor_uuid,
             branch_uuid=branch_uuid,
