@@ -4,7 +4,10 @@
 ``repo/salida.py::buscar_ingreso_activo_por_uuid`` and the V8
 duplicate-plate guard (``repo/ingreso.py::existe_ingreso_activo``) must
 agree on what "active" means. A salida whose ``anulaciones`` row is
-``ejecutada`` never happened (HU-F8.1), so the vehicle is still inside.
+``ejecutada`` never happened (HU-F8.1), so the vehicle is still inside; an
+ingreso whose own ``tipo_anulable='ingreso'`` anulacion is ``ejecutada`` never
+happened either (D3: ``mv_ocupacion_diaria`` and the cupo label, migration
+0091, already exclude it), so it is not active anywhere.
 
 Read-only fragment; no writes live here.
 """
@@ -28,3 +31,21 @@ def salida_vigente_exists_sql(ingreso_ref: str) -> str:
                     AND a.estado = 'ejecutada'
                 )
             )"""
+
+
+def ingreso_anulado_exists_sql(ingreso_ref: str) -> str:
+    """``EXISTS(...)`` true when ``ingreso_ref`` itself was annulled (executed)."""
+    return f"""EXISTS (
+              SELECT 1 FROM prod.anulaciones a
+              WHERE a.uuid_ingreso = {ingreso_ref}
+                AND a.tipo_anulable = 'ingreso'
+                AND a.estado = 'ejecutada'
+            )"""
+
+
+def ingreso_activo_sql(ingreso_ref: str) -> str:
+    """SQL boolean: the ingreso counts as inside (no live salida, not annulled)."""
+    return (
+        f"(NOT {salida_vigente_exists_sql(ingreso_ref)} "
+        f"AND NOT {ingreso_anulado_exists_sql(ingreso_ref)})"
+    )

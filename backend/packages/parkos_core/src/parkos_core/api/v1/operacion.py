@@ -74,7 +74,10 @@ from ...repo.ingreso import (
     validar_tarifa_vigente,
     validar_tipo_vehiculo_vigente,
 )
-from ...repo.ingreso_activo import salida_vigente_exists_sql
+from ...repo.ingreso_activo import (
+    ingreso_anulado_exists_sql,
+    salida_vigente_exists_sql,
+)
 from ...repo.ocupacion import get_ocupacion_puros_activos
 from ...repo.placa import detectar_tipo_vehiculo
 from ...repo.salida import (
@@ -999,7 +1002,18 @@ async def get_ingreso_estado(
     )
     salidas_exists = (await session.execute(salidas_exists_stmt, {"ingreso_uuid": str(uuid)})).scalar()
 
-    estado = "cerrado" if salidas_exists else "abierto"
+    if salidas_exists:
+        estado = "cerrado"
+    else:
+        # D3: an executed ``tipo_anulable='ingreso'`` anulacion voids the
+        # ingreso itself (the cupo/occupancy views already exclude it).
+        anulado = (
+            await session.execute(
+                text(f"SELECT {ingreso_anulado_exists_sql('CAST(:ingreso_uuid AS uuid)')}"),
+                {"ingreso_uuid": str(uuid)},
+            )
+        ).scalar()
+        estado = "anulada" if anulado else "abierto"
 
     return IngresoEstadoResponse(
         uuid_ingreso=ingreso.uuid,
@@ -1070,7 +1084,16 @@ async def list_ingresos(
                 ).exists()
             )
         )
-        stmt = stmt.where(~salida_vigente.exists())
+        # D3: same verdict as ``repo.ingreso_activo.ingreso_activo_sql`` -- an
+        # ingreso annulled by an executed ``tipo_anulable='ingreso'`` row is
+        # not inside.
+        ingreso_anulado = (
+            select(Anulaciones.uuid)
+            .where(Anulaciones.uuid_ingreso == Ingreso.uuid)
+            .where(Anulaciones.tipo_anulable == "ingreso")
+            .where(Anulaciones.estado == "ejecutada")
+        )
+        stmt = stmt.where(~salida_vigente.exists(), ~ingreso_anulado.exists())
     stmt = stmt.order_by(Ingreso.created_at.desc()).limit(min(limit, 200))
     result = await session.execute(stmt)
     return [IngresoRead.model_validate(r) for r in result.scalars().all()]
