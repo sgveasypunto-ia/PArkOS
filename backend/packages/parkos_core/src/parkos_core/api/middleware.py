@@ -8,7 +8,8 @@ PR2 ships the full :class:`IdempotencyKeyMiddleware`:
     two callers using the same UUID string don't collide.
   - On a hit within the 24h TTL: replay the cached response (status,
     body, headers).
-  - On a hit past the TTL: 410 Gone.
+  - On a hit past the TTL: treated as a fresh request (handler runs, no
+    persist: the append-only UK keeps the stale row).
   - On a miss: pass through; on the response, persist the response for
     future replays.
 
@@ -129,14 +130,15 @@ class IdempotencyKeyMiddleware(BaseHTTPMiddleware):
             if cached is not None:
                 now = datetime.now(UTC).replace(tzinfo=None)
                 if cached.expires_at is not None and cached.expires_at <= now:
+                    # An expired key is a NEW request, never a permanent 410.
+                    # ``idempotency_keys`` is append-only with UK (issuer,
+                    # key_hash), so the stale row can neither be updated nor
+                    # re-inserted: run the handler and do not persist.
                     logger.info(
-                        "idempotency_key_expired",
+                        "idempotency_key_expired_passthrough",
                         extra={"issuer": issuer, "path": request.url.path},
                     )
-                    return JSONResponse(
-                        status_code=410,
-                        content={"error": "idempotency_key_expired"},
-                    )
+                    return await call_next(request)
 
                 logger.debug(
                     "idempotency_key_replay",
