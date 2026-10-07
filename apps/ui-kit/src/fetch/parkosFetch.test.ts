@@ -212,7 +212,7 @@ describe('parkosFetch — 401 refresh-once Mutex', () => {
 });
 
 describe('parkosFetch — Idempotency-Key SHA-256', () => {
-  it('U10: POST emits Idempotency-Key SHA-256(method|path|body)', async () => {
+  it('U10: POST emits a 64-char hex Idempotency-Key', async () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ ok: true }));
 
     await parkosFetch('/api/orders', {
@@ -225,6 +225,47 @@ describe('parkosFetch — Idempotency-Key SHA-256', () => {
     const headers = new Headers(init.headers);
     const key = headers.get('Idempotency-Key');
     expect(key).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('U10b: two identical POSTs get DISTINCT keys', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => jsonResponse({ ok: true }));
+    const call = () =>
+      parkosFetch('/api/caja-sesion/sesiones', { method: 'POST', body: JSON.stringify({ base: 0 }) });
+    await call();
+    await call();
+    const k1 = new Headers((spy.mock.calls[0]?.[1] as RequestInit).headers).get('Idempotency-Key');
+    const k2 = new Headers((spy.mock.calls[1]?.[1] as RequestInit).headers).get('Idempotency-Key');
+    expect(k1).toMatch(/^[0-9a-f]{64}$/);
+    expect(k2).toMatch(/^[0-9a-f]{64}$/);
+    expect(k1).not.toBe(k2);
+  });
+
+  it('U10c: a caller-supplied Idempotency-Key is respected', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse({ ok: true }));
+    await parkosFetch('/api/x', {
+      method: 'POST',
+      body: '{}',
+      headers: { 'Idempotency-Key': 'caller-key' },
+    });
+    const init = spy.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('Idempotency-Key')).toBe('caller-key');
+  });
+
+  it('U10d: 5xx retry reuses the SAME key', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(emptyResponse(503, 'boom'))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const p = parkosFetchRaw('/api/x', { method: 'POST', body: '{"a":1}' });
+    await vi.runAllTimersAsync();
+    await p;
+    expect(spy).toHaveBeenCalledTimes(2);
+    const k1 = new Headers((spy.mock.calls[0]?.[1] as RequestInit).headers).get('Idempotency-Key');
+    const k2 = new Headers((spy.mock.calls[1]?.[1] as RequestInit).headers).get('Idempotency-Key');
+    expect(k1).toMatch(/^[0-9a-f]{64}$/);
+    expect(k2).toBe(k1);
+    vi.useRealTimers();
   });
 
   it('U11: POST /auth/login skips Idempotency-Key', async () => {

@@ -110,6 +110,18 @@ function readSucursalHeader(): string | null {
   }
 }
 
+function randomNonce(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * One key per LOGICAL user intention: the per-call nonce makes two identical
+ * bodies (e.g. opening two shifts with the same base) distinct operations,
+ * while `withIdempotencyKey` pins the key so internal retries reuse it.
+ */
 async function idempotencyKey(
   method: string,
   url: string,
@@ -117,7 +129,7 @@ async function idempotencyKey(
 ): Promise<string> {
   const enc = new TextEncoder();
   const data = enc.encode(
-    `${method.toUpperCase()}|${url}|${JSON.stringify(body ?? null)}`,
+    `${method.toUpperCase()}|${url}|${JSON.stringify(body ?? null)}|${randomNonce()}`,
   );
   const hash = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(hash))
@@ -149,14 +161,28 @@ async function waitForAuthRehydration(): Promise<void> {
   });
 }
 
-async function buildInit(
+/**
+ * Pin the Idempotency-Key for this logical call. Respects a caller-set header;
+ * otherwise generates a nonce-based key. Recursive retries (5xx/408/network/
+ * 401-refresh) receive the pinned init, so they all reuse the SAME key.
+ */
+async function withIdempotencyKey(
   input: RequestInfo | URL,
   init?: ParkosFetchInit,
-): Promise<RequestInit> {
-  const headers = new Headers(init?.headers);
-  const url = typeof input === 'string' ? input : input.toString();
+): Promise<ParkosFetchInit | undefined> {
   const method = (init?.method ?? 'GET').toUpperCase();
+  const url = typeof input === 'string' ? input : input.toString();
+  const isMutational = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
+  if (!isMutational || url.includes('/auth/login')) return init;
+  const headers = new Headers(init?.headers);
+  if (headers.has('Idempotency-Key')) return init;
+  if (init?.skipIdempotencyKey) return init;
+  headers.set('Idempotency-Key', await idempotencyKey(method, url, init?.body));
+  return { ...init, headers };
+}
 
+async function buildInit(init?: ParkosFetchInit): Promise<RequestInit> {
+  const headers = new Headers(init?.headers);
   // (0) Wait for Zustand persist rehydration so accessToken is available.
   // Fix: SWR fires before Zustand rehydrates from localStorage, causing
   // null token → 401 → handle401 → refresh failure → auth cleared.
@@ -174,12 +200,9 @@ async function buildInit(
     headers.set('X-Sucursal-Context', sucHeader);
   }
 
-  // (3) Idempotency-Key para mutacionales, skip para /auth/login
-  const isMutational = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
-  const isLoginEndpoint = url.includes('/auth/login');
-  if (isMutational && !init?.skipIdempotencyKey && !isLoginEndpoint) {
-    headers.set('Idempotency-Key', await idempotencyKey(method, url, init?.body));
-  }
+  // (3) Idempotency-Key: assigned once per logical call in `parkosFetchRaw`
+  // (`withIdempotencyKey`); a caller-supplied header is preserved by the
+  // `new Headers(init.headers)` copy above.
 
   // (4) Content-Type default si body y no header
   if (init?.body && !headers.has('Content-Type')) {
@@ -224,7 +247,8 @@ export async function parkosFetchRaw(
   init?: ParkosFetchInit,
   attempt: number = 1,
 ): Promise<Response> {
-  const finalInit = await buildInit(input, init);
+  init = await withIdempotencyKey(input, init);
+  const finalInit = await buildInit(init);
 
   // F3.2 — DEC-F3.2-03: pre-flight gate solo para POST críticos antes del fetch.
   const method = (init?.method ?? 'GET').toUpperCase();
