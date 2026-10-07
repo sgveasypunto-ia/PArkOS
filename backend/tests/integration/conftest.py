@@ -311,3 +311,28 @@ async def tipos_vehiculo_restaurados(pg_engine, alembic_upgrade):
                 ),
                 {"orig": originales},
             )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _no_deferred_dian_dispatch_outlives_the_test():
+    """Cancel the fire-and-forget DIAN dispatches a test left running.
+
+    ``sync/hooks/impls/dian_dispatch_on_sync.py`` runs each dispatch as a
+    background task in its own session (after the apply committed): it inserts the
+    ``envio_dian`` row and then calls the provider -- unreachable here -- while its
+    transaction stays open. Left running, it outlives the test that spawned it and
+    the next test's ``TRUNCATE`` (a blocking psycopg call on the event-loop
+    thread, which also starves that very task) waits on its lock forever. No test
+    asserts on the outcome of a dispatch it did not await, so cancel (and thereby
+    roll back) whatever is still pending at the end of each test.
+    """
+    yield
+    import asyncio
+
+    from parkos_core.sync.hooks.impls import dian_dispatch_on_sync as dispatch_mod
+
+    pending = [t for t in list(dispatch_mod._BACKGROUND_TASKS) if not t.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
