@@ -292,11 +292,38 @@ def _allocate_line_taxes(
     return allocation
 
 
+def _net_line_bases(detalles: list[Any], impuestos: list[Any]) -> list[Decimal]:
+    """Taxable amount of each line.
+
+    Subscription lines are persisted at the taxable BASE already (their sum
+    equals ``factura_impuestos.base_calculo``). Rotacion / salida / servicio
+    lines are persisted at the tax-INCLUSIVE tariff price, while
+    ``factura_impuestos`` holds the base: adding the tax on top of those
+    gross lines would overcharge the document. When the line sum differs
+    from the taxable base the lines are netted pro rata to it (the last line
+    absorbs the rounding), so ``sum(lines) == base`` and base + tax == total.
+    """
+    gross = [_q(_dec(d.subtotal)) for d in detalles]
+    if not impuestos:
+        return gross
+    taxable = _q(max(_dec(getattr(i, "base_calculo", None)) for i in impuestos))
+    gross_total = sum(gross, Decimal(0))
+    if taxable == 0 or gross_total == 0 or abs(gross_total - taxable) <= _CENT:
+        return gross
+    nets: list[Decimal] = []
+    remaining = taxable
+    for idx, amount in enumerate(gross):
+        share = remaining if idx == len(gross) - 1 else _q(taxable * amount / gross_total)
+        nets.append(share)
+        remaining -= share
+    return nets
+
+
 def _build_detailed_body(
     invoice: etree._Element, detalles: list[Any], impuestos: list[Any]
 ) -> None:
     """Append TaxTotal + LegalMonetaryTotal + InvoiceLines from persisted rows."""
-    line_bases = [_q(_dec(d.subtotal)) for d in detalles]
+    line_bases = _net_line_bases(detalles, impuestos)
     base_total = sum(line_bases, Decimal(0))
     tax_amounts = [_q(_dec(getattr(i, "valor", None))) for i in impuestos]
     tax_total = sum(tax_amounts, Decimal(0))
@@ -347,7 +374,11 @@ def _build_detailed_body(
                 unit_code=_LINE_UNIT_CODE,
                 line_amount=_format_money(line_bases[idx]),
                 description=str(det.concepto or _LINE_DESCRIPTION),
-                price_amount=_format_money(_dec(det.valor_unitario)),
+                price_amount=_format_money(
+                    line_bases[idx] / Decimal(det.cantidad or 1)
+                    if line_bases[idx] != _q(_dec(det.subtotal))
+                    else _dec(det.valor_unitario)
+                ),
                 currency=_CURRENCY_CODE,
                 tax_total=_build_tax_total(
                     _format_money(line_tax), _CURRENCY_CODE, line_subtotals

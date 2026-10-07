@@ -85,6 +85,7 @@ if os.environ.get("PARKOS_DEPLOY", "cloud").lower() == "branch":
 
 from ...models.A.revocacion_factura import RevocacionFactura
 from ...constants import CLIENTE_ESTANDAR_UUID
+from ...db.tenancy import suspend_tenant_context
 from ...models.A.factura_detalle import FacturaDetalle
 from ...models.A.factura_impuestos import FacturaImpuestos
 from ...models.L_E.factura_electronica import FacturaElectronica
@@ -410,25 +411,29 @@ async def _load_lines_and_taxes(
     """
     from types import SimpleNamespace
 
-    detalles = list(
-        (
-            await session.execute(
-                select(FacturaDetalle)
-                .where(FacturaDetalle.uuid_factura == uuid_factura)
-                .order_by(FacturaDetalle.created_at.asc(), FacturaDetalle.uuid.asc())
+    # System-level read keyed by the invoice already resolved above: rows
+    # emitted before the creators stamped ``uuid_sucursal`` carry NULL there
+    # and the tenant listener would hide them under an admin context.
+    with suspend_tenant_context():
+        detalles = list(
+            (
+                await session.execute(
+                    select(FacturaDetalle)
+                    .where(FacturaDetalle.uuid_factura == uuid_factura)
+                    .order_by(FacturaDetalle.created_at.asc(), FacturaDetalle.uuid.asc())
+                )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
-    imp_rows = (
-        await session.execute(
-            select(FacturaImpuestos, Impuestos)
-            .join(Impuestos, FacturaImpuestos.uuid_impuesto == Impuestos.uuid, isouter=True)
-            .where(FacturaImpuestos.uuid_factura == uuid_factura)
-            .order_by(FacturaImpuestos.created_at.asc(), FacturaImpuestos.uuid.asc())
-        )
-    ).all()
+        imp_rows = (
+            await session.execute(
+                select(FacturaImpuestos, Impuestos)
+                .join(Impuestos, FacturaImpuestos.uuid_impuesto == Impuestos.uuid, isouter=True)
+                .where(FacturaImpuestos.uuid_factura == uuid_factura)
+                .order_by(FacturaImpuestos.created_at.asc(), FacturaImpuestos.uuid.asc())
+            )
+        ).all()
     impuestos = [
         SimpleNamespace(
             codigo=cat.codigo if cat is not None else None,

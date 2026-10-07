@@ -333,3 +333,33 @@ def test_ubl_without_tax_rows_has_zero_tax_and_payable_equals_base() -> None:
     assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "0.00"
     assert _xp(doc, "/*/cac:TaxTotal/cac:TaxSubtotal") == []
     assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:PayableAmount")[0].text == "100840.34"
+
+
+def test_ubl_tax_inclusive_lines_are_netted_to_the_taxable_base() -> None:
+    """Rotacion/salida lines are persisted at the tax-INCLUSIVE tariff price
+    (200) while ``factura_impuestos`` holds base 168.07 + IVA 31.93. The UBL
+    must not add the tax on top of the gross line: lines are netted to the
+    taxable base so base + tax == the 200.00 charged."""
+    from types import SimpleNamespace
+
+    detalles = [
+        SimpleNamespace(concepto="Parqueo", cantidad=1, valor_unitario=200.00, subtotal=200.00)
+    ]
+    impuestos = [
+        SimpleNamespace(
+            codigo="IVA", nombre="IVA", base_calculo=168.07,
+            porcentaje_aplicado=0.19, valor=31.93,
+        )
+    ]
+    xml_bytes = serialize(_build_factura_mock(), None, detalles=detalles, impuestos=impuestos)
+    doc = etree.fromstring(xml_bytes)
+
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:LineExtensionAmount")[0].text == "168.07"
+    assert _xp(doc, "/*/cac:LegalMonetaryTotal/cbc:PayableAmount")[0].text == "200.00"
+    assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "31.93"
+    line = _xp(doc, "/*/cac:InvoiceLine")[0]
+    assert _xp(line, "cbc:LineExtensionAmount")[0].text == "168.07"
+    assert _xp(line, "cac:Price/cbc:PriceAmount")[0].text == "168.07"
+    assert _xp(line, "cac:TaxTotal/cbc:TaxAmount")[0].text == "31.93"
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(doc), schema.error_log
