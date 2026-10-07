@@ -59,6 +59,7 @@ import {
   type VentaSuscripcionCreate,
 } from '../hooks/useVentaSuscripcion';
 import { useTiposSubscripciones } from '../hooks/useTiposSubscripciones';
+import { useIvaVigente } from '../../facturacion/hooks/useIvaVigente';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { feWarningMessage } from '../../facturacion/lib/feEstado';
 import { hoyBogotaISO } from '../lib/fechaInicio';
@@ -307,12 +308,23 @@ export function Venta({
     isLoading: planesLoading,
   } = useTiposSubscripciones(uuid_sucursal, state.uuid_tipo_vehiculo ?? null);
 
+  // El backend cobra `plan.valor + IVA` (clientes_venta.py: total_con_iva),
+  // así que el total a cobrar (y el monto recibido por defecto del pago)
+  // debe incluir el IVA vigente; si no, el default queda por debajo.
+  const ivaVigente = useIvaVigente(true);
+
   const selectedPlan = useMemo(() => {
     if (!planes || !state.uuid_tipo_subscripcion) return null;
     return (
       planes.find((p) => p.uuid === state.uuid_tipo_subscripcion) ?? null
     );
   }, [planes, state.uuid_tipo_subscripcion]);
+  const totalConIva =
+    ivaVigente.porcentaje === null
+      ? null
+      : Math.round(
+          (selectedPlan?.valor ?? PLAN_PREVIEW_VALOR) * (1 + ivaVigente.porcentaje) * 100,
+        ) / 100;
 
   const selectedTipoVehiculo = useMemo(
     () => tiposVehiculo.find((tv) => tv.uuid === state.uuid_tipo_vehiculo) ?? null,
@@ -964,9 +976,19 @@ export function Venta({
             The FE is always emitted: the checkbox only chooses to bill the
             subscriber instead of "consumidor final".
           */}
+          {totalConIva === null ? (
+            <p
+              className="text-sm text-muted-foreground"
+              data-testid="venta-iva-cargando"
+            >
+              {t('suscripciones:venta.paso6.iva_cargando', {
+                defaultValue: 'Calculando el total con IVA…',
+              })}
+            </p>
+          ) : (
           <PagoModal
             uuid_ingreso={null}
-            total_cop={selectedPlan?.valor ?? PLAN_PREVIEW_VALOR}
+            total_cop={totalConIva}
             clientePrefill={clientePrefill}
             identificacionReadonly
             draft={pagoDraft}
@@ -976,6 +998,7 @@ export function Venta({
             })}
             onSubmit={handlePagoSubmit}
           />
+          )}
           {isMutating && <span data-testid="venta-mutating">Procesando…</span>}
         </section>
       )}
