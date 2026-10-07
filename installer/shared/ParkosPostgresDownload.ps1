@@ -26,10 +26,15 @@
 
 $script:ParkosPgRequiredBinaries = @('pg_ctl.exe', 'initdb.exe', 'psql.exe')
 
-# Version fijada (verificada con HEAD 200 contra get.enterprisedb.com; EDB no
-# publica un SHA-256 oficial por archivo, asi que no se pinea hash: se registra
-# el hash calculado en la primera descarga en <zip>.sha256 y se compara en
-# cada reuso).
+# Version fijada (verificada con HEAD 200 contra get.enterprisedb.com). EDB no
+# publica un SHA-256 oficial por archivo, asi que el hash esperado se fija aqui
+# (ParkosPgPinnedSha256) con el del ZIP completo versionado en el repo
+# (installer\payload\parts\payload-parts.json y postgres\<zip>.sha256; un test lo
+# cruza). Todo ZIP que se use (payload, cache o descarga) debe coincidir; el
+# hash que se registra en <zip>.sha256 en la primera descarga ya no es la
+# fuente de confianza. Al subir de version: cambiar Version y este hash a la vez.
+$script:ParkosPgPinnedSha256 = '25e6fcdfb8caec38691bf461125e7564508760666f7b8e5dc6a5f0818f58f81e'
+
 function Get-ParkosPostgresDownloadInfo {
     $version = '16.15-1'
     $fileName = "postgresql-$version-windows-x64-binaries.zip"
@@ -37,6 +42,7 @@ function Get-ParkosPostgresDownloadInfo {
         Version  = $version
         FileName = $fileName
         Url      = "https://get.enterprisedb.com/postgresql/$fileName"
+        Sha256   = $script:ParkosPgPinnedSha256
     }
 }
 
@@ -303,6 +309,14 @@ function Restore-ParkosPostgresZipFromParts {
 # Postgres ZIP
 # ---------------------------------------------------------------------------
 
+# $true si el SHA-256 del archivo es el fijado. Falla cerrado: sin hash fijado
+# lanza (nunca acepta "cualquier zip").
+function Test-ParkosPostgresZipPinnedHash {
+    param([Parameter(Mandatory)][string]$Path, [string]$Sha256)
+    if (-not $Sha256) { throw 'No hay SHA-256 fijado para el ZIP de Postgres (ParkosPgPinnedSha256): no se puede verificar; se rechaza el archivo.' }
+    return ((Get-ParkosFileSha256 -Path $Path) -eq $Sha256.ToLowerInvariant())
+}
+
 # Devuelve la ruta de un zip de Postgres valido: cache (-CacheDir), payload del
 # instalador (-PayloadDir: nombre fijado o 'postgresql-16-windows-x64-binaries.zip')
 # o descarga nueva a <CacheDir> (.part -> validar -> renombrar).
@@ -318,13 +332,16 @@ function Get-ParkosPostgresZip {
     $info = Get-ParkosPostgresDownloadInfo
     $cached = Join-Path $CacheDir $info.FileName
 
-    # 1) Payload del instalador: ZIP completo (sin hash registrado).
+    # 1) Payload del instalador: ZIP completo (con el SHA-256 fijado).
     if ($PayloadDir) {
         foreach ($name in @($info.FileName, 'postgresql-16-windows-x64-binaries.zip')) {
             $p = Join-Path $PayloadDir $name
             if ((Test-Path $p) -and (Test-ParkosPostgresZip -Path $p)) {
-                Write-ParkosDownloadLog $Logger "Postgres ZIP en payload: $p"
-                return $p
+                if (Test-ParkosPostgresZipPinnedHash -Path $p -Sha256 $info.Sha256) {
+                    Write-ParkosDownloadLog $Logger "Postgres ZIP en payload: $p"
+                    return $p
+                }
+                Write-ParkosDownloadLog $Logger "El ZIP $p no coincide con el SHA-256 fijado de Postgres $($info.Version): se ignora."
             }
         }
 
@@ -352,11 +369,17 @@ function Get-ParkosPostgresZip {
                 Set-Content -Path $hashFile -Value $actual -NoNewline
                 Write-ParkosDownloadLog $Logger "Hash SHA-256 registrado (primer uso): $actual"
             }
-            Write-ParkosDownloadLog $Logger "Postgres ZIP en cache: $cached"
-            return $cached
+            if (Test-ParkosPostgresZipPinnedHash -Path $cached -Sha256 $info.Sha256) {
+                Write-ParkosDownloadLog $Logger "Postgres ZIP en cache: $cached"
+                return $cached
+            }
+            Write-ParkosDownloadLog $Logger "El ZIP en cache ($actual) no coincide con el SHA-256 fijado de Postgres $($info.Version); se aparta como .bad y se descarga de nuevo."
+            Move-Item -Path $cached -Destination "$cached.bad" -Force
+            Remove-Item -LiteralPath $hashFile -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-ParkosDownloadLog $Logger "El ZIP en cache es invalido; se aparta como .bad y se descarga de nuevo."
+            Move-Item -Path $cached -Destination "$cached.bad" -Force
         }
-        Write-ParkosDownloadLog $Logger "El ZIP en cache es invalido; se aparta como .bad y se descarga de nuevo."
-        Move-Item -Path $cached -Destination "$cached.bad" -Force
     }
 
     # 4) Descarga con reintentos (ultimo recurso).
@@ -370,6 +393,10 @@ function Get-ParkosPostgresZip {
             if (-not (Test-ParkosPostgresZip -Path $part)) {
                 Remove-Item $part -Force -ErrorAction SilentlyContinue
                 throw 'el archivo descargado no es un ZIP de Postgres valido (faltan pg_ctl/initdb/psql).'
+            }
+            if (-not (Test-ParkosPostgresZipPinnedHash -Path $part -Sha256 $info.Sha256)) {
+                Remove-Item $part -Force -ErrorAction SilentlyContinue
+                throw "el ZIP descargado no coincide con el SHA-256 fijado ($($info.Sha256)) de Postgres $($info.Version): se descarta."
             }
             Move-Item -Path $part -Destination $cached -Force
             $hash = Get-ParkosFileSha256 -Path $cached
