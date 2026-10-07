@@ -21,7 +21,7 @@ import { useState } from 'react';
 import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useNavigate } from 'react-router-dom';
-import { mutate } from 'swr';
+import { useSWRConfig } from 'swr';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
 import { useAuthStore } from '@parkos/ui-kit/store';
@@ -45,6 +45,8 @@ import {
 
 export function AbrirTurno(): JSX.Element {
   const navigate = useNavigate();
+  // Cache-bound mutate: the SWR cache is scoped per operator session.
+  const { mutate } = useSWRConfig();
   const { user, sucursal } = useAuth();
   const [errorState, setErrorState] = useState<AbrirTurnoErrorState>(null);
 

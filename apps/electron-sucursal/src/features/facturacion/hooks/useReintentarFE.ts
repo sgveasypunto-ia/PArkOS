@@ -26,7 +26,8 @@
  * invariant is enforced server-side.
  */
 import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
-import { mutate as globalMutate } from 'swr';
+import { useCallback } from 'react';
+import { useSWRConfig, type ScopedMutator } from 'swr';
 
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
@@ -86,6 +87,7 @@ async function handle401(): Promise<never> {
 async function mutateFn(
   _key: string,
   init: { arg: string },
+  mutate: ScopedMutator,
 ): Promise<EnvioDianRetryRead> {
   const uuidFe = init.arg;
   const path = `${POST_PATH_PREFIX}/${uuidFe}/reintentar`;
@@ -106,7 +108,7 @@ async function mutateFn(
     // `refreshInterval: 30_000` (the new chain tip is `pendiente`,
     // non-terminal). `mutate()` is awaited before `trigger()` returns
     // to avoid a stale `aceptado` flash (R1).
-    await globalMutate(`${FE_CACHE_KEY_PREFIX}/${uuidFe}`);
+    await mutate(`${FE_CACHE_KEY_PREFIX}/${uuidFe}`);
 
     return {
       uuid_envio: raw.uuid_envio,
@@ -140,8 +142,14 @@ async function mutateFn(
  * 201 → `mutate(cache)` re-engages polling + returns `{uuid_envio, estado:'pendiente', uuid_envio_padre}`.
  */
 export function useReintentarFE(): UseReintentarFEReturn {
+  // Cache-bound mutate: the SWR cache is scoped per operator session.
+  const { mutate } = useSWRConfig();
+  const fetcher = useCallback(
+    (key: string, init: { arg: string }) => mutateFn(key, init, mutate),
+    [mutate],
+  );
   const swr: SWRMutationResponse<EnvioDianRetryRead, Error, string, string> =
-    useSWRMutation(POST_PATH_PREFIX, mutateFn);
+    useSWRMutation(POST_PATH_PREFIX, fetcher);
 
   return {
     trigger: swr.trigger as UseReintentarFEReturn['trigger'],
