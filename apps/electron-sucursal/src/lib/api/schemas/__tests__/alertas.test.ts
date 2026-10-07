@@ -26,7 +26,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { AlertaSchema, AlertaReadListSchema } from '../alertas';
+import { AlertaSchema, AlertaReadListSchema, parseAlertasPayload } from '../alertas';
 
 const VALID_UUID = '00000000-0000-0000-0000-000000000001';
 
@@ -81,6 +81,19 @@ describe('AlertaSchema — REQ-OPS-177 + REQ-OPS-180 (HU-F11.2)', () => {
   it('S2c: `valor_diferencia_datafono` was removed from the BE wire schema -- both shapes parse', () => {
     const { valor_diferencia_datafono: _drop, ...sinDatafono } = BASE_ROW;
     expect(() => AlertaSchema.parse(sinDatafono)).not.toThrow();
+  });
+
+  it('S2e: the list endpoint envelope `{ items, next_cursor }` and a bare array both parse', () => {
+    const envelope = { items: [{ ...BASE_ROW, severity: 'critical' }], next_cursor: null };
+    expect(parseAlertasPayload(envelope)).toHaveLength(1);
+    expect(parseAlertasPayload([BASE_ROW])).toHaveLength(1);
+    expect(() => parseAlertasPayload({ items: [{ ...BASE_ROW, estado: 'activa' }] })).toThrow();
+  });
+
+  it('S2d: the per-alert `severity` the backend sends is accepted (strict schema must not reject the whole list)', () => {
+    for (const severity of ['critical', 'warning', 'info', null]) {
+      expect(AlertaSchema.parse({ ...BASE_ROW, severity }).severity).toBe(severity);
+    }
   });
 
   it('S3a: `datos_nuevos` is OPTIONAL — schema parses a BE row that omits the field today (DA-F11.2-14)', () => {

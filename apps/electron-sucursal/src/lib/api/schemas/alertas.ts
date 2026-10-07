@@ -50,12 +50,31 @@ export const AlertaSchema = z
      * response AND gracefully picks up the column when the BE lands it.
      */
     datos_nuevos: z.record(z.unknown()).nullable().optional(),
+    /**
+     * Per-alert severity computed by the backend (`critical` | `warning` |
+     * `info`, or null without an `alert_types` row). The schema is strict, so
+     * the key must be declared or the whole list fails to parse.
+     */
+    severity: z.string().nullable().optional(),
   })
   .strict();
 
 export type AlertaRead = z.infer<typeof AlertaSchema>;
 
 export const AlertaReadListSchema = z.array(AlertaSchema);
+
+/**
+ * `GET /workflows/alerta` answers the cursor-paginated envelope
+ * `{ items, next_cursor }` (HU-F19.5); older shapes answered a bare array.
+ * Accept both so the panel does not fail to parse a valid response.
+ */
+export function parseAlertasPayload(raw: unknown): AlertaRead[] {
+  const items =
+    raw !== null && typeof raw === 'object' && !Array.isArray(raw) && 'items' in raw
+      ? (raw as { items: unknown }).items
+      : raw;
+  return AlertaReadListSchema.parse(items);
+}
 
 /**
  * `AlertTypeSchema` — the second SWR payload
