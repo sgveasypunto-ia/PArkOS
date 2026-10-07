@@ -33,6 +33,19 @@ import { getTarifaSucursalByUuid, type TarifaSucursalRead } from '../api/tarifas
 
 const DEDUPING_INTERVAL_MS = 5 * 60 * 1000;
 
+const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * `true` solo para un uuid utilizable: no nulo, no vacio y distinto del
+ * uuid nil. El nil es el placeholder que `SalidaPanel` inyecta en la
+ * cotizacion de la rama de error; consultarlo siempre da 404.
+ */
+export function isUsableTarifaUuid(uuid: string | null | undefined): uuid is string {
+  if (!uuid) return false;
+  const v = uuid.trim();
+  return v !== '' && v !== NIL_UUID;
+}
+
 export interface UseTarifaByUuidReturn {
   /** Tarifa aplicable al uuid; `null` mientras carga o si 404. */
   tarifa: TarifaSucursalRead | null;
@@ -52,16 +65,16 @@ export interface UseTarifaByUuidReturn {
  * cerrada o uuid mal tipeado). El llamador debe hacer fallback al
  * UUID cuando `tarifa === null && !isLoading && !error`.
  */
-export function useTarifaByUuid(uuid: string | null): UseTarifaByUuidReturn {
+export function useTarifaByUuid(uuid: string | null | undefined): UseTarifaByUuidReturn {
   const accessToken = useAuthStore((s) => s.accessToken);
-  const key = uuid && accessToken
+  const key = isUsableTarifaUuid(uuid) && accessToken
     ? `/empresa/tarifas-sucursal/${uuid}`
     : null;
 
   const { data, error, isLoading, mutate } = useSWR<TarifaSucursalRead | null>(
     key,
     async () => {
-      if (uuid === null) return null;
+      if (!isUsableTarifaUuid(uuid)) return null;
       try {
         return await getTarifaSucursalByUuid(uuid);
       } catch (err) {
