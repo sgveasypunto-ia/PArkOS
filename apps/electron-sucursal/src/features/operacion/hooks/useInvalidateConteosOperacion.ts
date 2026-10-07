@@ -77,12 +77,14 @@ export function useInvalidateConteosOperacion(): (
         matchers.push(
           (key) =>
             typeof key === 'string' && key.includes(`/operacion/ocupacion?uuid_sucursal=${suc}`),
+          // Every ingresos lookup, whatever its query string: the
+          // per-sucursal list AND the per-placa lookup behind
+          // `useIngresoActivo` (`?placa=X`, which carries no sucursal
+          // in its key). Matching on the sucursal here left the
+          // per-placa cache stale after a salida, so a re-ingreso of the
+          // same plate still saw the closed row (H6).
           (key) =>
-            typeof key === 'string' && key.includes(`/operacion/ingresos?uuid_sucursal=${suc}`),
-          (key) =>
-            // Catch the alternative key shape (per-placa lookup) — same
-            // canonical path prefix, different query string.
-            typeof key === 'string' && key.includes('/api/v1/operacion/ingresos') && key.includes(suc),
+            typeof key === 'string' && key.includes('/operacion/ingresos'),
         );
       }
 
