@@ -25,6 +25,7 @@ from pathlib import Path
 
 import httpx
 import pytest_asyncio
+from _seeds import ensure_usuario, grant_admin_scope, grant_permission
 from fastapi import APIRouter, FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -40,7 +41,7 @@ from parkos_core.api.v1.caja_arqueo import router as caja_arqueo_router_obj  # n
 from parkos_core.auth.tokens import issue_token  # noqa: E402
 from parkos_core.db.engine import get_session  # noqa: E402
 from parkos_core.models.A.arqueo import Arqueo  # noqa: E402
-from parkos_core.models.V.caja import Caja  # noqa: E402
+from parkos_core.models.A.caja import Caja  # noqa: E402
 from parkos_core.models.V.tipo_arqueo import TipoArqueo  # noqa: E402
 from parkos_core.models.L_S.sesion import Sesion  # noqa: E402
 from parkos_core.repo import append_only  # noqa: E402
@@ -57,7 +58,10 @@ def _build_cloud_admin_app(pg_engine) -> tuple[FastAPI, callable]:
 
     app = FastAPI()
     outer = APIRouter(prefix="/api/v1")
-    outer.include_router(caja_arqueo_router_obj)
+    # The dedicated router is prefix-less: ``api/v1/caja.py`` mounts it under ``/caja``.
+    caja = APIRouter(prefix="/caja")
+    caja.include_router(caja_arqueo_router_obj)
+    outer.include_router(caja)
     app.include_router(outer)
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
@@ -68,6 +72,37 @@ def _build_cloud_admin_app(pg_engine) -> tuple[FastAPI, callable]:
 
     app.dependency_overrides[get_session] = _session_override
     return app
+
+
+# The admin actor is a real, DB-backed user holding ``audit_read``
+# (``require_permission`` reads ``permisos_usuario``, never the JWT claims) and
+# its branch scope is read from ``usuarios_sucursal``. A fresh actor per test
+# keeps the listings of the other tests of the (shared) database out of scope.
+@pytest_asyncio.fixture
+async def admin_actor(pg_engine, alembic_upgrade) -> uuid_lib.UUID:
+    actor = uuid_lib.uuid4()
+    await grant_permission(pg_engine, actor, "audit_read")
+    return actor
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _arqueo_table_empty(pg_dsn, alembic_upgrade):
+    """The admin listing is GLOBAL (no tenant scope) and the tests assert exact
+    counts, so they need ``prod.arqueo`` empty. [A] rows cannot be deleted, but
+    the suite's own idiom (``TRUNCATE``) is fine; the root conftest restores the
+    migration-seeded data after the module."""
+    import psycopg
+
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute("TRUNCATE prod.arqueo CASCADE")
+        conn.commit()
+
+
+async def _new_branch(pg_engine, admin_actor: uuid_lib.UUID) -> uuid_lib.UUID:
+    """A real ``sucursal`` inside the admin's scope (arqueo.uuid_sucursal is a FK)."""
+    sucursal = uuid_lib.uuid4()
+    await grant_admin_scope(pg_engine, admin_actor, [sucursal])
+    return sucursal
 
 
 def _admin_token(
@@ -110,7 +145,7 @@ def _operador_token(*, sucursal_uuid: uuid_lib.UUID) -> str:
     )
 
 
-def _seed_tipo_arqueo(
+async def _seed_tipo_arqueo(
     session, *, codigo: str, descripcion: str = ""
 ) -> TipoArqueo:
     """Insert a vigente ``prod.tipo_arqueo`` row and flush so the
@@ -129,12 +164,13 @@ def _seed_tipo_arqueo(
         sync_status="sincronizado",
     )
     session.add(row)
-    session.flush()
+    await session.flush()
     return row
 
 
-def _seed_sesion(
+async def _seed_sesion(
     session,
+    pg_engine,
     *,
     uuid_sucursal: uuid_lib.UUID,
     fecha_apertura: datetime,
@@ -146,7 +182,7 @@ def _seed_sesion(
     asserts at Step 4 of the arqueo handler)."""
     row = Sesion(
         uuid_sucursal=uuid_sucursal,
-        uuid_usuario=uuid_lib.uuid4(),
+        uuid_usuario=await ensure_usuario(pg_engine, uuid_lib.uuid4()),
         timestamp_apertura=fecha_apertura,
         timestamp_cierre=None,
         valor_inicial_efectivo=valor_inicial_efectivo,
@@ -156,11 +192,11 @@ def _seed_sesion(
         sync_status="sincronizado",
     )
     session.add(row)
-    session.flush()
+    await session.flush()
     return row
 
 
-def _seed_arqueo(
+async def _seed_arqueo(
     session,
     *,
     uuid_sucursal: uuid_lib.UUID | None,
@@ -186,7 +222,7 @@ def _seed_arqueo(
         "valor_datafono_reportado": 0,
         "created_at": created_at,
     }
-    return append_only.append_event(
+    return await append_only.append_event(
         session,
         Arqueo,
         attrs,
@@ -200,20 +236,20 @@ def _seed_arqueo(
 
 
 async def test_t1_no_selectors_returns_most_recent(
-    pg_engine, alembic_upgrade, pg_session
+    pg_engine, alembic_upgrade, pg_session, admin_actor
 ) -> None:
     """T1: without any filter the endpoint returns the most-recent
     ``limit=20`` arqueos ordered DESC by ``created_at``. With only 3
     seeded rows we get all three (the page is the last one)."""
     app = _build_cloud_admin_app(pg_engine)
-    admin_jwt = _admin_token()
+    admin_jwt = _admin_token(actor_uuid=admin_actor)
 
     now = datetime.now(UTC).replace(tzinfo=None)
-    tipo = _seed_tipo_arqueo(pg_session, codigo="auditoria")
+    tipo = await _seed_tipo_arqueo(pg_session, codigo="auditoria")
     for offset_minutes in (5, 4, 3):
-        _seed_arqueo(
+        await _seed_arqueo(
             pg_session,
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=await _new_branch(pg_engine, admin_actor),
             uuid_tipo_arqueo=tipo.uuid,
             created_at=now - timedelta(minutes=offset_minutes),
         )
@@ -236,7 +272,7 @@ async def test_t1_no_selectors_returns_most_recent(
 
 
 async def test_t2_uuid_sucursal_filter_restricts_to_branch(
-    pg_engine, alembic_upgrade, pg_session
+    pg_engine, alembic_upgrade, pg_session, admin_actor
 ) -> None:
     """T2: ``uuid_sucursal`` filter restricts the listing to that branch
     only. Two arqueos at ``sucursal_a``, one at ``sucursal_b`` -> with
@@ -244,20 +280,20 @@ async def test_t2_uuid_sucursal_filter_restricts_to_branch(
     branch-A rows.
     """
     app = _build_cloud_admin_app(pg_engine)
-    admin_jwt = _admin_token()
+    admin_jwt = _admin_token(actor_uuid=admin_actor)
 
     now = datetime.now(UTC).replace(tzinfo=None)
-    tipo = _seed_tipo_arqueo(pg_session, codigo="auditoria")
-    sucursal_a = uuid_lib.uuid4()
-    sucursal_b = uuid_lib.uuid4()
+    tipo = await _seed_tipo_arqueo(pg_session, codigo="auditoria")
+    sucursal_a = await _new_branch(pg_engine, admin_actor)
+    sucursal_b = await _new_branch(pg_engine, admin_actor)
     for _ in range(2):
-        _seed_arqueo(
+        await _seed_arqueo(
             pg_session,
             uuid_sucursal=sucursal_a,
             uuid_tipo_arqueo=tipo.uuid,
             created_at=now - timedelta(minutes=10),
         )
-    _seed_arqueo(
+    await _seed_arqueo(
         pg_session,
         uuid_sucursal=sucursal_b,
         uuid_tipo_arqueo=tipo.uuid,
@@ -279,24 +315,24 @@ async def test_t2_uuid_sucursal_filter_restricts_to_branch(
 
 
 async def test_t3_fecha_desde_y_fecha_hasta_range_filter(
-    pg_engine, alembic_upgrade, pg_session
+    pg_engine, alembic_upgrade, pg_session, admin_actor
 ) -> None:
     """T3: ``fecha_desde + fecha_hasta`` apply as an inclusive date
     filter on ``created_at::date``. We seed 5 rows across 5 days and
     expect the date range to slice them.
     """
     app = _build_cloud_admin_app(pg_engine)
-    admin_jwt = _admin_token()
+    admin_jwt = _admin_token(actor_uuid=admin_actor)
 
     today = datetime.now(UTC).replace(tzinfo=None)
     # Anchor at noon to dodge TZ-day-flip edge cases when the test runs
     # near midnight UTC.
     base = today.replace(hour=12, minute=0, second=0, microsecond=0)
-    tipo = _seed_tipo_arqueo(pg_session, codigo="auditoria")
+    tipo = await _seed_tipo_arqueo(pg_session, codigo="auditoria")
     for day_offset in range(5):
-        _seed_arqueo(
+        await _seed_arqueo(
             pg_session,
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=await _new_branch(pg_engine, admin_actor),
             uuid_tipo_arqueo=tipo.uuid,
             # date - 4, 3, 2, 1, 0 (today)
             created_at=base - timedelta(days=4 - day_offset),
@@ -324,33 +360,33 @@ async def test_t3_fecha_desde_y_fecha_hasta_range_filter(
 
 
 async def test_t4_uuid_tipo_arqueo_filter(
-    pg_engine, alembic_upgrade, pg_session
+    pg_engine, alembic_upgrade, pg_session, admin_actor
 ) -> None:
     """T4: ``uuid_tipo_arqueo`` filter restricts the listing by arqueo
     code. Two ``auditoria`` rows, one ``cierre_turno`` -> with the
     ``auditoria`` uuid the response carries only the two matching rows.
     """
     app = _build_cloud_admin_app(pg_engine)
-    admin_jwt = _admin_token()
+    admin_jwt = _admin_token(actor_uuid=admin_actor)
 
     now = datetime.now(UTC).replace(tzinfo=None)
-    tipo_aud = _seed_tipo_arqueo(pg_session, codigo="auditoria")
-    tipo_ct = _seed_tipo_arqueo(pg_session, codigo="cierre_turno")
-    _seed_arqueo(
+    tipo_aud = await _seed_tipo_arqueo(pg_session, codigo="auditoria")
+    tipo_ct = await _seed_tipo_arqueo(pg_session, codigo="cierre_turno")
+    await _seed_arqueo(
         pg_session,
-        uuid_sucursal=uuid_lib.uuid4(),
+        uuid_sucursal=await _new_branch(pg_engine, admin_actor),
         uuid_tipo_arqueo=tipo_aud.uuid,
         created_at=now - timedelta(minutes=4),
     )
-    _seed_arqueo(
+    await _seed_arqueo(
         pg_session,
-        uuid_sucursal=uuid_lib.uuid4(),
+        uuid_sucursal=await _new_branch(pg_engine, admin_actor),
         uuid_tipo_arqueo=tipo_aud.uuid,
         created_at=now - timedelta(minutes=3),
     )
-    _seed_arqueo(
+    await _seed_arqueo(
         pg_session,
-        uuid_sucursal=uuid_lib.uuid4(),
+        uuid_sucursal=await _new_branch(pg_engine, admin_actor),
         uuid_tipo_arqueo=tipo_ct.uuid,
         created_at=now - timedelta(minutes=2),
     )
@@ -370,20 +406,20 @@ async def test_t4_uuid_tipo_arqueo_filter(
 
 
 async def test_t5_cursor_pagination(
-    pg_engine, alembic_upgrade, pg_session
+    pg_engine, alembic_upgrade, pg_session, admin_actor
 ) -> None:
     """T5: with ``limit=2`` and 4 seeded rows the first response
     contains 2 items + a ``next_cursor``; following the cursor returns
     the remaining 2 rows with ``next_cursor`` None (EOF)."""
     app = _build_cloud_admin_app(pg_engine)
-    admin_jwt = _admin_token()
+    admin_jwt = _admin_token(actor_uuid=admin_actor)
 
     now = datetime.now(UTC).replace(tzinfo=None)
-    tipo = _seed_tipo_arqueo(pg_session, codigo="auditoria")
+    tipo = await _seed_tipo_arqueo(pg_session, codigo="auditoria")
     for minute in (5, 4, 3, 2):
-        _seed_arqueo(
+        await _seed_arqueo(
             pg_session,
-            uuid_sucursal=uuid_lib.uuid4(),
+            uuid_sucursal=await _new_branch(pg_engine, admin_actor),
             uuid_tipo_arqueo=tipo.uuid,
             created_at=now - timedelta(minutes=minute),
         )
@@ -419,13 +455,13 @@ async def test_t5_cursor_pagination(
 
 
 async def test_t6_malformed_cursor_returns_400(
-    pg_engine, alembic_upgrade, pg_session
+    pg_engine, alembic_upgrade, pg_session, admin_actor
 ) -> None:
     """T6: a malformed cursor payload yields ``400 invalid_cursor``
     with the typed error body. Same wire shape as the audit endpoint's
     cursor validation (audit.py::list_audit_log)."""
     app = _build_cloud_admin_app(pg_engine)
-    admin_jwt = _admin_token()
+    admin_jwt = _admin_token(actor_uuid=admin_actor)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://cloud") as client:
@@ -440,7 +476,7 @@ async def test_t6_malformed_cursor_returns_400(
 
 
 async def test_t7_operador_issuer_is_rejected(
-    pg_engine, alembic_upgrade, pg_session
+    pg_engine, alembic_upgrade, pg_session, admin_actor
 ) -> None:
     """T7: an ``operador-`` token gets 401 -- the new endpoint is
     admin-only. Operators do NOT list arqueos (they POST their own);

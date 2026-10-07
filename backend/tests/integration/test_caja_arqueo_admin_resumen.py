@@ -21,6 +21,7 @@ from pathlib import Path
 
 import httpx
 import pytest_asyncio
+from _seeds import grant_permission
 from fastapi import APIRouter, FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -37,8 +38,10 @@ from parkos_core.auth.tokens import issue_token  # noqa: E402
 from parkos_core.db.engine import get_session  # noqa: E402
 from parkos_core.models.A.arqueo import Arqueo  # noqa: E402
 from parkos_core.models.L_S.sesion import Sesion  # noqa: E402
-from parkos_core.models.V.caja import Caja  # noqa: E402
+from parkos_core.models.A.caja import Caja  # noqa: E402
 from parkos_core.models.V.sucursal import Sucursal  # noqa: E402
+from parkos_core.models.V.usuarios import Usuarios  # noqa: E402
+from tests.conftest import VFixtureFactory  # noqa: E402
 from parkos_core.models.V.tipo_arqueo import TipoArqueo  # noqa: E402
 from parkos_core.repo import append_only  # noqa: E402
 
@@ -55,7 +58,11 @@ def _build_cloud_admin_app(pg_engine) -> tuple[FastAPI, callable]:
 
     app = FastAPI()
     outer = APIRouter(prefix="/api/v1")
-    outer.include_router(caja_admin_arqueo_router)
+    # ``admin_router`` is prefix-less: ``api/v1/caja.py`` mounts it under ``/caja``
+    # (``GET /api/v1/caja/arqueo/resumen-admin``).
+    caja = APIRouter(prefix="/caja")
+    caja.include_router(caja_admin_arqueo_router)
+    outer.include_router(caja)
     app.include_router(outer)
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
@@ -68,13 +75,23 @@ def _build_cloud_admin_app(pg_engine) -> tuple[FastAPI, callable]:
     return app
 
 
+# The admin actor is a real, DB-backed user holding ``audit_read``:
+# ``require_permission`` reads ``permisos_usuario``, never the JWT claims.
+_ADMIN_ACTOR = uuid_lib.uuid4()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _admin_actor_with_audit_read(pg_engine, alembic_upgrade):
+    await grant_permission(pg_engine, _ADMIN_ACTOR, "audit_read")
+
+
 def _admin_token(
     *,
     actor_uuid: uuid_lib.UUID | None = None,
     expires_in: int = 3600,
 ) -> str:
     return issue_token(
-        subject_uuid=actor_uuid or uuid_lib.uuid4(),
+        subject_uuid=actor_uuid or _ADMIN_ACTOR,
         issuer="admin-test",
         claims={
             "rol": "admin",
@@ -84,7 +101,7 @@ def _admin_token(
     )
 
 
-def _seed_sucursal(session, *, nombre: str) -> Sucursal:
+async def _seed_sucursal(session, *, nombre: str) -> Sucursal:
     """Insert a vigente ``prod.sucursal`` row.
 
     Sucursal is ``[V]`` (bi-temporal), but for this test we only
@@ -111,11 +128,11 @@ def _seed_sucursal(session, *, nombre: str) -> Sucursal:
         sync_status="sincronizado",
     )
     session.add(row)
-    session.flush()
+    await session.flush()
     return row
 
 
-def _seed_sesion(
+async def _seed_sesion(
     session,
     *,
     uuid_sucursal: uuid_lib.UUID,
@@ -125,9 +142,13 @@ def _seed_sesion(
     on ``factura_pagos`` for the day's expected total; an open
     sesion with no payments renders ``esperado_efectivo=0``.
     """
+    # ``sesion.uuid_usuario`` is a real FK.
+    usuario = VFixtureFactory.build(Usuarios)
+    session.add(usuario)
+    await session.flush()
     row = Sesion(
         uuid_sucursal=uuid_sucursal,
-        uuid_usuario=uuid_lib.uuid4(),
+        uuid_usuario=usuario.uuid,
         timestamp_apertura=fecha_apertura,
         timestamp_cierre=None,
         valor_inicial_efectivo=0,
@@ -137,11 +158,11 @@ def _seed_sesion(
         sync_status="sincronizado",
     )
     session.add(row)
-    session.flush()
+    await session.flush()
     return row
 
 
-def _seed_tipo_arqueo(session, *, codigo: str) -> TipoArqueo:
+async def _seed_tipo_arqueo(session, *, codigo: str) -> TipoArqueo:
     row = TipoArqueo(
         codigo=codigo,
         descripcion="",
@@ -153,11 +174,11 @@ def _seed_tipo_arqueo(session, *, codigo: str) -> TipoArqueo:
         sync_status="sincronizado",
     )
     session.add(row)
-    session.flush()
+    await session.flush()
     return row
 
 
-def _seed_arqueo(
+async def _seed_arqueo(
     session,
     *,
     uuid_sucursal: uuid_lib.UUID | None,
@@ -182,7 +203,7 @@ def _seed_arqueo(
         "valor_datafono_reportado": valor_datafono_reportado,
         "created_at": created_at,
     }
-    return append_only.append_event(
+    return await append_only.append_event(
         session,
         Arqueo,
         attrs,
@@ -238,27 +259,27 @@ async def test_t2_mixed_branches_returns_one_item_per_branch(
     fecha = today.date().isoformat()
 
     # Three vigentes sucursales.
-    s_a = _seed_sucursal(pg_session, nombre="A")
-    s_b = _seed_sucursal(pg_session, nombre="B")
-    s_c = _seed_sucursal(pg_session, nombre="C")
+    s_a = await _seed_sucursal(pg_session, nombre="A")
+    s_b = await _seed_sucursal(pg_session, nombre="B")
+    s_c = await _seed_sucursal(pg_session, nombre="C")
 
-    tipo_aud = _seed_tipo_arqueo(pg_session, codigo="auditoria")
-    tipo_ct = _seed_tipo_arqueo(pg_session, codigo="cierre_turno")
+    tipo_aud = await _seed_tipo_arqueo(pg_session, codigo="auditoria")
+    tipo_ct = await _seed_tipo_arqueo(pg_session, codigo="cierre_turno")
 
     # Branch A: 2 regular arqueos (uuid_sesion NOT NULL).
-    sesion_a = _seed_sesion(
+    sesion_a = await _seed_sesion(
         pg_session,
         uuid_sucursal=s_a.uuid,
         fecha_apertura=base - timedelta(hours=2),
     )
-    _seed_arqueo(
+    await _seed_arqueo(
         pg_session,
         uuid_sucursal=s_a.uuid,
         uuid_tipo_arqueo=tipo_aud.uuid,
         uuid_sesion=sesion_a.uuid,
         created_at=base - timedelta(hours=2),
     )
-    _seed_arqueo(
+    await _seed_arqueo(
         pg_session,
         uuid_sucursal=s_a.uuid,
         uuid_tipo_arqueo=tipo_aud.uuid,
@@ -267,7 +288,7 @@ async def test_t2_mixed_branches_returns_one_item_per_branch(
     )
 
     # Branch B: 1 cierre_dia (uuid_sesion IS NULL) on the day.
-    _seed_arqueo(
+    await _seed_arqueo(
         pg_session,
         uuid_sucursal=s_b.uuid,
         uuid_tipo_arqueo=tipo_ct.uuid,

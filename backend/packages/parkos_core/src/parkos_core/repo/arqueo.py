@@ -1031,27 +1031,22 @@ async def resumen_admin_del_dia(
 
 
 def _to_resumen_item(arq: Arqueo) -> Dict[str, Any]:
-    """Convert an ``Arqueo`` row to the wire-shape ``ArqueoResumenItem`` dict.
+    """Convert a cierre_dia ``Arqueo`` row to the ``ArqueoResumenItem`` dict.
 
-    Mirrors ``construir_resumen_sesion`` but for a single Arqueo
-    (cierre_dia has ``uuid_sesion IS NULL`` per DEC-ARQUEO-03). The
-    summary caller maps the dict to the Pydantic schema on the way
-    out.
+    Same shape as :func:`obtener_cierre_dia_del_dia` (cierre_dia has
+    ``uuid_sesion IS NULL`` per DEC-ARQUEO-03, so every session field is
+    ``None``): ``ArqueoResumenItem`` is ``extra='forbid'`` and effective-only
+    (REQ-OPS-193), so the old arqueo-row shape (``uuid``, ``uuid_tipo_arqueo``,
+    datafono columns...) made ``GET /caja/arqueo/resumen-admin`` fail with a
+    ``ValidationError`` (HTTP 500) for any branch with a cierre_dia that day.
     """
     return {
-        "uuid": arq.uuid,
-        "uuid_tipo_arqueo": arq.uuid_tipo_arqueo,
-        "codigo_tipo_arqueo": None,
-        "uuid_sesion": arq.uuid_sesion,
+        "uuid_sesion": None,
+        "uuid_usuario": None,
+        "timestamp_apertura": None,
+        "timestamp_cierre": None,
+        "estado": None,
         "valor_efectivo_esperado": _to_decimal(arq.valor_efectivo_esperado),
-        "valor_datafono_esperado": _to_decimal(arq.valor_datafono_esperado),
         "valor_efectivo_reportado": _to_decimal(arq.valor_efectivo_reportado),
-        "valor_datafono_reportado": _to_decimal(arq.valor_datafono_reportado),
-        "diferencia_efectivo": _to_decimal(arq.valor_efectivo_reportado)
-        - _to_decimal(arq.valor_efectivo_esperado),
-        "diferencia_datafono": _to_decimal(arq.valor_datafono_reportado)
-        - _to_decimal(arq.valor_datafono_esperado),
-        "descuadre_pct": None,
-        "alerta_generada": None,
-        "alerta_uuid": None,
+        "uuid_arqueo": arq.uuid,
     }
