@@ -132,11 +132,23 @@ class ResolucionNoVigenteError(Exception):
 # ---------------------------------------------------------------------------
 
 
+async def _facturas_por_uuid(
+    session: AsyncSession, uuid_factura: uuid_lib.UUID
+) -> Facturas | None:
+    stmt = select(Facturas).where(Facturas.uuid == uuid_factura)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def buscar_factura_por_uuid(
     session: AsyncSession, *, uuid_factura: uuid_lib.UUID
 ) -> Facturas | None:
-    """V1: SELECT ``prod.facturas`` row by PK."""
-    return await session.get(Facturas, uuid_factura)
+    """V1: SELECT ``prod.facturas`` row by ``uuid``.
+
+    ``facturas`` has a composite PK ``(uuid, fecha_retencion_hasta)``, so
+    ``session.get(Facturas, uuid)`` raises ``InvalidRequestError``; a plain
+    SELECT on the (unique) ``uuid`` column is the correct lookup.
+    """
+    return await _facturas_por_uuid(session, uuid_factura)
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +419,7 @@ async def validar_uuid_factura_y_sucursal(
     Returns ``(factura_row, target_sucursal_uuid)`` if found, else raises
     :class:`FacturaNoEncontradaElectronicaError` (handler maps to 404).
     """
-    factura = await session.get(Facturas, uuid_factura)
+    factura = await _facturas_por_uuid(session, uuid_factura)
     if factura is None:
         raise FacturaNoEncontradaElectronicaError(uuid_factura=uuid_factura)
     return factura, factura.uuid_sucursal  # type: ignore[return-value]

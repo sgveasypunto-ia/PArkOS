@@ -123,6 +123,26 @@ async def test_buscar_factura_por_uuid_returns_none_when_missing(
 
 
 @pytest.mark.asyncio
+async def test_buscar_factura_por_uuid_returns_row_with_composite_pk(
+    pg_engine: AsyncEngine,
+    seeded_sucursal_uuid: uuid_lib.UUID,
+) -> None:
+    """V1: ``facturas`` has a composite PK; lookup by ``uuid`` alone must work."""
+    from parkos_core.repo.factura_electronica import validar_uuid_factura_y_sucursal
+
+    factura_uuid = await _seed_factura(pg_engine, uuid_sucursal=seeded_sucursal_uuid)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        row = await buscar_factura_por_uuid(session, uuid_factura=factura_uuid)
+        _, sucursal = await validar_uuid_factura_y_sucursal(
+            session, uuid_factura=factura_uuid
+        )
+    assert row is not None
+    assert row.uuid == factura_uuid
+    assert sucursal == seeded_sucursal_uuid
+
+
+@pytest.mark.asyncio
 async def test_buscar_resolucion_vigente_por_sucursal_returns_latest(
     pg_engine: AsyncEngine,
     seeded_sucursal_uuid: uuid_lib.UUID,
@@ -181,13 +201,16 @@ async def test_buscar_envio_dian_chain_tip_returns_latest(
     seeded_sucursal_uuid: uuid_lib.UUID,
 ) -> None:
     """V2 chain tip: 3 envio rows; helper returns the latest by timestamp_evento DESC."""
+    resolucion_uuid = await _seed_resolucion(
+        pg_engine, uuid_sucursal=seeded_sucursal_uuid
+    )
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         fe = FacturaElectronica(
             uuid=uuid_lib.uuid4(),
             uuid_sucursal=seeded_sucursal_uuid,
             uuid_factura=None,
-            uuid_resolucion_facturacion=None,
+            uuid_resolucion_facturacion=resolucion_uuid,
             prefijo="SETP",
             consecutivo=1,
             descuento=0,
@@ -293,14 +316,29 @@ async def test_crear_envio_dian_inicial_sets_uuid_envio_padre_null(
     seeded_sucursal_uuid: uuid_lib.UUID,
 ) -> None:
     """Step 8 INSERT: initial envio has ``uuid_envio_padre IS NULL`` + ``estado='pendiente'``."""
+    resolucion_uuid = await _seed_resolucion(
+        pg_engine, uuid_sucursal=seeded_sucursal_uuid
+    )
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        fe = await crear_factura_electronica_inicial(
+            session,
+            actor_uuid=uuid_lib.uuid4(),
+            uuid_sucursal=seeded_sucursal_uuid,
+            uuid_factura=await _seed_factura(
+                pg_engine, uuid_sucursal=seeded_sucursal_uuid
+            ),
+            uuid_resolucion_facturacion=resolucion_uuid,
+            prefijo="SETP",
+            consecutivo=42,
+        )
+        await session.flush()
         envio = await crear_envio_dian_inicial(
             session,
             actor_uuid=uuid_lib.uuid4(),
             uuid_sucursal=seeded_sucursal_uuid,
-            uuid_factura_electronica=uuid_lib.uuid4(),
-            uuid_resolucion_facturacion=uuid_lib.uuid4(),
+            uuid_factura_electronica=fe.uuid,
+            uuid_resolucion_facturacion=resolucion_uuid,
             payload={"prefijo": "SETP", "consecutivo": 42, "uuid_factura": "x"},
         )
         await session.commit()
@@ -315,13 +353,16 @@ async def test_crear_envio_dian_reintento_sets_uuid_envio_padre_to_tip(
     seeded_sucursal_uuid: uuid_lib.UUID,
 ) -> None:
     """Step 5 INSERT: retry envio has ``uuid_envio_padre=<tip.uuid>`` (DEC-FE-02)."""
+    resolucion_uuid = await _seed_resolucion(
+        pg_engine, uuid_sucursal=seeded_sucursal_uuid
+    )
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         fe = FacturaElectronica(
             uuid=uuid_lib.uuid4(),
             uuid_sucursal=seeded_sucursal_uuid,
             uuid_factura=None,
-            uuid_resolucion_facturacion=None,
+            uuid_resolucion_facturacion=resolucion_uuid,
             prefijo="SETP",
             consecutivo=1,
             descuento=0,
@@ -336,7 +377,7 @@ async def test_crear_envio_dian_reintento_sets_uuid_envio_padre_to_tip(
             actor_uuid=uuid_lib.uuid4(),
             uuid_sucursal=seeded_sucursal_uuid,
             uuid_factura_electronica=fe_uuid,
-            uuid_resolucion_facturacion=uuid_lib.uuid4(),
+            uuid_resolucion_facturacion=resolucion_uuid,
             payload={},
         )
         await session.flush()
@@ -345,7 +386,7 @@ async def test_crear_envio_dian_reintento_sets_uuid_envio_padre_to_tip(
             actor_uuid=uuid_lib.uuid4(),
             uuid_sucursal=seeded_sucursal_uuid,
             uuid_factura_electronica=fe_uuid,
-            uuid_resolucion_facturacion=uuid_lib.uuid4(),
+            uuid_resolucion_facturacion=resolucion_uuid,
             payload={},
             uuid_envio_padre=initial.uuid,
         )
