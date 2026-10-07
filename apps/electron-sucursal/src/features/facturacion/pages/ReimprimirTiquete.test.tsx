@@ -92,6 +92,7 @@ const imprimirMock = vi.fn().mockResolvedValue({ ok: true });
   imprimir: imprimirMock,
 };
 
+import { useAvisosImpresion } from '../../../lib/print/avisoImpresion';
 import { ReimprimirTiquete } from './ReimprimirTiquete';
 import type { Ingreso } from '../../operacion/api/ingresoActivoApi';
 import type { FacturaRead } from '../api/facturaApi';
@@ -440,6 +441,44 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
     expect(imprimirMock).toHaveBeenCalled();
   });
 
+  it('H-print: si la impresora falla, la reimpresión igual queda registrada y se avisa "No se pudo imprimir…"', async () => {
+    useAvisosImpresion.setState({ avisos: [] });
+    imprimirMock.mockRejectedValue(new Error('printer_offline'));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      mockUseReimprimir.mockReturnValue(
+        buildReimprimirHook({
+          triggerResult: {
+            uuid: UUID_REIMPRESION,
+            workflow_estado: 'autorizada' as const,
+            uuid_reimpresion_padre: null,
+            uuid_ingreso: UUID_INGRESO,
+            uuid_factura: null,
+            costo_aplicado: 0,
+            motivo: MOTIVO_VALIDO,
+            created_at: '2026-09-19T11:00:00Z',
+          },
+        }),
+      );
+      mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+      mockUseRegistrarPagoServicio.mockReturnValue(buildRegistrarPagoServicioHook());
+      mockUseCostoServicioVigente.mockReturnValue({ costo: 0, isLoading: false, error: undefined });
+      mockResolverIngresoReimpresion.mockResolvedValue({ kind: 'found', ingreso: INGRESO_CON_PLACA });
+      renderAt();
+      await llegarAlPago();
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('reimprimir-sin-costo-confirmar'));
+      });
+      expect(screen.getByTestId('reimprimir-success')).toBeInTheDocument();
+      expect(useAvisosImpresion.getState().avisos[0]?.mensaje).toMatch(
+        /^No se pudo imprimir el tiquete reimpreso/,
+      );
+    } finally {
+      imprimirMock.mockResolvedValue({ ok: true });
+    }
+  });
+
+
   it('T6: submit de <PagoModal> → POST factura-servicio + POST reimpresión con uuid_factura real → success + imprime', async () => {
     const reimprimirHook = buildReimprimirHook();
     const registrarPagoServicioHook = buildRegistrarPagoServicioHook();
@@ -527,6 +566,8 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
         .replace(/[ 	]+/g, ' '),
     );
     expect(textos.length).toBe(2); // tiquete de entrada (reimpresion) + factura del servicio
+    // El tiquete reimpreso viaja como `{ buffer, ticketId, cut }` con el sello REIMPRESIÓN.
+    expect(textos.some((t) => t.includes('REIMPRESIÓN'))).toBe(true);
     const factura = textos.find((t) => t.includes('FACTURA'));
     expect(factura).toBeDefined();
     expect(factura).toMatch(/IVA 19% \$ ?798,32/);

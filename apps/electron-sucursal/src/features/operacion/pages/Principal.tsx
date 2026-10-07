@@ -45,7 +45,8 @@ import { TipoIngresoToggle, type TipoIngresoVariant } from '../components/TipoIn
 import { TiqueteModal } from '../components/TiqueteModal';
 import { useClienteBySubscripcion } from '../api/clienteApi';
 import { buildEntradaPayloadFromResponse } from '../../../lib/print/printBuilder';
-import { buildEntradaBuffer } from '../../../lib/print/escposBuilder';
+import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
+import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import {
   type PostIngresoPayload,
@@ -210,13 +211,14 @@ export default function Principal() {
       // (printer offline), the F5.1 retry queue handles it; the
       // operator can also use the always-on Imprimir button in
       // TiqueteModal (E3 exemption).
-      try {
-        const payload = buildPrintPayload(response, currentPlaca);
-        await window.bridge.imprimir(payload);
-      } catch {
-        // Swallow: ingreso is persisted (DB INSERT is source of truth);
-        // F5.1 retry queue drains when the printer reconnects.
-      }
+      // The ingreso is persisted (DB INSERT is source of truth); a failed print
+      // leaves a visible "No se pudo imprimir…" notice with retry and never
+      // blocks the flow (avisoImpresion).
+      await ejecutarImpresion('el tiquete de entrada', () =>
+        imprimirTiquete('entrada', buildEntradaPayload(response, currentPlaca), {
+          ticketId: response.uuid,
+        }),
+      );
     },
     [],
   );
@@ -417,15 +419,19 @@ export default function Principal() {
             success.uuid_subscripcion_cliente ? clienteData ?? null : null
           }
           initialObservaciones={observaciones}
-          buildPrintPayload={(uuid) =>
-            buildPrintPayload(
-              {
-                uuid,
-                tipo_entrada: success.tipo_entrada,
-                uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
-                consecutivo: success.consecutivo,
-              },
-              success.placa,
+          imprimir={(uuid) =>
+            imprimirTiquete(
+              'entrada',
+              buildEntradaPayload(
+                {
+                  uuid,
+                  tipo_entrada: success.tipo_entrada,
+                  uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
+                  consecutivo: success.consecutivo,
+                },
+                success.placa,
+              ),
+              { ticketId: uuid },
             )
           }
           onSiguiente={handleSiguiente}
@@ -454,32 +460,19 @@ export default function Principal() {
 }
 
 /**
- * `buildPrintPayload(response)` — produce the F5.1 IPC payload that
- * wraps the F5.2 ``escposBuilder.buildEntradaBuffer`` result into a
- * base64 buffer + the ingreso UUID as ticketId. F5.2 owns the actual
- * byte composition; F6.1 only wires the result to the bridge.
- *
- * REGRESSION fix (2026-09-22): the prior implementation emitted a
- * sentinel Buffer that ``bridge.imprimir`` rejected — every click on
- * "Imprimir" failed. Now we assemble a structurally valid
- * ``EntradaPayload`` via ``printBuilder.ts`` and serialize through
- * the real F5.2 builder.
+ * `buildEntradaPayload(response, placa)` — the typed `EntradaPayload` of the
+ * ingreso tiquete; `tiquetePrint.imprimirTiquete` renders it to ESC/POS
+ * (Electron) or HTML + `window.print` (browser mode).
  */
-function buildPrintPayload(
+function buildEntradaPayload(
   response: PostIngresoResponse,
   currentPlaca: string | null,
-): { buffer: string; ticketId: string; cut: boolean } {
-  const entradaPayload = buildEntradaPayloadFromResponse(
+) {
+  return buildEntradaPayloadFromResponse(
     response,
     response.consecutivo ? null : currentPlaca,
     {},
   );
-  const buffer = buildEntradaBuffer(entradaPayload);
-  return {
-    buffer: buffer.toString('base64'),
-    ticketId: response.uuid,
-    cut: true,
-  };
 }
 
 async function fetchActiveUuid(placaTarget: string): Promise<string> {
