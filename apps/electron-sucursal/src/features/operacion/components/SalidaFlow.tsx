@@ -80,6 +80,12 @@ export interface SalidaFlowProps {
    * that spy on the routing call, NOT for production.
    */
   onPagoOpen?: (uuid_salida: string) => void;
+  /**
+   * H7: called right after `useRegistrarSalida.trigger()` resolves, i.e.
+   * once the ingreso is closed server-side. The parent uses it to stop
+   * polling `/cotizar` (which would now 404 `ingreso_no_encontrado`).
+   */
+  onSalidaConfirmada?: () => void;
 }
 
 /**
@@ -96,6 +102,7 @@ export function SalidaFlow({
   onRecalcular,
   pagoAnchorId,
   onPagoOpen,
+  onSalidaConfirmada,
 }: SalidaFlowProps): JSX.Element {
   const { trigger } = useRegistrarSalida();
   const openDrawer = useDashboardDrawerStore((s) => s.open);
@@ -110,6 +117,8 @@ export function SalidaFlow({
     setRegistrarError(null);
     try {
       const result: SalidaReadForzado = await trigger({ uuid_ingreso: uuidIngreso });
+      // H7: the ingreso is closed now — tell the parent to stop polling /cotizar.
+      onSalidaConfirmada?.();
       // REGRESSION fix (2026-09-22): invalidate the live-count SWR
       // caches immediately after a successful salida so the right-
       // sidebar <MiTurnoPanel />, the Inventario <OcupacionPanel />
@@ -152,7 +161,7 @@ export function SalidaFlow({
         setRegistrarError(err as Error);
       }
     }
-  }, [trigger, uuidIngreso, invalidarConteos, sucursal?.uuid, sesion?.uuid, pagoAnchorId, onPagoOpen, openDrawer]);
+  }, [trigger, uuidIngreso, invalidarConteos, sucursal?.uuid, sesion?.uuid, pagoAnchorId, onPagoOpen, onSalidaConfirmada, openDrawer]);
 
   return (
     <div data-testid="salida-flow" data-anchor-for="pago" id={pagoAnchorId}>
