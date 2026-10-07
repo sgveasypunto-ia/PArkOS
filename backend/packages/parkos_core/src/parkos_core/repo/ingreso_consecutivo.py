@@ -33,7 +33,7 @@ from __future__ import annotations
 import uuid as uuid_lib
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.A.ingreso_consecutivo_contador import IngresoConsecutivoContador
@@ -120,6 +120,17 @@ async def assign_ingreso_consecutivo(
             f"prod.tipos_vehiculo"
         )
     tipo_upper = (tipo_row.tipo or "").upper()  # 'BICI' | 'PATIN' | etc.
+
+    # Serialize EVERY caller of this namespace until the caller's commit. The
+    # ``SELECT ... FOR UPDATE`` below only locks a row that already exists, so
+    # concurrent FIRST callers all saw "no counter" and raced to INSERT it: the
+    # losers failed on the partial unique index (a 500 on the first no-placa
+    # ingresos of a branch/tipo). A transaction-scoped advisory lock keyed on the
+    # namespace closes that window and keeps the FOR UPDATE path unchanged.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:namespace, 0))"),
+        {"namespace": f"ingreso_consecutivo:{uuid_sucursal}:{uuid_tipo_vehiculo}"},
+    )
 
     # 1. IDEMPOTENCY CHECK -- mirror assign_consecutivo step 1.
     existing = (
