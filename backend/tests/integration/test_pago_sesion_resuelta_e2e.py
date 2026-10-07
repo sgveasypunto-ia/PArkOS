@@ -116,3 +116,36 @@ async def test_renovacion_sin_sesion_abierta_conserva_regla_existente_sesion_nul
     assert r.status_code == 201, r.text
     pagos = await _pagos(pg_engine, r.json()["uuid_factura"])
     assert [p.uuid_sesion for p in pagos] == [None]
+
+
+async def _vender(client, pg_engine, mint_operador_jwt, *, emitir_fe: bool) -> dict:
+    m = await _sembrar_base(pg_engine, con_resolucion=True, valor="100000")
+    r = await client.post(
+        f"{BASE}/venta-suscripcion",
+        json={
+            "uuid_cliente": str(m.cliente),
+            "placas": ["ZZZ999"],
+            "uuid_tipo_subscripcion": str(m.plan),
+            "fecha_inicio_cobertura": hoy_bogota().isoformat(),
+            "cobrar_ahora": True,
+            "medio_pago": "efectivo",
+            "emitir_factura_electronica": emitir_fe,
+        },
+        headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"),
+    )
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+async def test_recibo_venta_sin_fe_muestra_consumidor_final_no_al_suscriptor(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    body = await _vender(client, pg_engine, mint_operador_jwt, emitir_fe=False)
+    assert body["factura"]["cliente"] is None
+
+
+async def test_recibo_venta_con_fe_muestra_al_suscriptor(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    body = await _vender(client, pg_engine, mint_operador_jwt, emitir_fe=True)
+    assert body["factura"]["cliente"]["nombre"] == "Ada"

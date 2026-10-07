@@ -439,7 +439,11 @@ async def venta_suscripcion(
             detalles_creados=detalles_creados,
             payload=payload,
             total_server=total_con_iva or Decimal(0),
-            cliente_uuid=cliente_uuid_venta,
+            # The receipt shows the BILLED customer: the subscriber only
+            # when the FE was requested for them, else "Consumidor final".
+            cliente_uuid=(
+                cliente_uuid_venta if payload.emitir_factura_electronica else None
+            ),
             fe_resultado=fe_res,
         )
 
