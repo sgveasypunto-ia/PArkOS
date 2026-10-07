@@ -91,6 +91,7 @@ from ...repo import (
     impuestos as repo_impuestos,
 )
 from ...repo import venta_suscripcion as repo_venta
+from ...repo.sesion_activa import resolver_sesion_de_pago
 from ...schemas.clientes import VentaSuscripcionCreate, VentaSuscripcionResponse
 from ...schemas.facturacion import FacturaItemCreate
 from ..deps import requires_issuer
@@ -364,10 +365,10 @@ async def venta_suscripcion(
         )
 
         # Step 10c: INSERT prod.factura_pagos (initial pago).
-        # Q2: ``ctx.uuid_sesion`` is the active operator turno session
-        # (sourced from JWT ``sesion`` claim). May be None when the
-        # operator is between turnos; ``prod.factura_pagos.uuid_sesion``
-        # is nullable so the INSERT is valid either way.
+        # The payment is tied to the operator's OPEN turno: the JWT
+        # ``sesion`` claim when present, otherwise resolved from the DB
+        # (the claim is absent when the turno is opened after login).
+        # None only when there is no open turno (column is nullable).
         assert ctx.sucursal_uuid is not None  # operador- issuer always carries one
         await repo_factura.crear_factura_pago(
             session,
@@ -376,7 +377,12 @@ async def venta_suscripcion(
             medio_pago=payload.medio_pago,
             valor=total_con_iva,
             referencia=payload.referencia,
-            uuid_sesion=ctx.uuid_sesion,
+            uuid_sesion=await resolver_sesion_de_pago(
+                session,
+                actor_uuid=ctx.actor_uuid,
+                uuid_sucursal=ctx.sucursal_uuid,
+                uuid_sesion_explicita=ctx.uuid_sesion,
+            ),
         )
 
     # --- Step 10: KD-VENTA-01 SINGLE COMMIT (subscripción + cobro only). ---

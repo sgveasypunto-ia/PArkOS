@@ -57,6 +57,7 @@ from ...repo import factura as repo_factura
 from ...repo.factura_detalle import crear_factura_detalle_bulk
 from ...repo.fe_emision import emitir_fe_para_pago, es_despliegue_nube
 from ...repo.impuestos import obtener_iva_vigente
+from ...repo.sesion_activa import resolver_sesion_de_pago
 from ...schemas.facturacion import (
     FacturaCreate,
     FacturaDetalleCreate,
@@ -443,7 +444,12 @@ async def create_factura(
             medio_pago=payload.medio_pago,
             valor=payload.total,
             referencia=payload.referencia,
-            uuid_sesion=payload.uuid_sesion or ctx.uuid_sesion,
+            uuid_sesion=await resolver_sesion_de_pago(
+                session,
+                actor_uuid=ctx.actor_uuid,
+                uuid_sucursal=ctx.sucursal_uuid,
+                uuid_sesion_explicita=payload.uuid_sesion or ctx.uuid_sesion,
+            ),
         )
     except repo_factura.PagoDuplicadoError as exc:
         # Defense in depth (QA backlog cleanup, 2026-10-02): same unmanaged
@@ -567,7 +573,12 @@ async def create_factura_pago(
             medio_pago=payload.medio_pago,
             valor=payload.valor,
             referencia=payload.referencia,
-            uuid_sesion=payload.uuid_sesion or ctx.uuid_sesion,
+            uuid_sesion=await resolver_sesion_de_pago(
+                session,
+                actor_uuid=ctx.actor_uuid,
+                uuid_sucursal=ctx.sucursal_uuid,
+                uuid_sesion_explicita=payload.uuid_sesion or ctx.uuid_sesion,
+            ),
         )
     except repo_factura.PagoDuplicadoError as exc:
         # This handler's own ``responses`` doc already advertised 409
@@ -828,7 +839,12 @@ async def create_factura_servicio(
             medio_pago=payload.medio_pago,
             valor=payload.total,
             referencia=payload.referencia,
-            uuid_sesion=payload.uuid_sesion or ctx.uuid_sesion,
+            uuid_sesion=await resolver_sesion_de_pago(
+                session,
+                actor_uuid=ctx.actor_uuid,
+                uuid_sucursal=ctx.sucursal_uuid,
+                uuid_sesion_explicita=payload.uuid_sesion or ctx.uuid_sesion,
+            ),
         )
     except repo_factura.PagoDuplicadoError as exc:
         # Same unmanaged-500 class fixed on create_factura/
