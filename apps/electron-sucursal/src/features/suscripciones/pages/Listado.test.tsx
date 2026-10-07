@@ -60,32 +60,40 @@ vi.mock('@parkos/ui-kit/fetch', () => ({
 
 import { Listado } from './Listado';
 
-const mockRows = [
-  {
-    uuid: 'uuid-1',
-    placa: 'ABC123',
-    cliente_nombre: 'Cliente Alpha',
-    plan_nombre: 'Mensual',
-    fecha_vencimiento: '2030-01-01',
-    estado: 'activa' as const,
+const U = (n: number): string => `00000000-0000-4000-8000-00000000000${n}`;
+const item = (
+  n: number,
+  nombre: string,
+  identificacion: string,
+  plan: string,
+  vence: string,
+  dias: number,
+) => ({
+  uuid: U(n),
+  cliente: { uuid: U(n + 3), nombre, apellido: 'Prueba', numero_identificacion: identificacion },
+  plan: {
+    uuid: U(n + 6),
+    tipo: plan,
+    valor: '100000.00',
+    cantidad_maxima_vehiculos: 2,
+    mismo_tipo_vehiculo: false,
   },
-  {
-    uuid: 'uuid-2',
-    placa: 'DEF456',
-    cliente_nombre: 'Cliente Beta',
-    plan_nombre: 'Mensual',
-    fecha_vencimiento: '2030-06-01',
-    estado: 'activa' as const,
-  },
-  {
-    uuid: 'uuid-3',
-    placa: 'GHI789',
-    cliente_nombre: 'Cliente Gamma',
-    plan_nombre: 'Anual',
-    fecha_vencimiento: '2020-01-01',
-    estado: 'vencida' as const,
-  },
-];
+  fecha_inicio_cobertura: '2029-12-01',
+  fecha_vencimiento: vence,
+  cupo_maximo: 2,
+  vehiculos_inscritos: 1,
+  dias_restantes: dias,
+  puede_renovar: false,
+});
+
+// Real wire shape of GET /api/v1/clientes/subscripciones-activas: a wrapped list.
+const mockPayload = {
+  items: [
+    item(1, 'Alpha', '111', 'Mensual', '2030-01-01', 400),
+    item(2, 'Beta', '222', 'Mensual', '2030-06-01', 500),
+    item(3, 'Gamma', '333', 'Anual', '2020-01-01', -30),
+  ],
+};
 
 // Wrap each render in a fresh SWR cache so cached data from prior
 // tests does not pollute subsequent test assertions about the
@@ -103,49 +111,70 @@ beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
   mockFetch.mockReset();
-  mockFetch.mockResolvedValue(mockRows);
+  mockFetch.mockResolvedValue(mockPayload);
 });
 
 describe('<Listado /> — REQ-OPS-182', () => {
-  it('T1: render → table shows 5 column headers', async () => {
+  it('T0: pide la ruta real /clientes/subscripciones-activas (no /suscripciones-cliente)', async () => {
     renderListado();
-    await waitFor(() => expect(screen.getByTestId('listado-row-ABC123')).toBeDefined());
+    await waitFor(() => expect(screen.getByTestId('listado-row-' + U(1))).toBeDefined());
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('/api/v1/clientes/subscripciones-activas');
+  });
+
+  it('T1: render → table shows 5 column headers and wrapped rows', async () => {
+    renderListado();
+    await waitFor(() => expect(screen.getByTestId('listado-row-' + U(1))).toBeDefined());
     expect(screen.getByText('Cliente')).toBeDefined();
     expect(screen.getByText('Plan')).toBeDefined();
     expect(screen.getByText('Fecha vencimiento')).toBeDefined();
     expect(screen.getByText('Días restantes')).toBeDefined();
     expect(screen.getByText('Estado')).toBeDefined();
+    expect(screen.getByText('Alpha Prueba')).toBeDefined();
+    expect(screen.getByTestId('listado-diasrestantes-' + U(1)).textContent).toBe('400');
+    expect(screen.getByTestId('listado-estado-' + U(1)).textContent).toBe('activa');
+    expect(screen.getByTestId('listado-estado-' + U(3)).textContent).toBe('vencida');
+    expect(screen.queryByTestId('listado-error')).toBeNull();
   });
 
-  it('T2: search by placa → only matching row visible (no new GET)', async () => {
+  it('T2: search by cliente or identificación → only matching row (no new GET)', async () => {
     renderListado();
-    await waitFor(() => expect(screen.getByTestId('listado-row-ABC123')).toBeDefined());
+    await waitFor(() => expect(screen.getByTestId('listado-row-' + U(1))).toBeDefined());
 
-    fireEvent.change(screen.getByTestId('listado-search-input'), {
-      target: { value: 'ABC123' },
-    });
-
+    fireEvent.change(screen.getByTestId('listado-search-input'), { target: { value: 'alpha' } });
     await waitFor(() => {
-      expect(screen.getByTestId('listado-row-ABC123')).toBeDefined();
-      expect(screen.queryByTestId('listado-row-DEF456')).toBeNull();
-      expect(screen.queryByTestId('listado-row-GHI789')).toBeNull();
+      expect(screen.getByTestId('listado-row-' + U(1))).toBeDefined();
+      expect(screen.queryByTestId('listado-row-' + U(2))).toBeNull();
+      expect(screen.queryByTestId('listado-row-' + U(3))).toBeNull();
     });
 
-    // The fetch is called only once (the initial mount GET). No
-    // refetch on every keystroke — the filter is client-side.
+    fireEvent.change(screen.getByTestId('listado-search-input'), { target: { value: '222' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('listado-row-' + U(2))).toBeDefined();
+      expect(screen.queryByTestId('listado-row-' + U(1))).toBeNull();
+    });
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it('T3: empty search shows all rows', async () => {
     renderListado();
-    await waitFor(() => expect(screen.getByTestId('listado-row-ABC123')).toBeDefined());
+    await waitFor(() => expect(screen.getByTestId('listado-row-' + U(1))).toBeDefined());
+    fireEvent.change(screen.getByTestId('listado-search-input'), { target: { value: '' } });
+    expect(screen.getByTestId('listado-row-' + U(1))).toBeDefined();
+    expect(screen.getByTestId('listado-row-' + U(2))).toBeDefined();
+    expect(screen.getByTestId('listado-row-' + U(3))).toBeDefined();
+  });
 
-    fireEvent.change(screen.getByTestId('listado-search-input'), {
-      target: { value: '' },
-    });
+  it('T4: lista vacía → mensaje vacío y sin error', async () => {
+    mockFetch.mockResolvedValue({ items: [] });
+    renderListado();
+    await waitFor(() => expect(screen.getByTestId('listado-empty')).toBeDefined());
+    expect(screen.queryByTestId('listado-error')).toBeNull();
+  });
 
-    expect(screen.getByTestId('listado-row-ABC123')).toBeDefined();
-    expect(screen.getByTestId('listado-row-DEF456')).toBeDefined();
-    expect(screen.getByTestId('listado-row-GHI789')).toBeDefined();
+  it('T5: fallo del backend → alerta de error', async () => {
+    mockFetch.mockRejectedValue(new Error('boom'));
+    renderListado();
+    await waitFor(() => expect(screen.getByTestId('listado-error')).toBeDefined());
   });
 });
