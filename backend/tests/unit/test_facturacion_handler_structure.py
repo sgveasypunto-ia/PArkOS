@@ -40,12 +40,20 @@ def _load_handler_module():
     Mirrors F1.7's T4 RED pattern: bypass pytest's session-skip cascade
     by loading the module directly via ``importlib``.
     """
-    sys.modules.pop("parkos_core.api.v1.facturacion", None)
-    spec = importlib.util.spec_from_file_location(
-        "parkos_core.api.v1.facturacion", str(HANDLER_MODULE_PATH)
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    name = "parkos_core.api.v1.facturacion"
+    # Restore the canonical module afterwards: leaving it popped makes the
+    # next ``import parkos_core.api.v1.facturacion`` build a SECOND module
+    # object, so tests that bound names at collection time (e.g.
+    # ``test_fe_cache_control``) and then monkeypatch the module at runtime
+    # patch a different object than the one their handler runs against.
+    prior = sys.modules.pop(name, None)
+    try:
+        spec = importlib.util.spec_from_file_location(name, str(HANDLER_MODULE_PATH))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        if prior is not None:
+            sys.modules[name] = prior
     return mod
 
 
