@@ -31,7 +31,7 @@ vi.mock('react-i18next', () => ({
   // desglose de IVA): ahí aplica el defaultValue con sus {{variables}}.
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) =>
-      opts && typeof opts.defaultValue === 'string' && 'porcentaje' in opts
+      opts && typeof opts.defaultValue === 'string' && ('porcentaje' in opts || 'monto' in opts)
         ? opts.defaultValue.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => String(opts[k]))
         : key,
   }),
@@ -317,6 +317,15 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(linea).toMatch(/4\.789,92/);
     expect(linea).toMatch(/25\.210,08/);
     expect(screen.getByTestId('pago-total').textContent).toBe('30000');
+  });
+
+  it('T5d (UX4): el paso de pago muestra "Total a pagar" explícito con el IVA incluido', async () => {
+    renderVenta();
+    await hastaPago();
+    const linea = screen.getByTestId('venta-total-a-pagar').textContent ?? '';
+    expect(linea).toMatch(/Total a pagar:/);
+    expect(linea).toMatch(/30\.000/);
+    expect(linea).toMatch(/IVA incluido/);
   });
 
   it('T6: last day of month charges the full plan, no badge, start date = today Bogota', async () => {

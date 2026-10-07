@@ -65,9 +65,26 @@ describe('<ProximasVencerBanner />', () => {
     render(<ProximasVencerBanner uuid_sucursal="s" />);
     const banner = screen.getByTestId('proximas-vencer-banner');
     expect(banner).toHaveAttribute('role', 'status');
-    expect(banner).toHaveTextContent('2 suscripciones próximas a vencer');
-    expect(banner).toHaveTextContent('1 ya venció');
+    // UX3: "por vencer" and "vencidas" are counted apart (expired ones are NOT
+    // folded into "próximas a vencer"), and the window is named.
+    expect(banner).toHaveTextContent('1 suscripción por vencer y 1 vencida');
+    expect(banner).toHaveTextContent('en su ventana de alerta');
     expect(banner).toHaveTextContent('Cliente Alpha');
+  });
+
+  it('UX3: only expired rows -> says vencidas, never "por vencer"', () => {
+    mockData.mockReturnValue([item({ vencida: true, dias_restantes: -2 })]);
+    render(<ProximasVencerBanner uuid_sucursal="s" />);
+    const texto = screen.getByTestId('proximas-vencer-banner-texto');
+    expect(texto).toHaveTextContent('1 suscripción vencida');
+    expect(texto).not.toHaveTextContent('por vencer');
+  });
+
+  it('UX2: the CTA sets its own foreground (outline bg-background is dark in dark theme; inherited warning-foreground is unreadable)', () => {
+    mockData.mockReturnValue([item()]);
+    render(<ProximasVencerBanner uuid_sucursal="s" />);
+    const cta = screen.getByTestId('proximas-vencer-banner-ver');
+    expect(cta.className).toContain('text-foreground');
   });
 
   it('the CTA opens the subscriptions drawer', async () => {

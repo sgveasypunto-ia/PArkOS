@@ -62,7 +62,9 @@ vi.mock('swr', async () => {
   const actual = await vi.importActual<typeof SwrType>('swr');
   return {
     ...actual,
-    mutate: (...args: unknown[]) => mockMutate(...args),
+    // UX1: the app scopes the SWR cache per session (provider), so the hook
+    // must use the cache-bound `useSWRConfig().mutate`, not the global one.
+    useSWRConfig: () => ({ mutate: (...args: unknown[]) => mockMutate(...args) }),
   };
 });
 
