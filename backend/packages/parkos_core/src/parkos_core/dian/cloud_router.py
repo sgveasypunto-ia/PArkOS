@@ -12,10 +12,9 @@ Belt-and-suspenders DIAN boundary at TWO layers:
 
 Endpoints (all cloud-only, REQ-X3):
 
-- ``POST /factura-electronica`` — REQ-34 / REQ-35. Atomic
-  ``SELECT FOR UPDATE`` on the resolution row + ``consecutivo++``
-  (T-PR11-05 helper) + INSERT via :func:`repo.event.record_event`;
-  T-PR11-06 then fires the DIAN dispatcher.
+- ``POST /factura-electronica`` — REFUSED (409): numbering is branch-local
+  (AGENTS.md); the cloud only validates the branch-assigned ``consecutivo``
+  and forwards to DIAN, it never mints one.
 - ``POST /envio-dian`` — REQ-25-W-CLOUD-ONLY. Workflow transition for
   DIAN send/ack via :func:`repo.workflow.append_transition`.
 - ``POST /validacion-evento`` — REQ-25. Admin validation of received
@@ -61,11 +60,9 @@ from ..api.deps import get_tenant_ctx, requires_issuer
 from ..auth.tenancy import TenantContext
 from ..db.engine import get_session
 from ..models.A.revocacion_factura import RevocacionFactura
-from ..models.L_E.factura_electronica import FacturaElectronica
 from ..models.L_W.envio_dian import EnvioDian
 from ..models.L_W.validacion_evento import ValidacionEvento
 from ..repo.append_only import append_event
-from ..repo.event import record_event
 from ..repo.pagination import Cursor, InvalidCursorError
 from ..repo.pagination import decode as cursor_decode
 from ..repo.pagination import encode as cursor_encode
@@ -79,18 +76,12 @@ from ..schemas.dian import (
     ValidacionEventoReadList,
 )
 from ..schemas.facturacion import CloudFacturaElectronicaCreate
-from .cloud.atomic_next_consecutivo import (
-    PrefijoMissingError,
-    ResolucionNotFoundError,
-    next_consecutivo,
-)
 from .cloud.dispatcher import (
     ESTADO_ACEPTADO,
     ESTADO_EN_PROCESO,
     ESTADO_ERROR,
     ESTADO_RECHAZADO,
     ESTADO_TIMEOUT,
-    dispatch_factura_electronica,
     dispatch_revocacion,
 )
 
@@ -176,60 +167,18 @@ async def create_factura_electronica(
     Returns:
         ``{uuid, prefijo, consecutivo, uuid_envio_dian}``.
     """
-    # 1. Atomic next-consecutivo (T-PR11-05). The lock is held by the
-    # transaction until the INSERT commits below — concurrent inserts
-    # on the same resolution serialize cleanly.
-    resolucion_uuid = payload.uuid_resolucion_facturacion
-    try:
-        prefijo, consecutivo = await next_consecutivo(
-            session, uuid_resolucion_facturacion=resolucion_uuid
-        )
-    except ResolucionNotFoundError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "resolucion_not_found", "uuid": str(resolucion_uuid)},
-        ) from exc
-    except PrefijoMissingError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": "resolucion_sin_prefijo"},
-        ) from exc
-
-    # 2. INSERT via record_event (append-only [L-E]).
-    new_row = await record_event(
-        session,
-        FacturaElectronica,
-        actor_uuid=ctx.actor_uuid,
-        new_attrs={
-            "uuid_sucursal": payload.uuid_sucursal,
-            "uuid_factura": payload.uuid_factura,
-            "uuid_cliente": payload.uuid_cliente,
-            "uuid_resolucion_facturacion": resolucion_uuid,
-            "prefijo": prefijo,
-            "consecutivo": consecutivo,
-            "descuento": payload.descuento,
+    # 0. Numbering is BRANCH-LOCAL (AGENTS.md): the branch assigns the
+    # ``consecutivo`` inside its own resolution range and the cloud only
+    # validates it and forwards to DIAN. Minting one here collides with the
+    # branch's own number on ``factura_electronica_uk01`` (live incident
+    # 2026-10). Refuse before touching the resolution row.
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "fe_numeracion_solo_en_sucursal",
+            "uuid_factura": str(payload.uuid_factura),
         },
-        log_tx=True,
     )
-    await session.commit()
-    await session.refresh(new_row)
-
-    # 3. T-PR11-06 — fire the DIAN dispatcher; envio_dian row carries
-    # the terminal outcome.
-    envio = await dispatch_factura_electronica(
-        session,
-        uuid_factura_electronica=new_row.uuid,
-        actor_uuid=ctx.actor_uuid,
-        dian_provider_url=DIAN_PROVIDER_URL,
-        dian_token_path=DIAN_TOKEN_PATH,
-    )
-
-    return {
-        "uuid": new_row.uuid,
-        "prefijo": prefijo,
-        "consecutivo": consecutivo,
-        "uuid_envio_dian": envio.uuid,
-    }
 
 
 @router.post(
