@@ -209,6 +209,13 @@ async def _invoke_hook(hook: registry.HookFn, ctx: HookContext) -> HookResult:
     return result
 
 
+def _as_uuid(value: Any) -> uuid_lib.UUID | None:
+    """Wire UUID (``str``) -> ``uuid.UUID``; ``None`` stays ``None``."""
+    if value is None or isinstance(value, uuid_lib.UUID):
+        return value
+    return uuid_lib.UUID(str(value))
+
+
 async def _dispatch_repo_call(
     session: AsyncSession,
     spec: SyncCatalogEntry,
@@ -292,10 +299,18 @@ async def _dispatch_repo_call(
     if strategy == "session_cycle":
         if spec.name == "sesion":
             if payload.get("timestamp_cierre") is not None:
+                # SS1: this is the branch's closing EVENT (``sesion_enqueue_sync_close``,
+                # migration 0092) — an UPDATE of the SAME uuid, applied with the
+                # ORIGIN's closing time/user and idempotently (a re-delivery of an
+                # already-applied close is a no-op). A close that outruns its open
+                # still raises ``SessionNotFoundError`` and is retried by the worker.
                 return await session_cycle.close_session_with_log(
                     session,
                     actor_uuid=actor_uuid,
-                    sesion_uuid=payload["uuid"],
+                    sesion_uuid=_as_uuid(payload["uuid"]),
+                    timestamp_cierre=payload["timestamp_cierre"],
+                    uuid_usuario_cierre=_as_uuid(payload.get("uuid_usuario_cierre")),
+                    idempotent=True,
                     valor_final_efectivo=payload.get("valor_final_efectivo"),
                     # F12.1.1 / REQ-MOT-001 / D2: the datafono dimension
                     # is dropped at the sync boundary. The wire payload
@@ -316,7 +331,11 @@ async def _dispatch_repo_call(
                 # docstring ("uuid" arg) for why this is required, not
                 # optional, once any FK-carrying child (arqueo,
                 # factura_pagos) syncs alongside its sesion parent.
-                uuid=payload.get("uuid"),
+                uuid=_as_uuid(payload.get("uuid")),
+                # SS1: keep the origin's opening time and make a re-delivery of an
+                # already-applied INSERT a no-op (never a PK error, never a re-open).
+                timestamp_apertura=payload.get("timestamp_apertura"),
+                idempotent=True,
             )
         if payload.get("estado") == "cerrado":
             return await session_cycle.close_login_with_log(
