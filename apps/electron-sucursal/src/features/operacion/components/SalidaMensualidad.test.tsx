@@ -35,6 +35,8 @@ import { act, render, screen } from '@testing-library/react';
 import { SalidaMensualidad } from './SalidaMensualidad';
 import { useRegistrarSalida } from '../hooks/useRegistrarSalida';
 import type { CotizarMensualidad } from '../hooks/useCotizacion';
+import { FACTURA_MENSUALIDAD_CERO } from '../../../lib/print/__tests__/facturaFixtures';
+import { expectDetalleImpuestos, textoImpreso } from '../../../lib/print/__tests__/facturaAssert';
 import { useDashboardDrawerStore } from '../../../renderer/store/dashboardDrawerStore';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -177,10 +179,9 @@ const cotizacionMensualidad: CotizarMensualidad = {
 };
 
 const facturaMensualidadResponse = {
-  uuid: '00000000-0000-0000-0000-00000000fa01',
-  numero_recibo: 'D000001-20260919-000001',
-  total: 0,
-  descuento: 10000,
+  ...FACTURA_MENSUALIDAD_CERO,
+  uuid: '00000000-0000-4000-8000-00000000fa01',
+  numero_recibo: 'sucursal-20260919-000001',
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -266,7 +267,7 @@ describe('<SalidaMensualidad /> — discount-factura + print envelope wiring (mi
     expect(bridge.imprimir).not.toHaveBeenCalled();
   });
 
-  it('fires bridge.imprimir("salida_mensualidad", payload) via queueMicrotask ONLY after the modal closes', async () => {
+  it('prints the COMPLETE $0 invoice (tax detail + discount) via bridge.imprimir ONLY after the modal closes', async () => {
     const bridge = installBridgeMock();
 
     const uuidSalida = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -292,10 +293,11 @@ describe('<SalidaMensualidad /> — discount-factura + print envelope wiring (mi
     await flushMicrotasks();
 
     expect(bridge.imprimir).toHaveBeenCalledTimes(1);
-    expect(bridge.imprimir).toHaveBeenCalledWith(
-      'salida_mensualidad',
-      expect.objectContaining({ uuid_salida: uuidSalida }),
-    );
+    const texto = textoImpreso(bridge.imprimir);
+    expectDetalleImpuestos(texto, 'sucursal-20260919-000001');
+    expect(texto).toMatch(/Descuento - \$ ?168,07/);
+    expect(texto).toMatch(/TOTAL \$ ?0,00/);
+    expect(texto).toContain('XYZ987');
   });
 
   it('closes the dashboard drawer when the factura modal is dismissed (H5)', async () => {

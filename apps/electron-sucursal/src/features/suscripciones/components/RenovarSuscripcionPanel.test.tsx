@@ -34,6 +34,8 @@ vi.mock('../hooks/useRenovarSuscripcion', () => ({
   }),
 }));
 
+import { instalarBridgeImprimir, textoImpreso, expectDetalleImpuestos } from '../../../lib/print/__tests__/facturaAssert';
+import { FACTURA_SUSCRIPCION_120000 } from '../../../lib/print/__tests__/facturaFixtures';
 import { RenovacionError } from '../hooks/renovacionErrors';
 import { RenovarSuscripcionPanel } from './RenovarSuscripcionPanel';
 
@@ -239,11 +241,11 @@ describe('<RenovarSuscripcionPanel /> — PT-3', () => {
   });
 
   it('P8: a failing print bridge never blocks closing the receipt', async () => {
-    const firePrintEnvelope = vi.fn(() => {
+    const imprimirFactura = vi.fn(() => {
       throw new Error('printer offline');
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const { onRenovada } = setup({ firePrintEnvelope });
+    const { onRenovada } = setup({ imprimirFactura });
     const user = userEvent.setup();
     await user.click(screen.getByTestId('renovar-confirmar'));
     await screen.findByTestId('factura-display-modal');
@@ -251,11 +253,39 @@ describe('<RenovarSuscripcionPanel /> — PT-3', () => {
       fireEvent.click(screen.getByTestId('factura-display-cerrar'));
       await Promise.resolve();
     });
-    expect(firePrintEnvelope).toHaveBeenCalledWith(
-      'recibo_pago',
+    expect(imprimirFactura).toHaveBeenCalledWith(
       expect.objectContaining({ numero_recibo: FACTURA.numero_recibo }),
     );
     expect(onRenovada).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it('P9: al cerrar el recibo imprime la factura COMPLETA (IVA 19%, base, total), no el envelope incompleto', async () => {
+    const imprimir = instalarBridgeImprimir();
+    mockTrigger.mockResolvedValue({
+      ...RESULT,
+      factura: {
+        ...FACTURA,
+        subtotal: FACTURA_SUSCRIPCION_120000.subtotal,
+        total: FACTURA_SUSCRIPCION_120000.total,
+        impuestos: FACTURA_SUSCRIPCION_120000.impuestos,
+      },
+    });
+    setup();
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('renovar-confirmar'));
+    await screen.findByTestId('factura-display-modal');
+    expect(imprimir).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('factura-display-cerrar'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(imprimir).toHaveBeenCalledTimes(1);
+    const texto = textoImpreso(imprimir);
+    expectDetalleImpuestos(texto, FACTURA.numero_recibo);
+    expect(texto).toMatch(/IVA 19% \$ ?19\.159,66/);
+    expect(texto).toMatch(/Base \$ ?100\.840,34/);
+    expect(texto).toMatch(/TOTAL \$ ?120\.000/);
   });
 });

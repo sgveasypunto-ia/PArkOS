@@ -13,7 +13,9 @@ import type { ApiStatus, BridgeSurface } from '../../../electron/bridge';
  *
  *   - authStore / tarifasStore -> localStorage (auth keeps the same flat
  *     keys as the ui-kit authStore fallback so both paths agree).
- *   - imprimir                 -> no-op, resolves `{ ok: true }` (no printer).
+ *   - imprimir                 -> no-op, resolves `{ ok: true }` (no printer);
+ *                                 `modo: 'browser'` makes invoice printing go
+ *                                 through HTML + `window.print()` instead.
  *   - config.getApiOrigin      -> '' (same-origin; Vite proxies /api, /auth).
  *   - apiStatus                -> real probe of `/health` (proxied by Vite).
  */
@@ -36,6 +38,8 @@ export function createBrowserBridge(
         lastError: null,
       }),
       onStatus: () => () => undefined,
+      // Lets `imprimirFactura` pick the HTML + window.print channel.
+      modo: 'browser' as const,
     },
   );
 

@@ -452,3 +452,38 @@ describe('<PagoSheet /> — REQ-OPS-138/139', () => {
     expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
   });
 });
+// ---------------------------------------------------------------------------
+// Print path: the post-pago print sends the COMPLETE invoice (tax detail),
+// never the incomplete `{uuid_factura, numero_recibo}` envelope.
+// ---------------------------------------------------------------------------
+import { instalarBridgeImprimir, textoImpreso, expectDetalleImpuestos } from '../../../lib/print/__tests__/facturaAssert';
+import { FACTURA_ROTACION_200 } from '../../../lib/print/__tests__/facturaFixtures';
+
+describe('<PagoSheet /> — impresión completa de la factura', () => {
+  it('P16: tras el pago imprime UNA factura completa con IVA 19%, base y total (no el envelope incompleto)', async () => {
+    const imprimir = instalarBridgeImprimir();
+    mockTrigger.mockResolvedValue({ ...FACTURA_ROTACION_200, numero_recibo: 'sucursal-20261007-000099' });
+    render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={168.07} total_cop={200} />);
+    act(() =>
+      useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+        uuid_ingreso: 'uuid-1',
+        uuid_salida: 'salida-1',
+        subtotal_cop: 168.07,
+        total_cop: 200,
+      }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(imprimir).toHaveBeenCalledTimes(1);
+    const texto = textoImpreso(imprimir);
+    expectDetalleImpuestos(texto, 'sucursal-20261007-000099');
+    expect(texto).toMatch(/IVA 19% \$ ?31,93/);
+    expect(texto).toMatch(/Base \$ ?168,07/);
+    expect(texto).toContain('ABC123');
+  });
+});

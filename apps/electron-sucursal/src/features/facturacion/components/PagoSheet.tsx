@@ -22,15 +22,12 @@
  *     directive (2026-09-23): "hasta que no se cobre y se genere
  *     factura no se debe cerrar el registro de parqueo".
  *
- * Print envelope:
- *   - Both `bridge.imprimir('salida', payload)` (CU-15S) and
- *     `bridge.imprimir('recibo_pago', payload)` (recibo de pago)
- *     are deferred to the next microtask via `queueMicrotask` so
- *     the React render commit completes BEFORE the IPC round-trip
- *     begins.
- *   - Both calls are wrapped in `try/catch` — printer offline /
- *     disconnected MUST NOT block the operator (the pago is already
- *     persisted in `prod.factura`).
+ * Print:
+ *   - The complete invoice (`imprimirFactura`, tax detail included) is
+ *     deferred to the next microtask via `dispararImpresionFactura` so the
+ *     React render commit completes BEFORE the IPC round-trip begins.
+ *   - Failures are swallowed — printer offline / disconnected MUST NOT block
+ *     the operator (the pago is already persisted in `prod.factura`).
  */
 import { useEffect, useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -55,6 +52,7 @@ import { useAuth } from '@parkos/ui-kit/hooks';
 import { useSesionActiva } from '../../caja/hooks/useSesionActiva';
 import type { FacturaRead } from '../api/facturaApi';
 import { FacturaDisplayModal } from './FacturaDisplayModal';
+import { dispararImpresionFactura, type ImprimirFacturaFn } from '../../../lib/print/facturaPrint';
 
 export interface PagoSheetProps {
   /**
@@ -75,41 +73,12 @@ export interface PagoSheetProps {
   subtotal_cop: number;
   total_cop: number;
   /**
-   * Bridge print-envelope emitter for CU-15S (F7.3) + recibo_pago
-   * (F8.1). Defaults to `window.bridge?.imprimir(tipo, payload)`
-   * via a tiny helper that swallows IPC failures (DEC-SUC-08). The
-   * post-pago envelope sequence is DEC-SUC-27 verbatim: CU-15S
-   * fires AFTER pago, then recibo de pago.
+   * Invoice printer. Defaults to `imprimirFactura` (`lib/print/facturaPrint`):
+   * builds the COMPLETE document (tax detail included) from the `FacturaRead`
+   * and sends it through the bridge (ESC/POS in Electron, HTML in browser
+   * mode). Overridable in tests.
    */
-  firePrintEnvelope?: (tipo: 'salida' | 'recibo_pago', payload: unknown) => void;
-}
-
-function defaultFirePrintEnvelope(
-  tipo: 'salida' | 'recibo_pago',
-  payload: unknown,
-): void {
-  const w = globalThis as unknown as { window?: { bridge?: { imprimir?: (k: string, p: unknown) => void } } };
-  const bridge = w.window?.bridge;
-  if (bridge?.imprimir) {
-    bridge.imprimir(tipo, payload);
-  }
-}
-
-function deferredSafePrint(
-  emit: (tipo: 'salida' | 'recibo_pago', payload: unknown) => void,
-  tipo: 'salida' | 'recibo_pago',
-  payload: unknown,
-): void {
-  queueMicrotask(() => {
-    try {
-      emit(tipo, payload);
-    } catch (err) {
-      console.warn(
-        `[PagoSheet] bridge.imprimir(${tipo}) failed (printer_offline / disconnected):`,
-        err,
-      );
-    }
-  });
+  imprimirFactura?: ImprimirFacturaFn;
 }
 
 /**
@@ -124,7 +93,7 @@ export function PagoSheet({
   uuid_salida,
   subtotal_cop,
   total_cop,
-  firePrintEnvelope,
+  imprimirFactura,
 }: PagoSheetProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
@@ -315,18 +284,17 @@ export function PagoSheet({
       // pending / failed-and-auto-retried) is shown by <FacturaDisplayModal />.
       // The operator is NOT redirected away, and the front never calls
       // POST /facturacion/factura-electronica (it would answer 409).
-      // DEC-SUC-27 — CU-15S print fires AFTER pago, then recibo de pago.
-      const emit = firePrintEnvelope ?? defaultFirePrintEnvelope;
-      deferredSafePrint(emit, 'salida', { uuid_factura: result.uuid });
-      deferredSafePrint(emit, 'recibo_pago', {
-        uuid_factura: result.uuid,
-        numero_recibo: result.numero_recibo,
-      });
+      // DEC-SUC-27 — the print fires AFTER the pago. ONE complete invoice
+      // (emisor, cliente, vehículo, ítems, subtotal, detalle por impuesto,
+      // total, pago, estado FE) built from the same `FacturaRead` the modal
+      // shows; it replaces the former `salida` + `recibo_pago` envelopes that
+      // carried only `{uuid_factura, numero_recibo}` and never reached a printer.
+      dispararImpresionFactura(result, imprimirFactura);
       // NOTE: close() happens when the operator dismisses the
       // FacturaDisplayModal, not here. The drawer stays open with
       // the modal mounted until the operator closes it.
     },
-    [uuid_salida, subtotal_cop, total_cop, trigger, firePrintEnvelope, invalidarConteos, sucursal?.uuid, sesion?.uuid],
+    [uuid_salida, subtotal_cop, total_cop, trigger, imprimirFactura, invalidarConteos, sucursal?.uuid, sesion?.uuid],
   );
 
   return (

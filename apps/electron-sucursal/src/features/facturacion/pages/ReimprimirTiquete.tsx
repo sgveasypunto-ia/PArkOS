@@ -116,6 +116,7 @@ import { useRegistrarPagoServicio } from '../hooks/useRegistrarPagoServicio';
 import { PagoModal, type PagoFormValues } from '../components/PagoModal';
 import { buildClienteFePayload } from '../lib/clienteFePayload';
 import { FacturaDisplayModal } from '../components/FacturaDisplayModal';
+import { imprimirFactura } from '../../../lib/print/facturaPrint';
 import type { ReimpresionTicketRead } from '../api/reimpresionApi';
 import type { FacturaRead } from '../api/facturaApi';
 import type { PostFacturaServicioPayload } from '../api/facturaServicioApi';
@@ -350,6 +351,9 @@ export function ReimprimirTiquete(): JSX.Element {
           // ya quedaron registrados; un fallo de impresión no debe
           // bloquear ni revertir el flujo.
         }
+        // La factura del servicio se imprime completa (detalle de impuestos);
+        // `imprimirFactura` nunca lanza.
+        void imprimirFactura(factura);
       } catch (err) {
         setErrorMsg(
           esIngresoYaTieneSalida(err)

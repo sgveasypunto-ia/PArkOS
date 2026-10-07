@@ -10,7 +10,9 @@
  *   D5: "Cerrar" click → `onClose` fires.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
+import { instalarBridgeImprimir, textoImpreso, expectDetalleImpuestos } from '../../../lib/print/__tests__/facturaAssert';
+import { FACTURA_SUSCRIPCION_120000, FACTURA_ROTACION_200 } from '../../../lib/print/__tests__/facturaFixtures';
 import { afterEach } from 'vitest';
 
 vi.mock('react-i18next', () => ({
@@ -341,5 +343,30 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
     expect(screen.getByTestId('factura-display-total').textContent).toContain('0,00');
     // 1260.50 + 239.50 - 1500.00 = 0
     expect(1260.5 + 239.5 - 1500).toBe(0);
+  });
+
+  it('D9: boton "Imprimir" imprime la factura completa (detalle de impuestos) por el bridge, sin cerrar el modal', async () => {
+    const imprimir = instalarBridgeImprimir();
+    const onClose = vi.fn();
+    render(<FacturaDisplayModal factura={{ ...BASE_FACTURA, ...FACTURA_SUSCRIPCION_120000, numero_recibo: BASE_FACTURA.numero_recibo, uuid: FACTURA_SUSCRIPCION_120000.uuid }} onClose={onClose} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('factura-display-imprimir'));
+    });
+    expect(imprimir).toHaveBeenCalledTimes(1);
+    const texto = textoImpreso(imprimir);
+    expectDetalleImpuestos(texto, BASE_FACTURA.numero_recibo);
+    expect(texto).toMatch(/IVA 19% \$ ?19\.159,66/);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('D10: reimpresion de la factura de un servicio: el boton imprime tambien con impuestos', async () => {
+    const imprimir = instalarBridgeImprimir();
+    render(<FacturaDisplayModal factura={{ ...BASE_FACTURA, uuid: FACTURA_ROTACION_200.uuid }} onClose={vi.fn()} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('factura-display-imprimir'));
+    });
+    const texto = textoImpreso(imprimir);
+    expect(texto).toMatch(/IVA 19% \$ ?19,00/);
+    expect(texto).toMatch(/Base \$ ?100,00/);
   });
 });

@@ -16,8 +16,8 @@
  *
  * The modal mounts OVER the PagoSheet (z-indexed higher than shadcn
  * `<Sheet>`) so the operator can review the breakdown before
- * dismissing the sheet. The thermal CU-15S print fires in parallel
- * (see PagoSheet.handleSubmit deferredSafePrint).
+ * dismissing the sheet. The invoice print (`lib/print/facturaPrint`, with the
+ * per-tax detail) fires in parallel; the "Imprimir" button reprints it.
  *
  * Visual format (2026-09-24, operator directive): mirrors `<TiqueteModal
  * />`'s (HU-F6.2) print-preview grammar — a single monospaced, dashed-
@@ -47,6 +47,7 @@ import type { FacturaRead } from '../api/facturaApi';
 import { feEstadoLabel, feWarningMessage } from '../lib/feEstado';
 import { FacturaImpuestosDetalle } from './FacturaImpuestosDetalle';
 import { formatCOP } from '../../caja/lib/format';
+import { imprimirFactura } from '../../../lib/print/facturaPrint';
 
 export interface FacturaDisplayModalProps {
   /** Enriched FacturaRead from the post-pago POST. NULL = modal hidden. */
@@ -320,6 +321,18 @@ export function FacturaDisplayModal({
             )}
 
             <DialogFooter>
+              {/* Reimpresión manual: imprime el MISMO documento completo (con el
+                  detalle de impuestos) que se imprime automáticamente al cobrar. */}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void imprimirFactura(f);
+                }}
+                data-testid="factura-display-imprimir"
+              >
+                {t('facturacion:display.imprimir', { defaultValue: 'Imprimir' })}
+              </Button>
               <Button
                 type="button"
                 onClick={onClose}
