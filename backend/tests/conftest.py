@@ -413,10 +413,34 @@ def _restore_seed_tables() -> None:
                 warnings.warn(f"seed restore skipped for prod.{table}: lock not available")
 
 
+def _terminate_leaked_transactions() -> None:
+    """Kill sessions a finished module left ``idle in transaction``.
+
+    A failed test keeps its traceback, and with it every session its locals
+    reference, alive until pytest exits; such a session holds its locks for the
+    rest of the run and the next module that ``TRUNCATE``s a related table then
+    blocks forever (one failing e2e test used to hang the whole suite). At module
+    teardown no fixture legitimately holds an open transaction, so whatever is
+    left idle in transaction is a leak: terminate it.
+    """
+    dsn = _SEED_STATE["dsn"]
+    if not dsn:
+        return
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+            "AND state = 'idle in transaction'"
+        )
+
+
 @pytest.fixture(autouse=True, scope="module")
 def _seed_data_restored_after_module() -> Iterator[None]:
     """Put the migration-seeded rows back after each module (see block above)."""
     yield
+    _terminate_leaked_transactions()
     _restore_seed_tables()
 
 

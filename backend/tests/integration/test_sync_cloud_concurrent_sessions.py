@@ -47,6 +47,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 
 @pytest.fixture(autouse=True)
+def _empty_outbox(pg_dsn, alembic_upgrade) -> None:
+    """The apply iteration drains EVERY pending ``sync_queue`` row of the (shared)
+    database, so rows other tests left behind (for branches that are gone) would
+    be applied here and fail on their foreign keys. Start from an empty outbox."""
+    import psycopg
+
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute("TRUNCATE prod.sync_queue")
+        conn.commit()
+
+
+@pytest.fixture(autouse=True)
 def _catalog_engine_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """The apply side drains real sync_queue rows through SyncMotor —
     matches every other ``_apply_pending_batch_once`` integration test."""
