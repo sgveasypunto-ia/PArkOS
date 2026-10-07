@@ -153,3 +153,109 @@ def sesion_with_ingresos_y_pagos() -> dict[str, Any]:
 __all__ = [
     "sesion_with_ingresos_y_pagos",
 ]
+
+# ---------------------------------------------------------------------------
+# empresa singleton (0078 ``empresa_singleton_uk``)
+# ---------------------------------------------------------------------------
+# ``prod.empresa`` allows AT MOST ONE open (``vigente_hasta IS NULL``) row, and
+# migrations seed one. Many integration modules seed their own ``Empresa`` as
+# the FK parent of their ``sucursal`` rows, which used to be free to do and now
+# violates the singleton. ``empresa_slot_libre`` frees the slot for the duration
+# of a test and puts the seeded row back afterwards, so modules that insert
+# their own empresa keep working and modules that read the seeded one are
+# untouched (the fixture is only attached to modules that insert an ``Empresa``).
+
+
+@pytest.fixture
+def empresa_slot_libre(pg_dsn: str, alembic_upgrade):
+    """Close the open empresa for the test, restore it afterwards."""
+    import psycopg
+
+    close_sql = (
+        "UPDATE prod.empresa SET vigente_hasta = NOW(), estado = 'inactivo' "
+        "WHERE vigente_hasta IS NULL"
+    )
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute("SELECT uuid FROM prod.empresa WHERE vigente_hasta IS NULL")
+        originals = [row[0] for row in cur.fetchall()]
+        cur.execute(close_sql)
+        conn.commit()
+    try:
+        yield
+    finally:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+            cur.execute(close_sql)
+            if originals:
+                cur.execute(
+                    "UPDATE prod.empresa SET vigente_hasta = NULL, estado = 'activo' "
+                    "WHERE uuid = ANY(%s)",
+                    (originals,),
+                )
+            conn.commit()
+
+
+_EMPRESA_SEEDING_MODULES: dict[str, bool] = {}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Attach ``empresa_slot_libre`` to every module that inserts an ``Empresa``."""
+    for item in items:
+        path = str(item.fspath)
+        if "integration" not in path:
+            continue
+        seeds = _EMPRESA_SEEDING_MODULES.get(path)
+        if seeds is None:
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    seeds = "Empresa(" in fh.read()
+            except OSError:
+                seeds = False
+            _EMPRESA_SEEDING_MODULES[path] = seeds
+        if seeds:
+            item.add_marker(pytest.mark.usefixtures("empresa_slot_libre"))
+
+
+@pytest.fixture(autouse=True)
+def _empresa_extra_rows_as_closed_history():
+    """A second OPEN ``empresa`` in the same test is stored as closed history.
+
+    Several modules seed one ``Empresa`` per branch (``_seed_two_branches``...)
+    purely as the FK parent of their ``sucursal`` rows. With the singleton
+    index only one open row can exist, so any further ``Empresa`` flushed while
+    another open one exists (in the DB or earlier in the same flush) is
+    inserted already closed: it still satisfies the FK, and it cannot trip
+    ``empresa_singleton_uk``. Tests that need THEIR empresa to be the open one
+    get it for free: ``empresa_slot_libre`` frees the slot, so the first
+    ``Empresa`` a test inserts is the open one.
+    """
+    from datetime import timedelta
+
+    from parkos_core.models.V.empresa import Empresa
+    from sqlalchemy import event, select
+    from sqlalchemy.orm import Session
+
+    def _before_flush(session, flush_context, instances):  # noqa: ARG001
+        new_open = [
+            obj for obj in session.new if isinstance(obj, Empresa) and obj.vigente_hasta is None
+        ]
+        if not new_open:
+            return
+        with session.no_autoflush:
+            slot_taken = (
+                session.execute(select(Empresa.uuid).where(Empresa.vigente_hasta.is_(None)))
+                .scalars()
+                .first()
+                is not None
+            )
+        for obj in new_open:
+            if slot_taken:
+                obj.vigente_hasta = obj.vigente_desde + timedelta(seconds=1)
+                obj.estado = "inactivo"
+            else:
+                slot_taken = True
+
+    event.listen(Session, "before_flush", _before_flush)
+    try:
+        yield
+    finally:
+        event.remove(Session, "before_flush", _before_flush)
