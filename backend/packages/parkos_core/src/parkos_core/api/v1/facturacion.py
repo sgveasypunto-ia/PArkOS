@@ -56,7 +56,7 @@ from ...models.L_E.ingreso import Ingreso
 from ...repo import factura as repo_factura
 from ...repo.factura_detalle import crear_factura_detalle_bulk
 from ...repo.fe_emision import emitir_fe_para_pago, es_despliegue_nube
-from ...repo.impuestos import obtener_iva_vigente
+from ...repo.impuestos import desglosar_iva_incluido, obtener_iva_vigente
 from ...repo.sesion_activa import resolver_sesion_de_pago
 from ...schemas.facturacion import (
     FacturaCreate,
@@ -407,6 +407,13 @@ async def create_factura(
     # of the request's ``tipo="descuento"`` lines, not a hardcoded
     # Decimal(0) -- see ``repo.factura.compute_descuento``.
     descuento_server = repo_factura.compute_descuento(items_validados)
+    # The tariff price already INCLUDES the IVA: the tax is a breakdown inside
+    # the gross base, never charged on top. ``base_iva + iva_monto == base_bruta``
+    # exactly; the header ``subtotal`` is that same base (server authority: the
+    # client-sent ``payload.subtotal`` is no longer persisted), so the invoice,
+    # its ``factura_impuestos`` row and the FE agree. ``total`` is unchanged.
+    base_bruta = repo_factura.compute_base_bruta(items_validados)
+    base_iva, iva_monto, _ = desglosar_iva_incluido(base_bruta, iva_porcentaje)
     new_factura = await repo_factura.crear_factura_evento(
         session,
         actor_uuid=ctx.actor_uuid,
@@ -414,7 +421,7 @@ async def create_factura(
             "uuid_sucursal": target_sucursal,
             "uuid_ingreso": salida.uuid_ingreso,
             "uuid_salida": salida.uuid,
-            "subtotal": payload.subtotal,
+            "subtotal": base_iva,
             "descuento": descuento_server,
             "total": payload.total,
         },
@@ -431,9 +438,12 @@ async def create_factura(
     # directive is to show the FULL IVA "como si fuera rotacion", not
     # $0. No-op for an ordinary rotacion factura (no descuento lines,
     # base_bruta == total_server).
-    base_bruta = repo_factura.compute_base_bruta(items_validados)
     await repo_factura.crear_factura_impuesto_iva(
-        session, uuid_factura=new_factura.uuid, base=base_bruta, iva=iva_porcentaje
+        session,
+        uuid_factura=new_factura.uuid,
+        base=base_iva,
+        iva=iva_porcentaje,
+        iva_monto=iva_monto,
     )
     assert target_sucursal is not None  # salida.uuid_sucursal, persisted row
     try:
@@ -809,6 +819,10 @@ async def create_factura_servicio(
 
     # --- Step 10: INSERT prod.facturas [L-E] (uuid_salida=None). --------
     descuento_server = repo_factura.compute_descuento(items_validados)
+    # IVA-included breakdown (same contract as ``create_factura``): the
+    # header ``subtotal`` is the tax base; ``total`` is unchanged.
+    base_bruta = repo_factura.compute_base_bruta(items_validados)
+    base_iva, iva_monto, _ = desglosar_iva_incluido(base_bruta, iva_porcentaje)
     new_factura = await repo_factura.crear_factura_evento(
         session,
         actor_uuid=ctx.actor_uuid,
@@ -816,7 +830,7 @@ async def create_factura_servicio(
             "uuid_sucursal": target_sucursal,
             "uuid_ingreso": payload.uuid_ingreso,
             "uuid_salida": None,
-            "subtotal": payload.subtotal,
+            "subtotal": base_iva,
             "descuento": descuento_server,
             "total": payload.total,
         },
@@ -826,9 +840,12 @@ async def create_factura_servicio(
     detalles_creados = await crear_factura_detalle_bulk(
         session, uuid_factura=new_factura.uuid, items=items_validados
     )
-    base_bruta = repo_factura.compute_base_bruta(items_validados)
     await repo_factura.crear_factura_impuesto_iva(
-        session, uuid_factura=new_factura.uuid, base=base_bruta, iva=iva_porcentaje
+        session,
+        uuid_factura=new_factura.uuid,
+        base=base_iva,
+        iva=iva_porcentaje,
+        iva_monto=iva_monto,
     )
     assert target_sucursal is not None  # ingreso.uuid_sucursal, persisted row
     try:
