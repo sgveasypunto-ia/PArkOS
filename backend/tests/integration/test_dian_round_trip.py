@@ -223,17 +223,20 @@ async def test_success_on_first_attempt_populates_cufe_and_estado(
     assert envio.respuesta_proveedor["estado_dian"] == dispatcher.ESTADO_ACEPTADO
     assert envio.cufe == "cufe-ok-123"
     assert envio.estado == dispatcher.ESTADO_ACEPTADO
-    assert envio.uuid_envio_padre is None  # first (and only) attempt
 
     async with Session() as session:
         rows = (
             await session.execute(
-                select(EnvioDian).where(
-                    EnvioDian.uuid_factura_electronica == factura_uuid
-                )
+                select(EnvioDian)
+                .where(EnvioDian.uuid_factura_electronica == factura_uuid)
+                .order_by(EnvioDian.timestamp_evento.asc())
             )
         ).scalars().all()
-    assert len(rows) == 1
+    # One attempt = three appended rows (activo -> enviado -> aceptado); the
+    # returned envio is the LAST one and nothing was edited in place.
+    assert [r.estado for r in rows] == ["activo", "enviado", "aceptado"]
+    assert rows[0].uuid_envio_padre is None  # first (and only) attempt
+    assert envio.uuid == rows[-1].uuid
 
 
 @pytest.mark.asyncio
@@ -275,7 +278,7 @@ async def test_exhaustion_chains_six_attempts_and_raises_provider_error_alert(
             await session.execute(
                 select(EnvioDian)
                 .where(EnvioDian.uuid_factura_electronica == factura_uuid)
-                .order_by(EnvioDian.created_at.asc())
+                .order_by(EnvioDian.timestamp_evento.asc())
             )
         ).scalars().all()
         provider_error_alerts = (
@@ -287,7 +290,10 @@ async def test_exhaustion_chains_six_attempts_and_raises_provider_error_alert(
             )
         ).scalars().all()
 
-    assert len(chain) == dispatcher.DIAN_MAX_RETRIES == 6
+    # 6 attempts x (activo, enviado, timeout) + the closing ``error`` row.
+    assert dispatcher.DIAN_MAX_RETRIES == 6
+    assert len(chain) == dispatcher.DIAN_MAX_RETRIES * 3 + 1
+    assert [row.estado for row in chain[-4:]] == ["activo", "enviado", "timeout", "error"]
     # Each attempt (after the first) points at the PRIOR attempt's uuid.
     by_uuid = {row.uuid: row for row in chain}
     assert chain[0].uuid_envio_padre is None

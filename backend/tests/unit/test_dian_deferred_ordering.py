@@ -98,7 +98,7 @@ async def test_sweep_pass_resumes_candidates_once_and_releases_the_snapshot() ->
 
     from parkos_core.jobs.sync_cloud import SyncCloudWorker
 
-    fe_a, fe_b = uuid_lib.uuid4(), uuid_lib.uuid4()
+    fe_a, fe_b, fe_stuck = uuid_lib.uuid4(), uuid_lib.uuid4(), uuid_lib.uuid4()
     session = MagicMock()
     session.rollback = AsyncMock()
     worker = SyncCloudWorker.__new__(SyncCloudWorker)
@@ -108,9 +108,19 @@ async def test_sweep_pass_resumes_candidates_once_and_releases_the_snapshot() ->
             "parkos_core.dian.cloud.sweep.find_stale_pendientes",
             new=AsyncMock(return_value=[fe_a, fe_b]),
         ),
-        patch.object(hooks, "resume_factura_dispatch", side_effect=[True, False]) as resume,
+        # fe_b is reported by BOTH selectors: it must be resumed only once.
+        patch(
+            "parkos_core.dian.cloud.sweep.find_stale_inflight",
+            new=AsyncMock(return_value=[fe_b, fe_stuck]),
+        ),
+        patch.object(
+            hooks, "resume_factura_dispatch", side_effect=[True, False, True]
+        ) as resume,
     ):
         started = await worker._dian_sweep_once(session)
-    assert started == 1
-    assert [c.args[0] for c in resume.call_args_list] == [fe_a, fe_b]
+    assert started == 2
+    assert [c.args[0] for c in resume.call_args_list] == [fe_a, fe_b, fe_stuck]
+    # Every resume carries the in-flight threshold so a dead dispatcher's
+    # orphan row can be closed by the guard (never an UPDATE).
+    assert all(c.kwargs["recover_orphans_after"] for c in resume.call_args_list)
     session.rollback.assert_awaited_once()

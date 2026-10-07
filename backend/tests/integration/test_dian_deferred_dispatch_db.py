@@ -195,8 +195,12 @@ async def test_dispatch_starts_only_after_the_outer_commit_and_sends_once(
                 select(EnvioDian).where(EnvioDian.uuid_factura_electronica == fe.uuid)
             )
         ).scalars().all()
-    assert len(chain) == 1, "document dispatched twice (FE hook + envio hook)"
-    assert chain[0].estado == dispatcher.ESTADO_ACEPTADO
+    # ONE chain (append-only: activo -> enviado -> aceptado), not two parallel
+    # ones from the FE hook + the envio hook.
+    assert sorted(r.estado for r in chain) == sorted(["activo", "enviado", "aceptado"]), (
+        "document dispatched twice (FE hook + envio hook)"
+    )
+    assert sum(1 for r in chain if r.uuid_envio_padre is None) == 1
     assert [r.method for r in provider_calls].count("POST") == 1
 
 

@@ -83,11 +83,11 @@ if os.environ.get("PARKOS_DEPLOY", "cloud").lower() == "branch":
         "dian_cloud_unavailable_on_branch (T-PR11-07, REQ-X3, design §10 Layer 2)"
     )
 
-from ...models.A.revocacion_factura import RevocacionFactura
 from ...constants import CLIENTE_ESTANDAR_UUID
 from ...db.tenancy import suspend_tenant_context
 from ...models.A.factura_detalle import FacturaDetalle
 from ...models.A.factura_impuestos import FacturaImpuestos
+from ...models.A.revocacion_factura import RevocacionFactura
 from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_W.alerta import Alerta
 from ...models.L_W.envio_dian import EnvioDian
@@ -120,6 +120,19 @@ ESTADO_ACEPTADO, ESTADO_RECHAZADO, ESTADO_TIMEOUT, ESTADO_EN_PROCESO = (
 # ESTADO_ERROR means the WHOLE retry budget, across multiple attempts, is
 # spent.
 ESTADO_ERROR = "error"
+# In-flight markers of a chain. ``envio_dian`` is append-only for ``rol_app``
+# (no UPDATE of ``estado`` / ``respuesta_proveedor``), so a dispatch never
+# edits a row: every step is a NEW row chained through ``uuid_envio_padre``
+# and the LAST row of the chain (``timestamp_evento`` DESC, ``uuid`` DESC, the
+# same rule as ``prod.v_factura_electronica_acuse``) defines the state.
+#   activo   -> attempt registered, nothing sent to the provider yet
+#   enviado  -> provider accepted the submission (``payload.track_id`` known)
+ESTADO_ACTIVO = "activo"
+ESTADO_ENVIADO = "enviado"
+ESTADOS_EN_CURSO = frozenset({ESTADO_ACTIVO, ESTADO_ENVIADO, ESTADO_EN_PROCESO})
+ESTADOS_TERMINALES = frozenset(
+    {ESTADO_ACEPTADO, ESTADO_RECHAZADO, ESTADO_TIMEOUT, ESTADO_ERROR}
+)
 
 
 def _now_naive() -> datetime:
@@ -277,75 +290,120 @@ async def record_dispatch_failure(
     await session.commit()
 
 
-def _stamp_envio_retention_on_attribute(envio: EnvioDian) -> None:
-    """Stamp the DIAN 5-year retention column on the ORM instance (PR11c -- Bug 4).
+def _retention_date() -> Any:
+    """DIAN retention horizon stamped on every row this module appends."""
+    return _now_naive().date() + timedelta(days=365 * _DIAN_RETENTION_YEARS)
 
-    Replaces the PR11a raw SQL ``UPDATE prod.envio_dian`` path with a
-    straight attribute mutation -- ``EnvioDian.fecha_retencion_hasta``
-    is now declared on the ORM class so the change flows through
-    ``session.add(envio)`` like every other ORM write in the codebase.
 
-    The caller (``_record_terminal``) commits once after both the
-    retention stamp and the alerta INSERT land on the session, so no
-    extra commit lives here.
+def _chain_row(
+    parent: EnvioDian,
+    *,
+    estado: str,
+    payload: dict[str, Any],
+    respuesta_proveedor: dict[str, Any] | None = None,
+    cufe: str | None = None,
+) -> EnvioDian:
+    """Build the NEXT row of ``parent``'s chain (INSERT only, never an UPDATE).
+
+    ``envio_dian`` is an append-only table for ``rol_app``: a step of the
+    dispatch is expressed as a child row (``uuid_envio_padre = parent.uuid``)
+    carrying the new ``estado``. ``timestamp_evento`` is forced strictly after
+    the parent's so the "last row wins" readers order the chain correctly even
+    when two steps land within the same clock tick.
     """
-    envio.fecha_retencion_hasta = _now_naive().date() + timedelta(
-        days=365 * _DIAN_RETENTION_YEARS
+    now = _now_naive()
+    floor = (parent.timestamp_evento or now) + timedelta(microseconds=1)
+    return EnvioDian(
+        uuid=uuid_lib.uuid4(),
+        uuid_sucursal=parent.uuid_sucursal,
+        uuid_factura_electronica=parent.uuid_factura_electronica,
+        uuid_resolucion_facturacion=parent.uuid_resolucion_facturacion,
+        payload=payload,
+        respuesta_proveedor=respuesta_proveedor,
+        cufe=cufe,
+        uuid_envio_padre=parent.uuid,
+        timestamp_evento=max(now, floor),
+        estado=estado,
+        fecha_retencion_hasta=_retention_date(),
+        created_at=now,
+        created_by=parent.created_by,
     )
+
+
+async def _record_submitted(
+    envio: EnvioDian, track_id: str, session: AsyncSession
+) -> EnvioDian:
+    """Append the ``enviado`` step: the provider holds the document (``track_id``).
+
+    Persisting it as a row (not as an edit of the attempt) is what lets a later
+    sweep tell "never sent" from "sent, outcome unknown" without risking a
+    second submission of the same document.
+    """
+    sent = _chain_row(
+        envio,
+        estado=ESTADO_ENVIADO,
+        payload={
+            **(envio.payload or {}),
+            "track_id": track_id,
+            "estado_dian": ESTADO_ENVIADO,
+        },
+    )
+    session.add(sent)
+    await session.commit()
+    return sent
 
 
 async def _record_terminal(
     envio: EnvioDian, poll_result: PollResult, session: AsyncSession
 ) -> EnvioDian:
-    """Stamp envio on terminal poll outcome + alerta on failure.
+    """Append the terminal row of the chain + its alerta, in ONE commit.
 
-    DIAN outcome lives in ``respuesta_proveedor.estado_dian`` (the
-    column built for the provider's reply); ``cufe`` writes go to the
-    dedicated column. One commit covers envio UPDATE + alerta INSERT.
+    Never mutates ``envio`` (append-only table). The DIAN outcome lives in the
+    new row's ``estado`` (what ``prod.v_factura_electronica_acuse`` projects
+    to the branch) and in ``respuesta_proveedor.estado_dian``; ``cufe`` goes to
+    its dedicated column. The alerta and the row share the commit, so each
+    terminal outcome raises its alert exactly once.
     """
     estado = poll_result.estado
-    payload: dict[str, Any] = {"estado_dian": estado}
+    response: dict[str, Any] = {"estado_dian": estado}
     if poll_result.cufe is not None:
-        envio.cufe = poll_result.cufe
-        payload["cufe"] = poll_result.cufe
+        response["cufe"] = poll_result.cufe
     if poll_result.motivo_rechazo is not None:
-        payload["motivo_rechazo"] = poll_result.motivo_rechazo
-    envio.respuesta_proveedor = payload
-    envio.timestamp_evento = _now_naive()
-    # T-PR9-009 — the branch reads the DIAN outcome through the derived
-    # view ``prod.v_factura_electronica_acuse`` (migration 0009,
-    # T-PR5-008), which projects ``envio_dian.estado`` directly. Mirror
-    # the SAME outcome value onto ``estado`` (not just
-    # ``respuesta_proveedor.estado_dian``) so that view carries something
-    # meaningful for the branch to read.
-    envio.estado = estado
+        response["motivo_rechazo"] = poll_result.motivo_rechazo
+    terminal = _chain_row(
+        envio,
+        estado=estado,
+        payload={**(envio.payload or {}), "estado_dian": estado},
+        respuesta_proveedor=response,
+        cufe=poll_result.cufe,
+    )
+    session.add(terminal)
 
     if estado == ESTADO_ACEPTADO:
-        _stamp_envio_retention_on_attribute(envio)
+        pass
     elif estado == ESTADO_RECHAZADO:
         await _write_alerta(
             session,
-            uuid_sucursal=envio.uuid_sucursal,
-            uuid_arqueo=envio.uuid,
+            uuid_sucursal=terminal.uuid_sucursal,
+            uuid_arqueo=terminal.uuid,
             tipo_alerta="dian_rechazada",
         )
     elif estado == ESTADO_TIMEOUT:
         await _write_alerta(
             session,
-            uuid_sucursal=envio.uuid_sucursal,
-            uuid_arqueo=envio.uuid,
+            uuid_sucursal=terminal.uuid_sucursal,
+            uuid_arqueo=terminal.uuid,
             tipo_alerta="dian_timeout",
         )
-    else:  # Unknown terminal → surface to operator.
+    else:  # Unknown terminal -> surface to operator.
         await _write_alerta(
             session,
-            uuid_sucursal=envio.uuid_sucursal,
-            uuid_arqueo=envio.uuid,
+            uuid_sucursal=terminal.uuid_sucursal,
+            uuid_arqueo=terminal.uuid,
             tipo_alerta="dian_error",
         )
     await session.commit()
-    await session.refresh(envio)
-    return envio
+    return terminal
 
 
 class SourceRowNotVisibleError(RuntimeError):
@@ -363,9 +421,40 @@ class DispatchAlreadyHandledError(Exception):
     the same document to the provider twice."""
 
 
+async def _close_orphan(session: AsyncSession, orphan: EnvioDian) -> EnvioDian:
+    """Append the ``error`` row (+ ``dian_error`` alerta) that closes an
+    in-flight attempt whose dispatcher died before recording an outcome.
+
+    The orphan itself is never touched: history keeps the attempt and its
+    interruption as two rows. ``payload.interrupted`` lets the sweep cap how
+    many times one document may be recovered.
+    """
+    closure = _chain_row(
+        orphan,
+        estado=ESTADO_ERROR,
+        payload={**(orphan.payload or {}), "estado_dian": ESTADO_ERROR, "interrupted": True},
+        respuesta_proveedor={
+            "estado_dian": ESTADO_ERROR,
+            "motivo_rechazo": f"dispatch_interrupted: last_step={orphan.estado}",
+        },
+    )
+    session.add(closure)
+    await _write_alerta(
+        session,
+        uuid_sucursal=closure.uuid_sucursal,
+        uuid_arqueo=closure.uuid,
+        tipo_alerta="dian_error",
+    )
+    return closure
+
+
 async def _claim_first_attempt(
-    session: AsyncSession, *, lock_key: str, conditions: tuple[Any, ...]
-) -> None:
+    session: AsyncSession,
+    *,
+    lock_key: str,
+    conditions: tuple[Any, ...],
+    recover_after: timedelta | None = None,
+) -> EnvioDian | None:
     """Serialize and de-duplicate the FIRST attempt of a deferred dispatch.
 
     Takes a transaction-scoped advisory lock on the document (released by the
@@ -373,18 +462,42 @@ async def _claim_first_attempt(
     cloud-originated chain (``payload.xml_sha256``, written only by this
     module) already exists. The branch's own ``pendiente`` row never carries
     ``xml_sha256``, so it does not count as a chain.
+
+    ``recover_after`` (sweep only) lets ONE kind of existing chain through: its
+    LAST row is still in flight (``activo`` / ``enviado``) and older than the
+    threshold, i.e. the dispatcher that owned it died. The orphan is closed with
+    an ``error`` row + alerta (returned, uncommitted, so it commits together
+    with the new attempt chained to it) when it was never submitted (``activo``).
+    An ``enviado`` orphan was already accepted by the provider (``track_id``
+    known): it is closed and alerted, but NOT resent -- a human decides.
     """
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": lock_key}
     )
-    existing = (
+    tip = (
         await session.execute(
-            select(EnvioDian.uuid).where(*conditions).limit(1)
+            select(EnvioDian)
+            .where(*conditions)
+            .order_by(EnvioDian.timestamp_evento.desc(), EnvioDian.uuid.desc())
+            .limit(1)
         )
     ).scalar_one_or_none()
-    if existing is not None:
+    if tip is None:
+        return None
+    stale = (
+        recover_after is not None
+        and tip.estado in ESTADOS_EN_CURSO
+        and tip.timestamp_evento is not None
+        and tip.timestamp_evento < _now_naive() - recover_after
+    )
+    if not stale:
         await session.rollback()
         raise DispatchAlreadyHandledError(lock_key)
+    closure = await _close_orphan(session, tip)
+    if tip.estado == ESTADO_ENVIADO:
+        await session.commit()
+        raise DispatchAlreadyHandledError(lock_key)
+    return closure
 
 
 class ClienteNoDisponibleError(RuntimeError):
@@ -533,6 +646,7 @@ async def dispatch_factura_electronica(
     dian_token_path: Path,
     parent_envio_uuid: uuid_lib.UUID | None = None,
     skip_if_dispatched: bool = False,
+    recover_orphans_after: timedelta | None = None,
 ) -> EnvioDian:
     """Send ``factura_electronica`` to DIAN; return the terminal ``envio_dian``.
 
@@ -563,7 +677,7 @@ async def dispatch_factura_electronica(
         )
 
     if skip_if_dispatched and parent_envio_uuid is None:
-        await _claim_first_attempt(
+        closure = await _claim_first_attempt(
             session,
             lock_key=f"dian:fe:{uuid_factura_electronica}",
             conditions=(
@@ -571,7 +685,10 @@ async def dispatch_factura_electronica(
                 EnvioDian.payload["xml_sha256"].astext.is_not(None),
                 EnvioDian.payload["uuid_revocacion_factura"].astext.is_(None),
             ),
+            recover_after=recover_orphans_after,
         )
+        if closure is not None:
+            parent_envio_uuid = closure.uuid
 
     await validate_consecutivo_range(session, factura=row)
 
@@ -618,12 +735,15 @@ async def dispatch_factura_electronica(
     # AFTER INSERT trigger enqueues sync_queue (PR2 §12).
     now = _now_naive()
     envio = EnvioDian(
+        uuid=uuid_lib.uuid4(),
         uuid_sucursal=row.uuid_sucursal,
         uuid_factura_electronica=row.uuid,
         uuid_resolucion_facturacion=row.uuid_resolucion_facturacion,
         payload={"xml_sha256": xml_sha256, "estado_dian": "pendiente"},
         uuid_envio_padre=parent_envio_uuid,
         timestamp_evento=now,
+        estado=ESTADO_ACTIVO,
+        fecha_retencion_hasta=_retention_date(),
         created_at=now,
         created_by=actor_uuid,
     )
@@ -633,7 +753,6 @@ async def dispatch_factura_electronica(
     # transaction -- that left connections 'idle in transaction' holding
     # locks and blocked /sync/push (defect D5).
     await session.commit()
-    await session.refresh(envio)
 
     # Initial POST. Rejected XML → rejection + alerta, no track_id.
     track_id, rechazo = await _send_initial(provider, xml_bytes)
@@ -641,9 +760,7 @@ async def dispatch_factura_electronica(
         return await _record_terminal(envio, rechazo, session)
 
     # Commit with track_id, then enter the poll loop.
-    envio.payload = {**envio.payload, "track_id": track_id}  # type: ignore[dict-item]
-    await session.commit()
-    await session.refresh(envio)
+    envio = await _record_submitted(envio, track_id, session)  # type: ignore[arg-type]
 
     # Initial poll window.
     timeout_s = _env_float("PARKOS_DIAN_TIMEOUT_S", float(_DEFAULT_TIMEOUT_S))
@@ -747,6 +864,7 @@ async def dispatch_revocacion(
     # envio_dian).
     now = _now_naive()
     envio = EnvioDian(
+        uuid=uuid_lib.uuid4(),
         uuid_sucursal=row.uuid_sucursal,
         uuid_factura_electronica=row.uuid_factura_electronica,
         payload={
@@ -756,6 +874,8 @@ async def dispatch_revocacion(
         },
         uuid_envio_padre=parent_envio_uuid,
         timestamp_evento=now,
+        estado=ESTADO_ACTIVO,
+        fecha_retencion_hasta=_retention_date(),
         created_at=now,
         created_by=actor_uuid,
     )
@@ -765,7 +885,6 @@ async def dispatch_revocacion(
     # transaction -- that left connections 'idle in transaction' holding
     # locks and blocked /sync/push (defect D5).
     await session.commit()
-    await session.refresh(envio)
 
     # Initial POST — rejection short-circuits straight to terminal.
     try:
@@ -801,9 +920,7 @@ async def dispatch_revocacion(
         )
 
     # Commit with track_id, then enter the poll loop.
-    envio.payload = {**envio.payload, "track_id": track_id}  # type: ignore[dict-item]
-    await session.commit()
-    await session.refresh(envio)
+    envio = await _record_submitted(envio, track_id, session)  # type: ignore[arg-type]
 
     # 5. Initial poll window.
     timeout_s = _env_float("PARKOS_DIAN_TIMEOUT_S", float(_DEFAULT_TIMEOUT_S))
@@ -909,7 +1026,7 @@ def _terminal_estado_dian(envio: EnvioDian) -> str | None:
 async def _mark_provider_error_exhausted(
     session: AsyncSession, envio: EnvioDian
 ) -> EnvioDian:
-    """Stamp the outer retry budget as exhausted (design.md §2 Issue #9).
+    """Append the ``error`` row closing an exhausted retry budget (design.md §2 Issue #9).
 
     Distinct from a single attempt's own ``ESTADO_TIMEOUT``/
     ``ESTADO_RECHAZADO`` — this fires once the WHOLE
@@ -918,20 +1035,24 @@ async def _mark_provider_error_exhausted(
     alert (``fe_provider_error``) distinct from any per-attempt alert
     already written by :func:`_record_terminal`.
     """
-    envio.respuesta_proveedor = {
-        **(envio.respuesta_proveedor or {}),
-        "estado_dian": ESTADO_ERROR,
-    }
-    envio.estado = ESTADO_ERROR
+    exhausted = _chain_row(
+        envio,
+        estado=ESTADO_ERROR,
+        payload={**(envio.payload or {}), "estado_dian": ESTADO_ERROR},
+        respuesta_proveedor={
+            **(envio.respuesta_proveedor or {}),
+            "estado_dian": ESTADO_ERROR,
+        },
+    )
+    session.add(exhausted)
     await _write_alerta(
         session,
-        uuid_sucursal=envio.uuid_sucursal,
-        uuid_arqueo=envio.uuid,
+        uuid_sucursal=exhausted.uuid_sucursal,
+        uuid_arqueo=exhausted.uuid,
         tipo_alerta="fe_provider_error",
     )
     await session.commit()
-    await session.refresh(envio)
-    return envio
+    return exhausted
 
 
 async def dispatch_factura_electronica_with_backoff(
@@ -943,6 +1064,7 @@ async def dispatch_factura_electronica_with_backoff(
     dian_token_path: Path,
     max_retries: int = DIAN_MAX_RETRIES,
     skip_if_dispatched: bool = False,
+    recover_orphans_after: timedelta | None = None,
 ) -> EnvioDian:
     """Drive :func:`dispatch_factura_electronica` across the DIAN retry budget.
 
@@ -971,6 +1093,7 @@ async def dispatch_factura_electronica_with_backoff(
             dian_token_path=dian_token_path,
             parent_envio_uuid=parent_uuid,
             skip_if_dispatched=skip_if_dispatched,
+            recover_orphans_after=recover_orphans_after,
         )
         if _terminal_estado_dian(envio) == ESTADO_ACEPTADO:
             return envio
@@ -1025,12 +1148,12 @@ __all__ = [
     "ClienteNoDisponibleError",
     "FacturaDetalleNoDisponibleError",
     "ConsecutivoRangeError",
-    "DispatchAlreadyHandledError",
-    "SourceRowNotVisibleError",
     "DianProvider",
+    "DispatchAlreadyHandledError",
     "EnvioDian",
     "FactusProvider",
     "PollResult",
+    "SourceRowNotVisibleError",
     "dispatch_factura_electronica",
     "dispatch_factura_electronica_with_backoff",
     "dispatch_revocacion",

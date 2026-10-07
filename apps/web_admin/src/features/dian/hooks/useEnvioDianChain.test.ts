@@ -71,6 +71,17 @@ describe('useEnvioDianChain', () => {
     );
   });
 
+  it('asks for EVERY row (solo_tip=false): the listing defaults to the last row per document', async () => {
+    const root = envio({ uuid: 'root', uuid_envio_padre: null });
+    const tip = envio({ uuid: 'tip', uuid_envio_padre: 'root' });
+    mockedFetch.mockResolvedValue({ items: [tip, root], next_cursor: null });
+
+    const { result } = renderHook(() => useEnvioDianChain(tip));
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(mockedFetch).toHaveBeenCalledWith(expect.objectContaining({ solo_tip: false }));
+  });
+
   it('pages forward when the parent is not on the first page', async () => {
     const root = envio({ uuid: 'root', uuid_envio_padre: null });
     const tip = envio({ uuid: 'tip', uuid_envio_padre: 'root' });

@@ -145,6 +145,7 @@ _ESTADO_DIAN_VALUES: frozenset[str] = frozenset(STATE_MACHINES["envio_dian"]) | 
     "rechazado",
     "timeout",
     "en_proceso",
+    "activo",  # in-flight marker of the append-only dispatch chain
 }
 
 

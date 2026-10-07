@@ -155,6 +155,7 @@ export async function fetchEnvioDianList(query: EnvioDianListQuery): Promise<Env
   const params = new URLSearchParams();
   if (query.uuid_sucursal) params.set('uuid_sucursal', query.uuid_sucursal);
   if (query.estado) params.set('estado', query.estado);
+  if (query.solo_tip === false) params.set('solo_tip', 'false');
   if (query.cursor) params.set('cursor', query.cursor);
   params.set('limit', String(query.limit));
 

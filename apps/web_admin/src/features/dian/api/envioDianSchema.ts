@@ -90,6 +90,12 @@ export type EnvioDianReadList = z.infer<typeof envioDianReadListSchema>;
 export interface EnvioDianListQuery {
   uuid_sucursal?: string;
   estado?: EnvioDianEstado;
+  /**
+   * Defaults to `true` server-side: only the LAST row of each document's chain
+   * (the append-only state) is listed. Pass `false` to list EVERY row, which is
+   * what the chain/history walk over `uuid_envio_padre` needs.
+   */
+  solo_tip?: boolean;
   cursor?: string;
   limit: number;
 }

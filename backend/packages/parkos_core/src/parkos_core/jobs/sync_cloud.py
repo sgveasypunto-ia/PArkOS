@@ -170,6 +170,7 @@ DEFAULT_APPLY_BATCH_LIMIT = 100
 # (``PARKOS_DIAN_SWEEP_STALE_S``). Both read at use time.
 DEFAULT_DIAN_SWEEP_INTERVAL_S = 300
 DEFAULT_DIAN_SWEEP_STALE_S = 600
+DEFAULT_DIAN_INFLIGHT_STALE_S = 3600
 
 
 def _env_int(name: str, default: int) -> int:
@@ -706,7 +707,10 @@ class SyncCloudWorker(WorkerRunner):
         """
         from datetime import timedelta
 
-        from parkos_core.dian.cloud.sweep import find_stale_pendientes
+        from parkos_core.dian.cloud.sweep import (
+            find_stale_inflight,
+            find_stale_pendientes,
+        )
         from parkos_core.sync.hooks.impls.dian_dispatch_on_sync import (
             resume_factura_dispatch,
         )
@@ -714,12 +718,24 @@ class SyncCloudWorker(WorkerRunner):
         stale = timedelta(
             seconds=_env_int("PARKOS_DIAN_SWEEP_STALE_S", DEFAULT_DIAN_SWEEP_STALE_S)
         )
+        inflight_stale = timedelta(
+            seconds=_env_int(
+                "PARKOS_DIAN_INFLIGHT_STALE_S", DEFAULT_DIAN_INFLIGHT_STALE_S
+            )
+        )
         candidates = await find_stale_pendientes(session, older_than=stale)
+        # Cloud chains whose dispatcher died with a row still in flight
+        # (append-only: the chain's LAST row is activo/enviado and old).
+        for uuid_fe in await find_stale_inflight(session, older_than=inflight_stale):
+            if uuid_fe not in candidates:
+                candidates.append(uuid_fe)
         # Read-only: release the snapshot before any provider work starts.
         await session.rollback()
         started = 0
         for uuid_fe in candidates:
-            if resume_factura_dispatch(uuid_fe):
+            if resume_factura_dispatch(
+                uuid_fe, recover_orphans_after=inflight_stale
+            ):
                 started += 1
         if candidates:
             self.log.info(
