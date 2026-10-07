@@ -7,7 +7,7 @@
  * `useRegistrarPago.ts` precedent verbatim):
  *   - `parkosFetch` for the canonical wire transport (F2.2
  *     auth/retry).
- *   - `buildIdempotencyKey` (features/operacion/lib/idempotency.ts
+ *   - `withActionIdempotencyKey` (features/operacion/lib/idempotency.ts
  *     — F7.2) for the SHA-256 RFC 8785 closure header
  *     (DEC-SUC-04 + DEC-IDEM-01 reuse from F1.6).
  *   - `VentaSuscripcionReadSchema` (api/ventaSuscripcionApi.ts)
@@ -31,7 +31,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 import {
   POST_VENTA_SUSCRIPCION_PATH,
   VentaSuscripcionReadSchema,
@@ -122,14 +122,11 @@ async function mutateFn(
   init: { arg: VentaSuscripcionCreate },
 ): Promise<VentaSuscripcionRead> {
   const body = init.arg;
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path: POST_VENTA_SUSCRIPCION_PATH,
-    body,
-  });
-
   try {
-    const raw = await postVentaWithIdempotency(body, idempotencyKey);
+    const raw = await withActionIdempotencyKey(
+      { method: 'POST', path: POST_VENTA_SUSCRIPCION_PATH, body },
+      (idempotencyKey) => postVentaWithIdempotency(body, idempotencyKey),
+    );
     return VentaSuscripcionReadSchema.parse(raw);
   } catch (err) {
     if (err instanceof ParkosHttpError) {

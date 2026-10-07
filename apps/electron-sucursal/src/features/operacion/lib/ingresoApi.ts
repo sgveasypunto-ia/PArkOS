@@ -2,23 +2,11 @@
  * `ingresoApi.ts` — POST mutation for `ingreso` rows (HU-F6.1, T3;
  * REQ-OPS-191/192/194/197 — ingreso sin placa + consecutivo).
  *
- * The Idempotency-Key header is derived per DEC-SUC-04 from a SHA-256
- * digest of `method | path | canonicalJSON(body)`. We compute the
- * digest on the renderer so two retries — operator double-press,
- * network 5xx → parkosFetch retry — carry the same header and the
- * backend's idempotency middleware (PR2) returns the same response.
- *
- * `parkosFetch` ALSO computes its own `Idempotency-Key` (F2.2
- * `idempotencyKey(method, url, body)` inside `parkosFetch.ts:110-123`)
- * for every mutational request. We deliberately use the SAME shape
- * here — SHA-256 of `method|path|JSON.stringify(body|null)` — so that
- * `ingresoApi.postIngreso()` and `parkosFetch`'s internal key are
- * byte-identical. This means:
- *   - If the caller doesn't override `skipIdempotencyKey`, our explicit
- *     `Idempotency-Key` header here is byte-identical to what
- *     `parkosFetch` would compute itself.
- *   - We forward it via `init.headers` to make the contract explicit
- *     at the call site — easier to reason about and easier to test.
+ * The Idempotency-Key header identifies ONE operator action (see
+ * `withActionIdempotencyKey`): a double-press while the request is in flight
+ * and parkosFetch transport retries share one key (the backend dedupes them);
+ * a NEW submit — e.g. re-entering a plate that already left — gets a fresh key
+ * so the backend never replays the previous ingreso.
  *
  * HU-INGRESO-SIN-PLACA (REQ-OPS-194):
  *   The payload is a discriminated union keyed on `placa_presente: boolean`
@@ -32,16 +20,11 @@
  * for legacy carro/moto rows, formatted `<TIPO>-NNNNNN-<uuid8>` for
  * no-placa ingresos.
  *
- * The spec requires 3 scenarios:
- *   - Operator double-press (500ms apart): same Idempotency-Key.
- *   - Body mutation (operator edits `observaciones`): different key.
- *   - Network retry (5xx): same key — `parkosFetch` re-fires with the
- *     same headers, our key is stable, server returns the same `uuid`.
  */
 import { parkosFetch, ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { z } from 'zod';
 
-import { canonicalJSON } from './canonicalJson';
+import { withActionIdempotencyKey } from './idempotency';
 
 /**
  * Discriminated union payload accepted by `POST /api/v1/operacion/ingresos`
@@ -98,30 +81,6 @@ export type PostIngresoResponse = z.infer<typeof PostIngresoResponseSchema>;
 const POST_PATH = '/api/v1/operacion/ingresos';
 
 /**
- * `deriveIdempotencyKey(payload)` — SHA-256 hex digest of
- * `POST|/api/v1/operacion/ingresos|<canonicalJSON(payload)>`. Exposed
- * (not just used internally) so callers can test/inspect the key
- * without going through the network.
- *
- * We use the Web Crypto API (`crypto.subtle.digest`) — available in
- * modern browsers and Node 16+ via `globalThis.crypto`. The previous
- * implementation used `crypto.subtle.digest` directly; we keep that
- * dependency because SHA-256 is the spec-mandated hash for the
- * Idempotency-Key contract.
- */
-export async function deriveIdempotencyKey(
-  payload: PostIngresoPayload,
-): Promise<string> {
-  const material = `POST|${POST_PATH}|${canonicalJSON(payload)}`;
-  const enc = new TextEncoder();
-  const bytes = enc.encode(material);
-  const hash = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-/**
  * `postIngreso(payload)` — POST the mutation with the canonical
  * Idempotency-Key. Returns the parsed `PostIngresoResponse` on 201.
  *
@@ -134,14 +93,17 @@ export async function deriveIdempotencyKey(
 export async function postIngreso(
   payload: PostIngresoPayload,
 ): Promise<PostIngresoResponse> {
-  const key = await deriveIdempotencyKey(payload);
-  const raw = await parkosFetch<unknown>(POST_PATH, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-    headers: {
-      'Idempotency-Key': key,
-    },
-  });
+  const raw = await withActionIdempotencyKey(
+    { method: 'POST', path: POST_PATH, body: payload },
+    (key) =>
+      parkosFetch<unknown>(POST_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        headers: {
+          'Idempotency-Key': key,
+        },
+      }),
+  );
   try {
     return PostIngresoResponseSchema.parse(raw);
   } catch (err) {

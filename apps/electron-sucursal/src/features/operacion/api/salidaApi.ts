@@ -50,7 +50,7 @@ export interface PostSalidaPayload {
  * `postSalida(payload)` — POST with the canonical Idempotency-Key
  * (header set via `parkosFetch`'s internal idempotency helper, which
  * hashes `method|path|JSON.stringify(body)` — same shape as the
- * F6.1 `ingresoApi.deriveIdempotencyKey` precedent).
+ * F6.1 `withActionIdempotencyKey` helper).
  *
  * Returns the parsed `SalidaReadForzado` on 201. Errors propagate as
  * `ParkosHttpError` so callers can branch on the status:

@@ -13,7 +13,7 @@
  * Composition mirrors `useRegistrarPago.ts` (F8.1) and
  * `useReintentarFE.ts` (F8.2):
  *   - `parkosFetch` for the canonical wire transport (F2.2 auth/retry).
- *   - `buildIdempotencyKey` (F7.2 lib/idempotency.ts) for the SHA-256
+ *   - `withActionIdempotencyKey` (F7.2 lib/idempotency.ts) for the SHA-256
  *     RFC 8785 closure header (DEC-SUC-04 + DEC-IDEM-01).
  *   - `ReimpresionTicketCreateSchema` (api/reimpresionApi.ts) for
  *     client-side pre-validation — `motivo.min(10)` is checked
@@ -28,7 +28,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 import {
   ReimpresionTicketCreateSchema,
   ReimpresionTicketReadSchema,
@@ -62,19 +62,17 @@ async function mutateFn(
   // here propagates through SWRMutation as `error`.
   const body = ReimpresionTicketCreateSchema.parse(init.arg);
 
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path: POST_PATH,
-    body,
-  });
-
   try {
     const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-    const raw = await parkosFetch<unknown>(POST_PATH, {
-      method: 'POST',
-      body: JSON.stringify(body),
-      headers: { 'Idempotency-Key': idempotencyKey },
-    });
+    const raw = await withActionIdempotencyKey(
+      { method: 'POST', path: POST_PATH, body },
+      (idempotencyKey) =>
+        parkosFetch<unknown>(POST_PATH, {
+          method: 'POST',
+          body: JSON.stringify(body),
+          headers: { 'Idempotency-Key': idempotencyKey },
+        }),
+    );
     return ReimpresionTicketReadSchema.parse(raw);
   } catch (err) {
     if (err instanceof ParkosHttpError && err.status === 401) {

@@ -6,7 +6,7 @@
  * Composition mirrors `useReimprimir.ts` (F8.3) and
  * `useReintentarFE.ts` (F8.2):
  *   - `parkosFetch` for the canonical wire transport (F2.2 auth/retry).
- *   - `buildIdempotencyKey` (F7.2 lib/idempotency.ts) for the SHA-256
+ *   - `withActionIdempotencyKey` (F7.2 lib/idempotency.ts) for the SHA-256
  *     RFC 8785 closure header (DEC-SUC-04 + DEC-IDEM-01).
  *   - `ReimpresionTicketAnularSchema` (api/reimpresionApi.ts) for
  *     client-side pre-validation — `motivo_anulacion.min(10)` is
@@ -30,7 +30,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 import {
   ReimpresionTicketAnularSchema,
   ReimpresionTicketReadSchema,
@@ -69,19 +69,15 @@ async function mutateFn(
 
   const path = `${POST_PATH_PREFIX}/${init.arg.uuidReimpresion}/anular`;
   const body = { motivo_anulacion: init.arg.motivo_anulacion };
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path,
-    body,
-  });
-
   try {
     const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-    const raw = await parkosFetch<unknown>(path, {
-      method: 'POST',
-      body: JSON.stringify(body),
-      headers: { 'Idempotency-Key': idempotencyKey },
-    });
+    const raw = await withActionIdempotencyKey({ method: 'POST', path, body }, (idempotencyKey) =>
+      parkosFetch<unknown>(path, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+    );
     return ReimpresionTicketReadSchema.parse(raw);
   } catch (err) {
     if (err instanceof ParkosHttpError && err.status === 401) {

@@ -14,7 +14,7 @@
  * Composition (mirrors `useRegistrarPago.ts` precedent — F8.1):
  *   - `parkosFetch` for the canonical wire transport (F2.2
  *     auth/retry).
- *   - `buildIdempotencyKey` (lib/idempotency.ts — F7.2) for the
+ *   - `withActionIdempotencyKey` (lib/idempotency.ts — F7.2) for the
  *     SHA-256 RFC 8785 closure header (DEC-SUC-04 + DEC-IDEM-01
  *     reuse from F1.6). A double-trigger with the same `uuid_salida`
  *     yields the SAME Idempotency-Key → server-side cache dedup
@@ -60,7 +60,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 
 const POST_PATH_PREFIX = '/api/v1/operacion/salidas/';
 const POST_PATH_SUFFIX = '/anular-no-pagada';
@@ -108,21 +108,17 @@ async function mutateFn(
   const body = {
     motivo: MOTIVO_AUTO_ANULACION_SALIDA,
   };
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path,
-    body,
-  });
-
   try {
     const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-    return await parkosFetch<unknown>(path, {
-      method: 'POST',
-      body: JSON.stringify(body),
-      headers: {
-        'Idempotency-Key': idempotencyKey,
-      },
-    });
+    return await withActionIdempotencyKey({ method: 'POST', path, body }, (idempotencyKey) =>
+      parkosFetch<unknown>(path, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+      }),
+    );
   } catch (err) {
     if (err instanceof ParkosHttpError && err.status === 401) {
       return handle401(uuid_salida);

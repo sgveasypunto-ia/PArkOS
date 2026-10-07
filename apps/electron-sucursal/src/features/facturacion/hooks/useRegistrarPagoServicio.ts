@@ -9,7 +9,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 import {
   postFacturaServicio,
   type PostFacturaServicioPayload,
@@ -38,14 +38,11 @@ async function mutateFn(
   init: { arg: PostFacturaServicioPayload },
 ): Promise<FacturaRead> {
   const body = init.arg;
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path: POST_PATH,
-    body,
-  });
-
   try {
-    return await postFacturaServicio(body, idempotencyKey);
+    return await withActionIdempotencyKey(
+      { method: 'POST', path: POST_PATH, body },
+      (idempotencyKey) => postFacturaServicio(body, idempotencyKey),
+    );
   } catch (err) {
     if (err instanceof ParkosHttpError && err.status === 401) {
       return handle401();

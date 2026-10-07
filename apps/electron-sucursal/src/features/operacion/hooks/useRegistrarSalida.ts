@@ -4,7 +4,7 @@
  *
  * Composition:
  *   - `parkosFetch` for the canonical wire transport (F2.2 auth/retry).
- *   - `buildIdempotencyKey` (lib/idempotency.ts) for the SHA-256
+ *   - `withActionIdempotencyKey` (lib/idempotency.ts) for the SHA-256
  *     RFC 8785 closure header (DEC-SUC-04 + DEC-IDEM-01 reuse from F1.6).
  *   - `SalidaReadForzadoSchema` (api/salidaApi.ts) for the response parse.
  *   - `useAuthStore.getState().clear()` + `parkos:auth:cleared` event
@@ -20,7 +20,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../lib/idempotency';
+import { withActionIdempotencyKey } from '../lib/idempotency';
 import { SalidaReadForzadoSchema, type SalidaReadForzado } from '../api/salidaApi';
 
 const POST_PATH = '/api/v1/operacion/salidas';
@@ -75,14 +75,11 @@ async function mutateFn(
   init: { arg: RegistrarSalidaInput },
 ): Promise<SalidaReadForzado> {
   const body = { uuid_ingreso: init.arg.uuid_ingreso };
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path: POST_PATH,
-    body,
-  });
-
   try {
-    const raw = await postSalidaWithIdempotency(body, idempotencyKey);
+    const raw = await withActionIdempotencyKey(
+      { method: 'POST', path: POST_PATH, body },
+      (idempotencyKey) => postSalidaWithIdempotency(body, idempotencyKey),
+    );
     return SalidaReadForzadoSchema.parse(raw);
   } catch (err) {
     if (err instanceof ParkosHttpError) {
@@ -116,7 +113,7 @@ function parseSalidaDuplicadaUuid(body: string): string | null {
  * Thin wrapper around `parkosFetch` that lets us pass an explicit
  * `Idempotency-Key` header (the public `salidaApi.postSalida` relies
  * on `parkosFetch`'s internal hash which uses `JSON.stringify(body)` —
- * same input shape as our `buildIdempotencyKey` when the body has
+ * same input shape as our `withActionIdempotencyKey` when the body has
  * only `uuid_ingreso`, but explicit forwarding documents the contract
  * at the call site).
  */
