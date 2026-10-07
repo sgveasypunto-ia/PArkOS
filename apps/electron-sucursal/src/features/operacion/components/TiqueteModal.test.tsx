@@ -52,11 +52,7 @@ describe('TiqueteModal', () => {
         open
         uuid_ingreso="11111111-1111-1111-1111-111111111111"
         tipo_entrada="ROTACION"
-        buildPrintPayload={() => ({
-          buffer: Buffer.from('hello').toString('base64'),
-          ticketId: 'ticket-1',
-          cut: true,
-        })}
+        imprimir={async () => ({ ok: true })}
         onSiguiente={vi.fn()}
       />,
     );
@@ -69,11 +65,7 @@ describe('TiqueteModal', () => {
         open
         uuid_ingreso="11111111-1111-1111-1111-111111111111"
         tipo_entrada="MENSUALIDAD"
-        buildPrintPayload={() => ({
-          buffer: Buffer.from('hello').toString('base64'),
-          ticketId: 'ticket-1',
-          cut: true,
-        })}
+        imprimir={async () => ({ ok: true })}
         onSiguiente={vi.fn()}
       />,
     );
@@ -90,11 +82,7 @@ describe('TiqueteModal', () => {
         uuid_ingreso="11111111-1111-1111-1111-111111111111"
         tipo_entrada="ROTACION"
         tipo_vehiculo_nombre="moto"
-        buildPrintPayload={() => ({
-          buffer: 'AA==',
-          ticketId: 'ticket-1',
-          cut: true,
-        })}
+        imprimir={async () => ({ ok: true })}
         onSiguiente={vi.fn()}
       />,
     );
@@ -110,11 +98,7 @@ describe('TiqueteModal', () => {
         uuid_ingreso="11111111-1111-1111-1111-111111111111"
         tipo_entrada="ROTACION"
         tipo_vehiculo_nombre={null}
-        buildPrintPayload={() => ({
-          buffer: 'AA==',
-          ticketId: 'ticket-1',
-          cut: true,
-        })}
+        imprimir={async () => ({ ok: true })}
         onSiguiente={vi.fn()}
       />,
     );
@@ -123,48 +107,33 @@ describe('TiqueteModal', () => {
     expect(screen.queryByText(/Veh[íi]culo/i)).not.toBeInTheDocument();
   });
 
-  it('calls bridge.imprimir with the payload from buildPrintPayload on Imprimir click', async () => {
-    const buildPrintPayload = vi.fn((uuid_ingreso: string) => ({
-      buffer: Buffer.from(`entrada:${uuid_ingreso}`).toString('base64'),
-      ticketId: uuid_ingreso,
-      cut: true,
-    }));
+  it('calls imprimir with the ingreso uuid on Imprimir click and closes on success', async () => {
+    const imprimir = vi.fn(async (_uuid: string) => ({ ok: true }));
+    const onSiguiente = vi.fn();
     render(
       <TiqueteModal
         open
         uuid_ingreso="11111111-1111-1111-1111-111111111111"
         tipo_entrada="ROTACION"
-        buildPrintPayload={buildPrintPayload}
-        onSiguiente={vi.fn()}
+        imprimir={imprimir}
+        onSiguiente={onSiguiente}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: /imprimir/i }));
-    await waitFor(() => expect(imprimirMock).toHaveBeenCalledTimes(1));
-    expect(buildPrintPayload).toHaveBeenCalledWith(
-      '11111111-1111-1111-1111-111111111111',
-    );
-    expect(imprimirMock).toHaveBeenCalledWith({
-      buffer: Buffer.from(
-        'entrada:11111111-1111-1111-1111-111111111111',
-      ).toString('base64'),
-      ticketId: '11111111-1111-1111-1111-111111111111',
-      cut: true,
-    });
+    await waitFor(() => expect(imprimir).toHaveBeenCalledTimes(1));
+    expect(imprimir).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+    await waitFor(() => expect(onSiguiente).toHaveBeenCalled());
   });
 
-  it('shows an inline error when bridge.imprimir returns ok:false', async () => {
-    imprimirMock.mockResolvedValueOnce({ ok: false });
+  it('shows an inline error (and stays open to retry) when the print fails', async () => {
+    const onSiguiente = vi.fn();
     render(
       <TiqueteModal
         open
         uuid_ingreso="11111111-1111-1111-1111-111111111111"
         tipo_entrada="ROTACION"
-        buildPrintPayload={() => ({
-          buffer: 'AA==',
-          ticketId: 'ticket-1',
-          cut: true,
-        })}
-        onSiguiente={vi.fn()}
+        imprimir={async () => ({ ok: false })}
+        onSiguiente={onSiguiente}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: /imprimir/i }));
@@ -173,6 +142,7 @@ describe('TiqueteModal', () => {
         screen.getByRole('alert'),
       ).toHaveTextContent(/no se pudo imprimir/i),
     );
+    expect(onSiguiente).not.toHaveBeenCalled();
   });
 
   // HU-INGRESO-SIN-PLACA (REQ-OPS-197) — `Identificación:` line.
@@ -183,11 +153,7 @@ describe('TiqueteModal', () => {
         open
         uuid_ingreso="11111111-1111-1111-1111-111111111111"
         tipo_entrada="ROTACION"
-        buildPrintPayload={() => ({
-          buffer: 'AA==',
-          ticketId: 'ticket-1',
-          cut: true,
-        })}
+        imprimir={async () => ({ ok: true })}
         onSiguiente={vi.fn()}
       />,
     );
@@ -207,11 +173,7 @@ describe('TiqueteModal', () => {
         uuid_ingreso="11111111-1111-1111-1111-111111111111"
         tipo_entrada="ROTACION"
         consecutivo="BICI-000001-3f8a1b2c"
-        buildPrintPayload={() => ({
-          buffer: 'AA==',
-          ticketId: 'ticket-1',
-          cut: true,
-        })}
+        imprimir={async () => ({ ok: true })}
         onSiguiente={vi.fn()}
       />,
     );

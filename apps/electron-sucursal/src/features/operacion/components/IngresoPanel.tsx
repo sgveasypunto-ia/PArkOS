@@ -46,7 +46,8 @@ import {
 import { TiqueteModal } from './TiqueteModal';
 import { useClienteBySubscripcion } from '../api/clienteApi';
 import { buildEntradaPayloadFromResponse } from '../../../lib/print/printBuilder';
-import { buildEntradaBuffer } from '../../../lib/print/escposBuilder';
+import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
+import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
 import { Button } from '@/components/ui/button';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import { useInvalidateConteosOperacion } from '../hooks/useInvalidateConteosOperacion';
@@ -265,12 +266,13 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
         uuid_sucursal: sucursal?.uuid ?? null,
         uuid_sesion: sesion?.uuid ?? null,
       });
-      try {
-        const payload = buildPrintPayload(response, currentPlaca);
-        await window.bridge.imprimir(payload);
-      } catch {
-        // Best-effort print — DEC-SUC-27; F5.1 retry queue handles reconnects.
-      }
+      // Best-effort print — DEC-SUC-27. Never blocks the flow; a failure leaves a
+      // visible "No se pudo imprimir…" notice with retry (avisoImpresion).
+      await ejecutarImpresion('el tiquete de entrada', () =>
+        imprimirTiquete('entrada', buildEntradaPayload(response, currentPlaca), {
+          ticketId: response.uuid,
+        }),
+      );
     },
     [invalidarConteos, sucursal?.uuid, sesion?.uuid],
   );
@@ -864,15 +866,19 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
             success.uuid_subscripcion_cliente ? clienteData ?? null : null
           }
           initialObservaciones={observaciones}
-          buildPrintPayload={(uuid) =>
-            buildPrintPayload(
-              {
-                uuid,
-                tipo_entrada: success.tipo_entrada,
-                uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
-                consecutivo: success.consecutivo,
-              },
-              success.placa,
+          imprimir={(uuid) =>
+            imprimirTiquete(
+              'entrada',
+              buildEntradaPayload(
+                {
+                  uuid,
+                  tipo_entrada: success.tipo_entrada,
+                  uuid_subscripcion_cliente: success.uuid_subscripcion_cliente,
+                  consecutivo: success.consecutivo,
+                },
+                success.placa,
+              ),
+              { ticketId: uuid },
             )
           }
           onSiguiente={() => {
@@ -919,42 +925,26 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
 }
 
 /**
- * `buildPrintPayload(response)` — produce the F5.1 IPC payload that
- * wraps the F5.2 ``escposBuilder.buildEntradaBuffer`` result into a
- * base64 buffer + the ingreso UUID as ticketId. F5.2 owns the actual
- * byte composition; this panel only wires the result to the bridge.
+ * `buildEntradaPayload(response, placa)` — the typed `EntradaPayload` of the
+ * ingreso tiquete. `tiquetePrint.imprimirTiquete` renders it to ESC/POS
+ * (Electron, bytes identical to `escposBuilder.buildEntradaBuffer`) or to HTML
+ * (browser mode → `window.print`).
  *
- * REGRESSION fix (2026-09-22): the prior implementation emitted a
- * sentinel Buffer (``Buffer.from("tiquete:entrada:...")``) that
- * ``bridge.imprimir`` rejected — every click on "Imprimir" failed
- * with the generic "No se pudo imprimir el tiquete" error. Now we
- * actually call the F5.2 builder via ``printBuilder.ts`` which
- * assembles a structurally valid ``EntradaPayload`` (discriminated
- * union ``con-placa`` | ``con-consecutivo``) before serializing.
- *
- * Note: ``cliente`` is NOT threaded into this payload yet — the
- * tiquete's cliente block is currently rendered only in the preview.
- * Wiring the cliente name into the ESC/POS payload is a follow-up
- * (requires a ``clienteSchema`` to be added to ``escposTemplates.ts``
- * and a 17th/18th key in ``TiqueteEntradaCampos``).
+ * Note: ``cliente`` is NOT threaded into this payload yet — the tiquete's
+ * cliente block is currently rendered only in the preview (follow-up: needs a
+ * ``clienteSchema`` in ``escposTemplates.ts``).
  */
-function buildPrintPayload(
+function buildEntradaPayload(
   response: PostIngresoResponse,
   currentPlaca: string | null,
-): { buffer: string; ticketId: string; cut: boolean } {
-  const entradaPayload = buildEntradaPayloadFromResponse(
+) {
+  return buildEntradaPayloadFromResponse(
     response,
     response.consecutivo ? null : currentPlaca,
     // TODO: hydrate from a future GET /print-context endpoint (or
     // individual fetches of empresa + sucursal + tarifa + documentos).
     {},
   );
-  const buffer = buildEntradaBuffer(entradaPayload);
-  return {
-    buffer: buffer.toString('base64'),
-    ticketId: response.uuid,
-    cut: true,
-  };
 }
 
 async function fetchActiveUuid(placaTarget: string): Promise<string> {

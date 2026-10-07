@@ -25,7 +25,6 @@ import {
   runCerrarTurnoChain,
   type ArqueoSubmitFn,
   type CerrarSesionHelper,
-  type CerrarTurnoBridge,
 } from '../cerrarTurnoChain';
 import type { SesionRead } from '../../api/sesionActivaApi';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
@@ -46,12 +45,12 @@ const BASE_VALUES = {
 
 let submitArqueo: ReturnType<typeof vi.fn>;
 let cerrarSesion: ReturnType<typeof vi.fn>;
-let bridge: CerrarTurnoBridge;
+let imprimirCierre: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   submitArqueo = vi.fn();
   cerrarSesion = vi.fn();
-  bridge = { imprimir: vi.fn() };
+  imprimirCierre = vi.fn();
 });
 
 const UUID_TIPO_CIERRE_TURNO = 'tipo-arqueo-uuid-cierre-turno';
@@ -62,7 +61,7 @@ const chain = (values: unknown = BASE_VALUES) =>
     uuidTipoArqueo: UUID_TIPO_CIERRE_TURNO,
     submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
     cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
-    bridge,
+    imprimirCierre,
     values: values as never,
   });
 
@@ -88,22 +87,23 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
       valor_efectivo_reportado: 100_000,
     });
 
-    // 2. bridge.imprimir fired exactly once with auditoria_codigo='cierre_turno'.
-    expect(bridge.imprimir).toHaveBeenCalledTimes(1);
-    expect(bridge.imprimir).toHaveBeenCalledWith(
-      'arqueo',
-      expect.objectContaining({
-        uuid: 'arqueo-uuid-1',
-        auditoria_codigo: 'cierre_turno',
-      }),
-    );
-
-    // 3. THEN the helper is invoked (after POST + bridge.imprimir).
+    // 2. the PUT ran (print happens AFTER it, with the real closing time).
     expect(cerrarSesion).toHaveBeenCalledTimes(1);
     expect(cerrarSesion).toHaveBeenCalledWith(
       'sess-uuid-1',
       { valor_final_efectivo: 100_000 },
       { deferLogout: true },
+    );
+
+    // 3. the slip data is handed over exactly once, AFTER the PUT.
+    expect(imprimirCierre).toHaveBeenCalledTimes(1);
+    expect(imprimirCierre).toHaveBeenCalledWith({
+      sesion: expect.objectContaining({ timestamp_cierre: '2026-09-21T18:00:00Z' }),
+      arqueo: { uuid: 'arqueo-uuid-1' },
+      observaciones: undefined,
+    });
+    expect(cerrarSesion.mock.invocationCallOrder[0]!).toBeLessThan(
+      imprimirCierre.mock.invocationCallOrder[0]!,
     );
 
     expect(result).toEqual({
@@ -115,6 +115,24 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
       arqueo: { uuid: 'arqueo-uuid-1' },
       observaciones: undefined,
     });
+  });
+
+  // A failed print (sync throw or rejection) must never block or change the cierre.
+  it.each([
+    ['lanza', () => { throw new Error('printer_offline'); }],
+    ['rechaza', () => Promise.reject(new Error('printer_offline'))],
+  ])('seq-1c: la impresión %s -> el cierre igual termina en cierre_completado', async (_n, impl) => {
+    submitArqueo.mockResolvedValueOnce({ uuid: 'arqueo-uuid-1c' });
+    cerrarSesion.mockResolvedValueOnce({ ok: true, status: 200, sesion: SESION });
+    imprimirCierre.mockImplementation(impl as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await chain();
+    await Promise.resolve();
+
+    expect(result.kind).toBe('cierre_completado');
+    expect(imprimirCierre).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   // ────────────────────────────────────────────────────────────────────
@@ -207,7 +225,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
       uuidTipoArqueo: UUID_TIPO_CIERRE_TURNO,
       submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
       cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
-      bridge,
+      imprimirCierre,
       values: {
         ...BASE_VALUES,
         valor_efectivo_reportado: 97_000,
@@ -232,7 +250,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
       uuidTipoArqueo: UUID_TIPO_CIERRE_TURNO,
       submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
       cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
-      bridge,
+      imprimirCierre,
       values: {
         ...BASE_VALUES,
         valor_efectivo_reportado: 100_000,
@@ -254,7 +272,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
       uuidTipoArqueo: UUID_TIPO_CIERRE_TURNO,
       submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
       cerrarSesion: cerrarSesion as unknown as CerrarSesionHelper,
-      bridge,
+      imprimirCierre,
       values: { ...BASE_VALUES, valor_efectivo_reportado: 97_000, observaciones_cierre: '   ' } as never,
       requiereJustificacion: true,
     });
@@ -272,7 +290,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
     const result = await chain();
 
     expect(result).toEqual({ kind: 'arqueo_fallido', status: 500 });
-    expect(bridge.imprimir).not.toHaveBeenCalled();
+    expect(imprimirCierre).not.toHaveBeenCalled();
     expect(cerrarSesion).not.toHaveBeenCalled();
   });
 
@@ -285,7 +303,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
     const result = await chain();
 
     expect(result).toEqual({ kind: 'red_arqueo' });
-    expect(bridge.imprimir).not.toHaveBeenCalled();
+    expect(imprimirCierre).not.toHaveBeenCalled();
     expect(cerrarSesion).not.toHaveBeenCalled();
   });
 
@@ -321,8 +339,8 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
     const result = await chain();
 
     expect(result).toEqual({ kind: 'redirect_login' });
-    // bridge.imprimir fires BEFORE the PUT attempt (REQ-OPS-157 happy).
-    expect(bridge.imprimir).toHaveBeenCalledTimes(1);
+    // The PUT failed: the turno is not closed, so no slip is printed.
+    expect(imprimirCierre).not.toHaveBeenCalled();
   });
 
   // ────────────────────────────────────────────────────────────────────
@@ -404,7 +422,7 @@ describe('HU-F10.2 — cerrarTurnoChain (REQ-OPS-157, REQ-OPS-159, AD-2 + AD-3)'
     await chain();
 
     expect(submitArqueo).toHaveBeenCalledTimes(1);
-    expect(bridge.imprimir).not.toHaveBeenCalled();
+    expect(imprimirCierre).not.toHaveBeenCalled();
     expect(cerrarSesion).not.toHaveBeenCalled();
   });
 });

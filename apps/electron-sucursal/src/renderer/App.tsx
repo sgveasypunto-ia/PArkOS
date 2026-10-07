@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { Route, Routes } from 'react-router-dom';
 
 import { StatusBar } from './components/StatusBar';
+import { AvisosImpresion } from './components/AvisosImpresion';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { Login } from '../features/auth/pages/Login';
 import { Dashboard } from '../features/caja/pages/Dashboard';
@@ -128,6 +129,7 @@ export default function App(): JSX.Element {
           />
         </Routes>
       </main>
+      <AvisosImpresion />
     </div>
   );
 }

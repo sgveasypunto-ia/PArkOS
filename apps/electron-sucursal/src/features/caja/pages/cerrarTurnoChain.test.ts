@@ -35,7 +35,7 @@ const BASE_VALUES = {
 const baseArgs = () => ({
   sesion: SESION,
   uuidTipoArqueo: 'tipo-arqueo-uuid-1',
-  bridge: null,
+  imprimirCierre: null,
   values: BASE_VALUES,
 });
 

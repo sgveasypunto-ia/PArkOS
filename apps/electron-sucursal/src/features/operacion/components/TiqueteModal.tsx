@@ -152,16 +152,12 @@ export interface TiqueteModalProps {
    */
   initialObservaciones?: string;
   /**
-   * Closure that produces a fresh `bridge.imprimir` payload for the
-   * given `uuid_ingreso`. Centralised so the page can swap the
-   * builder between F5.2 / F6.2 / browser-fallback without coupling
-   * the modal to either.
+   * Prints the tiquete for the given `uuid_ingreso` through the shared print
+   * layer (`tiquetePrint.imprimirTiquete`: ESC/POS in Electron, HTML +
+   * `window.print` in browser mode). Resolves `{ ok: false }` (never throws)
+   * when the printer failed — the modal then shows the inline retry error.
    */
-  buildPrintPayload: (uuid_ingreso: string) => {
-    buffer: string;
-    ticketId: string;
-    cut: boolean;
-  };
+  imprimir: (uuid_ingreso: string) => Promise<{ ok: boolean }>;
   /** Called when the operator clicks "Siguiente" — reset form, clear cache. */
   onSiguiente: () => void;
   /**
@@ -180,7 +176,7 @@ export function TiqueteModal({
   placa = null,
   cliente = null,
   initialObservaciones = '',
-  buildPrintPayload,
+  imprimir,
   onSiguiente,
   onIrASalida,
 }: TiqueteModalProps) {
@@ -207,8 +203,7 @@ export function TiqueteModal({
     setObservacionesSaved(false);
     setPrinting(true);
     try {
-      const payload = buildPrintPayload(uuid_ingreso);
-      const result = await window.bridge.imprimir(payload);
+      const result = await imprimir(uuid_ingreso);
       if (!result.ok) {
         setPrintError(
           t('tiquete_entrada_print_error', {
@@ -235,7 +230,7 @@ export function TiqueteModal({
     } finally {
       setPrinting(false);
     }
-  }, [buildPrintPayload, t, uuid_ingreso, onSiguiente]);
+  }, [imprimir, t, uuid_ingreso, onSiguiente]);
 
   // FEATURE B: subscription-validity gate. Compute once per render
   // (cliente is a prop, doesn't change inside the modal's lifetime).

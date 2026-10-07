@@ -105,7 +105,8 @@ import { VehiculoSuggestions } from '../../operacion/components/VehiculoSuggesti
 import type { Ingreso } from '../../operacion/api/ingresoActivoApi';
 import { resolverIngresoReimpresion } from '../lib/resolverIngresoReimpresion';
 import { formatCOP } from '../../caja/lib/format';
-import { build as buildEscpos } from '../../../lib/print/escposBuilder';
+import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
+import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
 import { buildReimpresionEntradaPayload } from '../../../lib/print/printBuilder';
 import { useReimprimir } from '../hooks/useReimprimir';
 import { useAnularReimpresion } from '../hooks/useAnularReimpresion';
@@ -140,17 +141,21 @@ function identificadorDe(ingreso: Ingreso): string {
   return ingreso.placa ?? ingreso.consecutivo ?? ingreso.uuid;
 }
 
+/**
+ * Prints the reimpresión of the ingreso tiquete on both channels (ESC/POS in
+ * Electron, HTML + `window.print` in browser mode). Never throws and never
+ * blocks the flow: a failure leaves a visible "No se pudo imprimir…" notice
+ * with retry (the cobro / reimpresión are already registered).
+ */
 async function imprimirReimpresionEntrada(
   ingreso: Ingreso,
   motivo: string,
 ): Promise<void> {
-  const payload = buildReimpresionEntradaPayload(ingreso, motivo);
-  const buffer = buildEscpos('reimpresion', payload);
-  await window.bridge.imprimir({
-    buffer: buffer.toString('base64'),
-    ticketId: ingreso.uuid,
-    cut: true,
-  });
+  await ejecutarImpresion('el tiquete reimpreso', () =>
+    imprimirTiquete('reimpresion', buildReimpresionEntradaPayload(ingreso, motivo), {
+      ticketId: ingreso.uuid,
+    }),
+  );
 }
 
 const MSG_INGRESO_CERRADO =
@@ -344,16 +349,13 @@ export function ReimprimirTiquete(): JSX.Element {
         });
         setResultado(out);
         setFacturaDisplay(factura);
-        try {
-          await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
-        } catch {
-          // Best-effort print (DEC-SUC-27) — el cobro y la reimpresión
-          // ya quedaron registrados; un fallo de impresión no debe
-          // bloquear ni revertir el flujo.
-        }
+        // Best-effort (DEC-SUC-27) — el cobro y la reimpresión ya quedaron
+        // registrados; un fallo de impresión avisa (con reintento) sin
+        // bloquear ni revertir el flujo.
+        await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
         // La factura del servicio se imprime completa (detalle de impuestos);
-        // `imprimirFactura` nunca lanza.
-        void imprimirFactura(factura);
+        // nunca lanza y avisa si falla.
+        void ejecutarImpresion('la factura', () => imprimirFactura(factura));
       } catch (err) {
         setErrorMsg(
           esIngresoYaTieneSalida(err)
@@ -389,11 +391,8 @@ export function ReimprimirTiquete(): JSX.Element {
         motivo: motivoConfirmado,
       });
       setResultado(out);
-      try {
-        await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
-      } catch {
-        // Best-effort print (DEC-SUC-27), igual que el flujo con cobro.
-      }
+      // Best-effort print (DEC-SUC-27), igual que el flujo con cobro.
+      await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
     } catch (err) {
       setErrorMsg(
         esIngresoYaTieneSalida(err)

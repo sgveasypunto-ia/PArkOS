@@ -155,7 +155,9 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
 
   it('I2: two-step flujo (validate + confirmar) triggers postIngreso + auto-print on 201', async () => {
     mockPostIngreso.mockResolvedValue({
+      uuid: '00000000-0000-0000-0000-000000000777',
       uuid_ingreso: '00000000-0000-0000-0000-000000000777',
+      consecutivo: null,
       tipo_entrada: 'ROTACION',
       uuid_subscripcion_cliente: null,
     });
@@ -189,7 +191,58 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
       placa: 'ABC123',
       uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000010',
     });
-    expect(window.bridge.imprimir).toHaveBeenCalled();
+    expect(window.bridge.imprimir).toHaveBeenCalledTimes(1);
+    // Real contract: ONE object `{ buffer, ticketId, cut }` with the ESC/POS tiquete.
+    const arg = (imprimirMock.mock.calls[0] as unknown[])[0] as {
+      buffer: string;
+      ticketId: string;
+      cut: boolean;
+    };
+    expect(arg.ticketId).toBe('00000000-0000-0000-0000-000000000777');
+    expect(arg.cut).toBe(true);
+    const txt = Buffer.from(arg.buffer, 'base64').toString('utf8');
+    expect(txt).toContain('TIQUETE DE ENTRADA');
+    expect(txt).toContain('ABC123');
+  });
+
+  it('I2c: modo navegador — el tiquete de ingreso se imprime por window.print (HTML), no por el bridge', async () => {
+    mockPostIngreso.mockResolvedValue({
+      uuid: '00000000-0000-0000-0000-000000000778',
+      uuid_ingreso: '00000000-0000-0000-0000-000000000778',
+      consecutivo: null,
+      tipo_entrada: 'ROTACION',
+      uuid_subscripcion_cliente: null,
+    });
+    const original = (window as unknown as { bridge: unknown }).bridge;
+    const navegador = Object.assign(vi.fn(), { modo: 'browser' as const });
+    (window as unknown as { bridge: unknown }).bridge = { imprimir: navegador };
+    window.print = vi.fn();
+    try {
+      render(
+        <MemoryRouter>
+          <IngresoPanel />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        screen.getByTestId('placa-input-stub').click();
+      });
+      await act(async () => {
+        (screen.getByTestId('ingreso-registrar') as HTMLButtonElement).click();
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(navegador).not.toHaveBeenCalled();
+      expect(window.print).toHaveBeenCalledTimes(1);
+      const dom = document.getElementById('parkos-escpos-fallback-container')?.textContent ?? '';
+      expect(dom).toContain('TIQUETE DE ENTRADA');
+      expect(dom).toContain('ABC123');
+    } finally {
+      (window as unknown as { bridge: unknown }).bridge = original;
+      document.getElementById('parkos-escpos-fallback-container')?.remove();
+    }
   });
 
   it('I2b: ingreso activo de rotación NO se rotula "Mensualidad activa"; con suscripción sí', () => {

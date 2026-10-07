@@ -39,6 +39,7 @@ import { Input } from '@/components/ui/input';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useArqueo } from '../hooks/useArqueo';
 import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
+import { useImprimirCierre } from '../hooks/useImprimirCierre';
 import {
   useArqueoResumenPorSesion,
   type ArqueoResumenPorSesion,
@@ -46,7 +47,6 @@ import {
 import { CierreDiarioForm } from './CierreDiarioForm';
 import {
   runCierreDiarioChain,
-  type CierreDiarioBridge,
   type ArqueoSubmitFn,
 } from './cierreDiarioChain';
 
@@ -151,6 +151,7 @@ export function CierreDiario(): JSX.Element {
     | null
   >(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const imprimir = useImprimirCierre();
 
   const onCancel = (): void => {
     // Ajuste 2026-09-25: `<CierreDiario />` ahora vive DENTRO de
@@ -178,21 +179,10 @@ export function CierreDiario(): JSX.Element {
     }
     setIsSubmitting(true);
 
-    // Wire the bridge if available (jsdom + vitest may not have it).
-    const bridge: CierreDiarioBridge | null =
-      typeof window !== 'undefined' &&
-      typeof (window as unknown as { bridge?: { imprimir?: unknown } }).bridge?.imprimir === 'function'
-        ? {
-            imprimir: (window as unknown as {
-              bridge: { imprimir: (k: string, p: Record<string, unknown>) => Promise<unknown> };
-            }).bridge.imprimir,
-          }
-        : null;
-
     const result = await runCierreDiarioChain({
       submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
       uuidTipoArqueo: uuidTipoCierreDia,
-      bridge,
+      imprimirCierre: imprimir.dia,
       values: {
         valor_efectivo_reportado: values.valor_efectivo_reportado,
         justificacion: values.justificacion,

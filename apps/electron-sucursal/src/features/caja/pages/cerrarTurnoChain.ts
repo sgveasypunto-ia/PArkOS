@@ -4,10 +4,10 @@
  * Encapsulates the 3-step sequencer that the `<CerrarTurno>` page wires
  * up via react-hook-form + Zustand:
  *   1. `POST /caja/arqueo` with `tipo_arqueo='cierre_turno'`.
- *   2. `bridge.imprimir('arqueo', { ..., auditoria_codigo: 'cierre_turno' })`
- *      (BEFORE the PUT, DA-F10.2-5 RESOLVED).
- *   3. `PUT /caja-sesion/{uuid}/cerrar` via the F3.3 logout-on-success
+ *   2. `PUT /caja-sesion/{uuid}/cerrar` via the F3.3 logout-on-success
  *      helper (`useSesionActiva().cerrarSesion`).
+ *   3. Cierre slip through the injected `imprimirCierre` (after the PUT, so it
+ *      carries the closing time; best-effort, never blocks the cierre).
  *
  * The helper returns a discriminated `CerrarTurnoChainResult` so the
  * caller (the orchestrator) can render the right banner without
@@ -23,13 +23,18 @@ import type { SesionRead } from '../api/sesionActivaApi';
 import type { ArqueoSubmitResult } from '../hooks/useArqueo';
 
 /**
- * Bridge signature: `window.bridge.imprimir(kind, payload)` per F2.2
- * DEC-FETCH-08 + `renderer/global.d.ts`. Typed as a minimal interface
- * so the helper is unit-testable without a real Electron bridge.
+ * What the cierre slip needs once the turno is closed. The orchestrator injects
+ * `imprimirCierre` (it owns the real print through `arqueoPrint.imprimirCierre`
+ * + the visible "No se pudo imprimir" notice); the chain only hands it the data
+ * AFTER the PUT succeeded (so the slip carries the real closing time) and never
+ * lets a print failure change the outcome of the cierre.
  */
-export interface CerrarTurnoBridge {
-  imprimir(kind: string, payload: Record<string, unknown>): Promise<unknown>;
+export interface CierreTurnoParaImprimir {
+  sesion: SesionRead;
+  arqueo: ArqueoSubmitResult;
+  observaciones: string | undefined;
 }
+export type ImprimirCierreTurnoFn = (cierre: CierreTurnoParaImprimir) => unknown;
 
 /**
  * Helper signature for the F3.3 logout-on-success seam (REQ-OPS-160,
@@ -172,7 +177,8 @@ export async function runCerrarTurnoChain(args: {
   uuidTipoArqueo: string;
   submitArqueo: ArqueoSubmitFn;
   cerrarSesion: CerrarSesionHelper;
-  bridge: CerrarTurnoBridge | null;
+  /** Prints the cierre slip (best-effort); `null` when printing is not wired (tests). */
+  imprimirCierre: ImprimirCierreTurnoFn | null;
   values: {
     valor_efectivo_reportado: number;
     observaciones_cierre?: string;
@@ -223,16 +229,6 @@ export async function runCerrarTurnoChain(args: {
       }
     }
     arqueoUuid = arqueoResult.uuid;
-
-    // 2. ESC/POS print (BEFORE the PUT). DA-F10.2-5 RESOLVED — the
-    // dispatcher accepts `auditoria_codigo='cierre_turno'` without
-    // escpos changes (F10.1 `'arqueo'` union extension).
-    if (args.bridge !== null) {
-      await args.bridge.imprimir('arqueo', {
-        uuid: arqueoResult.uuid,
-        auditoria_codigo: 'cierre_turno',
-      });
-    }
   } catch (err) {
     // Cases 1-4: POST errors. NO sesion close attempted.
     //
@@ -293,11 +289,27 @@ export async function runCerrarTurnoChain(args: {
   );
 
   if (result.ok) {
+    const observaciones = args.values.observaciones_cierre?.trim() || undefined;
+    // 4. Print the slip AFTER the turno is closed (the slip needs the real
+    // closing time). Fire-and-forget: a printer failure is surfaced by the
+    // injected function (visible notice + retry) and must never block or
+    // alter the cierre itself.
+    if (args.imprimirCierre !== null) {
+      try {
+        void Promise.resolve(
+          args.imprimirCierre({ sesion: result.sesion, arqueo: arqueoResult, observaciones }),
+        ).catch((err: unknown) => {
+          console.warn('[cerrarTurnoChain] imprimirCierre rejected', err);
+        });
+      } catch (err) {
+        console.warn('[cerrarTurnoChain] imprimirCierre threw', err);
+      }
+    }
     return {
       kind: 'cierre_completado',
       sesion: result.sesion,
       arqueo: arqueoResult,
-      observaciones: args.values.observaciones_cierre?.trim() || undefined,
+      observaciones,
     };
   }
 
