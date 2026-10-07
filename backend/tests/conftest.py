@@ -38,6 +38,7 @@ fixtures themselves are sync (the container is blocking I/O).
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import sys
@@ -611,7 +612,7 @@ def mint_sync_agent_jwt() -> Callable[..., str]:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def app() -> str:
+def app(request: pytest.FixtureRequest) -> str:
     """Parametrize the FastAPI app the ``client`` fixture should bind to.
 
     Default ``"sucursal"`` (branch API). Override via indirect parametrization
@@ -622,7 +623,66 @@ def app() -> str:
     The cloud-only assertion (``test_openapi_branch_excludes_cloud.py``) uses
     the default; the unit test for the admin app uses ``APP=admin``.
     """
-    return os.environ.get("TEST_APP", "sucursal")
+    # ``request.param`` is set by ``@pytest.mark.parametrize("app", [...], indirect=True)``.
+    # Without reading it the parametrization was silently ignored and every
+    # ``[admin]`` case ran against the branch app.
+    return getattr(request, "param", None) or os.environ.get("TEST_APP", "sucursal")
+
+
+
+_CLOUD_PURGE_PREFIXES = ("parkos_core.api.v1", "api_admin_main")
+_CLOUD_PURGE_EXACT = frozenset({"parkos_core.api.deps", "parkos_core.api.middleware"})
+
+
+@contextlib.contextmanager
+def _cloud_admin_app() -> Iterator[object]:
+    """Yield the admin FastAPI app built as a CLOUD deploy, then restore modules.
+
+    The root conftest pins ``PARKOS_DEPLOY=branch`` (the static suite asserts a
+    branch-only OpenAPI), and ``parkos_core.api.v1`` reads that env var ONCE at
+    import time. Under that default, ``api_admin_main.app`` is built WITHOUT the
+    DIAN/cloud-only resources (``/empresa/resolucion-facturacion`` ...) and every
+    test that drives them through ``app="admin"`` gets a bare 404. Production
+    ``api-admin`` runs with ``PARKOS_DEPLOY=cloud`` (docker-compose.cloud.yml),
+    so the ``admin`` client builds the app under that env: it purges the cached
+    ``parkos_core.api.v1.*`` / ``api_admin_main.*`` modules, re-imports them with
+    ``cloud`` and, on exit, puts the original module objects back so sibling
+    tests (and the branch app) keep seeing the identities they imported.
+    """
+    prev_deploy = os.environ.get("PARKOS_DEPLOY")
+    os.environ["PARKOS_DEPLOY"] = "cloud"
+
+    def _purged(name: str) -> bool:
+        return name.startswith(_CLOUD_PURGE_PREFIXES) or name in _CLOUD_PURGE_EXACT
+
+    saved = {n: m for n, m in sys.modules.items() if _purged(n)}
+    saved_parent_attrs: dict[tuple[str, str], object] = {}
+    for name, mod in saved.items():
+        if "." not in name:
+            continue
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and parent.__dict__.get(attr) is mod:
+            saved_parent_attrs[(parent_name, attr)] = mod
+    for name in saved:
+        sys.modules.pop(name, None)
+    try:
+        from api_admin_main.app import app as admin_app
+
+        yield admin_app
+    finally:
+        for name in list(sys.modules):
+            if _purged(name) and name not in saved:
+                sys.modules.pop(name, None)
+        sys.modules.update(saved)
+        for (parent_name, attr), original in saved_parent_attrs.items():
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                parent.__dict__[attr] = original
+        if prev_deploy is None:
+            os.environ.pop("PARKOS_DEPLOY", None)
+        else:
+            os.environ["PARKOS_DEPLOY"] = prev_deploy
 
 
 @pytest_asyncio.fixture
@@ -646,18 +706,19 @@ async def client(app: str, pg_engine: AsyncEngine) -> AsyncIterator[object]:
     _engine_mod._engine = None
     _engine_mod._sessionmaker = None
 
-    if app == "admin":
-        from api_admin_main.app import app as fastapi_app
-    else:
-        from api_sucursal_main.app import app as fastapi_app
+    with contextlib.ExitStack() as stack:
+        if app == "admin":
+            fastapi_app = stack.enter_context(_cloud_admin_app())
+        else:
+            from api_sucursal_main.app import app as fastapi_app
 
-    transport = httpx.ASGITransport(app=fastapi_app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://testserver",
-        headers={"X-Request-ID": "test"},
-    ) as client_:
-        yield client_
+        transport = httpx.ASGITransport(app=fastapi_app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            headers={"X-Request-ID": "test"},
+        ) as client_:
+            yield client_
 
 
 # ---------------------------------------------------------------------------
