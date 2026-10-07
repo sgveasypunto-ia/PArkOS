@@ -37,7 +37,7 @@
   },
   "listado": {
     "titulo": "Suscripciones",
-    "searchPlaceholder": "Buscar por placa o cliente",
+    "searchPlaceholder": "Buscar por cliente o identificación",
     "colCliente": "Cliente",
     "colPlan": "Plan",
     "colFechaVencimiento": "Fecha vencimiento",
