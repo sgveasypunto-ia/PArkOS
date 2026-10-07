@@ -182,3 +182,66 @@ describe('<CotizacionPanel /> — placeholder con tarifa_uuid nil (L2)', () => {
     vi.doUnmock('../../catalogos/hooks/useTarifaByUuid');
   });
 });
+
+describe('<CotizacionPanel /> — unidad real de la tarifa (FC2)', () => {
+  const HORA = '12e3886a-7059-47ee-bdb2-aa5fb1272bea';
+  const FRACCION = 'c41b6602-f7b2-437d-bcfc-0462cd385eda';
+
+  async function detalleCon(uuidTipoTarifa: string | null, valor: number): Promise<string> {
+    vi.resetModules();
+    vi.doMock('../../catalogos/hooks/useTarifaByUuid', async (orig) => ({
+      ...(await orig<typeof import('../../catalogos/hooks/useTarifaByUuid')>()),
+      useTarifaByUuid: () => ({
+        tarifa: {
+          uuid: TARIFA_UUID,
+          uuid_sucursal: null,
+          uuid_tipo_vehiculo: null,
+          uuid_tipo_tarifa: uuidTipoTarifa,
+          valor,
+          valor_plena: null,
+          vigente_desde: '2026-10-05T14:35:00',
+          vigente_hasta: null,
+          estado: 'activo',
+          created_at: '2026-10-05T19:37:36',
+          created_by: null,
+          sync_status: null,
+        },
+        isLoading: false,
+        error: undefined,
+        refresh: vi.fn(),
+      }),
+    }));
+    const { CotizacionPanel: Panel } = await import('./CotizacionPanel');
+    render(
+      <Panel
+        data={cotizacionRotacion}
+        secondsLeft={900}
+        onConfirmar={vi.fn()}
+        onRecalcular={vi.fn()}
+      />,
+    );
+    const texto = screen.getByTestId('cotizacion-tarifa-detalle').textContent ?? '';
+    vi.doUnmock('../../catalogos/hooks/useTarifaByUuid');
+    return texto;
+  }
+
+  it('tarifa de modalidad hora → "/hora", no "/min"', async () => {
+    cleanup();
+    const texto = await detalleCon(HORA, 1500);
+    expect(texto).toMatch(/1\.500\/hora/);
+    expect(texto).not.toContain('/min');
+  });
+
+  it('tarifa de modalidad fracción → "/fracción"', async () => {
+    cleanup();
+    const texto = await detalleCon(FRACCION, 100);
+    expect(texto).toMatch(/100\/fracción/);
+  });
+
+  it('modalidad desconocida → valor sin unidad inventada', async () => {
+    cleanup();
+    const texto = await detalleCon(null, 100);
+    expect(texto).not.toContain('/min');
+    expect(texto).not.toContain('/hora');
+  });
+});

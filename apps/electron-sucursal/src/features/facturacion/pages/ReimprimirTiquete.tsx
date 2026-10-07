@@ -109,6 +109,7 @@ import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
 import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
 import { buildReimpresionEntradaPayload } from '../../../lib/print/printBuilder';
 import { resolverTarifaHoraDeTipo } from '../../../lib/print/tarifaHoraEntrada';
+import { resolverContextoImpresion } from '../../../lib/print/contextoImpresion';
 import { formatFechaHoraCorta } from '../../caja/lib/format';
 import { useReimprimir } from '../hooks/useReimprimir';
 import { useAnularReimpresion } from '../hooks/useAnularReimpresion';
@@ -157,7 +158,10 @@ async function imprimirReimpresionEntrada(
     const tarifaHora = await resolverTarifaHoraDeTipo(ingreso.uuid_tipo_vehiculo);
     return imprimirTiquete(
       'reimpresion',
-      buildReimpresionEntradaPayload(ingreso, motivo, { tarifaHora }),
+      buildReimpresionEntradaPayload(ingreso, motivo, {
+        ...(await resolverContextoImpresion()),
+        tarifaHora,
+      }),
       { ticketId: ingreso.uuid },
     );
   });

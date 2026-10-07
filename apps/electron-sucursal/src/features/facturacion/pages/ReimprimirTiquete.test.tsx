@@ -76,6 +76,13 @@ vi.mock('../lib/resolverIngresoReimpresion', () => ({
     mockResolverIngresoReimpresion(termino),
 }));
 
+vi.mock('../../../lib/print/contextoImpresion', () => ({
+  resolverContextoImpresion: async () => ({
+    empresa: { nombre: 'Empresa Real SAS', nit: '900000000-5', direccion: 'Cra 45 # 10-20', regimen: 'Comun' },
+    operario: 'Operador QA E2E',
+  }),
+}));
+
 vi.mock('../../operacion/hooks/useIngresosActivos', () => ({
   useIngresosActivos: () => mockUseIngresosActivos(),
 }));
@@ -571,6 +578,11 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
     expect(textos.length).toBe(2); // tiquete de entrada (reimpresion) + factura del servicio
     // El tiquete reimpreso viaja como `{ buffer, ticketId, cut }` con el sello REIMPRESIÓN.
     expect(textos.some((t) => t.includes('REIMPRESIÓN'))).toBe(true);
+    // FC1: el encabezado del tiquete reimpreso usa la empresa real, no el placeholder.
+    const tiquete = textos.find((t) => t.includes('REIMPRESIÓN')) ?? '';
+    expect(tiquete).toContain('Empresa Real SAS');
+    expect(tiquete).toContain('NIT 900000000-5');
+    expect(tiquete).not.toContain('Parkos S.A.S.');
     const factura = textos.find((t) => t.includes('FACTURA'));
     expect(factura).toBeDefined();
     expect(factura).toMatch(/IVA 19% \$ ?798,32/);

@@ -48,6 +48,7 @@ import { buildEntradaPayloadFromResponse } from '../../../lib/print/printBuilder
 import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
 import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
 import { resolverTarifaHoraDeIngreso } from '../../../lib/print/tarifaHoraEntrada';
+import { resolverContextoImpresion } from '../../../lib/print/contextoImpresion';
 import { useIngresoActivo } from '../hooks/useIngresoActivo';
 import {
   type PostIngresoPayload,
@@ -472,7 +473,10 @@ async function buildEntradaPayload(
   return buildEntradaPayloadFromResponse(
     response,
     response.consecutivo ? null : currentPlaca,
-    { tarifaHora: await resolverTarifaHoraDeIngreso(response.uuid) },
+    {
+      ...(await resolverContextoImpresion()),
+      tarifaHora: await resolverTarifaHoraDeIngreso(response.uuid),
+    },
   );
 }
 
