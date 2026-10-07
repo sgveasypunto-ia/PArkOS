@@ -265,7 +265,7 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     await change('venta-cliente-numero', '123');
     await click('venta-paso-1-siguiente');
     expect(screen.queryByTestId('venta-paso-2')).toBeNull();
-    expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(/documento/);
+    expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(/al menos 5 caracteres/);
   });
 
   it('T4: pago submit -> 422 typed error -> revert to step 5 (Placas) with inline placa group error', async () => {

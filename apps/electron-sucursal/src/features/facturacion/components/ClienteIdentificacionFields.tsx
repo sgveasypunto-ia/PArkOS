@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Input } from '@/components/ui/input';
 import type { TipoIdentificador } from '../../../lib/validation/identificacion';
+import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 
 export type TipoPersonaCliente = 'persona' | 'empresa';
 
@@ -46,6 +47,7 @@ const NUMERO_PLACEHOLDER: Record<TipoIdentificador, string> = {
   CE: '1020304050',
   pasaporte: 'AB1234567',
 };
+
 
 export interface ClienteIdentificacionFieldsProps {
   value: ClienteIdentificacionValue;
@@ -129,7 +131,7 @@ export function ClienteIdentificacionFields({
         />
         {errors?.numero_identificacion && (
           <p className="text-sm font-medium text-destructive" data-testid={`${testIdPrefix}-numero-error`}>
-            {errors.numero_identificacion}
+            {mensajeIdentificacion(errors.numero_identificacion)}
           </p>
         )}
       </div>
@@ -150,7 +152,7 @@ export function ClienteIdentificacionFields({
           />
           {errors?.dv && (
             <p className="text-sm font-medium text-destructive" data-testid={`${testIdPrefix}-dv-error`}>
-              {errors.dv}
+              {mensajeIdentificacion(errors.dv)}
             </p>
           )}
         </div>
@@ -175,7 +177,7 @@ export function ClienteIdentificacionFields({
         />
         {errors?.nombre && (
           <p className="text-sm font-medium text-destructive" data-testid={`${testIdPrefix}-nombre-error`}>
-            {errors.nombre}
+            {mensajeIdentificacion(errors.nombre)}
           </p>
         )}
       </div>
@@ -194,7 +196,7 @@ export function ClienteIdentificacionFields({
           />
           {errors?.apellido && (
             <p className="text-sm font-medium text-destructive" data-testid={`${testIdPrefix}-apellido-error`}>
-              {errors.apellido}
+              {mensajeIdentificacion(errors.apellido)}
             </p>
           )}
         </div>
