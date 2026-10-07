@@ -65,7 +65,7 @@ export function computeCaretPosition(
   let seen = 0;
   for (let i = 0; i < newDisplay.length; i++) {
     if (seen === target) return i;
-    if (/\d/.test(newDisplay[i])) seen++;
+    if (/\d/.test(newDisplay.charAt(i))) seen++;
   }
   return newDisplay.length;
 }
