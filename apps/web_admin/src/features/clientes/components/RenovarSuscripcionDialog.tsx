@@ -144,7 +144,7 @@ export function RenovarSuscripcionDialog({
           <DialogDescription>
             {t(
               'renovacion.descripcion',
-              'Se renueva la suscripción con sus mismos vehículos y se cobra el plan completo. No es necesario ingresar placas.',
+              'Se renueva la suscripción con sus mismos vehículos y se cobra el plan completo (IVA incluido). No es necesario ingresar placas.',
             )}
           </DialogDescription>
         </DialogHeader>

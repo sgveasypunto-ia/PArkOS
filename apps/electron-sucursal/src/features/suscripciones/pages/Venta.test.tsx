@@ -27,7 +27,14 @@ import { MemoryRouter } from 'react-router-dom';
 import type * as UseVentaSuscripcionModule from '../hooks/useVentaSuscripcion';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  // Devuelve la key cruda, salvo cuando hay valores a interpolar (línea del
+  // desglose de IVA): ahí aplica el defaultValue con sus {{variables}}.
+  useTranslation: () => ({
+    t: (key: string, opts?: Record<string, unknown>) =>
+      opts && typeof opts.defaultValue === 'string' && 'porcentaje' in opts
+        ? opts.defaultValue.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => String(opts[k]))
+        : key,
+  }),
 }));
 
 const mockTrigger = vi.fn();
@@ -45,8 +52,9 @@ vi.mock('../hooks/useVentaSuscripcion', async (importOriginal) => {
   };
 });
 
-// El backend cobra plan.valor + IVA (clientes_venta.py: total_con_iva); el
-// wizard debe pasar a <PagoModal> ese total, no el valor sin IVA.
+// El precio del plan INCLUYE el IVA (clientes_venta.py: total == plan.valor);
+// el wizard pasa a <PagoModal> el valor del plan y solo muestra el desglose
+// del IVA como línea informativa.
 const mockIvaPorcentaje = vi.fn((): number | null => 0.19);
 vi.mock('../../facturacion/hooks/useIvaVigente', () => ({
   useIvaVigente: () => ({
@@ -287,16 +295,28 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(screen.getByTestId('venta-paso-6')).toBeDefined();
   });
 
-  it('T5b: sin IVA vigente cargado no se monta el pago con un total sin IVA', async () => {
+  it('T5b: el pago se monta con el valor del plan aunque el IVA aun no cargue (sin desglose)', async () => {
     mockIvaPorcentaje.mockReturnValue(null);
     try {
       renderVenta();
       await hastaPago();
-      expect(screen.getByTestId('venta-paso-6')).toBeDefined();
-      expect(screen.queryByTestId('pago-modal')).toBeNull();
+      expect(screen.getByTestId('pago-modal')).toBeDefined();
+      expect(screen.getByTestId('pago-total').textContent).toBe('30000');
+      expect(screen.queryByTestId('venta-iva-incluido')).toBeNull();
     } finally {
       mockIvaPorcentaje.mockReturnValue(0.19);
     }
+  });
+
+  it('T5c: muestra "Incluye IVA 19%" como desglose dentro del total, sin cobro extra', async () => {
+    renderVenta();
+    await hastaPago();
+    const linea = screen.getByTestId('venta-iva-incluido').textContent ?? '';
+    expect(linea).toMatch(/Incluye IVA 19%/);
+    // 30000 / 1.19 = base 25210.08 + IVA 4789.92
+    expect(linea).toMatch(/4\.789,92/);
+    expect(linea).toMatch(/25\.210,08/);
+    expect(screen.getByTestId('pago-total').textContent).toBe('30000');
   });
 
   it('T6: last day of month charges the full plan, no badge, start date = today Bogota', async () => {
@@ -307,8 +327,8 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
       renderVenta();
       await hastaPago();
       expect(screen.getByTestId('pago-modal')).toBeDefined();
-      // 30000 + 19% IVA = 35700 (monto recibido por defecto = total a cobrar).
-      expect(screen.getByTestId('pago-total').textContent).toBe('35700');
+      // El plan (30000) ya incluye el IVA: monto recibido por defecto = valor del plan.
+      expect(screen.getByTestId('pago-total').textContent).toBe('30000');
       expect(screen.queryByTestId('venta-prorrateo-badge')).toBeNull();
       await click('pago-confirmar-stub');
       const arg = mockTrigger.mock.calls[0]?.[0] as { fecha_inicio_cobertura: string };
