@@ -142,7 +142,7 @@ async def _run_deferred(make: DeferredDispatch, key: DispatchKey | None = None) 
                 async with SessionLocal() as session:
                     await make(session)
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if getattr(exc, "not_visible", False) and attempt < len(
                     _NOT_VISIBLE_RETRY_DELAYS_S
                 ):
@@ -242,7 +242,9 @@ def defer_dispatch(
 
 
 def resume_factura_dispatch(
-    uuid_factura_electronica: uuid_lib.UUID, actor_uuid: uuid_lib.UUID | None = None
+    uuid_factura_electronica: uuid_lib.UUID,
+    actor_uuid: uuid_lib.UUID | None = None,
+    recover_orphans_after: Any = None,
 ) -> bool:
     """Start the deferred dispatch of an already-committed FE (periodic sweep).
 
@@ -266,6 +268,7 @@ def resume_factura_dispatch(
                     dian_provider_url=_DIAN_PROVIDER_URL,
                     dian_token_path=_DIAN_TOKEN_PATH,
                     skip_if_dispatched=True,
+                    recover_orphans_after=recover_orphans_after,
                 ),
                 key=key,
                 txn=None,

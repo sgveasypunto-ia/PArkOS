@@ -43,8 +43,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 # Cloud-only enforcement guard (REQ-X3, design §10 Layer 2).
 # This MUST stay as the very first non-stdlib code so the ImportError
@@ -78,6 +79,7 @@ from ..schemas.dian import (
 from ..schemas.facturacion import CloudFacturaElectronicaCreate
 from .cloud.dispatcher import (
     ESTADO_ACEPTADO,
+    ESTADO_ACTIVO,
     ESTADO_EN_PROCESO,
     ESTADO_ERROR,
     ESTADO_RECHAZADO,
@@ -320,12 +322,46 @@ async def create_validacion_evento(
 #   of the plan.md drift).
 _ENVIO_DIAN_ESTADOS: frozenset[str] = frozenset(STATE_MACHINES["envio_dian"]) | {
     ESTADO_ACEPTADO,
+    ESTADO_ACTIVO,
     ESTADO_RECHAZADO,
     ESTADO_TIMEOUT,
     ESTADO_EN_PROCESO,
     ESTADO_ERROR,
+    ESTADO_ACTIVO,
+}
+# ``activo`` is the in-flight marker the dispatcher inserts (append-only chain,
+# see ``dispatcher.py``); to a monitor it is "in process", so filtering by
+# ``en_proceso`` also matches it.
+_ENVIO_DIAN_ESTADO_ALIASES: dict[str, tuple[str, ...]] = {
+    ESTADO_EN_PROCESO: (ESTADO_EN_PROCESO, ESTADO_ACTIVO),
 }
 _VALIDACION_EVENTO_ESTADOS: frozenset[str] = frozenset(STATE_MACHINES["validacion_evento"])
+
+
+def _superseded_envio_exists() -> Any:
+    """``EXISTS`` of a LATER ``envio_dian`` row for the same document.
+
+    A document is an FE (or one revocation of it). Ordering is the same one
+    ``prod.v_factura_electronica_acuse`` uses: ``timestamp_evento`` DESC, then
+    ``uuid`` DESC. Rows without an FE (NULL never equals NULL) are never hidden.
+    """
+    later = aliased(EnvioDian)
+    return (
+        select(later.uuid)
+        .where(
+            later.uuid_factura_electronica == EnvioDian.uuid_factura_electronica,
+            func.coalesce(later.payload["uuid_revocacion_factura"].astext, "")
+            == func.coalesce(EnvioDian.payload["uuid_revocacion_factura"].astext, ""),
+            or_(
+                later.timestamp_evento > EnvioDian.timestamp_evento,
+                and_(
+                    later.timestamp_evento == EnvioDian.timestamp_evento,
+                    later.uuid > EnvioDian.uuid,
+                ),
+            ),
+        )
+        .exists()
+    )
 
 
 def _parse_cursor_timestamp(value: str) -> datetime:
@@ -353,6 +389,7 @@ async def _list_workflow_rows(
     cursor: str | None,
     limit: int,
     extra_where: list[Any] | None = None,
+    estado_aliases: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[Any], str | None]:
     """Shared cursor-paginated SELECT for ``envio_dian`` / ``validacion_evento``.
 
@@ -408,7 +445,8 @@ async def _list_workflow_rows(
 
     stmt = select(model_cls).where(model_cls.vigente_hasta.is_(None))
     if estado is not None:
-        stmt = stmt.where(model_cls.estado == estado)
+        matching = (estado_aliases or {}).get(estado, (estado,))
+        stmt = stmt.where(model_cls.estado.in_(matching))
     for clause in extra_where or []:
         stmt = stmt.where(clause)
     stmt = stmt.order_by(model_cls.vigente_desde.desc(), model_cls.uuid.asc())
@@ -442,6 +480,7 @@ async def _list_workflow_rows(
 async def list_envio_dian(
     uuid_sucursal: uuid_lib.UUID | None = Query(default=None),  # noqa: B008
     estado: str | None = Query(default=None),
+    solo_tip: bool = Query(default=True),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),  # noqa: B008
@@ -449,7 +488,13 @@ async def list_envio_dian(
 ) -> EnvioDianReadList:
     """``GET /api/v1/envio-dian`` — cursor-paginated read-only listing.
 
-    Filters (both optional, composed with AND): ``uuid_sucursal`` and
+    ``envio_dian`` is append-only: a dispatch never edits a row, it appends the
+    next one, so the state of a document is its LAST row. By default
+    (``solo_tip=true``) only that row is listed per document (FE or revocation);
+    ``solo_tip=false`` lists every row, which is what the chain/history view
+    needs to walk ``uuid_envio_padre``.
+
+    Filters (all optional, composed with AND): ``uuid_sucursal`` and
     ``estado`` (422 ``invalid_estado`` if not a real value — see the
     module-level comment above ``_ENVIO_DIAN_ESTADOS`` for the full
     drift-vs-plan.md rationale). Orders by
@@ -459,6 +504,8 @@ async def list_envio_dian(
     extra_where: list[Any] = []
     if uuid_sucursal is not None:
         extra_where.append(EnvioDian.uuid_sucursal == uuid_sucursal)
+    if solo_tip:
+        extra_where.append(~_superseded_envio_exists())
 
     rows, next_cursor = await _list_workflow_rows(
         session,
@@ -468,6 +515,7 @@ async def list_envio_dian(
         cursor=cursor,
         limit=limit,
         extra_where=extra_where,
+        estado_aliases=_ENVIO_DIAN_ESTADO_ALIASES,
     )
     items = [EnvioDianRead.model_validate(row) for row in rows]
     return EnvioDianReadList(items=items, next_cursor=next_cursor)

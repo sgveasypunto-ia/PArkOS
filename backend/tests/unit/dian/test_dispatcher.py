@@ -109,9 +109,20 @@ async def test_dispatcher_accepts_and_writes_envio_dian(
 
     envio = await _dispatch(session, token_path)
 
-    assert session.add.call_count == 1
-    assert isinstance(session.add.call_args.args[0], EnvioDian)
-    assert envio is session.added[0]
+    # Append-only table: attempt (activo) -> submitted (enviado) -> outcome.
+    # Nothing is ever edited, the LAST row is the state and is what returns.
+    assert session.add.call_count == 3
+    assert all(isinstance(r, EnvioDian) for r in session.added)
+    attempt, sent, terminal = session.added
+    assert (attempt.estado, sent.estado, terminal.estado) == (
+        dispatcher.ESTADO_ACTIVO,
+        dispatcher.ESTADO_ENVIADO,
+        dispatcher.ESTADO_ACEPTADO,
+    )
+    assert sent.uuid_envio_padre == attempt.uuid
+    assert terminal.uuid_envio_padre == sent.uuid
+    assert attempt.respuesta_proveedor is None and attempt.cufe is None
+    assert envio is terminal
     assert envio.respuesta_proveedor["estado_dian"] == dispatcher.ESTADO_ACEPTADO
     assert envio.cufe == "cufe-abc-123"
     assert envio.payload["track_id"] == "track-123"
