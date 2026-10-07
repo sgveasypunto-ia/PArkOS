@@ -38,6 +38,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useArqueo } from '../hooks/useArqueo';
+import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
 import {
   useArqueoResumenPorSesion,
   type ArqueoResumenPorSesion,
@@ -92,6 +93,8 @@ export function CierreDiario(): JSX.Element {
   const { t } = useTranslation(['caja']);
   const navigate = useNavigate();
   const { submit: submitArqueo } = useArqueo();
+  // The BE V2 schema needs the tipo_arqueo UUID, not the codigo string.
+  const { uuid: uuidTipoCierreDia } = useTipoArqueoPorCodigo('cierre_dia');
   const { sucursal, sucursalesPermitidas } = useAuth();
 
   // Default the active branch to the operator's first permitida.
@@ -137,7 +140,15 @@ export function CierreDiario(): JSX.Element {
   });
 
   const [errorState, setErrorState] = useState<
-    { kind: 'arqueo_fallido' | 'red_arqueo' | 'ya_cerrado' | 'permiso_insuficiente' } | null
+    | {
+        kind: 'arqueo_fallido';
+        /** HTTP status of the failed POST (absent for the local guard). */
+        status?: number;
+        /** Server-side reason (`detail`) or a local explanation. */
+        detail?: string;
+      }
+    | { kind: 'red_arqueo' | 'ya_cerrado' | 'permiso_insuficiente' }
+    | null
   >(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -154,6 +165,17 @@ export function CierreDiario(): JSX.Element {
 
   const onSubmit = form.handleSubmit(async (values) => {
     setErrorState(null);
+
+    // Without the catalog UUID the POST would be rejected (422): fail
+    // fast with an explicit message instead of a misleading generic one.
+    if (!uuidTipoCierreDia) {
+      setErrorState({
+        kind: 'arqueo_fallido',
+        detail:
+          'No se pudo resolver el tipo de arqueo "cierre_dia" del catálogo — reintente en unos segundos.',
+      });
+      return;
+    }
     setIsSubmitting(true);
 
     // Wire the bridge if available (jsdom + vitest may not have it).
@@ -169,6 +191,7 @@ export function CierreDiario(): JSX.Element {
 
     const result = await runCierreDiarioChain({
       submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
+      uuidTipoArqueo: uuidTipoCierreDia,
       bridge,
       values: {
         valor_efectivo_reportado: values.valor_efectivo_reportado,
@@ -191,7 +214,11 @@ export function CierreDiario(): JSX.Element {
         navigate('/');
         return;
       case 'arqueo_fallido':
-        setErrorState({ kind: 'arqueo_fallido' });
+        setErrorState({
+          kind: 'arqueo_fallido',
+          status: result.status,
+          detail: result.detail,
+        });
         return;
       case 'red_arqueo':
         setErrorState({ kind: 'red_arqueo' });
@@ -331,6 +358,12 @@ export function CierreDiario(): JSX.Element {
             defaultValue:
               'No se pudo registrar el cierre diario — reintente; si persiste contacte al supervisor.',
           })}
+          {(errorState.detail !== undefined || errorState.status) && (
+            <span data-testid="cierre-diario-error-detalle" className="mt-1 block text-xs">
+              {errorState.status ? `[${errorState.status}] ` : ''}
+              {errorState.detail}
+            </span>
+          )}
         </div>
       )}
       {errorState?.kind === 'red_arqueo' && (

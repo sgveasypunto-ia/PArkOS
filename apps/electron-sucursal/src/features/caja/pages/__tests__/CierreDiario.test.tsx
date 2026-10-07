@@ -92,6 +92,17 @@ vi.mock('../../hooks/useArqueo', () => ({
   }),
 }));
 
+// Catalog lookup: codigo 'cierre_dia' -> uuid (H9: the BE V2 schema needs it).
+const TIPO_CIERRE_DIA_UUID = '6a759c41-1896-4362-bde4-6eff00ae6626';
+let mockTipoUuid: string | undefined = TIPO_CIERRE_DIA_UUID;
+vi.mock('../../hooks/useTipoArqueoPorCodigo', () => ({
+  useTipoArqueoPorCodigo: () => ({
+    data: undefined,
+    uuid: mockTipoUuid,
+    error: undefined,
+  }),
+}));
+
 // cierreDiarioChain
 vi.mock('../cierreDiarioChain', () => ({
   runCierreDiarioChain: (...args: unknown[]) => mockRunCierreDiarioChain(...args),
@@ -149,6 +160,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockResumenData = undefined;
   mockResumenError = undefined;
+  mockTipoUuid = TIPO_CIERRE_DIA_UUID;
 });
 
 afterEach(() => {
@@ -270,5 +282,62 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/');
     });
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // page-6 — H9: resolved tipo_arqueo UUID is forwarded to the chain
+  // ──────────────────────────────────────────────────────────────────
+  it('page-6: submit forwards the resolved cierre_dia uuid_tipo_arqueo to the chain', async () => {
+    mockResumenData = TRES_SESIONES;
+    mockRunCierreDiarioChain.mockResolvedValueOnce({
+      kind: 'success',
+      uuid_arqueo: 'arqueo-uuid-AD',
+    });
+    renderPage();
+    const confirmar = (await screen.findByTestId(
+      'cierre-diario-confirmar',
+    )) as HTMLButtonElement;
+    confirmar.click();
+    await waitFor(() => {
+      expect(mockRunCierreDiarioChain).toHaveBeenCalledWith(
+        expect.objectContaining({ uuidTipoArqueo: TIPO_CIERRE_DIA_UUID }),
+      );
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // page-7 — H9: catalog not resolved yet -> no POST, explicit message
+  // ──────────────────────────────────────────────────────────────────
+  it('page-7: tipo_arqueo unresolved -> chain NOT called and an explicit error is shown', async () => {
+    mockResumenData = TRES_SESIONES;
+    mockTipoUuid = undefined;
+    renderPage();
+    const confirmar = (await screen.findByTestId(
+      'cierre-diario-confirmar',
+    )) as HTMLButtonElement;
+    confirmar.click();
+    const banner = await screen.findByTestId('cierre-diario-error-5xx');
+    expect(banner.textContent).toMatch(/tipo de arqueo/i);
+    expect(mockRunCierreDiarioChain).not.toHaveBeenCalled();
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // page-8 — H9: server detail surfaced instead of the generic banner
+  // ──────────────────────────────────────────────────────────────────
+  it('page-8: arqueo_fallido surfaces the server error detail in the banner', async () => {
+    mockResumenData = TRES_SESIONES;
+    mockRunCierreDiarioChain.mockResolvedValueOnce({
+      kind: 'arqueo_fallido',
+      status: 422,
+      detail: 'body.uuid_tipo_arqueo: Field required',
+    });
+    renderPage();
+    const confirmar = (await screen.findByTestId(
+      'cierre-diario-confirmar',
+    )) as HTMLButtonElement;
+    confirmar.click();
+    const banner = await screen.findByTestId('cierre-diario-error-5xx');
+    expect(banner.textContent).toContain('body.uuid_tipo_arqueo: Field required');
+    expect(banner.textContent).toContain('422');
   });
 });
