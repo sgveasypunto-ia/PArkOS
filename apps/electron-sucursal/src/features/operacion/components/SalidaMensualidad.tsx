@@ -40,7 +40,7 @@
  * silent print failure is strictly better than a fatal one. F8.x
  * owns the reprint-with-cost workflow; F7.3 only fires the envelope.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import {
   useRegistrarSalida,
@@ -74,6 +74,11 @@ export interface SalidaMensualidadProps {
    * polling `/cotizar` (which would now 404 `ingreso_no_encontrado`).
    */
   onSalidaConfirmada?: () => void;
+  /**
+   * D2: the parent already confirmed this ingreso's salida (survives a
+   * remount of this component). Keeps the confirm button disabled.
+   */
+  yaConfirmada?: boolean;
   /** Optional override for the post-print envelope; tests spy on it. */
   onPrint?: (payload: { uuid_salida: string }) => void;
   /** Optional override for `window.bridge?.imprimir`; defaults to the global. */
@@ -125,6 +130,7 @@ export function SalidaMensualidad({
   onPrint,
   firePrintEnvelope,
   onSalidaConfirmada,
+  yaConfirmada = false,
 }: SalidaMensualidadProps): JSX.Element {
   const { trigger } = useRegistrarSalida();
   const { trigger: triggerPago } = useRegistrarPago();
@@ -137,6 +143,10 @@ export function SalidaMensualidad({
   const { sucursal } = useAuth();
   const { sesion } = useSesionActiva();
   const [error, setError] = useState<Error | null>(null);
+  // D2: set as soon as the salida POST resolves. The ingreso is closed
+  // server-side, so confirming again could only duplicate the exit.
+  const [salidaRegistrada, setSalidaRegistrada] = useState(false);
+  const confirmandoRef = useRef(false);
   // HU-F8.4-equivalent for mensualidad (migration 0050): holds the
   // FacturaRead from the discount-factura POST so <FacturaDisplayModal
   // /> can render the full breakdown before the CU-15SM ticket prints.
@@ -154,9 +164,12 @@ export function SalidaMensualidad({
   };
 
   const handleConfirmar = async (): Promise<void> => {
+    if (confirmandoRef.current || salidaRegistrada || yaConfirmada) return;
+    confirmandoRef.current = true;
     setError(null);
     try {
       const result: SalidaReadForzado = await trigger({ uuid_ingreso: uuidIngreso });
+      setSalidaRegistrada(true);
       // H7: the ingreso is closed now — tell the parent to stop polling /cotizar.
       onSalidaConfirmada?.();
       void invalidarConteos({
@@ -209,6 +222,8 @@ export function SalidaMensualidad({
       } else {
         setError(err as Error);
       }
+    } finally {
+      confirmandoRef.current = false;
     }
   };
 
@@ -222,6 +237,7 @@ export function SalidaMensualidad({
           void handleConfirmar();
         }}
         onRecalcular={() => undefined}
+        confirmarDeshabilitado={salidaRegistrada || yaConfirmada}
       />
       {/* F7.3 (DEC-SUC-27 + DEC-SUC-08) — CU-15SM prints IMMEDIATELY
           after the operator dismisses the discount-factura modal

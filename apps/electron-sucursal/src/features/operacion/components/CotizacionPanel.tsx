@@ -75,6 +75,8 @@ export interface CotizacionPanelProps {
   onConfirmar: () => void;
   /** Parent wires to SWR `mutate()` for manual re-fetch. */
   onRecalcular: () => void;
+  /** D2: once the salida is registered the confirm action must not fire again. */
+  confirmarDeshabilitado?: boolean;
 }
 
 /**
@@ -89,6 +91,7 @@ function CotizacionPanelImpl({
   secondsLeft,
   onConfirmar,
   onRecalcular,
+  confirmarDeshabilitado = false,
 }: CotizacionPanelProps): JSX.Element {
   const isExpiring = secondsLeft < 120;
   const isExpired = secondsLeft === 0;
@@ -181,6 +184,7 @@ function CotizacionPanelImpl({
             <Button
               type="button"
               data-testid="cotizacion-confirmar"
+              disabled={confirmarDeshabilitado}
               onClick={onConfirmar}
             >
               Confirmar salida por mensualidad
@@ -257,6 +261,7 @@ function CotizacionPanelImpl({
           <Button
             type="button"
             data-testid="cotizacion-confirmar"
+            disabled={confirmarDeshabilitado}
             onClick={onConfirmar}
           >
             Confirmar salida
