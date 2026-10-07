@@ -68,6 +68,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...auth.jwt_issuer_guard import verify_jwt
 from ...auth.tokens import issue_token
 from ...db.engine import get_session
+from ...exceptions import SesionAlreadyActive
 from ...models.A.log_transaccional import LogTransaccional
 from ...repo.append_only import AppendOnlyError, append_event
 from ...repo.pairing import (
@@ -77,6 +78,7 @@ from ...repo.pairing import (
     consume_pairing_token,
 )
 from ...repo.revoked_sync_jwt import is_revoked
+from ...repo.session_cycle import SessionNotFoundError
 from ...runtime import engine_flag
 from ...runtime.clock import ClockSkewError
 from ...sync.catalog.sync_catalog import (
@@ -701,6 +703,21 @@ async def sync_push(
                     apply_result = await motor.apply_row(
                         session, spec, row.datos, actor_uuid=actor_uuid
                     )
+            except (SesionAlreadyActive, SessionNotFoundError) as exc:
+                # SS1: ``open_session``/``close_session_with_log`` raise these
+                # DOMAIN errors (not a DBAPIError) when the cloud still holds
+                # the operator's previous sesion active, or a close outruns its
+                # open. Left uncaught they 500'd the WHOLE batch. Per row:
+                # reported, retried by the sender; the rest of the batch lands.
+                logging.getLogger(__name__).warning(
+                    "sync_push.row_sesion_error tabla=%s error=%s", row.tabla, type(exc).__name__
+                )
+                results_by_index[idx] = _PushResponseRow(
+                    uuid_registro=row.uuid_registro,
+                    status="apply_error",
+                    detail=f"{type(exc).__name__}: {str(exc)[:200]}",
+                )
+                continue
             except DBAPIError as exc:
                 logging.getLogger(__name__).warning(
                     "sync_push.row_db_error tabla=%s error=%s", row.tabla, type(exc.orig).__name__
