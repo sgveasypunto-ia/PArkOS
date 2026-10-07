@@ -35,6 +35,11 @@ _HANDLER_FILE = (
 )
 
 
+# The ``facturacion`` router is declared with ``prefix="/facturacion"``, so
+# the registered route paths carry it.
+_FE_PREFIX = "/facturacion"
+
+
 # ---------------------------------------------------------------------------
 # T7.1 — Routes are registered
 # ---------------------------------------------------------------------------
@@ -48,7 +53,7 @@ def test_post_factura_electronica_route_is_registered() -> None:
         (
             r
             for r in router.routes
-            if hasattr(r, "path") and r.path == "/factura-electronica"
+            if hasattr(r, "path") and r.path == _FE_PREFIX + "/factura-electronica"
         ),
         None,
     )
@@ -75,7 +80,7 @@ def test_get_factura_electronica_uuid_route_is_registered() -> None:
             r
             for r in router.routes
             if hasattr(r, "path")
-            and r.path == "/factura-electronica/{uuid}"
+            and r.path == _FE_PREFIX + "/factura-electronica/{uuid}"
         ),
         None,
     )
@@ -97,7 +102,7 @@ def test_post_reintentar_route_is_registered() -> None:
             r
             for r in router.routes
             if hasattr(r, "path")
-            and r.path == "/factura-electronica/{uuid}/reintentar"
+            and r.path == _FE_PREFIX + "/factura-electronica/{uuid}/reintentar"
         ),
         None,
     )
@@ -118,23 +123,39 @@ def _handler_uses_fe_issuer_dep(handler_name: str) -> bool:
     tree = ast.parse(_HANDLER_FILE.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef) and node.name == handler_name:
-            for arg in (
-                node.args.args + node.args.kwonlyargs + node.args.posonlyargs
+            # ``args.defaults`` aligns with the LAST positional args; build an
+            # explicit name -> default map so extra defaulted params
+            # (``session``, ``ctx``) do not shift the lookup.
+            positional = node.args.posonlyargs + node.args.args
+            defaults = dict(
+                zip(
+                    [a.arg for a in positional[len(positional) - len(node.args.defaults):]],
+                    node.args.defaults,
+                    strict=True,
+                )
+            )
+            defaults.update(
+                {
+                    a.arg: d
+                    for a, d in zip(
+                        node.args.kwonlyargs, node.args.kw_defaults, strict=True
+                    )
+                    if d is not None
+                }
+            )
+            default = defaults.get("_claims")
+            # ``_claims: None = Depends(_fe_issuer_dep)`` -- the default is a
+            # ``Call`` whose func is ``Name(id='Depends')`` and whose first
+            # arg is ``Name(id='_fe_issuer_dep')``.
+            if (
+                isinstance(default, ast.Call)
+                and isinstance(default.func, ast.Name)
+                and default.func.id == "Depends"
+                and default.args
+                and isinstance(default.args[0], ast.Name)
+                and default.args[0].id == "_fe_issuer_dep"
             ):
-                if arg.arg == "_claims":
-                    default = node.args.defaults[0] if node.args.defaults else None
-                    # ``_claims: None = Depends(_fe_issuer_dep)`` — the default
-                    # is a ``Call`` whose func is ``Name(id='Depends')`` and
-                    # whose first arg is ``Name(id='_fe_issuer_dep')``.
-                    if (
-                        isinstance(default, ast.Call)
-                        and isinstance(default.func, ast.Name)
-                        and default.func.id == "Depends"
-                        and default.args
-                        and isinstance(default.args[0], ast.Name)
-                        and default.args[0].id == "_fe_issuer_dep"
-                    ):
-                        return True
+                return True
     return False
 
 
@@ -171,11 +192,14 @@ def test_fe_issuer_dep_uses_operador_admin_scope() -> None:
     tree = ast.parse(_HANDLER_FILE.read_text(encoding="utf-8"))
     target_name: str | None = None
     for node in tree.body:
-        if (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "_fe_issuer_dep"
-        ):
+        # Plain ``_fe_issuer_dep = requires_issuer(...)`` or annotated form.
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        else:
+            names = []
+        if "_fe_issuer_dep" in names:
             target_name = "_fe_issuer_dep"
             value = node.value
             if (
