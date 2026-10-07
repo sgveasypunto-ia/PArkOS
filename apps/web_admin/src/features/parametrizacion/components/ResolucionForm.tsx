@@ -1,30 +1,27 @@
 /**
- * `<ResolucionForm />` — creation form for HU-F15.3 "Resoluciones" (DIAN).
+ * `<ResolucionForm />` — create / edit-numbering form for HU-F15.3
+ * "Resoluciones" (DIAN).
  *
  * Container/presentational split, mirrors
  * `features/tarifas/components/TarifaForm.tsx`'s shape (`<Form>` +
  * `FormField`/`FormItem`/`FormLabel`/`FormControl`/`FormMessage`,
  * `useForm` + `zodResolver` in a `*Harness` wrapper). One deliberate drift
- * from that precedent: `TarifaFormHarness` only builds the form and lets
- * the PAGE (`Tarifas.tsx`) own the SWR mutation + typed-error mapping; here
- * the Harness owns the `createResolucionFacturacion` call AND the 422
- * field-level error mapping itself. Reason: this form is CREATE-only (no
- * edit mode, unlike tarifas) and its only typed error
- * (`ResolucionFacturacionVigenciaError`) maps to exactly one field
- * (`fecha_fin_vigencia`) that only the Harness's `form` instance can set
- * via `form.setError` — splitting that across the container
- * (`ResolucionesDIAN.tsx`) would mean passing the `form` object out of the
- * harness, defeating the harness/presentational split's whole point.
- * `ResolucionesDIAN.tsx` only needs to know "did a resolución get created"
- * (`onCreated`) and "did the operator cancel" (`onCancel`).
+ * from that precedent: the Harness owns the `createResolucionFacturacion` /
+ * `updateResolucionFacturacion` call AND the 422/409 field-level error
+ * mapping itself, because those errors map to fields only the Harness's
+ * `form` instance can `setError` on.
+ *
+ * Two modes, same fields:
+ *   - create: empty form (dates default to today).
+ *   - edit (`resolucion` prop): prefilled from a vigente row; submit calls
+ *     `PUT` which is bi-temporal on the backend (closes the version, inserts
+ *     a new one). This is how a resolucion created WITHOUT numbering gets its
+ *     `prefijo` + `rango_desde`/`rango_hasta`, which electronic-invoice
+ *     emission requires (`resolucion_sin_prefijo` otherwise).
  *
  * `uuid_sucursal` is NOT a visible field — it is pinned to the branch this
  * tab is scoped to (the harness's `uuidSucursal` prop, pinned again at
- * submit time as defense-in-depth, same rule `TarifaForm.tsx` documents
- * for its own `uuid_sucursal`). The other 4 fields (`numero_resolucion`,
- * `fecha_resolucion`, `fecha_inicio_vigencia`, `fecha_fin_vigencia`) are the
- * only user input this screen collects — `prefijo`, `rango_desde` and
- * `rango_hasta` are server-assigned (REQ-X3) and never appear in this form.
+ * submit time as defense-in-depth).
  */
 import { useState } from 'react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
@@ -45,19 +42,29 @@ import { Input } from '@/components/ui/input';
 
 import {
   createResolucionFacturacion,
+  ResolucionFacturacionNumeracionError,
   ResolucionFacturacionVigenciaError,
+  updateResolucionFacturacion,
 } from '../api/resolucionFacturacionApi';
 import {
+  PREFIJO_MAX_LENGTH,
   resolucionFacturacionCreateSchema,
   type ResolucionFacturacion,
   type ResolucionFacturacionCreateInput,
+  type ResolucionFacturacionFormValues,
 } from '../api/resolucionFacturacionSchema';
 
 export interface ResolucionFormProps {
-  form: UseFormReturn<ResolucionFacturacionCreateInput>;
+  form: UseFormReturn<
+    ResolucionFacturacionFormValues,
+    unknown,
+    ResolucionFacturacionCreateInput
+  >;
   onSubmit: (values: ResolucionFacturacionCreateInput) => void | Promise<void>;
   isSubmitting: boolean;
   onCancel: () => void;
+  /** `true` when editing an existing resolucion (changes the submit label). */
+  isEdit?: boolean;
   /** Non-field-level submit error (network/unexpected). The
    * `fecha_fin_vigencia` 422 guard is NOT routed here — it is set directly
    * on `form` (via `form.setError`) so it renders through that field's own
@@ -73,6 +80,8 @@ interface ResolucionFormHarnessExtraProps {
   uuidSucursal: string;
   onCreated: (resolucion: ResolucionFacturacion) => void;
   onCancel: () => void;
+  /** Vigente row to correct/complete. Absent = create mode. */
+  resolucion?: ResolucionFacturacion;
 }
 
 function hoyComoFecha(): string {
@@ -89,6 +98,7 @@ export function ResolucionForm({
   onSubmit,
   isSubmitting,
   onCancel,
+  isEdit = false,
   submitError = null,
 }: ResolucionFormProps) {
   const { t } = useTranslation();
@@ -203,6 +213,92 @@ export function ResolucionForm({
           />
         </div>
 
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <FormField
+            control={form.control}
+            name="prefijo"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="prefijo">
+                  {t('resoluciones.field.prefijo', 'Prefijo')}
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    id="prefijo"
+                    data-testid="resolucion-field-prefijo"
+                    autoComplete="off"
+                    maxLength={PREFIJO_MAX_LENGTH}
+                    className="uppercase"
+                    {...field}
+                    onChange={(e) => field.onChange(e.target.value.toUpperCase())}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'resoluciones.field.prefijoHelp',
+                    'Letras y números, hasta 4 caracteres (ej. SETP).',
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="rango_desde"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="rango_desde">
+                  {t('resoluciones.field.rangoDesde', 'Rango desde')}
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    id="rango_desde"
+                    data-testid="resolucion-field-rango-desde"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    step={1}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="rango_hasta"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor="rango_hasta">
+                  {t('resoluciones.field.rangoHasta', 'Rango hasta')}
+                </FormLabel>
+                <FormControl>
+                  <Input
+                    id="rango_hasta"
+                    data-testid="resolucion-field-rango-hasta"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    step={1}
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'resoluciones.field.rangoHastaHelp',
+                    'Debe ser mayor o igual a "Rango desde".',
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+
         <div className="mt-2 flex items-center justify-end gap-2">
           <Button
             type="button"
@@ -216,7 +312,9 @@ export function ResolucionForm({
           <Button type="submit" disabled={isSubmitting} data-testid="resolucion-submit">
             {isSubmitting
               ? t('resoluciones.form.submitting', 'Guardando…')
-              : t('resoluciones.form.create', 'Crear')}
+              : isEdit
+                ? t('resoluciones.form.save', 'Guardar numeración')
+                : t('resoluciones.form.create', 'Crear')}
           </Button>
         </div>
       </form>
@@ -224,23 +322,50 @@ export function ResolucionForm({
   );
 }
 
+function formValuesFrom(
+  uuidSucursal: string,
+  resolucion: ResolucionFacturacion | undefined,
+): ResolucionFacturacionFormValues {
+  if (resolucion) {
+    return {
+      uuid_sucursal: uuidSucursal,
+      numero_resolucion: resolucion.numero_resolucion ?? '',
+      fecha_resolucion: resolucion.fecha_resolucion ?? hoyComoFecha(),
+      fecha_inicio_vigencia: resolucion.fecha_inicio_vigencia ?? hoyComoFecha(),
+      fecha_fin_vigencia: resolucion.fecha_fin_vigencia ?? '',
+      prefijo: resolucion.prefijo ?? '',
+      rango_desde: resolucion.rango_desde ?? '',
+      rango_hasta: resolucion.rango_hasta ?? '',
+    };
+  }
+  return {
+    uuid_sucursal: uuidSucursal,
+    numero_resolucion: '',
+    fecha_resolucion: hoyComoFecha(),
+    fecha_inicio_vigencia: hoyComoFecha(),
+    fecha_fin_vigencia: '',
+    prefijo: '',
+    rango_desde: '',
+    rango_hasta: '',
+  };
+}
+
 export function ResolucionFormHarness({
   uuidSucursal,
   onCreated,
   onCancel,
+  resolucion,
 }: ResolucionFormHarnessExtraProps): JSX.Element {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const form = useForm<ResolucionFacturacionCreateInput>({
+  const form = useForm<
+    ResolucionFacturacionFormValues,
+    unknown,
+    ResolucionFacturacionCreateInput
+  >({
     resolver: zodResolver(resolucionFacturacionCreateSchema) as never,
-    defaultValues: {
-      uuid_sucursal: uuidSucursal,
-      numero_resolucion: '',
-      fecha_resolucion: hoyComoFecha(),
-      fecha_inicio_vigencia: hoyComoFecha(),
-      fecha_fin_vigencia: '',
-    },
+    defaultValues: formValuesFrom(uuidSucursal, resolucion),
   });
 
   async function handleSubmit(values: ResolucionFacturacionCreateInput): Promise<void> {
@@ -250,15 +375,26 @@ export function ResolucionFormHarness({
       // Re-pin uuid_sucursal at submit time — defense-in-depth against any
       // caller-side drift, same rule `TarifaForm.tsx`'s module docstring
       // documents for its own `uuid_sucursal` field.
-      const creada = await createResolucionFacturacion({ ...values, uuid_sucursal: uuidSucursal });
-      onCreated(creada);
+      const payload = { ...values, uuid_sucursal: uuidSucursal };
+      const guardada = resolucion
+        ? await updateResolucionFacturacion(resolucion.uuid, payload)
+        : await createResolucionFacturacion(payload);
+      onCreated(guardada);
     } catch (err) {
       if (err instanceof ResolucionFacturacionVigenciaError) {
         form.setError('fecha_fin_vigencia', { type: 'server', message: err.message });
         return;
       }
+      if (err instanceof ResolucionFacturacionNumeracionError) {
+        form.setError(err.campo, { type: 'server', message: err.message });
+        return;
+      }
       setSubmitError(
-        err instanceof Error ? err.message : 'No se pudo crear la resolución.',
+        err instanceof Error
+          ? err.message
+          : resolucion
+            ? 'No se pudo guardar la resolución.'
+            : 'No se pudo crear la resolución.',
       );
     } finally {
       setIsSubmitting(false);
@@ -271,6 +407,7 @@ export function ResolucionFormHarness({
       onSubmit={handleSubmit}
       isSubmitting={isSubmitting}
       onCancel={onCancel}
+      isEdit={resolucion !== undefined}
       submitError={submitError}
     />
   );

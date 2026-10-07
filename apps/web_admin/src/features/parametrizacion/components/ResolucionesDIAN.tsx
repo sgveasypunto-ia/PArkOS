@@ -6,6 +6,12 @@
  * renders a per-row "agotandose" (BR2) banner for every vigente resolución
  * whose `consecutivo-actual` projection reports `agotandose: true`.
  *
+ * Numbering (`prefijo` + `rango_desde`/`rango_hasta`) is entered here: the
+ * create form asks for it, and every vigente row has an "Editar numeración"
+ * action (bi-temporal PUT) so a resolución registered without numbering can
+ * be completed. Without numbering the branch cannot emit electronic invoices
+ * (`resolucion_sin_prefijo`), so rows missing it show a warning.
+ *
  * `uuidSucursal` comes from the ROUTE (`SucursalDetalle`'s `:uuid` param),
  * NOT the topbar's active branch — same prop pattern as
  * `<SucursalBitacoraTab uuidSucursal>` right below it in
@@ -34,7 +40,10 @@ import { TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 import { getConsecutivoActual } from '../api/resolucionFacturacionApi';
-import type { ResolucionFacturacionConsecutivoActual } from '../api/resolucionFacturacionSchema';
+import type {
+  ResolucionFacturacion,
+  ResolucionFacturacionConsecutivoActual,
+} from '../api/resolucionFacturacionSchema';
 import { useResolucionesSucursal } from '../hooks/useResolucionesSucursal';
 import { ResolucionFormHarness } from './ResolucionForm';
 
@@ -59,10 +68,32 @@ function AgotandoseBanner(): JSX.Element {
   );
 }
 
+function tieneNumeracion(r: ResolucionFacturacion): boolean {
+  return Boolean(r.prefijo) && r.rango_desde !== null && r.rango_hasta !== null;
+}
+
+function SinNumeracionAviso(): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <p
+      role="status"
+      data-testid="resolucion-sin-numeracion"
+      className="mt-2 flex items-center gap-2 rounded-md bg-warning px-3 py-2 text-xs text-warning-foreground"
+    >
+      <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
+      {t(
+        'resoluciones.sinNumeracion',
+        'Falta el prefijo y el rango: sin ellos esta sucursal no puede emitir factura electrónica.',
+      )}
+    </p>
+  );
+}
+
 export function ResolucionesDIAN({ uuidSucursal }: ResolucionesDIANProps): JSX.Element {
   const { t } = useTranslation();
   const { resoluciones, isLoading, error, refresh } = useResolucionesSucursal(uuidSucursal);
   const [mostrandoForm, setMostrandoForm] = useState(false);
+  const [editando, setEditando] = useState<ResolucionFacturacion | null>(null);
   const [consecutivos, setConsecutivos] = useState<
     Record<string, ResolucionFacturacionConsecutivoActual | null>
   >({});
@@ -92,8 +123,16 @@ export function ResolucionesDIAN({ uuidSucursal }: ResolucionesDIANProps): JSX.E
 
   async function handleCreated(): Promise<void> {
     setMostrandoForm(false);
+    setEditando(null);
     await refresh();
   }
+
+  function cerrarForm(): void {
+    setMostrandoForm(false);
+    setEditando(null);
+  }
+
+  const formAbierto = mostrandoForm || editando !== null;
 
   return (
     <section
@@ -113,22 +152,30 @@ export function ResolucionesDIAN({ uuidSucursal }: ResolucionesDIANProps): JSX.E
             )}
           </p>
         </div>
-        {!mostrandoForm && (
+        {!formAbierto && (
           <Button onClick={() => setMostrandoForm(true)} data-testid="resolucion-new">
             {t('resoluciones.new', 'Nueva resolución')}
           </Button>
         )}
       </header>
 
-      {mostrandoForm && (
+      {formAbierto && (
         <div
           className="rounded-lg border bg-card p-4"
           data-testid="resolucion-form-container"
         >
+          {editando && (
+            <h4 className="mb-3 text-sm font-semibold" data-testid="resolucion-form-title">
+              {t('resoluciones.editTitle', 'Editar numeración de la resolución')}{' '}
+              {editando.numero_resolucion ?? ''}
+            </h4>
+          )}
           <ResolucionFormHarness
+            key={editando?.uuid ?? 'nueva'}
             uuidSucursal={uuidSucursal}
+            resolucion={editando ?? undefined}
             onCreated={handleCreated}
-            onCancel={() => setMostrandoForm(false)}
+            onCancel={cerrarForm}
           />
         </div>
       )}
@@ -196,7 +243,9 @@ export function ResolucionesDIAN({ uuidSucursal }: ResolucionesDIANProps): JSX.E
                     {t('resoluciones.field.rango', 'Rango')}
                   </p>
                   <p data-testid="resolucion-rango">
-                    {r.rango_desde ?? '—'}–{r.rango_hasta ?? '—'}
+                    {r.rango_desde === null && r.rango_hasta === null
+                      ? '—'
+                      : `${r.rango_desde ?? '—'}–${r.rango_hasta ?? '—'}`}
                   </p>
                 </div>
                 <div>
@@ -221,6 +270,26 @@ export function ResolucionesDIAN({ uuidSucursal }: ResolucionesDIANProps): JSX.E
                 </div>
               </div>
               {consecutivos[r.uuid]?.agotandose && <AgotandoseBanner />}
+              {r.estado === 'activo' && !tieneNumeracion(r) && <SinNumeracionAviso />}
+              {r.estado === 'activo' && (
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={formAbierto}
+                    onClick={() => setEditando(r)}
+                    data-testid={`resolucion-edit-${r.uuid}`}
+                    aria-label={t(
+                      'resoluciones.editAria',
+                      'Editar numeración de la resolución {{numero}}',
+                      { numero: r.numero_resolucion ?? '' },
+                    )}
+                  >
+                    {t('resoluciones.edit', 'Editar numeración')}
+                  </Button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
