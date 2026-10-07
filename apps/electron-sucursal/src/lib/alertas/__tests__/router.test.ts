@@ -20,16 +20,31 @@
  */
 import { describe, it, expect } from 'vitest';
 
+import type { MergedAlerta } from '../../api/schemas/alertas';
 import { DRILL_DOWN_ROUTES, drillDownHref } from '../router';
 
 const VALID_UUID_ARQUEO = '00000000-0000-0000-0000-000000000aaa';
 
-const baseAlert = {
-  uuid: '00000000-0000-0000-0000-000000000bbb',
-  uuid_arqueo: VALID_UUID_ARQUEO,
-  tipo_alerta: 'diferencia_datafono',
-  datos_nuevos: null,
-};
+// The router only reads `uuid`, `uuid_arqueo`, `tipo_alerta` and
+// `datos_nuevos`; the full `MergedAlerta` carries ~17 more fields that are
+// irrelevant here, so the fixture is a deliberate partial cast.
+function makeAlert(overrides: Record<string, unknown> = {}): MergedAlerta {
+  return {
+    uuid: '00000000-0000-0000-0000-000000000bbb',
+    uuid_arqueo: VALID_UUID_ARQUEO,
+    tipo_alerta: 'diferencia_datafono',
+    datos_nuevos: null,
+    ...overrides,
+  } as unknown as MergedAlerta;
+}
+
+const baseAlert = makeAlert();
+
+function datafonoRoute(): (alert: MergedAlerta) => string {
+  const fn = DRILL_DOWN_ROUTES['diferencia_datafono'];
+  if (!fn) throw new Error('diferencia_datafono drill-down route is not registered');
+  return fn;
+}
 
 describe('drill-down router -- REQ-OPS-199 / D3 (F12.1.1 preservation)', () => {
   it('S1: diferencia_datafono is a registered drill-down key', () => {
@@ -41,14 +56,12 @@ describe('drill-down router -- REQ-OPS-199 / D3 (F12.1.1 preservation)', () => {
   });
 
   it('S2: diferencia_datafono routes to /caja/arqueo/{uuid_arqueo} when arqueo is set', () => {
-    const fn = DRILL_DOWN_ROUTES['diferencia_datafono'];
-    const href = fn(baseAlert);
+    const href = datafonoRoute()(baseAlert);
     expect(href).toBe(`/caja/arqueo/${VALID_UUID_ARQUEO}`);
   });
 
   it('S2b: diferencia_datafono falls back to /alertas/{uuid} when arqueo is missing', () => {
-    const fn = DRILL_DOWN_ROUTES['diferencia_datafono'];
-    const href = fn({ ...baseAlert, uuid_arqueo: undefined });
+    const href = datafonoRoute()(makeAlert({ uuid_arqueo: null }));
     expect(href).toBe(`/alertas/${baseAlert.uuid}`);
   });
 
@@ -57,7 +70,7 @@ describe('drill-down router -- REQ-OPS-199 / D3 (F12.1.1 preservation)', () => {
   });
 
   it('S3b: drillDownHref returns default when tipo_alerta is missing', () => {
-    const noTipo = { ...baseAlert, tipo_alerta: undefined };
+    const noTipo = makeAlert({ tipo_alerta: undefined });
     expect(drillDownHref(noTipo)).toBe(`/alertas/${baseAlert.uuid}`);
   });
 });
