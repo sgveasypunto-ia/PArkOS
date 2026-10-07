@@ -140,11 +140,30 @@ def describe_apply_error_detail(exc: BaseException) -> str:
             # the bound row parameters.
             return type(exc).__name__
         orig = exc  # a plain Python error raised by our own code
-    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    # SQLAlchemy's asyncpg adapter wraps the driver error: the adapter class
+    # (``IntegrityError``) carries only the SQLSTATE, while the real driver
+    # exception (``UniqueViolationError``, in ``__cause__``) also exposes the
+    # ``constraint_name``. Prefer whichever level has each piece.
+    driver = getattr(orig, "__cause__", None)
+    sqlstate = (
+        getattr(orig, "sqlstate", None)
+        or getattr(orig, "pgcode", None)
+        or getattr(driver, "sqlstate", None)
+        or getattr(driver, "pgcode", None)
+    )
     if sqlstate:
-        constraint = getattr(getattr(orig, "diag", None), "constraint_name", None)
+        constraint = (
+            getattr(getattr(orig, "diag", None), "constraint_name", None)
+            or getattr(orig, "constraint_name", None)
+            or getattr(getattr(driver, "diag", None), "constraint_name", None)
+            or getattr(driver, "constraint_name", None)
+        )
+        driver_has_state = bool(
+            getattr(driver, "sqlstate", None) or getattr(driver, "pgcode", None)
+        )
+        named = driver if driver_has_state else orig
         suffix = f":{constraint}" if constraint else ""
-        return f"{type(orig).__name__}:{sqlstate}{suffix}"
+        return f"{type(named).__name__}:{sqlstate}{suffix}"
     text = " ".join(str(orig).split())
     if len(text) > _APPLY_ERROR_DETAIL_MAX:
         text = text[:_APPLY_ERROR_DETAIL_MAX] + "..."

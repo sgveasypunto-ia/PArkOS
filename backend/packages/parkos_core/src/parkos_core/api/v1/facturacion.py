@@ -55,7 +55,7 @@ from ...models.L_E.facturas import Facturas
 from ...models.L_E.ingreso import Ingreso
 from ...repo import factura as repo_factura
 from ...repo.factura_detalle import crear_factura_detalle_bulk
-from ...repo.fe_emision import emitir_fe_para_pago
+from ...repo.fe_emision import emitir_fe_para_pago, es_despliegue_nube
 from ...repo.impuestos import obtener_iva_vigente
 from ...schemas.facturacion import (
     FacturaCreate,
@@ -988,6 +988,20 @@ async def create_factura_electronica(
             status_code=409,
             detail={
                 "error": "factura_electronica_ya_existe",
+                "uuid_factura": str(payload.uuid_factura),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 4b: numbering is BRANCH-LOCAL (AGENTS.md). ----------------
+    # The cloud must never mint a (resolucion, consecutivo): the branch does
+    # it from the same range and the branch->cloud push would collide on
+    # ``factura_electronica_uk01``. Same rule as ``emitir_fe_para_pago``.
+    if es_despliegue_nube():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "fe_numeracion_solo_en_sucursal",
                 "uuid_factura": str(payload.uuid_factura),
             },
             headers=no_store,
