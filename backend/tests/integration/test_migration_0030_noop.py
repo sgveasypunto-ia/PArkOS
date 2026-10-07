@@ -35,12 +35,10 @@ def test_migration_0030_module_imports_with_canonical_revision() -> None:
     assert mod.revision == "0030_venta_suscripcion_optional", (
         f"unexpected revision id: {mod.revision!r}"
     )
-    assert mod.down_revision == (
-        "0029_reimpresion_siembra_and_permiso_anular"
-    ), (
-        "F1.12 migration must chain off the F1.11 head "
-        "(0029_reimpresion_siembra_and_permiso_anular); got "
-        f"{mod.down_revision!r}"
+    # 0029b (seed_sync_catalog) was slotted between 0029 and 0030.
+    assert mod.down_revision == "0029b_seed_sync_catalog", (
+        "F1.12 migration must chain off 0029b_seed_sync_catalog "
+        f"(the revision after the F1.11 head); got {mod.down_revision!r}"
     )
 
 

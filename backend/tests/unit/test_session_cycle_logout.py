@@ -78,9 +78,10 @@ class TestCloseLoginWithLogOrder:
         trigger ``ls_session_guard`` requires this).
         """
         session = _make_session()
-        # ``session.execute`` is called twice: SELECT, then UPDATE.
+        # ``session.execute``: login SELECT, chain advisory lock, chain head SELECT, UPDATE.
         session.execute.side_effect = [
             _select_returns(_login_row_mock()),
+            MagicMock(),  # hash_chain._chain_lock: pg_advisory_xact_lock
             _hash_chain_prior_row_lookup_returns(),
             AsyncMock(),
         ]
@@ -112,6 +113,7 @@ class TestCloseLoginWithLogOrder:
         session = _make_session()
         session.execute.side_effect = [
             _select_returns(_login_row_mock()),
+            MagicMock(),  # hash_chain._chain_lock: pg_advisory_xact_lock
             _hash_chain_prior_row_lookup_returns(),
             AsyncMock(),
         ]
@@ -145,6 +147,7 @@ class TestCloseLoginWithLogUpdateFields:
         session = _make_session()
         session.execute.side_effect = [
             _select_returns(_login_row_mock()),
+            MagicMock(),  # hash_chain._chain_lock: pg_advisory_xact_lock
             _hash_chain_prior_row_lookup_returns(),
             AsyncMock(),
         ]

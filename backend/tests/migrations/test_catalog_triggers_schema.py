@@ -47,29 +47,43 @@ assert len(_NEWLY_TRIGGERED_ENTRIES) == 18, (
 async def test_insert_enqueues_sync_queue_row(
     entry, pg_engine, alembic_upgrade, v_fixture_factory
 ) -> None:
-    """An INSERT into each of the 18 tables enqueues exactly one sync_queue row."""
-    async with pg_engine.connect() as conn:
-        before = (await conn.execute(text("SELECT count(*) FROM prod.sync_queue"))).scalar_one()
+    """An INSERT into each of the 18 tables enqueues exactly one sync_queue row.
 
+    Everything runs inside ONE transaction that is rolled back: ``empresa``
+    is a singleton (0078 ``empresa_singleton_uk``), so the open seeded row is
+    closed inside that same transaction to make room for the probe INSERT,
+    and rolling back leaves the shared database exactly as found (other
+    tests rely on the seeded empresa).
+    """
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        before = (await session.execute(text("SELECT count(*) FROM prod.sync_queue"))).scalar_one()
+
+        if entry.name == "empresa":
+            # UPDATE never enqueues (the trigger is AFTER INSERT only).
+            await session.execute(
+                text(
+                    "UPDATE prod.empresa SET vigente_hasta = NOW(), estado = 'inactivo' "
+                    "WHERE vigente_hasta IS NULL"
+                )
+            )
         row = v_fixture_factory.build(entry.model_cls)
         session.add(row)
-        await session.commit()
+        await session.flush()
 
-    async with pg_engine.connect() as conn:
-        after = (await conn.execute(text("SELECT count(*) FROM prod.sync_queue"))).scalar_one()
+        after = (await session.execute(text("SELECT count(*) FROM prod.sync_queue"))).scalar_one()
         assert after == before + 1, (
             f"expected exactly +1 sync_queue row for {entry.name!r}, got {after - before}"
         )
 
-        result = await conn.execute(
+        result = await session.execute(
             text(
                 "SELECT tabla, prioridad, uuid_sucursal FROM prod.sync_queue "
                 "ORDER BY created_at DESC LIMIT 1"
             )
         )
         tabla, prioridad, uuid_sucursal = result.one()
+        await session.rollback()
 
     assert tabla == entry.name
     # REQ-CAT-012/D18: priority is a constant intra-level tie-break value,

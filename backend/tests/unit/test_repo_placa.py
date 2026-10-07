@@ -26,11 +26,11 @@ from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
 from parkos_core.repo.placa import detectar_tipo_vehiculo
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.tests.conftest import VFixtureFactory  # noqa: F401
+from tests.conftest import VFixtureFactory  # noqa: F401
 
 
 @pytest.fixture
-async def seed_tipos_vehiculo(pg_engine):
+async def seed_tipos_vehiculo(pg_engine, pg_dsn):
     """Insert two vigente rows: ``tipo='carro'`` and ``tipo='moto'``.
 
     Returns ``(uuid_carro, uuid_moto)``.
@@ -42,7 +42,16 @@ async def seed_tipos_vehiculo(pg_engine):
     helper's lookup string and surfaced as
     ``tipo_vehiculo_invalido`` 422 on every fresh branch.
     """
-    async with AsyncSession(pg_engine) as session:
+    # The helper resolves ONE vigente row per tipo (``scalar_one_or_none``),
+    # and ``pg_engine`` is shared: the canonical 0062 seed and earlier tests'
+    # own ``carro`` / ``moto`` rows would make the lookup ambiguous. Start from
+    # an empty catalog, like the other DB-backed tests do.
+    import psycopg
+
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute("TRUNCATE prod.tipos_vehiculo CASCADE")
+        conn.commit()
+    async with AsyncSession(pg_engine, expire_on_commit=False) as session:
         tv_carro = VFixtureFactory.build(TiposVehiculo, tipo="carro")
         tv_moto = VFixtureFactory.build(TiposVehiculo, tipo="moto")
         session.add_all([tv_carro, tv_moto])
@@ -149,11 +158,19 @@ async def test_detectar_tipo_vehiculo_none_devuelve_none(pg_engine) -> None:
 
 @pytest.mark.asyncio
 async def test_detectar_tipo_vehiculo_catalog_missing_devuelve_none(
-    pg_engine,
+    pg_engine, pg_dsn
 ) -> None:
     """T-catalog-missing: regex matches ``ABC123`` but no vigente
     ``tipo='carro'`` row exists; helper returns ``None`` (the catalog
     defect surfaces as V4 ``tipo_vehiculo_invalido`` in the handler)."""
+    # ``pg_engine`` is shared and earlier tests leave ``carro`` rows behind:
+    # make the "catalog missing" precondition explicit instead of relying on
+    # test order.
+    import psycopg
+
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute("TRUNCATE prod.tipos_vehiculo CASCADE")
+        conn.commit()
     async with AsyncSession(pg_engine) as session:
         result = await detectar_tipo_vehiculo(session, "ABC123")
     assert result is None, (

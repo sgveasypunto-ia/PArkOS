@@ -174,6 +174,13 @@ async def _seed_tipos_y_cupo(
             )
         )
         await session.commit()
+    # V3 (validar_tarifa_vigente) is mandatory for every ingreso: seed a
+    # vigente tarifa for both tipos so the cupo / placa / subscription
+    # validations under test are the ones that decide the response.
+    for tipo_uuid in (uuid_tipo_auto, uuid_tipo_moto):
+        await _seed_tarifa_vigente(
+            pg_engine, uuid_sucursal=uuid_sucursal, uuid_tipo_vehiculo=tipo_uuid
+        )
 
 
 async def _seed_prior_ingreso(
@@ -304,7 +311,9 @@ async def _seed_subscripcion(
 async def _ensure_mv_exists(pg_engine) -> None:
     import psycopg
 
-    dsn_sync = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    dsn_sync = pg_engine.url.render_as_string(hide_password=False).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
     sql = """
     CREATE MATERIALIZED VIEW IF NOT EXISTS prod.mv_ocupacion_diaria AS
     SELECT i.uuid_sucursal, i.uuid_tipo_vehiculo, count(*) AS activos
@@ -430,18 +439,38 @@ async def _seed_tarifa_vigente(
     this so they can reach Step 8.5.
     """
     from parkos_core.models.V.tarifas_sucursal import TarifasSucursal
+    from parkos_core.models.V.tipo_tarifa import TipoTarifa
 
+    # ``tarifas_sucursal`` is now one row per (sucursal, tipo_vehiculo,
+    # tipo_tarifa) with ``valor`` / ``valor_plena`` (the old tarifa_hora /
+    # tarifa_dia / tarifa_mes columns are gone).
     now = _now_naive()
+    tipo_tarifa_uuid = uuid_lib.uuid4()
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
+        session.add(
+            TipoTarifa(
+                uuid=tipo_tarifa_uuid,
+                tipo=f"hora-{tipo_tarifa_uuid.hex[:8]}",
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
         session.add(
             TarifasSucursal(
                 uuid=uuid_lib.uuid4(),
                 uuid_sucursal=uuid_sucursal,
                 uuid_tipo_vehiculo=uuid_tipo_vehiculo,
-                tarifa_hora=1000,
-                tarifa_dia=10000,
-                tarifa_mes=100000,
+                uuid_tipo_tarifa=tipo_tarifa_uuid,
+                valor=1000,
+                valor_plena=10000,
                 vigente_desde=now,
                 vigente_hasta=None,
                 estado="activo",
@@ -664,6 +693,15 @@ async def test_t6_cupo_agotado_con_forzado_inserta_ingreso_y_alerta(
         uuid_tipo_vehiculo=tipo_auto,
         placa="OTHER999",
     )
+    # ``alerta.uuid_usuario`` is a real FK to ``usuarios``: the actor that
+    # forces the ingreso must exist.
+    from parkos_core.models.V.usuarios import Usuarios
+
+    from tests.conftest import VFixtureFactory
+
+    async with async_sessionmaker(pg_engine, expire_on_commit=False)() as session:
+        session.add(VFixtureFactory.build(Usuarios, uuid=actor))
+        await session.commit()
     await _refresh_mv(pg_engine)
 
     token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=branch)
@@ -688,7 +726,9 @@ async def test_t6_cupo_agotado_con_forzado_inserta_ingreso_y_alerta(
     # Verify the alerta row + jsonb payload (R5 same-TX commit).
     import psycopg
 
-    dsn = str(pg_engine.url).replace("postgresql+asyncpg://", "postgresql://")
+    dsn = pg_engine.url.render_as_string(hide_password=False).replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT tipo_alerta, datos_nuevos FROM prod.alerta "
@@ -863,7 +903,7 @@ async def test_t9_post_ingreso_sin_placa_aceptado_con_consecutivo(
     """T9: POST ``placa=null + uuid_tipo_vehiculo=bici`` -> 201 + consecutivo.
 
     REQ-OPS-191 + REQ-OPS-194 happy path: the no-placa path returns
-    201, ``consecutivo`` is non-null, formatted ``BICI-000001-<uuid8>``,
+    201, ``consecutivo`` is non-null, formatted ``BICICLETA-000001-<uuid8>``,
     and ``placa`` is null in the response body.
     """
     await _truncate_ingreso_tables(pg_dsn)
@@ -896,8 +936,8 @@ async def test_t9_post_ingreso_sin_placa_aceptado_con_consecutivo(
     assert body["placa"] is None
     assert body["tipo_entrada"] == "ROTACION"
     assert body["consecutivo"] is not None
-    assert body["consecutivo"].startswith("BICI-000001-"), (
-        f"first consecutivo should be BICI-000001-<uuid8>; got "
+    assert body["consecutivo"].startswith("BICICLETA-000001-"), (
+        f"first consecutivo should be BICICLETA-000001-<uuid8>; got "
         f"{body['consecutivo']!r}"
     )
 

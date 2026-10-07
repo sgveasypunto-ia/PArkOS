@@ -114,6 +114,20 @@ async def test_alert_type_capacidad_agotada_forzado_insertado(pg_engine) -> None
     )
 
 
+def _assert_in_chain(current: str, revision: str) -> None:
+    """``revision`` is part of the applied history that ends at ``current``."""
+    from pathlib import Path
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    migrations = Path(__file__).resolve().parents[2] / "packages" / "parkos_core" / "migrations"
+    cfg = Config()
+    cfg.set_main_option("script_location", str(migrations))
+    history = {r.revision for r in ScriptDirectory.from_config(cfg).iterate_revisions(current, "base")}
+    assert revision in history, f"{revision} is not in the history of the applied head {current!r}"
+
+
 @pytest.mark.asyncio
 async def test_alembic_head_includes_0025(pg_engine) -> None:
     """T1: alembic version table must show the migration head is
@@ -128,9 +142,9 @@ async def test_alembic_head_includes_0025(pg_engine) -> None:
         )
         row = result.first()
     assert row is not None, "alembic_version row missing"
-    assert row[0] == "0025_alerta_datos_nuevos", (
-        f"alembic head must be 0025_alerta_datos_nuevos, got {row[0]}"
-    )
+    # The chain keeps growing after 0025: assert it is APPLIED (in the history
+    # of the current head), not that it is the head.
+    _assert_in_chain(row[0], "0025_alerta_datos_nuevos")
 
 
 # ---------------------------------------------------------------------------

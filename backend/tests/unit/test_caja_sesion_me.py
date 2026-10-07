@@ -16,7 +16,7 @@ Four scenarios from ``openspec/changes/hu-f1-3-sesion-unica/design.md
   - T1 — operador with an active sesion → 200 + ``SesionRead`` JSON.
   - T2 — operador without an active sesion → 404 + ``{"error":
     "sesion_no_active"}``.
-  - T3 — ``cliente-`` JWT → 401/403 (issuer_dep rejects the path).
+  - T3 — a non operador/admin JWT (``sync-agent-``) → 401/403 (issuer_dep rejects the path).
   - T4 — operador with two closed sesiones + one open → 200 with the
     OPEN one (``ORDER BY timestamp_apertura DESC NULLS LAST`` picks it
     from the historical rows).
@@ -66,6 +66,7 @@ async def _seed_one_sesion(
     pg_engine,
     *,
     uuid_usuario: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID | None = None,
     timestamp_cierre: datetime | None = None,
     timestamp_apertura: datetime | None = None,
 ) -> uuid_lib.UUID:
@@ -85,7 +86,7 @@ async def _seed_one_sesion(
                 uuid=sesion_uuid,
                 valor_inicial_efectivo=100000.0,
                 valor_inicial_datafono=0.0,
-                uuid_sucursal=None,
+                uuid_sucursal=uuid_sucursal,
                 uuid_usuario=uuid_usuario,
                 timestamp_apertura=apertura,
                 timestamp_cierre=timestamp_cierre,
@@ -107,7 +108,8 @@ async def _seed_one_sesion(
 
 
 async def test_operador_con_sesion_activa_devuelve_200_y_sesion_read(
-    pg_engine, alembic_upgrade, mint_operador_jwt, client, pg_dsn
+    pg_engine, alembic_upgrade, mint_operador_jwt, client, pg_dsn, seeded_usuario_uuid,
+    seeded_sucursal_uuid
 ) -> None:
     """T1: ``operador-`` actor with one OPEN sesion (``timestamp_cierre=
     NULL``) hits ``GET /api/v1/caja-sesion/sesion/me`` and gets back a
@@ -120,9 +122,13 @@ async def test_operador_con_sesion_activa_devuelve_200_y_sesion_read(
     """
     await _truncate_sesion(pg_dsn)
 
-    actor_uuid = uuid_lib.uuid4()
-    sucursal_uuid = uuid_lib.uuid4()
-    seeded_uuid = await _seed_one_sesion(pg_engine, uuid_usuario=actor_uuid)
+    # ``sesion.uuid_usuario`` has a real FK to ``usuarios``.
+    # The tenant listener scopes ``sesion`` by ``uuid_sucursal`` too.
+    actor_uuid = seeded_usuario_uuid
+    sucursal_uuid = seeded_sucursal_uuid
+    seeded_uuid = await _seed_one_sesion(
+        pg_engine, uuid_usuario=actor_uuid, uuid_sucursal=sucursal_uuid
+    )
 
     token = mint_operador_jwt(actor_uuid=actor_uuid, sucursal_uuid=sucursal_uuid)
 
@@ -210,24 +216,26 @@ async def test_operador_sin_sesion_activa_devuelve_404_sesion_no_active(
 
 async def test_issuer_cliente_rechazado_en_sesion_me(pg_engine, alembic_upgrade, client) -> None:
     """T3: a request with an issuer that is NOT ``operador-`` or
-    ``admin-`` (here ``cliente-``) MUST be rejected BEFORE the handler
+    ``admin-`` (here ``sync-agent-``) MUST be rejected BEFORE the handler
     body runs — by ``_sesion_issuer_dep``. FastAPI's
     ``HTTPException(401/403)`` short-circuits the call.
 
     RED: handler not registered yet → path 404. GREEN:
     401/403 (issuer rejected by ``requires_issuer``).
     """
-    # Mint a token with an unknown issuer prefix. The
-    # ``requires_issuer("operador-", "admin-")`` check MUST reject it.
+    # Mint a token whose issuer is valid for the platform but NOT for this
+    # endpoint (``sync-agent-``; ``issue_token`` itself refuses to mint a
+    # ``cliente-`` prefix). The ``requires_issuer("operador-", "admin-")``
+    # check MUST reject it.
     from parkos_core.auth.tokens import issue_token
 
     actor_uuid = uuid_lib.uuid4()
     sucursal_uuid = uuid_lib.uuid4()
     token = issue_token(
         subject_uuid=actor_uuid,
-        issuer="cliente-test",
+        issuer="sync-agent-test",
         claims={
-            "rol": "cliente",
+            "rol": "sync",
             "sucursal": str(sucursal_uuid),
         },
     )
@@ -241,7 +249,7 @@ async def test_issuer_cliente_rechazado_en_sesion_me(pg_engine, alembic_upgrade,
     )
 
     assert resp.status_code in (401, 403), (
-        f"cliente- issuer MUST be rejected with 401/403; got {resp.status_code}: {resp.text}"
+        f"sync-agent- issuer MUST be rejected with 401/403; got {resp.status_code}: {resp.text}"
     )
     # Issuer rejection means the handler body NEVER ran — no
     # sesion_no_active leak.
@@ -257,7 +265,8 @@ async def test_issuer_cliente_rechazado_en_sesion_me(pg_engine, alembic_upgrade,
 
 
 async def test_dos_sesiones_cerradas_y_una_abierta_devuelve_la_abierta(
-    pg_engine, alembic_upgrade, mint_operador_jwt, client, pg_dsn
+    pg_engine, alembic_upgrade, mint_operador_jwt, client, pg_dsn, seeded_usuario_uuid,
+    seeded_sucursal_uuid
 ) -> None:
     """T4: ``operador-`` actor with TWO closed sesiones + ONE open
     sesion. Defense in depth: ``ORDER BY timestamp_apertura DESC NULLS
@@ -271,8 +280,9 @@ async def test_dos_sesiones_cerradas_y_una_abierta_devuelve_la_abierta(
     """
     await _truncate_sesion(pg_dsn)
 
-    actor_uuid = uuid_lib.uuid4()
-    sucursal_uuid = uuid_lib.uuid4()
+    # ``sesion.uuid_usuario`` has a real FK to ``usuarios``.
+    actor_uuid = seeded_usuario_uuid
+    sucursal_uuid = seeded_sucursal_uuid
 
     # Two closed sesiones (older), one open (newest). The open sesion
     # has the LATEST timestamp_apertura so ORDER BY DESC NULLS LAST would
@@ -285,18 +295,21 @@ async def test_dos_sesiones_cerradas_y_una_abierta_devuelve_la_abierta(
     old_uuid_1 = await _seed_one_sesion(
         pg_engine,
         uuid_usuario=actor_uuid,
+        uuid_sucursal=sucursal_uuid,
         timestamp_cierre=older_ts + timedelta(minutes=30),
         timestamp_apertura=older_ts,
     )
     old_uuid_2 = await _seed_one_sesion(
         pg_engine,
         uuid_usuario=actor_uuid,
+        uuid_sucursal=sucursal_uuid,
         timestamp_cierre=older_ts_2 + timedelta(minutes=30),
         timestamp_apertura=older_ts_2,
     )
     open_uuid = await _seed_one_sesion(
         pg_engine,
         uuid_usuario=actor_uuid,
+        uuid_sucursal=sucursal_uuid,
         timestamp_cierre=None,
         timestamp_apertura=open_ts,
     )

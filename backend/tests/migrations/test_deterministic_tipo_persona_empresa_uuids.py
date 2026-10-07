@@ -53,13 +53,18 @@ async def test_tipo_persona_and_empresa_uuids_are_deterministic_after_migration(
                 f"got {row.uuid} — every node must converge on the same uuid"
             )
 
+        # 0079 later corrected the seeded NIT's check digit (900000000-0 ->
+        # 900000000-5), so the row is no longer addressable by the NIT that
+        # 0020's dict is keyed by. The invariant 0020 pins is the IDENTITY: the
+        # (singleton, 0078) open empresa carries the deterministic uuid.
         for nit, expected_uuid in migration_0020._EMPRESA_DETERMINISTIC_UUIDS.items():
             row = (
                 await session.execute(
-                    select(Empresa).where(Empresa.nit == nit, Empresa.vigente_hasta.is_(None))
+                    select(Empresa).where(Empresa.vigente_hasta.is_(None))
                 )
             ).scalar_one()
             assert str(row.uuid) == expected_uuid, (
-                f"empresa nit '{nit}': expected deterministic uuid {expected_uuid}, "
-                f"got {row.uuid} — every node must converge on the same uuid"
+                f"empresa (seeded from nit '{nit}'): expected deterministic uuid "
+                f"{expected_uuid}, got {row.uuid} — every node must converge on "
+                f"the same uuid"
             )

@@ -118,7 +118,14 @@ def _insert_cursor(pg_dsn: str, sucursal_uuid: uuid_lib.UUID, seq: int = 0) -> u
 
 
 async def test_rol_app_cannot_update_or_delete_sync_cursor(pg_dsn: str) -> None:
-    """REVOKE (0051): rol_app has no UPDATE/DELETE on prod.sync_cursor."""
+    """rol_app has table-level UPDATE (restored by 0057) but NO DELETE.
+
+    0051 revoked both, which made the trigger's column carve-out
+    unreachable: ``SELECT ... FOR UPDATE`` and the ``ultimo_seq`` advance
+    need the UPDATE privilege. 0057 grants UPDATE back and leaves DELETE
+    revoked; the ``BEFORE UPDATE OR DELETE`` trigger (tests below) is what
+    constrains WHICH columns may change.
+    """
     import psycopg
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
@@ -130,7 +137,7 @@ async def test_rol_app_cannot_update_or_delete_sync_cursor(pg_dsn: str) -> None:
             "SELECT has_table_privilege('rol_app', 'prod.sync_cursor', 'DELETE')"
         )
         can_delete = (await cur.fetchone())[0]
-    assert can_update is False, "sync_cursor: REVOKE failed — rol_app still has UPDATE"
+    assert can_update is True, "sync_cursor: rol_app lost UPDATE (0057 grants it back)"
     assert can_delete is False, "sync_cursor: REVOKE failed — rol_app still has DELETE"
 
 

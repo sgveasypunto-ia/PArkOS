@@ -22,6 +22,7 @@ import pytest
 from parkos_core.models.V.empresa import Empresa
 from parkos_core.models.V.sucursal import Sucursal
 from parkos_core.repo import sync_cursor
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 
@@ -156,10 +157,14 @@ async def test_cursors_are_branch_scoped(
             session, uuid_sucursal=seeded_sucursal, ultimo_seq=100
         )
         await session.commit()
+    # ``empresa`` is a singleton (0078 ``empresa_singleton_uk``): the second
+    # sucursal hangs off the SAME empresa as the first one.
     async with Session() as session:
-        other = await _seed_sucursal(
-            pg_engine, uuid_empresa=(await _seed_empresa(pg_engine))
-        )
+        empresa_uuid = (
+            await session.execute(select(Sucursal.uuid_empresa).where(Sucursal.uuid == seeded_sucursal))
+        ).scalar_one()
+    async with Session() as session:
+        other = await _seed_sucursal(pg_engine, uuid_empresa=empresa_uuid)
         await sync_cursor.set_seq(session, uuid_sucursal=other, ultimo_seq=200)
         await session.commit()
         assert await sync_cursor.get_seq(session, uuid_sucursal=seeded_sucursal) == 100

@@ -414,17 +414,22 @@ async def test_cotizar_default_devuelve_desglose_fiscal(
     pg_engine, alembic_upgrade, mint_operador_jwt, client, pg_dsn
 ) -> None:
     """Happy path: a 89-minute ingreso (rounds up to 90 billed minutes
-    via ``CEIL``) with ``valor=100, valor_plena=200, tipo='hora'`` and
-    19% IVA seeded must return ``cobrar=true`` with the full breakdown.
+    via ``CEIL``) with ``valor=100, valor_plena=100000`` and 19% IVA
+    seeded must return ``cobrar=true`` with the full breakdown.
 
-    Math sanity (``unidad_minutos=60`` for ``hora``):
+    Math sanity (migration 0047: the unit is ALWAYS one minute, there is no
+    per-modality ``unidad_minutos`` any more):
 
-      ``tiempo_tar_plena = (200/100) * 60 = 120`` minutes
+      ``tiempo_tar_plena = valor_plena / valor = 100000 / 100 = 1000`` min
       ``CEIL(89 + drift) = 90`` (the drift between ``fecha_ingreso``
       written at test-setup time and the function's later ``NOW()``
       keeps ``tiempo_minutos`` strictly below 90, so ``CEIL`` lands on
       90, matching the design's ``CEIL(tiempo_minutos)`` formula).
-      ``89.X < 120`` → ``total = 100 * 90 = 9000``
+      ``89.X < 1000`` → ``total = 100 * 90 = 9000``
+
+    ``valor_plena`` is deliberately high so the per-minute ``CEIL`` branch
+    (not the plena cap, which a small ``valor_plena`` would trigger after
+    just ``valor_plena / valor`` minutes) is the one under test.
       ``iva = 9000 * 0.19 = 1710``
       ``subtotal = 9000 - 1710 = 7290``
 
@@ -450,7 +455,7 @@ async def test_cotizar_default_devuelve_desglose_fiscal(
         uuid_tipo_vehiculo=tipo_vehiculo_uuid,
         uuid_tipo_tarifa=tipo_tarifa_uuid,
         valor=Decimal("100"),
-        valor_plena=Decimal("200"),
+        valor_plena=Decimal("100000"),
     )
     await _seed_iva(pg_engine, porcentaje=Decimal("0.19"))
     ingreso_uuid = await _seed_ingreso(
@@ -480,7 +485,7 @@ async def test_cotizar_default_devuelve_desglose_fiscal(
     body = resp.json()
     assert body["cobrar"] is True
     assert Decimal(str(body["total"])) == Decimal("9000"), (
-        f"total must be 100 * CEIL(89.X) = 9000 (89.X < tiempo_tar_plena=120); "
+        f"total must be 100 * CEIL(89.X) = 9000 (89.X < tiempo_tar_plena=1000); "
         f"got {body['total']!r}"
     )
     assert Decimal(str(body["iva"])) == Decimal("1710"), (
@@ -489,12 +494,12 @@ async def test_cotizar_default_devuelve_desglose_fiscal(
     assert Decimal(str(body["subtotal"])) == Decimal("7290"), (
         f"subtotal must be total - iva = 7290; got {body['subtotal']!r}"
     )
-    # ``tiempo_minutos`` is reported as the raw float (89 + drift). The
-    # contract asserts the field is present and in the (89, 90) range —
-    # not the integer-rounded value used by the pricing formula.
-    assert 89.0 < float(body["tiempo_minutos"]) < 90.0, (
-        f"tiempo_minutos must reflect the actual elapsed time (between 89 "
-        f"and 90 minutes); got {body['tiempo_minutos']!r}"
+    # The response schema CEILs the SQL's raw float (89 + drift) into the
+    # integer billed minutes (``CotizarFacturacion._ceil_tiempo_minutos``), so
+    # the contract is the int 90, not a sub-second float.
+    assert body["tiempo_minutos"] == 90, (
+        f"tiempo_minutos must be CEIL(89 + drift) = 90 billed minutes; "
+        f"got {body['tiempo_minutos']!r}"
     )
     assert body["tarifa_uuid"] == str(tarifa_uuid)
     assert "vigente_hasta" in body and body["vigente_hasta"]

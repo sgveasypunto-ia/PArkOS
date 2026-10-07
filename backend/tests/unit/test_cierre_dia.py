@@ -87,9 +87,8 @@ async def test_cierre_dia_3_sesiones_2_cerradas_1_abierta_cerrar_solo_abierta() 
 
     m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="cierre_dia"))
     m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
-    m_calcular_esperado_cierre_dia = AsyncMock(
-        return_value=(Decimal("300000"), Decimal("150000"))
-    )
+    # F12.1.1 / REQ-OPS-194: esperado is a single efectivo Decimal.
+    m_calcular_esperado_cierre_dia = AsyncMock(return_value=Decimal("300000"))
     m_cerrar_bulk = AsyncMock(return_value=1)  # 1 abierta cerrada, 2 SKIPPED
     arqueo_row = MagicMock()
     arqueo_row.uuid = uuid_lib.uuid4()

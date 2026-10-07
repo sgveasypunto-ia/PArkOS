@@ -408,7 +408,7 @@
         %% [V] Precio por sede x tipo de vehículo x modalidad; el histórico reconstruye con qué tarifa se cobró; vigente_desde admite fecha futura (tarifa programada)
         %% Business
         uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
-        uuid uuid_sucursal FK "UK01 filtrada (uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa, vigente_desde) WHERE vigente_hasta IS NULL - índice único PARCIAL para bi-temporalidad (migración 0063); permite close+insert de la misma combinación sin violar la UK"
+        uuid uuid_sucursal FK "UK01 filtrada (uuid_sucursal, uuid_tipo_vehiculo, uuid_tipo_tarifa, vigente_desde) WHERE vigente_hasta es nulo (versión vigente) - índice único PARCIAL para bi-temporalidad (migración 0063); permite close+insert de la misma combinación sin violar la UK"
         uuid uuid_tipo_vehiculo FK "UK01"
         uuid uuid_tipo_tarifa FK "UK01 - modalidad tarifada (hora, fracción, plena)"
         decimal valor "precio de la modalidad para la combinación"

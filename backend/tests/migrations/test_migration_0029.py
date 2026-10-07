@@ -2,15 +2,16 @@
 
 T6.1 — module-level import contract: ``upgrade()`` and ``downgrade()``
         are callables with the canonical Alembic 4-arg signature.
-T6.2 — pre-flight ``DO $$`` aborts on missing tables
-        (gated ``PARKOS_DOCKER_TEST=1``).
+T6.2 — pre-flight ``DO $$`` aborts on missing tables.
 T6.3 — Op 1 siembra idempotency + Op 2 permission seed + Op 3 role
-        grants (gated ``PARKOS_DOCKER_TEST=1``).
+        grants.
 
-The DB-gated tests carry ``@pytest.mark.requires_db`` so the §4.3 check
-suite skips them cleanly when no Postgres is reachable. The module
-contract tests are pure Python and run unconditionally — they assert
-the migration module is importable + upgrade/downgrade are defined.
+The DB-backed tests carry ``@pytest.mark.requires_db``. They run against a
+THROW-AWAY database cloned from a template migrated to the revision just
+BEFORE 0029: they apply 0029 itself (not ``head``) and, being destructive
+(they DROP ``costos_servicios`` / DELETE seeds), must never touch the shared
+session database the rest of the suite uses. The module contract tests are
+pure Python and run unconditionally.
 """
 from __future__ import annotations
 
@@ -71,209 +72,201 @@ def test_migration_0029_upgrade_and_downgrade_are_callable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# DB-gated tests — require PARKOS_DOCKER_TEST=1 + reachable Postgres.
+# DB-backed tests -- throw-away database at revision 0028, 0029 applied by hand.
 # ---------------------------------------------------------------------------
+
+_REV_0028 = "0028_one_fe_per_factura_and_chain_index_and_sync_flip"
+_REV_0029 = "0029_reimpresion_siembra_and_permiso_anular"
+_ALEMBIC_CWD = _BACKEND_ROOT / "packages" / "parkos_core"  # alembic.ini lives here
+_ALEMBIC_TIMEOUT_S = 600
 
 # Mark all DB-gated tests so the §4.3 check suite can filter them.
 requires_db = pytest.mark.requires_db
 
 
+def _dsn_for(pg_dsn: str, dbname: str) -> str:
+    """``pg_dsn`` (a ``postgresql://`` URL) pointed at database ``dbname``."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(pg_dsn)
+    return urlunsplit(parts._replace(path=f"/{dbname}"))
+
+
+def _admin_exec(pg_dsn: str, sql: str) -> None:
+    import psycopg
+
+    with psycopg.connect(pg_dsn, autocommit=True) as conn:
+        conn.execute(sql)
+
+
+def _alembic(dsn: str, *args: str):
+    """Run ``alembic <args>`` against ``dsn`` (env.py reads ``DATABASE_URL``)."""
+    import os
+    import subprocess
+
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=str(_ALEMBIC_CWD),
+        env={**os.environ, "DATABASE_URL": dsn},
+        capture_output=True,
+        text=True,
+        timeout=_ALEMBIC_TIMEOUT_S,
+    )
+
+
+@pytest.fixture(scope="module")
+def dedicated_pg_dsn():
+    """DSN of a DEDICATED Postgres container just for this module.
+
+    The migration chain creates cluster-level roles (``CREATE ROLE rol_app``
+    ...) unconditionally, so a second database inside the shared session
+    container cannot be migrated from scratch. A separate container also keeps
+    these destructive tests away from the shared schema.
+    """
+    from tests.conftest import (
+        _DOCKER_TEST,
+        DEFAULT_TEST_PG_IMAGE,
+        _testcontainers_url_to_psycopg,
+    )
+
+    if _DOCKER_TEST:
+        pytest.skip("needs its own Postgres container (PARKOS_DOCKER_TEST=1 reuses a live DB)")
+    try:
+        from testcontainers.postgres import PostgresContainer
+    except ImportError as exc:
+        pytest.skip(f"testcontainers[postgres] not installed ({exc})")
+    try:
+        container = PostgresContainer(DEFAULT_TEST_PG_IMAGE)
+        container.start()
+    except Exception as exc:  # noqa: BLE001 - Docker daemon unreachable -> skip
+        pytest.skip(f"cannot start a Postgres container ({type(exc).__name__}: {exc!s})")
+    try:
+        yield _testcontainers_url_to_psycopg(container.get_connection_url())
+    finally:
+        container.stop()
+
+
+@pytest.fixture(scope="module")
+def template_db_0028(dedicated_pg_dsn: str):
+    """A database migrated up to (and including) revision 0028; the clone source."""
+    import uuid
+
+    name = f"t0029_tmpl_{uuid.uuid4().hex[:8]}"
+    _admin_exec(dedicated_pg_dsn, f'CREATE DATABASE "{name}"')
+    proc = _alembic(_dsn_for(dedicated_pg_dsn, name), "upgrade", _REV_0028)
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-1500:]
+    return name
+
+
+@pytest.fixture
+def scratch_dsn(dedicated_pg_dsn: str, template_db_0028: str):
+    """A fresh clone of the 0028 template, dropped after the test."""
+    import uuid
+
+    name = f"t0029_{uuid.uuid4().hex[:8]}"
+    _admin_exec(dedicated_pg_dsn, f'CREATE DATABASE "{name}" TEMPLATE "{template_db_0028}"')
+    try:
+        yield _dsn_for(dedicated_pg_dsn, name)
+    finally:
+        _admin_exec(dedicated_pg_dsn, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+def _count(dsn: str, sql: str) -> int:
+    import psycopg
+
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone()
+    assert row is not None
+    return row[0]
+
+
+_SQL_SIEMBRA = (
+    "SELECT count(*) FROM prod.costos_servicios "
+    "WHERE concepto = 'reimpresion' AND vigente_hasta IS NULL AND estado = 'activo'"
+)
+_SQL_PERMISO = "SELECT count(*) FROM prod.permisos WHERE permiso = 'anular_reimpresion'"
+
+
 @requires_db
 def test_migration_0029_preflight_blocks_when_costos_servicios_missing(
-    pg_dsn: str,
+    scratch_dsn: str,
 ) -> None:
-    """T6.1 RED: pre-flight aborts when ``prod.costos_servicios`` is missing.
-
-    Drops the table (test-only); asserts ``alembic upgrade head`` raises
-    a ``0029_preflight_abort`` exception naming the missing table.
-    Re-CREATEs the table post-assertion for idempotency.
-    """
+    """T6.1 RED: pre-flight aborts when ``prod.costos_servicios`` is missing."""
     import re
 
     import psycopg
 
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+    with psycopg.connect(scratch_dsn) as conn, conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS prod.costos_servicios CASCADE;")
         conn.commit()
 
-    from alembic import command
-    from alembic.config import Config
-
-    cfg = Config()
-    cfg.set_main_option(
-        "script_location",
-        str(_BACKEND_ROOT / "packages" / "parkos_core" / "migrations"),
+    proc = _alembic(scratch_dsn, "upgrade", _REV_0029)
+    msg = (proc.stderr or "") + (proc.stdout or "")
+    assert proc.returncode != 0, "0029 must abort when costos_servicios is missing"
+    assert re.search(r"0029_preflight_abort|prod\.costos_servicios", msg), (
+        f"pre-flight abort signature missing: {msg[-800:]!r}"
     )
-    cfg.set_main_option(
-        "sqlalchemy.url",
-        pg_dsn.replace("postgresql://", "postgresql+psycopg://"),
-    )
-
-    try:
-        with pytest.raises(Exception) as exc_info:
-            command.upgrade(cfg, "head")
-        msg = str(exc_info.value)
-        assert re.search(
-            r"0029_preflight_abort|prod\.costos_servicios", msg
-        ), f"pre-flight abort signature missing: {msg!r}"
-    finally:
-        # Best-effort re-create the table for subsequent tests. The
-        # canonical CREATE TABLE lives in migration 0001; we only need
-        # the table to exist for downstream migrations.
-        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS prod.costos_servicios (
-                    uuid uuid PRIMARY KEY DEFAULT gen_random_uuid()
-                );
-                """
-            )
-            conn.commit()
 
 
 @requires_db
-def test_migration_0029_op1_siembra_inserts_when_absent(pg_dsn: str) -> None:
-    """T6.1 GREEN: Op 1 conditional siembra inserts the ``reimpresion`` row.
-
-    Removes any existing siembra; runs the migration (idempotent);
-    asserts exactly 1 vigente row exists for ``concepto='reimpresion'``.
-    """
+def test_migration_0029_op1_siembra_inserts_when_absent(scratch_dsn: str) -> None:
+    """T6.1 GREEN: Op 1 conditional siembra inserts the ``reimpresion`` row."""
     import psycopg
 
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM prod.costos_servicios WHERE concepto = 'reimpresion';"
-        )
+    with psycopg.connect(scratch_dsn) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM prod.costos_servicios WHERE concepto = 'reimpresion';")
         conn.commit()
 
-    # Run the migration upgrade head.
-    from alembic import command
-    from alembic.config import Config
+    proc = _alembic(scratch_dsn, "upgrade", _REV_0029)
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-1500:]
 
-    cfg = Config()
-    cfg.set_main_option(
-        "script_location",
-        str(_BACKEND_ROOT / "packages" / "parkos_core" / "migrations"),
-    )
-    # Use the same DSN alembic will translate; we override the URL via env.
-    cfg.set_main_option("sqlalchemy.url", pg_dsn.replace("postgresql://", "postgresql+psycopg://"))
-    command.upgrade(cfg, "head")
-
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM prod.costos_servicios "
-            "WHERE concepto = 'reimpresion' "
-            "  AND vigente_hasta IS NULL "
-            "  AND estado = 'activo';"
-        )
-        row = cur.fetchone()
-        assert row is not None
-        assert row[0] == 1, (
-            f"expected exactly 1 siembra row; found {row[0]}"
-        )
+    n = _count(scratch_dsn, _SQL_SIEMBRA)
+    assert n == 1, f"expected exactly 1 siembra row; found {n}"
 
 
 @requires_db
-def test_migration_0029_op2_seed_anular_reimpresion_permission(pg_dsn: str) -> None:
+def test_migration_0029_op2_seed_anular_reimpresion_permission(scratch_dsn: str) -> None:
     """T6.1 GREEN: Op 2 seeds ``anular_reimpresion`` in ``prod.permisos``."""
     import psycopg
 
-    # Idempotent: delete any pre-existing seed; migration re-inserts.
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM prod.permisos WHERE permiso = 'anular_reimpresion';"
-        )
+    with psycopg.connect(scratch_dsn) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM prod.permisos WHERE permiso = 'anular_reimpresion';")
         conn.commit()
 
-    from alembic import command
-    from alembic.config import Config
+    proc = _alembic(scratch_dsn, "upgrade", _REV_0029)
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-1500:]
 
-    cfg = Config()
-    cfg.set_main_option(
-        "script_location",
-        str(_BACKEND_ROOT / "packages" / "parkos_core" / "migrations"),
-    )
-    cfg.set_main_option("sqlalchemy.url", pg_dsn.replace("postgresql://", "postgresql+psycopg://"))
-    command.upgrade(cfg, "head")
-
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM prod.permisos "
-            "WHERE permiso = 'anular_reimpresion';"
-        )
-        row = cur.fetchone()
-        assert row is not None
-        assert row[0] == 1, (
-            f"expected exactly 1 permission row; found {row[0]}"
-        )
+    n = _count(scratch_dsn, _SQL_PERMISO)
+    assert n == 1, f"expected exactly 1 permission row; found {n}"
 
 
 @requires_db
-def test_migration_0029_idempotent_reapply(pg_dsn: str) -> None:
+def test_migration_0029_idempotent_reapply(scratch_dsn: str) -> None:
     """T6.3: re-applying MIGRATION 0029 is a no-op (no duplicates)."""
-    from alembic import command
-    from alembic.config import Config
+    proc = _alembic(scratch_dsn, "upgrade", _REV_0029)
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-1500:]
+    # Re-apply for real: rewind the version pointer WITHOUT running the
+    # downgrade (which would remove the seeds), then upgrade again.
+    proc = _alembic(scratch_dsn, "stamp", _REV_0028)
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-1500:]
+    proc = _alembic(scratch_dsn, "upgrade", _REV_0029)
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-1500:]
 
-    cfg = Config()
-    cfg.set_main_option(
-        "script_location",
-        str(_BACKEND_ROOT / "packages" / "parkos_core" / "migrations"),
-    )
-    cfg.set_main_option("sqlalchemy.url", pg_dsn.replace("postgresql://", "postgresql+psycopg://"))
-    command.upgrade(cfg, "head")
-    # Re-apply — must not raise.
-    command.upgrade(cfg, "head")
-
-    import psycopg
-
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM prod.costos_servicios "
-            "WHERE concepto = 'reimpresion' "
-            "  AND vigente_hasta IS NULL "
-            "  AND estado = 'activo';"
-        )
-        row = cur.fetchone()
-        assert row is not None
-        assert row[0] == 1, (
-            f"re-apply produced duplicate siembra rows: {row[0]}"
-        )
-
-        cur.execute(
-            "SELECT count(*) FROM prod.permisos "
-            "WHERE permiso = 'anular_reimpresion';"
-        )
-        row = cur.fetchone()
-        assert row is not None
-        assert row[0] == 1, (
-            f"re-apply produced duplicate permission rows: {row[0]}"
-        )
+    n = _count(scratch_dsn, _SQL_SIEMBRA)
+    assert n == 1, f"re-apply produced duplicate siembra rows: {n}"
+    n = _count(scratch_dsn, _SQL_PERMISO)
+    assert n == 1, f"re-apply produced duplicate permission rows: {n}"
 
 
 @requires_db
-def test_migration_0029_downgrade_reverses_three_ops(pg_dsn: str) -> None:
+def test_migration_0029_downgrade_reverses_three_ops(scratch_dsn: str) -> None:
     """T6.4: downgrade reverses Op 1 + Op 2 + Op 3 (round-trip)."""
-    from alembic import command
-    from alembic.config import Config
+    proc = _alembic(scratch_dsn, "upgrade", _REV_0029)
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-1500:]
+    assert _count(scratch_dsn, _SQL_PERMISO) == 1
+    proc = _alembic(scratch_dsn, "downgrade", _REV_0028)
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-1500:]
 
-    cfg = Config()
-    cfg.set_main_option(
-        "script_location",
-        str(_BACKEND_ROOT / "packages" / "parkos_core" / "migrations"),
-    )
-    cfg.set_main_option("sqlalchemy.url", pg_dsn.replace("postgresql://", "postgresql+psycopg://"))
-    command.upgrade(cfg, "head")
-    command.downgrade(cfg, "-1")
-
-    import psycopg
-
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM prod.permisos "
-            "WHERE permiso = 'anular_reimpresion';"
-        )
-        row = cur.fetchone()
-        assert row is not None
-        assert row[0] == 0, (
-            f"downgrade did not remove permission: count={row[0]}"
-        )
+    n = _count(scratch_dsn, _SQL_PERMISO)
+    assert n == 0, f"downgrade did not remove permission: count={n}"

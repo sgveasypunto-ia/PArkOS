@@ -37,6 +37,26 @@ _A_TABLES: tuple = (
 )
 
 
+# Tables whose causal ``seq`` (0058) is NOT NULL and has no DB trigger to fill
+# it: ``revocacion_factura`` is stamped by ``repo.hash_chain.append`` only.
+_EXTRA_NOT_NULL: dict[str, tuple[str, str]] = {
+    # (uuid_sucursal, seq) is UNIQUE and the rows are never cleaned up (the
+    # table is immutable), so every INSERT needs a fresh seq.
+    "revocacion_factura": ("seq", "(extract(epoch FROM clock_timestamp()) * 1000000)::bigint"),
+}
+
+
+def _insert_sql(table_name: str, *, returning: bool = True) -> str:
+    """Minimal INSERT for an [A] table (uuid + retention + required extras)."""
+    cols, vals = ["uuid", "fecha_retencion_hasta"], ["gen_random_uuid()", "CURRENT_DATE"]
+    extra = _EXTRA_NOT_NULL.get(table_name)
+    if extra is not None:
+        cols.append(extra[0])
+        vals.append(extra[1])
+    sql = f"INSERT INTO prod.{table_name} ({', '.join(cols)}) VALUES ({', '.join(vals)})"
+    return sql + " RETURNING uuid" if returning else sql
+
+
 @pytest.mark.parametrize(("table_name", "carve_out"), _A_TABLES)
 async def test_a_table_insert_succeeds(
     pg_dsn: str,
@@ -64,11 +84,7 @@ async def test_a_table_insert_succeeds(
         # All [A] tables accept (uuid, fecha_retencion_hasta). Most have
         # additional required columns; for the partitioned-by-retention
         # tables the retention column is the partition key.
-        insert_sql = (
-            f"INSERT INTO prod.{table_name} (uuid, fecha_retencion_hasta) "
-            f"VALUES (gen_random_uuid(), CURRENT_DATE) "
-            f"RETURNING uuid"
-        )
+        insert_sql = _insert_sql(table_name)
         try:
             await cur.execute(insert_sql)
             row_uuid = (await cur.fetchone())[0]
@@ -119,10 +135,7 @@ async def test_a_table_update_blocked(
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
         # Seed a row in its own transaction so the UPDATE sees it.
-        await cur.execute(
-            f"INSERT INTO prod.{table_name} (uuid, fecha_retencion_hasta) "
-            f"VALUES (gen_random_uuid(), CURRENT_DATE) RETURNING uuid"
-        )
+        await cur.execute(_insert_sql(table_name))
         row_uuid = (await cur.fetchone())[0]
         await conn.commit()
 
@@ -167,10 +180,7 @@ async def test_a_table_delete_blocked(
     expected_tag = f"{table_name.upper()}_INMUTABLE"
 
     async with await psycopg.AsyncConnection.connect(pg_dsn) as conn, conn.cursor() as cur:
-        await cur.execute(
-            f"INSERT INTO prod.{table_name} (uuid, fecha_retencion_hasta) "
-            f"VALUES (gen_random_uuid(), CURRENT_DATE) RETURNING uuid"
-        )
+        await cur.execute(_insert_sql(table_name))
         row_uuid = (await cur.fetchone())[0]
         await conn.commit()
 

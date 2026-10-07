@@ -38,7 +38,7 @@ from parkos_core.models.L_E.ingreso import Ingreso
 from parkos_core.models.V.empresa import Empresa
 from parkos_core.models.V.sucursal import Sucursal
 from parkos_core.models.V.tipos_vehiculo import TiposVehiculo
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 pytestmark = pytest.mark.parametrize("app", ["sucursal"], indirect=True)
@@ -78,24 +78,32 @@ async def _seed_empresa_sucursal(
     now = _now_naive()
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
-        empresa_uuid = uuid_lib.uuid4()
-        session.add(
-            Empresa(
-                uuid=empresa_uuid,
-                nombre="Empresa Ocup Test",
-                nit=f"900{empresa_uuid.hex[:6]}",
-                mensaje_bienvenida="Hola",
-                mensaje_salida="Adios",
-                regimen="comun",
-                vigente_desde=now,
-                vigente_hasta=None,
-                estado="activo",
-                created_at=now,
-                created_by=None,
-                sync_status="sincronizado",
+        # ``empresa`` is a singleton (0078 ``empresa_singleton_uk``): a second
+        # sucursal in the same test reuses the empresa the first one created.
+        empresa_uuid = (
+            await session.execute(
+                select(Empresa.uuid).where(Empresa.vigente_hasta.is_(None))
             )
-        )
-        await session.flush()
+        ).scalars().first()
+        if empresa_uuid is None:
+            empresa_uuid = uuid_lib.uuid4()
+            session.add(
+                Empresa(
+                    uuid=empresa_uuid,
+                    nombre="Empresa Ocup Test",
+                    nit=f"900{empresa_uuid.hex[:6]}",
+                    mensaje_bienvenida="Hola",
+                    mensaje_salida="Adios",
+                    regimen="comun",
+                    vigente_desde=now,
+                    vigente_hasta=None,
+                    estado="activo",
+                    created_at=now,
+                    created_by=None,
+                    sync_status="sincronizado",
+                )
+            )
+            await session.flush()
         session.add(
             Sucursal(
                 uuid=uuid_sucursal,
@@ -340,7 +348,7 @@ async def test_operador_self_returns_200_with_ocupacion_response(
     assert auto_item is not None, (
         f"breakdown MUST include the seeded Auto tipo; got {body['items']!r}"
     )
-    assert auto_item["tipo"] == "Auto"
+    assert auto_item["tipo"] == "carro"  # the seeded ``tipos_vehiculo.tipo``
     assert auto_item["cupo_maximo"] == 50
     assert auto_item["activos"] == 1
     assert auto_item["disponible"] == 49
@@ -411,7 +419,6 @@ async def test_admin_allowed_branch_returns_200(
     await _truncate_ocupacion_tables(pg_dsn)
 
     branch_uuid = uuid_lib.uuid4()
-    actor_uuid = uuid_lib.uuid4()
     tipo_auto = uuid_lib.uuid4()
 
     await _seed_empresa_sucursal(pg_engine, uuid_sucursal=branch_uuid)
@@ -422,6 +429,25 @@ async def test_admin_allowed_branch_returns_200(
         tipo="carro",
         cupo_maximo=30,
     )
+    # The admin's branch scope is read FRESH from ``usuarios_sucursal``
+    # (``get_tenant_ctx``), not from the JWT ``sucursales_permitidas`` claim.
+    from parkos_core.models.V.usuarios import Usuarios
+    from parkos_core.models.V.usuarios_sucursal import UsuariosSucursal
+
+    from tests.conftest import VFixtureFactory
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        admin = VFixtureFactory.build(Usuarios, rol="admin")
+        session.add(admin)
+        await session.flush()
+        session.add(
+            VFixtureFactory.build(
+                UsuariosSucursal, uuid_sucursal=branch_uuid, uuid_usuario=admin.uuid
+            )
+        )
+        await session.commit()
+        actor_uuid = admin.uuid
 
     token = mint_admin_jwt(
         actor_uuid=actor_uuid,

@@ -8,8 +8,9 @@ the legacy wire shape / infra-row guards):
     the "never raises on garbage" contract (an unparseable segment reads
     as 0, so a malformed version compares as old rather than crashing).
   - B2 — ``_wire_shape``: the exact legacy wire contract
-    ``{tabla, uuid_registro, uuid_sucursal, operacion, prioridad, datos}``
-    with uuid serialization + ``None``/empty-``datos`` coercion.
+    ``{tabla, uuid_registro, seq, datos}`` (cloud ``_PushedRow`` is
+    ``extra='forbid'``) with uuid serialization, ``seq`` extraction and
+    ``None``/empty-``datos`` coercion.
   - B3 — ``is_infra_table``: the D21 out-of-catalog guard, including the
     pg_partman child-partition normalization so ``sync_log_p_current`` is
     recognised as infra while a catalog table's own child partition
@@ -83,58 +84,54 @@ def test_version_gte_used_by_autodetect_contract() -> None:
 
 class TestWireShape:
     def test_keys_are_exact_wire_contract(self) -> None:
+        """The cloud's ``_PushedRow`` is ``extra='forbid'``: only
+        ``{tabla, uuid_registro, seq, datos}`` may go over the wire."""
         row = MagicMock()
         row.tabla = "factura_pagos"
         row.uuid_registro = uuid_lib.uuid4()
         row.uuid_sucursal = uuid_lib.uuid4()
         row.operacion = "insert"
         row.prioridad = 10
-        row.datos = {"monto": 5}
+        row.datos = {"monto": 5, "seq": 7}
         shape = _wire_shape(row)
-        assert set(shape) == {
-            "tabla",
-            "uuid_registro",
-            "uuid_sucursal",
-            "operacion",
-            "prioridad",
-            "datos",
-        }
+        assert set(shape) == {"tabla", "uuid_registro", "seq", "datos"}
         assert shape["tabla"] == "factura_pagos"
         assert shape["uuid_registro"] == str(row.uuid_registro)
-        assert shape["uuid_sucursal"] == str(row.uuid_sucursal)
-        assert shape["operacion"] == "insert"
-        assert shape["prioridad"] == 10
-        assert shape["datos"] == {"monto": 5}
+        assert shape["seq"] == 7
+        assert shape["datos"] == {"monto": 5, "seq": 7}
 
-    def test_datos_and_operacion_coerce(self) -> None:
-        """Empty ``datos`` becomes ``{}`` and ``operacion``/``prioridad``
-        pass ``None`` through unchanged — both are current, green behavior."""
+    def test_datos_and_seq_coerce(self) -> None:
+        """Empty ``datos`` becomes ``{}`` and a missing or unparseable
+        ``seq`` falls back to ``0`` instead of crashing the batch."""
         row = MagicMock()
         row.tabla = "caja"
         row.uuid_registro = uuid_lib.uuid4()
-        row.uuid_sucursal = uuid_lib.uuid4()
-        row.operacion = None
-        row.prioridad = None
         row.datos = None
         shape = _wire_shape(row)
-        assert shape["operacion"] is None
-        assert shape["prioridad"] is None
+        assert shape["seq"] == 0
         assert shape["datos"] == {}
+
+        row.datos = {"seq": "not-a-number"}
+        assert _wire_shape(row)["seq"] == 0
+
+    def test_partition_name_normalized_to_catalog_parent(self) -> None:
+        """A pg_partman child name goes out as its catalog parent name."""
+        row = MagicMock()
+        row.tabla = "factura_pagos_p_2026_10"
+        row.uuid_registro = uuid_lib.uuid4()
+        row.datos = {"seq": 1}
+        assert _wire_shape(row)["tabla"] == "factura_pagos"
 
     def test_missing_uuids_coerce_to_none_not_string(self) -> None:
         """A row enqueued without a uuid must not send the string ``'None'``
-        over the wire — the legacy receiver parses uuid_registro/uuid_sucursal
-        as UUIDs and the literal ``'None'`` string would crash it."""
+        over the wire — the legacy receiver parses uuid_registro as a UUID
+        and the literal ``'None'`` string would crash it."""
         row = MagicMock()
         row.tabla = "caja"
         row.uuid_registro = None
-        row.uuid_sucursal = None
-        row.operacion = None
-        row.prioridad = None
         row.datos = None
         shape = _wire_shape(row)
         assert shape["uuid_registro"] is None
-        assert shape["uuid_sucursal"] is None
 
 
 # ---------------------------------------------------------------------------

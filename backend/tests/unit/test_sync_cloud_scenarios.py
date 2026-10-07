@@ -97,6 +97,9 @@ def _make_chain_row(
     row.timestamp_evento = timestamp
     row.hash_anterior = prior_hash
     row.hash_actual = new_hash
+    # ``seq`` is compared against ``min_seq`` by the verifier; a bare MagicMock
+    # attribute is not orderable. ``None`` = no causal seq (pre-0058 row).
+    row.seq = None
     return row
 
 
