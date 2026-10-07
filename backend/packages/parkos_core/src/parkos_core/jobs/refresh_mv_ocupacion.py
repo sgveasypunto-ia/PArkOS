@@ -4,15 +4,14 @@ Operates as a separate NSSM service (KD-1) with the same shape as
 ``parkos_core.jobs.sync_sucursal``. Cycle::
 
     try:
-        REFRESH MATERIALIZED VIEW CONCURRENTLY prod.mv_ocupacion_diaria
+        SELECT prod.refresh_mv_ocupacion_diaria()   # SECURITY DEFINER (0045)
     except Exception:
-        log warning refresh_mv_concurrently_failed_fallback
-        REFRESH MATERIALIZED VIEW prod.mv_ocupacion_diaria
+        rollback + log error refresh_mv_ocupacion_failed
     asyncio.sleep(refresh_interval_s)  # default 10s
 
-The CONCURRENTLY branch requires the UNIQUE INDEX (KD-2); if the index
-is missing, Postgres returns a stable error class and we fall back to
-plain ``REFRESH`` (which takes ``AccessExclusiveLock`` briefly, KD-5).
+The helper runs ``REFRESH MATERIALIZED VIEW CONCURRENTLY`` as the MV owner
+(requires the UNIQUE INDEX, KD-2). The worker's app role is not the owner,
+so it must never issue ``REFRESH`` directly.
 
 REQ-OPS-133 (QA-2026-09-17 bug 3): after migration 0034 recreates the
 MV, the very first REFRESH CONCURRENTLY can race with a not-yet-
@@ -117,16 +116,18 @@ class RefreshMvOcupacionWorker(WorkerRunner):
     async def cycle(self) -> None:
         """One REFRESH pass + interval sleep. Always idempotent.
 
-        Tries CONCURRENTLY first (KD-5); falls back to plain REFRESH if
-        the UNIQUE INDEX is missing or Postgres is under load. The
-        session is committed per branch so a failed branch does not
-        poison the next cycle.
+        Calls the SECURITY DEFINER helper ``prod.refresh_mv_ocupacion_diaria()``
+        (migration 0045), which owns the ``REFRESH ... CONCURRENTLY``. The
+        worker connects as the app role, which does NOT own the MV, so a
+        direct ``REFRESH MATERIALIZED VIEW`` fails with "must be owner of
+        materialized view mv_ocupacion_diaria" -- there is deliberately no
+        direct-REFRESH fallback. On failure the session is rolled back and
+        the next cycle retries (KD-5: never crash the loop).
         """
         # REQ-OPS-133: skip the first cycle on a freshly-created MV to
         # avoid the CONCURRENTLY-on-not-yet-committed-MV race. After
         # the skip window elapses (default 60s) the next cycle does a
-        # normal REFRESH CONCURRENTLY, which is the established
-        # production behavior.
+        # normal refresh, which is the established production behavior.
         if await self._is_mv_fresh():
             logger.debug(
                 "refresh_mv_ocupacion_skip_fresh_mv",
@@ -140,52 +141,25 @@ class RefreshMvOcupacionWorker(WorkerRunner):
 
         try:
             await self._session.execute(
-                text(
-                    "REFRESH MATERIALIZED VIEW CONCURRENTLY "
-                    "prod.mv_ocupacion_diaria"
-                )
+                text("SELECT prod.refresh_mv_ocupacion_diaria()")
             )
             await self._session.commit()
             logger.debug(
                 "refresh_mv_ocupacion_cycle_ok",
                 extra={"event": "refresh_mv_ocupacion_cycle_ok"},
             )
-        except Exception as exc:  # noqa: BLE001 -- KD-5: fall back, do not crash
-            # Truncate the original exception message to avoid leaking
-            # pgcode / DSN fragments into log aggregation. Log the
-            # exception class only; full traceback at DEBUG.
-            logger.warning(
-                "refresh_mv_concurrently_failed_fallback",
+        except Exception as exc:  # noqa: BLE001 -- KD-5: log, do not crash
+            # Log the exception class only (no pgcode / DSN fragments in
+            # log aggregation, R6); RIESGO-SUC-02 lag is the accepted
+            # operating characteristic until the next cycle succeeds.
+            await self._session.rollback()
+            logger.error(
+                "refresh_mv_ocupacion_failed",
                 extra={
-                    "event": "refresh_mv_concurrently_failed_fallback",
+                    "event": "refresh_mv_ocupacion_failed",
                     "exception_class": type(exc).__name__,
                 },
             )
-            await self._session.rollback()
-            try:
-                await self._session.execute(
-                    text(
-                        "REFRESH MATERIALIZED VIEW "
-                        "prod.mv_ocupacion_diaria"
-                    )
-                )
-                await self._session.commit()
-                logger.debug(
-                    "refresh_mv_ocupacion_fallback_ok",
-                    extra={"event": "refresh_mv_ocupacion_fallback_ok"},
-                )
-            except Exception as inner_exc:  # noqa: BLE001
-                # Both branches failed -- log error and let the next
-                # cycle retry. KD-5: never crash the loop; RIESGO-SUC-02
-                # lag is the accepted operating characteristic.
-                await self._session.rollback()
-                logger.error(
-                    "refresh_mv_ocupacion_both_branches_failed",
-                    extra={
-                        "event": "refresh_mv_ocupacion_both_branches_failed",
-                        "exception_class": type(inner_exc).__name__,
-                    },
-                )
         # Post-cycle sleep -- KD-5: never sleep BEFORE refresh (would
         # block the first startup refresh); see R1 mitigation in
         # proposal.md §8.

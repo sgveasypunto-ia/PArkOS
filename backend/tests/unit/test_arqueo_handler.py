@@ -667,3 +667,40 @@ async def test_alerta_payload_excludes_datafono_keys() -> None:
     assert "tolerancia_datafono" not in payload_json
     assert "diferencia_efectivo" in payload_json
     assert "tolerancia_efectivo" in payload_json
+
+
+@pytest.mark.asyncio
+async def test_arqueo_cierre_dia_uses_bogota_business_date() -> None:
+    """H9: cierre_dia must compute the expected total and mass-close the
+    sessions for the Bogota business date, NOT the server (UTC)
+    ``date.today()``, which flips to tomorrow at 19:00 Bogota and closes
+    nothing."""
+    from datetime import date
+
+    from parkos_core.api.v1 import caja_arqueo as handler_mod
+
+    fecha_negocio = date(2031, 1, 2)  # deliberately unlike any real "today"
+    ctx = _make_ctx()
+    response = _new_response()
+    payload = _build_payload(codigo="cierre_dia")
+    payload.uuid_sesion = None
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    m_resolver_tipo = AsyncMock(return_value=_build_tipo_arqueo(codigo="cierre_dia"))
+    m_resolver_tol = AsyncMock(return_value=_build_tolerancia())
+    m_esperado_dia = AsyncMock(return_value=Decimal("100000"))
+    m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
+    m_cerrar_sesiones = AsyncMock(return_value=0)
+
+    with patch.object(handler_mod, "hoy_bogota", return_value=fecha_negocio),          patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo),          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol),          patch.object(handler_mod.repo_arqueo, "calcular_esperado_cierre_dia", m_esperado_dia),          patch.object(handler_mod.repo_arqueo, "insertar_arqueo", m_insertar_arqueo),          patch.object(handler_mod.repo_arqueo, "cerrar_sesiones_del_dia_bulk", m_cerrar_sesiones):
+        await handler_mod.post_arqueo(
+            response=response,
+            payload=payload,
+            session=session,
+            ctx=ctx,
+            _claims=None,
+        )
+
+    assert m_esperado_dia.await_args.kwargs["fecha"] == fecha_negocio
+    assert m_cerrar_sesiones.await_args.kwargs["fecha"] == fecha_negocio

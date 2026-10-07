@@ -45,14 +45,17 @@ export interface CierreDiarioBridge {
 
 /**
  * `ArqueoSubmitFn` — structural type for `useArqueo().submit` shape.
- * The `uuid_sesion` literal type is `null` (NOT `string`) — this is
- * the corrigendum for the buggy `useCierreDiario()` helper at
- * `useArqueo.ts:107-117` that incorrectly typed it as `string`.
+ * The `uuid_sesion` literal type is `null` (cierre_dia has no sesion).
+ *
+ * The BE V2 schema (`ArqueoCreateV2`, `extra='forbid'`) requires
+ * `uuid_tipo_arqueo` (UUID FK to `prod.tipo_arqueo`) and rejects the legacy
+ * `tipo_arqueo` codigo string with a 422. The caller resolves `'cierre_dia'`
+ * to its UUID via `useTipoArqueoPorCodigo`.
  */
 export interface ArqueoSubmitFn {
   (payload: {
     uuid_sesion: null;
-    tipo_arqueo: 'cierre_dia';
+    uuid_tipo_arqueo: string;
     valor_efectivo_reportado: number;
     justificacion?: string;
   }): Promise<{ uuid: string }>;
@@ -66,23 +69,58 @@ export interface ArqueoSubmitFn {
  */
 export type CierreDiarioChainResult =
   | { kind: 'success'; uuid_arqueo: string }
-  | { kind: 'arqueo_fallido'; status: number }
+  | { kind: 'arqueo_fallido'; status: number; detail?: string }
   | { kind: 'red_arqueo' }
   | { kind: 'ya_cerrado'; uuid_arqueo?: string }
   | { kind: 'permiso_insuficiente'; status: number };
+
+/**
+ * Turn the raw body of a `ParkosHttpError` into a short, human-readable
+ * server detail so the page can show WHY the close failed instead of a
+ * generic banner. Handles the two backend shapes:
+ *   - `{"detail":{"error":"justificacion_requerida"}}` → the error code;
+ *   - FastAPI 422 `{"detail":[{"loc":[...],"msg":"..."}]}` → `loc: msg` joined.
+ * `undefined` when the body is not JSON or carries neither shape.
+ */
+function parseServerDetail(body: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  const detail = (parsed as { detail?: unknown } | null)?.detail;
+  if (typeof detail === 'string' && detail !== '') return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => {
+        const { loc, msg } = (item ?? {}) as { loc?: unknown; msg?: unknown };
+        if (typeof msg !== 'string') return undefined;
+        const where = Array.isArray(loc) ? loc.join('.') : '';
+        return where !== '' ? `${where}: ${msg}` : msg;
+      })
+      .filter((x): x is string => x !== undefined);
+    return parts.length > 0 ? parts.join('; ') : undefined;
+  }
+  const code = (detail as { error?: unknown } | null | undefined)?.error;
+  return typeof code === 'string' && code !== '' ? code : undefined;
+}
 
 /**
  * Build the POST /caja/arqueo body, dropping `justificacion` when
  * empty so the wire-level body does NOT carry the field (mirrors
  * F10.2 `buildArqueoBody` at `cerrarTurnoChain.ts:84-100`).
  */
-function buildArqueoBody(values: {
-  valor_efectivo_reportado: number;
-  justificacion?: string;
-}): Parameters<ArqueoSubmitFn>[0] {
+function buildArqueoBody(
+  uuidTipoArqueo: string,
+  values: {
+    valor_efectivo_reportado: number;
+    justificacion?: string;
+  },
+): Parameters<ArqueoSubmitFn>[0] {
   const body: Parameters<ArqueoSubmitFn>[0] = {
     uuid_sesion: null,
-    tipo_arqueo: 'cierre_dia',
+    uuid_tipo_arqueo: uuidTipoArqueo,
     valor_efectivo_reportado: values.valor_efectivo_reportado,
   };
   if (values.justificacion && values.justificacion.trim() !== '') {
@@ -96,6 +134,7 @@ function buildArqueoBody(values: {
  *
  * @param args.submitArqueo `useArqueo().submit` reference (typed
  *        via `ArqueoSubmitFn`).
+ * @param args.uuidTipoArqueo resolved UUID of the `cierre_dia` tipo_arqueo.
  * @param args.bridge minimal `bridge.imprimir` interface (or null in
  *        test environment where the bridge is not wired).
  * @param args.values form values from `<CierreDiarioForm />`.
@@ -105,6 +144,8 @@ function buildArqueoBody(values: {
  */
 export async function runCierreDiarioChain(args: {
   submitArqueo: ArqueoSubmitFn;
+  /** UUID of the `cierre_dia` row in `prod.tipo_arqueo` (catalog lookup). */
+  uuidTipoArqueo: string;
   bridge: CierreDiarioBridge | null;
   values: {
     valor_efectivo_reportado: number;
@@ -116,7 +157,7 @@ export async function runCierreDiarioChain(args: {
   let arqueoUuid: string | undefined;
   try {
     const arqueoResult = await args.submitArqueo(
-      buildArqueoBody(args.values),
+      buildArqueoBody(args.uuidTipoArqueo, args.values),
     );
     arqueoUuid = arqueoResult.uuid;
 
@@ -152,6 +193,10 @@ export async function runCierreDiarioChain(args: {
     if (status === 403) {
       return { kind: 'permiso_insuficiente', status };
     }
-    return { kind: 'arqueo_fallido', status };
+    const detail =
+      err instanceof ParkosHttpError ? parseServerDetail(err.body) : undefined;
+    return detail !== undefined
+      ? { kind: 'arqueo_fallido', status, detail }
+      : { kind: 'arqueo_fallido', status };
   }
 }

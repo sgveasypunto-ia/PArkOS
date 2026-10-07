@@ -42,6 +42,8 @@ import {
 let submitArqueo: ReturnType<typeof vi.fn>;
 let bridge: CierreDiarioBridge;
 
+const TIPO_CIERRE_DIA_UUID = '6a759c41-1896-4362-bde4-6eff00ae6626';
+
 const BASE_VALUES = {
   valor_efectivo_reportado: 150_000,
 };
@@ -58,6 +60,7 @@ afterEach(() => {
 const chain = (values: unknown = BASE_VALUES) =>
   runCierreDiarioChain({
     submitArqueo: submitArqueo as unknown as ArqueoSubmitFn,
+    uuidTipoArqueo: TIPO_CIERRE_DIA_UUID,
     bridge,
     values: values as never,
   });
@@ -72,13 +75,15 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
     const result = await chain();
 
     expect(submitArqueo).toHaveBeenCalledTimes(1);
-    // Wire body MUST carry uuid_sesion: null (corrigendum for the
-    // buggy useCierreDiario() at useArqueo.ts:107-117).
+    // Wire body MUST carry the resolved `uuid_tipo_arqueo` (the V2 schema
+    // forbids the legacy `tipo_arqueo` codigo string: 422 extra_forbidden)
+    // and `uuid_sesion: null` (cierre_dia has no sesion).
     expect(submitArqueo).toHaveBeenCalledWith({
       uuid_sesion: null,
-      tipo_arqueo: 'cierre_dia',
+      uuid_tipo_arqueo: TIPO_CIERRE_DIA_UUID,
       valor_efectivo_reportado: 150_000,
     });
+    expect(submitArqueo.mock.calls[0]?.[0]).not.toHaveProperty('tipo_arqueo');
     // bridge.imprimir fired exactly once with auditoria_codigo='cierre_dia'.
     expect(bridge.imprimir).toHaveBeenCalledTimes(1);
     expect(bridge.imprimir).toHaveBeenCalledWith(
@@ -170,5 +175,49 @@ describe('HU-F10.3 — cierreDiarioChain (REQ-OPS-166, AD-2)', () => {
 
     expect(bridge.imprimir).not.toHaveBeenCalled();
     expect(result).toEqual({ kind: 'red_arqueo' });
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  // chain-6 — server error detail is surfaced (H9: no more generic banner)
+  // ──────────────────────────────────────────────────────────────────
+  it('chain-6: POST 422 FastAPI validation body → arqueo_fallido with readable detail', async () => {
+    const body = JSON.stringify({
+      detail: [
+        {
+          type: 'missing',
+          loc: ['body', 'uuid_tipo_arqueo'],
+          msg: 'Field required',
+        },
+      ],
+    });
+    submitArqueo.mockRejectedValueOnce(
+      new ParkosHttpError(422, body, '/api/v1/caja/arqueo'),
+    );
+
+    const result = await chain();
+
+    expect(result).toEqual({
+      kind: 'arqueo_fallido',
+      status: 422,
+      detail: 'body.uuid_tipo_arqueo: Field required',
+    });
+  });
+
+  it('chain-7: POST 400 {detail:{error}} → arqueo_fallido with the error code as detail', async () => {
+    submitArqueo.mockRejectedValueOnce(
+      new ParkosHttpError(
+        400,
+        JSON.stringify({ detail: { error: 'justificacion_requerida' } }),
+        '/api/v1/caja/arqueo',
+      ),
+    );
+
+    const result = await chain();
+
+    expect(result).toEqual({
+      kind: 'arqueo_fallido',
+      status: 400,
+      detail: 'justificacion_requerida',
+    });
   });
 });

@@ -37,6 +37,7 @@ from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
 from ...repo import arqueo as repo_arqueo
+from ...runtime.tiempo import hoy_bogota
 from ...schemas.caja import (
     AdminResumenQueryParams,
     ArqueoCreateV2,
@@ -347,12 +348,16 @@ async def post_arqueo(
     # F12.1.1 / REQ-OPS-194: ``calcular_esperado_*`` returns a single
     # ``Decimal`` (effective only) -- the datafono dimension is no
     # longer in the calculation.
+    # H9: the business day is the Bogota calendar day. ``date.today()``
+    # is the server (UTC) date and flips to tomorrow at 19:00 Bogota,
+    # which made the close pick tomorrow's (empty) sessions.
+    fecha_negocio = hoy_bogota()
     if tipo_arqueo.codigo == "cierre_dia":
         esperado_efectivo = (
             await repo_arqueo.calcular_esperado_cierre_dia(
                 session,
                 uuid_sucursal=target_sucursal,
-                fecha=date_cls.today(),
+                fecha=fecha_negocio,
             )
         )
     else:
@@ -416,7 +421,7 @@ async def post_arqueo(
             session,
             actor_uuid=ctx.actor_uuid,
             target_sucursal=target_sucursal,  # type: ignore[arg-type]
-            fecha=date_cls.today(),
+            fecha=fecha_negocio,
         )
 
     # --- Step 10 (KD-ARQUEO-05 + DEC-ARQUEO-05 + REQ-OPS-094 modified):
