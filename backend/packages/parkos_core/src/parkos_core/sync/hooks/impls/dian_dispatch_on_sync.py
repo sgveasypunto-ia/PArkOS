@@ -53,6 +53,7 @@ import asyncio
 import os
 import uuid as uuid_lib
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -84,19 +85,75 @@ _log = structlog.get_logger(__name__)
 _PENDING_KEY = "parkos_dian_deferred_dispatches"
 
 DeferredDispatch = Callable[[Any], Awaitable[Any]]
+#: ``("fe" | "rev", document uuid)`` - identity of the document a dispatch is for.
+DispatchKey = tuple[str, uuid_lib.UUID]
+
+#: Safety net only (the ordering is the real fix, see ``_on_after_commit``):
+#: pause before re-trying a dispatch whose source row was not visible yet.
+_NOT_VISIBLE_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 2.0, 5.0)
 
 # Strong refs: the loop only keeps weak refs to tasks.
 _BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+#: Documents with a dispatch task alive in THIS process (same-process dedupe;
+#: cross-process dedupe is the advisory lock + chain check in the dispatcher).
+_INFLIGHT: set[DispatchKey] = set()
 
 
-async def _run_deferred(make: DeferredDispatch) -> None:
+@dataclass(eq=False)
+class _Queued:
+    make: DeferredDispatch
+    key: DispatchKey | None
+    #: Innermost SessionTransaction (SAVEPOINT or root) the hook ran in.
+    txn: Any
+
+
+def _inside(txn: Any, ancestor: Any) -> bool:
+    while txn is not None:
+        if txn is ancestor:
+            return True
+        txn = txn.parent
+    return False
+
+
+async def _alert_failure(key: DispatchKey) -> None:
+    """Best effort: a failed dispatch must be visible, never silent."""
+    try:
+        from ....db.engine import SessionLocal
+        from ....dian.cloud.dispatcher import record_dispatch_failure
+
+        async with SessionLocal() as session:
+            await record_dispatch_failure(session, uuid_documento=key[1], kind=key[0])
+    except Exception as exc:  # noqa: BLE001 - the alert must never mask the original failure
+        _log.warning(
+            "dian_dispatch.failure_alert_failed",
+            error_class=type(exc).__name__,
+            error=sanitize_error(exc),
+        )
+
+
+async def _run_deferred(make: DeferredDispatch, key: DispatchKey | None = None) -> None:
     """Run one queued dispatch in its OWN session, after the apply committed."""
     try:
         from ....db.engine import SessionLocal
 
-        async with SessionLocal() as session:
-            await make(session)
+        attempt = 0
+        while True:
+            try:
+                async with SessionLocal() as session:
+                    await make(session)
+                return
+            except Exception as exc:  # noqa: BLE001
+                if getattr(exc, "not_visible", False) and attempt < len(
+                    _NOT_VISIBLE_RETRY_DELAYS_S
+                ):
+                    await asyncio.sleep(_NOT_VISIBLE_RETRY_DELAYS_S[attempt])
+                    attempt += 1
+                    continue
+                raise
     except Exception as exc:  # noqa: BLE001 - background; the envio_dian chain keeps the state
+        if type(exc).__name__ == "DispatchAlreadyHandledError":
+            _log.info("dian_dispatch.already_handled", documento=str(key[1]) if key else None)
+            return
         # structlog is not configured to render ``exc_info`` here, so the
         # warning used to carry no cause. Class + sanitized message (URL
         # credentials masked, truncated) make it diagnosable; never the token.
@@ -106,40 +163,116 @@ async def _run_deferred(make: DeferredDispatch) -> None:
             error=sanitize_error(exc),
             exc_info=True,
         )
+        if key is not None:
+            await _alert_failure(key)
 
 
-def _on_after_commit(sync_session: Any) -> None:
-    pending: list[DeferredDispatch] = sync_session.info.get(_PENDING_KEY) or []
-    if not pending:
-        return
-    queued = list(pending)
-    pending.clear()
+async def _run_and_release(make: DeferredDispatch, key: DispatchKey | None) -> None:
+    try:
+        await _run_deferred(make, key)
+    finally:
+        if key is not None:
+            _INFLIGHT.discard(key)
+
+
+def _spawn(queued: list[_Queued]) -> None:
+    """Start one detached task per distinct document (needs a running loop)."""
     loop = asyncio.get_running_loop()
-    for make in queued:
-        task = loop.create_task(_run_deferred(make), name="dian_dispatch")
+    for item in queued:
+        if item.key is not None:
+            if item.key in _INFLIGHT:
+                continue  # FE hook + envio_dian hook for the same document
+            _INFLIGHT.add(item.key)
+        task = loop.create_task(_run_and_release(item.make, item.key), name="dian_dispatch")
         _BACKGROUND_TASKS.add(task)
         task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
-def _on_after_rollback(sync_session: Any) -> None:
+def _on_after_commit(sync_session: Any) -> None:
+    # SQLAlchemy fires ``after_commit`` for the release of a SAVEPOINT as
+    # well, and the sync push applies EVERY row inside ``begin_nested()``.
+    # Spawning there started the dispatch before the request-level commit,
+    # so its own session could not see the just-inserted
+    # ``factura_electronica`` ("not found") and every envio_dian stayed
+    # 'pendiente' (defect DD1). Only the outermost commit makes the rows
+    # visible to other sessions.
+    if sync_session.in_nested_transaction():
+        return
+    pending: list[_Queued] = sync_session.info.get(_PENDING_KEY) or []
+    if not pending:
+        return
+    queued = list(pending)
+    pending.clear()
+    _spawn(queued)
+
+
+def _on_after_soft_rollback(sync_session: Any, previous_transaction: Any) -> None:
+    """Drop only the dispatches queued inside the transaction that rolled back.
+
+    A SAVEPOINT rollback (one poison row) must not erase the dispatches of the
+    rows that already succeeded in the same batch, and the rolled-back row's
+    own document never existed. A root rollback drops everything.
+    """
     pending = sync_session.info.get(_PENDING_KEY)
     if pending:
-        pending.clear()
+        pending[:] = [q for q in pending if not _inside(q.txn, previous_transaction)]
 
 
-def defer_dispatch(session: Any, make: DeferredDispatch) -> None:
-    """Queue ``make(fresh_session)`` to run AFTER the session's commit.
+def defer_dispatch(
+    session: Any, make: DeferredDispatch, *, key: DispatchKey | None = None
+) -> None:
+    """Queue ``make(fresh_session)`` to run AFTER the OUTERMOST commit.
 
-    Never runs the provider call inside the caller's transaction. A
-    rollback drops the queue (the rows it referred to never existed).
+    Never runs the provider call inside the caller's transaction. A rollback
+    drops what was queued inside the rolled-back (sub)transaction.
     """
     sync_session = session.sync_session
     pending = sync_session.info.get(_PENDING_KEY)
     if pending is None:
         sync_session.info[_PENDING_KEY] = pending = []
         event.listen(sync_session, "after_commit", _on_after_commit)
-        event.listen(sync_session, "after_rollback", _on_after_rollback)
-    pending.append(make)
+        event.listen(sync_session, "after_soft_rollback", _on_after_soft_rollback)
+    pending.append(
+        _Queued(
+            make=make,
+            key=key,
+            txn=sync_session.get_nested_transaction() or sync_session.get_transaction(),
+        )
+    )
+
+
+def resume_factura_dispatch(
+    uuid_factura_electronica: uuid_lib.UUID, actor_uuid: uuid_lib.UUID | None = None
+) -> bool:
+    """Start the deferred dispatch of an already-committed FE (periodic sweep).
+
+    Same detached task, same advisory-lock/chain guard as the post-commit hook,
+    so a document is never sent twice. Returns False when this process already
+    has a dispatch alive for the document.
+    """
+    from ....dian.cloud.dispatcher import dispatch_factura_electronica_with_backoff
+
+    key: DispatchKey = ("fe", uuid_factura_electronica)
+    if key in _INFLIGHT:
+        return False
+    actor = actor_uuid or uuid_lib.uuid4()
+    _spawn(
+        [
+            _Queued(
+                make=lambda session: dispatch_factura_electronica_with_backoff(
+                    session,
+                    uuid_factura_electronica=uuid_factura_electronica,
+                    actor_uuid=actor,
+                    dian_provider_url=_DIAN_PROVIDER_URL,
+                    dian_token_path=_DIAN_TOKEN_PATH,
+                    skip_if_dispatched=True,
+                ),
+                key=key,
+                txn=None,
+            )
+        ]
+    )
+    return True
 
 
 # ``envio_dian`` workflow state-machine initial state (D1-rev: branch is
@@ -186,7 +319,9 @@ async def dian_factura_electronica_dispatch_hook(ctx: HookContext) -> HookResult
             actor_uuid=actor_uuid,
             dian_provider_url=_DIAN_PROVIDER_URL,
             dian_token_path=_DIAN_TOKEN_PATH,
+            skip_if_dispatched=True,
         ),
+        key=("fe", row_uuid),
     )
     return HookResult(proceed=True)
 
@@ -218,7 +353,9 @@ async def dian_revocacion_factura_dispatch_hook(ctx: HookContext) -> HookResult:
             actor_uuid=actor_uuid,
             dian_provider_url=_DIAN_PROVIDER_URL,
             dian_token_path=_DIAN_TOKEN_PATH,
+            skip_if_dispatched=True,
         ),
+        key=("rev", row_uuid),
     )
     return HookResult(proceed=True)
 
@@ -271,7 +408,9 @@ async def envio_dian_resume_hook(ctx: HookContext) -> HookResult:
                 actor_uuid=ctx.actor_uuid,
                 dian_provider_url=_DIAN_PROVIDER_URL,
                 dian_token_path=_DIAN_TOKEN_PATH,
+                skip_if_dispatched=True,
             ),
+            key=("fe", uuid_lib.UUID(str(uuid_factura_electronica))),
         )
     elif uuid_revocacion_factura is not None:
         from ....dian.cloud.dispatcher import dispatch_revocacion_with_backoff
@@ -284,7 +423,9 @@ async def envio_dian_resume_hook(ctx: HookContext) -> HookResult:
                 actor_uuid=ctx.actor_uuid,
                 dian_provider_url=_DIAN_PROVIDER_URL,
                 dian_token_path=_DIAN_TOKEN_PATH,
+                skip_if_dispatched=True,
             ),
+            key=("rev", uuid_lib.UUID(str(uuid_revocacion_factura))),
         )
 
     return HookResult(proceed=True)
@@ -309,4 +450,5 @@ __all__ = [
     "dian_factura_electronica_dispatch_hook",
     "dian_revocacion_factura_dispatch_hook",
     "envio_dian_resume_hook",
+    "resume_factura_dispatch",
 ]

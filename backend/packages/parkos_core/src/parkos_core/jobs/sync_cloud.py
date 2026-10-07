@@ -165,6 +165,18 @@ DEFAULT_VERIFY_INTERVAL_S = 3600
 DEFAULT_SYNC_BACK_INTERVAL_S = 5
 # Default per-cycle cap for ``repo.sync_queue.list_pending`` (T-PR11-001).
 DEFAULT_APPLY_BATCH_LIMIT = 100
+# DD1: cadence of the stale-``pendiente`` DIAN sweep (``PARKOS_DIAN_SWEEP_INTERVAL_S``)
+# and how old a branch ``pendiente`` envio_dian must be before it is resumed
+# (``PARKOS_DIAN_SWEEP_STALE_S``). Both read at use time.
+DEFAULT_DIAN_SWEEP_INTERVAL_S = 300
+DEFAULT_DIAN_SWEEP_STALE_S = 600
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
 
 
 def _hash_chain_min_seq() -> int:
@@ -370,6 +382,7 @@ class SyncCloudWorker(WorkerRunner):
             self._heavy_tasks = [
                 asyncio.create_task(self._apply_pending_loop(), name="apply_pending"),
                 asyncio.create_task(self._hash_chain_verifier_loop(), name="hash_chain_verifier"),
+                asyncio.create_task(self._dian_sweep_loop(), name="dian_sweep"),
             ]
             self.log.info(
                 "sync_cloud.heavy_loops_started",
@@ -661,6 +674,58 @@ class SyncCloudWorker(WorkerRunner):
         # required — same never-committed-session defect.
         await session.commit()
         return settled + len(resolved_row_uuids)
+
+    # ------------------------------------------------------------------
+    # Loop 3: _dian_sweep_loop - resume branch invoices never forwarded (DD1)
+    # ------------------------------------------------------------------
+
+    async def _dian_sweep_loop(self) -> None:
+        interval = max(
+            1, _env_int("PARKOS_DIAN_SWEEP_INTERVAL_S", DEFAULT_DIAN_SWEEP_INTERVAL_S)
+        )
+        while not self._shutdown_requested.is_set():
+            try:
+                if self._session_factory is not None:
+                    async with self._session_factory() as session:
+                        await self._dian_sweep_once(session)
+                else:
+                    await self._dian_sweep_once(self._session)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - keep the loop alive
+                self.log.error("sync_cloud.dian_sweep_failed", error=str(exc))
+            await asyncio.sleep(interval)
+
+    async def _dian_sweep_once(self, session: AsyncSession) -> int:
+        """Resume the stale branch-originated ``pendiente`` documents.
+
+        Selection is ``dian.cloud.sweep.find_stale_pendientes``; the dispatch
+        itself is the ordinary deferred one (own session, advisory lock and
+        chain check, ``DIAN_BACKOFF_SCHEDULE`` as the rate limit), so a
+        document that already has a cloud chain is never sent twice.
+        """
+        from datetime import timedelta
+
+        from parkos_core.dian.cloud.sweep import find_stale_pendientes
+        from parkos_core.sync.hooks.impls.dian_dispatch_on_sync import (
+            resume_factura_dispatch,
+        )
+
+        stale = timedelta(
+            seconds=_env_int("PARKOS_DIAN_SWEEP_STALE_S", DEFAULT_DIAN_SWEEP_STALE_S)
+        )
+        candidates = await find_stale_pendientes(session, older_than=stale)
+        # Read-only: release the snapshot before any provider work starts.
+        await session.rollback()
+        started = 0
+        for uuid_fe in candidates:
+            if resume_factura_dispatch(uuid_fe):
+                started += 1
+        if candidates:
+            self.log.info(
+                "sync_cloud.dian_sweep", candidates=len(candidates), started=started
+            )
+        return started
 
     # ------------------------------------------------------------------
     # D21 guard 2 (T-PR10-003) — skip infra-table sync_queue rows
