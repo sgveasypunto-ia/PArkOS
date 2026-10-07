@@ -94,15 +94,22 @@ describe('useAnularSalidaNoPagada — F8.1-b (auto-annul salida on close-without
   });
 
   it('A2: doble trigger with same uuid_salida → SAME Idempotency-Key header (server dedup)', async () => {
-    mockFetch.mockResolvedValue(annulationRead);
+    mockFetch.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return annulationRead;
+    });
 
     const { result } = renderHook(() => useAnularSalidaNoPagada());
 
     await act(async () => {
-      await result.current.trigger({ uuid_salida: UUID_SALIDA });
-    });
-    await act(async () => {
-      await result.current.trigger({ uuid_salida: UUID_SALIDA });
+      // Real double click: the second submit lands while the first POST is
+      // still in flight -> both carry the SAME key. (A submit AFTER the first
+      // settled is a NEW user action and gets a new key; see
+      // lib/idempotencyReplay.test.ts.)
+      const p1 = result.current.trigger({ uuid_salida: UUID_SALIDA });
+      await new Promise((r) => setTimeout(r, 1));
+      const p2 = result.current.trigger({ uuid_salida: UUID_SALIDA });
+      await Promise.all([p1, p2]);
     });
 
     expect(mockFetch).toHaveBeenCalledTimes(2);

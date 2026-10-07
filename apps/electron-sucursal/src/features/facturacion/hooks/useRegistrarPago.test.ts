@@ -211,27 +211,34 @@ describe('useRegistrarPago — HU-F8.4 (FE consumidor final + Idempotency-Key)',
   });
 
   it('P4: doble trigger with same body → SAME Idempotency-Key header (server dedup)', async () => {
-    mockFetch.mockResolvedValue(facturaEfectivoRead);
+    mockFetch.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return facturaEfectivoRead;
+    });
 
     const { result } = renderHook(() => useRegistrarPago());
 
     await act(async () => {
-      await result.current.trigger({
+      // Real double click: the second submit lands while the first POST is
+      // still in flight -> both carry the SAME key. (A submit AFTER the first
+      // settled is a NEW user action and gets a new key; see
+      // lib/idempotencyReplay.test.ts.)
+      const p1 = result.current.trigger({
         uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
         items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 41000 }],
         subtotal: 34454,
         total: 41000,
       });
-    });
-    await act(async () => {
-      await result.current.trigger({
+      await new Promise((r) => setTimeout(r, 1));
+      const p2 = result.current.trigger({
         uuid_salida: UUID_SALIDA,
         medio_pago: 'efectivo',
         items: [{ tipo: 'servicio', concepto: 'Servicio de parqueo', cantidad: 1, valor_unitario: 41000 }],
         subtotal: 34454,
         total: 41000,
       });
+      await Promise.all([p1, p2]);
     });
 
     expect(mockFetch).toHaveBeenCalledTimes(2);

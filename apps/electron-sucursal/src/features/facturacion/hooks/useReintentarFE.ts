@@ -7,7 +7,7 @@
  * `useRegistrarPago.ts` (F8.1):
  *   - `parkosFetch` for the canonical wire transport (F2.2
  *     auth/retry).
- *   - `buildIdempotencyKey` (F7.2 lib/idempotency.ts) for the
+ *   - `withActionIdempotencyKey` (F7.2 lib/idempotency.ts) for the
  *     SHA-256 RFC 8785 closure header (DEC-SUC-04 + DEC-IDEM-01).
  *   - `useAuthStore.getState().clear()` + `parkos:auth:cleared`
  *     event on 401 (preserved F3.1 invariant — REQ-OPS-107..110).
@@ -31,7 +31,7 @@ import { mutate as globalMutate } from 'swr';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 
 const POST_PATH_PREFIX = '/api/v1/facturacion/factura-electronica';
 
@@ -89,20 +89,18 @@ async function mutateFn(
 ): Promise<EnvioDianRetryRead> {
   const uuidFe = init.arg;
   const path = `${POST_PATH_PREFIX}/${uuidFe}/reintentar`;
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path,
-    body: {},
-  });
-
   try {
     const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-    const raw = (await parkosFetch<unknown>(path, {
-      method: 'POST',
-      headers: {
-        'Idempotency-Key': idempotencyKey,
-      },
-    })) as EnvioDianRetryRead;
+    const raw = (await withActionIdempotencyKey(
+      { method: 'POST', path, body: {} },
+      (idempotencyKey) =>
+        parkosFetch<unknown>(path, {
+          method: 'POST',
+          headers: {
+            'Idempotency-Key': idempotencyKey,
+          },
+        }),
+    )) as EnvioDianRetryRead;
 
     // REQ-OPS-169 — revalidate the polling cache so SWR resumes
     // `refreshInterval: 30_000` (the new chain tip is `pendiente`,

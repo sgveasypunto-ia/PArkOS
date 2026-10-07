@@ -12,7 +12,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 import {
   SubscripcionCupoDetalleSchema,
   putQuitarVehiculoPath,
@@ -54,19 +54,17 @@ async function mutateFn(
   { arg: uuidSubscripcionVehiculo }: { arg: string },
 ): Promise<SubscripcionCupoDetalle> {
   const path = putQuitarVehiculoPath(uuidSubscripcionVehiculo);
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'PUT',
-    path,
-    body: { intento: crypto.randomUUID() },
-  });
-
   try {
     const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-    const raw = await parkosFetch<unknown>(path, {
-      method: 'PUT',
-      headers: { 'Idempotency-Key': idempotencyKey },
-      skipIdempotencyKey: true,
-    });
+    const raw = await withActionIdempotencyKey(
+      { method: 'PUT', path, body: null },
+      (idempotencyKey) =>
+        parkosFetch<unknown>(path, {
+          method: 'PUT',
+          headers: { 'Idempotency-Key': idempotencyKey },
+          skipIdempotencyKey: true,
+        }),
+    );
     return SubscripcionCupoDetalleSchema.parse(raw);
   } catch (err) {
     if (err instanceof ParkosHttpError) {

@@ -4,7 +4,7 @@
  * paso 3 del Sheet: agregar un vehículo a una suscripción existente).
  *
  * Mirrors `useVentaSuscripcion.ts` composition verbatim: `parkosFetch`
- * + `buildIdempotencyKey` + typed 422/404/409 error subclasses so the
+ * + `withActionIdempotencyKey` + typed 422/404/409 error subclasses so the
  * cupos UI can `instanceof`-discriminate the inline message.
  */
 import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
@@ -12,7 +12,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 import {
   POST_AGREGAR_VEHICULO_PATH,
   SubscripcionCupoDetalleSchema,
@@ -67,22 +67,20 @@ async function mutateFn(
   _key: string,
   { arg }: { arg: AgregarVehiculoCupoRequest },
 ): Promise<SubscripcionCupoDetalle> {
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path: POST_AGREGAR_VEHICULO_PATH,
-    // Per-attempt nonce: add -> remove -> add of the same plate must NOT replay
-    // the cached 201 of the first add (the middleware caches by key for 24h).
-    body: { ...arg, intento: crypto.randomUUID() },
-  });
-
   try {
     const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-    const raw = await parkosFetch<unknown>(POST_AGREGAR_VEHICULO_PATH, {
-      method: 'POST',
-      body: JSON.stringify(arg),
-      headers: { 'Idempotency-Key': idempotencyKey },
-      skipIdempotencyKey: true,
-    });
+    // Per-action key: add -> remove -> add of the same plate must NOT replay
+    // the cached 201 of the first add (the middleware caches by key for 24h).
+    const raw = await withActionIdempotencyKey(
+      { method: 'POST', path: POST_AGREGAR_VEHICULO_PATH, body: arg },
+      (idempotencyKey) =>
+        parkosFetch<unknown>(POST_AGREGAR_VEHICULO_PATH, {
+          method: 'POST',
+          body: JSON.stringify(arg),
+          headers: { 'Idempotency-Key': idempotencyKey },
+          skipIdempotencyKey: true,
+        }),
+    );
     return SubscripcionCupoDetalleSchema.parse(raw);
   } catch (err) {
     if (err instanceof ParkosHttpError) {

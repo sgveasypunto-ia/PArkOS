@@ -5,7 +5,7 @@
  * The backend REQUIRES an `Idempotency-Key` per attempt. The caller owns
  * the attempt id (`intentoId`): the same id on a retry (network / 5xx)
  * replays the stored 201 instead of charging twice; a NEW id starts a new
- * attempt. The key is built with the shared `buildIdempotencyKey` helper and
+ * attempt. The key is built with the shared `attemptIdempotencyKey` helper and
  * sent with `skipIdempotencyKey` so `parkosFetch` does not overwrite it with
  * its generic body hash (which would collide across attempts).
  */
@@ -14,7 +14,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { attemptIdempotencyKey } from '../../operacion/lib/idempotency';
 import {
   RenovarSuscripcionRequestSchema,
   RenovarSuscripcionResponseSchema,
@@ -54,10 +54,11 @@ async function mutateFn(
   // Zod gate (datafono requires the voucher) BEFORE touching the network.
   const body = RenovarSuscripcionRequestSchema.parse(rest);
   const path = postRenovarPath(uuid_subscripcion);
-  const idempotencyKey = await buildIdempotencyKey({
+  const idempotencyKey = await attemptIdempotencyKey({
     method: 'POST',
     path,
-    body: { ...body, intento: intentoId },
+    body,
+    attemptId: intentoId,
   });
 
   try {

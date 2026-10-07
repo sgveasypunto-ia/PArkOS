@@ -4,7 +4,7 @@
  * Composition mirrors `useRegistrarSalida.ts` (F7.2) and
  * `useRegistrarPago.ts` (F8.1):
  *   - `parkosFetch` for the canonical wire transport.
- *   - `buildIdempotencyKey` (F7.2 lib/idempotency.ts) for the
+ *   - `withActionIdempotencyKey` (F7.2 lib/idempotency.ts) for the
  *     SHA-256 RFC 8785 closure header (DEC-SUC-04 + DEC-IDEM-01).
  *   - `useAuthStore.getState().clear()` + `parkos:auth:cleared`
  *     event on 401 (preserved F3.1 invariant — REQ-OPS-107..110).

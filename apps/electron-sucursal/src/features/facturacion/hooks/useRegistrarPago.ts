@@ -5,7 +5,7 @@
  * Composition (mirrors `useRegistrarSalida.ts` precedent — F7.2):
  *   - `parkosFetch` for the canonical wire transport (F2.2
  *     auth/retry).
- *   - `buildIdempotencyKey` (lib/idempotency.ts — F7.2) for the
+ *   - `withActionIdempotencyKey` (lib/idempotency.ts — F7.2) for the
  *     SHA-256 RFC 8785 closure header (DEC-SUC-04 + DEC-IDEM-01
  *     reuse from F1.6).
  *   - `FacturaReadSchema` (api/facturaApi.ts) for the discriminated
@@ -25,7 +25,7 @@ import useSWRMutation, { type SWRMutationResponse } from 'swr/mutation';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
-import { buildIdempotencyKey } from '../../operacion/lib/idempotency';
+import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
 import {
   postFactura,
   type FacturaRead,
@@ -54,14 +54,11 @@ async function mutateFn(
   init: { arg: PostFacturaPayload },
 ): Promise<FacturaRead> {
   const body = init.arg;
-  const idempotencyKey = await buildIdempotencyKey({
-    method: 'POST',
-    path: POST_PATH,
-    body,
-  });
-
   try {
-    return await postFactura(body, idempotencyKey);
+    return await withActionIdempotencyKey(
+      { method: 'POST', path: POST_PATH, body },
+      (idempotencyKey) => postFactura(body, idempotencyKey),
+    );
   } catch (err) {
     if (err instanceof ParkosHttpError && err.status === 401) {
       return handle401();
