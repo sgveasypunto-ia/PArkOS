@@ -53,6 +53,10 @@ new file introducing this vocabulary always fails closed.
   - ``backend/scripts/replicate_catalogs_to_branch.py`` is one of the 4
     untracked legacy demo scripts proposal §9.6 explicitly says to leave
     untouched ("Not part of this deliverable").
+  - HU-F15.3 files (``api/v1/empresa.py``, ``schemas/empresa.py``, the web_admin
+    resolution schema/test, its integration test and ``plan.md``) use
+    ``consecutivo_actual`` as the name of a DERIVED read-only response field
+    (next free number inside the resolution range), not as a stored column.
   - This test's OWN file is self-excluded — ``_FORBIDDEN_LITERALS`` below
     necessarily contains these literals as search DATA; scanning this
     file for its own search terms would be the exact tautological trap a
@@ -145,6 +149,18 @@ _ALLOWED_FILES_RELATIVE: frozenset[str] = frozenset(
         # exercise a guard, exactly like stage_runner.py's own gate above.
         "backend/tests/unit/test_stage_runner.py",
         "backend/tests/integration/test_reverse_dry_run.py",
+        # HU-F15.3 (resoluciones DIAN): ``GET .../resolucion-facturacion/{uuid}/
+        # consecutivo-actual`` returns a DERIVED value computed per request as
+        # ``COALESCE(MAX(factura_electronica.consecutivo), rango_desde - 1) + 1``
+        # inside the resolution's own range. It is NOT the withdrawn D1 model
+        # (a stored ``consecutivo_actual`` counter on ``empresa`` in the
+        # cloud), so these files legitimately carry the response field name.
+        "plan.md",
+        "backend/packages/parkos_core/src/parkos_core/api/v1/empresa.py",
+        "backend/packages/parkos_core/src/parkos_core/schemas/empresa.py",
+        "backend/tests/integration/test_hu_f15_3_resoluciones_dian_api.py",
+        "apps/web_admin/src/features/parametrizacion/api/resolucionFacturacionSchema.ts",
+        "apps/web_admin/src/features/parametrizacion/components/ResolucionesDIAN.test.tsx",
     }
 )
 
