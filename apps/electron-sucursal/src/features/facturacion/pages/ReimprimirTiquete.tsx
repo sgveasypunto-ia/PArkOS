@@ -372,6 +372,36 @@ export function ReimprimirTiquete(): JSX.Element {
     ],
   );
 
+  // Costo vigente $0: no hay cobro, por tanto no hay factura (una factura
+  // electrónica por $0 no tiene sentido fiscal; el backend la rechaza con
+  // 422). Se registra solo la reimpresión del workflow, sin uuid_factura.
+  const handleSinCosto = useCallback(async (): Promise<void> => {
+    if (!ingresoEncontrado || !motivoConfirmado) return;
+    setErrorMsg(null);
+    try {
+      const out = await reimprimir.trigger({
+        uuid_ingreso: ingresoEncontrado.uuid,
+        motivo: motivoConfirmado,
+      });
+      setResultado(out);
+      try {
+        await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
+      } catch {
+        // Best-effort print (DEC-SUC-27), igual que el flujo con cobro.
+      }
+    } catch (err) {
+      setErrorMsg(
+        esIngresoYaTieneSalida(err)
+          ? t('reimprimir.busqueda.ingreso_cerrado', {
+              defaultValue: MSG_INGRESO_CERRADO,
+            })
+          : err instanceof Error
+            ? err.message
+            : 'error',
+      );
+    }
+  }, [t, ingresoEncontrado, motivoConfirmado, reimprimir]);
+
   const handleAnularConfirm = anularForm.handleSubmit(async (values) => {
     if (!resultado) return;
     try {
@@ -627,9 +657,32 @@ export function ReimprimirTiquete(): JSX.Element {
                     })}
                   </p>
                 )}
+                {!costoServicio.isLoading && costoServicio.costo === 0 && (
+                  <div className="space-y-3" data-testid="reimprimir-sin-costo">
+                    <p className="text-sm text-muted-foreground">
+                      {t('reimprimir.cobro.sin_costo', {
+                        defaultValue:
+                          'La reimpresión no tiene costo configurado ($0): no se genera cobro ni factura.',
+                      })}
+                    </p>
+                    <Button
+                      type="button"
+                      data-testid="reimprimir-sin-costo-confirmar"
+                      disabled={reimprimir.isMutating}
+                      onClick={() => {
+                        void handleSinCosto();
+                      }}
+                    >
+                      {t('reimprimir.cobro.sin_costo_confirmar', {
+                        defaultValue: 'Reimprimir sin cobro',
+                      })}
+                    </Button>
+                  </div>
+                )}
                 {!costoServicio.isLoading &&
                   !ivaVigente.isLoading &&
                   costoServicio.costo !== null &&
+                  costoServicio.costo > 0 &&
                   ivaVigente.porcentaje !== null && (
                   <>
                     <p className="mb-4 text-sm text-muted-foreground" data-testid="reimprimir-costo-vigente">
