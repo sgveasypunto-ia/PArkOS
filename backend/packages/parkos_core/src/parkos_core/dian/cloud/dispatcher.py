@@ -157,6 +157,10 @@ async def _do_poll_once(provider: DianProvider, track_id: str) -> PollResult:
         return PollResult(estado=ESTADO_EN_PROCESO)
 
 
+def _provider_unavailable_motivo(exc: OSError) -> str:
+    return f"send: provider_unavailable: {type(exc).__name__}"
+
+
 async def _send_initial(
     provider: DianProvider, xml_bytes: bytes
 ) -> tuple[str | None, PollResult | None]:
@@ -183,6 +187,13 @@ async def _send_initial(
         except httpx.HTTPStatusError as exc:
             return None, PollResult(
                 estado=ESTADO_RECHAZADO, motivo_rechazo=_http_motivo("send:", exc)
+            )
+        except OSError as exc:
+            # Provider not configured (e.g. the token file is missing): this
+            # is not a transport error, so it used to escape and leave the
+            # freshly inserted envio_dian stuck with no outcome and no alerta.
+            return None, PollResult(
+                estado=ESTADO_ERROR, motivo_rechazo=_provider_unavailable_motivo(exc)
             )
         except httpx.RequestError as exc:
             last_exc = exc
@@ -606,6 +617,16 @@ async def dispatch_revocacion(
             envio,
             PollResult(
                 estado=ESTADO_RECHAZADO, motivo_rechazo=_http_motivo("send:", exc)
+            ),
+            session,
+        )
+    except OSError as exc:
+        # Provider not configured (token file missing/unreadable): terminal
+        # ``error`` outcome + alerta instead of an orphan envio_dian row.
+        return await _record_terminal(
+            envio,
+            PollResult(
+                estado=ESTADO_ERROR, motivo_rechazo=_provider_unavailable_motivo(exc)
             ),
             session,
         )

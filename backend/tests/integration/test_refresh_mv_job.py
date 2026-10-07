@@ -162,7 +162,7 @@ async def test_cycle_helper_failure_logs_and_does_not_fall_back_to_direct_refres
 
 
 def test_sanitize_error_redacts_credentials_and_truncates() -> None:
-    from parkos_core.jobs.refresh_mv_ocupacion import sanitize_error
+    from parkos_core.runtime.log_safe import sanitize_error
 
     out = sanitize_error(
         RuntimeError("connect postgresql+asyncpg://user:s3cret@host/db failed " + "x" * 900)

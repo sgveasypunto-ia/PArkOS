@@ -34,7 +34,6 @@ import argparse
 import asyncio
 import logging
 import os
-import re
 import sys
 from typing import Any
 
@@ -45,18 +44,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from parkos_core.runtime.log_safe import sanitize_error
+
 from .runner import WorkerRunner
 
 logger = logging.getLogger("parkos_core.jobs.refresh_mv_ocupacion")
-
-
-_URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
-_MAX_ERROR_CHARS = 300
-
-
-def sanitize_error(exc: BaseException) -> str:
-    """Message safe for log aggregation: URL credentials masked, truncated."""
-    return _URL_CREDENTIALS.sub(r"\g<scheme>***@", str(exc))[:_MAX_ERROR_CHARS]
 
 
 class RefreshMvOcupacionWorker(WorkerRunner):
