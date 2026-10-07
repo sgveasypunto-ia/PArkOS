@@ -30,6 +30,7 @@ import datetime
 import uuid as uuid_lib
 
 import pytest
+from _seeds import seed_ingreso
 from fastapi import HTTPException, Response
 from parkos_core.auth.tenancy import TenantContext
 from parkos_core.models.L_W.anulaciones import Anulaciones
@@ -137,7 +138,9 @@ async def test_anulacion_full_happy_path_then_terminal_409(
 
         # --- Step 1: solicitar (root, estado='iniciada'). ---------------
         root_payload = AnulacionesSolicitarEndpoint(
-            tipo_anulable="ingreso", uuid_ingreso=uuid_lib.uuid4(), motivo="Cliente desistio"
+            tipo_anulable="ingreso",
+            uuid_ingreso=await seed_ingreso(pg_engine, seeded_sucursal_uuid),
+            motivo="Cliente desistio",
         )
         root = await solicitar_anulacion(Response(), root_payload, session, ctx, None)
         assert root.estado == "iniciada"
@@ -281,7 +284,9 @@ async def test_transicionar_anulacion_out_of_order_returns_409(
         root = await solicitar_anulacion(
             Response(),
             AnulacionesSolicitarEndpoint(
-                tipo_anulable="ingreso", uuid_ingreso=uuid_lib.uuid4(), motivo="motivo"
+                tipo_anulable="ingreso",
+                uuid_ingreso=await seed_ingreso(pg_engine, seeded_sucursal_uuid),
+                motivo="motivo",
             ),
             session,
             ctx,

@@ -176,3 +176,27 @@ async def seed_sucursales(pg_engine, *sucursales: uuid_lib.UUID) -> None:
             ).first() is None:
                 session.add(VFixtureFactory.build(Sucursal, uuid=suc))
         await session.commit()
+
+
+async def seed_ingreso(pg_engine, uuid_sucursal: uuid_lib.UUID) -> uuid_lib.UUID:
+    """Insert a minimal open ``ingreso`` on ``uuid_sucursal`` and return its uuid.
+
+    ``anulaciones.uuid_ingreso`` (and every other ingreso reference) is a real FK.
+    """
+    from datetime import UTC, datetime
+
+    from parkos_core.models.L_E.ingreso import Ingreso
+
+    ingreso_uuid = uuid_lib.uuid4()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            Ingreso(
+                uuid=ingreso_uuid,
+                uuid_sucursal=uuid_sucursal,
+                placa=f"SEED{ingreso_uuid.hex[:3].upper()}",
+                fecha_ingreso=datetime.now(UTC).replace(tzinfo=None),
+            )
+        )
+        await session.commit()
+    return ingreso_uuid
