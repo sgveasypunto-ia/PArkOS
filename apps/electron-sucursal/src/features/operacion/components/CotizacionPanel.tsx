@@ -37,7 +37,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 import { formatCOP, formatFechaHoraCorta } from '../../caja/lib/format';
 import type { Cotizacion } from '../hooks/useCotizacion';
-import { useTarifaByUuid } from '../../catalogos/hooks/useTarifaByUuid';
+import { isUsableTarifaUuid, useTarifaByUuid } from '../../catalogos/hooks/useTarifaByUuid';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 /**
@@ -101,7 +101,9 @@ function CotizacionPanelImpl({
   // hay cotizacion de rotación (error branch o mensualidad branch) —
   // SWR skip en ese caso.
   const tarifaUuid: string | null =
-    data && data.cobrar === true ? data.tarifa_uuid : null;
+    data && data.cobrar === true && isUsableTarifaUuid(data.tarifa_uuid)
+      ? data.tarifa_uuid
+      : null;
   const { tarifa } = useTarifaByUuid(tarifaUuid);
 
   // Error branch — non-blocking banner (REQ-OPS-148). The operator
@@ -224,7 +226,7 @@ function CotizacionPanelImpl({
               // data todavía), mostramos el UUID como antes. El SWR
               // resuelve ~en el siguiente tick y el panel re-renderea
               // con el detalle completo.
-              <span>{data.tarifa_uuid}</span>
+              <span>{tarifaUuid ?? '—'}</span>
             )}
           </dd>
           <dt>Cotización vigente hasta</dt>

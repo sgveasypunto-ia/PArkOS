@@ -137,3 +137,32 @@ describe('<CotizacionPanel /> — pure presentational (REQ-OPS-143)', () => {
     expect(banner.textContent).toMatch(/IVA/i);
   });
 });
+
+describe('<CotizacionPanel /> — placeholder con tarifa_uuid nil (L2)', () => {
+  it('no consulta la tarifa y no muestra el uuid nil ni error', async () => {
+    const getSpy = vi.fn();
+    vi.resetModules();
+    vi.doMock('../../catalogos/hooks/useTarifaByUuid', async (orig) => ({
+      ...(await orig<typeof import('../../catalogos/hooks/useTarifaByUuid')>()),
+      useTarifaByUuid: (uuid: string | null) => {
+        getSpy(uuid);
+        return { tarifa: null, isLoading: false, error: undefined, refresh: vi.fn() };
+      },
+    }));
+    const { CotizacionPanel: Panel } = await import('./CotizacionPanel');
+    render(
+      <Panel
+        data={{
+          ...cotizacionRotacion,
+          tarifa_uuid: '00000000-0000-0000-0000-000000000000',
+        }}
+        secondsLeft={900}
+        onConfirmar={vi.fn()}
+        onRecalcular={vi.fn()}
+      />,
+    );
+    expect(getSpy).toHaveBeenCalledWith(null);
+    expect(screen.queryByText('00000000-0000-0000-0000-000000000000')).not.toBeInTheDocument();
+    vi.doUnmock('../../catalogos/hooks/useTarifaByUuid');
+  });
+});
