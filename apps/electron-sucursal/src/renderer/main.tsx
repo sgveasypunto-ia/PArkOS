@@ -11,6 +11,7 @@ import './index.css';
 import { initTheme } from './lib/theme';
 
 import App from './App';
+import { SwrSessionScope } from './components/SwrSessionScope';
 
 /**
  * Theme mechanism (Fase 2+3): the inline script in `index.html` already
@@ -32,7 +33,9 @@ export function Root() {
   return (
     <StrictMode>
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <App />
+        <SwrSessionScope>
+          <App />
+        </SwrSessionScope>
       </BrowserRouter>
     </StrictMode>
   );
