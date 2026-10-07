@@ -34,7 +34,9 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -46,6 +48,15 @@ from sqlalchemy.ext.asyncio import (
 from .runner import WorkerRunner
 
 logger = logging.getLogger("parkos_core.jobs.refresh_mv_ocupacion")
+
+
+_URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
+_MAX_ERROR_CHARS = 300
+
+
+def sanitize_error(exc: BaseException) -> str:
+    """Message safe for log aggregation: URL credentials masked, truncated."""
+    return _URL_CREDENTIALS.sub(r"\g<scheme>***@", str(exc))[:_MAX_ERROR_CHARS]
 
 
 class RefreshMvOcupacionWorker(WorkerRunner):
@@ -66,6 +77,9 @@ class RefreshMvOcupacionWorker(WorkerRunner):
     # MV race window without being so wide that a real operator-driven
     # CREATE-OR-REPLACE during a maintenance window is hidden.
     FRESH_MV_SKIP_WINDOW_S = 60
+    # ``/healthz`` turns 503 after this many consecutive failed refreshes, so
+    # Docker no longer reports a job that never refreshes anything as healthy.
+    FAILURE_DEGRADED_THRESHOLD = 3
 
     def __init__(
         self,
@@ -77,6 +91,34 @@ class RefreshMvOcupacionWorker(WorkerRunner):
         self._session = session
         # Floor at 5s to avoid pathological hot-loops on misconfiguration.
         self.refresh_interval_s = max(5, int(refresh_interval_s))
+        self._consecutive_failures = 0
+        self._last_error_class: str | None = None
+        self._last_error: str | None = None
+
+    def health_report(self) -> dict[str, Any]:
+        """Logical health for ``/healthz``: 503 while refreshes keep failing."""
+        return {
+            "ok": self._consecutive_failures < self.FAILURE_DEGRADED_THRESHOLD,
+            "consecutive_failures": self._consecutive_failures,
+            "degraded_threshold": self.FAILURE_DEGRADED_THRESHOLD,
+            "last_error_class": self._last_error_class,
+            "last_error": self._last_error,
+        }
+
+    def _note_failure(self, where: str, exc: Exception) -> None:
+        self._consecutive_failures += 1
+        self._last_error_class = type(exc).__name__
+        self._last_error = sanitize_error(exc)
+        logger.error(
+            "refresh_mv_ocupacion_failed",
+            extra={
+                "event": "refresh_mv_ocupacion_failed",
+                "stage": where,
+                "exception_class": self._last_error_class,
+                "error": self._last_error,
+                "consecutive_failures": self._consecutive_failures,
+            },
+        )
 
     async def _is_mv_fresh(self) -> bool:
         """Return True iff ``prod.mv_ocupacion_diaria`` was created or
@@ -98,7 +140,7 @@ class RefreshMvOcupacionWorker(WorkerRunner):
                         "extract(epoch from (now() - "
                         "  coalesce(pg_stat_get_last_analyze_time(c.oid), "
                         "           pg_stat_get_last_autoanalyze_time(c.oid)"
-                        ")) AS seconds_since_analyze "
+                        "))) AS seconds_since_analyze "
                         "FROM pg_class c "
                         "JOIN pg_namespace n ON c.relnamespace = n.oid "
                         "WHERE n.nspname = 'prod' AND c.relname = "
@@ -106,7 +148,11 @@ class RefreshMvOcupacionWorker(WorkerRunner):
                     )
                 )
             ).first()
-        except Exception:  # noqa: BLE001 -- defensive: never block on stats lookup
+        except Exception as exc:  # noqa: BLE001 -- never block on stats lookup
+            # The failed statement aborted the transaction: without a rollback
+            # the refresh that follows dies with InFailedSQLTransactionError.
+            await self._session.rollback()
+            self._note_failure("stats_lookup", exc)
             return False
         if row is None:
             return False
@@ -151,17 +197,14 @@ class RefreshMvOcupacionWorker(WorkerRunner):
                 extra={"event": "refresh_mv_ocupacion_cycle_ok"},
             )
         except Exception as exc:  # noqa: BLE001 -- KD-5: log, do not crash
-            # Log the exception class only (no pgcode / DSN fragments in
-            # log aggregation, R6); RIESGO-SUC-02 lag is the accepted
-            # operating characteristic until the next cycle succeeds.
+            # exception class + sanitized message (credentials masked,
+            # truncated); never the DSN or pgcode.
             await self._session.rollback()
-            logger.error(
-                "refresh_mv_ocupacion_failed",
-                extra={
-                    "event": "refresh_mv_ocupacion_failed",
-                    "exception_class": type(exc).__name__,
-                },
-            )
+            self._note_failure("refresh", exc)
+        else:
+            self._consecutive_failures = 0
+            self._last_error_class = None
+            self._last_error = None
         # Post-cycle sleep -- KD-5: never sleep BEFORE refresh (would
         # block the first startup refresh); see R1 mitigation in
         # proposal.md §8.

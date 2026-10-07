@@ -33,6 +33,7 @@ Both tests additionally assert:
 from __future__ import annotations
 
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -130,7 +131,7 @@ async def test_cycle_helper_failure_logs_and_does_not_fall_back_to_direct_refres
     captured_sleep: list[float] = []
     _patch_sleep(monkeypatch, captured_sleep)
 
-    fake_exc = RuntimeError("must be owner of materialized view (no pgcode)")
+    fake_exc = RuntimeError("must be owner of materialized view")
     session = _make_mock_session(side_effects=[fake_exc])
     worker = _worker_not_fresh(session)
     with caplog.at_level(
@@ -154,10 +155,39 @@ async def test_cycle_helper_failure_logs_and_does_not_fall_back_to_direct_refres
     for rec in caplog.records:
         rendered = rec.getMessage() + " " + str(rec.__dict__)
         assert "pgcode" not in rendered
-        assert "must be owner" not in rendered, (
-            f"log MUST NOT contain the original exception message (R6); "
-            f"got {rendered!r}"
-        )
+
+    # JB1: the line now carries the (sanitized) message so operators can see
+    # the cause; it was blind before and hid a SQL syntax error.
+    assert "must be owner" in failed[0].error  # type: ignore[attr-defined]
+
+
+def test_sanitize_error_redacts_credentials_and_truncates() -> None:
+    from parkos_core.jobs.refresh_mv_ocupacion import sanitize_error
+
+    out = sanitize_error(
+        RuntimeError("connect postgresql+asyncpg://user:s3cret@host/db failed " + "x" * 900)
+    )
+    assert "s3cret" not in out and "user:" not in out
+    assert "***@host" in out
+    assert len(out) <= 300
+
+
+async def test_health_degrades_after_consecutive_failures_and_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[float] = []
+    _patch_sleep(monkeypatch, captured)
+    session = _make_mock_session(side_effects=[RuntimeError("boom")] * 3 + [MagicMock()])
+    worker = _worker_not_fresh(session)
+    assert worker.health_report()["ok"] is True
+    for _ in range(3):
+        await worker.cycle()
+    report = worker.health_report()
+    assert report["ok"] is False
+    assert report["consecutive_failures"] == 3
+    assert report["last_error_class"] == "RuntimeError"
+    await worker.cycle()  # success
+    assert worker.health_report()["ok"] is True
 
 
 # ---------------------------------------------------------------------------
