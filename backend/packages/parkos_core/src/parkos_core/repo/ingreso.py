@@ -22,6 +22,7 @@ from ..models.L_E.ingreso import Ingreso
 from ..models.V.tipos_vehiculo import TiposVehiculo
 from .alerta import insertar_alerta_forzado
 from .event import record_event
+from .ingreso_activo import salida_vigente_exists_sql
 from .ingreso_consecutivo import (
     ConsecutivoExhaustedError,
     TipoVehiculoNotFoundError,
@@ -67,59 +68,28 @@ async def existe_ingreso_activo(
 ) -> uuid_lib.UUID | None:
     """V8 (REQ-OPS-040): is there an active ingreso for ``(sucursal, placa)``?
 
-    An ingreso is ACTIVE if it has no matching ``salidas`` row and no
-    matching ``anulaciones`` row. KD-V4 / D-HU-F1.6-3 forbids pessimistic
+    An ingreso is ACTIVE if it has no non-annulled ``salidas`` row and
+    its own ingreso has not been annulled. KD-V4 / D-HU-F1.6-3 forbids pessimistic
     locks (`FOR UPDATE/SHARE`) from the endpoint -- we read with a
     plain ``EXISTS`` and rely on the unique partial index pre-F1.5 to
     keep the race surface narrow.
     """
-    stmt = text(
-        """
-        SELECT EXISTS(
-          SELECT 1
-          FROM prod.ingreso i
-          WHERE i.uuid_sucursal = :uuid_sucursal
-            AND i.placa = :placa
-            AND NOT EXISTS (
-              SELECT 1 FROM prod.salidas s
-              WHERE s.uuid_ingreso = i.uuid
-                AND s.uuid_sucursal = i.uuid_sucursal
-            )
-            AND NOT EXISTS (
-              SELECT 1 FROM prod.anulaciones a
-              WHERE a.uuid_ingreso = i.uuid
-                AND a.estado = 'ejecutada'
-                AND a.tipo_anulable IN ('ingreso', 'salida')
-            )
-        ) AS exists
-        """
-    )
-    row = (
-        await session.execute(
-            stmt, {"uuid_sucursal": str(uuid_sucursal), "placa": placa}
-        )
-    ).first()
-    if row is None or not row.exists:
-        return None
-    # Return the prior UUID so the caller can populate
-    # ``uuid_ingreso_existente``. The EXISTS subquery loses identity;
-    # re-select with a plain SELECT id to surface it.
+    # One SELECT: the duplicate guard and the "active" listings share the
+    # same definition (``repo/ingreso_activo.py``). A salida annulled by an
+    # ``ejecutada`` anulacion never happened, so the vehicle is still
+    # inside; an annulled INGRESO (tipo_anulable='ingreso') is not active.
     id_stmt = text(
-        """
+        f"""
         SELECT i.uuid
         FROM prod.ingreso i
         WHERE i.uuid_sucursal = :uuid_sucursal
           AND i.placa = :placa
-          AND NOT EXISTS (
-            SELECT 1 FROM prod.salidas s
-            WHERE s.uuid_ingreso = i.uuid
-              AND s.uuid_sucursal = i.uuid_sucursal
-          )
+          AND NOT {salida_vigente_exists_sql("i.uuid")}
           AND NOT EXISTS (
             SELECT 1 FROM prod.anulaciones a
             WHERE a.uuid_ingreso = i.uuid
               AND a.estado = 'ejecutada'
-              AND a.tipo_anulable IN ('ingreso', 'salida')
+              AND a.tipo_anulable = 'ingreso'
           )
         LIMIT 1
         """

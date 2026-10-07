@@ -74,6 +74,7 @@ from ...repo.ingreso import (
     validar_tarifa_vigente,
     validar_tipo_vehiculo_vigente,
 )
+from ...repo.ingreso_activo import salida_vigente_exists_sql
 from ...repo.ocupacion import get_ocupacion_puros_activos
 from ...repo.placa import detectar_tipo_vehiculo
 from ...repo.salida import (
@@ -974,18 +975,7 @@ async def get_ingreso_estado(
     # succeeded. Same exclusion semantics as
     # ``repo/salida.py::buscar_ingreso_activo_por_uuid``.
     salidas_exists_stmt = text(
-        """
-        SELECT EXISTS(
-            SELECT 1 FROM prod.salidas s
-            WHERE s.uuid_ingreso = :ingreso_uuid
-              AND NOT EXISTS (
-                  SELECT 1 FROM prod.anulaciones a
-                  WHERE a.uuid_salida = s.uuid
-                    AND a.tipo_anulable = 'salida'
-                    AND a.estado = 'ejecutada'
-              )
-        )
-        """
+        f"SELECT {salida_vigente_exists_sql('CAST(:ingreso_uuid AS uuid)')}"
     )
     salidas_exists = (await session.execute(salidas_exists_stmt, {"ingreso_uuid": str(uuid)})).scalar()
 
