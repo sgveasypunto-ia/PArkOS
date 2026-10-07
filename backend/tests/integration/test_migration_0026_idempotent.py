@@ -37,6 +37,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # ---------------------------------------------------------------------------
 
 
+def _assert_in_chain(current: str, revision: str) -> None:
+    """``revision`` is part of the applied history that ends at ``current``."""
+    from pathlib import Path
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    migrations = Path(__file__).resolve().parents[2] / "packages" / "parkos_core" / "migrations"
+    cfg = Config()
+    cfg.set_main_option("script_location", str(migrations))
+    history = {r.revision for r in ScriptDirectory.from_config(cfg).iterate_revisions(current, "base")}
+    assert revision in history, f"{revision} is not in the history of the applied head {current!r}"
+
+
 @pytest.mark.asyncio
 async def test_alembic_head_includes_0026(pg_engine) -> None:
     """T1: ``alembic upgrade head`` lands on migration 0026.
@@ -48,10 +62,9 @@ async def test_alembic_head_includes_0026(pg_engine) -> None:
         result = await session.execute(text("SELECT version_num FROM alembic_version"))
         row = result.first()
     assert row is not None, "alembic_version row missing"
-    assert row[0] == "0026_seed_impuestos_iva_and_one_exit_per_ingreso", (
-        f"alembic head must be 0026_seed_impuestos_iva_and_one_exit_per_ingreso, "
-        f"got {row[0]!r}"
-    )
+    # The chain keeps growing after 0026: assert it is APPLIED (in the history
+    # of the current head), not that it is the head.
+    _assert_in_chain(row[0], "0026_seed_impuestos_iva_and_one_exit_per_ingreso")
 
 
 # ---------------------------------------------------------------------------
