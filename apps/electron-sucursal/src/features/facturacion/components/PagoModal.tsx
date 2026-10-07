@@ -37,6 +37,7 @@ import {
 
 import { validarNitModulo11 } from '../../../lib/validation/nit';
 import { validarIdentificacion, type TipoIdentificador } from '../../../lib/validation/identificacion';
+import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 import { formatCOP } from '../../../features/caja/lib/format';
 
 /**
@@ -131,7 +132,7 @@ function validarBloqueFe(
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['nit'],
-      message: 'numero_identificacion_requerido',
+      message: mensajeIdentificacion('numero_identificacion_requerido'),
     });
   } else if (values.tipo_identificador !== 'NIT') {
     const resultado = validarIdentificacion(values.tipo_identificador, numero);
@@ -139,7 +140,7 @@ function validarBloqueFe(
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['nit'],
-        message: resultado.motivo ?? 'documento_formato_invalido',
+        message: mensajeIdentificacion(resultado.motivo ?? 'documento_formato_invalido'),
       });
     }
   }
@@ -148,7 +149,7 @@ function validarBloqueFe(
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['nombre_cliente'],
-      message: 'nombre_requerido',
+      message: mensajeIdentificacion('nombre_requerido'),
     });
   }
 
@@ -156,7 +157,7 @@ function validarBloqueFe(
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['apellido'],
-      message: 'apellido_requerido',
+      message: mensajeIdentificacion('apellido_requerido'),
     });
   }
 
@@ -166,13 +167,13 @@ function validarBloqueFe(
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['dv'],
-        message: 'dv_requerido',
+        message: mensajeIdentificacion('dv_requerido'),
       });
     } else if (numero.length >= 5 && !validarNitModulo11(numero, dv).ok) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['dv'],
-        message: 'dv_invalido',
+        message: mensajeIdentificacion('dv_invalido'),
       });
     }
   }

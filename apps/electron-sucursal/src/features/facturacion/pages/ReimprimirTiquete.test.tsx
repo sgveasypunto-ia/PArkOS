@@ -393,6 +393,53 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
     expect(screen.queryByTestId('pago-modal')).not.toBeInTheDocument();
   });
 
+  it('T5b: costo vigente $0 → sin cobro: no hay <PagoModal>, no se factura, se registra la reimpresión sin uuid_factura', async () => {
+    const reimprimirHook = buildReimprimirHook({
+      triggerResult: {
+        uuid: UUID_REIMPRESION,
+        workflow_estado: 'autorizada' as const,
+        uuid_reimpresion_padre: null,
+        uuid_ingreso: UUID_INGRESO,
+        uuid_factura: null,
+        costo_aplicado: 0,
+        motivo: MOTIVO_VALIDO,
+        created_at: '2026-09-19T11:00:00Z',
+      },
+    });
+    const registrarPagoServicioHook = buildRegistrarPagoServicioHook();
+    mockUseReimprimir.mockReturnValue(reimprimirHook);
+    mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+    mockUseRegistrarPagoServicio.mockReturnValue(registrarPagoServicioHook);
+    mockUseCostoServicioVigente.mockReturnValue({
+      costo: 0,
+      isLoading: false,
+      error: undefined,
+    });
+    mockResolverIngresoReimpresion.mockResolvedValue({
+      kind: 'found',
+      ingreso: INGRESO_CON_PLACA,
+    });
+
+    renderAt();
+    await llegarAlPago();
+
+    expect(screen.getByTestId('reimprimir-sin-costo')).toBeInTheDocument();
+    expect(screen.queryByTestId('pago-modal')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pago-confirmar')).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reimprimir-sin-costo-confirmar'));
+    });
+
+    expect(registrarPagoServicioHook.trigger).not.toHaveBeenCalled();
+    expect(reimprimirHook.trigger).toHaveBeenCalledWith({
+      uuid_ingreso: UUID_INGRESO,
+      motivo: MOTIVO_VALIDO,
+    });
+    expect(screen.getByTestId('reimprimir-success')).toBeInTheDocument();
+    expect(imprimirMock).toHaveBeenCalled();
+  });
+
   it('T6: submit de <PagoModal> → POST factura-servicio + POST reimpresión con uuid_factura real → success + imprime', async () => {
     const reimprimirHook = buildReimprimirHook();
     const registrarPagoServicioHook = buildRegistrarPagoServicioHook();

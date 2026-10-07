@@ -24,6 +24,7 @@
   "ingreso_subtitulo": "Digita la placa del vehículo para registrar el ingreso.",
   "ingreso_tipo_detectado": "Tipo detectado",
   "ingreso_mensualidad_activa": "Mensualidad activa",
+  "ingreso_activo_rotacion": "Ingreso activo: Rotación",
   "ingreso_rotacion_label": "Rotación",
   "ingreso_tipo_entrada_label": "Tipo",
   "ingreso_forzar_title": "Forzar ingreso",

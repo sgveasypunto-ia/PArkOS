@@ -45,6 +45,17 @@ vi.mock('../hooks/useVentaSuscripcion', async (importOriginal) => {
   };
 });
 
+// El backend cobra plan.valor + IVA (clientes_venta.py: total_con_iva); el
+// wizard debe pasar a <PagoModal> ese total, no el valor sin IVA.
+const mockIvaPorcentaje = vi.fn((): number | null => 0.19);
+vi.mock('../../facturacion/hooks/useIvaVigente', () => ({
+  useIvaVigente: () => ({
+    porcentaje: mockIvaPorcentaje(),
+    isLoading: mockIvaPorcentaje() === null,
+    error: undefined,
+  }),
+}));
+
 const TIPO_MOTO = '00000000-0000-0000-0000-00000000aa01';
 const TIPO_CARRO = '00000000-0000-0000-0000-00000000aa02';
 const PLAN_CARRO = '00000000-0000-0000-0000-0000000000a1';
@@ -254,7 +265,7 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     await change('venta-cliente-numero', '123');
     await click('venta-paso-1-siguiente');
     expect(screen.queryByTestId('venta-paso-2')).toBeNull();
-    expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(/documento/);
+    expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(/al menos 5 caracteres/);
   });
 
   it('T4: pago submit -> 422 typed error -> revert to step 5 (Placas) with inline placa group error', async () => {
@@ -276,6 +287,18 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(screen.getByTestId('venta-paso-6')).toBeDefined();
   });
 
+  it('T5b: sin IVA vigente cargado no se monta el pago con un total sin IVA', async () => {
+    mockIvaPorcentaje.mockReturnValue(null);
+    try {
+      renderVenta();
+      await hastaPago();
+      expect(screen.getByTestId('venta-paso-6')).toBeDefined();
+      expect(screen.queryByTestId('pago-modal')).toBeNull();
+    } finally {
+      mockIvaPorcentaje.mockReturnValue(0.19);
+    }
+  });
+
   it('T6: last day of month charges the full plan, no badge, start date = today Bogota', async () => {
     // 2026-09-30 20:00 Bogota == 2026-10-01T01:00Z (UTC is already next month).
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -284,7 +307,8 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
       renderVenta();
       await hastaPago();
       expect(screen.getByTestId('pago-modal')).toBeDefined();
-      expect(screen.getByTestId('pago-total').textContent).toBe('30000');
+      // 30000 + 19% IVA = 35700 (monto recibido por defecto = total a cobrar).
+      expect(screen.getByTestId('pago-total').textContent).toBe('35700');
       expect(screen.queryByTestId('venta-prorrateo-badge')).toBeNull();
       await click('pago-confirmar-stub');
       const arg = mockTrigger.mock.calls[0]?.[0] as { fecha_inicio_cobertura: string };

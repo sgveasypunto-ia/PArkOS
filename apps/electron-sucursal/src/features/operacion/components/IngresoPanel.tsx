@@ -827,10 +827,18 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
           className="text-sm text-muted-foreground"
           role="status"
           aria-live="polite"
+          data-testid="ingreso-activo-tipo"
         >
-          {t('ingreso_mensualidad_activa', {
-            defaultValue: 'Mensualidad activa',
-          })}
+          {/* El rótulo refleja el ingreso activo real: solo es mensualidad
+              si el ingreso referencia una suscripción (antes decía
+              "Mensualidad activa" para cualquier ingreso activo). */}
+          {latestIngreso.uuid_subscripcion_cliente
+            ? t('ingreso_mensualidad_activa', {
+                defaultValue: 'Mensualidad activa',
+              })
+            : t('ingreso_activo_rotacion', {
+                defaultValue: 'Ingreso activo: Rotación',
+              })}
         </p>
       )}
 

@@ -150,6 +150,9 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     const dvErr = screen.queryByTestId('pago-fe-dv-error');
     expect(dvErr).not.toBeNull();
     expect(dvErr?.textContent).toMatch(/7|dv/i);
+    // El operador nunca ve el código crudo del esquema Zod.
+    expect(dvErr?.textContent).not.toMatch(/dv_invalido/);
+    expect(dvErr?.textContent).toMatch(/dígito de verificación/i);
   });
 
   it('M5: click "Confirmar pago" → onSubmit called with parsed PagoFormValues (efectivo)', async () => {
