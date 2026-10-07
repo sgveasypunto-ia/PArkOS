@@ -128,6 +128,8 @@ El motor de sync (`sync/motor/sync_motor.py::SyncMotor`) opera en dos modos, sel
 
 **RF-FACT-01**: `facturas` (`[L-E]`) registra el documento de venta interno con sus totales como hechos legales de la emisión (`subtotal`, `descuento`, `total` — nunca recalculados retroactivamente).
 
+**RF-FACT-SUB-01**: el precio del plan de suscripción (`tipo_subscripciones.valor`) es el total que paga el cliente, IVA incluido. En la venta y en la renovación el impuesto se calcula y se registra (`factura_impuestos`) como desglose dentro del precio (`base = valor / (1 + IVA)`, `iva = valor - base`, `base + iva = valor`), nunca como un cobro adicional. Solo aplica a facturas nuevas; las ya emitidas no se modifican.
+
 **RF-FACT-02**: `factura_detalle`, `factura_impuestos`, `factura_otros_cobros` (todas `[A]`) copian un *snapshot* del catálogo vigente al momento de emitir (tarifa, porcentaje de impuesto, costo del cargo) — un cambio posterior en el catálogo nunca altera una factura ya emitida.
 
 **RF-FACT-03**: `factura_pagos` (`[A]`) registra uno o varios medios de pago por factura (pago mixto). La numeración/consecutivo de facturación se valida vía `test_consecutivo_assignment.py`.
