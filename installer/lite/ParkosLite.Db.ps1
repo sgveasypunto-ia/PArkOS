@@ -313,6 +313,107 @@ function Restore-ParkosLitePartmanFromParts {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Runtime de Visual C++ para los binarios de Postgres (EDB)
+# ---------------------------------------------------------------------------
+# En algunos Windows 11 (p. ej. 24H2, build 26100) initdb/psql del zip de EDB
+# fallan con "LIBPQ.dll no esta disenado para ejecutarse en Windows" (exit
+# 0xC0E90002) hasta que los DLL del runtime de VC++ estan junto a pgsql\bin. Es
+# dependiente del entorno (desaparece con una actualizacion de Windows). No se
+# empaqueta ningun binario de Microsoft: se copian desde System32 si estan ahi.
+
+$script:ParkosLitePgRuntimeDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll')
+$script:ParkosLiteBadImageExitCode = [int64]3236495362   # 0xC0E90002 sin signo
+$script:ParkosLiteVcRedistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+
+# Carpeta del sistema de 64 bits (Sysnative si este PowerShell es de 32 bits).
+function Get-ParkosLiteSystemDir {
+    $sys = Join-Path $env:SystemRoot 'System32'
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+        $native = Join-Path $env:SystemRoot 'Sysnative'
+        if (Test-Path -LiteralPath $native) { return $native }
+    }
+    return $sys
+}
+
+# Ejecuta un binario con tope de tiempo (lo mata si se cuelga, p. ej. por el
+# dialogo modal de "no esta disenado para ejecutarse"). Nunca lanza. Devuelve
+# @{ ExitCode; TimedOut; Output }.
+function Invoke-ParkosLiteProbe {
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [int]$TimeoutSec = 20)
+    $p = $null
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $FilePath
+        $psi.Arguments = (($Arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $errTask = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+            try { $p.Kill() } catch { }
+            return @{ ExitCode = -1; TimedOut = $true; Output = @() }
+        }
+        $p.WaitForExit()
+        $text = ''
+        try { $text = $outTask.Result + $errTask.Result } catch { }
+        return @{ ExitCode = [int]$p.ExitCode; TimedOut = $false; Output = @($text -split "`r?`n" | Where-Object { $_ }) }
+    } catch {
+        return @{ ExitCode = -1; TimedOut = $false; Output = @($_.Exception.Message) }
+    } finally {
+        if ($p) { $p.Dispose() }
+    }
+}
+
+# Pre-flight: initdb --version debe ejecutarse. Si falla con 0xC0E90002 o se
+# cuelga, copia (sin sobrescribir) los DLL del runtime de VC++ desde System32 a
+# pgsql\bin y reintenta una vez; si no estan en System32 o sigue fallando, falla
+# con un mensaje que indica instalar el redistribuible de Microsoft. Otros
+# errores no se tocan (los reporta el paso siguiente, initdb).
+function Assert-ParkosLitePgRuntime {
+    param([Parameter(Mandatory)][string]$PgRoot, [scriptblock]$Logger)
+    $initdb = Get-ParkosLitePgBin -PgRoot $PgRoot -Name 'initdb'
+    $r = Invoke-ParkosLiteProbe -FilePath $initdb -Arguments @('--version') -TimeoutSec 20
+    if (-not $r.TimedOut -and $r.ExitCode -eq 0) { return }
+    $isRuntime = $r.TimedOut -or (([int64]$r.ExitCode -band 4294967295L) -eq $script:ParkosLiteBadImageExitCode)
+    if (-not $isRuntime) {
+        Write-ParkosDownloadLog $Logger "initdb --version devolvio $($r.ExitCode) (no parece un problema del runtime de Visual C++); se continua."
+        return
+    }
+    $why = "exit 0x{0:X8}" -f ([int64]$r.ExitCode -band 4294967295L)
+    if ($r.TimedOut) { $why = 'no respondio a tiempo' }
+    Write-ParkosDownloadLog $Logger "initdb --version fallo ($why): falta el runtime de Visual C++ junto a Postgres. Se copian los DLL desde System32 (solo los que faltan)."
+
+    $bin = Join-Path $PgRoot 'bin'
+    $sys = Get-ParkosLiteSystemDir
+    $copied = @(); $unavailable = @()
+    foreach ($dll in $script:ParkosLitePgRuntimeDlls) {
+        $dest = Join-Path $bin $dll
+        if (Test-Path -LiteralPath $dest) { continue }
+        $src = Join-Path $sys $dll
+        if (Test-Path -LiteralPath $src) {
+            Copy-Item -LiteralPath $src -Destination $dest
+            $copied += $dll
+        } else {
+            $unavailable += $dll
+        }
+    }
+    if ($copied.Count -gt 0) { Write-ParkosDownloadLog $Logger "Runtime de Visual C++ copiado a ${bin}: $($copied -join ', ')." }
+
+    $redistMsg = "Instala 'Microsoft Visual C++ Redistributable 2015-2022 x64' (enlace oficial de Microsoft: $script:ParkosLiteVcRedistUrl), reinicia esta ventana y vuelve a ejecutar la opcion 11 (Instalar base de datos)."
+    if ($copied.Count -eq 0 -and $unavailable.Count -gt 0) {
+        throw "Los binarios de Postgres no arrancan ($why) y los DLL del runtime de Visual C++ no estan en $sys ($($unavailable -join ', ')). $redistMsg"
+    }
+    $r2 = Invoke-ParkosLiteProbe -FilePath $initdb -Arguments @('--version') -TimeoutSec 20
+    if ($r2.TimedOut -or $r2.ExitCode -ne 0) {
+        throw "Los binarios de Postgres siguen sin arrancar tras copiar el runtime de Visual C++ (exit $($r2.ExitCode)). $redistMsg"
+    }
+    Write-ParkosDownloadLog $Logger 'initdb --version ya responde: runtime de Visual C++ resuelto.'
+}
+
 # Paso 2 completo. Orden de origen: partes del repo (Postgres: installer\payload\parts\postgres,
 # pg_partman: artefacto pg_partman-extension) -> cache -> descarga. Luego initdb,
 # arranque y roles.
@@ -325,6 +426,7 @@ function Install-ParkosLiteDatabase {
     )
     $zip = Get-ParkosPostgresZip -CacheDir $Paths.Downloads -PayloadDir $Paths.PgPayload -Logger $Logger
     Expand-ParkosPostgresZip -ZipPath $zip -PgRoot $Paths.PgRoot -Logger $Logger | Out-Null
+    Assert-ParkosLitePgRuntime -PgRoot $Paths.PgRoot -Logger $Logger
     [void](Restore-ParkosLitePartmanFromParts -Paths $Paths -Logger $Logger)
     $ext = Get-ParkosPgPartmanExtension -ExtensionDir (Join-Path $Paths.Downloads 'pg_partman\extension') -TempDir (Join-Path $Paths.Downloads 'tmp') -PayloadDir $Paths.PartmanPayload -Logger $Logger
     Install-ParkosPgPartmanExtension -PgRoot $Paths.PgRoot -ExtensionDir $ext

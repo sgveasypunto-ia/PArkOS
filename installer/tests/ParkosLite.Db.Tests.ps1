@@ -319,6 +319,7 @@ Describe 'Install-ParkosLiteDatabase: orden de origen' {
             PartsDir = 'C:\repo\installer\payload\parts' }
         Mock Get-ParkosPostgresZip { $script:order += 'pgzip'; 'C:\lite\downloads\pg.zip' }
         Mock Expand-ParkosPostgresZip { $script:order += 'expand' }
+        Mock Assert-ParkosLitePgRuntime { $script:order += 'runtime' }
         Mock Restore-ParkosLitePartmanFromParts { $script:order += 'partman-parts'; $true }
         Mock Get-ParkosPgPartmanExtension { $script:order += 'partman-ext'; 'C:\lite\downloads\pg_partman\extension' }
         Mock Install-ParkosPgPartmanExtension { }
@@ -330,6 +331,6 @@ Describe 'Install-ParkosLiteDatabase: orden de origen' {
     It 'Postgres se pide a las partes del repo (PgPayload) y pg_partman se restaura de partes antes de buscar/descargar' {
         Install-ParkosLiteDatabase -Paths $script:paths2 -Port 5433 -Secrets $script:secrets -Logger { param($m) }
         Assert-MockCalled Get-ParkosPostgresZip -ParameterFilter { $PayloadDir -eq 'C:\repo\installer\payload\parts\postgres' -and $CacheDir -eq 'C:\lite\downloads' } -Times 1 -Scope It
-        ($script:order -join ',') | Should Be 'pgzip,expand,partman-parts,partman-ext'
+        ($script:order -join ',') | Should Be 'pgzip,expand,runtime,partman-parts,partman-ext'
     }
 }

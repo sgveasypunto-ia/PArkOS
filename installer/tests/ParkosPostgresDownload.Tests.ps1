@@ -16,6 +16,17 @@ Describe 'Get-ParkosPostgresDownloadInfo' {
         $i.FileName | Should Be "postgresql-$($i.Version)-windows-x64-binaries.zip"
         $i.Url | Should Be "https://get.enterprisedb.com/postgresql/$($i.FileName)"
     }
+    It 'el SHA256 fijado en el codigo coincide con el manifest y el .sha256 versionados del repo' {
+        $src = Get-Content (Join-Path $PSScriptRoot '..\shared\ParkosPostgresDownload.ps1') -Raw
+        $src -match "ParkosPgPinnedSha256 = '([0-9a-f]{64})'" | Should Be $true
+        $pinned = $Matches[1]
+        $i = Get-ParkosPostgresDownloadInfo
+        $parts = Join-Path $PSScriptRoot '..\payload\parts'
+        $sidecar = ([System.IO.File]::ReadAllText((Join-Path $parts "postgres\$($i.FileName).sha256"))).Trim().ToLowerInvariant()
+        $entry = @((Get-Content (Join-Path $parts 'payload-parts.json') -Raw | ConvertFrom-Json).artifacts | Where-Object { $_.id -eq 'postgres' })[0]
+        $pinned | Should Be $sidecar
+        $pinned | Should Be ([string]$entry.sha256).ToLowerInvariant()
+    }
 }
 
 Describe 'Test-ParkosPostgresZip' {
@@ -65,6 +76,46 @@ Describe 'Get-ParkosPostgresZip' {
         $script:name = (Get-ParkosPostgresDownloadInfo).FileName
         Mock Start-ParkosSleep { }
         Mock Get-ParkosFileSha256 { 'HASH1' }
+        # El SHA256 fijado en codigo se sustituye por el que devuelve el mock.
+        $script:ParkosPgPinnedSha256 = 'HASH1'
+    }
+
+    It 'zip completo en el payload con hash distinto al fijado: se ignora (no se usa)' {
+        New-Item -ItemType Directory -Force -Path $script:payload | Out-Null
+        $p = Join-Path $script:payload $script:name
+        Set-Content $p 'zip'
+        $script:ParkosPgPinnedSha256 = 'OTRO'
+        Mock Test-ParkosPostgresZip { $true }
+        Mock Invoke-ParkosHttpDownload { throw 'sin red' }
+        { Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet -MaxAttempts 1 } | Should Throw 'sin red'
+    }
+
+    It 'cache con hash distinto al fijado: se aparta como .bad y se descarga de nuevo' {
+        New-Item -ItemType Directory -Force -Path $script:cache | Out-Null
+        $z = Join-Path $script:cache $script:name
+        Set-Content $z 'zip viejo'
+        $script:ParkosPgPinnedSha256 = 'OTRO'
+        Mock Test-ParkosPostgresZip { $true }
+        Mock Invoke-ParkosHttpDownload { Set-Content $OutFile 'data' }
+        { Get-ParkosPostgresZip -CacheDir $script:cache -Logger $script:quiet -MaxAttempts 1 } | Should Throw 'SHA-256 fijado'
+        (Test-Path "$z.bad") | Should Be $true
+    }
+
+    It 'descarga cuyo hash no es el fijado: se borra y falla (no se confia en el primer hash)' {
+        $script:ParkosPgPinnedSha256 = 'OTRO'
+        Mock Invoke-ParkosHttpDownload { Set-Content $OutFile 'data' }
+        Mock Test-ParkosPostgresZip { $true }
+        { Get-ParkosPostgresZip -CacheDir $script:cache -Logger $script:quiet -MaxAttempts 1 } | Should Throw 'SHA-256 fijado'
+        (Test-Path (Join-Path $script:cache $script:name)) | Should Be $false
+        (Test-Path (Join-Path $script:cache "$($script:name).part")) | Should Be $false
+        (Test-Path (Join-Path $script:cache "$($script:name).sha256")) | Should Be $false
+    }
+
+    It 'sin SHA256 fijado en el codigo: falla cerrado (no acepta cualquier zip)' {
+        $script:ParkosPgPinnedSha256 = ''
+        Mock Invoke-ParkosHttpDownload { Set-Content $OutFile 'data' }
+        Mock Test-ParkosPostgresZip { $true }
+        { Get-ParkosPostgresZip -CacheDir $script:cache -Logger $script:quiet -MaxAttempts 1 } | Should Throw 'SHA-256 fijado'
     }
 
     It 'cache hit: no descarga y devuelve la ruta cacheada' {
@@ -261,6 +312,7 @@ Describe 'Postgres ZIP en partes versionadas' {
         Mock Test-ParkosPostgresZip { $true }
         Mock Get-ParkosFileSha256 { param($Path) (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant() }
         Mock Invoke-ParkosHttpDownload { throw 'no deberia descargar' }
+        $script:ParkosPgPinnedSha256 = ''
         # Contenido conocido repartido en 3 partes (la 11 sirve para probar el orden numerico).
         $script:bytes = [byte[]](1..250)
         $script:partData = @(
@@ -350,6 +402,7 @@ Describe 'Postgres ZIP en partes versionadas' {
         New-FakeParts
         $full = Join-Path $script:payload $script:name
         Set-Content $full 'zip completo'
+        $script:ParkosPgPinnedSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $full).Hash.ToLowerInvariant()
         (Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet) | Should Be $full
     }
 
@@ -368,6 +421,7 @@ Describe 'Postgres ZIP en partes versionadas' {
     }
 
     It 'sin partes ni cache cae a la descarga (ultimo recurso)' {
+        $script:ParkosPgPinnedSha256 = (Get-FileHash -Algorithm SHA256 -InputStream ([System.IO.MemoryStream]::new([System.Text.Encoding]::Default.GetBytes('data' + [Environment]::NewLine)))).Hash.ToLowerInvariant()
         Mock Invoke-ParkosHttpDownload { Set-Content $OutFile 'data' }
         $r = Get-ParkosPostgresZip -CacheDir $script:cache -PayloadDir $script:payload -Logger $script:quiet
         $r | Should Be (Join-Path $script:cache $script:name)

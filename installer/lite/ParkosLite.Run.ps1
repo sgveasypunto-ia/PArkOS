@@ -346,6 +346,85 @@ function Stop-ParkosLiteAll {
 }
 
 # ---------------------------------------------------------------------------
+# Build desactualizado (API/front construidos en un commit anterior a HEAD)
+# ---------------------------------------------------------------------------
+
+function Test-ParkosLiteInteractive {
+    try { return ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) } catch { return $false }
+}
+
+# Commits que el repo trae desde <Built> hasta HEAD (opcionalmente solo los que
+# tocan <PathSpecs>). $null si no se puede saber: commit vacio/mal formado, ausente
+# del clon (superficial), sin git. Nunca lanza.
+function Get-ParkosLiteCommitsAhead {
+    param([Parameter(Mandatory)][string]$RepoRoot, [string]$Built, [string[]]$PathSpecs = @())
+    if (-not $Built -or $Built -notmatch '^[0-9a-fA-F]{7,40}$') { return $null }
+    try {
+        $v = Invoke-ParkosLiteGit -RepoRoot $RepoRoot -Arguments @('rev-parse', '--verify', '--quiet', "$Built^{commit}")
+        if ($v.ExitCode -ne 0) { return $null }
+        $gitArgs = @('rev-list', '--count', "$Built..HEAD")
+        if (@($PathSpecs).Count -gt 0) { $gitArgs += '--'; $gitArgs += @($PathSpecs) }
+        $r = Invoke-ParkosLiteGit -RepoRoot $RepoRoot -Arguments $gitArgs
+        if ($r.ExitCode -ne 0) { return $null }
+        $n = 0
+        if ([int]::TryParse((($r.Output -join '').Trim()), [ref]$n)) { return $n }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
+# Componentes cuyo build es anterior al codigo que les afecta. La API se avisa si
+# cambio backend/ o installer/bootstrap/ desde su commit; el front corre desde las
+# fuentes (Vite), asi que solo se avisa si cambiaron sus dependencias. Un cambio
+# solo de docs/tests no avisa. Cada elemento: Key, Component, Built, Ahead,
+# Relevant, Message. Lista vacia si todo esta al dia o no se puede saber.
+function Get-ParkosLiteBuildStaleness {
+    param([Parameter(Mandatory)]$Ctx)
+    $result = @()
+    if (-not $Ctx.Paths -or -not $Ctx.State) { return $result }
+    $repo = $Ctx.Paths.RepoRoot
+    $defs = @(
+        @{ Key = 'api'; Component = 'La API'; Built = [string]$Ctx.State.api_built_commit; Specs = @('backend', 'installer/bootstrap'); What = 'backend/' }
+        @{ Key = 'front'; Component = 'Las dependencias del front'; Built = [string]$Ctx.State.front_built_commit; Specs = @('apps/package.json', 'apps/pnpm-lock.yaml', 'apps/pnpm-workspace.yaml', 'apps/*/package.json'); What = 'package.json/pnpm-lock' }
+    )
+    foreach ($d in $defs) {
+        $relevant = Get-ParkosLiteCommitsAhead -RepoRoot $repo -Built $d.Built -PathSpecs $d.Specs
+        if ($null -eq $relevant -or $relevant -le 0) { continue }
+        $ahead = Get-ParkosLiteCommitsAhead -RepoRoot $repo -Built $d.Built
+        if ($null -eq $ahead -or $ahead -lt $relevant) { $ahead = $relevant }
+        $item = Get-ParkosLiteMenuItems | Where-Object { $_.Action -eq $d.Key } | Select-Object -First 1
+        $short = $d.Built; if ($short.Length -gt 7) { $short = $short.Substring(0, 7) }
+        $verb = 'se construyo'; if ($d.Key -eq 'front') { $verb = 'se instalaron' }
+        $msg = "$($d.Component) $verb en $short y el repo esta $ahead commits adelante ($relevant tocan $($d.What)): lo que corre puede tener errores ya corregidos. Reconstruyelo con la opcion $($item.Number) ($($item.Name))."
+        $result += [PSCustomObject]@{ Key = $d.Key; Component = $d.Component; Built = $d.Built; Ahead = $ahead; Relevant = $relevant; Message = $msg }
+    }
+    return $result
+}
+
+# Muestra el aviso de build viejo. Con -AllowRebuild y sesion interactiva pregunta
+# (default No) si reconstruir ahora; desatendido solo avisa: nunca reconstruye en
+# silencio. Devuelve $true si reconstruyo algo.
+function Invoke-ParkosLiteStaleBuildOffer {
+    param([Parameter(Mandatory)]$Ctx, [switch]$AllowRebuild)
+    $stale = @(Get-ParkosLiteBuildStaleness -Ctx $Ctx)
+    if ($stale.Count -eq 0) { return $false }
+    Write-Host ''
+    foreach ($s in $stale) { Write-Host "  AVISO: $($s.Message)" -ForegroundColor Yellow }
+    if (-not $AllowRebuild -or -not (Test-ParkosLiteInteractive)) { return $false }
+    $ans = Read-Host '  Reconstruir ahora? (s/N, Enter = No)'
+    if (-not $ans -or $ans.Trim() -notmatch '^(s|si|y|yes)$') { return $false }
+    foreach ($s in $stale) {
+        if ($s.Key -eq 'api') {
+            if (Invoke-ParkosLiteTuiStep -Ctx $Ctx -Key 'api') { Invoke-ParkosLiteTuiStep -Ctx $Ctx -Key 'migrate' | Out-Null }
+        } else {
+            Invoke-ParkosLiteTuiStep -Ctx $Ctx -Key $s.Key | Out-Null
+        }
+    }
+    return $true
+}
+
+# ---------------------------------------------------------------------------
 # Pasos de instalacion
 # ---------------------------------------------------------------------------
 
@@ -400,10 +479,9 @@ function Invoke-ParkosLiteStep {
             $staleRestored = @(Get-ParkosLiteApiRestoreMarkers -Paths $paths | Where-Object { Test-Path -LiteralPath $_ })
             if ($staleRestored.Count -eq 0 -and -not (Test-ParkosLiteApiBuildNeeded -Paths $paths)) {
                 Write-ParkosLiteLog $Ctx 'La API (api-sucursal.exe y migrate.exe) ya esta construida y el codigo no cambio: se omite el build.'
-                if (-not $state.api_built_commit) {
-                    $head = Invoke-ParkosLiteGit -RepoRoot $paths.RepoRoot -Arguments @('rev-parse', 'HEAD')
-                    if ($head.ExitCode -eq 0) { $state.api_built_commit = ($head.Output -join '').Trim() }
-                }
+                # El mtime dice que el exe es mas nuevo que todos los fuentes: corresponde a HEAD.
+                $head = Invoke-ParkosLiteGit -RepoRoot $paths.RepoRoot -Arguments @('rev-parse', 'HEAD')
+                if ($head.ExitCode -eq 0) { $state.api_built_commit = ($head.Output -join '').Trim() }
                 return
             }
             Write-ParkosLiteLog $Ctx 'Construyendo la API (PyInstaller): necesita uv/Python e Internet. Tarda entre 3 y 10 minutos la primera vez; no cierres la ventana.'
@@ -435,6 +513,8 @@ function Invoke-ParkosLiteStep {
             Write-ParkosLiteLog $Ctx 'Instalando dependencias del front (pnpm). Puede tardar varios minutos; es normal que no muestre avance continuo.'
             $rc = Invoke-ParkosLitePnpmInstall -AppsDir $paths.AppsDir -LogPath (Join-Path $paths.Logs 'pnpm-install.log')
             if ($rc -ne 0) { throw "pnpm install fallo (exit $rc). Revisa $(Join-Path $paths.Logs 'pnpm-install.log')" }
+            $head = Invoke-ParkosLiteGit -RepoRoot $paths.RepoRoot -Arguments @('rev-parse', 'HEAD')
+            if ($head.ExitCode -eq 0) { $state.front_built_commit = ($head.Output -join '').Trim() }
         }
         default { throw "Paso desconocido: $Key" }
     }

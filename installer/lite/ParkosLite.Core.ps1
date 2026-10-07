@@ -214,6 +214,7 @@ function New-ParkosLiteState {
         front_port        = 0
         source_branch     = ''
         api_built_commit  = ''
+        front_built_commit = ''
         steps             = @{}
     }
 }
@@ -224,7 +225,7 @@ function Read-ParkosLiteState {
     if (-not (Test-Path $Path)) { return $state }
     try {
         $o = Get-Content $Path -Raw | ConvertFrom-Json
-        foreach ($k in 'sucursal_uuid', 'source_branch', 'api_built_commit') {
+        foreach ($k in 'sucursal_uuid', 'source_branch', 'api_built_commit', 'front_built_commit') {
             if ($null -ne $o.$k) { $state[$k] = [string]$o.$k }
         }
         foreach ($k in 'db_port', 'api_port', 'front_port') {
