@@ -120,6 +120,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
   // salida')`` which sent the operator to a different URL — broken UX.
   // Now the existing sheet just hands off to the salida drawer.
   const openDrawer = useDashboardDrawerStore((s) => s.open);
+  const closeDrawer = useDashboardDrawerStore((s) => s.close);
 
   const [placa, setPlaca] = useState<string | null>(null);
   const [tipoDetectado, setTipoDetectado] = useState<'carro' | 'moto' | null>(null);
@@ -864,7 +865,13 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
               success.placa,
             )
           }
-          onSiguiente={handleSiguiente}
+          onSiguiente={() => {
+            // After print the ingreso is done: reset local state AND close
+            // the drawer so the operator is not left on a stale sheet.
+            // `onIrASalida` below must NOT close (it opens 'salida').
+            handleSiguiente();
+            closeDrawer();
+          }}
           onIrASalida={() => {
             // FEATURE D: hand off to the salida drawer with the ingreso's
             // plate (con-placa) or null (sin-placa). The SalidaPanel reads

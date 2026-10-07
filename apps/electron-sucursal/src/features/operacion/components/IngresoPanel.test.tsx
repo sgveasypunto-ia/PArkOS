@@ -44,7 +44,18 @@ vi.mock('./PlacaInput', () => ({
 }));
 
 vi.mock('./TiqueteModal', () => ({
-  TiqueteModal: () => <div data-testid="tiquete-modal-stub" />,
+  TiqueteModal: ({
+    onSiguiente,
+    onIrASalida,
+  }: {
+    onSiguiente: () => void;
+    onIrASalida: () => void;
+  }) => (
+    <div data-testid="tiquete-modal-stub">
+      <button type="button" data-testid="stub-siguiente" onClick={onSiguiente} />
+      <button type="button" data-testid="stub-ir-a-salida" onClick={onIrASalida} />
+    </div>
+  ),
 }));
 
 vi.mock('./ForzarIngresoModal', () => ({
@@ -112,6 +123,7 @@ const imprimirMock = vi.fn().mockResolvedValue({ ok: true });
 };
 
 import { IngresoPanel } from './IngresoPanel';
+import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -287,6 +299,54 @@ describe('<IngresoPanel /> — F6.1 dashboard section (REQ-OPS-136)', () => {
     expect(mockInvalidateConteos).toHaveBeenCalledWith({
       uuid_sucursal: '00000000-0000-0000-0000-00000000br01',
       uuid_sesion: '00000000-0000-0000-0000-00000000se01',
+    });
+  });
+  describe('post-print drawer handoff', () => {
+    async function registrarIngreso() {
+      mockPostIngreso.mockResolvedValue({
+        uuid_ingreso: '00000000-0000-0000-0000-000000000777',
+        tipo_entrada: 'ROTACION',
+        uuid_subscripcion_cliente: null,
+      });
+      render(
+        <MemoryRouter>
+          <IngresoPanel />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        screen.getByTestId('placa-input-stub').click();
+      });
+      await act(async () => {
+        (screen.getByTestId('ingreso-registrar') as HTMLButtonElement).click();
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it('I5: Siguiente after print closes the ingreso drawer', async () => {
+      useDashboardDrawerStore.getState().open('ingreso', 'test-anchor');
+      await registrarIngreso();
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('ingreso');
+
+      await act(async () => {
+        screen.getByTestId('stub-siguiente').click();
+      });
+
+      expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+    });
+
+    it('I6: Ir a salida hands off to the salida drawer (not closed)', async () => {
+      useDashboardDrawerStore.getState().open('ingreso', 'test-anchor');
+      await registrarIngreso();
+
+      await act(async () => {
+        screen.getByTestId('stub-ir-a-salida').click();
+      });
+
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
     });
   });
 });
