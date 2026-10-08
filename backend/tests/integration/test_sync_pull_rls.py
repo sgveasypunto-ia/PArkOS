@@ -222,7 +222,7 @@ async def test_rol_app_still_sees_every_row_of_every_rls_table(
             .scalars()
             .all()
         )
-        assert len(tables) == 17
+        assert len(tables) == 18  # 16 scoped + envio_dian (0095) + factura_electronica bridge
         for table in tables:
             total = (await conn.execute(text(f"SELECT count(*) FROM prod.{table}"))).scalar_one()
             trans = await conn.begin_nested()
