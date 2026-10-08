@@ -585,8 +585,8 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
     expect(tiquete).not.toContain('Parkos S.A.S.');
     const factura = textos.find((t) => t.includes('FACTURA'));
     expect(factura).toBeDefined();
-    expect(factura).toMatch(/IVA 19% \$ ?798,32/);
-    expect(factura).toMatch(/Base \$ ?4\.201,68/);
+    expect(factura).toMatch(/IVA 19% \(base \$ ?4\.201,68\)\s+\$ ?798,32/);
+    expect(factura).not.toMatch(/Base \$/);
   });
 
   it('T7: success card "Anular" click → alertdialog con motivo_anulacion', async () => {

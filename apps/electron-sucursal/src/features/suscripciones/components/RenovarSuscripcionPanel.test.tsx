@@ -284,8 +284,8 @@ describe('<RenovarSuscripcionPanel /> — PT-3', () => {
     expect(imprimir).toHaveBeenCalledTimes(1);
     const texto = textoImpreso(imprimir);
     expectDetalleImpuestos(texto, FACTURA.numero_recibo);
-    expect(texto).toMatch(/IVA 19% \$ ?19\.159,66/);
-    expect(texto).toMatch(/Base \$ ?100\.840,34/);
+    expect(texto).toMatch(/IVA 19% \(base \$ ?[\d.]+,\d\d\)\s+\$ ?19\.159,66/);
+    expect(texto).not.toMatch(/Base \$/);
     expect(texto).toMatch(/TOTAL \$ ?120\.000/);
   });
 });

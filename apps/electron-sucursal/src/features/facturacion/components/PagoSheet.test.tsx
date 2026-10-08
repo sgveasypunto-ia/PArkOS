@@ -482,8 +482,8 @@ describe('<PagoSheet /> — impresión completa de la factura', () => {
     expect(imprimir).toHaveBeenCalledTimes(1);
     const texto = textoImpreso(imprimir);
     expectDetalleImpuestos(texto, 'sucursal-20261007-000099');
-    expect(texto).toMatch(/IVA 19% \$ ?31,93/);
-    expect(texto).toMatch(/Base \$ ?168,07/);
+    expect(texto).toMatch(/IVA 19% \(base \$ ?[\d.]+,\d\d\)\s+\$ ?31,93/);
+    expect(texto).not.toMatch(/Base \$/);
     expect(texto).toContain('ABC123');
   });
 });

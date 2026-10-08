@@ -263,7 +263,16 @@ def make_router(
         _claims: None = Depends(issuer_dep),
     ):
         with _scope():
-            row = await current_version(session, model_cls, uuid)
+            if hasattr(model_cls, "vigente_hasta"):
+                row = await current_version(session, model_cls, uuid)
+            else:
+                # [L-E]/[L-W]/[A] tables have no vigente_* columns: there is no
+                # "current version", the row is read by its uuid (tenant scope
+                # still applied by the do_orm_execute listener).
+                result = await session.execute(
+                    select(model_cls).where(model_cls.uuid == uuid).limit(1)
+                )
+                row = result.scalars().first()
         if row is None:
             raise HTTPException(
                 status_code=404,

@@ -33,8 +33,8 @@ export function textoImpreso(imprimir: Mock, n = 0): string {
 /** Same tax-detail contract for every invoice type. */
 export function expectDetalleImpuestos(texto: string, numeroRecibo: string): void {
   expect(texto).toContain(numeroRecibo);
-  expect(texto).toMatch(/Subtotal \(base\) \$ ?[\d.]+,\d\d/);
-  expect(texto).toMatch(/IVA 19% \$ ?[\d.]+,\d\d/);
-  expect(texto).toMatch(/Base \$ ?[\d.]+,\d\d/);
+  expect(texto).toMatch(/Subtotal \(base\)\s+\$ ?[\d.]+,\d\d/);
+  expect(texto).toMatch(/IVA 19% \(base \$ ?[\d.]+,\d\d\)\s+\$ ?[\d.]+,\d\d/);
+  expect(texto).not.toMatch(/Base \$/);
   expect(texto).toMatch(/TOTAL \$ ?[\d.]+,\d\d/);
 }

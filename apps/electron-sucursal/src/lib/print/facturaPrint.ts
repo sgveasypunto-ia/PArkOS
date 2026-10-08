@@ -32,6 +32,7 @@ import {
   conceptoLegible,
   ETIQUETA_SUBTOTAL_BASE,
   descuentoEnBase,
+  esLineaDescuento,
   etiquetaSemanticaLineas,
   semanticaLineas,
 } from './facturaTextos';
@@ -141,7 +142,7 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
   const etiquetaLineas = etiquetaSemanticaLineas(semanticaLineas(f));
   if (etiquetaLineas) texto(etiquetaLineas);
   for (const item of f.items) {
-    const esDescuento = item.tipo === 'descuento';
+    const esDescuento = esLineaDescuento(item);
     fila(
       `${conceptoLegible(item.concepto)} x${item.cantidad}`,
       `${esDescuento && item.subtotal > 0 ? '- ' : ''}${dinero(item.subtotal)}`,
@@ -156,8 +157,8 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
   for (const imp of f.impuestos) {
     const nombre = imp.nombre_impuesto ?? imp.codigo_impuesto ?? 'Impuesto';
     const pct = porcentaje(imp.porcentaje_aplicado);
-    fila(`${nombre}${pct ? ` ${pct}` : ''}`, dinero(imp.valor));
-    fila('Base', dinero(imp.base_calculo), { sangria: true });
+    // The tax base is stated ONCE, inside the tax line (no separate "Base" row).
+    fila(`${nombre}${pct ? ` ${pct}` : ''} (base ${dinero(imp.base_calculo)})`, dinero(imp.valor));
   }
   fila('TOTAL', dinero(f.total), { negrita: true });
 

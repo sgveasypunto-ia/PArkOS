@@ -271,7 +271,8 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
     expect(imp.textContent).toContain('IVA');
     expect(imp.textContent).toContain('19.00%');
     expect(imp.textContent).toContain('19.159,66');
-    expect(screen.getByTestId('factura-display-impuesto-base').textContent).toContain('100.840,34');
+    expect(imp.textContent).toContain('100.840,34'); // base en la propia linea del impuesto
+    expect(screen.queryByTestId('factura-display-impuesto-base')).toBeNull();
     expect(screen.getByTestId('factura-display-total').textContent).toContain('120.000');
   });
 
@@ -297,7 +298,7 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
       />,
     );
     expect(screen.getAllByTestId('factura-display-impuesto')).toHaveLength(2);
-    expect(screen.getAllByTestId('factura-display-impuesto-base')).toHaveLength(2);
+    expect(screen.queryAllByTestId('factura-display-impuesto-base')).toHaveLength(0);
   });
 
   it('T3: factura sin impuestos → no hay filas de impuesto pero sí subtotal y total', () => {
@@ -356,7 +357,7 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
     expect(imprimir).toHaveBeenCalledTimes(1);
     const texto = textoImpreso(imprimir);
     expectDetalleImpuestos(texto, BASE_FACTURA.numero_recibo);
-    expect(texto).toMatch(/IVA 19% \$ ?19\.159,66/);
+    expect(texto).toMatch(/IVA 19% \(base \$ ?[\d.]+,\d\d\)\s+\$ ?19\.159,66/);
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -367,8 +368,8 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
       fireEvent.click(screen.getByTestId('factura-display-imprimir'));
     });
     const texto = textoImpreso(imprimir);
-    expect(texto).toMatch(/IVA 19% \$ ?19,00/);
-    expect(texto).toMatch(/Base \$ ?100,00/);
+    expect(texto).toMatch(/IVA 19% \(base \$ ?[\d.]+,\d\d\)\s+\$ ?19,00/);
+    expect(texto).not.toMatch(/Base \$/);
   });
 });
 
