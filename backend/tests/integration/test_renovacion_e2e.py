@@ -578,6 +578,104 @@ async def test_renovacion_anticipada_con_plan_cambiado_cobra_el_precio_actual(
     assert r.json()["renovacion_anticipada"] is True
 
 
+async def _assert_suscripcion_intacta(pg_engine, m: Mundo, sub, *, venc: date, placas: int) -> None:
+    """Nothing of a renewal survived: old row open with its original due date,
+    no second subscription, plate links untouched, no invoice, no audit row."""
+    vieja = await _fila(pg_engine, SubscripcionesCliente, sub)
+    assert vieja.vigente_hasta is None and vieja.estado == "activo"
+    assert vieja.fecha_vencimiento == venc
+    assert await _contar(
+        pg_engine, SubscripcionesCliente, SubscripcionesCliente.uuid_cliente == m.cliente
+    ) == 1
+    assert await _contar(
+        pg_engine, SubscripcionVehiculos,
+        SubscripcionVehiculos.uuid_subscripcion_cliente == sub,
+        SubscripcionVehiculos.vigente_hasta.is_(None),
+    ) == placas
+    assert await _contar(pg_engine, Facturas, Facturas.uuid_sucursal == m.sucursal) == 0
+    assert await _contar(
+        pg_engine, FacturaPagos, FacturaPagos.uuid_sucursal == m.sucursal
+    ) == 0
+    assert await _contar(
+        pg_engine, LogTransaccional,
+        LogTransaccional.accion == "renovar",
+        LogTransaccional.uuid_referencia == sub,
+    ) == 0
+
+
+@pytest.mark.parametrize("adelanto", [4, 24, 200])
+async def test_datafono_sin_voucher_no_extiende_la_vigencia(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt, adelanto
+) -> None:
+    """Payment not verifiable (datafono without voucher) -> 400 and the
+    subscription stays exactly as it was, early or not."""
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine)
+    venc = hoy + timedelta(days=adelanto)
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=venc, placas=("QQQ101", "QQQ102"))
+    r = await client.post(
+        _url(sub), json={"medio_pago": "datafono"},
+        headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"),
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "voucher_requerido"
+    await _assert_suscripcion_intacta(pg_engine, m, sub, venc=venc, placas=2)
+
+
+async def test_si_el_cobro_falla_a_mitad_no_queda_vigencia_extendida(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt, monkeypatch
+) -> None:
+    """The vigencia is written BEFORE the payment rows inside ONE transaction;
+    a failure while recording the payment must roll the extension back too
+    (no closed old row, no new row, no orphan invoice)."""
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine)
+    venc = hoy + timedelta(days=24)  # early renewal
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=venc, placas=("QQQ201", "QQQ202"))
+
+    async def _pago_falla(*_a, **_k):
+        raise repo_renovacion.IvaNoConfiguradoError()
+
+    monkeypatch.setattr(repo_renovacion.repo_factura, "crear_factura_pago", _pago_falla)
+    r = await client.post(
+        _url(sub), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}")
+    )
+    assert r.status_code == 500
+    await _assert_suscripcion_intacta(pg_engine, m, sub, venc=venc, placas=2)
+
+    # once the payment path works again the SAME subscription renews normally
+    monkeypatch.undo()
+    r2 = await client.post(
+        _url(sub), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}")
+    )
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["fecha_inicio_cobertura"] == (venc + timedelta(days=1)).isoformat()
+
+
+async def test_pago_registrado_extiende_y_el_cobro_queda_con_la_nueva_fila(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine)
+    venc = hoy + timedelta(days=24)
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=venc, placas=("QQQ301",))
+    r = await client.post(
+        _url(sub), json={"medio_pago": "datafono", "referencia": "V-1001"},
+        headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    nueva = uuid_lib.UUID(body["uuid_subscripcion"])
+    assert body["fecha_inicio_cobertura"] == (venc + timedelta(days=1)).isoformat()
+    factura = await _fila(pg_engine, Facturas, uuid_lib.UUID(body["uuid_factura"]))
+    assert factura.uuid_subscripcion_cliente == nueva
+    assert await _contar(
+        pg_engine, FacturaPagos,
+        FacturaPagos.uuid_factura == factura.uuid, FacturaPagos.referencia == "V-1001",
+    ) == 1
+    assert (await _fila(pg_engine, SubscripcionesCliente, sub)).vigente_hasta is not None
+
+
 async def test_sin_permiso_gestionar_clientes_es_403(
     client, pg_engine, alembic_upgrade, mint_operador_jwt
 ) -> None:
