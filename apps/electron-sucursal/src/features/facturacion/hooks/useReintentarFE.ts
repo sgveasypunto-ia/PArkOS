@@ -58,8 +58,19 @@ export class NumeracionAgotadaError extends Error {
   }
 }
 
+/**
+ * Wire shape of the retry response. `uuid` identifies the retry REQUEST (an
+ * `alerta` `dian_reintento_solicitado` filed for the cloud), NOT an
+ * `envio_dian`: the cloud creates the new envio and it returns by pull.
+ */
+interface EnvioDianRetryWire {
+  uuid: string;
+  uuid_envio_padre: string;
+}
+
 export interface EnvioDianRetryRead {
-  uuid_envio: string;
+  /** uuid of the retry request (alerta), never an envio_dian id. */
+  uuid_solicitud: string;
   estado: 'pendiente';
   uuid_envio_padre: string;
 }
@@ -102,7 +113,7 @@ async function mutateFn(
             'Idempotency-Key': idempotencyKey,
           },
         }),
-    )) as EnvioDianRetryRead;
+    )) as EnvioDianRetryWire;
 
     // REQ-OPS-169 — revalidate the polling cache so SWR resumes
     // `refreshInterval: 30_000` (the new chain tip is `pendiente`,
@@ -111,7 +122,7 @@ async function mutateFn(
     await mutate(`${FE_CACHE_KEY_PREFIX}/${uuidFe}`);
 
     return {
-      uuid_envio: raw.uuid_envio,
+      uuid_solicitud: raw.uuid,
       estado: 'pendiente',
       uuid_envio_padre: raw.uuid_envio_padre,
     };
@@ -139,7 +150,7 @@ async function mutateFn(
  * 401 → `useAuthStore.clear()` + `parkos:auth:cleared` (F3.1 invariant).
  * 409 `numeracion_agotada` → `NumeracionAgotadaError` (the ONLY FE
  *   error the UI surfaces per plan.md:1956).
- * 201 → `mutate(cache)` re-engages polling + returns `{uuid_envio, estado:'pendiente', uuid_envio_padre}`.
+ * 201 → `mutate(cache)` re-engages polling + returns `{uuid_solicitud, estado:'pendiente', uuid_envio_padre}`.
  */
 export function useReintentarFE(): UseReintentarFEReturn {
   // Cache-bound mutate: the SWR cache is scoped per operator session.

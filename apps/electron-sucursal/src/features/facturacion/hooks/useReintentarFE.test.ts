@@ -74,9 +74,14 @@ import { useReintentarFE, NumeracionAgotadaError } from './useReintentarFE';
 
 const UUID_FE = '00000000-0000-0000-0000-0000000000fe';
 
+// Real wire shape (backend `EnvioDianRetryRead`): `uuid` is the uuid of the
+// retry REQUEST (an `alerta` dian_reintento_solicitado), NOT an envio_dian id:
+// the cloud creates the envio_dian later and it comes back by pull.
 const reintentarResponse = {
-  uuid_envio: '00000000-0000-0000-0000-0000000000a1',
+  uuid: '00000000-0000-0000-0000-0000000000a1',
+  uuid_factura_electronica: '00000000-0000-0000-0000-0000000000fe',
   estado: 'pendiente',
+  timestamp_evento: '2026-10-07T10:00:00',
   uuid_envio_padre: '00000000-0000-0000-0000-0000000000a0',
 };
 
@@ -88,7 +93,7 @@ beforeEach(() => {
 });
 
 describe('useReintentarFE — REQ-OPS-168/169 FE retry chain', () => {
-  it('R1: trigger → POST 201 → returns new uuid_envio + estado=pendiente + mutate(cache) revalidates polling', async () => {
+  it('R1: trigger → POST 201 → returns uuid_solicitud + estado=pendiente + mutate(cache) revalidates polling', async () => {
     mockFetch.mockResolvedValueOnce(reintentarResponse);
 
     const { result } = renderHook(() => useReintentarFE());
@@ -115,7 +120,9 @@ describe('useReintentarFE — REQ-OPS-168/169 FE retry chain', () => {
     );
 
     // Resolved payload contract.
-    expect((data as { uuid_envio: string }).uuid_envio).toBe(reintentarResponse.uuid_envio);
+    expect((data as { uuid_solicitud: string }).uuid_solicitud).toBe(reintentarResponse.uuid);
+    // the response uuid is never exposed as an envio_dian id
+    expect(data).not.toHaveProperty('uuid_envio');
     expect((data as { estado: string }).estado).toBe('pendiente');
     expect((data as { uuid_envio_padre: string }).uuid_envio_padre).toBe(
       reintentarResponse.uuid_envio_padre,
