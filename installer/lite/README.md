@@ -168,8 +168,11 @@ arranque automatico (opcion 9) y borrar esa carpeta.
 - **La API no arranca**: opcion 8 (Ver logs) -> `api.err.log` / `api.out.log`.
 - **`pg_ctl start` falla**: opcion 8 (Ver logs) -> `postgres.log`.
 - **Pull rechazado**: hay cambios locales o la rama diverge; resuelve con git.
-- **`pnpm`**: el lockfile del repo puede ir desfasado; el lite instala con
-  `--lockfile=false` para no ensuciar el arbol git.
+- **`pnpm`**: el lite instala con `--frozen-lockfile`, asi que el
+  `apps/pnpm-lock.yaml` del repo es la fuente de verdad (instalacion
+  reproducible, sin tocar el arbol git). Si falla con
+  `ERR_PNPM_OUTDATED_LOCKFILE`, el lockfile no coincide con los `package.json`
+  y hay que regenerarlo en el repo (`pnpm install --lockfile-only`).
 
 ## Limitaciones
 
