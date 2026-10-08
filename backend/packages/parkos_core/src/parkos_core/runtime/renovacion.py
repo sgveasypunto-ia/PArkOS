@@ -23,19 +23,20 @@ from datetime import date, timedelta
 from .tiempo import hoy_bogota
 
 __all__ = [
-    "RENOVACION_VENTANA_DIAS",
+    "RENOVACION_URGENTE_DIAS",
     "calcular_inicio_renovacion",
     "dias_restantes",
     "renovacion_anticipada",
     "renovacion_permitida",
 ]
 
-# Renewal is only offered when the subscription has this many days or fewer
-# left (user requirement). Single knob: change it here and the endpoint
-# guard, the read-model flag ``puede_renovar`` and the tests follow.
+# A subscription can be renewed at ANY time before (or after) it expires:
+# there is no anticipation window and no cap. This constant only bounds the
+# "renovables" feed (subscriptions worth surfacing as urgent: this many days
+# or fewer left). It is NOT a renewal gate.
 # Independent of ``subscripciones_cliente.dias_alerta_pre_vencimiento``
 # (the per-subscription *warning* window, default 7).
-RENOVACION_VENTANA_DIAS: int = 10
+RENOVACION_URGENTE_DIAS: int = 10
 
 
 def dias_restantes(fecha_vencimiento: date | None, *, hoy: date | None = None) -> int | None:
@@ -49,14 +50,12 @@ def dias_restantes(fecha_vencimiento: date | None, *, hoy: date | None = None) -
 def renovacion_permitida(restantes: int | None) -> bool:
     """Single decision point for "can this subscription be renewed now?".
 
-    Allowed when ``restantes <= RENOVACION_VENTANA_DIAS``. Expired
-    subscriptions (``restantes <= 0``) are INCLUDED on purpose (business
-    assumption pending user confirmation): to stop allowing them, change
-    only this function.
+    Allowed whenever the subscription has a due date: no anticipation window
+    and no cap (the new period stacks on top of the remaining validity).
+    Expired subscriptions (``restantes <= 0``) are included. Only a missing
+    due date (``None``) blocks it.
     """
-    if restantes is None:
-        return False
-    return restantes <= RENOVACION_VENTANA_DIAS
+    return restantes is not None
 
 
 def renovacion_anticipada(fecha_vencimiento: date, *, hoy: date | None = None) -> bool:

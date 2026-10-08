@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import computed_field
 
 from ..runtime.renovacion import (
-    RENOVACION_VENTANA_DIAS,
+    RENOVACION_URGENTE_DIAS,
     dias_restantes,
     renovacion_permitida,
 )
@@ -75,7 +75,7 @@ class RenovarSuscripcionResponse(_Base):
     fecha_vencimiento: date
     dias_restantes: int
     renovacion_anticipada: bool
-    ventana_renovacion_dias: int = RENOVACION_VENTANA_DIAS
+    ventana_renovacion_dias: int = RENOVACION_URGENTE_DIAS
     valor_total_plan: Decimal
     total_con_iva: Decimal
     uuid_factura: uuid_lib.UUID

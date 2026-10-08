@@ -19,9 +19,9 @@ Renewal flow (one transaction for subscription + payment, FE afterwards):
      of the same row with ANOTHER key is rejected on its own (the old row is
      closed -> 409 ``suscripcion_no_renovable``), which also covers two
      concurrent requests (they serialize on the row lock).
-  3. ``repo.renovacion.renovar_vigencia``: window check (<= 10 days left,
-     ``runtime.renovacion.RENOVACION_VENTANA_DIAS``), current plan, plate
-     copy, close old + insert new, audit row in ``log_transaccional``.
+  3. ``repo.renovacion.renovar_vigencia``: no anticipation window (any open
+     subscription can be renewed; the new period stacks on the remaining
+     validity), current plan, plate copy, close old + insert new, audit row in ``log_transaccional``.
   4. ``repo.renovacion.cobrar_renovacion``: factura + detalle + IVA + pago
      for the FULL plan value (no proration).
   5. SINGLE ``await session.commit()`` (payment atomicity).
@@ -51,7 +51,7 @@ from ...repo import renovacion as repo_renovacion
 from ...repo.sesion_activa import resolver_sesion_de_pago
 from ...repo import subscripcion_activa as repo_activa
 from ...repo import venta_suscripcion as repo_venta
-from ...runtime.renovacion import RENOVACION_VENTANA_DIAS
+from ...runtime.renovacion import RENOVACION_URGENTE_DIAS
 from ...schemas.renovacion import (
     ProximaVencerItem,
     RenovarSuscripcionRequest,
@@ -87,7 +87,7 @@ def _error(status: int, code: str, **extra: object) -> HTTPException:
         404: {"description": "subscripcion_no_encontrada"},
         409: {
             "description": (
-                "renovacion_fuera_de_ventana / suscripcion_no_renovable / plan_no_vigente"
+                "suscripcion_no_renovable / plan_no_vigente"
             )
         },
         422: {
@@ -183,14 +183,6 @@ async def renovar_subscripcion(
         raise _error(
             409, "suscripcion_no_renovable", uuid_subscripcion=str(exc.uuid_subscripcion)
         ) from exc
-    except repo_renovacion.RenovacionFueraDeVentanaError as exc:
-        await session.rollback()
-        raise _error(
-            409,
-            "renovacion_fuera_de_ventana",
-            dias_restantes=exc.dias_restantes,
-            ventana_dias=exc.ventana_dias,
-        ) from exc
     except repo_renovacion.PlanNoVigenteError as exc:
         await session.rollback()
         raise _error(409, "plan_no_vigente") from exc
@@ -250,7 +242,7 @@ async def renovar_subscripcion(
         fecha_vencimiento=resultado.vencimiento,
         dias_restantes=resultado.dias_restantes_nueva,
         renovacion_anticipada=resultado.anticipada,
-        ventana_renovacion_dias=RENOVACION_VENTANA_DIAS,
+        ventana_renovacion_dias=RENOVACION_URGENTE_DIAS,
         valor_total_plan=resultado.monto,
         total_con_iva=cobro.total_con_iva,
         uuid_factura=cobro.factura.uuid,

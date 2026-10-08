@@ -23,7 +23,7 @@ from parkos_core.repo.venta_suscripcion import (  # noqa: E402
     calcular_monto_suscripcion,
 )
 from parkos_core.runtime.renovacion import (  # noqa: E402
-    RENOVACION_VENTANA_DIAS,
+    RENOVACION_URGENTE_DIAS,
     calcular_inicio_renovacion,
     dias_restantes,
     renovacion_anticipada,
@@ -40,8 +40,9 @@ def _plan(dias: int, valor: str = "30000") -> SimpleNamespace:
     return SimpleNamespace(duracion_dias=dias, valor=Decimal(valor))
 
 
-def test_ventana_es_diez_dias() -> None:
-    assert RENOVACION_VENTANA_DIAS == 10
+def test_urgente_es_diez_dias_y_no_bloquea() -> None:
+    # Only bounds the "renovables" feed; it is NOT a renewal gate any more.
+    assert RENOVACION_URGENTE_DIAS == 10
 
 
 # ---------------------------------------------------------------- window ---
@@ -50,8 +51,10 @@ def test_ventana_es_diez_dias() -> None:
 @pytest.mark.parametrize(
     ("dias_hasta_vencimiento", "restantes", "permitida"),
     [
-        (10, 11, False),  # 11 days left -> rejected
-        (9, 10, True),  # 10 days left -> allowed (exact edge)
+        (365, 366, True),  # a year ahead -> allowed, no anticipation cap
+        (24, 25, True),  # 25 days left -> allowed (was rejected by the window)
+        (10, 11, True),  # 11 days left -> allowed
+        (9, 10, True),
         (8, 9, True),
         (0, 1, True),  # due date = last covered day -> 1 day left
         (-1, 0, True),  # expired yesterday -> 0 left, can renew
@@ -108,6 +111,29 @@ def test_renovacion_muy_vencida_inicia_hoy_no_en_el_pasado() -> None:
     assert calcular_inicio_renovacion(vencimiento, hoy=HOY) == HOY
 
 
+# ------------------------------------------------------ stacking dates ---
+
+
+@pytest.mark.parametrize("adelanto", [25, 365])
+def test_renovacion_muy_anticipada_se_apila_sin_hueco(adelanto: int) -> None:
+    plan = _plan(30)
+    anterior = HOY + timedelta(days=adelanto)
+    assert renovacion_permitida(dias_restantes(anterior, hoy=HOY)) is True
+    inicio = calcular_inicio_renovacion(anterior, hoy=HOY)
+    assert inicio == anterior + timedelta(days=1)
+    nuevo = calcular_fecha_vencimiento(plan=plan, fecha_inicio_cobertura=inicio)
+    assert (nuevo - anterior).days == 30  # contiguous, no day lost or paid twice
+
+
+def test_apilado_cruza_fin_de_anio_y_bisiesto() -> None:
+    plan = _plan(30)
+    inicio = calcular_inicio_renovacion(date(2026, 12, 31), hoy=date(2026, 6, 1))
+    assert inicio == date(2027, 1, 1)
+    assert calcular_fecha_vencimiento(plan=plan, fecha_inicio_cobertura=inicio) == date(2027, 1, 30)
+    inicio = calcular_inicio_renovacion(date(2028, 2, 20), hoy=date(2028, 1, 1))
+    assert calcular_fecha_vencimiento(plan=plan, fecha_inicio_cobertura=inicio) == date(2028, 3, 21)
+
+
 # ------------------------------------------------------ plans / calendar ---
 
 
@@ -150,8 +176,9 @@ def test_anio_no_bisiesto_28_de_febrero() -> None:
 
 def test_ventana_cruza_fin_de_mes_y_de_anio() -> None:
     vencimiento = date(2027, 1, 5)
-    # Dec 26 -> 11 days left (outside), Dec 27 -> 10 (inside)
-    assert renovacion_permitida(dias_restantes(vencimiento, hoy=date(2026, 12, 26))) is False
+    # No window: both sides of the month/year crossing are allowed.
+    assert dias_restantes(vencimiento, hoy=date(2026, 12, 26)) == 11
+    assert renovacion_permitida(dias_restantes(vencimiento, hoy=date(2026, 12, 26))) is True
     assert renovacion_permitida(dias_restantes(vencimiento, hoy=date(2026, 12, 27))) is True
 
 
@@ -197,12 +224,12 @@ def test_campos_calculados_en_lectura_usan_la_fecha_de_bogota() -> None:
         pass
 
     hoy = hoy_bogota()
-    fuera = _Lectura(fecha_vencimiento=hoy + timedelta(days=RENOVACION_VENTANA_DIAS))  # 11 left
-    dentro = _Lectura(fecha_vencimiento=hoy + timedelta(days=RENOVACION_VENTANA_DIAS - 1))  # 10
+    fuera = _Lectura(fecha_vencimiento=hoy + timedelta(days=RENOVACION_URGENTE_DIAS))  # 11 left
+    dentro = _Lectura(fecha_vencimiento=hoy + timedelta(days=RENOVACION_URGENTE_DIAS - 1))  # 10
     vencida = _Lectura(fecha_vencimiento=hoy - timedelta(days=3))
     sin_fecha = _Lectura(fecha_vencimiento=None)
 
-    assert (fuera.dias_restantes, fuera.puede_renovar) == (11, False)
+    assert (fuera.dias_restantes, fuera.puede_renovar) == (11, True)
     assert (dentro.dias_restantes, dentro.puede_renovar) == (10, True)
     assert vencida.dias_restantes == -2
     assert vencida.puede_renovar is True
