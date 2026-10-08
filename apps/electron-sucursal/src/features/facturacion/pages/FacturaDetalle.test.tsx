@@ -66,7 +66,7 @@ function buildHookDefaults(overrides?: {
     }
     return (
       overrides?.triggerResult ?? {
-        uuid_envio: UUID_ENVIO,
+        uuid_solicitud: UUID_ENVIO,
         estado: 'pendiente' as const,
         uuid_envio_padre: UUID_ENVIO_PADRE,
       }

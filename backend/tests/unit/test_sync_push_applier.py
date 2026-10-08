@@ -531,7 +531,7 @@ def test_push_integrity_error_reports_class_sqlstate_constraint_without_values(
         sqlstate = "23505"
 
         class diag:  # noqa: N801 - mimics asyncpg's exception shape
-            constraint_name = "factura_electronica_uk01"
+            constraint_name = "clientes_uk01"
 
     secret = "VALOR-DE-FILA-NO-DEBE-FILTRARSE"
 
@@ -543,19 +543,81 @@ def test_push_integrity_error_reports_class_sqlstate_constraint_without_values(
 
     resp = c.post(
         "/sync/push",
-        json={"rows": [_row(tabla="factura_electronica", datos={"consecutivo": 1})]},
+        json={"rows": [_row(tabla="clientes", datos={"documento": 1})]},
     )
 
     assert resp.status_code == 207
     row = resp.json()["results"][0]
     assert row["status"] == "apply_error"
-    assert row["detail"] == "UniqueViolationError:23505:factura_electronica_uk01"
+    assert row["detail"] == "UniqueViolationError:23505:clientes_uk01"
     assert secret not in resp.text
     # informational sync_conflict recorded (best effort) in its own savepoint
     added = [c_.args[0] for c_ in session.add.call_args_list]
     assert [type(a).__name__ for a in added] == ["SyncConflict"]
     assert added[0].politica == "constraint_violation"
-    assert added[0].tabla == "factura_electronica"
+    assert added[0].tabla == "clientes"
+    session.commit.assert_awaited_once()
+
+
+def test_push_colision_de_consecutivo_es_conflicto_recuperable_con_alerta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(resolucion, consecutivo) duplicated: reported ``conflict`` (so the
+    sender stops retrying), recorded once as ``consecutivo_duplicado`` and an
+    alerta is raised. The row is never overwritten (savepoint rolled back)."""
+    from sqlalchemy.exc import IntegrityError
+
+    class UniqueViolationError(Exception):
+        sqlstate = "23505"
+
+        class diag:  # noqa: N801 - mimics asyncpg's exception shape
+            constraint_name = "factura_electronica_uk01"
+
+    async def _boom(self, session, spec, payload, *, actor_uuid=None):  # noqa: ANN001
+        raise IntegrityError("INSERT", {}, UniqueViolationError("dup"))
+
+    fired: list[dict[str, Any]] = []
+
+    class _Factory:
+        def __init__(self, session: Any, ctx: Any) -> None:
+            pass
+
+        async def fire(self, tipo: str, *, motivo: str, uuid_sucursal: Any = None) -> None:
+            fired.append({"tipo": tipo, "motivo": motivo, "sucursal": uuid_sucursal})
+
+    import parkos_core.repo.alert_types as alert_types
+
+    monkeypatch.setattr(alert_types, "AlertaFactory", _Factory)
+    c, _, session = _build_client(monkeypatch)
+    monkeypatch.setattr(sr.SyncMotor, "apply_row", _boom)
+    res_uuid = uuid_lib.uuid4()
+
+    resp = c.post(
+        "/sync/push",
+        json={
+            "rows": [
+                _row(
+                    tabla="factura_electronica",
+                    datos={
+                        "consecutivo": 1,
+                        "uuid_resolucion_facturacion": str(res_uuid),
+                    },
+                )
+            ]
+        },
+    )
+
+    assert resp.status_code == 207
+    row = resp.json()["results"][0]
+    assert row["status"] == "conflict"
+    assert row["detail"] == "consecutivo_duplicado"
+    added = [c_.args[0] for c_ in session.add.call_args_list]
+    assert [type(a).__name__ for a in added] == ["SyncConflict"]
+    assert added[0].politica == "consecutivo_duplicado"
+    assert len(fired) == 1
+    assert fired[0]["tipo"] == "fe_consecutivo_duplicado"
+    assert str(res_uuid) in fired[0]["motivo"]
+    assert fired[0]["sucursal"] == SUCURSAL_UUID
     session.commit.assert_awaited_once()
 
 

@@ -44,6 +44,16 @@ class ConsecutivoRangeExhaustedError(RuntimeError):
     """
 
 
+class NumeracionSoloEnSucursalError(RuntimeError):
+    """The cloud tried to mint a ``consecutivo`` inside a branch's resolution.
+
+    Numbering is BRANCH-LOCAL (AGENTS.md): the cloud only validates the number
+    the branch assigned. A cloud-minted number collides with the branch's own
+    on ``factura_electronica_uk01 (uuid_resolucion_facturacion, consecutivo)``
+    (live incident 2026-10), so the allocators refuse at the lowest layer.
+    """
+
+
 async def assign_consecutivo(
     session: AsyncSession,
     resolucion_uuid: uuid_lib.UUID,
@@ -93,7 +103,16 @@ async def assign_consecutivo(
             ``resolucion_uuid``.
         ConsecutivoRangeExhaustedError: the resolution's range has no
             room left for another number.
+        NumeracionSoloEnSucursalError: called from the cloud deployment.
     """
+    # 0. Defense in depth: the cloud never numbers (see the error docstring).
+    from .fe_emision import es_despliegue_nube  # lazy: fe_emision imports this module
+
+    if es_despliegue_nube():
+        raise NumeracionSoloEnSucursalError(
+            f"cloud cannot assign a consecutivo in resolucion_facturacion {resolucion_uuid}"
+        )
+
     # 1. Idempotency check FIRST — a retry of the same source event must
     # return the already-assigned number, never touch MAX() again.
     existing = (
@@ -177,6 +196,7 @@ async def buscar_resolucion_vigente_por_sucursal(
 
 __all__ = [
     "ConsecutivoRangeExhaustedError",
+    "NumeracionSoloEnSucursalError",
     "ResolucionFacturacionNotFoundError",
     "assign_consecutivo",
     "buscar_resolucion_vigente_por_sucursal",

@@ -57,7 +57,7 @@ import uuid as uuid_lib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -615,8 +615,13 @@ async def _registrar_conflicto_restriccion(
     *,
     detalle: str,
     uuid_sucursal: Any = None,
-) -> None:
+    politica: str = "constraint_violation",
+) -> Literal["nuevo", "existente", "fallo"]:
     """Informational ``sync_conflict`` for a row rejected by a DB constraint.
+
+    Returns ``"nuevo"`` when a record was written, ``"existente"`` when the row
+    was already recorded and ``"fallo"`` when the best-effort write failed, so
+    callers raise one alert per row and never settle a row that left no trace.
 
     Best effort in its OWN savepoint (never fails the batch). The payload is
     stored JSON-safe (recursive ``_json_safe``: UUID/datetime/Decimal/...);
@@ -645,13 +650,13 @@ async def _registrar_conflicto_restriccion(
                     .where(
                         SyncConflict.tabla == spec.name,
                         SyncConflict.uuid_registro == row.uuid_registro,
-                        SyncConflict.politica == "constraint_violation",
+                        SyncConflict.politica == politica,
                     )
                     .limit(1)
                 )
             ).scalar_one_or_none()
             if ya is not None:
-                return
+                return "existente"
             session.add(
                 SyncConflict(
                     uuid_sucursal=branch_uuid,
@@ -659,16 +664,68 @@ async def _registrar_conflicto_restriccion(
                     uuid_registro=row.uuid_registro,
                     datos_local=None,
                     datos_cloud=_json_safe(dict(row.datos or {})),
-                    politica="constraint_violation",
+                    politica=politica,
                     resolucion=f"rejected:{detalle}"[:250],
                     timestamp_evento=_now_naive(),
                 )
             )
             await session.flush()
+        return "nuevo"
     except Exception as exc:  # noqa: BLE001 - informational only
         logger.warning(
             "sync_push.conflict_record_failed",
             extra={"tabla": spec.name, "reason": type(exc).__name__},
+        )
+        return "fallo"
+
+
+#: ``factura_electronica`` UK on ``(uuid_resolucion_facturacion, consecutivo)``.
+_UK_NUMERACION_FE = "factura_electronica_uk01"
+#: Wire detail of a numbering collision (no row values).
+_DETALLE_CONSECUTIVO_DUPLICADO = "consecutivo_duplicado"
+
+
+def _es_colision_consecutivo(exc: BaseException, spec: Any, detalle: str) -> bool:
+    """True for a unique violation on the FE numbering UK (SQLSTATE 23505)."""
+    return (
+        isinstance(exc, IntegrityError)
+        and spec.name == "factura_electronica"
+        and _sqlstate(exc) == "23505"
+        and _UK_NUMERACION_FE in detalle
+    )
+
+
+async def _alertar_consecutivo_duplicado(
+    session: AsyncSession, row: Any, *, uuid_sucursal: Any
+) -> None:
+    """One ``fe_consecutivo_duplicado`` alerta for a colliding pushed document.
+
+    Best effort in its own savepoint: it never fails the batch. Only ids and the
+    number travel in the motive (no customer data). Neither document is touched.
+    """
+    from types import SimpleNamespace
+
+    from ...repo.alert_types import AlertaFactory
+
+    datos = dict(row.datos or {})
+    branch_uuid: uuid_lib.UUID | None = None
+    try:
+        branch_uuid = uuid_lib.UUID(str(uuid_sucursal)) if uuid_sucursal else None
+    except ValueError:
+        branch_uuid = None
+    motivo = (
+        f"resolucion={datos.get('uuid_resolucion_facturacion')} "
+        f"consecutivo={datos.get('consecutivo')} "
+        f"documento_rechazado={row.uuid_registro}"
+    )
+    try:
+        async with session.begin_nested():
+            await AlertaFactory(session, SimpleNamespace(actor_uuid=None)).fire(
+                "fe_consecutivo_duplicado", motivo=motivo, uuid_sucursal=branch_uuid
+            )
+    except Exception as exc:  # noqa: BLE001 - informational only
+        logger.warning(
+            "sync_push.consecutivo_alert_failed", extra={"reason": type(exc).__name__}
         )
 
 
@@ -831,7 +888,33 @@ async def sync_push(
                     "sync_push.apply_row_failed",
                     extra={"tabla": row.tabla, "reason": detalle},
                 )
-                if isinstance(exc, IntegrityError) and _sqlstate(exc) != "23503":
+                if _es_colision_consecutivo(exc, spec, detalle):
+                    # Two documents with the same (resolucion, consecutivo):
+                    # both are immutable, so nothing is overwritten and
+                    # retrying can never succeed. Settle the row as a
+                    # ``conflict`` (the sender stops retrying) leaving a
+                    # sync_conflict + one alerta for the accountant's
+                    # compensatory path -- only if the trace was written.
+                    traza = await _registrar_conflicto_restriccion(
+                        session,
+                        spec,
+                        row,
+                        detalle=detalle,
+                        uuid_sucursal=claims.get("sucursal"),
+                        politica="consecutivo_duplicado",
+                    )
+                    if traza != "fallo":
+                        if traza == "nuevo":
+                            await _alertar_consecutivo_duplicado(
+                                session, row, uuid_sucursal=claims.get("sucursal")
+                            )
+                        results_by_index[idx] = _PushResponseRow(
+                            uuid_registro=row.uuid_registro,
+                            status="conflict",
+                            detail=_DETALLE_CONSECUTIVO_DUPLICADO,
+                        )
+                        continue
+                elif isinstance(exc, IntegrityError) and _sqlstate(exc) != "23503":
                     # A missing parent (FK, 23503) is a "retry later", not a
                     # conflict worth a human's review.
                     await _registrar_conflicto_restriccion(

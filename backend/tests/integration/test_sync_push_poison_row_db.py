@@ -228,9 +228,10 @@ async def test_push_con_fila_que_viola_uk01_no_da_500_y_aplica_las_demas(
 
     assert resp.status_code == 207, resp.text
     results = resp.json()["results"]
-    assert [r["status"] for r in results] == ["apply_error", "applied"], resp.text
-    assert "factura_electronica_uk01" in results[0]["detail"]
-    assert "23505" in results[0]["detail"]
+    # a numbering collision is a recoverable CONFLICT (the sender settles it
+    # instead of retrying forever); the rest of the batch still applies
+    assert [r["status"] for r in results] == ["conflict", "applied"], resp.text
+    assert results[0]["detail"] == "consecutivo_duplicado"
     # row values never travel back in the diagnostic
     assert str(f_mala) not in results[0]["detail"]
 
@@ -243,12 +244,47 @@ async def test_push_con_fila_que_viola_uk01_no_da_500_y_aplica_las_demas(
                 .select_from(SyncConflict)
                 .where(
                     SyncConflict.tabla == "factura_electronica",
-                    SyncConflict.politica == "constraint_violation",
+                    SyncConflict.politica == "consecutivo_duplicado",
                     SyncConflict.uuid_registro == uuid_lib.UUID(mala["uuid"]),
                 )
             )
         ).scalar_one()
         assert conflictos == 1
+        alertas = (
+            (
+                await s.execute(
+                    select(Alerta).where(
+                        Alerta.uuid_sucursal == suc,
+                        Alerta.tipo_alerta == "fe_consecutivo_duplicado",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(alertas) == 1
+        assert mala["uuid"] in alertas[0].datos_nuevos["motivo"]
+
+    # replaying the same batch neither duplicates the conflict nor the alerta,
+    # and the surviving documents stay untouched (immutable)
+    resp2 = await client.post(
+        "/api/v1/sync/push",
+        json={"rows": [{"tabla": "factura_electronica", "uuid_registro": mala["uuid"],
+                        "seq": 1, "datos": mala}]},
+        headers={"Authorization": f"Bearer {token}", "X-Request-Id": uuid_lib.uuid4().hex},
+    )
+    assert [r["status"] for r in resp2.json()["results"]] == ["conflict"]
+    async with Session() as s:
+        assert [fe.uuid_factura for fe in await _fes(s, suc)] == [f_existente, f_buena]
+        n_alertas = (
+            await s.execute(
+                select(func.count()).select_from(Alerta).where(
+                    Alerta.uuid_sucursal == suc,
+                    Alerta.tipo_alerta == "fe_consecutivo_duplicado",
+                )
+            )
+        ).scalar_one()
+        assert n_alertas == 1
 
 
 @pytest.mark.parametrize("app", ["admin"], indirect=True)
