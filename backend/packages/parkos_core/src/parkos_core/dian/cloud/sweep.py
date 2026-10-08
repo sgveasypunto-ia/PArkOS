@@ -1,10 +1,11 @@
 """dian/cloud/sweep.py - find branch invoices the cloud never forwarded (DD1).
 
-The branch emits ``factura_electronica`` plus a ``pendiente`` ``envio_dian``
-and replicates both. The cloud forwards to the provider asynchronously from a
+The branch emits ``factura_electronica`` and replicates it (its local
+``pendiente`` ``envio_dian`` marker is NOT pushed: ``envio_dian`` is
+cloud-authored). The cloud forwards to the provider asynchronously from a
 post-commit hook; if that one-shot dispatch never ran (process restarted
 between commit and task, source row not yet visible, unreadable token, ...)
-nothing ever resumed the document and its ``envio_dian`` stayed ``pendiente``
+nothing ever resumed the document and it stayed without any cloud chain
 forever.
 
 This module only SELECTS candidates. Dispatching is done by the caller through
@@ -13,9 +14,8 @@ whose advisory lock + chain check guarantees a document is never submitted to
 the provider twice, and whose backoff schedule is the rate limit.
 
 A document is a candidate when ALL hold:
-  * it has a branch-originated ``envio_dian`` in ``estado='pendiente'`` (no
-    ``payload.xml_sha256``: that key is written only by the cloud dispatcher)
-    older than ``older_than``;
+  * the cloud's ``factura_electronica`` row was received more than
+    ``older_than`` ago;
   * it has NO cloud-originated chain (any ``envio_dian`` with
     ``payload.xml_sha256``) - an existing chain owns the document, finished
     (``aceptado`` / exhausted ``error`` + alert) or not;
@@ -40,6 +40,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from ...models.L_E.factura_electronica import FacturaElectronica
 from ...models.L_W.alerta import Alerta
 from ...models.L_W.envio_dian import EnvioDian
 
@@ -69,7 +70,7 @@ async def find_stale_pendientes(
     has_cloud_chain = (
         select(chain.c.uuid)
         .where(
-            chain.c.uuid_factura_electronica == EnvioDian.uuid_factura_electronica,
+            chain.c.uuid_factura_electronica == FacturaElectronica.uuid,
             chain.c.payload["xml_sha256"].astext.is_not(None),
         )
         .exists()
@@ -79,23 +80,18 @@ async def find_stale_pendientes(
         .select_from(Alerta)
         .where(
             Alerta.tipo_alerta == "dian_error",
-            Alerta.uuid_arqueo == EnvioDian.uuid_factura_electronica,
+            Alerta.uuid_arqueo == FacturaElectronica.uuid,
         )
         .scalar_subquery()
     )
     stmt = (
-        select(EnvioDian.uuid_factura_electronica)
+        select(FacturaElectronica.uuid)
         .where(
-            EnvioDian.estado == "pendiente",
-            EnvioDian.uuid_factura_electronica.is_not(None),
-            EnvioDian.payload["xml_sha256"].astext.is_(None),
-            EnvioDian.payload["uuid_revocacion_factura"].astext.is_(None),
-            EnvioDian.created_at < cutoff,
+            FacturaElectronica.created_at < cutoff,
             ~has_cloud_chain,
             failures < max_failures,
         )
-        .group_by(EnvioDian.uuid_factura_electronica)
-        .order_by(func.min(EnvioDian.created_at))
+        .order_by(FacturaElectronica.created_at)
         .limit(limit)
     )
     return list((await session.execute(stmt)).scalars().all())
