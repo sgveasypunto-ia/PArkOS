@@ -341,24 +341,81 @@ def _net_line_bases(detalles: list[Any], impuestos: list[Any]) -> list[Decimal]:
     return nets
 
 
+def _prorate(gross: list[Decimal], target: Decimal) -> list[Decimal]:
+    """Split ``target`` across ``gross`` pro rata (the last item absorbs rounding)."""
+    gross_total = sum(gross, Decimal(0))
+    if not gross:
+        return []
+    if gross_total == 0:
+        return [target] + [Decimal(0)] * (len(gross) - 1)
+    shares: list[Decimal] = []
+    remaining = target
+    for idx, amount in enumerate(gross):
+        share = remaining if idx == len(gross) - 1 else _q(target * amount / gross_total)
+        shares.append(share)
+        remaining -= share
+    return shares
+
+
+def _net_discount_base(
+    detalles: list[Any], impuestos: list[Any]
+) -> tuple[Decimal, Decimal] | None:
+    """``(gross_base, taxable)`` when the tax rows are on the NET taxable base.
+
+    Since AUD2 a discounted invoice persists ``factura_impuestos`` on the base
+    AFTER the discount (a fully covered exit: 0 / 0). It is told apart from the
+    legacy shape (tax on the gross base, discount tax-inclusive) because the
+    persisted base is below ``round(sum(lines) / (1 + rate), 2)``. Returns
+    ``None`` for the legacy shape (or when there is no tax row to compare).
+    """
+    if not impuestos:
+        return None
+    ref = max(impuestos, key=lambda i: _dec(getattr(i, "base_calculo", None)))
+    rate = _dec(getattr(ref, "porcentaje_aplicado", None))
+    gross_total = sum((_q(_dec(d.subtotal)) for d in detalles), Decimal(0))
+    gross_base = _q(gross_total / (Decimal(1) + rate))
+    taxable = _q(_dec(getattr(ref, "base_calculo", None)))
+    if taxable < gross_base - _CENT:
+        return gross_base, taxable
+    return None
+
+
 def _build_detailed_body(
     invoice: etree._Element, detalles: list[Any], impuestos: list[Any]
 ) -> None:
     """Append TaxTotal + LegalMonetaryTotal + InvoiceLines from persisted rows.
 
-    Discount rows become a document-level allowance (tax-inclusive, like the
-    gross tariff), so ``base + tax - allowance == payable`` (0 when the
-    subscription covers the whole exit).
+    Discount rows become a document-level allowance. Two persisted shapes:
+
+    * legacy: tax on the gross base, allowance tax-inclusive, so
+      ``base + tax - allowance == payable``;
+    * net (AUD2): tax on the base AFTER the discount. Lines and allowance are
+      both expressed ex-IVA (``line - allowance == taxable``) so
+      ``taxable + tax == payable`` and a fully covered exit carries 0 tax.
     """
     allowance_total = sum(
         (_q(_dec(d.subtotal)) for d in detalles if _is_descuento(d)), Decimal(0)
     )
     detalles = [d for d in detalles if not _is_descuento(d)]
-    line_bases = _net_line_bases(detalles, impuestos)
-    base_total = sum(line_bases, Decimal(0))
+    net = _net_discount_base(detalles, impuestos) if allowance_total > 0 else None
     tax_amounts = [_q(_dec(getattr(i, "valor", None))) for i in impuestos]
     tax_total = sum(tax_amounts, Decimal(0))
     identities = [_tax_identity(i) for i in impuestos]
+    gross_lines = [_q(_dec(d.subtotal)) for d in detalles]
+    if net is not None:
+        gross_base, taxable_net = net
+        line_bases = _prorate(gross_lines, gross_base)
+        tax_bases = _prorate(gross_lines, taxable_net)
+        base_total = gross_base
+        allowance_total = gross_base - taxable_net
+        tax_exclusive = taxable_net
+        payable = taxable_net + tax_total
+    else:
+        line_bases = _net_line_bases(detalles, impuestos)
+        tax_bases = line_bases
+        base_total = sum(line_bases, Decimal(0))
+        tax_exclusive = base_total
+        payable = base_total + tax_total - allowance_total
 
     subtotals = [
         _build_tax_subtotal(
@@ -378,20 +435,20 @@ def _build_detailed_body(
     invoice.append(_build_tax_total(_format_money(tax_total), _CURRENCY_CODE, subtotals))
     invoice.append(
         _build_legal_monetary_total(
-            _format_money(base_total + tax_total - allowance_total),
+            _format_money(payable),
             _CURRENCY_CODE,
             line_extension=_format_money(base_total),
-            tax_exclusive=_format_money(base_total),
-            tax_inclusive=_format_money(base_total + tax_total),
+            tax_exclusive=_format_money(tax_exclusive),
+            tax_inclusive=_format_money(tax_exclusive + tax_total),
             allowance_total=_format_money(allowance_total) if allowance_total > 0 else None,
         )
     )
 
-    allocation = _allocate_line_taxes(line_bases, impuestos)
+    allocation = _allocate_line_taxes(tax_bases, impuestos)
     for idx, det in enumerate(detalles):
         line_subtotals = [
             _build_tax_subtotal(
-                taxable=line_bases[idx],
+                taxable=tax_bases[idx],
                 amount=allocation[idx][t],
                 percent=percent,
                 code=scheme_id,
