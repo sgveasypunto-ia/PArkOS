@@ -90,6 +90,7 @@ from ...repo.salida import (
     crear_salida_evento,
     insertar_alerta_salida_forzado,
 )
+from ...repo.venta_suscripcion import buscar_subscripcion_activa_de_placa
 from ...runtime.tiempo import hoy_bogota
 from ...schemas.operacion import (
     AnularSalidaNoPagadaPayload,
@@ -323,10 +324,20 @@ async def create_ingreso(
 
     # --- Step 7: V6 (subscripcion vigente, bi-temporal). --------------
     subscripcion_vigente = False
-    if payload.uuid_subscripcion_cliente is not None:
+    # El front no envia ``uuid_subscripcion_cliente``: si la placa tiene una
+    # suscripcion activa en ESTA sucursal la resolvemos aqui (misma
+    # definicion de "placa cubierta" que la venta y la salida), para que el
+    # ingreso quede como MENSUALIDAD y el tiquete no diga "Rotacion". Un uuid
+    # explicito del cliente siempre gana.
+    uuid_subscripcion_cliente = payload.uuid_subscripcion_cliente
+    if uuid_subscripcion_cliente is None and payload.placa is not None:
+        uuid_subscripcion_cliente = await buscar_subscripcion_activa_de_placa(
+            session, placa=payload.placa, uuid_sucursal=target
+        )
+    if uuid_subscripcion_cliente is not None:
         sub_result = await validar_subscripcion_vigente(
             session,
-            uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente,
+            uuid_subscripcion_cliente=uuid_subscripcion_cliente,
             forzado=bool(bypass_reason),
         )
         subscripcion_vigente = sub_result.vigente
@@ -387,6 +398,8 @@ async def create_ingreso(
     )
     new_attrs["uuid_tipo_vehiculo"] = uuid_tipo_vehiculo
     new_attrs["uuid_sucursal"] = target
+    if uuid_subscripcion_cliente is not None:
+        new_attrs["uuid_subscripcion_cliente"] = uuid_subscripcion_cliente
     # REGRESSION fix (2026-09-22, directiva del operador): el INSERT
     # path NO estaba poblando ``fecha_ingreso`` en ``prod.ingreso`` — la
     # columna es nullable sin DEFAULT (verificar ``information_schema``
@@ -477,7 +490,7 @@ async def create_ingreso(
     # campo.
     tipo_entrada: str = (
         "MENSUALIDAD"
-        if (payload.uuid_subscripcion_cliente is not None and subscripcion_vigente)
+        if (uuid_subscripcion_cliente is not None and subscripcion_vigente)
         else "ROTACION"
     )
 
