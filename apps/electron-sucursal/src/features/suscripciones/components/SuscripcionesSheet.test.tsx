@@ -422,15 +422,26 @@ describe('<SuscripcionesSheet /> — HU-F9.1 + HU-F9.2 realineada', () => {
     expect(screen.getByTestId('suscripciones-cupos-vehiculo-sv-1')).toHaveTextContent('CUP001');
   });
 
-  it('S15b (PT-3): cupos detail with >10 days left has no "Renovar"', async () => {
-    mockBuscarTrigger.mockResolvedValue({ ...DETALLE, dias_restantes: 25, puede_renovar: false });
+  it('S15b: cupos detail with 25 days left still offers "Renovar" (no anticipation window)', async () => {
+    mockBuscarTrigger.mockResolvedValue({ ...DETALLE, dias_restantes: 25, puede_renovar: true });
     useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
     render(<SuscripcionesSheet />);
 
     const user = userEvent.setup();
     await user.click(screen.getByTestId('suscripciones-sheet-item-sub-1'));
     await waitFor(() => screen.getByTestId('suscripciones-cupos-detalle'));
-    expect(screen.queryByTestId('suscripciones-cupos-renovar')).not.toBeInTheDocument();
+    expect(screen.getByTestId('suscripciones-cupos-renovar')).toBeInTheDocument();
+  });
+
+  it('S15c: the "Por renovar" badge only marks urgent rows (<= 10 days), not every renewable one', () => {
+    mockListData.mockReturnValue([
+      { ...LISTA[0], uuid: 'sub-lejos', dias_restantes: 25, puede_renovar: true },
+      { ...LISTA[0], uuid: 'sub-cerca', dias_restantes: 4, puede_renovar: true },
+    ]);
+    useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+    render(<SuscripcionesSheet />);
+    expect(screen.queryByTestId('suscripciones-sheet-por-renovar-sub-lejos')).not.toBeInTheDocument();
+    expect(screen.getByTestId('suscripciones-sheet-por-renovar-sub-cerca')).toBeInTheDocument();
   });
 
   it('S16 (PT-3): after a renewal the lists are refreshed and the list is shown', async () => {

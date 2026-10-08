@@ -110,7 +110,7 @@ describe('useSuscripcionesActivas — HU-F9.2 realineada', () => {
     expect(result.current.data?.[0]?.dias_restantes).toBe(4);
   });
 
-  it('T1c: puede_renovar defaults to false when the backend omits it (>10 days / older backend)', async () => {
+  it('T1c: puede_renovar defaults to false when the backend omits it (older backend that omits it)', async () => {
     mockFetch.mockResolvedValueOnce({ items: [ITEM] });
     const { result } = renderHook(() => useSuscripcionesActivas('suc-1'), {
       wrapper: freshCacheWrapper,

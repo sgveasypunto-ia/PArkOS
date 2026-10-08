@@ -4,7 +4,10 @@
  * renewal re-launches the billing for the subscription's own plates).
  *
  * - "Renovar" is only reachable for subscriptions with `puede_renovar`
- *   (<= 10 days left, expired included); the UI never recalculates dates.
+ *   (any open subscription: no anticipation window, expired included). The
+ *   backend owns the dates; the early-renewal hint only shows the day the
+ *   new period starts (due date + 1), which the backend confirms in the
+ *   response.
  * - Sends `POST /clientes/subscripciones/{uuid}/renovar` with an
  *   Idempotency-Key per ATTEMPT (`intentoId`): the same id is reused when
  *   a retry follows a network/5xx failure (replay, no double charge); a
@@ -55,10 +58,16 @@ export interface RenovarSuscripcionPanelProps {
 }
 
 const STALE_CODES: ReadonlySet<string> = new Set([
-  'renovacion_fuera_de_ventana',
   'suscripcion_no_renovable',
   'subscripcion_no_encontrada',
 ]);
+
+/** Day after `iso` (YYYY-MM-DD), calendar-safe (month/year/leap) via UTC. */
+function diaSiguiente(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const next = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + 1));
+  return next.toISOString().slice(0, 10);
+}
 
 export function RenovarSuscripcionPanel({
   target,
@@ -76,6 +85,7 @@ export function RenovarSuscripcionPanel({
   const [reciboAbierto, setReciboAbierto] = useState(false);
   const intentoRef = useRef<string>(crypto.randomUUID());
 
+  const anticipada = target.dias_restantes !== null && target.dias_restantes > 0;
   const requiereVoucher = medioPago === 'datafono';
   const mostrarReferencia = medioPago !== 'efectivo';
 
@@ -173,6 +183,22 @@ export function RenovarSuscripcionPanel({
           </div>
         )}
       </div>
+
+      {anticipada && target.fecha_vencimiento && (
+        <p
+          className="rounded border bg-card px-3 py-2 text-sm"
+          data-testid="renovar-vigencia-anticipada"
+        >
+          {t('suscripciones:renovar.vigenciaAnticipada', {
+            inicio: diaSiguiente(target.fecha_vencimiento),
+            count: target.dias_restantes ?? 0,
+            defaultValue_one:
+              'La nueva vigencia empieza el {{inicio}} y se suma al día restante.',
+            defaultValue_other:
+              'La nueva vigencia empieza el {{inicio}} y se suma a los {{count}} días restantes.',
+          })}
+        </p>
+      )}
 
       <p className="text-sm text-muted-foreground" data-testid="renovar-nota">
         {t('suscripciones:renovar.nota', {

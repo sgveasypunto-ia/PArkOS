@@ -1,7 +1,8 @@
 /**
  * `renovacionErrors.ts` — typed errors + es-CO messages for the renewal
  * endpoint's error contract (PT-3). Every code the backend can answer is
- * covered; unknown ones fall back to a generic message.
+ * covered (there is no anticipation window any more, so no "out of window"
+ * code); unknown ones fall back to a generic message.
  */
 
 export type RenovacionErrorCode =
@@ -10,7 +11,6 @@ export type RenovacionErrorCode =
   | 'missing_sucursal_context'
   | 'permission_denied'
   | 'subscripcion_no_encontrada'
-  | 'renovacion_fuera_de_ventana'
   | 'suscripcion_no_renovable'
   | 'plan_no_vigente'
   | 'idempotency_key_conflict'
@@ -29,7 +29,6 @@ const KNOWN: ReadonlySet<string> = new Set<RenovacionErrorCode>([
   'missing_sucursal_context',
   'permission_denied',
   'subscripcion_no_encontrada',
-  'renovacion_fuera_de_ventana',
   'suscripcion_no_renovable',
   'plan_no_vigente',
   'idempotency_key_conflict',
@@ -45,21 +44,17 @@ const KNOWN: ReadonlySet<string> = new Set<RenovacionErrorCode>([
 export class RenovacionError extends Error {
   public readonly status: number;
   public readonly code: RenovacionErrorCode;
-  public readonly dias_restantes: number | null;
-  public readonly ventana_dias: number | null;
   public readonly placa: string | null;
 
   constructor(
     status: number,
     code: RenovacionErrorCode,
-    extra: { dias_restantes?: number; ventana_dias?: number; placa?: string } = {},
+    extra: { placa?: string } = {},
   ) {
     super(code);
     this.name = 'RenovacionError';
     this.status = status;
     this.code = code;
-    this.dias_restantes = extra.dias_restantes ?? null;
-    this.ventana_dias = extra.ventana_dias ?? null;
     this.placa = extra.placa ?? null;
   }
 
@@ -75,8 +70,6 @@ export class RenovacionError extends Error {
 
 interface RenovacionBody {
   error?: string;
-  dias_restantes?: number;
-  ventana_dias?: number;
   placa?: string;
 }
 
@@ -97,8 +90,6 @@ export function mapRenovacionHttpError(status: number, body: string): Renovacion
   const raw = parsed?.error ?? '';
   const code = (KNOWN.has(raw) ? raw : 'desconocido') as RenovacionErrorCode;
   return new RenovacionError(status, code, {
-    dias_restantes: parsed?.dias_restantes,
-    ventana_dias: parsed?.ventana_dias,
     placa: parsed?.placa,
   });
 }
@@ -112,12 +103,6 @@ export function renovacionErrorMessage(err: unknown, t: Translate): string {
     });
   }
   switch (err.code) {
-    case 'renovacion_fuera_de_ventana':
-      return t('suscripciones:renovar.errors.renovacion_fuera_de_ventana', {
-        dias: err.dias_restantes ?? '',
-        ventana: err.ventana_dias ?? 10,
-        defaultValue: `Todavía no se puede renovar: faltan ${err.dias_restantes ?? 'más'} días y la renovación se habilita cuando queden ${err.ventana_dias ?? 10} o menos.`,
-      });
     case 'idempotency_key_requerido':
       return t('suscripciones:renovar.errors.idempotency_key_requerido', {
         defaultValue: 'No se pudo identificar el intento de renovación. Intentá de nuevo.',

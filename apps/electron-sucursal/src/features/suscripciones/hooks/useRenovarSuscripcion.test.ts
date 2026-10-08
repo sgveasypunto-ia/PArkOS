@@ -7,7 +7,7 @@
  *       id yields a new key (and `skipIdempotencyKey` protects it).
  *   T3: datafono without voucher is rejected BEFORE the network.
  *   T4: every documented error code maps to a typed `RenovacionError`
- *       (incl. renovacion_fuera_de_ventana with dias_restantes / ventana_dias).
+ *       (the retired renovacion_fuera_de_ventana falls back to the generic message).
  *   T5: 401 -> auth cleared + event.
  *   T6: 5xx keeps the attempt open (`esDefinitivo` false), 4xx closes it.
  */
@@ -201,7 +201,6 @@ describe('useRenovarSuscripcion — PT-3', () => {
     [400, 'missing_sucursal_context'],
     [403, 'permission_denied'],
     [404, 'subscripcion_no_encontrada'],
-    [409, 'renovacion_fuera_de_ventana'],
     [409, 'suscripcion_no_renovable'],
     [409, 'plan_no_vigente'],
     [409, 'idempotency_key_conflict'],
@@ -246,7 +245,7 @@ describe('useRenovarSuscripcion — PT-3', () => {
     expect(msg).not.toContain(code);
   });
 
-  it('T4b: renovacion_fuera_de_ventana carries dias_restantes and ventana_dias', async () => {
+  it('T4b: the retired renovacion_fuera_de_ventana code maps to the generic message', async () => {
     const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
     mockFetch.mockRejectedValueOnce(
       new ParkosHttpError(
@@ -272,9 +271,10 @@ describe('useRenovarSuscripcion — PT-3', () => {
       }
     });
     const err = caught as RenovacionError;
-    expect(err.dias_restantes).toBe(25);
-    expect(err.ventana_dias).toBe(10);
-    expect(renovacionErrorMessage(err, (_k, o) => String(o?.defaultValue ?? _k))).toContain('25');
+    expect(err.code).toBe('desconocido');
+    expect(renovacionErrorMessage(err, (_k, o) => String(o?.defaultValue ?? _k))).not.toContain(
+      'Todavía no se puede renovar',
+    );
   });
 
   it('T5: 401 -> auth cleared + parkos:auth:cleared', async () => {
