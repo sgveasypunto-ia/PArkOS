@@ -597,6 +597,104 @@ async def test_t3_subscripcion_vigente_retorna_mensualidad(
     assert body["tipo_entrada"] == "MENSUALIDAD"
 
 
+async def _seed_vehiculo_en_subscripcion(
+    pg_engine,
+    *,
+    uuid_subscripcion: uuid_lib.UUID,
+    uuid_tipo_vehiculo: uuid_lib.UUID,
+    placa: str,
+) -> None:
+    from parkos_core.models.V.subscripcion_vehiculos import SubscripcionVehiculos
+    from parkos_core.models.V.vehiculos import Vehiculos
+
+    now = _now_naive()
+    veh_uuid = uuid_lib.uuid4()
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        session.add(
+            Vehiculos(
+                uuid=veh_uuid,
+                placa=placa,
+                uuid_tipo_vehiculo=uuid_tipo_vehiculo,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.flush()
+        session.add(
+            SubscripcionVehiculos(
+                uuid_subscripcion_cliente=uuid_subscripcion,
+                uuid_vehiculo=veh_uuid,
+                vigente_desde=now,
+                vigente_hasta=None,
+                estado="activo",
+                created_at=now,
+                created_by=None,
+                sync_status="sincronizado",
+                sync_timestamp=None,
+                sync_attempts=0,
+            )
+        )
+        await session.commit()
+
+
+async def test_t3b_placa_con_suscripcion_activa_sin_uuid_en_payload_es_mensualidad(
+    pg_engine, mint_operador_jwt, client, pg_dsn
+) -> None:
+    """T3b (bug ticket de ingreso): el front NO envia
+    ``uuid_subscripcion_cliente``; si la placa tiene una suscripcion activa
+    en la sucursal el servidor la resuelve -> ``MENSUALIDAD`` y el uuid
+    queda persistido/devuelto (el tiquete deja de imprimir "Rotacion")."""
+    import psycopg
+    from datetime import timedelta
+
+    await _truncate_ingreso_tables(pg_dsn)
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute("TRUNCATE prod.subscripcion_vehiculos, prod.vehiculos CASCADE")
+        conn.commit()
+    branch = uuid_lib.uuid4()
+    actor = uuid_lib.uuid4()
+    tipo_auto = uuid_lib.uuid4()
+    sub = uuid_lib.uuid4()
+
+    await _seed_sucursal(pg_engine, uuid_sucursal=branch)
+    await _seed_tipos_y_cupo(
+        pg_engine,
+        uuid_sucursal=branch,
+        uuid_tipo_auto=tipo_auto,
+        uuid_tipo_moto=uuid_lib.uuid4(),
+    )
+    await _seed_subscripcion(
+        pg_engine,
+        uuid_subscripcion=sub,
+        uuid_sucursal=branch,
+        fecha_vencimiento=datetime.now(UTC).date() + timedelta(days=30),
+    )
+    await _seed_vehiculo_en_subscripcion(
+        pg_engine, uuid_subscripcion=sub, uuid_tipo_vehiculo=tipo_auto, placa="ABC123"
+    )
+
+    token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=branch)
+    resp = await client.post(
+        "/api/v1/operacion/ingresos",
+        json={"placa": "ABC123"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Sucursal-Context": str(branch),
+        },
+    )
+    assert resp.status_code == 201, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["tipo_entrada"] == "MENSUALIDAD"
+    assert body["uuid_subscripcion_cliente"] == str(sub)
+
+
 async def test_t4_sin_subscripcion_es_rotacion(
     pg_engine, mint_operador_jwt, client, pg_dsn
 ) -> None:
