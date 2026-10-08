@@ -185,20 +185,86 @@ function Get-ParkosLiteApiRestoreMarkers {
     return @($script:ParkosLiteApiPartsIds | ForEach-Object { Join-Path $Paths.PayloadRoot "services\$_.parts-sha256" })
 }
 
+# Argumentos de `pnpm install` del front.
+#   --frozen-lockfile : el lockfile versionado (apps/pnpm-lock.yaml) es la fuente de
+#       verdad: instalacion reproducible y auditada, nunca una resolucion nueva. Antes
+#       se usaba --lockfile=false "por si el lockfile iba desfasado"; eso resolvia 1013
+#       paquetes sin control. Si el lockfile no coincide con los package.json, pnpm
+#       falla (ERR_PNPM_OUTDATED_LOCKFILE) y hay que regenerarlo en el repo
+#       (`pnpm install --lockfile-only` en apps\) y commitearlo, no ocultarlo aqui.
+#   --ignore-scripts  : no baja el binario de Electron (el lite usa el navegador).
+#   --reporter=append-only : sin barras ni cajas (legible en consola PS 5.1 y en el log).
+#   --config.update-notifier=false : el pnpm esta fijado a proposito; sin aviso de version.
+function Get-ParkosLitePnpmInstallArguments {
+    return @('install', '--ignore-scripts', '--frozen-lockfile', '--reporter=append-only', '--config.update-notifier=false', '--config.confirmModulesPurge=false')
+}
+
+# Unico punto que ejecuta pnpm de verdad (mockeable en los tests). Cada linea de
+# salida (stdout+stderr) se entrega a $OnLine; devuelve el exit code.
+function Invoke-ParkosLitePnpmNative {
+    param([Parameter(Mandatory)][string[]]$Arguments, [Parameter(Mandatory)][scriptblock]$OnLine)
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # pnpm.cmd (no pnpm.ps1): la politica de ejecucion de PS 5.1 puede bloquear los .ps1.
+        & pnpm.cmd @Arguments 2>&1 | ForEach-Object { & $OnLine "$_" }
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
+# Instala las dependencias del front y devuelve un codigo: 0 ok; el exit de pnpm si
+# fallo; 3 si pnpm salio 0 pero node_modules quedo incompleto (sin .modules.yaml).
+# Imprime siempre una linea clara de exito o fallo. El log queda en UTF-8 sin BOM.
 function Invoke-ParkosLitePnpmInstall {
     param([Parameter(Mandatory)][string]$AppsDir, [Parameter(Mandatory)][string]$LogPath)
     New-Item -ItemType Directory -Force -Path (Split-Path $LogPath) | Out-Null
-    # --ignore-scripts: no baja el binario de Electron (el lite usa el navegador).
-    # --lockfile=false: el lockfile del repo puede ir desfasado de los package.json
-    # (--frozen falla) y asi un install del lite nunca ensucia el arbol git.
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    $writer = New-Object System.IO.StreamWriter($LogPath, $false, (New-Object System.Text.UTF8Encoding($false)))
+    $envNames = @('NO_COLOR', 'npm_config_update_notifier')
+    $savedEnv = @{}
+    foreach ($n in $envNames) { $savedEnv[$n] = [Environment]::GetEnvironmentVariable($n, 'Process') }
+    $savedConsole = $null
+    $savedOut = $OutputEncoding
+    $onLine = {
+        param($line)
+        $writer.WriteLine($line)
+        $lines.Add($line)
+        if ($line -notmatch '^Progress:') { Write-Host $line }
+    }
     Push-Location $AppsDir
     try {
-        # pnpm.cmd (no pnpm.ps1): la politica de ejecucion de PS 5.1 puede bloquear los .ps1.
-        & pnpm.cmd install --ignore-scripts --frozen-lockfile=false --lockfile=false --config.confirmModulesPurge=false *>&1 | Tee-Object -FilePath $LogPath | ForEach-Object { if ("$_" -notmatch '^Progress:') { Write-Host $_ } }
-        return $LASTEXITCODE
+        # pnpm/node escribe UTF-8; PS 5.1 lo decodifica con el OEM (CP437) y sale mojibake.
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        try { $savedConsole = [Console]::OutputEncoding; [Console]::OutputEncoding = $utf8 } catch { $savedConsole = $null }
+        $OutputEncoding = $utf8
+        [Environment]::SetEnvironmentVariable('NO_COLOR', '1', 'Process')
+        [Environment]::SetEnvironmentVariable('npm_config_update_notifier', 'false', 'Process')
+        $rc = [int](Invoke-ParkosLitePnpmNative -Arguments (Get-ParkosLitePnpmInstallArguments) -OnLine $onLine)
     } finally {
         Pop-Location
+        foreach ($n in $envNames) { [Environment]::SetEnvironmentVariable($n, $savedEnv[$n], 'Process') }
+        if ($savedConsole) { try { [Console]::OutputEncoding = $savedConsole } catch { } }
+        $OutputEncoding = $savedOut
+        $writer.Dispose()
     }
+
+    if ($rc -ne 0) {
+        Write-Host "No se pudieron instalar las dependencias del front (exit $rc). Log completo: $LogPath"
+        Write-Host '--- ultimas lineas del log ---'
+        $lines | Where-Object { $_ -notmatch '^Progress:' } | Select-Object -Last 15 | ForEach-Object { Write-Host $_ }
+        return $rc
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $AppsDir 'node_modules\.modules.yaml'))) {
+        Write-Host "Instalacion incompleta: pnpm termino sin error pero falta node_modules\.modules.yaml en $AppsDir. Repite la opcion 15 y revisa $LogPath"
+        return 3
+    }
+    $count = $null
+    foreach ($l in $lines) { if ($l -match '^Packages:\s*\+(\d+)') { $count = [int]$Matches[1] } }
+    if ($null -ne $count) { Write-Host "Dependencias del front instaladas ($count paquetes)" }
+    else { Write-Host 'Dependencias del front instaladas.' }
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -512,7 +578,7 @@ function Invoke-ParkosLiteStep {
             Stop-ParkosLiteService -Paths $paths -Name 'front' -ExpectedProcess 'node' | Out-Null
             Write-ParkosLiteLog $Ctx 'Instalando dependencias del front (pnpm). Puede tardar varios minutos; es normal que no muestre avance continuo.'
             $rc = Invoke-ParkosLitePnpmInstall -AppsDir $paths.AppsDir -LogPath (Join-Path $paths.Logs 'pnpm-install.log')
-            if ($rc -ne 0) { throw "pnpm install fallo (exit $rc). Revisa $(Join-Path $paths.Logs 'pnpm-install.log')" }
+            if ($rc -ne 0) { throw "pnpm install fallo (exit $rc). Revisa $(Join-Path $paths.Logs 'pnpm-install.log') (si dice ERR_PNPM_OUTDATED_LOCKFILE, apps\pnpm-lock.yaml no coincide con los package.json: hay que regenerarlo en el repo)" }
             $head = Invoke-ParkosLiteGit -RepoRoot $paths.RepoRoot -Arguments @('rev-parse', 'HEAD')
             if ($head.ExitCode -eq 0) { $state.front_built_commit = ($head.Output -join '').Trim() }
         }

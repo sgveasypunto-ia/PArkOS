@@ -232,7 +232,7 @@ Las opciones 2 y 10 a 15 llevan una etiqueta de estado: `[ OK ]` (hecho), `[FAIL
 | 12 | AVANZADO | Construir API (.exe) | Construye `api-sucursal.exe` y `migrate.exe` (varios minutos) | Solo soporte |
 | 13 | AVANZADO | Migrar base de datos | Corre `alembic upgrade head` | Solo soporte |
 | 14 | AVANZADO | Cargar datos de demo | Ejecuta `seed_demo.sql` (se puede repetir sin riesgo) | Solo soporte |
-| 15 | AVANZADO | Instalar dependencias del front | `pnpm install --ignore-scripts` (no baja Electron) | Solo soporte |
+| 15 | AVANZADO | Instalar dependencias del front | `pnpm install --frozen-lockfile --ignore-scripts` con el lockfile del repo (no baja Electron). Al final imprime `Dependencias del front instaladas (N paquetes)` o el error con la cola del log | Solo soporte |
 | 0 | - | Salir | Cierra el menú (no detiene los servicios que estén corriendo) | - |
 
 Detalles del submenú de la opción 9:
@@ -542,7 +542,8 @@ Mensajes extraídos del código. Entre `<...>` van valores variables.
 | `Aviso: prod.fn_ensure_partitions() no se pudo ejecutar (no bloquea).` | Verificación de particiones falló | Informativo; revisar `lite.log` |
 | `seed de demo fallo (exit N): ...` | Error en `seed_demo.sql` o migraciones no aplicadas | Correr opción 13 y luego 14 |
 | `uuid de sucursal invalido: '...'` | `state.json` con UUID inválido | Repetir opción 10 |
-| `pnpm install fallo (exit N). Revisa ...\pnpm-install.log` | Red, `pnpm` o lockfile | Opción 8 -> `pnpm-install.log` |
+| `pnpm install fallo (exit N). Revisa ...\pnpm-install.log` | Red, `pnpm` o lockfile. Con `ERR_PNPM_OUTDATED_LOCKFILE`, `apps\pnpm-lock.yaml` no coincide con los `package.json` | Opción 8 -> `pnpm-install.log`. Si es el lockfile, hay que regenerarlo en el repo (`pnpm install --lockfile-only` en `apps\`) y commitearlo; no se omite en el lite |
+| `Instalacion incompleta: ... falta node_modules\.modules.yaml` | pnpm salió con 0 pero `node_modules` quedó a medias (corte, antivirus) | Repetir la opción 15 |
 | `La API no respondio en http://127.0.0.1:<puerto>/health. Revisa ...api.err.log y api.out.log` | La API no arrancó o no está sana | Opción 8 -> `api.err.log` |
 | `El front no respondio en http://127.0.0.1:<puerto>/. Revisa ...front.err.log y front.out.log` | Vite no arrancó (puerto ocupado: usa `--strictPort`) | Opción 8 -> `front.err.log`; liberar el puerto o cambiarlo |
 | `Vite no esta instalado: corre el paso 6) Instalar dependencias del front.` | Falta `node_modules` | Correr la **opción 15** (el mensaje cita una numeración antigua) |
@@ -594,7 +595,7 @@ Las celdas de la columna "Instalador completo" se basan en el encabezado de `par
 - La impresión es un no-op en el navegador (shim `window.bridge` solo cuando no existe el de Electron; ver `apps/electron-sucursal/src/renderer/lib/browserBridge.ts`).
 - Las contraseñas y la llave JWT son descartables y están en texto plano.
 - Los UUID de `carro`, `bicicleta` y `patineta` se siembran aquí porque las migraciones solo crean `moto` y `otro`.
-- El lockfile de `pnpm` del repositorio puede ir desfasado; el lite instala con `--lockfile=false` para no ensuciar el árbol de git.
+- El lite instala con `--frozen-lockfile`: el `apps\pnpm-lock.yaml` versionado es la fuente de verdad (instalación reproducible, sin resolver paquetes nuevos) y no modifica el árbol de git. Antes usaba `--lockfile=false`, que resolvía todo sin control. El pnpm 10.0.0 está fijado a propósito, así que el aviso `Update available` se desactiva, y la salida se fuerza a UTF-8 con reporter `append-only` para que se lea bien en Windows PowerShell 5.1.
 - El instalador ejecuta código del **mismo repositorio** donde está el script: la opción 7 modifica ese árbol de trabajo (`git checkout` y `git pull`).
 - Tres mensajes de error citan una numeración antigua de pasos (`paso 1`, `paso 6`); la numeración vigente es 10 (Preparar entorno) y 15 (Instalar dependencias del front).
 - Si falla la reconstrucción, la migración o `pnpm` **después** de un pull correcto en la opción 7, el error se muestra pero los servicios quedan detenidos (solo el fallo del pull reinicia lo anterior); use la opción 2 tras corregir (deducción del código).
