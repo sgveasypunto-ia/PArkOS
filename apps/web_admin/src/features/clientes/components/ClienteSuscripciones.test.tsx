@@ -155,7 +155,7 @@ describe('<ClienteSuscripciones />', () => {
 });
 
 describe('<ClienteSuscripciones /> -- renovación (PT-3)', () => {
-  it('does NOT show "Renovar" when puede_renovar is false (> 10 days left)', async () => {
+  it('does NOT show "Renovar" when the server says puede_renovar is false', async () => {
     render(<ClienteSuscripciones uuidCliente={UUID_CLIENTE} />, { wrapper });
     await waitFor(() => {
       expect(
@@ -165,6 +165,30 @@ describe('<ClienteSuscripciones /> -- renovación (PT-3)', () => {
     expect(
       screen.queryByTestId(`cliente-suscripcion-renovar-${UUID_SUBSCRIPCION}`),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows "Renovar" with 25 days left and previews that the new period stacks after the due date', async () => {
+    mockList.mockResolvedValue([
+      { ...VIGENTE, fecha_vencimiento: '2026-01-31', dias_restantes: 25, puede_renovar: true },
+    ]);
+    render(<ClienteSuscripciones uuidCliente={UUID_CLIENTE} />, { wrapper });
+    await userEvent.click(
+      await screen.findByTestId(`cliente-suscripcion-renovar-${UUID_SUBSCRIPCION}`),
+    );
+    const preview = screen.getByTestId('renovar-vigencia-anticipada');
+    expect(preview.textContent).toMatch(/2026-02-01/);
+    expect(preview.textContent).toMatch(/25 días/);
+  });
+
+  it('shows no stacking preview for an expired subscription', async () => {
+    mockList.mockResolvedValue([
+      { ...VIGENTE, fecha_vencimiento: '2026-01-01', dias_restantes: -3, puede_renovar: true },
+    ]);
+    render(<ClienteSuscripciones uuidCliente={UUID_CLIENTE} />, { wrapper });
+    await userEvent.click(
+      await screen.findByTestId(`cliente-suscripcion-renovar-${UUID_SUBSCRIPCION}`),
+    );
+    expect(screen.queryByTestId('renovar-vigencia-anticipada')).not.toBeInTheDocument();
   });
 
   it('does NOT recompute the window from dates: puede_renovar absent => no button', async () => {
@@ -251,10 +275,10 @@ describe('<ClienteSuscripciones /> -- renovación (PT-3)', () => {
     });
   });
 
-  it('maps renovacion_fuera_de_ventana (409) to a readable message and keeps the dialog open', async () => {
+  it('maps suscripcion_no_renovable (409) to a readable message and keeps the dialog open', async () => {
     mockList.mockResolvedValue([RENOVABLE]);
     const body = JSON.stringify({
-      detail: { error: 'renovacion_fuera_de_ventana', dias_restantes: 25, ventana_dias: 10 },
+      detail: { error: 'suscripcion_no_renovable' },
     });
     mockRenovar.mockRejectedValue(new ClientesApiError(`clientesApi: POST x -> 409: ${body}`, 409, body));
     render(<ClienteSuscripciones uuidCliente={UUID_CLIENTE} />, { wrapper });
@@ -263,8 +287,7 @@ describe('<ClienteSuscripciones /> -- renovación (PT-3)', () => {
     await userEvent.click(screen.getByTestId('renovar-confirmar'));
 
     const err = await screen.findByTestId('renovar-error');
-    expect(err.textContent).toMatch(/25 días/);
-    expect(err.textContent).toMatch(/10 días o menos/);
+    expect(err.textContent).toMatch(/no se puede renovar/);
     expect(screen.getByTestId('renovar-dialog')).toBeInTheDocument();
   });
 

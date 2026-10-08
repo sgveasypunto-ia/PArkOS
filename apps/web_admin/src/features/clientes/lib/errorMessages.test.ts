@@ -61,13 +61,13 @@ describe('mapVehiculoError', () => {
 });
 
 describe('mapRenovacionError', () => {
-  it('renovacion_fuera_de_ventana interpolates dias_restantes and ventana_dias', () => {
+  it('the retired renovacion_fuera_de_ventana code no longer blocks: generic message', () => {
     const msg = mapRenovacionError(
       err(409, { error: 'renovacion_fuera_de_ventana', dias_restantes: 25, ventana_dias: 10 }),
       t,
     );
-    expect(msg).toMatch(/25 días/);
-    expect(msg).toMatch(/10 días o menos/);
+    expect(msg).toMatch(/No se pudo renovar/);
+    expect(msg).not.toMatch(/Todavía no se puede renovar/);
   });
 
   it.each([
