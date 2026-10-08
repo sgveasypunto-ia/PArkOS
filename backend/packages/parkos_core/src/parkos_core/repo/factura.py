@@ -313,15 +313,11 @@ def compute_base_bruta(items: list[FacturaItemCreate]) -> Decimal:
     """Sum of every ``servicio``/``producto`` line, BEFORE subtracting
     any ``descuento`` line (2026-09-24, live-validation bugfix).
 
-    Used as the IVA snapshot's ``base`` (``crear_factura_impuesto_iva``)
-    instead of the NET ``compute_total()`` result. Found via live
-    Chrome DevTools validation: a salida-mensualidad factura (servicio
-    200 + descuento 200, net total 0) was snapshotting
-    ``factura_impuestos.valor = ROUND(0 * 0.19, 2) = 0`` -- the
-    operator's directive is to show the IVA "como si fuera rotacion"
-    (the FULL amount), not $0. For an ordinary rotacion factura
-    (no descuento lines) this equals ``compute_total()`` exactly, so
-    the fix is a no-op for the existing flow.
+    Used for the header ``subtotal`` (the gross base, shown as if it were
+    rotacion). The IVA snapshot itself is NOT computed on this: since AUD2 it
+    is computed on the NET taxable amount (``compute_total``), so a salida
+    fully covered by a subscription carries no tax. For an ordinary rotacion
+    factura (no descuento lines) this equals ``compute_total()`` exactly.
     """
     return sum(
         (
