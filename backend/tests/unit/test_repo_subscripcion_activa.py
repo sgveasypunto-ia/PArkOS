@@ -18,6 +18,7 @@ import uuid as uuid_lib
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from parkos_core.runtime.tiempo import hoy_bogota
 from parkos_core.models.V.clientes import Clientes
 from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
 from parkos_core.models.V.sucursal import Sucursal
@@ -97,7 +98,7 @@ def _seed_subscripcion(
 async def test_subscripcion_vigente_procede_sin_forzado(pg_engine, v_fixture_factory) -> None:
     """T1: vigente_hasta IS NULL + estado='activo' + fecha_vencimiento >= today
     → ``SubscripcionValidationResult(vigente=True, subscripcion=row)``."""
-    today = datetime.now(UTC).date()
+    today = hoy_bogota()  # the repo compares against the Bogota calendar day
     async with AsyncSession(pg_engine, expire_on_commit=False) as session:
         parents = await _seed_parents(session, v_fixture_factory)
         seed = _seed_subscripcion(
@@ -121,7 +122,7 @@ async def test_subscripcion_vigente_procede_sin_forzado(pg_engine, v_fixture_fac
 async def test_subscripcion_vencida_sin_forzado_returns_false(pg_engine, v_fixture_factory) -> None:
     """T2: fecha_vencimiento < today → ``SubscripcionValidationResult(vigente=False)``
     with forzado=False."""
-    today = datetime.now(UTC).date()
+    today = hoy_bogota()  # the repo compares against the Bogota calendar day
     async with AsyncSession(pg_engine, expire_on_commit=False) as session:
         parents = await _seed_parents(session, v_fixture_factory)
         seed = _seed_subscripcion(
@@ -143,7 +144,7 @@ async def test_subscripcion_vencida_sin_forzado_returns_false(pg_engine, v_fixtu
 async def test_subscripcion_vencida_con_forzado_walk_in(pg_engine, v_fixture_factory) -> None:
     """T3: misma T2 state con forzado=True → ``vigente=False``
     (walk-in auditado; caller procede)."""
-    today = datetime.now(UTC).date()
+    today = hoy_bogota()  # the repo compares against the Bogota calendar day
     async with AsyncSession(pg_engine, expire_on_commit=False) as session:
         parents = await _seed_parents(session, v_fixture_factory)
         seed = _seed_subscripcion(
@@ -165,7 +166,7 @@ async def test_subscripcion_vencida_con_forzado_walk_in(pg_engine, v_fixture_fac
 @pytest.mark.asyncio
 async def test_subscripcion_inactiva_sin_forzado_returns_false(pg_engine, v_fixture_factory) -> None:
     """T4: estado='inactivo' (vigente en fechas) → ``SubscripcionValidationResult(vigente=False)``."""
-    today = datetime.now(UTC).date()
+    today = hoy_bogota()  # the repo compares against the Bogota calendar day
     async with AsyncSession(pg_engine, expire_on_commit=False) as session:
         parents = await _seed_parents(session, v_fixture_factory)
         seed = _seed_subscripcion(

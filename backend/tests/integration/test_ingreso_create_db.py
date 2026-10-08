@@ -18,6 +18,7 @@ from parkos_core.models.L_E.ingreso import Ingreso
 from parkos_core.models.V.clientes import Clientes
 from parkos_core.models.V.tarifas_sucursal import TarifasSucursal
 from parkos_core.models.V.tipo_subscripciones import TipoSubscripciones
+from parkos_core.runtime.tiempo import hoy_bogota
 from parkos_core.models.L_W.anulaciones import Anulaciones
 from parkos_core.models.V.cantidad_vehiculos_sucursal import (
     CantidadVehiculosSucursal,
@@ -344,8 +345,8 @@ async def test_subscripcion_vencida_returns_422_sin_forzado(
                 uuid_cliente=cliente.uuid,
                 uuid_sucursal=branch,
                 uuid_tipo_subscripcion=tipo_sub.uuid,
-                fecha_inicio_cobertura=now.date() - timedelta(days=60),
-                fecha_vencimiento=now.date() - timedelta(days=1),  # past
+                fecha_inicio_cobertura=hoy_bogota() - timedelta(days=60),
+                fecha_vencimiento=hoy_bogota() - timedelta(days=1),  # past (Bogota day)
                 created_at=now,
                 created_by=uuid_lib.uuid4(),
                 vigente_desde=now - timedelta(days=60),
