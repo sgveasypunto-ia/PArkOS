@@ -559,27 +559,145 @@ Describe 'Invoke-ParkosLiteStep env pasa las partes del repo a las herramientas'
 Describe 'Get-ParkosLiteChangedSinceCommit' {
     It 'con archivos cambiados los devuelve' {
         Mock Get-ParkosPartsChangedFiles { @('backend/a.py', 'backend/b.py') }
-        $r = Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit 'abc'
+        $r = Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:
+' -Commit 'abc'
         @($r).Count | Should Be 2
     }
     It 'sin cambios y commit conocido: arreglo vacio (NO $null)' {
         Mock Get-ParkosPartsChangedFiles { @() }
         Mock Invoke-ParkosLiteGit { @{ ExitCode = 0; Output = @('abc') } }
-        $r = Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit 'abc'
+        $r = Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:
+' -Commit 'abc'
         ($null -eq $r) | Should Be $false
         @($r).Count | Should Be 0
     }
     It 'commit desconocido para git (clon superficial): $null' {
         Mock Get-ParkosPartsChangedFiles { $null }
         Mock Invoke-ParkosLiteGit { @{ ExitCode = 1; Output = @('fatal') } }
-        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit 'abc')) | Should Be $true
+        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:
+' -Commit 'abc')) | Should Be $true
     }
     It 'sin commit en el manifest: $null' {
-        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit '')) | Should Be $true
+        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:
+' -Commit '')) | Should Be $true
     }
     It 'git no instalado (el comando lanza): $null' {
         Mock Get-ParkosPartsChangedFiles { $null }
         Mock Invoke-ParkosLiteGit { throw 'git: no se reconoce' }
-        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:' -Commit 'abc')) | Should Be $true
+        ($null -eq (Get-ParkosLiteChangedSinceCommit -RepoRoot 'C:
+' -Commit 'abc')) | Should Be $true
+    }
+}
+
+Describe 'Get-ParkosLitePnpmInstallArguments' {
+    It 'usa el lockfile del repo congelado y nunca lo desactiva' {
+        $a = @(Get-ParkosLitePnpmInstallArguments)
+        ($a -contains '--frozen-lockfile') | Should Be $true
+        ($a -contains '--ignore-scripts') | Should Be $true
+        ($a -contains '--frozen-lockfile=false') | Should Be $false
+        ($a -contains '--lockfile=false') | Should Be $false
+    }
+    It 'reporter sin dibujo, sin aviso de actualizacion y sin confirmar purga' {
+        $a = @(Get-ParkosLitePnpmInstallArguments)
+        ($a -contains '--reporter=append-only') | Should Be $true
+        ($a -contains '--config.update-notifier=false') | Should Be $true
+        ($a -contains '--config.confirmModulesPurge=false') | Should Be $true
+    }
+}
+
+Describe 'Invoke-ParkosLitePnpmInstall' {
+    function New-PnpmCase {
+        param([string]$Name, [switch]$WithModules)
+        $apps = Join-Path $TestDrive "$Name-apps"
+        New-Item -ItemType Directory -Force -Path (Join-Path $apps 'node_modules') | Out-Null
+        if ($WithModules) { Set-Content (Join-Path $apps 'node_modules\.modules.yaml') 'layoutVersion: 5' }
+        return @{ Apps = $apps; Log = (Join-Path $TestDrive "$Name-logs\pnpm-install.log") }
+    }
+
+    It 'instala con las argumentos construidos y devuelve 0 con mensaje de exito y conteo' {
+        $c = New-PnpmCase 'ok' -WithModules
+        Mock Invoke-ParkosLitePnpmNative {
+            & $OnLine 'Progress: resolved 5, reused 0'
+            & $OnLine 'Packages: +1013'
+            & $OnLine 'Done in 3s'
+            0
+        }
+        $script:out = @(); Mock Write-Host { $script:out += "$Object" }
+        (Invoke-ParkosLitePnpmInstall -AppsDir $c.Apps -LogPath $c.Log) | Should Be 0
+        Assert-MockCalled Invoke-ParkosLitePnpmNative -Times 1 -ParameterFilter { $Arguments -contains '--frozen-lockfile' -and -not ($Arguments -contains '--lockfile=false') }
+        ($script:out -contains 'Dependencias del front instaladas (1013 paquetes)') | Should Be $true
+        @($script:out | Where-Object { $_ -match '^Progress:' }).Count | Should Be 0
+    }
+    It 'sin linea Packages: mensaje de exito sin conteo' {
+        $c = New-PnpmCase 'nocount' -WithModules
+        Mock Invoke-ParkosLitePnpmNative { & $OnLine 'Already up to date'; 0 }
+        $script:out = @(); Mock Write-Host { $script:out += "$Object" }
+        (Invoke-ParkosLitePnpmInstall -AppsDir $c.Apps -LogPath $c.Log) | Should Be 0
+        ($script:out -contains 'Dependencias del front instaladas.') | Should Be $true
+    }
+    It 'el log queda en UTF-8 sin BOM y conserva la linea Progress' {
+        $c = New-PnpmCase 'enc' -WithModules
+        Mock Invoke-ParkosLitePnpmNative { & $OnLine 'Progress: resolved 1'; & $OnLine 'paquete ñandú'; 0 }
+        $script:out = @(); Mock Write-Host { $script:out += "$Object" }
+        Invoke-ParkosLitePnpmInstall -AppsDir $c.Apps -LogPath $c.Log | Out-Null
+        $bytes = [IO.File]::ReadAllBytes($c.Log)
+        ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) | Should Be $false
+        ($bytes[0] -eq 0xFF) | Should Be $false
+        [Text.Encoding]::UTF8.GetString($bytes) | Should Match 'ñandú'
+        [Text.Encoding]::UTF8.GetString($bytes) | Should Match 'Progress: resolved 1'
+    }
+    It 'fija UTF-8, NO_COLOR y sin aviso de actualizacion durante la llamada y lo restaura despues' {
+        $c = New-PnpmCase 'envx' -WithModules
+        $script:seen = @{}
+        Mock Invoke-ParkosLitePnpmNative {
+            $script:seen.Enc = [Console]::OutputEncoding.WebName
+            $script:seen.Out = $OutputEncoding.WebName
+            $script:seen.NoColor = $env:NO_COLOR
+            $script:seen.Notifier = $env:npm_config_update_notifier
+            0
+        }
+        $script:out = @(); Mock Write-Host { $script:out += "$Object" }
+        $prevCon = [Console]::OutputEncoding
+        $prevOut = $OutputEncoding
+        $env:NO_COLOR = $null; $env:npm_config_update_notifier = 'previo'
+        try {
+            Invoke-ParkosLitePnpmInstall -AppsDir $c.Apps -LogPath $c.Log | Out-Null
+            $script:seen.Enc | Should Be 'utf-8'
+            $script:seen.Out | Should Be 'utf-8'
+            $script:seen.NoColor | Should Be '1'
+            $script:seen.Notifier | Should Be 'false'
+            [Console]::OutputEncoding.WebName | Should Be $prevCon.WebName
+            $OutputEncoding.WebName | Should Be $prevOut.WebName
+            ($null -eq $env:NO_COLOR) | Should Be $true
+            $env:npm_config_update_notifier | Should Be 'previo'
+        } finally { $env:npm_config_update_notifier = $null }
+    }
+    It 'restaura codificacion y entorno aunque pnpm lance' {
+        $c = New-PnpmCase 'thr' -WithModules
+        Mock Invoke-ParkosLitePnpmNative { throw 'boom' }
+        $script:out = @(); Mock Write-Host { $script:out += "$Object" }
+        $prevCon = [Console]::OutputEncoding.WebName
+        $env:NO_COLOR = $null
+        { Invoke-ParkosLitePnpmInstall -AppsDir $c.Apps -LogPath $c.Log } | Should Throw
+        [Console]::OutputEncoding.WebName | Should Be $prevCon
+        ($null -eq $env:NO_COLOR) | Should Be $true
+    }
+    It 'exit distinto de 0: devuelve el codigo, imprime el log y su cola' {
+        $c = New-PnpmCase 'fail' -WithModules
+        Mock Invoke-ParkosLitePnpmNative { 1..30 | ForEach-Object { & $OnLine "linea $_" }; & $OnLine 'ERR_PNPM_OUTDATED_LOCKFILE'; 1 }
+        $script:out = @(); Mock Write-Host { $script:out += "$Object" }
+        (Invoke-ParkosLitePnpmInstall -AppsDir $c.Apps -LogPath $c.Log) | Should Be 1
+        @($script:out | Where-Object { $_ -match 'No se pudieron instalar las dependencias del front \(exit 1\).*pnpm-install\.log' }).Count | Should Be 1
+        @($script:out | Where-Object { $_ -eq 'ERR_PNPM_OUTDATED_LOCKFILE' }).Count | Should Be 2
+        @($script:out | Where-Object { $_ -eq 'linea 1' }).Count | Should Be 1
+        @($script:out | Where-Object { $_ -match '^Dependencias del front instaladas' }).Count | Should Be 0
+    }
+    It 'exit 0 pero node_modules sin .modules.yaml: instalacion incompleta (codigo 3)' {
+        $c = New-PnpmCase 'partial'
+        Mock Invoke-ParkosLitePnpmNative { & $OnLine 'Packages: +10'; 0 }
+        $script:out = @(); Mock Write-Host { $script:out += "$Object" }
+        (Invoke-ParkosLitePnpmInstall -AppsDir $c.Apps -LogPath $c.Log) | Should Be 3
+        @($script:out | Where-Object { $_ -match 'incompleta.*\.modules\.yaml' }).Count | Should Be 1
+        @($script:out | Where-Object { $_ -match '^Dependencias del front instaladas' }).Count | Should Be 0
     }
 }
