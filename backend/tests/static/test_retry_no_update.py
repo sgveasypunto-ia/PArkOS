@@ -120,30 +120,29 @@ def test_retry_handler_commits_exactly_once() -> None:
     )
 
 
-def test_retry_handler_uses_crear_envio_dian_reintento() -> None:
-    """T6.5: the retry handler MUST call ``crear_envio_dian_reintento``.
+def test_retry_handler_files_a_request_instead_of_writing_envio_dian() -> None:
+    """The retry handler MUST call ``crear_solicitud_reintento_dian``.
 
-    A future regression that swapped in ``crear_envio_dian_inicial`` or
-    a direct ``session.add(EnvioDian(...))`` would break DEC-FE-02 (the
-    retry row must carry ``uuid_envio_padre`` — the initial helper sets
-    it to NULL). The walk pins the helper name so the audit trail
-    invariant is enforced at the AST level.
+    ``envio_dian`` is cloud-authored (``cloud_to_branch``): the branch never
+    pushes it, so a retry row written locally would never reach the cloud. The
+    handler appends a request row (``alerta`` ``dian_reintento_solicitado``,
+    ``branch_to_cloud``) and the cloud creates the retry attempt. It must not
+    write ``EnvioDian`` itself, nor call the removed local helper.
     """
     tree = _parse_handler()
     handler = _retry_handler_node(tree)
-    calls_retry_helper = False
+    called: set[str] = set()
+    constructs_envio = False
 
     for node in ast.walk(handler):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "crear_envio_dian_reintento"
-        ):
-            calls_retry_helper = True
-            break
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            called.add(node.func.attr)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            constructs_envio |= node.func.id == "EnvioDian"
 
-    assert calls_retry_helper, (
-        "DEC-FE-02 violated: `retry_envio_dian` does not call "
-        "`crear_envio_dian_reintento`; the retry row would lose its "
-        "`uuid_envio_padre` link to the chain tip."
+    assert "crear_solicitud_reintento_dian" in called, (
+        "`retry_envio_dian` does not call `crear_solicitud_reintento_dian`; the "
+        "retry would never reach the cloud."
     )
+    assert "crear_envio_dian_reintento" not in called
+    assert not constructs_envio

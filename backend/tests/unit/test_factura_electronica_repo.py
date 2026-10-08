@@ -9,7 +9,7 @@ T2.1 covers the read-side helpers:
 T2.2 covers the write-side helpers:
   - crear_factura_electronica_inicial (Step 7 INSERT)
   - crear_envio_dian_inicial (Step 8 INSERT)
-  - crear_envio_dian_reintento (Step 5 INSERT retry with uuid_envio_padre)
+  - crear_solicitud_reintento_dian / buscar_solicitud_reintento_pendiente (retry request)
 
 These tests use a real Postgres container (per F1.4/F1.5/F1.6/F1.7/F1.9
 precedent — no mocked DB for paths that touch SELECT FOR UPDATE / the
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import sys
 import uuid as uuid_lib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 # Ensure parkos_core importable
@@ -39,7 +39,9 @@ from parkos_core.repo.factura_electronica import (
     buscar_factura_electronica_por_uuid,
     buscar_factura_por_uuid,
     crear_envio_dian_inicial,
-    crear_envio_dian_reintento,
+    TIPO_ALERTA_REINTENTO_DIAN,
+    buscar_solicitud_reintento_pendiente,
+    crear_solicitud_reintento_dian,
     crear_factura_electronica_inicial,
 )
 from parkos_core.repo.resolucion_facturacion import (
@@ -348,48 +350,71 @@ async def test_crear_envio_dian_inicial_sets_uuid_envio_padre_null(
 
 
 @pytest.mark.asyncio
-async def test_crear_envio_dian_reintento_sets_uuid_envio_padre_to_tip(
+async def test_crear_solicitud_reintento_files_an_alerta_for_the_cloud(
     pg_engine: AsyncEngine,
     seeded_sucursal_uuid: uuid_lib.UUID,
 ) -> None:
-    """Step 5 INSERT: retry envio has ``uuid_envio_padre=<tip.uuid>`` (DEC-FE-02)."""
-    resolucion_uuid = await _seed_resolucion(
-        pg_engine, uuid_sucursal=seeded_sucursal_uuid
-    )
+    """The retry is a ``branch_to_cloud`` request (``alerta``), never a local envio_dian."""
+    from sqlalchemy import func, select
+
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    fe_uuid = uuid_lib.uuid4()
+    padre = uuid_lib.uuid4()
     async with Session() as session:
-        fe = FacturaElectronica(
-            uuid=uuid_lib.uuid4(),
-            uuid_sucursal=seeded_sucursal_uuid,
-            uuid_factura=None,
-            uuid_resolucion_facturacion=resolucion_uuid,
-            prefijo="SETP",
-            consecutivo=1,
-            descuento=0,
-            created_at=_now(),
-            created_by=None,
-        )
-        session.add(fe)
-        await session.flush()
-        fe_uuid = fe.uuid
-        initial = await crear_envio_dian_inicial(
+        envios_antes = (
+            await session.execute(select(func.count()).select_from(EnvioDian))
+        ).scalar_one()
+        solicitud = await crear_solicitud_reintento_dian(
             session,
             actor_uuid=uuid_lib.uuid4(),
             uuid_sucursal=seeded_sucursal_uuid,
             uuid_factura_electronica=fe_uuid,
-            uuid_resolucion_facturacion=resolucion_uuid,
-            payload={},
-        )
-        await session.flush()
-        retry = await crear_envio_dian_reintento(
-            session,
-            actor_uuid=uuid_lib.uuid4(),
-            uuid_sucursal=seeded_sucursal_uuid,
-            uuid_factura_electronica=fe_uuid,
-            uuid_resolucion_facturacion=resolucion_uuid,
-            payload={},
-            uuid_envio_padre=initial.uuid,
+            uuid_envio_padre=padre,
+            payload={"prefijo": "SETP", "consecutivo": 1},
         )
         await session.commit()
-    assert retry.uuid_envio_padre == initial.uuid
-    assert retry.estado == "pendiente"
+        envios_despues = (
+            await session.execute(select(func.count()).select_from(EnvioDian))
+        ).scalar_one()
+    assert solicitud.tipo_alerta == TIPO_ALERTA_REINTENTO_DIAN
+    assert solicitud.uuid_arqueo == fe_uuid
+    assert solicitud.uuid_sucursal == seeded_sucursal_uuid
+    assert solicitud.datos_nuevos["uuid_envio_padre"] == str(padre)
+    assert envios_despues == envios_antes
+
+
+@pytest.mark.asyncio
+async def test_buscar_solicitud_pendiente_only_sees_requests_newer_than_the_tip(
+    pg_engine: AsyncEngine,
+    seeded_sucursal_uuid: uuid_lib.UUID,
+) -> None:
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    fe_uuid = uuid_lib.uuid4()
+    async with Session() as session:
+        solicitud = await crear_solicitud_reintento_dian(
+            session,
+            actor_uuid=uuid_lib.uuid4(),
+            uuid_sucursal=seeded_sucursal_uuid,
+            uuid_factura_electronica=fe_uuid,
+            uuid_envio_padre=None,
+            payload={},
+        )
+        await session.commit()
+        antes = solicitud.timestamp_evento - timedelta(seconds=5)
+        despues = solicitud.timestamp_evento + timedelta(seconds=5)
+        pendiente = await buscar_solicitud_reintento_pendiente(
+            session, uuid_factura_electronica=fe_uuid, desde=antes
+        )
+        sin_tip = await buscar_solicitud_reintento_pendiente(
+            session, uuid_factura_electronica=fe_uuid, desde=None
+        )
+        contestada = await buscar_solicitud_reintento_pendiente(
+            session, uuid_factura_electronica=fe_uuid, desde=despues
+        )
+        otra = await buscar_solicitud_reintento_pendiente(
+            session, uuid_factura_electronica=uuid_lib.uuid4(), desde=None
+        )
+    assert pendiente is not None and pendiente.uuid == solicitud.uuid
+    assert sin_tip is not None
+    assert contestada is None  # the cloud's newer attempt answered it
+    assert otra is None

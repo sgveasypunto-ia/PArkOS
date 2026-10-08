@@ -282,6 +282,10 @@ def resume_factura_dispatch(
 # the author of the envio_dian chain, initial transition is ``pendiente``).
 _ESTADO_PENDIENTE = "pendiente"
 
+# ``alerta.tipo_alerta`` of a manual retry request (repo.factura_electronica
+# TIPO_ALERTA_REINTENTO_DIAN; duplicated to keep this module import-light).
+_TIPO_REINTENTO = "dian_reintento_solicitado"
+
 
 async def dian_factura_electronica_dispatch_hook(ctx: HookContext) -> HookResult:
     """``hook_post_insert`` for ``factura_electronica`` (CU-05 fix #2 leg 1).
@@ -363,8 +367,50 @@ async def dian_revocacion_factura_dispatch_hook(ctx: HookContext) -> HookResult:
     return HookResult(proceed=True)
 
 
+async def dian_reintento_solicitado_hook(ctx: HookContext) -> HookResult:
+    """``hook_post_insert`` for ``alerta`` (manual DIAN retry, branch -> cloud).
+
+    ``envio_dian`` is cloud-authored and never pushed by the branch, so a manual
+    retry arrives as an ``alerta`` with ``tipo_alerta='dian_reintento_solicitado'``
+    whose ``uuid_arqueo`` is the ``factura_electronica`` to resend. Every other
+    ``alerta`` is ignored. The retry is deferred to AFTER the outermost commit,
+    keyed by the document (``("fe", uuid)``) like the arrival hook, so duplicate
+    requests in one batch start a single task; across processes the dispatcher's
+    advisory lock + chain check refuses an accepted or in-flight document.
+    """
+    payload = ctx.payload if isinstance(ctx.payload, dict) else {}
+    if payload.get("tipo_alerta") != _TIPO_REINTENTO:
+        return HookResult(proceed=True)
+    referencia = payload.get("uuid_arqueo")
+    if referencia is None:
+        return HookResult(proceed=True)
+
+    from ....dian.cloud.dispatcher import dispatch_factura_electronica_retry
+
+    uuid_fe = uuid_lib.UUID(str(referencia))
+    actor_uuid = ctx.actor_uuid
+
+    defer_dispatch(
+        ctx.session,
+        lambda session: dispatch_factura_electronica_retry(
+            session,
+            uuid_factura_electronica=uuid_fe,
+            actor_uuid=actor_uuid,
+            dian_provider_url=_DIAN_PROVIDER_URL,
+            dian_token_path=_DIAN_TOKEN_PATH,
+        ),
+        key=("fe", uuid_fe),
+    )
+    return HookResult(proceed=True)
+
+
 async def envio_dian_resume_hook(ctx: HookContext) -> HookResult:
     """``hook_post_insert`` for ``envio_dian(estado='pendiente')`` (CU-05 fix #2 leg 3).
+
+    NOT bound to the catalog any more: ``envio_dian`` is ``cloud_to_branch`` and
+    is applied at the branch. Kept (and registered) because the sweep/tests call
+    it directly; the live triggers are the FE / revocacion arrival hooks and
+    :func:`dian_reintento_solicitado_hook`.
 
     Branch-originated envio_dian rows in the ``pendiente`` state arrive
     at the cloud via sync — without this hook every pendiente envio_dian
@@ -443,6 +489,10 @@ registry.register(
     dian_revocacion_factura_dispatch_hook,
 )
 registry.register(
+    "dian_reintento_solicitado",
+    dian_reintento_solicitado_hook,
+)
+registry.register(
     "envio_dian_resume",
     envio_dian_resume_hook,
 )
@@ -451,6 +501,7 @@ registry.register(
 __all__ = [
     "defer_dispatch",
     "dian_factura_electronica_dispatch_hook",
+    "dian_reintento_solicitado_hook",
     "dian_revocacion_factura_dispatch_hook",
     "envio_dian_resume_hook",
     "resume_factura_dispatch",

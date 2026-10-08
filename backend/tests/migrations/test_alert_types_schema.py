@@ -33,6 +33,7 @@ _EXPECTED_TIPOS = _ORIGINAL_TIPOS | frozenset(
         "capacidad_agotada",
         "capacidad_agotada_forzado",
         "descuadre_critico",
+        "dian_reintento_solicitado",
         "evento_no_procesado",
         "fe_emision_fallida",
         "fe_emision_pendiente",
@@ -80,6 +81,7 @@ async def test_alert_types_severity_values(pg_engine, alembic_upgrade) -> None:
     assert by_tipo["dian_rechazada"] == "warning"
     assert by_tipo["fe_provider_error"] == "critical"
     assert by_tipo["fe_numbering_exhausted"] == "critical"
+    assert by_tipo["dian_reintento_solicitado"] == "info"
     assert all(v in {"info", "warning", "critical"} for v in by_tipo.values())
 
 

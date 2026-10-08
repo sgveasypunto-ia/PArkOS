@@ -219,8 +219,13 @@ async def test_retry_handler_sets_cache_control_no_store(
     )
     monkeypatch.setattr(
         facturacion_mod.repo_factura_electronica,
-        "crear_envio_dian_reintento",
+        "crear_solicitud_reintento_dian",
         AsyncMock(return_value=new_envio),
+    )
+    monkeypatch.setattr(
+        facturacion_mod.repo_factura_electronica,
+        "buscar_solicitud_reintento_pendiente",
+        AsyncMock(return_value=None),
     )
 
     response = MagicMock()

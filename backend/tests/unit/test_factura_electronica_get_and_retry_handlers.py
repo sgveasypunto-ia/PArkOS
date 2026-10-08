@@ -244,8 +244,13 @@ async def test_retry_envio_dian_happy_path_with_chain_tip(
     )
     monkeypatch.setattr(
         facturacion_mod.repo_factura_electronica,
-        "crear_envio_dian_reintento",
+        "crear_solicitud_reintento_dian",
         AsyncMock(return_value=new_envio),
+    )
+    monkeypatch.setattr(
+        facturacion_mod.repo_factura_electronica,
+        "buscar_solicitud_reintento_pendiente",
+        AsyncMock(return_value=None),
     )
 
     response = MagicMock()
@@ -361,3 +366,36 @@ async def test_retry_404_when_fe_missing(
         await retry_envio_dian(response, missing_uuid, session, ctx, None)
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail["error"] == "factura_electronica_no_encontrada"
+
+
+@pytest.mark.asyncio
+async def test_retry_409_when_a_request_is_already_waiting_for_the_cloud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry request travels branch -> cloud asynchronously: a second click
+    before the cloud's new attempt returns must not file a second request."""
+    import parkos_core.api.v1.facturacion as facturacion_mod
+
+    fe_orm = _make_fe_orm()
+    chain_tip = _make_envio_orm(uuid_factura_electronica=fe_orm.uuid, estado="rechazado")
+    waiting = MagicMock()
+    waiting.uuid = uuid_lib.uuid4()
+
+    ctx = _make_ctx(sucursal_uuid=fe_orm.uuid_sucursal)
+    session = AsyncMock()
+    repo = facturacion_mod.repo_factura_electronica
+    monkeypatch.setattr(repo, "buscar_factura_electronica_por_uuid", AsyncMock(return_value=fe_orm))
+    monkeypatch.setattr(repo, "buscar_envio_dian_chain_tip", AsyncMock(return_value=chain_tip))
+    monkeypatch.setattr(repo, "buscar_solicitud_reintento_pendiente", AsyncMock(return_value=waiting))
+    create = AsyncMock()
+    monkeypatch.setattr(repo, "crear_solicitud_reintento_dian", create)
+
+    response = MagicMock()
+    response.headers = {}
+    with pytest.raises(HTTPException) as exc_info:
+        await retry_envio_dian(response, fe_orm.uuid, session, ctx, None)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"] == "envio_dian_already_pending"
+    create.assert_not_awaited()
+    assert session.commit.await_count == 0

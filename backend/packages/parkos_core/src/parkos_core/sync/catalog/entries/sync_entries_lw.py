@@ -18,6 +18,7 @@ from ....models.L_W.envio_dian import EnvioDian
 from ....models.L_W.reclamos import Reclamos
 from ....models.L_W.reimpresion_ticket import ReimpresionTicket
 from ....models.L_W.validacion_evento import ValidacionEvento
+from ...hooks.impls.dian_dispatch_on_sync import dian_reintento_solicitado_hook
 from ..schema import SyncCatalogEntry
 
 # ---------------------------------------------------------------------------
@@ -103,6 +104,10 @@ _ALERTA = SyncCatalogEntry(
     seq_strategy="seq_via_datos",
     self_chain=True,
     parent_fk_column="uuid_alerta_padre",
+    # Carrier of the manual DIAN retry request (``tipo_alerta=
+    # 'dian_reintento_solicitado'``): the cloud creates the retry envio_dian on
+    # arrival. The hook is a no-op for every other alerta.
+    hook_post_insert=dian_reintento_solicitado_hook,
 )
 
 # ---------------------------------------------------------------------------
