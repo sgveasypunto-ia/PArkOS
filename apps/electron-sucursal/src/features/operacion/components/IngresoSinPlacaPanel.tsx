@@ -33,6 +33,7 @@ import { z } from 'zod';
 
 import { useTiposVehiculoSinPlaca } from '../../catalogos/hooks/useTiposVehiculoSinPlaca';
 import { Button } from '@/components/ui/button';
+import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 import {
   Select,
   SelectContent,
@@ -202,7 +203,7 @@ export function IngresoSinPlacaPanel({
 
       {submitError && (
         <p role="alert" className="text-sm text-destructive">
-          {t(`error_${submitError}`, { defaultValue: submitError })}
+          {t(`error_${submitError}`, { defaultValue: mensajeIdentificacion(submitError) })}
         </p>
       )}
     </form>

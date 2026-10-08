@@ -608,4 +608,29 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     await paso5('ABC12D'); // moto format
     expect(screen.getByTestId('venta-paso-6')).toBeDefined();
   });
+
+  it('T15 (AUD3): una placa mal formada muestra un mensaje en español, no el código crudo', async () => {
+    renderVenta();
+    await paso1();
+    await paso2();
+    await paso3();
+    await paso4();
+    await paso5('AB1');
+    const msg = screen.getByTestId('venta-placas-format-error').textContent ?? '';
+    expect(msg).toContain('Placa no coincide con ningún formato conocido');
+    expect(msg).not.toContain('placa_formato_invalido');
+    expect(screen.queryByTestId('venta-paso-6')).toBeNull();
+  });
+
+  it('T16 (AUD3): una cantidad fuera de rango muestra un mensaje en español', async () => {
+    renderVenta();
+    await paso1();
+    await paso2();
+    await paso3();
+    await change('venta-cantidad-input', '0');
+    await click('venta-paso-4-siguiente');
+    const msg = screen.getByTestId('venta-cantidad-error').textContent ?? '';
+    expect(msg).not.toMatch(/validation\.|_/);
+    expect(msg.length).toBeGreaterThan(10);
+  });
 });

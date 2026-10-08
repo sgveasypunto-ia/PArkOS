@@ -68,6 +68,7 @@ import { hoyBogotaISO } from '../lib/fechaInicio';
 import { buildClienteVentaPayload } from '../lib/clienteVentaPayload';
 import { validarIdentificacion } from '../../../lib/validation/identificacion';
 import { validarNitModulo11 } from '../../../lib/validation/nit';
+import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 
 /**
  * Optional escape hatches for non-page consumers (e.g., embedded in
@@ -206,7 +207,7 @@ const buildPlacasSchema = (count: number) =>
             'placa_formato_invalido',
           ),
       )
-      .length(count),
+      .length(count, 'placas_cantidad_invalida'),
   });
 
 /**
@@ -846,7 +847,7 @@ export function Venta({
               className="text-sm text-destructive"
               role="alert"
             >
-              {cantidadError}
+              {mensajeIdentificacion(cantidadError)}
             </span>
           )}
           <Button
@@ -923,7 +924,7 @@ export function Venta({
                     tipo: selectedTipoVehiculo?.tipo ?? '',
                     defaultValue: `La placa no corresponde al tipo de vehículo elegido (${selectedTipoVehiculo?.tipo ?? ''}).`,
                   })
-                : placasError}
+                : mensajeIdentificacion(placasError)}
             </span>
           )}
           <Button
