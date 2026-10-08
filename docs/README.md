@@ -51,6 +51,7 @@ migraciones y la suite de pruebas — no el plan original. Todo lo que aparece m
 
 - [Manual de usuario final](05-manuales/usuario-final.md) — panel `web_admin`.
 - [Manual de operaciones](05-manuales/operaciones.md) — despliegue, variables de entorno, observabilidad.
+- [Procedimiento de documentos compensatorios](05-manuales/procedimiento-documentos-compensatorios.md) — **borrador, pendiente de decisión del contador**: consecutivo duplicado y registros históricos sin modificar.
 
 ## Runbooks operacionales
 
