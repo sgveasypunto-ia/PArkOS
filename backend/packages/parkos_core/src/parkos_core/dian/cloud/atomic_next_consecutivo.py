@@ -21,6 +21,7 @@ if os.environ.get("PARKOS_DEPLOY", "cloud").lower() == "branch":
     )
 
 from ...models.V.resolucion_facturacion import ResolucionFacturacion
+from ...repo.resolucion_facturacion import NumeracionSoloEnSucursalError
 
 
 class ResolucionNotFoundError(RuntimeError):
@@ -46,6 +47,7 @@ async def next_consecutivo(
 
     Raises:
         ResolucionNotFoundError / PrefijoMissingError (both RuntimeError).
+        NumeracionSoloEnSucursalError: the resolution is assigned to a branch.
     """
     row = (
         await session.execute(
@@ -61,6 +63,14 @@ async def next_consecutivo(
     if row.prefijo is None:
         raise PrefijoMissingError(
             f"resolucion_facturacion {uuid_resolucion_facturacion} has no prefijo"
+        )
+    if row.uuid_sucursal is not None:
+        # Numbering is BRANCH-LOCAL (AGENTS.md): a resolution assigned to a
+        # branch is numbered by that branch; minting here collides on
+        # ``factura_electronica_uk01``.
+        raise NumeracionSoloEnSucursalError(
+            f"resolucion_facturacion {uuid_resolucion_facturacion} belongs to a branch; "
+            "the cloud must not mint its consecutivo"
         )
     start = (row.rango_desde - 1) if row.rango_desde is not None else -1
     # scalar_one: COALESCE always returns exactly one value.
