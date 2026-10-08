@@ -1,7 +1,7 @@
 """pull RLS for ``envio_dian`` (now a ``cloud_to_branch`` / ``single_branch`` entry).
 
-Revision ID: 0095_pull_rls_envio_dian
-Revises: 0094_cotizar_iva_incluido
+Revision ID: 0096_pull_rls_envio_dian
+Revises: 0095_deterministic_catalog_seed_uuids
 
 ``envio_dian`` is cloud-authored (the cloud is the only egress to the DIAN
 provider) and returns ``cufe`` / ``estado`` to the branch that issued the
@@ -33,8 +33,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0095_pull_rls_envio_dian"
-down_revision = "0094_cotizar_iva_incluido"
+revision = "0096_pull_rls_envio_dian"
+down_revision = "0095_deterministic_catalog_seed_uuids"
 branch_labels = None
 depends_on = None
 

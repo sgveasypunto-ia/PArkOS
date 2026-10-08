@@ -34,9 +34,9 @@ def _load_migration():
 
 
 def _load_envio_dian_migration():
-    """0095 puts ``envio_dian`` under the same barrier; a 0085 round trip must undo it first."""
-    path = MIGRATION.with_name("0095_pull_rls_envio_dian.py")
-    spec = importlib.util.spec_from_file_location("migration_0095", path)
+    """0096 puts ``envio_dian`` under the same barrier; a 0085 round trip must undo it first."""
+    path = MIGRATION.with_name("0096_pull_rls_envio_dian.py")
+    spec = importlib.util.spec_from_file_location("migration_0096", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
