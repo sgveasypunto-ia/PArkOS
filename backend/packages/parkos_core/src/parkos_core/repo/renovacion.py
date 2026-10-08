@@ -47,7 +47,7 @@ from ..models.V.subscripciones_cliente import SubscripcionesCliente
 from ..models.V.tipo_subscripciones import TipoSubscripciones
 from ..models.V.vehiculos import Vehiculos
 from ..runtime.renovacion import (
-    RENOVACION_VENTANA_DIAS,
+    RENOVACION_URGENTE_DIAS,
     calcular_inicio_renovacion,
     dias_restantes,
     renovacion_anticipada,
@@ -67,7 +67,6 @@ __all__ = [
     "IvaNoConfiguradoError",
     "PlacaEnOtraSuscripcionError",
     "PlanNoVigenteError",
-    "RenovacionFueraDeVentanaError",
     "ResultadoRenovacion",
     "SubscripcionNoEncontradaError",
     "SubscripcionNoRenovableError",
@@ -102,17 +101,6 @@ class SubscripcionNoRenovableError(Exception):
     def __init__(self, *, uuid_subscripcion: uuid_lib.UUID) -> None:
         self.uuid_subscripcion = uuid_subscripcion
         super().__init__(f"suscripcion_no_renovable: {uuid_subscripcion}")
-
-
-class RenovacionFueraDeVentanaError(Exception):
-    """409 ``renovacion_fuera_de_ventana``: more than the window left."""
-
-    def __init__(self, *, dias_restantes: int, ventana_dias: int) -> None:
-        self.dias_restantes = dias_restantes
-        self.ventana_dias = ventana_dias
-        super().__init__(
-            f"renovacion_fuera_de_ventana: dias_restantes={dias_restantes} > {ventana_dias}"
-        )
 
 
 class PlanNoVigenteError(Exception):
@@ -368,12 +356,8 @@ async def renovar_vigencia(
     if anterior.fecha_vencimiento is None:
         raise SubscripcionNoRenovableError(uuid_subscripcion=uuid_subscripcion)
 
-    restantes = (anterior.fecha_vencimiento - referencia_hoy).days + 1
-    if not renovacion_permitida(restantes):
-        raise RenovacionFueraDeVentanaError(
-            dias_restantes=restantes, ventana_dias=RENOVACION_VENTANA_DIAS
-        )
-
+    # No anticipation window: any open subscription with a due date can be
+    # renewed; the new period stacks on the remaining validity.
     plan = await _resolver_plan_vigente(
         session, uuid_tipo_subscripcion=anterior.uuid_tipo_subscripcion
     )
@@ -564,15 +548,16 @@ async def cobrar_renovacion(
 async def listar_renovables(
     session: AsyncSession, *, uuid_sucursal: uuid_lib.UUID, hoy: date | None = None
 ) -> list[dict]:
-    """Open subscriptions of the branch that can be renewed NOW.
+    """Open subscriptions of the branch that are urgent to renew.
 
     ``GET /clientes/subscripciones-activas`` only lists the still-valid ones,
     so expired subscriptions (which may be renewed) need their own listing.
-    Rule = :func:`renovacion_permitida` (``dias_restantes <= ventana``),
-    ordered by ``fecha_vencimiento`` ascending (oldest / most urgent first).
+    This feed is bounded to ``dias_restantes <= RENOVACION_URGENTE_DIAS``; it
+    is a feed limit, NOT a renewal gate (any subscription can be renewed).
+    Ordered by ``fecha_vencimiento`` ascending (oldest / most urgent first).
     """
     referencia = hoy if hoy is not None else hoy_bogota()
-    limite = referencia + timedelta(days=RENOVACION_VENTANA_DIAS - 1)
+    limite = referencia + timedelta(days=RENOVACION_URGENTE_DIAS - 1)
     stmt = (
         select(SubscripcionesCliente, Clientes, TipoSubscripciones)
         .join(Clientes, Clientes.uuid == SubscripcionesCliente.uuid_cliente, isouter=True)

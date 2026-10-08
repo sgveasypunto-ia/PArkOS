@@ -4,7 +4,7 @@
  *   P1: summary shown, NO plate inputs, default medio = efectivo (no referencia).
  *   P2: confirm -> trigger payload + receipt (FacturaDisplayModal) + onRenovada on close.
  *   P3: datafono requires the voucher; sent as `referencia`.
- *   P4: renovacion_fuera_de_ventana -> clear Spanish message, lists refreshed
+ *   P4: suscripcion_no_renovable -> clear Spanish message, lists refreshed
  *       (`onStale`) and a NEW attempt id on the next click.
  *   P5: a non-definitive failure keeps the SAME attempt id (safe retry).
  *   P6: "Volver" -> onBack, disabled while the payment is in flight.
@@ -17,8 +17,21 @@ import userEvent from '@testing-library/user-event';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, opts?: { defaultValue?: string; defaultValue_one?: string; defaultValue_other?: string }) =>
-      opts?.defaultValue ?? opts?.defaultValue_other ?? _key,
+    t: (
+      _key: string,
+      opts?: Record<string, unknown> & {
+        defaultValue?: string;
+        defaultValue_one?: string;
+        defaultValue_other?: string;
+      },
+    ) => {
+      const raw =
+        opts?.defaultValue ??
+        (opts?.count === 1 ? opts?.defaultValue_one : undefined) ??
+        opts?.defaultValue_other ??
+        _key;
+      return raw.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => String(opts?.[k] ?? ''));
+    },
   }),
 }));
 
@@ -137,6 +150,26 @@ describe('<RenovarSuscripcionPanel /> — PT-3', () => {
     expect(screen.queryByTestId('renovar-referencia')).not.toBeInTheDocument();
   });
 
+  it('P1b: early renewal (25 days left) previews that the new period stacks after the due date', () => {
+    setup({ target: { ...TARGET, fecha_vencimiento: '2026-10-31', dias_restantes: 25 } });
+    const preview = screen.getByTestId('renovar-vigencia-anticipada');
+    expect(preview).toHaveTextContent('2026-11-01');
+    expect(preview).toHaveTextContent('25');
+  });
+
+  it('P1c: month/year/leap crossings compute the next day from the due date', () => {
+    setup({ target: { ...TARGET, fecha_vencimiento: '2028-02-28', dias_restantes: 40 } });
+    expect(screen.getByTestId('renovar-vigencia-anticipada')).toHaveTextContent('2028-02-29');
+    cleanup();
+    setup({ target: { ...TARGET, fecha_vencimiento: '2026-12-31', dias_restantes: 80 } });
+    expect(screen.getByTestId('renovar-vigencia-anticipada')).toHaveTextContent('2027-01-01');
+  });
+
+  it('P1d: an expired subscription shows no stacking preview', () => {
+    setup({ target: { ...TARGET, fecha_vencimiento: '2026-10-01', dias_restantes: -5 } });
+    expect(screen.queryByTestId('renovar-vigencia-anticipada')).not.toBeInTheDocument();
+  });
+
   it('P2: confirm -> trigger payload, receipt, and onRenovada after closing it', async () => {
     const { onRenovada } = setup();
     const user = userEvent.setup();
@@ -177,15 +210,15 @@ describe('<RenovarSuscripcionPanel /> — PT-3', () => {
     );
   });
 
-  it('P4: renovacion_fuera_de_ventana -> clear message, onStale, and a NEW attempt id afterwards', async () => {
+  it('P4: suscripcion_no_renovable -> clear message, onStale, and a NEW attempt id afterwards', async () => {
     mockTrigger.mockRejectedValueOnce(
-      new RenovacionError(409, 'renovacion_fuera_de_ventana', { dias_restantes: 25, ventana_dias: 10 }),
+      new RenovacionError(409, 'suscripcion_no_renovable'),
     );
     const { onStale } = setup();
     const user = userEvent.setup();
     await user.click(screen.getByTestId('renovar-confirmar'));
 
-    expect(screen.getByTestId('renovar-error')).toHaveTextContent('25');
+    expect(screen.getByTestId('renovar-error')).toHaveTextContent('no se puede renovar');
     expect(onStale).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByTestId('renovar-confirmar'));

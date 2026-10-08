@@ -8,7 +8,7 @@
  *
  * The backend is authoritative: each row already carries
  * `dias_restantes`, `dias_alerta_pre_vencimiento` (per-subscription alert
- * threshold) and `puede_renovar` (<= 10 days window, Bogota calendar). The
+ * threshold) and `puede_renovar` (any open subscription; there is no anticipation window). The
  * client does NOT recompute dates nor re-filter by a threshold; it only
  * sorts by `fecha_vencimiento` ASC (closest expiry first) and normalizes
  * the shape.

@@ -110,15 +110,6 @@ export function mapRenovacionError(e: unknown, t: Translate): string {
   if (has(e, 'voucher_requerido')) {
     return t('renovacion.errorVoucher', 'El datáfono exige la referencia del voucher.');
   }
-  if (has(e, 'renovacion_fuera_de_ventana')) {
-    const dias = detailString(e, 'dias_restantes');
-    const ventana = detailString(e, 'ventana_dias');
-    return t(
-      'renovacion.errorFueraDeVentana',
-      'Todavía no se puede renovar: a la suscripción le quedan {{dias}} días y la renovación se habilita con {{ventana}} días o menos.',
-      { dias: dias ?? '—', ventana: ventana ?? '10' },
-    );
-  }
   if (has(e, 'suscripcion_no_renovable')) {
     return t('renovacion.errorNoRenovable', 'Esta suscripción no se puede renovar.');
   }

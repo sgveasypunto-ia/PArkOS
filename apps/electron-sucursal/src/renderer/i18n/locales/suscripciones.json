@@ -73,6 +73,8 @@
     "vencida": "vencida",
     "diasRestantes_one": "{{count}} día restante",
     "diasRestantes_other": "{{count}} días restantes",
+    "vigenciaAnticipada_one": "La nueva vigencia empieza el {{inicio}} y se suma al día restante.",
+    "vigenciaAnticipada_other": "La nueva vigencia empieza el {{inicio}} y se suma a los {{count}} días restantes.",
     "nota": "La renovación mantiene las placas de la suscripción y cobra el plan completo (IVA incluido). No hace falta registrar placas.",
     "medioPago": "Medio de pago",
     "medios": {
@@ -88,7 +90,6 @@
     "exito": "Suscripción renovada.",
     "nuevoVencimiento": "Nuevo vencimiento: {{fecha}}",
     "errors": {
-      "renovacion_fuera_de_ventana": "Todavía no se puede renovar: faltan {{dias}} días y la renovación se habilita cuando queden {{ventana}} o menos.",
       "idempotency_key_requerido": "No se pudo identificar el intento de renovación. Intentá de nuevo.",
       "voucher_requerido": "Ingresá el número de voucher del datáfono.",
       "missing_sucursal_context": "No se pudo identificar la sucursal de la sesión. Cerrá sesión e ingresá de nuevo.",

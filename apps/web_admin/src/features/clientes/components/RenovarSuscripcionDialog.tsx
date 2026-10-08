@@ -3,8 +3,10 @@
  *
  * Renews an EXISTING subscription (no plates are asked: the backend reuses the
  * vehicles of the previous period). The "Renovar" entry point is only shown by
- * the caller when the server says `puede_renovar` (<= 10 days left, expired
- * included); this dialog never recomputes that.
+ * the caller when the server says `puede_renovar` (any open subscription:
+ * there is no anticipation window, expired included); this dialog never
+ * recomputes that. For an early renewal it only previews the day the new
+ * period starts (due date + 1); the backend confirms the real dates.
  *
  * Idempotency: one `Idempotency-Key` per attempt. A retry of the SAME request
  * (e.g. after a network error) reuses the key so the backend replays instead
@@ -51,6 +53,12 @@ const MEDIO_LABELS: Record<MedioPagoRenovacion, [string, string]> = {
   datafono: ['renovacion.medio.datafono', 'Datáfono'],
   transferencia: ['renovacion.medio.transferencia', 'Transferencia'],
 };
+
+/** Day after `iso` (YYYY-MM-DD), calendar-safe (month/year/leap) via UTC. */
+function diaSiguiente(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + 1)).toISOString().slice(0, 10);
+}
 
 function formatCop(value: number | string | null | undefined): string {
   if (value === null || value === undefined || value === '') return '—';
@@ -103,6 +111,7 @@ export function RenovarSuscripcionDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, subscripcion?.uuid]);
 
+  const anticipada = (subscripcion?.dias_restantes ?? 0) > 0;
   const referenciaRequerida = medioPago === 'datafono';
   const referenciaFaltante = referenciaRequerida && referencia.trim() === '';
 
@@ -148,6 +157,22 @@ export function RenovarSuscripcionDialog({
             )}
           </DialogDescription>
         </DialogHeader>
+
+        {result === null && anticipada && subscripcion?.fecha_vencimiento && (
+          <p
+            className="rounded-md border px-3 py-2 text-sm"
+            data-testid="renovar-vigencia-anticipada"
+          >
+            {t(
+              'renovacion.vigenciaAnticipada',
+              'La nueva vigencia empieza el {{inicio}} y se suma a los {{dias}} días restantes.',
+              {
+                inicio: diaSiguiente(subscripcion.fecha_vencimiento),
+                dias: subscripcion.dias_restantes,
+              },
+            )}
+          </p>
+        )}
 
         {result === null ? (
           <form

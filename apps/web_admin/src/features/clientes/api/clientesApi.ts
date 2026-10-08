@@ -201,8 +201,8 @@ export const subscripcionClienteSchema = z.object({
   created_at: z.string(),
   created_by: z.string().uuid().nullable(),
   sync_status: z.string().nullable(),
-  // Server-computed (PT-3 renovación). `puede_renovar` is true only when the
-  // plan has <= 10 days left (expired included); the UI must not recompute it.
+  // Server-computed (PT-3 renovación). `puede_renovar` is true for any open
+  // subscription (no anticipation window, expired included); the UI must not recompute it.
   // Optional/nullable so older servers (and list rows without it) still parse.
   dias_restantes: z.number().int().nullable().optional(),
   puede_renovar: z.boolean().nullable().optional(),

@@ -33,6 +33,8 @@ from parkos_core.models.V.tipo_subscripciones import TipoSubscripciones
 from parkos_core.models.V.usuarios import Usuarios
 from parkos_core.models.V.vehiculos import Vehiculos
 from parkos_core.repo import renovacion as repo_renovacion
+from parkos_core.repo import venta_suscripcion as repo_venta
+from parkos_core.repo.subscripcion_activa import validar_subscripcion_vigente
 from parkos_core.runtime.tiempo import hoy_bogota
 from tests.conftest import VFixtureFactory
 
@@ -473,25 +475,205 @@ async def test_sin_idempotency_key_es_400(
 # ---------------------------------------------------------------------------
 
 
-async def test_ventana_11_dias_rechaza_y_10_dias_permite(
+async def test_renovacion_anticipada_a_25_dias_se_apila_y_cobra(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    """No anticipation window: 25 days left renews, stacking after the due date."""
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine, con_resolucion=True)
+    venc = hoy + timedelta(days=24)  # 25 days left (today included)
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=venc, placas=("FFF661", "FFF662"))
+
+    r = await client.post(
+        _url(sub), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}")
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["renovacion_anticipada"] is True
+    assert body["fecha_inicio_cobertura"] == (venc + timedelta(days=1)).isoformat()
+    assert body["fecha_vencimiento"] == (venc + timedelta(days=30)).isoformat()
+    assert sorted(body["placas"]) == ["FFF661", "FFF662"]
+    assert body["uuid_factura"]
+    assert await _contar(pg_engine, Facturas, Facturas.uuid_sucursal == m.sucursal) == 1
+
+
+async def test_renovacion_a_un_anio_no_tiene_tope(
     client, pg_engine, alembic_upgrade, mint_operador_jwt
 ) -> None:
     hoy = hoy_bogota()
     m = await _sembrar_base(pg_engine)
-    # vencimiento = hoy + 10 -> 11 days left (today included): rejected
-    fuera = await _sembrar_suscripcion(pg_engine, m, vencimiento=hoy + timedelta(days=10), placas=("FFF661",))
-    # vencimiento = hoy + 9 -> 10 days left: allowed
-    dentro = await _sembrar_suscripcion(pg_engine, m, vencimiento=hoy + timedelta(days=9), placas=("FFF662",))
+    sub = await _sembrar_suscripcion(
+        pg_engine, m, vencimiento=hoy + timedelta(days=364), placas=("FFF663",)
+    )
+    r = await client.post(
+        _url(sub), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}")
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["fecha_inicio_cobertura"] == (hoy + timedelta(days=365)).isoformat()
 
-    r_fuera = await client.post(_url(fuera), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"))
-    assert r_fuera.status_code == 409
-    detail = r_fuera.json()["detail"]
-    assert detail["error"] == "renovacion_fuera_de_ventana"
-    assert detail["dias_restantes"] == 11 and detail["ventana_dias"] == 10
+
+async def test_doble_renovacion_anticipada_apila_contiguo_y_la_placa_sigue_cubierta(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine)
+    venc = hoy + timedelta(days=24)
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=venc, placas=("FFF664",))
+
+    r1 = await client.post(
+        _url(sub), json={}, headers=_headers(mint_operador_jwt, m, key=f"a-{uuid_lib.uuid4()}")
+    )
+    assert r1.status_code == 201, r1.text
+    nueva1 = r1.json()["uuid_subscripcion"]
+    # the open row starts in the future but still covers the plate today
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as s:
+        assert await repo_venta.buscar_subscripcion_activa_de_placa(
+            s, placa="FFF664", uuid_sucursal=m.sucursal
+        ) == uuid_lib.UUID(nueva1)
+        assert (
+            await validar_subscripcion_vigente(s, uuid_subscripcion_cliente=uuid_lib.UUID(nueva1))
+        ).vigente is True
+
+    r2 = await client.post(
+        _url(nueva1), json={}, headers=_headers(mint_operador_jwt, m, key=f"b-{uuid_lib.uuid4()}")
+    )
+    assert r2.status_code == 201, r2.text
+    b1, b2 = r1.json(), r2.json()
+    assert b2["fecha_inicio_cobertura"] == (date.fromisoformat(b1["fecha_vencimiento"]) + timedelta(days=1)).isoformat()
+    assert b2["fecha_vencimiento"] == (date.fromisoformat(b2["fecha_inicio_cobertura"]) + timedelta(days=29)).isoformat()
+    assert b2["renovacion_anticipada"] is True
+    # exactly one open subscription for the customer
+    assert await _contar(
+        pg_engine, SubscripcionesCliente,
+        SubscripcionesCliente.uuid_cliente == m.cliente,
+        SubscripcionesCliente.vigente_hasta.is_(None),
+    ) == 1
+
+
+async def test_renovacion_anticipada_con_plan_cambiado_cobra_el_precio_actual(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine, valor="100000")
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as s:
+        viejo = (await s.execute(select(TipoSubscripciones).where(TipoSubscripciones.uuid == m.plan))).scalar_one()
+        viejo.vigente_hasta, viejo.estado = _now(), "inactivo"
+        s.add(
+            VFixtureFactory.build(
+                TipoSubscripciones, tipo=viejo.tipo, valor=Decimal("130000"), duracion_dias=30,
+                cantidad_maxima_vehiculos=2, mismo_tipo_vehiculo=False,
+            )
+        )
+        await s.commit()
+    sub = await _sembrar_suscripcion(
+        pg_engine, m, vencimiento=hoy + timedelta(days=39), placas=("FFF665",)
+    )
+    r = await client.post(
+        _url(sub), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}")
+    )
+    assert r.status_code == 201, r.text
+    assert Decimal(r.json()["valor_total_plan"]) == Decimal("130000.00")
+    assert r.json()["renovacion_anticipada"] is True
+
+
+async def _assert_suscripcion_intacta(pg_engine, m: Mundo, sub, *, venc: date, placas: int) -> None:
+    """Nothing of a renewal survived: old row open with its original due date,
+    no second subscription, plate links untouched, no invoice, no audit row."""
+    vieja = await _fila(pg_engine, SubscripcionesCliente, sub)
+    assert vieja.vigente_hasta is None and vieja.estado == "activo"
+    assert vieja.fecha_vencimiento == venc
+    assert await _contar(
+        pg_engine, SubscripcionesCliente, SubscripcionesCliente.uuid_cliente == m.cliente
+    ) == 1
+    assert await _contar(
+        pg_engine, SubscripcionVehiculos,
+        SubscripcionVehiculos.uuid_subscripcion_cliente == sub,
+        SubscripcionVehiculos.vigente_hasta.is_(None),
+    ) == placas
     assert await _contar(pg_engine, Facturas, Facturas.uuid_sucursal == m.sucursal) == 0
+    assert await _contar(
+        pg_engine, FacturaPagos, FacturaPagos.uuid_sucursal == m.sucursal
+    ) == 0
+    assert await _contar(
+        pg_engine, LogTransaccional,
+        LogTransaccional.accion == "renovar",
+        LogTransaccional.uuid_referencia == sub,
+    ) == 0
 
-    r_dentro = await client.post(_url(dentro), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"))
-    assert r_dentro.status_code == 201, r_dentro.text
+
+@pytest.mark.parametrize("adelanto", [4, 24, 200])
+async def test_datafono_sin_voucher_no_extiende_la_vigencia(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt, adelanto
+) -> None:
+    """Payment not verifiable (datafono without voucher) -> 400 and the
+    subscription stays exactly as it was, early or not."""
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine)
+    venc = hoy + timedelta(days=adelanto)
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=venc, placas=("QQQ101", "QQQ102"))
+    r = await client.post(
+        _url(sub), json={"medio_pago": "datafono"},
+        headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"),
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "voucher_requerido"
+    await _assert_suscripcion_intacta(pg_engine, m, sub, venc=venc, placas=2)
+
+
+async def test_si_el_cobro_falla_a_mitad_no_queda_vigencia_extendida(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt, monkeypatch
+) -> None:
+    """The vigencia is written BEFORE the payment rows inside ONE transaction;
+    a failure while recording the payment must roll the extension back too
+    (no closed old row, no new row, no orphan invoice)."""
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine)
+    venc = hoy + timedelta(days=24)  # early renewal
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=venc, placas=("QQQ201", "QQQ202"))
+
+    async def _pago_falla(*_a, **_k):
+        raise repo_renovacion.IvaNoConfiguradoError()
+
+    monkeypatch.setattr(repo_renovacion.repo_factura, "crear_factura_pago", _pago_falla)
+    r = await client.post(
+        _url(sub), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}")
+    )
+    assert r.status_code == 500
+    await _assert_suscripcion_intacta(pg_engine, m, sub, venc=venc, placas=2)
+
+    # once the payment path works again the SAME subscription renews normally
+    monkeypatch.undo()
+    r2 = await client.post(
+        _url(sub), json={}, headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}")
+    )
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["fecha_inicio_cobertura"] == (venc + timedelta(days=1)).isoformat()
+
+
+async def test_pago_registrado_extiende_y_el_cobro_queda_con_la_nueva_fila(
+    client, pg_engine, alembic_upgrade, mint_operador_jwt
+) -> None:
+    hoy = hoy_bogota()
+    m = await _sembrar_base(pg_engine)
+    venc = hoy + timedelta(days=24)
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=venc, placas=("QQQ301",))
+    r = await client.post(
+        _url(sub), json={"medio_pago": "datafono", "referencia": "V-1001"},
+        headers=_headers(mint_operador_jwt, m, key=f"k-{uuid_lib.uuid4()}"),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    nueva = uuid_lib.UUID(body["uuid_subscripcion"])
+    assert body["fecha_inicio_cobertura"] == (venc + timedelta(days=1)).isoformat()
+    factura = await _fila(pg_engine, Facturas, uuid_lib.UUID(body["uuid_factura"]))
+    assert factura.uuid_subscripcion_cliente == nueva
+    assert await _contar(
+        pg_engine, FacturaPagos,
+        FacturaPagos.uuid_factura == factura.uuid, FacturaPagos.referencia == "V-1001",
+    ) == 1
+    assert (await _fila(pg_engine, SubscripcionesCliente, sub)).vigente_hasta is not None
 
 
 async def test_sin_permiso_gestionar_clientes_es_403(
@@ -528,7 +710,7 @@ async def test_placa_en_otra_suscripcion_vigente_es_422(
 ) -> None:
     hoy = hoy_bogota()
     m = await _sembrar_base(pg_engine)
-    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=hoy + timedelta(days=3), placas=("HHH881",))
+    sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=hoy + timedelta(days=40), placas=("HHH881",))
     # a DIFFERENT open subscription of the same branch also holds the plate
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as s:
@@ -620,7 +802,7 @@ async def test_subscripciones_activas_expone_dias_restantes_y_puede_renovar(
     r = await client.get(f"{BASE}/subscripciones-activas", headers=_headers(mint_operador_jwt, m))
     assert r.status_code == 200, r.text
     items = {i["uuid"]: i for i in r.json()["items"]}
-    assert (items[str(lejos)]["dias_restantes"], items[str(lejos)]["puede_renovar"]) == (11, False)
+    assert (items[str(lejos)]["dias_restantes"], items[str(lejos)]["puede_renovar"]) == (11, True)
     assert (items[str(cerca)]["dias_restantes"], items[str(cerca)]["puede_renovar"]) == (10, True)
     # expired rows are NOT part of this listing (see the renovables endpoint)
     assert str(vencida) not in items
@@ -648,11 +830,11 @@ async def test_proximas_vencer_usa_la_alerta_de_cada_suscripcion_y_fecha_bogota(
     assert items[str(a)]["dias_restantes"] == 6 and items[str(a)]["dias_alerta_pre_vencimiento"] == 7
     assert items[str(a)]["puede_renovar"] is True  # 6 <= 10
     assert items[str(a)]["placas"] == ["KKK201"] and items[str(a)]["cliente_nombre"] == "Ada Prueba"
-    assert items[str(c)]["dias_restantes"] == 21 and items[str(c)]["puede_renovar"] is False
+    assert items[str(c)]["dias_restantes"] == 21 and items[str(c)]["puede_renovar"] is True
     assert str(b) not in items and str(d) not in items and str(e) not in items
 
 
-async def test_renovables_incluye_vencidas_y_respeta_la_ventana(
+async def test_renovables_incluye_vencidas_y_acota_el_feed_a_urgentes(
     client, pg_engine, alembic_upgrade, mint_operador_jwt
 ) -> None:
     hoy = hoy_bogota()
@@ -667,7 +849,7 @@ async def test_renovables_incluye_vencidas_y_respeta_la_ventana(
     assert set(items) == {str(borde), str(vencida)}
     assert items[str(borde)]["dias_restantes"] == 10 and items[str(borde)]["puede_renovar"] is True
     assert items[str(vencida)]["dias_restantes"] == -29 and items[str(vencida)]["puede_renovar"] is True
-    assert str(fuera) not in items
+    assert str(fuera) not in items  # feed bound only; renewing it is still allowed
 
 
 # ---------------------------------------------------------------------------
@@ -708,21 +890,15 @@ async def test_fechas_de_renovacion_en_bd_con_hoy_inyectado(
     assert res.monto == Decimal("100000.00")
 
 
-async def test_repo_rechaza_fuera_de_ventana_con_hoy_inyectado(pg_engine, alembic_upgrade) -> None:
+async def test_repo_permite_renovar_sin_ventana_con_hoy_inyectado(pg_engine, alembic_upgrade) -> None:
     m = await _sembrar_base(pg_engine)
     sub = await _sembrar_suscripcion(pg_engine, m, vencimiento=date(2028, 3, 5), placas=("MMM401",))
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as s:
-        with pytest.raises(repo_renovacion.RenovacionFueraDeVentanaError) as exc:
-            await repo_renovacion.renovar_vigencia(
-                s, actor_uuid=m.actor, uuid_subscripcion=sub, uuid_sucursal=m.sucursal,
-                hoy=date(2028, 2, 24),  # 11 days left (leap year)
-            )
-        assert exc.value.dias_restantes == 11
-        await s.rollback()
         res = await repo_renovacion.renovar_vigencia(
             s, actor_uuid=m.actor, uuid_subscripcion=sub, uuid_sucursal=m.sucursal,
-            hoy=date(2028, 2, 25),  # 10 days left
+            hoy=date(2027, 12, 1),  # ~96 days left
         )
         await s.commit()
     assert res.inicio == date(2028, 3, 6)
+    assert res.anticipada is True

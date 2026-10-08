@@ -53,6 +53,8 @@ type SheetMode = 'list' | 'venta' | 'cupos' | 'renovar';
 
 /** Permission that lets a user add/remove plates of a subscription (PT-2, supervisor). */
 const PERMISO_GESTIONAR_PLACAS = 'gestionar_placas_suscripcion';
+/** "Por renovar" badge bound (mirrors the backend urgent feed); NOT a renewal gate. */
+const DIAS_RENOVACION_URGENTE = 10;
 
 export function SuscripcionesSheet(): JSX.Element {
   const { t } = useTranslation(['suscripciones', 'common']);
@@ -422,7 +424,9 @@ export function SuscripcionesSheet(): JSX.Element {
                             {s.plan.tipo}
                           </span>
                         </div>
-                        {s.puede_renovar && (
+                        {s.puede_renovar &&
+                          s.dias_restantes != null &&
+                          s.dias_restantes <= DIAS_RENOVACION_URGENTE && (
                           <div
                             className="mt-1 inline-block rounded bg-warning px-1.5 py-0.5 text-xs font-medium text-warning-foreground"
                             data-testid={`suscripciones-sheet-por-renovar-${s.uuid}`}
@@ -543,7 +547,7 @@ export function SuscripcionesSheet(): JSX.Element {
                 </p>
               )}
 
-              {/* PT-3: only when the backend says the subscription is in the renewal window. */}
+              {/* PT-3: whenever the backend says it can be renewed (no anticipation window). */}
               {detalle.puede_renovar && (
                 <Button
                   type="button"

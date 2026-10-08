@@ -89,14 +89,14 @@ describe('renovarSubscripcion', () => {
     expect(mockedRaw).not.toHaveBeenCalled();
   });
 
-  it('surfaces the typed backend error (409 renovacion_fuera_de_ventana)', async () => {
+  it('surfaces the typed backend error (409 suscripcion_no_renovable)', async () => {
     mockedRaw.mockResolvedValue(
-      fail(409, { detail: { error: 'renovacion_fuera_de_ventana', dias_restantes: 25, ventana_dias: 10 } }),
+      fail(409, { detail: { error: 'suscripcion_no_renovable', dias_restantes: 25 } }),
     );
     const e = await renovarSubscripcion(UUID, {}, 'k').catch((x: unknown) => x);
     expect(e).toBeInstanceOf(ClientesApiError);
     expect((e as ClientesApiError).status).toBe(409);
-    expect((e as ClientesApiError).code).toBe('renovacion_fuera_de_ventana');
+    expect((e as ClientesApiError).code).toBe('suscripcion_no_renovable');
     expect((e as ClientesApiError).detail.dias_restantes).toBe(25);
   });
 });
