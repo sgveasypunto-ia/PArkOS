@@ -109,6 +109,7 @@ from ...repo import workflow as repo_workflow
 from ...repo.pagination import Cursor, InvalidCursorError
 from ...repo.pagination import decode as cursor_decode
 from ...repo.pagination import encode as cursor_encode
+from ...repo.factura_electronica import TIPO_ALERTA_REINTENTO_DIAN
 from ...repo.versioned import current_version
 from ...repo.workflow import _now_naive
 from ...schemas.workflows import (
@@ -258,6 +259,9 @@ async def list_alertas(
         .outerjoin(AlertTypes, AlertTypes.tipo_alerta == Alerta.tipo_alerta)
         .where(Alerta.vigente_hasta.is_(None))
         .where(Alerta.uuid_sucursal.in_(target_sucursales))
+        # The branch -> cloud DIAN retry request rides on ``alerta`` but is
+        # plumbing, not an alert for the administrator.
+        .where(Alerta.tipo_alerta.is_distinct_from(TIPO_ALERTA_REINTENTO_DIAN))
     )
     if tipo_alerta is not None:
         stmt = stmt.where(Alerta.tipo_alerta == tipo_alerta)

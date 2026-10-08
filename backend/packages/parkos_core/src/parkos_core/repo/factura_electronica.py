@@ -7,7 +7,7 @@ Helpers for ``POST /api/v1/facturacion/factura-electronica``:
 - :func:`buscar_factura_electronica_por_uuid` (V1) — FE row by uuid.
 - :func:`crear_factura_electronica_inicial` (Step 7 INSERT [L-E]).
 - :func:`crear_envio_dian_inicial` (Step 8 INSERT [L-W] initial).
-- :func:`crear_envio_dian_reintento` (Step 5 INSERT [L-W] retry with uuid_envio_padre).
+- :func:`crear_solicitud_reintento_dian` (retry REQUEST: ``alerta`` branch_to_cloud; the cloud writes the retry ``envio_dian``).
 - :func:`buscar_envio_dian_chain_tip` (V2 chain-tip via ``timestamp_evento DESC LIMIT 1``).
 - :func:`leer_factura_electronica_con_envio_via_view` (GET JOIN to view).
 - :func:`validar_uuid_factura_y_sucursal` (V1 + tenant scope data).
@@ -24,8 +24,10 @@ Helpers for ``POST /api/v1/facturacion/factura-electronica``:
 - :class:`ConsecutivoRangeExhaustedError` (V4 409, RE-EXPORTED from
   :mod:`parkos_core.repo.resolucion_facturacion` for callers).
 
-DEC-FE-01: envio_dian writes are branch-initiated.
-DEC-FE-02: retry chain via NEW row + uuid_envio_padre (NEVER UPDATE).
+envio_dian is cloud-authored (``cloud_to_branch``); the branch only writes its
+local ``pendiente`` marker at emission, which is never pushed.
+DEC-FE-02: retries are appended, never updated: the branch files a request
+(``alerta``) and the cloud appends the new ``envio_dian`` chained to the tip.
 DEC-FE-05: assign_consecutivo reused as-is, NO modification.
 KD-FE-01: handler commits ONCE; this module does NOT commit.
 """
@@ -42,7 +44,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.L_E.factura_electronica import FacturaElectronica
 from ..models.L_E.facturas import Facturas
+from ..models.L_W.alerta import Alerta
 from ..models.L_W.envio_dian import EnvioDian
+from . import alert_types
+from .append_only import append_event
 
 # Re-export for callers (DEC-FE-03 + DEC-FE-05 + REQ-OPS-066).
 from .resolucion_facturacion import ConsecutivoRangeExhaustedError  # noqa: E402,F401
@@ -316,54 +321,74 @@ async def buscar_envio_dian_chain_tip(
 
 
 # ---------------------------------------------------------------------------
-# Step 5 INSERT retry prod.envio_dian [L-W]
+# Manual retry request (branch -> cloud) via ``alerta``
 # ---------------------------------------------------------------------------
 
+#: ``alerta.tipo_alerta`` of a retry request. ``envio_dian`` is cloud-authored
+#: (``cloud_to_branch``) and the branch never pushes it, so the branch asks for
+#: a retry through ``alerta`` (``branch_to_cloud``); the cloud creates the retry
+#: attempt on arrival (``dian_reintento_solicitado_hook``). Seeded by 0097.
+TIPO_ALERTA_REINTENTO_DIAN = "dian_reintento_solicitado"
 
-async def crear_envio_dian_reintento(
+
+async def crear_solicitud_reintento_dian(
     session: AsyncSession,
     *,
     actor_uuid: uuid_lib.UUID,
     uuid_sucursal: uuid_lib.UUID | None,
     uuid_factura_electronica: uuid_lib.UUID,
-    uuid_resolucion_facturacion: uuid_lib.UUID,
+    uuid_envio_padre: uuid_lib.UUID | None,
     payload: dict[str, Any],
-    uuid_envio_padre: uuid_lib.UUID,
-) -> EnvioDian:
-    """Step 5 INSERT (DEC-FE-02 + DEC-FE-07): NEW ``prod.envio_dian`` retry row.
+) -> Alerta:
+    """INSERT one retry request (``alerta``, chain root). Never UPDATE / DELETE.
 
-    Sets ``uuid_envio_padre=<tip.uuid>``, ``estado='pendiente'``, ``cufe=NULL``.
-
-    The chain IS the audit trail. NEVER UPDATE on existing envio rows.
-
-    NOTE (zero-bug-policy, 2026-09-23): ``uuid_sucursal`` is nullable
-    to match the underlying :class:`EnvioDian` ORM column
-    (``Mapped[uuid_lib.UUID | None]``, see
-    ``models/L_W/envio_dian.py:31``). The previous typing was a lie —
-    callers passed ``fe_row.uuid_sucursal`` (nullable at the DB
-    level), causing the LSP error at the call site
-    ``api/v1/facturacion.py:1007``.
+    ``uuid_arqueo`` carries the ``factura_electronica`` uuid (the column name is
+    historical, see ``dian/cloud/dispatcher.py::_write_alerta``);
+    ``datos_nuevos`` carries ``uuid_envio_padre`` (the chain tip the branch saw)
+    plus the document snapshot. The request is idempotent at the receiver:
+    ``apply_guard`` ignores a re-delivered uuid and the cloud refuses to resend
+    an accepted or in-flight document.
     """
-    fecha_retencion_hasta = date.today()  # see factura_detalle.py NOTE part 2
-    envio_row = EnvioDian(
-        uuid=uuid_lib.uuid4(),
-        fecha_retencion_hasta=fecha_retencion_hasta,
-        uuid_sucursal=uuid_sucursal,
-        uuid_factura_electronica=uuid_factura_electronica,
-        uuid_resolucion_facturacion=uuid_resolucion_facturacion,
-        payload=payload,
-        respuesta_proveedor=None,
-        cufe=None,
-        uuid_envio_padre=uuid_envio_padre,
-        timestamp_evento=datetime.now(UTC).replace(tzinfo=None),
-        estado="pendiente",
-        vigente_desde=datetime.now(UTC).replace(tzinfo=None),
-        vigente_hasta=None,
-        created_by=actor_uuid,
+    await alert_types.validate(session, TIPO_ALERTA_REINTENTO_DIAN)
+    return await append_event(
+        session,
+        Alerta,  # type: ignore[type-var]
+        {
+            "uuid_sucursal": uuid_sucursal,
+            "tipo_alerta": TIPO_ALERTA_REINTENTO_DIAN,
+            "uuid_alerta_padre": None,
+            "uuid_arqueo": uuid_factura_electronica,
+            "timestamp_evento": datetime.now(UTC).replace(tzinfo=None),
+            "datos_nuevos": {
+                **payload,
+                "uuid_factura_electronica": str(uuid_factura_electronica),
+                "uuid_envio_padre": str(uuid_envio_padre) if uuid_envio_padre else None,
+            },
+        },
+        actor_uuid=actor_uuid,
     )
-    session.add(envio_row)
-    await session.flush()
-    return envio_row
+
+
+async def buscar_solicitud_reintento_pendiente(
+    session: AsyncSession,
+    *,
+    uuid_factura_electronica: uuid_lib.UUID,
+    desde: datetime | None,
+) -> Alerta | None:
+    """A retry request for the document NOT yet answered by a newer envio_dian.
+
+    ``desde`` is the chain tip's ``timestamp_evento``: a request filed after it
+    is still waiting for the cloud (the new attempt travels back by pull); one
+    filed before it was already answered. ``None`` (empty chain) matches any.
+    """
+    stmt = select(Alerta).where(
+        Alerta.tipo_alerta == TIPO_ALERTA_REINTENTO_DIAN,
+        Alerta.uuid_arqueo == uuid_factura_electronica,
+    )
+    if desde is not None:
+        stmt = stmt.where(Alerta.timestamp_evento > desde)
+    stmt = stmt.order_by(Alerta.timestamp_evento.desc()).limit(1)
+    return (await session.execute(stmt)).scalars().first()
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +466,9 @@ __all__ = [
     "buscar_factura_electronica_por_uuid",
     "buscar_factura_por_uuid",
     "crear_envio_dian_inicial",
-    "crear_envio_dian_reintento",
+    "TIPO_ALERTA_REINTENTO_DIAN",
+    "buscar_solicitud_reintento_pendiente",
+    "crear_solicitud_reintento_dian",
     "crear_factura_electronica_inicial",
     "leer_factura_electronica_con_envio_via_view",
     "validar_uuid_factura_y_sucursal",

@@ -656,6 +656,15 @@ class SyncSucursalWorker(WorkerRunner):
                 await sq_helpers.mark_failed(self._session, row.uuid, "unknown_table")
                 continue
 
+            if spec.direction == "cloud_to_branch" and spec.originating_role == "cloud":
+                # Cloud-authored entry (``envio_dian``): the cloud is its only
+                # author and the table travels cloud -> branch via /sync/pull.
+                # A row written locally at the branch never goes up; settle it
+                # (same as an infra row), never mark_failed.
+                self.log.debug("sync_sucursal.push_skipped_cloud_authored", tabla=catalog_tabla)
+                await sq_helpers.mark_dispatched(self._session, row.uuid)
+                continue
+
             payload = _business_payload_for_apply(spec, row.datos or {})
             events.append(
                 {

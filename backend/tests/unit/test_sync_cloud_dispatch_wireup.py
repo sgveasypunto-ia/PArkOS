@@ -26,18 +26,13 @@ Acceptance for this fix — pure mock-based, no DB — proves:
   2. ``revocacion_factura`` apply fires
      ``dispatch_revocacion_with_backoff`` with the just-written row's
      uuid.
-  3. ``envio_dian(estado='pendiente', uuid_factura_electronica=...)``
-     apply fires ``dispatch_factura_electronica_with_backoff`` against
-     the linked FE.
-  4. ``envio_dian(estado='pendiente', payload.payload.uuid_revocacion_
-     factura=...)`` apply fires ``dispatch_revocacion_with_backoff``
-     against the linked revocacion.
-  5. ``envio_dian(estado!='pendiente')`` apply does NOT fire any
-     dispatcher (skipped — those rows are cloud-side transitions on
-     the envio_dian chain, not branch-originated requests).
-  6. The catalog entries' ``hook_post_insert`` field is actually bound
-     to the dispatch hook (regression guard — a forgotten re-import
-     in ``sync_entries_*.py`` would silently drop the wire-up).
+  3. ``envio_dian`` is cloud_to_branch (cloud is the only DIAN egress):
+     it carries NO dispatch hook, so applying it at the branch never
+     reaches the cloud-only dispatcher.
+  4. The FE / revocacion entries' ``hook_post_insert`` field is actually
+     bound to the dispatch hook (regression guard — a forgotten
+     re-import in ``sync_entries_*.py`` would silently drop the
+     wire-up).
 
 Pattern follows ``test_motor_apply_row.py`` (T-PR4-001/006/007): mock
 the repo helpers + dispatcher at their source modules, drive
@@ -139,9 +134,14 @@ class TestCatalogWiring:
         spec = SYNC_CATALOG_BY_NAME["factura_electronica"]
         assert spec.hook_post_insert is dian_dispatch_on_sync.dian_factura_electronica_dispatch_hook
 
-    def test_envio_dian_hook_post_insert_is_resume_hook(self) -> None:
+    def test_envio_dian_is_not_bound_to_the_cloud_dispatcher(self) -> None:
+        """``envio_dian`` is cloud_to_branch: it is APPLIED at the branch, where the
+        cloud dispatcher cannot be imported. The cloud dispatches from the
+        ``factura_electronica`` / ``revocacion_factura`` hooks instead.
+        """
         spec = SYNC_CATALOG_BY_NAME["envio_dian"]
-        assert spec.hook_post_insert is dian_dispatch_on_sync.envio_dian_resume_hook
+        assert spec.direction == "cloud_to_branch"
+        assert spec.hook_post_insert is None
 
     def test_revocacion_factura_hook_post_insert_is_dispatch_hook(self) -> None:
         spec = SYNC_CATALOG_BY_NAME["revocacion_factura"]
@@ -271,203 +271,3 @@ class TestRevocacionFacturaApplyFiresDispatch:
         kwargs = dispatch_mock.await_args.kwargs
         assert kwargs["uuid_revocacion_factura"] == REV_UUID
         assert kwargs["actor_uuid"] == ACTOR_UUID
-
-
-# ---------------------------------------------------------------------------
-# 3. envio_dian(estado='pendiente', uuid_factura_electronica=...) -> FE dispatch
-# 4. envio_dian(estado='pendiente', payload.payload.uuid_revocacion_...) -> REV dispatch
-# 5. envio_dian(estado!='pendiente') -> no dispatch
-# ---------------------------------------------------------------------------
-
-
-class TestEnvioDianApplyDispatchRouting:
-    """``envio_dian`` apply dispatches based on the linked row, only when
-    ``estado='pendiente'``. All non-pendiente rows are skipped (they're
-    cloud-side transitions on the envio_dian chain, not branch requests).
-    """
-
-    @pytest.mark.asyncio
-    async def test_pendiente_with_factura_electronica_dispatches_fe(
-        self,
-    ) -> None:
-        spec = SYNC_CATALOG_BY_NAME["envio_dian"]
-        session = _fake_session()
-        envio_row = _fake_row(ENVIO_UUID)
-        fe_link = uuid_lib.uuid4()
-
-        with (
-            patch(
-                "parkos_core.repo.workflow.append_transition",
-                new=AsyncMock(return_value=envio_row),
-            ) as _append_mock,
-            patch(
-                "parkos_core.dian.cloud.dispatcher."
-                "dispatch_factura_electronica_with_backoff",
-                new=AsyncMock(),
-            ) as fe_dispatch_mock,
-            patch(
-                "parkos_core.dian.cloud.dispatcher."
-                "dispatch_revocacion_with_backoff",
-                new=AsyncMock(),
-            ) as rev_dispatch_mock,
-        ):
-            payload = {
-                "parent_uuid": None,
-                "estado": "pendiente",
-                "uuid_sucursal": SUCURSAL_UUID,
-                "uuid_factura_electronica": fe_link,
-            }
-            result = await apply_row(
-                session, spec, dict(payload), actor_uuid=ACTOR_UUID
-            )
-
-        await _drain(session)
-
-        assert result.status == "APPLIED"
-        fe_dispatch_mock.assert_awaited_once()
-        rev_dispatch_mock.assert_not_called()
-        # Hook dispatches against the LINKED FE uuid (the one in the
-        # payload), NOT the new envio_dian row's own uuid.
-        kwargs = fe_dispatch_mock.await_args.kwargs
-        assert kwargs["uuid_factura_electronica"] == fe_link
-
-    @pytest.mark.asyncio
-    async def test_pendiente_with_nested_revocacion_dispatches_revocacion(
-        self,
-    ) -> None:
-        spec = SYNC_CATALOG_BY_NAME["envio_dian"]
-        session = _fake_session()
-        envio_row = _fake_row(ENVIO_UUID)
-        rev_link = uuid_lib.uuid4()
-
-        with (
-            patch(
-                "parkos_core.repo.workflow.append_transition",
-                new=AsyncMock(return_value=envio_row),
-            ) as _append_mock,
-            patch(
-                "parkos_core.dian.cloud.dispatcher."
-                "dispatch_factura_electronica_with_backoff",
-                new=AsyncMock(),
-            ) as fe_dispatch_mock,
-            patch(
-                "parkos_core.dian.cloud.dispatcher."
-                "dispatch_revocacion_with_backoff",
-                new=AsyncMock(),
-            ) as rev_dispatch_mock,
-        ):
-            # Revocacion-linked envios store ``uuid_revocacion_factura``
-            # inside the JSONB ``payload`` column (mirrors
-            # ``dispatch_revocacion``'s own ``payload={..., "uuid_revocacion_
-            # factura": str(row.uuid)}`` write).
-            payload = {
-                "parent_uuid": None,
-                "estado": "pendiente",
-                "uuid_sucursal": SUCURSAL_UUID,
-                "uuid_factura_electronica": None,
-                "payload": {"uuid_revocacion_factura": str(rev_link)},
-            }
-            result = await apply_row(
-                session, spec, dict(payload), actor_uuid=ACTOR_UUID
-            )
-
-        await _drain(session)
-
-        assert result.status == "APPLIED"
-        fe_dispatch_mock.assert_not_called()
-        rev_dispatch_mock.assert_awaited_once()
-        kwargs = rev_dispatch_mock.await_args.kwargs
-        # ``payload.payload.uuid_revocacion_factura`` is stored as
-        # ``str(uuid)`` (mirrors the dispatcher's own serialize write
-        # at ``dian/cloud/dispatcher.py`` line 554); the hook returns
-        # the string verbatim, so the dispatcher receives the SAME
-        # string the test wrote.
-        assert kwargs["uuid_revocacion_factura"] == str(rev_link)
-
-    @pytest.mark.asyncio
-    async def test_non_pendiente_does_not_dispatch(self) -> None:
-        """``aceptado`` / ``rechazado`` / ``enviado`` rows are skipped.
-
-        Cloud-side transitions on the envio_dian chain land here only
-        in pathological double-apply cases; re-dispatching them would
-        produce duplicate Factus submissions. The hook short-circuits
-        BEFORE any dispatcher call.
-        """
-        spec = SYNC_CATALOG_BY_NAME["envio_dian"]
-        session = _fake_session()
-        envio_row = _fake_row(ENVIO_UUID)
-
-        for non_pendiente in ("enviado", "aceptado", "rechazado"):
-            with (
-                patch(
-                    "parkos_core.repo.workflow.append_transition",
-                    new=AsyncMock(return_value=envio_row),
-                ),
-                patch(
-                    "parkos_core.dian.cloud.dispatcher."
-                    "dispatch_factura_electronica_with_backoff",
-                    new=AsyncMock(),
-                ) as fe_dispatch_mock,
-                patch(
-                    "parkos_core.dian.cloud.dispatcher."
-                    "dispatch_revocacion_with_backoff",
-                    new=AsyncMock(),
-                ) as rev_dispatch_mock,
-            ):
-                payload = {
-                    "parent_uuid": None,
-                    "estado": non_pendiente,
-                    "uuid_sucursal": SUCURSAL_UUID,
-                    "uuid_factura_electronica": uuid_lib.uuid4(),
-                }
-                result = await apply_row(
-                    session, spec, dict(payload), actor_uuid=ACTOR_UUID
-                )
-                await _drain(session)
-                assert result.status == "APPLIED", (
-                    f"apply failed for estado={non_pendiente}"
-                )
-                fe_dispatch_mock.assert_not_called()
-                rev_dispatch_mock.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_pendiente_with_no_linked_row_is_a_noop(self) -> None:
-        """A pendiente envio_dian with neither FE nor revocacion link is
-        skipped — defensive against malformed payloads; the apply itself
-        still succeeds so the row stays in sync_queue -> dispatched.
-        """
-        spec = SYNC_CATALOG_BY_NAME["envio_dian"]
-        session = _fake_session()
-        envio_row = _fake_row(ENVIO_UUID)
-
-        with (
-            patch(
-                "parkos_core.repo.workflow.append_transition",
-                new=AsyncMock(return_value=envio_row),
-            ),
-            patch(
-                "parkos_core.dian.cloud.dispatcher."
-                "dispatch_factura_electronica_with_backoff",
-                new=AsyncMock(),
-            ) as fe_dispatch_mock,
-            patch(
-                "parkos_core.dian.cloud.dispatcher."
-                "dispatch_revocacion_with_backoff",
-                new=AsyncMock(),
-            ) as rev_dispatch_mock,
-        ):
-            payload = {
-                "parent_uuid": None,
-                "estado": "pendiente",
-                "uuid_sucursal": SUCURSAL_UUID,
-                # Neither uuid_factura_electronica nor payload.uuid_revocacion_factura
-            }
-            result = await apply_row(
-                session, spec, dict(payload), actor_uuid=ACTOR_UUID
-            )
-
-        await _drain(session)
-
-        assert result.status == "APPLIED"
-        fe_dispatch_mock.assert_not_called()
-        rev_dispatch_mock.assert_not_called()

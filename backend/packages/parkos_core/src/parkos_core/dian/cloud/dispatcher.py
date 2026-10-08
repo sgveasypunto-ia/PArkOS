@@ -1065,8 +1065,12 @@ async def dispatch_factura_electronica_with_backoff(
     max_retries: int = DIAN_MAX_RETRIES,
     skip_if_dispatched: bool = False,
     recover_orphans_after: timedelta | None = None,
+    initial_parent_uuid: uuid_lib.UUID | None = None,
 ) -> EnvioDian:
     """Drive :func:`dispatch_factura_electronica` across the DIAN retry budget.
+
+    ``initial_parent_uuid`` chains the FIRST attempt to an existing chain tip
+    (a manual retry); ``None`` starts a fresh chain.
 
     Each attempt is one full send+poll round trip, chained to the prior
     attempt via ``uuid_envio_padre`` (the ``envio_dian`` catalog entry
@@ -1082,7 +1086,7 @@ async def dispatch_factura_electronica_with_backoff(
     untouched and runs INSIDE each attempt here — this is a SEPARATE,
     outer retry layer.
     """
-    parent_uuid: uuid_lib.UUID | None = None
+    parent_uuid: uuid_lib.UUID | None = initial_parent_uuid
     envio: EnvioDian | None = None
     for attempt in range(max_retries):
         envio = await dispatch_factura_electronica(
@@ -1103,6 +1107,57 @@ async def dispatch_factura_electronica_with_backoff(
 
     assert envio is not None  # max_retries >= 1 (DIAN_MAX_RETRIES == 6)
     return await _mark_provider_error_exhausted(session, envio)
+
+
+async def dispatch_factura_electronica_retry(
+    session: AsyncSession,
+    *,
+    uuid_factura_electronica: uuid_lib.UUID,
+    actor_uuid: uuid_lib.UUID,
+    dian_provider_url: str,
+    dian_token_path: Path,
+) -> EnvioDian:
+    """Manual retry requested by the branch: append a NEW attempt to the chain.
+
+    The branch cannot write ``envio_dian`` (cloud-authored); it files an
+    ``alerta`` request and the cloud runs this. Same advisory lock as the first
+    dispatch, so a request can never race the original send or another request.
+    The document is NOT resent while the cloud chain is ``aceptado`` or still in
+    flight (:class:`DispatchAlreadyHandledError`, handled quietly by the
+    deferred runner). Otherwise the new attempt is chained to the tip
+    (``rechazado`` / ``error`` / terminal timeout) or starts a chain when none
+    exists (the original dispatch never ran).
+    """
+    lock_key = f"dian:fe:{uuid_factura_electronica}"
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": lock_key}
+    )
+    tip = (
+        await session.execute(
+            select(EnvioDian)
+            .where(
+                EnvioDian.uuid_factura_electronica == uuid_factura_electronica,
+                EnvioDian.payload["xml_sha256"].astext.is_not(None),
+                EnvioDian.payload["uuid_revocacion_factura"].astext.is_(None),
+            )
+            .order_by(EnvioDian.timestamp_evento.desc(), EnvioDian.uuid.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if tip is not None and (tip.estado == ESTADO_ACEPTADO or tip.estado in ESTADOS_EN_CURSO):
+        await session.rollback()  # releases the advisory lock
+        raise DispatchAlreadyHandledError(lock_key)
+    parent = tip.uuid if tip is not None else None
+    # The lock is held until the first attempt's commit persists its row; the
+    # next request then sees that chain and is refused (idempotent).
+    return await dispatch_factura_electronica_with_backoff(
+        session,
+        uuid_factura_electronica=uuid_factura_electronica,
+        actor_uuid=actor_uuid,
+        dian_provider_url=dian_provider_url,
+        dian_token_path=dian_token_path,
+        initial_parent_uuid=parent,
+    )
 
 
 async def dispatch_revocacion_with_backoff(
@@ -1150,6 +1205,7 @@ __all__ = [
     "ConsecutivoRangeError",
     "DianProvider",
     "DispatchAlreadyHandledError",
+    "dispatch_factura_electronica_retry",
     "EnvioDian",
     "FactusProvider",
     "PollResult",

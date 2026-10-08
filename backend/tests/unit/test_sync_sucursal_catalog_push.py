@@ -155,6 +155,66 @@ class TestMixedBatchRouting:
 
 
 # ---------------------------------------------------------------------------
+# A1b — cloud-authored entries never leave the branch
+# ---------------------------------------------------------------------------
+
+
+class TestCloudAuthoredEntriesAreNotPushed:
+    """``envio_dian`` is ``cloud_to_branch`` and cloud-authored: the cloud is the
+    only egress to the DIAN provider and the acknowledgement travels the other
+    way. A row the branch writes locally (initial / retry request) is settled
+    as dispatched and never reaches the wire.
+    """
+
+    @pytest.mark.asyncio
+    async def test_envio_dian_row_is_settled_and_never_sent(
+        self, worker: SyncSucursalWorker
+    ) -> None:
+        envio = _make_pending_row(tabla="envio_dian")
+        caja = _make_pending_row(tabla="caja")
+
+        with (
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_dispatched", AsyncMock()
+            ) as mark_dispatched_mock,
+            patch(
+                "parkos_core.jobs.sync_sucursal.sq_helpers.mark_failed", AsyncMock()
+            ) as mark_failed_mock,
+        ):
+            push_events = _wire_up_push_events(
+                worker,
+                EventsPushResponse(
+                    status=207,
+                    results=[{"event_type": "caja", "status": "applied"}],
+                ),
+            )
+            await worker._push_and_handle_catalog([envio, caja])
+
+        push_events.assert_awaited_once()
+        sent = push_events.await_args.args[0]
+        assert [e["tabla"] for e in sent] == ["caja"]
+        assert envio.uuid in await_args_dispatched(mark_dispatched_mock)
+        mark_failed_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_batch_of_only_envio_dian_makes_no_wire_call(
+        self, worker: SyncSucursalWorker
+    ) -> None:
+        envio = _make_pending_row(tabla="envio_dian")
+
+        with patch(
+            "parkos_core.jobs.sync_sucursal.sq_helpers.mark_dispatched", AsyncMock()
+        ) as mark_dispatched_mock:
+            push_events = _wire_up_push_events(
+                worker, EventsPushResponse(status=207, results=[])
+            )
+            await worker._push_and_handle_catalog([envio])
+
+        push_events.assert_not_awaited()
+        assert await_args_dispatched(mark_dispatched_mock) == {envio.uuid}
+
+
+# ---------------------------------------------------------------------------
 # A2 — pg_partman suffix normalization on the wire
 # ---------------------------------------------------------------------------
 

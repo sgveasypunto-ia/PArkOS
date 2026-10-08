@@ -36,6 +36,8 @@ GLOBAL_TABLES = sorted(t for t, c in EXPECTED_SCOPE.items() if c == "global")
 OWNED_TABLES = sorted(t for t, c in EXPECTED_SCOPE.items() if c == "owned")
 OVERRIDE_TABLES = sorted(t for t, c in EXPECTED_SCOPE.items() if c == "override")
 SUBSCRIPTION_TABLES = sorted(t for t, c in EXPECTED_SCOPE.items() if c == "subscription")
+# Owned entries that are not ``[V]`` versions: no ``vigente_hasta`` to close, no factory build.
+APPEND_ONLY_OWNED = frozenset({"envio_dian"})
 
 
 def _model(table: str):
@@ -72,6 +74,10 @@ async def _retire(engine, pending: list[tuple[str, list[uuid_lib.UUID]]]) -> Non
     async with async_sessionmaker(engine, expire_on_commit=False)() as s:
         for table, ids in pending:
             model = _model(table)
+            if table in APPEND_ONLY_OWNED:
+                # ``[L-W]`` rows are never closed (REVOKE UPDATE): they are delivered
+                # by the ``created_at`` cursor and stay where they are.
+                continue
             await s.execute(
                 update(model)
                 .where(model.uuid.in_(ids), model.vigente_hasta.is_(None))
@@ -169,6 +175,24 @@ async def _seed_world(engine, factory) -> tuple[World, int]:
                     uuid_tipo_subscripcion=tipo_sub,
                 ),
             ]
+        # ``envio_dian`` (``[L-W]``, cloud-authored): the DIAN acknowledgement owed to
+        # the branch that issued the document. Not a ``[V]`` row, so built directly.
+        for who, suc in (("a", suc_a), ("b", suc_b)):
+            envio_uuid = uuid_lib.uuid4()
+            ids[("envio_dian", who)] = envio_uuid
+            stage2.append(
+                _model("envio_dian")(
+                    uuid=envio_uuid,
+                    uuid_sucursal=suc,
+                    estado="aceptado",
+                    cufe=f"cufe-{who}-{tag}",
+                    timestamp_evento=datetime.now(UTC).replace(tzinfo=None),
+                    created_at=datetime.now(UTC).replace(tzinfo=None),
+                    created_by=None,
+                    sync_status="pendiente",
+                    sync_attempts=0,
+                )
+            )
         stage2 += [
             build("configuracion_tolerancias", "global", uuid_sucursal=None),
             build("configuracion_seguridad", "global", uuid_sucursal=None),
@@ -222,7 +246,7 @@ def test_expected_scope_matches_pull_eligible_catalog(app) -> None:
     }
     assert eligible - set(EXPECTED_SCOPE) == set(), "catalog entries with no decided pull scope"
     assert set(EXPECTED_SCOPE) - eligible == set(), "EXPECTED_SCOPE names non pull-eligible entries"
-    assert len(EXPECTED_SCOPE) == 26
+    assert len(EXPECTED_SCOPE) == 27
 
 
 # ---------------------------------------------------------------------------

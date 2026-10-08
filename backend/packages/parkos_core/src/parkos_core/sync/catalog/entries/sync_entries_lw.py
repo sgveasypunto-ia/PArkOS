@@ -1,8 +1,8 @@
 """catalog/entries/sync_entries_lw.py — 6 [L-W] catalog entries (T-PR2-008..009).
 
-``envio_dian`` is **flipped** to ``cloud_to_branch`` (D1-rev, D5-rev) — it is
-the ordinary return channel carrying ``cufe``/``estado`` back to the branch,
-replacing the withdrawn ``sync_back_events`` table entirely.
+``envio_dian`` is ``cloud_to_branch`` (D1-rev, D5-rev) — it is the ordinary
+return channel carrying ``cufe``/``estado`` back to the branch, replacing the
+withdrawn ``sync_back_events`` table entirely.
 ``validacion_evento`` is the **sole** ``never_propagated`` entry in the whole
 catalog (D8-rev, REQ-CAT-016) — CLOUD-ONLY admin review tray.
 
@@ -18,7 +18,7 @@ from ....models.L_W.envio_dian import EnvioDian
 from ....models.L_W.reclamos import Reclamos
 from ....models.L_W.reimpresion_ticket import ReimpresionTicket
 from ....models.L_W.validacion_evento import ValidacionEvento
-from ...hooks.impls.dian_dispatch_on_sync import envio_dian_resume_hook
+from ...hooks.impls.dian_dispatch_on_sync import dian_reintento_solicitado_hook
 from ..schema import SyncCatalogEntry
 
 # ---------------------------------------------------------------------------
@@ -104,6 +104,10 @@ _ALERTA = SyncCatalogEntry(
     seq_strategy="seq_via_datos",
     self_chain=True,
     parent_fk_column="uuid_alerta_padre",
+    # Carrier of the manual DIAN retry request (``tipo_alerta=
+    # 'dian_reintento_solicitado'``): the cloud creates the retry envio_dian on
+    # arrival. The hook is a no-op for every other alerta.
+    hook_post_insert=dian_reintento_solicitado_hook,
 )
 
 # ---------------------------------------------------------------------------
@@ -115,19 +119,21 @@ _ENVIO_DIAN = SyncCatalogEntry(
     model_cls=EnvioDian,
     audit_class="L_W",
     sync_strategy="append",
-    # HU-F1.10 / DEC-FE-01 — flipped from ``cloud_to_branch`` (D1-rev /
-    # D5-rev, module docstring lines 3-7) to ``branch_to_cloud``. The
-    # branch is the AUTHOR of the envio_dian chain (initial + retry
-    # transitions); the cloud dispatcher consumes the chain via sync
-    # replication for analytics + state-machine advancement
-    # (``pendiente → enviado → aceptado | rechazado``).
+    # CLOUD-AUTHORED, returns to its branch. The cloud is the ONLY egress to
+    # the DIAN provider (``envio_dian`` is CLOUD-ONLY in the ER) and the
+    # dispatcher appends the chain (``pendiente -> enviado -> aceptado |
+    # rechazado``); ``cufe``/``estado`` reach the branch through this ordinary
+    # ``cloud_to_branch`` entry, scoped to the branch that issued the
+    # document (``uuid_sucursal``). It supersedes the DEC-FE-01 flip of
+    # migration 0028 (``branch_to_cloud``), which contradicted the data model.
     #
-    # MIGRATION 0028 Op 1 records this flip at the schema level. The
-    # ER diagram comment is updated post-archive from "CLOUD-ONLY" to
-    # "BRANCH-INITIATED, cloud consumer via sync" in a separate PR
-    # (F1.10 ER docstring drift pattern, matches F1.9
-    # ``models/A/factura_pagos.py`` lines 9-18).
-    direction="branch_to_cloud",
+    # The branch never pushes this table: ``jobs/sync_sucursal.py`` settles
+    # any locally written ``envio_dian`` row as dispatched without sending it
+    # (``originating_role="cloud"``). The cloud dispatches from the
+    # ``factura_electronica`` / ``revocacion_factura`` arrival hooks, so this
+    # entry carries NO ``hook_post_insert`` (it is applied at the branch,
+    # where the cloud-only dispatcher cannot be imported).
+    direction="cloud_to_branch",
     broadcast_policy="single_branch",
     apply_strategy="append_transition",
     originating_role="cloud",
@@ -146,15 +152,6 @@ _ENVIO_DIAN = SyncCatalogEntry(
     seq_strategy="seq_via_datos",
     self_chain=True,
     parent_fk_column="uuid_envio_padre",
-    # CU-05 critical fix #2 — branch-originated envio_dian rows in the
-    # ``pendiente`` state arrive at the cloud via sync; without this
-    # hook they sat in the cloud DB forever without being forwarded to
-    # Factus. The hook inspects ``payload["estado"]`` and dispatches
-    # via the linked FE / revocacion only for ``pendiente`` rows.
-    # See ``sync/hooks/impls/dian_dispatch_on_sync.py``'s module
-    # docstring for the known duplication hazard when both this hook
-    # AND the FE / revocacion hook fire on related rows.
-    hook_post_insert=envio_dian_resume_hook,
 )
 
 _VALIDACION_EVENTO = SyncCatalogEntry(

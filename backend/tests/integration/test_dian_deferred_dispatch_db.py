@@ -233,23 +233,16 @@ async def test_failed_dispatch_is_alerted_and_stays_resumable(
     pg_engine: AsyncEngine, seeded_sucursal_uuid, provider_calls, monkeypatch,
 ) -> None:
     """A dispatch that dies before any envio exists (consecutivo out of range)
-    leaves the branch pendiente row untouched, raises ONE dian_error alerta,
-    and the sweep still lists the document until the failure cap."""
+    raises ONE dian_error alerta, and the sweep still lists the document (a
+    cloud ``factura_electronica`` without a cloud chain) until the failure cap."""
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     monkeypatch.setitem(vars(engine_module), "SessionLocal", Session)
     ids = await _seed_support(pg_engine, seeded_sucursal_uuid)
     fe = _fe(seeded_sucursal_uuid, ids, consecutivo=1_000_000_000)  # > rango_hasta
     old = _now() - timedelta(hours=1)
+    fe.created_at = old
     async with Session() as s:
         s.add(fe)
-        await s.flush()
-        s.add(
-            EnvioDian(
-                uuid_sucursal=seeded_sucursal_uuid, uuid_factura_electronica=fe.uuid,
-                payload={"prefijo": "SETP", "consecutivo": 1_000_000_000}, estado="pendiente",
-                timestamp_evento=old, created_at=old, created_by=seeded_sucursal_uuid,
-            )
-        )
         await s.commit()
 
     await hooks._run_deferred(
@@ -268,17 +261,8 @@ async def test_failed_dispatch_is_alerted_and_stays_resumable(
                 )
             )
         ).scalars().all()
-        pendiente = (
-            await s.execute(
-                select(EnvioDian).where(
-                    EnvioDian.uuid_factura_electronica == fe.uuid,
-                    EnvioDian.estado == "pendiente",
-                )
-            )
-        ).scalars().all()
         resumable = await find_stale_pendientes(s, older_than=timedelta(minutes=10))
     assert len(alerts) == 1
-    assert len(pendiente) == 1
     assert fe.uuid in resumable
     assert provider_calls == []
 
@@ -293,18 +277,11 @@ async def test_sweep_selects_only_documents_without_a_cloud_chain(
     fresh_fe, stale_fe, sent_fe = (
         _fe(seeded_sucursal_uuid, ids, n, idx=i) for i, n in enumerate((4, 5, 6))
     )
+    fresh_fe.created_at, stale_fe.created_at, sent_fe.created_at = _now(), old, old
     async with Session() as s:
+        # Only the cloud's own ``factura_electronica`` rows drive the sweep: the
+        # branch's local ``pendiente`` envio_dian never reaches the cloud.
         s.add_all([fresh_fe, stale_fe, sent_fe])
-        await s.flush()
-        for fe, created in ((fresh_fe, _now()), (stale_fe, old), (sent_fe, old)):
-            s.add(
-                EnvioDian(
-                    uuid_sucursal=seeded_sucursal_uuid, uuid_factura_electronica=fe.uuid,
-                    payload={"prefijo": "SETP"}, estado="pendiente",
-                    timestamp_evento=created, created_at=created,
-                    created_by=seeded_sucursal_uuid,
-                )
-            )
         await s.commit()
     async with Session() as s:
         await dispatcher.dispatch_factura_electronica_with_backoff(
@@ -317,3 +294,108 @@ async def test_sweep_selects_only_documents_without_a_cloud_chain(
     assert stale_fe.uuid in found
     assert fresh_fe.uuid not in found  # not stale yet
     assert sent_fe.uuid not in found  # a cloud chain owns it
+
+
+# ---------------------------------------------------------------------------
+# Manual retry: the branch asks, the cloud dispatches a NEW attempt
+# ---------------------------------------------------------------------------
+
+
+async def _seed_cloud_tip(Session, sucursal, fe, estado: str, *, hace: timedelta) -> EnvioDian:
+    ts = _now() - hace
+    tip = EnvioDian(
+        uuid=uuid_lib.uuid4(), uuid_sucursal=sucursal, uuid_factura_electronica=fe.uuid,
+        payload={"prefijo": "SETP", "xml_sha256": "abc"}, estado=estado,
+        timestamp_evento=ts, created_at=ts, created_by=sucursal,
+    )
+    async with Session() as s:
+        s.add(tip)
+        await s.commit()
+    return tip
+
+
+def _retry_kwargs(fe, token_path) -> dict:
+    return dict(
+        uuid_factura_electronica=fe.uuid, actor_uuid=uuid_lib.uuid4(),
+        dian_provider_url=PROVIDER_URL, dian_token_path=token_path,
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_request_sends_a_new_attempt_chained_to_the_rejected_tip(
+    pg_engine: AsyncEngine, seeded_sucursal_uuid, provider_calls, token_path,
+) -> None:
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    ids = await _seed_support(pg_engine, seeded_sucursal_uuid)
+    fe = _fe(seeded_sucursal_uuid, ids, consecutivo=7)
+    async with Session() as s:
+        s.add(fe)
+        await s.commit()
+    tip = await _seed_cloud_tip(Session, seeded_sucursal_uuid, fe, "rechazado", hace=timedelta(hours=2))
+
+    async with Session() as s:
+        await dispatcher.dispatch_factura_electronica_retry(s, **_retry_kwargs(fe, token_path))
+
+    async with Session() as check:
+        chain = (
+            await check.execute(
+                select(EnvioDian).where(EnvioDian.uuid_factura_electronica == fe.uuid)
+            )
+        ).scalars().all()
+    assert [r.method for r in provider_calls].count("POST") == 1
+    new_rows = [r for r in chain if r.uuid != tip.uuid]
+    assert new_rows and any(r.estado == "aceptado" for r in new_rows)
+    assert any(r.uuid_envio_padre == tip.uuid for r in new_rows)
+    # append-only: the rejected tip is untouched
+    assert next(r for r in chain if r.uuid == tip.uuid).estado == "rechazado"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("estado", ["aceptado", "activo", "enviado"])
+async def test_retry_request_is_refused_while_the_document_is_accepted_or_in_flight(
+    pg_engine: AsyncEngine, seeded_sucursal_uuid, provider_calls, token_path, estado,
+) -> None:
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    ids = await _seed_support(pg_engine, seeded_sucursal_uuid)
+    fe = _fe(seeded_sucursal_uuid, ids, consecutivo=8)
+    async with Session() as s:
+        s.add(fe)
+        await s.commit()
+    await _seed_cloud_tip(Session, seeded_sucursal_uuid, fe, estado, hace=timedelta(minutes=1))
+
+    async with Session() as s:
+        with pytest.raises(dispatcher.DispatchAlreadyHandledError):
+            await dispatcher.dispatch_factura_electronica_retry(s, **_retry_kwargs(fe, token_path))
+    assert provider_calls == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_retry_requests_send_the_document_once(
+    pg_engine: AsyncEngine, seeded_sucursal_uuid, provider_calls, monkeypatch,
+) -> None:
+    """Two requests for the same document (double click, re-delivery) in one
+    apply batch: one deferred task, one POST."""
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    monkeypatch.setitem(vars(engine_module), "SessionLocal", Session)
+    ids = await _seed_support(pg_engine, seeded_sucursal_uuid)
+    fe = _fe(seeded_sucursal_uuid, ids, consecutivo=9)
+    async with Session() as s:
+        s.add(fe)
+        await s.commit()
+    await _seed_cloud_tip(Session, seeded_sucursal_uuid, fe, "rechazado", hace=timedelta(hours=2))
+
+    payload = {
+        "tipo_alerta": "dian_reintento_solicitado",
+        "uuid_arqueo": str(fe.uuid),
+        "uuid_sucursal": str(seeded_sucursal_uuid),
+    }
+    async with Session() as push:
+        for _ in range(2):
+            async with push.begin_nested():
+                await hooks.dian_reintento_solicitado_hook(_ctx(push, payload=dict(payload)))
+        assert not hooks._BACKGROUND_TASKS  # nothing starts before the outer commit
+        assert provider_calls == []
+        await push.commit()
+    await asyncio.gather(*list(hooks._BACKGROUND_TASKS))
+
+    assert [r.method for r in provider_calls].count("POST") == 1

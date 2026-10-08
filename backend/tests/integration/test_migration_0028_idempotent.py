@@ -20,14 +20,19 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 
-def test_envio_dian_direction_flipped_to_branch_to_cloud() -> None:
-    """DEC-FE-01: envio_dian is now branch_to_cloud (was cloud_to_branch)."""
+def test_envio_dian_direction_is_cloud_to_branch() -> None:
+    """envio_dian is cloud-authored (cloud is the only DIAN egress) and returns to its branch.
+
+    DEC-FE-01 flipped it to ``branch_to_cloud`` in migration 0028; the data
+    model (``modelo_datos_er.mmd``: CLOUD-ONLY) and AGENTS.md say
+    ``cloud_to_branch``, and the catalog drift check derives the same.
+    """
     envio_dian = SYNC_CATALOG_BY_NAME.get("envio_dian")
     assert envio_dian is not None
-    assert envio_dian.direction == "branch_to_cloud", (
-        f"DEC-FE-01 violated: envio_dian direction is "
-        f"{envio_dian.direction!r}, expected 'branch_to_cloud'"
+    assert envio_dian.direction == "cloud_to_branch", (
+        f"envio_dian direction is {envio_dian.direction!r}, expected 'cloud_to_branch'"
     )
+    assert envio_dian.broadcast_policy == "single_branch"
 
 
 @pytest.mark.asyncio

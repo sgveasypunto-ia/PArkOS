@@ -341,6 +341,23 @@ async def test_list_alertas_severity_populated_from_alert_types(pg_engine, pg_ds
     assert items[0]["severity"] == "critical"
 
 
+async def test_list_alertas_hides_the_dian_retry_requests(pg_engine, pg_dsn) -> None:
+    """``dian_reintento_solicitado`` is plumbing (branch -> cloud request), not an
+    alert for the administrator: it must not appear in the tray."""
+    branch = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, uuid_sucursal=branch)
+    await _seed_alerta(pg_engine, uuid_sucursal=branch, tipo_alerta="dian_reintento_solicitado")
+    await _seed_alerta(pg_engine, uuid_sucursal=branch, tipo_alerta="sin_catalogo_xyz")
+    admin_actor = uuid_lib.uuid4()
+    await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[branch])
+    fastapi_app, set_claims = _build_app(pg_engine)
+    token = _admin_token_and_claims(fastapi_app, set_claims, actor_uuid=admin_actor)
+
+    resp = await _get(fastapi_app, "/api/v1/workflows/alerta", token)
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    assert [i["tipo_alerta"] for i in resp.json()["items"]] == ["sin_catalogo_xyz"]
+
+
 # ---------------------------------------------------------------------------
 # operador- stays pinned to its own branch (no cross-branch leak)
 # ---------------------------------------------------------------------------

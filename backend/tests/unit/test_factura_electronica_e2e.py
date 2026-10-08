@@ -169,8 +169,13 @@ async def test_e2e_post_get_retry_get_full_journey(
     )
     monkeypatch.setattr(
         facturacion_mod.repo_factura_electronica,
-        "crear_envio_dian_reintento",
+        "crear_solicitud_reintento_dian",
         AsyncMock(return_value=retry_envio_orm),
+    )
+    monkeypatch.setattr(
+        facturacion_mod.repo_factura_electronica,
+        "buscar_solicitud_reintento_pendiente",
+        AsyncMock(return_value=None),
     )
 
     async def _chain_tip(session, *, uuid_factura_electronica):
@@ -262,7 +267,7 @@ async def test_e2e_post_get_retry_get_full_journey(
     # ----- Cross-cutting assertions -----------------------------------
     # The retry helper was called with the prior chain tip as parent.
     call_kwargs = (
-        facturacion_mod.repo_factura_electronica.crear_envio_dian_reintento.call_args.kwargs
+        facturacion_mod.repo_factura_electronica.crear_solicitud_reintento_dian.call_args.kwargs
     )
     assert call_kwargs["uuid_envio_padre"] == first_envio_uuid
     assert call_kwargs["uuid_factura_electronica"] == fe_uuid

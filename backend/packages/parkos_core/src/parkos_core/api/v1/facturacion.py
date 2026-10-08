@@ -1288,8 +1288,9 @@ async def get_factura_electronica(
 # ---------------------------------------------------------------------------
 # HU-F1.10 / T6 — POST /factura-electronica/{uuid}/reintentar
 #
-# 8-step handler. Creates a NEW envio_dian retry row (NEVER UPDATE on the
-# existing chain). The chain IS the audit trail — DEC-FE-02 + DEC-FE-07.
+# 8-step handler. Files a retry REQUEST (``alerta``, branch_to_cloud); the cloud
+# appends the NEW envio_dian (NEVER UPDATE on the existing chain). The chain IS
+# the audit trail — DEC-FE-02 + DEC-FE-07.
 #
 # Defense in depth:
 #   - KD-3 issuer chain (``operador-,admin-``)
@@ -1342,8 +1343,9 @@ async def retry_envio_dian(
            - rechazado → proceed
            - enviado   → proceed (DIAN timed out; retry)
            - None      → proceed (defensive; empty chain)
-        6. KD-FE-01 INSERT NEW prod.envio_dian retry row
-           (uuid_envio_padre=<tip.uuid>, estado='pendiente')
+        6. KD-FE-01 INSERT the retry request (alerta dian_reintento_solicitado,
+           datos_nuevos.uuid_envio_padre=<tip.uuid>); the cloud creates the
+           envio_dian retry row on arrival
         7. KD-FE-01 single commit (atomic)
         8. DEC-FE-06: Cache-Control: no-store header + response shape
     """
@@ -1414,20 +1416,40 @@ async def retry_envio_dian(
         # retry by creating an orphan row with uuid_envio_padre=None.
         uuid_envio_padre = None  # type: ignore[assignment]
 
-    # --- Step 6: INSERT NEW envio_dian retry row (DEC-FE-02). --------
-    new_envio = await repo_factura_electronica.crear_envio_dian_reintento(
+    # --- Step 5b: a request is already waiting for the cloud. ----------
+    # The new attempt travels cloud -> branch by pull, so the chain tip does
+    # not change until it returns: refuse a second request meanwhile.
+    waiting = await repo_factura_electronica.buscar_solicitud_reintento_pendiente(
+        session,
+        uuid_factura_electronica=fe_row.uuid,  # type: ignore[arg-type]
+        desde=chain_tip.timestamp_evento if chain_tip is not None else None,
+    )
+    if waiting is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "envio_dian_already_pending",
+                "uuid_factura_electronica": str(uuid),
+                "uuid_envio_pendiente": str(waiting.uuid),
+            },
+            headers=no_store,
+        )
+
+    # --- Step 6: INSERT the retry REQUEST (DEC-FE-02). -----------------
+    # ``envio_dian`` is cloud-authored and never pushed by the branch: the
+    # request travels as an ``alerta`` (branch_to_cloud) and the cloud appends
+    # the new envio_dian chained to ``uuid_envio_padre``.
+    new_envio = await repo_factura_electronica.crear_solicitud_reintento_dian(
         session,
         actor_uuid=ctx.actor_uuid,
         uuid_sucursal=target_sucursal,
         uuid_factura_electronica=fe_row.uuid,  # type: ignore[arg-type]
-        uuid_resolucion_facturacion=fe_row.uuid_resolucion_facturacion,  # type: ignore[arg-type]
+        uuid_envio_padre=uuid_envio_padre,  # type: ignore[arg-type]
         payload={
             "prefijo": fe_row.prefijo,
             "consecutivo": fe_row.consecutivo,
-            "uuid_factura_electronica": str(fe_row.uuid),
             "trigger": "manual_retry",
         },
-        uuid_envio_padre=uuid_envio_padre,  # type: ignore[arg-type]
     )
 
     # --- Step 7: KD-FE-01 single commit. ------------------------------

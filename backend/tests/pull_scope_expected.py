@@ -35,6 +35,8 @@ EXPECTED_SCOPE: dict[str, str] = {
     "documentos": "owned",
     "tarifas_sucursal": "owned",
     "cantidad_vehiculos_sucursal": "owned",
+    # cloud-authored DIAN acknowledgement (cufe / estado) returning to its branch
+    "envio_dian": "owned",
     # global default + per-branch override
     "configuracion_tolerancias": "override",
     "configuracion_seguridad": "override",
