@@ -63,18 +63,11 @@ export function FacturaImpuestosDetalle({ factura: f }: FacturaImpuestosDetalleP
               {imp.nombre_impuesto ?? imp.codigo_impuesto ?? 'Impuesto'}{' '}
               {imp.porcentaje_aplicado !== null &&
                 imp.porcentaje_aplicado !== undefined &&
-                `(${(imp.porcentaje_aplicado * 100).toFixed(2)}%)`}
+                `(${(imp.porcentaje_aplicado * 100).toFixed(2)}%)`}{' '}
+              {t('facturacion:display.baseImpuestoEnLinea', { defaultValue: 'base' })}{' '}
+              {money(imp.base_calculo)}
             </span>
             <span className="shrink-0 tabular-nums">{money(imp.valor)}</span>
-          </div>
-          <div
-            className="flex justify-between gap-2 pl-2 text-neutral-600"
-            data-testid="factura-display-impuesto-base"
-          >
-            <span className="min-w-0 truncate">
-              {t('facturacion:display.baseImpuesto', { defaultValue: 'Base' })}
-            </span>
-            <span className="shrink-0 tabular-nums">{money(imp.base_calculo)}</span>
           </div>
         </div>
       ))}

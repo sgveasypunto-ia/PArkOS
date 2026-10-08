@@ -36,13 +36,24 @@ export type SemanticaLineas = 'base' | 'bruto';
 const TOLERANCIA = 0.011;
 
 /**
+ * Whether an invoice line is a discount. `factura_detalle` has no `tipo`
+ * column, so the response returns every line as `servicio`: the discount is
+ * recognised by `tipo` when present, otherwise by its concept ("Descuento ...").
+ */
+export function esLineaDescuento(i: { tipo?: string | null; concepto?: string | null }): boolean {
+  if (i.tipo === 'descuento') return true;
+  const c = (i.concepto ?? '').trim().toLowerCase();
+  return c.startsWith('descuento');
+}
+
+/**
  * Whether the stored line amounts are the taxable base or the gross price.
  * `null` when they reconcile with neither (no label rather than a wrong one).
  */
 export function semanticaLineas(
   f: Pick<FacturaRead, 'items' | 'subtotal' | 'impuestos'>,
 ): SemanticaLineas | null {
-  const lineas = f.items.filter((i) => i.tipo !== 'descuento');
+  const lineas = f.items.filter((i) => !esLineaDescuento(i));
   if (lineas.length === 0) return null;
   const suma = lineas.reduce((acc, i) => acc + Number(i.subtotal ?? 0), 0);
   const base = Number(f.subtotal ?? 0);

@@ -156,11 +156,23 @@ describe('AUD2: factura con descuento y IVA sobre el neto', () => {
   it('las lineas brutas se reconocen aunque el IVA neto sea 0', () => {
     expect(semanticaLineas(SALIDA_MENSUALIDAD_NETA(1500, 0, 0, 0))).toBe('bruto');
   });
+  it('FIN1: la respuesta real (descuento devuelto como tipo servicio) se reconoce por el concepto', () => {
+    const f = factura({
+      subtotal: 1260.5,
+      descuento: 1500,
+      total: 0,
+      items: [linea('Estadía', 1500), linea('Descuento por mensualidad - MENSUAL_AUTO', 1500)],
+      impuestos: iva(0, 0),
+    });
+    expect(semanticaLineas(f)).toBe('bruto');
+    const txt = facturaATexto(construirFactura(f));
+    expect(txt).toContain('Valores con IVA incluido');
+  });
   it('el ticket impreso lee Subtotal / Descuento / IVA / TOTAL con descuento en base', () => {
     const txt = facturaATexto(construirFactura(SALIDA_MENSUALIDAD_NETA(1500, 0, 0, 0))).replace(/\s+/g, ' ');
-    expect(txt).toMatch(/Subtotal \(base\) \$ ?1\.260,50/);
+    expect(txt).toMatch(/Subtotal \(base\)\s+\$ ?1\.260,50/);
     expect(txt).toMatch(/Descuento - \$ ?1\.260,50/);
-    expect(txt).toMatch(/IVA 19% \$ ?0,00/);
+    expect(txt).toMatch(/IVA 19% \(base \$ ?[\d.]+,\d\d\)\s+\$ ?0,00/);
     expect(txt).toMatch(/TOTAL \$ ?0,00/);
     expect(txt).toContain('Valores con IVA incluido');
   });
