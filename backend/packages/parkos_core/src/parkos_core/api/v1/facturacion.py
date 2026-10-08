@@ -413,7 +413,14 @@ async def create_factura(
     # client-sent ``payload.subtotal`` is no longer persisted), so the invoice,
     # its ``factura_impuestos`` row and the FE agree. ``total`` is unchanged.
     base_bruta = repo_factura.compute_base_bruta(items_validados)
-    base_iva, iva_monto, _ = desglosar_iva_incluido(base_bruta, iva_porcentaje)
+    base_iva, _, _ = desglosar_iva_incluido(base_bruta, iva_porcentaje)
+    # AUD2: the tax is computed on the NET taxable amount (total after the
+    # discount), never on the gross: a salida covered 100% by the subscription
+    # (total 0) carries IVA 0 / base 0; a partial discount taxes only what is
+    # charged. Without discount ``payload.total == base_bruta`` -> unchanged.
+    base_neta, iva_monto, _ = desglosar_iva_incluido(
+        max(payload.total, Decimal(0)), iva_porcentaje
+    )
     new_factura = await repo_factura.crear_factura_evento(
         session,
         actor_uuid=ctx.actor_uuid,
@@ -434,17 +441,11 @@ async def create_factura(
         items=items_validados,
         uuid_sucursal=target_sucursal,
     )
-    # ``base`` (2026-09-24, live-validation bugfix): the GROSS base
-    # (servicio/producto only), NOT ``total_server`` (net, post-
-    # descuento). A salida-mensualidad factura nets to total_server=0,
-    # which snapshotted factura_impuestos.valor=0 -- the operator's
-    # directive is to show the FULL IVA "como si fuera rotacion", not
-    # $0. No-op for an ordinary rotacion factura (no descuento lines,
-    # base_bruta == total_server).
+    # ``base`` = NET taxable base (AUD2, see the comment above Step 9).
     await repo_factura.crear_factura_impuesto_iva(
         session,
         uuid_factura=new_factura.uuid,
-        base=base_iva,
+        base=base_neta,
         iva=iva_porcentaje,
         iva_monto=iva_monto,
         uuid_sucursal=target_sucursal,
@@ -826,7 +827,14 @@ async def create_factura_servicio(
     # IVA-included breakdown (same contract as ``create_factura``): the
     # header ``subtotal`` is the tax base; ``total`` is unchanged.
     base_bruta = repo_factura.compute_base_bruta(items_validados)
-    base_iva, iva_monto, _ = desglosar_iva_incluido(base_bruta, iva_porcentaje)
+    base_iva, _, _ = desglosar_iva_incluido(base_bruta, iva_porcentaje)
+    # AUD2: the tax is computed on the NET taxable amount (total after the
+    # discount), never on the gross: a salida covered 100% by the subscription
+    # (total 0) carries IVA 0 / base 0; a partial discount taxes only what is
+    # charged. Without discount ``payload.total == base_bruta`` -> unchanged.
+    base_neta, iva_monto, _ = desglosar_iva_incluido(
+        max(payload.total, Decimal(0)), iva_porcentaje
+    )
     new_factura = await repo_factura.crear_factura_evento(
         session,
         actor_uuid=ctx.actor_uuid,
@@ -850,7 +858,7 @@ async def create_factura_servicio(
     await repo_factura.crear_factura_impuesto_iva(
         session,
         uuid_factura=new_factura.uuid,
-        base=base_iva,
+        base=base_neta,
         iva=iva_porcentaje,
         iva_monto=iva_monto,
         uuid_sucursal=target_sucursal,

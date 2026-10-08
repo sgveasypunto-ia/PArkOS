@@ -11,6 +11,7 @@
  */
 import { useTranslation } from 'react-i18next';
 
+import { descuentoEnBase } from '../../../lib/print/facturaTextos';
 import type { FacturaRead } from '../api/facturaApi';
 
 const copDecimal = new Intl.NumberFormat('es-CO', {
@@ -47,12 +48,12 @@ export function FacturaImpuestosDetalle({ factura: f }: FacturaImpuestosDetalleP
           {money(f.subtotal)}
         </span>
       </div>
-      {(f.descuento ?? 0) > 0 && (
+      {descuentoEnBase(f) > 0 && (
         <div className="flex justify-between gap-2">
           <span className="min-w-0 truncate">
             {t('facturacion:display.descuento', { defaultValue: 'Descuento' })}
           </span>
-          <span className="shrink-0 tabular-nums">− {money(f.descuento)}</span>
+          <span className="shrink-0 tabular-nums">− {money(descuentoEnBase(f))}</span>
         </div>
       )}
       {f.impuestos.map((imp) => (

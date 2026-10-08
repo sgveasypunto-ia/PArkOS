@@ -400,3 +400,77 @@ def test_ubl_mensualidad_exit_with_full_discount_reconciles_to_zero() -> None:
     assert _xp(allowance[0], "cbc:Amount")[0].text == "1500.00"
     schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
     assert schema.validate(doc), schema.error_log
+
+
+def _mensualidad_detalles(descuento: float) -> list:
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(concepto="Parqueo", cantidad=1, valor_unitario=1500.00, subtotal=1500.00),
+        SimpleNamespace(
+            concepto="Descuento por mensualidad - Plan Mensual",
+            cantidad=1, valor_unitario=descuento, subtotal=descuento,
+        ),
+    ]
+
+
+def test_ubl_net_tax_full_discount_has_zero_tax_and_zero_payable() -> None:
+    """AUD2: a salida-mensualidad invoice covered 100% by the subscription
+    persists its IVA row on the NET taxable base (0 / 0). The UBL must not
+    report a positive tax: line 1260.50 - allowance 1260.50 (both ex-IVA) =
+    taxable 0, tax 0, payable 0."""
+    from types import SimpleNamespace
+
+    impuestos = [
+        SimpleNamespace(
+            codigo="IVA", nombre="IVA", base_calculo=0.00,
+            porcentaje_aplicado=0.19, valor=0.00,
+        )
+    ]
+    xml_bytes = serialize(
+        _build_factura_mock(), None, detalles=_mensualidad_detalles(1500.00), impuestos=impuestos
+    )
+    doc = etree.fromstring(xml_bytes)
+
+    assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "0.00"
+    assert _xp(doc, "/*/cac:TaxTotal/cac:TaxSubtotal/cbc:TaxableAmount")[0].text == "0.00"
+    lm = "/*/cac:LegalMonetaryTotal/cbc:"
+    assert _xp(doc, lm + "LineExtensionAmount")[0].text == "1260.50"
+    assert _xp(doc, lm + "AllowanceTotalAmount")[0].text == "1260.50"
+    assert _xp(doc, lm + "TaxExclusiveAmount")[0].text == "0.00"
+    assert _xp(doc, lm + "TaxInclusiveAmount")[0].text == "0.00"
+    assert _xp(doc, lm + "PayableAmount")[0].text == "0.00"
+    assert _xp(doc, "/*/cac:AllowanceCharge/cbc:Amount")[0].text == "1260.50"
+    line = _xp(doc, "/*/cac:InvoiceLine")[0]
+    assert _xp(line, "cac:TaxTotal/cbc:TaxAmount")[0].text == "0.00"
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(doc), schema.error_log
+
+
+def test_ubl_net_tax_partial_discount_reconciles_to_the_net_total() -> None:
+    """AUD2: total 1500 with a 500 discount -> net 1000 = base 840.34 + IVA 159.66.
+    gross base 1260.50 - allowance(ex-IVA) 420.16 = 840.34; + tax = 1000.00."""
+    from types import SimpleNamespace
+
+    impuestos = [
+        SimpleNamespace(
+            codigo="IVA", nombre="IVA", base_calculo=840.34,
+            porcentaje_aplicado=0.19, valor=159.66,
+        )
+    ]
+    xml_bytes = serialize(
+        _build_factura_mock(), None, detalles=_mensualidad_detalles(500.00), impuestos=impuestos
+    )
+    doc = etree.fromstring(xml_bytes)
+
+    lm = "/*/cac:LegalMonetaryTotal/cbc:"
+    assert _xp(doc, "/*/cac:TaxTotal/cbc:TaxAmount")[0].text == "159.66"
+    assert _xp(doc, lm + "LineExtensionAmount")[0].text == "1260.50"
+    assert _xp(doc, lm + "AllowanceTotalAmount")[0].text == "420.16"
+    assert _xp(doc, lm + "TaxExclusiveAmount")[0].text == "840.34"
+    assert _xp(doc, lm + "TaxInclusiveAmount")[0].text == "1000.00"
+    assert _xp(doc, lm + "PayableAmount")[0].text == "1000.00"
+    line_tax = _xp(doc, "/*/cac:InvoiceLine/cac:TaxTotal/cbc:TaxAmount")[0].text
+    assert line_tax == "159.66"
+    schema = etree.XMLSchema(etree.parse(str(_XSD_MAIN_PATH)))
+    assert schema.validate(doc), schema.error_log

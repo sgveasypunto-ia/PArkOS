@@ -29,6 +29,7 @@ import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 import { useAuth } from '@parkos/ui-kit/hooks';
 
 import { detectarTipoVehiculo } from '../../../lib/validation/placa';
+import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { useTiposVehiculoConSubscripcion } from '../../catalogos/hooks/useTiposVehiculoConSubscripcion';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
@@ -848,7 +849,7 @@ export function IngresoPanel({ initialPlaca = null }: IngresoPanelProps = {}): J
 
       {submitError && (
         <p role="alert" className="text-sm text-destructive">
-          {t(`error_${submitError}`, { defaultValue: submitError })}
+          {t(`error_${submitError}`, { defaultValue: mensajeIdentificacion(submitError) })}
         </p>
       )}
 

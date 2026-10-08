@@ -70,9 +70,10 @@ import { SalidaFlow } from './SalidaFlow';
 import { SalidaMensualidad } from './SalidaMensualidad';
 import { VehiculoSuggestions } from './VehiculoSuggestions';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
+import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 
 const placaSchema = z.object({
-  placa: z.string().trim().min(5, 'placa_formato_invalido'),
+  placa: z.string().trim().min(5, mensajeIdentificacion('placa_formato_invalido')),
 });
 type PlacaValues = z.infer<typeof placaSchema>;
 

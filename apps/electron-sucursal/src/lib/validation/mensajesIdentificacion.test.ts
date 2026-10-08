@@ -12,10 +12,19 @@ describe('mensajeIdentificacion', () => {
     'documento_formato_invalido',
     'nombre_requerido',
     'apellido_requerido',
+    // AUD3: placa / cantidad de la venta de suscripción y ingreso/salida
+    'placa_formato_invalido',
+    'placa_tipo_incompatible',
+    'placas_cantidad_invalida',
+    'validation.cantidad.min_1',
+    'validation.cantidad.max_excedida',
+    'validation.number.required',
+    'ingreso_sin_placa_tipo_requerido',
+    'email_formato_invalido',
   ])('traduce %s a un mensaje en español sin el código crudo', (codigo) => {
     const msg = mensajeIdentificacion(codigo);
     expect(msg).not.toBe(codigo);
-    expect(msg).not.toMatch(/_/);
+    expect(msg).not.toMatch(/_|validation\./);
   });
 
   it('deja pasar un texto desconocido y tolera vacíos', () => {

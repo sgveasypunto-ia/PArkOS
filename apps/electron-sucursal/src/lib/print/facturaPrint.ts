@@ -31,6 +31,7 @@ import { printHtml } from './fallbackBrowser';
 import {
   conceptoLegible,
   ETIQUETA_SUBTOTAL_BASE,
+  descuentoEnBase,
   etiquetaSemanticaLineas,
   semanticaLineas,
 } from './facturaTextos';
@@ -150,7 +151,8 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
   // Totales + detalle por impuesto
   sep();
   fila(ETIQUETA_SUBTOTAL_BASE, dinero(f.subtotal));
-  if ((f.descuento ?? 0) > 0) fila('Descuento', `- ${dinero(f.descuento)}`);
+  const descuento = descuentoEnBase(f);
+  if (descuento > 0) fila('Descuento', `- ${dinero(descuento)}`);
   for (const imp of f.impuestos) {
     const nombre = imp.nombre_impuesto ?? imp.codigo_impuesto ?? 'Impuesto';
     const pct = porcentaje(imp.porcentaje_aplicado);

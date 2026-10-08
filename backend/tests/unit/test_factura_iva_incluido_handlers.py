@@ -169,19 +169,7 @@ async def test_servicio_suelto_persists_iva_included_breakdown(
     _assert_desglose(captured)
 
 
-@pytest.mark.asyncio
-async def test_mensualidad_exit_zero_total_invoice_adds_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Salida-mensualidad: servicio 1500 (IVA incl.) + descuento 1500, total 0.
-
-    The receipt must add up: base 1260.50 + IVA 239.50 - descuento 1500 == 0
-    (before: subtotal 1215 / IVA 285 split on the total, IVA row not even
-    visible, so "Subtotal 1.215, Descuento -1.500, TOTAL 0" did not reconcile).
-    """
-    sucursal = uuid_lib.uuid4()
-    captured = _wire(monkeypatch, sucursal)
-    # compute_total / compute_descuento are real: they net the discount line.
+def _salida_mensualidad(monkeypatch: pytest.MonkeyPatch, sucursal: uuid_lib.UUID) -> MagicMock:
     salida = MagicMock()
     salida.uuid = uuid_lib.uuid4()
     salida.uuid_sucursal = sucursal
@@ -193,7 +181,11 @@ async def test_mensualidad_exit_zero_total_invoice_adds_up(
     monkeypatch.setattr(
         "parkos_core.api.v1.facturacion.repo_factura.buscar_salida_facturable", _buscar
     )
-    payload = FacturaCreate(
+    return salida
+
+
+def _payload_descuento(salida: MagicMock, descuento: str, total: str) -> FacturaCreate:
+    return FacturaCreate(
         uuid_salida=salida.uuid,
         items=[
             FacturaItemCreate(
@@ -202,23 +194,67 @@ async def test_mensualidad_exit_zero_total_invoice_adds_up(
             ),
             FacturaItemCreate(
                 tipo="descuento", concepto="Descuento por mensualidad - Plan",
-                cantidad=1, valor_unitario=Decimal("1500.00"), uuid_tarifa_sucursal=None,
+                cantidad=1, valor_unitario=Decimal(descuento), uuid_tarifa_sucursal=None,
             ),
         ],
         subtotal=Decimal("1215.00"),
-        total=Decimal("0.00"),
+        total=Decimal(total),
         medio_pago="suscripcion",
         referencia=None,
         fe_con_datos=False,
         fe_datos_cliente=None,
     )
 
-    await handlers.create_factura(MagicMock(), payload, AsyncMock(), _ctx(sucursal), None)
+
+@pytest.mark.asyncio
+async def test_mensualidad_exit_zero_total_invoice_carries_no_tax(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Salida-mensualidad fully covered (servicio 1500 + descuento 1500, total 0).
+
+    AUD2: the IVA row is computed on the NET taxable base (total - descuento =
+    0), so a $0 payable total never carries a positive tax. The header keeps
+    the gross base (1260.50) and the discount (1500); the display derives the
+    discount-in-base as ``subtotal - impuesto.base``. The subscription was
+    already invoiced with its IVA at sale time.
+    """
+    sucursal = uuid_lib.uuid4()
+    captured = _wire(monkeypatch, sucursal)
+    salida = _salida_mensualidad(monkeypatch, sucursal)
+
+    await handlers.create_factura(
+        MagicMock(), _payload_descuento(salida, "1500.00", "0.00"),
+        AsyncMock(), _ctx(sucursal), None,
+    )
 
     imp, fac = captured["impuesto"], captured["factura"]
-    assert imp["base"] == Decimal("1260.50")
-    assert imp["iva_monto"] == Decimal("239.50")
+    assert imp["base"] == Decimal("0.00")
+    assert imp["iva_monto"] == Decimal("0.00")
     assert fac["subtotal"] == Decimal("1260.50")
     assert fac["descuento"] == Decimal("1500.00")
     assert fac["total"] == Decimal("0.00")
-    assert fac["subtotal"] + imp["iva_monto"] - fac["descuento"] == fac["total"]
+    # subtotal - descuento-in-base + IVA == total
+    descuento_en_base = fac["subtotal"] - imp["base"]
+    assert fac["subtotal"] - descuento_en_base + imp["iva_monto"] == fac["total"]
+
+
+@pytest.mark.asyncio
+async def test_mensualidad_exit_partial_discount_taxes_the_net_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Total 1500, discount 500 -> net 1000 = base 840.34 + IVA 159.66."""
+    sucursal = uuid_lib.uuid4()
+    captured = _wire(monkeypatch, sucursal)
+    salida = _salida_mensualidad(monkeypatch, sucursal)
+
+    await handlers.create_factura(
+        MagicMock(), _payload_descuento(salida, "500.00", "1000.00"),
+        AsyncMock(), _ctx(sucursal), None,
+    )
+
+    imp, fac = captured["impuesto"], captured["factura"]
+    assert imp["base"] == Decimal("840.34")
+    assert imp["iva_monto"] == Decimal("159.66")
+    assert imp["base"] + imp["iva_monto"] == fac["total"] == Decimal("1000.00")
+    assert fac["subtotal"] == Decimal("1260.50")
+    assert fac["descuento"] == Decimal("500.00")

@@ -36,6 +36,7 @@ import { useTranslation } from 'react-i18next';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 import { detectarTipoVehiculo } from '../../../lib/validation/placa';
+import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 
 import { ForzarIngresoModal } from '../components/ForzarIngresoModal';
@@ -405,7 +406,7 @@ export default function Principal() {
       {submitError && (
         <p role="alert" className="text-sm text-destructive">
           {t(`error_${submitError}`, {
-            defaultValue: submitError,
+            defaultValue: mensajeIdentificacion(submitError),
           })}
         </p>
       )}

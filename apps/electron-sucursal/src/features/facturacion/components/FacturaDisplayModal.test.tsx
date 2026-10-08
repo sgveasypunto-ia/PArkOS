@@ -312,7 +312,9 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
     expect(screen.getByTestId('factura-display-subtotal')).toBeTruthy();
     expect(screen.getByTestId('factura-display-total')).toBeTruthy();
   });
-  it('T4: salida mensualidad ($0 con descuento) → base + IVA − descuento = total, con todas las líneas visibles', () => {
+  it('T4: salida mensualidad ($0 con descuento) → Subtotal − Descuento + IVA = total, sin IVA positivo', () => {
+    // AUD2: el IVA se persiste sobre el neto (0 / 0); el descuento se muestra
+    // en base (subtotal − base del impuesto).
     render(
       <FacturaDisplayModal
         factura={{
@@ -327,9 +329,9 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
               uuid_impuesto: 'iva-1',
               nombre_impuesto: 'IVA',
               codigo_impuesto: 'IVA',
-              base_calculo: 1260.5,
+              base_calculo: 0,
               porcentaje_aplicado: 0.19,
-              valor: 239.5,
+              valor: 0,
             },
           ],
         }}
@@ -338,11 +340,10 @@ describe('<FacturaDisplayModal /> — detalle de impuestos', () => {
     );
     const totales = screen.getByTestId('factura-display-totales').textContent ?? '';
     expect(screen.getByTestId('factura-display-subtotal').textContent).toContain('1.260,50');
-    expect(totales).toContain('1.500,00'); // descuento (todo el valor)
-    expect(screen.getByTestId('factura-display-impuesto').textContent).toContain('239,50');
+    expect(totales).toMatch(/Descuento\s*−\s*\$\s*1\.260,50/); // descuento en base
+    expect(totales).not.toContain('1.500,00');
+    expect(screen.getByTestId('factura-display-impuesto').textContent).toContain('0,00');
     expect(screen.getByTestId('factura-display-total').textContent).toContain('0,00');
-    // 1260.50 + 239.50 - 1500.00 = 0
-    expect(1260.5 + 239.5 - 1500).toBe(0);
   });
 
   it('D9: boton "Imprimir" imprime la factura completa (detalle de impuestos) por el bridge, sin cerrar el modal', async () => {
@@ -417,7 +418,7 @@ describe('<FacturaDisplayModal /> — textos de la factura (FB3)', () => {
 
   it('F2: las líneas declaran su semántica y el subtotal se rotula como base', () => {
     render(<FacturaDisplayModal factura={SUSCRIPCION_REAL} onClose={vi.fn()} />);
-    expect(screen.getByTestId('factura-display-items').textContent).toContain('Valores sin IVA');
+    expect(screen.getByTestId('factura-display-items').textContent).toContain('Valores antes de IVA');
     expect(screen.getByTestId('factura-display-totales').textContent).toContain('Subtotal (base)');
   });
 

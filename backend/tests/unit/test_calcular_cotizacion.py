@@ -430,8 +430,9 @@ async def test_cotizar_default_devuelve_desglose_fiscal(
     ``valor_plena`` is deliberately high so the per-minute ``CEIL`` branch
     (not the plena cap, which a small ``valor_plena`` would trigger after
     just ``valor_plena / valor`` minutes) is the one under test.
-      ``iva = 9000 * 0.19 = 1710``
-      ``subtotal = 9000 - 1710 = 7290``
+    Since migration 0094 the total is IVA-INCLUDED:
+      ``subtotal = round(9000 / 1.19, 2) = 7563.03``
+      ``iva = 9000 - 7563.03 = 1436.97``
 
     The response MUST also carry ``Cache-Control: no-store`` so no
     proxy can serve a stale quote (R8).
@@ -488,11 +489,11 @@ async def test_cotizar_default_devuelve_desglose_fiscal(
         f"total must be 100 * CEIL(89.X) = 9000 (89.X < tiempo_tar_plena=1000); "
         f"got {body['total']!r}"
     )
-    assert Decimal(str(body["iva"])) == Decimal("1710"), (
-        f"iva must be 9000 * 0.19 = 1710; got {body['iva']!r}"
+    assert Decimal(str(body["iva"])) == Decimal("1436.97"), (
+        f"iva must be total - round(total/1.19, 2) = 1436.97; got {body['iva']!r}"
     )
-    assert Decimal(str(body["subtotal"])) == Decimal("7290"), (
-        f"subtotal must be total - iva = 7290; got {body['subtotal']!r}"
+    assert Decimal(str(body["subtotal"])) == Decimal("7563.03"), (
+        f"subtotal must be round(total/1.19, 2) = 7563.03; got {body['subtotal']!r}"
     )
     # The response schema CEILs the SQL's raw float (89 + drift) into the
     # integer billed minutes (``CotizarFacturacion._ceil_tiempo_minutos``), so
