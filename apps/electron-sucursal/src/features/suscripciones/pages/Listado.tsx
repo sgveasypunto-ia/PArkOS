@@ -38,6 +38,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 
 import type { SubscripcionActivaItem } from '../api/cuposApi';
+import { normalizarBusqueda } from '../lib/busquedaSuscripcion';
 import { useSuscripcionesActivas } from '../hooks/useSuscripcionesActivas';
 
 export interface ListadoRow {
@@ -64,14 +65,14 @@ function toRow(i: SubscripcionActivaItem): ListadoRow {
   };
 }
 
-/** Case-insensitive substring search over cliente name OR identification. Empty query passes all. */
+/** Case- and accent-insensitive substring search over cliente name OR identification. Empty query passes all. */
 function filterListado(rows: ListadoRow[], query: string): ListadoRow[] {
-  const q = query.trim().toLowerCase();
+  const q = normalizarBusqueda(query);
   if (!q) return rows;
   return rows.filter(
     (r) =>
-      r.cliente_nombre.toLowerCase().includes(q) ||
-      r.numero_identificacion.toLowerCase().includes(q),
+      normalizarBusqueda(r.cliente_nombre).includes(q) ||
+      normalizarBusqueda(r.numero_identificacion).includes(q),
   );
 }
 

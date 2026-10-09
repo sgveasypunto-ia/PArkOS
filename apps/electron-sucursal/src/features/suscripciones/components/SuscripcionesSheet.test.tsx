@@ -211,6 +211,76 @@ describe('<SuscripcionesSheet /> — HU-F9.1 + HU-F9.2 realineada', () => {
     expect(screen.queryByTestId('suscripciones-cupos-detalle')).not.toBeInTheDocument();
   });
 
+  describe('búsqueda por nombre (defecto 7.5)', () => {
+    const mk = (uuid: string, nombre: string, apellido: string, id: string) => ({
+      ...LISTA[0],
+      uuid,
+      cliente: { uuid: `cli-${uuid}`, nombre, apellido, numero_identificacion: id },
+    });
+    const VARIOS = [
+      mk('a', 'Juan', 'Pérez', '1001'),
+      mk('b', 'Juan Carlos', 'Gómez', '1002'),
+      mk('c', 'José', 'Núñez', '1003'),
+    ];
+
+    it('S7: escribir "juan" filtra la lista por nombre (case-insensitive)', async () => {
+      mockListData.mockReturnValue(VARIOS);
+      useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+      render(<SuscripcionesSheet />);
+      const user = userEvent.setup();
+      await user.type(screen.getByTestId('suscripciones-buscar-input'), 'JUAN');
+      expect(screen.getByTestId('suscripciones-sheet-item-a')).toBeInTheDocument();
+      expect(screen.getByTestId('suscripciones-sheet-item-b')).toBeInTheDocument();
+      expect(screen.queryByTestId('suscripciones-sheet-item-c')).toBeNull();
+    });
+
+    it('S8: tolera acentos ("jose" encuentra "José"; "nunez" encuentra "Núñez")', async () => {
+      mockListData.mockReturnValue(VARIOS);
+      useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+      render(<SuscripcionesSheet />);
+      const user = userEvent.setup();
+      await user.type(screen.getByTestId('suscripciones-buscar-input'), 'jose');
+      expect(screen.getByTestId('suscripciones-sheet-item-c')).toBeInTheDocument();
+      expect(screen.queryByTestId('suscripciones-sheet-item-a')).toBeNull();
+    });
+
+    it('S9: submit con varias coincidencias por nombre NO consulta; deja elegir de la lista', async () => {
+      mockListData.mockReturnValue(VARIOS);
+      useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+      render(<SuscripcionesSheet />);
+      const user = userEvent.setup();
+      await user.type(screen.getByTestId('suscripciones-buscar-input'), 'juan');
+      await user.click(screen.getByTestId('suscripciones-buscar-submit'));
+      expect(mockBuscarTrigger).not.toHaveBeenCalled();
+      expect(screen.getByTestId('suscripciones-sheet-item-a')).toBeInTheDocument();
+    });
+
+    it('S10: submit con UNA coincidencia por nombre abre sus cupos por su identificación', async () => {
+      mockListData.mockReturnValue(VARIOS);
+      mockBuscarTrigger.mockResolvedValue(DETALLE);
+      useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+      render(<SuscripcionesSheet />);
+      const user = userEvent.setup();
+      await user.type(screen.getByTestId('suscripciones-buscar-input'), 'jos');
+      await user.click(screen.getByTestId('suscripciones-buscar-submit'));
+      expect(mockBuscarTrigger).toHaveBeenCalledWith('1003');
+      await waitFor(() => {
+        expect(screen.getByTestId('suscripciones-cupos-detalle')).toBeInTheDocument();
+      });
+    });
+
+    it('S11: sin coincidencias en la lista, submit conserva la búsqueda exacta por identificación', async () => {
+      mockListData.mockReturnValue(VARIOS);
+      mockBuscarTrigger.mockResolvedValue(null);
+      useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
+      render(<SuscripcionesSheet />);
+      const user = userEvent.setup();
+      await user.type(screen.getByTestId('suscripciones-buscar-input'), '777');
+      await user.click(screen.getByTestId('suscripciones-buscar-submit'));
+      expect(mockBuscarTrigger).toHaveBeenCalledWith('777');
+    });
+  });
+
   it('S5: clicking a list row fetches the detail and advances to cupos mode', async () => {
     mockBuscarTrigger.mockResolvedValue(DETALLE);
     useDashboardDrawerStore.getState().open('suscripciones', 'sidebar-suscripciones');
