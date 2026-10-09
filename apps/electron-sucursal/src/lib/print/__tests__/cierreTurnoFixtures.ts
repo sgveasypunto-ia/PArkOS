@@ -72,6 +72,7 @@ function escenario(
       diferencia: contado - esperado,
       uuidArqueo: arqueo.uuid,
       secciones,
+      nota: i18n.t('caja:cerrarTurno.resumenCierre.notaElectronicos'),
     },
   };
 }
