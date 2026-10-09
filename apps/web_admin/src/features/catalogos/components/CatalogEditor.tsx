@@ -47,14 +47,38 @@ import type { CatalogConfig } from '../lib/configTypes';
  */
 function mapConflictError(
   err: ParkosHttpError,
-  t: (key: string, fallback: string) => string,
+  t: (
+    key: string,
+    fallback: string,
+    options?: Record<string, string | number | undefined>,
+  ) => string,
 ): string {
   let code: string | undefined;
+  let extra: { current?: number; limit?: number } = {};
   try {
-    const parsed = JSON.parse(err.body) as { detail?: { error?: string } | string };
-    code = typeof parsed.detail === 'string' ? parsed.detail : parsed.detail?.error;
+    const parsed = JSON.parse(err.body) as {
+      detail?: { error?: string; current?: number; limit?: number } | string;
+    };
+    if (typeof parsed.detail === 'string') {
+      code = parsed.detail;
+    } else if (parsed.detail && typeof parsed.detail === 'object') {
+      code = parsed.detail.error;
+      extra = {
+        current: parsed.detail.current,
+        limit: parsed.detail.limit,
+      };
+    }
   } catch {
     code = undefined;
+  }
+  if (code === 'tipos_vehiculo_max_reached') {
+    const current = extra.current;
+    const limit = extra.limit;
+    return t(
+      'catalogos.tiposVehiculoMaxReached',
+      'Ya hay {{current}} tipos de vehículo vigentes. El máximo permitido es {{limit}}. Desactivá uno para poder agregar otro.',
+      { current, limit },
+    );
   }
   if (code === 'tipo_vehiculo_con_subscripciones_vigentes') {
     return t(
@@ -102,12 +126,17 @@ export function CatalogEditor({ config }: CatalogEditorProps): JSX.Element {
       }
       // An empty `select` ("Cualquiera") is "no value": omit it instead of
       // sending '' (the backend expects a UUID or an absent key).
-      const payload = { ...values };
+      const stripped: Record<string, unknown> = { ...values };
       for (const f of config.fields) {
-        if (f.type === 'select' && (payload[f.name] === '' || payload[f.name] === undefined)) {
-          delete payload[f.name];
+        if (f.type === 'select' && (stripped[f.name] === '' || stripped[f.name] === undefined)) {
+          delete stripped[f.name];
         }
       }
+      // Let the config map form values to the wire payload (e.g. JSON-parse
+      // `caracteristicas` from textarea string to dict). Previously the raw
+      // form values were sent, which silently broke JSONB fields — a real
+      // submit would 422 from the backend.
+      const payload = config.toCreatePayload(stripped);
       if (editing) {
         await updateCatalogVersion(config.resource, editing.uuid, payload);
       } else {
@@ -147,7 +176,10 @@ export function CatalogEditor({ config }: CatalogEditorProps): JSX.Element {
 
   const dialogDefaults = editing
     ? Object.fromEntries(
-        config.fields.map((f) => [f.name, editing[f.name] ?? '']),
+        config.fields.map((f) => {
+          const raw = editing[f.name];
+          return [f.name, f.formatForEdit ? f.formatForEdit(raw) : (raw ?? '')];
+        }),
       )
     : config.defaults;
 
@@ -262,18 +294,9 @@ export function CatalogEditor({ config }: CatalogEditorProps): JSX.Element {
         defaults={dialogDefaults}
         onSubmit={handleSubmit}
         isSubmitting={submitting}
+        validateForm={config.validateForm}
+        submitError={submitError}
       />
-
-      {submitError !== null && (
-        <p
-          role="alert"
-          aria-live="assertive"
-          className="text-destructive mt-2 px-6 text-xs"
-          data-testid={`catalog-submit-error-${config.resource}`}
-        >
-          {submitError}
-        </p>
-      )}
     </Card>
   );
 }

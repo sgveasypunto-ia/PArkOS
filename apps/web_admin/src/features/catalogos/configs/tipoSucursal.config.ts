@@ -5,7 +5,9 @@
  * (≤255 opt), `descripcion` (opt), `caracteristicas` (JSONB dict opt).
  *
  * El form serializa `caracteristicas` como JSON string y lo parsea
- * antes de mandar (Pydantic espera dict, no string).
+ * antes de mandar (Pydantic espera dict, no string). La validación de
+ * sintaxis corre en el cliente vía `validateForm` para que el usuario
+ * vea el error inline (antes el form lo descartaba en silencio).
  */
 import type { CatalogConfig } from '../lib/configTypes';
 
@@ -20,7 +22,19 @@ export const tipoSucursalConfig: CatalogConfig = {
     { name: 'descripcion', label: 'Descripción' },
     {
       name: 'caracteristicas',
-      label: 'Características (JSON)',
+      label: 'Características',
+      type: 'textarea',
+      placeholder: '{"capacidad": 50, "techado": true}',
+      hint: 'Diccionario JSON con propiedades libres. Opcional. Ej: {"capacidad": 50, "techado": true}',
+      formatForEdit: (rowValue) => {
+        if (rowValue === null || rowValue === undefined) return '{}';
+        if (typeof rowValue === 'string') return rowValue;
+        try {
+          return JSON.stringify(rowValue, null, 2);
+        } catch {
+          return '{}';
+        }
+      },
     },
   ],
   columns: [
@@ -47,6 +61,19 @@ export const tipoSucursalConfig: CatalogConfig = {
     descripcion: '',
     caracteristicas: '{}',
   },
+  validateForm: (values) => {
+    const raw = values.caracteristicas;
+    if (typeof raw !== 'string' || raw.trim() === '') return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return 'Características debe ser un objeto JSON (no array, no valor primitivo).';
+      }
+    } catch {
+      return 'Características tiene JSON inválido. Revisá la sintaxis.';
+    }
+    return null;
+  },
   toCreatePayload: (form) => {
     const out: Record<string, unknown> = {
       codigo: String(form.codigo ?? '').trim(),
@@ -63,14 +90,9 @@ export const tipoSucursalConfig: CatalogConfig = {
     }
     const raw = form.caracteristicas;
     if (typeof raw === 'string' && raw.trim() !== '') {
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          out.caracteristicas = parsed;
-        }
-      } catch {
-        // Mantener payload sin `caracteristicas` si el JSON es inválido;
-        // el backend devolverá 422 con su propio mensaje.
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        out.caracteristicas = parsed;
       }
     }
     return out;

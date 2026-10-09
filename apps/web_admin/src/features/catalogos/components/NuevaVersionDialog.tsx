@@ -9,6 +9,11 @@
  * `Form` (shadcn). El formulario se renderiza desde la lista de
  * campos del `config.fields` — el componente no conoce ningún
  * catálogo específico.
+ *
+ * El `submitError` se renderiza DENTRO del dialog (no en el Card
+ * padre) para que el usuario lo vea cuando el dialog está abierto
+ * — el dialog es modal y portaleado, un error afuera queda tapado
+ * por el overlay.
  */
 import { useEffect } from 'react';
 import { useForm, type UseFormRegisterReturn } from 'react-hook-form';
@@ -38,13 +43,32 @@ interface NuevaVersionDialogProps {
   description: string;
   fields: CatalogField[];
   defaults: Record<string, unknown>;
-  onSubmit: (values: Record<string, unknown>) => Promise<void>;
+  onSubmit: (
+    values: Record<string, unknown>,
+    config: { validateForm?: (v: Record<string, unknown>) => string | null },
+  ) => Promise<void>;
   isSubmitting: boolean;
+  /**
+   * Optional pre-submit validator, run by the dialog before calling `onSubmit`.
+   * Lets the config validate cross-field/format rules (e.g. JSON syntax) that
+   * Zod's per-field schema can't express.
+   */
+  validateForm?: (values: Record<string, unknown>) => string | null;
+  /** Error from the last failed submit. Rendered inside the dialog. */
+  submitError?: string | null;
 }
 
 /**
- * `select` field: options are the vigente rows of `field.optionsResource`
- * (cached by SWR through `useCatalogList`); the empty option maps to "no value".
+ * `select` field with two modes:
+ *  - `field.options` is set → render those literal options (e.g. enum-like
+ *    fields such as `tipo_calculo`).
+ *  - `field.optionsResource` is set → pull vigente rows from the named
+ *    catalog (the common FK case).
+ *
+ * `optionsValueKey` controls which row key is used as the option `value`
+ * (default `uuid`). Set it to e.g. `tipo` when the backend field is a
+ * free string keyed by the option's `tipo` (e.g. `tipo_cliente_permitido`,
+ * which the backend stores as a `str` not a FK).
  */
 function CatalogSelect({
   field,
@@ -58,17 +82,19 @@ function CatalogSelect({
   /** Value stored on the row being edited (may point at a no-longer-vigente version). */
   currentValue: string;
 }): JSX.Element {
+  const hasLiteral = Array.isArray(field.options);
   const { rows } = useCatalogList(field.optionsResource ?? 'tipos-vehiculo');
   const labelKey = field.optionsLabelKey ?? 'tipo';
-  const vigentes = rows.filter((r) => r.vigente_hasta === null && r.estado === 'activo');
-  // A row can reference an older version of the option (references keep the
-  // uuid they had when saved): keep it selectable instead of silently
-  // resetting the field to "no value".
-  const stale =
-    currentValue !== '' && !vigentes.some((r) => r.uuid === currentValue)
-      ? (rows.find((r) => r.uuid === currentValue) ?? null)
-      : null;
-  const options = stale ? [...vigentes, stale] : vigentes;
+  const valueKey = field.optionsValueKey ?? 'uuid';
+
+  const literalOptions = field.options ?? [];
+  const resourceOptions = useResourceOptions({
+    rows,
+    valueKey,
+    labelKey,
+    currentValue,
+  });
+
   return (
     <select
       id={`field-${field.name}`}
@@ -79,13 +105,50 @@ function CatalogSelect({
       className="border-input bg-transparent flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
       <option value="">{field.emptyOptionLabel ?? ''}</option>
-      {options.map((r) => (
-        <option key={r.uuid} value={r.uuid}>
-          {String(r[labelKey] ?? r.uuid)}
+      {(hasLiteral ? literalOptions : resourceOptions).map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
         </option>
       ))}
     </select>
   );
+}
+
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * Build the `<option>` list for a resource-driven select. The `value` is
+ * the row's `optionsValueKey` (default `uuid`). When the current row
+ * references a no-longer-vigente version, keep that option selectable
+ * so the field doesn't silently reset to "no value".
+ */
+function useResourceOptions({
+  rows,
+  valueKey,
+  labelKey,
+  currentValue,
+}: {
+  rows: { uuid: string; vigente_hasta: string | null; estado: string }[];
+  valueKey: string;
+  labelKey: string;
+  currentValue: string;
+}): SelectOption[] {
+  const vigentes = rows.filter((r) => r.vigente_hasta === null && r.estado === 'activo');
+  const stale =
+    currentValue !== '' && !vigentes.some((r) => r.uuid === currentValue)
+      ? (rows.find((r) => r.uuid === currentValue) ?? null)
+      : null;
+  const list = stale ? [...vigentes, stale] : vigentes;
+  return list.map((r) => {
+    const v = (r as unknown as Record<string, unknown>)[valueKey];
+    return {
+      value: v === undefined || v === null ? '' : String(v),
+      label: String((r as unknown as Record<string, unknown>)[labelKey] ?? v ?? r.uuid),
+    };
+  });
 }
 
 export function NuevaVersionDialog({
@@ -97,6 +160,8 @@ export function NuevaVersionDialog({
   defaults,
   onSubmit,
   isSubmitting,
+  validateForm,
+  submitError,
 }: NuevaVersionDialogProps): JSX.Element {
   const { t } = useTranslation();
 
@@ -139,7 +204,14 @@ export function NuevaVersionDialog({
 
         <form
           onSubmit={form.handleSubmit(async (values) => {
-            await onSubmit(values as Record<string, unknown>);
+            if (validateForm) {
+              const blocked = validateForm(values as Record<string, unknown>);
+              if (blocked !== null) {
+                form.setError('root' as never, { type: 'manual', message: blocked });
+                return;
+              }
+            }
+            await onSubmit(values as Record<string, unknown>, { validateForm });
           })}
           className="grid gap-4"
           data-testid="nueva-version-form"
@@ -147,6 +219,12 @@ export function NuevaVersionDialog({
           {fields.map((field) => {
             const error = form.formState.errors[field.name];
             const isCheckbox = field.type === 'checkbox';
+            const isTextarea = field.type === 'textarea' || (field.type === undefined && field.multiline === true);
+            const errorId = `field-${field.name}-error`;
+            const hintId = `field-${field.name}-hint`;
+            const describedBy = [error ? errorId : null, field.hint ? hintId : null]
+              .filter(Boolean)
+              .join(' ');
             return (
               <div key={field.name} className="grid gap-2">
                 <Label
@@ -192,7 +270,7 @@ export function NuevaVersionDialog({
                       currentValue={String(defaults[field.name] ?? '')}
                     />
                     {field.hint && (
-                      <p id={`field-${field.name}-hint`} className="text-muted-foreground text-xs">
+                      <p id={hintId} className="text-muted-foreground text-xs">
                         {field.hint}
                       </p>
                     )}
@@ -200,20 +278,37 @@ export function NuevaVersionDialog({
                 )}
                 {!isCheckbox && field.type !== 'select' && (
                   <>
-                    <Input
-                      id={`field-${field.name}`}
-                      type={field.type === 'number' ? 'number' : 'text'}
-                      step={field.type === 'number' ? '0.0001' : undefined}
-                      {...form.register(field.name)}
-                      data-testid={`field-${field.name}`}
-                      aria-invalid={error ? 'true' : 'false'}
-                      aria-describedby={
-                        error ? `field-${field.name}-error` : undefined
-                      }
-                    />
+                    {isTextarea ? (
+                      <textarea
+                        id={`field-${field.name}`}
+                        {...form.register(field.name)}
+                        data-testid={`field-${field.name}`}
+                        aria-invalid={error ? 'true' : 'false'}
+                        aria-describedby={describedBy || undefined}
+                        placeholder={field.placeholder}
+                        rows={4}
+                        className="border-input bg-transparent flex w-full rounded-md border px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      />
+                    ) : (
+                      <Input
+                        id={`field-${field.name}`}
+                        type={field.type === 'number' ? 'number' : 'text'}
+                        step={field.type === 'number' ? '0.0001' : undefined}
+                        placeholder={field.placeholder}
+                        {...form.register(field.name)}
+                        data-testid={`field-${field.name}`}
+                        aria-invalid={error ? 'true' : 'false'}
+                        aria-describedby={describedBy || undefined}
+                      />
+                    )}
+                    {field.hint && (
+                      <p id={hintId} className="text-muted-foreground text-xs">
+                        {field.hint}
+                      </p>
+                    )}
                     {error && (
                       <p
-                        id={`field-${field.name}-error`}
+                        id={errorId}
                         role="alert"
                         className="text-destructive text-xs"
                       >
@@ -225,6 +320,18 @@ export function NuevaVersionDialog({
               </div>
             );
           })}
+
+          {(form.formState.errors.root || submitError) && (
+            <p
+              role="alert"
+              aria-live="assertive"
+              className="border-destructive/50 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
+              data-testid="nueva-version-submit-error"
+            >
+              {((form.formState.errors.root as { message?: string } | undefined)?.message as string) ??
+                submitError}
+            </p>
+          )}
 
           <DialogFooter>
             <Button
