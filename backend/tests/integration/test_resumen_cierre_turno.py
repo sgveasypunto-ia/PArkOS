@@ -87,6 +87,12 @@ def _counts(ingresos: int, salidas: int) -> MagicMock:
     return m
 
 
+def _scalar(value: Decimal | None) -> MagicMock:
+    m = MagicMock()
+    m.scalar_one_or_none.return_value = value
+    return m
+
+
 def _grouped(rows: list[tuple[str | None, str | None, int, Decimal]]) -> MagicMock:
     m = MagicMock()
     m.all.return_value = rows
@@ -117,6 +123,8 @@ async def test_happy_path_groups_by_medio_pago_and_reports_reversos() -> None:
                     ("reverso", "efectivo", 1, Decimal("5000")),
                 ]
             ),
+            _scalar(Decimal("100000")),  # base de caja (sesion.valor_inicial_efectivo)
+            _scalar(Decimal("350000")),  # efectivo reportado en el ultimo arqueo
         ]
     )
 
@@ -144,6 +152,9 @@ async def test_happy_path_groups_by_medio_pago_and_reports_reversos() -> None:
     }
     assert result.reversos_count == 1
     assert result.reversos_total_cop == Decimal("5000")
+    assert result.base_entregada == Decimal("100000")
+    assert result.efectivo_reportado == Decimal("350000")
+    assert result.producido == Decimal("250000")
     assert response.headers.get("Cache-Control") == "no-store"
 
 
@@ -156,7 +167,16 @@ async def test_zero_state_returns_empty_medios() -> None:
     sesion = _make_sesion(sucursal=sucursal, usuario=usuario)
     sel = _select_returning(sesion)
     session = MagicMock()
-    session.execute = AsyncMock(side_effect=[sel, sel, _counts(0, 0), _grouped([])])
+    session.execute = AsyncMock(
+        side_effect=[
+            sel,
+            sel,
+            _counts(0, 0),
+            _grouped([]),
+            _scalar(Decimal("100000")),  # base
+            _scalar(None),  # no arqueo yet
+        ]
+    )
 
     with patch.object(
         arqueo, "_sum_factura_pagos_by_medio_pago", new=AsyncMock(return_value=Decimal("0"))
@@ -174,6 +194,10 @@ async def test_zero_state_returns_empty_medios() -> None:
     assert result.transacciones_count == 0
     assert result.reversos_count == 0
     assert result.reversos_total_cop == Decimal("0")
+    # No arqueo yet: the base is known, the producido is not.
+    assert result.base_entregada == Decimal("100000")
+    assert result.efectivo_reportado is None
+    assert result.producido is None
 
 
 @pytest.mark.asyncio
@@ -345,6 +369,9 @@ def test_wire_shape_is_additive_and_mi_turno_read_is_frozen() -> None:
         "medios_pago",
         "reversos_count",
         "reversos_total_cop",
+        "base_entregada",
+        "efectivo_reportado",
+        "producido",
     }
     with pytest.raises(Exception):  # extra='forbid' -> pydantic ValidationError
         ResumenCierreTurnoRead(

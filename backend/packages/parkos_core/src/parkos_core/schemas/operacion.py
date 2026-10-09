@@ -805,6 +805,11 @@ class ResumenCierreTurnoRead(_Base):
     medios_pago: list[ResumenCierreMedioPagoRead] = Field(default_factory=list)
     reversos_count: int = 0
     reversos_total_cop: Decimal = Decimal(0)
+    # Cash-handover figures (efectivo only, derived at read time). ``None`` when
+    # the sesion has no arqueo yet, so older clients that ignore them keep working.
+    base_entregada: Decimal | None = None
+    efectivo_reportado: Decimal | None = None
+    producido: Decimal | None = None
 
 
 __all__ = [

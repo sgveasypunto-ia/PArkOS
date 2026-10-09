@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime, timezone
+from decimal import Decimal
 from typing import Any, cast
 
 from sqlalchemy import select, update
@@ -25,6 +26,7 @@ from ..exceptions import SesionAlreadyActive
 from ..models.L_S.login import Login
 from ..models.L_S.sesion import Sesion
 from ..models.V.usuarios import Usuarios
+from .mi_turno import producido_de
 
 # SQLSTATE for unique-constraint violation in Postgres. Used to
 # detect the partial unique index violation from migration 0023
@@ -384,6 +386,14 @@ async def close_session_with_log(
         }
         if valor_final_datafono is not None:
             datos_nuevos["valor_final_datafono"] = str(valor_final_datafono)
+        if valor_final_efectivo is not None and row.valor_inicial_efectivo is not None:
+            # Cash handover (efectivo only): the base goes on to the next
+            # operator and what exceeds it is the producido consigned.
+            base = Decimal(str(row.valor_inicial_efectivo))
+            datos_nuevos["base_entregada"] = str(base)
+            datos_nuevos["producido"] = str(
+                producido_de(Decimal(str(valor_final_efectivo)), base)
+            )
         if observaciones is not None:
             datos_nuevos["observaciones"] = observaciones
         log_row = LogTransaccional(
