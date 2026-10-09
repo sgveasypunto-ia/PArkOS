@@ -173,6 +173,23 @@ async def venta_suscripcion(
             headers=no_store,
         )
 
+    # --- Step 2b: same placa twice in one venta -> 422 (defecto 5.4). --
+    try:
+        repo_venta.validar_placas_no_duplicadas(placas=payload.placas)
+    except repo_venta.PlacaDuplicadaEnVentaError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "placa_duplicada_en_venta",
+                "placa": exc.placa,
+                "message": (
+                    f"La placa {exc.placa} esta repetida en la misma venta; "
+                    "cada vehiculo debe tener una placa distinta."
+                ),
+            },
+            headers=no_store,
+        ) from exc
+
     # --- Step 3: V1 cliente lookup-or-create (DEC-VENTA-07 drops 'dv'). -
     try:
         cliente = await repo_venta.buscar_cliente_por_uuid_o_crear(
