@@ -37,6 +37,7 @@ import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursal
 
 import type { AdminUsuarioRead } from '../api/adminUsuarioSchema';
 import { useAdminUsuarioSucursales } from '../hooks/useAdminUsuarioSucursales';
+import { SucursalFilterCombobox } from './SucursalFilterCombobox';
 
 export interface AdminUsuarioSucursalesManagerProps {
   user: AdminUsuarioRead | null;
@@ -192,41 +193,39 @@ export function AdminUsuarioSucursalesManager({
         </div>
 
         <div>
-          <label
-            htmlFor="admin-sucursales-add-select"
-            className="mb-2 block text-sm font-medium"
-          >
-            {t('gestionUsuarios.sucursalesManager.addLabel', 'Agregar sucursal')}
-          </label>
-          <div className="flex gap-2">
-            <select
-              id="admin-sucursales-add-select"
-              data-testid="admin-sucursales-add-select"
-              value={pendingAdd}
-              onChange={(e) => setPendingAdd(e.target.value)}
-              disabled={busy !== null || available.length === 0}
-              className="flex h-9 flex-1 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              <option value="">
-                {available.length === 0
-                  ? t(
-                      'gestionUsuarios.sucursalesManager.noneAvailable',
-                      'No hay sucursales disponibles para asignar.',
-                    )
-                  : t(
-                      'gestionUsuarios.sucursalesManager.addPlaceholder',
-                      'Elegí una sucursal…',
-                    )}
-              </option>
-              {available.map((s) => (
-                <option key={s.uuid} value={s.uuid}>
-                  {s.nombre ?? s.uuid}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-start gap-2">
+            <div className="flex-1" data-testid="admin-sucursales-add-select-wrap">
+              <SucursalFilterCombobox
+                options={available.map((s) => ({
+                  uuid: s.uuid,
+                  nombre: s.nombre,
+                  prefijo_nombre: s.prefijo_nombre ?? null,
+                }))}
+                value={pendingAdd}
+                onChange={setPendingAdd}
+                label={t(
+                  'gestionUsuarios.sucursalesManager.addLabel',
+                  'Agregar sucursal',
+                )}
+                placeholder={
+                  available.length === 0
+                    ? t(
+                        'gestionUsuarios.sucursalesManager.noneAvailable',
+                        'No hay sucursales disponibles para asignar.',
+                      )
+                    : t(
+                        'gestionUsuarios.sucursalesManager.addPlaceholder',
+                        'Elegí una sucursal…',
+                      )
+                }
+                disabled={busy !== null || available.length === 0}
+                testId="admin-sucursales-add-select"
+              />
+            </div>
             <Button
               type="button"
               size="sm"
+              className="mt-6"
               disabled={pendingAdd === '' || busy !== null}
               onClick={() => void handleAdd()}
               data-testid="admin-sucursales-add"

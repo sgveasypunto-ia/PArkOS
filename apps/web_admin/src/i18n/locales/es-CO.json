@@ -665,7 +665,13 @@
       "sucursalLabel": "Sucursal",
       "estadoLabel": "Estado",
       "todos": "Todos",
-      "todas": "Todas"
+      "todas": "Todas",
+      "sucursalCombobox": {
+        "search": "Buscar por nombre, prefijo o UUID…",
+        "none": "No hay sucursales disponibles.",
+        "empty": "Sin resultados para la búsqueda.",
+        "currentPrefix": "Actual:"
+      }
     },
     "wizard": {
       "progressLabel": "Progreso del asistente",
