@@ -30,9 +30,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, model_validator
 
 from ..repo.nit_modulo11 import dv_esperado, validar_nit_modulo11
+from ._placa import PlacaVehiculo
 from .common import FilterBase, ReadListBase, _Base
 from .facturacion import FacturaRead
 from .renovacion import ConRenovacion
@@ -303,17 +304,17 @@ class VehiculosRead(_Base):
 
 
 class VehiculosCreate(_Base):
-    """REQ-03-V-INSERCION. ``placa`` capped at 1-16 chars per REQ-OP-06
-    (Colombian plates are 6, international up to 16)."""
+    """REQ-03-V-INSERCION. ``placa`` follows the same auto/moto format as the
+    branch front (:data:`PlacaVehiculo`), canonicalized to upper-case."""
 
-    placa: Annotated[str, StringConstraints(min_length=1, max_length=16)]
+    placa: PlacaVehiculo
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
 
 
 class VehiculosUpdate(_Base):
     """REQ-04-V-ACTUALIZACION. Same shape as :class:`VehiculosCreate`."""
 
-    placa: Annotated[str, StringConstraints(min_length=1, max_length=16)]
+    placa: PlacaVehiculo
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
 
 
@@ -441,7 +442,7 @@ class VentaSuscripcionCreate(_Base):
 
     cliente: ClientesCreate | None = None
     uuid_cliente: uuid_lib.UUID | None = None
-    placas: Annotated[list[str], Field(min_length=1, max_length=2)]
+    placas: Annotated[list[PlacaVehiculo], Field(min_length=1, max_length=2)]
     uuid_tipo_subscripcion: uuid_lib.UUID
     fecha_inicio_cobertura: date
     cobrar_ahora: bool = False
@@ -590,7 +591,7 @@ class AgregarVehiculoCupoRequest(_Base):
     """``POST /clientes/subscripcion-vehiculos/agregar`` payload."""
 
     uuid_subscripcion_cliente: uuid_lib.UUID
-    placa: Annotated[str, StringConstraints(min_length=1, max_length=16)]
+    placa: PlacaVehiculo
 
 
 __all__ = [
