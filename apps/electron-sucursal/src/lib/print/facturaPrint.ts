@@ -392,9 +392,9 @@ export function lineasAHtml(lineas: FacturaLinea[], testid: string): string {
       }
       if (l.tipo === 'fila') {
         const style = `display:flex;justify-content:space-between;gap:2mm${l.sangria ? ';padding-left:3mm' : ''}${l.negrita ? ';font-weight:bold' : ''}`;
-        return `<div class="fila" style="${style}"><span style="overflow-wrap:anywhere">${esc(l.izq)}</span> <span style="white-space:nowrap">${esc(l.der)}</span></div>`;
+        return `<div class="fila" style="${style}"><span style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(l.izq)}</span> <span style="white-space:nowrap">${esc(l.der)}</span></div>`;
       }
-      const style = `${l.centro ? 'text-align:center;' : ''}${l.negrita ? 'font-weight:bold;' : ''}margin:0;overflow-wrap:anywhere`;
+      const style = `${l.centro ? 'text-align:center;' : ''}${l.negrita ? 'font-weight:bold;' : ''}margin:0;white-space:pre-wrap;overflow-wrap:anywhere`;
       return `<p style="${style}">${esc(l.texto)}</p>`;
     })
     .join('\n');
