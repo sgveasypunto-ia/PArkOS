@@ -145,3 +145,20 @@ export function extraerMensajeDetail422(detail: unknown): string {
   return '';
 }
 
+
+/**
+ * 422 `fecha_fin_fuera_de_rango` — the coverage end the operator typed is
+ * outside `[fecha_inicio_cobertura, fin del plan]` (it can only be
+ * shortened). Carries the server's readable message and the allowed maximum.
+ */
+export class VentaSuscripcionFechaFinError extends Error {
+  public readonly status = 422;
+  public readonly mensaje: string;
+  public readonly fechaFinMaxima: string;
+  constructor(mensaje: string, fechaFinMaxima = '') {
+    super('fecha_fin_fuera_de_rango');
+    this.name = 'VentaSuscripcionFechaFinError';
+    this.mensaje = mensaje;
+    this.fechaFinMaxima = fechaFinMaxima;
+  }
+}

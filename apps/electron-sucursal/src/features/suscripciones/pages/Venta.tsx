@@ -58,6 +58,7 @@ import {
   VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionFechaFinError,
   VentaSuscripcionValidationError,
   type VentaSuscripcionCreate,
 } from '../hooks/useVentaSuscripcion';
@@ -68,6 +69,7 @@ import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { feWarningMessage } from '../../facturacion/lib/feEstado';
 import { hoyBogotaISO } from '../lib/fechaInicio';
 import { VigenciaResumen } from '../components/VigenciaResumen';
+import { calcularFechaFinCobertura, validarFechaFin } from '../lib/vigencia';
 import { buildClienteVentaPayload } from '../lib/clienteVentaPayload';
 import { validarIdentificacion } from '../../../lib/validation/identificacion';
 import { validarNitModulo11 } from '../../../lib/validation/nit';
@@ -292,6 +294,11 @@ export function Venta({
   // PT-1: once the sale is charged the wizard is FINAL -- "Volver" and a
   // second submit are disabled so the payment can never be re-sent.
   const [ventaCompletada, setVentaCompletada] = useState(false);
+  // Fin de cobertura editado por el operador (solo se puede ACORTAR). `null` =
+  // fin calculado por el plan. El backend es la autoridad (422).
+  const [fechaFinEditada, setFechaFinEditada] = useState<string | null>(null);
+  const [fechaFinErrorServidor, setFechaFinErrorServidor] = useState<string | null>(null);
+  const [fechaFinFoco, setFechaFinFoco] = useState(0);
   const { trigger, isMutating } = useVentaSuscripcion();
   const { tipos: tiposVehiculo, isFromFallback: tiposFromFallback } = useTiposVehiculo();
   const {
@@ -313,6 +320,16 @@ export function Venta({
     );
   }, [planes, state.uuid_tipo_subscripcion]);
   const totalPlan = selectedPlan?.valor ?? PLAN_PREVIEW_VALOR;
+  const fechaInicioVenta = state.fecha_inicio_cobertura ?? hoyBogotaISO();
+  // Fin que cubre el plan: tope de la fecha editable (solo se puede acortar).
+  const fechaFinPlan = selectedPlan
+    ? calcularFechaFinCobertura(fechaInicioVenta, selectedPlan.duracion_dias)
+    : null;
+  // El tope depende del plan y del inicio: si cambian, la edición se descarta.
+  useEffect(() => {
+    setFechaFinEditada(null);
+    setFechaFinErrorServidor(null);
+  }, [state.uuid_tipo_subscripcion, state.fecha_inicio_cobertura]);
   const desgloseIva =
     ivaVigente.porcentaje === null
       ? null
@@ -514,6 +531,10 @@ export function Venta({
       // payment step only picks WHO is billed -- it no longer decides
       // whether an FE exists.
       emitir_factura_electronica: values.fe,
+      // Solo viaja si el operador acortó el fin respecto al del plan.
+      ...(fechaFinEditada !== null && fechaFinEditada !== fechaFinPlan
+        ? { fecha_fin_cobertura: fechaFinEditada }
+        : {}),
     };
     if (values.medio_pago === 'efectivo') {
       return {
@@ -560,6 +581,15 @@ export function Venta({
   const handlePagoSubmit = async (values: PagoFormValues): Promise<void> => {
     // PT-1: the sale is final once charged -- never re-send the payment.
     if (ventaCompletada) return;
+    // Feedback inmediato: un fin fuera de rango no se envía (el backend igual lo valida).
+    if (
+      fechaFinEditada !== null &&
+      fechaFinPlan !== null &&
+      validarFechaFin(fechaFinEditada, fechaInicioVenta, fechaFinPlan) !== null
+    ) {
+      setFechaFinFoco((n) => n + 1);
+      return;
+    }
     try {
       const result = await trigger(buildVentaPayload(values));
       setVentaCompletada(true);
@@ -579,6 +609,18 @@ export function Venta({
       }
       completeVenta();
     } catch (err) {
+      if (err instanceof VentaSuscripcionFechaFinError) {
+        // El rechazo es del campo de fin: se queda en el paso de pago.
+        setFechaFinErrorServidor(
+          err.mensaje ||
+            t('suscripciones:venta.errors.fecha_fin_fuera_de_rango', {
+              defaultValue:
+                'La fecha de fin está fuera del rango permitido: solo se puede acortar la vigencia.',
+            }),
+        );
+        setFechaFinFoco((n) => n + 1);
+        return;
+      }
       if (
         err instanceof VentaSuscripcionDuplicatePlateError ||
         err instanceof VentaSuscripcionPlacaRepetidaError ||
@@ -1044,8 +1086,15 @@ export function Venta({
           </p>
           {selectedPlan && (
             <VigenciaResumen
-              fechaInicio={state.fecha_inicio_cobertura ?? hoyBogotaISO()}
+              fechaInicio={fechaInicioVenta}
               duracionDias={selectedPlan.duracion_dias}
+              fechaFin={fechaFinEditada}
+              errorServidor={fechaFinErrorServidor}
+              focusSignal={fechaFinFoco}
+              onFechaFinChange={(fin) => {
+                setFechaFinEditada(fin);
+                setFechaFinErrorServidor(null);
+              }}
             />
           )}
           {desgloseIva !== null && ivaVigente.porcentaje !== null && (

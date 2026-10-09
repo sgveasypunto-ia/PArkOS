@@ -146,10 +146,20 @@
       "vigencia": {
         "titulo": "Vigencia de la suscripción",
         "inicio": "Inicio de cobertura",
-        "fin": "Fin de cobertura"
+        "fin": "Fin de cobertura",
+        "ajustar": "Ajustar fecha de fin",
+        "restablecer": "Usar fin del plan",
+        "ayuda": "Solo se puede acortar: entre {{min}} y {{max}}. El valor a cobrar no cambia.",
+        "error": {
+          "vacia": "Ingresa la fecha de fin de cobertura.",
+          "invalida": "La fecha de fin no es válida.",
+          "antes_inicio": "La fecha de fin no puede ser anterior al inicio ({{min}}).",
+          "despues_maximo": "La fecha de fin no puede superar el fin del plan ({{max}}). Para extender la vigencia usa otro plan o una renovación."
+        }
       }
     },
     "errors": {
+      "fecha_fin_fuera_de_rango": "La fecha de fin está fuera del rango permitido: solo se puede acortar la vigencia.",
       "suscripcion_duplicada_placa": "Esta placa ya tiene una suscripción vigente",
       "placa_duplicada_en_venta": "Hay una placa repetida en la venta; cada vehículo debe tener una placa distinta.",
       "validacion_servidor": "El servidor rechazó los datos de la venta. Revisa las placas.",

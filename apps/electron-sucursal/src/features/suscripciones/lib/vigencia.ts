@@ -34,3 +34,24 @@ export function formatFechaCO(iso: string): string {
   const m = ISO_RE.exec(iso);
   return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
 }
+
+export type FechaFinError = 'vacia' | 'invalida' | 'antes_inicio' | 'despues_maximo';
+
+/**
+ * Local mirror of the backend rule for the editable coverage end: the
+ * operator may only SHORTEN it -- `inicio <= fin <= fin calculado por el
+ * plan`. The backend is the authority (422 `fecha_fin_fuera_de_rango`);
+ * this only gives immediate feedback. Returns `null` when valid.
+ * ISO `YYYY-MM-DD` strings compare lexicographically.
+ */
+export function validarFechaFin(
+  finISO: string,
+  inicioISO: string,
+  maximoISO: string,
+): FechaFinError | null {
+  if (finISO === '') return 'vacia';
+  if (parseISO(finISO)?.toISOString().slice(0, 10) !== finISO) return 'invalida';
+  if (finISO < inicioISO) return 'antes_inicio';
+  if (finISO > maximoISO) return 'despues_maximo';
+  return null;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calcularFechaFinCobertura, formatFechaCO } from './vigencia';
+import { calcularFechaFinCobertura, formatFechaCO, validarFechaFin } from './vigencia';
 
 describe('calcularFechaFinCobertura (regla del backend: inicio + duracion_dias - 1)', () => {
   it('plan de 30 dias cubre exactamente 30 dias calendario', () => {
@@ -23,5 +23,26 @@ describe('calcularFechaFinCobertura (regla del backend: inicio + duracion_dias -
 describe('formatFechaCO', () => {
   it('formatea YYYY-MM-DD como dd/mm/aaaa', () => {
     expect(formatFechaCO('2026-10-09')).toBe('09/10/2026');
+  });
+});
+
+describe('validarFechaFin (solo se puede acortar: inicio <= fin <= fin del plan)', () => {
+  const INICIO = '2026-10-01';
+  const MAX = '2026-10-30';
+  it('acepta fechas dentro del rango, incluidos los extremos', () => {
+    expect(validarFechaFin('2026-10-01', INICIO, MAX)).toBeNull();
+    expect(validarFechaFin('2026-10-15', INICIO, MAX)).toBeNull();
+    expect(validarFechaFin('2026-10-30', INICIO, MAX)).toBeNull();
+  });
+  it('rechaza extender mas alla del fin del plan', () => {
+    expect(validarFechaFin('2026-10-31', INICIO, MAX)).toBe('despues_maximo');
+  });
+  it('rechaza una fecha anterior al inicio', () => {
+    expect(validarFechaFin('2026-09-30', INICIO, MAX)).toBe('antes_inicio');
+  });
+  it('rechaza vacia o con formato invalido', () => {
+    expect(validarFechaFin('', INICIO, MAX)).toBe('vacia');
+    expect(validarFechaFin('15/10/2026', INICIO, MAX)).toBe('invalida');
+    expect(validarFechaFin('2026-02-31', INICIO, MAX)).toBe('invalida');
   });
 });
