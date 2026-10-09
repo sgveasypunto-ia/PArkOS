@@ -135,6 +135,11 @@
       "salidas": "Salidas en mi turno",
       "cuposLibres": "Cupos libres en la sucursal"
     },
+    "cobrado": {
+      "regionLabel": "Dinero cobrado en mi turno",
+      "efectivo": "Cobrado en efectivo",
+      "error": "No se pudo cargar el dinero cobrado. Se reintentará automáticamente."
+    },
     "cerrarTurno": "Cerrar turno",
     "hacerArqueo": "Hacer arqueo"
   },

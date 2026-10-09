@@ -61,6 +61,12 @@ export interface UseMiTurnoReturn {
   error: Error | undefined;
   /** True when data is populated AND the most recent poll errored. */
   isStale: boolean;
+  /**
+   * True once SWR delivered a real payload. `data` is always non-null
+   * (zero fallback), so money figures must gate on this flag: a fallback
+   * zero is not a collected amount.
+   */
+  isLoaded: boolean;
   refresh: () => Promise<MiTurnoRead | undefined>;
 }
 
@@ -106,6 +112,7 @@ export function useMiTurno(uuid_sesion: string | null): UseMiTurnoReturn {
     data: effectiveData,
     error,
     isStale,
+    isLoaded: data !== undefined,
     refresh: async () => mutate(),
   };
 }

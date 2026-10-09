@@ -85,6 +85,7 @@ const SAMPLE_OK = {
     total_cobrado_datafono_cop: 30000,
   },
   error: undefined,
+  isLoaded: true,
 };
 
 const SAMPLE_OK_OCUPACION = {
@@ -112,6 +113,7 @@ const SAMPLE_ZERO = {
     total_cobrado_datafono_cop: 0,
   },
   error: undefined,
+  isLoaded: true,
 };
 
 const SAMPLE_ZERO_OCUPACION = {
@@ -248,21 +250,60 @@ describe('<MiTurnoPanel /> — REQ-OPS-187 (HU-F12.1)', () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
-  it('T6: NO se renderiza ningún KPI de dinero (regresión 2026-09-22)', () => {
+  it('T6: muestra el efectivo cobrado en una region accesible con formato COP es-CO', () => {
     useMiTurnoMock.mockReturnValue(SAMPLE_OK);
     useOcupacionMock.mockReturnValue(SAMPLE_OK_OCUPACION);
     render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
-    // El wire sigue trayendo total_cobrado_efectivo_cop / datafono_cop
-    // pero el panel los ignora. Bloquea cualquier intento de volver a
-    // meter `<MiTurnoKpiCard unitKey="miTurno.unidades.cop">` o un
-    // grid de 5 KPIs.
-    expect(screen.queryByTestId('mi-turno-kpi-total-cobrado')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('mi-turno-kpi-efectivo')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('mi-turno-kpi-datafono')).not.toBeInTheDocument();
-    // Ningún textContent contiene "COP" ni el sufijo moneda.
-    expect(screen.getByTestId('mi-turno-panel').textContent).not.toMatch(/COP/);
-    expect(screen.getByTestId('mi-turno-panel').textContent).not.toMatch(/Total cobrado/);
-    expect(screen.getByTestId('mi-turno-panel').textContent).not.toMatch(/Efectivo/);
-    expect(screen.getByTestId('mi-turno-panel').textContent).not.toMatch(/Datáfono/);
+    const region = screen.getByRole('region', { name: 'miTurno.cobrado.regionLabel' });
+    expect(region).toBeInTheDocument();
+    const valor = screen.getByTestId('mi-turno-cobrado-efectivo-value');
+    expect(valor.textContent).toMatch(/50\.000/);
+    expect(valor.textContent).toMatch(/\$/);
+    expect(region.textContent).toMatch(/miTurno\.cobrado\.efectivo/);
+  });
+
+  it('T6b: NO muestra datafono ni total general (el BE lo fija en 0 por F12.1.1)', () => {
+    useMiTurnoMock.mockReturnValue(SAMPLE_OK);
+    useOcupacionMock.mockReturnValue(SAMPLE_OK_OCUPACION);
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    const panel = screen.getByTestId('mi-turno-panel');
+    expect(panel.textContent).not.toMatch(/30\.000/);
+    expect(panel.textContent).not.toMatch(/datafono/i);
+    expect(screen.queryByTestId('mi-turno-cobrado-datafono-value')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mi-turno-cobrado-total-value')).not.toBeInTheDocument();
+  });
+
+  it('T6c: efectivo en cero renderiza $ 0 (valor real, no vacio)', () => {
+    useMiTurnoMock.mockReturnValue(SAMPLE_ZERO);
+    useOcupacionMock.mockReturnValue(SAMPLE_ZERO_OCUPACION);
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    expect(screen.getByTestId('mi-turno-cobrado-efectivo-value').textContent).toMatch(/\$\s?0$/);
+  });
+
+  it('T6d: sin turno (uuid_sesion=null) o sin datos cargados renderiza em dash, no un cero falso', () => {
+    useMiTurnoMock.mockReturnValue({ data: undefined, error: undefined, isLoaded: false });
+    useOcupacionMock.mockReturnValue({ data: undefined, error: undefined });
+    render(<MiTurnoPanel uuid_sesion={null} uuid_sucursal={null} />);
+    expect(screen.getByTestId('mi-turno-cobrado-efectivo-value').textContent).toBe('—');
+  });
+
+  it('T6e: error sin datos previos muestra em dash y mensaje de error accesible', () => {
+    useMiTurnoMock.mockReturnValue({
+      data: undefined,
+      error: new Error('server error'),
+      isLoaded: false,
+    });
+    useOcupacionMock.mockReturnValue({ data: undefined, error: undefined });
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    expect(screen.getByTestId('mi-turno-cobrado-efectivo-value').textContent).toBe('—');
+    expect(screen.getByRole('alert').textContent).toMatch(/miTurno\.cobrado\.error/);
+  });
+
+  it('T6f: con datos previos y error nuevo conserva el valor y no muestra alerta', () => {
+    useMiTurnoMock.mockReturnValue({ ...SAMPLE_OK, error: new Error('x'), isStale: true });
+    useOcupacionMock.mockReturnValue(SAMPLE_OK_OCUPACION);
+    render(<MiTurnoPanel uuid_sesion={UUID_SESION} uuid_sucursal={UUID_SUCURSAL} />);
+    expect(screen.getByTestId('mi-turno-cobrado-efectivo-value').textContent).toMatch(/50\.000/);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
