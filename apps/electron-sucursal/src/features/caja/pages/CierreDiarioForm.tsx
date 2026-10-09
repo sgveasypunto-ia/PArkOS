@@ -40,6 +40,7 @@ import {
 
 import type { ArqueoResumenPorSesion } from '../hooks/useArqueoResumenPorSesion';
 import { formatFechaHoraCorta } from '../lib/format';
+import { contarSesiones, esSesionAbierta } from '../lib/sesionEstado';
 
 /**
  * Public shape that the `<CierreDiario />` page passes to the form.
@@ -122,9 +123,14 @@ export function CierreDiarioForm(props: {
     !requiresJustificacion ||
     (typeof watchedJustificacion === 'string' &&
       watchedJustificacion.trim().length >= 3);
+  // Caja bug 4: con sesiones abiertas el cierre diario no procede; se
+  // explica junto al botón (aria-describedby) en vez de dejarlo mudo.
+  const { abiertas, total } = contarSesiones(props.sesiones);
+  const sesionesAbiertasMsgId = `${formId}-sesiones-abiertas`;
   const isDisabled =
     props.isSubmitting ||
     props.cierreDiaExists ||
+    abiertas > 0 ||
     props.totals.valor_efectivo_reportado <= 0 ||
     !justificacionOk;
 
@@ -227,7 +233,7 @@ export function CierreDiarioForm(props: {
                         // ya usado por `<SyncStatusBadge />`), sin variantes
                         // `dark:` manuales — el token resuelve el tema.
                         className={
-                          s.estado === 'cerrado'
+                          !esSesionAbierta(s)
                             ? 'inline-flex items-center rounded bg-success px-2 py-0.5 text-xs text-success-foreground'
                             : 'inline-flex items-center rounded bg-warning px-2 py-0.5 text-xs text-warning-foreground'
                         }
@@ -244,8 +250,21 @@ export function CierreDiarioForm(props: {
                 data-testid="cierre-diario-totals"
                 className="border-t-2 border-border bg-muted font-semibold"
               >
-                <td colSpan={2} className="px-3 py-2">
-                  Σ
+                <td
+                  colSpan={2}
+                  className="px-3 py-2"
+                  data-testid="cierre-diario-totals-sesiones"
+                >
+                  Σ{' '}
+                  <span
+                    aria-label={t('caja:cierreDiario.totalSesionesAbiertas', {
+                      abiertas,
+                      total,
+                      defaultValue: `${abiertas} abiertas de ${total} sesiones`,
+                    })}
+                  >
+                    {abiertas}/{total}
+                  </span>
                 </td>
                 <td className="px-3 py-2 text-right">
                   {formatCOP(props.totals.valor_efectivo_reportado)}
@@ -358,12 +377,33 @@ export function CierreDiarioForm(props: {
         )}
 
         {/* ── Buttons ──────────────────────────────────────────────── */}
+        {abiertas > 0 && (
+          <p
+            id={sesionesAbiertasMsgId}
+            data-testid="cierre-diario-sesiones-abiertas"
+            role="status"
+            className="rounded border border-warning bg-warning/10 p-2 text-sm text-warning"
+          >
+            {abiertas === 1
+              ? t('caja:cierreDiario.sesionesAbiertasUna', {
+                  count: abiertas,
+                  defaultValue:
+                    `Hay ${abiertas} sesión abierta. Ciérrela antes de hacer el cierre diario.`,
+                })
+              : t('caja:cierreDiario.sesionesAbiertasVarias', {
+                  count: abiertas,
+                  defaultValue:
+                    `Hay ${abiertas} sesiones abiertas. Ciérrelas antes de hacer el cierre diario.`,
+                })}
+          </p>
+        )}
         <div className="flex flex-wrap gap-2 pt-2">
           <Button
             type="submit"
             data-testid="cierre-diario-confirmar"
             disabled={isDisabled}
             aria-disabled={isDisabled}
+            aria-describedby={abiertas > 0 ? sesionesAbiertasMsgId : undefined}
           >
             {/* Estado loading visual — `isSubmitting` ya existía en la
                 lógica (usado en `isDisabled`) pero el botón nunca
