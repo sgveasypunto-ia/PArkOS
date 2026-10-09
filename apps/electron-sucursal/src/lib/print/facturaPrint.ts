@@ -135,6 +135,19 @@ function lineasEmpresa(valor: string, cols: number): string[] {
   return out;
 }
 
+/**
+ * Lineas `Empresa: <razon social>` del ticket de salida, saneadas y ajustadas al
+ * ancho termico. Vacio si no hay empresa. Fuente unica: la usan la plantilla de
+ * impresion y la vista del ticket en pantalla (FacturaDisplayModal).
+ */
+export function lineasEmpresaTicket(
+  empresa: string | null | undefined,
+  cols: number = FACTURA_COLUMNAS,
+): string[] {
+  const saneada = sanearTexto(empresa ?? '');
+  return saneada ? lineasEmpresa(saneada, cols) : [];
+}
+
 /** The single document model. Pure: same input, same lines. */
 export function construirFactura(f: FacturaRead): FacturaLinea[] {
   const s = f.datos_sucursal;
@@ -179,8 +192,7 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
     sep();
     if (v.placa) texto(`Placa: ${v.placa}`, { negrita: true });
     // Cliente empresa dueño de la suscripcion: solo su razon social (sin NIT ni datos personales).
-    const empresaSusc = sanearTexto(v.empresa_suscripcion ?? '');
-    if (empresaSusc) for (const l of lineasEmpresa(empresaSusc, FACTURA_COLUMNAS)) texto(l);
+    for (const l of lineasEmpresaTicket(v.empresa_suscripcion)) texto(l);
     if (v.fecha_ingreso) texto(`Entrada: ${formatFechaCorta(v.fecha_ingreso)}`);
     if (v.fecha_salida) texto(`Salida: ${formatFechaCorta(v.fecha_salida)}`);
     if (v.minutos !== null && v.minutos !== undefined) texto(`Tiempo: ${tiempo(v.minutos)}`);
