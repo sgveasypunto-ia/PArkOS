@@ -26,6 +26,15 @@ import type { BridgeSurface } from '../../../electron/bridge';
 import type { FacturaRead } from '../../features/facturacion/api/facturaApi';
 import { cutPartial, escCenter, escInit, escLeft, lf } from './escposBuilder';
 import {
+  ANCHO_LOGO_ENCABEZADO,
+  ANCHO_LOGO_PIE,
+  MARCA_ENCABEZADO,
+  MARCA_PIE,
+  cargarMarcaRaster,
+  logoDataUri,
+  type MarcaRaster,
+} from './marcaTicket';
+import {
   TICKET_ANCHO_IMPRIMIBLE_MM,
   TICKET_COLUMNAS,
   ajustarTexto,
@@ -52,7 +61,9 @@ export const FACTURA_COLUMNAS = TICKET_COLUMNAS;
 export type FacturaLinea =
   | { tipo: 'texto'; texto: string; centro?: boolean; negrita?: boolean }
   | { tipo: 'fila'; izq: string; der: string; negrita?: boolean; sangria?: boolean }
-  | { tipo: 'sep' };
+  | { tipo: 'sep' }
+  /** easypunto logo (header / footer): raster on ESC/POS, `<img>` on HTML, text fallback otherwise. */
+  | { tipo: 'marca'; posicion: 'encabezado' | 'pie' };
 
 export function dinero(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
@@ -171,6 +182,8 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
     out.push({ tipo: 'sep' });
   };
 
+  out.push(MARCA_ENCABEZADO);
+
   // Emisor
   texto(s.razon_social ?? 'Establecimiento', { centro: true, negrita: true });
   texto(`NIT ${s.nit ?? '—'}${s.regimen ? ` · ${s.regimen}` : ''}`, { centro: true });
@@ -257,8 +270,12 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
     texto('Factura electrónica: pendiente de la DIAN (CUFE se asigna al emitirla)');
   }
   texto('Gracias por su visita.', { centro: true });
+  out.push(MARCA_PIE);
   return out;
 }
+
+/** Brand name printed when the logo image is unavailable. */
+const TEXTO_MARCA = 'easypunto';
 
 /** One physical printed line (already wrapped to the ticket width). */
 export interface LineaFisica {
@@ -277,6 +294,9 @@ export function expandirLineas(lineas: FacturaLinea[], cols: number = FACTURA_CO
   for (const l of lineas) {
     if (l.tipo === 'sep') {
       out.push({ texto: separadorTicket(cols), centro: false, negrita: false });
+    } else if (l.tipo === 'marca') {
+      // Text fallback (also what the plain-text dump shows): the brand name.
+      out.push({ texto: TEXTO_MARCA, centro: true, negrita: true });
     } else if (l.tipo === 'fila') {
       for (const t of filaTicket(l.izq, l.der, cols, l.sangria === true)) {
         out.push({ texto: t, centro: false, negrita: l.negrita === true });
@@ -303,23 +323,43 @@ export function facturaATexto(lineas: FacturaLinea[], cols: number = FACTURA_COL
  * width 576 dots), ESC M 0 (Font A, 48 columns), ESC a 1 / ESC a 0 (centre),
  * ESC E n (bold), GS V 0 (partial cut).
  */
-export function lineasAEscpos(lineas: FacturaLinea[]): Buffer {
+export function lineasAEscpos(lineas: FacturaLinea[], marca: MarcaRaster | null = null): Buffer {
   const u = (t: string): Buffer => Buffer.from(t, 'utf8');
   const parts: Buffer[] = [escInit(), escAreaImprimible()];
-  for (const l of expandirLineas(lineas)) {
-    if (l.centro) parts.push(escCenter());
-    if (l.negrita) parts.push(escNegrita(true));
-    parts.push(u(`${l.texto}\n`));
-    if (l.negrita) parts.push(escNegrita(false));
-    if (l.centro) parts.push(escLeft());
+  for (const linea of lineas) {
+    if (linea.tipo === 'marca' && marca) {
+      // Raster logo (GS v 0), centred; the printer advances the paper itself.
+      parts.push(escCenter(), linea.posicion === 'pie' ? marca.pie : marca.encabezado, escLeft());
+      continue;
+    }
+    for (const l of expandirLineas([linea])) {
+      if (l.centro) parts.push(escCenter());
+      if (l.negrita) parts.push(escNegrita(true));
+      parts.push(u(`${l.texto}\n`));
+      if (l.negrita) parts.push(escNegrita(false));
+      if (l.centro) parts.push(escLeft());
+    }
   }
   parts.push(u('\n'), cutPartial(), lf());
   return Buffer.concat(parts);
 }
 
-/** ESC/POS bytes for the thermal printer (same framing as the other tiquetes). */
-export function facturaAEscpos(f: FacturaRead): Buffer {
-  return lineasAEscpos(construirFactura(f));
+/**
+ * ESC/POS bytes for the thermal printer. `marca` = raster logo from
+ * `cargarMarcaRaster()`; without it the brand prints as text.
+ */
+export function facturaAEscpos(f: FacturaRead, marca: MarcaRaster | null = null): Buffer {
+  return lineasAEscpos(construirFactura(f), marca);
+}
+
+/**
+ * Raster logo to hand to `lineasAEscpos` for this bridge: none in browser mode
+ * (HTML uses the vector `<img>`) or without bridge; otherwise the cached raster
+ * (`null` if it cannot be produced → text fallback). Never throws.
+ */
+export async function marcaParaBridge(bridge: Pick<BridgeSurface, 'imprimir'> | undefined): Promise<MarcaRaster | null> {
+  if (!bridge?.imprimir || (bridge.imprimir as { modo?: string }).modo === 'browser') return null;
+  return cargarMarcaRaster();
 }
 
 function esc(text: string): string {
@@ -345,6 +385,11 @@ export function lineasAHtml(lineas: FacturaLinea[], testid: string): string {
   const body = lineas
     .map((l) => {
       if (l.tipo === 'sep') return '<hr style="border:0;border-top:1px dashed #000;margin:1mm 0" />';
+      if (l.tipo === 'marca') {
+        // Vector logo, black and white; widths mirror the raster (dots / 8 = mm), never above the 72 mm area.
+        const mm = (l.posicion === 'pie' ? ANCHO_LOGO_PIE : ANCHO_LOGO_ENCABEZADO) / 8;
+        return `<p style="text-align:center;margin:1mm 0"><img alt="easypunto" src="${logoDataUri()}" style="width:${mm}mm;max-width:${TICKET_ANCHO_IMPRIMIBLE_MM}mm;height:auto;filter:grayscale(1) contrast(1.5)" /></p>`;
+      }
       if (l.tipo === 'fila') {
         const style = `display:flex;justify-content:space-between;gap:2mm${l.sangria ? ';padding-left:3mm' : ''}${l.negrita ? ';font-weight:bold' : ''}`;
         return `<div class="fila" style="${style}"><span style="overflow-wrap:anywhere">${esc(l.izq)}</span> <span style="white-space:nowrap">${esc(l.der)}</span></div>`;
@@ -421,8 +466,9 @@ export async function imprimirFactura(
   factura: FacturaRead,
   bridge: Pick<BridgeSurface, 'imprimir'> | undefined = bridgeActual(),
 ): Promise<ResultadoImpresion> {
+  const marca = await marcaParaBridge(bridge);
   return enviarAlBridge(bridge, {
-    escpos: () => facturaAEscpos(factura),
+    escpos: () => facturaAEscpos(factura, marca),
     html: () => facturaAHtml(factura),
     ticketId: `factura-${factura.numero_recibo}`,
     uuidRegistro: factura.uuid,

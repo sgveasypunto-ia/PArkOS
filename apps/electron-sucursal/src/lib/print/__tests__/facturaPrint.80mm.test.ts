@@ -11,6 +11,7 @@ import {
   facturaATexto,
   lineasEmpresaTicket,
 } from '../facturaPrint';
+import type { FacturaRead } from '../../../features/facturacion/api/facturaApi';
 import { TICKET_COLUMNAS } from '../ticketBase';
 import {
   FACTURA_BASE,
@@ -22,14 +23,14 @@ import {
 const EMPRESA_LARGA = 'Inversiones y Representaciones Internacionales del Caribe Colombiano SAS';
 const CUFE = 'f3a9'.repeat(24);
 
-const mensualidadEmpresa = {
+const mensualidadEmpresa: FacturaRead = {
   ...FACTURA_MENSUALIDAD_CERO,
   datos_vehiculo: {
     ...FACTURA_MENSUALIDAD_CERO.datos_vehiculo!,
     empresa_suscripcion: EMPRESA_LARGA,
   },
 };
-const suscripcionDatafono = {
+const suscripcionDatafono: FacturaRead = {
   ...FACTURA_SUSCRIPCION_120000,
   medio_pago: 'datafono',
   voucher: '004512',
@@ -41,7 +42,7 @@ const suscripcionDatafono = {
     cufe: CUFE,
   },
 };
-const conceptoLargo = {
+const conceptoLargo: FacturaRead = {
   ...FACTURA_ROTACION_200,
   items: [
     {
@@ -50,7 +51,7 @@ const conceptoLargo = {
     },
   ],
 };
-const CASOS = {
+const CASOS: Record<string, FacturaRead> = {
   rotacion: FACTURA_ROTACION_200,
   mensualidadEmpresa,
   suscripcionDatafono,
@@ -122,6 +123,7 @@ describe('ESC/POS 80 mm', () => {
     // Text lines only: strip the ESC/GS commands the renderer emits.
     const texto = b
       .toString('utf8')
+      // eslint-disable-next-line no-control-regex -- ESC/GS opcodes are control bytes by definition
       .replace(/\x1b@|\x1b[aEM!][\s\S]|\x1d[LW][\s\S]{2}|\x1dV[\s\S]/g, '');
     for (const l of texto.split('\n')) expect(l.length).toBeLessThanOrEqual(48);
   });

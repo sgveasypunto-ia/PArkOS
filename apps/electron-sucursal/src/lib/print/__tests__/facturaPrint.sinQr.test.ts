@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import type { FacturaRead } from '../../../features/facturacion/api/facturaApi';
 import { facturaAEscpos, facturaAHtml } from '../facturaPrint';
 import fuenteFactura from '../facturaPrint.ts?raw';
 import fuenteTicketBase from '../ticketBase.ts?raw';
@@ -17,7 +18,7 @@ import {
   FACTURA_SUSCRIPCION_120000,
 } from './facturaFixtures';
 
-const CASOS = {
+const CASOS: Record<string, FacturaRead> = {
   base: FACTURA_BASE,
   rotacion: FACTURA_ROTACION_200,
   mensualidadCero: FACTURA_MENSUALIDAD_CERO,
@@ -39,7 +40,8 @@ describe.each(Object.entries(CASOS))('factura %s sin QR', (_n, f) => {
   });
 
   it('el HTML no contiene QR, canvas ni svg inline', () => {
-    const html = facturaAHtml(f);
+    // The brand logo travels as a data URI whose path data may contain any letters: ignore it.
+    const html = facturaAHtml(f).replace(/src="data:image[^"]*"/g, 'src=""');
     expect(html).not.toMatch(/qr/i);
     expect(html).not.toMatch(/<canvas|<svg/i);
     // The only images allowed are the brand logos.
