@@ -124,6 +124,28 @@ const SUC_NORTE = {
   sync_status: null,
 } as const;
 
+// Sibling fixture for the search-filter tests. The "Bogota" /
+// "BOG-SUR" / "Sucursal Sur" strings are deliberately distinct from
+// SUC_NORTE on every searchable field so a query of "Sur" or "BOG-SUR"
+// matches only this row, not the Norte one.
+const SUC_SUR = {
+  uuid: '22222222-2222-2222-2222-222222222222',
+  nombre: 'Sucursal Sur',
+  prefijo_nombre: 'BOG-SUR',
+  direccion: null,
+  telefono: null,
+  ciudad: 'Medellin',
+  horario: null,
+  uuid_tipo_sucursal: null,
+  uuid_empresa: null,
+  vigente_desde: '2026-09-01T00:00:00',
+  vigente_hasta: null,
+  estado: 'activo',
+  created_at: '2026-09-01T00:00:00',
+  created_by: null,
+  sync_status: null,
+} as const;
+
 beforeEach(() => {
   mockedList.mockReset();
   mockedCreate.mockReset();
@@ -268,6 +290,173 @@ describe('SeleccionarSucursal unified page', () => {
       'data-state',
       'active',
     );
+  });
+
+  // -- Free-text search (HU-F24.0 -- single input, matches all 3 fields) -
+
+  it('T9: typing in the search input filters the table to rows that match nombre/prefijo/ciudad', async () => {
+    const user = userEvent.setup();
+    mockedList.mockResolvedValue([SUC_NORTE, SUC_SUR]);
+    renderAt(['/seleccionar-sucursal?tab=admin']);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).toBeInTheDocument();
+    });
+
+    const input = screen.getByTestId(
+      'sucursal-search',
+    ) as HTMLInputElement;
+
+    // (a) Match by ciudad: "Medellin" is unique to SUC_SUR.
+    await user.clear(input);
+    await user.type(input, 'Medellin');
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).toBeInTheDocument();
+    });
+
+    // (b) Match by prefijo: "BOG-SUR" is unique to SUC_SUR.
+    await user.clear(input);
+    await user.type(input, 'BOG-SUR');
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).toBeInTheDocument();
+    });
+
+    // (c) Match by nombre: "Norte" is unique to SUC_NORTE.
+    await user.clear(input);
+    await user.type(input, 'Norte');
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).not.toBeInTheDocument();
+    });
+
+    // (d) Case + accent insensitive: "bogotá" matches "Bogota" + "BOG-NOR".
+    await user.clear(input);
+    await user.type(input, 'bogotá');
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it('T10: empty query restores the full list (no filter)', async () => {
+    const user = userEvent.setup();
+    mockedList.mockResolvedValue([SUC_NORTE, SUC_SUR]);
+    renderAt(['/seleccionar-sucursal?tab=admin']);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).toBeInTheDocument();
+    });
+
+    const input = screen.getByTestId(
+      'sucursal-search',
+    ) as HTMLInputElement;
+
+    // Filter down to a single row.
+    await user.type(input, 'Medellin');
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).not.toBeInTheDocument();
+    });
+
+    // The X button wipes the query -> both rows back.
+    await user.click(screen.getByTestId('sucursal-search-clear'));
+    expect(input.value).toBe('');
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('T11: no matches shows the empty-state card with a clear button that restores the list', async () => {
+    const user = userEvent.setup();
+    mockedList.mockResolvedValue([SUC_NORTE, SUC_SUR]);
+    renderAt(['/seleccionar-sucursal?tab=admin']);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).toBeInTheDocument();
+    });
+
+    const input = screen.getByTestId(
+      'sucursal-search',
+    ) as HTMLInputElement;
+    await user.type(input, 'zzzz-nothing-matches');
+
+    // Both rows gone, the no-results card is up.
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId('sucursal-search-no-results'),
+      ).toBeInTheDocument();
+    });
+    // The query is interpolated into the message.
+    expect(
+      screen.getByTestId('sucursal-search-no-results').textContent,
+    ).toContain('zzzz-nothing-matches');
+
+    // Clicking the clear button restores the list.
+    await user.click(screen.getByTestId('sucursal-search-no-results-clear'));
+    expect(input.value).toBe('');
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId('sucursal-row-22222222-2222-2222-2222-222222222222'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('T12: the search input is associated with an accessible label (sr-only + htmlFor)', async () => {
+    mockedList.mockResolvedValue([SUC_NORTE]);
+    renderAt(['/seleccionar-sucursal?tab=admin']);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('sucursal-row-11111111-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument();
+    });
+
+    // axe-core is asserted at the e2e layer (seleccionar-sucursal.spec.ts
+    // runs AxeBuilder on the whole page). The unit test just confirms
+    // the contract that makes that pass: <label htmlFor=...> wired to
+    // <input id=...> + the X button carries its own aria-label so the
+    // row still has a single named control.
+    const input = screen.getByTestId('sucursal-search');
+    expect(input.getAttribute('id')).toBe('sucursal-search-input');
+    const labelledBy = document.querySelector(
+      'label[for="sucursal-search-input"]',
+    );
+    expect(labelledBy).not.toBeNull();
   });
 
   // NOTE: T9/T10 (regression tests verifying refreshAdminAuth is called

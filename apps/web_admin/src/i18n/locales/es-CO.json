@@ -160,6 +160,11 @@
     },
     "title": {
       "admin": "Sucursales"
+    },
+    "search": {
+      "placeholder": "Buscar por nombre, prefijo o ciudad…",
+      "noResults": "No se encontraron sucursales que coincidan con \"{{query}}\".",
+      "clearAria": "Limpiar búsqueda"
     }
   },
   "home": {

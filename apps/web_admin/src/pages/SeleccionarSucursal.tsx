@@ -43,6 +43,7 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
 
 import { SucursalFormHarness } from '@/features/sucursales/components/SucursalForm';
 import { useTipoSucursal } from '@/features/tipo-sucursal/hooks/useTipoSucursal';
@@ -145,6 +146,38 @@ export default function SeleccionarSucursal(): JSX.Element {
   const [editing, setEditing] = useState<Sucursal | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<ErrorState>(null);
+  // Free-text filter over the admin table. State is kept at the page
+  // level (NOT the TabsContent level) so it survives tab switches --
+  // the user's expectation: type a query, switch to "Seleccionar",
+  // switch back, the query is still there. Empty string = no filter.
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  // Accent- and case-insensitive match: "bogota", "Bogotá", "BOGOTÁ"
+  // all hit a row with ciudad "Bogotá". The same NFD-stripped query is
+  // compared against the three searchable fields (nombre,
+  // prefijo_nombre, ciudad); a row matches if ANY field contains the
+  // query as a substring. Null fields are treated as "no match" so
+  // "null" never appears in the search results.
+  const filteredSucursales = useMemo<Sucursal[]>(() => {
+    const base = listForAdmin.sucursales;
+    const normalizedQuery = searchQuery
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    if (normalizedQuery === '') return base;
+    return base.filter((s) => {
+      const candidates = [s.nombre, s.prefijo_nombre, s.ciudad];
+      return candidates.some((value) => {
+        if (value === null || value === undefined) return false;
+        return value
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .includes(normalizedQuery);
+      });
+    });
+  }, [listForAdmin.sucursales, searchQuery]);
 
   function closeModal(): void {
     setShowCreate(false);
@@ -274,6 +307,53 @@ export default function SeleccionarSucursal(): JSX.Element {
             </Button>
           </header>
 
+          {/* Free-text filter. Single input matches against nombre,
+              prefijo_nombre, AND ciudad (accent/case-insensitive). The
+              `htmlFor`/`id` pair wires the input to its visible label
+              so axe-core sees an accessible form field (the X button
+              below carries its own aria-label so the search row still
+              has a single labeled control). */}
+          <div className="mb-4 flex items-center gap-2">
+            <label
+              htmlFor="sucursal-search-input"
+              className="sr-only"
+            >
+              {t(
+                'sucursalAdmin.search.placeholder',
+                'Buscar por nombre, prefijo o ciudad…',
+              )}
+            </label>
+            <Input
+              id="sucursal-search-input"
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={t(
+                'sucursalAdmin.search.placeholder',
+                'Buscar por nombre, prefijo o ciudad…',
+              )}
+              className="max-w-sm"
+              data-testid="sucursal-search"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {searchQuery !== '' && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setSearchQuery('')}
+                aria-label={t(
+                  'sucursalAdmin.search.clearAria',
+                  'Limpiar búsqueda',
+                )}
+                data-testid="sucursal-search-clear"
+              >
+                ✕
+              </Button>
+            )}
+          </div>
+
           {(showCreate || editing !== null) && (
             <Card className="mb-4" data-testid="sucursal-form-card">
               <CardHeader>
@@ -337,6 +417,31 @@ export default function SeleccionarSucursal(): JSX.Element {
             >
               {t('sucursal.empty', 'Aún no hay sucursales configuradas.')}
             </p>
+          ) : filteredSucursales.length === 0 ? (
+            // Base list is non-empty (the branch above handles the
+            // truly-empty case) but the filter eliminated every row.
+            // Distinct empty state so the admin can tell "no
+            // branches" from "no matches for my query".
+            <div
+              className="flex flex-col items-start gap-2 rounded-lg border bg-card p-4 text-sm"
+              data-testid="sucursal-search-no-results"
+            >
+              <p className="text-muted-foreground">
+                {t(
+                  'sucursalAdmin.search.noResults',
+                  'No se encontraron sucursales que coincidan con "{{query}}".',
+                ).replace('{{query}}', searchQuery)}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setSearchQuery('')}
+                data-testid="sucursal-search-no-results-clear"
+              >
+                {t('sucursalAdmin.search.clearAria', 'Limpiar búsqueda')}
+              </Button>
+            </div>
           ) : (
             <div
               className="overflow-x-auto rounded-lg border bg-card"
@@ -360,7 +465,7 @@ export default function SeleccionarSucursal(): JSX.Element {
                   </tr>
                 </thead>
                 <tbody>
-                  {listForAdmin.sucursales.map((s) => (
+                  {filteredSucursales.map((s) => (
                     <tr
                       key={s.uuid}
                       data-testid={`sucursal-row-${s.uuid}`}
